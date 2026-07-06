@@ -16,17 +16,183 @@ Output conforms to schemas/presentation/presentation_schema.json or
 textbook_structure.schema.json based on extraction method used.
 """
 
+import difflib
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from bs4 import BeautifulSoup, Tag
 
+from lib.ontology.taxonomy import (
+    get_lexicon_apparatus_names,
+    strip_leading_ordinal,
+)
+
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# SemantiK structure-fidelity guards (Package 1 + 3) — master gate.
+#
+# Wraps the article-path chapter/section assembly guards (continuation-article
+# merge, headingless-wrapper grouping, noncontent/EOC/numbered-apparatus
+# heading filtering, post-build sanity diagnostics) AND the Package-3
+# ordinal-strip apparatus demotion in ``_is_eoc_section_heading``. Default OFF:
+# flag-off is byte-identical to the pre-guard extractor (snapshot-pinned).
+# ---------------------------------------------------------------------------
+_STRUCTURE_EXTRACT_GUARDS_ENV = "ED4ALL_STRUCTURE_EXTRACT_GUARDS"
+
+
+def _structure_extract_guards_enabled() -> bool:
+    """Whether the Package 1/3 extractor guards are enabled (default OFF)."""
+    raw = os.environ.get(_STRUCTURE_EXTRACT_GUARDS_ENV)
+    if raw is None:
+        return False
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+# Lazily-cached lowercased lexicon apparatus display names, consulted (after
+# an ordinal strip) by the guards-gated arm of ``_is_eoc_section_heading`` so a
+# numbered banner "10.3 Review Exercises" / "1.4 Practice Test" demotes via the
+# data-driven lexicon rather than a hardcoded name.
+_LEXICON_APPARATUS_LOWER_CACHE: Optional[frozenset] = None
+
+
+def _lexicon_apparatus_names_lower() -> frozenset:
+    global _LEXICON_APPARATUS_LOWER_CACHE
+    if _LEXICON_APPARATUS_LOWER_CACHE is None:
+        try:
+            _LEXICON_APPARATUS_LOWER_CACHE = frozenset(
+                n.strip().lower()
+                for n in get_lexicon_apparatus_names()
+                if n and n.strip()
+            )
+        except Exception:  # pragma: no cover - defensive; lexicon always loads
+            _LEXICON_APPARATUS_LOWER_CACHE = frozenset()
+    return _LEXICON_APPARATUS_LOWER_CACHE
+
+
+# ---------------------------------------------------------------------------
+# Package 2 — outline-anchored section alignment (satellite of the Package-1/3
+# guards). Harvests the document's OWN declared ``N.M Title`` structure (the
+# chapter-outline zone + ``<nav class="toc">``, INCLUDING fused outline
+# paragraphs), aligns body/outline/answer-key heading occurrences against it,
+# and regroups sections/chapters by the declared ordinal spine rather than by
+# the OCR-inflated article boundaries. Default ON when the Package-1 guards are
+# on (opt-out) — it is a REFINEMENT of the guarded path, only ever reached from
+# ``_build_chapters_from_articles_guarded``. Undeclared corpora (no harvestable
+# outline) fall through UNCHANGED to the Package-1 guarded behavior.
+# ---------------------------------------------------------------------------
+_STRUCTURE_OUTLINE_ANCHOR_ENV = "ED4ALL_STRUCTURE_OUTLINE_ANCHOR"
+
+
+def _outline_anchor_enabled() -> bool:
+    """Whether Package-2 outline anchoring is enabled.
+
+    Default ON (opt-out): only ``_build_chapters_from_articles_guarded`` calls
+    this, so the guards master gate already had to be on to get here. An
+    explicit falsey ``ED4ALL_STRUCTURE_OUTLINE_ANCHOR`` reverts to the
+    Package-1 guarded behavior (byte-identical to guards-on / anchor-off).
+    """
+    raw = os.environ.get(_STRUCTURE_OUTLINE_ANCHOR_ENV)
+    if raw is None:
+        return True
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+# ``N.M`` section-ordinal shapes. ``_NM_HEADING_RE`` anchors a heading that
+# OPENS with an ordinal ("1.4 Multiply and Divide Integers"); ``_NM_SPLIT_RE``
+# finds every ordinal inside a run so a FUSED outline paragraph
+# ("1.2 Use the Language of Algebra 1.3 Add and Subtract Integers") recovers
+# BOTH entries.
+_NM_HEADING_RE = re.compile(r"^\s*(\d+\.\d+)\s+(\S.*)$")
+_NM_SPLIT_RE = re.compile(r"\b(\d+\.\d+)\b")
+
+# Review / answer-key furniture words. An article whose TITLE carries one of
+# these opens the document's trailing review/answer-key zone (OpenStax prints
+# the per-section openers as reprints there — see the plan's "1.2/1.3 opener"
+# forensics). Shape-based, publisher-neutral; the vocabulary is generic
+# academic-apparatus wording, not a publisher name.
+_REVIEW_ZONE_RE = re.compile(
+    r"\b(review|key terms|key concepts|practice test|cumulative)\b",
+    re.IGNORECASE,
+)
+
+# A declared ``N.M`` whose MINOR component exceeds this is almost certainly an
+# example / figure reference ("EXAMPLE 1.58") leaking into a ``<nav class="toc">``
+# or fused paragraph, not a real section ordinal. Pure-shape guard (section
+# minors are small contiguous integers); heading-derived entries are exempt
+# because a council-typed ``<h3>`` ordinal is trustworthy.
+_MAX_SECTION_MINOR = 30
+
+# Fuzzy title-match floor (difflib ratio, OCR tolerance). A body heading whose
+# ordinal-stripped, casefolded, whitespace-collapsed text scores at least this
+# against a declared entry's title is the same section.
+_OUTLINE_TITLE_MATCH_RATIO = 0.80
+
+# Zone preference for the surviving occurrence of a declared section: a real
+# body opener beats an outline stub beats an answer-key reprint.
+_ZONE_RANK = {"body": 0, "outline": 1, "answer_key": 2}
+
+# Package 2b — multi-source ordinal-UNION harvest. Title-donor priority
+# (priority-wins, replacing first-seen-wins): a real body non-apparatus heading
+# beats an answer-key heading beats an outline-zone/nav fused split beats a
+# fused body-paragraph split. Lower rank == higher priority (won by ``min``).
+_TITLE_TIER_BODY_HEADING = 1
+_TITLE_TIER_ANSWER_KEY_HEADING = 2
+_TITLE_TIER_OUTLINE_FUSED = 3
+_TITLE_TIER_BODY_FUSED = 4
+
+# Contiguity belt (extra guard on top of the load-bearing structural-admission
+# rule): the accepted minors within one major must form a near-contiguous 1..K
+# run. A minor separated from the running kept-run by more than this gap is a
+# stray structural false positive (e.g. a "6.15 exercises" cross-reference
+# leaking a banner) and is pruned along with the rest of its tail. Generous
+# enough to tolerate a single genuinely-missing per-section opener.
+_OUTLINE_MINOR_GAP_MAX = 3
+
+
+def _normalize_outline_text(text: str) -> str:
+    """Casefold + whitespace-collapse for fuzzy title comparison."""
+    return re.sub(r"\s+", " ", (text or "")).strip().lower()
+
+
+def _ordinal_sort_key(ordinal: str) -> Tuple[int, ...]:
+    """Numeric sort key for an ``N.M`` ordinal so ``1.10`` sorts after ``1.9``."""
+    try:
+        return tuple(int(p) for p in ordinal.split("."))
+    except ValueError:  # pragma: no cover - ordinals are regex-validated
+        return (0,)
+
+
+def _split_fused_outline_entries(text: str) -> List[Tuple[str, str]]:
+    """Recover ``(ordinal, title)`` pairs from a run of fused outline text.
+
+    Each ordinal owns the text up to the NEXT ordinal, so
+    ``"1.2 Use the Language of Algebra 1.3 Add and Subtract Integers"`` yields
+    ``[("1.2", "Use the Language of Algebra"), ("1.3", "Add and Subtract
+    Integers")]``. Example-number leaks (minor > ``_MAX_SECTION_MINOR``) are
+    dropped as a pure-shape guard against ``EXAMPLE N.NN`` references.
+    """
+    matches = list(_NM_SPLIT_RE.finditer(text))
+    out: List[Tuple[str, str]] = []
+    for i, m in enumerate(matches):
+        ordinal = m.group(1)
+        try:
+            if int(ordinal.split(".")[1]) > _MAX_SECTION_MINOR:
+                continue
+        except (ValueError, IndexError):  # pragma: no cover
+            continue
+        start = m.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        out.append((ordinal, text[start:end].strip()))
+    return out
+
 
 # TOC-like heading texts that should NOT be promoted to chapter titles
 # on their own. DART's converter emits many "Contents" h2s when page
@@ -108,11 +274,16 @@ _EOC_PREFIX = (
 )
 
 
-def _is_eoc_section_heading(normalized: str) -> bool:
-    """Whether ``normalized`` (already lowercased, whitespace-collapsed,
-    trailing-colon-stripped) is an end-of-chapter exercise/review/summary
-    section heading. Exact match for the short glossary/summary phrases;
-    exact-or-space-delimited-prefix for the distinctive exercise phrases."""
+# Package 3 — bare per-section drill banners the numbered form ("1.4
+# Exercises") yields after the ordinal strip. Generic-academic apparatus
+# words (not a publisher name); consulted ONLY on the guards-gated ordinal
+# arm below, so the shared ``_is_noncontent_heading`` / chunk-heading-sanity
+# path stays byte-identical when the guards flag is off.
+_EOC_NUMBERED_BARE = frozenset({"exercises", "exercise"})
+
+
+def _eoc_core_match(normalized: str) -> bool:
+    """Existing exact/prefix EOC match against ``_EOC_EXACT`` / ``_EOC_PREFIX``."""
     if normalized in _EOC_EXACT:
         return True
     for phrase in _EOC_PREFIX:
@@ -128,6 +299,58 @@ def _is_eoc_section_heading(normalized: str) -> bool:
         ):
             return True
     return False
+
+
+def _eoc_banner_regex() -> "re.Pattern":
+    """Regex matching an apparatus-BANNER ordinal ("N.M Exercises" shape).
+
+    Package 2b source (e): a per-section drill banner is STRUCTURAL evidence
+    that its ordinal names a real section (every real section prints one), even
+    though the banner itself donates no title. The apparatus-phrase alternation
+    is drawn ONLY from the existing generic bare-exercises words, the core EOC
+    exact/prefix phrases, and the data-driven lexicon apparatus display names —
+    never a publisher-specific vocabulary. Longest phrases first so a two-word
+    banner ("review exercises") wins over its one-word suffix.
+    """
+    phrases = (
+        set(_EOC_NUMBERED_BARE)
+        | set(_EOC_EXACT)
+        | set(_EOC_PREFIX)
+        | set(_lexicon_apparatus_names_lower())
+    )
+    alts = "|".join(
+        re.escape(p)
+        for p in sorted((p for p in phrases if p), key=len, reverse=True)
+    )
+    return re.compile(r"\b(\d+\.\d+)\s+(?:" + alts + r")\b", re.IGNORECASE)
+
+
+def _is_eoc_section_heading(normalized: str) -> bool:
+    """Whether ``normalized`` (already lowercased, whitespace-collapsed,
+    trailing-colon-stripped) is an end-of-chapter exercise/review/summary
+    section heading. Exact match for the short glossary/summary phrases;
+    exact-or-space-delimited-prefix for the distinctive exercise phrases.
+
+    Package 3 (guards-gated): a numbered per-section drill banner ("1.4
+    Exercises", "10.3 Review Exercises") carries a leading ordinal that
+    defeats the exact/prefix match. When ``ED4ALL_STRUCTURE_EXTRACT_GUARDS``
+    is on, the leading ordinal is stripped and the bare name is re-matched
+    against the core EOC set, the generic bare-exercises words, and the
+    data-driven lexicon apparatus display names. Flag-off is byte-identical.
+    """
+    if _eoc_core_match(normalized):
+        return True
+    if not _structure_extract_guards_enabled():
+        return False
+    stripped = strip_leading_ordinal(normalized).strip()
+    if not stripped or stripped == normalized:
+        # No leading ordinal was present -> nothing new to match.
+        return False
+    if stripped in _EOC_NUMBERED_BARE:
+        return True
+    if _eoc_core_match(stripped):
+        return True
+    return stripped in _lexicon_apparatus_names_lower()
 
 
 # Circled-letter answer markers (U+24D0..U+24D4 = ⓐⓑⓒⓓⓔ) and the
@@ -318,6 +541,12 @@ class SectionStructure:
     # surface; ``section_text`` is the verbatim prose the LLM synthesis
     # stages read. Empty string when no prose was captured.
     section_text: str = ""
+    # Package 2 (outline-anchored) provenance: which zone the surviving
+    # occurrence of this declared section was drawn from —
+    # ``body`` / ``outline`` / ``answer_key`` / ``declared_only``. ``None`` on
+    # the legacy / Package-1 paths (field stays absent from the serialized
+    # dict so those outputs are byte-stable).
+    matched_zone: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
@@ -333,6 +562,9 @@ class SectionStructure:
         # legacy fixtures without it stay byte-stable when prose is absent.
         if self.section_text:
             result["section_text"] = self.section_text
+        # Additive: only emit ``matchedZone`` on the outline-anchored path.
+        if self.matched_zone:
+            result["matchedZone"] = self.matched_zone
         return result
 
 
@@ -488,11 +720,7 @@ class SemanticStructureExtractor:
                 for q in review_questions
             ]
         }
-        collapse = self._structure_collapse_suspected(chapters)
-        if collapse:
-            result["structureDiagnostics"] = {
-                "structureCollapseSuspected": collapse
-            }
+        self._attach_structure_diagnostics(result, chapters)
         return result
 
     def extract_file(self, file_path: str, format: str = "auto") -> Dict[str, Any]:
@@ -588,11 +816,7 @@ class SemanticStructureExtractor:
                 for q in review_questions
             ]
         }
-        collapse = self._structure_collapse_suspected(chapters)
-        if collapse:
-            result["structureDiagnostics"] = {
-                "structureCollapseSuspected": collapse
-            }
+        self._attach_structure_diagnostics(result, chapters)
         return result
 
     def extract_with_profiling(
@@ -777,17 +1001,26 @@ class SemanticStructureExtractor:
         carries a rich heading structure (W3C specs are the canonical
         example).
         """
+        # Reset per-extraction guard diagnostics (populated only on the
+        # guarded article path below).
+        self._structure_diagnostics = None
+
         # Wave 19 primary path: DPUB-ARIA doc-chapter articles.
         doc_chapter_articles = soup.find_all(
             'article', attrs={'role': 'doc-chapter'}
         )
         primary_chapters: List[ChapterStructure] = []
         if doc_chapter_articles:
-            for idx, article in enumerate(doc_chapter_articles, start=1):
-                chapter = self._build_chapter_from_article(
-                    soup, article, idx
+            if _structure_extract_guards_enabled():
+                primary_chapters = self._build_chapters_from_articles_guarded(
+                    soup, doc_chapter_articles
                 )
-                primary_chapters.append(chapter)
+            else:
+                for idx, article in enumerate(doc_chapter_articles, start=1):
+                    chapter = self._build_chapter_from_article(
+                        soup, article, idx
+                    )
+                    primary_chapters.append(chapter)
 
         if not primary_chapters:
             # Legacy heading-hierarchy path.
@@ -877,6 +1110,29 @@ class SemanticStructureExtractor:
                 "threshold": _STRUCTURE_COLLAPSE_SECTION_THRESHOLD,
             }
         return None
+
+    def _attach_structure_diagnostics(
+        self,
+        result: Dict[str, Any],
+        chapters: List[Any],
+    ) -> None:
+        """Merge the collapse-suspected signal (all paths) and the Package-1
+        guard counters (guarded article path only) into
+        ``result["structureDiagnostics"]``.
+
+        Byte-stable when guards are off: ``_structure_diagnostics`` is reset to
+        ``None`` at the top of ``_build_chapter_structure`` and only the
+        guarded article path populates it, so a legacy run emits exactly the
+        prior ``{"structureCollapseSuspected": ...}`` shape (or no key)."""
+        diagnostics: Dict[str, Any] = {}
+        collapse = self._structure_collapse_suspected(chapters)
+        if collapse:
+            diagnostics["structureCollapseSuspected"] = collapse
+        guard = getattr(self, "_structure_diagnostics", None)
+        if guard:
+            diagnostics["guards"] = guard
+        if diagnostics:
+            result["structureDiagnostics"] = diagnostics
 
     def _warn_if_structure_collapsed(self, chapters: List[Any]) -> None:
         """Emit a loud WARNING when ``_structure_collapse_suspected`` fires."""
@@ -1507,18 +1763,771 @@ class SemanticStructureExtractor:
             sections=sections,
         )
 
+    # ------------------------------------------------------------------
+    # Package 1 — guarded article-path assembly.
+    #
+    # Only reached when ``ED4ALL_STRUCTURE_EXTRACT_GUARDS`` is truthy.
+    # Fixes the three chapter/section over-emission layers the legacy
+    # article path let through on per-block-wrapped scan corpora:
+    #   1a. a continuation article (no visible content h1/h2 — its title
+    #       lives in an aria-hidden div per lib/semantik/adapter.py:291-305)
+    #       merges its body into the PREVIOUS chapter instead of minting a
+    #       ``Chapter {n}`` fallback. The first article never merges.
+    #   1b. a ``<section>`` wrapper with no heading element does NOT mint a
+    #       section — its blocks group under the preceding heading-bearing
+    #       section (or the chapter's implicit lead ``content_blocks``).
+    #   1c. a heading failing ``_is_noncontent_heading`` (which folds in
+    #       ``_is_eoc_section_heading`` + Package-3 ordinal normalization)
+    #       does not create a boundary; its content regroups like 1b.
+    # ------------------------------------------------------------------
+
+    def _article_content_heading(self, article: Tag) -> Optional[Tag]:
+        """Return the article's visible chapter-title h1/h2, else ``None``.
+
+        Mirrors the legacy title probe (``article.find(['h1','h2'])``) but
+        additionally rejects a heading that fails ``_is_noncontent_heading``
+        (1c) — a chapter whose only heading is answer-key / EOC / numbered-
+        apparatus noise has no real title and is treated as a continuation.
+        """
+        heading_tag = article.find(['h1', 'h2'])
+        if heading_tag is None:
+            return None
+        text = heading_tag.get_text(strip=True)
+        if not text or _is_noncontent_heading(text):
+            return None
+        return heading_tag
+
+    def _group_sections_from_iter(
+        self,
+        soup: BeautifulSoup,
+        section_elems: List[Tag],
+        parent_id: str,
+        lead_content_blocks: List[ContentBlock],
+        sec_start: int,
+        diag: Dict[str, int],
+    ) -> tuple:
+        """Group a run of ``<section>`` wrappers into real sections (1b/1c).
+
+        A wrapper with a content heading becomes a section; a headingless or
+        noncontent-heading wrapper has its classified blocks appended to the
+        preceding real section (or ``lead_content_blocks`` if none yet), so
+        NOTHING is dropped — only regrouped. Returns ``(sections, counter)``.
+        """
+        sections: List[SectionStructure] = []
+        sec_counter = sec_start
+        for elem in section_elems:
+            heading_tag = elem.find(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
+            heading_text = heading_tag.get_text(strip=True) if heading_tag else ''
+            is_content_heading = bool(heading_text) and not _is_noncontent_heading(
+                heading_text
+            )
+            if is_content_heading:
+                sec_counter += 1
+                sections.append(
+                    self._build_section_from_element(
+                        soup, elem, parent_id, sec_counter,
+                        guarded=True, diag=diag,
+                    )
+                )
+                continue
+            # 1b / 1c — regroup. classify_section returns None for nested
+            # <section> children (containers), so no double-count against a
+            # parent classify_section.
+            blocks = self.block_classifier.classify_section(elem)
+            target = sections[-1].content_blocks if sections else lead_content_blocks
+            target.extend(blocks)
+            if heading_tag is not None:
+                diag["apparatus_demoted"] += 1
+            else:
+                diag["headingless_wrappers_grouped"] += 1
+        return sections, sec_counter
+
+    def _collect_article_body(
+        self,
+        soup: BeautifulSoup,
+        article: Tag,
+        chapter_id: str,
+        sec_start: int,
+        diag: Dict[str, int],
+    ) -> tuple:
+        """Extract ``(content_blocks, sections, counter)`` from an article
+        with the 1b/1c grouping applied. ``content_blocks`` is the article's
+        implicit lead section (blocks before the first ``<section>``)."""
+        content_blocks = self._extract_chapter_content(article, None)
+        direct = article.find_all('section', recursive=False)
+        if direct:
+            section_elems = direct
+        else:
+            # Sections emitted as SIBLINGS after the article (Wave 13 shape),
+            # up to the next doc-chapter article or document end.
+            section_elems = []
+            sibling = article.next_sibling
+            while sibling is not None:
+                if isinstance(sibling, Tag):
+                    if (
+                        sibling.name == 'article'
+                        and sibling.get('role') == 'doc-chapter'
+                    ):
+                        break
+                    if sibling.name == 'section':
+                        section_elems.append(sibling)
+                sibling = sibling.next_sibling
+        sections, sec_counter = self._group_sections_from_iter(
+            soup, section_elems, chapter_id, content_blocks, sec_start, diag
+        )
+        return content_blocks, sections, sec_counter
+
+    def _build_chapter_from_article_guarded(
+        self,
+        soup: BeautifulSoup,
+        article: Tag,
+        chapter_num: int,
+        heading_tag: Optional[Tag],
+        diag: Dict[str, int],
+    ) -> ChapterStructure:
+        """Guarded counterpart of ``_build_chapter_from_article`` (1b/1c)."""
+        chapter_id = str(article.get('id') or f'ch{chapter_num}').strip()
+        heading_text = None
+        heading_id = None
+        heading_level = 2
+        if heading_tag is not None:
+            heading_text = heading_tag.get_text(strip=True) or None
+            heading_id = heading_tag.get('id')
+            try:
+                heading_level = int(heading_tag.name.lstrip('h'))
+            except ValueError:
+                heading_level = 2
+        if not heading_text:
+            heading_text = article.get('aria-label') or f'Chapter {chapter_num}'
+
+        explicit_objectives = self._extract_explicit_objectives(article)
+        content_blocks, sections, _ = self._collect_article_body(
+            soup, article, chapter_id, 0, diag
+        )
+        return ChapterStructure(
+            id=chapter_id,
+            heading_level=heading_level,
+            heading_text=heading_text,
+            heading_id=heading_id,
+            explicit_objectives=explicit_objectives,
+            content_blocks=content_blocks,
+            sections=sections,
+        )
+
+    def _declared_section_estimate(self, soup: BeautifulSoup) -> int:
+        """Cheap declared-section count: distinct ``N.M`` ordinals in a
+        chapter-outline / ToC zone, if one exists. ``0`` when no such zone
+        (undeclared corpora fall through with no sanity warning)."""
+        zones: List[Tag] = []
+        zones.extend(
+            soup.find_all(attrs={"data-dart-block-id": "chapter-outline"})
+        )
+        zones.extend(soup.find_all("nav", class_="toc"))
+        if not zones:
+            return 0
+        ordinals: set = set()
+        for zone in zones:
+            for m in re.findall(r"\b\d+\.\d+\b", zone.get_text(" ", strip=True)):
+                ordinals.add(m)
+        return len(ordinals)
+
+    def _build_chapters_from_articles_guarded(
+        self,
+        soup: BeautifulSoup,
+        articles: List[Tag],
+    ) -> List[ChapterStructure]:
+        """Guarded article path (1a merge + 1b/1c grouping + 1d diagnostics)."""
+        diag: Dict[str, int] = {
+            "sections_built": 0,
+            "headingless_wrappers_grouped": 0,
+            "continuations_merged": 0,
+            "apparatus_demoted": 0,
+            "declared_section_estimate": self._declared_section_estimate(soup),
+        }
+        chapters: List[ChapterStructure] = []
+        chapter_ordinal = 0
+        for article in articles:
+            heading_tag = self._article_content_heading(article)
+            # 1a — a continuation (no content h1/h2) merges into the previous
+            # chapter. The FIRST article never merges (nothing precedes it).
+            if heading_tag is None and chapters:
+                prev = chapters[-1]
+                content_blocks, sections, _ = self._collect_article_body(
+                    soup, article, prev.id, len(prev.sections), diag
+                )
+                prev.content_blocks.extend(content_blocks)
+                prev.sections.extend(sections)
+                diag["continuations_merged"] += 1
+                continue
+            chapter_ordinal += 1
+            chapters.append(
+                self._build_chapter_from_article_guarded(
+                    soup, article, chapter_ordinal, heading_tag, diag
+                )
+            )
+
+        diag["sections_built"] = sum(len(c.sections) for c in chapters)
+        self._structure_diagnostics = diag
+
+        # Package 2 — outline-anchored realignment. Refines the Package-1
+        # chapters onto the document's declared ``N.M`` spine when the book
+        # declares its own structure. Falls through UNCHANGED (returns None)
+        # for undeclared corpora, so the wide-net contract holds.
+        if _outline_anchor_enabled():
+            anchored = self._build_chapters_outline_anchored(soup, articles, diag)
+            if anchored is not None:
+                chapters = anchored
+
+        # 1d — post-build sanity: warn (never fail) when the built section
+        # count dwarfs the outline-declared estimate (>3x), the per-block-
+        # wrapper / apparatus-banner inflation signature.
+        est = diag["declared_section_estimate"]
+        if est > 0 and diag["sections_built"] > 3 * est:
+            logger.warning(
+                "SemanticStructureExtractor: STRUCTURE_SECTION_OVERCOUNT — built "
+                "%d section(s) vs ~%d declared in the chapter-outline/ToC zone "
+                "(>3x). Likely per-block-wrapper / apparatus-banner inflation.",
+                diag["sections_built"],
+                est,
+            )
+        return chapters
+
+    # ------------------------------------------------------------------
+    # Package 2 — outline-anchored section alignment.
+    # ------------------------------------------------------------------
+
+    def _outline_zone_articles(self, soup: BeautifulSoup) -> List[Tag]:
+        """Articles that CONTAIN a ``chapter-outline`` block (the outline zone).
+
+        The DART converter stamps the outline block with
+        ``data-dart-block-id="chapter-outline"``; its enclosing
+        ``<article role="doc-chapter">`` is the declared-structure zone whose
+        heading sections + fused paragraphs are the cleanest entry source.
+        """
+        articles: List[Tag] = []
+        seen: set = set()
+        for blk in soup.find_all(attrs={"data-dart-block-id": "chapter-outline"}):
+            art = blk.find_parent("article", attrs={"role": "doc-chapter"})
+            if art is not None and id(art) not in seen:
+                seen.add(id(art))
+                articles.append(art)
+        return articles
+
+    @staticmethod
+    def _prune_outline_contiguity(
+        entries: Dict[str, str],
+        title_sources: Dict[str, str],
+    ) -> Tuple[Dict[str, str], Dict[str, str]]:
+        """Contiguity belt — keep only the near-contiguous 1..K run per major,
+        then drop whole spurious majors.
+
+        Stage 1 (within a major): sort the accepted minors and keep the dense
+        run from the smallest minor upward, dropping a minor (and its tail) once
+        it is more than ``_OUTLINE_MINOR_GAP_MAX`` beyond the previous kept
+        minor. Never drops the opener, so a real chapter can only lose a stray
+        far-outlier, never its body.
+
+        Stage 2 (across majors): a real chapter opens at minor 1, so keep the
+        DOMINANT major (most retained sections) plus any other major whose run
+        opens at minor 1. A lone cross-reference leaking a banner from another
+        chapter (e.g. a "7.3 Exercises" mention inside chapter 1) survives
+        neither test and is dropped. Fail-safe: the dominant major is always
+        kept, so a real single-chapter file can never be emptied.
+        """
+        by_major: Dict[int, List[int]] = {}
+        for ordinal in entries:
+            major, minor = ordinal.split(".")
+            by_major.setdefault(int(major), []).append(int(minor))
+
+        # Stage 1 — per-major contiguity.
+        kept_minors: Dict[int, List[int]] = {}
+        for major, minors in by_major.items():
+            run_prev: Optional[int] = None
+            kept: List[int] = []
+            for minor in sorted(set(minors)):
+                if run_prev is None or minor - run_prev <= _OUTLINE_MINOR_GAP_MAX:
+                    kept.append(minor)
+                    run_prev = minor
+                else:
+                    break
+            kept_minors[major] = kept
+
+        # Stage 2 — cross-major spurious-major drop.
+        if kept_minors:
+            dominant = max(kept_minors, key=lambda m: (len(kept_minors[m]), -m))
+            keep_majors = {
+                m
+                for m, mins in kept_minors.items()
+                if m == dominant or (mins and mins[0] == 1)
+            }
+        else:  # pragma: no cover - entries non-empty by construction
+            keep_majors = set()
+
+        keep = {
+            f"{major}.{minor}"
+            for major, mins in kept_minors.items()
+            if major in keep_majors
+            for minor in mins
+        }
+        pruned_entries = {o: entries[o] for o in entries if o in keep}
+        pruned_sources = {o: title_sources[o] for o in entries if o in keep}
+        return pruned_entries, pruned_sources
+
+    def _harvest_outline(
+        self,
+        soup: BeautifulSoup,
+    ) -> Tuple[Dict[str, str], List[Tag], Dict[str, str]]:
+        """Package 2b — multi-source ordinal-UNION harvest of declared sections.
+
+        LOAD-BEARING ADMISSION RULE: an ordinal is admitted as a declared
+        section iff it has STRUCTURAL evidence — it opens a heading element
+        ((d) numbered headings document-wide, existing ``_NM_HEADING_RE``
+        shape) or forms an apparatus banner ((e) "N.M Exercises" shape). An
+        ordinal seen ONLY in fused raw text (outline paragraphs, nav text, body
+        paragraphs) is a TITLE DONOR, never an admitter — this kills the
+        figure-caption / Try-It / Example ordinal leaks, which all enter via
+        raw-text splits.
+
+        Title backfill is priority-wins (not first-seen): body non-apparatus
+        heading > answer-key heading > outline-zone/nav fused split > fused
+        body-paragraph split. A heading whose tail is bare apparatus
+        ("N.M Exercises") admits the ORDINAL but donates NO title. Two shape
+        belts guard admission: the minor <= ``_MAX_SECTION_MINOR`` ceiling and
+        the per-major near-contiguity prune.
+
+        Returns ``(entries, outline_zone_articles, title_sources)``. ``entries``
+        is empty when the book declares no structural ordinal spine (wide-net
+        fall-through, byte-identical to the guards-only path).
+        """
+        outline_articles = self._outline_zone_articles(soup)
+        outline_ids = {id(a) for a in outline_articles}
+        articles = soup.find_all("article", attrs={"role": "doc-chapter"})
+
+        # Zone map — mirrors ``_collect_outline_occurrences``'s trailing-review
+        # latch: outline-zone articles are ``outline``; once an article TITLE
+        # trips the review/answer-key furniture predicate every following
+        # article is ``answer_key``; everything else is ``body``.
+        zone_of: Dict[int, str] = {}
+        in_review = False
+        for article in articles:
+            th = article.find(["h1", "h2"])
+            t = th.get_text(strip=True) if th else ""
+            if _REVIEW_ZONE_RE.search(t) or _is_noncontent_heading(t):
+                in_review = True
+            if id(article) in outline_ids:
+                zone_of[id(article)] = "outline"
+            elif in_review:
+                zone_of[id(article)] = "answer_key"
+            else:
+                zone_of[id(article)] = "body"
+
+        # ordinal -> {"structural": bool, "titles": {tier: (source_label, title)}}
+        cand: Dict[str, Dict[str, Any]] = {}
+
+        def _cand(ordinal: str) -> Optional[Dict[str, Any]]:
+            try:
+                if int(ordinal.split(".")[1]) > _MAX_SECTION_MINOR:
+                    return None
+            except (ValueError, IndexError):  # pragma: no cover - regex-validated
+                return None
+            return cand.setdefault(ordinal, {"structural": False, "titles": {}})
+
+        def _clean_title(title: str) -> Optional[str]:
+            norm = re.sub(r"\s+", " ", title or "").strip()
+            if len(norm) < 3 or not any(c.isalpha() for c in norm):
+                return None
+            low = norm.lower()
+            if (
+                low in _EOC_NUMBERED_BARE
+                or _eoc_core_match(low)
+                or low in _lexicon_apparatus_names_lower()
+                or _is_noncontent_heading(norm)
+            ):
+                return None
+            return norm
+
+        def _donate(ordinal: str, tier: int, source_label: str, title: str) -> None:
+            c = _cand(ordinal)
+            if c is None:
+                return
+            clean = _clean_title(title)
+            if clean and tier not in c["titles"]:
+                c["titles"][tier] = (source_label, clean)
+
+        def _admit(ordinal: str) -> None:
+            c = _cand(ordinal)
+            if c is not None:
+                c["structural"] = True
+
+        # (d) numbered headings document-wide — the ordinal must OPEN the
+        # heading. Opening a heading element IS the structural evidence.
+        for heading in soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6"]):
+            text = re.sub(r"\s+", " ", heading.get_text(" ", strip=True))
+            m = _NM_HEADING_RE.match(text)
+            if not m:
+                continue
+            ordinal, tail = m.group(1), m.group(2).strip()
+            _admit(ordinal)
+            art = heading.find_parent("article", attrs={"role": "doc-chapter"})
+            zone = (
+                zone_of.get(id(art), "no-article") if art is not None else "no-article"
+            )
+            low = tail.lower().rstrip(":")
+            first = low.split()[0] if low.split() else ""
+            apparatus = (
+                low in _EOC_NUMBERED_BARE
+                or _eoc_core_match(low)
+                or low in _lexicon_apparatus_names_lower()
+                or first in _EOC_NUMBERED_BARE
+                or not any(c.isalpha() for c in tail)
+            )
+            if apparatus:
+                continue  # admits the ordinal but donates no title
+            if zone in ("body", "no-article"):
+                _donate(ordinal, _TITLE_TIER_BODY_HEADING, "body_heading", tail)
+            elif zone == "answer_key":
+                _donate(
+                    ordinal, _TITLE_TIER_ANSWER_KEY_HEADING, "answer_key_heading", tail
+                )
+            else:
+                _donate(ordinal, _TITLE_TIER_OUTLINE_FUSED, "outline_heading", tail)
+
+        # (e) apparatus-banner ordinals anywhere in text ("N.M Exercises").
+        banner_re = _eoc_banner_regex()
+        for m in banner_re.finditer(soup.get_text(" ", strip=True)):
+            _admit(m.group(1))
+
+        # Title donors (raw-text splits) — NEVER admit, only backfill titles.
+        #   (b) outline-zone fused / demoted paragraphs
+        for article in outline_articles:
+            for sec in article.find_all("section", recursive=False):
+                if sec.find(["h1", "h2", "h3", "h4", "h5", "h6"]) is not None:
+                    continue  # heading sections already harvested by (d)
+                for ordinal, title in _split_fused_outline_entries(
+                    sec.get_text(" ", strip=True)
+                ):
+                    _donate(ordinal, _TITLE_TIER_OUTLINE_FUSED, "outline_fused", title)
+        #   (c) ``<nav class="toc">`` fused text
+        nav = soup.find("nav", class_="toc")
+        if nav is not None:
+            for ordinal, title in _split_fused_outline_entries(
+                nav.get_text(" ", strip=True)
+            ):
+                _donate(ordinal, _TITLE_TIER_OUTLINE_FUSED, "nav_fused", title)
+        #   fused body-paragraph splits (last-resort tier) — only a paragraph
+        #   that OPENS with an ordinal AND fuses several (a printed-outline
+        #   reprint), never a single-ordinal mid-body sentence.
+        for para in soup.find_all(["p", "li", "div"]):
+            text = re.sub(r"\s+", " ", para.get_text(" ", strip=True))
+            if not _NM_HEADING_RE.match(text):
+                continue
+            fused = _split_fused_outline_entries(text)
+            if len(fused) < 2:
+                continue
+            for ordinal, title in fused:
+                _donate(ordinal, _TITLE_TIER_BODY_FUSED, "body_fused", title)
+
+        # Assemble admitted entries with priority-wins titles + provenance.
+        entries: Dict[str, str] = {}
+        title_sources: Dict[str, str] = {}
+        for ordinal, c in cand.items():
+            if not c["structural"]:
+                continue
+            source_label = "apparatus_only"
+            title = ""
+            for tier in sorted(c["titles"]):
+                source_label, title = c["titles"][tier]
+                break
+            entries[ordinal] = title
+            title_sources[ordinal] = source_label
+
+        entries, title_sources = self._prune_outline_contiguity(
+            entries, title_sources
+        )
+
+        ordered = sorted(entries, key=_ordinal_sort_key)
+        entries = {o: entries[o] for o in ordered}
+        title_sources = {o: title_sources[o] for o in ordered}
+        return entries, outline_articles, title_sources
+
+    @staticmethod
+    def _article_section_elems(article: Tag) -> List[Tag]:
+        """Section wrappers belonging to an article (direct children, else the
+        trailing siblings up to the next doc-chapter article — the Wave-13
+        sibling shape). Mirrors ``_collect_article_body``'s section discovery."""
+        direct = article.find_all("section", recursive=False)
+        if direct:
+            return direct
+        section_elems: List[Tag] = []
+        sibling = article.next_sibling
+        while sibling is not None:
+            if isinstance(sibling, Tag):
+                if (
+                    sibling.name == "article"
+                    and sibling.get("role") == "doc-chapter"
+                ):
+                    break
+                if sibling.name == "section":
+                    section_elems.append(sibling)
+            sibling = sibling.next_sibling
+        return section_elems
+
+    def _collect_outline_occurrences(
+        self,
+        articles: List[Tag],
+        outline_article_ids: set,
+        entries: Dict[str, str],
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Find every heading-bearing section whose ``N.M`` heading matches a
+        declared entry, tagged with its zone.
+
+        Zones (document order, trailing-review latches): a section inside an
+        outline-zone article is ``outline``; once an article TITLE trips the
+        review/answer-key furniture predicate every following section is
+        ``answer_key`` (OpenStax reprints openers there); everything else is
+        ``body``. A match requires the ordinal AND a fuzzy title score >=
+        ``_OUTLINE_TITLE_MATCH_RATIO`` (OCR tolerance).
+        """
+        occurrences: Dict[str, List[Dict[str, Any]]] = {o: [] for o in entries}
+        in_review = False
+        for article in articles:
+            title_heading = article.find(["h1", "h2"])
+            title = title_heading.get_text(strip=True) if title_heading else ""
+            if _REVIEW_ZONE_RE.search(title) or _is_noncontent_heading(title):
+                in_review = True
+            if id(article) in outline_article_ids:
+                zone = "outline"
+            elif in_review:
+                zone = "answer_key"
+            else:
+                zone = "body"
+            for elem in self._article_section_elems(article):
+                heading = elem.find(["h1", "h2", "h3", "h4", "h5", "h6"])
+                if heading is None:
+                    continue
+                heading_text = re.sub(
+                    r"\s+", " ", heading.get_text(" ", strip=True)
+                )
+                m = _NM_HEADING_RE.match(heading_text)
+                if m:
+                    ordinal, title_text = m.group(1), m.group(2)
+                    if ordinal not in entries or not entries[ordinal]:
+                        continue
+                    ratio = difflib.SequenceMatcher(
+                        None,
+                        _normalize_outline_text(title_text),
+                        _normalize_outline_text(entries[ordinal]),
+                    ).ratio()
+                    if ratio < _OUTLINE_TITLE_MATCH_RATIO:
+                        continue
+                    matched_ordinal = ordinal
+                else:
+                    # Cheap extension (spec item 4): an UNNUMBERED heading whose
+                    # whole normalized text fuzzy-matches a declared entry title
+                    # (>= _OUTLINE_TITLE_MATCH_RATIO) counts as a body occurrence
+                    # — recovers an opener whose leading ordinal OCR-dropped.
+                    norm_heading = _normalize_outline_text(heading_text)
+                    if not norm_heading:
+                        continue
+                    matched_ordinal = None
+                    best = _OUTLINE_TITLE_MATCH_RATIO
+                    for cand_ord, cand_title in entries.items():
+                        if not cand_title:
+                            continue
+                        r = difflib.SequenceMatcher(
+                            None,
+                            norm_heading,
+                            _normalize_outline_text(cand_title),
+                        ).ratio()
+                        if r >= best:
+                            best = r
+                            matched_ordinal = cand_ord
+                    if matched_ordinal is None:
+                        continue
+                occurrences[matched_ordinal].append(
+                    {
+                        "zone": zone,
+                        "elem": elem,
+                        "heading_id": heading.get("id"),
+                        "text_mass": len(elem.get_text(" ", strip=True)),
+                    }
+                )
+        return occurrences
+
+    def _build_chapters_outline_anchored(
+        self,
+        soup: BeautifulSoup,
+        articles: List[Tag],
+        diag: Dict[str, Any],
+    ) -> Optional[List[ChapterStructure]]:
+        """Regroup the article stream onto the declared ``N.M`` outline spine.
+
+        Returns ``None`` (fall through to the Package-1 chapters) when the book
+        declares no harvestable outline. Otherwise emits ONE section per
+        declared entry, grouped into chapters by the ordinal's major number,
+        with every non-matching heading + orphan block demoted (never dropped)
+        to the nearest surviving section or the chapter lead.
+        """
+        entries, outline_articles, title_sources = self._harvest_outline(soup)
+        if not entries:
+            return None
+
+        outline_article_ids = {id(a) for a in outline_articles}
+        occurrences = self._collect_outline_occurrences(
+            articles, outline_article_ids, entries
+        )
+
+        # Declared chapter title: the file h1 when a single major is declared
+        # (its real title, e.g. "Foundations"); a synthesized "Chapter N"
+        # otherwise. Ordinals grouped by major -> one chapter each.
+        h1 = soup.find("h1")
+        h1_text = h1.get_text(strip=True) if h1 else ""
+        majors = sorted({int(o.split(".")[0]) for o in entries})
+        single_major = len(majors) == 1
+
+        def _chapter_title(major: int) -> str:
+            if single_major and h1_text and not _is_noncontent_heading(h1_text):
+                return h1_text
+            return f"Chapter {major}"
+
+        chapters_by_major: Dict[int, ChapterStructure] = {}
+        for major in majors:
+            chapters_by_major[major] = ChapterStructure(
+                id=f"ch{major}",
+                heading_level=2,
+                heading_text=_chapter_title(major),
+                heading_id=None,
+                explicit_objectives=[],
+                content_blocks=[],
+                sections=[],
+            )
+
+        # One SectionStructure per declared entry; pick the surviving
+        # occurrence (best zone), map its element for the content walk.
+        chosen_by_elem: Dict[int, SectionStructure] = {}
+        unmatched_declared: List[Dict[str, str]] = []
+        matched_sections = 0
+        section_counters: Dict[int, int] = {m: 0 for m in majors}
+
+        for ordinal in sorted(entries, key=_ordinal_sort_key):
+            major = int(ordinal.split(".")[0])
+            chapter = chapters_by_major[major]
+            occ_list = occurrences.get(ordinal, [])
+            chosen = None
+            if occ_list:
+                # Best zone first (body > outline > answer_key); among same-zone
+                # candidates prefer the element with the greatest descendant
+                # text mass (a real opener >> an outline stub) — spec item 5.
+                best_rank = min(_ZONE_RANK[o["zone"]] for o in occ_list)
+                same_zone = [
+                    o for o in occ_list if _ZONE_RANK[o["zone"]] == best_rank
+                ]
+                chosen = max(same_zone, key=lambda o: o.get("text_mass", 0))
+            best_zone = chosen["zone"] if chosen else "declared_only"
+
+            section_counters[major] += 1
+            section = SectionStructure(
+                id=f"{chapter.id}_s{section_counters[major]}",
+                heading_level=3,
+                heading_text=" ".join(
+                    part for part in (ordinal, entries[ordinal]) if part
+                ),
+                heading_id=chosen["heading_id"] if chosen else None,
+                content_blocks=[],
+                subsections=[],
+            )
+            section.matched_zone = best_zone  # provenance (serialized below)
+            chapter.sections.append(section)
+
+            if chosen is not None:
+                matched_sections += 1
+                chosen_by_elem[id(chosen["elem"])] = section
+            if best_zone != "body":
+                # Loss signal: no real body opener. The re-conversion work list
+                # for packages 4+5 (includes outline-only + answer-key-only +
+                # declared-only entries).
+                unmatched_declared.append(
+                    {
+                        "ordinal": ordinal,
+                        "title": entries[ordinal],
+                        "found_zone": best_zone,
+                    }
+                )
+
+        # Content walk (document order): fill each surviving section with its
+        # chosen element's blocks; demote everything else to the current
+        # surviving section (or the chapter lead when nothing is open yet).
+        first_chapter = chapters_by_major[majors[0]]
+        current_section: Optional[SectionStructure] = None
+        demoted_headings = 0
+        for article in articles:
+            lead_blocks = self._extract_chapter_content(article, None)
+            target = (
+                current_section.content_blocks
+                if current_section is not None
+                else first_chapter.content_blocks
+            )
+            target.extend(lead_blocks)
+            for elem in self._article_section_elems(article):
+                blocks = self.block_classifier.classify_section(elem)
+                section = chosen_by_elem.get(id(elem))
+                if section is not None:
+                    section.content_blocks.extend(blocks)
+                    current_section = section
+                    continue
+                heading = elem.find(["h1", "h2", "h3", "h4", "h5", "h6"])
+                if heading is not None and heading.get_text(strip=True):
+                    demoted_headings += 1
+                target = (
+                    current_section.content_blocks
+                    if current_section is not None
+                    else first_chapter.content_blocks
+                )
+                target.extend(blocks)
+
+        chapters = [chapters_by_major[m] for m in majors]
+
+        # Diagnostics — improve the (previously fused-blind) declared estimate
+        # and record the outline-anchor counters + loss list.
+        diag["declared_section_estimate"] = len(entries)
+        diag["sections_built"] = sum(len(c.sections) for c in chapters)
+        diag["outline_anchor"] = {
+            "declared_entries": len(entries),
+            "matched_sections": matched_sections,
+            "demoted_headings": demoted_headings,
+            "unmatched_declared": unmatched_declared,
+            "title_sources": title_sources,
+        }
+
+        if unmatched_declared:
+            logger.warning(
+                "SemanticStructureExtractor: STRUCTURE_DECLARED_SECTION_MISSING "
+                "— %d declared section(s) have no body opener (outline-only / "
+                "answer-key reprint / absent): %s. These are the re-conversion "
+                "work list.",
+                len(unmatched_declared),
+                ", ".join(u["ordinal"] for u in unmatched_declared),
+            )
+        return chapters
+
     def _build_section_from_element(
         self,
         soup: BeautifulSoup,
         section_elem: Tag,
         parent_id: str,
         section_num: int,
+        guarded: bool = False,
+        diag: Optional[Dict[str, int]] = None,
     ) -> SectionStructure:
         """Build a ``SectionStructure`` directly from a DOM ``<section>``.
 
         Wave 19 DART output emits flat ``<section>`` wrappers rather
         than nesting them under article children, so we read heading
         info off the section itself.
+
+        Package 1 (``guarded=True``): nested ``<section>`` children run
+        through the 1b/1c grouping too, so a headingless/noncontent-heading
+        nested wrapper regroups instead of minting an empty subsection.
         """
         section_id = f"{parent_id}_s{section_num}"
         heading_tag = section_elem.find(
@@ -1536,14 +2545,21 @@ class SemanticStructureExtractor:
         content_blocks = self.block_classifier.classify_section(section_elem)
         # Nested <section> children become subsections.
         subsections: List[SectionStructure] = []
-        sub_counter = 0
-        for nested in section_elem.find_all('section', recursive=False):
-            sub_counter += 1
-            subsections.append(
-                self._build_section_from_element(
-                    soup, nested, section_id, sub_counter,
-                )
+        nested_elems = section_elem.find_all('section', recursive=False)
+        if guarded:
+            subsections, _ = self._group_sections_from_iter(
+                soup, nested_elems, section_id, content_blocks, 0,
+                diag if diag is not None else {},
             )
+        else:
+            sub_counter = 0
+            for nested in nested_elems:
+                sub_counter += 1
+                subsections.append(
+                    self._build_section_from_element(
+                        soup, nested, section_id, sub_counter,
+                    )
+                )
 
         return SectionStructure(
             id=section_id,

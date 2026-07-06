@@ -270,3 +270,43 @@ def test_resegment_all_noncontent_segment_falls_back_to_unit():
         chapters, embed_client=_StubEmbedClient()
     )
     assert all(ch["headingText"].startswith("Unit ") for ch in result)
+
+
+# ---------------------------------------------------------------------------
+# Package 3 — scaffolding-title detection catches ordinal-prefixed banners.
+# ---------------------------------------------------------------------------
+
+
+def test_scaffolding_title_catches_numbered_exercises_banner(monkeypatch):
+    from lib.semantic_structure_extractor.resegment import _is_scaffolding_title
+
+    monkeypatch.setenv("ED4ALL_STRUCTURE_EXTRACT_GUARDS", "1")
+    # Ordinal-prefixed drill/apparatus banners are scaffolding (poor chapter
+    # titles) — the leading ordinal no longer defeats the prefix match.
+    assert _is_scaffolding_title("10.3 Exercises")
+    assert _is_scaffolding_title("1.4 Review Exercises")  # lexicon apparatus name
+    assert _is_scaffolding_title("2.1 Practice")
+    # A genuine numbered section title is NOT scaffolding.
+    assert not _is_scaffolding_title("2.2 Solve Linear Equations")
+    assert not _is_scaffolding_title("Chapter 5 Graphs")
+
+
+def test_scaffolding_title_flag_off_unchanged(monkeypatch):
+    from lib.semantic_structure_extractor.resegment import _is_scaffolding_title
+
+    monkeypatch.delenv("ED4ALL_STRUCTURE_EXTRACT_GUARDS", raising=False)
+    # Flag off: the ordinal still defeats the prefix (legacy behavior); only
+    # the bare (unnumbered) scaffolding words match.
+    assert not _is_scaffolding_title("10.3 Exercises")
+    assert _is_scaffolding_title("Exercises")
+    assert _is_scaffolding_title("Self Check")
+
+
+def test_resegment_titles_skip_numbered_apparatus_banner(monkeypatch):
+    # A pseudo-chapter whose first section is a numbered apparatus banner
+    # ("10.3 Exercises") must skip it as a chapter title (guards on).
+    monkeypatch.setenv("ED4ALL_STRUCTURE_EXTRACT_GUARDS", "1")
+    chapters = _collapsed_three_topics(60)
+    chapters[0]["sections"][0]["headingText"] = "10.3 Exercises"
+    result = resegment_collapsed_structure(chapters, embed_client=_StubEmbedClient())
+    assert result[0]["headingText"] != "10.3 Exercises"

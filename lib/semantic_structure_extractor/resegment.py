@@ -35,9 +35,15 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
+from lib.ontology.taxonomy import (
+    get_lexicon_apparatus_names,
+    strip_leading_ordinal,
+)
+
 from .semantic_structure_extractor import (
     _STRUCTURE_COLLAPSE_SECTION_THRESHOLD,
     _is_noncontent_heading,
+    _structure_extract_guards_enabled,
 )
 
 logger = logging.getLogger(__name__)
@@ -108,9 +114,39 @@ _SCAFFOLDING_TITLE_PREFIXES = (
 )
 
 
+def _lexicon_scaffolding_prefixes() -> tuple:
+    """Package 3 — augment the hardcoded scaffolding prefixes with the
+    data-driven lexicon apparatus display names (lowercased). Falls back to
+    the constant alone when the lexicon is unavailable (never crash)."""
+    try:
+        names = tuple(
+            n.strip().lower()
+            for n in get_lexicon_apparatus_names()
+            if n and n.strip()
+        )
+    except Exception:  # pragma: no cover - defensive; lexicon always loads
+        names = ()
+    return _SCAFFOLDING_TITLE_PREFIXES + names
+
+
 def _is_scaffolding_title(title: str) -> bool:
     t = title.strip().lower()
-    return any(t == p or t.startswith(p) for p in _SCAFFOLDING_TITLE_PREFIXES)
+    prefixes = _SCAFFOLDING_TITLE_PREFIXES
+    candidates = [t]
+    if _structure_extract_guards_enabled():
+        # Package 3 — route through the lexicon loader AND strip a leading
+        # section ordinal so "10.3 Exercises" is recognized as scaffolding
+        # (the ordinal otherwise defeats the prefix match). Guards-gated:
+        # flag-off is byte-identical to the pre-guard constant-only check.
+        prefixes = _lexicon_scaffolding_prefixes()
+        stripped = strip_leading_ordinal(t).strip()
+        if stripped and stripped != t:
+            candidates.append(stripped)
+    return any(
+        c == p or c.startswith(p)
+        for c in candidates
+        for p in prefixes
+    )
 
 
 def _segment_title(sections: List[Dict[str, Any]], index: int) -> str:
