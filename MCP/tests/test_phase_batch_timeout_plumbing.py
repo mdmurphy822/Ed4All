@@ -82,16 +82,24 @@ def test_phase_without_yaml_batch_timeout_defaults_none() -> None:
 
 
 def _capture_wait_for_timeout(monkeypatch):
-    """Patch executor's asyncio.wait_for to record the timeout it is given."""
+    """Record the batch wall-clock deadline execute_phase enforces.
+
+    Post-graceful-stop (plan P5 / AMENDMENT #5) ``execute_phase`` no longer
+    wraps ``_execute_parallel`` in ``asyncio.wait_for`` (that would hard-cancel
+    the batch at the deadline). It wraps it in a Task and enforces the deadline
+    with a NON-cancelling ``asyncio.wait({task}, timeout=deadline)``. This helper
+    captures the STAGE-1 timeout (the resolved effective batch deadline) from the
+    first ``asyncio.wait`` call, delegating to the real ``asyncio.wait`` so the
+    wrapped batch (empty task list in these plumbing tests) actually completes.
+    """
     captured: dict = {}
+    _real_wait = asyncio.wait
 
-    async def fake_wait_for(coro, timeout=None):
-        captured["timeout"] = timeout
-        # Drain the real coroutine so there is no "never awaited" warning.
-        coro.close()
-        return {}
+    async def fake_wait(aws, *args, timeout=None, **kwargs):
+        captured.setdefault("timeout", timeout)
+        return await _real_wait(aws, *args, timeout=timeout, **kwargs)
 
-    monkeypatch.setattr("MCP.core.executor.asyncio.wait_for", fake_wait_for)
+    monkeypatch.setattr("MCP.core.executor.asyncio.wait", fake_wait)
     return captured
 
 

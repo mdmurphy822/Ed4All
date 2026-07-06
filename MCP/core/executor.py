@@ -18,10 +18,12 @@ Phase 0 Hardening:
 """
 
 import asyncio
+import contextvars
 import json
 import logging
 import os
 import sys
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -36,6 +38,8 @@ if str(_PROJECT_ROOT) not in sys.path:
 from lib.paths import STATE_PATH, get_state_runs_dir  # noqa: E402
 from lib.generation.stop_control import (  # noqa: E402
     GracefulStopRequested,
+    clear_stop,
+    request_stop,
     stop_requested,
 )
 
@@ -394,6 +398,68 @@ def _agent_dispatch_enabled() -> bool:
     """
     raw = os.environ.get(_AGENT_DISPATCH_ENV, "").strip().lower()
     return raw in ("1", "true", "yes", "on")
+
+
+# --------------------------------------------------------------------------- #
+# Graceful-stop timeout → pause conversion (plan P5, AMENDMENT #5 / D10)
+# --------------------------------------------------------------------------- #
+# When a wall-clock deadline expires, the executor does NOT immediately cancel
+# the in-flight coroutine (``asyncio.wait_for`` would — that is exactly the hard
+# kill the "checkpoint on command" grace period must prevent). Instead it grants
+# a bounded GRACE window for the workers to reach their next unit boundary,
+# checkpoint the in-flight unit, and return a PAUSED result. Only if the grace
+# window ALSO expires (an unresponsive worker that never consults the stop
+# channel) does it hard-cancel and fall through to the pre-existing TIMEOUT
+# handling. The grace is a fraction of the deadline, capped — expressed as
+# module CONSTANTS (never an env var: this is internal mechanics, NOT a new
+# behavior flag) so tests can monkeypatch them to small numbers.
+BATCH_TIMEOUT_GRACE_FRACTION = 0.10
+BATCH_TIMEOUT_GRACE_CAP_SECONDS = 600.0
+
+
+def _grace_seconds(timeout_seconds: float) -> float:
+    """Bounded drain window after a wall-clock deadline (``min(cap, 10%·T)``).
+
+    Read from the module constants at call time so a test can monkeypatch
+    :data:`BATCH_TIMEOUT_GRACE_FRACTION` / :data:`BATCH_TIMEOUT_GRACE_CAP_SECONDS`
+    and observe the change. Kept as a float (the plan's ``int(...)`` floor only
+    matters sub-second — irrelevant at the production multi-minute scale where
+    grace is ~180s — and float-vs-int here makes the window testable).
+    """
+    try:
+        t = float(timeout_seconds)
+    except (TypeError, ValueError):
+        return 0.0
+    return min(BATCH_TIMEOUT_GRACE_CAP_SECONDS, BATCH_TIMEOUT_GRACE_FRACTION * t)
+
+
+# Task-scoped in-process stop channel (D10). Distinct from the run-scoped
+# filesystem sentinel in ``lib.generation.stop_control``: when a SINGLE task
+# exceeds ``ED4ALL_TASK_TIMEOUT_MINUTES`` the executor sets this per-task Event
+# and grants a grace window before a hard cancel — but it NEVER writes the
+# run-scoped sentinel, because one slow task must not pause the whole run. A
+# ``threading.Event`` (not ``asyncio.Event``) so a tool that offloads to
+# ``asyncio.to_thread`` can consult it from its worker thread; the ContextVar is
+# copied into the tool's task/thread context at dispatch. Stop-aware in-process
+# tools MAY consult :func:`current_task_stop_event` to drain early; today the
+# channel is grace-only (no in-process tool reads it yet), and after grace the
+# existing TIMEOUT classification + transient-retry ladder stands unchanged
+# (retry replays the fingerprinted resume sidecar, so no work is lost).
+_TASK_STOP_EVENT: "contextvars.ContextVar[Optional[threading.Event]]" = (
+    contextvars.ContextVar("ed4all_task_stop_event", default=None)
+)
+
+
+def current_task_stop_event() -> Optional[threading.Event]:
+    """Return the in-process per-task stop Event for the current tool call.
+
+    A stop-aware in-process tool MAY consult this to drain to its next unit
+    boundary early once the executor signals a per-task timeout grace window.
+    It is NOT the run-scoped filesystem sentinel (see the module note on
+    :data:`_TASK_STOP_EVENT`) — consulting it can only shorten one slow task,
+    never pause the run. Returns ``None`` outside a managed tool invocation.
+    """
+    return _TASK_STOP_EVENT.get()
 
 
 # W2.1: CUDA-OOM detection + free-VRAM probe were factored into the shared
@@ -1316,11 +1382,63 @@ class TaskExecutor:
         # Log the mapped parameters for debugging
         logger.debug(f"Invoking {tool_name} with params: {list(mapped_params.keys())}")
 
-        # Call tool with mapped parameters
-        result_str = await asyncio.wait_for(
-            tool_func(**mapped_params),
-            timeout=self.timeout_seconds,
-        )
+        # Call tool with mapped parameters under the per-task timeout.
+        #
+        # Task-scoped graceful stop (D10 / AMENDMENT #4). ``asyncio.wait_for``
+        # would hard-cancel the tool at ``ED4ALL_TASK_TIMEOUT_MINUTES``, killing
+        # an in-flight LLM call and its uncheckpointed unit. Instead we grant a
+        # bounded grace window via a NON-cancelling two-stage ``asyncio.wait``,
+        # signalling a per-TASK in-process stop Event (NOT the run-scoped
+        # sentinel — one slow task must never pause the whole run). A stop-aware
+        # in-process tool MAY consult ``current_task_stop_event`` to drain early;
+        # the event is copied into the tool's task/thread context here. After the
+        # grace window we hard-cancel and re-raise ``asyncio.TimeoutError`` so the
+        # EXISTING TIMEOUT classification + transient-retry ladder stands
+        # unchanged (a retry replays the fingerprinted resume sidecar, so no work
+        # is lost). Today the channel is grace-only: no in-process tool reads the
+        # event yet, so the grace window simply delays the hard cancel — but the
+        # channel is wired so a stop-aware tool can shorten it later.
+        stop_event = threading.Event()
+        token = _TASK_STOP_EVENT.set(stop_event)
+        try:
+            tool_task: "asyncio.Task[Any]" = asyncio.ensure_future(
+                tool_func(**mapped_params)
+            )
+            done, pending = await asyncio.wait(
+                {tool_task}, timeout=self.timeout_seconds
+            )
+            if tool_task in pending:
+                # Per-task deadline hit — signal the task-scoped stop channel and
+                # grant the grace window. Deliberately does NOT call request_stop
+                # (that would write the run-scoped sentinel and pause the run).
+                stop_event.set()
+                grace_seconds = _grace_seconds(self.timeout_seconds)
+                logger.warning(
+                    f"[{self.run_id}] Tool '{tool_name}' hit task deadline "
+                    f"{self.timeout_seconds}s; signalled task-scoped stop, "
+                    f"granting {grace_seconds:.1f}s grace before hard cancel"
+                )
+                done, pending = await asyncio.wait(
+                    {tool_task}, timeout=grace_seconds
+                )
+            if tool_task in pending:
+                # Grace elapsed — hard cancel and re-raise TimeoutError so the
+                # retry ladder classifies + retries exactly as before.
+                tool_task.cancel()
+                try:
+                    await tool_task
+                except asyncio.CancelledError:
+                    pass
+                raise asyncio.TimeoutError(
+                    f"Tool '{tool_name}' exceeded {self.timeout_seconds}s "
+                    f"(+ grace) task timeout"
+                )
+            # Completed within the deadline or drained within grace — surface the
+            # tool's own return value / exception (``.result()`` re-raises a
+            # GracefulStopRequested or any tool error unchanged).
+            result_str = tool_task.result()
+        finally:
+            _TASK_STOP_EVENT.reset(token)
 
         # Parse result
         try:
@@ -1818,56 +1936,118 @@ class TaskExecutor:
         _prev_active_phase = getattr(self, "_active_phase_name", None)
         self._active_phase_name = phase_name
         try:
-            results = await asyncio.wait_for(
-                self._execute_parallel(
-                    workflow_id, tasks, max_concurrent,
-                    results_sink=partial_results,
-                ),
-                timeout=batch_timeout_seconds
-            )
-        except asyncio.TimeoutError:
-            # Keep every task that finished before the deadline (its real
-            # status + result payload) from the sink, then TIMEOUT-mark only
-            # the tasks that never finished. A task that was already non-PENDING
-            # (e.g. pre-completed on resume) and never ran this phase is left
-            # untouched, matching the prior ``status == "PENDING"`` filter.
-            results = dict(partial_results)
-            timed_out_ids: List[Any] = []
-            for t in tasks:
-                tid = t.get("id")
-                if tid in results:
-                    continue  # finished before the deadline — preserve it
-                if t.get("status") != "PENDING":
-                    continue  # not part of this phase's run
-                results[tid] = ExecutionResult(
-                    task_id=tid,
-                    status="TIMEOUT",
-                    error=f"Phase batch timeout after {batch_timeout_seconds}s",
+            # Graceful-stop timeout → pause (AMENDMENT #5). ``asyncio.wait_for``
+            # CANCELS ``_execute_parallel`` at the deadline — precisely the hard
+            # kill the "checkpoint on command" grace period must prevent. So we
+            # wrap the batch in a Task and enforce the deadline with a
+            # NON-cancelling ``asyncio.wait``, in two stages:
+            #   stage 1 — wait to the batch deadline; on expiry request a
+            #     RUN-SCOPED graceful stop (the whole-phase pause path — the
+            #     owner contract "timeouts become pauses"), then
+            #   stage 2 — wait a bounded grace window for the in-flight workers
+            #     to reach their next unit boundary. Each worker's cooperative
+            #     stop-check (Wave-A/C in-loop sites) observes the sentinel,
+            #     checkpoints its in-flight unit, and returns a PAUSED result;
+            #     the batch loop-top halts new dispatch. A grace-drained batch
+            #     therefore surfaces PAUSED results, NOT TIMEOUT.
+            # Only if the grace window ALSO expires (an unresponsive worker that
+            # never consults the sentinel) do we hard-cancel and fall through to
+            # the pre-existing TIMEOUT marking + retry.
+            batch_task: "asyncio.Task[Dict[str, ExecutionResult]]" = (
+                asyncio.ensure_future(
+                    self._execute_parallel(
+                        workflow_id, tasks, max_concurrent,
+                        results_sink=partial_results,
+                    )
                 )
-                timed_out_ids.append(tid)
-            logger.error(
-                f"[{self.run_id}] Phase {phase_name} timed out after "
-                f"{batch_timeout_seconds}s — preserved {len(partial_results)} "
-                f"completed task result(s)/checkpoint(s); marked "
-                f"{len(timed_out_ids)} unfinished task(s) TIMEOUT"
             )
-            if self.capture:
-                self.capture.log_decision(
-                    decision_type="phase_completion",
-                    decision=(
-                        f"Phase {phase_name} batch timeout: preserved "
-                        f"{len(partial_results)} completed, abandoned "
-                        f"{len(timed_out_ids)} unfinished"
-                    ),
-                    rationale=(
-                        f"Batch wall-clock deadline {batch_timeout_seconds}s hit "
-                        f"on phase {phase_name} (index {phase_index}); completed "
-                        f"task results + their checkpoints preserved via the "
-                        f"results_sink instead of discarded, only the "
-                        f"{len(timed_out_ids)} unfinished task(s) abandoned for "
-                        f"retry (ids={timed_out_ids})"
-                    ),
+            done, pending = await asyncio.wait(
+                {batch_task}, timeout=batch_timeout_seconds
+            )
+            if batch_task in pending:
+                # Deadline hit with work still in flight — convert the timeout
+                # into a run-scoped graceful stop (NOT a cancel) so the phase
+                # pauses instead of losing in-flight units.
+                request_stop(
+                    self.run_id,
+                    scope="run",
+                    reason="batch_timeout",
+                    source="timeout",
                 )
+                grace_seconds = _grace_seconds(batch_timeout_seconds)
+                logger.warning(
+                    f"[{self.run_id}] Phase {phase_name} hit batch deadline "
+                    f"{batch_timeout_seconds}s; requested graceful stop, "
+                    f"granting {grace_seconds:.1f}s grace for in-flight workers "
+                    f"to drain to a unit boundary before hard cancel"
+                )
+                done, pending = await asyncio.wait(
+                    {batch_task}, timeout=grace_seconds
+                )
+
+            if batch_task in pending:
+                # Grace ALSO expired — a worker never reached a unit boundary.
+                # Restore the pre-graceful HARD behaviour: clear the
+                # timeout-authored sentinel (it was written by the timeout
+                # machinery, not the operator — leaving it would spuriously
+                # pause the NEXT phase of this run), hard-cancel, and TIMEOUT-mark
+                # only the still-unfinished tasks exactly as before. Completed
+                # results survive in ``partial_results`` (the W2.2 sink).
+                clear_stop(self.run_id)
+                batch_task.cancel()
+                try:
+                    await batch_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:  # noqa: BLE001 - coroutine's own error, if any
+                    pass
+                results = dict(partial_results)
+                timed_out_ids: List[Any] = []
+                for t in tasks:
+                    tid = t.get("id")
+                    if tid in results:
+                        continue  # finished before the deadline — preserve it
+                    if t.get("status") != "PENDING":
+                        continue  # not part of this phase's run
+                    results[tid] = ExecutionResult(
+                        task_id=tid,
+                        status="TIMEOUT",
+                        error=f"Phase batch timeout after {batch_timeout_seconds}s",
+                    )
+                    timed_out_ids.append(tid)
+                logger.error(
+                    f"[{self.run_id}] Phase {phase_name} timed out after "
+                    f"{batch_timeout_seconds}s (grace {grace_seconds:.1f}s "
+                    f"elapsed with a worker still unresponsive) — preserved "
+                    f"{len(partial_results)} completed task result(s)/"
+                    f"checkpoint(s); marked {len(timed_out_ids)} unfinished "
+                    f"task(s) TIMEOUT"
+                )
+                if self.capture:
+                    self.capture.log_decision(
+                        decision_type="phase_completion",
+                        decision=(
+                            f"Phase {phase_name} batch timeout: preserved "
+                            f"{len(partial_results)} completed, abandoned "
+                            f"{len(timed_out_ids)} unfinished"
+                        ),
+                        rationale=(
+                            f"Batch wall-clock deadline {batch_timeout_seconds}s "
+                            f"then grace {grace_seconds:.1f}s both elapsed on "
+                            f"phase {phase_name} (index {phase_index}) with a "
+                            f"worker unresponsive to the stop sentinel; completed "
+                            f"task results + their checkpoints preserved via the "
+                            f"results_sink, only the {len(timed_out_ids)} "
+                            f"unfinished task(s) abandoned for retry "
+                            f"(ids={timed_out_ids})"
+                        ),
+                    )
+            else:
+                # Batch finished — either fully before the deadline, or drained
+                # to a COMPLETE/PAUSED mix within the grace window. The
+                # ``paused_detected`` path below stamps the phase ``paused``
+                # whenever any worker drained on the graceful stop.
+                results = batch_task.result()
         finally:
             # Graceful stop: clear the published active phase so a subsequent
             # (or nested) phase never inherits a stale name. Per-task

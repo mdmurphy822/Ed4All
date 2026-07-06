@@ -4599,6 +4599,8 @@ from lib.generation.llm_checkpoint import (  # noqa: E402
     hash_text as _llm_hash_text,
 )
 from lib.generation.stop_control import (  # noqa: E402
+    GLOBAL_SENTINEL_NAME as _STOP_GLOBAL_SENTINEL_NAME,
+    RUN_SENTINEL_NAME as _STOP_RUN_SENTINEL_NAME,
     STOP_MARKER,
     GracefulStopRequested,
     check_stop,
@@ -7100,6 +7102,18 @@ _SEMANTIK_REAL_RUNTIME_MODES = frozenset({"real"})
 #                            model/cache dirs relative to cwd).
 _SEMANTIK_PYTHON_ENV = "SEMANTIK_PYTHON"
 _SEMANTIK_RUNTIME_DIR_ENV = "SEMANTIK_RUNTIME_DIR"
+# Graceful-stop declared-env plumbing for the SemantiK cascade seam (Wave E /
+# plan P6). The cascade runs in its OWN venv (in-process on Ed4All's sys.path,
+# or the fully out-of-process JSON bridge) and MUST NOT import Ed4All's
+# ``lib/generation/stop_control`` — so, exactly like the GPU-lifecycle
+# cross-venv twin, Ed4All resolves the active run's stop-sentinel PATH(s) and
+# hands them to the cascade's own ``dart_semantic.stop_seam`` via this env var
+# (``os.pathsep``-joined). It carries a PATH, selects no provider/model, and is
+# a byte-identical no-op when unset → declared-env plumbing, NOT a behavior flag
+# (no LICENSING / behavior-flags row). The seam raises the SemantiK-local
+# ``CascadeStopRequested`` on observing a listed sentinel, which this module
+# translates to ``GracefulStopRequested`` at the conversion boundary.
+_SEMANTIK_STOP_SENTINEL_ENV = "SEMANTIK_STOP_SENTINEL"
 # Path to the SemantiK-side runner script (vendored under SemantiK/scripts/).
 # Resolved relative to the repo root so no absolute path is hardcoded.
 _SEMANTIK_RUNNER_SCRIPT = (
@@ -7191,6 +7205,39 @@ class _SemantikBridgeResult:
         self.ocr_repair = ocr if isinstance(ocr, dict) else None
 
 
+def _semantik_stop_sentinel_env_value() -> Optional[str]:
+    """Build the ``SEMANTIK_STOP_SENTINEL`` value for the cascade seam (P6).
+
+    Declared-env plumbing (a PATH, not a behavior flag): resolves the active
+    run's stop sentinels — the global ``<state_runs>/STOP_ALL`` and, when an
+    ``ED4ALL_RUN_ID`` resolves, the run-scoped
+    ``<state_runs>/<run_id>/control/STOP_REQUESTED`` — and joins them with
+    ``os.pathsep`` so the SemantiK cascade's cross-venv ``dart_semantic.stop_seam``
+    twin (which must NOT import Ed4All's ``lib/``) can poll them at a seam
+    boundary. Paths are built from ``stop_control``'s public sentinel-name
+    constants + ``lib.paths.get_state_runs_dir`` (the SAME resolution
+    ``stop_control`` uses — never CWD-relative, read per call), so a servicer /
+    bridge launched from a non-repo-root CWD watches exactly the sentinel the
+    CLI writes. The global path is always emitted (so ``ed4all stop --all``
+    reaches a conversion even with no run_id); returns ``None`` only if the
+    state-runs dir cannot be resolved, in which case the caller leaves the env
+    unset → every cascade seam is a byte-identical no-op.
+    """
+    try:
+        from lib.paths import get_state_runs_dir  # noqa: PLC0415
+
+        runs_dir = get_state_runs_dir()
+    except Exception:  # noqa: BLE001 — path resolution must never crash the seam
+        return None
+    paths: List[str] = [str(runs_dir / _STOP_GLOBAL_SENTINEL_NAME)]
+    run_id = (os.environ.get("ED4ALL_RUN_ID") or "").strip()
+    if run_id:
+        paths.append(
+            str(runs_dir / run_id / "control" / _STOP_RUN_SENTINEL_NAME)
+        )
+    return os.pathsep.join(paths)
+
+
 def _run_semantik_bridge_subprocess(
     pdf: str, runtime: str = "auto"
 ) -> Dict[str, Any]:
@@ -7263,6 +7310,14 @@ def _run_semantik_bridge_subprocess(
         # still means an operator's explicit value is never clobbered.
         bridge_env = dict(os.environ)
         bridge_env.setdefault("SEMANTIK_THETA_DEVICE", "cpu")
+        # Graceful-stop (P6): hand the child the run's stop-sentinel PATH(s) via
+        # declared-env plumbing (alongside SEMANTIK_PYTHON / SEMANTIK_RUNTIME_DIR)
+        # so the cascade's cross-venv ``dart_semantic.stop_seam`` twin polls them
+        # at a seam boundary and self-terminates instead of running the full
+        # (~hours) authoring pass. Unset ⇒ every seam is a byte-identical no-op.
+        _stop_sentinel = _semantik_stop_sentinel_env_value()
+        if _stop_sentinel:
+            bridge_env[_SEMANTIK_STOP_SENTINEL_ENV] = _stop_sentinel
         if _semantik_expandable_segments_enabled():
             bridge_env.setdefault(
                 "PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True"
@@ -8378,6 +8433,17 @@ def _run_semantik_v2_conversion(
     from lib.semantik.cascade_ir import build_chapters_ir
     from lib.semantik.adapter import normalize_cascade_to_ed4all
 
+    # Graceful-stop (P6): publish the run's stop-sentinel PATH(s) into the env
+    # so BOTH the in-process cascade (its ``dart_semantic.stop_seam`` twin reads
+    # ``os.environ`` per seam call) AND the bridge subprocess (``bridge_env =
+    # dict(os.environ)``) can poll them and self-terminate at a seam boundary.
+    # Declared-env plumbing (a PATH), unset ⇒ byte-identical no-op. Set (not
+    # setdefault) so the value always tracks the ACTIVE run; Ed4All owns this
+    # var (the SemantiK docs treat it as Ed4All-managed).
+    _stop_sentinel = _semantik_stop_sentinel_env_value()
+    if _stop_sentinel:
+        os.environ[_SEMANTIK_STOP_SENTINEL_ENV] = _stop_sentinel
+
     # 1. Run the cascade. Resolution order (§5 / Section 8 M4):
     #   (a) in-process import of run_pipeline_v2 — works iff Ed4All's venv
     #       ever gets SemantiK's heavy deps;
@@ -8401,6 +8467,20 @@ def _run_semantik_v2_conversion(
         if (os.environ.get(_SEMANTIK_PYTHON_ENV) or "").strip():
             bridge = _run_semantik_bridge_subprocess(str(pdf))
             if bridge.get("error"):
+                # Graceful-stop (P6): the bridge child polls the handed-in stop
+                # sentinel and self-terminates, but the current
+                # ``run_cascade_json.py`` surfaces the SemantiK-local
+                # ``CascadeStopRequested`` as a generic ``{"error": ...}`` (it
+                # has no structured stop channel yet — SemantiK-side follow-up).
+                # So when the bridge errors AND a stop sentinel is authoritative,
+                # translate to the graceful-stop control signal (paused, never
+                # failed): the sentinel is the authoritative signal, and a
+                # genuine bridge error concurrent with a pending stop safely
+                # re-runs on resume (worst case zero-loss).
+                if stop_requested():
+                    raise GracefulStopRequested(
+                        f"semantik_bridge:{pdf.stem}", 0, None
+                    )
                 logger.error(
                     "SemantiK bridge failed on %s: %s", pdf, bridge["error"]
                 )
@@ -8453,11 +8533,35 @@ def _run_semantik_v2_conversion(
                 cfg_exc,
             )
             _semantik_config = None
+        # Graceful-stop (P6): the in-process cascade's ``dart_semantic.stop_seam``
+        # twin raises the SemantiK-local ``CascadeStopRequested`` at a seam
+        # boundary when it observes the handed-in sentinel. Import it lazily
+        # here (the ``run_pipeline_v2`` import already succeeded, so the seam
+        # module is present); the ``()`` fallback makes the ``except`` never
+        # match if the seam is somehow absent, so the broad handler below still
+        # fails closed.
+        try:
+            from SemantiK.dart_semantic.stop_seam import (
+                CascadeStopRequested as _CascadeStopRequested,
+            )
+        except Exception:  # noqa: BLE001 — seam absent → never-matching except
+            _CascadeStopRequested = ()  # type: ignore[assignment]
         try:
             if _semantik_config is not None:
                 result = run_pipeline_v2(str(pdf), config=_semantik_config)
             else:
                 result = run_pipeline_v2(str(pdf))
+        except _CascadeStopRequested as stop_exc:
+            # Translate the SemantiK-local cooperative stop into the Ed4All
+            # graceful-stop control signal so the executor/runner map it to
+            # ``paused`` (never failed, never retried). MUST precede the broad
+            # ``except Exception`` (``CascadeStopRequested`` subclasses
+            # RuntimeError, so the broad handler would otherwise fail it closed).
+            raise GracefulStopRequested(
+                f"semantik_cascade:{pdf.stem}",
+                0,
+                getattr(stop_exc, "sentinel_path", None),
+            ) from stop_exc
         except Exception as exc:  # noqa: BLE001 — cascade error fails closed
             import traceback as _tb
 

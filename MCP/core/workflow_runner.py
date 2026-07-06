@@ -57,7 +57,7 @@ from lib.generation.stop_control import (
     clear_stop,
     stop_requested,
 )
-from lib.paths import get_state_runs_dir
+from lib.paths import DART_PATH, get_state_runs_dir
 
 
 class AuthoringProviderRouteError(RuntimeError):
@@ -1876,7 +1876,7 @@ class WorkflowRunner:
 
             # Create tasks for this phase
             tasks = self._create_phase_tasks(
-                workflow_id, phase, routed_params, workflow_params
+                workflow_id, phase, routed_params, workflow_params, phase_outputs
             )
 
             # Add tasks to workflow state
@@ -3683,12 +3683,66 @@ class WorkflowRunner:
 
         return params
 
+    def _resume_reusable_conversion_stems(
+        self,
+        phase_outputs: Optional[Dict[str, Any]],
+        pdf_paths: List[Any],
+    ) -> set:
+        """PDF stems whose prior conversion is COMPLETE — for P6 resume reuse.
+
+        Graceful-stop "checkpoint on command": ``dart_conversion`` is one
+        SemantiK task per PDF (``max_concurrent: 1``, no per-unit sidecar — a
+        chapter is either fully converted or not), so a stop mid-phase leaves
+        the finished chapters' artifacts on disk and the in-flight chapter
+        un-converted. On ``--resume`` this auto-enables per-PDF conversion reuse
+        for the finished chapters so the run does not re-convert (hours of
+        7B/OCR work) what already succeeded.
+
+        RESUME-GATED (never fires on a fresh run): the ``dart_conversion`` phase
+        is (re)created here only when it did NOT complete — the completed-phase
+        skip guard skips a ``_completed`` phase — and a prior
+        ``phase_outputs['dart_conversion']`` that is present but NOT
+        ``_completed`` is the paused/partial resume signal. A fresh run has no
+        such entry → empty set, so a stale ``{stem}_accessible.html`` left in
+        the output dir by an unrelated prior run is never wrongly reused.
+
+        COMPLETENESS SIGNAL = BOTH ``{stem}_accessible.html`` AND
+        ``{stem}_accessible.quality.json`` in the conversion output dir (the
+        ``DART_PATH/output`` the ``extract_and_convert_pdf`` seam writes to).
+        The HTML is written first and the quality sidecar best-effort after
+        (``_run_semantik_v2_conversion``), so requiring BOTH rejects a torn
+        write (HTML present, sidecar missing) → that PDF is re-converted. The
+        downstream ``_run_semantik_v2_conversion`` reuse arm then reads the
+        prior HTML + sidecars back (cascade skipped); a PDF NOT in this set gets
+        no ``reuse_conversion`` flag and is converted normally.
+        """
+        if not isinstance(phase_outputs, dict):
+            return set()
+        entry = phase_outputs.get("dart_conversion")
+        if not isinstance(entry, dict) or entry.get("_completed"):
+            return set()
+        conv_dir = DART_PATH / "output"
+        reusable: set = set()
+        for pdf_path in pdf_paths:
+            stem = Path(str(pdf_path)).stem
+            if not stem:
+                continue
+            html = conv_dir / f"{stem}_accessible.html"
+            quality = conv_dir / f"{stem}_accessible.quality.json"
+            try:
+                if html.is_file() and quality.is_file():
+                    reusable.add(stem)
+            except OSError:
+                continue
+        return reusable
+
     def _create_phase_tasks(
         self,
         workflow_id: str,
         phase: WorkflowPhase,
         routed_params: Dict[str, Any],
         workflow_params: Optional[Dict[str, Any]] = None,
+        phase_outputs: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Create task dicts for a phase.
@@ -3716,6 +3770,13 @@ class WorkflowRunner:
             pdf_paths = workflow_params.get("pdf_paths", [])
             if isinstance(pdf_paths, str):
                 pdf_paths = [p.strip() for p in pdf_paths.split(",")]
+            # Graceful-stop (P6) auto-reuse on paused/partial resume: the PDF
+            # stems whose prior conversion is COMPLETE on disk, to be skipped
+            # (reused) on this resume leg. Empty on a fresh run (self-gated) so
+            # a stale artifact is never wrongly reused.
+            auto_reuse_stems = self._resume_reusable_conversion_stems(
+                phase_outputs, pdf_paths
+            )
             for i, pdf_path in enumerate(pdf_paths):
                 task_id = f"T-{phase.name}-{i}-{timestamp}"
                 # SemantiK migration P3c — the registry tool
@@ -3733,7 +3794,16 @@ class WorkflowRunner:
                         "canonical_course_code"
                     ),
                 }
-                if workflow_params.get("reuse_conversion"):
+                # ``reuse_conversion`` is set either GLOBALLY (--reuse-conversion
+                # / ED4ALL_REUSE_CONVERSION) or PER-PDF on a paused/partial
+                # resume for PDFs whose prior conversion completed (P6). Same
+                # per-task flag / same ``_run_semantik_v2_conversion`` reuse
+                # mechanism — no parallel plumbing.
+                pdf_stem = Path(str(pdf_path)).stem
+                if (
+                    workflow_params.get("reuse_conversion")
+                    or pdf_stem in auto_reuse_stems
+                ):
                     task_params["reuse_conversion"] = True
                 task = {
                     "id": task_id,

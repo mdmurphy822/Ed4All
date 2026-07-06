@@ -78,6 +78,7 @@ from .endpoint_runtime import (
 )
 from .prompts import build_math_request, build_prose_request, build_table_request
 from .routing import adapter_for
+from ..stop_seam import StopPoller
 from .runtime import (
     QwenRuntime,
     make_phase_runtime,
@@ -764,6 +765,16 @@ def run_qwen_specialists(
     if not regions:
         return {}
 
+    # GRACEFUL-STOP SEAM (c) — Stage-6 adapter-batch boundary. The Ed4All side
+    # may hand in a SEMANTIK_STOP_SENTINEL (declared-env plumbing, cross-venv
+    # twin of the GPU-lifecycle lease). This throttled poller is checked BETWEEN
+    # adapter batches (Phase 1) and between candidate-slot passes (Phase 2), so
+    # a stop requested mid-Stage-6 (the ~3h/chapter local-7B authoring tier)
+    # raises CascadeStopRequested at the next batch boundary instead of running
+    # the whole document to completion. No-op / fail-soft when no sentinel path
+    # was provided; never crashes a run that passes none.
+    stop_poller = StopPoller()
+
     sampling = _load_sampling(config_path, lane=lane)
 
     # Phase routing: decide which phase set runs.
@@ -938,6 +949,10 @@ def run_qwen_specialists(
     if run_phase1:
         version = getattr(rt_phase1, "_adapter_version", "unknown")
         for adapter in _PASS_ORDER:
+            # Seam (c): between adapter groups — the coarsest Stage-6 batch
+            # boundary. A stop requested after (e.g.) the PROSE group finishes
+            # raises before the TABLE/MATH AdapterSwap loads. No-op when unset.
+            stop_poller.check(f"stage6:phase1:{adapter}")
             bucket = buckets.get(adapter, [])
             if not bucket:
                 logger.debug("Stage6 phase1 %s: no regions, skipping", adapter)
@@ -1068,6 +1083,10 @@ def run_qwen_specialists(
             slot_failures: list[int] = [0] * len(active)
             # Per-region prompt: refine appends the chosen draft slot.
             for k_idx in range(phase2_k):
+                # Seam (c): between candidate-slot passes on the Phase-2 lane
+                # (each slot is one batched fan-out over all active regions). A
+                # stop mid-Phase-2 raises at the next slot boundary. No-op unset.
+                stop_poller.check(f"stage6:phase2:slot{k_idx}")
                 slot_seed = None if seed is None else int(seed + k_idx)
                 # Both dispatch paths return a list[str | None] aligned to
                 # ``active`` order, so the degradation mapping below is

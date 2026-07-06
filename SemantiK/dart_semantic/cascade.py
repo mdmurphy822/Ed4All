@@ -47,6 +47,7 @@ from .qwen_specialists.reviewer import resolve_structure_review_mode
 from .qwen_specialists.runtime import any_phase_provider_is_endpoint
 from .reading_order import resolve_deploy_profile
 from .soft_reranker import score_document
+from .stop_seam import check_cascade_stop
 from .structure_graph import Region, build_structure_graph
 from .theta import apply_repair_stats, decide_exit, evaluate, maybe_offline_retry
 from .v2_config import DEFAULT_V2_CONFIG, V2Config
@@ -1771,6 +1772,17 @@ def run_full_cascade(
     # gated on ED4ALL_GPU_LIFECYCLE, fail-soft, lazy-reload-safe.
     _gpu_lifecycle_release(ollama=True, stage="post-Stage-5e/pre-Stage-6")
 
+    # GRACEFUL-STOP SEAM (a) — post-Stage-5e / pre-Stage-6, the cheapest-loss
+    # cooperative checkpoint point: everything upstream (extract / council /
+    # structure / 5b-5e) is disk-cache-recoverable, and Stage 6 is the
+    # ~3h/chapter local-7B authoring exposure. When the Ed4All side handed in a
+    # SEMANTIK_STOP_SENTINEL and it now exists, raise CascadeStopRequested here
+    # so we never enter Stage 6. No-op (byte-identical) when no sentinel path
+    # was provided; the probe is fail-soft. Mirrors the _gpu_lifecycle_release
+    # cross-venv twin — the seam polls a PATH handed in from outside, never
+    # importing Ed4All's lib/.
+    check_cascade_stop("cascade:post-stage5e-pre-stage6")
+
     # ------------------------------------------------------------------
     # Stages 6-12 are encapsulated so the offline-retry orchestrator can
     # re-run the inner pipeline against ``lane="offline"``. Stage outputs
@@ -2013,6 +2025,14 @@ def run_full_cascade(
         if lane == "offline":
             offline_retry_fired = True
         return _run_inner(lane)
+
+    # GRACEFUL-STOP SEAM (b) — pre-Stage-13 offline retry. The fast lane's
+    # Stages 6-12 already ran; the offline retry may re-run all of Stage 6-12
+    # against the ``offline`` lane (another full authoring pass). If a stop was
+    # requested during the fast lane, raise here so we don't spend the offline
+    # retry on a run we're about to pause. No-op / fail-soft exactly like seam
+    # (a) when no SEMANTIK_STOP_SENTINEL was handed in.
+    check_cascade_stop("cascade:pre-stage13-offline-retry")
 
     log("[cascade] running Stage 13 (offline retry orchestration)")
     t = time.perf_counter()

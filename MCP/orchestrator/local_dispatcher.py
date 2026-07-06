@@ -25,13 +25,14 @@ import asyncio
 import json
 import logging
 import os
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
-from lib.generation.stop_control import GracefulStopRequested
+from lib.generation.stop_control import GracefulStopRequested, request_stop
 
-from .task_mailbox import TaskMailbox
+from .task_mailbox import MailboxError, TaskMailbox, TaskNotFoundError
 from .worker_contracts import PhaseInput, PhaseOutput
 
 logger = logging.getLogger(__name__)
@@ -100,6 +101,36 @@ _DEFAULT_MAILBOX_TIMEOUT = 600.0
 # exposes this on the CLI too).
 _DEFAULT_AGENT_TASK_TIMEOUT = 1800.0
 _AGENT_TASK_TIMEOUT_ENV = "ED4ALL_AGENT_TIMEOUT_SECONDS"
+
+# P5 item 3 — mailbox-deadline graceful-stop grace drain.
+#
+# When the mailbox waiter's ``ED4ALL_AGENT_TIMEOUT_SECONDS`` deadline elapses,
+# the outer subagent may still be mid-unit. Rather than abandoning it to
+# ``MAILBOX_TIMEOUT`` immediately, the waiter writes a run-scoped stop sentinel
+# (``stop_control.request_stop`` — signals the worker to checkpoint at its next
+# unit boundary) and extends the wait by a short grace window. A task that
+# produces a completion within grace — a normal result OR the ``GRACEFUL_STOP``
+# envelope the servicer marshals — is handled normally / as PAUSED; only if
+# grace ALSO elapses does the waiter surface the timeout. This mirrors the
+# executor batch-timeout grace formula ``min(600s, 10% of the timeout)`` — a
+# code constant, never a behavior flag.
+_MAILBOX_TIMEOUT_GRACE_CAP_SECONDS = 600.0
+_MAILBOX_TIMEOUT_GRACE_FRACTION = 0.10
+
+
+def _mailbox_grace_seconds(timeout_seconds: float) -> float:
+    """Grace window after a mailbox deadline: ``min(600, int(0.10 * timeout))``.
+
+    Truncated to whole seconds to match the executor's batch-timeout grace.
+    Sub-10s deadlines (only ever seen in tests) truncate to a 0s grace — the
+    waiter still gives the worker one best-effort completion poll before
+    surfacing the timeout. Exposed as a module function so tests can monkeypatch
+    a non-zero grace without first waiting out a production-size deadline.
+    """
+    return min(
+        _MAILBOX_TIMEOUT_GRACE_CAP_SECONDS,
+        float(int(_MAILBOX_TIMEOUT_GRACE_FRACTION * float(timeout_seconds))),
+    )
 
 
 # Registry of known agent-spec directories. The dispatcher searches these
@@ -522,15 +553,38 @@ class LocalDispatcher:
             )
             raise
         except TimeoutError:
+            # P5 item 3: the deadline elapsed but the outer subagent may still
+            # be mid-unit. Signal a graceful stop (run-scoped sentinel → the
+            # worker checkpoints at its next unit boundary) and drain a short
+            # grace window for a completion. A completion that arrives within
+            # grace — a normal result OR the marshalled GRACEFUL_STOP envelope —
+            # is handled normally / as PAUSED; only past grace do we surface
+            # MAILBOX_TIMEOUT.
+            grace = _mailbox_grace_seconds(timeout)
+            logger.warning(
+                "LocalDispatcher.dispatch_task: mailbox deadline (%.0fs) "
+                "elapsed for task=%s agent=%s — requesting graceful stop, "
+                "draining %.1fs grace", timeout, task_id, agent_type, grace,
+            )
+            request_stop(run_id, reason="mailbox_timeout", source="timeout")
+            graced = await self._await_completion_within_grace(
+                mailbox, task_id, grace,
+            )
+            if graced is not None:
+                # _tool_dict_from_envelope re-raises a GRACEFUL_STOP envelope as
+                # the pause channel; a normal completion returns the tool dict.
+                return self._tool_dict_from_envelope(graced, task_id)
             logger.error(
-                "LocalDispatcher.dispatch_task: mailbox timeout for "
-                "task=%s agent=%s", task_id, agent_type,
+                "LocalDispatcher.dispatch_task: mailbox timeout for task=%s "
+                "agent=%s (no completion within %.0fs deadline + %.1fs grace)",
+                task_id, agent_type, timeout, grace,
             )
             return {
                 "success": False,
                 "error": (
                     f"MAILBOX_TIMEOUT: no completion from outer operator "
-                    f"within {timeout:.0f}s for task {task_id!r}. "
+                    f"within {timeout:.0f}s (+{grace:.0f}s graceful-stop grace) "
+                    f"for task {task_id!r}. "
                     f"Recovery: run the mailbox operator loop (Session 2 "
                     f"ships ``ed4all mailbox-bridge peek-agent``) in a "
                     f"Claude Code session, or set ED4ALL_AGENT_TIMEOUT_SECONDS "
@@ -561,6 +615,43 @@ class LocalDispatcher:
                 )
 
         return self._tool_dict_from_envelope(envelope, task_id)
+
+    async def _await_completion_within_grace(
+        self,
+        mailbox: TaskMailbox,
+        task_id: str,
+        grace_seconds: float,
+    ) -> Optional[Dict[str, Any]]:
+        """Poll ONLY for a completion envelope for up to ``grace_seconds``.
+
+        Called after a mailbox deadline elapses and a stop sentinel has been
+        written (P5 item 3): give the outer worker a moment to checkpoint its
+        in-flight unit and write a completion — a normal result, or the
+        ``GRACEFUL_STOP`` envelope the servicer marshals for a graceful stop.
+
+        Deliberately does NOT reuse ``await_completion_async``: that waiter
+        observes the sentinel we JUST wrote and raises ``GracefulStopRequested``
+        on its first poll, abandoning the worker before it can complete. Here we
+        watch only for the completion FILE, so the worker's own result wins the
+        race. Returns the envelope, or ``None`` if grace elapses with none
+        (mirrors ``_check_completion_once``'s "probe at least once" contract).
+        """
+        deadline = time.monotonic() + max(0.0, float(grace_seconds))
+        first = True
+        while True:
+            try:
+                return mailbox.read_completion(task_id)
+            except TaskNotFoundError:
+                pass
+            except MailboxError as exc:  # torn / unreadable completion file
+                logger.debug(
+                    "LocalDispatcher: grace read_completion(%s) failed: %s",
+                    task_id, exc,
+                )
+            if not first and time.monotonic() >= deadline:
+                return None
+            first = False
+            await asyncio.sleep(self.mailbox_poll_interval)
 
     @staticmethod
     def _tool_dict_from_envelope(
