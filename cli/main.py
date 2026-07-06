@@ -63,6 +63,21 @@ except ImportError as _stop_import_err:  # pragma: no cover
     )
 
 
+# Register W5 'ed4all objectives restructure' command — deterministic
+# (no-LLM) rebuild of an existing objectives doc that round-trips
+# --reuse-objectives. Lazy try/except so the CLI still loads if the
+# restructure lib (its embedding-optional deps) fails to import.
+try:
+    from cli.commands import register_objectives_command
+
+    register_objectives_command(cli)
+except ImportError as _obj_import_err:  # pragma: no cover
+    import logging as _logging
+    _logging.getLogger(__name__).warning(
+        "cli.commands.objectives_cmd unavailable: %s", _obj_import_err
+    )
+
+
 # Register Wave 34 'ed4all mailbox watch' command (outer-session watcher
 # for LocalDispatcher's TaskMailbox bridge).
 try:

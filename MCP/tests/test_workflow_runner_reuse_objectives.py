@@ -392,3 +392,91 @@ class TestPhaseLoopIntegration:
         )
         assert out is not None
         assert out["_completed"] is True
+
+
+class TestRestructureReuseRoundTrip:
+    """Defect F — ``ed4all objectives restructure`` output feeds --reuse-objectives.
+
+    Pins the contract that the deterministic restructure emits a doc which the
+    reuse plumbing accepts: it passes ``_validate_reuse_objectives_file`` and
+    ``_normalize_to_courseforge_form``, and the runner's
+    ``_synthesize_course_planning_reuse_output`` consumes it end-to-end.
+    """
+
+    @staticmethod
+    def _restructured(tmp_path: Path) -> Path:
+        import numpy as np
+
+        from lib.objectives.restructure import (
+            RestructureOptions,
+            restructure_objectives_doc,
+        )
+
+        class _R:
+            kind = "st"
+
+        class _Embed:
+            resolved = _R()
+
+            def encode_batch(self, texts):
+                out = []
+                for t in texts:
+                    v = np.zeros(24, dtype=float)
+                    v[abs(hash(" ".join(str(t).lower().split()[:4]))) % 24] = 1.0
+                    out.append(v)
+                return np.asarray(out, dtype=float)
+
+        def _chunk(cid, mid, title):
+            return {"id": cid, "source": {
+                "module_id": mid, "module_title": title, "position_in_module": 0}}
+
+        all_chunks = [_chunk("c1", "mod-a", "Chapter A"), _chunk("c2", "mod-b", "Chapter B")]
+        cbi = {c["id"]: c for c in all_chunks}
+        doc = {
+            "course_name": "TEST_101",
+            "chapter_objectives": [{"chapter": "Week 1", "objectives": [
+                {"id": "CO-01", "statement": "Derive the tangent slope at a point",
+                 "bloom_level": "apply", "bloom_verb": "derive", "source_chunk_ids": ["c1"]},
+                {"id": "CO-02", "statement": "Integrate a rational polynomial expression",
+                 "bloom_level": "apply", "bloom_verb": "integrate", "source_chunk_ids": ["c2"]},
+            ]}],
+        }
+        new_doc, _ = restructure_objectives_doc(
+            doc, cbi, all_chunks,
+            options=RestructureOptions(
+                course_name="TEST_101", generated_from="in.json", embed=_Embed()),
+        )
+        p = tmp_path / "objectives.restructured.json"
+        p.write_text(json.dumps(new_doc), encoding="utf-8")
+        return p
+
+    def test_output_passes_reuse_validation(self, tmp_path):
+        from cli.commands.run import _validate_reuse_objectives_file
+
+        p = self._restructured(tmp_path)
+        assert _validate_reuse_objectives_file(str(p)) is None
+
+    def test_output_normalizes_to_courseforge_form(self, tmp_path):
+        from MCP.core.workflow_runner import _normalize_to_courseforge_form
+
+        p = self._restructured(tmp_path)
+        data = json.loads(p.read_text())
+        normalized = _normalize_to_courseforge_form(data)
+        assert normalized is not None
+        assert normalized["terminal_objectives"]
+        assert normalized["chapter_objectives"]
+
+    def test_runner_consumes_restructured_output(
+        self, runner_stub, project_dir, tmp_path
+    ):
+        p = self._restructured(tmp_path)
+        params = {
+            "reuse_objectives_path": str(p),
+            "course_name": "TEST_101",
+        }
+        out = runner_stub._synthesize_course_planning_reuse_output(
+            params, _build_phase_outputs(project_dir),
+        )
+        assert out is not None
+        assert out["_completed"] is True
+        assert int(out["terminal_count"]) == 2

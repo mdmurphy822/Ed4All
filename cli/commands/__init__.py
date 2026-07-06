@@ -22,6 +22,7 @@ from .libv2_query import register_libv2_query_command
 from .libv2_validate_packet import libv2_group as _libv2_group
 from .libv2_validate_packet import register_libv2_command as _register_libv2_validate_packet
 from .mailbox_watch import register_mailbox_command
+from .objectives_cmd import register_objectives_command
 from .run import register_run_command
 from .state_prune import register_state_command
 from .stop import register_stop_command
@@ -48,6 +49,7 @@ __all__ = [
     "register_mailbox_command",
     "register_state_command",
     "register_stop_command",
+    "register_objectives_command",
     "register_libv2_command",
     "register_libv2_query_command",
     "register_libv2_ask_command",

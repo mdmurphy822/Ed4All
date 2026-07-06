@@ -55,6 +55,15 @@ ed4all run textbook-to-course --provider nvidia --course-name PHYS_101 \
 ed4all run textbook-to-course --corpus pdfs/ --course-name PHYS_101 \
   --reuse-objectives Courseforge/exports/PROJ-PHYS_101-.../01_learning_objectives/synthesized_objectives.json
 
+# ed4all objectives restructure: DETERMINISTICALLY (no LLM) rebuild an existing
+# objectives doc — lexical dedup (E), vacuity annotate/drop (B),
+# chapter-anchored TO re-derivation (A), sub-objective quality (D) — in minutes
+# instead of a 7B re-roll. Writes <input>.restructured.json + restructure_report.json;
+# feed the output straight back into --reuse-objectives (it round-trips that shape).
+ed4all objectives restructure \
+  Courseforge/exports/PROJ-PHYS_101-.../01_learning_objectives/synthesized_objectives.json \
+  --course-name PHYS_101 --drop-vacuous
+
 # --reuse-conversion: reuse a prior SemantiK conversion (skips the
 # model-nondeterministic v2 cascade when prior artifacts exist). Mirrors
 # ED4ALL_REUSE_CONVERSION (flag wins). See SemantiK/CLAUDE.md §3.3a.
@@ -678,7 +687,7 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `NVIDIA_*` (hosted 70B/large cloud tier — `NVIDIA_API_KEY` / `NVIDIA_BASE_URL` / `NVIDIA_LARGE_MODEL`) | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 3 |
 | `SEMANTIK_*` (DART replacement — SemantiK semantic-cascade converter; also honors the legacy `DART_THETA_DEVICE` compat env) | [`SemantiK/CLAUDE.md § Opt-In Behavior Flags`](SemantiK/CLAUDE.md) | 80 |
 | `COURSEFORGE_*` / `COURSEPLANNER_*` / `TEXTBOOK_SYNTHESIS_*` | [`Courseforge/CLAUDE.md § Opt-In Behavior Flags`](Courseforge/CLAUDE.md) | 35 |
-| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root index (below) + [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 169 |
+| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root index (below) + [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 176 |
 
 ### Cross-cutting flags (root-owned)
 
@@ -791,6 +800,7 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `ED4ALL_OBJECTIVE_DEDUP_LEXICAL_COSINE` | `0.78` | W2 Defect E satellite — centroid-cosine floor for a lexical merge edge (below the 0.88 single-link dedup threshold). |
 | `ED4ALL_OBJECTIVE_DEDUP_LEXICAL_JACCARD` | `0.60` | W2 Defect E satellite — best-grounded skill-signature Jaccard floor for a lexical merge edge (above PRONG-A's <0.34 distinctness band). |
 | `ED4ALL_OBJECTIVE_SPECIFICITY` | unset (off) | W2 Defect B — opt-in gate for the CO-statement specificity/vacuity validator (`objective_specificity` at course_planning; V1 content-residual vacuity + V2 vague-object + V3 source-token recall). Default off → byte-identical skip-with-pass. |
+| `ED4ALL_OBJECTIVE_SEED_SANITIZE` | unset (off) | W4 Defect C — exercise-apparatus seed sanitation (`lib/objectives/chunk_window.py::resolve_seed_sanitize`): strips apparatus lines/sentences from the RENDERED Pass-B window body + drops Pass-C survivors whose STATEMENT matches an apparatus marker (chunk_ids / citability untouched). Default off → byte-identical windows. **Operator note:** flipping this mid-course changes the window-render fingerprint, so window resume sidecars invalidate and those windows re-run on `--resume`. |
 | `ED4ALL_OBJECTIVE_SOURCE_BACKFILL` | unset (off) | I3 PRONG B — source-richness BACKFILL gate |
 | `ED4ALL_OBJECTIVE_BACKFILL_COVERAGE_TARGET` | `1.0` | I3 PRONG B coverage target: min fraction of content-bearing chunks the backfill drives toward. |
 | `ED4ALL_OBJECTIVE_BLOOM_RELEVEL` | unset (off) | Feature 1 — deterministic Bloom-level relevel (re-derive a mislabelled CO/TO `bloom_level` from its main verb's canonical level; statements never change). |
@@ -812,6 +822,7 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `ED4ALL_STAGE_MODE` | `symlink` | How `stage_dart_outputs` materialises DART HTML (copy / symlink / hardlink). |
 | `ED4ALL_STATE_RUNS_DIR` | `<repo>/state/runs/` | State-runs directory |
 | `ED4ALL_STRUCTURE_EXTRACT_GUARDS` | unset (off) | SemantiK structure-fidelity Package 1+3 — DPUB-ARIA article-path continuation-merge / headingless-wrapper grouping / noncontent+numbered-apparatus heading filter / structureDiagnostics sanity on the extractor (byte-identical off). |
+| `ED4ALL_STRUCTURE_OUTLINE_ANCHOR` | on-when-guards-on | SemantiK extractor outline-anchored section alignment (`lib/semantic_structure_extractor/semantic_structure_extractor.py`): aligns built sections to the chapter-outline / ToC `N.M` declarations with an ordinal-union harvest so scan-split sections re-fuse to their declared section. Opt-out: inert unless `ED4ALL_STRUCTURE_EXTRACT_GUARDS` is on (only the guarded path reaches it), then default ON → set falsey for byte-identical Package-1 chapters. |
 | `ED4ALL_TO_BACKLINK_FLOOR` | `0.45` cosine / `0.10` token | WS2 dual weak-link floor for the deterministic CO→TO backlink |
 | `ED4ALL_TO_BACKLINK_REASSIGN` | unset (off) | M5 Fix A anti-junk-drawer reassignment + validator-parity scoring for the CO→TO backlink |
 | `ED4ALL_TO_CLUSTER_K` | `0` (auto) | WS1.1 FIXED target-K for **bottom-up TO derivation** Ward agglomerative clustering |
@@ -825,6 +836,10 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `ED4ALL_TO_ALLOW_SINGLETON_TO` | unset (off → singleton TOs dissolved) | Anti-hallucinated-TO backstop — the OPT-OUT for the unconditional `dissolve_singletons` pass |
 | `ED4ALL_TO_MIN_CLUSTERS` | `3` | Tiny-course floor for the `dissolve_singletons` backstop |
 | `ED4ALL_TO_SOURCE_GROUNDING` | unset (off) | W7.5 opt-in gate for the TERMINAL-objective source-grounding validator |
+| `ED4ALL_TO_CHAPTER_ANCHOR` | unset (off) | W3 Defect A master gate — chapter-anchored TO derivation (one DART module → one terminal objective by cited-chunk plurality) instead of bottom-up statement clustering. Default off → bottom-up path unchanged. |
+| `ED4ALL_TO_CHAPTER_ANCHOR_REORDER` | on-when-master-on | W3 Defect A §6 satellite — stable book-order CO re-sort (by module order + in-module position) BEFORE the week slice, so ceil-stride weeks are chapter-contiguous even without `ED4ALL_WEEK_TO_GROUPS`. Only the falsey tokens disable it. |
+| `ED4ALL_TO_CHAPTER_MIN_MODULES` | `2` | W3 Defect A satellite — module-count floor below which anchor mode degrades to bottom-up (a monolithic single-HTML corpus can't be anchored). |
+| `ED4ALL_TO_CHAPTER_MIN_CO_COVERAGE` | `0.80` | W3 Defect A satellite — min fraction of COs that must resolve ≥1 module from their own cited chunks for anchor mode to fire (else degrade to bottom-up). |
 | `ED4ALL_TRAINING_CAPTURES_DIR` | `<repo>/training-captures/` | Overrides the legacy decision-capture mirror root (`training-captures/`). |
 | `ED4ALL_VALIDATOR_FAIL_CLOSED_ON_OOM` | unset (off) | W2.1 in-gate CUDA OOM surfaces as a `VALIDATOR_OOM` warning; truthy ⇒ the OOM fails the gate closed. |
 | `ED4ALL_CALIB_EXTRA_CORPORA` | unset (off) | W8.3 multi-corpus discovery pointer for the calibration harness |
