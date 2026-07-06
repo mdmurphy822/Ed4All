@@ -27,6 +27,7 @@ The helpers are PURE (no provider dep, no env reads beyond the caller-supplied
 from __future__ import annotations
 
 import math
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath, PureWindowsPath
@@ -283,6 +284,124 @@ def _allowed_id_reserve_tokens(chunk_ids: List[str]) -> int:
     return estimate_tokens(joined)
 
 
+# ---------------------------------------------------------------------------
+# Defect C — exercise-apparatus seed sanitation (flag-gated window render prep)
+# ---------------------------------------------------------------------------
+#: ``ED4ALL_OBJECTIVE_SEED_SANITIZE`` (default OFF). When on, the RENDERED
+#: window body fed to the 7B synthesizer is stripped of exercise-/practice-
+#: apparatus lines & sentences so a non-instructional banner ("In the following
+#: exercises…") never SEEDS an objective. chunk_ids / citability / the chunkset
+#: itself are UNTOUCHED — only the prompt render text changes. Because the window
+#: chunk bodies feed ``_stage2_window_fingerprint``, flipping the flag flips the
+#: fingerprint, so a stale per-window resume sidecar correctly invalidates.
+#: Default OFF ⇒ byte-identical windows (proved by the ``to_dict()`` regression).
+_SEED_SANITIZE_ENV = "ED4ALL_OBJECTIVE_SEED_SANITIZE"
+_SEED_SANITIZE_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+#: Render placeholder for a wholly-apparatus chunk (heading kept, body replaced).
+APPARATUS_SENTINEL = "[practice exercises — not instructional prose]"
+
+#: Sentence splitter (mirrors the lightweight boundary heuristic used elsewhere).
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def resolve_seed_sanitize(value: Optional[bool] = None) -> bool:
+    """Resolve the ``ED4ALL_OBJECTIVE_SEED_SANITIZE`` gate (default OFF).
+
+    Explicit arg > env. Truthy tokens ``1``/``true``/``yes``/``on`` (any case)
+    enable; falsey / garbage / unset → off (parse-with-fallback, mirroring the
+    stage-2 flag resolvers). Read at window-build time so flipping the flag
+    between runs re-derives the render (and thus the fingerprint).
+    """
+    if value is not None:
+        return bool(value)
+    return (
+        os.environ.get(_SEED_SANITIZE_ENV, "").strip().lower()
+        in _SEED_SANITIZE_TRUTHY
+    )
+
+
+def _chunk_heading(chunk: Dict[str, Any]) -> str:
+    """Best-effort display heading for a chunk (for the wholly-apparatus render).
+
+    Prefers a top-level ``heading`` / ``section_heading`` / ``title``; falls back
+    to ``source.section_heading`` (the chunk-v4 relayed heading). Empty when none.
+    """
+    if not isinstance(chunk, dict):
+        return ""
+    for key in ("heading", "section_heading", "title"):
+        val = chunk.get(key)
+        if val:
+            return str(val).strip()
+    source = chunk.get("source")
+    if isinstance(source, dict):
+        val = source.get("section_heading")
+        if val:
+            return str(val).strip()
+    return ""
+
+
+def _wholly_apparatus_render(chunk: Dict[str, Any]) -> str:
+    """Render a wholly-apparatus chunk as ``heading + sentinel`` (or bare sentinel)."""
+    heading = _chunk_heading(chunk)
+    if heading:
+        return f"{heading}\n{APPARATUS_SENTINEL}"
+    return APPARATUS_SENTINEL
+
+
+def _strip_apparatus_from_body(text: str, profile: Any) -> str:
+    """Drop apparatus lines / sentences from ``text``, preserving surrounding prose.
+
+    Line-level first (a line that is wholly an apparatus banner is dropped),
+    then sentence-level within each surviving line (an apparatus sentence embedded
+    in a prose line is dropped, the prose kept). Returns the stripped body
+    (may be ``""`` when every line/sentence was apparatus — caller sentinels it).
+    """
+    kept_lines: List[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        sentences = _SENTENCE_SPLIT_RE.split(stripped)
+        kept = [
+            s.strip()
+            for s in sentences
+            if s.strip() and not profile.text_has_marker(s)
+        ]
+        if kept:
+            kept_lines.append(" ".join(kept))
+    return "\n".join(kept_lines).strip()
+
+
+def _sanitize_window_body(chunk: Dict[str, Any], body: str, profile: Any) -> str:
+    """Flag-on sanitation of ONE chunk's rendered body (structural first, lexical second).
+
+    Detection order mirrors ``citation_reselect._is_exercise_like_chunk``:
+
+    * structural signal ``True`` (``composite_unit == "exercise_set"`` /
+      ``unit_roles ∋ readiness_check/answer_key/practice``) → wholly apparatus →
+      ``heading + sentinel``;
+    * structural signal ``False`` (declared instructional prose — wins over
+      apparatus) → body returned unchanged (trust the metadata, no lexical strip);
+    * structural signal ``None`` (no pedagogical metadata) → lexical line/sentence
+      strip; if nothing survives, the chunk was wholly apparatus → sentinel.
+    """
+    signal = profile.structural_signal(chunk)
+    if signal is False:
+        return body
+    if signal is True:
+        return _wholly_apparatus_render(chunk)
+    # No pedagogical metadata → lexical. Fast path: no marker anywhere in the
+    # body leaves it byte-identical (the vendor-control invariant — a marker-free
+    # corpus is never re-flowed), so sentence surgery runs only on a real hit.
+    if not profile.text_has_marker(body):
+        return body
+    remaining = _strip_apparatus_from_body(body, profile)
+    if not remaining:
+        return _wholly_apparatus_render(chunk)
+    return remaining
+
+
 def group_chunks_into_windows(
     chapter: Dict[str, Any],
     chunks_for_chapter_list: List[Dict[str, Any]],
@@ -293,6 +412,7 @@ def group_chunks_into_windows(
     max_tokens: int,
     join_method: str = "sourceid",
     response_reserve: Optional[int] = None,
+    sanitize_seeds: Optional[bool] = None,
 ) -> List[ChunkWindow]:
     """Greedy-pack a chapter's chunks into windows under the ``num_ctx`` budget.
 
@@ -332,6 +452,16 @@ def group_chunks_into_windows(
     # yields at least one chunk per window (single-chunk-window contract).
     base_available = max(1, base_available)
 
+    # Defect-C apparatus-seed sanitation of the RENDERED body (flag-gated,
+    # default OFF ⇒ this branch is inert and the windows are byte-identical).
+    # The lexicon profile is the union of every profile (over-match is safe —
+    # only render text is edited, never chunk ids / citability).
+    _sanitize = resolve_seed_sanitize(sanitize_seeds)
+    _profile = None
+    if _sanitize:
+        from lib.objectives.apparatus_lexicon import compile_profile
+        _profile = compile_profile()
+
     # Pre-truncate per-chunk bodies + precompute rendered lines / token costs.
     prepared: List[Tuple[str, str, int]] = []  # (chunk_id, body, line_tokens)
     for chunk in chunks_for_chapter_list:
@@ -339,6 +469,10 @@ def group_chunks_into_windows(
         if not cid:
             continue
         body = _chunk_body(chunk)
+        if _sanitize and _profile is not None:
+            # Strip apparatus BEFORE the per-chunk cap so a wholly-apparatus
+            # chunk collapses to the short sentinel and frees window budget.
+            body = _sanitize_window_body(chunk, body, _profile)
         if len(body) > MAX_CHUNK_BODY_CHARS:
             body = body[:MAX_CHUNK_BODY_CHARS]
         line_tokens = estimate_tokens(_render_chunk_line(cid, body))

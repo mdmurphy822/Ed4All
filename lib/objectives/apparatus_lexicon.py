@@ -101,6 +101,16 @@ _MARKER_GROUPS = (
     "glyph_markers",
 )
 
+#: Subset safe to match against an OBJECTIVE STATEMENT. ``callout_labels``
+#: is excluded: labels like "how to" / "learning objectives" are ordinary
+#: English inside a legitimate CO statement, so matching them there would
+#: drop real objectives. Callouts still count for render/seed-body scans.
+_STATEMENT_MARKER_GROUPS = (
+    "lo_boilerplate",
+    "apparatus_banners",
+    "glyph_markers",
+)
+
 
 def _phrase_to_regex(phrase: str) -> re.Pattern:
     """Compile a marker phrase to a case-insensitive regex.
@@ -130,6 +140,7 @@ class CompiledProfile:
 
     profile_spec: str
     marker_regexes: Tuple[re.Pattern, ...]
+    statement_marker_regexes: Tuple[re.Pattern, ...]
     lo_boilerplate_regexes: Tuple[re.Pattern, ...]
     apparatus_units: frozenset
     apparatus_roles: frozenset
@@ -182,6 +193,17 @@ class CompiledProfile:
         if not text:
             return False
         return any(rgx.search(text) for rgx in self.marker_regexes)
+
+    def statement_has_apparatus_marker(self, text: str) -> bool:
+        """Whether an objective STATEMENT carries an apparatus marker.
+
+        Scans only the ``_STATEMENT_MARKER_GROUPS`` subset — callout labels
+        ("how to", "learning objectives", …) are legitimate statement English
+        and never flag here.
+        """
+        if not text:
+            return False
+        return any(rgx.search(text) for rgx in self.statement_marker_regexes)
 
     def leads_with_lo_boilerplate(self, text: str) -> bool:
         """Whether ``text`` (after leading whitespace) STARTS with LO boilerplate."""
@@ -241,6 +263,8 @@ def compile_profile(profile_spec: Optional[str] = None) -> CompiledProfile:
 
     marker_seen: set = set()
     markers: List[re.Pattern] = []
+    stmt_seen: set = set()
+    stmt_markers: List[re.Pattern] = []
     lo_seen: set = set()
     lo_regexes: List[re.Pattern] = []
     for key in keys:
@@ -252,6 +276,13 @@ def compile_profile(profile_spec: Optional[str] = None) -> CompiledProfile:
                     continue
                 marker_seen.add(norm)
                 markers.append(_phrase_to_regex(phrase))
+        for group in _STATEMENT_MARKER_GROUPS:
+            for phrase in prof.get(group) or []:
+                norm = str(phrase).strip().lower()
+                if not norm or norm in stmt_seen:
+                    continue
+                stmt_seen.add(norm)
+                stmt_markers.append(_phrase_to_regex(phrase))
         for phrase in prof.get("lo_boilerplate") or []:
             norm = str(phrase).strip().lower()
             if not norm or norm in lo_seen:
@@ -269,6 +300,7 @@ def compile_profile(profile_spec: Optional[str] = None) -> CompiledProfile:
     return CompiledProfile(
         profile_spec=profile_spec or "*",
         marker_regexes=tuple(markers),
+        statement_marker_regexes=tuple(stmt_markers),
         lo_boilerplate_regexes=tuple(lo_regexes),
         apparatus_units=_fs("apparatus_units"),
         apparatus_roles=_fs("apparatus_roles"),

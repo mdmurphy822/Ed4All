@@ -5416,6 +5416,80 @@ def _append_concept_window_checkpoint(
     )
 
 
+def _drop_apparatus_seeded_candidates(
+    pool: List[Dict[str, Any]],
+    capture: Optional[Any] = None,
+) -> List[Dict[str, Any]]:
+    """Defect-C backstop: drop Pass-C survivors whose STATEMENT is apparatus text.
+
+    A candidate objective whose ``statement`` matches any exercise-/practice-
+    apparatus marker from the shared lexicon profile (``lib/objectives/
+    apparatus_lexicon.compile_profile``) is a seed the window sanitation missed
+    (or a chapter-fallback candidate that never saw window prep). Drop it
+    pre-dedup so a non-instructional banner never becomes a canonical CO.
+
+    keep-≥1 protection: when EVERY candidate is flagged, the longest-statement
+    one is rescued so the pool is never emptied (the deterministic synthesizer
+    fallback only fires on a genuinely empty pool). Order is preserved. Emits one
+    ``content_selection`` decision with dynamic counts. Caller gates on the flag.
+    """
+    if not pool:
+        return pool
+    from lib.objectives.apparatus_lexicon import compile_profile
+
+    profile = compile_profile()
+    flagged: set = set()
+    for i, co in enumerate(pool):
+        if not isinstance(co, dict):
+            continue
+        stmt = str(co.get("statement") or "").strip()
+        # Statement-scoped matcher: callout labels ("how to", "learning
+        # objectives") are legitimate statement English and never flag.
+        if stmt and profile.statement_has_apparatus_marker(stmt):
+            flagged.add(i)
+    if not flagged:
+        return pool
+    # keep-≥1: if all candidates are flagged, rescue the longest-statement one.
+    if len(flagged) == len(pool):
+        rescue_i = max(
+            range(len(pool)),
+            key=lambda i: len(str(pool[i].get("statement") or "")),
+        )
+        flagged.discard(rescue_i)
+    kept = [co for i, co in enumerate(pool) if i not in flagged]
+    dropped_count = len(flagged)
+    if dropped_count and capture is not None:
+        try:
+            capture.log_decision(
+                decision_type="content_selection",
+                decision=(
+                    f"apparatus_seed_backstop:dropped {dropped_count} of "
+                    f"{len(pool)} Pass-C survivor objective(s)"
+                ),
+                rationale=(
+                    "Defect-C apparatus-seed backstop: "
+                    f"{dropped_count} of {len(pool)} Pass-C survivor objective "
+                    "statement(s) matched an exercise-/practice-apparatus marker "
+                    "from the shared lexicon profile (e.g. 'In the following "
+                    "exercises' / 'Practice Makes Perfect' / readiness-quiz "
+                    "banners / answer-key glyphs) and were dropped pre-dedup so a "
+                    "non-instructional exercise banner never seeds a canonical "
+                    "CO. keep->=1 protection retained the longest-statement "
+                    "candidate when every survivor was flagged so the pool is "
+                    "never emptied."
+                ),
+                alternatives_considered=[
+                    "keep the apparatus-seeded survivors (a 'In the following "
+                    "exercises' banner becomes a vacuous canonical CO)",
+                    "drop unconditionally (risks emptying a window's pool when "
+                    "every survivor is apparatus text)",
+                ],
+            )
+        except Exception:  # noqa: BLE001 — capture must not break synthesis
+            pass
+    return kept
+
+
 async def _run_stage2_window_synthesis(
     *,
     provider: Any,
@@ -5455,6 +5529,7 @@ async def _run_stage2_window_synthesis(
     from lib.objectives.chunk_window import (
         chunks_for_chapter,
         group_chunks_into_windows,
+        resolve_seed_sanitize,
     )
     from lib.objectives.objective_grounding import ground_candidates
     from lib.objectives.objective_dedup import dedup_candidates
@@ -5874,6 +5949,14 @@ async def _run_stage2_window_synthesis(
     else:
         _co_pool = list(ground.grounded)
         ungrounded_dropped = ground.dropped_count
+
+    # ---- Defect C: apparatus-seed backstop (flag-gated, pre-dedup). ---
+    # Drop any Pass-C survivor whose STATEMENT is exercise-/practice-apparatus
+    # text the window sanitation missed (or a chapter-fallback candidate that
+    # never saw window prep). keep-≥1; decision-captured. Same
+    # ``ED4ALL_OBJECTIVE_SEED_SANITIZE`` flag as the window render sanitation.
+    if resolve_seed_sanitize():
+        _co_pool = _drop_apparatus_seeded_candidates(_co_pool, capture=capture)
 
     # ---- Build the embed client once (Pass D + Pass E backlink). ------
     _embed = None

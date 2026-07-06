@@ -200,3 +200,29 @@ def test_legacy_patterns_unchanged():
         "::", "ⓐ", "ⓑ", "ⓒ", "ⓓ", "ⓔ",
         "BE PREPARED", "TRY IT", "HOW TO", "LEARNING OBJECTIVES",
     )
+
+
+def test_statement_matcher_excludes_callout_labels():
+    """Statement-scoped matching must not flag ordinary statement English.
+
+    ``callout_labels`` phrases ("how to", "learning objectives") are common
+    inside legitimate CO statements; only banners/boilerplate/glyphs flag.
+    """
+    from lib.objectives.apparatus_lexicon import compile_profile
+
+    profile = compile_profile()
+    # Callout tokens: full-text matcher flags, statement matcher must not.
+    for stmt in (
+        "Explain how to solve a two-step linear equation.",
+        "Identify the learning objectives addressed by each module.",
+    ):
+        assert profile.text_has_marker(stmt)
+        assert not profile.statement_has_apparatus_marker(stmt)
+    # Banners / boilerplate / glyphs flag in BOTH scopes.
+    for stmt in (
+        "In the following exercises, solve each system.",
+        "By the end of this section you can factor trinomials.",
+        "Simplify ⓐ the first expression.",
+    ):
+        assert profile.text_has_marker(stmt)
+        assert profile.statement_has_apparatus_marker(stmt)

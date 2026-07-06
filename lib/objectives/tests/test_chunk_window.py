@@ -14,14 +14,15 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.objectives.chunk_window import (  # noqa: E402
+    APPARATUS_SENTINEL,
     MAX_CHUNK_BODY_CHARS,
     chunks_for_chapter,
     group_chunks_into_windows,
 )
 
 
-def _chunk(cid: str, slug: str, body: str) -> dict:
-    return {
+def _chunk(cid: str, slug: str, body: str, **meta) -> dict:
+    c = {
         "id": cid,
         "text": body,
         "source": {
@@ -30,6 +31,8 @@ def _chunk(cid: str, slug: str, body: str) -> dict:
             ]
         },
     }
+    c.update(meta)
+    return c
 
 
 def _chapter(cid: str, source_file: str, chapter_text: str = "x") -> dict:
@@ -150,3 +153,168 @@ def test_chunks_for_chapter_order_fallback():
     # Equal chapter_text lengths → 2 chunks each, disjoint, in order.
     assert [c["id"] for c in m1] == ["c0", "c1"]
     assert [c["id"] for c in m2] == ["c2", "c3"]
+
+
+# ---------------------------------------------------------------------------
+# Defect C — exercise-apparatus seed sanitation (ED4ALL_OBJECTIVE_SEED_SANITIZE)
+# ---------------------------------------------------------------------------
+_SANITIZE_KW = dict(
+    num_ctx=2048,
+    system_prompt=_SYS_PROMPT,
+    draft_block=_DRAFT,
+    max_tokens=128,
+)
+
+
+def _window_texts(windows) -> str:
+    return "\n".join(c["text"] for w in windows for c in w.chunks)
+
+
+def test_structural_apparatus_renders_sentinel():
+    """composite_unit=='exercise_set' → wholly-apparatus render (heading+sentinel)."""
+    chapter = _chapter("ch1", "one.html")
+    chunk = _chunk(
+        "e1", "one",
+        "1. Solve x+2=5. 2. Solve 3y=12. 3. Simplify 6/8.",
+        composite_unit="exercise_set",
+        heading="Section Exercises",
+    )
+    windows = group_chunks_into_windows(
+        chapter, [chunk], sanitize_seeds=True, **_SANITIZE_KW
+    )
+    text = windows[0].chunks[0]["text"]
+    assert text == f"Section Exercises\n{APPARATUS_SENTINEL}"
+    assert "Solve x+2=5" not in text
+
+
+def test_structural_role_apparatus_renders_sentinel_no_heading():
+    """unit_roles ∋ practice with no heading → bare sentinel."""
+    chapter = _chapter("ch1", "one.html")
+    chunk = _chunk(
+        "e1", "one", "Try these practice items now.",
+        unit_roles=["practice"],
+    )
+    windows = group_chunks_into_windows(
+        chapter, [chunk], sanitize_seeds=True, **_SANITIZE_KW
+    )
+    assert windows[0].chunks[0]["text"] == APPARATUS_SENTINEL
+
+
+def test_structural_instructional_wins_body_unchanged():
+    """composite_unit=='worked_example' (instructional) → body untouched even flag-on."""
+    chapter = _chapter("ch1", "one.html")
+    body = "In the following exercises we demonstrate the addition of fractions."
+    chunk = _chunk("w1", "one", body, composite_unit="worked_example")
+    windows = group_chunks_into_windows(
+        chapter, [chunk], sanitize_seeds=True, **_SANITIZE_KW
+    )
+    # Structural 'instructional' wins over the lexical apparatus phrase.
+    assert windows[0].chunks[0]["text"] == body
+
+
+def test_lexical_line_strip_preserves_surrounding_prose():
+    """No metadata → lexical strip drops the apparatus line, keeps the prose lines."""
+    chapter = _chapter("ch1", "one.html")
+    body = (
+        "Fractions represent parts of a whole.\n"
+        "In the following exercises, add the fractions.\n"
+        "A denominator is the bottom number of a fraction."
+    )
+    chunk = _chunk("p1", "one", body)  # no pedagogical metadata
+    windows = group_chunks_into_windows(
+        chapter, [chunk], sanitize_seeds=True, **_SANITIZE_KW
+    )
+    text = windows[0].chunks[0]["text"]
+    assert "Fractions represent parts of a whole." in text
+    assert "A denominator is the bottom number of a fraction." in text
+    assert "following exercises" not in text
+    assert APPARATUS_SENTINEL not in text  # prose survived → no sentinel
+
+
+def test_lexical_wholly_apparatus_sentinel():
+    """A no-metadata chunk that is ALL apparatus lexically → heading + sentinel."""
+    chapter = _chapter("ch1", "one.html")
+    body = "In the following exercises, simplify.\nPractice Makes Perfect"
+    chunk = _chunk("p1", "one", body, heading="Exercises")
+    windows = group_chunks_into_windows(
+        chapter, [chunk], sanitize_seeds=True, **_SANITIZE_KW
+    )
+    assert windows[0].chunks[0]["text"] == f"Exercises\n{APPARATUS_SENTINEL}"
+
+
+def test_flag_off_byte_identical_to_dict(monkeypatch):
+    """Default off (and explicit False) leave windows byte-identical (no sanitation)."""
+    monkeypatch.delenv("ED4ALL_OBJECTIVE_SEED_SANITIZE", raising=False)
+    chapter = _chapter("ch1", "one.html")
+    chunks = [
+        _chunk("e1", "one", "In the following exercises, add 1/2 + 1/3.",
+               composite_unit="exercise_set", heading="Exercises"),
+        _chunk("p1", "one", "A fraction names part of a whole."),
+    ]
+    off_default = group_chunks_into_windows(chapter, chunks, **_SANITIZE_KW)
+    off_explicit = group_chunks_into_windows(
+        chapter, chunks, sanitize_seeds=False, **_SANITIZE_KW
+    )
+    assert [w.to_dict() for w in off_default] == [
+        w.to_dict() for w in off_explicit
+    ]
+    # Nothing stripped when off: apparatus text still present, no sentinel.
+    joined = _window_texts(off_default)
+    assert "following exercises" in joined
+    assert APPARATUS_SENTINEL not in joined
+
+
+def test_env_flag_enables_sanitation(monkeypatch):
+    """The env var (no explicit arg) drives sanitation — mirrors the run path."""
+    monkeypatch.setenv("ED4ALL_OBJECTIVE_SEED_SANITIZE", "true")
+    chapter = _chapter("ch1", "one.html")
+    chunk = _chunk("e1", "one", "Exercises follow.", composite_unit="exercise_set")
+    windows = group_chunks_into_windows(chapter, [chunk], **_SANITIZE_KW)
+    assert APPARATUS_SENTINEL in windows[0].chunks[0]["text"]
+
+
+def test_fingerprint_flips_on_flag():
+    """The stage-2 window fingerprint changes when sanitation is on (sidecar invalidation)."""
+    from MCP.tools.pipeline_tools import _stage2_window_fingerprint
+
+    chapter = _chapter("ch1", "one.html")
+    chunk = _chunk(
+        "e1", "one", "1. Solve x=1. 2. Solve x=2.",
+        composite_unit="exercise_set", heading="Exercises",
+    )
+    off = group_chunks_into_windows(
+        chapter, [chunk], sanitize_seeds=False, **_SANITIZE_KW
+    )[0]
+    on = group_chunks_into_windows(
+        chapter, [chunk], sanitize_seeds=True, **_SANITIZE_KW
+    )[0]
+
+    def _fp(w):
+        return _stage2_window_fingerprint(
+            chunk_ids=w.chunk_ids,
+            chunks=w.chunks,
+            draft_block=_DRAFT,
+            model="m-7b",
+            num_ctx=2048,
+            system_prompt=_SYS_PROMPT,
+        )
+
+    assert _fp(off) != _fp(on)
+
+
+def test_vendor_control_zero_strips_on_marker_free_corpus():
+    """A marker-free corpus is byte-identical flag-on vs flag-off (no false strips)."""
+    chapter = _chapter("ch1", "one.html")
+    chunks = [
+        _chunk(f"c{i}", "one",
+               f"Topic {i} explains a clean instructional idea about the subject.")
+        for i in range(4)
+    ]
+    off = group_chunks_into_windows(
+        chapter, chunks, sanitize_seeds=False, **_SANITIZE_KW
+    )
+    on = group_chunks_into_windows(
+        chapter, chunks, sanitize_seeds=True, **_SANITIZE_KW
+    )
+    assert [w.to_dict() for w in off] == [w.to_dict() for w in on]
+    assert APPARATUS_SENTINEL not in _window_texts(on)
