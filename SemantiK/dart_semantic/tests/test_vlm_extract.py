@@ -442,10 +442,17 @@ def test_system_directive_forbids_image_markdown():
     assert "figure:" in directive
 
 
+def test_system_directive_forbids_raw_img_html():
+    # The directive ALSO forbids raw <img> HTML tags (the census found the VLM
+    # emitting raw <img src="https://…"> as literal text in table cells).
+    directive = vlm_extract._SYSTEM_DIRECTIVE.lower()
+    assert "<img" in directive
+
+
 def test_prompt_version_bumped():
-    # Bumped 1 -> 2 to invalidate the per-page markdown disk cache keyed on
-    # prompt_version (the old prompt could have cached fabricated-image pages).
-    assert vlm_extract.PROMPT_VERSION >= 2
+    # Bumped 2 -> 3 to invalidate the per-page markdown disk cache keyed on
+    # prompt_version (the old prompt could have cached fabricated raw-<img> pages).
+    assert vlm_extract.PROMPT_VERSION >= 3
 
 
 def _run_extract_shared(monkeypatch, td, *, requests_obj, provider_local=True):

@@ -40,6 +40,25 @@ def test_residual_markdown_image_fails():
     assert out.passed is False
 
 
+def test_escaped_external_img_tag_fails():
+    # The VLM emits a raw <img> tag as literal text in a table cell; the HTML
+    # path ESCAPES it, so the unescaped _EXTERNAL_SRC_RE never sees it. The
+    # escaped-shape check must still fail the document closed.
+    html = (
+        "<main><table><tr><td>"
+        "&lt;img src=&quot;https://i.imgur.com/1.png&quot;&gt;"
+        "</td></tr></table></main>"
+    )
+    out = _check_no_external_refs(html)
+    assert out.check is GateCheck.NO_EXTERNAL_REFS
+    assert out.passed is False
+
+
+def test_escaped_external_img_tag_single_quote_entity_fails():
+    html = "<main>&lt;img src=&#39;http://evil.example/x.png&#39; /&gt;</main>"
+    assert _check_no_external_refs(html).passed is False
+
+
 def test_self_contained_doc_passes():
     html = (
         "<main><h1>Title</h1><p>Body prose with inline math $x^2$.</p>"

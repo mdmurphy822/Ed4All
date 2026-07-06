@@ -49,6 +49,7 @@ from lib.ontology.taxonomy import (
     get_lexicon_apparatus_names,
     get_lexicon_apparatus_whitelist,
     get_lexicon_interior_apparatus_names,
+    get_lexicon_numbered_apparatus_names,
     strip_leading_ordinal,
 )
 
@@ -279,6 +280,24 @@ def is_apparatus_heading(text: str) -> bool:
 _APPARATUS_NAME_LOWER: frozenset[str] = frozenset(
     n.strip().lower() for n in APPARATUS_HEADING_NAMES
 )
+# BARE apparatus words that are apparatus ONLY when ordinal-prefixed — a printed
+# per-section drill banner "N.M Exercises" is furniture, but a STANDALONE
+# "Exercises" is a real end-of-chapter section heading. The lexicon apparatus
+# display names resolve to ['Chapter Review', 'Key Concepts', 'Key Terms',
+# 'Practice Test', 'Review Exercises'] — no bare "Exercises" — so the numbered
+# banner slipped through as a real heading (66 "N.M Exercises" leaked into 62
+# chunk section_headings on the real corpus). This SEPARATE data-driven key
+# (schemas/taxonomies/semantik_lexicon.json::numbered_apparatus_names) is
+# consumed ONLY here (the numbered variant), NEVER by is_apparatus_heading — so
+# the standalone/leading-split behavior of bare "Exercises" is unchanged.
+_NUMBERED_ONLY_APPARATUS_LOWER: frozenset[str] = frozenset(
+    n.strip().lower() for n in get_lexicon_numbered_apparatus_names()
+)
+# The union the numbered-banner match tests the ordinal-stripped remainder
+# against: every standalone apparatus display name PLUS the numbered-only words.
+_NUMBERED_APPARATUS_NAME_LOWER: frozenset[str] = (
+    _APPARATUS_NAME_LOWER | _NUMBERED_ONLY_APPARATUS_LOWER
+)
 
 
 def is_numbered_apparatus_heading(text: str) -> bool:
@@ -286,9 +305,11 @@ def is_numbered_apparatus_heading(text: str) -> bool:
 
     True iff ``text`` begins with an ``N`` / ``N.M`` / ``N.M.K`` ordinal AND
     the ordinal-stripped remainder is exactly one of
-    :data:`APPARATUS_HEADING_NAMES` (case-insensitive). A heading with no
-    leading ordinal, or whose stripped remainder is not an apparatus name,
-    returns ``False``.
+    :data:`APPARATUS_HEADING_NAMES` OR a numbered-only apparatus word
+    (:data:`_NUMBERED_ONLY_APPARATUS_LOWER` — e.g. bare ``"Exercises"``), matched
+    case-insensitively. A heading with no leading ordinal (a bare
+    ``"Exercises"``), or whose stripped remainder is not an apparatus name,
+    returns ``False`` — so ``is_apparatus_heading('Exercises')`` is unaffected.
     """
     t = (text or "").strip()
     if not t:
@@ -296,7 +317,7 @@ def is_numbered_apparatus_heading(text: str) -> bool:
     stripped = strip_leading_ordinal(t).strip()
     if not stripped or stripped == t:
         return False  # no leading ordinal -> not the numbered-banner case
-    return stripped.lower() in _APPARATUS_NAME_LOWER
+    return stripped.lower() in _NUMBERED_APPARATUS_NAME_LOWER
 
 
 # ---------------------------------------------------------------------------

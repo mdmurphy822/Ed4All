@@ -20,7 +20,7 @@ from lib.semantik.adapter import (
     _AdapterChapter,
     normalize_cascade_to_ed4all,
 )
-from lib.semantik.math_fold import strip_markdown_images
+from lib.semantik.math_fold import strip_literal_img_tags, strip_markdown_images
 
 
 # --- unit: strip_markdown_images ---------------------------------------------
@@ -68,6 +68,70 @@ def test_strip_idempotent():
 def test_strip_noop_without_image():
     text = "Just prose, a http://cnx.org/x link, and $x^2$ math."
     assert strip_markdown_images(text, html=True) == text
+
+
+# --- unit: strip_literal_img_tags (raw/escaped <img> tag text) ----------------
+def test_literal_escaped_img_external_html_placeholder():
+    # The VLM emits a raw <img> tag as literal text in a table cell; the HTML
+    # path ESCAPES it. The markdown regex never matched it — this strip does.
+    out = strip_literal_img_tags(
+        "cell &lt;img src=&quot;https://i.imgur.com/1.png&quot; /&gt; end",
+        html=True,
+    )
+    assert "imgur" not in out
+    assert "&lt;img" not in out and "<img" not in out
+    assert 'class="dart-figure-notation"' in out
+
+
+def test_literal_unescaped_img_in_raw_text_plain():
+    # Unescaped literal <img> in raw_text (plain mode) → bare [figure:] token.
+    out = strip_literal_img_tags(
+        "x <img src=https://i.imgur.com/1.png> y", html=False
+    )
+    assert "imgur" not in out and "<img" not in out
+    assert "[figure:" in out
+
+
+def test_literal_img_table_cell_escaped_preserves_alt():
+    out = strip_literal_img_tags(
+        "&lt;img alt=&quot;Graph of f&quot; "
+        "src=&quot;https://i.imgur.com/1.png&quot;&gt;",
+        html=True,
+    )
+    assert 'aria-label="Graph of f (image not recoverable)"' in out
+    assert "imgur" not in out
+
+
+def test_literal_img_single_quote_and_selfclosing():
+    a = strip_literal_img_tags("<img src='https://example.com/a.png'>", html=True)
+    b = strip_literal_img_tags("<img src=https://h/x.png />", html=True)
+    assert "example.com" not in a and 'class="dart-figure-notation"' in a
+    assert "://h/x.png" not in b and "<img" not in b
+
+
+def test_literal_img_bare_fabricated_filename():
+    out = strip_literal_img_tags('<img src="image.png" alt="Fig 2">', html=True)
+    assert "image.png" not in out
+    assert 'aria-label="Fig 2 (image not recoverable)"' in out
+
+
+def test_literal_img_legit_local_src_untouched():
+    # A REAL DOM figure <img> with a local {stem}_figures/… src is NOT stripped —
+    # this pass only removes fabricated external / bare-filename tag text.
+    legit = '<img src="doc-ch01_figures/fig-3.png" alt="A chart">'
+    assert strip_literal_img_tags(legit, html=True) == legit
+
+
+def test_literal_img_empty_src_untouched():
+    assert strip_literal_img_tags('<img src="">', html=True) == '<img src="">'
+
+
+def test_literal_img_idempotent_and_noop():
+    once = strip_literal_img_tags('<img src="http://h/x.png">', html=True)
+    assert strip_literal_img_tags(once, html=True) == once
+    assert strip_literal_img_tags("just prose, no tag", html=True) == (
+        "just prose, no tag"
+    )
 
 
 # --- adapter integration ------------------------------------------------------
@@ -142,3 +206,25 @@ def test_adapter_cleans_sidecar_text():
     sec_text = out["synthesized_sidecar"]["sections"][0]["data"]["text"]
     assert "imgur" not in sec_text
     assert "![" not in sec_text
+
+
+def test_adapter_strips_escaped_literal_img_before_linkify():
+    # A table-cell literal <img> tag arrives ESCAPED in the HTML body; it must be
+    # stripped (no anchor minted from the fabricated URL) and the placeholder set.
+    out = _one_block_out(
+        "In cell &lt;img src=&quot;https://i.imgur.com/1.png&quot; /&gt; here"
+    )
+    html = out["html"]
+    assert "imgur" not in html
+    assert "&lt;img" not in html and "<img" not in html
+    assert "href=" not in html or "i.imgur" not in html
+    assert 'class="dart-figure-notation"' in html
+
+
+def test_adapter_literal_img_cleans_sidecar_text():
+    out = _one_block_out(
+        "row &lt;img src=&quot;https://i.imgur.com/1.png&quot;&gt; end"
+    )
+    sec_text = out["synthesized_sidecar"]["sections"][0]["data"]["text"]
+    assert "imgur" not in sec_text
+    assert "img" not in sec_text or "src" not in sec_text

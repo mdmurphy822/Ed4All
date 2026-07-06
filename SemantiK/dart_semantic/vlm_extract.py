@@ -61,7 +61,7 @@ logger = logging.getLogger(__name__)
 # Bumped when the transcription prompt changes (the per-page cache keys on this
 # int rather than hashing the whole directive). Mirrored by the whole-doc
 # extract-cache salt (``extract_shared_cached``) via the ``vlm_key`` term.
-PROMPT_VERSION = 2
+PROMPT_VERSION = 3
 
 # Validated tier-0 render geometry — a page renders at the OCR scale then
 # PIL-downscales to this max width before JPEG encode (a second render per page
@@ -216,7 +216,8 @@ _SYSTEM_DIRECTIVE = (
     "or display $$...$$). Reproduce prose VERBATIM. Do NOT summarize, explain, "
     "translate, or add commentary — output ONLY the page's Markdown "
     "transcription. Do NOT emit Markdown image syntax ![...](...) and do NOT "
-    "invent image URLs or file paths. For a figure or diagram that cannot be "
+    "emit raw HTML image tags <img ...> (in any form), and do NOT invent image "
+    "URLs or file paths. For a figure or diagram that cannot be "
     "transcribed as text, write a plain-text line beginning 'Figure:' "
     "describing it, with no link."
 )

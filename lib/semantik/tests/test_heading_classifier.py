@@ -274,6 +274,32 @@ def test_is_numbered_apparatus_heading_predicate():
     assert not nah("")
 
 
+def test_numbered_bare_exercises_demoted_apparatus_unchanged():
+    # FIX 2 — the lexicon apparatus display names carry no bare "Exercises", so
+    # "N.M Exercises" banners used to survive as headings. The separate
+    # numbered_apparatus_names lexicon key demotes the NUMBERED form ONLY, while
+    # is_apparatus_heading('Exercises') (the bare standalone) is UNCHANGED.
+    from lib.semantik.heading_classifier import (
+        is_apparatus_heading as ah,
+        is_numbered_apparatus_heading as nah,
+    )
+
+    # The bug the census found: numbered "N.M Exercises" now demotes.
+    assert nah("2.1 Exercises")
+    assert nah("10.3 Exercises")
+    # An existing apparatus display name is still caught (regression guard).
+    assert nah("3.4 Review Exercises")
+    # A real numbered section title is never demoted.
+    assert not nah("2.1 Real Title")
+    # CRITICAL: bare unnumbered "Exercises" is NOT a numbered banner, and the
+    # standalone is_apparatus_heading behavior for it is unchanged (still False,
+    # since "Exercises" is deliberately absent from apparatus_sections).
+    assert not nah("Exercises")
+    assert ah("Exercises") is False
+    # Sanity: a real bare apparatus display name still promotes via ah.
+    assert ah("Review Exercises") is True
+
+
 def test_adapter_demotes_numbered_apparatus_banner():
     ch = _AdapterChapter(
         title="Chapter 1 Foundations",

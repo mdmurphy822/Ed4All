@@ -87,6 +87,7 @@ from lib.semantik.math_fold import (
     sanitize_math_spans,
     separate_adjacent_math_spans,
     strip_latex_commands,
+    strip_literal_img_tags,
     strip_markdown_images,
     strip_tikz_figures,
     wrap_bare_math,
@@ -2475,6 +2476,32 @@ def _strip_markdown_images(chapters: Sequence[_AdapterChapter]) -> None:
                 )
 
 
+def _strip_literal_img_tags(chapters: Sequence[_AdapterChapter]) -> None:
+    r"""Strip VLM-fabricated LITERAL / ESCAPED ``<img>`` tag text across the IR.
+
+    Companion to :func:`_strip_markdown_images` for the RAW ``<img src="https://
+    …">`` tags the VLM emits as literal text inside table cells / prose — they
+    arrive ESCAPED (``&lt;img …&gt;``) or as plain literal text, so the markdown
+    regex never matches and :func:`_linkify_block_urls` would otherwise turn the
+    fabricated URL into a live ``<a href>``. Runs at the SAME seam (BEFORE the
+    linkifier). Only tags whose ``src`` is external / bare-fabricated are
+    replaced by the accessible ``.dart-figure-notation`` placeholder — a real
+    DOM figure ``<img>`` with a local ``{stem}_figures/…`` src is untouched.
+    Cleans HTML + ``raw_text`` / ``repaired_text`` so the fabricated URL reaches
+    neither the learner page nor the chunker / retrieval index.
+    """
+    for ch in chapters:
+        for block in ch.blocks:
+            if block.html:
+                block.html = strip_literal_img_tags(block.html, html=True)
+            if block.raw_text:
+                block.raw_text = strip_literal_img_tags(block.raw_text, html=False)
+            if block.repaired_text:
+                block.repaired_text = strip_literal_img_tags(
+                    block.repaired_text, html=False
+                )
+
+
 def _linkify_block_urls(chapters: Sequence[_AdapterChapter]) -> None:
     """Linkify bare / angle-wrapped vendor URLs across the IR in place (ITEM 1).
 
@@ -2917,6 +2944,13 @@ def _normalize_ocr_headings(
     # <img>. Cleans HTML + sidecar (raw_text/repaired_text) so the invented URL
     # reaches neither the learner page nor the chunker.
     _strip_markdown_images(chapters)
+
+    # Scan-lane fabricated-image guard (companion) — strip VLM-invented RAW /
+    # ESCAPED <img src="https://…"> tag TEXT (table-cell debris the markdown
+    # regex never matched) to the same accessible placeholder, ALSO before the
+    # linkifier so the fabricated URL never becomes a live <a href>. A real
+    # figure <img> with a local {stem}_figures/… src is left untouched.
+    _strip_literal_img_tags(chapters)
 
     # ITEM 1 (round-2 audit) — linkify bare / angle-wrapped vendor URLs LAST, so
     # the emitted mathjax_ignore <a> anchors are past the final wrap_bare_math

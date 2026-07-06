@@ -12,7 +12,8 @@ Checks (in cheap-first order):
 4. ``LANDMARK_PRESENCE``— at least one ``<main>``.
 5. ``HEADING_TREE``     — first heading is ``<h1>``; no level skips; in 1..6.
 6. ``NO_EXTERNAL_REFS`` — no external ``http(s)://`` resource ``src=`` (img /
-   script) or stylesheet ``<link href>``, and no residual Markdown image.
+   script) or stylesheet ``<link href>``, no residual Markdown image, and no
+   residual escaped external ``<img>`` tag text.
 7. ``AXE_WCAG22AA``     — axe-core full doc, no serious/critical violations.
 
 Stage 10 receives a *full document* (not a fragment), so we do **not**
@@ -329,6 +330,16 @@ _EXTERNAL_LINK_HREF_RE = re.compile(
 # A residual Markdown image ``![alt](target)`` (the VLM-fabricated-image escape
 # that the adapter sanitizer should have removed).
 _RESIDUAL_MD_IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+# A residual ESCAPED literal ``<img>`` tag TEXT whose src is external —
+# ``&lt;img src=&quot;https://i.imgur.com/1.png&quot;&gt;`` — the VLM emits raw
+# ``<img>`` HTML as literal text inside a table cell; the HTML-emit path escapes
+# it, so ``_EXTERNAL_SRC_RE`` (which matches an UNESCAPED ``<img … src=https://``)
+# never sees it. The ``(?:(?!&gt;).)*?`` body stays within the one escaped tag.
+_ESCAPED_EXTERNAL_IMG_RE = re.compile(
+    r"&lt;\s*img\b(?:(?!&gt;).)*?\bsrc\s*=\s*"
+    r"""(?:&quot;|&#0*39;|["'])?\s*(?:https?:)?//""",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def _check_no_external_refs(html: str) -> CheckOutcome:
@@ -348,6 +359,14 @@ def _check_no_external_refs(html: str) -> CheckOutcome:
             passed=False,
             message="residual markdown image",
             details={"match": md.group(0)[:120]},
+        )
+    esc_img = _ESCAPED_EXTERNAL_IMG_RE.search(html)
+    if esc_img:
+        return CheckOutcome(
+            check=GateCheck.NO_EXTERNAL_REFS,
+            passed=False,
+            message="residual escaped external image tag",
+            details={"match": esc_img.group(0)[:120]},
         )
     src = _EXTERNAL_SRC_RE.search(html)
     if src:

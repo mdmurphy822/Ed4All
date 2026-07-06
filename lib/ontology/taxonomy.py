@@ -51,6 +51,7 @@ __all__ = [
     "get_lexicon_openers",
     "get_lexicon_apparatus_names",
     "get_lexicon_interior_apparatus_names",
+    "get_lexicon_numbered_apparatus_names",
     "get_lexicon_apparatus_whitelist",
     "get_lexicon_confusables",
     "get_lexicon_subclasses",
@@ -362,6 +363,27 @@ def get_lexicon_interior_apparatus_names(
         s["display"].upper()
         for s in _merged_profile_field(spec, "apparatus_sections")
         if s.get("display") and s.get("interior_banner")
+    )
+
+
+def get_lexicon_numbered_apparatus_names(
+    profile_spec: Optional[str] = None,
+) -> Tuple[str, ...]:
+    """Return the BARE apparatus words that are apparatus ONLY when numbered.
+
+    Merged ``numbered_apparatus_names`` (a flat list of display strings, e.g.
+    ``"Exercises"``) across the active profiles. Consumed ONLY by
+    ``heading_classifier.is_numbered_apparatus_heading`` (the ordinal-prefixed
+    banner demotion) — never by the standalone ``is_apparatus_heading``, so a
+    bare unnumbered ``"Exercises"`` is NOT demoted (preserving the W1 builder's
+    deliberate choice to keep bare "Exercises" out of ``apparatus_sections``).
+    Empty for profiles that declare no such list.
+    """
+    spec = profile_spec if profile_spec is not None else resolve_lexicon_profile()
+    return tuple(
+        str(s).strip()
+        for s in _merged_profile_field(spec, "numbered_apparatus_names")
+        if str(s).strip()
     )
 
 

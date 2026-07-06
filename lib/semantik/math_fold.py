@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import re
 from html import escape as _html_escape
+from html import unescape as _html_unescape
 
 __all__ = [
     "fold_math",
@@ -69,6 +70,7 @@ __all__ = [
     "sanitize_math_spans",
     "strip_tikz_figures",
     "strip_markdown_images",
+    "strip_literal_img_tags",
     "separate_adjacent_math_spans",
     "linkify_urls",
 ]
@@ -1125,6 +1127,25 @@ def strip_tikz_figures(text: str) -> str:
 _MARKDOWN_IMAGE_RE = re.compile(r"!\[(?P<alt>[^\]]*)\]\(\s*(?P<target>[^)]*)\)")
 
 
+def _figure_placeholder(alt: str, *, html: bool) -> str:
+    r"""The shared accessible not-recoverable-figure placeholder.
+
+    HTML mode → the ``.dart-figure-notation`` span (``alt`` HTML-escaped into the
+    ``aria-label``); plain mode → a bare ``[figure: {alt}]``. The single source
+    of truth for both :func:`strip_markdown_images` and
+    :func:`strip_literal_img_tags` so the two fabricated-image sanitizers emit an
+    identical placeholder.
+    """
+    alt = (alt or "").strip() or "Figure"
+    if not html:
+        return f"[figure: {alt}]"
+    label = _html_escape(f"{alt} (image not recoverable)", quote=True)
+    return (
+        '<span class="dart-figure-notation" role="img" '
+        f'aria-label="{label}">[figure]</span>'
+    )
+
+
 def strip_markdown_images(text: str, *, html: bool = True) -> str:
     r"""Replace EVERY Markdown image ``![alt](target)`` with an a11y placeholder.
 
@@ -1145,16 +1166,115 @@ def strip_markdown_images(text: str, *, html: bool = True) -> str:
         return text or ""
 
     def _fix(m: "re.Match[str]") -> str:
-        alt = (m.group("alt") or "").strip() or "Figure"
-        if not html:
-            return f"[figure: {alt}]"
-        label = _html_escape(f"{alt} (image not recoverable)", quote=True)
-        return (
-            '<span class="dart-figure-notation" role="img" '
-            f'aria-label="{label}">[figure]</span>'
-        )
+        return _figure_placeholder(m.group("alt") or "", html=html)
 
     return _MARKDOWN_IMAGE_RE.sub(_fix, text)
+
+
+# ---------------------------------------------------------------------------
+# Literal / escaped ``<img>`` tag-TEXT sanitizer (VLM fabricated-image boundary,
+# 2026-07-06 census — RAW <img> in table cells the markdown strip never saw).
+# ---------------------------------------------------------------------------
+# The Qwen2.5-VL scan lane also emits a RAW HTML ``<img src="https://i.imgur.com/
+# 1.png">`` tag as LITERAL TEXT inside a table cell / prose (not markdown
+# ``![]()``). It arrives at the adapter either ESCAPED (``&lt;img src=&quot;…
+# &quot;&gt;`` — the HTML-emit path escapes ``<``/``"``) or as a plain literal
+# ``<img …>`` string in ``raw_text``, so the markdown-image regex never matches
+# and :func:`linkify_urls` then turns the fabricated URL into a live ``<a href>``.
+# :func:`strip_literal_img_tags` removes such tag TEXT — mirroring the markdown
+# strip — replacing it with the SAME accessible placeholder, but ONLY when the
+# ``src`` is external (http/https/protocol-relative) OR a bare fabricated image
+# filename (no directory + an image extension). A REAL, DOM-level figure ``<img>``
+# the cascade emits carries a LOCAL relative path WITH a directory
+# (``{stem}_figures/fig-N.png`` → has a ``/`` and no scheme), so it is never
+# matched — this pass is a text sanitizer over fabricated tag text, never a
+# rewrite of legitimate image elements. Runs at the SAME adapter seam as the
+# markdown strip (before the linkifier). Idempotent (the placeholder carries no
+# ``img`` token) + fast-guarded.
+_LITERAL_IMG_TAG_RE = re.compile(
+    r"(?:&lt;|<)\s*img\b(?P<attrs>(?:(?!&gt;|>).)*)(?:&gt;|>)",
+    re.IGNORECASE | re.DOTALL,
+)
+# ``src`` / ``alt`` value, tolerant of double / single / entity-escaped
+# (``&quot;`` / ``&#39;``) / unquoted quoting.
+_IMG_ATTR_SRC_RE = re.compile(
+    r"""\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|&quot;(.*?)&quot;|&#0*39;(.*?)&#0*39;"""
+    r"""|([^\s>&]+))""",
+    re.IGNORECASE,
+)
+_IMG_ATTR_ALT_RE = re.compile(
+    r"""\balt\s*=\s*(?:"([^"]*)"|'([^']*)'|&quot;(.*?)&quot;|&#0*39;(.*?)&#0*39;"""
+    r"""|([^\s>&]+))""",
+    re.IGNORECASE,
+)
+# External: an explicit http/https scheme or a protocol-relative ``//host``.
+_IMG_EXTERNAL_SRC_RE = re.compile(r"^\s*(?:https?:)?//", re.IGNORECASE)
+# Bare fabricated filename: NO directory component + a recognizable image
+# extension (``image.png`` / ``chart.jpg``) — a real local figure src always
+# carries a ``{stem}_figures/`` directory, so a bare filename is VLM debris.
+_IMG_BARE_FABRICATED_RE = re.compile(
+    r"^[^/\s]+\.(?:png|jpe?g|gif|svg|webp|bmp|tiff?)\s*$", re.IGNORECASE
+)
+
+
+def _img_attr_value(rx: "re.Pattern[str]", attrs: str) -> str | None:
+    m = rx.search(attrs or "")
+    if not m:
+        return None
+    for g in m.groups():
+        if g is not None:
+            return g
+    return None
+
+
+def _is_fabricated_img_src(src: str | None) -> bool:
+    """Whether an ``<img>`` ``src`` is an external ref or a bare fabricated file.
+
+    True for an ``http(s)://`` / protocol-relative ``//`` src, or a bare
+    image filename with no directory. False for an empty src or a real local
+    relative path with a directory (``{stem}_figures/fig-N.png``) — those are
+    legitimate DOM image elements and must never be stripped.
+    """
+    if not src:
+        return False
+    s = src.strip()
+    if not s:
+        return False
+    if _IMG_EXTERNAL_SRC_RE.match(s):
+        return True
+    return "/" not in s and bool(_IMG_BARE_FABRICATED_RE.match(s))
+
+
+def strip_literal_img_tags(text: str, *, html: bool = True) -> str:
+    r"""Replace literal / escaped ``<img>`` tag TEXT with an a11y placeholder.
+
+    Handles the RAW / escaped ``<img …>`` tag the VLM emits as literal text (a
+    fabricated external / bare-filename image the markdown strip never sees):
+    ESCAPED ``&lt;img src=&quot;https://…&quot; /&gt;``, unescaped literal
+    ``<img src=https://… >`` in ``raw_text``, self-closing and not, single /
+    double / no quotes. The ``src`` is external (http/https/protocol-relative) or
+    a bare fabricated filename → the tag is replaced by :func:`_figure_placeholder`
+    (preserving any ``alt``); otherwise (a real local ``{stem}_figures/…`` src,
+    or no/empty src) the tag TEXT is left byte-identical. A fast guard returns
+    text with no ``img`` token unchanged; idempotent (the placeholder carries no
+    ``img``).
+    """
+    if not text:
+        return text or ""
+    low = text.lower()
+    if "<img" not in low and "&lt;img" not in low:
+        return text
+
+    def _fix(m: "re.Match[str]") -> str:
+        attrs = m.group("attrs") or ""
+        src = _img_attr_value(_IMG_ATTR_SRC_RE, attrs)
+        if not _is_fabricated_img_src(src):
+            return m.group(0)  # real/legit DOM img (or no src) → untouched
+        alt_raw = _img_attr_value(_IMG_ATTR_ALT_RE, attrs)
+        alt = _html_unescape(alt_raw).strip() if alt_raw else ""
+        return _figure_placeholder(alt, html=html)
+
+    return _LITERAL_IMG_TAG_RE.sub(_fix, text)
 
 
 # ---------------------------------------------------------------------------
