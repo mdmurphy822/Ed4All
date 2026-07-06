@@ -104,8 +104,16 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from lib.chunk_heading_sanity import _EXERCISE_BANNER_RE
 from lib.embedding._math import cosine_similarity
+# Exercise-marker constants consolidated into the shared apparatus lexicon
+# (single source of truth). Imported here as byte-identical re-exports — no
+# behavior change. ``_EXERCISE_BANNER_RE`` was formerly imported from
+# ``lib.chunk_heading_sanity`` (which now itself re-exports the same object).
+from lib.objectives.apparatus_lexicon import (
+    EXERCISE_BANNER_RE as _EXERCISE_BANNER_RE,
+    EXTRA_EXERCISE_BANNER_RE as _EXTRA_EXERCISE_BANNER_RE,
+    FOLLOWING_EXERCISES_RE as _FOLLOWING_EXERCISES_RE,
+)
 from lib.objectives.objective_dedup import (
     resolve_chunk_relevance_floor,
     resolve_max_chunks_per_objective,
@@ -122,8 +130,8 @@ _FALSEY = frozenset({"0", "false", "no", "off"})
 # ---- Exercise-likeness heuristic (conservative, high-precision) -----------
 # Signal A — the OpenStax "In the following exercises" instruction line, near
 # the START of the chunk (an exercise block leads with it). Positional so a
-# passing mention deep inside prose does not trip it.
-_FOLLOWING_EXERCISES_RE = re.compile(r"In\s+the\s+following\s+exercises", re.I)
+# passing mention deep inside prose does not trip it. ``_FOLLOWING_EXERCISES_RE``
+# is imported from lib.objectives.apparatus_lexicon (byte-identical).
 _EARLY_WINDOW_CHARS = 200
 
 # Signal B — circled multiple-choice answer glyphs ⓐⓑⓒⓓⓔ (U+24D0..U+24D4);
@@ -142,15 +150,10 @@ _NUMBERED_RUN_MIN = 3
 _NUMBERED_RUN_SPAN = 400
 
 # Signal D — exercise-section banners. The shared ``_EXERCISE_BANNER_RE``
-# (reused from chunk_heading_sanity) already covers "EXERCISES Practice Makes
-# Perfect" + "In the following exercises"; this extends it with the standalone
+# already covers "EXERCISES Practice Makes Perfect" + "In the following
+# exercises"; ``_EXTRA_EXERCISE_BANNER_RE`` extends it with the standalone
 # "Practice Makes Perfect" / "Section Exercises" / "Review Exercises" headers.
-_EXTRA_EXERCISE_BANNER_RE = re.compile(
-    r"\b(?:Practice\s+Makes\s+Perfect"
-    r"|Section\s+Exercises"
-    r"|Review\s+Exercises)\b",
-    re.IGNORECASE,
-)
+# Both are imported from lib.objectives.apparatus_lexicon (byte-identical).
 
 
 def _has_dense_numbered_run(text: str) -> bool:

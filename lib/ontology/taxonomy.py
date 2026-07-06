@@ -56,7 +56,40 @@ __all__ = [
     "get_lexicon_subclasses",
     "DEFAULT_LEXICON_PROFILE",
     "LEXICON_PROFILE_ENV",
+    "strip_leading_ordinal",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Shared shape utility — leading-ordinal strip (SemantiK structure-fidelity,
+# Package 3). A printed section banner "1.4 Exercises" / "10.3 Review
+# Exercises" carries a leading ``N`` / ``N.M`` / ``N.M.K`` ordinal that
+# defeats an exact/prefix apparatus-name match. This single helper strips that
+# ordinal so the apparatus/EOC lexicon matchers in the extractor
+# (``_is_eoc_section_heading``), the SemantiK heading classifier
+# (``lib/semantik/heading_classifier.py``), and the collapse re-segmenter
+# (``lib/semantic_structure_extractor/resegment.py``) all see the bare name.
+# Domain-agnostic pure-shape rule (no vocabulary) — the vocabulary stays in
+# ``schemas/taxonomies/semantik_lexicon.json``.
+# ---------------------------------------------------------------------------
+import re as _re
+
+_LEADING_ORDINAL_RE = _re.compile(r"^\s*\d+(?:\.\d+)*\s+")
+
+
+def strip_leading_ordinal(text: str) -> str:
+    """Strip a leading ``N`` / ``N.M`` / ``N.M.K`` ordinal + trailing space.
+
+    "1.4 Exercises" -> "Exercises"; "10.3 Review Exercises" -> "Review
+    Exercises". A heading with no leading ordinal ("Add and Subtract
+    Integers") is returned unchanged. The trailing-space requirement means a
+    bare decimal with no following word ("1.4") is left alone (nothing after
+    the ordinal to keep), and an interior number ("Section 2 Foo") is not
+    touched (anchored ``^``). Idempotent on already-stripped text.
+    """
+    if not text:
+        return text
+    return _LEADING_ORDINAL_RE.sub("", text, count=1)
 
 
 # ---------------------------------------------------------------------------
@@ -71,15 +104,42 @@ _TAXONOMY_SCHEMA_PATH = (
 )
 
 
-@lru_cache(maxsize=1)
-def load_taxonomy() -> Dict:
-    """Load and cache ``schemas/taxonomies/taxonomy.json``.
+_TAXONOMIES_DIR = _TAXONOMY_SCHEMA_PATH.parent
+
+
+@lru_cache(maxsize=None)
+def load_taxonomy(name: Optional[str] = None) -> Dict:
+    """Load and cache a JSON taxonomy from ``schemas/taxonomies/``.
+
+    Two modes:
+
+    * ``name is None`` (default) — the canonical subject-classification
+      taxonomy ``taxonomy.json``, validated for its ``divisions`` root. This
+      is the historical, backward-compatible behavior every existing caller
+      relies on.
+    * ``name`` given — a GENERIC read of ``schemas/taxonomies/<name>.json``
+      (raw JSON, no shape assumptions), so profile-organized lexicons
+      (e.g. ``exercise_apparatus_lexicon``) are loadable through the one
+      documented entry point (root CLAUDE.md § Canonical Helpers). ``name``
+      must be a bare basename — a path separator raises ``ValueError``.
 
     Raises:
-        FileNotFoundError: schema is missing (Wave 1 Worker S migration
-            should have published it).
-        ValueError: schema shape is invalid (missing ``divisions`` root).
+        FileNotFoundError: the requested taxonomy file is missing.
+        ValueError: an invalid ``name``, or (default mode) a malformed
+            ``divisions`` root.
     """
+    if name is not None:
+        if not str(name).strip() or "/" in str(name) or "\\" in str(name):
+            raise ValueError(f"Invalid taxonomy name: {name!r}")
+        stem = str(name).strip()
+        if stem.endswith(".json"):
+            stem = stem[: -len(".json")]
+        path = _TAXONOMIES_DIR / f"{stem}.json"
+        if not path.exists():
+            raise FileNotFoundError(f"Taxonomy not found at {path}.")
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+
     if not _TAXONOMY_SCHEMA_PATH.exists():
         raise FileNotFoundError(
             f"Taxonomy schema not found at {_TAXONOMY_SCHEMA_PATH}. "

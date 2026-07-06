@@ -68,10 +68,10 @@ _PART_SUFFIX_RE = re.compile(r"\s*\(part\s+\d+\)\s*$", re.IGNORECASE)
 
 # Unambiguous OpenStax exercise-section banner. These are exercise prose the
 # font-size promoter lifts into a heading; never a real section title.
-_EXERCISE_BANNER_RE = re.compile(
-    r"\b(?:EXERCISES?\s+Practice\s+Makes\s+Perfect"
-    r"|In\s+the\s+following\s+exercises)\b",
-    re.IGNORECASE,
+# Consolidated into lib/objectives/apparatus_lexicon (single source of truth);
+# re-exported here as ``_EXERCISE_BANNER_RE`` — byte-identical, no behavior change.
+from lib.objectives.apparatus_lexicon import (  # noqa: E402
+    EXERCISE_BANNER_RE as _EXERCISE_BANNER_RE,
 )
 
 # Embedded answer-key / exercise NUMBER markers ("313. 9a", "126. 5"). The

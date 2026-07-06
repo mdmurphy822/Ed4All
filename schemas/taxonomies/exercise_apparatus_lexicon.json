@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/taxonomies/v1/exercise_apparatus_lexicon.schema.json",
+  "title": "Exercise-Apparatus Lexicon",
+  "description": "Profile-organized vocabulary of exercise / practice / answer-key / learning-objective-boilerplate 'apparatus' markers — the NON-instructional textbook chrome that leaks into per-window objective seeds and sub-objective statements. Consumed by lib/objectives/apparatus_lexicon.py::compile_profile, which compiles these phrase lists into case-insensitive marker regexes and pairs them with the structural (composite_unit / unit_roles) signal enums so the objective-synthesis passes can detect apparatus text over-permissively (detection over-match is SAFE — the downstream sanitation edits rendered/seed text only, never chunk ids or citability). Same profile discipline as semantik_lexicon.json (owner directive: publisher vocabulary lives in data-driven lexicon PROFILES, never in code). A new corpus / publisher is onboarded by adding a profile here, never by editing Python. The loader defaults to the UNION of every profile (see compile_profile) so no corpus-specific selection is baked into a call site.",
+  "$comment": "Wave W1 (objective-synthesis fix plan, Defect C 'shared detection module' portion + Defect D). Consolidates the previously-hardcoded constants lib/chunk_heading_sanity._EXERCISE_BANNER_RE, lib/objectives/citation_reselect._FOLLOWING_EXERCISES_RE / _EXTRA_EXERCISE_BANNER_RE, and lib/objectives/sub_objectives._JUNK_MARKERS. Those exact legacy constants are re-homed as byte-identical named constants in apparatus_lexicon.py (EXERCISE_BANNER_RE / FOLLOWING_EXERCISES_RE / EXTRA_EXERCISE_BANNER_RE / JUNK_MARKERS) and re-exported at the old call sites — a pure refactor, no behavior change flag-off. This lexicon FILE additionally offers a superset used by the (flag-gated, later-wave) window-sanitation + seed-backstop passes and by the Defect-D 'lo_boilerplate' prefix-strip. The 'structural' block holds the SemantiK composite-unit / unit-role signal enums (metadata contract, not corpus vocab) so a publisher whose chunker emits different role slugs can extend detection here too. Marker phrases are matched case-insensitively with word-internal whitespace treated as \\s+ (so an OCR line break inside 'Practice   Makes  Perfect' still matches); single-glyph markers match verbatim.",
+  "structural": {
+    "description": "SemantiK composite-unit / unit-role signal enums the structural apparatus detector keys on (mirrors the additive data-dart-unit / data-dart-flow chunk metadata). Apparatus signals mark exercise / practice / answer-key material; instructional signals mark teachable prose and WIN over apparatus when both are present on one chunk.",
+    "apparatus_units": ["exercise_set"],
+    "apparatus_roles": ["readiness_check", "answer_key", "practice"],
+    "instructional_units": ["worked_example", "definition_group", "procedure"],
+    "instructional_roles": ["worked_example", "statement", "definition"]
+  },
+  "profiles": {
+    "generic": {
+      "description": "Corpus-agnostic apparatus shape markers a mathematics / science / humanities textbook uses regardless of publisher: the exercise-set banners, the readiness-check callouts, the answer-key glyph runs, and the learning-objective section boilerplate that frames (but is not) an objective.",
+      "lo_boilerplate": [
+        "by the end of this section",
+        "by the end of this chapter",
+        "you will be able to",
+        "if you missed this problem",
+        "readiness quiz",
+        "in the following exercises",
+        "be prepared",
+        "try it"
+      ],
+      "apparatus_banners": [
+        "in the following exercises",
+        "practice makes perfect",
+        "section exercises",
+        "review exercises",
+        "chapter review",
+        "readiness quiz",
+        "if you missed this problem"
+      ],
+      "callout_labels": [
+        "be prepared",
+        "try it",
+        "how to",
+        "learning objectives"
+      ],
+      "glyph_markers": ["ⓐ", "ⓑ", "ⓒ", "ⓓ", "ⓔ"]
+    },
+    "openstax-shaped": {
+      "description": "Publisher-flavored (OpenStax-shaped) phrasings of the same apparatus families — the fused 'EXERCISES Practice Makes Perfect' banner and the fully-spelled 'By the end of this section, you will be able to:' objective preamble. NOT tied to any single course: any textbook that adopts this apparatus shape is covered. Opt-in overlay; the union loader folds it in by default so over-match stays safe.",
+      "lo_boilerplate": [
+        "by the end of this section you will be able to",
+        "learning objectives by the end of this section"
+      ],
+      "apparatus_banners": [
+        "exercises practice makes perfect",
+        "chapter review exercises"
+      ],
+      "callout_labels": [
+        "be prepared",
+        "try it"
+      ]
+    }
+  }
+}
