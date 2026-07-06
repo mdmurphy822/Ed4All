@@ -55,6 +55,7 @@ what lets a math-aware metric stay stable on non-math corpora.
 from __future__ import annotations
 
 import re
+from html import escape as _html_escape
 
 __all__ = [
     "fold_math",
@@ -67,6 +68,7 @@ __all__ = [
     "escape_math_angle_brackets",
     "sanitize_math_spans",
     "strip_tikz_figures",
+    "strip_markdown_images",
     "separate_adjacent_math_spans",
     "linkify_urls",
 ]
@@ -1104,6 +1106,55 @@ def strip_tikz_figures(text: str) -> str:
         return f"{o}{stripped}{c}"  # mixed → keep the surviving real math
 
     return _MATH_SPAN_ANGLE_RE.sub(_fix, text)
+
+
+# ---------------------------------------------------------------------------
+# Markdown-image sanitizer (VLM fabricated-image-URL boundary — scan lane).
+# ---------------------------------------------------------------------------
+# The Qwen2.5-VL scan-lane transcriber sometimes INVENTS a Markdown image
+# ``![alt](url)`` for a figure it cannot transcribe — the ``url`` is a
+# hallucinated external host (``i.imgur.com`` / ``example.com`` / a bare
+# relative ``image.png``) that resolves to nothing, poisons the assembled page
+# with a broken external ``<img>`` (WCAG 1.1.1 content loss + a CSP-violating
+# off-origin fetch), and — if it reached ``_linkify_block_urls`` — would be
+# turned into a live ``<a href>`` anchor to the fabricated host. This is figure
+# content the cascade cannot recover, so — mirroring :func:`strip_tikz_figures`
+# — EVERY image (any host, any relative filename, URL-agnostic) is replaced by
+# the accessible ``.dart-figure-notation`` placeholder. Runs BEFORE the
+# linkifier so a fabricated URL never becomes a clickable anchor.
+_MARKDOWN_IMAGE_RE = re.compile(r"!\[(?P<alt>[^\]]*)\]\(\s*(?P<target>[^)]*)\)")
+
+
+def strip_markdown_images(text: str, *, html: bool = True) -> str:
+    r"""Replace EVERY Markdown image ``![alt](target)`` with an a11y placeholder.
+
+    The VLM scan lane invents Markdown image syntax pointing at hallucinated
+    image URLs (external host or bare relative filename); the target resolves to
+    nothing and must never ship as a broken ``<img>`` / live ``<a href>`` to the
+    fabricated host. URL-agnostic: any ``target`` (``https://i.imgur.com/…``,
+    ``image.png``, ``example.com/x``) is stripped. In HTML mode the match is
+    replaced by the accessible ``.dart-figure-notation`` placeholder span
+    (mirroring :data:`_TIKZ_FIGURE_PLACEHOLDER`), the ``alt`` HTML-escaped into
+    the ``aria-label``; in plain mode (``raw_text`` / sidecar / chunker text) by
+    a bare ``[figure]`` placeholder carrying the alt — so the fabricated URL
+    reaches neither the learner page nor the retrieval index. A fast guard
+    returns text with no ``![`` unchanged; idempotent (the emitted placeholder
+    carries no ``![`` marker, so re-application is a no-op).
+    """
+    if not text or "![" not in text:
+        return text or ""
+
+    def _fix(m: "re.Match[str]") -> str:
+        alt = (m.group("alt") or "").strip() or "Figure"
+        if not html:
+            return f"[figure: {alt}]"
+        label = _html_escape(f"{alt} (image not recoverable)", quote=True)
+        return (
+            '<span class="dart-figure-notation" role="img" '
+            f'aria-label="{label}">[figure]</span>'
+        )
+
+    return _MARKDOWN_IMAGE_RE.sub(_fix, text)
 
 
 # ---------------------------------------------------------------------------

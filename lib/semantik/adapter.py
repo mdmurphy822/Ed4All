@@ -87,6 +87,7 @@ from lib.semantik.math_fold import (
     sanitize_math_spans,
     separate_adjacent_math_spans,
     strip_latex_commands,
+    strip_markdown_images,
     strip_tikz_figures,
     wrap_bare_math,
 )
@@ -116,6 +117,7 @@ from lib.semantik.heading_classifier import (
     is_decorated_solution_label,
     is_emphasis_label_heading,
     is_fused_heading,
+    is_numbered_apparatus_heading,
     is_running_header,
     is_standalone_apparatus_heading,
     is_standalone_folio,
@@ -2446,6 +2448,33 @@ def _sanitize_block_body_latex(chapters: Sequence[_AdapterChapter]) -> None:
                 )
 
 
+def _strip_markdown_images(chapters: Sequence[_AdapterChapter]) -> None:
+    r"""Strip VLM-fabricated Markdown images ``![alt](url)`` across the IR in place.
+
+    The scan-lane VLM invents a Markdown image for a figure it cannot
+    transcribe — the ``url`` is a hallucinated external host / bare relative
+    filename that resolves to nothing. Left in place it ships as a broken
+    external ``<img>`` (WCAG 1.1.1 content loss + a CSP-violating off-origin
+    fetch) and, worse, :func:`_linkify_block_urls` would turn the fabricated URL
+    into a LIVE ``<a href>`` anchor. So this pass runs FIRST (before the
+    linkifier), replacing every image with the accessible
+    ``.dart-figure-notation`` placeholder (mirroring :func:`_strip_tikz_figures`).
+    Unlike the TikZ strip this ALSO cleans ``raw_text`` / ``repaired_text`` (the
+    same sidecar fields :func:`_linkify_block_urls` touches) so the fabricated URL
+    never reaches the chunker / retrieval index either. Idempotent.
+    """
+    for ch in chapters:
+        for block in ch.blocks:
+            if block.html:
+                block.html = strip_markdown_images(block.html, html=True)
+            if block.raw_text:
+                block.raw_text = strip_markdown_images(block.raw_text, html=False)
+            if block.repaired_text:
+                block.repaired_text = strip_markdown_images(
+                    block.repaired_text, html=False
+                )
+
+
 def _linkify_block_urls(chapters: Sequence[_AdapterChapter]) -> None:
     """Linkify bare / angle-wrapped vendor URLs across the IR in place (ITEM 1).
 
@@ -2843,6 +2872,12 @@ def _normalize_ocr_headings(
                 )
             elif is_watermark_garbage_heading(text):
                 _demote_heading_block_to_paragraph(block)
+            elif is_numbered_apparatus_heading(text):
+                # Defect e — a numbered per-section apparatus banner ("1.4
+                # Exercises", "10.3 Review Exercises") demotes to prose so it
+                # never mints a spurious per-section boundary. A real numbered
+                # section title strips to a non-apparatus name and is kept.
+                _demote_heading_block_to_paragraph(block)
             elif is_fused_heading(text):
                 # Defect 3 — a section heading whose text is an obviously-fused
                 # blob (sentence-length prose or multiple $…$ runs) is demoted
@@ -2874,6 +2909,14 @@ def _normalize_ocr_headings(
     # the sanitizer (idempotent on already-clean bodies) guarantees EVERY emitted
     # block is delimiter-balanced, so the whole-document math strip never desyncs.
     _sanitize_block_body_latex(chapters)
+
+    # Scan-lane fabricated-image guard — strip VLM-invented Markdown images
+    # ``![alt](url)`` (hallucinated external host / bare relative filename) to an
+    # accessible placeholder BEFORE the linkifier, so a fabricated URL is never
+    # turned into a live <a href> anchor and never ships as a broken external
+    # <img>. Cleans HTML + sidecar (raw_text/repaired_text) so the invented URL
+    # reaches neither the learner page nor the chunker.
+    _strip_markdown_images(chapters)
 
     # ITEM 1 (round-2 audit) — linkify bare / angle-wrapped vendor URLs LAST, so
     # the emitted mathjax_ignore <a> anchors are past the final wrap_bare_math

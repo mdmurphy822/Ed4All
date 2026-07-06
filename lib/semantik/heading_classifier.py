@@ -49,6 +49,7 @@ from lib.ontology.taxonomy import (
     get_lexicon_apparatus_names,
     get_lexicon_apparatus_whitelist,
     get_lexicon_interior_apparatus_names,
+    strip_leading_ordinal,
 )
 
 # ---------------------------------------------------------------------------
@@ -259,6 +260,43 @@ def is_apparatus_heading(text: str) -> bool:
     ``<p>PRACTICE TEST</p>`` back to a heading.
     """
     return bool(_APPARATUS_HEADING_RE.match(text or ""))
+
+
+# ---------------------------------------------------------------------------
+# (e) Numbered per-section apparatus BANNER — demote.
+# ---------------------------------------------------------------------------
+# A printed per-section drill banner carries a leading section ordinal
+# ("1.4 Exercises", "10.3 Review Exercises", "9.2 Practice Test"). The
+# standalone :func:`is_apparatus_heading` match is anchored on the bare name
+# (leading chars may only be OCR gutter glyphs, not a numeric ordinal), so the
+# numbered form slips through as a REAL section heading and mints a spurious
+# per-section boundary in the heading-segmenting chunker. When the ordinal is
+# stripped and the remainder is exactly an apparatus display name, the heading
+# is a numbered apparatus banner and is DEMOTED to prose. Vocabulary is the
+# same data-driven lexicon set (``get_lexicon_apparatus_names``) — no code
+# vocabulary. Conservative: a real numbered section title ("1.3 Add and
+# Subtract Integers") strips to a non-apparatus name and is never demoted.
+_APPARATUS_NAME_LOWER: frozenset[str] = frozenset(
+    n.strip().lower() for n in APPARATUS_HEADING_NAMES
+)
+
+
+def is_numbered_apparatus_heading(text: str) -> bool:
+    """Whether ``text`` is an ordinal-prefixed apparatus banner (defect e).
+
+    True iff ``text`` begins with an ``N`` / ``N.M`` / ``N.M.K`` ordinal AND
+    the ordinal-stripped remainder is exactly one of
+    :data:`APPARATUS_HEADING_NAMES` (case-insensitive). A heading with no
+    leading ordinal, or whose stripped remainder is not an apparatus name,
+    returns ``False``.
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+    stripped = strip_leading_ordinal(t).strip()
+    if not stripped or stripped == t:
+        return False  # no leading ordinal -> not the numbered-banner case
+    return stripped.lower() in _APPARATUS_NAME_LOWER
 
 
 # ---------------------------------------------------------------------------
@@ -646,6 +684,7 @@ __all__ = [
     "is_decorated_solution_label",
     "is_emphasis_label_heading",
     "is_fused_heading",
+    "is_numbered_apparatus_heading",
     "is_running_header",
     "is_standalone_apparatus_heading",
     "is_standalone_folio",

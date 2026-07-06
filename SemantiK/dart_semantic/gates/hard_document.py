@@ -11,7 +11,9 @@ Checks (in cheap-first order):
 3. ``TITLE_PRESENT``    — ``<title>...</title>`` non-empty.
 4. ``LANDMARK_PRESENCE``— at least one ``<main>``.
 5. ``HEADING_TREE``     — first heading is ``<h1>``; no level skips; in 1..6.
-6. ``AXE_WCAG22AA``     — axe-core full doc, no serious/critical violations.
+6. ``NO_EXTERNAL_REFS`` — no external ``http(s)://`` resource ``src=`` (img /
+   script) or stylesheet ``<link href>``, and no residual Markdown image.
+7. ``AXE_WCAG22AA``     — axe-core full doc, no serious/critical violations.
 
 Stage 10 receives a *full document* (not a fragment), so we do **not**
 wrap candidates in the ``_MAIN_SHELL`` used by Stage 7 — the doc owns
@@ -306,6 +308,71 @@ def _check_heading_hierarchy(html: str) -> CheckOutcome:
 
 
 # ---------------------------------------------------------------------------
+# No external network references — no off-origin resource fetch, no residual
+# fabricated Markdown image.
+# ---------------------------------------------------------------------------
+
+
+# An external resource-loading ``src=`` on an <img> / <script> (a fetched
+# resource, WCAG 1.1.1 content-loss risk + a CSP off-origin fetch). Prose
+# ``<a href>`` links are NOT gated — OpenStax / cnx attribution anchors are
+# legitimate content, not a resource fetch.
+_EXTERNAL_SRC_RE = re.compile(
+    r"""<(?:img|script)\b[^>]*\bsrc\s*=\s*["']?\s*https?://""",
+    re.IGNORECASE,
+)
+# An external stylesheet ``<link ... href="https://...">`` (loads off-origin CSS).
+_EXTERNAL_LINK_HREF_RE = re.compile(
+    r"""<link\b[^>]*\bhref\s*=\s*["']?\s*https?://""",
+    re.IGNORECASE,
+)
+# A residual Markdown image ``![alt](target)`` (the VLM-fabricated-image escape
+# that the adapter sanitizer should have removed).
+_RESIDUAL_MD_IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+
+
+def _check_no_external_refs(html: str) -> CheckOutcome:
+    """Fail a document that fetches an off-origin resource or carries a
+    residual Markdown image.
+
+    Guards against the scan-lane fabricated-image defect leaking through to the
+    shipped page: an external ``src=`` (``<img>`` / ``<script>``) or stylesheet
+    ``<link href>`` is a broken off-origin fetch (WCAG 1.1.1 + CSP), and a
+    residual ``![alt](url)`` is an un-sanitized fabricated image. Prose
+    ``<a href>`` attribution links are legitimate content and are NOT gated.
+    """
+    md = _RESIDUAL_MD_IMAGE_RE.search(html)
+    if md:
+        return CheckOutcome(
+            check=GateCheck.NO_EXTERNAL_REFS,
+            passed=False,
+            message="residual markdown image",
+            details={"match": md.group(0)[:120]},
+        )
+    src = _EXTERNAL_SRC_RE.search(html)
+    if src:
+        return CheckOutcome(
+            check=GateCheck.NO_EXTERNAL_REFS,
+            passed=False,
+            message="external resource src",
+            details={"match": src.group(0)[:120]},
+        )
+    link = _EXTERNAL_LINK_HREF_RE.search(html)
+    if link:
+        return CheckOutcome(
+            check=GateCheck.NO_EXTERNAL_REFS,
+            passed=False,
+            message="external stylesheet link href",
+            details={"match": link.group(0)[:120]},
+        )
+    return CheckOutcome(
+        check=GateCheck.NO_EXTERNAL_REFS,
+        passed=True,
+        message="ok",
+    )
+
+
+# ---------------------------------------------------------------------------
 # axe-core (full document)
 # ---------------------------------------------------------------------------
 
@@ -374,6 +441,7 @@ def gate_document(
     checks.append(_check_title_present(html))
     checks.append(_check_main_landmark(html))
     checks.append(_check_heading_hierarchy(html))
+    checks.append(_check_no_external_refs(html))
 
     if validator is not None:
         checks.append(_check_axe_full_doc(html, validator))

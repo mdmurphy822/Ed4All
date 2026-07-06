@@ -249,3 +249,59 @@ def test_adapter_strips_trailing_running_header_from_body():
     assert "The result is x = 3" in html
     assert "251" not in html
     assert "Solving Linear Equations and Inequalities 251" not in html
+
+
+# ---------------------------------------------------------------------------
+# (e) Package 3 — numbered per-section apparatus banner demotion.
+# ---------------------------------------------------------------------------
+
+
+def test_is_numbered_apparatus_heading_predicate():
+    from lib.semantik.heading_classifier import is_numbered_apparatus_heading as nah
+
+    # Ordinal-prefixed apparatus display names → demote.
+    assert nah("1.4 Review Exercises")
+    assert nah("10.3 Practice Test")
+    assert nah("1.4 Key Terms")
+    assert nah("9.2 Chapter Review")
+    # A real numbered section title strips to a non-apparatus name → keep.
+    assert not nah("1.3 Add and Subtract Integers")
+    assert not nah("2.1 Foundations")
+    # Bare (unnumbered) apparatus name is NOT the numbered-banner case — the
+    # standalone apparatus path owns it (kept as a real EOC section heading).
+    assert not nah("Review Exercises")
+    assert not nah("Exercises")
+    assert not nah("")
+
+
+def test_adapter_demotes_numbered_apparatus_banner():
+    ch = _AdapterChapter(
+        title="Chapter 1 Foundations",
+        blocks=[
+            _heading_block("1.1 Introduction to Whole Numbers", 0),
+            _heading_block("1.4 Review Exercises", 4),
+            _body_block("In the following exercises, simplify.", 5),
+        ],
+    )
+    html = _render([ch])["html"]
+    # The numbered apparatus banner does not survive as a heading — no
+    # per-section boundary is minted from it. Content still renders as prose.
+    import re
+
+    assert not re.search(
+        r"<h[1-6][^>]*>[^<]*1\.4 Review Exercises", html
+    ), "numbered apparatus banner must not survive as a heading"
+    assert "1.4 Review Exercises" in html  # text preserved as prose
+    # The real numbered section heading is untouched.
+    assert "1.1 Introduction to Whole Numbers" in html
+
+
+def test_adapter_keeps_real_numbered_section_heading():
+    ch = _AdapterChapter(
+        title="Chapter 1 Foundations",
+        blocks=[_heading_block("1.3 Add and Subtract Integers", 0)],
+    )
+    html = _render([ch])["html"]
+    assert "1.3 Add and Subtract Integers" in html
+    # A real section title stays a heading (not demoted to a bare <p>).
+    assert "<h" in html

@@ -22,6 +22,7 @@ class GateCheck(str, Enum):
     REF_LINK_INTEGRITY = "ref_link_integrity"
     LANG_DECLARED      = "lang_declared"
     TITLE_PRESENT      = "title_present"
+    NO_EXTERNAL_REFS   = "no_external_refs"
 
 
 @dataclass(frozen=True)

@@ -429,6 +429,25 @@ def test_unload_never_raises_on_failure():
                                         requests_module=fake) is False
 
 
+# ---- prompt hardening: no fabricated image markdown -----------------------
+
+
+def test_system_directive_forbids_image_markdown():
+    directive = vlm_extract._SYSTEM_DIRECTIVE.lower()
+    # The transcriber is instructed NOT to emit Markdown image syntax or invent
+    # image URLs — the scan-lane fabricated-image defect fix.
+    assert "![" in vlm_extract._SYSTEM_DIRECTIVE
+    assert "image url" in directive or "invent" in directive
+    # An untranscribable figure gets a plain-text 'Figure:' line, not a link.
+    assert "figure:" in directive
+
+
+def test_prompt_version_bumped():
+    # Bumped 1 -> 2 to invalidate the per-page markdown disk cache keyed on
+    # prompt_version (the old prompt could have cached fabricated-image pages).
+    assert vlm_extract.PROMPT_VERSION >= 2
+
+
 def _run_extract_shared(monkeypatch, td, *, requests_obj, provider_local=True):
     """Drive extract_shared over a 2-page scanned doc with mocked extractors."""
     monkeypatch.setenv("SEMANTIK_VLM_EXTRACT", "1")
