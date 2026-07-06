@@ -80,9 +80,31 @@ import json
 import logging
 import os
 import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from lib.generation.llm_checkpoint import CheckpointStore, compute_fingerprint
+from lib.generation.stop_control import check_stop
+
 logger = logging.getLogger(__name__)
+
+#: Graceful-stop + resume-sidecar wiring (P4 item 5). The per-review-chunk
+#: sidecar lives BESIDE the objectives the pass reviews — the
+#: ``01_learning_objectives/`` export dir that holds ``synthesized_objectives.json``
+#: (the caller passes ``checkpoint_path``; unwired → no sidecar, byte-identical
+#: to today, but the ``check_stop`` at the chunk boundary is still live via
+#: ``ED4ALL_RUN_ID``). One record per successfully-reviewed chunk; the family
+#: flag ``ED4ALL_GENERATION_CHECKPOINT`` (site_env=None) governs it.
+_REVIEW_CHECKPOINT_SITE_ID = "objective_review"
+#: Canonical sidecar basename (sibling of ``synthesized_objectives.json``).
+REVIEW_CHECKPOINT_NAME = ".objective_review_checkpoint.jsonl"
+
+
+def _review_checkpoint_store(path: Optional[Path]) -> CheckpointStore:
+    """Fingerprinted per-chunk resume sidecar for the objective-review pass."""
+    return CheckpointStore(
+        path, site_id=_REVIEW_CHECKPOINT_SITE_ID, site_env=None,
+    )
 
 # ---------------------------------------------------------------------------
 # Env contract (parse-with-fallback, mirroring the other ED4ALL_* knobs).
@@ -1197,14 +1219,25 @@ def review_objectives(
     threshold: float = 0.45,
     embedder: Optional[Any] = None,
     client: Optional[Any] = None,
+    checkpoint_path: Optional[Path] = None,
+    run_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run the grounding-safe objective-review pass IN PLACE.
 
     Mutates ``terminals`` + the CO dicts inside ``chapter_objectives`` in
     place (when enabled and the call succeeds). Returns a result dict
     ``{"enabled": bool, "applied": bool, "counters": {...}, "provider": str,
-    "model": str}``. NEVER raises — any error logs a warning and leaves the
+    "model": str}``. Any per-chunk error logs a warning and leaves that group's
     objectives byte-identical to the 7B input.
+
+    Graceful stop (P4 item 5): a pending stop sentinel raises
+    ``GracefulStopRequested`` at the per-chunk boundary (checked at the loop top,
+    BEFORE dispatching that chunk's review call). This is the ONE exception the
+    pass propagates — the ``course_planning`` invoke site converts it to a phase
+    ``paused`` (never the fail-closed RuntimeError). Every already-reviewed chunk
+    is on the resume sidecar (``checkpoint_path``, when supplied); a resume
+    replays those chunks' adjusted maps without re-dispatching. The sidecar is
+    removed once every chunk lands (``chunks_failed == 0``).
 
     Default-OFF: when ``ED4ALL_OBJECTIVE_REVIEW_PROVIDER`` (or the explicit
     ``provider`` arg) is unset/empty/unknown, returns ``{"enabled": False,
@@ -1223,6 +1256,12 @@ def review_objectives(
         embedder: test seam for the CO→TO scorer; defaults to
             ``try_load_embedder()``.
         client: test seam for the OpenAI-compatible HTTP client.
+        checkpoint_path: per-chunk resume sidecar path (natural sibling of
+            ``synthesized_objectives.json`` in ``01_learning_objectives/``).
+            ``None`` disables the sidecar (byte-identical default); the stop
+            check stays live regardless.
+        run_id: explicit run id for the stop-sentinel probe (else resolved from
+            ``ED4ALL_RUN_ID``).
     """
     resolved_provider = resolve_objective_review_provider(provider)
     if resolved_provider is None:
@@ -1361,39 +1400,64 @@ def review_objectives(
         "remaps_reverted": 0,
         "remaps_unknown_to_dropped": 0,
     }
+    store = _review_checkpoint_store(checkpoint_path)
+    cache = store.load()
     chunks_attempted = 0
     chunks_failed = 0
+    chunks_completed = 0
     for label, messages in chunks:
+        # Stop at the per-chunk unit boundary — BEFORE dispatching this chunk's
+        # review call. A pending sentinel raises GracefulStopRequested here
+        # (sequential loop → a plain raise is correct; no gathered coroutine to
+        # lose). Every chunk reviewed so far is already on the sidecar; the raise
+        # propagates out of the pass (the invoke site maps it to ``paused``).
+        check_stop(_REVIEW_CHECKPOINT_SITE_ID, chunks_completed, run_id=run_id)
         chunks_attempted += 1
+        # Fingerprint = the full per-chunk messages (which encode the objectives
+        # + prompt) + resolved model, so any objective/prompt/model change flips
+        # it and re-runs that chunk on resume (never splices a stale review).
+        fingerprint = compute_fingerprint(
+            {"messages": messages, "model": resolved_model or ""}
+        )
         adjusted: Optional[Dict[str, Dict[str, Any]]] = None
-        try:
-            raw_text = oa_client.chat_completion(
-                messages,
-                max_tokens=_REVIEW_CHUNK_MAX_TOKENS,
-                temperature=_REVIEW_TEMPERATURE,
-            )
-            adjusted = _parse_adjusted(raw_text)
-        except Exception as exc:  # noqa: BLE001 — provider/network failure
-            logger.warning(
-                "objective-review chunk %s dispatch failed (provider=%s, "
-                "model=%s): %s. Keeping this group's original 7B "
-                "objectives; continuing.",
-                label, resolved_provider, resolved_model, exc,
-            )
-            chunks_failed += 1
-            continue
-        if not adjusted:
-            logger.warning(
-                "objective-review chunk %s response did not parse into an "
-                "adjusted-id map (provider=%s, model=%s); keeping this "
-                "group's originals; continuing.",
-                label, resolved_provider, resolved_model,
-            )
-            chunks_failed += 1
-            continue
+        reused = store.reuse(label, fingerprint, cache=cache)
+        if reused is not None:
+            cand = reused.get("adjusted")
+            adjusted = cand if isinstance(cand, dict) and cand else None
+        if adjusted is None:
+            try:
+                raw_text = oa_client.chat_completion(
+                    messages,
+                    max_tokens=_REVIEW_CHUNK_MAX_TOKENS,
+                    temperature=_REVIEW_TEMPERATURE,
+                )
+                adjusted = _parse_adjusted(raw_text)
+            except Exception as exc:  # noqa: BLE001 — provider/network failure
+                logger.warning(
+                    "objective-review chunk %s dispatch failed (provider=%s, "
+                    "model=%s): %s. Keeping this group's original 7B "
+                    "objectives; continuing.",
+                    label, resolved_provider, resolved_model, exc,
+                )
+                chunks_failed += 1
+                continue
+            if not adjusted:
+                logger.warning(
+                    "objective-review chunk %s response did not parse into an "
+                    "adjusted-id map (provider=%s, model=%s); keeping this "
+                    "group's originals; continuing.",
+                    label, resolved_provider, resolved_model,
+                )
+                chunks_failed += 1
+                continue
+            # Checkpoint the successfully-parsed chunk BEFORE merging so a stop
+            # at the NEXT loop-top leaves this chunk recoverable. A failed /
+            # unparsed chunk is never checkpointed (re-runs on resume).
+            store.append(label, fingerprint, {"adjusted": adjusted})
         # Reuse the SAME guardrail engine. It iterates all terminals + CO
         # groups but only mutates ids present in this chunk's adjusted map,
-        # so a per-chunk call applies exactly this chunk's edits.
+        # so a per-chunk call applies exactly this chunk's edits. Re-applied
+        # verbatim on a reused chunk so a resume reproduces the merge.
         chunk_counters = merge_reviewed_objectives(
             terminals=terminals,
             chapter_objectives=chapter_objectives,
@@ -1403,6 +1467,13 @@ def review_objectives(
         )
         for k in agg:
             agg[k] += chunk_counters.get(k, 0)
+        chunks_completed += 1
+
+    # A fully-complete review (every chunk landed) drops its resume sidecar —
+    # the objectives are about to be persisted by the caller. A partial review
+    # (chunks_failed > 0) keeps the sidecar so a resume replays what succeeded.
+    if chunks_failed == 0:
+        store.remove()
 
     # Applied if at least one chunk landed (some edits merged). When every
     # chunk failed, the objectives are byte-identical to the 7B input.

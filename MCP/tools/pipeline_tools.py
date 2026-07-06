@@ -4720,6 +4720,173 @@ def _append_stage2_window_checkpoint(
 
 
 # ---------------------------------------------------------------------------
+# course_planning Stage-2 chapter_fallback per-chapter resume checkpoint (P4).
+#
+# The chunk_window path (above) checkpoints per WINDOW; the legacy
+# chapter_fallback path (chunkset missing) dispatches one 7B call per CHAPTER
+# via ``synthesize_chapter_objectives``. Same fingerprinted-JSONL contract as
+# the window sidecar, unit = one CHAPTER (keyed by ``chapter_id``). On resume a
+# completed chapter's candidate objectives splice back into ``_flat_candidates``
+# in ORIGINAL chapter order (byte-equivalent to an uninterrupted run); any
+# change to what the model saw — the bounded chapter_text, the course name, the
+# shared draft-TO block, the model id, the resolved num_ctx, or the synthesis
+# system prompt — flips the fingerprint and re-runs that chapter. Default ON via
+# the shared ``ED4ALL_OBJECTIVE_SYNTHESIS_CHECKPOINT`` > family flag. The sidecar
+# lives in the SAME phase OUTPUT dir as the window sidecar (a sibling file).
+_STAGE2_CHAPTER_FALLBACK_CHECKPOINT_NAME = (
+    ".stage2_chapter_fallback_checkpoint.jsonl"
+)
+
+
+def _stage2_chapter_fallback_store(path: Optional[Path]) -> _LlmCheckpointStore:
+    """Sidecar for the legacy per-chapter fallback authoring (one call each)."""
+    return _LlmCheckpointStore(
+        path,
+        site_id="stage2_chapter_fallback",
+        site_env=_OBJECTIVE_SYNTHESIS_CHECKPOINT_ENV,
+    )
+
+
+def _stage2_chapter_fallback_fingerprint(
+    *,
+    chapter_text: str,
+    course_name: str,
+    draft_block: str,
+    model: str,
+    num_ctx: int,
+    system_prompt: str,
+) -> str:
+    """Deterministic fingerprint of a chapter_fallback chapter's inputs.
+
+    Hashes over the bounded chapter prose the model actually sees plus every
+    other axis that changes the per-chapter synthesis output (course name, the
+    shared draft-TO block, model id, resolved num_ctx, synthesis system prompt).
+    A re-extract that changes the chapter_text invalidates the cache even when
+    the chapter id is unchanged.
+    """
+    return _llm_compute_fingerprint({
+        "v": _STAGE2_CHECKPOINT_SCHEMA_VERSION,
+        "chapter_text_sha": _llm_hash_text(chapter_text or ""),
+        "course_name": course_name or "",
+        "draft_block": draft_block or "",
+        "model": model or "",
+        "num_ctx": int(num_ctx),
+        "system_prompt_sha": _llm_hash_text(system_prompt or ""),
+    })
+
+
+def _load_stage2_chapter_fallback_checkpoint(
+    path: Optional[Path],
+) -> Dict[str, Dict[str, Any]]:
+    """Tolerant loader for the chapter_fallback resume sidecar.
+
+    Returns a ``{chapter_id: record}`` map (last-line-wins, torn-trailing-line
+    tolerant — the shared store's contract). A missing / unreadable sidecar
+    returns an empty map (first-run case).
+    """
+    out: Dict[str, Dict[str, Any]] = {}
+    for rec in _stage2_chapter_fallback_store(path).load().values():
+        cid = rec.get("chapter_id")
+        if isinstance(cid, str) and cid:
+            out[cid] = rec
+    return out
+
+
+def _append_stage2_chapter_fallback_checkpoint(
+    path: Optional[Path],
+    *,
+    chapter_id: str,
+    fingerprint: str,
+    chapter_objectives: List[Dict[str, Any]],
+) -> None:
+    """Append one completed-chapter record to the sidecar with flush+fsync.
+
+    Best-effort (the shared store's contract): an OSError only costs a re-run
+    of that one chapter on resume. No-op when ``path`` is None or the site /
+    family flag is off.
+    """
+    _stage2_chapter_fallback_store(path).append(
+        chapter_id,
+        fingerprint,
+        {
+            "chapter_id": chapter_id,
+            "chapter_objectives": chapter_objectives,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# W10 assessment_synthesis per-unit resume checkpoint (P4).
+#
+# The ``assessment_synthesis`` phase runs three sequential per-TERMINAL-OBJECTIVE
+# loops (quiz / discussion / assignment), then a single atomic end-write
+# (``_write_assessment_artifacts`` → ``06_assessments/manifest.json`` + XML).
+# ONE fingerprinted-JSONL sidecar covers all three, keyed on the composite unit
+# ``(kind, terminal_id)``; on resume a completed unit is REPLAYED from the
+# sidecar and its generation (the quiz ``AssessmentGenerator.generate`` call or
+# the prose ``_synthesize_prose_prompt`` LLM dispatch) is SKIPPED. The stored
+# quiz payload is the assessment's ``to_dict()`` form, which flows through
+# ``_build_assessment_artifacts_from_data`` / ``assessment_to_qti`` identically
+# to the live dataclass (both serialize via ``to_dict()`` before XML emit), so
+# the emitted artifacts are byte-identical to an uninterrupted run. The fingerprint
+# captures the TO statement, the chunkset sha, the provider/model, the prompt
+# version, and per-kind knobs (bloom levels / question count for quizzes) so any
+# change re-runs the affected unit. Family-flag-only (``site_env=None``); default
+# ON. The sidecar lives in the phase OUTPUT dir ``<export>/06_assessments/`` and
+# is removed only AFTER the manifest write succeeds (a stop raises before that
+# write, so the sidecar survives for the resume).
+_ASSESSMENTS_CHECKPOINT_NAME = ".assessments_checkpoint.jsonl"
+_ASSESSMENT_PROMPT_VERSION = "v1"
+
+
+def _assessments_store(path: Optional[Path]) -> _LlmCheckpointStore:
+    return _LlmCheckpointStore(
+        path,
+        site_id="assessment_synthesis",
+        site_env=None,
+    )
+
+
+def _assessment_unit_key(kind: str, terminal_id: str) -> str:
+    return f"{kind}#{terminal_id}"
+
+
+def _assessment_chunkset_sha(chunks: List[Dict[str, Any]]) -> str:
+    """sha over the loaded chunks' (id, text) so a re-chunk re-runs the units."""
+    parts: List[str] = []
+    for c in chunks:
+        if isinstance(c, dict):
+            cid = c.get("id") or c.get("chunk_id") or ""
+            parts.append(f"{cid}\x1f{c.get('text') or ''}")
+    return _llm_hash_text("\x1e".join(parts))
+
+
+def _assessment_unit_fingerprint(
+    *,
+    kind: str,
+    terminal_id: str,
+    statement: str,
+    chunkset_sha: str,
+    provider: str,
+    model: str,
+    prompt_version: str,
+    knobs: str = "",
+) -> str:
+    """Deterministic fingerprint of one (kind, terminal_id) assessment unit."""
+    return _llm_compute_fingerprint({
+        "v": _LLM_CHECKPOINT_SCHEMA_VERSION,
+        "kind": kind,
+        "terminal_id": terminal_id,
+        "statement_sha": _llm_hash_text(statement or ""),
+        "chunkset_sha": chunkset_sha or "",
+        "provider": provider or "",
+        "model": model or "",
+        "prompt_version": prompt_version or "",
+        "knobs": knobs or "",
+    })
+
+
+# ---------------------------------------------------------------------------
 # concept_extraction Stage-3 per-window resume checkpoint.
 #
 # Same fingerprinted-JSONL unit-checkpoint contract as the stage-2 window
@@ -5127,8 +5294,70 @@ async def _run_stage2_window_synthesis(
                 )
     else:
         # ---- chapter_fallback: legacy per-chapter dispatch. -----------
+        # Per-chapter resume checkpoint (P4). Unit = one CHAPTER. Sidecar is a
+        # sibling of the window sidecar in the phase OUTPUT dir; default ON via
+        # the shared ED4ALL_OBJECTIVE_SYNTHESIS_CHECKPOINT > family flag. A
+        # completed chapter's candidate objectives splice back into
+        # _flat_candidates in ORIGINAL chapter order on resume.
+        _cf_path = (
+            checkpoint_path.parent / _STAGE2_CHAPTER_FALLBACK_CHECKPOINT_NAME
+            if checkpoint_path is not None else None
+        )
+        _cf_num_ctx = resolve_num_ctx()
+        _cf_model = str(getattr(provider, "_model", "") or "")
+        _cf_enabled = (
+            _cf_path is not None
+            and _objective_synthesis_checkpoint_enabled()
+        )
+        _cf_cache = (
+            _load_stage2_chapter_fallback_checkpoint(_cf_path)
+            if _cf_enabled else {}
+        )
+        if _cf_cache:
+            logger.info(
+                "plan_course_structure: Stage-2 loaded %d checkpointed "
+                "chapter_fallback record(s) from %s.",
+                len(_cf_cache), _cf_path,
+            )
+
+        def _cf_fingerprint(chapter_dict: Dict[str, Any]) -> str:
+            return _stage2_chapter_fallback_fingerprint(
+                chapter_text=str(chapter_dict.get("chapter_text") or ""),
+                course_name=course_name,
+                draft_block=_draft_block,
+                model=_cf_model,
+                num_ctx=_cf_num_ctx,
+                system_prompt=_TEXTBOOK_SYNTHESIS_SYSTEM_PROMPT,
+            )
+
+        # Partition chapters into REUSE (fingerprint matches a completed
+        # record) vs DISPATCH.
+        _cf_fp_by_id: Dict[str, str] = {}
+        _cf_reused: Dict[str, List[Dict[str, Any]]] = {}
+        _cf_to_dispatch: List[Dict[str, Any]] = []
+        for _ch in chapters:
+            _cid = str(_ch.get("id") or "")
+            _fp = _cf_fingerprint(_ch)
+            _cf_fp_by_id[_cid] = _fp
+            _rec = _cf_cache.get(_cid) if _cf_enabled else None
+            if isinstance(_rec, dict) and _rec.get("fingerprint") == _fp:
+                _cf_reused[_cid] = [
+                    c
+                    for c in (_rec.get("chapter_objectives") or [])
+                    if isinstance(c, dict)
+                ]
+            else:
+                _cf_to_dispatch.append(_ch)
+
         def _one_chapter(chapter_dict: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             cid = str(chapter_dict.get("id") or "")
+            # Graceful stop (P3.0 marker pattern): a stop armed WHILE this batch
+            # is in flight refuses a not-yet-started chapter by RETURNING
+            # STOP_MARKER — never raising (a raise would propagate through
+            # asyncio.gather before the post-gather append loop, losing every
+            # already-completed chapter in this batch).
+            if stop_requested():
+                return STOP_MARKER
             try:
                 return provider.synthesize_chapter_objectives(
                     chapter_dict,
@@ -5148,23 +5377,69 @@ async def _run_stage2_window_synthesis(
                 )
                 return None
 
-        _batches = provider.batch_chapters(chapters)
+        # Dispatch ONLY the un-cached chapters; append each completed chapter to
+        # the sidecar AS ITS BATCH LANDS so a mid-phase kill only costs the
+        # in-flight batch on resume.
+        _cf_dispatched: Dict[str, Optional[Dict[str, Any]]] = {}
+        _cf_stop_marker_seen = False
+        _batches = provider.batch_chapters(_cf_to_dispatch)
         for _batch in _batches:
+            # Graceful stop BETWEEN batches: every prior batch's completed
+            # chapter is already appended, so this plain raise loses nothing
+            # (mid-batch arming is handled by the STOP_MARKER return above).
+            check_stop("stage2_chapter_fallback", len(_cf_dispatched))
             _results = await _asyncio.gather(*[
                 _loop.run_in_executor(None, _one_chapter, ch) for ch in _batch
             ])
             for _chapter_dict, _res in zip(_batch, _results):
                 _cid = str(_chapter_dict.get("id") or "")
-                if _res is None:
-                    chapter_synthesis_failures.append(_cid)
+                if _res is STOP_MARKER:
+                    # Not-attempted (stop refused pre-dispatch): skip append so
+                    # resume re-runs it. Do NOT record in _cf_dispatched.
+                    _cf_stop_marker_seen = True
                     continue
+                _cf_dispatched[_cid] = _res
+                if _cf_enabled and _res is not None:
+                    _append_stage2_chapter_fallback_checkpoint(
+                        _cf_path,
+                        chapter_id=_cid,
+                        fingerprint=_cf_fp_by_id.get(_cid, ""),
+                        chapter_objectives=[
+                            _co
+                            for _co in (_res.get("chapter_objectives") or [])
+                            if isinstance(_co, dict)
+                        ],
+                    )
+        if _cf_stop_marker_seen:
+            # Every chapter that COMPLETED before the stop is in _cf_dispatched
+            # AND checkpointed; the markers were never dispatched. Raise AFTER
+            # the sidecar append so resume re-runs only the un-attempted
+            # chapters (P3.0).
+            raise GracefulStopRequested(
+                "stage2_chapter_fallback", len(_cf_dispatched)
+            )
+
+        # Reassemble in ORIGINAL chapter order (reused + freshly dispatched).
+        # The chapter path emits no source_chunk_ids; mark empty so Pass C
+        # treats each CO as no_resolved_chunk.
+        for _ch in chapters:
+            _cid = str(_ch.get("id") or "")
+            if _cid in _cf_reused:
                 candidates_synthesized += 1
-                for _co in _res.get("chapter_objectives") or []:
+                for _co in _cf_reused[_cid]:
                     if isinstance(_co, dict):
-                        # The chapter path emits no source_chunk_ids; mark
-                        # empty so Pass C treats it as no_resolved_chunk.
                         _co.setdefault("source_chunk_ids", [])
                         _flat_candidates.append(_co)
+                continue
+            _res = _cf_dispatched.get(_cid)
+            if _res is None:
+                chapter_synthesis_failures.append(_cid)
+                continue
+            candidates_synthesized += 1
+            for _co in _res.get("chapter_objectives") or []:
+                if isinstance(_co, dict):
+                    _co.setdefault("source_chunk_ids", [])
+                    _flat_candidates.append(_co)
 
     if candidates_synthesized == 0 or not _flat_candidates:
         logger.warning(
@@ -9772,6 +10047,150 @@ def _objectives_payload_sha(objectives_payload: Any) -> str:
         return _llm_hash_text(str(objectives_payload))
 
 
+# --------------------------------------------------------------------------- #
+# Dynamic block-planner per-week resume sidecar (plan P4 item 4 / D5).
+# --------------------------------------------------------------------------- #
+# The outline tier's dynamic block planner (``ED4ALL_DYNAMIC_BLOCK_PLAN``)
+# dispatches ONE 70B ``plan_week_blocks`` call per week to choose that week's
+# block sequence. That call lives in an EARLIER loop than the per-block outline
+# sidecar, so a mid-planning kill re-dispatched every week's plan on resume.
+# This sidecar checkpoints each week's plan keyed by ``week_num`` with a
+# fingerprint over the planner's full input surface (TO + COs + source chunks +
+# model + budget); any mismatch re-runs that week. Family-flag-only
+# (``site_env=None``): governed by ``ED4ALL_GENERATION_CHECKPOINT`` alone.
+_BLOCK_PLANNER_CHECKPOINT_NAME = ".block_planner_weeks_checkpoint.jsonl"
+
+
+def _block_planner_store(path: Optional[Path]) -> _LlmCheckpointStore:
+    return _LlmCheckpointStore(
+        path, site_id="block_planner_weeks", site_env=None,
+    )
+
+
+def _block_planner_week_key(week_num: int) -> str:
+    return f"w{int(week_num)}"
+
+
+def _block_planner_week_fingerprint(
+    *,
+    week_num: int,
+    terminal_objective: Dict[str, Any],
+    chapter_objectives: List[Dict[str, Any]],
+    source_chunks: List[Dict[str, Any]],
+    model: str,
+    budget: Any,
+    course_code: str,
+) -> str:
+    """Fingerprint every input ``plan_week_blocks`` sees for one week."""
+    def _obj_desc(o: Dict[str, Any]) -> str:
+        o = o or {}
+        return f"{o.get('id')}\x1f{o.get('statement')}\x1f{o.get('bloom_level')}"
+
+    _chunk_parts = [
+        f"{c.get('id')}\x1f{c.get('text')}\x1f{c.get('heading')}"
+        for c in (source_chunks or []) if isinstance(c, dict)
+    ]
+    return _llm_compute_fingerprint({
+        "site": "block_planner_week",
+        "week_num": int(week_num),
+        "to": _obj_desc(terminal_objective or {}),
+        "cos_sha": _llm_hash_text(
+            "\x1e".join(_obj_desc(o) for o in (chapter_objectives or []))
+        ),
+        "chunks_sha": _llm_hash_text("\x1e".join(_chunk_parts)),
+        "model": str(model or ""),
+        "budget": str(budget),
+        "course_code": str(course_code or ""),
+        "new_block_types": os.environ.get("ED4ALL_NEW_BLOCK_TYPES", ""),
+    })
+
+
+def _serialize_week_block_plan(plan: Any) -> Dict[str, Any]:
+    """Serialize a ``WeekBlockPlan`` into a JSON-able checkpoint payload."""
+    _page_plan: Dict[str, Any] = {}
+    for _pk, _entries in (getattr(plan, "page_plan", {}) or {}).items():
+        _page_plan[_pk] = [list(_e) for _e in _entries]
+    return {
+        "page_plan": _page_plan,
+        "selected": list(getattr(plan, "selected", []) or []),
+        "fallback_used": bool(getattr(plan, "fallback_used", False)),
+        "terminal_objective_id": str(
+            getattr(plan, "terminal_objective_id", "") or ""
+        ),
+        "model": str(getattr(plan, "model", "") or ""),
+    }
+
+
+def _deserialize_week_block_plan(payload: Dict[str, Any]) -> Any:
+    """Reconstruct a ``WeekBlockPlan`` from a checkpoint payload."""
+    from lib.generation.block_planner import WeekBlockPlan  # noqa: PLC0415
+
+    _page_plan: Dict[str, Any] = {}
+    for _pk, _entries in (payload.get("page_plan") or {}).items():
+        _page_plan[_pk] = [
+            (str(_e[0]), str(_e[1]), list(_e[2]) if len(_e) > 2 else [])
+            for _e in _entries
+        ]
+    return WeekBlockPlan(
+        page_plan=_page_plan,
+        selected=list(payload.get("selected") or []),
+        fallback_used=bool(payload.get("fallback_used", False)),
+        terminal_objective_id=str(payload.get("terminal_objective_id") or ""),
+        model=str(payload.get("model") or ""),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Legacy single-pass content_generation per-week resume sidecar (P4 item 3).
+# --------------------------------------------------------------------------- #
+# ``_generate_course_content`` (the ``course_generation``-workflow content
+# phase) emits one 5-page weekly module per week via ``build_week_data`` (LLM
+# authoring when ``COURSEFORGE_PROVIDER`` / ``COURSEFORGE_TWO_PASS`` is set) +
+# ``generate_week``. This per-week sidecar records each completed week keyed by
+# ``week_num`` with a fingerprint over the week objectives + provider spec +
+# prompt version; on resume a week is SKIPPED (its page files re-collected from
+# the stored payload) when the record matches AND every page file still exists.
+# Family-flag-only (``site_env=None``).
+_LEGACY_CONTENTGEN_CHECKPOINT_NAME = ".content_generation_weeks_checkpoint.jsonl"
+_LEGACY_CONTENTGEN_PROMPT_VERSION = "v1"
+
+
+def _legacy_contentgen_store(path: Optional[Path]) -> _LlmCheckpointStore:
+    return _LlmCheckpointStore(
+        path, site_id="content_generation_legacy", site_env=None,
+    )
+
+
+def _legacy_contentgen_week_key(week_num: int) -> str:
+    return f"w{int(week_num)}"
+
+
+def _legacy_contentgen_week_fingerprint(
+    *,
+    week_num: int,
+    week_objectives: List[Dict[str, Any]],
+    provider_spec: str,
+    duration_weeks: int,
+    course_code: str,
+) -> str:
+    """Fingerprint the per-week legacy content-gen inputs."""
+    _obj_sha = _llm_hash_text(
+        "\x1e".join(
+            f"{o.get('id')}\x1f{o.get('statement')}"
+            for o in (week_objectives or [])
+        )
+    )
+    return _llm_compute_fingerprint({
+        "site": "content_generation_legacy_week",
+        "week_num": int(week_num),
+        "objectives_sha": _obj_sha,
+        "provider_spec": str(provider_spec or ""),
+        "duration_weeks": int(duration_weeks),
+        "course_code": str(course_code or ""),
+        "prompt_version": _LEGACY_CONTENTGEN_PROMPT_VERSION,
+    })
+
+
 #: Key under which the per-block input fingerprint is stamped into a tier
 #: checkpoint entry (`.blocks_outline_checkpoint.jsonl` /
 #: `.blocks_final_checkpoint.jsonl`). Entries lacking it (pre-upgrade
@@ -12483,8 +12902,23 @@ async def _run_content_generation_outline(**kwargs) -> str:
     # key-terms flag). Reuse ``_chunk_detail_map`` if the key-terms flag already
     # populated it.
     _planner_detail_map: Dict[str, Dict[str, Any]] = {}
+    # Dynamic block-planner per-week resume sidecar (P4 item 4 / D5). Lives in
+    # the outline OUTPUT dir alongside the per-block outline sidecar; loaded once
+    # so a resumed run reuses already-planned weeks instead of re-dispatching the
+    # per-week 70B plan call. Inert (empty cache, no writes) when the planner is
+    # off or the family flag is disabled.
+    _planner_checkpoint_path = out_dir / _BLOCK_PLANNER_CHECKPOINT_NAME
+    _planner_store = _block_planner_store(_planner_checkpoint_path)
+    _planner_cache = _planner_store.load()
+    _planner_model = ""
     if dynamic_block_plan:
         block_planner_provider = _build_block_planner_provider(capture=capture)
+        _planner_model = str(
+            getattr(block_planner_provider, "_model", "")
+            or getattr(block_planner_provider, "model", "")
+            or os.environ.get("ED4ALL_DYNAMIC_BLOCK_PLAN_MODEL", "")
+            or ""
+        )
         _planner_detail_map = (
             _chunk_detail_map
             if _chunk_detail_map
@@ -12492,6 +12926,13 @@ async def _run_content_generation_outline(**kwargs) -> str:
         )
 
     for week_num in range(1, duration_weeks + 1):
+        # Graceful stop (checkpoint on command): raise at the week-loop unit
+        # boundary. Every prior week's block plan was appended to the planner
+        # sidecar (or served from the resume cache), so a stop here loses at
+        # most the in-flight week's plan. A pre-armed sentinel raises on week 1
+        # (zero planner dispatches). Sequential loop → plain check_stop (no
+        # STOP_MARKER; the P3.0 gather-marker pattern does not bind here).
+        check_stop("block_planner_weeks", week_num - 1)
         week_topics = (
             topics_by_week[week_num - 1]
             if (week_num - 1) < len(topics_by_week)
@@ -12547,7 +12988,10 @@ async def _run_content_generation_outline(**kwargs) -> str:
         # (byte-identical legacy behaviour).
         week_block_plan = None
         if dynamic_block_plan:
-            from lib.generation.block_planner import plan_week_blocks
+            from lib.generation.block_planner import (
+                DEFAULT_BLOCK_BUDGET,
+                plan_week_blocks,
+            )
 
             _week_to = (
                 week_objectives[0]
@@ -12573,14 +13017,41 @@ async def _run_content_generation_outline(**kwargs) -> str:
                         )
                         _week_chunks.append({"id": _cid, "text": _body,
                                              "heading": _heading})
-            week_block_plan = plan_week_blocks(
+            # Resume sidecar: reuse a prior week's plan when its fingerprint
+            # matches (skips the per-week 70B ``plan_week_blocks`` dispatch);
+            # a mismatch / miss re-plans + checkpoints. The deterministic
+            # cross-week merge below always re-runs, so a reused RAW plan stays
+            # byte-equivalent. A GracefulStopRequested cannot originate here
+            # (``plan_week_blocks`` never raises — it fail-softs to the fixed
+            # plan), so the pause boundary is the loop-top check_stop above.
+            _planner_key = _block_planner_week_key(week_num)
+            _planner_fp = _block_planner_week_fingerprint(
+                week_num=week_num,
                 terminal_objective=_week_to,
                 chapter_objectives=_week_cos,
                 source_chunks=_week_chunks,
-                provider=block_planner_provider,
-                capture=capture,
+                model=_planner_model,
+                budget=DEFAULT_BLOCK_BUDGET,
                 course_code=course_code,
             )
+            _planner_reused = _planner_store.reuse(
+                _planner_key, _planner_fp, cache=_planner_cache,
+            )
+            if _planner_reused is not None:
+                week_block_plan = _deserialize_week_block_plan(_planner_reused)
+            else:
+                week_block_plan = plan_week_blocks(
+                    terminal_objective=_week_to,
+                    chapter_objectives=_week_cos,
+                    source_chunks=_week_chunks,
+                    provider=block_planner_provider,
+                    capture=capture,
+                    course_code=course_code,
+                )
+                _planner_store.append(
+                    _planner_key, _planner_fp,
+                    _serialize_week_block_plan(week_block_plan),
+                )
             if week_block_plan.fallback_used:
                 n_weeks_planner_fallback += 1
             else:
@@ -13547,6 +14018,9 @@ async def _run_content_generation_outline(**kwargs) -> str:
     # INTERRUPTED run — a stale sidecar would re-feed a completed run.
     if _outline_checkpoint_on:
         _remove_block_checkpoint(_outline_checkpoint_path)
+    # Symmetric cleanup for the dynamic block-planner per-week sidecar (removed
+    # only on this successful final write, never on a graceful-stop pause).
+    _planner_store.remove()
 
     # Worker W2: persist chunks_lookup + objectives_payload as sidecars
     # next to blocks_outline.jsonl so W3's rewrite phase can rehydrate
@@ -15410,6 +15884,10 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
         _to_batch: list = []          # prepared outline Blocks for fresh dispatch
         _batch_idx_by_id: Dict[str, int] = {}   # block_id -> original index
         _chunks_for_batch: Dict[str, list] = {}
+        # Graceful-stop per-round checkpoint bookkeeping: block_ids the router's
+        # ``on_block_resolved`` callback has already appended to the resume
+        # sidecar (so Phase C below does not double-append them).
+        _batch_checkpointed_ids: set = set()
         for _idx, blk in enumerate(outline_blocks):
             _cached_entry = _rewrite_cache.get(blk.block_id)
             if _cached_entry is not None:
@@ -15500,21 +15978,41 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
                 except Exception:  # noqa: BLE001
                     pass
             # Graceful stop (checkpoint on command): pre-flight check BEFORE
-            # the batch dispatch. The batched cloud lane resolves all its
-            # blocks in a single ``route_rewrite_batch`` call (per-round
-            # checkpoint hooks INSIDE the router are Wave C), so once a stop
-            # is armed the correct unit boundary is here — refuse the whole
-            # batch dispatch (nothing has been checkpointed yet: Phase C below
-            # is the only appender) and raise. A stop armed mid-router-call
-            # cannot be honoured from here; that is the router's own concern.
+            # the batch dispatch so a PRE-ARMED sentinel never dispatches the
+            # batch at all (zero provider calls). A stop armed DURING the router
+            # call is honoured INSIDE ``route_rewrite_batch`` — it checkpoints
+            # every block resolved in a completed round via the
+            # ``on_block_resolved`` callback below, then raises
+            # ``GracefulStopRequested`` between rounds (Wave C / D2). That raise
+            # must propagate, so it is caught + re-raised ahead of the fail-soft
+            # ``except Exception`` (which would otherwise stamp the whole batch
+            # ``validator_consensus_fail``, mapping a pause to a fake failure).
             check_stop("rewrite_tier", len(_finished_by_idx))
+
+            def _on_batch_block_resolved(_bid: str, _blk: Any) -> None:
+                """Router per-round hook: append a validator-PASSING block the
+                instant it resolves so a between-round stop loses at most the
+                in-flight round. Best-effort; ids tracked to avoid a Phase-C
+                double-append."""
+                _checkpoint_rewrite_result(_blk)
+                _rid = str(getattr(_blk, "block_id", "") or _bid or "")
+                if _rid:
+                    _batch_checkpointed_ids.add(_rid)
+
             try:
                 _batch_results = router.route_rewrite_batch(
                     _to_batch,
                     source_chunks_by_block_id=_chunks_for_batch,
                     objectives=objectives_payload,
                     validators=[],
+                    on_block_resolved=_on_batch_block_resolved,
                 )
+            except GracefulStopRequested:
+                # Between-round stop raised from inside route_rewrite_batch:
+                # completed-round blocks are already checkpointed via the
+                # callback — propagate the pause, never marshal it as a batch
+                # consensus-fail.
+                raise
             except Exception as exc:  # noqa: BLE001 — fail-soft whole batch
                 logger.warning(
                     "rewrite phase: route_rewrite_batch() failed (%s); "
@@ -15535,11 +16033,18 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
                 _finished_by_idx[_idx] = _apply_str_backstops(_res)
 
         # --- Phase C: re-order + checkpoint -------------------------------
+        # Blocks resolved fresh by the router are already on disk (the
+        # ``on_block_resolved`` callback checkpointed them per round); only the
+        # short-circuited (cache / key-terms / FAQ) survivors still need an
+        # append here. Dedupe-by-block_id makes a duplicate harmless, but the
+        # id-set keeps the sidecar one-line-per-block.
         for _idx in range(len(outline_blocks)):
             _result = _finished_by_idx.get(_idx)
             if _result is not None:
                 rewrite_blocks.append(_result)
-                _checkpoint_rewrite_result(_result)
+                _rc_bid = str(getattr(_result, "block_id", "") or "")
+                if _rc_bid not in _batch_checkpointed_ids:
+                    _checkpoint_rewrite_result(_result)
     elif _rewrite_concurrency <= 1:
         # Sequential path — EXACT legacy behavior. No pool constructed.
         for blk in outline_blocks:
@@ -17855,6 +18360,11 @@ def _build_tool_registry() -> dict:
                     _src = _so_by_id.get(str(_e.get("id")))
                     if _src is not None and _src.get("sub_objectives"):
                         _e["sub_objectives"] = list(_src["sub_objectives"])
+            except GracefulStopRequested:
+                # populate_sub_objectives' per-CO check_stop raised: propagate
+                # the pause (never let the fail-soft handler below marshal it
+                # into "leaving CO sub_objectives unchanged" + continue).
+                raise
             except Exception as _so_exc:  # noqa: BLE001 — never fail the phase
                 logger.warning(
                     "sub-objective derivation raised (%s); leaving CO "
@@ -18491,7 +19001,29 @@ def _build_tool_registry() -> dict:
                 if chapter_objectives
                 else {}
             )
+            # Per-week resume sidecar (P4 item 3). Lives in the content OUTPUT
+            # dir; loaded once so a resumed run skips already-emitted weeks
+            # instead of re-authoring them. Inert (empty cache, no writes) when
+            # the family flag is disabled. ``provider_spec`` folds the authoring
+            # mode into every week's fingerprint so a provider/two-pass swap
+            # between resume attempts re-runs the affected weeks.
+            _cg_checkpoint_path = (
+                content_dir / _LEGACY_CONTENTGEN_CHECKPOINT_NAME
+            )
+            _cg_store = _legacy_contentgen_store(_cg_checkpoint_path)
+            _cg_cache = _cg_store.load()
+            _cg_provider_spec = (
+                f"router={content_router is not None}|"
+                f"provider={_courseforge_provider_env}|"
+                f"two_pass={_courseforge_two_pass_enabled()}"
+            )
             for week_num in range(1, duration_weeks + 1):
+                # Graceful stop (checkpoint on command): raise at the week-loop
+                # unit boundary. Every prior week was appended to the sidecar (or
+                # served from the resume cache), so a stop here loses at most the
+                # in-flight week. A pre-armed sentinel raises on week 1 (zero
+                # weeks emitted). Sequential loop → plain check_stop.
+                check_stop("content_generation_legacy", weeks_prepared)
                 week_topics = (
                     topics_by_week[week_num - 1]
                     if (week_num - 1) < len(topics_by_week)
@@ -18538,6 +19070,33 @@ def _build_tool_registry() -> dict:
                     seen.add(o["id"])
                     week_objectives_deduped.append(o)
 
+                # Resume sidecar: skip a week whose fingerprint matches AND whose
+                # page files all still exist on disk (re-collect them into the
+                # emit list) — the expensive ``build_week_data`` authoring +
+                # ``generate_week`` write are avoided. A fingerprint miss / any
+                # missing page file re-emits the week fresh.
+                _cg_week_key = _legacy_contentgen_week_key(week_num)
+                _cg_week_fp = _legacy_contentgen_week_fingerprint(
+                    week_num=week_num,
+                    week_objectives=week_objectives_deduped,
+                    provider_spec=_cg_provider_spec,
+                    duration_weeks=duration_weeks,
+                    course_code=course_code,
+                )
+                _cg_reused = _cg_store.reuse(
+                    _cg_week_key, _cg_week_fp, cache=_cg_cache,
+                )
+                if _cg_reused is not None:
+                    _reused_paths = [
+                        str(p) for p in (_cg_reused.get("page_paths") or [])
+                    ]
+                    if _reused_paths and all(
+                        Path(p).exists() for p in _reused_paths
+                    ):
+                        generated_files.extend(_reused_paths)
+                        weeks_prepared += 1
+                        continue
+
                 week_data = _cgh.build_week_data(
                     week_num=week_num,
                     duration_weeks=duration_weeks,
@@ -18568,6 +19127,7 @@ def _build_tool_registry() -> dict:
 
                 weeks_prepared += 1
                 week_dir = content_dir / f"week_{week_num:02d}"
+                _week_page_paths: list = []
                 for name in files:
                     page_path = week_dir / name
                     # Post-process: ensure every page carries an
@@ -18588,6 +19148,15 @@ def _build_tool_registry() -> dict:
                             "Failed to post-process %s: %s", page_path, exc,
                         )
                     generated_files.append(str(page_path))
+                    _week_page_paths.append(str(page_path))
+
+                # Checkpoint the completed week (flush+fsync) so a resume skips
+                # it. Appended AFTER generate_week + post-processing wrote every
+                # page file — a stop at the NEXT loop-top then loses nothing.
+                _cg_store.append(
+                    _cg_week_key, _cg_week_fp,
+                    {"page_paths": _week_page_paths},
+                )
 
                 if capture is not None:
                     try:
@@ -18767,6 +19336,11 @@ def _build_tool_registry() -> dict:
                     "Failed to write content_generation_provenance.json: %s", exc
                 )
                 provenance_path = None
+
+            # Crash-resume sidecar cleanup: every week is on disk, so the
+            # interrupted-run checkpoint is no longer needed (removed only on
+            # this successful final return, never on a graceful-stop pause).
+            _cg_store.remove()
 
             content_paths_str = ",".join(generated_files)
             return json.dumps({
@@ -24231,6 +24805,15 @@ def _build_tool_registry() -> dict:
 
         out_dir = project_path / "06_assessments"
 
+        # ---- per-unit resume checkpoint (P4) -----------------------------
+        # ONE sidecar keyed on (kind, terminal_id); default ON (family flag).
+        # Removed only AFTER the manifest end-write succeeds; a graceful stop
+        # raises before that write, so the sidecar survives for the resume.
+        _assessments_ckpt_path = out_dir / _ASSESSMENTS_CHECKPOINT_NAME
+        _assessments_store_obj = _assessments_store(_assessments_ckpt_path)
+        _assessments_cache = _assessments_store_obj.load()
+        _assessment_units_done = 0
+
         # ---- course code -------------------------------------------------
         course_code = (
             kwargs.get("course_code")
@@ -24313,6 +24896,10 @@ def _build_tool_registry() -> dict:
             except OSError:
                 loaded_chunks = []
 
+        # Chunkset fingerprint axis (shared by every unit): a re-chunk that
+        # changes the grounding re-runs the affected units on resume.
+        _assessment_chunkset_sha_val = _assessment_chunkset_sha(loaded_chunks)
+
         # ---- params ------------------------------------------------------
         question_count = int(kwargs.get("question_count", 5) or 5)
         bloom_raw = kwargs.get("bloom_levels", "remember,understand,apply")
@@ -24387,6 +24974,10 @@ def _build_tool_registry() -> dict:
         generator = AssessmentGenerator(capture=capture, check_leaks=False)
         built_assessments: List[Any] = []
         for week_idx, tid in enumerate(terminal_ids, start=1):
+            # Graceful stop at the unit boundary (sequential loop → plain
+            # check_stop). Every completed unit is already checkpointed, so this
+            # raises BEFORE the final manifest write with zero loss.
+            check_stop("assessment_synthesis", _assessment_units_done)
             group_co_ids = cos_by_terminal.get(tid) or []
             # Quiz the TO + its child COs. A flat group quizzes the COs.
             obj_ids = (
@@ -24394,6 +24985,32 @@ def _build_tool_registry() -> dict:
             )
             obj_ids = [o for o in obj_ids if o in valid_objective_ids]
             if not obj_ids:
+                continue
+            # ---- resume checkpoint: replay a completed quiz unit ----------
+            _q_fp = _assessment_unit_fingerprint(
+                kind="quiz",
+                terminal_id=tid,
+                statement=" \x1e ".join(
+                    id_to_statement.get(o, o) for o in obj_ids
+                ),
+                chunkset_sha=_assessment_chunkset_sha_val,
+                provider="assessment_generator",
+                model="",
+                prompt_version=_ASSESSMENT_PROMPT_VERSION,
+                knobs=f"bloom={','.join(bloom_levels)};qc={question_count}",
+            )
+            _q_key = _assessment_unit_key("quiz", tid)
+            _q_reused = _assessments_store_obj.reuse(
+                _q_key, _q_fp, cache=_assessments_cache
+            )
+            if _q_reused is not None:
+                _cached = _q_reused.get("assessment")
+                if isinstance(_cached, dict):
+                    # The dict form flows through
+                    # _build_assessment_artifacts_from_data /
+                    # assessment_to_qti identically to the live dataclass.
+                    built_assessments.append(_cached)
+                    _assessment_units_done += 1
                 continue
             try:
                 assessment = generator.generate(
@@ -24433,6 +25050,22 @@ def _build_tool_registry() -> dict:
             else:
                 assessment.title = f"Week {week_idx} Quiz"
             built_assessments.append(assessment)
+            # Checkpoint the completed unit (to_dict() + week for the emit).
+            try:
+                _q_payload = dict(assessment.to_dict())
+            except Exception:
+                _q_payload = {
+                    "assessment_id": getattr(assessment, "assessment_id", ""),
+                    "title": getattr(assessment, "title", ""),
+                    "questions": [],
+                }
+            _q_payload["week"] = week_idx
+            _q_payload["title"] = assessment.title
+            _assessments_store_obj.append(
+                _q_key, _q_fp,
+                {"kind": "quiz", "terminal_id": tid, "assessment": _q_payload},
+            )
+            _assessment_units_done += 1
 
         # ============================================================== #
         # 2. ASSIGNMENT + DISCUSSION PROSE — optional LLM prose seat.     #
@@ -24485,9 +25118,31 @@ def _build_tool_registry() -> dict:
 
         # 2a. One discussion per TERMINAL objective.
         for week_idx, tid in enumerate(terminal_ids, start=1):
+            # Graceful stop at the unit boundary (sequential loop).
+            check_stop("assessment_synthesis", _assessment_units_done)
             if tid == "_FLAT_" or tid not in to_map:
                 continue
             statement = id_to_statement.get(tid, tid)
+            # ---- resume checkpoint: replay a completed discussion unit ----
+            _d_fp = _assessment_unit_fingerprint(
+                kind="discussion",
+                terminal_id=tid,
+                statement=statement,
+                chunkset_sha=_assessment_chunkset_sha_val,
+                provider=prose_provider_name or "deterministic",
+                model=str(prose_model or ""),
+                prompt_version=_ASSESSMENT_PROMPT_VERSION,
+            )
+            _d_key = _assessment_unit_key("discussion", tid)
+            _d_reused = _assessments_store_obj.reuse(
+                _d_key, _d_fp, cache=_assessments_cache
+            )
+            if _d_reused is not None:
+                _cd = _d_reused.get("discussion")
+                if isinstance(_cd, dict):
+                    discussions.append(_cd)
+                    _assessment_units_done += 1
+                continue
             grounded = _grounded_chunk_ids_for(tid)
             prompt_text = ""
             if prose_provider is not None:
@@ -24535,9 +25190,20 @@ def _build_tool_registry() -> dict:
                 "text": prompt_text,
                 "week": week_idx,
             })
+            _assessments_store_obj.append(
+                _d_key, _d_fp,
+                {
+                    "kind": "discussion",
+                    "terminal_id": tid,
+                    "discussion": discussions[-1],
+                },
+            )
+            _assessment_units_done += 1
 
         # 2b. One assignment per CO-cluster (per TO's child-CO group).
         for week_idx, tid in enumerate(terminal_ids, start=1):
+            # Graceful stop at the unit boundary (sequential loop).
+            check_stop("assessment_synthesis", _assessment_units_done)
             group_co_ids = [
                 c for c in (cos_by_terminal.get(tid) or [])
                 if c in valid_objective_ids
@@ -24547,6 +25213,27 @@ def _build_tool_registry() -> dict:
             # Anchor the assignment on the first CO of the cluster.
             anchor = group_co_ids[0]
             statement = id_to_statement.get(anchor, anchor)
+            # ---- resume checkpoint: replay a completed assignment unit ----
+            _a_fp = _assessment_unit_fingerprint(
+                kind="assignment",
+                terminal_id=tid,
+                statement=statement,
+                chunkset_sha=_assessment_chunkset_sha_val,
+                provider=prose_provider_name or "deterministic",
+                model=str(prose_model or ""),
+                prompt_version=_ASSESSMENT_PROMPT_VERSION,
+                knobs=f"anchor={anchor}",
+            )
+            _a_key = _assessment_unit_key("assignment", tid)
+            _a_reused = _assessments_store_obj.reuse(
+                _a_key, _a_fp, cache=_assessments_cache
+            )
+            if _a_reused is not None:
+                _ca = _a_reused.get("assignment")
+                if isinstance(_ca, dict):
+                    assignments.append(_ca)
+                    _assessment_units_done += 1
+                continue
             grounded = _grounded_chunk_ids_for(anchor)
             task_text = ""
             if prose_provider is not None:
@@ -24593,6 +25280,15 @@ def _build_tool_registry() -> dict:
                 "points": 10,
                 "week": week_idx,
             })
+            _assessments_store_obj.append(
+                _a_key, _a_fp,
+                {
+                    "kind": "assignment",
+                    "terminal_id": tid,
+                    "assignment": assignments[-1],
+                },
+            )
+            _assessment_units_done += 1
 
         # ============================================================== #
         # 3. EMIT — XML + manifest via the pure helpers.                 #
@@ -24608,6 +25304,9 @@ def _build_tool_registry() -> dict:
             )
             artifacts = []
         manifest = _write_assessment_artifacts(out_dir, artifacts)
+        # Resume is only for an INTERRUPTED run: drop the sidecar now that the
+        # final manifest write has succeeded (mirrors the tier sidecars).
+        _assessments_store_obj.remove()
 
         quiz_n = sum(1 for e in manifest["assessments"] if e.get("type") == "qti")
         disc_n = sum(
@@ -25666,6 +26365,11 @@ def _build_tool_registry() -> dict:
                     "course_slug": course_slug,
                 })
             _index_strategy = "idempotent_reuse"
+        except GracefulStopRequested:
+            # A pre-encode / pre-write stop check raised: propagate the pause
+            # (GracefulStopRequested subclasses RuntimeError, so the broad
+            # handler below would otherwise marshal it as a build_error).
+            raise
         except Exception as exc:  # noqa: BLE001 — surface, never silently degrade
             return json.dumps({
                 "success": False,

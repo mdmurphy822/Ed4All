@@ -41,6 +41,7 @@ from Trainforge.training import (  # noqa: E402
     RunPodBackend,
     TrainingRunner,
 )
+from lib.generation.stop_control import GracefulStopRequested  # noqa: E402
 from lib.ontology.slugs import libv2_course_slug  # noqa: E402
 
 
@@ -152,6 +153,12 @@ def train_course_command(
         dry_run=dry_run,
         config_overrides_path=Path(config_overrides) if config_overrides else None,
     )
+    # NB: a graceful stop (``ed4all stop`` sentinel tripping mid-training) makes
+    # ``runner.run()`` raise ``GracefulStopRequested``. It is deliberately NOT
+    # caught here: on the in-process ``ed4all run trainforge_train`` path the
+    # executor's Wave-A carve-out catches it and marks the phase ``paused``.
+    # The standalone ``python -m Trainforge.train_course`` path converts it to
+    # the canonical paused exit code 3 in :func:`main`.
     result = runner.run()
 
     click.secho("Training run complete.", fg="green" if not dry_run else "cyan")
@@ -168,8 +175,30 @@ def train_course_command(
 
 
 def main() -> None:
-    """Console-script entry point. Click owns argv parsing."""
-    train_course_command()
+    """Console-script entry point. Click owns argv parsing.
+
+    Runs the click command in non-standalone mode so a graceful stop
+    (``GracefulStopRequested``, raised by the runner when an ``ed4all stop``
+    sentinel trips mid-training) surfaces as the canonical paused exit code 3
+    with a resume hint, instead of a bare traceback. All other click control
+    flow (usage errors, ``--help``, ``Abort``) keeps its standard behavior.
+    """
+    try:
+        train_course_command.main(standalone_mode=False)
+    except GracefulStopRequested as stop:
+        click.secho(f"\nTraining paused (graceful stop): {stop}", fg="yellow")
+        click.echo(
+            "The trainer flushed its native checkpoint into the run dir. "
+            "Re-run the same command to resume — resume_from_checkpoint "
+            "auto-detects the latest checkpoint-*."
+        )
+        sys.exit(3)
+    except click.ClickException as exc:
+        exc.show()
+        sys.exit(exc.exit_code)
+    except click.exceptions.Abort:
+        click.echo("Aborted!", err=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

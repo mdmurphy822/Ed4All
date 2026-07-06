@@ -61,9 +61,31 @@ import json
 import logging
 import os
 import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from lib.generation.llm_checkpoint import CheckpointStore, compute_fingerprint
+from lib.generation.stop_control import check_stop
+
 logger = logging.getLogger(__name__)
+
+#: Graceful-stop + resume-sidecar wiring (P4 item 6, Resolved Decision D5 —
+#: full sidecars even for the bounded per-CO loop). One record per CO; the
+#: sidecar lives beside ``synthesized_objectives.json`` (``01_learning_objectives/``).
+#: ``checkpoint_path`` unwired → no sidecar (byte-identical default), but the
+#: per-CO ``check_stop`` stays live via ``ED4ALL_RUN_ID``. The DETERMINISTIC
+#: derivation is untouched — only the ``populate_sub_objectives`` loop gains the
+#: stop check + sidecar. Family flag ``ED4ALL_GENERATION_CHECKPOINT`` (site_env=None).
+_SUB_OBJECTIVES_SITE_ID = "sub_objectives"
+#: Canonical sidecar basename (sibling of ``synthesized_objectives.json``).
+SUB_OBJECTIVES_CHECKPOINT_NAME = ".sub_objectives_checkpoint.jsonl"
+
+
+def _sub_objectives_store(path: Optional[Path]) -> CheckpointStore:
+    """Fingerprinted per-CO resume sidecar for the sub-objective derivation."""
+    return CheckpointStore(
+        path, site_id=_SUB_OBJECTIVES_SITE_ID, site_env=None,
+    )
 
 # ---------------------------------------------------------------------------
 # Env contract (parse-with-fallback, mirroring the other ED4ALL_* knobs).
@@ -777,6 +799,8 @@ def populate_sub_objectives(
     model: Optional[str] = None,
     client: Optional[Any] = None,
     capture: Optional[Any] = None,
+    checkpoint_path: Optional[Path] = None,
+    run_id: Optional[str] = None,
 ) -> Dict[str, int]:
     """Populate ``sub_objectives`` on every CO in ``chapter_objectives`` IN PLACE.
 
@@ -787,7 +811,23 @@ def populate_sub_objectives(
     existing (empty) ``sub_objectives`` unchanged. Returns a counters dict
     (``cos_seen`` / ``cos_populated`` / ``sub_objectives_total``).
 
-    NEVER raises — a per-CO failure logs a warning and leaves THAT CO untouched.
+    A per-CO derivation failure logs a warning and leaves THAT CO untouched.
+
+    Graceful stop (P4 item 6 / D5): a pending stop sentinel raises
+    ``GracefulStopRequested`` at the per-CO boundary (checked at the loop top,
+    BEFORE deriving that CO — and before the per-CO ``except`` guard, so it is
+    never swallowed). Every already-derived CO is on the resume sidecar
+    (``checkpoint_path``, when supplied); a resume replays those without
+    re-deriving (skipping the LLM arm's call when a provider is set). The
+    sidecar is removed once every CO is processed. The deterministic default
+    path (no provider) is byte-identical — the sidecar only caches results and
+    adds no output.
+
+    Args (stop/resume additions):
+        checkpoint_path: per-CO resume sidecar path (natural sibling of
+            ``synthesized_objectives.json``). ``None`` disables the sidecar.
+        run_id: explicit run id for the stop-sentinel probe (else
+            ``ED4ALL_RUN_ID``).
     """
     counters = {"cos_seen": 0, "cos_populated": 0, "sub_objectives_total": 0}
 
@@ -820,29 +860,67 @@ def populate_sub_objectives(
     else:
         shared_embedder = embedder
 
-    for co in _iter_cos():
+    store = _sub_objectives_store(checkpoint_path)
+    cache = store.load()
+    # Resolve the provider/model ONCE for the fingerprint (they don't change
+    # per CO). The provider axis in the fingerprint keeps the deterministic and
+    # LLM-arm records from colliding for the same CO.
+    resolved_provider = resolve_sub_objective_provider(provider)
+    resolved_model = (
+        resolve_sub_objective_model(resolved_provider, model)
+        if resolved_provider is not None else None
+    )
+    cap = resolve_max_sub_objectives(None)
+
+    for _idx, co in enumerate(_iter_cos()):
+        # Stop at the per-CO unit boundary — BEFORE this CO's derivation AND
+        # before the per-CO ``except`` guard, so a graceful stop is never
+        # swallowed. Sequential loop → a plain raise is correct.
+        check_stop(_SUB_OBJECTIVES_SITE_ID, counters["cos_seen"], run_id=run_id)
         counters["cos_seen"] += 1
-        try:
-            derived = derive_sub_objectives_for_co(
-                co=co,
-                chunks_by_id=chunks_by_id,
-                embedder=shared_embedder,
-                provider=provider,
-                model=model,
-                client=client,
-                capture=capture,
-            )
-        except Exception as exc:  # noqa: BLE001 — isolate per-CO failure
-            logger.warning(
-                "sub_objectives: derivation raised for CO %s: %s. Leaving "
-                "its sub_objectives unchanged.",
-                co.get("id"), exc,
-            )
-            continue
+        unit_id = str(co.get("id") or f"co#{_idx}")
+        fingerprint = compute_fingerprint({
+            "stmt": _co_statement(co),
+            "chunk_ids": sorted(_co_chunk_ids(co)),
+            "provider": resolved_provider or "",
+            "model": resolved_model or "",
+            "cap": cap,
+        })
+        reused = store.reuse(unit_id, fingerprint, cache=cache)
+        if reused is not None:
+            derived = [
+                s for s in (reused.get("sub_objectives") or [])
+                if isinstance(s, dict)
+            ]
+        else:
+            try:
+                derived = derive_sub_objectives_for_co(
+                    co=co,
+                    chunks_by_id=chunks_by_id,
+                    embedder=shared_embedder,
+                    provider=provider,
+                    model=model,
+                    client=client,
+                    capture=capture,
+                )
+            except Exception as exc:  # noqa: BLE001 — isolate per-CO failure
+                logger.warning(
+                    "sub_objectives: derivation raised for CO %s: %s. Leaving "
+                    "its sub_objectives unchanged.",
+                    co.get("id"), exc,
+                )
+                continue
+            # Checkpoint the derived result (even an empty list is a valid
+            # outcome) so a stop at the next loop-top leaves this CO recoverable
+            # and a resume skips its (possibly LLM-backed) derivation.
+            store.append(unit_id, fingerprint, {"sub_objectives": derived})
         if derived:
             co["sub_objectives"] = derived
             counters["cos_populated"] += 1
             counters["sub_objectives_total"] += len(derived)
+
+    # Every CO processed without a stop → drop the resume sidecar.
+    store.remove()
     return counters
 
 

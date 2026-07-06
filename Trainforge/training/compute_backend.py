@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from lib.generation.stop_control import GracefulStopRequested
 from lib.utils import read_jsonl as _utils_read_jsonl
 
 
@@ -179,6 +180,11 @@ class LocalBackend(ComputeBackend):
                     pref_pairs, sft_out, spec.output_dir,
                 )
                 metrics["dpo_completed"] = True
+            except GracefulStopRequested:
+                # A graceful stop during DPO is a PAUSE, not a DPO failure —
+                # never route it into the SFT-fallback / dpo_fail_hard arm.
+                # Propagate so the runner/executor mark the phase paused.
+                raise
             except Exception as exc:  # noqa: BLE001
                 if bool(spec.training_config.get("dpo_fail_hard", True)):
                     raise RuntimeError(

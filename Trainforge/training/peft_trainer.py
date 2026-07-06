@@ -28,9 +28,153 @@ from Trainforge.training.base_models import (
     BaseModelSpec,
     format_instruction,
 )
+from lib.generation.stop_control import (
+    GracefulStopRequested,
+    StopPoller,
+    check_stop,
+)
 
 
 logger = logging.getLogger(__name__)
+
+
+# --------------------------------------------------------------------------- #
+# Graceful-stop seam (P4b — "checkpoint on command" for trainforge_train)      #
+# --------------------------------------------------------------------------- #
+#
+# The trainer loop is TRL's SFTTrainer/DPOTrainer (HF ``transformers`` Trainer)
+# — the framework exposes a per-step / per-epoch callback boundary via
+# ``transformers.TrainerCallback``. The stop seam checks the SAME filesystem
+# sentinel every other Ed4All stage checks (``lib.generation.stop_control``);
+# when armed it asks the trainer to (1) flush its NATIVE ``checkpoint-<step>``
+# resume dir and (2) stop cleanly, then surfaces the pause as
+# ``GracefulStopRequested`` so the runner/executor mark the phase ``paused``
+# (never ``completed``). Worst-case loss = the single in-flight step's gradient
+# (< one optimizer update); resume replays from the native checkpoint.
+#
+# The reaction logic lives in ``_GracefulStopMixin`` (NO ``transformers``
+# import) so it is unit-testable on a CPU-only box; ``_build_stop_callback``
+# mixes it in front of the real ``TrainerCallback`` at call time.
+
+
+class _GracefulStopMixin:
+    """Stop→checkpoint→stop reaction for the training ``TrainerCallback``.
+
+    Split out from ``transformers.TrainerCallback`` so the decision is
+    importable + testable without the heavy ML deps. The ``on_*`` overrides
+    win the MRO when mixed in front of ``TrainerCallback`` (see
+    :func:`_build_stop_callback`), so they replace the base no-op events.
+    """
+
+    def _init_stop(
+        self,
+        *,
+        run_id: Optional[str] = None,
+        min_interval_s: float = 5.0,
+    ) -> None:
+        # A tight per-step ``stat`` is cheap but wasteful; throttle it.
+        self._stop_poller = StopPoller(min_interval_s=float(min_interval_s))
+        self._stop_run_id = run_id
+        self.stop_triggered = False
+        self.stop_global_step = 0
+
+    def _react_to_stop(self, args: Any, state: Any, control: Any) -> Any:
+        # Track progress for the resume hint even on the no-stop path.
+        self.stop_global_step = int(getattr(state, "global_step", 0) or 0)
+        if self.stop_triggered:
+            # Latch: once we've asked the trainer to stop, stay stopped —
+            # never re-probe or clear the flags mid-flush.
+            return control
+        if self._stop_poller.should_stop(self._stop_run_id):
+            # Flush the trainer-native checkpoint at THIS unit boundary, then
+            # halt after the flush. Both flags are consumed by HF's Trainer.
+            control.should_save = True
+            control.should_training_stop = True
+            self.stop_triggered = True
+        return control
+
+    def on_step_end(self, args: Any, state: Any, control: Any, **kwargs: Any) -> Any:
+        return self._react_to_stop(args, state, control)
+
+    def on_epoch_end(self, args: Any, state: Any, control: Any, **kwargs: Any) -> Any:
+        return self._react_to_stop(args, state, control)
+
+
+def _build_stop_callback(
+    *,
+    run_id: Optional[str] = None,
+    min_interval_s: float = 5.0,
+) -> Any:
+    """Construct a ``transformers.TrainerCallback`` wired to the stop sentinel.
+
+    The ``transformers`` import is deferred here (never at module import) so a
+    bare ``import Trainforge.training.peft_trainer`` stays CPU-cheap and the
+    reaction logic in :class:`_GracefulStopMixin` remains testable without the
+    ``[training]`` extra installed. Fail-soft: if ``TrainerCallback`` can't be
+    resolved (a partial / stubbed ``transformers``), returns ``None`` and logs
+    a warning — training then runs WITHOUT the stop seam rather than crashing.
+    """
+    try:
+        from transformers import TrainerCallback  # type: ignore
+    except ImportError:
+        logger.warning(
+            "PEFTTrainer: transformers.TrainerCallback unavailable; the "
+            "graceful-stop seam is DISABLED for this run (training will not "
+            "checkpoint-on-command)."
+        )
+        return None
+
+    class _GracefulStopCallback(_GracefulStopMixin, TrainerCallback):  # type: ignore[misc]
+        pass
+
+    cb = _GracefulStopCallback()
+    cb._init_stop(run_id=run_id, min_interval_s=min_interval_s)
+    return cb
+
+
+def _has_trainer_checkpoint(output_dir: Path) -> bool:
+    """True iff a TRL/HF-native ``checkpoint-*`` dir already exists in ``output_dir``.
+
+    Presence signals a prior graceful-stop (or crash) left a resumable native
+    checkpoint. Best-effort: any filesystem error degrades to ``False`` (fresh).
+    """
+    try:
+        return any(
+            p.is_dir() and p.name.startswith("checkpoint-")
+            for p in Path(output_dir).iterdir()
+        )
+    except OSError:
+        return False
+
+
+def _resume_arg(output_dir: Path) -> Optional[bool]:
+    """``True`` (auto-detect latest ``checkpoint-*``) when a native trainer
+    checkpoint from a prior graceful-stop exists, else ``None`` (fresh run).
+
+    HF's ``Trainer.train(resume_from_checkpoint=True)`` auto-selects the
+    highest-step ``checkpoint-*`` under ``output_dir``; ``None`` trains from
+    scratch. Since the runner mints a provenance-keyed ``model_id`` (the same
+    course + base + specs re-run into the SAME ``run_dir``), a resumed
+    ``ed4all run trainforge_train`` lands here with the paused run's checkpoint
+    already on disk and continues from it.
+    """
+    return True if _has_trainer_checkpoint(output_dir) else None
+
+
+def _raise_if_stopped(stop_cb: Any, site_id: str) -> None:
+    """Surface a graceful stop as ``GracefulStopRequested`` after ``train()``.
+
+    Called immediately AFTER ``trainer.train()`` returns. By then the trainer
+    has already flushed its native ``checkpoint-<step>`` (we set
+    ``control.should_save`` at the stop boundary), so the run is resumable.
+    Raising here — BEFORE the final ``save_model`` / model-card emit (risk R5)
+    — means the phase is reported ``paused`` and never ``completed``.
+    """
+    if stop_cb is not None and getattr(stop_cb, "stop_triggered", False):
+        raise GracefulStopRequested(
+            site_id=site_id,
+            units_completed=int(getattr(stop_cb, "stop_global_step", 0) or 0),
+        )
 
 
 def _require_training_deps() -> None:
@@ -106,6 +250,10 @@ class PEFTTrainer:
             ``adapter.safetensors`` — the Wave 100 fix renames the
             returned path to match.
         """
+        # Graceful-stop preflight: a sentinel armed BEFORE the (expensive)
+        # weight load / trainer build stops the run here with zero GPU work.
+        check_stop("trainforge_train.fit_sft.preflight", 0)
+
         _require_training_deps()
 
         # Heavy imports — only reachable when deps are installed.
@@ -199,7 +347,23 @@ class PEFTTrainer:
             tokenizer=tokenizer,
             peft_config=lora_config,
         )
-        trainer.train()
+        # Graceful-stop seam: check the sentinel at every step/epoch boundary;
+        # on stop the callback flushes a native checkpoint + halts cleanly.
+        stop_cb = _build_stop_callback()
+        if stop_cb is not None and hasattr(trainer, "add_callback"):
+            trainer.add_callback(stop_cb)
+        # Resume from a prior graceful-stop's native checkpoint when present;
+        # only pass the kwarg when actually resuming so the fresh-run call
+        # stays signature-compatible with the trusted TRL default.
+        _resume = _resume_arg(output_dir)
+        if _resume:
+            trainer.train(resume_from_checkpoint=_resume)
+        else:
+            trainer.train()
+        # Surface the pause BEFORE the final consolidated save_model (R5): the
+        # native checkpoint is already on disk, so the run is resumable and the
+        # runner must not emit a "completed" adapter / model card.
+        _raise_if_stopped(stop_cb, "trainforge_train.fit_sft")
         trainer.save_model(str(output_dir))
 
         # TRL's save_model() writes adapter_model.safetensors (with
@@ -239,6 +403,10 @@ class PEFTTrainer:
         Returns:
             Path to the consolidated DPO+SFT adapter.
         """
+        # Graceful-stop preflight (see fit_sft): stop before the DPO weight
+        # load when a sentinel is already armed.
+        check_stop("trainforge_train.fit_dpo.preflight", 0)
+
         _require_training_deps()
 
         from datasets import Dataset  # type: ignore
@@ -340,7 +508,19 @@ class PEFTTrainer:
             train_dataset=dataset,
             processing_class=tokenizer,
         )
-        trainer.train()
+        # Graceful-stop seam (same contract as fit_sft). NB: DPO shares
+        # ``output_dir`` with the SFT phase, so ``checkpoint-*`` here can
+        # co-exist with SFT's — resume_from_checkpoint auto-selects the
+        # highest global_step, which is the DPO one once DPO has stepped.
+        stop_cb = _build_stop_callback()
+        if stop_cb is not None and hasattr(trainer, "add_callback"):
+            trainer.add_callback(stop_cb)
+        _resume = _resume_arg(output_dir)
+        if _resume:
+            trainer.train(resume_from_checkpoint=_resume)
+        else:
+            trainer.train()
+        _raise_if_stopped(stop_cb, "trainforge_train.fit_dpo")
         trainer.save_model(str(output_dir))
         return output_dir / "adapter_model.safetensors"
 

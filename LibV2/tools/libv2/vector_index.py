@@ -59,6 +59,7 @@ from lib.libv2_storage import (
     VECTOR_INDEX_MANIFEST_FILENAME as MANIFEST_FILENAME,
     resolve_imscc_chunks_dir,
 )
+from lib.generation.stop_control import check_stop
 from lib.utils.hashing import sha256_file, sha256_text
 
 try:  # Trainforge is a sibling package; resolved at runtime in-repo.
@@ -511,6 +512,16 @@ def build_vector_index(
 
     fingerprint = dict(client.model_fingerprint())
 
+    # Graceful-stop (plan D1) — abort-to-paused, first window. An operator
+    # ``ed4all stop`` (or a batch-timeout escalation) arms a filesystem
+    # sentinel; we raise ``GracefulStopRequested`` here, BEFORE the monolithic
+    # encode, so a pending stop never pays for an embedding pass it is about to
+    # discard. Embeddings are not LLM calls, so the "≤1 in-flight LLM call"
+    # loss guarantee does not bind them — resume re-embeds from scratch. Raising
+    # pre-encode (and therefore pre-write) is one half of the "no partial index"
+    # contract: no bytes have been written to ``index_dir`` yet.
+    check_stop("vector_index_build", 0)
+
     if texts:
         matrix = np.asarray(client.encode_batch(texts), dtype=np.float32)
         if matrix.ndim != 2 or matrix.shape[0] != len(texts):
@@ -528,6 +539,19 @@ def build_vector_index(
         matrix = np.zeros((0, max(dim, 1)), dtype=np.float32)
         if dim <= 0:
             dim = matrix.shape[1]
+
+    # Graceful-stop (plan D1) — abort-to-paused, second window. A stop armed
+    # DURING the (potentially long) encode is caught here, still BEFORE any
+    # artifact write. This cheap probe is the second half of the "no partial
+    # index" contract: the two ``check_stop`` calls bracket the only expensive
+    # step, and everything past this point is a short, uninterrupted three-file
+    # write sequence. The commit marker (``manifest.json``) is written LAST and
+    # carries the SHAs of the already-written ``embeddings.npy`` / ``id_map.json``,
+    # so even a non-graceful hard-kill mid-write leaves a manifest-less (or
+    # sha-mismatched) dir that the read path fails closed on
+    # (``SemanticIndexMissing`` / ``SemanticIndexStale``) — never a half-served
+    # partial index. A graceful stop cannot reach the writes at all.
+    check_stop("vector_index_build", 0)
 
     index_dir.mkdir(parents=True, exist_ok=True)
     embeddings_path = index_dir / EMBEDDINGS_FILENAME

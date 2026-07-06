@@ -143,6 +143,17 @@ from lib.llm.endpoints import (  # noqa: E402
     load_endpoint_registry,
 )
 
+# Graceful-stop sentinel control (checkpoint-on-command). ``check_stop`` is a
+# no-op unless a stop sentinel is armed; the batched rewrite lane calls it
+# between validator-regen rounds so a mid-batch kill loses at most the
+# in-flight round — every block resolved in an earlier round is already
+# persisted via the ``on_block_resolved`` checkpoint callback. Stdlib-only,
+# selects no provider/model (no LICENSING / behavior-flags row).
+from lib.generation.stop_control import (  # noqa: E402
+    GracefulStopRequested,
+    check_stop,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -2665,6 +2676,7 @@ class CourseforgeRouter:
         regen_budget: Optional[int] = None,
         validators: Optional[List[Any]] = None,
         fast_fail: bool = True,
+        on_block_resolved: Optional[Callable[[str, Block], None]] = None,
     ) -> Dict[str, Block]:
         """Rewrite a list of blocks via BATCHED HTTP POSTs (round-based regen).
 
@@ -2693,6 +2705,29 @@ class CourseforgeRouter:
         scoped to a single ``(provider, model, max_tokens)`` group so per-
         block-type validator matrices + routing are honored (validators run
         per-block post-parse).
+
+        Checkpoint-on-command (graceful stop, plan P4.7 / D2):
+
+        - ``on_block_resolved`` — optional ``callable(block_id, block)`` invoked
+          the moment a block is terminally resolved by PASSING its validator
+          chain (never for the budget-exhausted ``validator_consensus_fail``
+          survivors — degraded blocks are not checkpointed, mirroring the
+          per-block rewrite-checkpoint contract). The caller (the pipeline
+          rewrite handler) threads its resume-sidecar appender here so a block
+          that passes in round *k* is on disk before round *k+1* starts.
+          Defaults to ``None`` → a pure no-op, so every existing caller is
+          byte-for-byte unaffected. A callback that raises is swallowed
+          (best-effort; a lost checkpoint only re-runs that one block on
+          resume).
+        - **Between-round stop check.** At the top of every regen round this
+          calls ``stop_control.check_stop("rewrite_batched", n_resolved)``. A
+          pending stop sentinel raises ``GracefulStopRequested`` BEFORE the
+          round's dispatch — so blocks resolved in rounds ``<= k`` are already
+          checkpointed (via ``on_block_resolved``) and the raise loses at most
+          the in-flight round. A pre-armed sentinel raises on round 0 with zero
+          provider calls. The exception propagates out of this method; the
+          caller must NOT swallow it in a broad ``except`` (it maps to the
+          ``paused`` phase status, never ``failed``).
         """
         from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
 
@@ -2751,6 +2786,37 @@ class CourseforgeRouter:
         batched_concurrency = max(1, resolve_rewrite_batched_concurrency())
 
         results: Dict[str, Block] = {}
+        # Count of blocks TERMINALLY resolved by passing their validator chain
+        # (the units the ``on_block_resolved`` callback has checkpointed). This
+        # is the ``units_completed`` reported on a graceful stop; it is NOT
+        # bumped for the budget-exhausted consensus-fail survivors (degraded
+        # blocks are not checkpointed).
+        n_resolved = 0
+
+        def _resolve_block(block_id: str, resolved_block: Block) -> None:
+            """Record a validator-PASSING block + checkpoint it via the callback.
+
+            Sets the result slot, invokes ``on_block_resolved`` (when supplied)
+            so the winner is persisted the instant it resolves, and bumps the
+            resolved counter. Best-effort: a raising callback is logged, never
+            propagated (a lost checkpoint only costs a re-run of that one block
+            on resume).
+            """
+            nonlocal n_resolved
+            results[block_id] = resolved_block
+            if on_block_resolved is not None:
+                try:
+                    on_block_resolved(block_id, resolved_block)
+                except GracefulStopRequested:
+                    # A stop is the router's own between-round concern, never
+                    # the checkpoint callback's — but never swallow it here.
+                    raise
+                except Exception as exc:  # noqa: BLE001 — checkpoint best-effort
+                    logger.warning(
+                        "route_rewrite_batch: on_block_resolved callback raised "
+                        "for block %s: %s", block_id, exc,
+                    )
+            n_resolved += 1
 
         for key, group_blocks in groups.items():
             spec = spec_by_group[key]
@@ -2763,6 +2829,15 @@ class CourseforgeRouter:
             last_seen: Dict[str, Block] = {b.block_id: b for b in group_blocks}
 
             for _round in range(max(1, resolved_budget)):
+                # Checkpoint-on-command: stop BETWEEN rounds. Blocks resolved in
+                # earlier rounds are already checkpointed via ``_resolve_block``
+                # → ``on_block_resolved``, so a pending stop loses at most the
+                # in-flight round. A pre-armed sentinel raises here on round 0
+                # (n_resolved==0) → zero provider calls. This also serves as the
+                # between-GROUP boundary: a group that finished early hits this
+                # check on its next (break-bound) iteration before the outer
+                # loop advances to the next provider group.
+                check_stop("rewrite_batched", n_resolved)
                 if not remaining:
                     break
                 batches = pack_rewrite_batches(
@@ -2858,7 +2933,10 @@ class CourseforgeRouter:
                         )
                         last_seen[block.block_id] = candidate
                         if all_passed:
-                            results[block.block_id] = candidate
+                            # Terminal resolution — record + checkpoint via the
+                            # callback so this winner survives a stop raised at
+                            # the next round's top.
+                            _resolve_block(block.block_id, candidate)
                             continue
                         # Failed → refresh this block's remediation suffix from
                         # its OWN gate failures, re-queue it ALONE-with-other-

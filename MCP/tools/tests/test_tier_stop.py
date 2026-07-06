@@ -422,6 +422,139 @@ def test_rewrite_batched_pre_armed_never_dispatches(
 
 
 # --------------------------------------------------------------------------- #
+# Rewrite tier (batched cloud lane) — REAL per-round checkpoint callback (P4.7)
+# --------------------------------------------------------------------------- #
+# The pipeline handler threads ``on_block_resolved=_checkpoint_rewrite_result``
+# into ``route_rewrite_batch`` so a block resolved in a completed round lands in
+# ``.blocks_final_checkpoint.jsonl`` BEFORE the router's between-round
+# ``check_stop`` raises. Without that wiring (the pre-fix bug) the raise skips
+# the deferred Phase-C sweep and every fresh block is lost; the carve-out at the
+# batch call site keeps the raise from being marshalled as a consensus-fail.
+class _ArmAfterBatchProvider(_FakeProvider):
+    """Batched-lane rewrite provider: valid str-HTML per block, records each
+    ``generate_rewrite_batch`` call, arms the real sentinel after the
+    ``arm_after_calls``-th (0 = never)."""
+
+    def __init__(self, *, arm_after_calls: int = 0) -> None:
+        super().__init__()
+        self._arm_after_calls = arm_after_calls
+        self.batch_calls: List[List[str]] = []
+
+    def generate_rewrite_batch(
+        self, blocks, *, source_chunks_by_id=None, objectives=None,
+        remediation_suffix_by_id=None,
+    ):  # type: ignore[no-untyped-def]
+        import dataclasses as _dc
+
+        self.batch_calls.append([b.block_id for b in blocks])
+        out = {}
+        for b in blocks:
+            out[b.block_id] = _dc.replace(
+                b,
+                content=(
+                    f"<p>Batched rewrite for {b.block_id} with thirty plus "
+                    f"words of body prose to clear the grounding floor and "
+                    f"satisfy the non-trivial paragraph word minimum here.</p>"
+                ),
+            )
+        if (
+            self._arm_after_calls
+            and len(self.batch_calls) == self._arm_after_calls
+        ):
+            stop_control.request_stop(scope="run", reason="test", source="test")
+        return out
+
+
+def _force_batched_cloud_lane(monkeypatch) -> None:
+    """Force the batched cloud lane on with a single batch per round."""
+    from Courseforge.generators import _rewrite_batch as _rb
+    from Courseforge.router import router as _rmod
+
+    monkeypatch.setattr(_rb, "resolve_rewrite_batch_mode", lambda: True)
+    monkeypatch.setattr(
+        _rmod.CourseforgeRouter, "_is_cloud_rewrite_lane",
+        lambda self, spec: True,
+    )
+    monkeypatch.setenv("COURSEFORGE_REWRITE_BATCH_SIZE", "10")
+
+
+def test_rewrite_batched_callback_checkpoints_before_between_round_raise(
+    tmp_path, monkeypatch, _armed_env
+):
+    """A stop armed during the batch → the router's between-round check_stop
+    raises AFTER the callback checkpointed every resolved block. The sidecar
+    holding all 4 proves the callback was threaded (else the raise skips Phase C
+    and leaves it empty) and that GracefulStopRequested propagated (carve-out)."""
+    project_id = "TEST_RW_BATCH_CB"
+    _seed_project(tmp_path, project_id)
+    _pin_hermetic_roots(monkeypatch, tmp_path)
+    _force_batched_cloud_lane(monkeypatch)
+    provider = _ArmAfterBatchProvider(arm_after_calls=1)
+    _patch_router_with_fakes(monkeypatch, provider)
+    _keep_sidecars(monkeypatch)
+    validated_path = _seed_validated_blocks(tmp_path, n=4)
+
+    with pytest.raises(GracefulStopRequested):
+        _run_rewrite(project_id, validated_path)
+
+    assert len(provider.batch_calls) == 1        # one batch, all 4 resolved
+    sidecar = _find_rewrite_sidecar(tmp_path, project_id)
+    assert _sidecar_records(sidecar) == 4        # callback checkpointed them
+
+
+def test_rewrite_batched_resume_reuses_checkpointed_blocks(
+    tmp_path, monkeypatch, _armed_env
+):
+    """Resume: the 4 blocks checkpointed by the callback are cache hits, so the
+    batched lane gets zero fresh blocks (route_rewrite_batch never re-dispatched)
+    and the final blocks_final.jsonl is written."""
+    project_id = "TEST_RW_BATCH_RESUME"
+    _seed_project(tmp_path, project_id)
+    _pin_hermetic_roots(monkeypatch, tmp_path)
+    _force_batched_cloud_lane(monkeypatch)
+    _keep_sidecars(monkeypatch)
+    validated_path = _seed_validated_blocks(tmp_path, n=4)
+
+    interrupted = _ArmAfterBatchProvider(arm_after_calls=1)
+    _patch_router_with_fakes(monkeypatch, interrupted)
+    with pytest.raises(GracefulStopRequested):
+        _run_rewrite(project_id, validated_path)
+    sidecar = _find_rewrite_sidecar(tmp_path, project_id)
+    assert _sidecar_records(sidecar) == 4
+
+    stop_control.clear_stop(include_global=True)
+    resume = _ArmAfterBatchProvider(arm_after_calls=0)  # never arms
+    _patch_router_with_fakes(monkeypatch, resume)
+    resume_payload = _run_rewrite(project_id, validated_path)
+    assert resume.batch_calls == []      # all 4 served from the resume cache
+    assert Path(resume_payload["blocks_final_path"]).exists()
+
+
+def test_rewrite_batched_callback_no_double_append(
+    tmp_path, monkeypatch, _armed_env
+):
+    """No-stop happy path: the callback appends each resolved block exactly once
+    and Phase C skips the already-checkpointed ids (one JSONL line per block)."""
+    project_id = "TEST_RW_BATCH_NODUP"
+    _seed_project(tmp_path, project_id)
+    _pin_hermetic_roots(monkeypatch, tmp_path)
+    _force_batched_cloud_lane(monkeypatch)
+    _keep_sidecars(monkeypatch)
+    validated_path = _seed_validated_blocks(tmp_path, n=3)
+    provider = _ArmAfterBatchProvider(arm_after_calls=0)  # never stops
+    _patch_router_with_fakes(monkeypatch, provider)
+
+    payload = _run_rewrite(project_id, validated_path)
+
+    sidecar = _find_rewrite_sidecar(tmp_path, project_id)
+    _lines = [ln for ln in sidecar.read_text(encoding="utf-8").splitlines()
+              if ln.strip()]
+    assert len(_lines) == 3            # one line per block — no double-append
+    assert _sidecar_records(sidecar) == 3
+    assert Path(payload["blocks_final_path"]).exists()
+
+
+# --------------------------------------------------------------------------- #
 # Helper: locate the rewrite sidecar under the export dir
 # --------------------------------------------------------------------------- #
 def _find_rewrite_sidecar(tmp_path: Path, project_id: str) -> Path:

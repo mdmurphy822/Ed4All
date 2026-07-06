@@ -58,9 +58,30 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from lib.generation.llm_checkpoint import CheckpointStore, compute_fingerprint
+from lib.generation.stop_control import check_stop
+
 logger = logging.getLogger(__name__)
+
+#: Graceful-stop + resume-sidecar wiring (P4 item 6, Resolved Decision D5 —
+#: full sidecars even for the bounded ≤ ``max_additions`` loop). One record per
+#: complement LLM call; the sidecar lives beside ``synthesized_objectives.json``
+#: (``01_learning_objectives/``). ``checkpoint_path`` unwired → no sidecar
+#: (byte-identical default), but the per-call ``check_stop`` stays live via
+#: ``ED4ALL_RUN_ID``. Family flag ``ED4ALL_GENERATION_CHECKPOINT`` (site_env=None).
+_BLOOM_COMPLEMENT_SITE_ID = "bloom_complement"
+#: Canonical sidecar basename (sibling of ``synthesized_objectives.json``).
+BLOOM_COMPLEMENT_CHECKPOINT_NAME = ".bloom_complement_checkpoint.jsonl"
+
+
+def _bloom_complement_store(path: Optional[Path]) -> CheckpointStore:
+    """Fingerprinted per-LLM-call resume sidecar for the bloom-complement pass."""
+    return CheckpointStore(
+        path, site_id=_BLOOM_COMPLEMENT_SITE_ID, site_env=None,
+    )
 
 #: PRONG C master gate. Default OFF (opt-in).
 _DEFAULT_BLOOM_COMPLEMENT = False
@@ -648,12 +669,28 @@ def complement_bloom_profile(
     enabled: Optional[bool] = None,
     min_share: Optional[float] = None,
     max_additions: Optional[int] = None,
+    checkpoint_path: Optional[Path] = None,
+    run_id: Optional[str] = None,
 ) -> ComplementResult:
     """Top up the canonical CO set with grounded analyze/evaluate complements.
 
     Mutates ``canonical`` by APPENDING accepted complement COs (id-less — the
     caller mints CO-NN after this pass). Default-off / empty inputs / provider
     absent → no-op (``available=False``, ``canonical`` untouched).
+
+    Graceful stop (P4 item 6 / D5): a pending stop sentinel raises
+    ``GracefulStopRequested`` at the per-LLM-call boundary (checked at the loop
+    top, BEFORE dispatching that call). Every already-completed call's validated
+    candidates are on the resume sidecar (``checkpoint_path``, when supplied); a
+    resume replays them through the SAME dedup/echo acceptance without
+    re-dispatching. The sidecar is removed once the loop finishes normally.
+
+    Args (stop/resume additions):
+        checkpoint_path: per-LLM-call resume sidecar path (natural sibling of
+            ``synthesized_objectives.json``). ``None`` disables the sidecar
+            (byte-identical default); the stop check stays live regardless.
+        run_id: explicit run id for the stop-sentinel probe (else
+            ``ED4ALL_RUN_ID``).
     """
     if not resolve_bloom_complement(enabled):
         return ComplementResult(objectives=canonical, available=False)
@@ -703,6 +740,8 @@ def complement_bloom_profile(
         except Exception:  # noqa: BLE001 — dedup then relies on the echo guard
             existing_vecs = []
 
+    store = _bloom_complement_store(checkpoint_path)
+    cache = store.load()
     added = 0
     calls = 0
     unproductive = 0
@@ -712,18 +751,45 @@ def complement_bloom_profile(
         and added < max_add
         and calls < max_calls
     ):
+        # Stop at the per-LLM-call unit boundary — BEFORE dispatching this call.
+        # Sequential loop → a plain raise is correct (no gathered coroutine to
+        # lose); every completed call's candidates are already on the sidecar.
+        check_stop(_BLOOM_COMPLEMENT_SITE_ID, calls, run_id=run_id)
         target_level = _COMPLEMENT_TARGET_LEVELS[added % len(_COMPLEMENT_TARGET_LEVELS)]
         avoid = [_statement(co) for co in canonical if _statement(co)]
-        candidates = _synthesize_complements(
-            provider,
-            course_name=course_name,
-            target_level=target_level,
-            offered=offered,
-            avoid_statements=avoid,
-            chunks_by_id=chunks_by_id,
-            capture=capture,
-            share_before=higher_order_share(canonical),
-        )
+        # Fingerprint the call's full input surface: the CURRENT canonical
+        # statements (they grow as complements are accepted, and feed the avoid
+        # block), the offered chunk-id menu, the target level, provider/model,
+        # and the loop knobs — so any change re-runs the call on resume.
+        unit_id = f"call#{calls}"
+        fingerprint = compute_fingerprint({
+            "canonical": sorted(_statement(co) for co in canonical if _statement(co)),
+            "offered_ids": sorted(str(c["id"]) for c in offered),
+            "target_level": target_level,
+            "provider": str(getattr(provider, "_provider", "") or ""),
+            "model": str(getattr(provider, "_model", "") or ""),
+            "min_share": target,
+            "max_add": max_add,
+        })
+        reused = store.reuse(unit_id, fingerprint, cache=cache)
+        if reused is not None:
+            candidates = [
+                c for c in (reused.get("candidates") or []) if isinstance(c, dict)
+            ]
+        else:
+            candidates = _synthesize_complements(
+                provider,
+                course_name=course_name,
+                target_level=target_level,
+                offered=offered,
+                avoid_statements=avoid,
+                chunks_by_id=chunks_by_id,
+                capture=capture,
+                share_before=higher_order_share(canonical),
+            )
+            # Checkpoint the call's validated candidates BEFORE the acceptance
+            # pass so a stop at the next loop-top leaves this call recoverable.
+            store.append(unit_id, fingerprint, {"candidates": candidates})
         calls += 1
         accepted_this = 0
         for co in candidates:
@@ -762,6 +828,11 @@ def complement_bloom_profile(
                 break
         else:
             unproductive = 0
+
+    # Loop finished normally (no stop) → drop the resume sidecar; the appended
+    # complements are about to be minted + persisted by the caller. A stop
+    # raise never reaches here, so a paused run keeps its sidecar for resume.
+    store.remove()
 
     result.cos_added = added
     result.llm_calls = calls
