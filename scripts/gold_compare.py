@@ -608,7 +608,12 @@ def metric_recall(gch: GoldChapter, cand_text: str) -> dict:
 def metric_junk(gch: GoldChapter, cand_text: str) -> dict:
     cand_tokens = fold_tokenize(cand_text)
     content = [t for t in cand_tokens if len(t) >= 2 and not t.isdigit()]
-    oov = [t for t in content if t not in gch.vocab]
+    # Folded LaTeX command words (``sqrt``, ``frac``, ``cdot`` …) are legitimate
+    # math tokens once fold_math has run — never junk. Exempt them from the OOV
+    # set exactly as ``_looks_like_garbage`` does, so a math-heavy chapter whose
+    # GOLD reference happened to express no such notation (e.g. gold ch09 dropped
+    # every radical) is not scored down for CORRECTLY emitting it.
+    oov = [t for t in content if t not in gch.vocab and t not in MATH_WORDS]
     junk_rate = len(oov) / len(content) if content else 0.0
     cand_tri = ngram_set(cand_tokens, PRECISION_N)
     novel = cand_tri - gch.tri_shingles

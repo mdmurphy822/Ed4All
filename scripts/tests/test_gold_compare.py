@@ -300,6 +300,22 @@ def test_junk_rate_flags_ocr_garbage(tmp_path):
     assert gc.metric_junk(gch, dirty)["junk_rate"] > 0.0
 
 
+def test_junk_rate_exempts_folded_math_words(tmp_path):
+    """Folded LaTeX command words are legitimate math, never junk — even when the
+    GOLD reference chapter expressed no such notation (e.g. gold dropped every
+    radical but the candidate correctly emits ``\\sqrt`` → folded ``sqrt``)."""
+    gold = gc.load_gold(build_gold(tmp_path))
+    gch = gold[1]
+    clean = "\n".join(c.text for c in gch.chunks)
+    # sqrt/frac/cdot are in MATH_WORDS and absent from this gold's vocab.
+    assert "sqrt" in gc.MATH_WORDS and "sqrt" not in gch.vocab
+    mathy = clean + (" \\sqrt{2} \\cdot \\sqrt{5} = \\sqrt{10}" * 20)
+    # Every added OOV-shaped token is an exempt math word → junk stays ~0.
+    assert gc.metric_junk(gch, mathy)["junk_rate"] == 0.0
+    # Real garbage still counts even amid the math.
+    assert gc.metric_junk(gch, mathy + " qwxzptr blargh xzzzt")["junk_rate"] > 0.0
+
+
 def test_mishandled_detects_mojibake_and_hyphen():
     text = "This equa- tion has a mojibake Ã© artifact and â€™ smart quote."
     m = gc.metric_mishandled(text)
