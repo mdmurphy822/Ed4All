@@ -4568,6 +4568,412 @@ def _derive_terminals_bottom_up(
 
 
 # ---------------------------------------------------------------------------
+# Defect A — chapter-anchored TO derivation (opt-in; default OFF).
+# ---------------------------------------------------------------------------
+#
+# Terminal objectives are chapter-grained by definition; the bottom-up statement
+# clustering above scattered a chapter's COs across theme clusters (Defect A).
+# When ``ED4ALL_TO_CHAPTER_ANCHOR`` is on, TOs are derived by anchoring each CO
+# to the DART module (== one staged HTML == one chapter) its cited chunks come
+# from — one module → one TO, authored via the SAME existing 7B call site,
+# sidecar, and stop check as bottom-up. Default OFF ⇒ byte-identical to today.
+_TO_CHAPTER_ANCHOR_ENV = "ED4ALL_TO_CHAPTER_ANCHOR"
+_TO_CHAPTER_ANCHOR_REORDER_ENV = "ED4ALL_TO_CHAPTER_ANCHOR_REORDER"
+_TO_CHAPTER_MIN_MODULES_ENV = "ED4ALL_TO_CHAPTER_MIN_MODULES"
+_TO_CHAPTER_MIN_CO_COVERAGE_ENV = "ED4ALL_TO_CHAPTER_MIN_CO_COVERAGE"
+_TO_CHAPTER_ANCHOR_TRUTHY = frozenset({"1", "true", "yes", "on"})
+# Hard ceiling on module count (per-section files → module finer than chapter →
+# too many singleton TOs; degrade to bottom-up). Not operator-tunable (§A step 2).
+_TO_CHAPTER_MAX_MODULES = 30
+
+
+def _resolve_to_chapter_anchor(value: Optional[bool] = None) -> bool:
+    """Resolve the ``ED4ALL_TO_CHAPTER_ANCHOR`` master gate (default OFF).
+
+    Explicit arg > env. Truthy tokens ``1``/``true``/``yes``/``on`` (any case)
+    enable; falsey / garbage / unset → off (parse-with-fallback, mirroring
+    :func:`resolve_week_to_groups`).
+    """
+    if value is not None:
+        return bool(value)
+    return (
+        os.environ.get(_TO_CHAPTER_ANCHOR_ENV, "").strip().lower()
+        in _TO_CHAPTER_ANCHOR_TRUTHY
+    )
+
+
+def _resolve_to_chapter_anchor_reorder(value: Optional[bool] = None) -> bool:
+    """Resolve the ``ED4ALL_TO_CHAPTER_ANCHOR_REORDER`` satellite (default ON).
+
+    Default ON *when the master is on* (§A step 6): the CO re-order pass makes
+    ceil-stride weeks chapter-contiguous even without ``ED4ALL_WEEK_TO_GROUPS``.
+    Explicit arg > env; only the falsey tokens ``0``/``false``/``no``/``off``
+    disable it, everything else (incl. unset) → ON.
+    """
+    if value is not None:
+        return bool(value)
+    raw = os.environ.get(_TO_CHAPTER_ANCHOR_REORDER_ENV, "").strip().lower()
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return True
+
+
+def _resolve_to_chapter_min_modules(value: Optional[int] = None) -> int:
+    """Resolve the ``ED4ALL_TO_CHAPTER_MIN_MODULES`` floor (default 2).
+
+    Below this module count the anchor mode degrades to bottom-up (a monolithic
+    single-HTML corpus has 1 module → nothing to anchor). Garbage / non-positive
+    env values fall back to the default (parse-with-fallback).
+    """
+    if value is not None:
+        return max(1, int(value))
+    raw = os.environ.get(_TO_CHAPTER_MIN_MODULES_ENV)
+    if raw:
+        try:
+            parsed = int(raw)
+            if parsed >= 1:
+                return parsed
+        except (TypeError, ValueError):
+            pass
+    return 2
+
+
+def _resolve_to_chapter_min_co_coverage(value: Optional[float] = None) -> float:
+    """Resolve the ``ED4ALL_TO_CHAPTER_MIN_CO_COVERAGE`` floor (default 0.80).
+
+    The min fraction of COs that must resolve ≥1 module from their own cited
+    chunks for the anchor mode to fire; below it, degrade to bottom-up. Garbage /
+    out-of-[0,1] env values fall back to the default (parse-with-fallback).
+    """
+    if value is not None:
+        return min(1.0, max(0.0, float(value)))
+    raw = os.environ.get(_TO_CHAPTER_MIN_CO_COVERAGE_ENV)
+    if raw:
+        try:
+            parsed = float(raw)
+            if 0.0 <= parsed <= 1.0:
+                return parsed
+        except (TypeError, ValueError):
+            pass
+    return 0.80
+
+
+def _chapter_anchor_degrade_reason(
+    result: Any, *, min_modules: int, min_coverage: float
+) -> Optional[str]:
+    """Graceful-degrade eligibility probe (§A step 2). ``None`` ⇒ eligible.
+
+    Returns a short machine-readable reason string (surfaced as the
+    ``to_derivation_degraded_reason`` signal + logged at WARNING) when the corpus
+    can't support chapter-anchored TOs, so the caller falls through to bottom-up.
+    """
+    n_modules = int(getattr(result, "n_modules", 0))
+    if n_modules < min_modules:
+        return f"too_few_modules:{n_modules}<{min_modules}"
+    if n_modules > _TO_CHAPTER_MAX_MODULES:
+        return f"too_many_modules:{n_modules}>{_TO_CHAPTER_MAX_MODULES}"
+    coverage = float(getattr(result, "co_coverage", 0.0))
+    if coverage < min_coverage:
+        return f"low_co_coverage:{coverage:.3f}<{min_coverage:.3f}"
+    return None
+
+
+def _most_common_bloom_verb(cluster_cos: List[Dict[str, Any]]) -> str:
+    """Most-common member ``bloom_verb`` (capitalized) for a fallback TO stem.
+
+    Falls back to detecting the main Bloom verb off each CO's statement when the
+    field is absent, then to a neutral ``"Master"`` when nothing resolves. Pure /
+    deterministic; used only for the author-failed fallback statement (§A step 4).
+    """
+    from collections import Counter as _Counter
+
+    verbs: List[str] = []
+    for co in cluster_cos:
+        if not isinstance(co, dict):
+            continue
+        verb = str(co.get("bloom_verb") or "").strip().lower()
+        if not verb:
+            try:
+                from lib.ontology.bloom import detect_bloom_level  # noqa: PLC0415
+
+                _lvl, detected = detect_bloom_level(
+                    str(co.get("statement") or "")
+                )
+                verb = str(detected or "").strip().lower()
+            except Exception:  # noqa: BLE001 — best-effort verb detection
+                verb = ""
+        if verb:
+            verbs.append(verb)
+    if not verbs:
+        return "Master"
+    return _Counter(verbs).most_common(1)[0][0].capitalize()
+
+
+def _reorder_cos_by_anchor(
+    chapter_cos: List[Dict[str, Any]],
+    chunks_by_id: Dict[str, Any],
+    all_chunks: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """§A step 6 — stable book-order re-sort of pre-mint COs (chapter-contiguous).
+
+    Runs the pure anchor assignment on the pre-id-mint candidates and stable-sorts
+    by ``(module_order_index, min position_in_module over cited chunks, existing
+    index)`` so a subsequent ceil-stride week slice is chapter-contiguous even
+    without ``ED4ALL_WEEK_TO_GROUPS``. A no-op (returns the input list unchanged)
+    when the corpus is ineligible for anchoring — mirrors the TO-derivation
+    degrade so the reorder never scatters a corpus the anchor path would reject.
+    """
+    from lib.objectives.chapter_anchor import assign_cos_to_modules
+
+    result = assign_cos_to_modules(chapter_cos, chunks_by_id, all_chunks)
+    reason = _chapter_anchor_degrade_reason(
+        result,
+        min_modules=_resolve_to_chapter_min_modules(),
+        min_coverage=_resolve_to_chapter_min_co_coverage(),
+    )
+    if reason is not None:
+        return chapter_cos
+    order_pos = {mid: i for i, mid in enumerate(result.module_order)}
+    indexed = list(enumerate(chapter_cos))
+    indexed.sort(
+        key=lambda pair: (
+            order_pos.get(result.assignment.get(pair[0], ""), len(order_pos)),
+            result.min_position_by_co.get(pair[0], 1_000_000_000),
+            pair[0],
+        )
+    )
+    return [co for _idx, co in indexed]
+
+
+def _derive_terminals_chapter_anchored(
+    *,
+    provider: Any,
+    chapter_cos: List[Dict[str, Any]],
+    chunks_by_id: Dict[str, Any],
+    all_chunks: List[Dict[str, Any]],
+    embed: Any,
+    course_name: str,
+    mint_lo_id: Any,
+    capture: Optional[Any] = None,
+    checkpoint_path: Optional[Path] = None,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Defect A — derive terminal objectives by ANCHORING COs to DART modules.
+
+    Every CO is assigned (deterministically) to the module its cited chunks
+    predominantly come from (one module == one staged HTML == one chapter); one
+    TO is authored per module, in book order, via the EXISTING
+    ``provider.author_terminal_for_cluster`` call, the EXISTING
+    ``_stage2_cluster_store`` sidecar (fingerprint extended with the anchor
+    module id), and the EXISTING ``check_stop("stage2_clusters")`` boundary — NO
+    new LLM call site, graceful-stop parity with the bottom-up loop.
+
+    Returns ``(terminals, cluster_signals)``. Returns ``([], {reason})`` on a
+    graceful degrade (too few / too many modules, or low CO coverage) so the
+    caller falls through to ``_derive_terminals_bottom_up`` untouched.
+    """
+    from lib.objectives.chapter_anchor import assign_cos_to_modules
+
+    result = assign_cos_to_modules(chapter_cos, chunks_by_id, all_chunks)
+    reason = _chapter_anchor_degrade_reason(
+        result,
+        min_modules=_resolve_to_chapter_min_modules(),
+        min_coverage=_resolve_to_chapter_min_co_coverage(),
+    )
+    if reason is not None:
+        logger.warning(
+            "plan_course_structure: chapter-anchored TO derivation degraded "
+            "(%s) — falling through to bottom-up clustering.", reason,
+        )
+        return [], {"to_derivation_degraded_reason": reason}
+
+    logger.info(
+        "plan_course_structure: chapter-anchored TO derivation — %d module(s), "
+        "%d CO(s), coverage=%.3f (cluster-K/guards/merge/singleton knobs IGNORED "
+        "in anchor mode).",
+        result.n_modules, len(chapter_cos), result.co_coverage,
+    )
+
+    # Zero-resolve COs default to the last module (never dropped). When an embed
+    # client is available, re-home each to the module of its NEAREST resolved CO
+    # by statement cosine (§A step 3) — a strictly better home than "last".
+    assignment: Dict[int, str] = dict(result.assignment)
+    if result.unresolved_co_indices and embed is not None:
+        try:
+            _rehome_unresolved_by_cosine(
+                chapter_cos, assignment, result.unresolved_co_indices, embed
+            )
+        except Exception:  # noqa: BLE001 — cosine re-home is best-effort
+            logger.warning(
+                "plan_course_structure: chapter-anchor cosine re-home of %d "
+                "zero-resolve CO(s) failed; keeping last-module default.",
+                len(result.unresolved_co_indices), exc_info=True,
+            )
+
+    # Rebuild the book-ordered, non-empty module groups from the (possibly
+    # re-homed) assignment.
+    from lib.objectives.chapter_anchor import _build_groups  # noqa: PLC0415
+
+    groups = _build_groups(assignment, result.module_order)
+
+    terminals: List[Dict[str, Any]] = []
+    to_source_chunk_assignments: Dict[str, List[str]] = {}
+    _cluster_store = _stage2_cluster_store(checkpoint_path)
+    _cluster_cache = _cluster_store.load() if _cluster_store.enabled else {}
+    _modules_reused = 0
+
+    for m_idx, (module_id, member_idxs) in enumerate(groups, start=1):
+        # Graceful stop at the module boundary — SAME site id + sequential
+        # semantics as the bottom-up cluster loop (previous module's authored TO
+        # is already on the sidecar, so a raise loses ≤1 in-flight author call).
+        check_stop("stage2_clusters", m_idx - 1)
+        cluster_cos = [chapter_cos[i] for i in member_idxs]
+        module_title = result.module_title_by_id.get(module_id) or module_id
+        _cl_unit = f"cluster{m_idx:02d}"
+        # Fingerprint EXTENDED with the anchor module id so a stale assignment
+        # never reuses another module's TO (mirrors the bottom-up fingerprint).
+        _cl_fp = _llm_compute_fingerprint({
+            "site": "stage2_clusters",
+            "anchor_module_id": module_id,
+            "member_statements": sorted(
+                str(c.get("statement") or c.get("text") or "")
+                for c in cluster_cos
+            ),
+            "model": str(getattr(provider, "_model", "") or ""),
+            "course_name": course_name,
+        })
+        authored: Optional[Dict[str, Any]] = None
+        if _cluster_store.enabled:
+            _cl_cached = _cluster_store.reuse(
+                _cl_unit, _cl_fp, cache=_cluster_cache
+            )
+            if _cl_cached is not None and isinstance(
+                _cl_cached.get("authored"), dict
+            ):
+                authored = dict(_cl_cached["authored"])
+                _modules_reused += 1
+        if authored is None:
+            authored = provider.author_terminal_for_cluster(
+                cluster_cos, course_name=course_name, cluster_index=m_idx
+            )
+            if authored is not None and _cluster_store.enabled:
+                _cluster_store.append(
+                    _cl_unit, _cl_fp, {"authored": dict(authored)}
+                )
+        if authored is None:
+            # §A step 4 — deterministic module-titled fallback (never invents;
+            # the verb is the members' most-common Bloom verb).
+            authored = _fallback_terminal_from_cluster(cluster_cos)
+            authored["statement"] = (
+                f"{_most_common_bloom_verb(cluster_cos)} the concepts and "
+                f"skills of {module_title}."
+            )
+            authored["to_synthesis"] = "chapter_anchor_fallback"
+        authored["id"] = mint_lo_id("terminal", m_idx)
+        # Stamp the anchor provenance on every TO (§A step 4).
+        authored["anchor_module_id"] = module_id
+        authored["anchor_module_title"] = module_title
+        terminals.append(authored)
+
+        # Set terminal_id on members in-loop + union their cited chunks for the
+        # TerminalObjectiveSourceGroundingValidator parity (§A step 5).
+        _cluster_chunk_ids: List[str] = []
+        _seen_chunk_ids: set = set()
+        for i in member_idxs:
+            chapter_cos[i]["terminal_id"] = authored["id"]
+            _raw = chapter_cos[i].get("source_chunk_ids")
+            if isinstance(_raw, list):
+                for _ch in _raw:
+                    _cs = str(_ch).strip()
+                    if _cs and _cs not in _seen_chunk_ids:
+                        _seen_chunk_ids.add(_cs)
+                        _cluster_chunk_ids.append(_cs)
+        to_source_chunk_assignments[authored["id"]] = _cluster_chunk_ids
+
+    cluster_signals: Dict[str, Any] = {
+        "to_derivation": "chapter_anchored",
+        "chapter_anchor_modules": len(groups),
+        "chapter_anchor_ties": result.ties,
+        "chapter_anchor_multi_module_cos": result.multi_module_cos,
+        "chapter_anchor_unresolved_cos": len(result.unresolved_co_indices),
+        "to_source_chunk_assignments": to_source_chunk_assignments,
+        "to_clusters_reused_from_checkpoint": _modules_reused,
+    }
+    if _modules_reused:
+        logger.info(
+            "plan_course_structure: chapter-anchored TO derivation reused "
+            "%d/%d module TO(s) from sidecar (skipped their 7B author calls).",
+            _modules_reused, len(groups),
+        )
+    if capture is not None:
+        try:
+            capture.log_decision(
+                decision_type="content_selection",
+                decision=(
+                    f"chapter_anchored_tos:{len(groups)} module(s) -> "
+                    f"{len(terminals)} TO(s) over {len(chapter_cos)} CO(s)"
+                ),
+                rationale=(
+                    "Defect-A chapter-anchored TO derivation: assigned "
+                    f"{len(chapter_cos)} CO(s) to {result.n_modules} DART "
+                    "module(s) (one staged HTML == one chapter) by cited-chunk "
+                    f"plurality (coverage={result.co_coverage:.3f}, "
+                    f"{result.ties} tie(s), {result.multi_module_cos} "
+                    "multi-module, "
+                    f"{len(result.unresolved_co_indices)} zero-resolve), then "
+                    f"authored one book-ordered TO per module ({len(groups)} "
+                    "non-empty) via the existing per-cluster 7B author call + "
+                    "resume sidecar — recovering the chapter grain the bottom-up "
+                    "statement clustering scattered."
+                ),
+                alternatives_considered=[
+                    "bottom-up statement clustering (scatters a chapter's COs "
+                    "across theme clusters — Defect A prerequisite inversions)",
+                ],
+            )
+        except Exception:  # noqa: BLE001 — capture must not break derivation
+            pass
+
+    return terminals, cluster_signals
+
+
+def _rehome_unresolved_by_cosine(
+    chapter_cos: List[Dict[str, Any]],
+    assignment: Dict[int, str],
+    unresolved_idxs: List[int],
+    embed: Any,
+) -> None:
+    """Re-home zero-resolve COs to the module of their nearest resolved CO.
+
+    Mutates ``assignment`` in place. ``unresolved_idxs`` COs have no cited-chunk
+    module vote; each is re-pointed to the module of the resolved CO with the
+    highest statement cosine (a strictly better home than the last-module
+    default). A no-op when there is no resolved CO to compare against.
+    """
+    import numpy as np
+
+    unresolved_set = set(unresolved_idxs)
+    resolved_idxs = [i for i in range(len(chapter_cos)) if i not in unresolved_set]
+    if not resolved_idxs:
+        return
+
+    def _stmt(i: int) -> str:
+        c = chapter_cos[i]
+        return str(c.get("statement") or c.get("text") or "").strip() or " "
+
+    all_idxs = resolved_idxs + list(unresolved_idxs)
+    vecs = np.asarray(embed.encode_batch([_stmt(i) for i in all_idxs]), dtype=float)
+    norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    unit = vecs / norms
+    n_res = len(resolved_idxs)
+    res_unit = unit[:n_res]
+    for local, co_idx in enumerate(unresolved_idxs):
+        sims = res_unit @ unit[n_res + local]
+        best_local = int(np.argmax(sims))
+        assignment[co_idx] = assignment[resolved_idxs[best_local]]
+
+
+# ---------------------------------------------------------------------------
 # Stage-2 per-window resume checkpoint sidecar.
 # ---------------------------------------------------------------------------
 #
@@ -5658,6 +6064,19 @@ async def _run_stage2_window_synthesis(
                 _reselect.kept_original_below_floor,
             )
 
+    # ---- Defect A §A step 6 — chapter-contiguous CO re-order BEFORE minting.
+    # When the chapter-anchor master + reorder satellite are on (and we have a
+    # chunk-window grounding), stable-sort the survivors into book order (module
+    # first-occurrence, then within-module position) so ceil-stride weeks are
+    # chapter-contiguous even without ED4ALL_WEEK_TO_GROUPS. No-op / byte-
+    # identical when the master flag is off (the default).
+    if (
+        _resolve_to_chapter_anchor()
+        and _resolve_to_chapter_anchor_reorder()
+        and grounding_mode == "chunk_window"
+    ):
+        chapter_cos = _reorder_cos_by_anchor(chapter_cos, chunks_by_id, all_chunks)
+
     # ---- Mint CO-NN AFTER Pass C + D over the survivors. --------------
     for _idx, _co in enumerate(chapter_cos, start=1):
         _co["id"] = mint_lo_id("chapter", _idx)
@@ -5668,10 +6087,36 @@ async def _run_stage2_window_synthesis(
     # weak_to_link_rate). WS1 derives TOs by clustering the CO statement
     # vectors and authoring one TO per cluster, setting each CO's terminal_id
     # DIRECTLY from its cluster (correct by construction).
+    #
+    # Defect A — when ED4ALL_TO_CHAPTER_ANCHOR is on AND we have a chunk-window
+    # grounding, TOs are derived by ANCHORING COs to DART modules first; the
+    # anchor path may gracefully degrade (returns []), in which case the
+    # bottom-up path runs UNTOUCHED. Default OFF ⇒ bottom-up only (byte-identical).
     terminal: List[Dict[str, Any]] = []
     used_bottom_up = False
     cluster_signals: Dict[str, Any] = {}
-    if _embed is not None:
+    _cluster_cp = (
+        checkpoint_path.parent / _STAGE2_CLUSTERS_CHECKPOINT_NAME
+        if checkpoint_path is not None
+        else None
+    )
+    if _resolve_to_chapter_anchor() and grounding_mode == "chunk_window":
+        terminal, cluster_signals = _derive_terminals_chapter_anchored(
+            provider=provider,
+            chapter_cos=chapter_cos,
+            chunks_by_id=chunks_by_id,
+            all_chunks=all_chunks,
+            embed=_embed,
+            course_name=course_name,
+            mint_lo_id=mint_lo_id,
+            capture=capture,
+            checkpoint_path=_cluster_cp,
+        )
+    if not terminal and _embed is not None:
+        # Anchor mode off / degraded → bottom-up clustering (UNTOUCHED). Preserve
+        # any degrade-reason signal for observability, then let bottom-up own
+        # the rest of cluster_signals.
+        _degrade_reason = cluster_signals.get("to_derivation_degraded_reason")
         terminal, cluster_signals = _derive_terminals_bottom_up(
             provider=provider,
             chapter_cos=chapter_cos,
@@ -5681,13 +6126,11 @@ async def _run_stage2_window_synthesis(
             capture=capture,
             # Per-cluster TO-author resume sidecar, sibling of the window
             # sidecar in the phase OUTPUT dir (same flag gating).
-            checkpoint_path=(
-                checkpoint_path.parent / _STAGE2_CLUSTERS_CHECKPOINT_NAME
-                if checkpoint_path is not None
-                else None
-            ),
+            checkpoint_path=_cluster_cp,
         )
-        used_bottom_up = bool(terminal)
+        if _degrade_reason and terminal:
+            cluster_signals["to_derivation_degraded_reason"] = _degrade_reason
+    used_bottom_up = bool(terminal)
 
     if not used_bottom_up:
         # ---- FALLBACK (R4, load-bearing): legacy draft-TO reconcile + backlink.
@@ -5720,7 +6163,25 @@ async def _run_stage2_window_synthesis(
     # M5 Fix A — reassign mode (env ED4ALL_TO_BACKLINK_REASSIGN) re-scores
     # hint-honored COs (validator parity → weak_to_link_rate matches
     # co_terminal_alignment) and re-points cosine-junk links to a better TO.
-    _backlink = backlink_cos_to_tos(terminal, chapter_cos, embed=_embed)
+    # Defect A — reassign is SUPPRESSED in chapter-anchor mode (a CO's parent TO
+    # is chosen by cited-chunk plurality, not cosine, so re-pointing to a
+    # cosine-argmax TO would UNDO the anchor). The backlink still runs (WS2
+    # weak-link measurement), just with reassign forced off; WARN if the env is
+    # set so the operator knows it was ignored this run.
+    _reassign_override: Optional[bool] = None
+    if cluster_signals.get("to_derivation") == "chapter_anchored":
+        from lib.ontology.lo_backlink import resolve_reassign_mode  # noqa: PLC0415
+
+        if resolve_reassign_mode():
+            logger.warning(
+                "plan_course_structure: ED4ALL_TO_BACKLINK_REASSIGN is set but "
+                "SUPPRESSED in chapter-anchor mode (kept for WS2 weak-link "
+                "measurement only — reassign would undo the chapter anchor).",
+            )
+        _reassign_override = False
+    _backlink = backlink_cos_to_tos(
+        terminal, chapter_cos, embed=_embed, reassign=_reassign_override
+    )
 
     # The window-map path stamps a distinct ``_window`` label so an audit can
     # tell chunk-grounded synthesis apart from the chapter-grained fallback,
@@ -5755,6 +6216,19 @@ async def _run_stage2_window_synthesis(
         # max_pairwise_cosine / near_dup_pairs are surfaced for pinning).
         "max_chunks_per_objective": dedup.max_chunks_per_objective,
         "pruned_chunk_total": dedup.pruned_chunk_total,
+        # W2 (Defect E) — lexical cross-window restatement-merge telemetry.
+        # Present only when the lexical-merge pass actually merged ≥1 cluster
+        # (guarded so the legacy signal shape is unchanged when it no-ops).
+        **(
+            {"lexical_merge_pairs": dedup.lexical_merge_pairs}
+            if getattr(dedup, "lexical_merge_pairs", 0)
+            else {}
+        ),
+        **(
+            {"lexical_clusters_merged": dedup.lexical_clusters_merged}
+            if getattr(dedup, "lexical_clusters_merged", 0)
+            else {}
+        ),
         # I3 PRONG A — distinct-skill split signals.
         "clusters_split_for_distinct_skill": (
             dedup.clusters_split_for_distinct_skill
