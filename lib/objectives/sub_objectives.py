@@ -66,6 +66,12 @@ from typing import Any, Dict, List, Optional
 
 from lib.generation.llm_checkpoint import CheckpointStore, compute_fingerprint
 from lib.generation.stop_control import check_stop
+# The raw-chrome junk-marker tuple is consolidated into the shared apparatus
+# lexicon (single source of truth); imported here as a byte-identical re-export.
+from lib.objectives.apparatus_lexicon import (
+    JUNK_MARKERS as _JUNK_MARKERS,
+    compile_profile as _compile_apparatus_profile,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +100,13 @@ def _sub_objectives_store(path: Optional[Path]) -> CheckpointStore:
 ENV_SUB_OBJECTIVE_PROVIDER = "ED4ALL_SUB_OBJECTIVE_PROVIDER"
 ENV_SUB_OBJECTIVE_MODEL = "ED4ALL_SUB_OBJECTIVE_MODEL"
 ENV_SUB_OBJECTIVE_MAX = "ED4ALL_SUB_OBJECTIVE_MAX"
+#: Defect-D deterministic statement-quality gate (default OFF → byte-identical
+#: to the legacy salient-statement extraction). ON enables leading-boilerplate
+#: prefix-strip, run-on skip-not-truncate, glossary ``term : definition`` →
+#: ``"Define {term}"``, all-cluster-body scanning, Bloom-verb heading keep, and
+#: within-CO statement dedupe. Parse-with-fallback, mirroring the other flags.
+ENV_SUB_OBJECTIVE_QUALITY = "ED4ALL_SUB_OBJECTIVE_QUALITY"
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
 
 #: Providers the LLM arm knows how to construct (the validation allowlist).
 #: Mirrors ``objective_review._SUPPORTED_REVIEW_PROVIDERS`` — only the strong
@@ -222,6 +235,22 @@ def resolve_max_sub_objectives(value: Optional[int] = None) -> int:
     return parsed
 
 
+def resolve_sub_objective_quality(value: Optional[bool] = None) -> bool:
+    """Resolve ``ED4ALL_SUB_OBJECTIVE_QUALITY`` (default **OFF**).
+
+    Explicit arg > env. Only the truthy tokens ``1`` / ``true`` / ``yes`` /
+    ``on`` (any case) enable the Defect-D statement-quality path; unset /
+    anything else keeps the byte-identical legacy extraction (parse-with-
+    fallback, mirroring the sibling default-OFF resolvers).
+    """
+    if value is not None:
+        return bool(value)
+    raw = os.environ.get(ENV_SUB_OBJECTIVE_QUALITY)
+    if raw is None:
+        return False
+    return raw.strip().lower() in _TRUTHY
+
+
 def _resolve_llm_timeout() -> float:
     """Per-request HTTP timeout for the LLM arm (parse-with-fallback)."""
     import math as _math  # noqa: PLC0415
@@ -302,11 +331,8 @@ _NON_CONCEPT_LEAD = frozenset(
 #: Substrings marking raw exercise / callout / answer-key / glyph fragments that
 #: leak verbatim from OpenStax-style source chunks (e.g. "BE PREPARED : : 1.1",
 #: "TRY IT : : 1.6", the circled-letter exercise glyphs). A sentence containing
-#: any of these is not a concept statement.
-_JUNK_MARKERS = (
-    "::", "ⓐ", "ⓑ", "ⓒ", "ⓓ", "ⓔ",
-    "BE PREPARED", "TRY IT", "HOW TO", "LEARNING OBJECTIVES",
-)
+#: any of these is not a concept statement. ``_JUNK_MARKERS`` is imported from
+#: lib.objectives.apparatus_lexicon (byte-identical re-export).
 
 
 def _looks_like_concept_sentence(s: str) -> bool:
@@ -363,6 +389,131 @@ def _salient_statement(body: str, fallback: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Defect-D deterministic statement quality (flag-gated; default OFF)
+# ---------------------------------------------------------------------------
+
+#: A run-on beyond this word count is SKIPPED (never head-truncated mid-clause)
+#: unless it ends at a real sentence boundary within the budget.
+_MAX_QUALITY_WORDS = 18
+
+#: Glossary shape: a short leading term (1-4 words) then ``: <definition>``.
+_GLOSSARY_RE = re.compile(
+    r"^\s*([A-Za-z][\w\-]*(?:\s+[A-Za-z][\w\-]*){0,3})\s*:\s*\S"
+)
+
+
+def _leads_with_bloom_verb(text: str) -> bool:
+    """Whether ``text``'s first word is a canonical Bloom / action verb.
+
+    Uses ``lib.ontology.bloom.get_all_verbs`` (single source of truth) — a
+    heading is kept verbatim only when it opens on a real objective verb, so
+    the banned ``"Understand: <x>"`` templating never reappears.
+    """
+    first = (text or "").strip().split(" ", 1)[0].lower().strip(".,;:()")
+    if not first:
+        return False
+    from lib.ontology.bloom import get_all_verbs  # noqa: PLC0415
+
+    return first in get_all_verbs()
+
+
+def _glossary_define(text: str) -> Optional[str]:
+    """Map a glossary ``term : definition`` line to ``"Define {term}"``.
+
+    Returns ``None`` when ``text`` is not glossary-shaped (no short leading term
+    followed by a colon + definition body) or the term carries a junk marker.
+    """
+    m = _GLOSSARY_RE.match(text or "")
+    if not m:
+        return None
+    term = m.group(1).strip()
+    if not term or any(mk in term for mk in _JUNK_MARKERS):
+        return None
+    return f"Define {term}"
+
+
+def _salient_statement_quality(
+    bodies: List[str], fallback: str, profile: Any
+) -> str:
+    """Quality salient-statement extraction over ALL cluster-member bodies.
+
+    Deterministic, replayable. For each member body in order:
+
+    1. strip a leading learning-objective boilerplate preamble (recover the
+       tail after the colon; a pure-preamble line contributes nothing);
+    2. a glossary ``term : definition`` line → ``"Define {term}"``;
+    3. otherwise the FIRST sentence that either (a) leads with a canonical
+       Bloom verb and is short + marker-free (kept verbatim), or (b) ends at a
+       real sentence boundary within :data:`_MAX_QUALITY_WORDS` and reads as a
+       concept sentence. A run-on with no in-budget boundary is SKIPPED — never
+       head-truncated mid-clause.
+
+    Falls back to ``fallback`` (the CO statement) only when no member body
+    yields a clean statement.
+    """
+    for body in bodies:
+        text = profile.strip_lo_boilerplate_prefix((body or "").strip())
+        if not text:
+            continue
+        glossary = _glossary_define(text)
+        if glossary:
+            return glossary
+        for raw in _SENTENCE_SPLIT.split(text):
+            s = re.sub(r"\s+", " ", raw).strip()
+            if not s:
+                continue
+            ends_clean = s.endswith((".", "!", "?"))
+            core = s.rstrip(":;,. ")
+            if not core:
+                continue
+            words = core.split(" ")
+            # Bloom-verb heading — kept verbatim even without terminal
+            # punctuation, provided it is short and marker-free.
+            if (
+                2 <= len(words) <= _MAX_QUALITY_WORDS
+                and _leads_with_bloom_verb(core)
+                and not any(mk in core for mk in _JUNK_MARKERS)
+            ):
+                return core
+            # Otherwise demand a real boundary within budget; never truncate.
+            if not ends_clean or len(words) > _MAX_QUALITY_WORDS:
+                continue
+            if not _looks_like_concept_sentence(core):
+                continue
+            return core
+    return fallback
+
+
+def _dedupe_within_co(
+    subs: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Collapse sub-objectives with an identical normalized statement.
+
+    Merges the source_chunk_ids of duplicates into the first occurrence (no
+    chunk id is ever dropped — anti-loss). Empty statements are never merged
+    together.
+    """
+    out: List[Dict[str, Any]] = []
+    index: Dict[str, int] = {}
+    for so in subs:
+        stmt = str(so.get("statement", ""))
+        key = re.sub(r"\s+", " ", stmt.strip().lower())
+        ids = list(so.get("source_chunk_ids", []))
+        if key and key in index:
+            existing = out[index[key]]
+            seen = set(existing["source_chunk_ids"])
+            for cid in ids:
+                if cid not in seen:
+                    existing["source_chunk_ids"].append(cid)
+                    seen.add(cid)
+            continue
+        if key:
+            index[key] = len(out)
+        out.append({"statement": stmt, "source_chunk_ids": ids})
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Deterministic clustering path
 # ---------------------------------------------------------------------------
 
@@ -374,6 +525,8 @@ def _derive_deterministic(
     chunks_by_id: Dict[str, Any],
     embedder: Optional[Any],
     max_sub_objectives: int,
+    quality: bool = False,
+    profile: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
     """Cluster the CO's source chunks into named sub-objectives.
 
@@ -387,7 +540,21 @@ def _derive_deterministic(
     * ``< 2`` chunks → single sub-objective.
 
     Never fabricates a chunk id; never returns more than ``max_sub_objectives``.
+
+    ``quality`` (Defect D, default OFF) routes to the parallel
+    :func:`_derive_deterministic_quality` path. When OFF the body below is the
+    byte-identical legacy extraction.
     """
+    if quality:
+        prof = profile if profile is not None else _compile_apparatus_profile()
+        return _derive_deterministic_quality(
+            co=co,
+            chunk_ids=chunk_ids,
+            chunks_by_id=chunks_by_id,
+            embedder=embedder,
+            max_sub_objectives=max_sub_objectives,
+            profile=prof,
+        )
     co_stmt = _co_statement(co)
     # Pair each chunk id with its body; keep order stable.
     bodies: List[str] = [_chunk_body(chunks_by_id.get(cid)) for cid in chunk_ids]
@@ -480,6 +647,106 @@ def _derive_deterministic(
         sub_objectives = kept
 
     return sub_objectives
+
+
+def _derive_deterministic_quality(
+    *,
+    co: Dict[str, Any],
+    chunk_ids: List[str],
+    chunks_by_id: Dict[str, Any],
+    embedder: Optional[Any],
+    max_sub_objectives: int,
+    profile: Any,
+) -> List[Dict[str, Any]]:
+    """Defect-D statement-quality variant of :func:`_derive_deterministic`.
+
+    Same clustering + anti-loss + cap semantics; the ONLY differences are the
+    statement derivation (:func:`_salient_statement_quality`, scanning ALL
+    cluster-member bodies with boilerplate-strip / glossary / run-on-skip /
+    Bloom-heading rules) and a final within-CO statement dedupe. A separate
+    function so the flag-OFF path in :func:`_derive_deterministic` stays
+    byte-identical.
+    """
+    co_stmt = _co_statement(co)
+    bodies: List[str] = [_chunk_body(chunks_by_id.get(cid)) for cid in chunk_ids]
+
+    def _single(ids: List[str], member_bodies: List[str]) -> List[Dict[str, Any]]:
+        if not ids:
+            return []
+        return [
+            {
+                "statement": _salient_statement_quality(
+                    member_bodies, co_stmt or "Key concept", profile
+                ),
+                "source_chunk_ids": list(ids),
+            }
+        ]
+
+    if len(chunk_ids) < 2 or embedder is None:
+        return _dedupe_within_co(_single(chunk_ids, bodies))
+
+    vecs: List[Optional[List[float]]] = []
+    for body in bodies:
+        if not body:
+            vecs.append(None)
+            continue
+        try:
+            v = embedder.encode(body)
+            vecs.append(list(v) if v is not None else None)
+        except Exception as exc:  # noqa: BLE001 — degrade to no-cluster
+            logger.warning("sub_objectives: chunk encode failed: %s", exc)
+            vecs.append(None)
+
+    embeddable_idx = [i for i, v in enumerate(vecs) if v is not None]
+    if len(embeddable_idx) < 2:
+        return _dedupe_within_co(_single(chunk_ids, bodies))
+
+    from lib.objectives.objective_dedup import cluster_by_cosine  # noqa: PLC0415
+
+    sub_vecs = [vecs[i] for i in embeddable_idx]  # type: ignore[index]
+    clusters, _max_cos, _near = cluster_by_cosine(
+        sub_vecs, _CHUNK_CLUSTER_THRESHOLD
+    )
+    global_clusters: List[List[int]] = [
+        [embeddable_idx[local] for local in members] for members in clusters
+    ]
+    no_body_idx = [i for i, v in enumerate(vecs) if v is None]
+    if no_body_idx and global_clusters:
+        global_clusters[0].extend(no_body_idx)
+    elif no_body_idx:
+        global_clusters = [no_body_idx]
+
+    sub_objectives: List[Dict[str, Any]] = []
+    for members in global_clusters:
+        members_sorted = sorted(set(members))
+        ids = [chunk_ids[i] for i in members_sorted]
+        member_bodies = [bodies[i] for i in members_sorted]
+        sub_objectives.append(
+            {
+                "statement": _salient_statement_quality(
+                    member_bodies, co_stmt or "Key concept", profile
+                ),
+                "source_chunk_ids": ids,
+            }
+        )
+
+    # Cap: merge the smallest tail clusters into the last kept one, preserving
+    # the first overflow cluster's (already-clean) statement; ids never dropped.
+    if len(sub_objectives) > max_sub_objectives:
+        kept = sub_objectives[: max_sub_objectives - 1]
+        overflow = sub_objectives[max_sub_objectives - 1:]
+        overflow_ids: List[str] = []
+        for extra in overflow:
+            overflow_ids.extend(extra["source_chunk_ids"])
+        kept.append(
+            {
+                "statement": overflow[0]["statement"],
+                "source_chunk_ids": overflow_ids,
+            }
+        )
+        sub_objectives = kept
+
+    return _dedupe_within_co(sub_objectives)
 
 
 # ---------------------------------------------------------------------------
@@ -634,6 +901,7 @@ def derive_sub_objectives_for_co(
     client: Optional[Any] = None,
     max_sub_objectives: Optional[int] = None,
     capture: Optional[Any] = None,
+    quality: Optional[bool] = None,
 ) -> List[Dict[str, Any]]:
     """Derive the concept / sub-objective layer for ONE chapter objective.
 
@@ -669,6 +937,7 @@ def derive_sub_objectives_for_co(
     co_id = str(co.get("id") or "")
     chunk_ids = _co_chunk_ids(co)
     cap = resolve_max_sub_objectives(max_sub_objectives)
+    resolved_quality = resolve_sub_objective_quality(quality)
 
     if not chunk_ids:
         _emit_decision(
@@ -753,6 +1022,7 @@ def derive_sub_objectives_for_co(
                 chunks_by_id=chunks_by_id,
                 embedder=scorer_embedder,
                 max_sub_objectives=cap,
+                quality=resolved_quality,
             )
         except Exception as exc:  # noqa: BLE001 — never fail the phase
             logger.warning(
@@ -871,6 +1141,9 @@ def populate_sub_objectives(
         if resolved_provider is not None else None
     )
     cap = resolve_max_sub_objectives(None)
+    # Defect-D quality flag on the fingerprint so a flag flip invalidates cached
+    # per-CO derivations (a resume never replays a stale legacy statement).
+    resolved_quality = resolve_sub_objective_quality(None)
 
     for _idx, co in enumerate(_iter_cos()):
         # Stop at the per-CO unit boundary — BEFORE this CO's derivation AND
@@ -885,6 +1158,7 @@ def populate_sub_objectives(
             "provider": resolved_provider or "",
             "model": resolved_model or "",
             "cap": cap,
+            "quality": resolved_quality,
         })
         reused = store.reuse(unit_id, fingerprint, cache=cache)
         if reused is not None:
@@ -902,6 +1176,7 @@ def populate_sub_objectives(
                     model=model,
                     client=client,
                     capture=capture,
+                    quality=resolved_quality,
                 )
             except Exception as exc:  # noqa: BLE001 — isolate per-CO failure
                 logger.warning(
@@ -966,7 +1241,9 @@ __all__ = [
     "resolve_sub_objective_provider",
     "resolve_sub_objective_model",
     "resolve_max_sub_objectives",
+    "resolve_sub_objective_quality",
     "ENV_SUB_OBJECTIVE_PROVIDER",
     "ENV_SUB_OBJECTIVE_MODEL",
     "ENV_SUB_OBJECTIVE_MAX",
+    "ENV_SUB_OBJECTIVE_QUALITY",
 ]

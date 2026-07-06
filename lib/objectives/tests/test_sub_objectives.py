@@ -26,12 +26,15 @@ from typing import Any, Dict, List
 
 from lib.objectives.sub_objectives import (
     _DECISION_TYPE,
+    _dedupe_within_co,
     derive_sub_objectives_for_co,
     populate_sub_objectives,
     resolve_max_sub_objectives,
     resolve_sub_objective_provider,
+    resolve_sub_objective_quality,
     ENV_SUB_OBJECTIVE_MAX,
     ENV_SUB_OBJECTIVE_PROVIDER,
+    ENV_SUB_OBJECTIVE_QUALITY,
 )
 
 
@@ -496,3 +499,193 @@ def test_clean_concept_sentence_is_preferred_over_leading_junk():
     stmt = subs[0]["statement"]
     assert stmt.startswith("The opposite of a number")
     assert "TRY IT" not in stmt and stmt != co["statement"]
+
+
+# ---------------------------------------------------------------------------
+# Defect D — deterministic statement quality (ED4ALL_SUB_OBJECTIVE_QUALITY).
+# ---------------------------------------------------------------------------
+
+
+def _one_chunk_co(cid: str, body: str, statement: str) -> Any:
+    co = {
+        "id": "CO-Q",
+        "statement": statement,
+        "source_chunk_ids": [cid],
+        "sub_objectives": [],
+    }
+    return co, {cid: {"text": body}}
+
+
+def test_quality_resolver_parse_with_fallback(monkeypatch):
+    monkeypatch.delenv(ENV_SUB_OBJECTIVE_QUALITY, raising=False)
+    assert resolve_sub_objective_quality() is False
+    monkeypatch.setenv(ENV_SUB_OBJECTIVE_QUALITY, "1")
+    assert resolve_sub_objective_quality() is True
+    monkeypatch.setenv(ENV_SUB_OBJECTIVE_QUALITY, "off")
+    assert resolve_sub_objective_quality() is False
+    monkeypatch.setenv(ENV_SUB_OBJECTIVE_QUALITY, "garbage")
+    assert resolve_sub_objective_quality() is False
+    # Explicit arg wins over env.
+    assert resolve_sub_objective_quality(True) is True
+
+
+def test_quality_prefix_strip_recovers_tail():
+    co, chunks = _one_chunk_co(
+        "p1",
+        "By the end of this section, you will be able to: "
+        "Round whole numbers to a given place value.",
+        "CO fallback statement.",
+    )
+    subs = derive_sub_objectives_for_co(
+        co=co, chunks_by_id=chunks, embedder=None, quality=True
+    )
+    assert len(subs) == 1
+    assert subs[0]["statement"] == "Round whole numbers to a given place value"
+
+
+def test_quality_run_on_skipped_not_truncated():
+    run_on = (
+        "This extended passage rambles across many clauses and ideas without "
+        "ever reaching a terminal sentence boundary while listing numerous "
+        "related concepts and details"
+    )
+    assert len(run_on.split()) > 18 and not run_on.endswith(".")
+    co_on, chunks = _one_chunk_co("r1", run_on, "Fallback CO statement here.")
+    subs_on = derive_sub_objectives_for_co(
+        co=co_on, chunks_by_id=chunks, embedder=None, quality=True
+    )
+    # Run-on has no in-budget boundary → SKIPPED → CO-statement fallback,
+    # NEVER a mid-clause truncation.
+    assert subs_on[0]["statement"] == co_on["statement"]
+
+    # Flag OFF still head-truncates to 14 words (legacy behavior) — proves the
+    # quality path diverges and the OFF path is unchanged.
+    co_off, chunks2 = _one_chunk_co("r1", run_on, "Fallback.")
+    subs_off = derive_sub_objectives_for_co(
+        co=co_off, chunks_by_id=chunks2, embedder=None, quality=False
+    )
+    assert len(subs_off[0]["statement"].split()) == 14
+    assert subs_off[0]["statement"] != co_off["statement"]
+
+
+def test_quality_glossary_extraction():
+    co, chunks = _one_chunk_co(
+        "g1",
+        "Prime number : a whole number greater than one with exactly two factors.",
+        "Fallback.",
+    )
+    subs = derive_sub_objectives_for_co(
+        co=co, chunks_by_id=chunks, embedder=None, quality=True
+    )
+    assert subs[0]["statement"] == "Define Prime number"
+
+
+def test_quality_boilerplate_only_rejected():
+    co, chunks = _one_chunk_co(
+        "b1", "In the following exercises, solve each equation.", "Clean CO fallback."
+    )
+    subs = derive_sub_objectives_for_co(
+        co=co, chunks_by_id=chunks, embedder=None, quality=True
+    )
+    # The whole body is apparatus boilerplate → falls back to the CO statement.
+    assert subs[0]["statement"] == co["statement"]
+
+
+def test_quality_within_co_dedupe_unit():
+    subs = [
+        {"statement": "Define slope", "source_chunk_ids": ["a", "b"]},
+        {"statement": "define  SLOPE ", "source_chunk_ids": ["b", "c"]},
+        {"statement": "Compute area", "source_chunk_ids": ["d"]},
+    ]
+    out = _dedupe_within_co(subs)
+    assert len(out) == 2
+    assert out[0]["statement"] == "Define slope"
+    assert out[0]["source_chunk_ids"] == ["a", "b", "c"]  # merged, no dup, ordered
+    assert out[1]["source_chunk_ids"] == ["d"]
+
+
+def test_quality_dedupe_identical_fallbacks_in_co():
+    # Two vocab-disjoint boilerplate-only chunks → 2 clusters, both fall back to
+    # the CO statement → deduped to one; no chunk id lost.
+    co = {
+        "id": "CO-D",
+        "statement": "Shared fallback statement.",
+        "source_chunk_ids": ["d1", "d2"],
+        "sub_objectives": [],
+    }
+    chunks = {
+        "d1": {"text": "In the following exercises solve problems."},
+        "d2": {"text": "Be prepared to begin the readiness quiz now."},
+    }
+    subs = derive_sub_objectives_for_co(
+        co=co, chunks_by_id=chunks, embedder=_Embed(), quality=True
+    )
+    assert len(subs) == 1
+    assert subs[0]["statement"] == co["statement"]
+    covered = {cid for so in subs for cid in so["source_chunk_ids"]}
+    assert covered == {"d1", "d2"}
+
+
+#: Frozen snapshot of the flag-OFF derivation for the two-topic fixture (the
+#: legacy 14-word head-truncation). Pins the byte-stable status quo so a future
+#: edit to the quality path can't silently perturb the OFF behavior.
+_OFF_SNAPSHOT = [
+    {"statement": "Prime factorization expresses a number as a product of prime factors using a factor",
+     "source_chunk_ids": ["chk_a1"]},
+    {"statement": "A factor tree breaks a composite number into its prime factorization product step by",
+     "source_chunk_ids": ["chk_a2"]},
+    {"statement": "Divisibility rules determine whether a number is divisible by 2, 3, 5, or 10",
+     "source_chunk_ids": ["chk_b1"]},
+    {"statement": "A divisibility rule for 3 checks whether the digit sum is divisible by 3",
+     "source_chunk_ids": ["chk_b2"]},
+]
+
+
+def test_quality_flag_off_byte_identical_snapshot(monkeypatch):
+    monkeypatch.delenv(ENV_SUB_OBJECTIVE_QUALITY, raising=False)
+    chunks = _chunks_two_topics()
+    # (1) env-unset default == (2) explicit quality=False == (3) frozen snapshot.
+    unset = derive_sub_objectives_for_co(
+        co=_co_two_topics(), chunks_by_id=chunks, embedder=_Embed()
+    )
+    explicit_off = derive_sub_objectives_for_co(
+        co=_co_two_topics(), chunks_by_id=chunks, embedder=_Embed(), quality=False
+    )
+    assert unset == explicit_off == _OFF_SNAPSHOT
+    # Flag ON diverges (keeps full sentences, no head-truncation) but preserves
+    # the same clustering / id partition.
+    on = derive_sub_objectives_for_co(
+        co=_co_two_topics(), chunks_by_id=chunks, embedder=_Embed(), quality=True
+    )
+    assert on != _OFF_SNAPSHOT
+    assert [so["source_chunk_ids"] for so in on] == [
+        so["source_chunk_ids"] for so in _OFF_SNAPSHOT
+    ]
+
+
+def test_populate_fingerprint_includes_quality(monkeypatch):
+    import lib.objectives.sub_objectives as som
+
+    captured: List[Dict[str, Any]] = []
+    real = som.compute_fingerprint
+
+    def _spy(payload):
+        captured.append(payload)
+        return real(payload)
+
+    monkeypatch.setattr(som, "compute_fingerprint", _spy)
+    monkeypatch.setenv(ENV_SUB_OBJECTIVE_QUALITY, "1")
+    populate_sub_objectives(
+        chapter_objectives=[_co_two_topics()],
+        chunks_by_id=_chunks_two_topics(),
+        embedder=_Embed(),
+    )
+    assert captured, "populate must compute a per-CO fingerprint"
+    assert all("quality" in payload for payload in captured)
+    assert captured[0]["quality"] is True
+
+    # Same fingerprint payload with the flag OFF hashes differently → a flag
+    # flip invalidates cached per-CO derivations.
+    off = real({**captured[0], "quality": False})
+    on = real(captured[0])
+    assert off != on
