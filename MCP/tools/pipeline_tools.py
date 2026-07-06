@@ -4410,6 +4410,10 @@ def _derive_terminals_bottom_up(
     _cluster_cache = _cluster_store.load() if _cluster_store.enabled else {}
     _clusters_reused = 0
     for c_idx, member_idxs in enumerate(clusters, start=1):
+        # Graceful stop at the cluster boundary (sequential — plain raise): the
+        # previous cluster's authored TO is already appended to the sidecar, so
+        # a raise here loses at most the one in-flight author call.
+        check_stop("stage2_clusters", c_idx - 1)
         cluster_cos = [chapter_cos[i] for i in member_idxs]
         _cl_unit = f"cluster{c_idx:02d}"
         _cl_fp = _llm_compute_fingerprint({
@@ -4593,6 +4597,12 @@ from lib.generation.llm_checkpoint import (  # noqa: E402
     checkpoint_enabled as _llm_checkpoint_enabled,
     compute_fingerprint as _llm_compute_fingerprint,
     hash_text as _llm_hash_text,
+)
+from lib.generation.stop_control import (  # noqa: E402
+    STOP_MARKER,
+    GracefulStopRequested,
+    check_stop,
+    stop_requested,
 )
 
 _OBJECTIVE_SYNTHESIS_CHECKPOINT_ENV = "ED4ALL_OBJECTIVE_SYNTHESIS_CHECKPOINT"
@@ -4955,6 +4965,15 @@ async def _run_stage2_window_synthesis(
                 f"{window_dict.get('chapter_id')}"
                 f"#w{window_dict.get('window_index')}"
             )
+            # Graceful stop (P3.0 marker pattern): a stop armed WHILE this batch
+            # is in flight refuses a not-yet-started window by RETURNING
+            # STOP_MARKER — never raising. A raise would propagate through
+            # asyncio.gather (no return_exceptions) before the post-gather
+            # append loop runs, losing every already-completed window in this
+            # batch. In-flight calls finish; the caller appends them, skips
+            # markers, then raises GracefulStopRequested.
+            if stop_requested():
+                return STOP_MARKER
             try:
                 return provider.synthesize_window_objectives(
                     window_dict,
@@ -5033,12 +5052,23 @@ async def _run_stage2_window_synthesis(
         # only costs the in-flight batch on resume, never the whole run.
         _dispatched: Dict[Tuple[str, int], Optional[Dict[str, Any]]] = {}
         _batches = provider.batch_chapters(_to_dispatch)
+        _stop_marker_seen = False
         for _batch in _batches:
+            # Graceful stop BETWEEN batches: every prior batch's completed
+            # window is already appended to the sidecar, so this plain raise
+            # loses nothing (mid-batch arming is handled by the STOP_MARKER
+            # return inside _one_window + the post-loop raise below).
+            check_stop("stage2_windows", len(_dispatched))
             _results = await _asyncio.gather(*[
                 _loop.run_in_executor(None, _one_window, w) for w in _batch
             ])
             for _wd, _res in zip(_batch, _results):
                 _dkey = _window_key(_wd)
+                if _res is STOP_MARKER:
+                    # Not-attempted (stop refused pre-dispatch): skip append so
+                    # resume re-runs it. Do NOT record in _dispatched.
+                    _stop_marker_seen = True
+                    continue
                 _dispatched[_dkey] = _res
                 if _cp_enabled and _res is not None:
                     _append_stage2_window_checkpoint(
@@ -5052,6 +5082,12 @@ async def _run_stage2_window_synthesis(
                             if isinstance(_c, dict)
                         ],
                     )
+        if _stop_marker_seen:
+            # A stop was armed mid-batch: every window that COMPLETED before it
+            # is now in _dispatched AND checkpointed; the markers were never
+            # dispatched. Raise AFTER the sidecar append so resume re-runs only
+            # the un-attempted windows (P3.0).
+            raise GracefulStopRequested("stage2_windows", len(_dispatched))
 
         # Reassemble candidates in ORIGINAL window order (byte-equivalent to an
         # uninterrupted run; the dispatch loop above already checkpointed each
@@ -9344,6 +9380,10 @@ async def _run_post_rewrite_validation(**kwargs) -> str:
     gate_results: list = []
     failing_gate_ids: set = set()
     for gate_id, validator in validators:
+        # Graceful stop (checkpoint on command): non-LLM validator loop, so a
+        # stop here just pauses cleanly between validator units (no work to
+        # lose). Aggregated ``gate_results`` are re-derivable on resume.
+        check_stop("post_rewrite_validation", len(gate_results))
         try:
             result = validator.validate({**inputs, "gate_id": gate_id})
         except Exception as exc:  # pragma: no cover — defensive
@@ -13281,6 +13321,13 @@ async def _run_content_generation_outline(**kwargs) -> str:
 
     outline_blocks: List[Any] = []
     for blk in all_blocks:
+        # Graceful stop (checkpoint on command): raise at the unit boundary
+        # once a stop sentinel is armed. Every prior block has already been
+        # appended to ``.blocks_outline_checkpoint.jsonl`` (fresh) or
+        # rehydrated from it (resume), so ``len(outline_blocks)`` == the
+        # number of checkpointed/served units. Sequential loop → a plain
+        # ``check_stop`` raise is correct (no gathered coroutine to lose).
+        check_stop("outline_tier", len(outline_blocks))
         _blk_fp = (
             _outline_block_fp(blk) if _outline_checkpoint_on else ""
         )
@@ -13770,6 +13817,10 @@ async def _run_inter_tier_validation(**kwargs) -> str:
     gate_results: list = []
     failing_gate_ids: set = set()
     for gate_id, validator in validators:
+        # Graceful stop (checkpoint on command): non-LLM validator loop, so a
+        # stop here just pauses cleanly between validator units (no work to
+        # lose). Aggregated ``gate_results`` are re-derivable on resume.
+        check_stop("inter_tier_validation", len(gate_results))
         try:
             result = validator.validate({**inputs, "gate_id": gate_id})
         except Exception as exc:  # pragma: no cover — defensive
@@ -15164,7 +15215,19 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
         read-only maps); the only shared MUTABLE state it touches is the
         ``DecisionCapture`` (deep inside ``route``/providers) and the NLI
         singleton (best-of-N), both of which are now internally locked.
+
+        Graceful stop (P3.0 marker discipline): under the thread-pool path
+        every future is pre-submitted, so a worker that observes an armed
+        stop sentinel must RETURN ``STOP_MARKER`` pre-dispatch rather than
+        raise — a raise would surface through ``future.result()`` and skip
+        the drain-loop checkpoint of the already-resolved (completed) blocks.
+        In-flight dispatches finish; new ones are refused. The sequential
+        path's loop-top ``check_stop`` normally raises first, but it also
+        maps a returned marker to ``GracefulStopRequested`` (tiny arm-race
+        window), so the marker return is safe on both paths.
         """
+        if stop_requested():
+            return STOP_MARKER
         _cached_entry = _rewrite_cache.get(blk.block_id)
         if _cached_entry is not None:
             _cached_blk = _entry_to_block(_cached_entry)
@@ -15436,6 +15499,15 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
                     )
                 except Exception:  # noqa: BLE001
                     pass
+            # Graceful stop (checkpoint on command): pre-flight check BEFORE
+            # the batch dispatch. The batched cloud lane resolves all its
+            # blocks in a single ``route_rewrite_batch`` call (per-round
+            # checkpoint hooks INSIDE the router are Wave C), so once a stop
+            # is armed the correct unit boundary is here — refuse the whole
+            # batch dispatch (nothing has been checkpointed yet: Phase C below
+            # is the only appender) and raise. A stop armed mid-router-call
+            # cannot be honoured from here; that is the router's own concern.
+            check_stop("rewrite_tier", len(_finished_by_idx))
             try:
                 _batch_results = router.route_rewrite_batch(
                     _to_batch,
@@ -15471,7 +15543,20 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
     elif _rewrite_concurrency <= 1:
         # Sequential path — EXACT legacy behavior. No pool constructed.
         for blk in outline_blocks:
+            # Graceful stop (checkpoint on command): raise at the unit
+            # boundary. Every prior block was appended to
+            # ``.blocks_final_checkpoint.jsonl`` (or served from the resume
+            # cache), so ``len(rewrite_blocks)`` == checkpointed units.
+            check_stop("rewrite_tier", len(rewrite_blocks))
             _result = _process_one_block(blk)
+            # Belt-and-suspenders for the tiny arm-race window: a stop armed
+            # between the loop-top check and ``_process_one_block``'s entry
+            # returns STOP_MARKER — treat it as not-attempted (never a block),
+            # do NOT checkpoint it, and raise before any final artifact write.
+            if _result is STOP_MARKER:
+                raise GracefulStopRequested(
+                    "rewrite_tier", len(rewrite_blocks)
+                )
             if _result is not None:
                 rewrite_blocks.append(_result)
                 _checkpoint_rewrite_result(_result)
@@ -15511,6 +15596,17 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
                 )
             except Exception:  # noqa: BLE001
                 pass
+        # Graceful stop (checkpoint on command): a pre-armed sentinel refuses
+        # the whole fan-out before any future is submitted (zero dispatches).
+        check_stop("rewrite_tier", len(rewrite_blocks))
+        # P3.0 drain discipline: futures are pre-submitted, so an in-flight
+        # worker that observes a mid-fanout stop RETURNS ``STOP_MARKER`` (never
+        # raises — a raise would surface through ``future.result()`` and skip
+        # the checkpoint of already-resolved blocks). The drain loop keeps
+        # checkpointing every NON-marker resolved future, records that a stop
+        # was seen, and only AFTER draining raises ``GracefulStopRequested`` —
+        # so a mid-fanout kill loses nothing already computed.
+        _rewrite_stop_seen = False
         with ThreadPoolExecutor(max_workers=_pool_size) as _pool:
             _futs = {
                 _pool.submit(_process_one_block, _blk): _idx
@@ -15519,7 +15615,14 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
             for _fut in _futs:
                 _idx = _futs[_fut]
                 try:
-                    _results_by_idx[_idx] = _fut.result()
+                    _fut_result = _fut.result()
+                    if _fut_result is STOP_MARKER:
+                        # Refused pre-dispatch — not-attempted; do NOT
+                        # checkpoint (resume re-runs it) and do NOT place it in
+                        # the reorder map (it is not a Block).
+                        _rewrite_stop_seen = True
+                        continue
+                    _results_by_idx[_idx] = _fut_result
                     # Checkpoint as each future resolves (flush per block) so a
                     # mid-fanout kill is resumable; resume dedupes by block_id.
                     _checkpoint_rewrite_result(_results_by_idx[_idx])
@@ -15539,6 +15642,13 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
                         )
                     except (TypeError, ValueError):
                         _results_by_idx[_idx] = None
+        # Raise AFTER the drain loop so every already-resolved (non-marker)
+        # future above was checkpointed first (R5: raise before any final
+        # artifact write). ``len(_results_by_idx)`` == the checkpointed units.
+        if _rewrite_stop_seen:
+            raise GracefulStopRequested(
+                "rewrite_tier", len(_results_by_idx)
+            )
         for _idx in range(len(outline_blocks)):
             _result = _results_by_idx.get(_idx)
             if _result is not None:
@@ -17597,6 +17707,12 @@ def _build_tool_registry() -> dict:
                         ):
                             if _fld in _src:
                                 _e[_fld] = _src[_fld]
+            except GracefulStopRequested:
+                # A graceful stop that escapes the review pass is a PAUSE, not a
+                # failure — propagate it out AS-IS so the runner stamps the phase
+                # ``paused`` (never convert it to the fail-closed RuntimeError
+                # below). This carve-out MUST precede the broad handler.
+                raise
             except Exception as _review_exc:  # noqa: BLE001
                 # FAIL-CLOSED when the review is CONFIGURED: a configured
                 # quality review that raises (including the deliberate
@@ -21516,6 +21632,13 @@ def _build_tool_registry() -> dict:
                 """
                 cid = str(spec.get("id") or "")
                 widx = spec.get("window_index")
+                # Graceful stop (P3.0 marker pattern): a stop armed WHILE this
+                # batch is in flight refuses a not-yet-started window by
+                # RETURNING STOP_MARKER — never raising (a raise would propagate
+                # through asyncio.gather before the post-gather append loop runs,
+                # losing already-completed windows in this batch).
+                if stop_requested():
+                    return STOP_MARKER
                 try:
                     return provider.synthesize_concepts(
                         spec, course_name=course_name
@@ -21603,7 +21726,13 @@ def _build_tool_registry() -> dict:
             # whole run (mirrors the stage-2 per-batch checkpoint fix).
             _dispatched: Dict[Tuple[str, int], Optional[Dict[str, Any]]] = {}
             batches = provider.batch_chapters(_to_dispatch)
+            _stop_marker_seen = False
             for batch in batches:
+                # Graceful stop BETWEEN batches: every prior batch's completed
+                # window is already appended to the sidecar, so this plain raise
+                # loses nothing (mid-batch arming → STOP_MARKER + post-loop
+                # raise below).
+                check_stop("concept_windows", len(_dispatched))
                 # Dispatch each batch of ≤10 windows via run_in_executor,
                 # awaiting the whole batch before the next (plan §5.3 —
                 # "wait for ALL batch completions before next batch").
@@ -21615,6 +21744,11 @@ def _build_tool_registry() -> dict:
                 ])
                 for spec, res in zip(batch, results):
                     _dkey = _window_key(spec)
+                    if res is STOP_MARKER:
+                        # Not-attempted (stop refused pre-dispatch): skip append
+                        # so resume re-runs it. Do NOT record in _dispatched.
+                        _stop_marker_seen = True
+                        continue
                     _dispatched[_dkey] = res
                     if _cp_enabled and res is not None:
                         _append_concept_window_checkpoint(
@@ -21628,6 +21762,12 @@ def _build_tool_registry() -> dict:
                                 if isinstance(_c, dict)
                             ],
                         )
+            if _stop_marker_seen:
+                # A stop armed mid-batch: every window that COMPLETED before it
+                # is now in _dispatched AND checkpointed; the markers were never
+                # dispatched. Raise AFTER the sidecar append so resume re-runs
+                # only the un-attempted windows (P3.0).
+                raise GracefulStopRequested("concept_windows", len(_dispatched))
 
             # Reassemble concepts in ORIGINAL window order (byte-equivalent to
             # an uninterrupted run; the dispatch loop above already
@@ -21908,6 +22048,13 @@ def _build_tool_registry() -> dict:
                     capture=_capture_concept,
                     checkpoint_path=_concept_checkpoint_path,
                 )
+            except GracefulStopRequested:
+                # A graceful stop from the Stage-3 window loop is a PAUSE, not a
+                # best-effort degrade — propagate it out AS-IS so the runner
+                # stamps the phase ``paused`` and resume re-runs only the
+                # un-attempted windows (the per-window sidecar already holds the
+                # completed ones). This carve-out MUST precede the broad handler.
+                raise
             except Exception as exc:  # noqa: BLE001 — Stage 3 is best-effort
                 logger.warning(
                     "concept_extraction: Stage-3 concept synthesis raised "
@@ -23250,6 +23397,10 @@ def _build_tool_registry() -> dict:
 
         if html_parser is not None:
             for idx, html_path in enumerate(html_files):
+                # Graceful stop (checkpoint on command): deterministic non-LLM
+                # per-file parse loop — a stop just pauses cleanly between
+                # files (the chunker re-parses from scratch on resume).
+                check_stop("dart_chunking", idx)
                 try:
                     html_text = html_path.read_text(encoding="utf-8")
                 except OSError as exc:

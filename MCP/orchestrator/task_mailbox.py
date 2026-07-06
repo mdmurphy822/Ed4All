@@ -49,6 +49,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from lib.generation.stop_control import GracefulStopRequested, stop_requested
+
 logger = logging.getLogger(__name__)
 
 
@@ -287,10 +289,28 @@ class TaskMailbox:
         ``None`` to signal "not yet — sleep and retry". Raises
         ``TimeoutError`` when the deadline has elapsed past the initial
         check (matching the original sync semantics: always probe at
-        least once before timing out).
+        least once before timing out), and ``GracefulStopRequested`` when a
+        stop sentinel is observed (graceful-stop "checkpoint on command").
+
+        Precedence at each poll wakeup: a real completion WINS (a task that
+        already finished is returned even if a stop is pending), then a stop
+        sentinel beats the deadline (so a stopped orchestrator does not sit
+        out the full ``ED4ALL_AGENT_TIMEOUT_SECONDS`` / mailbox timeout — it
+        pauses instead of returning ``MAILBOX_TIMEOUT``), then the deadline.
         """
         if target.exists():
             return self.read_completion(task_id)
+        # Graceful-stop race (P3.M / AMENDMENT #6). Resolve the sentinel
+        # through ``stop_control`` (``get_state_runs_dir()`` — never a
+        # CWD-relative path, risk R2) so a servicer / bridge process launched
+        # from a foreign CWD is still seen. Instrumented HERE at the mailbox
+        # level (not in ``LocalDispatcher``'s waiter) so every waiter —
+        # including ``MailboxBrokeredBackend`` — inherits the pause channel.
+        if stop_requested(self.run_id):
+            raise GracefulStopRequested(
+                site_id=f"mailbox_wait:{task_id}",
+                units_completed=0,
+            )
         if not first_check and time.monotonic() >= deadline:
             raise TimeoutError(
                 f"timed out after {timeout_seconds}s waiting for {task_id!r}"
@@ -305,7 +325,9 @@ class TaskMailbox:
     ) -> Dict[str, Any]:
         """Block until ``completed/{task_id}.json`` exists, then return its contents.
 
-        Raises ``TimeoutError`` if ``timeout_seconds`` elapses first.
+        Raises ``TimeoutError`` if ``timeout_seconds`` elapses first, or
+        ``GracefulStopRequested`` if a stop sentinel is observed mid-wait
+        (the caller maps that to a paused outcome, never a timeout).
 
         Synchronous variant — use ``await_completion_async`` from
         async dispatcher / orchestrator code paths so the asyncio
@@ -334,7 +356,7 @@ class TaskMailbox:
         """Async sibling of ``wait_for_completion``.
 
         Mirrors the sync method's signature and ``TimeoutError`` /
-        ``MailboxError`` semantics, but yields control via
+        ``GracefulStopRequested`` / ``MailboxError`` semantics, but yields control via
         ``asyncio.sleep`` between polls instead of blocking a thread
         pool slot. Wave W5: the dispatcher's mailbox bridge calls this
         directly under 10-way fanout instead of wrapping the sync

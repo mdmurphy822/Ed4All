@@ -29,10 +29,57 @@ import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
+from lib.generation.stop_control import GracefulStopRequested
+
 from .task_mailbox import TaskMailbox
 from .worker_contracts import PhaseInput, PhaseOutput
 
 logger = logging.getLogger(__name__)
+
+# Envelope error_code that means "a graceful stop tripped a unit boundary in
+# the worker" (the mailbox servicer marshals ``GracefulStopRequested`` into
+# this code so the pause survives the cross-process JSON boundary). Parsed on
+# the way back and re-raised as ``GracefulStopRequested`` so the executor maps
+# it to a PAUSED ExecutionResult (no retry, no poison) rather than a FAILED one.
+GRACEFUL_STOP_ERROR_CODE = "GRACEFUL_STOP"
+
+
+def _graceful_stop_layer(envelope: Any) -> Optional[Dict[str, Any]]:
+    """Return the dict layer carrying a ``GRACEFUL_STOP`` error_code, if any.
+
+    The servicer wraps a tool's result under a ``result`` key
+    (``{"success": False, "result": {"error_code": "GRACEFUL_STOP", ...}}``),
+    while the mailbox waiter synthesizes a flat paused envelope
+    (``{"success": False, "error_code": "GRACEFUL_STOP", ...}``). Probe both
+    the top level and a nested ``result`` so either shape is recognised.
+    """
+    if not isinstance(envelope, dict):
+        return None
+    for layer in (envelope, envelope.get("result")):
+        if isinstance(layer, dict) and layer.get("error_code") == GRACEFUL_STOP_ERROR_CODE:
+            return layer
+    return None
+
+
+def _raise_if_graceful_stop(envelope: Any, task_id: Optional[str] = None) -> None:
+    """Re-raise a marshalled graceful stop as ``GracefulStopRequested``.
+
+    A no-op unless ``envelope`` carries the ``GRACEFUL_STOP`` error_code.
+    ``site_id`` / ``units_completed`` are carried through from the worker's
+    exception payload when present so the runner's resume hint stays accurate.
+    """
+    layer = _graceful_stop_layer(envelope)
+    if layer is None:
+        return
+    default_site = f"mailbox_task:{task_id}" if task_id else "mailbox_task"
+    try:
+        units = int(layer.get("units_completed") or 0)
+    except (TypeError, ValueError):
+        units = 0
+    raise GracefulStopRequested(
+        site_id=str(layer.get("site_id") or default_site),
+        units_completed=units,
+    )
 
 # Env flag: set to "1" to allow the stub ``LocalDispatcher`` path to return
 # ``status="ok"`` without firing a real subagent. Default off so production
@@ -307,13 +354,19 @@ class LocalDispatcher:
         self._dispatched.append(f"{agent_type}:{task_name}")
 
         if self.agent_tool is not None:
-            return await self._dispatch_task_via_callable(
+            result = await self._dispatch_task_via_callable(
                 task_name=task_name,
                 agent_type=agent_type,
                 task_params=task_params,
                 run_id=run_id,
                 phase_context=phase_context,
             )
+            # A graceful stop can arrive through the callable path too (e.g. an
+            # in-process integration returns the marshalled envelope). Convert
+            # it to the pause channel here so both dispatch paths behave
+            # identically at the executor boundary.
+            _raise_if_graceful_stop(result)
+            return result
 
         allow_stub = os.environ.get(_ALLOW_STUB_ENV, "").strip().lower() in (
             "1", "true", "yes", "on",
@@ -333,6 +386,10 @@ class LocalDispatcher:
                 "artifacts": [],
             }
 
+        # The mailbox path both (a) re-raises a waiter-observed stop from
+        # ``await_completion_async`` and (b) returns a servicer-marshalled
+        # GRACEFUL_STOP envelope; ``_tool_dict_from_envelope`` handles the
+        # latter, so the returned dict is already clean here.
         return await self._dispatch_task_via_mailbox(
             task_name=task_name,
             agent_type=agent_type,
@@ -452,6 +509,18 @@ class LocalDispatcher:
                 timeout_seconds=timeout,
                 poll_interval=self.mailbox_poll_interval,
             )
+        except GracefulStopRequested:
+            # The orchestrator observed a stop sentinel while waiting for the
+            # outer operator. Propagate the pause channel (cleanup still runs
+            # via ``finally``) so the executor stamps this task PAUSED — never
+            # MAILBOX_WAIT_FAILED (which the generic ``except Exception`` below
+            # would otherwise produce, since GracefulStopRequested subclasses
+            # RuntimeError).
+            logger.info(
+                "LocalDispatcher.dispatch_task: graceful stop observed while "
+                "awaiting task=%s agent=%s — pausing", task_id, agent_type,
+            )
+            raise
         except TimeoutError:
             logger.error(
                 "LocalDispatcher.dispatch_task: mailbox timeout for "
@@ -516,6 +585,13 @@ class LocalDispatcher:
                 "error_code": "INVALID_ENVELOPE",
                 "mailbox_task_id": task_id,
             }
+
+        # Graceful stop marshalled by the servicer (P3.M): re-raise as the
+        # pause channel BEFORE the generic success=False passthrough (which
+        # would otherwise reach the executor as a FAILED envelope and get
+        # retried / poison-classified). Checked at both the top level and a
+        # nested ``result`` layer.
+        _raise_if_graceful_stop(envelope, task_id)
 
         if envelope.get("success") is False:
             out = dict(envelope)
@@ -646,6 +722,15 @@ class LocalDispatcher:
                 timeout_seconds=self.mailbox_timeout_seconds,
                 poll_interval=self.mailbox_poll_interval,
             )
+        except GracefulStopRequested:
+            # Propagate the pause channel (cleanup runs via ``finally``) so the
+            # phase-level caller pauses rather than misreading the stop as a
+            # generic mailbox wait failure.
+            logger.info(
+                "LocalDispatcher: graceful stop observed while awaiting "
+                "task=%s phase=%s — pausing", task_id, phase_input.phase_name,
+            )
+            raise
         except TimeoutError:
             logger.error(
                 "LocalDispatcher: mailbox timeout for task=%s phase=%s",
@@ -704,6 +789,10 @@ class LocalDispatcher:
                 error="mailbox envelope was not a JSON object",
                 metrics={"mailbox_task_id": task_id},
             )
+
+        # A marshalled graceful stop re-raises as the pause channel rather than
+        # collapsing into a ``status="fail"`` PhaseOutput.
+        _raise_if_graceful_stop(envelope, task_id)
 
         if not envelope.get("success", False):
             err = envelope.get("error") or "outer watcher reported failure"

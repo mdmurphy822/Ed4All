@@ -41,6 +41,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from lib.generation.stop_control import StopPoller
 from lib.objectives import _DEFAULT_ENTAILMENT_FLOOR
 from lib.retrieval.groundedness import (
     THRESHOLDS_PROVENANCE_DEFAULTS,
@@ -212,7 +213,14 @@ def ground_candidates(
     scored_count = 0
     reground_count = 0
 
+    # Optional graceful-stop blanket (throttled): this per-candidate NLI loop is
+    # recomputed from the window sidecar on resume (it holds no sidecar of its
+    # own), so a raise here loses nothing but keeps a long grounding pass
+    # responsive to an operator stop. A no-op when no sentinel is armed.
+    _stop_poller = StopPoller()
+
     for cand in candidates:
+        _stop_poller.check("objective_grounding", len(grounded) + len(ungrounded))
         c = dict(cand)
         statement = _candidate_statement(c)
         cited_ids = _candidate_source_chunk_ids(c)

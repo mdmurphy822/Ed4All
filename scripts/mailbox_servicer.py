@@ -30,8 +30,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from MCP.orchestrator.local_dispatcher import GRACEFUL_STOP_ERROR_CODE  # noqa: E402
 from MCP.orchestrator.task_mailbox import TaskMailbox  # noqa: E402
 from MCP.tools.pipeline_tools import _build_tool_registry  # noqa: E402
+from lib.generation.stop_control import (  # noqa: E402
+    GracefulStopRequested,
+    stop_requested,
+)
 
 # Tools that are pure deterministic transforms (no LLM completion needed).
 DETERMINISTIC_TOOLS = {
@@ -108,6 +113,7 @@ async def drain(run_id: str, watch_seconds: float) -> int:
     serviced = 0
     needs_agent: list[dict] = []
     first = True
+    stopped = False
     while first or time.time() < deadline:
         first = False
         specs = _all_task_specs(mb)
@@ -118,6 +124,17 @@ async def drain(run_id: str, watch_seconds: float) -> int:
             agent = spec.get("agent_type") or ""
             params = dict(spec.get("task_params") or {})
             params.pop("id", None)  # not a tool kwarg
+            # Pre-claim graceful-stop check (P3.M): once a stop sentinel is up,
+            # stop claiming / executing NEW tasks. We check at the top of the
+            # loop body — before claiming this task — so the in-flight task
+            # (the one we just finished writing a completion for) is never torn
+            # up; we simply refuse to start the next one. Resolved through
+            # stop_control (get_state_runs_dir(), never CWD — risk R2). Prefer
+            # the task's own run_id, falling back to the drain run_id.
+            task_run_id = spec.get("run_id") or run_id
+            if stop_requested(task_run_id):
+                stopped = True
+                break
             if tool in DETERMINISTIC_TOOLS:
                 # claim if still pending
                 if not spec["_claimed"]:
@@ -128,6 +145,29 @@ async def drain(run_id: str, watch_seconds: float) -> int:
                 print(f"[exec] {agent}/{tool} task={tid} ...", flush=True)
                 try:
                     result = await _run_tool(tool, params)
+                except GracefulStopRequested as exc:
+                    # The tool observed a stop sentinel at a unit boundary,
+                    # checkpointed the in-flight unit, and raised. Marshal it
+                    # into a GRACEFUL_STOP completion envelope (carrying the
+                    # exception's site_id / units_completed) BEFORE the
+                    # catch-all below — otherwise it would be recorded as
+                    # TOOL_RAISED, string-classified transient, retried 3x, and
+                    # stamp the phase FAILED. local_dispatcher re-raises this
+                    # code as the pause channel so the executor stamps PAUSED.
+                    result = {
+                        "success": False,
+                        "error": str(exc),
+                        "error_code": GRACEFUL_STOP_ERROR_CODE,
+                        "site_id": getattr(exc, "site_id", None),
+                        "units_completed": getattr(exc, "units_completed", 0),
+                    }
+                    _complete(mb, tid, result)
+                    print(f"       -> PAUSED (graceful stop) "
+                          f"units_completed={result['units_completed']}",
+                          flush=True)
+                    serviced += 1
+                    stopped = True
+                    break
                 except Exception as exc:  # noqa: BLE001
                     result = {"success": False, "error": repr(exc),
                               "error_code": "TOOL_RAISED"}
@@ -141,6 +181,10 @@ async def drain(run_id: str, watch_seconds: float) -> int:
             else:
                 if tid not in {n["_task_id"] for n in needs_agent}:
                     needs_agent.append(spec)
+        if stopped:
+            print("\n=== GRACEFUL_STOP — sentinel observed; not claiming new "
+                  "tasks ===", flush=True)
+            break
         if needs_agent:
             break
         if not progressed:

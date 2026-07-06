@@ -56,6 +56,7 @@ from lib.ontology.slugs import deslugify_concept  # noqa: E402
 from lib.utils import append_jsonl as _utils_append_jsonl  # noqa: E402
 from lib.utils import read_jsonl as _utils_read_jsonl  # noqa: E402
 from lib.utils import write_jsonl as _utils_write_jsonl  # noqa: E402
+from lib.generation import stop_control  # noqa: E402
 from lib.ontology.template_prefixes import (  # noqa: E402
     DETERMINISTIC_TEMPLATE_PREFIXES as _DETERMINISTIC_TEMPLATE_PREFIXES,
 )
@@ -2210,6 +2211,50 @@ def run_synthesis(
         for idx, chunk in iter_chunks:
             if _budget_exhausted_exc is not None:
                 break
+            # Graceful stop ("checkpoint on command"). This is the same
+            # unit boundary as the budget-exhausted break above, but the
+            # disposition differs: the budget path BREAKS and then falls
+            # through to the post-loop telemetry + artifact persistence,
+            # so run_synthesis RETURNS its SynthesisStats normally and the
+            # caller marks the phase COMPLETE (capped_at_max_dispatches
+            # is a success-shaped return). A completed phase would never
+            # be re-dispatched on --resume, so mirroring the break here
+            # would silently drop the un-synthesized tail. Instead we
+            # RAISE GracefulStopRequested: the executor maps it to a
+            # PAUSED (never failed, never retried) result and the runner
+            # stamps the phase `paused` so a later --resume re-enters and
+            # replays the resume sidecar.
+            #
+            # Every accepted pair for every ALREADY-processed chunk has
+            # already been appended to the resume checkpoint sidecar at
+            # :2621 / :2976 (flushed + fsync'd per emit), so the stop
+            # loses ZERO completed work — the current chunk has not yet
+            # dispatched. Raising here (before the post-loop artifact
+            # `open("w")` at the "Persist artifacts" block) also keeps the
+            # sidecar on disk: ``clean_exit`` stays False, so the finally
+            # block never unlinks it (risk R5). This is a plain sequential
+            # loop (NOT an asyncio.gather site), so the direct-raise
+            # check_stop pattern applies — the STOP_MARKER return-value
+            # discipline is only for gathered coroutines.
+            if stop_control.stop_requested():
+                _stop_units = (
+                    stats.instruction_pairs_emitted
+                    + stats.preference_pairs_emitted
+                )
+                logger.warning(
+                    "training_synthesis: graceful stop requested after %d "
+                    "checkpointed pair(s) (%d instruction + %d preference); "
+                    "raising GracefulStopRequested so the phase pauses "
+                    "(resumable) rather than completing. Resume sidecar "
+                    "preserved at %s.",
+                    _stop_units,
+                    stats.instruction_pairs_emitted,
+                    stats.preference_pairs_emitted,
+                    checkpoint_path,
+                )
+                stop_control.check_stop(
+                    "training_synthesis.pair_loop", _stop_units, run_id=None,
+                )
             # Wave 120: detect property surface forms in this chunk so
             # the paraphrase provider preserves them verbatim. None ->
             # no manifest loaded; empty list -> chunk doesn't reference
