@@ -52,7 +52,7 @@
         {"display": "Review Exercises", "interior_banner": true},
         {"display": "Practice Test", "interior_banner": true}
       ],
-      "numbered_apparatus_names": ["Exercises", "Section Exercises"],
+      "numbered_apparatus_names": ["Exercises", "Section Exercises", "Practice Makes Perfect"],
       "apparatus_whitelist": [
         "solution",
         "key terms",

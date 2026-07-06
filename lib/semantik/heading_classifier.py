@@ -304,12 +304,26 @@ def is_numbered_apparatus_heading(text: str) -> bool:
     """Whether ``text`` is an ordinal-prefixed apparatus banner (defect e).
 
     True iff ``text`` begins with an ``N`` / ``N.M`` / ``N.M.K`` ordinal AND
-    the ordinal-stripped remainder is exactly one of
-    :data:`APPARATUS_HEADING_NAMES` OR a numbered-only apparatus word
-    (:data:`_NUMBERED_ONLY_APPARATUS_LOWER` — e.g. bare ``"Exercises"``), matched
-    case-insensitively. A heading with no leading ordinal (a bare
-    ``"Exercises"``), or whose stripped remainder is not an apparatus name,
-    returns ``False`` — so ``is_apparatus_heading('Exercises')`` is unaffected.
+    the ordinal-stripped remainder is either:
+
+    * exactly one of :data:`APPARATUS_HEADING_NAMES` OR a numbered-only
+      apparatus word (:data:`_NUMBERED_ONLY_APPARATUS_LOWER` — e.g. bare
+      ``"Exercises"``), matched case-insensitively; OR
+    * COMPOSITIONAL — it STARTS WITH a numbered-only apparatus word
+      (word-boundary) whose residual tail is itself an apparatus name/phrase
+      from the lexicon union. This catches the OCR-fused banner
+      ``"2.7 EXERCISES Practice Makes Perfect"`` (OCR welded the section-exercise
+      banner onto its "Practice Makes Perfect" subhead), whose stripped
+      remainder ``"EXERCISES Practice Makes Perfect"`` is not an EXACT lexicon
+      entry. All vocabulary stays in ``schemas/taxonomies/semantik_lexicon.json``
+      (the numbered-only + apparatus display names) — only the composition shape
+      is code.
+
+    A heading with no leading ordinal (a bare ``"Exercises"``), or whose stripped
+    remainder is not an apparatus name and whose apparatus-word prefix has a
+    NON-apparatus tail (``"3.4 Exercises in Measure Theory"`` — a real titled
+    section), returns ``False`` — so ``is_apparatus_heading('Exercises')`` is
+    unaffected and genuine "Exercises in <topic>" titles are never demoted.
     """
     t = (text or "").strip()
     if not t:
@@ -317,7 +331,21 @@ def is_numbered_apparatus_heading(text: str) -> bool:
     stripped = strip_leading_ordinal(t).strip()
     if not stripped or stripped == t:
         return False  # no leading ordinal -> not the numbered-banner case
-    return stripped.lower() in _NUMBERED_APPARATUS_NAME_LOWER
+    low = stripped.lower()
+    # Exact ordinal-stripped remainder is an apparatus display / numbered word.
+    if low in _NUMBERED_APPARATUS_NAME_LOWER:
+        return True
+    # Compositional: the remainder starts with a numbered-only apparatus word
+    # ("Exercises") and its residual tail is itself apparatus vocabulary
+    # ("Practice Makes Perfect") from the lexicon union. A tail that is NOT
+    # apparatus vocabulary (a real titled section) does not demote.
+    for name in _NUMBERED_ONLY_APPARATUS_LOWER:
+        prefix = name + " "
+        if low.startswith(prefix):
+            tail = low[len(prefix):].strip()
+            if not tail or tail in _NUMBERED_APPARATUS_NAME_LOWER:
+                return True
+    return False
 
 
 # ---------------------------------------------------------------------------

@@ -300,6 +300,27 @@ def test_numbered_bare_exercises_demoted_apparatus_unchanged():
     assert ah("Review Exercises") is True
 
 
+def test_ocr_fused_numbered_banner_demoted():
+    # FIX 1 — OCR fused the section-exercise banner with its "Practice Makes
+    # Perfect" subhead into one heading, so the ordinal-stripped remainder
+    # ("EXERCISES Practice Makes Perfect") is not an EXACT lexicon entry. The
+    # compositional rule (numbered-word prefix + apparatus tail) demotes it.
+    from lib.semantik.heading_classifier import is_numbered_apparatus_heading as nah
+
+    assert nah("2.7 EXERCISES Practice Makes Perfect")
+    assert nah("4.1 EXERCISES Practice Makes Perfect")
+    # Case-insensitive; the title-case fused form also demotes.
+    assert nah("2.7 Exercises Practice Makes Perfect")
+    # The bare "Practice Makes Perfect" numbered banner also demotes now.
+    assert nah("2.7 Practice Makes Perfect")
+    # REGRESSION LOCK: a real "N.M Exercises in <topic>" section TITLE whose
+    # tail is NOT apparatus vocabulary must NEVER demote.
+    assert not nah("3.4 Exercises in Measure Theory")
+    assert not nah("2.1 Exercises of the Chapter Reviewed")
+    # Standalone (unnumbered) fused text is not the numbered-banner case.
+    assert not nah("EXERCISES Practice Makes Perfect")
+
+
 def test_adapter_demotes_numbered_apparatus_banner():
     ch = _AdapterChapter(
         title="Chapter 1 Foundations",

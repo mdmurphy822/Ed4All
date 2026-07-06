@@ -121,6 +121,9 @@ __all__ = [
     "merge_small_sections",
     "merge_section_source_ids",
     "type_from_heading",
+    "retype_from_leading_text",
+    "leads_with_exercise_banner",
+    "leads_with_lo_boilerplate",
     "split_by_sentences",
     "apply_chunk_overlap",
     "resolve_chunk_overlap_words",
@@ -975,6 +978,160 @@ def _type_from_heading_content_aware(heading: str) -> str:
     return "explanation"
 
 
+# ---------------------------------------------------------------------------
+# Leading-text apparatus retype (FIX 2 + FIX 3) — apparatus-typing fidelity
+#
+# The apparatus-heading demotion (lib/semantik/heading_classifier +
+# lib/semantik/adapter) moved per-section exercise BANNERS ("N.M Exercises",
+# "Practice Makes Perfect") out of the heading stream and into leading prose.
+# The chunker's chunk_type is heading-driven, so a demoted-banner exercise run
+# now inherits the preceding pedagogical section's type (example/explanation)
+# and real problem sets stop typing "exercise" (a 137->79 regression in the
+# post-demotion census). These two deterministic, corpus-agnostic passes restore
+# fidelity by inspecting a chunk's OWN leading window:
+#
+#   FIX 2 — banner-leading -> "exercise": a chunk whose leading window begins
+#     with an ordinal-prefixed exercise/practice banner types as exercise.
+#   FIX 3 — LO-boilerplate-leading vetoes "exercise": a chunk whose leading
+#     window is section-intro boilerplate ("By the end of this section, ...") is
+#     an INTRO, never an exercise, so an exercise type is demoted to "overview".
+#
+# Composition: the banner rule wins over the veto (an "In the following
+# exercises" line is a banner even though the shared lexicon also lists it as
+# LO-boilerplate). All VOCABULARY is data-driven from the shared lexicons
+# (schemas/taxonomies/{semantik_lexicon,exercise_apparatus_lexicon}.json) via
+# the canonical loaders — only the leading-window COMPOSITION is code here.
+# Deterministic, no LLM, no new behavior flag (a correctness restore of the
+# always-on demotion class, byte-identical for corpora without these banners —
+# e.g. the RDF/SHACL calibration corpus). CHUNKER_SCHEMA_VERSION stays "v4":
+# the chunk SHAPE is unchanged; only a per-chunk chunk_type VALUE is corrected.
+# ---------------------------------------------------------------------------
+
+#: Leading-window size for the apparatus retype: first 2 lines, or >= this many
+#: chars, whichever covers more (the demoted banner lands at the head of the
+#: chunk's prose, possibly a short pedagogical lead-in ahead of it).
+_LEADING_WINDOW_CHARS: int = 200
+
+
+def _leading_window(text: str) -> str:
+    """Return the chunk's leading window (first ~2 lines / 200 chars)."""
+
+    two_lines = "\n".join((text or "").splitlines()[:2])
+    if len(two_lines) >= _LEADING_WINDOW_CHARS:
+        return two_lines
+    return (text or "")[:_LEADING_WINDOW_CHARS]
+
+
+@lru_cache(maxsize=1)
+def _leading_apparatus_predicates() -> Tuple[Tuple[Any, ...], Callable[[str], bool]]:
+    """Compile the leading-text apparatus predicates from the shared lexicons.
+
+    Returns ``(banner_regexes, leads_with_lo_boilerplate_fn)``:
+
+    * ``banner_regexes`` — exercise/practice BANNER matchers applied to the
+      leading window. Built from the numbered-apparatus names
+      (``lib.ontology.taxonomy.get_lexicon_numbered_apparatus_names`` — the
+      ordinal-prefixed "N.M Exercises" / "N.M Section Exercises" form, with a
+      lowercase-continuation negative lookahead so a real "N.M Exercises in
+      <topic>" title never matches) PLUS the exercise-banner phrase regexes
+      already canonicalised in ``lib.objectives.apparatus_lexicon``
+      (``EXERCISE_BANNER_RE`` / ``EXTRA_EXERCISE_BANNER_RE`` — "Practice Makes
+      Perfect", "In the following exercises", "Section/Review Exercises").
+    * ``leads_with_lo_boilerplate_fn`` — the shared
+      ``compile_profile().leads_with_lo_boilerplate`` predicate (LO section-intro
+      boilerplate), used for the FIX 3 veto.
+
+    Vocabulary stays in the lexicon JSON; only the leading composition is code.
+    Cached — the lexicons are static per process. Lazy imports mirror the
+    existing ``_section_opener_substrings`` lib-import discipline (lib.* is
+    already a chunker dependency); a load failure degrades to no-op predicates so
+    the chunker never loses typing.
+    """
+
+    banner_res: List[Any] = []
+    lo_fn: Callable[[str], bool] = lambda _t: False  # noqa: E731
+
+    try:
+        from lib.ontology.taxonomy import get_lexicon_numbered_apparatus_names
+
+        names = [
+            re.escape(n.strip()).replace(r"\ ", r"\s+")
+            for n in get_lexicon_numbered_apparatus_names()
+            if n and n.strip()
+        ]
+        if names:
+            # A numbered banner at the start of ANY line in the window, NOT
+            # followed by a lowercase continuation word (that would be a real
+            # "N.M Exercises in Measure Theory" title, not a drill banner).
+            banner_res.append(
+                re.compile(
+                    r"(?m)^\s*\d+(?:\.\d+)*\s+(?:%s)\b(?!\s+[a-z])"
+                    % "|".join(names),
+                    re.IGNORECASE,
+                )
+            )
+    except Exception:  # pragma: no cover - defensive: never lose typing
+        pass
+
+    try:
+        from lib.objectives.apparatus_lexicon import (
+            EXERCISE_BANNER_RE,
+            EXTRA_EXERCISE_BANNER_RE,
+            compile_profile,
+        )
+
+        banner_res.append(EXERCISE_BANNER_RE)
+        banner_res.append(EXTRA_EXERCISE_BANNER_RE)
+        lo_fn = compile_profile().leads_with_lo_boilerplate
+    except Exception:  # pragma: no cover - defensive: never lose typing
+        pass
+
+    return tuple(banner_res), lo_fn
+
+
+def leads_with_exercise_banner(text: str) -> bool:
+    """Whether ``text``'s leading window begins with an exercise/practice banner."""
+
+    if not text:
+        return False
+    head = _leading_window(text)
+    banner_res, _ = _leading_apparatus_predicates()
+    return any(rgx.search(head) for rgx in banner_res)
+
+
+def leads_with_lo_boilerplate(text: str) -> bool:
+    """Whether ``text``'s leading window is LO section-intro boilerplate."""
+
+    if not text:
+        return False
+    _, lo_fn = _leading_apparatus_predicates()
+    return bool(lo_fn(_leading_window(text)))
+
+
+def retype_from_leading_text(text: str, chunk_type: str) -> str:
+    """Re-type a chunk from its LEADING text (deterministic, corpus-agnostic).
+
+    * FIX 2 — a leading exercise/practice banner types the chunk ``"exercise"``.
+    * FIX 3 — leading LO-intro boilerplate vetoes an ``"exercise"`` type down to
+      ``"overview"`` (a section intro is never a problem set).
+
+    Composition: the banner rule is evaluated FIRST, so an "In the following
+    exercises" line (a banner that the shared lexicon ALSO lists as
+    LO-boilerplate) types ``"exercise"`` rather than tripping the veto. Any other
+    chunk_type is returned unchanged — the passes only fire on the two
+    unambiguous leading shapes, so a corpus without these banners is
+    byte-identical.
+    """
+
+    if not text:
+        return chunk_type
+    if leads_with_exercise_banner(text):
+        return "exercise"
+    if chunk_type == "exercise" and leads_with_lo_boilerplate(text):
+        return "overview"
+    return chunk_type
+
+
 def split_by_sentences(text: str, target_words: int) -> List[str]:
     """Split ``text`` into sentence-grouped chunks of up to ``target_words``.
 
@@ -1571,7 +1728,10 @@ def chunk_text_block(
             html=html,
             item=item,
             section_heading=heading,
-            chunk_type=chunk_type,
+            # FIX 2/3: correct the heading-driven type from this chunk's own
+            # leading text (banner-leading -> exercise; LO-boilerplate-leading
+            # vetoes exercise). No-op for prose without those leading shapes.
+            chunk_type=retype_from_leading_text(text, chunk_type),
             follows_chunk_id=follows_chunk_id,
             position_in_module=position_in_module,
             html_xpath=container_xpath,
@@ -1613,7 +1773,9 @@ def chunk_text_block(
                 html="" if i > 0 else html,
                 item=item,
                 section_heading=part_heading,
-                chunk_type=chunk_type,
+                # FIX 2/3: per-part leading-text retype (each split piece is
+                # judged on its own leading window — the banner leads part 1).
+                chunk_type=retype_from_leading_text(sub_text, chunk_type),
                 follows_chunk_id=prev_id,
                 position_in_module=position_in_module + i,
                 html_xpath=container_xpath,
