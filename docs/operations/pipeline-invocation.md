@@ -376,6 +376,111 @@ Before a long synthesis, confirm the two real Stage inputs are clean:
 
 ---
 
+## 7. Graceful stop (`ed4all stop`)
+
+Every long-running stage polls a filesystem **stop sentinel** at its unit
+boundaries (the same points where the fingerprinted resume sidecars append). On
+a stop the running unit finishes, checkpoints, and the phase pauses — it is
+never marked `failed`, and **worst-case loss is one in-flight LLM call**.
+
+### Requesting a stop
+
+```bash
+ed4all stop <workflow_id|run_id>   # run-scoped: pause ONE run
+ed4all stop --all                  # global: pause EVERY run
+ed4all stop --clear-all            # remove the global STOP_ALL sentinel
+```
+
+- **Run-scoped** resolves the target against the `RUNNING` workflows in
+  `state/workflows/*.json` (matching the workflow id or its `params.run_id`) and
+  drops `<state_runs>/<run_id>/control/STOP_REQUESTED`. A target that matches no
+  live run still writes a best-effort sentinel — a stray sentinel is a harmless
+  no-op. `ed4all stop` never touches the running process; it only drops the
+  sentinel and reports the currently-RUNNING workflows (a run whose state file
+  is older than 24 h is annotated *possibly stale*).
+- **`--all`** writes the operator-owned global `<state_runs>/STOP_ALL`. This is
+  the master "halt everything" switch: **while it exists the runner refuses to
+  start ANY run — fresh or `--resume`** — with an error naming the only command
+  that clears it. It is *never* auto-cleared.
+- **`--clear-all`** removes `STOP_ALL` (and any resolved run-scoped sentinel).
+  Run this before you can launch a new run after a global stop.
+
+A run-scoped sentinel is auto-cleared at the *start* of that run, so a paused
+run resumes cleanly with a plain `--resume` (below); the operator-owned global
+one is not.
+
+### SIGTERM / SIGINT to a live `ed4all run`
+
+Sending `SIGTERM` or `SIGINT` (Ctrl-C) to a running `ed4all run` is the **same
+request** — the first signal writes the run-scoped sentinel and the run drains
+to a checkpoint. A **second** signal restores the default disposition and
+**hard-kills** the process (a hard kill re-stamps the still-`RUNNING` state file
+`paused` so the resume path sees the truth).
+
+### Exit code 3 = paused; resume with `--resume` (never `--force`)
+
+A gracefully stopped run exits **code 3** (distinct from a completed run's 0 and
+a gate/status failure's 2) and prints a resume hint. Resume it with a **plain**:
+
+```bash
+ed4all run <workflow> --resume <workflow_id>
+```
+
+The paused phase carries status `paused`; `--resume` replays from the resume
+sidecars (each records exactly the units already completed, so no completed unit
+re-runs). **Do NOT pass `--force` after a stop** — `--force` clears the resume
+sidecars, discarding the checkpointed work you just paused to keep.
+
+### Timeouts now become pauses (not hard failures)
+
+The timeout knobs in §4 no longer hard-cancel first — they drain to a checkpoint:
+
+- **Batch timeout** (`ED4ALL_BATCH_TIMEOUT_MINUTES` / per-phase
+  `batch_timeout_minutes:`) writes the run-scoped stop sentinel at the deadline
+  and grants a **grace window of `min(600s, 10% of the timeout)`** for in-flight
+  workers to reach a unit boundary and return `paused`. A grace-drained batch
+  surfaces `paused`, **not** `TIMEOUT`. Only if the grace *also* expires (an
+  unresponsive worker that never consults the sentinel) does the executor clear
+  the timeout-authored sentinel, hard-cancel, and mark the still-unfinished
+  tasks `TIMEOUT` as before.
+- **Task timeout** (`ED4ALL_TASK_TIMEOUT_MINUTES`) grace-drains the single slow
+  task (via a per-task, non-cancelling channel — it never writes the run
+  sentinel, since one slow task must not pause the whole run) and then keeps the
+  **existing `TIMEOUT` classification + transient-retry ladder** unchanged. The
+  resume sidecar makes a retry lossless — completed units are replayed, not
+  re-run.
+- **Mailbox waiter** (`ED4ALL_AGENT_TIMEOUT_SECONDS`) uses the same
+  sentinel-plus-grace pattern: at the deadline it writes the run-scoped sentinel
+  and extends by `min(600s, 10% of the timeout)`; a completion within grace (a
+  normal result or the `GRACEFUL_STOP` envelope the servicer marshals) is handled
+  normally / as `paused`, and only a grace-expiry surfaces the timeout.
+
+### Worst-case loss by phase
+
+Loss is bounded by the size of the *unit* each loop checkpoints:
+
+| Phase / lane | Checkpoint unit | Worst-case loss on stop |
+|---|---|---|
+| Objective synthesis (Stage-2 windows / TO clusters) | one `num_ctx` window / cluster | one in-flight LLM call |
+| Concept extraction (Stage-3 windows) | one window | one in-flight LLM call |
+| Course outline tier | one unit | one in-flight LLM call |
+| Content rewrite — batched lane | one router **round** (per-block winners land as they resolve) | one in-flight round |
+| Assessment synthesis (W10) | one `(kind, terminal_id)` unit | one in-flight LLM call |
+| Objective review / bloom-complement / sub-objectives | per-chunk / per-complement / per-CO | one in-flight LLM call |
+| Training-pair synthesis | one pair | one in-flight pair |
+| SLM training | trainer-native step/epoch checkpoint | since the last saved step |
+| SemantiK conversion (`dart_conversion`) | one **chapter** (paused resume auto-reuses finished `{stem}_accessible.html` + `.quality.json`) | one chapter — cascade seams land the mid-chapter stop at post-Stage-5e/pre-Stage-6, pre-Stage-13, and Stage-6 adapter-batch boundaries |
+| Vector indexing | aborts pre-write | none — never a partial index |
+
+### Known follow-up (out of scope)
+
+GUI-enqueued runs share the orchestrator, so the sentinel works for them too —
+but the GUI run-registry does not yet surface a `paused` status (the run shows
+as still-running until refreshed). Adding `paused` to the run-registry vocabulary
+and the Activity bridge is a tracked follow-up.
+
+---
+
 ## See also
 
 - `docs/operations/license-clean-run.md` — licensing / ToS-clean seat recipe.

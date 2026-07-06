@@ -22,6 +22,16 @@ ed4all run rag_training --corpus course.imscc --course-name CHEM_101 --mode api
 ed4all run textbook-to-course --corpus x.pdf --course-name T --dry-run   # plan only
 ed4all run textbook-to-course --resume WF-20260420-abc12345               # resume
 
+# ed4all stop: graceful "checkpoint on command". Drops a stop sentinel; the run
+# finishes its in-flight unit, checkpoints it, and pauses (exit code 3) —
+# worst-case loss is one in-flight LLM call. Resume with a PLAIN --resume (never
+# --force after a stop — force clears the resume sidecars). SIGTERM/Ctrl-C to a
+# live `ed4all run` is the same request (signal again to hard-kill). Full
+# runbook: docs/operations/pipeline-invocation.md § 7.
+ed4all stop WF-20260420-abc12345    # pause ONE run at its next unit boundary
+ed4all stop --all                   # global STOP_ALL — pause + BLOCK all runs
+ed4all stop --clear-all             # remove STOP_ALL (operator-owned)
+
 # --stop-after <phase>: halt cleanly AFTER the named phase, skipping all
 # downstream. Canonical "retrieval-ready course, no training synthesis"
 # slice stops after imscc_chunking. Phase name validated (unknown ->
@@ -531,8 +541,9 @@ Precedent call sites + regression tests: `docs/architecture/decision-capture.md`
 ### Error Classification
 
 Errors are classified to determine retry behavior:
-- **Transient**: `timeout`, `rate_limit`, `connection_error`, `service_unavailable` → retryable
+- **Transient**: `rate_limit`, `connection_error`, `service_unavailable` → retryable
 - **Permanent**: `validation_error`, `missing_input`, `permission_denied`, `schema_error` → no retry
+- **`timeout` is no longer unconditionally transient-retry** (graceful-stop change): a **batch** timeout now writes the run-scoped stop sentinel and grace-drains to a checkpoint — it becomes a `paused` (not `TIMEOUT`), and only hard-cancels to `TIMEOUT` if the grace window also expires. A **task** timeout grace-drains the slow task, then keeps the existing `TIMEOUT` classification + transient-retry ladder (the resume sidecar makes the retry lossless). Detail: `docs/operations/pipeline-invocation.md` § 7.
 
 ### Retry Protocol
 
@@ -541,6 +552,19 @@ Failed tasks retry up to 3 times with exponential backoff:
 2. Second retry: After 30 seconds
 3. Third retry: After 120 seconds
 4. After 3 failures: Log to error table, require manual intervention
+
+### Graceful stop (checkpoint on command)
+
+`ed4all stop <id>` / `--all` (and `SIGTERM`/`SIGINT` to a live `ed4all run`)
+drops a filesystem stop sentinel that every long-running stage polls at its unit
+boundaries. The in-flight unit finishes, checkpoints, and the phase pauses
+(status `paused`, exit code **3**) — never `failed`, never retried, worst-case
+loss one in-flight LLM call. Resume with a **plain** `ed4all run --resume <id>`
+(never `--force` after a stop — `--force` clears the resume sidecars). The
+operator-owned global `STOP_ALL` also **blocks new/resumed runs** until
+`ed4all stop --clear-all`. Full semantics (per-phase worst-case-loss table,
+timeout-to-pause grace windows, SemantiK chapter-seam granularity):
+`docs/operations/pipeline-invocation.md` § 7.
 
 ### Poison Pill Detection
 
@@ -652,7 +676,7 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 |--------|-------|-----------:|
 | `TRAINFORGE_*` / `LOCAL_SYNTHESIS_*` / `TOGETHER_*` / `ANTHROPIC_SYNTHESIS_*` / `CURRICULUM_ALIGNMENT_*` / `WAVE18_*` | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 54 |
 | `NVIDIA_*` (hosted 70B/large cloud tier — `NVIDIA_API_KEY` / `NVIDIA_BASE_URL` / `NVIDIA_LARGE_MODEL`) | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 3 |
-| `SEMANTIK_*` (DART replacement — SemantiK semantic-cascade converter; also honors the legacy `DART_THETA_DEVICE` compat env) | [`SemantiK/CLAUDE.md § Opt-In Behavior Flags`](SemantiK/CLAUDE.md) | 79 |
+| `SEMANTIK_*` (DART replacement — SemantiK semantic-cascade converter; also honors the legacy `DART_THETA_DEVICE` compat env) | [`SemantiK/CLAUDE.md § Opt-In Behavior Flags`](SemantiK/CLAUDE.md) | 80 |
 | `COURSEFORGE_*` / `COURSEPLANNER_*` / `TEXTBOOK_SYNTHESIS_*` | [`Courseforge/CLAUDE.md § Opt-In Behavior Flags`](Courseforge/CLAUDE.md) | 35 |
 | `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root index (below) + [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 164 |
 

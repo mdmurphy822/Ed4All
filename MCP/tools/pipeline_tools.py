@@ -231,7 +231,7 @@ def _inject_source_ids_attr(html: str, source_ids_value: str) -> str:
 # the backstop could not fill a content-type for the rest of the palette
 # (``scenario`` / ``problem`` / ``concept`` / …) when the rewrite LLM omitted it
 # → BlockContentTypeValidator fired OUTLINE_BLOCK_MISSING_CONTENT_TYPE on
-# course-a-cal2. The scaffolding skip set (objective / chrome / recap) is NOT
+# a calibration run. The scaffolding skip set (objective / chrome / recap) is NOT
 # keyed — the gate skips those.
 from lib.ontology.content_types import (  # noqa: E402
     BLOCK_TYPE_CONTENT_TYPE as _REWRITE_BLOCK_TYPE_CONTENT_TYPE,
@@ -16269,7 +16269,7 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
     # regardless of which per-block dispatch path it took (sequential /
     # concurrent / batched / cache-hit) or whether the provider's
     # ``_force_inject_curies`` / the in-loop ``_apply_str_backstops`` mint
-    # actually landed a span. Root cause (course-a-calib calib run): a
+    # actually landed a span. Root cause (seen on a calibration run): a
     # block whose outline DECLARED minted CURIEs and whose published prose
     # genuinely discusses the concept could still reach blocks_final.jsonl
     # with NO ``<span data-cf-curie>`` (the provider's pedagogical-context
