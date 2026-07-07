@@ -1560,20 +1560,22 @@ def run_full_cascade(
         # Parallel to the structure_review audit (~L948). Stays None when off.
         # Phase 9: a cross-kind pedagogical-unit op (subtype='regroup') records
         # op='regroup' + the merged unit's semantic_class + regions_folded so
-        # the (bridge-owned, still-unwired) block_resegment DecisionCapture can
-        # interpolate regroup counts/classes into a dynamic, replayable
-        # rationale — with NO decision_event schema change (block_resegment is
-        # already in the enum). A same-kind op (subtype default 'merge') keeps
-        # op=op.op and the original 4-key row VERBATIM (byte-stable when the
-        # regroup flag is off — no regroup op exists so no row gains the extra
-        # keys). The capture EMIT stays the bridge TODO below; this only
-        # enriches the audit row the bridge will consume. Built via the single
-        # SoT helper so the cascade and its tests never drift.
+        # the block_resegment DecisionCapture can interpolate regroup
+        # counts/classes into a dynamic, replayable rationale — with NO
+        # decision_event schema change (block_resegment is already in the enum).
+        # A same-kind op (subtype default 'merge') keeps op=op.op and the
+        # original 4-key row VERBATIM (byte-stable when the regroup flag is off —
+        # no regroup op exists so no row gains the extra keys). Built via the
+        # single SoT helper so the cascade and its tests never drift.
         resegment_ops_audit = build_resegment_audit_rows(resegment_ops)
-        # TODO(decision-capture): emit block_resegment event from the bridge
-        # (MCP/tools/pipeline_tools.py) off conformance_audit["block_resegment"]
-        # — one DecisionCapture row per converted document, mirroring the
-        # structure_review emit. Owned by the parent; do NOT wire it here.
+        # Decision-capture EMIT is WIRED at the Ed4All boundary (owned by the
+        # parent, not here): MCP/tools/pipeline_tools.py section "2c" calls
+        # _emit_block_resegment_capture(_semantik_resolve_block_resegment(result))
+        # after every conversion — the resolver reads this audit off the
+        # result-dict top-level key ("block_resegment") for the in-process arm
+        # and off the bridge JSON for the cross-venv arm (run_cascade_json.py
+        # _build_bridge_dict forwards it), so ONE block_resegment DecisionCapture
+        # fires per converted document, mirroring the structure_review emit.
         stages["stage5e"] = time.perf_counter() - t
         n_merges = sum(1 for o in resegment_ops if o.op == "merge")
         n_splits = sum(1 for o in resegment_ops if o.op == "split")

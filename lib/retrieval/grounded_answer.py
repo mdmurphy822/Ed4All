@@ -2258,6 +2258,7 @@ def answer_course_question(
             composed.answer_text,
             groundedness_passages,
             cited_chunk_ids=final_cited_ids,
+            capture=capture,
         )
         warnings.extend(gw)
         # v2 contradicted_count is computed under windowed / single-topic
@@ -2328,6 +2329,7 @@ def _score_groundedness(
     cited_passages: Sequence[RetrievedPassage],
     *,
     cited_chunk_ids: Optional[set] = None,
+    capture: Optional[Any] = None,
 ) -> Tuple[Optional[Dict[str, Any]], List[str], Optional[Any]]:
     """Optional per-answer groundedness (advisory). NLI absent → null block.
 
@@ -2348,7 +2350,10 @@ def _score_groundedness(
         return None, [], None
     try:
         report = score_groundedness(
-            answer_text or "", cited_passages, cited_chunk_ids=cited_chunk_ids
+            answer_text or "",
+            cited_passages,
+            cited_chunk_ids=cited_chunk_ids,
+            capture=capture,
         )
     except Exception:
         return None, [], None

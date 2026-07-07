@@ -119,6 +119,20 @@
       "type": "string",
       "format": "date-time",
       "description": "ISO 8601 timestamp (UTC) of the build. Optional, and deliberately EXCLUDED from the byte-stable determinism contract (a rebuild over identical inputs differs only in this field)."
+    },
+    "embed_overflow": {
+      "type": "object",
+      "description": "W1b.2 (opt-in ED4ALL_EMBED_OVERFLOW_GUARD) over-window accounting block, stamped at build time when the guard is on. Records which embedded passages exceed the serving-window token ceiling (ED4ALL_EMBED_MAX_SEQ_TOKENS) so a post-hoc audit can see silent truncation. Omitted entirely when the guard is off (byte-identical off-path); part of the determinism content hash when present (real build provenance).",
+      "properties": {
+        "max_seq_tokens": {"type": "integer", "minimum": 1},
+        "records_scanned": {"type": "integer", "minimum": 0},
+        "overflow_count": {"type": "integer", "minimum": 0},
+        "overflow_rate": {"type": "number", "minimum": 0, "maximum": 1},
+        "max_observed_tokens": {"type": "integer", "minimum": 0},
+        "overflow_chunk_ids": {"type": "array", "items": {"type": "string"}}
+      },
+      "required": ["max_seq_tokens", "records_scanned", "overflow_count", "overflow_rate", "max_observed_tokens", "overflow_chunk_ids"],
+      "additionalProperties": false
     }
   },
   "additionalProperties": false

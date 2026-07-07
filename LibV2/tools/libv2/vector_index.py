@@ -169,11 +169,18 @@ class VectorIndexManifest:
     # Default "" keeps pre-prefix manifests loadable (back-compat).
     document_prefix: str = ""
     query_prefix: str = ""
+    # W1b.2 (opt-in ED4ALL_EMBED_OVERFLOW_GUARD): over-window accounting block
+    # (count_overflow_records output — max_seq_tokens / overflow_count /
+    # overflow_rate / max_observed_tokens / overflow_chunk_ids). Omitted when
+    # None (guard off) so the off-path manifest is byte-identical; it IS part of
+    # the content hash when present (real build provenance).
+    embed_overflow: Optional[Dict[str, Any]] = None
     generated_at: Optional[str] = None
 
     # Field order used for the on-disk dict + the determinism contract.
     # ``generated_at`` is appended last and is the ONLY field excluded from
-    # the content hash.
+    # the content hash. ``embed_overflow`` is omitted when None (like
+    # generated_at) so a guard-off build is byte-identical.
     _ORDER: Tuple[str, ...] = (
         "schema_version",
         "embedding_provider",
@@ -194,6 +201,7 @@ class VectorIndexManifest:
         "device",
         "document_prefix",
         "query_prefix",
+        "embed_overflow",
         "generated_at",
     )
 
@@ -221,6 +229,8 @@ class VectorIndexManifest:
         out: Dict[str, Any] = {}
         for key in self._ORDER:
             if key == "generated_at" and self.generated_at is None:
+                continue
+            if key == "embed_overflow" and self.embed_overflow is None:
                 continue
             out[key] = getattr(self, key)
         return out
@@ -568,6 +578,33 @@ def build_vector_index(
     model_id = str(fingerprint.get("model_id") or "")
     revision = fingerprint.get("revision")
 
+    # W1b.2 (opt-in ED4ALL_EMBED_OVERFLOW_GUARD, default OFF) — count-and-stamp
+    # arm. When the guard is on, record which embedded passages exceed the
+    # serving-window token ceiling (ED4ALL_EMBED_MAX_SEQ_TOKENS) so a post-hoc
+    # audit can see silent truncation. Pure accounting over the SAME ``texts``
+    # that were encoded (document_prefix already prepended); never mutates them.
+    # The split arm (ED4ALL_EMBED_OVERFLOW_SPLIT) is deferred — count/stamp only
+    # here. Guard off ⇒ embed_overflow stays None ⇒ manifest byte-identical.
+    embed_overflow: Optional[Dict[str, Any]] = None
+    try:
+        from lib.embedding.providers import (
+            count_overflow_records,
+            resolve_embed_max_seq_tokens,
+            resolve_embed_overflow_guard,
+        )
+
+        if resolve_embed_overflow_guard():
+            max_seq_tokens = resolve_embed_max_seq_tokens()
+            overflow_records = [
+                {"id": cid, "text": txt}
+                for cid, txt in zip(chunk_ids, texts)
+            ]
+            embed_overflow = count_overflow_records(
+                overflow_records, max_seq_tokens
+            )
+    except Exception:  # noqa: BLE001 — accounting is best-effort, never blocks
+        embed_overflow = None
+
     manifest = VectorIndexManifest(
         schema_version=_MANIFEST_SCHEMA_VERSION,
         embedding_provider=provider_name,
@@ -588,6 +625,7 @@ def build_vector_index(
         device=str(fingerprint.get("device") or getattr(client, "device", "") or "cpu"),
         document_prefix=document_prefix,
         query_prefix=query_prefix,
+        embed_overflow=embed_overflow,
         generated_at=generated_at,
     )
     manifest_path.write_bytes(_manifest_bytes(manifest))

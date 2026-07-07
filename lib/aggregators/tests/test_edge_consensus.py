@@ -891,3 +891,209 @@ def test_matrix_keys_cover_registered_rules() -> None:
     registered.add("intra_chunk_link")
     missing = registered - set(_RULE_PAIR_MATRIX.keys())
     assert not missing, f"matrix missing rule names: {sorted(missing)}"
+
+
+# ----------------------------------------------------------------------
+# NLI extension (TRAINFORGE_EDGE_NLI) — chunk-anchored contradiction arm.
+# Tests monkeypatch NliClassifier.get_or_load so the real ~750MB DeBERTa
+# model NEVER loads.
+# ----------------------------------------------------------------------
+
+class _FakeNliScore:
+    def __init__(self, entailment: float, neutral: float, contradiction: float) -> None:
+        self.entailment = entailment
+        self.neutral = neutral
+        self.contradiction = contradiction
+
+
+class _FakeNliClassifier:
+    """Scripted NLI classifier. ``contradiction_for`` maps a hypothesis
+    substring → contradiction probability; default 0.0 (no signal)."""
+
+    def __init__(self, contradiction_for: Optional[Dict[str, float]] = None) -> None:
+        self.contradiction_for = contradiction_for or {}
+        self.calls: List[Dict[str, str]] = []
+
+    def score_pair(self, *, premise: str, hypothesis: str) -> _FakeNliScore:
+        self.calls.append({"premise": premise, "hypothesis": hypothesis})
+        contradiction = 0.0
+        for needle, value in self.contradiction_for.items():
+            if needle in hypothesis:
+                contradiction = value
+                break
+        return _FakeNliScore(
+            entailment=max(0.0, 1.0 - contradiction),
+            neutral=0.0,
+            contradiction=contradiction,
+        )
+
+
+def _patch_nli(monkeypatch: pytest.MonkeyPatch, fake: _FakeNliClassifier) -> None:
+    import lib.classifiers.nli_classifier as nli_mod
+
+    monkeypatch.setattr(
+        nli_mod.NliClassifier, "get_or_load", classmethod(lambda cls: fake)
+    )
+
+
+def _defined_by_edges() -> List[Dict[str, Any]]:
+    # defined-by: concept -> chunk (chunk endpoint = target).
+    return [
+        _prov_edge(
+            source="photosynthesis", target="chunk_00001",
+            edge_type="defined-by",
+            rule="defined_by_from_first_mention",
+        ),
+    ]
+
+
+def test_nli_no_lookup_no_op_even_with_flag_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flag on but NO chunk_text_lookup supplied → extension no-ops
+    exactly as the deferred stub did (default-off no-op preserved)."""
+    monkeypatch.setenv("TRAINFORGE_EDGE_NLI", "true")
+    fake = _FakeNliClassifier({"defines": 0.99})
+    _patch_nli(monkeypatch, fake)
+    graph_path = _write_graph(tmp_path, _defined_by_edges())
+    agg = EdgeConsensusAggregator(graph_path, course_slug="t", run_id="r")
+    report = agg.build()
+    assert report["summary"]["retracted_count"] == 0
+    assert fake.calls == []  # classifier never invoked without a lookup
+
+
+def test_nli_contradiction_retracts_edge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flag on + lookup + strong contradiction (>=0.5) → edge retracted."""
+    monkeypatch.setenv("TRAINFORGE_EDGE_NLI", "true")
+    fake = _FakeNliClassifier({"defines photosynthesis": 0.87})
+    _patch_nli(monkeypatch, fake)
+    edges = _defined_by_edges()
+    graph_path = _write_graph(tmp_path, edges)
+    lookup = {"chunk_00001": "This passage is about mitochondria and ATP only."}
+    agg = EdgeConsensusAggregator(
+        graph_path, course_slug="t", run_id="r", chunk_text_lookup=lookup,
+    )
+    report = agg.build()
+    assert report["summary"]["retracted_count"] == 1
+    # Hypothesis rendered from the template + humanized concept.
+    assert fake.calls
+    assert "This text defines photosynthesis." == fake.calls[0]["hypothesis"]
+
+    # apply_to_graph stamps edge_status: retracted + the nli signal.
+    graph = json.loads(graph_path.read_text(encoding="utf-8"))
+    agg.apply_to_graph(graph)
+    edge = graph["edges"][0]
+    assert edge["edge_status"] == "retracted"
+    nli_sigs = [
+        s for s in edge["consensus_signals"]
+        if s.get("other_rule") == "nli_text_entailment"
+    ]
+    assert nli_sigs and nli_sigs[0]["signal"] == "disagree"
+    assert nli_sigs[0]["confidence"] == pytest.approx(0.87)
+
+
+def test_nli_below_threshold_no_signal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Contradiction below 0.5 → no signal (entailment/neutral add nothing)."""
+    monkeypatch.setenv("TRAINFORGE_EDGE_NLI", "true")
+    fake = _FakeNliClassifier({"defines": 0.42})
+    _patch_nli(monkeypatch, fake)
+    graph_path = _write_graph(tmp_path, _defined_by_edges())
+    lookup = {"chunk_00001": "Photosynthesis converts light to chemical energy."}
+    agg = EdgeConsensusAggregator(
+        graph_path, course_slug="t", run_id="r", chunk_text_lookup=lookup,
+    )
+    report = agg.build()
+    assert report["summary"]["retracted_count"] == 0
+    assert report["summary"]["pending_count"] == 1
+    assert fake.calls  # classifier WAS invoked, just under threshold
+
+
+def test_nli_missing_chunk_text_no_op(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Lookup supplied but the cited chunk id is absent → no forward pass."""
+    monkeypatch.setenv("TRAINFORGE_EDGE_NLI", "true")
+    fake = _FakeNliClassifier({"defines": 0.99})
+    _patch_nli(monkeypatch, fake)
+    graph_path = _write_graph(tmp_path, _defined_by_edges())
+    lookup = {"chunk_99999": "unrelated"}
+    agg = EdgeConsensusAggregator(
+        graph_path, course_slug="t", run_id="r", chunk_text_lookup=lookup,
+    )
+    report = agg.build()
+    assert report["summary"]["retracted_count"] == 0
+    assert fake.calls == []
+
+
+def test_nli_per_run_cap_bounds_forward_passes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TRAINFORGE_EDGE_NLI_MAX_EDGES caps the number of scored edges."""
+    monkeypatch.setenv("TRAINFORGE_EDGE_NLI", "true")
+    monkeypatch.setenv("TRAINFORGE_EDGE_NLI_MAX_EDGES", "1")
+    fake = _FakeNliClassifier({"defines": 0.99})
+    _patch_nli(monkeypatch, fake)
+    edges = [
+        _prov_edge(
+            source="alpha", target="chunk_00001",
+            edge_type="defined-by", rule="defined_by_from_first_mention",
+        ),
+        _prov_edge(
+            source="beta", target="chunk_00002",
+            edge_type="defined-by", rule="defined_by_from_first_mention",
+        ),
+    ]
+    graph_path = _write_graph(tmp_path, edges)
+    lookup = {
+        "chunk_00001": "Text one about alpha.",
+        "chunk_00002": "Text two about beta.",
+    }
+    agg = EdgeConsensusAggregator(
+        graph_path, course_slug="t", run_id="r", chunk_text_lookup=lookup,
+    )
+    report = agg.build()
+    # Only one edge scored under the cap; only that one can retract.
+    assert len(fake.calls) == 1
+    assert report["summary"]["retracted_count"] == 1
+
+
+def test_nli_flag_off_ignores_lookup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flag OFF + lookup supplied → extension never runs (byte-identical)."""
+    monkeypatch.delenv("TRAINFORGE_EDGE_NLI", raising=False)
+    fake = _FakeNliClassifier({"defines": 0.99})
+    _patch_nli(monkeypatch, fake)
+    graph_path = _write_graph(tmp_path, _defined_by_edges())
+    lookup = {"chunk_00001": "anything"}
+    agg = EdgeConsensusAggregator(
+        graph_path, course_slug="t", run_id="r", chunk_text_lookup=lookup,
+    )
+    report = agg.build()
+    assert report["summary"]["retracted_count"] == 0
+    assert fake.calls == []
+
+
+def test_load_chunk_text_lookup_reads_course_tree(tmp_path: Path) -> None:
+    """load_chunk_text_lookup builds {id: text} from a course chunkset."""
+    from lib.aggregators.edge_consensus import load_chunk_text_lookup
+
+    course_dir = tmp_path / "course"
+    dart = course_dir / "dart_chunks"
+    dart.mkdir(parents=True)
+    (dart / "chunks.jsonl").write_text(
+        json.dumps({"id": "chunk_00001", "text": "hello"}) + "\n"
+        + json.dumps({"chunk_id": "chunk_00002", "text": "world"}) + "\n"
+        + "not json\n"
+        + json.dumps({"id": "chunk_00003"}) + "\n",  # no text → skipped
+        encoding="utf-8",
+    )
+    lookup = load_chunk_text_lookup(course_dir)
+    assert lookup == {"chunk_00001": "hello", "chunk_00002": "world"}
+    # No chunkset → None (extension no-ops).
+    assert load_chunk_text_lookup(tmp_path / "empty") is None
+    assert load_chunk_text_lookup(None) is None

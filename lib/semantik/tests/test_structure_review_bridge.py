@@ -746,8 +746,10 @@ def test_block_resegment_capture_is_best_effort(monkeypatch):
 
 
 def test_block_resegment_resolver_reads_both_arms():
-    """The seam resolver reads block_resegment off the bridge attribute AND the
-    in-process conformance_audit, and returns None when neither carries it."""
+    """The seam resolver reads block_resegment off the bridge attribute, the
+    in-process result-dict TOP-LEVEL key (the CANONICAL shape ``cascade.py``
+    emits — ``result["block_resegment"]``), AND the conformance-nested compat
+    arm; and returns None when none carries it."""
     from MCP.tools.pipeline_tools import (
         _SemantikBridgeResult,
         _semantik_resolve_block_resegment,
@@ -760,19 +762,147 @@ def test_block_resegment_resolver_reads_both_arms():
     resolved = _semantik_resolve_block_resegment(bridge)
     assert resolved is not None and resolved[0]["op"] == "merge"
 
-    # In-process arm — cascade["conformance_audit"]["block_resegment"].
+    # In-process arm A — cascade["block_resegment"] (result-dict top level, the
+    # REAL PipelineV2Result shape the cascade emits; this is what GAP B missed).
     inproc = _SyntheticCascadeResult(_reviewed_provenance(), None)
     inproc.block_resegment = None  # in-process result has no bridge attribute
-    inproc.cascade["conformance_audit"]["block_resegment"] = (
-        _block_resegment_audit()
-    )
+    inproc.cascade["block_resegment"] = _block_resegment_audit()
     resolved2 = _semantik_resolve_block_resegment(inproc)
     assert resolved2 is not None and resolved2[1]["op"] == "split"
+
+    # In-process arm B — cascade["conformance_audit"]["block_resegment"]
+    # (forward-compat nesting; the cascade never emits here today).
+    inproc2 = _SyntheticCascadeResult(_reviewed_provenance(), None)
+    inproc2.block_resegment = None
+    inproc2.cascade["conformance_audit"]["block_resegment"] = (
+        _block_resegment_audit()
+    )
+    resolved3 = _semantik_resolve_block_resegment(inproc2)
+    assert resolved3 is not None and resolved3[0]["op"] == "merge"
+
+    # Ran-but-no-edits => [] (preserved, distinct from None).
+    empty = _SyntheticCascadeResult(_reviewed_provenance(), None)
+    empty.block_resegment = None
+    empty.cascade["block_resegment"] = []
+    assert _semantik_resolve_block_resegment(empty) == []
 
     # Neither arm carries it => None (clean skip).
     off = _SyntheticCascadeResult(_reviewed_provenance(), None)
     off.block_resegment = None
     assert _semantik_resolve_block_resegment(off) is None
+
+
+def _block_resegment_regroup_audit() -> list[dict]:
+    """A Phase-9 audit list carrying a cross-kind REGROUP op (op='regroup' +
+    semantic_class + regions_folded) and a fused-title SPLIT — the shape
+    ``block_resegment.build_resegment_audit_rows`` emits so the capture can
+    interpolate the regroup counts / classes / folded-region tally."""
+    return [
+        {
+            "op": "regroup",
+            "source_ids": [12, 13, 14],
+            "origin": "deterministic",
+            "conservation_verified": True,
+            "semantic_class": "worked_example",
+            "regions_folded": 2,
+        },
+        {
+            "op": "split",
+            "source_ids": [40],
+            "origin": "deterministic",
+            "conservation_verified": True,
+            "subtype": "fused_title",
+        },
+    ]
+
+
+def test_block_resegment_capture_regroup_rationale_dynamic(monkeypatch):
+    """A SEMANTIK_UNIT_REGROUP-only doc surfaces its regroup count, merged-unit
+    semantic_class, folded-region tally + fused-title split in the DYNAMIC
+    rationale (the Phase-9 enrichment), proven under strict validation so the
+    ``block_resegment`` enum member is exercised end-to-end."""
+    monkeypatch.setenv("VALIDATE_DECISIONS", "true")
+    monkeypatch.setenv("DECISION_VALIDATION_STRICT", "true")
+
+    from lib.paths import get_training_captures_dir
+    from MCP.tools.pipeline_tools import _emit_block_resegment_capture
+
+    captures_root = get_training_captures_dir()
+
+    _emit_block_resegment_capture(
+        _block_resegment_regroup_audit(),
+        canonical_course_code="BRESEG_REGROUP_101",
+        pdf_stem="regroupbook",
+    )
+
+    rows = []
+    for jsonl in Path(captures_root).rglob("*.jsonl"):
+        for line in jsonl.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                try:
+                    rows.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    br_rows = [
+        r
+        for r in rows
+        if r.get("decision_type") == "block_resegment"
+        and r.get("course_id") in {"BRESEG_REGROUP_101", "BRESEG-REGROUP-101"}
+    ]
+    assert br_rows, "expected a block_resegment capture row for the regroup doc"
+    row = br_rows[0]
+
+    assert row["decision_type"] == "block_resegment"
+    assert len(row["rationale"]) >= 20
+    # Regroup enrichment interpolated into the rationale.
+    assert "1 regroup" in row["rationale"]
+    assert "1 fused-title split" in row["rationale"]
+    assert "2 region(s) folded" in row["rationale"]
+    assert "worked_example x1" in row["rationale"]
+    # The decision string carries the regroup count.
+    assert "regroups=1" in row["decision"]
+
+
+def test_bridge_dict_forwards_block_resegment_and_second_pass(monkeypatch):
+    """``run_cascade_json._build_bridge_dict`` forwards the block_resegment op
+    list AND the second_pass_verify dict off the cascade result's top-level keys
+    (GAP A) — rows/dict when the pass ran, ``None`` when it was off — and the
+    Ed4All-side ``_SemantikBridgeResult`` re-exposes them for the seam."""
+    rcj = _import_bridge_builder()
+    from MCP.tools.pipeline_tools import (
+        _SemantikBridgeResult,
+        _semantik_resolve_block_resegment,
+        _semantik_resolve_second_pass_verify,
+    )
+
+    # (a) Pass ON — both arms present at the cascade result-dict top level.
+    result = _SyntheticCascadeResult(_reviewed_provenance(), None)
+    result.cascade["block_resegment"] = _block_resegment_regroup_audit()
+    result.cascade["second_pass_verify"] = {
+        "adopted": True,
+        "rounds": [{"round": 1, "flagged": [3]}],
+    }
+    bridge = json.loads(json.dumps(rcj._build_bridge_dict(result, pdf="x.pdf")))
+
+    assert isinstance(bridge["block_resegment"], list)
+    assert bridge["block_resegment"][0]["op"] == "regroup"
+    assert isinstance(bridge["second_pass_verify"], dict)
+    assert bridge["second_pass_verify"]["rounds"][0]["round"] == 1
+
+    br = _SemantikBridgeResult(bridge)
+    assert _semantik_resolve_block_resegment(br)[0]["op"] == "regroup"
+    assert _semantik_resolve_second_pass_verify(br)["adopted"] is True
+
+    # (b) Pass OFF — no top-level keys => both forward as None (clean skip).
+    off_result = _SyntheticCascadeResult(_reviewed_provenance(), None)
+    off_bridge = json.loads(
+        json.dumps(rcj._build_bridge_dict(off_result, pdf="x.pdf"))
+    )
+    assert off_bridge["block_resegment"] is None
+    assert off_bridge["second_pass_verify"] is None
+    off_br = _SemantikBridgeResult(off_bridge)
+    assert _semantik_resolve_block_resegment(off_br) is None
+    assert _semantik_resolve_second_pass_verify(off_br) is None
 
 
 # ---------------------------------------------------------------------------

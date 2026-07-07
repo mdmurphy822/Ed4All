@@ -50,12 +50,12 @@
     },
     "phase": {
       "type": ["string", "null"],
-      "enum": ["input-research", "exam-research", "course-outliner", "textbook-ingestor", "content-generator", "brightspace-packager", "dart-conversion", "dart-validation", "trainforge-assessment", "trainforge-training", "synthesize-training", "validation", "content-analysis", "question-generation", "assessment-assembly", "courseforge-input-research", "courseforge-exam-research", "courseforge-course-outliner", "courseforge-content-generator", "courseforge-content-generator-outline", "courseforge-content-generator-rewrite", "courseforge-brightspace-packager", "courseforge-statistical-validation", "courseforge-bert-ensemble", "trainforge-content-analysis", "trainforge-question-generation", "trainforge-assessment-assembly", "trainforge-validation", "curriculum-alignment", "inter_tier_validation", "post_rewrite_validation", "libv2-retrieval", "libv2-indexing", "libv2-fusion", "libv2-answer", null],
+      "enum": ["input-research", "exam-research", "course-outliner", "textbook-ingestor", "content-generator", "brightspace-packager", "dart-conversion", "dart-validation", "trainforge-assessment", "trainforge-training", "synthesize-training", "validation", "content-analysis", "question-generation", "assessment-assembly", "courseforge-input-research", "courseforge-exam-research", "courseforge-course-outliner", "courseforge-content-generator", "courseforge-content-generator-outline", "courseforge-content-generator-rewrite", "courseforge-brightspace-packager", "courseforge-statistical-validation", "courseforge-bert-ensemble", "trainforge-content-analysis", "trainforge-question-generation", "trainforge-assessment-assembly", "trainforge-validation", "curriculum-alignment", "inter_tier_validation", "post_rewrite_validation", "libv2-retrieval", "libv2-indexing", "libv2-fusion", "libv2-answer", "course_planning", "libv2_archival", "vector_indexing", null],
       "description": "Processing phase within the tool pipeline"
     },
     "tool": {
       "type": "string",
-      "enum": ["dart", "courseforge", "trainforge", "orchestrator"],
+      "enum": ["dart", "courseforge", "trainforge", "orchestrator", "libv2", "pipeline"],
       "description": "Which tool generated this decision"
     },
     "decision_type": {
@@ -106,6 +106,7 @@
         "block_resegment",
         "block_rewrite_call",
         "block_source_ref_check",
+        "block_synthesis_manifest_emitted",
         "block_template_fallback",
         "block_validation_action",
         "bloom_alignment_check",
@@ -167,6 +168,7 @@
         "form_data_backfill_session",
         "form_data_degraded_placeholder_skipped",
         "format_decision",
+        "fresh_eval_invocation",
         "frontmatter_chunk_drop",
         "gold_candidate_authoring",
         "gold_candidate_promotion",

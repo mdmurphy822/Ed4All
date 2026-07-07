@@ -191,9 +191,56 @@ _CYCLE_DETECTING_RULES: FrozenSet[str] = frozenset({
     "is_a_from_key_terms",
 })
 
-#: NLI extension flag — schema admits the ``retracted`` value; full
-#: NLI implementation deferred to a follow-on wave per the plan.
+#: NLI extension flag — when truthy AND a chunk-text lookup is supplied to
+#: the aggregator, each chunk-anchored edge's predicate is rendered to a
+#: hypothesis and scored (via the shared ``lib.classifiers.nli_classifier``
+#: DeBERTa singleton) against the cited chunk text. Only a strong
+#: CONTRADICTION (>= :data:`_NLI_CONTRADICTION_THRESHOLD`) emits a
+#: ``disagree`` signal (mapped to ``edge_status: retracted`` by
+#: :meth:`_status_from_signals`); entailment / neutral add no signal in v1
+#: (conservative — the arm can only retract, never confirm). Default off →
+#: the aggregator runs cross-rule-matrix + triangulation consensus only.
 _NLI_FLAG_ENV: str = "TRAINFORGE_EDGE_NLI"
+
+#: Per-run cap on the number of edges scored by the NLI extension (bounds
+#: forward passes on the shared card / CPU). Satellite of ``TRAINFORGE_EDGE_NLI``.
+_NLI_MAX_EDGES_ENV: str = "TRAINFORGE_EDGE_NLI_MAX_EDGES"
+_NLI_DEFAULT_MAX_EDGES: int = 500
+
+#: Contradiction probability at / above which the NLI extension emits a
+#: ``disagree`` signal. Mirrors the established ``NliScore`` convention
+#: (``contradiction >= 0.5`` — see ``lib.classifiers.nli_classifier``).
+_NLI_CONTRADICTION_THRESHOLD: float = 0.5
+
+#: Premise char cap so a long chunk doesn't blow the NLI serving window
+#: (the tokenizer truncates too, but bound the input up front).
+_NLI_PREMISE_CHAR_CAP: int = 2000
+
+#: Chunk-anchored edge types the NLI extension scores. Each entry names
+#: which endpoint carries the chunk id vs. the concept, and the hypothesis
+#: template rendered against the cited chunk text. Only these types are
+#: scored — the concept↔chunk predicates are the ones with a natural
+#: text-entailment reading; LO-order / question→LO edges are skipped.
+_NLI_EDGE_TEMPLATES: Dict[str, Dict[str, str]] = {
+    "defined_by_from_first_mention": {
+        "chunk_endpoint": "target",
+        "concept_endpoint": "source",
+        "hypothesis": "This text defines {concept}.",
+    },
+    "exemplifies_from_example_chunks": {
+        "chunk_endpoint": "source",
+        "concept_endpoint": "target",
+        "hypothesis": "This text gives an example of {concept}.",
+    },
+}
+
+#: Chunkset locations searched by :func:`load_chunk_text_lookup`, relative
+#: to a LibV2 course dir (first hit per id wins).
+_CHUNK_JSONL_CANDIDATES: Tuple[str, ...] = (
+    "dart_chunks/chunks.jsonl",
+    "imscc_chunks/chunks.jsonl",
+    "corpus/chunks.jsonl",
+)
 
 #: Opt-in retraction / decay policy for CONTRADICTED edges. Default unset →
 #: stamp-only behaviour (byte-identical to the pre-flag output). The policy
@@ -299,6 +346,13 @@ class EdgeConsensusAggregator:
         Optional ``DecisionCapture`` instance. When wired, the
         aggregator emits one ``edge_consensus_resolution`` event per
         :meth:`build` call.
+    chunk_text_lookup:
+        Optional ``{chunk_id: text}`` mapping backing the NLI extension
+        (``TRAINFORGE_EDGE_NLI``). Default ``None`` → the NLI extension
+        no-ops even when the flag is on (graceful degrade — the aggregator
+        only carries the graph path, whose edges reference chunk IDs, not
+        chunk TEXT). Build it from the LibV2 course tree via
+        :func:`load_chunk_text_lookup`.
     """
 
     def __init__(
@@ -308,6 +362,7 @@ class EdgeConsensusAggregator:
         course_slug: str = "",
         run_id: str = "",
         decision_capture: Optional[Any] = None,
+        chunk_text_lookup: Optional[Mapping[str, str]] = None,
     ) -> None:
         self.semantic_graph_path = (
             Path(semantic_graph_path) if semantic_graph_path is not None else None
@@ -315,6 +370,14 @@ class EdgeConsensusAggregator:
         self.course_slug = str(course_slug or "")
         self.run_id = str(run_id or "")
         self.decision_capture = decision_capture
+        # NLI-extension state (TRAINFORGE_EDGE_NLI). ``chunk_text_lookup``
+        # None → the extension no-ops. Budget + classifier are (re)resolved
+        # per build()/apply_to_graph() call via :meth:`_nli_setup`.
+        self._chunk_text_lookup: Optional[Dict[str, str]] = (
+            dict(chunk_text_lookup) if chunk_text_lookup else None
+        )
+        self._nli_budget_remaining: int = 0
+        self._nli_classifier: Optional[Any] = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -406,6 +469,7 @@ class EdgeConsensusAggregator:
         graph = self._load_graph()
         edges = _as_list(graph.get("edges"))
 
+        self._nli_setup()
         pair_index, type_dir_index, aux = self._build_indexes(edges)
 
         per_rule_counts: Dict[str, Dict[str, int]] = defaultdict(
@@ -639,6 +703,7 @@ class EdgeConsensusAggregator:
         # mutation lands (no half-stamped graph on a typo).
         policy = _resolve_contradicted_policy()
 
+        self._nli_setup()
         edges = _as_list(graph.get("edges"))
         pair_index, type_dir_index, aux = self._build_indexes(edges)
 
@@ -1000,6 +1065,36 @@ class EdgeConsensusAggregator:
             return "supported"
         return "pending"
 
+    def _nli_setup(self) -> None:
+        """Resolve the per-run NLI budget + classifier (idempotent per call).
+
+        Called at the top of :meth:`build` and :meth:`apply_to_graph` so both
+        the report and the graph-mutation paths score the same edges under the
+        same per-run cap. No-op (budget 0, classifier None) unless
+        ``TRAINFORGE_EDGE_NLI`` is truthy AND a chunk-text lookup was supplied
+        at construction. Resetting the budget every call keeps
+        :meth:`apply_to_graph` idempotent — a second call re-scores the same
+        edges deterministically. Best-effort: a classifier-load failure (deps
+        missing / model load error) degrades to a no-op extension.
+        """
+        self._nli_budget_remaining = 0
+        self._nli_classifier = None
+        if not self._chunk_text_lookup:
+            return
+        if not _flag_is_true(_NLI_FLAG_ENV):
+            return
+        self._nli_budget_remaining = _resolve_nli_max_edges()
+        try:
+            from lib.classifiers.nli_classifier import NliClassifier
+            self._nli_classifier = NliClassifier.get_or_load()
+        except Exception as exc:  # noqa: BLE001 — graceful degrade
+            logger.debug(
+                "EdgeConsensusAggregator: NLI classifier load failed "
+                "(extension no-ops): %s",
+                exc,
+            )
+            self._nli_classifier = None
+
     def _nli_extension_signal(
         self,
         *,
@@ -1008,14 +1103,62 @@ class EdgeConsensusAggregator:
         source: str,
         target: str,
     ) -> Optional[Dict[str, Any]]:
-        """Stub for the NLI extension (TRAINFORGE_EDGE_NLI=true).
+        """NLI text-entailment extension (``TRAINFORGE_EDGE_NLI``).
 
-        Deferred per the wave plan. The schema admits the
-        ``retracted`` edge_status value and the
-        ``other_rule: "nli_text_entailment"`` signal shape so a
-        follow-on wave can land the real implementation without
-        re-bumping the schema. Returns ``None`` until that wave.
+        For a chunk-anchored edge (:data:`_NLI_EDGE_TEMPLATES`), render the
+        edge predicate to a hypothesis and score it against the cited chunk
+        text via the shared DeBERTa NLI singleton. Emits a single ``disagree``
+        signal ONLY on a strong contradiction
+        (``score.contradiction >= _NLI_CONTRADICTION_THRESHOLD``); entailment /
+        neutral verdicts add no signal in v1 (conservative — the arm can only
+        retract, never confirm). Returns ``None`` (no signal) when the flag is
+        off, no chunk-text lookup was supplied, the classifier is unavailable,
+        the per-run budget is exhausted, the edge type is not chunk-anchored,
+        or the cited chunk text / concept label can't be resolved.
         """
+        lookup = self._chunk_text_lookup
+        classifier = self._nli_classifier
+        if not lookup or classifier is None:
+            return None
+        if self._nli_budget_remaining <= 0:
+            return None
+        template = _NLI_EDGE_TEMPLATES.get(this_rule)
+        if template is None:
+            return None
+        chunk_id = target if template["chunk_endpoint"] == "target" else source
+        concept_id = source if template["concept_endpoint"] == "source" else target
+        chunk_text = lookup.get(chunk_id)
+        if not isinstance(chunk_text, str) or not chunk_text.strip():
+            return None
+        concept_label = _humanize_concept(concept_id)
+        if not concept_label:
+            return None
+        hypothesis = template["hypothesis"].format(concept=concept_label)
+        # Consume budget only when a real forward pass is about to run so the
+        # cap maps to NLI inferences, not to skipped non-anchored edges.
+        self._nli_budget_remaining -= 1
+        try:
+            score = classifier.score_pair(
+                premise=chunk_text[:_NLI_PREMISE_CHAR_CAP],
+                hypothesis=hypothesis,
+            )
+        except Exception as exc:  # noqa: BLE001 — never break the aggregation
+            logger.debug(
+                "EdgeConsensusAggregator: NLI score_pair raised for "
+                "edge %s->%s (%s): %s",
+                source, target, this_rule, exc,
+            )
+            return None
+        contradiction = getattr(score, "contradiction", None)
+        if not isinstance(contradiction, (int, float)) or isinstance(contradiction, bool):
+            return None
+        if float(contradiction) >= _NLI_CONTRADICTION_THRESHOLD:
+            return {
+                "other_rule": "nli_text_entailment",
+                "signal": "disagree",
+                "detail": "nli_contradiction",
+                "confidence": round(float(contradiction), 4),
+            }
         return None
 
     def _emit_decision(
@@ -1120,6 +1263,90 @@ def _flag_is_true(env_name: str) -> bool:
     """Truthy check matching the project's flag-resolution conventions."""
     raw = os.getenv(env_name, "")
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _resolve_nli_max_edges() -> int:
+    """Per-run NLI edge-scoring cap. Garbage / non-positive → default."""
+    raw = os.getenv(_NLI_MAX_EDGES_ENV, "")
+    try:
+        val = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return _NLI_DEFAULT_MAX_EDGES
+    return val if val > 0 else _NLI_DEFAULT_MAX_EDGES
+
+
+def _humanize_concept(node_id: str) -> str:
+    """Render a concept node id into a readable NLI hypothesis fragment.
+
+    Strips a course-scoped ``course:slug`` prefix (keeps the last segment)
+    and swaps ``-`` / ``_`` for spaces. Returns "" on non-str / empty input
+    so the caller no-ops rather than build a degenerate hypothesis.
+    """
+    if not isinstance(node_id, str):
+        return ""
+    label = node_id.split(":")[-1].replace("-", " ").replace("_", " ").strip()
+    return label
+
+
+def load_chunk_text_lookup(course_dir: Optional[Any]) -> Optional[Dict[str, str]]:
+    """Build a ``{chunk_id: text}`` lookup from a LibV2 course tree.
+
+    Searches the canonical chunkset locations (:data:`_CHUNK_JSONL_CANDIDATES`)
+    under ``course_dir``. Returns ``None`` when no chunkset is found (so the
+    NLI extension no-ops exactly as if the lookup were never supplied).
+    Best-effort: unreadable files / malformed JSONL lines are skipped.
+    """
+    if not course_dir:
+        return None
+    base = Path(course_dir)
+    lookup: Dict[str, str] = {}
+    for rel in _CHUNK_JSONL_CANDIDATES:
+        path = base / rel
+        if not path.is_file():
+            continue
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            cid = obj.get("id") or obj.get("chunk_id")
+            text = obj.get("text")
+            if isinstance(cid, str) and cid and isinstance(text, str) and text:
+                # First chunkset wins per id (dart before imscc before corpus).
+                lookup.setdefault(cid, text)
+    return lookup or None
+
+
+def chunk_text_lookup_from_chunks(
+    chunks: Optional[Any],
+) -> Optional[Dict[str, str]]:
+    """Build a ``{chunk_id: text}`` lookup from an in-memory chunk-dict list.
+
+    Companion to :func:`load_chunk_text_lookup` for call sites that already
+    hold the chunks in memory (e.g. the concept_extraction authoring path).
+    Returns ``None`` when the input yields no usable ``(id, text)`` pairs so
+    the NLI extension no-ops.
+    """
+    if not isinstance(chunks, list):
+        return None
+    lookup: Dict[str, str] = {}
+    for obj in chunks:
+        if not isinstance(obj, dict):
+            continue
+        cid = obj.get("id") or obj.get("chunk_id")
+        text = obj.get("text")
+        if isinstance(cid, str) and cid and isinstance(text, str) and text:
+            lookup.setdefault(cid, text)
+    return lookup or None
 
 
 class ContradictedEdgePolicyError(ValueError):

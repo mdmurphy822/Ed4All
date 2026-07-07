@@ -3682,6 +3682,7 @@ def _backfill_dart_chunk_lo_refs(
     course_slug: str,
     objective_ids: List[str],
     libv2_root: Optional[str] = None,
+    objectives: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Wave3-Anew3 — back-fill ``learning_outcome_refs`` on DART chunks.
 
@@ -3706,11 +3707,21 @@ def _backfill_dart_chunk_lo_refs(
             without an allowlist; preserves false-positive guard).
         libv2_root: Optional override for the LibV2 root; resolution
             chain follows :func:`_resolve_libv2_root`.
+        objectives: Optional list of ``{"id", "statement"}`` dicts (the
+            already-minted objective universe). When supplied AND
+            ``ED4ALL_CHUNK_LO_HEURISTIC`` is truthy, an additive-only
+            W1b.5 heuristic arm runs AFTER the exact ``scan_lo_refs``
+            pass: chunks still carrying no refs are content-token-matched
+            to an objective STATEMENT (existing-ids-only,
+            ``only_when_empty=True``). Default ``None`` / flag off →
+            byte-identical to the exact-scan-only baseline.
 
     Returns:
         Summary dict with ``chunks_path``, ``chunks_scanned``,
         ``chunks_updated``, ``new_refs_total``, and (when the chunks
-        file is missing) ``skipped`` + ``reason``.
+        file is missing) ``skipped`` + ``reason``. When the heuristic
+        arm runs it adds ``heuristic_chunks_linked`` +
+        ``heuristic_refs_added``.
 
     Best-effort: missing chunks file / unreadable JSONL line / write
     error each emit a logger.warning and continue rather than crash the
@@ -3803,7 +3814,67 @@ def _backfill_dart_chunk_lo_refs(
             # No new refs — keep original bytes / order intact.
             updated_lines.append(line)
 
-    if chunks_updated > 0:
+    # W1b.5 (opt-in ``ED4ALL_CHUNK_LO_HEURISTIC``, default OFF) — additive-only
+    # heuristic rescue AFTER the exact scan. A DART chunk rarely contains the
+    # literal ``TO-03`` string, so the exact pass links very few chunks; this
+    # arm content-token-matches an un-linked chunk to an objective STATEMENT,
+    # drawing ids EXCLUSIVELY from the supplied objective universe. Default off
+    # (or no objectives) ⇒ this whole block is skipped and ``updated_lines`` is
+    # byte-identical to the exact-only baseline.
+    heuristic_linked = 0
+    heuristic_refs_added = 0
+    from lib.ontology.lo_heuristic_link import (
+        heuristic_link_chunks,
+        resolve_lo_heuristic_enabled,
+    )
+    if objectives and resolve_lo_heuristic_enabled():
+        # Re-parse the (in-memory) post-exact-scan lines, collect chunks that
+        # are STILL un-linked, and let the helper mutate them in place.
+        line_chunks: List[tuple] = []  # (line_index, chunk_dict)
+        for idx, line in enumerate(updated_lines):
+            if not line.strip():
+                continue
+            try:
+                parsed = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if not isinstance(parsed, dict):
+                continue
+            refs = parsed.get("learning_outcome_refs") or []
+            if refs:
+                continue  # exact scan already linked it — leave bytes intact
+            line_chunks.append((idx, parsed))
+
+        if line_chunks:
+            # Exception-guarded capture construction (best-effort contract —
+            # capture failure must never break the back-fill).
+            heuristic_capture: Optional[Any] = None
+            try:
+                from lib.decision_capture import DecisionCapture
+
+                heuristic_capture = DecisionCapture(
+                    course_code=course_slug,
+                    phase="course_planning",
+                    tool="pipeline",
+                )
+            except Exception:  # noqa: BLE001 — capture is best-effort
+                heuristic_capture = None
+
+            summary = heuristic_link_chunks(
+                [c for _, c in line_chunks],
+                objectives,
+                capture=heuristic_capture,
+                only_when_empty=True,
+            )
+            heuristic_linked = int(summary.get("chunks_linked", 0))
+            heuristic_refs_added = int(summary.get("refs_added", 0))
+            # Re-serialize only the chunks the heuristic actually mutated.
+            for idx, chunk in line_chunks:
+                if chunk.get("learning_outcome_refs"):
+                    updated_lines[idx] = json.dumps(chunk, ensure_ascii=False)
+
+    needs_write = chunks_updated > 0 or heuristic_refs_added > 0
+    if needs_write:
         try:
             chunks_path.write_text(
                 "\n".join(updated_lines) + ("\n" if updated_lines else ""),
@@ -3824,13 +3895,17 @@ def _backfill_dart_chunk_lo_refs(
                 "reason": f"write_error:{exc}",
             }
 
-    return {
+    result: Dict[str, Any] = {
         "chunks_path": str(chunks_path),
         "chunks_scanned": chunks_scanned,
         "chunks_updated": chunks_updated,
         "new_refs_total": new_refs_total,
         "skipped": False,
     }
+    if objectives and resolve_lo_heuristic_enabled():
+        result["heuristic_chunks_linked"] = heuristic_linked
+        result["heuristic_refs_added"] = heuristic_refs_added
+    return result
 
 
 def _load_dart_chunkset_for_planning(
@@ -8275,8 +8350,12 @@ def _semantik_resolve_block_resegment(result: Any) -> Optional[List[Dict[str, An
     Resolution order:
       1. ``result.block_resegment`` — the bridge arm
          (``_SemantikBridgeResult``) surfaces it as a top-level attribute.
-      2. ``result.cascade["conformance_audit"]["block_resegment"]`` — the
-         in-process ``PipelineV2Result`` carries it inside the telemetry dict.
+      2. ``result.cascade["block_resegment"]`` — the in-process
+         ``PipelineV2Result`` carries the audit at the run_full_cascade result
+         dict's TOP LEVEL (``cascade.py`` ~L2217), which is the CANONICAL shape
+         the real cascade emits (parallel to ``second_pass_verify`` /
+         ``ocr_repair``). A conformance-nested runtime is also accepted
+         (checked first) for forward-compat, though the cascade never nests it.
 
     Returns ``None`` when the re-segmenter did NOT run (``SEMANTIK_BLOCK_RESEGMENT``
     off / no audit key) so the caller skips the capture cleanly; ``[]`` when it
@@ -8290,8 +8369,12 @@ def _semantik_resolve_block_resegment(result: Any) -> Optional[List[Dict[str, An
         conformance = cascade.get("conformance_audit")
         if isinstance(conformance, dict):
             audit = conformance.get("block_resegment")
-            if audit is None:
-                return None
+            if audit is not None:
+                return list(audit) if isinstance(audit, (list, tuple)) else None
+        # In-process result-dict TOP-LEVEL arm — where ``cascade.py`` actually
+        # emits ``result["block_resegment"]`` (the real PipelineV2Result shape).
+        audit = cascade.get("block_resegment")
+        if audit is not None:
             return list(audit) if isinstance(audit, (list, tuple)) else None
     return None
 
@@ -8309,9 +8392,11 @@ def _emit_block_resegment_capture(
     logs a warning and returns — it NEVER breaks the conversion. Skips cleanly
     (no capture) when ``ops is None`` (the re-segmenter was off / flag unset).
     The rationale is DYNAMIC/replayable per the CLAUDE.md contract: it
-    interpolates per-op merge/split counts + total regions touched +
-    conservation_verified so a post-hoc replay can attribute the block
-    re-segmentation.
+    interpolates per-op merge/split counts, the Phase-9 regroup /
+    fused-title-split counts + folded-region tally + merged-unit semantic
+    classes, total regions touched, a bounded sample of touched block
+    source_ids, and conservation_verified so a post-hoc replay can attribute
+    the block re-segmentation.
 
     ``decision_type='block_resegment'`` is a canonical enum member
     (``schemas/events/decision_event.schema.json``), added for this seam.
@@ -8353,6 +8438,50 @@ def _emit_block_resegment_capture(
             if isinstance(o, dict) and "conservation_verified" in o
         ]
         conservation_verified = all(flagged) if flagged else None
+        # Phase-9 cross-kind pedagogical-unit REGROUP + fused-title SPLIT signals
+        # (build_resegment_audit_rows enriches those rows with op='regroup' +
+        # semantic_class + regions_folded, and subtype='fused_title'). Interpolate
+        # them so a SEMANTIK_UNIT_REGROUP-only doc surfaces its regroup counts /
+        # classes / folded-region tally instead of "0 merge(s) / 0 split(s)".
+        from collections import Counter  # noqa: PLC0415 — local, best-effort seam
+
+        regroups = sum(
+            1
+            for o in ops
+            if isinstance(o, dict) and str(o.get("op") or "") == "regroup"
+        )
+        fused_title_splits = sum(
+            1
+            for o in ops
+            if isinstance(o, dict)
+            and str(o.get("subtype") or "") == "fused_title"
+        )
+        regions_folded = sum(
+            int(o.get("regions_folded") or 0)
+            for o in ops
+            if isinstance(o, dict) and isinstance(o.get("regions_folded"), int)
+        )
+        class_counter = Counter(
+            str(o.get("semantic_class"))
+            for o in ops
+            if isinstance(o, dict) and o.get("semantic_class")
+        )
+        semantic_class_summary = ", ".join(
+            f"{cls} x{n}" for cls, n in sorted(class_counter.items())
+        )
+        # Bounded sample of the stable block ids each op touched (the audit rows
+        # carry source_ids/origin, not page numbers, so block ids are the correct
+        # per-doc replay signal). Capped so the rationale stays terse.
+        sample_ids: List[Any] = []
+        for o in ops:
+            if not isinstance(o, dict):
+                continue
+            sids = o.get("source_ids")
+            if isinstance(sids, (list, tuple)):
+                sample_ids.extend(sids)
+            if len(sample_ids) >= 8:
+                break
+        sample_ids = sample_ids[:8]
         # The SemantiK cascade is the DART-conversion replacement, so the
         # capture lands under the canonical ``dart`` tool / ``dart-conversion``
         # phase. Course code falls back to the PDF stem via the shared
@@ -8371,8 +8500,11 @@ def _emit_block_resegment_capture(
         # so the capture is replayable.
         rationale = (
             f"SEMANTIK_BLOCK_RESEGMENT applied {total_ops} block re-segmentation "
-            f"op(s) on {pdf_stem}: {merges} merge(s) / {splits} split(s) touching "
-            f"{regions_touched} region(s); conservation_verified="
+            f"op(s) on {pdf_stem}: {merges} merge(s) / {splits} split(s) / "
+            f"{regroups} regroup(s) ({fused_title_splits} fused-title split(s), "
+            f"{regions_folded} region(s) folded) touching {regions_touched} "
+            f"region(s); classes=[{semantic_class_summary or 'none'}]; "
+            f"source_ids={sample_ids}; conservation_verified="
             f"{conservation_verified}. Structure-only block boundary edits "
             f"(no text rewritten)."
         )
@@ -8380,7 +8512,7 @@ def _emit_block_resegment_capture(
             decision_type="block_resegment",
             decision=(
                 f"ops={total_ops} merges={merges} splits={splits} "
-                f"regions_touched={regions_touched}"
+                f"regroups={regroups} regions_touched={regions_touched}"
             ),
             rationale=rationale,
             alternatives_considered=[
@@ -19280,12 +19412,21 @@ def _build_tool_registry() -> dict:
             # block the phase output.
             course_slug = (course_name or "").lower().replace("_", "-").replace(" ", "-")
             backfill_summary: Dict[str, Any] = {}
+            # W1b.5 heuristic arm needs the objective STATEMENTS (not just
+            # ids). Build the {id: statement} view and hand it to the
+            # back-fill; the heuristic only fires under ED4ALL_CHUNK_LO_HEURISTIC
+            # (default off ⇒ objectives ignored, exact-scan byte-identical).
+            heuristic_objectives = [
+                {"id": _oid, "statement": _stmt}
+                for _oid, _stmt in _objective_id_to_statement(synthesized).items()
+            ]
             if course_slug and objective_ids:
                 try:
                     backfill_summary = _backfill_dart_chunk_lo_refs(
                         course_slug=course_slug,
                         objective_ids=objective_ids,
                         libv2_root=kwargs.get("libv2_root"),
+                        objectives=heuristic_objectives,
                     )
                     if backfill_summary.get("chunks_updated"):
                         logger.info(
@@ -23961,6 +24102,7 @@ def _build_tool_registry() -> dict:
             try:
                 from lib.aggregators.edge_consensus import (
                     EdgeConsensusAggregator,
+                    chunk_text_lookup_from_chunks,
                 )
 
                 _run_id = (
@@ -23968,10 +24110,15 @@ def _build_tool_registry() -> dict:
                     or os.getenv("ED4ALL_RUN_ID", "")
                     or ""
                 )
+                # TRAINFORGE_EDGE_NLI: thread the in-memory chunk text so the
+                # NLI extension can score chunk-anchored edges. None when the
+                # flag is off / chunks carry no text → extension no-ops.
+                _nli_lookup = chunk_text_lookup_from_chunks(chunks)
                 _consensus = EdgeConsensusAggregator(
                     semantic_graph_path=None,
                     course_slug=course_slug,
                     run_id=str(_run_id),
+                    chunk_text_lookup=_nli_lookup,
                 )
                 # Stamp edge_status + consensus_signals[] in place on the
                 # freshly-built graph dict before it is serialized.
@@ -24082,6 +24229,7 @@ def _build_tool_registry() -> dict:
             try:
                 from lib.aggregators.edge_consensus import (
                     EdgeConsensusAggregator,
+                    chunk_text_lookup_from_chunks,
                 )
 
                 _run_id = (
@@ -24089,11 +24237,16 @@ def _build_tool_registry() -> dict:
                     or os.getenv("ED4ALL_RUN_ID", "")
                     or ""
                 )
+                # Same chunk-text lookup as the authoring apply_to_graph above
+                # so the report's retracted counts agree with the stamped graph
+                # when TRAINFORGE_EDGE_NLI is on.
+                _nli_lookup = chunk_text_lookup_from_chunks(chunks)
                 _report_path = graph_dir / "edge_consensus_report.json"
                 EdgeConsensusAggregator(
                     semantic_graph_path=graph_path,
                     course_slug=course_slug,
                     run_id=str(_run_id),
+                    chunk_text_lookup=_nli_lookup,
                 ).write(_report_path)
                 edge_consensus_report_path = str(_report_path)
             except Exception as exc:  # noqa: BLE001 — fail-soft

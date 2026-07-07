@@ -90,6 +90,7 @@ _KNOWN_FIELDS = frozenset(_REQUIRED_FIELDS) | {
     "embedding_model_revision",
     "document_prefix",
     "query_prefix",
+    "embed_overflow",
     "generated_at",
 }
 

@@ -13,6 +13,7 @@ Decision Capture:
 
 import json
 import logging
+import os
 import re
 import sys
 import uuid
@@ -39,6 +40,22 @@ except Exception:  # pragma: no cover - defensive fallback
     MLFeatures = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
+
+# GPT Feedback (May 12) item 5 — observable cognitive task-type axis on the
+# assessment-generator surface, gated behind TRAINFORGE_COGNITIVE_TASK_TYPE.
+# Default unset -> the QuestionData.cognitive_task_type field stays None and
+# to_dict() omits it, so legacy assessment output is byte-identical. When the
+# flag is truthy, each emitted question is tagged with the task verb detected
+# in its stem (mirrors the always-on chunk-emit precedent at
+# Trainforge/process_course.py). Standard TRAINFORGE_* truthy-token parse.
+_COGNITIVE_TASK_TYPE_ENV = "TRAINFORGE_COGNITIVE_TASK_TYPE"
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def _cognitive_task_type_enabled() -> bool:
+    """Return True when TRAINFORGE_COGNITIVE_TASK_TYPE is truthy."""
+    return os.environ.get(_COGNITIVE_TASK_TYPE_ENV, "").strip().lower() in _TRUTHY
+
 
 # Import content extractor for content-grounded generation
 from Trainforge.generators.content_extractor import ContentExtractor
@@ -115,9 +132,15 @@ class QuestionData:
     # an acceptable shape for a not-yet-classified question.
     observed_bloom_level: Optional[str] = None
     bloom_alignment: Optional[bool] = None
+    # GPT Feedback (May 12) item 5 — observable cognitive task verb
+    # (classify / compute / debug / critique / ...), orthogonal to
+    # bloom_level. Populated only when TRAINFORGE_COGNITIVE_TASK_TYPE is on
+    # AND the question stem carries a canonical task verb; otherwise stays
+    # None and is OMITTED from to_dict() so legacy output is byte-identical.
+    cognitive_task_type: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d: Dict[str, Any] = {
             "question_id": self.question_id,
             "question_type": self.question_type,
             "stem": self.stem,
@@ -132,6 +155,11 @@ class QuestionData:
             "observed_bloom_level": self.observed_bloom_level,
             "bloom_alignment": self.bloom_alignment,
         }
+        # Additive + optional: omitted when unset so the flag-off serialized
+        # shape is byte-identical to the pre-feature output.
+        if self.cognitive_task_type is not None:
+            d["cognitive_task_type"] = self.cognitive_task_type
+        return d
 
 
 @dataclass
@@ -613,6 +641,46 @@ class AssessmentGenerator:
                     ),
                 )
             return result
+
+        # GPT Feedback (May 12) item 5 — tag the emitted question with the
+        # observable cognitive task verb detected in its stem. Gated on
+        # TRAINFORGE_COGNITIVE_TASK_TYPE: default unset -> the field stays
+        # None and to_dict() omits it (byte-identical legacy output). When on
+        # AND a canonical task verb is present, stamp the field and emit one
+        # decision-capture event mirroring the always-on chunk-emit precedent
+        # at Trainforge/process_course.py.
+        if _cognitive_task_type_enabled():
+            task_type: Optional[str] = None
+            try:
+                from lib.ontology.cognitive_task import detect_cognitive_task_type
+                task_type = detect_cognitive_task_type(result.stem)
+            except Exception as exc:  # noqa: BLE001 - best-effort, never break emit
+                logger.debug("cognitive_task_type detection raised: %s", exc)
+            if task_type:
+                result.cognitive_task_type = task_type
+                if self.capture:
+                    stem_prefix = result.stem[:80].replace("\n", " ").strip()
+                    try:
+                        self.capture.log_decision(
+                            decision_type="cognitive_task_type_detection",
+                            decision=f"Assigned cognitive_task_type={task_type}",
+                            rationale=(
+                                f"detect_cognitive_task_type matched the "
+                                f"canonical verb {task_type!r} as a whole word "
+                                f"in the {question_type} question stem "
+                                f"(prefix={stem_prefix!r}) for question "
+                                f"{question_id} (objective={objective_id}, "
+                                f"bloom={bloom_level!r}). Adds an axis "
+                                "orthogonal to bloom_level so downstream "
+                                "consumers can audit per-task diversity."
+                            ),
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug(
+                            "DecisionCapture.log_decision raised on "
+                            "cognitive_task_type_detection: %s",
+                            exc,
+                        )
 
         # Log content grounding decision (real question emit path).
         if self.capture:

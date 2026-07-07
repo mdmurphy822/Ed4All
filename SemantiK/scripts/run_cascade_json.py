@@ -37,9 +37,16 @@ On SUCCESS — all JSON-serializable fields the P3a/P3b seam consumes::
       "runtime_mode":       <str>,        # "real" | "mock" (R4 mock-trap input)
       "structure_review":   [ {block_id, verdict, kind_before, kind_after,
                                level_before, level_after, review_note,
-                               reverted_for_invariant}, ... ] | null
-                                          # Stage-5d 70B reviewer verdicts; null
+                               reverted_for_invariant}, ... ] | null,
+                                          # Stage-5d reviewer verdicts; null
                                           # when SEMANTIK_STRUCTURE_REVIEW is off
+      "ocr_repair":         { ...stats } | null,   # SEMANTIK_OCR_CONFUSABLE_REPAIR
+      "block_resegment":    [ {op, source_ids, ...}, ... ] | null,
+                                          # Stage-5e SEMANTIK_BLOCK_RESEGMENT ops;
+                                          # null when the re-segmenter is off
+      "second_pass_verify": { adopted, rounds:[...] } | null
+                                          # Stage-9 SEMANTIK_SECOND_PASS per-round
+                                          # audit; null when the loop is off
     }
 
 On FAILURE — a clear error object (the seam fails closed on this, NEVER a
@@ -201,6 +208,60 @@ def _resolve_ocr_repair(result: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _resolve_block_resegment(result: Any) -> Optional[List[Dict[str, Any]]]:
+    """Pull the doc-level SEMANTIK_BLOCK_RESEGMENT op list off the cascade
+    result and promote it to a top-level bridge key (Phase 9).
+
+    ``run_full_cascade`` emits the audit at the result-dict TOP LEVEL
+    (``result.cascade["block_resegment"]`` — ``cascade.py`` ~L2217), a LIST when
+    the re-segmenter ran (``[]`` when it ran and made no edits) and ``None``
+    (key absent) when the pass was off; a runtime that nested it under
+    ``conformance_audit`` is also accepted (checked first). The seam reads this
+    to emit ONE ``block_resegment`` DecisionCapture per converted doc; the
+    ``None`` (pass off) vs ``[]`` (ran, no edits) distinction is preserved.
+    """
+    cascade = getattr(result, "cascade", None)
+    audit: Any = None
+    if isinstance(cascade, dict):
+        conformance = cascade.get("conformance_audit")
+        if isinstance(conformance, dict) and conformance.get("block_resegment") is not None:
+            audit = conformance.get("block_resegment")
+        elif cascade.get("block_resegment") is not None:
+            audit = cascade.get("block_resegment")
+    if audit is None:
+        return None
+    out: List[Dict[str, Any]] = []
+    for op in audit if isinstance(audit, (list, tuple)) else []:
+        if isinstance(op, dict):
+            out.append(dict(op))
+    return out
+
+
+def _resolve_second_pass_verify(result: Any) -> Optional[Dict[str, Any]]:
+    """Pull the Stage-9 Pass-2 verify-refine per-round audit arm off the cascade
+    result and promote it to a top-level bridge key (Phase 6/7).
+
+    Unlike ``structure_review`` / ``block_resegment`` (lists), this arm is a
+    DICT (``{"adopted": ..., "rounds": [...]}``); ``run_full_cascade`` emits it
+    at the result-dict top level (``result.cascade["second_pass_verify"]`` —
+    ``cascade.py`` ~L2226) and ``None`` (key absent) when SEMANTIK_SECOND_PASS
+    was off / no round ran. A conformance-nested runtime is also accepted
+    (checked first). The seam reads this to emit ONE ``structure_review``
+    DecisionCapture (``second_pass_verify`` discriminator) PER verify round.
+    """
+    cascade = getattr(result, "cascade", None)
+    if isinstance(cascade, dict):
+        conformance = cascade.get("conformance_audit")
+        if isinstance(conformance, dict):
+            arm = conformance.get("second_pass_verify")
+            if isinstance(arm, dict):
+                return dict(arm)
+        arm = cascade.get("second_pass_verify")
+        if isinstance(arm, dict):
+            return dict(arm)
+    return None
+
+
 def _build_bridge_dict(result: Any, pdf: str) -> Dict[str, Any]:
     """Assemble the JSON-serializable bridge dict from a cascade result."""
     theta = getattr(result, "theta_score", None)
@@ -223,6 +284,15 @@ def _build_bridge_dict(result: Any, pdf: str) -> Dict[str, Any]:
         # the pass was off). The per-region ``repaired_text`` / ``ocr_repair``
         # keys already ride through ``region_provenance`` verbatim.
         "ocr_repair": _resolve_ocr_repair(result),
+        # Phase 9 — the doc-level SEMANTIK_BLOCK_RESEGMENT op list (None when the
+        # re-segmenter was off). The Ed4All seam emits one ``block_resegment``
+        # DecisionCapture per doc off this arm (the bridge arm was previously
+        # unforwarded — the capture only fired on the in-process path).
+        "block_resegment": _resolve_block_resegment(result),
+        # Phase 6/7 — the Stage-9 Pass-2 verify-refine per-round audit DICT
+        # (None when SEMANTIK_SECOND_PASS was off / no round ran). The seam
+        # emits one ``structure_review`` DecisionCapture per verify round off it.
+        "second_pass_verify": _resolve_second_pass_verify(result),
     }
 
 

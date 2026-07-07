@@ -417,3 +417,62 @@ def test_no_resolved_attr_defaults_to_empty_prefixes(tmp_path):
     m = build_vector_index(course_dir, client=_FakeEmbeddingClient())
     assert m.document_prefix == ""
     assert m.query_prefix == ""
+
+
+# --------------------------------------------------------------------------
+# W1b.2 — ED4ALL_EMBED_OVERFLOW_GUARD count-and-stamp arm.
+# --------------------------------------------------------------------------
+
+
+def test_embed_overflow_off_byte_identical(tmp_path, monkeypatch):
+    """Guard OFF (default): manifest carries no embed_overflow block, and the
+    serialized manifest bytes never mention it (byte-identical off-path)."""
+    monkeypatch.delenv("ED4ALL_EMBED_OVERFLOW_GUARD", raising=False)
+    course_dir = _write_course(tmp_path, n=5)
+    m = build_vector_index(course_dir, client=_FakeEmbeddingClient())
+    assert m.embed_overflow is None
+    assert "embed_overflow" not in m.to_dict()
+    assert "embed_overflow" not in m.content_dict()
+    raw = (course_dir / "vector_index" / "manifest.json").read_text("utf-8")
+    assert "embed_overflow" not in raw
+
+
+def test_embed_overflow_on_stamps_block(tmp_path, monkeypatch):
+    """Guard ON with a tight token ceiling: every default chunk overflows, and
+    the manifest carries the embed_overflow accounting block (count + stamp)."""
+    monkeypatch.setenv("ED4ALL_EMBED_OVERFLOW_GUARD", "1")
+    monkeypatch.setenv("ED4ALL_EMBED_MAX_SEQ_TOKENS", "5")
+    course_dir = _write_course(tmp_path, n=5)
+    m = build_vector_index(course_dir, client=_FakeEmbeddingClient())
+    assert isinstance(m.embed_overflow, dict)
+    assert m.embed_overflow["max_seq_tokens"] == 5
+    assert m.embed_overflow["records_scanned"] == 5
+    assert m.embed_overflow["overflow_count"] >= 1
+    # It IS part of the determinism content hash when present.
+    assert "embed_overflow" in m.content_dict()
+    # Round-trips through the on-disk manifest.
+    loaded = VectorIndexManifest.from_file(
+        course_dir / "vector_index" / "manifest.json"
+    )
+    assert loaded.embed_overflow == m.embed_overflow
+
+
+def test_embed_overflow_manifest_passes_validator(tmp_path, monkeypatch):
+    """A guard-on manifest (with the embed_overflow block) still passes the
+    VectorIndexManifestValidator — the schema admits the optional field."""
+    from lib.validators.vector_index_manifest import VectorIndexManifestValidator
+
+    monkeypatch.setenv("ED4ALL_EMBED_OVERFLOW_GUARD", "1")
+    monkeypatch.setenv("ED4ALL_EMBED_MAX_SEQ_TOKENS", "5")
+    course_dir = _write_course(tmp_path, n=4)
+    build_vector_index(course_dir, client=_FakeEmbeddingClient())
+    manifest_path = course_dir / "vector_index" / "manifest.json"
+    result = VectorIndexManifestValidator().validate(
+        {"vector_index_manifest_path": str(manifest_path)}
+    )
+    schema_violations = [
+        i for i in result.issues
+        if i.code == "VECTOR_INDEX_MANIFEST_SCHEMA_VIOLATION"
+    ]
+    assert schema_violations == [], schema_violations
+    assert result.passed, [i.code for i in result.issues]

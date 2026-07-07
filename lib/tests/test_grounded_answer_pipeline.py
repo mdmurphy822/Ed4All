@@ -1945,3 +1945,67 @@ def test_completeness_recheck_noop_when_uncovered_part_ungrounded(mini_libv2: Pa
     ev = _recheck_events(spy)
     assert len(ev) == 1
     assert ev[0]["decision"] == "completeness_recheck:noop:all_addressed_or_ungrounded"
+
+
+# --------------------------------------------------------------------------- #
+# W1.8 — groundedness_computational_check capture threads through the
+# PRODUCTION grounded-answer path (not just the eval path). The capture is
+# threaded into ``_score_groundedness`` -> ``score_groundedness(capture=...)``.
+# --------------------------------------------------------------------------- #
+
+_COMP_ANSWER = "The computed sum is 3 plus 10 equals 13 for this vector problem."
+
+
+def _groundedness_comp_events(spy: SpyCapture) -> list:
+    return [e for e in spy.events
+            if e["decision_type"] == "groundedness_computational_check"]
+
+
+def test_groundedness_capture_threads_on_production_path(
+    mini_libv2: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """With ED4ALL_GROUNDEDNESS_COMPUTATIONAL on + a computational claim in the
+    answer, the production answer path threads the DecisionCapture into
+    score_groundedness so exactly one groundedness_computational_check decision
+    fires with a dynamic >=20-char rationale."""
+    from lib.tests.test_groundedness import FakeNli
+
+    monkeypatch.setenv("ED4ALL_GROUNDEDNESS_COMPUTATIONAL", "1")
+    # Inject a deterministic NLI so the scorer runs (and reaches comp_check)
+    # without the ~750MB DeBERTa stack.
+    monkeypatch.setattr(
+        "lib.retrieval.groundedness._resolve_nli", lambda nli: FakeNli()
+    )
+    spy = SpyCapture()
+    client = FakeAnswerClient([_envelope(_COMP_ANSWER, ["mini_alpha_chunk_001"])])
+    result = answer_course_question(
+        mini_libv2, COURSE_SLUG, "What does a vector store index?",
+        client=client, capture=spy, refusal_policy=_PERMISSIVE_LEXICAL,
+        with_groundedness=True,
+    )
+    assert result.status in (STATUS_ANSWERED, STATUS_ANSWERED_WITH_WARNINGS)
+    ev = _groundedness_comp_events(spy)
+    assert len(ev) == 1
+    assert len(ev[0]["rationale"]) >= 20
+
+
+def test_groundedness_capture_silent_when_flag_off(
+    mini_libv2: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Flag OFF ⇒ no groundedness_computational_check decision fires even though
+    groundedness scoring runs (byte-identical to the historical exemption)."""
+    from lib.tests.test_groundedness import FakeNli
+
+    monkeypatch.delenv("ED4ALL_GROUNDEDNESS_COMPUTATIONAL", raising=False)
+    monkeypatch.setattr(
+        "lib.retrieval.groundedness._resolve_nli", lambda nli: FakeNli()
+    )
+    spy = SpyCapture()
+    client = FakeAnswerClient([_envelope(_COMP_ANSWER, ["mini_alpha_chunk_001"])])
+    result = answer_course_question(
+        mini_libv2, COURSE_SLUG, "What does a vector store index?",
+        client=client, capture=spy, refusal_policy=_PERMISSIVE_LEXICAL,
+        with_groundedness=True,
+    )
+    assert result.status in (STATUS_ANSWERED, STATUS_ANSWERED_WITH_WARNINGS)
+    assert _groundedness_comp_events(spy) == []

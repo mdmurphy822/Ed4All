@@ -242,3 +242,109 @@ def test_backfill_no_matches_leaves_file_unchanged(tmp_path: Path):
     assert summary["new_refs_total"] == 0
     after = chunks_path.read_bytes()
     assert before == after, "no-op back-fill must not rewrite bytes"
+
+
+# ---------------------------------------------------------------------------
+# W1b.5 — heuristic LO-link additive arm (ED4ALL_CHUNK_LO_HEURISTIC)
+# ---------------------------------------------------------------------------
+
+# A chunk that contains NO literal TO-NN / CO-NN id (so the exact scan links
+# nothing) but whose prose shares content tokens with TO-01's statement.
+_HEURISTIC_OBJECTIVES = [
+    {"id": "TO-01", "statement": "Solve linear equations using inverse operations"},
+]
+_HEURISTIC_CHUNK_TEXT = (
+    "This lesson explains how to solve linear equations with inverse "
+    "operations, working step by step through each transformation."
+)
+
+
+class _RecordingCapture:
+    """Records log_decision calls; mirrors the DecisionCapture surface used."""
+
+    def __init__(self, *args, **kwargs):
+        self.calls = []
+
+    def log_decision(self, *, decision_type, decision, rationale, **kwargs):
+        self.calls.append(
+            {"decision_type": decision_type, "decision": decision,
+             "rationale": rationale}
+        )
+
+
+def test_backfill_heuristic_off_is_byte_identical(tmp_path: Path, monkeypatch):
+    """Flag OFF (default): objectives supplied but no heuristic runs → the
+    on-disk JSONL is byte-identical to the exact-scan-only baseline, and the
+    summary carries no heuristic keys."""
+    monkeypatch.delenv("ED4ALL_CHUNK_LO_HEURISTIC", raising=False)
+    libv2_root = tmp_path / "LibV2"
+    chunks_path = libv2_root / "courses" / "phys-101" / "dart_chunks" / "chunks.jsonl"
+    _write_chunks(chunks_path, [
+        {"id": "c1", "text": _HEURISTIC_CHUNK_TEXT, "html": "",
+         "learning_outcome_refs": []},
+    ])
+    before = chunks_path.read_bytes()
+    summary = _backfill_dart_chunk_lo_refs(
+        course_slug="phys-101",
+        objective_ids=["TO-01"],
+        libv2_root=str(libv2_root),
+        objectives=_HEURISTIC_OBJECTIVES,
+    )
+    after = chunks_path.read_bytes()
+    assert before == after, "heuristic-off back-fill must not rewrite bytes"
+    assert summary["chunks_updated"] == 0
+    assert "heuristic_chunks_linked" not in summary
+    assert "heuristic_refs_added" not in summary
+
+
+def test_backfill_heuristic_on_links_unlinked_chunk(tmp_path: Path, monkeypatch):
+    """Flag ON: the un-linked chunk is heuristically stamped with TO-01 (drawn
+    only from the supplied objective universe) and a content_selection capture
+    fires with a dynamic >=20-char rationale."""
+    monkeypatch.setenv("ED4ALL_CHUNK_LO_HEURISTIC", "1")
+    cap = _RecordingCapture()
+    monkeypatch.setattr("lib.decision_capture.DecisionCapture",
+                        lambda *a, **k: cap)
+    libv2_root = tmp_path / "LibV2"
+    chunks_path = libv2_root / "courses" / "phys-101" / "dart_chunks" / "chunks.jsonl"
+    _write_chunks(chunks_path, [
+        {"id": "c1", "text": _HEURISTIC_CHUNK_TEXT, "html": "",
+         "learning_outcome_refs": []},
+    ])
+    summary = _backfill_dart_chunk_lo_refs(
+        course_slug="phys-101",
+        objective_ids=["TO-01"],
+        libv2_root=str(libv2_root),
+        objectives=_HEURISTIC_OBJECTIVES,
+    )
+    assert summary["heuristic_chunks_linked"] == 1
+    assert summary["heuristic_refs_added"] == 1
+    rewritten = _read_chunks(chunks_path)
+    assert rewritten[0]["learning_outcome_refs"] == ["TO-01"]
+    # The helper's built-in content_selection capture fired.
+    cs = [c for c in cap.calls if c["decision_type"] == "content_selection"]
+    assert len(cs) == 1
+    assert len(cs[0]["rationale"]) >= 20
+
+
+def test_backfill_heuristic_only_links_existing_ids(tmp_path: Path, monkeypatch):
+    """Anti-fabrication: a chunk that matches no supplied objective stays
+    un-linked even with the heuristic on."""
+    monkeypatch.setenv("ED4ALL_CHUNK_LO_HEURISTIC", "1")
+    monkeypatch.setattr("lib.decision_capture.DecisionCapture",
+                        lambda *a, **k: _RecordingCapture())
+    libv2_root = tmp_path / "LibV2"
+    chunks_path = libv2_root / "courses" / "phys-101" / "dart_chunks" / "chunks.jsonl"
+    _write_chunks(chunks_path, [
+        {"id": "c1", "text": "Entirely unrelated prose about photosynthesis.",
+         "html": "", "learning_outcome_refs": []},
+    ])
+    summary = _backfill_dart_chunk_lo_refs(
+        course_slug="phys-101",
+        objective_ids=["TO-01"],
+        libv2_root=str(libv2_root),
+        objectives=_HEURISTIC_OBJECTIVES,
+    )
+    assert summary.get("heuristic_refs_added", 0) == 0
+    rewritten = _read_chunks(chunks_path)
+    assert rewritten[0]["learning_outcome_refs"] == []

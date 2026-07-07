@@ -1206,17 +1206,19 @@ def build_resegment_audit_rows(ops: list[ResegmentOp]) -> list[dict[str, Any]]:
     Single SoT for the cascade's audit section (``cascade.py`` consumes this).
     A cross-kind pedagogical-unit op (``subtype=='regroup'``) records
     ``op='regroup'`` + the merged unit's ``semantic_class`` + ``regions_folded``
-    (= len(region_indices) - 1) so the (bridge-owned, still-unwired)
-    ``block_resegment`` DecisionCapture can interpolate regroup counts/classes
-    into a dynamic, replayable rationale — with NO ``decision_event`` schema
-    change (``block_resegment`` is already in the enum). A same-kind op (subtype
-    default ``'merge'``) keeps ``op=op.op`` and the original 4-key row VERBATIM,
-    so a regroup-flag-off run (no regroup op exists) is BYTE-IDENTICAL to the
-    pre-Phase-9 audit. **Honest gap:** no DecisionCapture EVENT fires for a
-    regroup until the bridge TODO (``cascade.py``) is wired — the regroup is a
-    DETERMINISTIC transform (mirrors the chunker / reading-order
-    deterministic-transform posture, which also emit no capture), not an LLM
-    call site; the row only enriches the audit the bridge will consume."""
+    (= len(region_indices) - 1) so the ``block_resegment`` DecisionCapture can
+    interpolate regroup counts/classes into a dynamic, replayable rationale —
+    with NO ``decision_event`` schema change (``block_resegment`` is already in
+    the enum). A same-kind op (subtype default ``'merge'``) keeps ``op=op.op``
+    and the original 4-key row VERBATIM, so a regroup-flag-off run (no regroup
+    op exists) is BYTE-IDENTICAL to the pre-Phase-9 audit. **Emit is live:** the
+    Ed4All boundary (``MCP/tools/pipeline_tools.py`` section 2c) fires ONE
+    ``block_resegment`` DecisionCapture per converted document off this audit —
+    reading it from the result-dict top-level ``block_resegment`` key
+    (in-process arm) or the forwarded bridge JSON (cross-venv arm) — even though
+    the regroup itself is a DETERMINISTIC transform (the deterministic-pass
+    capture posture, matching ``difficulty_calibration`` / the Bloom relevel,
+    not an LLM call site); this row supplies the replayable signals."""
     rows: list[dict[str, Any]] = []
     for op in ops:
         is_regroup = op.subtype == "regroup"
@@ -1231,10 +1233,10 @@ def build_resegment_audit_rows(ops: list[ResegmentOp]) -> list[dict[str, Any]]:
             row["semantic_class"] = op.semantic_class
             row["regions_folded"] = max(0, len(op.region_indices) - 1)
         elif is_fused_title:
-            # A fused-title split records op='split' + subtype so the (still
-            # unwired) block_resegment DecisionCapture can interpolate a
-            # fused-title recovery count; mirrors the regroup-only enrichment,
-            # so a flag-off run (no fused-title op) is BYTE-IDENTICAL.
+            # A fused-title split records op='split' + subtype so the
+            # block_resegment DecisionCapture can interpolate a fused-title
+            # recovery count; mirrors the regroup-only enrichment, so a flag-off
+            # run (no fused-title op) is BYTE-IDENTICAL.
             row["subtype"] = "fused_title"
         rows.append(row)
     return rows

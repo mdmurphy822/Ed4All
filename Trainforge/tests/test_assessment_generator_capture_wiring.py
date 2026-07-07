@@ -126,3 +126,100 @@ def test_no_capture_silent_no_op():
         source_chunks=_stub_chunks(),
     )
     assert result is not None
+
+
+# ---------------------------------------------------------------------------
+# TRAINFORGE_COGNITIVE_TASK_TYPE wiring (GPT Feedback May 12 item 5).
+# ---------------------------------------------------------------------------
+
+def _essay_chunks() -> List[Dict[str, Any]]:
+    """Chunk whose text yields an extractable concept relationship so the
+    essay generator fires. At bloom_level ``evaluate`` the essay stem is
+    ``"Evaluate the relationship between ..."`` — the leading bloom verb
+    ``evaluate`` is also a canonical cognitive task verb, so detection is
+    deterministic."""
+    return [
+        {
+            "id": "c1",
+            "text": (
+                "<p>Photosynthesis causes glucose production in plants. "
+                "This process converts light energy into chemical energy.</p>"
+            ),
+            "learning_outcome_refs": ["TO-01"],
+        }
+    ]
+
+
+def test_cognitive_task_type_flag_off_byte_identical(monkeypatch):
+    """Default (flag unset) -> no ``cognitive_task_type`` key on any emitted
+    question dict AND no ``cognitive_task_type_detection`` capture event."""
+    monkeypatch.delenv("TRAINFORGE_COGNITIVE_TASK_TYPE", raising=False)
+    capture = _RecordingCapture()
+    gen = AssessmentGenerator(capture=capture, check_leaks=False)
+    result = gen.generate(
+        course_code="TEST_101",
+        objective_ids=["TO-01"],
+        bloom_levels=["evaluate"],
+        question_count=1,
+        source_chunks=_essay_chunks(),
+    )
+    for q in result.questions:
+        assert "cognitive_task_type" not in q.to_dict()
+    assert not any(
+        e["decision_type"] == "cognitive_task_type_detection"
+        for e in capture.events
+    )
+
+
+def test_cognitive_task_type_flag_on_tags_and_captures(monkeypatch):
+    """Flag on + a stem carrying a canonical task verb -> the question dict
+    grows a ``cognitive_task_type`` key and a matching decision-capture
+    event fires with a dynamic rationale (>=20 chars)."""
+    monkeypatch.setenv("TRAINFORGE_COGNITIVE_TASK_TYPE", "true")
+    capture = _RecordingCapture()
+    gen = AssessmentGenerator(capture=capture, check_leaks=False)
+    result = gen.generate(
+        course_code="TEST_101",
+        objective_ids=["TO-01"],
+        bloom_levels=["evaluate"],
+        question_count=1,
+        source_chunks=_essay_chunks(),
+    )
+    tagged = [q for q in result.questions if q.cognitive_task_type is not None]
+    assert tagged, "expected at least one question tagged with a task verb"
+    q0 = tagged[0]
+    assert q0.cognitive_task_type == "evaluate"
+    assert q0.to_dict()["cognitive_task_type"] == "evaluate"
+
+    events = [
+        e for e in capture.events
+        if e["decision_type"] == "cognitive_task_type_detection"
+    ]
+    assert events, "expected a cognitive_task_type_detection capture event"
+    rationale = events[0]["rationale"]
+    assert isinstance(rationale, str) and len(rationale) >= 20
+    assert "evaluate" in rationale
+
+
+def test_cognitive_task_type_flag_on_no_verb_no_tag(monkeypatch):
+    """Flag on but the stem has no canonical task verb -> field stays None,
+    key omitted, no detection event (conservative: no fabricated axis)."""
+    monkeypatch.setenv("TRAINFORGE_COGNITIVE_TASK_TYPE", "true")
+    capture = _RecordingCapture()
+    gen = AssessmentGenerator(capture=capture, check_leaks=False)
+    # bloom_level ``remember`` -> MCQ stem "Which of the following best
+    # describes <em>Topic X</em>?" carries no canonical task verb.
+    result = gen.generate(
+        course_code="TEST_101",
+        objective_ids=["TO-01"],
+        bloom_levels=["remember"],
+        question_count=1,
+        source_chunks=_stub_chunks(),
+    )
+    for q in result.questions:
+        assert q.cognitive_task_type is None
+        assert "cognitive_task_type" not in q.to_dict()
+    assert not any(
+        e["decision_type"] == "cognitive_task_type_detection"
+        for e in capture.events
+    )
