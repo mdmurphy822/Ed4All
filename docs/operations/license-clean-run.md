@@ -137,8 +137,8 @@ operator action required**.
 export SEMANTIK_SPECIALIST_PROVIDER=local   # this is already the default
 ```
 
-**Optional hosted 70B quality seat.** Stage-6 specialist generation (and the
-off-by-default Stage-5d structure reviewer) can be routed to a hosted 70B
+**Optional hosted large-model quality seat.** Stage-6 specialist generation (and the
+off-by-default Stage-5d structure reviewer) can be routed to a hosted large-model
 endpoint for higher quality:
 
 ```bash

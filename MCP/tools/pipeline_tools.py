@@ -9971,7 +9971,7 @@ def _build_block_planner_provider(capture=None):
         from lib.generation.block_planner import build_planner_provider
 
         # IB7.2 — the planner SEAT is operator-selectable so the
-        # framework-aligned path is reachable without the NVIDIA 70B key. The
+        # framework-aligned path is reachable without the hosted-seat key. The
         # default stays "nvidia" (byte-stable); ED4ALL_DYNAMIC_BLOCK_PLAN_PROVIDER
         # can pick the license-clean local Qwen seat (LOCAL_SYNTHESIS_*).
         seat = (
@@ -13571,7 +13571,7 @@ async def _run_content_generation_outline(**kwargs) -> str:
     # OFF → ``dynamic_block_plan`` stays False and every page consumes the
     # fixed ``_PAGE_TYPE_BLOCK_PLAN`` (byte-identical legacy behaviour). ON →
     # a per-TO planner chooses each week's block sequence from the catalog.
-    # The provider is built ONCE (lazy NVIDIA 70B seat); a None provider
+    # The provider is built ONCE (lazy hosted large-model seat); a None provider
     # (missing key / construction error) degrades each week to the fixed
     # plan inside ``plan_week_blocks`` itself.
     dynamic_block_plan = _dynamic_block_plan_enabled()

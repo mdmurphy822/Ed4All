@@ -332,7 +332,10 @@ libv2 concepts analyze <slug>                            # Analyze concept vocab
 libv2 concepts clean <slug>                              # Clean concept vocabulary
 libv2 eval generate <slug>                               # Generate evaluation queries
 libv2 eval run <slug>                                    # Run retrieval evaluation
+libv2 eval run <slug> <model_id>                         # ED4ALL-Bench dispatch — fresh adapter eval (judge=none)
 libv2 eval compare <baseline.json> <comparison.json>     # Compare evaluation results
+libv2 models eval <slug> <model_id>                      # Print the cached eval_report.json for a trained adapter
+libv2 models eval <slug> <model_id> --fresh [--smoke] [--replace]  # Re-run a fresh adapter eval
 libv2 validate indexes                                   # Validate index consistency
 libv2 vector-index build --course <slug>                 # Build on-device semantic vector index
 libv2 vector-index status --course <slug>                # Index manifest summary + staleness
@@ -347,6 +350,8 @@ libv2 cross-discover "<query>"                           # Route a topic query t
 ```
 
 W4.5: the cross-package concept index (`catalog/cross_package_concepts.json`, written by `libv2 cross-index`) is now CONSUMED by `LibV2/tools/libv2/cross_package_discovery.py` (via the additive `libv2 cross-discover` command) — no longer dead data. Additive read-only consumption: no env flag, no config/workflows.yaml/gate/schema change, and the `cross-index` writer path stays byte-identical.
+
+**Fresh-eval bridge (Wave-92 deferral CLOSED).** `libv2 models eval <slug> <model_id>` prints the cached `eval_report.json` the training harness wrote alongside the model card. Adding `--fresh` re-runs a NEW evaluation from the saved adapter via `LibV2/tools/libv2/model_eval_bridge.py::run_fresh_eval` — it rebuilds an `AdapterCallable` from the model dir (`model_card.json` `base_model.{huggingface_repo,name,revision}` + `eval_config` gen knobs) and scores it with Trainforge's `SLMEvalHarness`. The fresh report is NON-destructive by default: it lands at `models/<model_id>/eval_report.fresh-<ts>.json` under the model dir. `--replace` instead overwrites the canonical `eval_report.json` after a `.json.bak` backup, so `get_model_eval_report` / `EvalGatingValidator` only pick up fresh scores deliberately (the canonical report stays training-time unless replaced). `--smoke` runs the harness in smoke mode (N=3 probes/stage). A real fresh run needs `pip install -e '.[training]'` and, on a shared-GPU box, the `scripts/gpu_guard.sh run --task libv2-fresh-eval -- libv2 models eval <slug> <model_id> --fresh` wrap (`ED4ALL_GPU_LIFECYCLE` only sweeps inside `ed4all run`, not a standalone CLI). `libv2 eval run <slug> <model_id>` (default `--judge none`) now dispatches the SAME fresh bridge; `--judge anthropic` / `--judge local_nli` remain scaffold (the qualitative scorer is not yet wired). `run_fresh_eval` emits one best-effort `fresh_eval_invocation` decision-capture event (rationale interpolates `model_id`, `course_slug`, base repo, profile, `smoke`, gen knobs, `replace`, output name).
 
 ### ChunkFilter notes
 

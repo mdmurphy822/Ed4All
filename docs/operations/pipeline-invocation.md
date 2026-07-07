@@ -172,16 +172,16 @@ ed4all run textbook-to-course --resume WF-20260420-abc12345
 
 **Preflight** without dispatching anything: append `--dry-run`.
 
-### 3.1 NVIDIA 70B-everywhere build profile
+### 3.1 Hosted large-model build profile (`--provider nvidia`)
 
-SETUP only — gated on a later RUN discussion; **nothing dispatches to NVIDIA by
-default.** `--provider nvidia` (also via `LLM_PROVIDER=nvidia`) on a
-`COURSEFORGE_TWO_PASS=true` run:
+SETUP only — gated on a later RUN discussion; **nothing dispatches to the cloud
+seat by default.** `--provider nvidia` (the vendor endpoint-registry key; also
+via `LLM_PROVIDER=nvidia`) on a `COURSEFORGE_TWO_PASS=true` run:
 
 - redirects the block-routing YAML to `Courseforge/config/block_routing.nvidia_large.yaml`
-  — the **rewrite** tier runs on the hosted 70B `meta/llama-3.3-70b-instruct`; the
-  **outline** first draft stays local 7B;
-- pins `NVIDIA_LARGE_MODEL` to the 70B (closes the 30B-nano registry-default leak);
+  — the **rewrite** tier runs on the hosted large model (`meta/llama-3.3-70b-instruct`
+  via `NVIDIA_LARGE_MODEL`); the **outline** first draft stays local 7B;
+- pins `NVIDIA_LARGE_MODEL` to the large model (closes the 30B-nano registry-default leak);
 - routes the **textbook-synthesis** seat (`objective_extraction` / `course_planning` /
   `concept_extraction`) to `nvidia`;
 - pins the **training** seat (`TRAINFORGE_SYNTHESIS_PROVIDER`) **LOCAL** by this branch
@@ -241,7 +241,7 @@ defaults point at cloud** (they will silently no-op / fail without a key):
 | `COURSEFORGE_PROVIDER` | — | `local` | single-pass content authoring |
 | `COURSEFORGE_OUTLINE_PROVIDER` | — | `local` | two-pass outline tier |
 | `COURSEFORGE_REWRITE_PROVIDER` | **`anthropic`** | `local` | two-pass rewrite (authoring) tier |
-| `ED4ALL_DYNAMIC_BLOCK_PLAN_PROVIDER` | **`nvidia`** | `local` | dynamic block planner — **the landmine**: defaults to the NVIDIA 70B and silently degrades to a fixed plan without the key |
+| `ED4ALL_DYNAMIC_BLOCK_PLAN_PROVIDER` | **`nvidia`** | `local` | dynamic block planner — **the landmine**: defaults to the hosted large seat (registry key `nvidia`) and silently degrades to a fixed plan without the key |
 | `CURRICULUM_ALIGNMENT_PROVIDER` | — | `local` | teaching-role classification |
 | `TRAINFORGE_ASSESSMENT_PROVIDER` | subagent | `local` | assessment authoring |
 | `TRAINFORGE_SYNTHESIS_PROVIDER` | — | `local` | training-pair synthesis |

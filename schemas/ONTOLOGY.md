@@ -1279,8 +1279,8 @@ Canonical reference: **`SemantiK/CLAUDE.md`** (cascade stages 1–13, council ad
 - **`SEMANTIK_*` flag family** (owner: `SemantiK/CLAUDE.md § Opt-In Behavior Flags`). All
   parse-with-fallback, byte-stable / off-or-local by default. Provider/model selectors:
   `SEMANTIK_SPECIALIST_PROVIDER` (local in-process GGUF council vs hosted OpenAI-compatible endpoint)
-  + `SEMANTIK_SPECIALIST_MODEL` / `SEMANTIK_STRUCTURE_REVIEW_MODEL` seats (NVIDIA hosted-70B default,
-  the only `docs/LICENSING.md`-rowed flags here).
+  + `SEMANTIK_SPECIALIST_MODEL` / `SEMANTIK_STRUCTURE_REVIEW_MODEL` seats (hosted large-model default via
+  `NVIDIA_LARGE_MODEL`, the only `docs/LICENSING.md`-rowed flags here).
 - **Figure / table recovery** — the `tableData` / `figureData` `ContentBlock` fields are populated by
   SemantiK's structural passes: `SEMANTIK_TABLE_STRUCTURAL_CONFIRM` (default on; a geometrically
   confident pdfplumber grid is confirmed regardless of the BERT `table_region` head),

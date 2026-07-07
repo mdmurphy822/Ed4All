@@ -34,7 +34,7 @@
 
 ### 1. SemantiK (Semantic PDF → Accessible-HTML Conversion)
 
-**Purpose**: Ingest raw PDF/document inputs and convert them to semantically rich, WCAG 2.2 AA compliant HTML. SemantiK is the **license-clean conversion engine** that replaced the legacy DART converter — its extraction stack carries no PyMuPDF/MuPDF (AGPL-3) or Poppler (GPL-2), so the subsystem ships Apache-2.0. It runs **in-process** within Ed4All (via the `[semantik]` extra) and needs no cloud LLM at runtime; a hosted 70B endpoint is an opt-in quality seat, not a dependency.
+**Purpose**: Ingest raw PDF/document inputs and convert them to semantically rich, WCAG 2.2 AA compliant HTML. SemantiK is the **license-clean conversion engine** that replaced the legacy DART converter — its extraction stack carries no PyMuPDF/MuPDF (AGPL-3) or Poppler (GPL-2), so the subsystem ships Apache-2.0. It runs **in-process** within Ed4All (via the `[semantik]` extra) and needs no cloud LLM at runtime; a hosted large-model endpoint is an opt-in quality seat, not a dependency.
 
 **Pipeline Position**: First stage - raw material ingestion and conversion.
 
@@ -53,7 +53,7 @@ PDF / Office Doc --->|-> structure-graph -> Qwen specialists  +--> Accessible HT
 **Key Capabilities**:
 - License-clean local extraction (pikepdf + pypdfium2 + pdfplumber + Tesseract; no AGPL/GPL dependencies)
 - BERT council classification (structure, semantic role, merge/split, table, math) + cross-BERT reranking
-- Qwen specialist HTML generation (prose, table, math) — local GGUF or an opt-in hosted 70B seat
+- Qwen specialist HTML generation (prose, table, math) — local GGUF or an opt-in hosted large-model seat
 - Semantic HTML with content-type-specific subclassing (not just generic h1-h6)
 - WCAG 2.2 AA compliance enforced by eliminating per-region + document-scope hard gates (axe, html5, heading-tree, landmark, lang, title)
 - Dark mode, reduced motion, and responsive design support

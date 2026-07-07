@@ -39,9 +39,10 @@ ed4all stop --clear-all             # remove STOP_ALL (operator-owned)
 ed4all run textbook-to-course --corpus pdfs/ --course-name PHYS_101 \
   --skip-training --stop-after imscc_chunking
 
-# NVIDIA 70B-everywhere build profile (SETUP — nothing dispatches to
-# NVIDIA by default; gated on a later RUN discussion). Full routing
-# detail (YAML redirect, seat pins, licensing caveat): see
+# Hosted large-model build profile (--provider nvidia = the vendor
+# endpoint-registry key; SETUP — nothing dispatches to the cloud seat by
+# default; gated on a later RUN discussion). Full routing detail (YAML
+# redirect, seat pins, licensing caveat): see
 # docs/operations/pipeline-invocation.md § 3.1. Run --dry-run first.
 export COURSEFORGE_TWO_PASS=true
 ed4all run textbook-to-course --provider nvidia --course-name PHYS_101 \
@@ -93,10 +94,10 @@ Environment toggles (override or supplement CLI flags):
 | Env Var | Default | Purpose |
 |---------|---------|---------|
 | `LLM_MODE` | `local` | Chooses `local` or `api` if `--mode` isn't passed. |
-| `LLM_PROVIDER` | `anthropic` | Provider in api mode (`anthropic` or `openai`; `openai` is stubbed, reserved for a later wave). |
+| `LLM_PROVIDER` | `anthropic` | Provider in api mode: `anthropic`, `mock`, or any name in the OpenAI-compatible endpoint registry (`config/endpoints.yaml` → `_OPENAI_COMPATIBLE_PROVIDERS`, e.g. `local`, `together`); a new provider is a registry entry, never a subclass. `openai` is a deprecated alias for `local` (emits `DeprecationWarning`). |
 | `LLM_MODEL` | per-provider | Model ID override (e.g., a specific Claude release). |
 | `ANTHROPIC_API_KEY` | — | Required for api mode with Anthropic. |
-| `OPENAI_API_KEY` | — | Reserved; OpenAI backend not yet implemented. |
+| registry key envs | — | API keys for OpenAI-compatible registry providers come from each `config/endpoints.yaml` entry's `api_key_env` (e.g. `LOCAL_SYNTHESIS_API_KEY`, `TOGETHER_API_KEY`). |
 
 ### MCP Server
 ```bash
@@ -646,11 +647,11 @@ Summary by workflow (counts derived from `config/workflows.yaml`):
 
 | Workflow | Critical | Warning | Total |
 |----------|---------:|--------:|------:|
-| `course_generation` | 30 | 27 | 57 |
+| `course_generation` | 36 | 21 | 57 |
 | `rag_training` | 4 | 3 | 7 |
-| `textbook_to_course` | 58 | 71 | 129 |
+| `textbook_to_course` | 65 | 64 | 129 |
 | `trainforge_train` | 2 | 0 | 2 |
-| **Total** | **94** | **101** | **195** |
+| **Total** | **107** | **88** | **195** |
 
 Per-wave gate-landing history (additions, demotions, deferred severity flips, with the intermediate running subtotals at each wave): `docs/validation/gate-history.md`. The table above is the current authoritative count; the history file's per-wave subtotals are provenance-only and do not sum to the current total.
 
@@ -683,8 +684,8 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 
 | Prefix | Owner | Flag count |
 |--------|-------|-----------:|
-| `TRAINFORGE_*` / `LOCAL_SYNTHESIS_*` / `TOGETHER_*` / `ANTHROPIC_SYNTHESIS_*` / `CURRICULUM_ALIGNMENT_*` / `WAVE18_*` | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 54 |
-| `NVIDIA_*` (hosted 70B/large cloud tier — `NVIDIA_API_KEY` / `NVIDIA_BASE_URL` / `NVIDIA_LARGE_MODEL`) | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 3 |
+| `TRAINFORGE_*` / `LOCAL_SYNTHESIS_*` / `TOGETHER_*` / `ANTHROPIC_SYNTHESIS_*` / `CURRICULUM_ALIGNMENT_*` / `WAVE18_*` | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 55 |
+| `NVIDIA_*` (vendor endpoint-registry row for the hosted large-model seat — `NVIDIA_API_KEY` / `NVIDIA_BASE_URL` / `NVIDIA_LARGE_MODEL`) | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 3 |
 | `SEMANTIK_*` (DART replacement — SemantiK semantic-cascade converter; also honors the legacy `DART_THETA_DEVICE` compat env) | [`SemantiK/CLAUDE.md § Opt-In Behavior Flags`](SemantiK/CLAUDE.md) | 82 |
 | `COURSEFORGE_*` / `COURSEPLANNER_*` / `TEXTBOOK_SYNTHESIS_*` | [`Courseforge/CLAUDE.md § Opt-In Behavior Flags`](Courseforge/CLAUDE.md) | 35 |
 | `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root index (below) + [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 176 |
@@ -704,7 +705,7 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `ED4ALL_KG_REAL_FLOORS` | unset (off) | Recompute REAL completeness+accuracy KG-quality scores before the per-dimension floor check. |
 | `MCP_ORCHESTRATOR_LLM_MODEL` | `claude-opus-4-7` | Pins the Anthropic model ID for the MCP orchestrator LLM backend; per-run `LLM_MODEL` wins. |
 | `LOCAL_DISPATCHER_ALLOW_STUB` | unset | Permits `LocalDispatcher` to emit a stubbed `PhaseOutput` when no `agent_tool` is wired; tests/dry-run only. |
-| `ED4ALL_CLOUD_RATE_LIMIT` | unset (off) | NVIDIA-70b-everywhere SETUP — master switch for the shared cloud-provider admission gate |
+| `ED4ALL_CLOUD_RATE_LIMIT` | unset (off) | Hosted-large build profile SETUP — master switch for the shared cloud-seat admission gate |
 | `ED4ALL_AGENT_DISPATCH` | unset | Routes subagent-classified agents through `dispatcher.dispatch_task` instead of in-process tool registry. |
 | `ED4ALL_AGENT_TIMEOUT_SECONDS` | `1800` | Per-task subagent dispatch mailbox timeout. |
 | `ED4ALL_ALIGNMENT_VERB_TRIPLE` | unset (off) | IB3 constructive-alignment keystone |
@@ -752,9 +753,9 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `ED4ALL_GATE_ADVISORY` | unset | **Safety-critical.** Flips post-training eval gates from blocking to advisory |
 | `ED4ALL_GENERATION_CHECKPOINT` | `on` | Family flag for the fingerprinted LLM unit-checkpoint resume sidecars; site flags override it. |
 | `ED4ALL_GENERATION_TECHNIQUE` | `C5` | W5 C0..C5 generation-technique selector (naive → best-of-N + NLI verifier). |
-| `ED4ALL_DYNAMIC_BLOCK_PLAN` | unset (off) | Wave-2 keystone content-aware 70B block planner gate (two-pass outline phase). |
+| `ED4ALL_DYNAMIC_BLOCK_PLAN` | unset (off) | Wave-2 keystone content-aware large-model block planner gate (two-pass outline phase). |
 | `ED4ALL_DYNAMIC_BLOCK_PLAN_MODEL` | per-provider | Model-ID override for the `ED4ALL_DYNAMIC_BLOCK_PLAN` planner |
-| `ED4ALL_DYNAMIC_BLOCK_PLAN_PROVIDER` | `nvidia` | IB7.2 planner-SEAT selector |
+| `ED4ALL_DYNAMIC_BLOCK_PLAN_PROVIDER` | `nvidia` (endpoint-registry key) | IB7.2 planner-SEAT selector (hosted large seat by default) |
 | `ED4ALL_PLANNER_BLOOM_CLIMB` | unset (off) | IB7.3 programmatic Bloom-climb re-sort |
 | `ED4ALL_PLANNER_LIFECYCLE` | unset (off) | IB7.4 lifecycle open/close guarantee + slot-edit escalation |
 | `ED4ALL_PLANNER_SPACING` | unset (off) | IB7.5a within-module temporal-spacing pass |
