@@ -2,17 +2,16 @@
 
 Wires ``DecisionCapture``-shaped events at the ``LLMBackend`` base
 class so every concrete backend (``AnthropicBackend``, ``LocalBackend``,
-``MailboxBrokeredBackend``, ``OpenAIBackend``, ``MockBackend``) emits
-one ``decision_type="llm_chat_call"`` event per dispatch when a
+``MailboxBrokeredBackend``, ``OpenAICompatibleBackend``, ``MockBackend``)
+emits one ``decision_type="llm_chat_call"`` event per dispatch when a
 capture is wired. Mirrors the canonical pattern at
 ``Trainforge/generators/_openai_compatible_client.py``.
 
 LLM-agnostic intent: no hardcoded provider names appear in event
 field names — only the ``provider`` audit value identifies the
-backend. A future ``OpenAIBackend`` / ``TogetherBackend`` /
-``OllamaBackend`` plugged in via the same mixin must surface its
-own ``provider_label`` in the rationale without re-implementing
-the capture pattern.
+backend. A future registry provider plugged into the same mixin
+must surface its own ``provider_label`` in the rationale without
+re-implementing the capture pattern.
 
 Coverage:
 
@@ -41,7 +40,6 @@ from MCP.orchestrator.llm_backend import (
     LocalBackend,
     MailboxBrokeredBackend,
     MockBackend,
-    OpenAIBackend,
     build_backend,
 )
 from MCP.orchestrator.task_mailbox import TaskMailbox
@@ -249,8 +247,8 @@ def test_mailbox_backend_emits_capture_even_on_failure(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# LocalBackend / OpenAIBackend — constructor accepts capture; never emit
-# (their .complete_sync raises NotImplementedError so capture is moot)
+# LocalBackend — constructor accepts capture; never emits
+# (its .complete_sync raises NotImplementedError so capture is moot)
 # ---------------------------------------------------------------------------
 
 
@@ -258,14 +256,6 @@ def test_local_backend_accepts_capture_kwarg():
     cap = _FakeCapture()
     backend = LocalBackend(capture=cap)
     # Calling complete_sync raises by design — no capture emit expected.
-    with pytest.raises(NotImplementedError):
-        backend.complete_sync("s", "u")
-    assert cap.events == []
-
-
-def test_openai_backend_accepts_capture_kwarg():
-    cap = _FakeCapture()
-    backend = OpenAIBackend(api_key="ignored", capture=cap)
     with pytest.raises(NotImplementedError):
         backend.complete_sync("s", "u")
     assert cap.events == []
@@ -315,14 +305,12 @@ def test_provider_labels_are_distinct_per_backend():
         AnthropicBackend.provider_label,
         LocalBackend.provider_label,
         MailboxBrokeredBackend.provider_label,
-        OpenAIBackend.provider_label,
         MockBackend.provider_label,
     }
-    assert len(labels) == 5, f"provider labels collided: {labels}"
+    assert len(labels) == 4, f"provider labels collided: {labels}"
     # No provider-name strings leak into the mixin's generic field
     # contract — only the value carries the brand.
     assert "anthropic" in labels
-    assert "openai" in labels
     assert "local" in labels
     assert "mailbox" in labels
     assert "mock" in labels

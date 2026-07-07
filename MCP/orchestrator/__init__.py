@@ -8,7 +8,7 @@ Wave 7 introduces:
 - PipelineOrchestrator: front controller that dispatches phases through
   mode-specific dispatchers (local Claude Code subagent vs. API backend)
 - LLMBackend protocol + implementations (LocalBackend, AnthropicBackend,
-  OpenAIBackend stub, MockBackend)
+  OpenAICompatibleBackend, MockBackend)
 - Worker contracts (PhaseInput, PhaseOutput, GateResult) shared between
   dispatchers so every worker speaks the same JSON-serializable language
 
@@ -21,7 +21,6 @@ from .llm_backend import (
     LLMBackend,
     LocalBackend,
     MockBackend,
-    OpenAIBackend,
     OpenAICompatibleBackend,
     build_backend,
     resolve_openai_compatible_backend,
@@ -35,7 +34,6 @@ __all__ = [
     "LLMBackend",
     "LocalBackend",
     "MockBackend",
-    "OpenAIBackend",
     "OpenAICompatibleBackend",
     "PhaseInput",
     "PhaseOutput",

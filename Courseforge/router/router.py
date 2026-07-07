@@ -1016,11 +1016,15 @@ class CourseforgeRouter:
         from Courseforge.generators._outline_provider import (  # noqa: PLC0415
             OutlineProvider,
         )
-        # ``openai_compatible`` is the router's fourth provider value;
-        # the OutlineProvider supports it natively (its
-        # SUPPORTED_PROVIDERS includes it). Pass through unchanged so
-        # the OutlineProvider can route through OpenAICompatibleClient
-        # at a non-Ollama / non-Together base_url.
+        # Collapse the legacy ``openai_compatible`` alias to ``local`` (it
+        # is not a registry endpoint name; the OutlineProvider constructor
+        # collapses it too, but doing it here keeps the provider-cache key
+        # and the constructed provider consistent). Every OTHER value —
+        # ``local`` / ``together`` / ``nvidia`` and any other registry
+        # ``kind: openai_compatible`` seat (``groq`` / ``fireworks`` /
+        # ``deepseek`` / …) — passes through verbatim; the OutlineProvider's
+        # registry-superset ``supported_providers`` accepts them and the base
+        # constructs the OpenAI-compatible client generically.
         provider_arg = spec.provider
         instance = OutlineProvider(
             provider=provider_arg if provider_arg != "openai_compatible" else "local",
@@ -1047,8 +1051,14 @@ class CourseforgeRouter:
         from Courseforge.generators._rewrite_provider import (  # noqa: PLC0415
             RewriteProvider,
         )
-        # RewriteProvider's base only accepts {"anthropic","together","local"};
-        # collapse "openai_compatible" to "local" so the constructor passes.
+        # Collapse the legacy ``openai_compatible`` alias to ``local`` (not a
+        # registry endpoint name). Every other value — ``anthropic`` /
+        # ``together`` / ``local`` / ``nvidia`` / ``claude_session`` and any
+        # other registry ``kind: openai_compatible`` seat (``groq`` /
+        # ``fireworks`` / ``deepseek`` / …) — passes through verbatim; the
+        # RewriteProvider's registry-superset ``supported_providers`` accepts
+        # them (the constructor collapses the alias too, but doing it here
+        # keeps the provider-cache key consistent with the constructed one).
         provider_arg = (
             spec.provider if spec.provider != "openai_compatible" else "local"
         )

@@ -1052,12 +1052,73 @@ def test_rewrite_appends_touch_with_tier_rewrite(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_supported_providers_includes_anthropic_together_local():
-    """The module-level constant lists at least the three the base
-    accepts. ``openai_compatible`` is reserved for a future plumbing
-    pass and may or may not be present."""
+def test_supported_providers_is_registry_superset():
+    """The module-level constant is the registry-superset allow-list:
+    ``anthropic`` + every ``kind: openai_compatible`` registry endpoint
+    (``local`` / ``together`` / ``nvidia`` + any future cloud row), PLUS
+    the two non-registry-endpoint tags the rewrite tier handles specially
+    (``claude_session`` subagent dispatch + the legacy ``openai_compatible``
+    alias). Adding a provider is a registry-entry change, never a subclass."""
+    from lib.llm.endpoints import load_endpoint_registry
+
     s = set(SUPPORTED_PROVIDERS)
-    assert {"anthropic", "together", "local"}.issubset(s)
+    assert {"anthropic", "together", "local", "nvidia"}.issubset(s)
+    assert {"claude_session", "openai_compatible"}.issubset(s)
+    # Every openai-compatible registry seat is present (no hardcoded narrowing).
+    registry_seats = {
+        name
+        for name, row in load_endpoint_registry().items()
+        if str(row.get("kind")) == "openai_compatible"
+    }
+    assert registry_seats.issubset(s)
+
+
+def test_registry_seat_constructs_and_stamps_valid_touch(monkeypatch):
+    """A non-legacy registry endpoint (``groq``) that the router allowlist
+    admits now constructs the rewrite tier without a ValueError, and its
+    self-stamped Touch collapses to the seat's registry ``provenance_provider``
+    (``groq`` → ``together``) so Touch validation passes — healing the
+    router-allowlist / tier-enforcement split-brain."""
+    from Courseforge.generators._rewrite_provider import (
+        RewriteProvider,
+        _touch_provenance,
+    )
+
+    class _FakeOA:
+        model = "fake-model"
+        base_url = "http://fake"
+
+    p = RewriteProvider(provider="groq", client=_FakeOA())
+    assert p._provider == "groq"
+    # Registry provenance collapse keeps Touch.provider inside the closed set.
+    assert _touch_provenance("groq") == "together"
+
+
+def test_openai_compatible_alias_collapses_to_local():
+    """The legacy ``openai_compatible`` alias collapses to ``local`` at
+    constructor entry so a standalone construction matches the
+    router-mediated one (and never hits the base's UnknownEndpoint branch)."""
+    from Courseforge.generators._rewrite_provider import RewriteProvider
+
+    class _FakeOA:
+        model = "fake-model"
+        base_url = "http://fake"
+
+    p = RewriteProvider(provider="openai_compatible", client=_FakeOA())
+    assert p._provider == "local"
+
+
+def test_unknown_provider_still_fails_fast():
+    """An unknown provider name is still rejected at construction (fail-fast),
+    now via the base's registry-derived allow-list ValueError."""
+    from Courseforge.generators._rewrite_provider import RewriteProvider
+
+    class _FakeOA:
+        model = "fake-model"
+        base_url = "http://fake"
+
+    with pytest.raises(ValueError):
+        RewriteProvider(provider="definitely-not-a-provider", client=_FakeOA())
 
 
 # ---------------------------------------------------------------------------

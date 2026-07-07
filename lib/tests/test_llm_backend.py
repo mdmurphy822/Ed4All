@@ -16,7 +16,6 @@ from MCP.orchestrator.llm_backend import (
     LocalBackend,
     MailboxBrokeredBackend,
     MockBackend,
-    OpenAIBackend,
     OpenAICompatibleBackend,
     _OPENAI_COMPATIBLE_PROVIDERS,
     build_backend,
@@ -32,10 +31,6 @@ class TestProtocolConformance:
 
     def test_local_backend_is_llm_backend(self):
         backend = LocalBackend()
-        assert isinstance(backend, LLMBackend)
-
-    def test_openai_backend_is_llm_backend(self):
-        backend = OpenAIBackend(api_key="key")
         assert isinstance(backend, LLMBackend)
 
     def test_anthropic_backend_is_llm_backend(self):
@@ -104,13 +99,6 @@ class TestLocalBackend:
         backend = LocalBackend()
         with pytest.raises(NotImplementedError):
             await backend.complete("sys", "user")
-
-
-class TestOpenAIBackend:
-    def test_stub_raises(self):
-        backend = OpenAIBackend(api_key="k")
-        with pytest.raises(NotImplementedError, match="stub"):
-            backend.complete_sync("sys", "user")
 
 
 class TestAnthropicBackend:
@@ -199,7 +187,7 @@ class TestBuildBackend:
         backend = build_backend(spec)
         assert isinstance(backend, MockBackend)
 
-    def test_api_mode_openai_stub(self, monkeypatch):
+    def test_api_mode_openai_alias(self, monkeypatch):
         # W-D12: ``provider="openai"`` is now a deprecated alias for the
         # ``local`` registry entry — the legacy stub no longer fires.
         # See TestBuildBackendRegistry::test_build_backend_openai_alias_deprecation

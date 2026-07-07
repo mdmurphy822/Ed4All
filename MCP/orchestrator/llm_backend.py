@@ -13,7 +13,6 @@ Wave 7 ships:
   message pointing at the dispatcher; the local dispatcher handles LLM needs
   via the enclosing Claude Code session rather than a callable backend.
 - ``AnthropicBackend`` — production path; direct SDK call, non-streaming.
-- ``OpenAIBackend`` — stub; reserved for a later wave per decision O2.
 - ``MockBackend`` — records calls, returns deterministic responses for tests.
 
 Streaming (``stream=True``) is intentionally deferred per decision O3 and
@@ -174,7 +173,6 @@ DEFAULT_ANTHROPIC_MODEL = (
     os.environ.get(MCP_ORCHESTRATOR_LLM_MODEL_ENV)
     or DEFAULT_ANTHROPIC_MODEL_DEFAULT
 )
-DEFAULT_OPENAI_MODEL = "gpt-4o"
 
 
 # =============================================================================
@@ -697,66 +695,6 @@ class MailboxBrokeredBackend(_CaptureMixin):
                 images=images,
             ),
         )
-
-
-# =============================================================================
-# OpenAIBackend — stub reserved for later wave
-# =============================================================================
-
-
-class OpenAIBackend(_CaptureMixin):
-    """Reserved for a future wave (decision O2).
-
-    Construction is allowed so the provider registry surface works, but any
-    completion call raises ``NotImplementedError`` to keep the contract
-    honest. Swap to ``AnthropicBackend`` or wait for the follow-up wave that
-    lands the OpenAI SDK integration.
-    """
-
-    provider_label = "openai"
-
-    def __init__(
-        self,
-        api_key: Optional[str] = None,
-        default_model: str = DEFAULT_OPENAI_MODEL,
-        *,
-        capture: Optional[Any] = None,
-    ):
-        self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
-        self.default_model = default_model
-        self._set_capture(capture)
-
-    def _err(self) -> NotImplementedError:
-        return NotImplementedError(
-            "OpenAIBackend is a stub reserved for a later wave (decision O2). "
-            "Use AnthropicBackend for Wave 7 api-mode runs, or pin "
-            "LLM_PROVIDER=anthropic."
-        )
-
-    async def complete(
-        self,
-        system: str,
-        user: str,
-        *,
-        model: Optional[str] = None,
-        max_tokens: int = 4096,
-        temperature: float = 0.7,
-        stream: bool = False,
-        images: Optional[List[Dict[str, Any]]] = None,
-    ) -> Union[str, AsyncIterator[str]]:
-        raise self._err()
-
-    def complete_sync(
-        self,
-        system: str,
-        user: str,
-        *,
-        model: Optional[str] = None,
-        max_tokens: int = 4096,
-        temperature: float = 0.7,
-        images: Optional[List[Dict[str, Any]]] = None,
-    ) -> str:
-        raise self._err()
 
 
 # =============================================================================
@@ -1414,8 +1352,7 @@ def build_backend(
     Precedence: explicit ``overrides`` > ``spec`` fields > env vars > defaults.
 
     Recognized env vars: ``LLM_MODE``, ``LLM_PROVIDER``, ``LLM_MODEL``,
-    ``ANTHROPIC_API_KEY``, ``OPENAI_API_KEY``, ``ED4ALL_RUN_ID``,
-    ``ED4ALL_MAILBOX_BASE_DIR``.
+    ``ANTHROPIC_API_KEY``, ``ED4ALL_RUN_ID``, ``ED4ALL_MAILBOX_BASE_DIR``.
 
     Wave 73 local-mode path: when ``mode=local`` and a ``run_id`` is
     resolvable (via overrides, spec, or ``ED4ALL_RUN_ID`` env), build a
@@ -1475,9 +1412,9 @@ def build_backend(
         )
     if provider == "openai":
         # W-D12: ``provider="openai"`` is now a deprecated alias for the
-        # ``local`` OpenAI-compatible registry entry. The pre-W-D12
-        # ``OpenAIBackend`` was a stub that raised on every call —
-        # routing legacy callers through ``local`` lets a deployment
+        # ``local`` OpenAI-compatible registry entry. The pre-W-D12 stub
+        # backend raised on every call — routing legacy callers through
+        # ``local`` lets a deployment
         # that pinned the legacy spelling keep running against a local
         # OpenAI-compatible server (Ollama / vLLM / llama.cpp / LM
         # Studio) with no code edit beyond an env tweak. Operators

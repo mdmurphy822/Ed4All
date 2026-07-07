@@ -44,6 +44,7 @@ from Courseforge.router.router import (  # noqa: E402
     BlockProviderSpec,
     CourseforgeRouter,
     _HARDCODED_DEFAULTS,
+    _collapse_to_touch_provider,
 )
 from blocks import Block  # noqa: E402  (Phase 2 intermediate format)
 
@@ -558,6 +559,37 @@ def test_nvidia_provider_spec_validates():
         base_url="https://integrate.api.nvidia.com/v1",
     )
     assert spec.provider == "nvidia"
+
+
+def test_registry_seat_spec_constructs_both_tiers(monkeypatch):
+    """Split-brain heal: a registry ``kind: openai_compatible`` seat the
+    router allowlist admits (``groq``) now constructs BOTH tiers instead of
+    validating at ``BlockProviderSpec`` but raising ValueError at the tier
+    constructor. Before the registry-superset plumbing, the outline/rewrite
+    constructors pinned a narrow ``supported_providers`` tuple that rejected
+    every registry seat beyond ``anthropic``/``together``/``local``(/``nvidia``)."""
+    monkeypatch.setenv("GROQ_API_KEY", "gk-test")
+    r = CourseforgeRouter()
+
+    outline_spec = BlockProviderSpec(
+        block_type="concept",
+        tier="outline",
+        provider="groq",
+        model="llama-3.1-8b-instant",
+    )
+    rewrite_spec = BlockProviderSpec(
+        block_type="concept",
+        tier="rewrite",
+        provider="groq",
+        model="llama-3.3-70b-versatile",
+    )
+    outline_instance = r._get_outline_provider(outline_spec)
+    rewrite_instance = r._get_rewrite_provider(rewrite_spec)
+    assert outline_instance._provider == "groq"
+    assert rewrite_instance._provider == "groq"
+    # The seat stamps its registry provenance (``groq`` → ``together``) so the
+    # closed ``Touch.provider`` set is honored.
+    assert _collapse_to_touch_provider("groq") == "together"
 
 
 # ---------------------------------------------------------------------------

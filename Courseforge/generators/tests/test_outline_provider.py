@@ -189,6 +189,69 @@ def test_env_var_selects_provider(monkeypatch):
     assert "together" in SUPPORTED_PROVIDERS
 
 
+def test_supported_providers_is_registry_superset():
+    """The module-level constant is the registry-superset allow-list:
+    ``anthropic`` + every ``kind: openai_compatible`` registry endpoint
+    (``local`` / ``together`` / ``nvidia`` + any future cloud row), PLUS the
+    legacy ``openai_compatible`` alias. Adding a provider is a registry-entry
+    change, never a subclass."""
+    from lib.llm.endpoints import load_endpoint_registry
+
+    s = set(SUPPORTED_PROVIDERS)
+    assert {"anthropic", "together", "local", "nvidia"}.issubset(s)
+    assert "openai_compatible" in s
+    registry_seats = {
+        name
+        for name, row in load_endpoint_registry().items()
+        if str(row.get("kind")) == "openai_compatible"
+    }
+    assert registry_seats.issubset(s)
+
+
+def test_registry_seat_constructs_and_stamps_valid_touch(monkeypatch):
+    """A non-legacy registry endpoint (``groq``) that the router allowlist
+    admits now constructs the outline tier without a ValueError, and its
+    Touch provenance collapses to the seat's registry ``provenance_provider``
+    (``groq`` → ``together``) so Touch validation passes."""
+    from Courseforge.generators._outline_provider import _touch_provenance
+
+    monkeypatch.setenv("TOGETHER_API_KEY", "tk")
+    p = OutlineProvider(
+        provider="groq",
+        client=_make_client(
+            lambda r: httpx.Response(200, json=_success_body("{}"))
+        ),
+    )
+    assert p._provider == "groq"
+    assert _touch_provenance("groq") == "together"
+
+
+def test_openai_compatible_alias_collapses_to_local(monkeypatch):
+    """The legacy ``openai_compatible`` alias collapses to ``local`` at
+    constructor entry so a standalone construction matches the router-mediated
+    one (and never hits the base's UnknownEndpoint branch)."""
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    p = OutlineProvider(
+        provider="openai_compatible",
+        client=_make_client(
+            lambda r: httpx.Response(200, json=_success_body("{}"))
+        ),
+    )
+    assert p._provider == "local"
+
+
+def test_unknown_provider_still_fails_fast():
+    """An unknown provider name is still rejected at construction (fail-fast),
+    now via the base's registry-derived allow-list ValueError."""
+    with pytest.raises(ValueError):
+        OutlineProvider(
+            provider="definitely-not-a-provider",
+            client=_make_client(
+                lambda r: httpx.Response(200, json=_success_body("{}"))
+            ),
+        )
+
+
 # ---------------------------------------------------------------------------
 # Per-block-type bounds
 # ---------------------------------------------------------------------------

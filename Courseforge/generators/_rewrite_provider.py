@@ -76,7 +76,10 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from Courseforge.generators._base import _BaseLLMProvider
+from Courseforge.generators._base import (
+    _BaseLLMProvider,
+    _default_supported_providers,
+)
 from Courseforge.generators._rewrite_fit_window import (  # noqa: E402
     cited_chunk_ids_from_content,
     resolve_fit_window,
@@ -188,25 +191,74 @@ def _resolve_request_timeout() -> float:
         return _DEFAULT_REQUEST_TIMEOUT_SECONDS
     return parsed
 
-SUPPORTED_PROVIDERS = (
-    "anthropic",
-    "together",
-    "local",
-    "openai_compatible",
-    # NVIDIA hosted OpenAI-compatible inference API — the rewrite LARGE /
-    # escalation tier seat. Routed through the shared
-    # ``_BaseLLMProvider`` ``nvidia`` branch (key from ``NVIDIA_API_KEY``,
-    # base_url + model from the YAML tier spec). Selected via the
-    # capability-tier chain in ``block_routing.license_clean.yaml``.
-    "nvidia",
-    # Wave6: in-session subagent dispatch — the rewrite tier dispatches
-    # through ``MCP/orchestrator/local_dispatcher.py::LocalDispatcher``
-    # to the ``content-generator`` Claude Code subagent (Wave4b frontmatter
-    # pin: ``model: sonnet``) so a Claude Max session can drive the
-    # rewrite tier without an ANTHROPIC_API_KEY. Direct port of the
-    # Trainforge pattern at ``Trainforge/generators/_claude_session_provider.py``.
-    "claude_session",
-)
+# Legacy alias for the "non-Ollama / non-Together OpenAI-compatible server"
+# tag. It collapses to ``local`` at constructor entry (mirroring the router's
+# ``_get_rewrite_provider`` collapse) so a standalone
+# ``RewriteProvider(provider="openai_compatible")`` behaves identically to a
+# router-mediated construction — both route through the same
+# ``OpenAICompatibleClient`` at the ``local`` seat's base_url.
+_OPENAI_COMPATIBLE_ALIAS = "openai_compatible"
+
+
+def _supported_providers() -> Tuple[str, ...]:
+    """Registry-superset provider allow-list for the rewrite tier.
+
+    The rewrite tier reaches the SAME openai-compatible seats the base
+    supports — every ``kind: openai_compatible`` row in
+    ``config/endpoints.yaml`` (``anthropic`` SDK transport + ``local`` /
+    ``together`` / ``nvidia`` / ``nvidia-deepseek`` / ``groq`` /
+    ``fireworks`` / ``deepseek`` / … — one YAML row, zero subclass edits)
+    — PLUS two non-registry-endpoint tags this tier handles specially:
+
+    - ``claude_session`` — a subagent-dispatch backend (not an HTTP
+      endpoint), intercepted BEFORE ``super().__init__`` and driven via
+      ``MCP/orchestrator/local_dispatcher.py::LocalDispatcher`` so a Claude
+      Max session can author the rewrite tier without an ``ANTHROPIC_API_KEY``.
+    - ``openai_compatible`` — the legacy alias, collapsed to ``local`` at
+      constructor entry.
+
+    Anti-cycle / missing-file hardening: ``_default_supported_providers``
+    (the base) already falls back to the legacy trio on a registry read
+    failure, so this composition never crashes at import.
+    """
+    base = _default_supported_providers()
+    extras = ("claude_session", _OPENAI_COMPATIBLE_ALIAS)
+    seen: set = set()
+    out: List[str] = []
+    for name in tuple(base) + extras:
+        if name not in seen:
+            seen.add(name)
+            out.append(name)
+    return tuple(out)
+
+
+SUPPORTED_PROVIDERS: Tuple[str, ...] = _supported_providers()
+
+
+def _touch_provenance(provider: str) -> str:
+    """Collapse a resolved provider name to its registry Touch provenance.
+
+    Mirrors ``CourseforgeRouter._collapse_to_touch_provider`` WITHOUT the
+    router import (avoids a cycle): a registry openai-compatible seat
+    (e.g. ``groq`` / ``fireworks`` / ``nvidia-deepseek``) stamps its
+    declared ``provenance_provider`` (``together`` / ``nvidia`` / …) so
+    ``Touch.provider`` stays inside the closed provenance set
+    (``Courseforge/scripts/blocks.py::_TOUCH_PROVIDERS``). The legacy
+    ``openai_compatible`` alias collapses to ``local``; an unknown /
+    non-registry name passes through unchanged so Touch validation
+    surfaces the bad value rather than this helper masking it.
+    """
+    if provider == _OPENAI_COMPATIBLE_ALIAS:
+        return "local"
+    try:
+        from lib.llm.endpoints import load_endpoint_registry  # noqa: PLC0415
+
+        row = load_endpoint_registry().get(provider)
+        if row is not None:
+            return str(row.get("provenance_provider", provider))
+    except Exception:  # noqa: BLE001 — defensive; never crash on registry I/O
+        pass
+    return provider
 
 # Wave6: agent-type reused intentionally. The ``content-generator`` agent
 # file at ``Courseforge/agents/content-generator.md`` already carries:
@@ -2719,6 +2771,14 @@ class RewriteProvider(_BaseLLMProvider):
             or os.environ.get(ENV_PROVIDER)
             or DEFAULT_PROVIDER
         ).lower()
+        # Collapse the legacy ``openai_compatible`` alias to ``local`` at
+        # constructor entry so a standalone construction behaves exactly
+        # like a router-mediated one (the router collapses it in
+        # ``_get_rewrite_provider``). Without this, ``openai_compatible``
+        # would reach the base's registry else-branch and raise
+        # ``UnknownEndpoint`` (it is NOT a registry row name).
+        if resolved_provider == _OPENAI_COMPATIBLE_ALIAS:
+            resolved_provider = "local"
 
         # Per-call kwarg wins; otherwise source the generous default
         # from ``ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS`` (fallback 300.0)
@@ -2762,14 +2822,20 @@ class RewriteProvider(_BaseLLMProvider):
             self._run_id = run_id or "rewrite-standalone"
             return
 
-        # ``openai_compatible`` is reserved for a future plumbing pass
-        # (the base currently routes ``local`` / ``together`` through
-        # :class:`OpenAICompatibleClient` already, so the explicit
-        # ``openai_compatible`` value would be redundant until the
-        # base grows a separate branch). Until then, the rewrite tier
-        # constructor accepts the same three the base accepts.
+        # Registry-superset plumbing: the two non-registry-endpoint tags
+        # are already intercepted above — ``claude_session`` returned early
+        # and ``openai_compatible`` was collapsed to ``local``. Every other
+        # value is a registry endpoint the base constructs generically (the
+        # per-vendor branches for ``anthropic`` / ``together`` / ``nvidia`` /
+        # ``local`` plus the W9.2 else-branch for any other
+        # ``kind: openai_compatible`` row — ``groq`` / ``fireworks`` /
+        # ``deepseek`` / ``nvidia-deepseek`` / …). We pass the collapsed
+        # ``resolved_provider`` (not the raw kwarg) so the alias collapse
+        # survives, and we do NOT pin a narrow ``supported_providers`` — the
+        # base's registry-derived default governs, so adding a provider stays
+        # a ``config/endpoints.yaml`` registry-entry change, never a subclass.
         super().__init__(
-            provider=provider,
+            provider=resolved_provider,
             model=resolved_model,
             api_key=api_key,
             base_url=base_url,
@@ -2784,15 +2850,6 @@ class RewriteProvider(_BaseLLMProvider):
             default_model_anthropic=DEFAULT_MODEL_ANTHROPIC,
             default_model_together=DEFAULT_MODEL_TOGETHER,
             default_model_local=DEFAULT_MODEL_LOCAL,
-            # ``nvidia`` is admitted here so a ``large``-tier spec with
-            # ``provider: nvidia`` (from block_routing.license_clean.yaml)
-            # constructs cleanly. The base's ``nvidia`` branch reads
-            # ``NVIDIA_API_KEY`` + the YAML-supplied base_url/model.
-            # ``openai_compatible`` / ``claude_session`` are intercepted
-            # upstream (router collapses the former to ``local``; the
-            # latter returns early above), so they're intentionally NOT
-            # in this base-enforcement tuple.
-            supported_providers=("anthropic", "together", "local", "nvidia"),
             system_prompt=resolved_system_prompt,
             # Rewrite tier emits raw HTML body strings — NOT JSON.
             # Forcing json_mode=True (the base default) makes Qwen/Ollama
@@ -3477,7 +3534,7 @@ class RewriteProvider(_BaseLLMProvider):
                 return _apply_rewrite_touch(
                     block=block,
                     html_response=html_response,
-                    provider=self._provider,
+                    provider=_touch_provenance(self._provider),
                     model=self._model,
                     decision_capture_id=self._last_capture_id(),
                 )
@@ -3533,7 +3590,7 @@ class RewriteProvider(_BaseLLMProvider):
         return _apply_rewrite_touch(
             block=block,
             html_response=injected_html,
-            provider=self._provider,
+            provider=_touch_provenance(self._provider),
             model=self._model,
             decision_capture_id=self._last_capture_id(),
             purpose=_TOUCH_PURPOSE_CURIE_FORCED,
@@ -3718,7 +3775,7 @@ class RewriteProvider(_BaseLLMProvider):
             results[block.block_id] = _apply_rewrite_touch(
                 block=block,
                 html_response=fragment,
-                provider=self._provider,
+                provider=_touch_provenance(self._provider),
                 model=self._model,
                 decision_capture_id=self._last_capture_id(),
             )

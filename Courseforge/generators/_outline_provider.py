@@ -68,6 +68,7 @@ from blocks import (  # noqa: E402
 
 from Courseforge.generators._base import (  # noqa: E402
     _BaseLLMProvider,
+    _default_supported_providers,
 )
 from Trainforge.generators._openai_compatible_client import (  # noqa: E402
     ENV_REQUEST_TIMEOUT as _OA_ENV_REQUEST_TIMEOUT,
@@ -137,12 +138,66 @@ def _resolve_request_timeout() -> float:
         return _DEFAULT_REQUEST_TIMEOUT_SECONDS
     return parsed
 
-SUPPORTED_PROVIDERS: Tuple[str, ...] = (
-    "anthropic",
-    "together",
-    "local",
-    "openai_compatible",
-)
+# Legacy alias for the "non-Ollama / non-Together OpenAI-compatible server"
+# tag. It collapses to ``local`` at constructor entry (mirroring the router's
+# ``_get_outline_provider`` collapse) so a standalone
+# ``OutlineProvider(provider="openai_compatible")`` behaves identically to a
+# router-mediated construction. Without the collapse, the value would reach
+# the base's registry else-branch and raise ``UnknownEndpoint`` (it is NOT a
+# registry row name — the alias only works because the router collapses it).
+_OPENAI_COMPATIBLE_ALIAS = "openai_compatible"
+
+
+def _supported_providers() -> Tuple[str, ...]:
+    """Registry-superset provider allow-list for the outline tier.
+
+    The base's registry-derived default (``anthropic`` SDK transport +
+    every ``kind: openai_compatible`` row in ``config/endpoints.yaml`` —
+    ``local`` / ``together`` / ``nvidia`` / ``nvidia-deepseek`` / ``groq`` /
+    ``fireworks`` / ``deepseek`` / …) PLUS the legacy ``openai_compatible``
+    alias (collapsed to ``local`` at constructor entry). Adding a provider
+    is a registry-entry change, NOT a subclass. The base's
+    ``_default_supported_providers`` already falls back to the legacy trio
+    on a registry read failure, so this composition never crashes at import.
+    """
+    base = _default_supported_providers()
+    extras = (_OPENAI_COMPATIBLE_ALIAS,)
+    seen: set = set()
+    out: List[str] = []
+    for name in tuple(base) + extras:
+        if name not in seen:
+            seen.add(name)
+            out.append(name)
+    return tuple(out)
+
+
+SUPPORTED_PROVIDERS: Tuple[str, ...] = _supported_providers()
+
+
+def _touch_provenance(provider: str) -> str:
+    """Collapse a resolved provider name to its registry Touch provenance.
+
+    Mirrors ``CourseforgeRouter._collapse_to_touch_provider`` WITHOUT the
+    router import (avoids a cycle): a registry openai-compatible seat
+    (e.g. ``groq`` / ``fireworks`` / ``nvidia-deepseek``) stamps its
+    declared ``provenance_provider`` (``together`` / ``nvidia`` / …) so
+    ``Touch.provider`` stays inside the closed provenance set
+    (``Courseforge/scripts/blocks.py::_TOUCH_PROVIDERS``). The legacy
+    ``openai_compatible`` alias collapses to ``local``; an unknown /
+    non-registry name passes through unchanged so Touch validation
+    surfaces the bad value rather than this helper masking it.
+    """
+    if provider == _OPENAI_COMPATIBLE_ALIAS:
+        return "local"
+    try:
+        from lib.llm.endpoints import load_endpoint_registry  # noqa: PLC0415
+
+        row = load_endpoint_registry().get(provider)
+        if row is not None:
+            return str(row.get("provenance_provider", provider))
+    except Exception:  # noqa: BLE001 — defensive; never crash on registry I/O
+        pass
+    return provider
 
 # Maximum parse / remediation retries when the outline JSON fails
 # Schema validation. Mirrors the analogous knob on the synthesis
@@ -2147,6 +2202,25 @@ class OutlineProvider(_BaseLLMProvider):
             or DEFAULT_MODEL
         )
 
+        # Resolve + collapse the legacy ``openai_compatible`` alias to
+        # ``local`` at constructor entry so a standalone construction
+        # behaves exactly like a router-mediated one (the router collapses
+        # it in ``_get_outline_provider``). Without this, the alias would
+        # reach the base's registry else-branch and raise ``UnknownEndpoint``
+        # (it is NOT a registry row name). Every other value is a registry
+        # endpoint the base constructs generically; we pass the collapsed
+        # ``resolved_provider`` (not the raw kwarg) and do NOT pin a narrow
+        # ``supported_providers`` — the base's registry-derived default
+        # governs, so adding a provider stays a ``config/endpoints.yaml``
+        # registry-entry change, never a subclass.
+        resolved_provider = (
+            provider
+            or os.environ.get(ENV_PROVIDER)
+            or DEFAULT_PROVIDER
+        ).lower()
+        if resolved_provider == _OPENAI_COMPATIBLE_ALIAS:
+            resolved_provider = "local"
+
         # Per-call kwarg wins; otherwise source the generous default
         # from ``ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS`` (fallback 300.0).
         resolved_timeout: float = (
@@ -2155,7 +2229,7 @@ class OutlineProvider(_BaseLLMProvider):
         )
 
         super().__init__(
-            provider=provider,
+            provider=resolved_provider,
             model=resolved_model,
             api_key=api_key,
             base_url=base_url,
@@ -2167,7 +2241,6 @@ class OutlineProvider(_BaseLLMProvider):
             anthropic_client=anthropic_client,
             env_provider_var=ENV_PROVIDER,
             default_provider=DEFAULT_PROVIDER,
-            supported_providers=SUPPORTED_PROVIDERS,
             system_prompt=_OUTLINE_SYSTEM_PROMPT,
         )
 
@@ -2603,13 +2676,12 @@ class OutlineProvider(_BaseLLMProvider):
             )
 
         # Construct the touch + new Block. Provider must be one of the
-        # ``_TOUCH_PROVIDERS`` set in ``blocks.py`` — we map our
-        # provider tag onto that set (``openai_compatible`` collapses
-        # to ``local`` for the audit trail since both go through the
-        # same OA client). Anthropic / together / local map 1:1.
-        touch_provider = self._provider
-        if touch_provider == "openai_compatible":
-            touch_provider = "local"
+        # ``_TOUCH_PROVIDERS`` set in ``blocks.py`` — we map our resolved
+        # provider tag onto its registry-declared ``provenance_provider``
+        # (a ``groq`` / ``fireworks`` seat stamps ``together``; the legacy
+        # ``openai_compatible`` alias collapses to ``local``). Anthropic /
+        # together / local / nvidia map 1:1.
+        touch_provider = _touch_provenance(self._provider)
 
         touch = Touch(
             model=self._model,
