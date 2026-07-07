@@ -63,19 +63,40 @@ def resolve_deploy_profile() -> bool:
     return raw in _COLUMN_ORDER_TRUTHY
 
 
+def resolve_column_extract_mode() -> bool:
+    """Return True when the column-aware EXTRACTION pass runs.
+
+    Reads ``SEMANTIK_COLUMN_EXTRACT`` OR the bundled ``SEMANTIK_DEPLOY_PROFILE``.
+    **Default OFF** (unset / blank / falsey / garbage -> off; byte-identical to
+    the legacy full-page-width line assembly in
+    :func:`dart_semantic.extract_shared._pdfplumber_page`). A truthy value
+    (``1``/``true``/``yes``/``on``, case-insensitive) on EITHER flag -> on.
+    Parse-with-fallback, mirroring :func:`resolve_column_order_mode`.
+
+    When on, ``_pdfplumber_page`` segments each page into column bands BEFORE
+    line assembly (so a 3-col Federal Register / 2-col CFR page keeps each
+    column's text contiguous instead of fusing columns into one string), and
+    :func:`resolve_column_order_mode` is forced on too — column-aware
+    extraction implies the column-major block sort (the two must not disagree).
+    """
+    raw = (os.environ.get("SEMANTIK_COLUMN_EXTRACT") or "").strip().lower()
+    return raw in _COLUMN_ORDER_TRUTHY or resolve_deploy_profile()
+
+
 def resolve_column_order_mode() -> bool:
     """Return True when the column-major reading-order re-sort runs.
 
-    Reads ``SEMANTIK_COLUMN_ORDER`` OR the bundled ``SEMANTIK_DEPLOY_PROFILE``.
-    **Default OFF** (unset / blank / falsey / garbage -> off; byte-identical to
-    the legacy raster ``(y0, x0)`` sort). A truthy value
-    (``1``/``true``/``yes``/``on``, case-insensitive) on EITHER flag -> on.
-    Parse-with-fallback, mirroring
-    :func:`dart_semantic.structure_graph.resolve_reading_order_fix` (with the
-    inverted default).
+    Reads ``SEMANTIK_COLUMN_ORDER`` OR the bundled ``SEMANTIK_DEPLOY_PROFILE``
+    OR :func:`resolve_column_extract_mode` (column-aware extraction implies the
+    column-major block sort — the two must not disagree). **Default OFF** (unset
+    / blank / falsey / garbage -> off; byte-identical to the legacy raster
+    ``(y0, x0)`` sort). A truthy value (``1``/``true``/``yes``/``on``,
+    case-insensitive) on ANY of those flags -> on. Parse-with-fallback,
+    mirroring :func:`dart_semantic.structure_graph.resolve_reading_order_fix`
+    (with the inverted default).
     """
     raw = (os.environ.get("SEMANTIK_COLUMN_ORDER") or "").strip().lower()
-    return raw in _COLUMN_ORDER_TRUTHY or resolve_deploy_profile()
+    return raw in _COLUMN_ORDER_TRUTHY or resolve_column_extract_mode()
 
 
 def _is_genuine_multicolumn(seeds: list[float], splits: list[float]) -> bool:
@@ -236,6 +257,7 @@ def column_ids_for_bboxes(
 
 __all__ = [
     "resolve_column_order_mode",
+    "resolve_column_extract_mode",
     "resolve_deploy_profile",
     "column_ids_for_x0s",
     "column_ids_for_bboxes",

@@ -63,7 +63,10 @@ from .vlm_furniture import (
 )
 from .reading_order import (
     _DEFAULT_PAGE_WIDTH,
+    _GUTTER_GAP_FRAC,
     column_ids_for_bboxes,
+    column_ids_for_x0s,
+    resolve_column_extract_mode,
     resolve_column_order_mode,
     resolve_deploy_profile,
 )
@@ -117,9 +120,9 @@ _X_TOLERANCE_RATIO = 0.15
 
 # Max horizontal gap (pt) under which a single-character leading word is
 # treated as a *styled first letter that was split off its word body* (an
-# OpenStax colored / bold drop-cap: the Bold "S" of "Subtraction" becomes its
-# own pdfplumber word, ABUTTING "ubtraction"). Measured on the OpenStax
-# PEMDAS chart (Elem-Algebra ch.1): every such split sits at a ~0pt gap
+# textbook colored / bold drop-cap: the Bold "S" of "Subtraction" becomes its
+# own pdfplumber word, ABUTTING "ubtraction"). Measured on a real textbook
+# order-of-operations chart page: every such split sits at a ~0pt gap
 # (-0.01..0.01) AND carries a font-name change (Bold→Regular), while every
 # genuine single-letter word ("I remember", "a way", articles "A"/"a"/"I"
 # across body pages) has a real word-space gap >= ~1.99pt. 0.5 is a safe
@@ -132,7 +135,7 @@ def _merge_split_first_letters(line: list[dict]) -> list[dict]:
     off from its word body.
 
     pdfplumber's ``extract_words`` starts a new word at a font/style change,
-    so an OpenStax colored / bold drop-cap first letter (the Bold "S" of
+    so a styled colored / bold drop-cap first letter (the Bold "S" of
     "Subtraction") is emitted as its OWN word ABUTTING the rest
     ("ubtraction"). The downstream space-join then fabricates "S ubtraction".
 
@@ -419,6 +422,14 @@ def _compute_extract_cache_key(pdf_path: Path) -> str:
       flips hints ON — the exact "ship fusion text-only, flip hints later" flow —
       and the reverse serves hint-carrying blocks with the flag off. Append-only
       keeps the flag-off key byte-identical to the fusion key.
+    * ``col_key`` — SEMANTIK_COLUMN_EXTRACT (asymmetric, append-only-when-on):
+      the column-aware ``_pdfplumber_page`` line assembly re-segments each page
+      into column bands BEFORE the space-join, so the extracted text-block SHAPE
+      changes (columns no longer fused). Append-only ``|col1`` when on keeps the
+      flag-OFF key byte-identical to the historic key (no ``col0`` salt), so
+      every existing extract cache survives untouched when the feature is off,
+      while flipping it ON never serves a stale column-fused extraction. Mirrors
+      the sibling ``vlm_key`` / ``fuse_key`` / ``hints_key`` append-only shape.
 
     NB the render-scale / tesseract-config / user-words flags are deliberately
     kept OUT of the key (they do not change the extracted SHAPE and keeping them
@@ -431,8 +442,9 @@ def _compute_extract_cache_key(pdf_path: Path) -> str:
     vlm_key = "|vlm1" if resolve_vlm_extract_mode() else ""
     fuse_key = "|vlmfuse5" if resolve_vlm_fusion_mode() else ""
     hints_key = "|vlmhints1" if resolve_vlm_struct_hints_mode() else ""
+    col_key = "|col1" if resolve_column_extract_mode() else ""
     key_raw = (
-        f"v{EXTRACT_CACHE_VERSION}|{fig_key}{vlm_key}{fuse_key}{hints_key}|"
+        f"v{EXTRACT_CACHE_VERSION}|{fig_key}{vlm_key}{fuse_key}{hints_key}{col_key}|"
         f"{pdf_path.resolve()}|{st.st_size}|{int(st.st_mtime)}"
     )
     return hashlib.sha256(key_raw.encode()).hexdigest()[:24]
@@ -812,6 +824,225 @@ def _pypdfium2_render_page_to_image(pdf_path: Path, page_num: int, scale: float 
 # ---------- pdfplumber (tables + text with font info) ----------
 
 
+def _word_in_table(w: dict, table_bboxes: list) -> bool:
+    """True when a pdfplumber word's centroid falls inside any table bbox.
+
+    Used to keep table cell words from SEEDING the column-band gutter detection
+    (a wide multi-column data table would otherwise spawn a spurious gutter);
+    the whole-line table skip in :func:`_finalize_line_block` still drops any
+    line that lands inside a table, so nothing about the emitted blocks changes.
+    """
+    if not table_bboxes:
+        return False
+    mx = (float(w.get("x0", 0)) + float(w.get("x1", 0))) / 2.0
+    my = (float(w.get("top", 0)) + float(w.get("bottom", 0))) / 2.0
+    return any(
+        bx0 <= mx <= bx1 and by0 <= my <= by1 for (bx0, by0, bx1, by1) in table_bboxes
+    )
+
+
+def _finalize_line_block(line: list, table_bboxes: list) -> dict | None:
+    """Turn one bucketed physical line into a text-block dict (or None to skip).
+
+    Byte-identical to the historic per-line body of :func:`_pdfplumber_page`:
+    x-sort, styled-drop-cap first-letter rejoin, bbox/text/font computation, and
+    the in-table line skip. Factored out so the single-width (legacy) and
+    column-aware assembly paths share one emitter.
+    """
+    if not line:
+        return None
+    line.sort(key=lambda w: float(w.get("x0", 0)))
+    # Rejoin styled drop-cap first letters that a font change split off their
+    # word body ("S" + "ubtraction" -> "Subtraction").
+    line = _merge_split_first_letters(line)
+    x0 = min(float(w.get("x0", 0)) for w in line)
+    x1 = max(float(w.get("x1", 0)) for w in line)
+    top = min(float(w.get("top", 0)) for w in line)
+    bot = max(float(w.get("bottom", 0)) for w in line)
+    text = " ".join(w.get("text", "") for w in line).strip()
+    if not text:
+        return None
+    # Skip lines that fall entirely inside a detected table bbox.
+    mid_x = (x0 + x1) / 2
+    mid_y = (top + bot) / 2
+    if any(
+        bx0 <= mid_x <= bx1 and by0 <= mid_y <= by1 for (bx0, by0, bx1, by1) in table_bboxes
+    ):
+        return None
+    # Dominant font size (median).
+    sizes = [float(w.get("size") or 0) for w in line if w.get("size")]
+    font_name = line[0].get("fontname")
+    size = sorted(sizes)[len(sizes) // 2] if sizes else None
+    is_bold = bool(font_name and "Bold" in font_name)
+    is_italic = bool(font_name and any(t in font_name for t in ("Italic", "Oblique")))
+    return {
+        "bbox": [x0, top, x1, bot],
+        "text": text,
+        "font_size": size,
+        "font_name": font_name,
+        "is_bold": is_bold,
+        "is_italic": is_italic,
+        "confidence": 1.0,
+    }
+
+
+def _bucket_lines_by_top(words: list) -> list[list[dict]]:
+    """Bucket words (already sorted by ``(round(top), x0)``) into physical lines.
+
+    A word joins the current line when its ``top`` is within 3pt of the line's
+    first word; otherwise it starts a new line. Byte-identical to the historic
+    inline bucketing in :func:`_pdfplumber_page`.
+    """
+    lines: list[list[dict]] = []
+    for w in words:
+        top = float(w.get("top", 0))
+        if not lines or abs(top - float(lines[-1][0].get("top", 0))) > 3:
+            lines.append([w])
+        else:
+            lines[-1].append(w)
+    return lines
+
+
+def _assemble_text_blocks_singlewidth(words: list, table_bboxes: list) -> list[dict]:
+    """Legacy full-page-width line assembly (SEMANTIK_COLUMN_EXTRACT off).
+
+    Buckets every word into a full-width physical line then x-sorts + space-joins
+    — so multi-column words sharing a baseline fuse into one string. Kept
+    byte-identical to the pre-column-extract behaviour.
+    """
+    blocks: list[dict] = []
+    for line in _bucket_lines_by_top(words):
+        blk = _finalize_line_block(line, table_bboxes)
+        if blk is not None:
+            blocks.append(blk)
+    return blocks
+
+
+def _assemble_text_blocks_columnaware(
+    words: list, table_bboxes: list, page_w: float
+) -> list[dict]:
+    """Column-band line assembly (SEMANTIK_COLUMN_EXTRACT on).
+
+    Segments the page into column bands BEFORE line assembly so each column's
+    text stays contiguous (fixes the Fed-Register/CFR/W-9 cross-column fusion
+    salad where a full-width baseline sort glues ``col1 col2 col3`` into one
+    string). Steps:
+
+    1. **Detect columns from COLUMN-START seeds** via the REUSED
+       :func:`reading_order.column_ids_for_x0s` single-linkage gutter detector
+       (``single_column_guard=True``). A real multi-column page's word
+       left-edges densely fill the whole page width (interior words start at
+       every x), so seeding the detector on EVERY word's x0 finds no gutter;
+       instead only *column-start* words seed — the first word of each physical
+       line and any word opening a new column (preceded by a gutter-sized
+       horizontal gap). Those x0s cluster tightly at each column's left margin,
+       which is what single-linkage needs. Table-cell words never seed (a wide
+       data table would otherwise spawn a spurious gutter).
+    2. When the guard collapses to ONE column (genuine single-column page), fall
+       straight through to the byte-identical single-width path (second safety
+       net atop the default-off flag + append-only cache salt).
+    3. **Assign every word to a band by its left-edge** — the column whose left
+       margin is the greatest ``<= word.x0``. This is deliberately NOT the
+       detector's left-edge *midpoint* split (which bisects each column's own
+       text width and misassigns wide interior words); a word belongs to the
+       column it starts within.
+    4. Bucket words into full-width physical lines, then per line: a line whose
+       words all fall in one band joins it; a multi-column line is either a
+       **bridging full-width header** (a word STRADDLES an interior column
+       left-edge — i.e. sits in the gutter x-range) kept as ONE block leading
+       column 0, or a genuine cross-gutter baseline SPLIT into per-column
+       sub-lines.
+    5. Emit column 0 (top->bottom), then column 1, ... .
+    """
+    if not words:
+        return []
+    if page_w is None or page_w <= 0:
+        page_w = _DEFAULT_PAGE_WIDTH
+    gutter_gap = _GUTTER_GAP_FRAC * page_w
+
+    phys_lines = _bucket_lines_by_top(words)
+    in_table = (
+        {id(w): _word_in_table(w, table_bboxes) for w in words}
+        if table_bboxes
+        else None
+    )
+
+    # --- 1. column-start seeds -> detect columns via the REUSED detector ---
+    seed_x0s: list[float] = []
+    for line in phys_lines:
+        prev_x1: float | None = None
+        for w in sorted(line, key=lambda w: float(w.get("x0", 0))):
+            wx0 = float(w.get("x0", 0))
+            is_col_start = prev_x1 is None or (wx0 - prev_x1) > gutter_gap
+            prev_x1 = float(w.get("x1", 0))
+            if is_col_start and not (in_table and in_table.get(id(w))):
+                seed_x0s.append(wx0)
+    if not seed_x0s:
+        return _assemble_text_blocks_singlewidth(words, table_bboxes)
+
+    seed_cols = column_ids_for_x0s(seed_x0s, page_w, single_column_guard=True)
+    ncols = (max(seed_cols) + 1) if seed_cols else 1
+    if ncols <= 1:
+        # Genuine single-column page -> identical to the full-width path.
+        return _assemble_text_blocks_singlewidth(words, table_bboxes)
+
+    # column left-edge = smallest seed x0 in each detected band
+    left_edges: list[float | None] = [None] * ncols
+    for x0, c in zip(seed_x0s, seed_cols):
+        if left_edges[c] is None or x0 < left_edges[c]:
+            left_edges[c] = x0
+    if any(le is None for le in left_edges):  # defensive; should not happen
+        return _assemble_text_blocks_singlewidth(words, table_bboxes)
+    edges: list[float] = [float(le) for le in left_edges]
+
+    def _col_of(x0: float) -> int:
+        c = 0
+        for j in range(1, ncols):
+            if x0 >= edges[j]:
+                c = j
+            else:
+                break
+        return c
+
+    # --- 2. assign each physical line (or its split sub-lines) to a band ---
+    col_lines: dict[int, list[list[dict]]] = {i: [] for i in range(ncols)}
+    for line in phys_lines:
+        ln_sorted = sorted(line, key=lambda w: float(w.get("x0", 0)))
+        cols_in_line = {_col_of(float(w.get("x0", 0))) for w in ln_sorted}
+        if len(cols_in_line) == 1:
+            col_lines[next(iter(cols_in_line))].append(ln_sorted)
+            continue
+        # Multi-column physical line: full-width header vs genuine split. A
+        # header word STRADDLES an interior column left-edge (x0 < Lj < x1 — it
+        # sits in the gutter x-range); a genuine multi-column baseline has no
+        # word crossing the gutter (col-c text ends before Lj, col-(c+1) starts
+        # at Lj).
+        bridges = any(
+            float(w.get("x0", 0)) < edges[j] < float(w.get("x1", 0))
+            for w in ln_sorted
+            for j in range(1, ncols)
+        )
+        if bridges:
+            col_lines[0].append(ln_sorted)  # keep ONE block, leading column 0
+        else:
+            by_col: dict[int, list[dict]] = {}
+            for w in ln_sorted:
+                by_col.setdefault(_col_of(float(w.get("x0", 0))), []).append(w)
+            for c, ws in by_col.items():
+                col_lines[c].append(ws)
+
+    # --- 3. emit column 0 top->bottom, then column 1, ... ---
+    blocks: list[dict] = []
+    for c in range(ncols):
+        lines_c = col_lines[c]
+        lines_c.sort(key=lambda ln: min(float(w.get("top", 0)) for w in ln))
+        for line in lines_c:
+            blk = _finalize_line_block(line, table_bboxes)
+            if blk is not None:
+                blocks.append(blk)
+    return blocks
+
+
 def _pdfplumber_page(pdf_path: Path, page_num: int) -> dict:
     """Extract text blocks + tables via pdfplumber. Slower than pypdfium2
     but adds table detection and actual font metadata."""
@@ -884,53 +1115,22 @@ def _pdfplumber_page(pdf_path: Path, page_num: int) -> dict:
             logger.debug(f"pdfplumber extract_words page {page_num}: {exc}")
             words = []
 
-        # Bucket into lines by top-coordinate (within 2pt).
+        # Bucket into lines by top-coordinate (within 3pt), then space-join.
+        # Words are sorted by (round(top), x0) first so the bucketing is stable.
         words.sort(key=lambda w: (round(float(w.get("top", 0)), 0), float(w.get("x0", 0))))
-        lines: list[list[dict]] = []
-        for w in words:
-            top = float(w.get("top", 0))
-            if not lines or abs(top - float(lines[-1][0].get("top", 0))) > 3:
-                lines.append([w])
-            else:
-                lines[-1].append(w)
-
-        for line in lines:
-            if not line:
-                continue
-            line.sort(key=lambda w: float(w.get("x0", 0)))
-            # Rejoin styled drop-cap first letters that a font change split
-            # off their word body ("S" + "ubtraction" -> "Subtraction").
-            line = _merge_split_first_letters(line)
-            x0 = min(float(w.get("x0", 0)) for w in line)
-            x1 = max(float(w.get("x1", 0)) for w in line)
-            top = min(float(w.get("top", 0)) for w in line)
-            bot = max(float(w.get("bottom", 0)) for w in line)
-            text = " ".join(w.get("text", "") for w in line).strip()
-            if not text:
-                continue
-            # Skip lines that fall entirely inside a detected table bbox.
-            mid_x = (x0 + x1) / 2
-            mid_y = (top + bot) / 2
-            if any(
-                bx0 <= mid_x <= bx1 and by0 <= mid_y <= by1 for (bx0, by0, bx1, by1) in table_bboxes
-            ):
-                continue
-            # Dominant font size (median).
-            sizes = [float(w.get("size") or 0) for w in line if w.get("size")]
-            font_name = line[0].get("fontname")
-            size = sorted(sizes)[len(sizes) // 2] if sizes else None
-            is_bold = bool(font_name and "Bold" in font_name)
-            is_italic = bool(font_name and any(t in font_name for t in ("Italic", "Oblique")))
-            out["text_blocks"].append(
-                {
-                    "bbox": [x0, top, x1, bot],
-                    "text": text,
-                    "font_size": size,
-                    "font_name": font_name,
-                    "is_bold": is_bold,
-                    "is_italic": is_italic,
-                    "confidence": 1.0,
-                }
+        # SEMANTIK_COLUMN_EXTRACT (default OFF): when on, segment the page into
+        # column bands BEFORE line assembly so a multi-column page keeps each
+        # column's text contiguous instead of fusing columns into one string
+        # (the Fed-Register/CFR/W-9 salad). OFF -> the legacy full-page-width
+        # loop, byte-identical.
+        if resolve_column_extract_mode():
+            page_w = float(getattr(page, "width", 0) or _DEFAULT_PAGE_WIDTH)
+            out["text_blocks"].extend(
+                _assemble_text_blocks_columnaware(words, table_bboxes, page_w)
+            )
+        else:
+            out["text_blocks"].extend(
+                _assemble_text_blocks_singlewidth(words, table_bboxes)
             )
     finally:
         pdf.close()
@@ -1060,6 +1260,17 @@ def _tesseract_page_blocks(pdf_path: Path, page_num: int) -> dict:
     page_h = float(image.height)
 
     # Group words -> lines using (block_num, par_num, line_num).
+    #
+    # TODO(column-extract v1 pdfplumber-only): the SEMANTIK_COLUMN_EXTRACT
+    # column-band assembly is NOT yet applied to this OCR path — v1 ships the
+    # pdfplumber path only (the c2 fixtures that motivated the feature are all
+    # born-digital, so they route through _pdfplumber_page and never here). A
+    # follow-up would re-key this grouping to (column, block_num, par_num,
+    # line_num) via column_ids_for_x0s over the per-word `left` (page_w = image
+    # width). Tesseract's own block/par segmentation is already partly
+    # column-aware, so a naive re-key risks regressing single-column OCR; done
+    # deliberately behind the SAME flag as a separate, tested change rather than
+    # half-broken here.
     lines: dict[tuple, dict] = {}
     for j, word in enumerate(data["text"]):
         if not word.strip():
