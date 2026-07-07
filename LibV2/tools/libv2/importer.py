@@ -933,11 +933,12 @@ def get_model_eval_report(
 ) -> Optional[dict]:
     """Return the cached ``eval_report.json`` for a model, or ``None``.
 
-    Wave 93 — backs ``libv2 models eval <slug> <model_id>``. The
-    actual eval-callable bridge from a saved adapter to the eval
-    harness is deferred to a follow-up wave (see Wave 92's deferred
-    items in ``plans/slm-training-2026-04-26.md``); this function
-    only surfaces the cached report.
+    Wave 93 — backs ``libv2 models eval <slug> <model_id>``. This
+    function only surfaces the CACHED (training-time) report. To run a
+    FRESH evaluation from the saved adapter, use the fresh-eval bridge
+    ``LibV2.tools.libv2.model_eval_bridge.run_fresh_eval`` (exposed as
+    ``libv2 models eval <slug> <model_id> --fresh``), which rebuilds the
+    adapter callable and re-scores it via ``SLMEvalHarness``.
     """
     course_dir = Path(repo_root) / "courses" / course_slug
     eval_path = course_dir / "models" / model_id / "eval_report.json"

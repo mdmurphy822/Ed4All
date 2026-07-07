@@ -1531,14 +1531,19 @@ def _run_ed4all_bench_eval(
     judge: str,
     fmt: str,
 ) -> None:
-    """Wave 103 ED4ALL-Bench dispatch - validate config + scaffold runner.
+    """ED4ALL-Bench dispatch — run a fresh adapter eval (judge=none).
 
-    The full real-eval kickoff (loading the trained adapter into
-    GPU and invoking the SLMEvalHarness) lands in a follow-up wave;
-    this entry point validates that the per-course config is locked
-    and that the adapter directory exists, then prints a guided
-    next-step. The CLI surface is in place so the brief's user-facing
-    contract holds even before the bridge to AdapterCallable is wired.
+    ``judge=none`` routes through the fresh-eval bridge
+    (``model_eval_bridge.run_fresh_eval``): rebuild the saved adapter into
+    an :class:`AdapterCallable` and score it with :class:`SLMEvalHarness`,
+    writing a fresh ``eval_report.json`` under the model dir. Real runs
+    need the ``[training]`` ML stack + the ``scripts/gpu_guard.sh`` wrap
+    on a shared-GPU box.
+
+    The qualitative-judge arms (``--judge anthropic`` / ``--judge
+    local_nli``) layer an LLM/NLI scorer over the generations and are a
+    separate concern; they still validate inputs + print a guided
+    next-step until that scorer lands.
     """
     model_dir = course_dir / "models" / model_id
     if not model_dir.exists():
@@ -1550,6 +1555,20 @@ def _run_ed4all_bench_eval(
             f"No per-course eval/eval_config.yaml. Run "
             f"'libv2 eval init {slug}' first to scaffold one."
         )
+
+    if judge == "none":
+        # repo_root is <...>/courses/<slug> -> parents[1].
+        repo_root = course_dir.parent.parent
+        _run_fresh_model_eval(
+            slug=slug,
+            model_id=model_id,
+            repo_root=repo_root,
+            smoke=False,
+            replace=False,
+            fmt=fmt,
+        )
+        return
+
     payload = {
         "course": slug,
         "model_id": model_id,
@@ -1557,8 +1576,9 @@ def _run_ed4all_bench_eval(
         "model_dir": str(model_dir),
         "eval_config": str(eval_config_path) if eval_config_path.exists() else None,
         "status": (
-            "Wave 103 dispatch ready. Adapter+harness bridge ships in a "
-            "follow-up wave; this command currently validates inputs only."
+            f"Qualitative --judge {judge} scorer not yet wired. Run with "
+            f"--judge none for the quantitative fresh-adapter eval, or "
+            f"`libv2 models eval {slug} {model_id} --fresh`."
         ),
     }
     if fmt == "json":
@@ -2343,19 +2363,38 @@ def models_promote(ctx, slug: str, model_id: str, promoted_by: Optional[str]):
 @click.argument("slug")
 @click.argument("model_id")
 @click.option("--output", "-o", type=click.Choice(["text", "json"]), default="text")
+@click.option("--fresh", is_flag=True,
+              help="Run a fresh evaluation from the saved adapter instead of "
+                   "printing the cached report (loads the [training] ML stack).")
+@click.option("--smoke", is_flag=True,
+              help="With --fresh: run the harness in smoke mode (N=3 probes/stage).")
+@click.option("--replace", is_flag=True,
+              help="With --fresh: overwrite the canonical eval_report.json "
+                   "(backing the prior one up to eval_report.json.bak) so "
+                   "cached-report consumers pick up the fresh scores.")
 @click.pass_context
-def models_eval_cmd(ctx, slug: str, model_id: str, output: str):
-    """Print the cached eval_report.json for a model.
+def models_eval_cmd(ctx, slug: str, model_id: str, output: str,
+                    fresh: bool, smoke: bool, replace: bool):
+    """Print the cached eval_report.json for a model (or run a fresh eval).
 
-    Surfaces the report Trainforge.eval.SLMEvalHarness wrote alongside
-    the model card. Wave 93 does NOT run a fresh evaluation — the bridge
-    from a saved adapter to a model_callable is left as
-    ``NotImplementedError`` in the runner (see Wave 92 deferred items
-    in ``plans/slm-training-2026-04-26.md``).
+    Default: surfaces the report Trainforge.eval.SLMEvalHarness wrote
+    alongside the model card at training time.
+
+    ``--fresh`` runs a NEW evaluation from the saved adapter via the
+    fresh-eval bridge (``model_eval_bridge.run_fresh_eval`` — rebuilds
+    :class:`AdapterCallable` from the model dir and scores it with
+    :class:`SLMEvalHarness`). The fresh report lands non-destructively at
+    ``models/<model_id>/eval_report.fresh-<ts>.json`` unless ``--replace``
+    is passed (then it overwrites the canonical report after a ``.bak``
+    backup). A fresh run needs the ``[training]`` ML stack and, on a
+    shared-GPU box, the ``scripts/gpu_guard.sh`` wrap.
 
     \b
-    Example:
+    Examples:
         libv2 models eval demo-course-1 qwen2-5-1-5b-demo-course-1-3a4f8c92
+        libv2 models eval demo-course-1 <model_id> --fresh --smoke
+        scripts/gpu_guard.sh run --task libv2-fresh-eval -- \\
+            libv2 models eval demo-course-1 <model_id> --fresh --replace
     """
     from .importer import get_model_eval_report
 
@@ -2369,13 +2408,27 @@ def models_eval_cmd(ctx, slug: str, model_id: str, output: str):
         print_error(f"Model not found: {model_dir}")
         sys.exit(1)
 
+    if fresh:
+        _run_fresh_model_eval(
+            slug=slug,
+            model_id=model_id,
+            repo_root=repo_root,
+            smoke=smoke,
+            replace=replace,
+            fmt=output,
+        )
+        return
+    if smoke or replace:
+        print_warning("--smoke / --replace only apply with --fresh; ignoring.")
+
     report = get_model_eval_report(slug, model_id, repo_root)
     if report is None:
         print_warning(
             f"No eval_report.json found for {model_id}. Evaluation has not "
             f"run for this model — invoke `python -m Trainforge.train_course "
-            f"--course-code {slug}` to train and score together; or wire the "
-            f"model-callable bridge in a follow-up wave."
+            f"--course-code {slug}` to train and score together, or run a "
+            f"fresh eval from the saved adapter with "
+            f"`libv2 models eval {slug} {model_id} --fresh`."
         )
         return
 
@@ -2391,6 +2444,78 @@ def models_eval_cmd(ctx, slug: str, model_id: str, output: str):
         print("  per_tier:")
         for tier, vals in (report.get("per_tier") or {}).items():
             print(f"    {tier}: {vals}")
+
+
+def _run_fresh_model_eval(
+    *,
+    slug: str,
+    model_id: str,
+    repo_root: Path,
+    smoke: bool,
+    replace: bool,
+    fmt: str,
+) -> None:
+    """Run the fresh-eval bridge and print the resulting report.
+
+    Shared by ``libv2 models eval --fresh`` and the ``eval run <slug>
+    <model_id> --judge none`` ED4ALL-Bench path. Catches the heavy-deps
+    ImportError and prints actionable guidance (the [training] extra + the
+    gpu_guard wrap) instead of a bare stack trace.
+    """
+    from lib.decision_capture import DecisionCapture
+    from . import model_eval_bridge
+
+    capture = DecisionCapture(course_code=slug, phase="libv2-indexing", tool="libv2")
+    try:
+        report_path = model_eval_bridge.run_fresh_eval(
+            course_slug=slug,
+            model_id=model_id,
+            repo_root=repo_root,
+            smoke=smoke,
+            replace=replace,
+            capture=capture,
+        )
+    except ImportError as exc:
+        print_error(
+            f"Fresh eval unavailable — missing training deps: {exc}",
+            markup=False,
+        )
+        # markup=False preserves the literal "[training]" extra name that
+        # rich would otherwise interpret as console markup and swallow.
+        if RICH_AVAILABLE:
+            console.print(
+                model_eval_bridge.TRAINING_DEPS_GUIDANCE,
+                style="yellow", markup=False,
+            )
+        else:
+            print(model_eval_bridge.TRAINING_DEPS_GUIDANCE)
+        sys.exit(1)
+    except model_eval_bridge.FreshEvalError as exc:
+        print_error(str(exc))
+        sys.exit(1)
+    except Exception as exc:  # noqa: BLE001 — surface a clean CLI error.
+        print_error(f"Fresh eval failed: {exc}")
+        sys.exit(1)
+
+    try:
+        report = json.loads(Path(report_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print_error(f"Fresh eval wrote a report but it could not be read: {exc}")
+        sys.exit(1)
+
+    if fmt == "json":
+        print(json.dumps(report, indent=2))
+        return
+    print_success(f"Fresh eval report written to {report_path}")
+    if smoke:
+        print_warning(
+            "smoke_mode report — not gate-worthy (EvalGatingValidator "
+            "refuses smoke reports)."
+        )
+    for key in ("faithfulness", "coverage", "baseline_delta",
+                "calibration_ece", "profile"):
+        if key in report:
+            print(f"  {key}: {report[key]}")
 
 
 @main.command("import-model")

@@ -138,15 +138,31 @@ def test_eval_validate_unknown_course_fails(tmp_path):
     assert result.exit_code != 0
 
 
-def test_eval_run_two_arg_form_dispatches_ed4all_bench(tmp_path):
-    """When MODEL_ID is supplied, the runner takes the ED4ALL-Bench
-    branch and prints a kickoff status (the adapter bridge wave is
-    deferred but the surface is present)."""
+def test_eval_run_two_arg_form_dispatches_fresh_bridge(tmp_path, monkeypatch):
+    """When MODEL_ID is supplied with the default ``--judge none``, the
+    runner routes through the fresh-eval bridge (Wave 92 deferral closed).
+
+    The bridge is monkeypatched so the test stays CPU-only; we assert the
+    dispatch happened with the right (slug, model_id) rather than actually
+    loading an adapter."""
+    from LibV2.tools.libv2 import model_eval_bridge
+
     repo_root = tmp_path / "libv2"
     course_dir = _stage_course(repo_root, "tst-101")
-    # Minimal model dir so the existence check passes.
-    model_dir = course_dir / "models" / "tst-101-qwen2-5-1-5b-aaaa1111"
+    model_id = "tst-101-qwen2-5-1-5b-aaaa1111"
+    model_dir = course_dir / "models" / model_id
     model_dir.mkdir(parents=True)
+
+    calls = {}
+
+    def _fake_run(course_slug, model_id, repo_root, **kwargs):
+        calls["slug"] = course_slug
+        calls["model_id"] = model_id
+        out = model_dir / "eval_report.fresh-test.json"
+        out.write_text(json.dumps({"faithfulness": 0.5}), encoding="utf-8")
+        return out
+
+    monkeypatch.setattr(model_eval_bridge, "run_fresh_eval", _fake_run)
 
     runner = CliRunner()
     runner.invoke(libv2_main, [
@@ -154,15 +170,15 @@ def test_eval_run_two_arg_form_dispatches_ed4all_bench(tmp_path):
     ])
     result = runner.invoke(libv2_main, [
         "--repo", str(repo_root),
-        "eval", "run", "tst-101", "tst-101-qwen2-5-1-5b-aaaa1111",
+        "eval", "run", "tst-101", model_id,
         "--judge", "none",
         "--format", "json",
     ])
     assert result.exit_code == 0, result.output
+    assert calls["slug"] == "tst-101"
+    assert calls["model_id"] == model_id
     payload = json.loads(result.output)
-    assert payload["course"] == "tst-101"
-    assert payload["model_id"] == "tst-101-qwen2-5-1-5b-aaaa1111"
-    assert payload["judge"] == "none"
+    assert "faithfulness" in payload
 
 
 def test_eval_run_two_arg_form_unknown_model_fails(tmp_path):
