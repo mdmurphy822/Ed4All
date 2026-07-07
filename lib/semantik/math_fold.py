@@ -1403,12 +1403,12 @@ def wrap_bare_math(text: str, *, html: bool = True) -> str:
 # ---------------------------------------------------------------------------
 # Bare / angle-wrapped URL linkification (2026-07-04 round-2 audit — ITEM 1).
 # ---------------------------------------------------------------------------
-# The OpenStax scan carries vendor MEDIA links ("Access these online resources
-# … Product Property (https://openstax.org/l/25ProductProp)") as bare or
+# Scanned textbooks carry vendor MEDIA links ("Access these online resources
+# … Product Property (https://vendor.example/l/25ProductProp)") as bare or
 # angle-bracket-wrapped URLs in block prose. In the assembled learner page these
 # render as MathJax-italic soup — MathJax's global ``$``-delimiter scan (an
 # orphan display ``$$`` split across a block boundary) swallows the surrounding
-# text, so ``<https://openstax.org/l/25AddSubtrHR>`` reads as spaced italic
+# text, so ``<https://vendor.example/l/25AddSubtrHR>`` reads as spaced italic
 # "< https : //…>". :func:`linkify_urls` turns every bare URL into a real
 # ``<a href>`` anchor stamped ``mathjax_ignore`` so MathJax NEVER typesets the
 # link subtree (the assembler's ``ignoreHtmlClass`` catches it), and DROPS the
@@ -1428,7 +1428,10 @@ def wrap_bare_math(text: str, *, html: bool = True) -> str:
 _URL_RE = re.compile(
     r"(?P<open>&lt;|<)?"          # optional opening angle wrapper
     r"(?P<mopen>\$)?"           # optional math-open glued to the URL (fusion)
-    r"(?P<scheme>https?)\s*:\s*/\s*/\s*"   # scheme, OCR-spaced tolerant
+    r"(?P<scheme>https?)\s*:\s*/\s*/"   # scheme, OCR-spaced tolerant; NO space
+    #   after the second ``/`` — a host char must immediately follow ``//`` so a
+    #   scheme-only ``https://`` (or ``https:// Note`` column-bleed) can never
+    #   cross whitespace into the next token and mint a bare-scheme anchor.
     r"(?P<body>[A-Za-z0-9][A-Za-z0-9.\-_%#?=+~:/]*[A-Za-z0-9/])"  # url body
     r"(?P<mclose>\$)?"          # optional math-close glued to the URL
     r"(?P<close>&gt;|>)?",      # optional closing angle wrapper

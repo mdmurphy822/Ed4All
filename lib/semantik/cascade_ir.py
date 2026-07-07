@@ -348,6 +348,64 @@ def _render_table_html(
     return "".join(parts)
 
 
+# ── Render-time mojibake / CID-glyph repair (display-only) ──────────────────
+# Some vendor PDFs (CID-keyed fonts, double-encoded Windows-1252-in-UTF-8) flow
+# a mis-decoded right-single-quote / dash / curly-quote into ``raw_text`` either
+# as an ``â€…`` mojibake sequence or as an ``â`` (the 0xE2 lead byte) trailed by
+# unresolved ``(cid:N)`` continuation glyphs — e.g. ``countryâ(cid:0)(cid:0)s``
+# for ``country's``. This is a DISPLAY-only normalization applied at the render
+# seam: ``raw_text`` (and the content-hash sourceIds derived from it) stay
+# verbatim, mirroring the ``repaired_text`` OCR-confusable posture. A fast
+# marker guard makes it byte-identical on clean text.
+#
+# Explicit longest-first table for the byte-recoverable cp1252-in-UTF-8 family
+# (each key is exactly the mis-decoded 2-3 char sequence). The bare ``â€`` row
+# MUST stay last — it is a prefix of every row above it.
+_MOJIBAKE_MAP: tuple[tuple[str, str], ...] = (
+    ("â€™", "’"),      # right single quote  '
+    ("â€˜", "‘"),      # left single quote   '
+    ("â€œ", "“"),      # left double quote   "
+    ("â€\x9d", "”"),   # right double quote  " (0x9d control tail)
+    ("â€“", "–"),      # en dash             –
+    ("â€”", "—"),      # em dash             —
+    ("â€¦", "…"),      # ellipsis            …
+    ("Â\xa0", " "),         # nbsp mojibake
+    ("Â ", " "),            # nbsp mojibake (space-collapsed tail)
+    ("â€", "”"),       # bare closing double quote (KEEP LAST)
+)
+# The CID-collapsed variant: an ``â`` trailed by 1-2 unresolved ``(cid:N)``
+# glyphs. Both continuation bytes render as ``(cid:0)`` so the exact punctuation
+# is unrecoverable from the bytes; map the dominant right-single-quote, EXCEPT a
+# digit↔digit span (a number range like ``1786(cid)(cid)1787``) which is
+# deterministically an en dash.
+_CID_DASH_RE = re.compile(r"(?<=\d)â(?:\(cid:\d+\)){1,2}(?=\d)")
+_CID_QUOTE_RE = re.compile(r"â(?:\(cid:\d+\)){1,2}")
+# Any remaining bare CID glyph is an unmapped noise token — drop it.
+_CID_BARE_RE = re.compile(r"\(cid:\d+\)")
+
+
+def _repair_mojibake(text: str) -> str:
+    """Render-time repair of CID-glyph / double-encoded-UTF-8 mojibake.
+
+    Display-only: the result feeds the emitted HTML only — never persisted back
+    onto ``raw_text``. A fast marker guard keeps the common clean-text path a
+    byte-identical no-op; the substitutions only run when a ``(cid:`` glyph or an
+    ``â€`` / ``Â`` mojibake lead is actually present.
+    """
+    if not text:
+        return text or ""
+    if "(cid:" not in text and "â€" not in text and "Â" not in text:
+        return text
+    for before, after in _MOJIBAKE_MAP:
+        if before in text:
+            text = text.replace(before, after)
+    if "(cid:" in text:
+        text = _CID_DASH_RE.sub("–", text)
+        text = _CID_QUOTE_RE.sub("’", text)
+        text = _CID_BARE_RE.sub("", text)
+    return text
+
+
 def _block_html_for_kind(
     region_kind: str,
     raw_text: str,
@@ -377,7 +435,7 @@ def _block_html_for_kind(
       present, else ``<p>`` (the council ``list`` head is noisy).
     * everything else (``paragraph`` / ``math`` / …) → ``<p>``.
     """
-    text = (raw_text or "").strip()
+    text = _repair_mojibake(raw_text or "").strip()
     if region_kind == "figure":
         return _render_figure_html(text, figure_alt, image_src, caption_text)
     if region_kind == "table":
