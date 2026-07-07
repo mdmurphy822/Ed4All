@@ -50,7 +50,7 @@ Selects no provider/model → no ``docs/LICENSING.md`` row. Decision capture
 reuses the existing ``objective_chunk_prune`` event (no new decision_type).
 
 **Exercise-chunk demotion (ranking-quality bug fix).** A full-book audit
-(course ``sample-full-obj-01``) found end-of-chapter EXERCISE chunks winning the
+(a real full-book course) found end-of-chapter EXERCISE chunks winning the
 pure-cosine rank because their instruction line nearly quotes the CO statement
 (e.g. a "In the following exercises, find the place value ... 1. 51,493 ⓐ …"
 answer-list chunk out-cosining a skill-phrased CO). The re-selection then cites
@@ -77,7 +77,7 @@ quality inside an already opt-in feature, so default-on is acceptable; opt out
 with ``0`` / ``false`` / ``no`` / ``off`` to restore the pure-cosine rank.
 
 **Keep-original guard (entailment-regression bug fix).** A full-book audit
-(course ``sample-full-obj-01``) found the pure top-K REPLACE could STRIP the one
+(a real full-book course) found the pure top-K REPLACE could STRIP the one
 chunk that entails the CO statement. A chapter-level CO ("Solve linear
 inequalities using the Subtraction and Addition Properties of Inequality")
 cited the section chunk that literally states both *Inequality* properties, but
@@ -629,7 +629,7 @@ def reselect_citations(
         # keep-original guard above only protects ABOVE-FLOOR, non-exercise
         # originals, but the chunk that EARNED the CO's grounded verdict is
         # often a math-dense worked example — exactly the shape the cosine
-        # floor and the exercise-demote strip (the sample-scan-01
+        # floor and the exercise-demote strip (a real scan-corpus run's
         # objective_entailment gate failure class, 2026-07-04). Never strip
         # it: entailment evidence outranks cosine relevance. Cap widens by
         # <= 1 (mirrors the protected-original widening). ANTI-FABRICATION:

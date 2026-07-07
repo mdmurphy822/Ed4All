@@ -1,6 +1,6 @@
 """multi_part question parts[] authoring PROPOSAL builder.
 
-The v1.2 openstax gold set's ``multi_part`` questions carry operator-placeholder
+The v1.2 gold set's ``multi_part`` questions carry operator-placeholder
 parts ("PART A — operator: fill in", all ``covered:true``, no
 ``relevant_passage_refs``) — the scaffold ``gold_authoring._build_candidate``
 emits for a multi_part stratified draft. The part-coverage scorer

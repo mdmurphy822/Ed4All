@@ -1324,7 +1324,7 @@ def test_outline_decision_carries_band_and_section_count():
 # ---------------------------------------------------------------------------
 # bloom_verb backfill: a model-omitted verb is recovered from the objective's
 # OWN statement (never fabricated, never copied from abcd). Regression for the
-# course-a-calib course_planning review (2 of 31 COs had bloom_verb=None).
+# real calibration course_planning review (2 of 31 COs had bloom_verb=None).
 # ---------------------------------------------------------------------------
 
 

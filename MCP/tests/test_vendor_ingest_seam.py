@@ -1,7 +1,7 @@
 """P3d tests — input-type detection + the vendor-ingest conversion seam.
 
 The DUAL-SOURCE companion to ``test_semantik_dispatch_flip.py``. SemantiK
-converts a PDF; a publisher's already-accessible HTML (e.g. OpenStax CC-BY)
+converts a PDF; a publisher's already-accessible HTML (e.g. a CC-BY publisher)
 routes through ``_run_vendor_ingest_conversion`` instead. These tests prove
 the input-type detection routes HTML→vendor / PDF→cascade and that the vendor
 seam writes the SAME ``{stem}_accessible.html`` + sidecars contract the PDF
@@ -37,7 +37,7 @@ import json
 import pytest
 
 
-# A tiny but real OpenStax-shaped accessible HTML page (publisher CC-BY style).
+# A tiny but realistic publisher-shaped accessible HTML page (CC-BY style).
 _VENDOR_PAGE_HTML = """<!DOCTYPE html><html lang="en"><head><title>1-1</title>
 </head><body><main>
 <h2>1.1 Introduction to Whole Numbers</h2>

@@ -427,7 +427,7 @@ def _block_probes(block_text_collapsed: str) -> List[str]:
     Returns a one-element list (parity with the caller's ``any(...)`` loop) or
     ``[]`` for an empty block.
 
-    Empirically (sample-course-a, 275 blocks / 72 chunks) the literal leading
+    Empirically (a real full-book corpus, 275 blocks / 72 chunks) the literal leading
     probe maximises primary-block diversity: a content-run-anchored probe that
     skips leading chrome collapses many chunks onto a few TOC/preface blocks
     whose first *content* run recurs, while the literal leading words are

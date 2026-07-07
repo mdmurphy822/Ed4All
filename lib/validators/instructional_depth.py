@@ -100,7 +100,7 @@ _ISSUE_LIST_CAP: int = 50
 #: Purely-structural / chrome block types. A page composed ENTIRELY of these
 #: (an overview / objectives / summary page) carries no instructional concepts
 #: by design, so the concepts-per-page floor must NOT fire against it — that is
-#: a false positive (course-a-calib calibration run, 2026-06-24:
+#: a false positive (a real calibration run, 2026-06-24:
 #: ``week_01_overview`` emitting 0 concept blocks tripped the critical floor).
 #: A page is "content-bearing" iff it carries >=1 block OUTSIDE this set; only
 #: content-bearing pages are subject to the concepts-per-page floor.

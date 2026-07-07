@@ -295,7 +295,7 @@ def test_restamp_no_vocabulary_is_curie_noop(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Fix 3 — final deterministic CURIE-anchoring sweep (course-a-calib calib)
+# Fix 3 — final deterministic CURIE-anchoring sweep (real calibration run)
 # ---------------------------------------------------------------------------
 #
 # Root cause: a block whose outline DECLARED minted CURIEs and whose published

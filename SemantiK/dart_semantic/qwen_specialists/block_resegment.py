@@ -365,7 +365,7 @@ def _merge_says_same_at(
 # The pedagogical-label resolver lives in deterministic_structure; import it
 # lazily inside the detector to avoid a module-load cycle and keep the SoT.
 def _pedagogical_label_at(text: str) -> bool:
-    """Whether ``text`` opens with an OpenStax pedagogical label (EXAMPLE 2 /
+    """Whether ``text`` opens with a textbook pedagogical label (EXAMPLE 2 /
     Solution / Step 3 / …) — a new logical unit starting mid-region.
 
     Reuses ``deterministic_structure._pedagogical_class_for`` (the SoT regex)

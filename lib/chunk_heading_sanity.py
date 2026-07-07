@@ -25,8 +25,8 @@ Design contract (NEVER demote a real heading):
   front-matter, and donor/foundation lists.
 
 * **Plus two NARROW additive clauses** for noise families that detector does
-  NOT catch but the task names explicitly (calibrated against the real
-  sample-course corpus): (1) the OpenStax ``EXERCISES Practice Makes Perfect``
+  NOT catch but the task names explicitly (calibrated against a real full-book
+  corpus): (1) the OpenStax ``EXERCISES Practice Makes Perfect``
   banner / ≥2 embedded ``\\d{2,3}.`` exercise-answer markers, and (2)
   full-sentence imperative/declarative prose (>15 words ending in a period).
   Both have generous floors so a real title containing a number or a short

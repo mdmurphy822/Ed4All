@@ -56,6 +56,7 @@ __all__ = [
     "get_lexicon_confusables",
     "get_lexicon_subclasses",
     "DEFAULT_LEXICON_PROFILE",
+    "LEGACY_PROFILE_ALIASES",
     "LEXICON_PROFILE_ENV",
     "strip_leading_ordinal",
 ]
@@ -233,7 +234,7 @@ def get_valid_topics(division: str, domain: str, subdomain: str) -> Set[str]:
 # new corpus is onboarded by a lexicon entry, never a code edit (owner directive
 # 3: lexicon profiles, not corpus-specific code). Profile selection is env-driven
 # (``SEMANTIK_LEXICON_PROFILE``); the default is the ``generic-academic`` base
-# overlaid by the ``openstax`` overlay. The loader is a single-shot ``lru_cache``
+# overlaid by the ``open-textbook`` overlay. The loader is a single-shot ``lru_cache``
 # read (mirrors :func:`load_taxonomy`); the per-profile getters take a resolved
 # profile spec so a caller can cache the merged view at module import.
 # ---------------------------------------------------------------------------
@@ -247,10 +248,18 @@ _SEMANTIK_LEXICON_PATH = (
 
 #: Env var selecting the active lexicon profile spec (``+``-joined profile keys,
 #: merged left-to-right, later profile overlays earlier). Default combines the
-#: generic-academic base with the OpenStax overlay so the sample-algebra
+#: generic-academic base with the open-textbook overlay so a scanned open-textbook
 #: scan corpus (TRY IT / BE PREPARED / trvit) keeps working out of the box.
 LEXICON_PROFILE_ENV = "SEMANTIK_LEXICON_PROFILE"
-DEFAULT_LEXICON_PROFILE = "generic-academic+openstax"
+DEFAULT_LEXICON_PROFILE = "generic-academic+open-textbook"
+
+#: legacy profile-key aliases (pre-rename compat) — old publisher-named keys
+#: map silently onto the neutral keys wherever a ``+``-separated spec segment
+#: is resolved, so pre-rename operator env settings keep working.
+LEGACY_PROFILE_ALIASES = {
+    "openstax": "open-textbook",
+    "openstax-shaped": "textbook-shaped",
+}
 
 
 @lru_cache(maxsize=1)
@@ -291,13 +300,16 @@ def resolve_lexicon_profile(env: Optional[Dict[str, str]] = None) -> str:
 def _profile_keys(profile_spec: str) -> List[str]:
     """Split a ``+``-joined profile spec into known profile keys (in order).
 
-    Unknown profile keys are skipped (defensive — a typo yields the remaining
-    known profiles rather than a hard failure). An empty result falls back to
-    the default spec's keys so a caller never gets a silently-empty vocabulary.
+    Each segment is normalized through :data:`LEGACY_PROFILE_ALIASES` so a
+    pre-rename spec resolves to the same lexicon. Unknown profile keys are
+    skipped (defensive — a typo yields the remaining known profiles rather
+    than a hard failure). An empty result falls back to the default spec's
+    keys so a caller never gets a silently-empty vocabulary.
     """
     lex = load_semantik_lexicon()
     known = lex.get("profiles", {})
     keys = [k.strip() for k in (profile_spec or "").split("+") if k.strip()]
+    keys = [LEGACY_PROFILE_ALIASES.get(k, k) for k in keys]
     keys = [k for k in keys if k in known]
     if not keys:
         keys = [
@@ -417,7 +429,7 @@ def get_lexicon_subclasses(
     the other lexicon fields (flat list concatenation), this is a dict-of-lists,
     so the merge is per-KEY: for each unit type present in any merged profile,
     the label lists are concatenated left-to-right and de-duplicated first-seen
-    (so an OpenStax overlay can EXTEND ``worked_example``'s seeds without
+    (so an overlay profile can EXTEND ``worked_example``'s seeds without
     displacing the generic-academic base). Returns a plain dict mapping each
     unit type to an ordered de-duplicated tuple of kebab-case seed labels.
     ``profile_spec`` defaults to the resolved env profile.

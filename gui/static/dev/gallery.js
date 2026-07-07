@@ -145,7 +145,7 @@ function phaseTimelineSection() {
 /* ---- cards ---- */
 function cardSection() {
   const grid = el('div', { class: 'gallery-grid' }, [
-    courseCard({ title: 'Algebra (OpenStax)', href: '#/viewer/algebra', meta: '24 pages · 18.2 MB', askReady: true }),
+    courseCard({ title: 'Algebra (Sample)', href: '#/viewer/algebra', meta: '24 pages · 18.2 MB', askReady: true }),
     courseCard({ title: 'Physics 101 (no link)', meta: '12 pages · 9.0 MB' }),
     runCard({ title: 'PHYS_101', status: 'running', href: '#/build/GUI-1', meta: 'textbook_to_course · building' }),
     runCard({ title: 'BIO_201', status: 'completed', href: '#/build/GUI-2', meta: 'textbook_to_course · 28m' }),

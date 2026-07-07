@@ -160,7 +160,7 @@ def test_css_hooks_ship_dark_mode_and_reading_column():
 # Dark-mode chrome + MathJax breadcrumb fix (end-user-HTML audit, 2026-07-04).
 # ---------------------------------------------------------------------------
 def test_mathjax_ignores_page_chrome():
-    # DEFECT 2 — the breadcrumb course name "(sample-scan-01)" was typeset as math.
+    # DEFECT 2 — the breadcrumb course name "(course-slug-01)" was typeset as math.
     page = _assemble(mathjax=True)
     assert "ignoreHtmlClass" in page
     # header, breadcrumb nav, and TOC nav all carry the ignore class.

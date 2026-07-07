@@ -40,7 +40,7 @@ SCHEMA_VERSION = "1.0"
 #: Subdirectory under a LibV2 course where reports land.
 GENERATION_EVAL_SUBDIR = "generation_eval"
 
-#: §1.5 Bloom-collapse floors (MEASURE-THEN-PIN — the reference sample-course-a set
+#: §1.5 Bloom-collapse floors (MEASURE-THEN-PIN — the reference full-book set
 #: spans all six incl. ``create``). Start advisory.
 BLOOM_MIN_DISTINCT = 3
 BLOOM_MAX_SHARE = 0.80

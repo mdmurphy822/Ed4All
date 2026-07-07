@@ -146,7 +146,7 @@ _CORPUS_GENERALIZATION_ENV_DEFAULTS: Dict[str, str] = {
     # converter collapses an entire multi-chapter PDF into ONE ``lesson_id``,
     # every chunk folds into a single page-group → every cooccurrence pair lands
     # weight==1 → the related_from_cooccurrence rule (weight>=3) emits ZERO
-    # edges and the KG backbone dies (measured 0 vs 556 on the openstax 7B
+    # edges and the KG backbone dies (measured 0 vs 556 on a full-course 7B
     # build). On a degenerate (<3 real groups) page/section level the guard
     # steps DOWN to a finer level (page→section→chunk) for pair-counting only —
     # real co-occurrence at a valid window, nodes/occurrences unchanged. No-op

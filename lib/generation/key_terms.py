@@ -90,7 +90,7 @@ _TAG_STRIP_RE = re.compile(r"<[^>]+>")
 
 # P4 leakage filter — reject a source-chunk sentence that is an EXERCISE /
 # HEADING / ANSWER-KEY run rather than a real definition. On the
-# exercise-dense OpenStax corpus the first sentence that merely MENTIONS the
+# exercise-dense textbook corpus the first sentence that merely MENTIONS the
 # term is very often junk ("TRY IT :: 1.35 Evaluate 8x − 3…", "EXAMPLE 1.1 In
 # the number 63,407,218…", "30 Chapter 1 Foundations Multiply.",
 # "Solution ⓐ…"). A candidate matching any of these patterns is NOT a usable

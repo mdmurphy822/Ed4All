@@ -489,7 +489,7 @@ def _cohort_plus_outlier_cos() -> List[Dict[str, Any]]:
     """Five cohesive prime-number COs (heavy shared vocab) + ONE semantic
     outlier (disjoint insurance vocabulary).
 
-    Mirrors the real sample-course-a CO-71 failure: an Everyday-Math
+    Mirrors a real full-book run's CO-71 failure: an Everyday-Math
     insurance word-problem CO sitting among an otherwise-cohesive algebra
     cohort. Under both clustering paths (Ward at a pinned K=2, or the
     no-sklearn single-link fallback at the 0.50 TO threshold) the five prime

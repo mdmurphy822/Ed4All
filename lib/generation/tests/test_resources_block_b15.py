@@ -89,8 +89,8 @@ def _resources_block() -> Block:
             "heading": "Further Reading",
             "links": [
                 {
-                    "url": "https://openstax.org/algebra",
-                    "title": "OpenStax Algebra (free open textbook)",
+                    "url": "https://example.org/algebra",
+                    "title": "Sample Algebra (free open textbook)",
                     "annotation": "the source textbook",
                 },
                 {"url": "https://example.com/notes", "title": "Course Notes"},
@@ -107,9 +107,9 @@ def test_render_resources_section_accessible_under_flag(monkeypatch):
     assert 'class="resources"' in html
     assert "<ul" in html and "</ul>" in html
     # descriptive anchor text — never a bare URL / "click here"
-    assert "OpenStax Algebra" in html
-    assert ">https://openstax.org/algebra<" not in html  # not the anchor text
-    assert 'href="https://openstax.org/algebra"' in html
+    assert "Sample Algebra" in html
+    assert ">https://example.org/algebra<" not in html  # not the anchor text
+    assert 'href="https://example.org/algebra"' in html
     assert "the source textbook" in html  # annotation rendered
     assert "click here" not in html.lower()
 
@@ -162,7 +162,7 @@ def test_validator_fires_on_bad_link(monkeypatch):
             "block_id": "b1",
             "content": {
                 "links": [
-                    {"url": "http://a", "title": "OpenStax Algebra Chapter 2"},
+                    {"url": "http://a", "title": "Sample Algebra Chapter 2"},
                     {"url": "http://b", "title": "click here"},  # generic
                     {"url": "http://c"},  # titleless -> falls back to URL
                 ]
@@ -188,7 +188,7 @@ def test_validator_passes_on_good_links(monkeypatch):
             "content": {
                 "links": [
                     {"url": "http://a", "title": "Khan Academy: Linear Equations"},
-                    {"url": "http://b", "title": "OpenStax Algebra (textbook)"},
+                    {"url": "http://b", "title": "Sample Algebra (textbook)"},
                 ]
             },
         }

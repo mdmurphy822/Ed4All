@@ -1,6 +1,6 @@
 """Deterministic OCR heading-candidate classifier (adapter-seam, model-free).
 
-Forensic audit (2026-07-03) of 8 OCR-converted OpenStax chapters
+Forensic audit (2026-07-03) of 8 OCR-converted textbook chapters
 (``sample-algebra-2e-scan-chNN``) surfaced three heading-classification
 defects the upstream council + ``deterministic_structure.clean_structure``
 pass let through on scanned corpora:
@@ -43,7 +43,7 @@ import re
 # sourced from the profile-organized pedagogical lexicon
 # (``schemas/taxonomies/semantik_lexicon.json``) via the canonical loader, so a
 # new corpus is onboarded by a lexicon entry, not a code edit. Behavior-
-# preserving: the default ``generic-academic+openstax`` profile reproduces the
+# preserving: the default ``generic-academic+open-textbook`` profile reproduces the
 # historical hardcoded names / whitelist exactly.
 from lib.ontology.taxonomy import (
     get_lexicon_apparatus_names,

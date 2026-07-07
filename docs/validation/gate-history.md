@@ -487,7 +487,7 @@ gated behind `ED4ALL_OBJECTIVE_SPECIFICITY` (default OFF → byte-identical skip
 It closes a real silent-pass loophole: `objective_entailment` scores an objective's
 TRUTH, but nothing scored whether a statement names a concrete teachable skill, so a
 vacuous CO ("Apply various techniques to solve real-world problems") passed every
-course_planning gate (~22 such COs on the 2026-07-06 sample-scan-01 TO/CO review). Three
+course_planning gate (~22 such COs on a real 2026-07-06 TO/CO review). Three
 deterministic, embedding-free checks over each CO statement — V1 content-residual floor
 (`OBJECTIVE_VACUOUS`), V2 vague-object + thin residual (`OBJECTIVE_GENERIC_OBJECT`), V3
 source-token recall vs cited chunk text (`OBJECTIVE_UNANCHORED_STATEMENT`) — plus the

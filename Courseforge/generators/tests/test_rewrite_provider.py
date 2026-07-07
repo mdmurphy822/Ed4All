@@ -1299,7 +1299,7 @@ def test_activity_contract_forbids_bare_exercise_numbers():
     """Defect B sentinel (iter-6): the ``activity`` output contract must
     require each practice item to STATE THE ACTUAL PROBLEM / TASK in full
     and forbid bare source exercise / reference numbers — closing the 7B
-    failure where the activity listed bare OpenStax exercise indices
+    failure where the activity listed bare textbook exercise indices
     (\"83, 84, 85\") as if they were practice items. The iter-5
     skill-consistency directive stays intact (additive)."""
     contract = _BLOCK_TYPE_OUTPUT_CONTRACTS["activity"]
@@ -1315,7 +1315,7 @@ def test_activity_contract_forbids_bare_exercise_numbers():
 
 
 def test_prereq_set_contract_requires_prior_skills_not_own_objectives():
-    """Defect sentinel (OpenStax Alg ch5 integers): the ``prereq_set`` output
+    """Defect sentinel (real algebra ch5 integers run): the ``prereq_set`` output
     contract must require each ``<ol>`` item to name a PRIOR foundational
     skill/topic the learner needs BEFORE this content, and explicitly forbid
     listing the chapter's OWN learning objectives or emitting a raw
@@ -1344,7 +1344,7 @@ def test_prereq_set_contract_requires_prior_skills_not_own_objectives():
 
 
 def test_callout_contract_constrains_scope_to_single_focused_highlight():
-    """Defect sentinel (OpenStax Alg ch5 + ch10): the ``callout`` output
+    """Defect sentinel (real algebra ch5 + ch10 run): the ``callout`` output
     contract must constrain a callout to ONE focused, concise highlight —
     a single key tip / warning / caution / note — and explicitly forbid
     turning it into a full lesson with multi-example sequences or

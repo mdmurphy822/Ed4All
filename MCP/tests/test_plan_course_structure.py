@@ -571,7 +571,7 @@ def test_wave18_explicit_kwargs_skips_rescale(planner_fixture):
 # _project_synthesized_objectives_to_course_json share a module-level
 # normalizer that accepts three chapter_objectives shapes:
 # list-of-groups (Courseforge synthesized), flat-list (LibV2
-# component_objectives), and dict-of-lists (OpenStax shape). Before
+# component_objectives), and dict-of-lists (vendor dict-of-lists shape). Before
 # Wave2b the dict-of-lists shape silently dropped every CO-NN id from
 # both helpers. Direct unit-coverage of the normalizer guards both
 # call sites against regression.
@@ -584,7 +584,7 @@ class TestNormalizeChapterObjectivesToGroups:
     """Wave2b: shared shape normalizer for chapter_objectives."""
 
     def test_dict_of_lists_shape_yields_all_co_ids(self):
-        """OpenStax dict-of-lists shape: every CO-NN id surfaces in
+        """Vendor dict-of-lists shape: every CO-NN id surfaces in
         canonical sorted-key order, wrapped in synthetic groups whose
         ``chapter`` is the dict key.
         """

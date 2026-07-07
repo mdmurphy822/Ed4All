@@ -438,7 +438,7 @@ def test_decision_type_in_schema_enum():
 # ---------------------------------------------------------------------------
 # leak rejection: raw OpenStax exercise / callout / math fragments must NOT
 # become sub-objective statements, and the "Understand:" template prefix must
-# never leak (regression for the course-a-calib course_planning review).
+# never leak (regression for a real calibration course_planning review).
 # ---------------------------------------------------------------------------
 
 

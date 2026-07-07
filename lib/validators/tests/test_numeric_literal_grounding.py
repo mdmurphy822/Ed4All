@@ -302,7 +302,7 @@ def _fixture_corpus_slugs() -> set:
     """Course slugs the ``alg_blocks.json`` fixture was measured against.
 
     Derived from the fixture's own ``data-cf-source-ids`` (e.g.
-    ``sample_course_a_chunk_00043``) — the identity comes from the
+    ``<course_slug>_chunk_00043``) — the identity comes from the
     fixture DATA, not a hardcoded slug in test code — so the regression binds
     to the SAME corpus it was calibrated against rather than whatever course
     happens to sort first on disk. The documented flagged-set (exactly the two
@@ -364,7 +364,7 @@ def test_real_corpus_separates_fabrication_from_grounded() -> None:
     corpus = " ".join(
         json.loads(line)["text"] for line in _ALG_CHUNKS.read_text().splitlines() if line.strip()
     )
-    sid = "dart:openstax#all"
+    sid = "dart:corpus#all"
     blocks = []
     for i, b in enumerate(blocks_raw):
         blocks.append(

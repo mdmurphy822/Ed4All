@@ -434,7 +434,7 @@ def test_explanation_blocks_contribute_to_token_count() -> None:
 #     A week_NN_overview page composed purely of hook/objective/prereq_set
 #     blocks (0 concepts) must NOT trip
 #     INSTRUCTIONAL_DEPTH_CONCEPTS_PER_PAGE_BELOW_THRESHOLD — that is a false
-#     positive (course-a-calib calibration run, 2026-06-24).
+#     positive (a real calibration run, 2026-06-24).
 # ---------------------------------------------------------------------------
 
 

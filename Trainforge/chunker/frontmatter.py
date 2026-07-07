@@ -8,9 +8,9 @@ book's *front matter*: the cover/title page, the contributing-author list, the
 copyright + ISBN + Creative-Commons attribution block, the donor /
 foundation acknowledgements, the marketing "web view" page, the Table of
 Contents, and the "Key Features / Additional Resources" preface. None of that
-is course content — yet the OpenStax 7B build's chunkset carried ~8 such chunks
+is course content — yet a real full-textbook 7B build's chunkset carried ~8 such chunks
 (``..._chunk_00001``/``_00002``/...), which then got CITED by synthesized
-objectives and polluted grounding. The curated baseline (``sample-course-a``)
+objectives and polluted grounding. The curated baseline corpus
 escaped this only because its source HTML was a hand-trimmed chapter excerpt
 that never contained the cover pages — there is no reusable pruning script to
 formalise, so this module is the formalisation.
@@ -37,8 +37,8 @@ Design goals (high precision, low false-positive):
   front-matter, regardless of how many marketing signatures it also hits.
   This is the guard that protects real algebra content.
 
-* **The "Foundations" false-positive guard.** 68/72 chunks of the OpenStax
-  Elementary Algebra corpus contain the word "foundation" — almost entirely
+* **The "Foundations" false-positive guard.** 68/72 chunks of a real
+  algebra-textbook corpus contain the word "foundation" — almost entirely
   because of the legitimate running header / chapter title "Chapter 1
   Foundations". The donor signal therefore matches the *acknowledgement
   context* ("Foundation, Inc.", named-donor patterns) and NEVER bare
@@ -75,7 +75,7 @@ DEFAULT_COVER_REGION_CHUNKS: int = 8
 # enumerate math TOPICS as menu entries ("1.5 Visualize Fractions", "Chapter 7
 # Factoring") without containing a single worked step. Vocabulary-only matching
 # let every TOC / preface chunk falsely veto out of the front-matter set.
-# Measured separation on the real OpenStax corpus: front-matter chunks (cover /
+# Measured separation on the real algebra corpus: front-matter chunks (cover /
 # authors / copyright / donor / marketing / TOC / preface) carry ZERO of these
 # markers; every real instructional chunk carries ≥1.
 # ---------------------------------------------------------------------------

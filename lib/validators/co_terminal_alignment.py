@@ -3,7 +3,7 @@
 The structural ``terminal_objective_coverage`` gate is a *roll-up* check
 only — "does every TO have ≥1 CO pointing at it / does every TO's chapter
 resolve?". It NEVER measures whether the CO→TO assignment is *semantically*
-meaningful. On the broken sample-course-a run all 62 COs carried a populated
+meaningful. On a real broken full-book run all 62 COs carried a populated
 ``terminal_id`` (force-assigned floorlessly by
 ``lib/ontology/lo_backlink.py::backlink_cos_to_tos``), so the structural
 gate passed via the genuine orphan-check path even though the assignments

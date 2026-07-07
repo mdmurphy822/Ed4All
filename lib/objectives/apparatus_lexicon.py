@@ -234,13 +234,19 @@ def _select_profiles(
     """Resolve a ``+``-joined profile spec to known profile keys, in order.
 
     ``None`` / ``"*"`` / empty → EVERY profile (the default union; over-match is
-    safe). Unknown keys are skipped; an all-unknown spec falls back to the full
-    union so a caller never gets a silently-empty lexicon.
+    safe). Each segment is normalized through the canonical
+    ``LEGACY_PROFILE_ALIASES`` map (pre-rename compat, e.g. the old
+    publisher-named key for ``textbook-shaped``). Unknown keys are skipped; an
+    all-unknown spec falls back to the full union so a caller never gets a
+    silently-empty lexicon.
     """
+    from lib.ontology.taxonomy import LEGACY_PROFILE_ALIASES  # noqa: PLC0415
+
     known = list((lex.get("profiles") or {}).keys())
     if profile_spec is None or not str(profile_spec).strip() or profile_spec == "*":
         return known
     keys = [k.strip() for k in str(profile_spec).split("+") if k.strip()]
+    keys = [LEGACY_PROFILE_ALIASES.get(k, k) for k in keys]
     keys = [k for k in keys if k in known]
     return keys or known
 

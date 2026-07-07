@@ -541,7 +541,7 @@ _SECTION_BREAK_NUM_RE = re.compile(r"^\s*\d+\.\d+")
 
 #: Fallback textbook section-opener phrases (matched case-insensitively anywhere
 #: in the heading) used when the canonical lexicon loader is unavailable.
-#: ``learning objective`` covers OpenStax "Learning Objectives" openers;
+#: ``learning objective`` covers textbook "Learning Objectives" openers;
 #: ``be prepared`` covers the readiness-quiz opener. The live values are
 #: normally derived from ``lib.ontology.taxonomy.get_lexicon_openers`` — see
 #: :func:`_section_opener_substrings` — with this tuple as the no-taxonomy

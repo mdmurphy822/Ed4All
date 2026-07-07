@@ -195,7 +195,7 @@ _HEADING_BLOCK_RE = re.compile(
 # block carries exactly one trailing recap ``<p>`` and writes its math in
 # prose (no literal ``=`` and none of the result-marker words), every <p>-based
 # / equals / marker heuristic collapses and a fully-worked example is flagged
-# incomplete (measured on the sample-course-a 7B export: 2 false positives, 0
+# incomplete (measured on a real full-book 7B export: 2 false positives, 0
 # genuine stubs). A ``solution-line`` answer container OR more than one
 # ``step-row`` is solution evidence — precise enough that a one-line stub
 # (no answer container, no step rows) still flags honestly.

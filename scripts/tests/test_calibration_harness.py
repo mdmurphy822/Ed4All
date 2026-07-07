@@ -64,16 +64,16 @@ def _make_corpus(corpus_id: str, *, fired_gates: dict[str, int], total_blocks: i
 # corpus_key derivation
 # --------------------------------------------------------------------------------------
 def test_corpus_key_strips_timestamp_prefix_and_variant():
-    assert ch._corpus_key("PROJ-sample-course-a-20260621094139") == "sample-course-a"
-    assert ch._corpus_key("PROJ-OPENSTAX_ALG_9-20260513113631") == "sample-course-a"
-    assert ch._corpus_key("sample-course-b") == "sample-course-a"
+    assert ch._corpus_key("PROJ-sample-alg-9-full7b-20260621094139") == "sample-alg-9"
+    assert ch._corpus_key("PROJ-SAMPLE_ALG_9-20260513113631") == "sample-alg-9"
+    assert ch._corpus_key("sample-alg-9-7b") == "sample-alg-9"
     assert ch._corpus_key("biology-201") == "biology-201"
 
 
 def test_corpus_key_dash_underscore_equivalence():
     # The dash vs underscore variants of one corpus must collapse to one key (the bug
     # that originally inflated distinct count to 2).
-    assert ch._corpus_key("sample-course-a") == ch._corpus_key("OPENSTAX_ALG_9")
+    assert ch._corpus_key("sample-alg-9") == ch._corpus_key("SAMPLE_ALG_9")
 
 
 # --------------------------------------------------------------------------------------
@@ -130,13 +130,13 @@ def test_content_key_collapses_two_named_runs_of_one_textbook(tmp_path):
         tmp_path, "course-a-calib", "sample-algebra-2e-s11to13_accessible"
     )
     b = _write_export_with_blocks(
-        tmp_path, "sample-course-a", "sample-algebra-2e-ch1-3_accessible"
+        tmp_path, "sample-alg-9", "sample-algebra-2e-ch1-3_accessible"
     )
     ka = ch._content_corpus_key(a, "course-a-calib")
-    kb = ch._content_corpus_key(b, "sample-course-a")
+    kb = ch._content_corpus_key(b, "sample-alg-9")
     # Slug keys would have been distinct; content keys collapse to one.
     assert ka == kb == "src:sample-algebra-2e"
-    assert ch._corpus_key("course-a-calib") != ch._corpus_key("sample-course-a")
+    assert ch._corpus_key("course-a-calib") != ch._corpus_key("sample-alg-9")
 
 
 def test_content_key_keeps_distinct_textbooks_distinct(tmp_path):
@@ -228,7 +228,7 @@ def test_discovery_collapses_same_textbook_runs(tmp_path):
 
     _full_export("course-a-cal2", "sample-algebra-2e-s11to13_accessible")
     _full_export("course-a-calib", "sample-algebra-2e-s11to13_accessible")
-    _full_export("sample-course-a", "sample-algebra-2e-ch1-3_accessible")
+    _full_export("sample-alg-9", "sample-algebra-2e-ch1-3_accessible")
     _full_export("demo-ch1-calib", "demo-ch1_accessible")
 
     corpora = ch.discover_corpora(course_filter=None, runs_dir=tmp_path)

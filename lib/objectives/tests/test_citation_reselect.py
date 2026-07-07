@@ -407,7 +407,7 @@ def test_capture_reuses_objective_chunk_prune(monkeypatch):
 # numpy-vector regression: the REAL embed client returns np.ndarray vectors
 # (2D batch). Truthiness (`not vec` / `vec or []`) on those raises "truth
 # value of an array with more than one element is ambiguous" — the exact
-# failure that killed run WF-00000000-00000000 attempt 1-3 (2026-07-02).
+# failure that killed a real run (attempts 1-3) (2026-07-02).
 # ---------------------------------------------------------------------------
 def test_numpy_batch_vectors_do_not_raise():
     np = __import__("pytest").importorskip("numpy")
@@ -610,7 +610,7 @@ def test_resolve_reselect_keep_original(monkeypatch):
 # ---------------------------------------------------------------------------
 # Keep-original guard — entailment-regression bug fix (CO-21 shape).
 #
-# Reproduces the sample-full-obj-01 CO-21 collapse: a chapter-level CO cited the
+# Reproduces a real full-book run's CO collapse: a chapter-level CO cited the
 # section chunk that ENTAILS its statement (states both named properties), but a
 # FOREIGN chunk (lexically similar — shares "solve / linear / using / properties"
 # — yet about a different topic) out-cosines it. Under the pure top-K REPLACE the
@@ -748,7 +748,7 @@ def test_entailing_chunk_pin_never_stripped():
     guard alone would strip it — it only protects ABOVE-floor originals)."""
     chunks = _chunks()
     # The entailing chunk: vocabulary disjoint from the statement, so its
-    # token-hash cosine is ~0 (below any floor) — the sample-scan worked-example
+    # token-hash cosine is ~0 (below any floor) — a real scan-corpus worked-example
     # shape.
     chunks["c_entail"] = {
         "id": "c_entail",

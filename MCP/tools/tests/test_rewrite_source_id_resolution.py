@@ -424,8 +424,8 @@ def test_cbfence_idempotent_on_clean_block():
 # 3b-quater. CB-LEAK: a leaked REASONING PREAMBLE (CJK chain-of-thought or a
 #     short English preface) preceding the real HTML is stripped; the inner HTML
 #     is intact; a clean block / legitimate intro prose is byte-identical;
-#     idempotent. Mirrors the real ``flip_card_grid`` capture (OpenStax Algebra
-#     ch3, ``inputs/contentgen/alg_blocks_ch3.json`` block index 4): a TRUNCATED
+#     idempotent. Mirrors the real ``flip_card_grid`` capture (a real
+#     algebra-course capture): a TRUNCATED
 #     first attempt, then the literal Chinese reasoning line
 #     ``相反地，我将根据要求重新构造HTML内容：``, then a ``` ```html ``` fence wrapping a
 #     COMPLETE second copy of the block (the leak doubled as a restart).
@@ -542,7 +542,7 @@ def test_cbleak_does_not_eat_p_with_here_is_before_div():
 
 # The exact captured trailing leak region of the ``explanation`` block (block
 # index 1 of ``inputs/contentgen/alg_blocks.json``) from the Sonnet-vs-7B
-# OpenStax Algebra fractions comparison: a JSON-LD ``<script>`` blob AND a
+# real algebra-course fractions capture: a JSON-LD ``<script>`` blob AND a
 # malformed ``<data-cf-block-id ...>`` pseudo-element appended after the
 # legitimate ``</section>``.
 _CAPTURED_EXPLANATION_LEAK = (

@@ -211,7 +211,7 @@ class TestContentBodyNotSkeletonOnly:
 
 
 class TestDropEmptyTopicsBeforeEmission:
-    """Wave 42 regression: sample_rag smoke showed 14/20 content pages
+    """Wave 42 regression: a real smoke run showed 14/20 content pages
     emitted as <h2>-only — topics whose paragraphs totaled ≥30 words
     but had NO individual paragraph ≥30 words (the grounding
     validator's per-paragraph floor). build_week_data must filter

@@ -2,7 +2,7 @@
 attribute whenever no PARSEABLE ``data-cf-block-id`` attribute is present —
 not merely when the literal substring is absent.
 
-Root cause (course-a-cal2 ``post_rewrite_validation`` failure): the rewrite
+Root cause (a real ``post_rewrite_validation`` failure): the rewrite
 backstop guarded block-id injection with a naive substring check
 (``"data-cf-block-id" not in new_content``). When the 7B rewrite tier narrates
 the contract in prose (or stamps the token somewhere the

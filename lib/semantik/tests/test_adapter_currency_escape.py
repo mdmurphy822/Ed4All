@@ -1,6 +1,6 @@
 r"""Currency-``$`` escape at the adapter seam (round-7b — MathJax false-pairing).
 
-The OpenStax money word-problems carry lone currency ``$`` before digits ("costs
+Textbook money word-problems carry lone currency ``$`` before digits ("costs
 $5 … and $3"). The assembled end-user page enables MathJax v3 with
 ``inlineMath [['$','$']]``, so two such amounts in one paragraph FALSE-PAIR into
 an italic inline-math span at render. ``math_fold.escape_currency_dollars`` + the

@@ -237,13 +237,13 @@ def test_no_source_chunk_text_no_mint(tmp_path):
 
 def test_generic_placeholder_curie_augmented_with_domain_curie(tmp_path):
     """FIX 1: a block carrying only a GENERIC / placeholder CURIE (e.g.
-    'outline:openstax', 'cf:CO-36' — not a key in the per-course minted
+    'outline:sample', 'cf:CO-36' — not a key in the per-course minted
     map) is treated as still needing a domain CURIE; the minted domain
     CURIE is APPENDED and the generic token is preserved."""
     _vocab_file(tmp_path)
     block = _outline_block(
         block_id="week_01_content_01#objective_d_0",
-        curies=["outline:openstax", "cf:CO-36"],  # generic placeholders
+        curies=["outline:sample", "cf:CO-36"],  # generic placeholders
         key_claims=["The slope of a line measures its steepness."],
     )
     blocks = [block]
@@ -255,7 +255,7 @@ def test_generic_placeholder_curie_augmented_with_domain_curie(tmp_path):
     )
     result = blocks[0].content["curies"]
     # Generic tokens preserved...
-    assert "outline:openstax" in result
+    assert "outline:sample" in result
     assert "cf:CO-36" in result
     # ...and the minted domain CURIE appended.
     assert "demo101:slope" in result

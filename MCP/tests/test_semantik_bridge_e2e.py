@@ -228,7 +228,7 @@ async def test_2_chunks_carry_six_fields(tmp_path):
     registry = _build_tool_registry()
     out = await registry["run_dart_chunking"](
         staging_dir=str(staging),
-        course_name="sample_text",
+        course_name="sample_course",
         libv2_root=str(libv2_root),
     )
     payload = json.loads(out)
@@ -303,7 +303,7 @@ async def test_3_chunks_indexed_and_queryable(tmp_path, monkeypatch):
     chunk_out = json.loads(
         await registry["run_dart_chunking"](
             staging_dir=str(staging),
-            course_name="sample_text",
+            course_name="sample_course",
             libv2_root=str(libv2_root),
         )
     )
@@ -342,7 +342,7 @@ async def test_3_chunks_indexed_and_queryable(tmp_path, monkeypatch):
     run_vector_indexing = registry["run_vector_indexing"]
     idx_out = json.loads(
         await run_vector_indexing(
-            course_name="sample_text",
+            course_name="sample_course",
             libv2_root=str(libv2_root),
             provider="fake",
         )

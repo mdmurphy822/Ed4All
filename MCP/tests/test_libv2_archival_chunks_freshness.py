@@ -3,7 +3,7 @@
 Bug observed (2026-04-24) on the RDF/SHACL calibration corpus:
 ``trainforge_assessment`` phase failed (parameter mapping bug —
 separate fix), but ``libv2_archival`` ran anyway and stamped a fresh
-archive. Inside, ``chunks.jsonl`` contained 32 ``smoke_sample_rag_chunk_*``
+archive. Inside, ``chunks.jsonl`` contained 32 ``sample_rag_course_chunk_*``
 lines from an April 22 prior run. Somehow a stale archive's chunks
 survived into the newly-created archive at this slug.
 
@@ -97,8 +97,8 @@ def test_freshness_stale_when_prefix_mismatched_and_old(tmp_path):
     slug carries unrelated chunk IDs."""
     chunks = tmp_path / "chunks.jsonl"
     chunks.write_text(
-        '{"id":"smoke_sample_rag_chunk_00001","text":"x"}\n'
-        '{"id":"smoke_sample_rag_chunk_00002","text":"y"}\n'
+        '{"id":"sample_rag_course_chunk_00001","text":"x"}\n'
+        '{"id":"sample_rag_course_chunk_00002","text":"y"}\n'
     )
     # mtime in the past so we don't get a false-positive ``fresh``.
     past = time.time() - 3600
@@ -112,7 +112,7 @@ def test_freshness_stale_when_prefix_mismatched_and_old(tmp_path):
     )
     assert result["status"] == "stale", result
     assert result["expected_prefix"] == "demo_101_chunk_"
-    assert "smoke_sample_rag" in result["observed_prefixes"]
+    assert "sample_rag_course" in result["observed_prefixes"]
 
 
 def test_freshness_absent_when_empty_file(tmp_path):
@@ -165,12 +165,12 @@ async def test_libv2_archival_fails_when_chunks_stale(isolated_archive):
     course_dir = root / "LibV2" / "courses" / slug
 
     # Prime the LibV2 destination with prior-run chunks (the demo-101
-    # leak shape: smoke_sample_rag_chunk_* IDs from an April 22 run).
+    # leak shape: sample_rag_course_chunk_* IDs from an April 22 run).
     (course_dir / "corpus").mkdir(parents=True)
     prior_chunks = course_dir / "corpus" / "chunks.jsonl"
     prior_chunks.write_text(
         "\n".join(
-            json.dumps({"id": f"smoke_sample_rag_chunk_{i:05d}", "text": "x"})
+            json.dumps({"id": f"sample_rag_course_chunk_{i:05d}", "text": "x"})
             for i in range(32)
         )
         + "\n"
@@ -192,7 +192,7 @@ async def test_libv2_archival_fails_when_chunks_stale(isolated_archive):
     stale_chunks_src = tf / "corpus" / "chunks.jsonl"
     stale_chunks_src.write_text(
         "\n".join(
-            json.dumps({"id": f"smoke_sample_rag_chunk_{i:05d}", "text": "x"})
+            json.dumps({"id": f"sample_rag_course_chunk_{i:05d}", "text": "x"})
             for i in range(32)
         )
         + "\n"
@@ -302,7 +302,7 @@ async def test_libv2_archival_drops_prior_chunks_before_copy(isolated_archive):
     # Plant a prior-run chunks file at the destination.
     (course_dir / "corpus").mkdir(parents=True)
     prior = course_dir / "corpus" / "chunks.jsonl"
-    prior.write_text('{"id":"smoke_sample_rag_chunk_00001","text":"x"}\n')
+    prior.write_text('{"id":"sample_rag_course_chunk_00001","text":"x"}\n')
 
     # Run archival without any Trainforge dir to copy from
     # (Trainforge intentionally absent → no chunks copy happens).

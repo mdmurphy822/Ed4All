@@ -81,7 +81,7 @@ window.MathJax = {
     enableMenu: true,
     menuOptions: { settings: { assistiveMml: true } },
     // Never typeset the page chrome (breadcrumb / header / TOC nav). The
-    // course crumb "Elementary Algebra (sample-scan-01)" was rendering as math
+    // course crumb "Course Title (course-slug-01)" was rendering as math
     // italics; ignoring these regions keeps them plain text regardless of any
     // stray/unbalanced $ elsewhere in the (thousands of) content math runs.
     ignoreHtmlClass: 'tex2jax_ignore|mathjax_ignore',

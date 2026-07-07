@@ -45,8 +45,8 @@ it. You report; you never edit, fix, or commit.
      answer keys (the "Solutions" back-matter has per-chapter headings that
      historically contaminated chapter detection);
    - missing real section headings (compare against the book's known
-     section list when available — for OpenStax Elementary Algebra 2e the
-     PDF outline has ~83 numbered sections across 10 chapters);
+     section list when available — e.g. a typical full algebra textbook's
+     PDF outline declares ~80+ numbered sections across ~10 chapters);
    - heading-level scrambles (h3 before its h2, flat h1 walls);
    - OCR-mangled heading text ("1 .3", "CHAPTER l");
    - stranded headings — a heading emitted far from its body (the

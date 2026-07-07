@@ -316,7 +316,7 @@ def _check_heading_hierarchy(html: str) -> CheckOutcome:
 
 # An external resource-loading ``src=`` on an <img> / <script> (a fetched
 # resource, WCAG 1.1.1 content-loss risk + a CSP off-origin fetch). Prose
-# ``<a href>`` links are NOT gated — OpenStax / cnx attribution anchors are
+# ``<a href>`` links are NOT gated — publisher / cnx attribution anchors are
 # legitimate content, not a resource fetch.
 _EXTERNAL_SRC_RE = re.compile(
     r"""<(?:img|script)\b[^>]*\bsrc\s*=\s*["']?\s*https?://""",

@@ -77,12 +77,12 @@ def test_rerender_from_html_title_override(tmp_path):
     rc = rr.main([
         "--from-html", str(src),
         "--output", str(out),
-        "--title", "Elementary Algebra 2e",
+        "--title", "Sample Algebra 2e",
     ])
     assert rc == 0
     html = out.read_text(encoding="utf-8")
-    assert "<h1>Elementary Algebra 2e</h1>" in html
-    assert "<title>Elementary Algebra 2e</title>" in html
+    assert "<h1>Sample Algebra 2e</h1>" in html
+    assert "<title>Sample Algebra 2e</title>" in html
     # The running-header <h2> is neutralized out of the heading stream.
     assert "<h2>188 Chapter 1 Foundations</h2>" not in html
 

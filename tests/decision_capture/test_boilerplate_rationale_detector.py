@@ -2,7 +2,7 @@
 Regression tests for Wave4-I5 boilerplate-rationale detector.
 
 Finding 6 of plans/dispatch-7-execution-inspection-2026-05.md:
-62 of 63 source_selection decisions in the OpenStax dispatch-7 run shared a
+62 of 63 source_selection decisions in a real dispatch-7 run shared a
 byte-identical 165-char rationale. The detector fires at close() time by
 scanning self.decisions grouped by decision_type; it warns when > 60% of
 entries in a group (minimum 5 entries) share the same first-80-char prefix.

@@ -270,7 +270,7 @@ _CARD_INNER = (
     '<section class="gallery-section"><h2>Cards</h2>'
     '<p>courseCard() + runCard().</p>'
     '<div class="gallery-grid">'
-    + _course_card("Algebra (OpenStax)", href="#/viewer/algebra", meta="24 pages · 18.2 MB", ask=True)
+    + _course_card("Algebra (Sample)", href="#/viewer/algebra", meta="24 pages · 18.2 MB", ask=True)
     + _course_card("Physics 101", meta="12 pages · 9.0 MB")
     + _run_card("PHYS_101", "running", "◐", "Building", href="#/build/GUI-1", meta="textbook_to_course · building")
     + _run_card("BIO_201", "done", "●", "Ready", href="#/build/GUI-2", meta="textbook_to_course · 28m")

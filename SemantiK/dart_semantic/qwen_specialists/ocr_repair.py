@@ -151,7 +151,7 @@ _OCR_REPAIR_MAX_TOKENS = 1024
 #
 # The SemantiK pedagogical lexicon (schemas/taxonomies/semantik_lexicon.json)
 # now OWNS the label-level OCR confusables (e.g. ``tr[vy]it`` -> ``TRY IT`` the
-# OpenStax scan corpus emits). Those are WHOLE-TOKEN label normalizations —
+# textbook scan corpus emits). Those are WHOLE-TOKEN label normalizations —
 # a regex-matched garbled token maps to a multi-char (often multi-WORD)
 # canonical form — so they do NOT fit the char-level ``CONFUSABLE_MAP`` gate
 # (single-char substitutions, Levenshtein <= 2, no whitespace). We MERGE them
@@ -205,9 +205,10 @@ def _lexicon_confusables_from_json() -> tuple[dict, ...]:
     """Read lexicon confusables straight from the taxonomy JSON by path.
 
     Mirrors ``lib.ontology.taxonomy`` profile resolution minimally:
-    ``SEMANTIK_LEXICON_PROFILE`` (default ``generic-academic+openstax``) is a
-    ``+``-joined list of profile keys merged left-to-right. Unknown keys are
-    skipped; an empty result falls back to every profile's confusables so a
+    ``SEMANTIK_LEXICON_PROFILE`` (default ``generic-academic+open-textbook``)
+    is a ``+``-joined list of profile keys merged left-to-right, each segment
+    folded through the legacy profile-key aliases. Unknown keys are skipped;
+    an empty result falls back to every profile's confusables so a
     misconfigured profile never silently drops the OCR fixes.
     """
     # ocr_repair.py -> qwen_specialists -> dart_semantic -> SemantiK -> <repo>
@@ -226,8 +227,13 @@ def _lexicon_confusables_from_json() -> tuple[dict, ...]:
         return ()
     spec = (os.environ.get("SEMANTIK_LEXICON_PROFILE") or "").strip()
     if not spec:
-        spec = "generic-academic+openstax"
-    keys = [k.strip() for k in spec.split("+") if k.strip() and k.strip() in profiles]
+        spec = "generic-academic+open-textbook"
+    # legacy profile-key aliases (pre-rename compat) — cross-venv twin of
+    # lib.ontology.taxonomy.LEGACY_PROFILE_ALIASES (lib/ is not importable
+    # on this fallback path; keep the two maps in sync).
+    aliases = {"openstax": "open-textbook", "openstax-shaped": "textbook-shaped"}
+    keys = [aliases.get(k.strip(), k.strip()) for k in spec.split("+") if k.strip()]
+    keys = [k for k in keys if k in profiles]
     if not keys:
         keys = list(profiles.keys())
     out: list[dict] = []

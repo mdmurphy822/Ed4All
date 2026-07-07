@@ -185,7 +185,7 @@ def _item(raw_html: str, *, chunk_type_hint: str = "explanation") -> Dict[str, A
         "module_id": "mod1",
         "module_title": "Mod 1",
         "item_id": "sample_text_ch1",
-        "title": "OpenStax Algebra Ch.1",
+        "title": "Sample Text Ch.1",
         "resource_type": "page",
         "item_path": "sample_text_ch1.html",
         "raw_html": raw_html,

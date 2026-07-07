@@ -346,7 +346,7 @@ _CURIE_SPAN_EL_RE = re.compile(
 # The two-pass rewrite tier leaks two synthetic-token classes into VISIBLE
 # prose that a learner should never read:
 #
-#   1. Minted CURIEs (``prefix:localname`` — e.g. ``samplecoursea:integers``)
+#   1. Minted CURIEs (``prefix:localname`` — e.g. ``samplecourse:integers``)
 #      that the dynamic-CURIE-minting pass attaches as an anchoring signal. The
 #      ANCHORING signal belongs in the hidden ``<span data-cf-curie>`` ONLY;
 #      every visible occurrence (bare token, ``<code>prefix:localname</code>``,
@@ -360,7 +360,7 @@ _CURIE_SPAN_EL_RE = re.compile(
 
 # Matches a bare CURIE-shaped token (``prefix:localname``) anywhere in prose.
 # Prefix is a lowercase alnum word; localname allows ``_`` and ``-`` so a
-# minted ``samplecoursea:least_common_multiple`` matches. Built per-CURIE at
+# minted ``samplecourse:least_common_multiple`` matches. Built per-CURIE at
 # call time (escaped) rather than a single broad regex, so we only ever rewrite
 # the SPECIFIC minted tokens for this course (never an unrelated ``foo:bar``).
 
@@ -1587,7 +1587,7 @@ _BOGUS_BLOCK_ID_EL_RE = re.compile(
 # CB-SCRIPT: a stray ``<script>...</script>`` fragment the 7B rewrite tier leaks
 # into the rendered BODY of a content block — most often a JSON-LD
 # ``<script type="application/ld+json">{...}</script>`` blob duplicating the
-# block's own metadata. The Sonnet-vs-7B comparison on the OpenStax Algebra
+# block's own metadata. The Sonnet-vs-7B comparison on a real algebra corpus
 # fractions corpus captured an ``explanation`` block (block index 1 of
 # ``inputs/contentgen/alg_blocks.json``) whose emit appends, AFTER the legitimate
 # ``</section>``, a ``<script type="application/ld+json">...</script>`` blob.
@@ -1619,7 +1619,7 @@ _LEAKED_SCRIPT_EL_ESCAPED_RE = re.compile(
 
 # A ``<`` that begins neither a valid HTML start/end tag, a comment, a CDATA, nor
 # a processing instruction. The 7B occasionally emits a CURIE token as a tag
-# (``<samplecoursea:fraction>``) or a bare ``<`` it meant as a literal. The
+# (``<samplecourse:fraction>``) or a bare ``<`` it meant as a literal. The
 # repair pass HTML-escapes these so the document parses. A valid tag name starts
 # with an ASCII letter and contains only ``[A-Za-z0-9-]`` before whitespace, ``>``,
 # or ``/``; a CURIE-as-tag (``name:local``) has a ``:`` and so is NOT matched as a
@@ -1637,11 +1637,11 @@ _VOID_HTML_ELEMENTS = frozenset({
 _BALANCE_REPAIR_TAGS = frozenset({"span", "cite", "code"})
 
 # CB2: visible bracketed chunk-id tokens the 7B leaks into learner prose
-# (e.g. ``[sample_course_a_chunk_00043]``, ``[chunk_12]``). Stripped from
+# (e.g. ``[samplecourse_chunk_00043]``, ``[chunk_12]``). Stripped from
 # the rendered HTML in the repair pass. The bracketed form is safe to strip with
 # a plain string regex because HTML attribute values never contain a literal
 # ``[`` ... ``]`` pair around a chunk id (``data-cf-source-ids`` carries the bare
-# token ``openstax_..._chunk_00043``, never the bracketed form), so this regex
+# token ``samplecourse_..._chunk_00043``, never the bracketed form), so this regex
 # can NEVER match inside an attribute value. A single leading space is consumed
 # with the token so stripping mid-sentence does not leave a double space.
 _LEAKED_CHUNK_TOKEN_RE = re.compile(r' ?\[\s*(?:[a-z0-9_]*_)?chunk_\d+\s*\]')
@@ -1709,7 +1709,7 @@ _LEAKED_CLOSE_FENCE_RE = re.compile(r'\n?[ \t]*`{3,}\s*$')
 # chain-of-thought it should keep private — into the emitted block, BEFORE (or
 # mid-stream in front of) the real HTML. Two captured shapes:
 #   * a NON-ENGLISH (CJK) chain-of-thought line. Real captured ``flip_card_grid``
-#     output (OpenStax Algebra ch3, ``inputs/contentgen/alg_blocks_ch3.json``)
+#     output (a real algebra ch3 capture)
 #     emitted a TRUNCATED first attempt, then the literal Chinese reasoning line
 #     ``相反地，我将根据要求重新构造HTML内容：`` ("Conversely, I will restructure the
 #     HTML content as required:"), then a ```` ```html ```` fence wrapping a
@@ -1855,7 +1855,7 @@ def _repair_rewrite_html(html: str) -> str:
        with no wrapping fence is byte-identical. Runs FIRST so the tag-balance
        and escape steps below see clean HTML.
     0. Strip visible leaked bracketed source-id tokens (CB2) the 7B drops into
-       learner prose (e.g. ``[sample_course_a_chunk_00043]`` and the
+       learner prose (e.g. ``[samplecourse_chunk_00043]`` and the
        broader ``[clean_simplify_fractions_01]`` source-id form), along with a
        single leading space so the surrounding prose is not double-spaced.
        Operates on the bracketed form only, which never appears inside an HTML
@@ -1872,7 +1872,7 @@ def _repair_rewrite_html(html: str) -> str:
        real-tag form and the entity-escaped ``&lt;script&gt;...&lt;/script&gt;``
        form. A content block is rendered prose and must never carry a script.
     2. HTML-escape any ``<token:...>`` / bare ``<`` / stray ``>`` the model
-       meant as literal text (CURIE-as-tag, e.g. ``<samplecoursea:fraction>``).
+       meant as literal text (CURIE-as-tag, e.g. ``<samplecourse:fraction>``).
        A ``<`` opening a genuine valid HTML tag is left intact.
 
     CB3 (deliberate non-repair — documented limitation): a valid tag opener
@@ -2717,7 +2717,7 @@ def _project_synthesized_objectives_to_course_json(
     # Defensive: accept three shapes for ``chapter_objectives``:
     # (1) the Courseforge synthesized list-of-groups form,
     # (2) the LibV2 archive form (``component_objectives``), and
-    # (3) the OpenStax dict-of-lists form (Wave2b — see
+    # (3) the vendor dict-of-lists form (Wave2b — see
     # ``_normalize_chapter_objectives_to_groups`` docstring).
     # ``terminal_objectives`` accepts both the Courseforge name and
     # the LibV2 ``terminal_outcomes`` alias.
@@ -2768,7 +2768,7 @@ def _project_synthesized_objectives_to_course_json(
         # Persist the normalized list-of-groups shape so
         # ``load_canonical_objectives`` (which reads ``chapter`` +
         # ``objectives`` keys per group) sees a uniform structure
-        # across input shapes — the OpenStax dict-of-lists shape
+        # across input shapes — the vendor dict-of-lists shape
         # previously emitted as a dict on disk and dropped every CO
         # silently at the downstream walk.
         "chapter_objectives": chapter_groups,
@@ -2835,7 +2835,7 @@ def _normalize_chapter_objectives_to_groups(raw: Any) -> List[Dict[str, Any]]:
     list-of-groups form: ``[{"chapter": <label>, "objectives": [...]}, ...]``.
 
     Wave2b (``plans/wave2-smoke-verification-2026-05.md`` "Surprises"):
-    OpenStax-shaped ``synthesized_objectives.json`` carries
+    a vendor dict-of-lists-shaped ``synthesized_objectives.json`` carries
     ``chapter_objectives`` as a dict-of-lists keyed on chapter labels
     (e.g. ``{"1": [...], "2": [...]}``). Both Wave 2 helpers
     (``_project_synthesized_objectives_to_course_json`` from Wave2-I3
@@ -2857,7 +2857,7 @@ def _normalize_chapter_objectives_to_groups(raw: Any) -> List[Dict[str, Any]]:
        Wrapped in a single synthetic group keyed
        ``chapter="(ungrouped)"`` so the downstream walk still yields
        every CO-NN id.
-    3. **Dict-of-lists** (OpenStax shape):
+    3. **Dict-of-lists** (vendor dict-of-lists shape):
        ``{"1": [{"id": "CO-NN", ...}, ...], "2": [...], ...}``.
        Iterates keys in sorted order so the emitted group ordering is
        deterministic across runs; each value becomes the
@@ -9247,8 +9247,8 @@ def _run_semantik_v2_conversion(
 # Vendor-ingest conversion seam (publisher-supplied accessible HTML).
 # ---------------------------------------------------------------------------
 # The DUAL-SOURCE companion to ``_run_semantik_v2_conversion``. SemantiK
-# synthesizes accessible HTML *from a PDF*; some publishers (e.g. OpenStax
-# under CC-BY) already ship CLEAN accessible HTML, for which there is nothing
+# synthesizes accessible HTML *from a PDF*; some publishers (e.g. CC-BY
+# open-textbook publishers) already ship CLEAN accessible HTML, for which there is nothing
 # to synthesize — only NORMALIZE the existing markup into the Ed4All output
 # contract via ``lib.semantik.vendor_ingest.ingest_vendor_html`` (which reuses
 # the SAME ``normalize_cascade_to_ed4all`` adapter, tagged source="vendor").
@@ -9597,7 +9597,7 @@ _COURSEFORGE_TWO_PASS_TRUTHY = frozenset({"1", "true", "yes", "on"})
 # The Sonnet baseline emits five distinct page FILES per week —
 # ``overview`` / ``content`` / ``application`` / ``self_check`` / ``summary``
 # — each with its own block composition (see
-# ``LibV2/courses/sample-course-a/.../week_NN/{overview,content_01,
+# ``LibV2/courses/<course-slug>/.../week_NN/{overview,content_01,
 # application,self_check,summary}.html`` and the spec at
 # ``plans/finegrain/sonnet-ixd-component-spec.md``). The two-pass path
 # historically emitted only ``content_NN`` (one type), giving ~2 pages/week
@@ -11789,7 +11789,7 @@ def _build_outline_curie_minter(
         # A block needs a DOMAIN CURIE when EITHER its curies list is
         # empty OR none of its existing curies is a real per-course
         # minted domain CURIE (it carries only generic / placeholder
-        # tokens like ``outline:openstax`` / ``cf:CO-36`` that the
+        # tokens like ``outline:sample`` / ``cf:CO-36`` that the
         # anchoring gate cannot anchor). A block already carrying a real
         # minted domain CURIE is left untouched (never overwrite real
         # CURIEs) — this is what makes a post-loop re-run idempotent.
@@ -11907,7 +11907,7 @@ def _mint_outline_curies(
     A block "needs a domain CURIE" when EITHER its ``content["curies"]``
     is empty OR it carries only GENERIC / non-domain CURIEs (none of the
     existing curies is a key in the per-course minted-CURIE map — e.g.
-    ``outline:openstax`` / ``cf:CO-36`` placeholders the 7B emits). In
+    ``outline:sample`` / ``cf:CO-36`` placeholders the 7B emits). In
     the generic-curie case the minted domain CURIE is APPENDED (the
     existing curies are never deleted). A block already carrying a real
     minted domain CURIE is left untouched.
@@ -13508,7 +13508,7 @@ async def _run_content_generation_outline(**kwargs) -> str:
         # below), which is the correct field/stage.
         #
         # All-filtered fallback: when EVERY topic in a week is non-content
-        # noise (e.g. week 1 of an OpenStax corpus, whose only topic is the
+        # noise (e.g. week 1 of a textbook corpus, whose only topic is the
         # donor-acknowledgments h3), DON'T re-admit the noise verbatim —
         # that re-seeds the donor name into the block_id slug, which is the
         # exact leak observed in the live run. Instead empty the topic list
@@ -14504,7 +14504,7 @@ async def _run_content_generation_outline(**kwargs) -> str:
     # ------------------------------------------------------------------ #
     # Dynamic CURIE minting (v0.3.0 corpus-generalization initiative).
     # ------------------------------------------------------------------ #
-    # A prose corpus (e.g. an OpenStax textbook) has zero RDF/SHACL
+    # A prose corpus (e.g. a general textbook) has zero RDF/SHACL
     # CURIEs in its text, so every outline block lands with an EMPTY
     # ``content["curies"]`` and ``BlockCurieAnchoringValidator`` 100%-
     # fails the ``OUTLINE_BLOCK_MISSING_CURIES`` gate. When the Stage-3
@@ -16057,7 +16057,7 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
         # so the curie-anchoring signal survives the overwrite. ONLY real
         # CURIE-shaped tokens (``prefix:localname`` — carry a ``:``) are kept:
         # the 7B rewrite tier sometimes stamps BARE CHUNK IDS
-        # (``sample_course_a_chunk_00011`` — no colon) in
+        # (``samplecourse_chunk_00011`` — no colon) in
         # ``data-cf-source-ids``, and re-attaching those as the curie span
         # text produced a span the str-path ``BlockCurieAnchoringValidator``
         # could not extract as a CURIE (no colon) → OUTLINE_BLOCK_MISSING_CURIES
@@ -16166,7 +16166,7 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
             # surface form present in the published prose is the SAME anchoring
             # surface BlockCurieAnchoringValidator's str path accepts via the
             # threaded minted_curie_map, so minting its CURIE is honest. Closes
-            # the source-chunk-only gap measured on the sample-course-a 7B export
+            # the source-chunk-only gap measured on a real full-book 7B export
             # (249 shipping blocks carried no body CURIE because the
             # source-chunk match alone never fired for them).
             if not _curie_tokens:
@@ -18538,7 +18538,7 @@ def _build_tool_registry() -> dict:
             # construction here makes the objectives set internally
             # consistent before it is ever written to disk; the
             # course_planning ``terminal_objective_coverage`` gate is the
-            # fail-fast backstop. CO-less courses (OpenStax / gui-design)
+            # fail-fast backstop. CO-less courses (vendor-HTML / chunk-only imports)
             # are returned untouched — their terminals are self-contained
             # teaching units whose coverage is content-driven, so they are
             # adjudicated by the gate (with the textbook structure), never
@@ -19234,7 +19234,7 @@ def _build_tool_registry() -> dict:
             # supported ``chapter_objectives`` shapes via the
             # module-level normalizer
             # ``_normalize_chapter_objectives_to_groups`` (Wave2b —
-            # adds the OpenStax dict-of-lists shape on top of the
+            # adds the vendor dict-of-lists shape on top of the
             # legacy list-of-groups + flat-list shapes). Terminals are
             # read from either ``terminal_objectives`` or the LibV2
             # ``terminal_outcomes`` alias.
@@ -20882,7 +20882,7 @@ def _build_tool_registry() -> dict:
         archival call refuses to proceed and emits ``error_code =
         TRAINFORGE_OUTPUT_STALE``. This catches the case where a prior
         run's chunks under the same slug survived into a fresh archive
-        (observed today: smoke_sample_rag_chunk_* IDs leaked into the
+        (observed today: smoke_course_chunk_* IDs leaked into the
         RDF/SHACL calibration corpus archive after trainforge_assessment
         failed). When
         Trainforge was intentionally absent (no chunks file at all), the
@@ -22667,7 +22667,7 @@ def _build_tool_registry() -> dict:
             # chapter's DART chunks into serving-window-sized windows
             # (``group_chunks_into_windows``, the SAME helper + ``num_ctx``
             # env knob Stage 2 uses) and dispatch ONE call per window. A
-            # corpus that collapses to a single mega-chapter (the OpenStax
+            # corpus that collapses to a single mega-chapter (the real-corpus
             # 7B failure) then drives many concept calls — not one — so the
             # vocabulary approaches the corpus's real concept count instead
             # of whatever fits a single truncated chapter_text prompt.
@@ -23159,7 +23159,7 @@ def _build_tool_registry() -> dict:
         # re-tag UNIONs into each chunk's ``concept_tags`` so the
         # downstream ``build_cooccurrence_graph`` emits real
         # ``DomainConcept`` nodes for general (non-RDF) textbook prose —
-        # the end-to-end payoff that closes the OpenStax 0-node failure.
+        # the end-to-end payoff that closes the real-corpus 0-node failure.
         #
         # CRITICAL: the re-tag is in-memory only — ``chunks.jsonl`` on
         # disk is NOT rewritten, so ``dart_chunks_sha256`` stays
@@ -24379,7 +24379,7 @@ def _build_tool_registry() -> dict:
         # that drops the input path from carried-forward phase context,
         # the prior fail-soft empty-shell behaviour silently destroyed
         # real chunks (see plans/dispatch-7-execution-inspection-2026-05.md
-        # Finding 2; cost ~92 chunks during the 2026-05-12 OpenStax run).
+        # Finding 2; cost ~92 chunks during a real 2026-05 full-book run).
         # Preserve when an existing artifact is found; fail-closed when
         # there's nothing to preserve.
         if not html_files:
@@ -26003,7 +26003,7 @@ def _build_tool_registry() -> dict:
             # forward phase context. The prior fail-soft empty-shell
             # behaviour silently destroyed real chunks (see
             # plans/dispatch-7-execution-inspection-2026-05.md Finding 2;
-            # cost ~92 chunks during the 2026-05-12 OpenStax run).
+            # cost ~92 chunks during a real 2026-05 full-book run).
             # Preserve when an existing artifact is found; fail-closed
             # when there's nothing to preserve.
             existing_chunks_path = (

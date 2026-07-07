@@ -206,7 +206,7 @@ workflows:
           # slots, the (verb·level·knowledge-type) Bloom chip, and the rendered
           # interaction/feedback HTML are all rewrite-tier emit), so against
           # outline-tier dict blocks they blanket-fail every block as a false
-          # positive (course-a-calib calibration run, 2026-06-24: udl_coverage
+          # positive (a real calibration run, 2026-06-24: udl_coverage
           # 50/50 UDL_SINGLE_REPRESENTATION, qa_checklist 50/50 QA3_NO_BLOOM_TAG,
           # block_quality_rubric 2664, interaction_feedback 2146,
           # anatomy_slot_presence 74). They remain wired at
@@ -421,7 +421,7 @@ workflows:
           # block_prose_entailment gives no numeric fabrication protection.
           # This gate cross-checks each prose fraction's num/denom pair against
           # the cited source under OCR-tolerant containment. Day-1 SHADOW
-          # (warning): measured clean separation on the real sample-course-a
+          # (warning): measured clean separation on a real full-book
           # corpus (grounded blocks 0% source-absent; fabrication blocks flag).
           - gate_id: numeric_literal_grounding
             validator: lib.validators.numeric_literal_grounding.NumericLiteralGroundingValidator
@@ -2513,7 +2513,7 @@ workflows:
           # slots, the (verb·level·knowledge-type) Bloom chip, and the rendered
           # interaction/feedback HTML are all rewrite-tier emit), so against
           # outline-tier dict blocks they blanket-fail every block as a false
-          # positive (course-a-calib calibration run, 2026-06-24: udl_coverage
+          # positive (a real calibration run, 2026-06-24: udl_coverage
           # 50/50 UDL_SINGLE_REPRESENTATION, qa_checklist 50/50 QA3_NO_BLOOM_TAG,
           # block_quality_rubric 2664, interaction_feedback 2146,
           # anatomy_slot_presence 74). They remain wired at
@@ -2902,7 +2902,7 @@ workflows:
           # block_prose_entailment gives no numeric fabrication protection.
           # This gate cross-checks each prose fraction's num/denom pair against
           # the cited source under OCR-tolerant containment. Measured clean
-          # separation on the real sample-course-a corpus (grounded blocks 0%
+          # separation on a real full-book corpus (grounded blocks 0%
           # source-absent; fabrication blocks flag).
           - gate_id: numeric_literal_grounding
             validator: lib.validators.numeric_literal_grounding.NumericLiteralGroundingValidator

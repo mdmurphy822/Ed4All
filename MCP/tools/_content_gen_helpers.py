@@ -797,7 +797,7 @@ def _parse_html_heading_fallback(
     """Section-boundary fallback for DART HTML where paragraphs live
     outside ``<section>`` wrappers.
 
-    Wave 35: on the sample-corpus corpus DART emits ``<section
+    Wave 35: on some real corpora DART emits ``<section
     data-dart-block-id="…">`` tags that hold only a heading, while the
     1000+ ``<p>`` tags sit directly inside ``<main>``/``<article>``
     between consecutive sections. The primary section-based parser
@@ -2643,9 +2643,9 @@ def _topic_source_references(
       (which collapses underscores into one token) to a gentler
       lowercase + space-to-hyphen transform that matches the
       :class:`ContentGroundingValidator` and Wave 9 source-router.
-      Pre-Wave-35 emitted slugs like ``sampledigitalageaccessible``
+      Pre-Wave-35 emitted slugs like ``sampledigitalcourseaccessible``
       couldn't resolve against validator-visible staged HTML whose
-      stem was ``sample_digital_age_accessible``.
+      stem was ``sample_digital_course_accessible``.
     * Block ID — uses a gentler lowercase + pattern-filter so DART's
       native ``s3_c0`` / 16-hex IDs survive unchanged (the
       ``canonical_slug`` helper would collapse underscores and break

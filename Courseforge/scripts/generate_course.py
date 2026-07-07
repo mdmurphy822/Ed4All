@@ -3408,7 +3408,7 @@ def _summary_recap_paragraphs(
     word <li>s) + reflection prompts, producing zero non-trivial
     paragraphs per the validator's ``NON_TRIVIAL_WORD_FLOOR = 30``. On
     corpora where summary is a meaningful fraction of total pages (e.g.
-    8/44 on the sample_rag smoke run) that tripped
+    8/44 on a real smoke run) that tripped
     ``AGGREGATE_EMPTY_PAGES``.
 
     Selection strategy:
@@ -4634,7 +4634,7 @@ def generate_week(
     # words each) + reflection prompts — zero non-trivial paragraphs per
     # ContentGroundingValidator's NON_TRIVIAL_WORD_FLOOR = 30 — which
     # tripped AGGREGATE_EMPTY_PAGES when summary was a meaningful
-    # fraction of total pages (8/44 on the sample_rag smoke run).
+    # fraction of total pages (8/44 on a real smoke run).
     #
     # Only emit the recap when BOTH the page carries grounding
     # (summary_heading_attrs non-empty) AND content_modules yields at

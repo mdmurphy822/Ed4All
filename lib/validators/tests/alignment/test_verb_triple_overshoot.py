@@ -241,7 +241,7 @@ def test_prose_only_cohort_overshoot_tolerated_under_delivery_fires(monkeypatch)
     """cal2 finding — prose-only blocks (no declared bloom) are the real corpus
     shape, and the over-shoot tolerance carries the FP reduction there.
 
-    cal2 (66-block sample-algebra rewrite) blocks carry NO declared bloom
+    cal2 (a real 66-block calibration rewrite) blocks carry NO declared bloom
     anywhere — ``content`` is an HTML string, so ``resolve_block_verb_level``
     always falls through to the math-idiom-vulnerable prose scan. On that
     cohort 29 audited verb-triple pairs resolved ABOVE the objective band

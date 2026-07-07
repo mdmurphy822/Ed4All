@@ -285,7 +285,7 @@ def test_solution_line_div_is_evidence():
     """A worked example whose answer lives in a ``<div class="solution-line">``
     container (with a single trailing recap ``<p>``, no literal ``=``, no
     result-marker word) is recognized as complete — the false positive
-    measured on the sample-course-a 7B export (week_02_content_01#example_*)."""
+    measured on a real full-book 7B export (week_02_content_01#example_*)."""
     html = (
         "<section><h3>Worked Example: Least Common Multiple</h3>"
         '<div class="step-row"><span class="step-label">Step 1:</span> '

@@ -12,7 +12,7 @@ Cases:
    CO → pass (backward-compat for RDF/SHACL-style courses).
 3. ``test_co_less_chapter_in_structure_passes`` — CO-less course whose
    terminals point at chapters that exist (modulo label normalisation) →
-   pass (backward-compat for OpenStax / well-formed reuse runs).
+   pass (backward-compat for legacy well-formed reuse runs).
 4. ``test_co_less_chapter_missing_blocks`` — CO-less terminal pointing at a
    chapter NOT in the structure → critical ``ORPHAN_TERMINAL_NO_CHAPTER``.
 5. ``test_co_less_no_structure_warns_and_passes`` — CO-less course with no

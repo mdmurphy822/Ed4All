@@ -364,7 +364,7 @@ Before a long synthesis, confirm the two real Stage inputs are clean:
 
 - **`chapter_text`** (Stage-1 draft-TO input) — from `extract_textbook_structure`, per
   chapter. Check it's real chapter prose, free of front-matter (author/funder/title
-  pages) and answer-key text (`"Try It"`, `"Answer Key"`, `openstax.org`-style vendor
+  pages) and answer-key text (`"Try It"`, `"Answer Key"`, publisher-site-URL vendor
   chrome). Front-matter bleed is what turns a real chapter into a garbage terminal
   objective.
 - **Chunks** (Stage-2 grounding) — `--stop-after chunking`, then read **LibV2**

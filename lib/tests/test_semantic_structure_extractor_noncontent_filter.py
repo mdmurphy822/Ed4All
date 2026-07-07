@@ -1,6 +1,6 @@
 """Content-heading filter tests for SemanticStructureExtractor.
 
-A live OpenStax Elementary Algebra (ch1-3) full-pipeline run emitted 15
+A live full-textbook (ch1-3) pipeline run emitted 15
 "chapters" because the heading-hierarchy fallback promoted non-content
 headings to chapter/section nodes:
 

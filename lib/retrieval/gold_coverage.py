@@ -32,7 +32,7 @@ chapter) is read, in priority order, from: an explicit ``objectives``
 mapping passed by the caller; else derived from the union chunkset's
 ``learning_outcome_refs`` (terminal = ``to-*`` / ``TO-*``; chapter =
 ``co-*`` / ``CO-*``). The derived universe is honest about a course that
-ships no separate objectives doc (the openstax union case).
+ships no separate objectives doc (the union-course case).
 
 The report is emitted to ``<course_dir>/retrieval_eval/gold_coverage_<ts>.json``
 by :func:`write_coverage_report` and mirrors the ``GoldSetIssue`` warning
@@ -255,7 +255,7 @@ def build_coverage_report(
         chunks_by_id: the pinned chunkset indexed by id.
         objectives: optional synthesized objectives doc; when omitted the
             objectives universe is derived from the chunkset.
-        is_union: when True (default for the openstax union course) the
+        is_union: when True (default for the union course) the
             per-population coverage slice is enforced; set False for a
             single-population (non-union) chunkset to skip the population
             warnings.

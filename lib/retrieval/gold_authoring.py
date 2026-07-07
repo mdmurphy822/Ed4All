@@ -959,7 +959,7 @@ def draft_worked_example_candidates(
 #   1. Pairs a course chunk with a source chunk on the SAME concept,
 #      deterministically, via shared significant-token vocabulary
 #      (:func:`mine_both_population_pairs`). concept_tags are empty on the
-#      openstax union corpus, so the pairing leans on section-heading +
+#      the union corpus, so the pairing leans on section-heading +
 #      body-text content tokens (a small stopword filter keeps the signal on
 #      domain vocabulary), and the highest-overlap source partner per course
 #      chunk is chosen (ties broken by chunk id for determinism).

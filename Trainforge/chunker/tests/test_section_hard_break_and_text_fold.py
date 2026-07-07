@@ -1,6 +1,6 @@
 """Fix 1 (section-boundary hard break) + Fix 3 (text-level fragment fold).
 
-Covers the sample-scan forensic-audit fixes:
+Covers the scan-corpus forensic-audit fixes:
 
 * Fix 1 — ``ED4ALL_CHUNK_SECTION_HARD_BREAK`` forces a chunk break when the
   merger crosses a textbook SECTION boundary, so a chunk never fuses one

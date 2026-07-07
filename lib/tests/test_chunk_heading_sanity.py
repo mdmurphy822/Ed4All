@@ -6,7 +6,7 @@ never blank, never repair noise → noise) + the ``TRAINFORGE_HEADING_SANITY_FIL
 gate parse-with-fallback. All fixtures inline — no course-data references.
 
 The positive (noise) / negative (real-title) lists are calibrated against the
-real sample-course corpus headings observed at the live ``_run_dart_chunking``
+real full-book corpus headings observed at the live ``_run_dart_chunking``
 path: the 8 noise families the task names + the real section titles that MUST
 survive untouched.
 """
@@ -55,7 +55,7 @@ from lib.chunk_heading_sanity import (
         # 8a. Full-sentence imperative prose ending in a period (Layer 3a).
         "Write the numbers one under the other, lining up the decimal points "
         "carefully before you begin adding each column.",
-        # 8b. The REAL openstax instance: prose with an internal sentence
+        # 8b. The REAL corpus instance: prose with an internal sentence
         # period + a numeric measurement tail "0.6" (Layer 3b).
         "Write the numbers one under the other, lining up the decimal "
         "points. 0.6",

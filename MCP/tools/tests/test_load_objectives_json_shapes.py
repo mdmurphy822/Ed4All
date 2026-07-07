@@ -2,7 +2,7 @@
 
 Wave2b's smoke verification noted that ``_content_gen_helpers.load_objectives_json``
 silently dropped every CO-NN id when ``chapter_objectives`` arrived as a
-dict-of-lists (the OpenStax shape ``{"1": [...], "2": [...]}``) — the
+dict-of-lists (the vendor dict-of-lists shape ``{"1": [...], "2": [...]}``) — the
 upstream loader iterated the dict-keys rather than the objectives.
 
 Wave2c fixes the loader to delegate to the shared

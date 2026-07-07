@@ -3,9 +3,10 @@
 The opener / apparatus / confusable vocabularies moved out of hardcoded Python
 constants into ``schemas/taxonomies/semantik_lexicon.json`` (owner directive 3:
 lexicon profiles, not corpus-specific code). These tests lock the loader's
-profile-merge semantics AND assert the default ``generic-academic+openstax``
+profile-merge semantics AND assert the default ``generic-academic+open-textbook``
 profile reproduces the historical classifier vocabulary exactly (behavior-
-preserving refactor).
+preserving refactor). The legacy publisher-named profile-key spellings must
+keep resolving via ``LEGACY_PROFILE_ALIASES`` (silent back-compat).
 """
 from __future__ import annotations
 
@@ -21,7 +22,7 @@ def test_lexicon_loads_and_has_profiles():
     lex = T.load_semantik_lexicon()
     assert "profiles" in lex and isinstance(lex["profiles"], dict)
     assert "generic-academic" in lex["profiles"]
-    assert "openstax" in lex["profiles"]
+    assert "open-textbook" in lex["profiles"]
 
 
 def test_lexicon_cached_identity():
@@ -35,7 +36,7 @@ def test_lexicon_cached_identity():
 
 
 def test_default_profile_spec():
-    assert T.resolve_lexicon_profile({}) == "generic-academic+openstax"
+    assert T.resolve_lexicon_profile({}) == "generic-academic+open-textbook"
 
 
 def test_env_override_profile_spec():
@@ -58,7 +59,7 @@ def test_unknown_profile_falls_back_to_default_keys():
 
 
 def test_default_openers_reproduce_historical_order():
-    openers = T.get_lexicon_openers("generic-academic+openstax")
+    openers = T.get_lexicon_openers("generic-academic+open-textbook")
     got = [(o["role"], o["display"], o["numbered"]) for o in openers]
     assert got == [
         ("objectives", "Learning Objectives", False),
@@ -85,7 +86,7 @@ def test_association_roles():
 
 
 def test_apparatus_names_reproduce_historical():
-    assert T.get_lexicon_apparatus_names("generic-academic+openstax") == (
+    assert T.get_lexicon_apparatus_names("generic-academic+open-textbook") == (
         "Key Terms",
         "Key Concepts",
         "Chapter Review",
@@ -124,11 +125,11 @@ def test_confusables_default_has_trvit():
 
 
 # ---------------------------------------------------------------------------
-# Overlay semantics: openstax vocab is additive over generic-academic.
+# Overlay semantics: open-textbook vocab is additive over generic-academic.
 # ---------------------------------------------------------------------------
 
 
-def test_generic_profile_excludes_textbook_openers():
+def test_generic_profile_excludes_open_textbook_openers():
     roles = {o["role"] for o in T.get_lexicon_openers("generic-academic")}
     assert "try_it" not in roles and "readiness_check" not in roles
     assert {"objectives", "worked_example", "how_to", "solution"} <= roles
@@ -136,6 +137,35 @@ def test_generic_profile_excludes_textbook_openers():
 
 def test_generic_profile_has_no_confusables():
     assert T.get_lexicon_confusables("generic-academic") == ()
+
+
+# ---------------------------------------------------------------------------
+# Legacy profile-key aliases (pre-rename compat): the old publisher-named
+# spelling resolves to the SAME lexicon as the neutral key — silently.
+# ---------------------------------------------------------------------------
+
+
+def test_legacy_alias_spec_resolves_to_same_lexicon():
+    legacy = "generic-academic+openstax"
+    renamed = "generic-academic+open-textbook"
+    assert T.get_lexicon_openers(legacy) == T.get_lexicon_openers(renamed)
+    assert T.get_lexicon_apparatus_names(legacy) == T.get_lexicon_apparatus_names(renamed)
+    assert T.get_lexicon_confusables(legacy) == T.get_lexicon_confusables(renamed)
+    assert T.get_lexicon_subclass_glosses(legacy) == T.get_lexicon_subclass_glosses(renamed)
+
+
+def test_legacy_alias_env_value_resolves_to_same_lexicon():
+    # An operator env still set to the LEGACY value keeps working: the raw
+    # spec passes through resolve_lexicon_profile and aliases at key-split.
+    env = {"SEMANTIK_LEXICON_PROFILE": "generic-academic+openstax"}
+    spec = T.resolve_lexicon_profile(env)
+    assert spec == "generic-academic+openstax"  # raw spec, aliased downstream
+    assert T.get_lexicon_openers(spec) == T.get_lexicon_openers(
+        T.resolve_lexicon_profile({})
+    )
+    # Bare legacy key aliases too (not just the composite default).
+    conf = T.get_lexicon_confusables("openstax")
+    assert {c["pattern"]: c["canonical"] for c in conf}.get("tr[vy]it") == "TRY IT"
 
 
 # ---------------------------------------------------------------------------
@@ -176,7 +206,7 @@ def test_admonition_openers_all_map_to_admonition_role():
 
 def test_new_profiles_do_not_perturb_default_openers():
     # The default profile spec is unchanged by the new opt-in overlays.
-    default_roles = [o["role"] for o in T.get_lexicon_openers("generic-academic+openstax")]
+    default_roles = [o["role"] for o in T.get_lexicon_openers("generic-academic+open-textbook")]
     assert default_roles == [
         "objectives", "readiness_check", "try_it", "worked_example", "how_to", "solution",
     ]
@@ -209,9 +239,9 @@ def test_subclass_glosses_dict_form():
 
 def test_subclass_glosses_list_form_fallback():
     # A legacy list-form profile yields the labels with EMPTY glosses (the
-    # prompt then falls back to the bare label list). openstax declares no
-    # subclasses of its own, so the merged default spec inherits the
+    # prompt then falls back to the bare label list). open-textbook declares
+    # no subclasses of its own, so the merged default spec inherits the
     # generic-academic glosses unchanged.
-    merged = T.get_lexicon_subclass_glosses("generic-academic+openstax")
+    merged = T.get_lexicon_subclass_glosses("generic-academic+open-textbook")
     base = T.get_lexicon_subclass_glosses("generic-academic")
     assert merged == base

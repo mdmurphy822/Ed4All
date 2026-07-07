@@ -98,7 +98,7 @@ ENV_DISTINCT_SKILL_SPLIT = "ED4ALL_OBJECTIVE_DISTINCT_SKILL_SPLIT"
 #: chapter into disjoint windows, so a concept restated across a window boundary
 #: yields near-duplicate COs. The single-link cosine pass at the 0.88 dedup
 #: threshold catches near-identical embeddings, but a RESTATEMENT at ~0.80 cosine
-#: (different phrasing of the same skill) slips through — the sample-scan-01 run left
+#: (different phrasing of the same skill) slips through — a real scan-corpus run left
 #: ~35-50 residual dupes, one 50-member cosine chain. This opt-in second pass runs
 #: AFTER ``cluster_by_cosine`` and BEFORE the PRONG-A distinct-skill split (so a
 #: wrongly-chained cosine cluster can still split), merging two clusters iff their
@@ -1870,7 +1870,7 @@ def dedup_candidates(
             # so the one entailing chunk can lose the relevance race to
             # topically-similar non-entailing neighbors (TOC lists, heading
             # chunks). Shipping the CO without it fails the downstream
-            # objective_entailment gate (sample-scan-01, 2026-07-04: 10 COs).
+            # objective_entailment gate (measured 2026-07-04 on a real run: 10 COs).
             # The cap widens by <= 1, mirroring citation_reselect's
             # protected-original widening. ANTI-FABRICATION: the pin is
             # already ⊆ union_ids (the rep cited it), so we only re-keep,

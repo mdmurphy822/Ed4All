@@ -173,7 +173,7 @@ def build_verifier_digest(
 # Section-aligned digest windowing (Pass-2 verifier, this session).
 #
 # The committed ``run_second_pass_verify`` built ONE digest over the WHOLE
-# assembled doc (a 2190-region OpenStax run distilled to ~1830 entries /
+# assembled doc (a real 2190-region run distilled to ~1830 entries /
 # ~112k tokens) and dispatched a SINGLE verifier call — but a 16k Ollama
 # serving window head-truncates ~86% of that prompt, so the verifier judges a
 # fragment and returns a non-committal pass (a seeded EXAMPLE-as-heading defect

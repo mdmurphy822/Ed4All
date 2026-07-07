@@ -11,11 +11,11 @@ over ``textbook_structure.json::chapters[].chapter_text``, builds a
 ``domain_concept_vocabulary.json``, compiles ``domain_concept_seeds``, and
 RE-TAGS the loaded chunks IN-MEMORY before the co-occurrence / semantic
 graph build — so a corpus whose chunks carry only a handful of distinct
-``concept_tags`` (e.g. sample-course-a: 2 distinct tags → coverage 0.133,
+``concept_tags`` (e.g. a real full-book course: 2 distinct tags → coverage 0.133,
 degenerate 2-node graph) gets real ``DomainConcept`` nodes and clears the
 chunk-anchored coverage floor.
 
-This is the production fix for the OpenStax 0-node failure, exercised
+This is the production fix for the real-corpus 0-node failure, exercised
 standalone so it can be driven directly against an existing course's
 on-disk artifacts.
 

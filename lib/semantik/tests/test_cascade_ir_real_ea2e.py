@@ -3,8 +3,8 @@
 The synthetic ``test_cascade_ir.py`` / ``test_toc_frontmatter_detector.py``
 suites exercise hand-built ``region_provenance``. This suite validates the
 chapter-IR builder against a REAL captured SemantiK cascade bridge — 2911
-regions from the OpenStax sample-algebra-2e ch1-3 PDF, captured at
-``/tmp/semantik_p4/ea2e_bridge.json``.
+regions from a real full-book ch1-3 PDF capture (path via ``EA2E_BRIDGE_JSON``;
+default ``/tmp/semantik_p4/ea2e_bridge.json``).
 
 The defect this guards (root-caused 2026-06-22): the real bridge's
 ``region_provenance`` carries, in document order, (1) a metadata-drop front

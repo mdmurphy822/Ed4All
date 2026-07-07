@@ -3,7 +3,7 @@
 Plan: ``plans/textbook-llm-synthesis-3stage-2026-05.md`` §4 + test-plan
 item 4. Wave C.
 
-This is the END-TO-END PAYOFF test. It regression-pins the OpenStax
+This is the END-TO-END PAYOFF test. It regression-pins the real-corpus
 0-``DomainConcept``-node failure (plan §0): a fixture DART chunkset whose
 chunks carry EMPTY ``concept_tags`` plus a ``textbook_structure.json``
 carrying per-chapter ``chapter_text``. With ``TEXTBOOK_SYNTHESIS_PROVIDER``
@@ -266,7 +266,7 @@ def test_stage3_emits_domain_concept_nodes(
     """THE PAYOFF — a chunkset with EMPTY concept_tags + a textbook
     structure with chapter_text yields ≥1 ``DomainConcept`` node.
 
-    Regression-pins the OpenStax 0-node failure (plan §0).
+    Regression-pins the real-corpus 0-node failure (plan §0).
     """
     payload = _run(
         tmp_path,
@@ -715,7 +715,7 @@ class _WindowCountingStubProvider:
 
 
 def _mega_chapter_chunkset(n_chunks: int = 30) -> List[Dict[str, Any]]:
-    """A chunkset that all maps to ONE chapter (the OpenStax mega-chapter
+    """A chunkset that all maps to ONE chapter (the real-corpus mega-chapter
     failure shape). No ``source.source_references`` → order-fallback joins
     every chunk to the single chapter, then windowing splits them.
     """

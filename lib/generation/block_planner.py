@@ -809,7 +809,7 @@ def detect_acronyms(source_text: str) -> List[str]:
 
 # A small CURATED table of well-known mnemonics whose canonical acronym token
 # is often ABSENT from a source that nonetheless teaches the underlying concept
-# by spelling out the expansion. Order-of-operations material (OpenStax) writes
+# by spelling out the expansion. Order-of-operations material (e.g. an algebra textbook) writes
 # "Parentheses Exponents Multiplication Division Addition Subtraction" and/or
 # "Please Excuse My Dear Aunt Sally" but frequently NEVER writes the literal
 # token "PEMDAS" — so the precision-first literal-token detector above stays

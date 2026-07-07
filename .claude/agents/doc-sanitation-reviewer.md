@@ -66,17 +66,23 @@ included).
 
 ### 2. No hardcoded course slugs in tracked code/tests/docs
 Tracked scripts/tests must DISCOVER course slugs dynamically (tier-2
-discover-or-skip) and never pin a slug/path. Known real slugs that must NOT
-appear as load-bearing literals in tracked files:
-
-`nvidia70b-slice`, `sample-course-a`, `sample7b-full`, `sample-rag-101`,
-`sample-145`, `demo`, `course-a`.
+discover-or-skip) and never pin a slug/path. Do NOT keep a literal slug list in
+this file (it would itself leak the slugs) — DERIVE the live slug set at audit
+time from the gitignored data roots, then grep tracked files for each:
 
 ```bash
-git grep -nIE 'nvidia70b-slice|sample-course-a|sample7b-full|sample-rag-101|sample-145|course-a' -- ':!plans/' ':!*/tests/fixtures/*'
-# 'demo' is short + collides; grep it word-bounded and triage each hit
-git grep -nIw 'demo' -- ':!plans/' ':!*/tests/fixtures/*'
+# enumerate the real slug/identifier universe from the (gitignored) data roots
+ls LibV2/courses/ 2>/dev/null
+ls Courseforge/exports/ 2>/dev/null | sed -E 's/^PROJ-([^-]+)-.*/\1/'
+ls inputs/ 2>/dev/null
+# then, for each discovered name N (skip names <5 chars — grep those word-bounded
+# with -w and triage each hit), sweep the tracked tree:
+git grep -nI --fixed-strings "$N" -- ':!plans/' ':!*/tests/fixtures/*'
 ```
+
+Also sweep for corpus/publisher-run provenance that outlived its corpus: vendor
+textbook names, eval-corpus document IDs/filenames, and `WF-`-prefixed run IDs
+appearing as literals in tracked files.
 
 A tier-2 test that hardcodes a slug/path (even with a `pytest.skip` fallback) is
 a violation when that literal is the ONLY input tried — it must glob-discover
@@ -145,8 +151,8 @@ tracked `*.md` must resolve in the live tree.
 ## False-positive traps (do NOT flag these)
 
 - **Substring matches** — `algebra` / `algorithm` / `marketing` strings that
-  merely CONTAIN a slug fragment are not slug literals. Word-bound `demo` and
-  inspect context before flagging.
+  merely CONTAIN a slug fragment are not slug literals. Word-bound any short
+  (<5 char) discovered slug and inspect context before flagging.
 - **`.gitkeep`** files — these are the intended placeholders, never a leak.
 - **Test fixtures** under any `*/tests/fixtures/` path — fixture names
   (e.g. `mini_course_clean`) are allowed literals, not hardcoded production

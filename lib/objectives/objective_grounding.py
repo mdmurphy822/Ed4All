@@ -263,7 +263,7 @@ def ground_candidates(
             # top-K prune can drop the one NLI-entailing chunk while keeping
             # topically-similar non-entailing neighbors — the CO then ships
             # ``grounded=True`` metadata over citations that no longer entail
-            # its statement (the sample-scan objective_entailment gate failure
+            # its statement (a real run's objective_entailment gate failure
             # class, 2026-07-04: 10 COs, each with a recorded
             # ``entailment_score`` >= 0.77 whose entailing chunk was absent
             # from the final source_refs).

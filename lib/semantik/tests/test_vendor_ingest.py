@@ -67,7 +67,7 @@ def vendor_out():
     return ingest_vendor_html(
         pages,
         pdf_stem="sample-algebra-ch1",
-        doc_title="Elementary Algebra (OpenStax, CC-BY)",
+        doc_title="Sample Algebra (Vendor, CC-BY)",
     )
 
 

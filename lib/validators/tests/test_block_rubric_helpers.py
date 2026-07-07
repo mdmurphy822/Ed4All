@@ -104,7 +104,7 @@ def test_body_text_of_deinflates_escaped_provenance():
     real = _real_body()
     prov = (
         "&lt;aside class='cf-source-provenance' "
-        "data-cf-source-ids='dart:demo-ch1#b1'&gt;"
+        "data-cf-source-ids='dart:sample-ch1#b1'&gt;"
         + ("Source provenance payload token. " * 60)
         + "&lt;/aside&gt;"
     )

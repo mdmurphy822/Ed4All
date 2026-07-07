@@ -1392,7 +1392,7 @@ def _neighbors_for(regions: list[Region], index: int) -> tuple[Region | None, Re
 # byte-stable path).
 # ---------------------------------------------------------------------------
 
-# Pedagogical-label head tokens (OpenStax "TRY IT" / "EXAMPLE 2" / "EXERCISE")
+# Pedagogical-label head tokens (textbook "TRY IT" / "EXAMPLE 2" / "EXERCISE")
 # — a SMALL, documented allowlist. A content block whose first word is one of
 # these is a likely mis-typed pedagogical unit and is always sent to the
 # reviewer regardless of council confidence (the §6.2 OR-arm). Heading
@@ -1418,8 +1418,8 @@ _PEDAGOGICAL_PREFIX_TO_COMPONENT: dict[str, str] = {
 }
 
 # Council's KNOWN-WEAK content kinds — dispatched UNCONDITIONALLY when block
-# review is on. The council systematically MIS-TYPES content here (on OpenStax
-# it labels ~35 "TRY IT" exercises as code_block at HIGH confidence, and a
+# review is on. The council systematically MIS-TYPES content here (on a real
+# textbook corpus it labels ~35 "TRY IT" exercises as code_block at HIGH confidence, and a
 # definition line as a table), so its confidence is uninformative for these
 # kinds and the conf floor cannot catch the error. Re-typing these is the whole
 # point of the full-block reviewer, so they always get a prompt. Other content

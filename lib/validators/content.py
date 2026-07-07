@@ -209,7 +209,7 @@ class ContentStructureValidator:
         page with multiple skips indistinguishable in the gate report
         — an operator had to re-run the validator after fixing the
         first occurrence to learn what came next. The dispatch-7
-        OpenStax audit (Finding F4) called this out as a completeness
+        full-book audit (Finding F4) called this out as a completeness
         gap: 23/60 pages had skips, but the absence of per-skip
         locators meant operators could only audit one violation per
         page per run.

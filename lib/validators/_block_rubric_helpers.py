@@ -67,7 +67,8 @@ _DEFAULT_BODY_CHAR_CEILING = 200
 #
 # The single global 200-char ceiling was structurally unsatisfiable for the
 # exposition / answer-bearing block types: across two real corpora only 1 of 99
-# non-exempt blocks measured <=200 chars (alg median body 794, demo 1216). The
+# non-exempt blocks measured <=200 chars (measured medians 794 and 1216 on
+# two calibration corpora). The
 # 200 target is the right ATOMIC single-idea budget (key_idea / callout / vocab
 # card / formula — a one-line idea), but exposition that legitimately develops
 # ONE idea across a worked example, a diagram long-description, a scenario, or a
@@ -76,8 +77,8 @@ _DEFAULT_BODY_CHAR_CEILING = 200
 # entries by construction, so it needs a higher budget still.
 #
 # FIX 2 raised only 6 exposition types to 1000 and left every OTHER non-exempt
-# type pinned at the 200 atomic default. On the cal2 cohort (66-block
-# sample-algebra rewrite) the 7B authored reasonable-length content for
+# type pinned at the 200 atomic default. On the cal2 cohort (a 66-block
+# calibration-corpus rewrite) the 7B authored reasonable-length content for
 # many of those still-pinned types — objective 1599 / acronym 1267 /
 # prereq_set 836 / hook 547 / problem 897 / reflection_prompt 1003 / recap 473
 # / checklist 784 / activity 1623 / explanation 2879 — so 37 non-exempt blocks
@@ -266,7 +267,7 @@ _WS_RE = re.compile(r"\s+")
 # (``&lt;aside data-cf-source-ids='dart:slug#b1'&gt;…&lt;/aside&gt;``). The
 # plain ``_TAG_RE`` only strips literal ``<...>`` tags, so an escaped run is
 # counted as visible body text and inflates the measured length (observed: a
-# demo ``key_idea`` 667 → 2843 chars). We TARGET escaped-tag runs only — we do
+# a real ``key_idea`` 667 → 2843 chars). We TARGET escaped-tag runs only — we do
 # NOT blanket-unescape every entity, because a legitimately-escaped ``&amp;``
 # or a math ``&lt;`` ("x &lt; 5") is real content and must keep its length.
 #

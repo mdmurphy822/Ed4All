@@ -4,7 +4,7 @@ Guards the shipped page against the VLM fabricated-image defect leaking
 through: an external ``http(s)://`` resource ``src=`` (``<img>`` / ``<script>``)
 or stylesheet ``<link href>`` is a broken off-origin fetch (WCAG 1.1.1 + CSP),
 and a residual ``![alt](url)`` is an un-sanitized fabricated image. Prose
-``<a href>`` attribution links (OpenStax / cnx) are legitimate content and are
+``<a href>`` attribution links (publisher / cnx) are legitimate content and are
 NOT gated.
 
 Synthetic HTML fragments only — no course-data path, no cascade, no Chromium

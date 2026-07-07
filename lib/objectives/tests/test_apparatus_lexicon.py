@@ -123,7 +123,7 @@ def test_text_has_marker():
 def test_default_is_union_of_all_profiles():
     default = compile_profile()
     generic = compile_profile("generic")
-    # The union pulls in openstax-shaped markers the generic profile lacks
+    # The union pulls in textbook-shaped markers the generic profile lacks
     # (e.g. the fused "EXERCISES Practice Makes Perfect" banner).
     assert len(default.marker_regexes) >= len(generic.marker_regexes)
     assert default.text_has_marker("EXERCISES Practice Makes Perfect")
@@ -132,6 +132,21 @@ def test_default_is_union_of_all_profiles():
 def test_unknown_profile_falls_back_to_union():
     p = compile_profile("does-not-exist")
     assert p.marker_regexes  # non-empty (fell back to the union)
+
+
+def test_legacy_profile_key_alias_resolves_same_lexicon():
+    # Pre-rename compat: the old publisher-named key spelling resolves to the
+    # SAME compiled lexicon as the neutral "textbook-shaped" key (silently,
+    # via lib.ontology.taxonomy.LEGACY_PROFILE_ALIASES).
+    legacy = compile_profile("generic+openstax-shaped")
+    renamed = compile_profile("generic+textbook-shaped")
+    assert [r.pattern for r in legacy.marker_regexes] == [
+        r.pattern for r in renamed.marker_regexes
+    ]
+    # The bare legacy key aliases too — and carries the fused banner marker
+    # the generic profile lacks.
+    bare = compile_profile("openstax-shaped")
+    assert bare.text_has_marker("EXERCISES Practice Makes Perfect")
 
 
 def test_compile_profile_is_cached():

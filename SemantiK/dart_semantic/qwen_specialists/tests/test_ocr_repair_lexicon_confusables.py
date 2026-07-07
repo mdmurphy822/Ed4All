@@ -36,13 +36,28 @@ def _has_lexicon() -> bool:
 
 def test_lexicon_rules_load_trvit():
     rules = _lexicon_confusable_rules()
-    # The default profile (generic-academic+openstax) ships the trvit->TRY IT
-    # confusable. If the lexicon JSON is unreachable the merge is an honest
-    # no-op and this asserts nothing (graceful fallback).
+    # The default profile (generic-academic+open-textbook) ships the
+    # trvit->TRY IT confusable. If the lexicon JSON is unreachable the merge
+    # is an honest no-op and this asserts nothing (graceful fallback).
     if not rules:
         return
     canon = {r.canonical for r in rules}
     assert "TRY IT" in canon
+
+
+def test_json_fallback_honors_legacy_profile_alias(monkeypatch):
+    # Pre-rename compat: an operator env still set to the LEGACY profile
+    # spelling resolves the SAME confusables as the renamed default (the
+    # fallback JSON reader folds each spec segment through the alias twin).
+    from dart_semantic.qwen_specialists import ocr_repair as m
+
+    monkeypatch.setenv("SEMANTIK_LEXICON_PROFILE", "generic-academic+openstax")
+    legacy = m._lexicon_confusables_from_json()
+    monkeypatch.setenv("SEMANTIK_LEXICON_PROFILE", "generic-academic+open-textbook")
+    renamed = m._lexicon_confusables_from_json()
+    assert legacy == renamed
+    if legacy:  # graceful no-op when the schema is unreachable
+        assert {e["pattern"]: e["canonical"] for e in legacy}.get("tr[vy]it") == "TRY IT"
 
 
 def test_char_map_unchanged_by_merge():

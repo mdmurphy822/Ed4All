@@ -150,7 +150,7 @@ def test_verb_followed_by_comma_is_detected():
 
 # ---------------------------------------------------------------------- #
 # M5 Fix C — math verbs added to the canonical Bloom taxonomy.
-# The 7B sample-course run flagged 16 verb/Bloom mismatches; 13 were FALSE
+# A full-book 7B run flagged 16 verb/Bloom mismatches; 13 were FALSE
 # POSITIVES because common math verbs were absent from the taxonomy. These
 # tests pin each new verb to its assigned Bloom level and confirm the 3 REAL
 # misclassifications (CO-16/CO-20/CO-41) still flag.

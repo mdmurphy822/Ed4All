@@ -6,7 +6,7 @@ Established this session (``plans/finegrain/content-block-quality-2026-06.md``
 iters 5/5b): **DeBERTa-v3-mnli is NUMBER-BLIND.** With the premise fixed it
 scores ``-55/84``(correct) 0.502 vs ``-1/2``(wrong) 0.487 — a 0.015 gap — and
 the fabrication ``-40/88 = -5/11`` (0.542, present in ZERO of the 72 real
-OpenStax chunks) OUTSCORES every grounded math claim. So ``block_prose_entailment``
+source chunks) OUTSCORES every grounded math claim. So ``block_prose_entailment``
 gives no fabrication protection on numbers, and ``groundedness._is_computational``
 currently EXEMPTS such claims (zero protection). This validator runs a
 numeric-literal cross-check ALONGSIDE NLI (not a text mutation) — the principled
@@ -34,7 +34,7 @@ On the 8 real 7B blocks vs the 72 real chunks of a course archive
   ``explanation`` and ``misconception`` blocks.
 * Every grounded fraction (``-55/84``, ``-11/12``, ``-5/7``, ``ex1.75`` etc.) —
   including OCR-flattened forms (``− 55 84``) and legitimately COMPUTED RESULTS
-  that OpenStax worked examples print (``-55/84`` is the result of
+  that textbook worked examples print (``-55/84`` is the result of
   ``-11/12 · 5/7``) — is matched and NOT flagged.
 
 The grounded blocks have source-absent-fraction ratio **0.00**; the fabrication
@@ -50,7 +50,7 @@ Nuance: fabricated INPUTS vs computed RESULTS
 ---------------------------------------------
 A naive "every literal must be present" would risk false-positiving a correct
 reduction's RESULT that the source happens not to print. On this corpus that
-never bites — OpenStax prints worked-example results — so the strict "≥1 absent"
+never bites — textbooks print worked-example results — so the strict "≥1 absent"
 rule is the strictest defensible rule with ZERO false positives here. To stay
 robust on corpora that DON'T print every result, the validator (a) restricts the
 flag to fractions (paired ``a/b`` — a fabricated worked-example INPUT is almost

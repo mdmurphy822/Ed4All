@@ -1,7 +1,7 @@
 r"""Deterministic pedagogical-opener classifier (A7, adapter-seam, model-free).
 
 End-user-HTML audit (2026-07-04, ``plans/enduser-html-improvements-2026-07.md``
-§A7): OpenStax scan chapters emit the pedagogical *openers* — ``Learning
+§A7): scanned-textbook chapters emit the pedagogical *openers* — ``Learning
 Objectives`` / ``Be Prepared`` / ``Try It`` / ``Example`` / ``How To`` /
 ``Solution`` — as flat inline ``<p>`` prose (or fused into the front of the
 following paragraph), never as headings. Because the chunker only breaks a
@@ -33,7 +33,7 @@ from typing import Dict, Optional, Tuple
 # Wave #22 — the opener vocabulary is sourced from the profile-organized
 # pedagogical lexicon (``schemas/taxonomies/semantik_lexicon.json``) via the
 # canonical loader, so a new corpus is onboarded by a lexicon entry, not a code
-# edit. Behavior-preserving: the default ``generic-academic+openstax`` profile
+# edit. Behavior-preserving: the default ``generic-academic+open-textbook`` profile
 # reproduces the historical hardcoded ``_OPENERS`` tuple (role / pattern /
 # display / numbered / interior-split) exactly (byte-identical classifier
 # behavior; the compiled-regex STRING may reorder harmlessly since the label
@@ -53,7 +53,7 @@ ROLE_HOW_TO = "how_to"
 ROLE_SOLUTION = "solution"
 
 # Module-level cached lexicon view (resolved at import from
-# ``SEMANTIK_LEXICON_PROFILE``, default ``generic-academic+openstax``).
+# ``SEMANTIK_LEXICON_PROFILE``, default ``generic-academic+open-textbook``).
 _LEXICON_OPENERS = get_lexicon_openers()
 
 #: Every opener role this module can emit — consumed by the adapter emit-filter
@@ -71,7 +71,7 @@ OPENER_ASSOCIATION_ROLE: Dict[str, str] = {
 }
 
 # Opener spec: (label-body regex, role, canonical Title-Case display, numbered?).
-# ``numbered`` openers carry an OpenStax exercise number (``9.1``); the number
+# ``numbered`` openers carry a textbook exercise number (``9.1``); the number
 # is folded into the display ("Try It 9.1"). Built from the lexicon.
 _OPENERS = tuple(
     (o["pattern"], o["role"], o["display"], bool(o["numbered"]))
@@ -256,7 +256,7 @@ def split_leading_opener(
 # ---------------------------------------------------------------------------
 # ITEM 4 (round-2 audit) — INTERIOR numbered-opener split.
 # ---------------------------------------------------------------------------
-# The OpenStax scan fuses successive worked units into one run-on <p>:
+# A textbook scan fuses successive worked units into one run-on <p>:
 # "… Combine like radicals. TRY IT 9.201 Simplify: … TRY IT 9.202 Simplify: …
 # EXAMPLE 9.102 Simplify: …". Each interior marker is a STRONG shape — a
 # numbered opener label (``TRY IT`` / ``EXAMPLE`` / ``BE PREPARED``) + a decimal

@@ -1,6 +1,6 @@
 """Gold-question difficulty REGRADE proposal builder.
 
-The v1.2 openstax gold set is difficulty-skewed: the seed/template arms tagged
+The v1.2 gold set is difficulty-skewed: the seed/template arms tagged
 nearly every question ``easy`` (the §1.3 heuristic defaults a single-passage
 question to ``easy``), so the coverage report's difficulty bands
 (``gold_coverage.py::_DIFFICULTY_TARGET`` easy/medium/hard ~ 40/40/20, ±15) flag

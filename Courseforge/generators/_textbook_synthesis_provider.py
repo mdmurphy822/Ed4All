@@ -140,7 +140,7 @@ _DRAFT_TO_BAND_COLLAPSE = (6, 12)          # 1-chapter, section_count >> normal
 _COLLAPSE_SECTION_THRESHOLD = 40           # >40 sections in 1 chapter == collapse
 
 # Per-chapter chapter-text char budget for Stages 2 / 3. A single
-# OpenStax chapter's prose is typically 10-20 KB; the cap protects
+# textbook chapter's prose is typically 10-20 KB; the cap protects
 # against an unusually long chapter. Over-budget chapters truncate the
 # tail and the decision event records ``chapter_text_truncated=true``.
 _CHAPTER_TEXT_BUDGET = 24_000

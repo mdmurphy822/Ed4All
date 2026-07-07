@@ -410,7 +410,7 @@ async def test_f_inline_chunk_stamps_six_fields(monkeypatch, tmp_path):
 
     out = await run_dart_chunking(
         staging_dir=str(staging),
-        course_name="sample_text",
+        course_name="sample_course",
         libv2_root=str(libv2_root),
     )
     payload = json.loads(out)

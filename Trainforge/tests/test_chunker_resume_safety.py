@@ -6,7 +6,7 @@ Background. ``MCP/tools/pipeline_tools.py::_run_imscc_chunking`` and
 the input path was missing or invalid. On a workflow resume that
 dropped the input path from carried-forward phase context, the prior
 behaviour silently overwrote a previously-valid ``chunks.jsonl`` with
-an empty file — cost ~92 chunks during the 2026-05-12 OpenStax run.
+an empty file — cost ~92 chunks during a real 2026-05 full-book run.
 
 Per ``plans/dispatch-7-execution-inspection-2026-05.md`` Finding 2, the
 fix is twofold:

@@ -261,6 +261,7 @@ SemantiK/data/prerender_cache/
 SemantiK/data/*_dataset/
 SemantiK/data/*_dataset_*/
 SemantiK/data/eval_reports/
+SemantiK/eval_reports/
 SemantiK/data/figure_images/
 SemantiK/data/figure_embeddings/
 SemantiK/data/logs/

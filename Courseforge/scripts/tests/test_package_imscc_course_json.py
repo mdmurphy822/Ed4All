@@ -148,14 +148,14 @@ _SYNTHESIZED_COURSEFORGE_FORM = {
 }
 
 
-# OpenStax-shaped form (Wave2b — chapter_objectives is a dict of
+# Vendor dict-of-lists form (Wave2b — chapter_objectives is a dict of
 # chapter-label -> flat list of CO dicts). The Wave 2 smoke verification
 # (plans/wave2-smoke-verification-2026-05.md "Surprises") found this
-# shape on real OpenStax-derived corpora; before Wave2b both helpers
+# shape on real vendor-derived corpora; before Wave2b both helpers
 # silently dropped every CO-NN entry because they only handled the
-# list-of-groups + flat-list shapes. Mirrors the OpenStax dict-of-lists
+# list-of-groups + flat-list shapes. Mirrors the vendor dict-of-lists
 # layout — chapter labels as keys, flat CO dict lists as values.
-_SYNTHESIZED_OPENSTAX_FORM = {
+_SYNTHESIZED_VENDOR_DICT_OF_LISTS_FORM = {
     "course_name": "PHYS_101",
     "duration_weeks": 8,
     "terminal_objectives": [
@@ -478,7 +478,8 @@ class TestCourseJsonEmissionFromSynthesizedObjectives:
 
     def test_vendor_dict_of_lists_shape_is_handled(self, tmp_path):
         """Wave2b regression: chapter_objectives as a dict-of-lists
-        (OpenStax shape) must NOT silently drop every CO-NN entry.
+        (vendor dict-of-lists shape) must NOT silently drop every CO-NN
+        entry.
 
         Pre-Wave2b the projection only handled list-of-groups +
         flat-list shapes; a dict-shaped chapter_objectives was passed
@@ -490,13 +491,13 @@ class TestCourseJsonEmissionFromSynthesizedObjectives:
         """
         _, synth_path, course_json_path = _build_project(
             tmp_path,
-            synthesized=_SYNTHESIZED_OPENSTAX_FORM,
+            synthesized=_SYNTHESIZED_VENDOR_DICT_OF_LISTS_FORM,
         )
         result = _project_synthesized_objectives_to_course_json(
             synth_path,
             course_json_path,
             course_code="PHYS_101",
-            course_title="Physics 101 OpenStax-form",
+            course_title="Physics 101 vendor-form",
         )
         assert result is not None
         on_disk = json.loads(course_json_path.read_text(encoding="utf-8"))

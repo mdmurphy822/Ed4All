@@ -193,7 +193,7 @@ def main() -> int:
         "--course-name",
         required=True,
         help="Slugifies to the LibV2 course dir. Use a DISTINCT slug to "
-        "avoid clobbering an in-flight course (e.g. sample-course-pkgtest).",
+        "avoid clobbering an in-flight course (e.g. mycourse-pkgtest).",
     )
     ap.add_argument("--libv2-root", default=None)
     ap.add_argument("--archive", action="store_true", help="also try libv2_archival")

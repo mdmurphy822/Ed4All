@@ -72,7 +72,7 @@ human/adjudication step decides the flip.
 USAGE
 -----
     python3 scripts/calibration_harness.py
-    python3 scripts/calibration_harness.py --course sample-course-a
+    python3 scripts/calibration_harness.py --course sample-alg-9-full7b
     python3 scripts/calibration_harness.py --runs-dir Courseforge/exports
     python3 scripts/calibration_harness.py --corpora /data/extra_lib --max-corpora 4
     python3 scripts/calibration_harness.py --out /tmp/calibration_report.json
@@ -943,12 +943,12 @@ def _corpus_key(name: str) -> str:
     """Derive the underlying-corpus identity from a course slug / export dir name.
 
     Strips the ``PROJ-`` prefix, a trailing run timestamp, and known run-variant
-    suffixes so that e.g. ``PROJ-sample-course-a-20260621094139`` and
-    ``sample-course-a`` both key to ``sample-course-a``. This is what the flip heuristic
+    suffixes so that e.g. ``PROJ-sample-alg-9-full7b-20260621094139`` and
+    ``sample-alg-9`` both key to ``sample-alg-9``. This is what the flip heuristic
     counts: ten timestamped runs of one textbook are ONE corpus, not ten.
     """
     n = _course_token(name)
-    # Normalize separators so OPENSTAX_ALG_9 and sample-course-a are ONE corpus.
+    # Normalize separators so SAMPLE_ALG_9 and sample-alg-9 are ONE corpus.
     n = n.replace("_", "-")
     # Strip trailing timestamp(s).
     n = _TIMESTAMP_RE.sub("", n)
@@ -968,8 +968,8 @@ def _corpus_key(name: str) -> str:
 # --------------------------------------------------------------------------------------
 # The slug-based ``_corpus_key`` above collapses RE-RUNS of one named course, but it
 # CANNOT see that two DIFFERENTLY-NAMED courses are the same underlying textbook. Three
-# exports — ``course-a-cal2``, ``course-a-calib``, ``sample-course-a`` — are all the
-# OpenStax ``sample-algebra-2e`` textbook, yet they key to three distinct slugs and
+# exports — ``course-a-cal2``, ``course-a-calib``, ``sample-alg-9`` — can all be the
+# SAME underlying textbook, yet they key to three distinct slugs and
 # fake the ">=2 distinct corpora" diversity precondition the flip heuristic depends on.
 # The fix: when an export carries a resolvable SOURCE-DOCUMENT signal, key on the
 # normalized source-document identity instead of the slug, so same-textbook runs collapse.
@@ -1358,8 +1358,8 @@ def aggregate(
     # the latest run TIMESTAMP. A flags-ON run exercises every IB gate; an older
     # flags-OFF run of the same textbook exercises fewer, so coverage must lead.
     # NOTE: sorting by the full corpus_id name is WRONG — differing PROJ- name
-    # prefixes (course-a vs openstax) dominate a lexicographic sort over the
-    # trailing timestamp, so an older "openstax-..." run would beat a newer
+    # prefixes (course-a vs course-b) dominate a lexicographic sort over the
+    # trailing timestamp, so an older "course-b-..." run would beat a newer
     # "course-a-..." run of the SAME underlying corpus. Sort by the extracted
     # timestamp instead.
     def _coverage(c: CorpusResult) -> int:

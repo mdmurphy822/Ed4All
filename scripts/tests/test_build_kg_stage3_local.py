@@ -97,8 +97,8 @@ def _make_chunks() -> List[Dict[str, Any]]:
             chunks.append({
                 "id": f"alg_chunk_{idx:05d}",
                 "text": text,
-                # Start with a single generic tag (degenerate, like the real
-                # openstax case where chunks carry ~2 distinct tags total).
+                # Start with a single generic tag (degenerate, like the
+                # real-course case where chunks carry ~2 distinct tags total).
                 "concept_tags": ["mathematics"],
                 "learning_outcome_refs": [],
                 "chunk_type": "content",
@@ -171,7 +171,7 @@ def test_stage3_retags_chunks_with_synthesized_concepts(tmp_path):
 # Objectives whose key_concepts are the SAME slugs the chunk prose discusses.
 # BEFORE re-tag those slugs are ungrounded LO-key-concept orphan nodes
 # (frequency=0) that drag the chunk-anchored coverage floor — faithfully
-# reproducing the sample-course-a failure shape (coverage 0.133). AFTER
+# reproducing the real-course failure shape (coverage 0.133). AFTER
 # re-tag the slugs land on ≥2 chunks → mint grounded co-occurrence nodes →
 # coverage clears the floor.
 _OBJECTIVES = {
@@ -194,7 +194,7 @@ def test_stage3_retag_lifts_coverage_above_floor(tmp_path):
     """Coverage BEFORE re-tag is below floor; AFTER re-tag clears 0.50.
 
     With objectives present, the LO key_concept slugs are ungrounded orphan
-    nodes BEFORE re-tag (the openstax failure shape: coverage ~0.13). The
+    nodes BEFORE re-tag (the real-course failure shape: coverage ~0.13). The
     Stage-3 re-tag grounds them, lifting coverage above the 0.50 floor.
     """
     # --- BEFORE: build over the degenerate existing-tags chunks -----------

@@ -1,7 +1,7 @@
 """Regression: rejoin styled drop-cap first letters split off their word body.
 
-pdfplumber's ``extract_words`` starts a new word at a font/style change, so an
-OpenStax colored / bold drop-cap first letter (the Bold "S" of "Subtraction")
+pdfplumber's ``extract_words`` starts a new word at a font/style change, so a
+textbook colored / bold drop-cap first letter (the Bold "S" of "Subtraction")
 is emitted as its OWN word ABUTTING the rest ("ubtraction"); the downstream
 space-join then fabricates "S ubtraction" / "P arentheses" / "E xponents".
 
@@ -11,8 +11,8 @@ leading word into the following word ONLY when (a) it ABUTS the next word
 single-letter words ("I remember", "a way") sit at a real >= ~2pt word space
 with the SAME font, so they are never merged.
 
-Geometry below is taken verbatim from the measured OpenStax PEMDAS chart
-(Elem-Algebra ch.1, page 35): drop-cap splits sit at gap ~0.01 with a
+Geometry below is taken verbatim from a measured real textbook-scan PEMDAS
+chart (ch.1, page 35): drop-cap splits sit at gap ~0.01 with a
 Bold->Regular font change; genuine single-letter words sit at gap ~2.57 same
 font. CPU-only, no model load, no PDF IO.
 """

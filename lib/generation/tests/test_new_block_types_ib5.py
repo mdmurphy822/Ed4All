@@ -311,7 +311,7 @@ def test_failing_multimedia_a11y_emits_shape_check_decision():
 # IB5 content-type fix — each IB5 renderer stamps a valid data-cf-content-type
 # on its block root so the critical rewrite_content_type gate
 # (BlockContentTypeValidator) + rewrite_html_shape gate PASS on the str-path.
-# Regression for the course-a-cal2 post_rewrite_validation failure: 13 IB5-type
+# Regression for a real post_rewrite_validation failure: 13 IB5-type
 # blocks failed for carrying no data-cf-content-type.
 # --------------------------------------------------------------------------- #
 
@@ -433,7 +433,7 @@ def test_ib5_render_honors_resolved_content_type_label():
 def test_ib5_render_repairs_invalid_content_type_label():
     """An INVALID content_type_label is repaired to the per-type canonical default.
 
-    Regression for the course-a-cal2 ``OUTLINE_BLOCK_INVALID_CONTENT_TYPE``
+    Regression for a real ``OUTLINE_BLOCK_INVALID_CONTENT_TYPE``
     root: the planner / LLM wrote a domain term (``expression``) into the
     content-type slot. The renderer must NOT emit it (it would fail the gate) —
     it falls back to the block_type's canonical ChunkType default.
@@ -457,7 +457,7 @@ def test_scenario_and_guided_practice_roots_stamp_content_type(monkeypatch):
     """The standard scenario (B09) + guided_practice (B08) roots carry a valid
     data-cf-content-type so the post_rewrite rewrite_content_type gate passes.
 
-    Regression for the course-a-cal2 ``week_01_application#scenario`` /
+    Regression for a real run's ``week_01_application#scenario`` /
     ``week_02_application#problem`` MISSING-content-type failures — these roots
     previously emitted no data-cf-content-type at all.
     """

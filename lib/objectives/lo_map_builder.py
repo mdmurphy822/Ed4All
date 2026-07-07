@@ -186,7 +186,7 @@ def parse_dart_ref(ref: str) -> Optional[Tuple[str, str]]:
     """Split a ``dart:<src>#<anchor>`` provenance id into ``(src, anchor)``.
 
     Returns ``None`` for any non-``dart:`` / malformed ref. ``src`` is the
-    accessible-source basename (e.g. ``sample-algebra-2e-ch1-3_accessible``)
+    accessible-source basename (e.g. ``sample-book-ch1-3_accessible``)
     and ``anchor`` is the in-page ``id=`` fragment.
     """
     if not isinstance(ref, str):

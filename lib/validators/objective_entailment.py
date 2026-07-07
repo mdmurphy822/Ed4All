@@ -101,7 +101,7 @@ _ISSUE_LIST_CAP: int = 50
 #: no-op on plain English). Built for VLM-fused-extraction corpora whose
 #: chunk text carries raw LaTeX (``$\\sqrt{48}$``, ``\\frac{...}{...}``).
 #:
-#: DEFAULT OFF — measured justification (sample-scan-01, 2026-07-04 A/B on the
+#: DEFAULT OFF — measured justification (2026-07-04 A/B on a real scan corpus with the
 #: real DeBERTa-v3 NLI): folding rescued 3 LaTeX-dense false failures
 #: (CO-12 / CO-59 / CO-165) but newly failed 3 previously-passing COs
 #: (CO-48 / CO-51 / CO-157) and flipped one verdict to CONTRADICTED — net
@@ -510,7 +510,7 @@ class ObjectiveEntailmentValidator:
 
         # Opt-in math-representation folding (see
         # ``ENV_OBJECTIVE_ENTAILMENT_MATH_FOLD`` above — default OFF, measured
-        # net-neutral on sample-scan-01). ``inputs["math_fold"]`` (gate config)
+        # net-neutral on a real scan corpus). ``inputs["math_fold"]`` (gate config)
         # overrides the env.
         math_fold = resolve_objective_entailment_math_fold(
             inputs.get("math_fold")

@@ -1,6 +1,6 @@
 """Tests for the IB5 B04/B06 a11y producer fixes in ``RewriteProvider``.
 
-A real 7B-output gap (demo calibration corpus): the two-pass rewrite tier
+A real 7B-output gap (calibration corpus): the two-pass rewrite tier
 free-authors B04 ``multimedia`` / B06 ``diagram`` HTML and (1) emits MALFORMED
 comment closes — ``--&gt;`` (HTML-entity-escaped) instead of a real ``-->`` —
 which, per the WHATWG / ``html.parser`` tokenizer, leave the comment

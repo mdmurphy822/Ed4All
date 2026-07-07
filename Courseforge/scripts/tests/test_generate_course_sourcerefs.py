@@ -483,7 +483,7 @@ class TestGenerateCourseRoundTrip:
 # ancestor walk finds ``data-cf-source-ids`` on every non-trivial body
 # <p>/<li>/<figcaption>/<blockquote>. Before Wave 41 these page bodies
 # emitted raw <h2> + <p> siblings of <main> with no grounding ancestor
-# — smoke test on sample_rag.pdf flagged 10 ungrounded paragraphs across
+# — a real smoke-test PDF flagged 10 ungrounded paragraphs across
 # these page types and scored 0.63 (< 1.0 threshold → gate FAILED).
 # ---------------------------------------------------------------------- #
 
@@ -727,7 +727,7 @@ class TestWave41SummaryBodyWrap:
 # AGGREGATE_EMPTY_PAGES count. Pre-Wave-43 summary pages emitted only
 # the Key Takeaways list (5-15-word <li>s) + reflection prompts -> 0
 # non-trivial paragraphs -> when summary was ≥~15% of total pages
-# (e.g. 8/44 on sample_rag), AGGREGATE_EMPTY_PAGES tripped critical.
+# (e.g. 8/44 on a real smoke run), AGGREGATE_EMPTY_PAGES tripped critical.
 # ---------------------------------------------------------------------- #
 
 

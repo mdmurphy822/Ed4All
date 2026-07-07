@@ -7,7 +7,7 @@ a concrete, teachable skill. So an objective like "Apply various techniques to
 solve real-world problems" — grammatically valid, on-topic enough to entail — sails
 through even though, once its Bloom verb and domain-agnostic scaffolding are
 removed, NOTHING nameable remains. The 2026-07-06 TO/CO review found ~22 such
-vacuous COs in the sample-scan-01 set.
+vacuous COs in a real full-book set.
 
 This validator closes that gap with three DETERMINISTIC, embedding-FREE checks
 over each chapter objective's STATEMENT (composes with, never re-scores,

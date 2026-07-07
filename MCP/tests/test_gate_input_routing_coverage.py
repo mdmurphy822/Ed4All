@@ -398,7 +398,7 @@ def test_every_post_rewrite_and_inter_tier_gate_has_a_builder():
 # interaction/feedback/transition slots, the Bloom chip, rendered
 # interaction/feedback HTML) that do NOT exist on outline-tier dict
 # blocks. Wired at inter_tier_validation they blanket-fail every block as
-# a false positive (course-a-calib calibration, 2026-06-24). They must
+# a false positive (a real calibration run, 2026-06-24). They must
 # live at post_rewrite_validation ONLY. These tests pin that placement so
 # a re-wire at inter_tier can't silently reintroduce the FP storm.
 # --------------------------------------------------------------------- #

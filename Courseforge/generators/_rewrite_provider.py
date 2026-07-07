@@ -601,7 +601,7 @@ _REWRITE_SYSTEM_PROMPT = (
     "\n\n"
     "CITATION HYGIENE: NEVER write raw source-chunk identifiers or "
     "bracketed chunk tokens in visible, learner-facing prose — e.g. "
-    "NEVER write `[openstax_..._chunk_00043]`, `[chunk_12]`, or any "
+    "NEVER write `[coursename_..._chunk_00043]`, `[chunk_12]`, or any "
     "bracketed `[..._chunk_NN]` token in the rendered text. NEVER write a "
     "chunk-id `<cite>` (e.g. `<cite>..._chunk_00013</cite>`) or any "
     "\"According to the source ...\" / \"According to the source chunk "
@@ -1475,7 +1475,7 @@ def _escape_orphan_placeholder_tags(html: str) -> str:
 # terminate the comment, so the comment runs on and SWALLOWS every downstream
 # sibling (``<source>`` / ``<track>`` / ``<details>`` / ``</table>``), genuinely
 # destroying the captions / transcript / long-description in a real browser
-# (confirmed on demo block ``week_02_content_01#multimedia_week02_4`` — the
+# (confirmed on a real block ``week_02_content_01#multimedia_week02_4`` — the
 # ``<!-- … --&gt;`` swallowed 1293 chars including the ``<track>`` and
 # ``<details>``). The repair rewrites the escaped close back to a real ``-->``
 # BEFORE any downstream gate / parser / consumer sees the content.

@@ -166,7 +166,7 @@ def _print_plan(workflow_id: str, path: Path, plan: Dict[str, Any], apply: bool)
 
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--workflow-id", required=True, help="e.g. WF-00000000-00000001")
+    ap.add_argument("--workflow-id", required=True, help="e.g. WF-20260420-abc12345")
     ap.add_argument(
         "--incomplete-phase",
         default="dart_conversion",

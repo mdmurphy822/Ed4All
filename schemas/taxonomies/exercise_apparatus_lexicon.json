@@ -41,8 +41,8 @@
       ],
       "glyph_markers": ["ⓐ", "ⓑ", "ⓒ", "ⓓ", "ⓔ"]
     },
-    "openstax-shaped": {
-      "description": "Publisher-flavored (OpenStax-shaped) phrasings of the same apparatus families — the fused 'EXERCISES Practice Makes Perfect' banner and the fully-spelled 'By the end of this section, you will be able to:' objective preamble. NOT tied to any single course: any textbook that adopts this apparatus shape is covered. Opt-in overlay; the union loader folds it in by default so over-match stays safe.",
+    "textbook-shaped": {
+      "description": "Textbook-shaped phrasings of the same apparatus families — the fused 'EXERCISES Practice Makes Perfect' banner and the fully-spelled 'By the end of this section, you will be able to:' objective preamble. NOT tied to any single course or publisher: any textbook that adopts this apparatus shape is covered. Opt-in overlay; the union loader folds it in by default so over-match stays safe.",
       "lo_boilerplate": [
         "by the end of this section you will be able to",
         "learning objectives by the end of this section"

@@ -8,7 +8,7 @@ The chunk_v4 schema (`schemas/knowledge/chunk_v4.schema.json`) marks
 Before Wave3-Anew2, the `_create_chunk` callbacks in
 ``MCP/tools/pipeline_tools.py::_run_dart_chunking`` /
 ``_run_imscc_chunking`` omitted ``bloom_level`` entirely (100% schema
-failure on the F2 OpenStax corpus: 72 of 72 DART chunks missing the
+failure on the F2 calibration corpus: 72 of 72 DART chunks missing the
 field) and hardcoded ``difficulty="intermediate"`` so all 72 chunks
 shared a single difficulty regardless of cognitive demand.
 
@@ -81,7 +81,7 @@ def test_bloom_level_from_jsonld_learning_objectives_wins() -> None:
 def test_bloom_level_falls_through_to_verb_heuristic_without_jsonld() -> None:
     """No JSON-LD + applicable verb in text → verb-heuristic fires.
 
-    The canonical OpenStax F2 fixture has zero JSON-LD signal in the
+    The canonical F2 fixture corpus has zero JSON-LD signal in the
     DART HTML output; the chunker MUST detect cognitive demand from the
     chunk's prose to satisfy the schema's required-field contract.
     Verbs like ``analyze`` push the level to ``analyze`` per
@@ -329,7 +329,7 @@ def test_f2_regression_emitted_chunks_carry_required_fields(
     # The fixture has two sections — one with "analyze" verbs, one with
     # "define" verbs. The verb-heuristic must yield at least two distinct
     # bloom_level values across the corpus (i.e. NOT uniformly "intermediate"
-    # like the pre-fix OpenStax run that produced 72/72 identical
+    # like the pre-fix full-book run that produced 72/72 identical
     # difficulty values).
     bloom_values = {c["bloom_level"] for c in result.chunks}
     assert len(bloom_values) >= 2, (

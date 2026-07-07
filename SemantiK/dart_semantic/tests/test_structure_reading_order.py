@@ -4,7 +4,7 @@
 headings, Pass-3 tables/math, Pass-5 paragraphs, ...) and never re-sorts to
 reading order, so the flat Region list is SEGREGATED by kind (every heading
 clustered at the front, every body paragraph at the back) rather than
-monotone in document order. On OpenStax ch1-3 that surfaces as EXAMPLE
+monotone in document order. On a real textbook ch1-3 capture that surfaces as EXAMPLE
 labels (council=heading) at byte-4% and their bodies (paragraph) at byte-40%.
 
 The fix is a final STABLE sort by ``min(feature_block_indices)`` at the exit

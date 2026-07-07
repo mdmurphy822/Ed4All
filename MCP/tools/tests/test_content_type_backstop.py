@@ -1,6 +1,6 @@
 """Regression tests for the rewrite_content_type backstop fill + repair fix.
 
-After the IB5 content-type work the course-a-cal2 ``post_rewrite_validation``
+After the IB5 content-type work a real ``post_rewrite_validation`` run
 was down to 5/66 blocks failing — ALL on the critical ``rewrite_content_type``
 gate (``BlockContentTypeValidator``), on STANDARD block types, with two roots:
 

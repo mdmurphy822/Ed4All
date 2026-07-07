@@ -6,10 +6,10 @@ module recovers coherent *pseudo-chapters* via contiguity-constrained Ward
 clustering over section embeddings, BEFORE ``textbook_structure.json`` is
 written.
 
-The algorithm was de-risked on the real 141-section OpenStax algebra
+The algorithm was de-risked on a real 141-section algebra-textbook
 structure (2026-06-17): contiguous Ward at K≈11 recovered clean
 pseudo-chapters (whole numbers / variables / integers / fractions / decimals
-/ roots / properties) that map almost 1:1 to OpenStax Ch.1's real structure.
+/ roots / properties) that map almost 1:1 to the source Ch.1's real structure.
 
 Design contract:
 

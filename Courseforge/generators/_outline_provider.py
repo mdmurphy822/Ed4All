@@ -1227,7 +1227,7 @@ def _drop_objective_echo_claims(
 
     A 7B outline tier lazily echoes a learning-objective statement verbatim
     into ``key_claims`` on thin / exercise-grounded pages (measured: 7% of
-    outline-tier claims on ``sample-full-obj-01``). An objective-echo claim is
+    outline-tier claims on a real full-book run). An objective-echo claim is
     vacuous for grounding, NLI scoring, and downstream assessment/training
     synthesis, so it is dropped here (BEFORE the strict validator; same
     pre-validation point as the sibling ``_repair_*`` helpers).
