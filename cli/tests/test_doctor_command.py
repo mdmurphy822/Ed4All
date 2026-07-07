@@ -585,7 +585,7 @@ def test_doctor_run_non_aliased_workflow_passes_through(monkeypatch):
 
 
 def test_doctor_run_aliased_workflow_is_what_nvidia_preflight_sees(monkeypatch):
-    """The aliased workflow is also what _compute_nvidia_preflight models."""
+    """The aliased workflow is also what _compute_cloud_seat_preflight models."""
     capture: dict = {}
     seen: dict = {}
     _patch_run_checks(monkeypatch, _provider_results(), capture=capture)
@@ -605,7 +605,7 @@ def test_doctor_run_aliased_workflow_is_what_nvidia_preflight_sees(monkeypatch):
     )
 
     assert result.exit_code == 0, result.output
-    # _compute_nvidia_preflight opened applied_run_env with the aliased workflow.
+    # _compute_cloud_seat_preflight opened applied_run_env with the aliased workflow.
     assert seen["workflow"] == "textbook_to_course"
 
 

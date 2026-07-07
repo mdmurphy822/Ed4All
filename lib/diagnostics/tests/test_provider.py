@@ -242,7 +242,7 @@ def test_run_mode_training_synthesis_local_licensing_ok(patch_engine):
     assert lic.severity is Severity.OK
 
 
-def test_run_mode_nvidia_preflight_mapping(patch_engine):
+def test_run_mode_cloud_seat_preflight_mapping(patch_engine):
     patch_engine([_seat("content", "local", source="fanout")], present={})
     npf = {
         "checks": [
@@ -251,21 +251,23 @@ def test_run_mode_nvidia_preflight_mapping(patch_engine):
             {"level": "FAIL", "name": "model_reachable", "detail": "401 from endpoint"},
         ]
     }
+    # Legacy run_config key — provider checks read new-then-old, so an old
+    # post-mortem sidecar carrying ``nvidia_preflight`` still maps through.
     results = prov.provider_checks(_run_ctx(nvidia_preflight=npf))
     by_name = _by_name(results)
-    assert by_name["nvidia_preflight_key_present"].severity is Severity.OK
-    assert by_name["nvidia_preflight_rate_limit"].severity is Severity.WARN
-    assert by_name["nvidia_preflight_model_reachable"].severity is Severity.FAIL
-    assert by_name["nvidia_preflight_model_reachable"].detail == "401 from endpoint"
+    assert by_name["cloud_seat_preflight_key_present"].severity is Severity.OK
+    assert by_name["cloud_seat_preflight_rate_limit"].severity is Severity.WARN
+    assert by_name["cloud_seat_preflight_model_reachable"].severity is Severity.FAIL
+    assert by_name["cloud_seat_preflight_model_reachable"].detail == "401 from endpoint"
 
 
-def test_run_mode_nvidia_preflight_real_levels_and_unknown(patch_engine):
+def test_run_mode_cloud_seat_preflight_real_levels_and_unknown(patch_engine):
     """#1 — the REAL lowercase levels run.py emits map correctly.
 
-    `cli/commands/run.py::_nvidia_preflight` emits per-check `level` ∈
+    `cli/commands/run.py::_cloud_seat_preflight` emits per-check `level` ∈
     {'pass', 'warn', 'error'} + a top-level 'verdict'. 'error' MUST escalate
     to FAIL (the old map keyed only 'FAIL' so 'error' fell through to INFO and
-    a real nvidia failure never escalated the exit code). An UNKNOWN level
+    a real cloud-seat failure never escalated the exit code). An UNKNOWN level
     maps to WARN, never INFO.
     """
     patch_engine([_seat("content", "local", source="fanout")], present={})
@@ -279,16 +281,17 @@ def test_run_mode_nvidia_preflight_real_levels_and_unknown(patch_engine):
             {"level": "surprise", "name": "novel_check", "detail": "new level"},
         ],
     }
-    results = prov.provider_checks(_run_ctx(nvidia_preflight=npf))
+    # New run_config key (the current CLI emits it).
+    results = prov.provider_checks(_run_ctx(cloud_seat_preflight=npf))
     by_name = _by_name(results)
-    assert by_name["nvidia_preflight_nvidia_api_key"].severity is Severity.OK
-    assert by_name["nvidia_preflight_answer_loopback"].severity is Severity.WARN
+    assert by_name["cloud_seat_preflight_nvidia_api_key"].severity is Severity.OK
+    assert by_name["cloud_seat_preflight_answer_loopback"].severity is Severity.WARN
     # the critical fix: a real 'error' escalates to FAIL, not INFO
-    assert by_name["nvidia_preflight_two_pass"].severity is Severity.FAIL
+    assert by_name["cloud_seat_preflight_two_pass"].severity is Severity.FAIL
     # an unrecognized level surfaces as WARN (never silently INFO)
-    assert by_name["nvidia_preflight_novel_check"].severity is Severity.WARN
+    assert by_name["cloud_seat_preflight_novel_check"].severity is Severity.WARN
     # the top-level verdict is surfaced and mapped through the same table
-    assert by_name["nvidia_preflight_verdict"].severity is Severity.FAIL
+    assert by_name["cloud_seat_preflight_verdict"].severity is Severity.FAIL
 
 
 def test_run_mode_class_default_missing_key_not_fail(patch_engine):

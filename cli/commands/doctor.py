@@ -62,10 +62,12 @@ from lib.diagnostics.serving_window import register_serving_window_checks
 from lib.diagnostics.vram import register_gpu_checks
 
 # Reused, pure, side-effect-free helpers from the sibling ``run`` command
-# (same CLI layer — importing across cli.commands is fine). ``_nvidia_preflight``
-# resolves+asserts the NVIDIA routing off env (no dispatch); the workflow
-# normaliser + supported set validate ``--run``. Imported as module globals so
-# tests can monkeypatch ``doctor_mod._nvidia_preflight`` / ``applied_run_env``.
+# (same CLI layer — importing across cli.commands is fine).
+# ``_nvidia_preflight`` (the deprecated compat alias for
+# ``_cloud_seat_preflight``) resolves+asserts the hosted-large routing off env
+# (no dispatch); the workflow normaliser + supported set validate ``--run``.
+# Imported as module globals so tests can monkeypatch
+# ``doctor_mod._nvidia_preflight`` / ``applied_run_env``.
 from cli.commands.run import (
     COURSEFORGE_STAGE_SUBCOMMANDS,
     SUPPORTED_WORKFLOWS,
@@ -155,27 +157,31 @@ def _bootstrap_checks() -> None:
     register_postmortem_checks()
 
 
-def _compute_nvidia_preflight(workflow: str, provider: str | None) -> dict | None:
-    """Best-effort NVIDIA routing preflight UNDER the run fanout (or ``None``).
+def _compute_cloud_seat_preflight(workflow: str, provider: str | None) -> dict | None:
+    """Best-effort hosted-large routing preflight UNDER the run fanout.
 
-    Only meaningful when the run's effective provider could be ``nvidia``
-    (the ``--provider`` hint or ``LLM_PROVIDER`` env) — ``_nvidia_preflight``
-    always reports an nvidia verdict off env, so computing it for a non-nvidia
-    run would attach misleading FAILs. Computed inside
-    :func:`applied_run_env` so it reflects the env a real ``ed4all run`` would
-    apply. NEVER raises — any failure degrades to ``None`` (the provider check
-    is fine without it).
+    Only meaningful when the run's effective provider could be ``nvidia`` (the
+    vendor endpoint-registry key — the ``--provider`` hint or ``LLM_PROVIDER``
+    env) — ``_cloud_seat_preflight`` always reports a cloud-seat verdict off
+    env, so computing it for a non-nvidia run would attach misleading FAILs.
+    Computed inside :func:`applied_run_env` so it reflects the env a real
+    ``ed4all run`` would apply. NEVER raises — any failure degrades to ``None``
+    (the provider check is fine without it).
     """
     effective = (provider or os.environ.get("LLM_PROVIDER") or "").strip().lower()
     if effective != "nvidia":
         return None
     try:
-        # _nvidia_preflight reads only env + flags; params are nominal.
+        # _cloud_seat_preflight reads only env + flags; params are nominal.
         params = {"course_name": "doctor-preflight", "provider": provider or ""}
         with applied_run_env(workflow, provider or ""):
             return _nvidia_preflight(params)
     except Exception:  # noqa: BLE001 — preflight must never break the command
         return None
+
+
+# Deprecated compat alias for the renamed helper.
+_compute_nvidia_preflight = _compute_cloud_seat_preflight
 
 
 @click.command("doctor")
@@ -384,9 +390,12 @@ def doctor_command(
             }
             if run_workflow:
                 # Best-effort, never breaks the command (→ None on failure).
-                run_config["nvidia_preflight"] = _compute_nvidia_preflight(
-                    workflow, provider
-                )
+                # Emit under the new ``cloud_seat_preflight`` key AND the legacy
+                # ``nvidia_preflight`` key for one release (provider checks read
+                # new-then-old; old post-mortem sidecars carry the legacy key).
+                _pf = _compute_cloud_seat_preflight(workflow, provider)
+                run_config["cloud_seat_preflight"] = _pf
+                run_config["nvidia_preflight"] = _pf
 
         # Group selection: explicit --group wins; else --run/--ping add the
         # provider group; else the bare default (provider EXCLUDED).

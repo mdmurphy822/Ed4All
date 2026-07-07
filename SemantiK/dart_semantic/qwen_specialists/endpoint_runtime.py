@@ -3,7 +3,7 @@
 This is the HEAVY-generation arm of the Stage 6 specialist runtime. The
 8 GB box keeps the SMALL components local (council/structure BERTs, region
 detection, theta), but the math/table/prose/gap_fill specialist generation
-can route to a hosted 70B model (the NVIDIA seat) instead of a local GGUF.
+can route to a hosted large model (the NVIDIA seat) instead of a local GGUF.
 
 ``OpenAICompatibleRuntime`` implements the same :class:`QwenRuntime`
 Protocol as :class:`~.runtime.LlamaCppRuntime`, so the Stage 6 runner +
@@ -65,7 +65,7 @@ logger = logging.getLogger(__name__)
 
 
 # Sane literal default model — NOT machine-specific. The NVIDIA seat's
-# 70B rewrite model id, matching Ed4All's ED4ALL_DYNAMIC_BLOCK_PLAN /
+# large rewrite model id, matching Ed4All's ED4ALL_DYNAMIC_BLOCK_PLAN /
 # objective-review default.
 _DEFAULT_MODEL = "meta/llama-3.3-70b-instruct"
 _DEFAULT_TIMEOUT_SECONDS = 120.0
@@ -85,15 +85,15 @@ _DEFAULT_CONCURRENCY = 8
 #
 # Default regions packed per batched POST. Overridable via
 # SEMANTIK_SPECIALIST_BATCH_REGIONS (parse-with-fallback, mirrors the
-# concurrency knob). 12 keeps each batched prompt comfortably inside a 70B
-# context window while collapsing ~197 prose regions to ~17 POSTs.
+# concurrency knob). 12 keeps each batched prompt comfortably inside a
+# large-model context window while collapsing ~197 prose regions to ~17 POSTs.
 _DEFAULT_BATCH_REGIONS = 12
 
 # Hard ceiling on the summed per-region max_tokens for ONE batched call —
 # the truncation guard. A batch whose summed output budget would exceed this
 # (minus the safety margin) is capped here; the runner's _pack_batches also
 # splits big-output batches so this cap is rarely the binding constraint.
-# 16384 is a conservative completion ceiling shared by the 70B seats.
+# 16384 is a conservative completion ceiling shared by the large seats.
 _DEFAULT_OUTPUT_TOKEN_CEILING = 16384
 # Safety margin subtracted from the ceiling so the batched response always
 # has headroom (the model never emits exactly max_tokens of useful content).
@@ -324,8 +324,8 @@ def _resolve_timeout() -> float:
 # string (see prompts.py::_format_prompt). The local adapter is trained to
 # treat that whole string as the user turn (chat_format.wrap_for_qwen). For
 # a hosted instruct model we split it into a real system + user turn AND
-# reinforce the OUTPUT-ENVELOPE contract so the 70B emits a bare fragment
-# the assembler can parse identically to the adapter's output.
+# reinforce the OUTPUT-ENVELOPE contract so the hosted model emits a bare
+# fragment the assembler can parse identically to the adapter's output.
 _ENVELOPE_DIRECTIVE = (
     "You are a DART document-conversion specialist. Convert the single "
     "region described in the USER message into ONE accessible HTML5 "

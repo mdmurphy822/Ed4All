@@ -2,7 +2,7 @@
 
 The keystone of the block-variety redesign. Replaces the FIXED per-week
 block template (``MCP/tools/pipeline_tools.py::_PAGE_TYPE_BLOCK_PLAN``) with
-a 70B-driven planner that, PER TERMINAL OBJECTIVE (week), chooses the block
+a large-model-driven planner that, PER TERMINAL OBJECTIVE (week), chooses the block
 sequence that best conveys THAT TO's content — so each week is
 content-shaped, not template-filled.
 
@@ -31,11 +31,11 @@ Surface
   ``_page_id_for`` page-file grouping mechanics.
 - ``selected``: the validated, ordered list of
   ``{block_type, target_co_ids[], page_type, content_focus, target_bloom}``
-  dicts the 70B chose (post-guardrail).
+  dicts the large seat chose (post-guardrail).
 - ``fallback_used``: ``True`` when the deterministic fixed-plan fallback
   fired (LLM error / unparseable / empty), ``False`` on a real LLM plan.
 
-How it prompts the 70B
+How it prompts the large seat
 ----------------------
 
 The planner builds ONE prompt per TO containing: the TO statement; its
@@ -61,7 +61,7 @@ Guardrails (applied to the raw LLM output)
 3. The block count is CLAMPED to ``[budget_min, budget_max]`` (excess
    blocks past the max are dropped; too-few triggers a default top-up to
    the min).
-4. COVERAGE: every child CO MUST be covered by ≥1 block. A CO the 70B
+4. COVERAGE: every child CO MUST be covered by ≥1 block. A CO the large seat
    dropped gets a default ``concept`` block appended targeting it.
 5. ``target_bloom`` is resolved per block (the LLM-declared bloom if valid,
    else the catalog ``bloom_fit`` floor, else the covered CO's bloom).
@@ -116,7 +116,7 @@ __all__ = [
     "build_cross_week_retrieval_blocks",
 ]
 
-# System prompt for the dedicated planner provider — frames the 70B as an
+# System prompt for the dedicated planner provider — frames the large seat as an
 # instructional designer choosing block types, NOT authoring HTML (so the
 # rewrite tier's HTML-authoring system prompt does not bleed into planning).
 _PLANNER_SYSTEM_PROMPT = (
@@ -138,7 +138,7 @@ CANONICAL_PAGE_TYPES: Tuple[str, ...] = (
     "summary",
 )
 
-# Min / max blocks the 70B may select per week (per TO). The max is raised
+# Min / max blocks the large seat may select per week (per TO). The max is raised
 # (was 12) to FUND the per-page-type floors below: a balanced week needs
 # overview (≥3) + content (open) + application (≥4) + self_check (≥4) +
 # summary (≥4) blocks, so a 12-block ceiling starved application / self_check
@@ -335,7 +335,7 @@ _BLOCK_TYPE_DEFAULT_PAGE: Dict[str, str] = {
 }
 
 # Bounded prompt sizing knobs (keep the per-TO prompt small enough for the
-# 70B context without summarising the model away from the real content).
+# large-seat context without summarising the model away from the real content).
 _MAX_SOURCE_CHUNKS_IN_PROMPT = 8
 _MAX_CHARS_PER_CHUNK = 600
 _MAX_COS_IN_PROMPT = 30
@@ -348,7 +348,7 @@ _MAX_COS_IN_PROMPT = 30
 # Lightweight, deterministic, source-grounded detectors that flag WHEN a TO's
 # source content is shaped for one of the three palette-v2 block types
 # (``acronym`` / ``table``). They feed the planner two signals:
-#   1. the per-TO selection-guidance prompt (so the 70B is nudged toward the
+#   1. the per-TO selection-guidance prompt (so the large seat is nudged toward the
 #      right block type when the shape is present), and
 #   2. a deterministic floor-filler seat (so the block type is REACHABLE on a
 #      real run even if the planner under-uses it).
@@ -977,7 +977,7 @@ def build_planner_provider(
     client: Optional[Any] = None,
     max_tokens: int = 2048,
 ):
-    """Construct the dedicated planner provider (70B, planning system prompt).
+    """Construct the dedicated planner provider (large seat, planning system prompt).
 
     Reuses the SAME ``_BaseLLMProvider`` dispatch plumbing as the rewrite
     tier + objective review (so the ``nvidia`` seat resolves
@@ -1011,21 +1011,23 @@ def _planner_provider_base():
     return _BaseLLMProvider
 
 
-# The 70B planner seat. Mirrors the NVIDIA rewrite-tier model
+# The hosted large-model planner seat. Mirrors the hosted rewrite-tier model
 # (``Courseforge/config/block_routing.nvidia_large.yaml`` →
 # ``meta/llama-3.3-70b-instruct``). The planner is a content-aware authoring
 # decision, so it pins the same large model as the rewrite tier rather than
 # the lighter nemotron base default.
-_PLANNER_70B_NVIDIA_MODEL = "meta/llama-3.3-70b-instruct"
+_PLANNER_LARGE_SEAT_MODEL = "meta/llama-3.3-70b-instruct"
+# Deprecated compat alias (external callers reach the old name).
+_PLANNER_70B_NVIDIA_MODEL = _PLANNER_LARGE_SEAT_MODEL
 
 
 def _resolve_planner_model(provider: Optional[str]) -> Optional[str]:
-    """Resolve the planner model (env override > 70B default for nvidia).
+    """Resolve the planner model (env override > large-seat default for nvidia).
 
     Resolution (high → low):
         ``ED4ALL_DYNAMIC_BLOCK_PLAN_MODEL`` > ``NVIDIA_LARGE_MODEL`` >
-        the 70B literal (nvidia seat) > ``None`` (base default for other
-        providers).
+        the large-model literal (nvidia seat) > ``None`` (base default for
+        other providers).
     """
     import os  # noqa: PLC0415
 
@@ -1034,7 +1036,7 @@ def _resolve_planner_model(provider: Optional[str]) -> Optional[str]:
         return explicit.strip()
     prov = (provider or "").lower()
     if prov == "nvidia":
-        return os.environ.get("NVIDIA_LARGE_MODEL") or _PLANNER_70B_NVIDIA_MODEL
+        return os.environ.get("NVIDIA_LARGE_MODEL") or _PLANNER_LARGE_SEAT_MODEL
     if prov == "local":
         # IB7.2 — license-clean local Qwen seat. Reuse the shared base's
         # ``local`` registry default (LOCAL_SYNTHESIS_MODEL → the Apache-2.0
@@ -1055,7 +1057,7 @@ def _make_block_planner_provider_cls():
     base = _planner_provider_base()
 
     class BlockPlannerProvider(base):  # type: ignore[misc, valid-type]
-        """Planner-tier provider: dispatches a block-plan prompt to the 70B.
+        """Planner-tier provider: dispatches a block-plan prompt to the large seat.
 
         Thin ``_BaseLLMProvider`` subclass. Overrides only the two abstract
         hooks (no task-specific authoring) and exposes ``plan_blocks`` so
@@ -1202,7 +1204,7 @@ def _build_prompt(
     catalog: Sequence[Dict[str, Any]],
     budget: Tuple[int, int],
 ) -> str:
-    """Render the per-TO planner user prompt for the 70B."""
+    """Render the per-TO planner user prompt for the large seat."""
     lo, hi = budget
     to_id = str(terminal_objective.get("id") or "TO-01")
     to_stmt = str(terminal_objective.get("statement") or "").strip()
@@ -1258,7 +1260,7 @@ def _build_prompt(
         )
     # Union the literal-token detector with the curated canonical-mnemonic
     # detector so a source that spells out PEMDAS/BODMAS without the literal
-    # token still nudges the 70B toward the `acronym` block.
+    # token still nudges the large seat toward the `acronym` block.
     detected_acronyms = list(
         dict.fromkeys(
             detect_acronyms(source_blob) + detect_canonical_mnemonics(source_blob)
@@ -1366,7 +1368,7 @@ _JSON_OBJ_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
 def _parse_llm_blocks(raw_text: str) -> List[Dict[str, Any]]:
-    """Lenient parse of the 70B response into a list of block dicts.
+    """Lenient parse of the large seat response into a list of block dicts.
 
     Tolerates code fences / leading prose by extracting the first balanced
     JSON object. Returns ``[]`` on any parse failure (the caller treats an
@@ -2130,10 +2132,10 @@ def _apply_page_floors(
 # The I6 block types (``table`` / ``acronym`` / ``key_idea``) are seated as
 # CONTENT-page floor fillers (``_PAGE_TYPE_FLOOR_FILLERS["content"]``), but the
 # content page has NO floor (``_PAGE_TYPE_FLOORS["content"] == 0``), so the
-# top-up never deploys them — deployment relied entirely on the 70B CHOOSING
+# top-up never deploys them — deployment relied entirely on the large seat CHOOSING
 # them (it chose them 0× across 7 weeks in the live run). This pass makes the
 # three types deterministically deploy whenever their content SHAPE is present
-# in the TO's source, independent of 70B judgment:
+# in the TO's source, independent of large-seat judgment:
 #
 #   * tabular source shape present + no ``table`` block        → inject one
 #   * acronym/mnemonic spelled out + no ``acronym`` block      → inject one
@@ -2161,7 +2163,7 @@ def _inject_palette_v2(
 
     Mutates / extends ``selected`` in place (returns it) so the three I6 block
     types appear on the content page when their shape is present — without
-    relying on the 70B selecting them. NO-OP for any I6 type already present.
+    relying on the large seat selecting them. NO-OP for any I6 type already present.
     Caller gates this on ``ED4ALL_DYNAMIC_BLOCK_PLAN`` being on, so the legacy
     / off path is byte-stable.
     """
@@ -2255,7 +2257,7 @@ def _inject_ib5_types(
 
     Mirrors :func:`_inject_palette_v2`. Mutates / extends ``selected`` in place
     (returns it) so the four IB5 types appear when their shape is present —
-    without relying on the 70B selecting them. NO-OP for any IB5 type already
+    without relying on the large seat selecting them. NO-OP for any IB5 type already
     present. Caller gates this on ``ED4ALL_NEW_BLOCK_TYPES`` being on, so the
     legacy / off path is byte-stable.
 
@@ -3776,7 +3778,7 @@ def plan_week_blocks(
     capture: Optional[Any] = None,
     course_code: str = "",
 ) -> WeekBlockPlan:
-    """Plan a week's block sequence for one terminal objective via the 70B.
+    """Plan a week's block sequence for one terminal objective via the large seat.
 
     Args:
         terminal_objective: ``{id, statement}`` for the week's TO.
@@ -3931,7 +3933,7 @@ def plan_week_blocks(
 
     # Issue I6 (Part A): deterministically deploy the palette-v2 types
     # (table / acronym / key_idea) by CONTENT SHAPE so they no longer depend on
-    # the 70B choosing them. NO-OP when ED4ALL_DYNAMIC_BLOCK_PLAN is off (the
+    # the large seat choosing them. NO-OP when ED4ALL_DYNAMIC_BLOCK_PLAN is off (the
     # legacy path never reaches here anyway — the consumer skips the planner —
     # but the env gate keeps unit-test byte-stability for callers that pass a
     # provider without the flag set).
@@ -3945,7 +3947,7 @@ def plan_week_blocks(
 
     # IB5 (mirrors the palette-v2 injection): deterministically deploy the four
     # framework-aligned types (hook / multimedia / worked_example / diagram) by
-    # CONTENT SHAPE so they no longer depend on the 70B selecting them. Gated on
+    # CONTENT SHAPE so they no longer depend on the large seat selecting them. Gated on
     # ED4ALL_NEW_BLOCK_TYPES — a strict NO-OP when off so the byte-stability
     # guard holds (the four types are never selected on a legacy run).
     if _new_block_types_on():
@@ -4229,7 +4231,7 @@ def _emit_block_plan_decision(
         )
     else:
         rationale = (
-            f"{planner_seat or '70B'} content-aware planner selected "
+            f"{planner_seat or 'large-model seat'} content-aware planner selected "
             f"{len(selected)} blocks for {to_id or 'TO'} within budget "
             f"{budget[0]}-{budget[1]} (model='{model or 'n/a'}'); block-type mix "
             f"{dict(sorted(type_counts.items()))}; CO coverage {coverage}. "

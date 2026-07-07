@@ -314,7 +314,7 @@ def _build_workflow_params(
     if provider:
         params["provider"] = provider
 
-    # NVIDIA-70b-everywhere GAP-2 fix — thread --stop-after so the workflow
+    # Hosted-large build profile GAP-2 fix — thread --stop-after so the workflow
     # runner halts cleanly after the named phase completes (before later
     # phases run). Default unset → no behaviour change.
     if stop_after:
@@ -585,12 +585,13 @@ def _build_orchestrator(
     default=None,
     help=(
         "LLM provider for the run. ``anthropic`` / ``openai`` are the api-mode "
-        "backends; ``nvidia`` selects the 70B-everywhere build profile "
-        "(redirects the two-pass block-routing + synthesis seat to the NVIDIA "
-        "hosted 70B; the training seat stays local for licensing). Also "
-        "settable via env LLM_PROVIDER. Default: env LLM_PROVIDER or "
-        "'anthropic'. NB: ``nvidia`` requires COURSEFORGE_TWO_PASS=true and a "
-        "NVIDIA_API_KEY; run --dry-run first for the routing preflight."
+        "backends; ``nvidia`` (the vendor endpoint-registry key) selects the "
+        "hosted large-model build profile (redirects the two-pass "
+        "block-routing + synthesis seat to the hosted large seat; the training "
+        "seat stays local for licensing). Also settable via env LLM_PROVIDER. "
+        "Default: env LLM_PROVIDER or 'anthropic'. NB: ``nvidia`` requires "
+        "COURSEFORGE_TWO_PASS=true and a NVIDIA_API_KEY; run --dry-run first "
+        "for the routing preflight."
     ),
 )
 @click.option(
@@ -1016,8 +1017,9 @@ def _dry_run_plan(
         # annotation precedent at ``_dry_run_plan`` for --reuse-objectives.
         target_block_ids = params.get("target_block_ids")
         force_rerun_flag = bool(params.get("force_rerun", False))
-        # NVIDIA-70b-everywhere GAP-2 — the --stop-after halt phase (annotated
-        # in the dry-run plan; phases after it are marked SKIPPED-after-stop).
+        # Hosted-large build profile GAP-2 — the --stop-after halt phase
+        # (annotated in the dry-run plan; phases after it are marked
+        # SKIPPED-after-stop).
         stop_after_phase = str(params.get("stop_after", "") or "").strip()
         stop_reached = False
         # Phases that consume target_block_ids (single-source-of-truth list
@@ -1072,7 +1074,7 @@ def _dry_run_plan(
                     f"--blocks set; re-rolling only block_type(s) "
                     f"{list(target_block_ids)!r}"
                 )
-            # NVIDIA-70b-everywhere GAP-2 — --stop-after annotation. Phases
+            # Hosted-large build profile GAP-2 — --stop-after annotation. Phases
             # AFTER the named stop phase are marked as not-running; the stop
             # phase itself is the last to execute.
             if stop_after_phase:
@@ -1103,11 +1105,16 @@ def _dry_run_plan(
             plan_dict["force_rerun"] = True
         if stop_after_phase:
             plan_dict["stop_after"] = stop_after_phase
-        # NVIDIA-70b-everywhere SETUP — preflight ("wired but not firing"
-        # proof). When --provider nvidia, resolve+assert the routing for every
-        # build phase WITHOUT dispatching. Makes NO network call.
+        # Hosted-large build profile SETUP — preflight ("wired but not firing"
+        # proof). When --provider nvidia (the vendor endpoint-registry key),
+        # resolve+assert the routing for every build phase WITHOUT dispatching.
+        # Makes NO network call. Emit under the new ``cloud_seat_preflight`` key
+        # AND the legacy ``nvidia_preflight`` key for one release so existing
+        # dry-run consumers + doctor post-mortems keep reading it.
         if provider == "nvidia":
-            plan_dict["nvidia_preflight"] = _nvidia_preflight(params)
+            _pf = _cloud_seat_preflight(params)
+            plan_dict["cloud_seat_preflight"] = _pf
+            plan_dict["nvidia_preflight"] = _pf
         return plan_dict
     except Exception as exc:  # noqa: BLE001 — dry-run shouldn't explode
         return {
@@ -1120,19 +1127,20 @@ def _dry_run_plan(
         }
 
 
-def _nvidia_preflight(params: Dict[str, Any]) -> Dict[str, Any]:
-    """Resolve + assert the NVIDIA-70b-everywhere routing for a build.
+def _cloud_seat_preflight(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Resolve + assert the hosted large-model build-profile routing.
 
     The "wired but not firing" proof. Computes what every build seat WOULD
-    resolve to under ``--provider nvidia`` + ``COURSEFORGE_TWO_PASS=true``
-    (using the same module constants the workflow runner uses), and emits
-    pass/warn/error assertions WITHOUT making any network call or requiring a
-    real key value (presence-only). Never dispatches to NVIDIA.
+    resolve to under ``--provider nvidia`` (the vendor endpoint-registry key)
+    + ``COURSEFORGE_TWO_PASS=true`` (using the same module constants the
+    workflow runner uses), and emits pass/warn/error assertions WITHOUT making
+    any network call or requiring a real key value (presence-only). Never
+    dispatches to the cloud seat.
 
     Asserts:
       - NVIDIA_API_KEY present (presence only — no call).
-      - the rewrite + synthesis tiers resolve to nvidia + the 70B (catch the
-        30B-nano leak).
+      - the rewrite + synthesis tiers resolve to nvidia + the hosted large
+        model (catch the 30B-nano leak).
       - TRAINFORGE_SYNTHESIS_PROVIDER resolves LOCAL (gap-3 licensing guard).
       - ED4ALL_ANSWER_PROVIDER resolves loopback.
       - WARN on a stale ``COURSEFORGE_*_PROVIDER=local`` env that would
@@ -1169,7 +1177,7 @@ def _nvidia_preflight(params: Dict[str, Any]) -> Dict[str, Any]:
 
     # 2. Rewrite tier — the block-routing YAML the branch would select.
     routing_path = os.environ.get("COURSEFORGE_BLOCK_ROUTING_PATH", "").strip()
-    expected_routing = _wr._NVIDIA_LARGE_BLOCK_ROUTING_PATH
+    expected_routing = _wr._HOSTED_LARGE_BLOCK_ROUTING_PATH
     if routing_path and routing_path != expected_routing:
         _check(
             "warn",
@@ -1204,24 +1212,24 @@ def _nvidia_preflight(params: Dict[str, Any]) -> Dict[str, Any]:
 
     # 3. NVIDIA_LARGE_MODEL — catch the 30B-nano registry-default leak.
     large_model = os.environ.get("NVIDIA_LARGE_MODEL", "").strip()
-    expected_model = _wr._NVIDIA_LARGE_MODEL_DEFAULT
-    resolved_model = large_model or expected_model  # branch setdefaults the 70B
+    expected_model = _wr._HOSTED_LARGE_MODEL_DEFAULT
+    resolved_model = large_model or expected_model  # branch setdefaults the large model
     if "nano" in resolved_model.lower() or "30b" in resolved_model.lower():
         _check(
             "error",
             "cloud_model",
             f"NVIDIA_LARGE_MODEL resolves to {resolved_model!r} — the 30B-nano "
-            f"leak. The branch setdefaults the 70B ({expected_model!r}); a stale "
-            f"export is overriding it.",
+            f"leak. The branch setdefaults the hosted large model "
+            f"({expected_model!r}); a stale export is overriding it.",
         )
     else:
         _check(
             "pass",
             "cloud_model",
-            f"cloud model resolves to {resolved_model!r} (70B, not the 30B nano).",
+            f"cloud model resolves to {resolved_model!r} (large model, not the 30B nano).",
         )
 
-    # 4. Synthesis seat — must resolve nvidia + 70B (the GAP-1 surface).
+    # 4. Synthesis seat — must resolve nvidia + the large model (GAP-1 surface).
     synth_provider = os.environ.get("TEXTBOOK_SYNTHESIS_PROVIDER", "").strip()
     # The branch setdefaults nvidia when unset; an explicit value wins.
     resolved_synth = synth_provider or "nvidia"
@@ -1230,7 +1238,7 @@ def _nvidia_preflight(params: Dict[str, Any]) -> Dict[str, Any]:
             "pass",
             "synthesis_tier",
             "TEXTBOOK_SYNTHESIS_PROVIDER resolves nvidia (objective_extraction "
-            "/ course_planning / concept_extraction reach the 70B).",
+            "/ course_planning / concept_extraction reach the hosted large seat).",
         )
     else:
         _check(
@@ -1301,6 +1309,11 @@ def _nvidia_preflight(params: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+# Deprecated compat alias — ``doctor`` imports this name and older callers /
+# tests monkeypatch it. Points at the renamed ``_cloud_seat_preflight``.
+_nvidia_preflight = _cloud_seat_preflight
+
+
 def _print_dry_run_plan(plan: Dict[str, Any]) -> None:
     click.secho("Dry run — planned execution:", fg="cyan")
     click.echo(f"  Workflow:  {plan['workflow']}")
@@ -1321,13 +1334,14 @@ def _print_dry_run_plan(plan: Dict[str, Any]) -> None:
         click.echo(f"  Force:     re-run completed phases (--force)")
     if plan.get("stop_after"):
         click.echo(f"  StopAfter: {plan['stop_after']} (halts before later phases)")
-    # NVIDIA-70b-everywhere preflight summary.
-    preflight = plan.get("nvidia_preflight")
+    # Hosted-large build profile preflight summary. Read the new key first,
+    # fall back to the legacy ``nvidia_preflight`` key (older plan dicts).
+    preflight = plan.get("cloud_seat_preflight") or plan.get("nvidia_preflight")
     if preflight:
         verdict = preflight.get("verdict", "?")
         color = {"PASS": "green", "WARN": "yellow", "FAIL": "red"}.get(verdict, "white")
         click.echo()
-        click.secho(f"NVIDIA preflight: {verdict}", fg=color, bold=True)
+        click.secho(f"Hosted large-seat preflight: {verdict}", fg=color, bold=True)
         click.secho(f"  ({preflight.get('note', '')})", fg="white")
         for chk in preflight.get("checks", []):
             lvl = chk.get("level", "")

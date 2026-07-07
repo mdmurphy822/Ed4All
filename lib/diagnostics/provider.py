@@ -21,8 +21,8 @@ Two modes, driven by ``ctx.run_config``:
   ``ed4all run`` would apply it. This is the authoritative mode: the
   per-seat key-presence FAILs, the authoring-vs-synthesis split-brain WARN,
   and the training-synthesis licensing WARN are all gating here. A
-  precomputed ``nvidia_preflight`` dict (the CLI runs it under the same
-  fanout) is mapped through verbatim.
+  precomputed ``cloud_seat_preflight`` dict (legacy key: ``nvidia_preflight``;
+  the CLI runs it under the same fanout) is mapped through verbatim.
 
 * **BARE mode** (no ``workflow``) — resolve seats off the CURRENT
   ``os.environ`` with NO fanout. Split-brain / licensing are advisory-only
@@ -463,19 +463,19 @@ def _licensing_guard(seats: List[Any]) -> List[CheckResult]:
 
 
 # --------------------------------------------------------------------- #
-# nvidia_preflight passthrough (precomputed by the CLI under the fanout)
+# cloud-seat preflight passthrough (precomputed by the CLI under the fanout)
 # --------------------------------------------------------------------- #
 
 
-#: Map the precomputed nvidia-preflight ``level`` / ``verdict`` strings onto a
-#: doctor Severity. The CLI's ``_nvidia_preflight``
+#: Map the precomputed cloud-seat-preflight ``level`` / ``verdict`` strings
+#: onto a doctor Severity. The CLI's ``_cloud_seat_preflight``
 #: (``cli/commands/run.py``) emits each check with a lower-case ``level`` ∈
 #: {``pass``, ``warn``, ``error``} and a top-level upper-case ``verdict`` ∈
 #: {``PASS``, ``WARN``, ``FAIL``}. We cover BOTH vocabularies (and the
 #: synonyms ``ok`` / ``fail`` / ``info``) and resolve case-insensitively via
 #: :func:`_nvidia_severity`. CRITICAL: ``error`` MUST land on FAIL — the old
 #: map keyed only ``FAIL`` so an ``error`` fell through to INFO and a real
-#: nvidia preflight failure never escalated the exit code.
+#: cloud-seat preflight failure never escalated the exit code.
 _NVIDIA_LEVEL_MAP = {
     "pass": Severity.OK,
     "ok": Severity.OK,
@@ -496,8 +496,8 @@ def _nvidia_severity(level: Any) -> Severity:
     return _NVIDIA_LEVEL_MAP.get(str(level).strip().lower(), Severity.WARN)
 
 
-def _nvidia_preflight_results(npf: Any) -> List[CheckResult]:
-    """Map the precomputed nvidia preflight dict's checks to CheckResults."""
+def _cloud_seat_preflight_results(npf: Any) -> List[CheckResult]:
+    """Map the precomputed cloud-seat preflight dict's checks to CheckResults."""
     if not isinstance(npf, dict):
         return []
     out: List[CheckResult] = []
@@ -508,10 +508,10 @@ def _nvidia_preflight_results(npf: Any) -> List[CheckResult]:
     if verdict is not None:
         out.append(
             CheckResult(
-                name="nvidia_preflight_verdict",
+                name="cloud_seat_preflight_verdict",
                 group=_GROUP,
                 severity=_nvidia_severity(verdict),
-                summary=f"nvidia preflight verdict: {verdict}",
+                summary=f"cloud-seat preflight verdict: {verdict}",
                 detail=str(npf.get("note", "")),
                 remediation="",
                 data={"verdict": str(verdict)},
@@ -529,7 +529,7 @@ def _nvidia_preflight_results(npf: Any) -> List[CheckResult]:
         cname = str(entry.get("name", "?"))
         out.append(
             CheckResult(
-                name=f"nvidia_preflight_{cname}",
+                name=f"cloud_seat_preflight_{cname}",
                 group=_GROUP,
                 severity=severity,
                 summary=cname,
@@ -670,7 +670,7 @@ def _run_mode(
     results.extend(_guarded(lambda: _split_brain(seats), "provider_split_brain_error"))
     results.extend(_guarded(lambda: _licensing_guard(seats), "provider_licensing_error"))
     results.extend(
-        _guarded(lambda: _nvidia_preflight_results(npf), "provider_nvidia_preflight_error")
+        _guarded(lambda: _cloud_seat_preflight_results(npf), "provider_cloud_seat_preflight_error")
     )
     if ping:
         results.extend(
@@ -732,7 +732,11 @@ def provider_checks(ctx: CheckContext) -> List[CheckResult]:
         workflow = rc.get("workflow")
         provider_hint = str(rc.get("provider_hint") or "")
         ping = bool(rc.get("ping"))
-        npf = rc.get("nvidia_preflight")
+        # New key first, legacy ``nvidia_preflight`` fallback (old post-mortem
+        # sidecars + plan dicts still carry the legacy key for one release).
+        npf = rc.get("cloud_seat_preflight")
+        if npf is None:
+            npf = rc.get("nvidia_preflight")
         if workflow:
             return _run_mode(str(workflow), provider_hint, ping, npf)
         return _bare_mode(ping)

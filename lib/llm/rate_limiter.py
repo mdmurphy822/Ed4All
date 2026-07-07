@@ -1,11 +1,11 @@
 """Cloud-provider admission control — RPM / TPM token buckets + concurrency.
 
 SETUP SCAFFOLD (ships DARK / default-OFF). This module exists so the
-"70B-everywhere" NVIDIA build mode (see
-``plans/finegrain/nvidia-70b-everywhere-2026-06.md``) has a shared
-admission gate ready to wire when the operator supplies real RPM/TPM
-ceilings + pricing. **Nothing dispatches to NVIDIA from here** — the
-limiter only sleeps/admits; it never makes a network call.
+hosted large-model build profile (``--provider nvidia``; see
+``docs/operations/pipeline-invocation.md`` § 3.1) has a shared admission
+gate ready to wire when the operator supplies real RPM/TPM ceilings +
+pricing. **Nothing dispatches to the cloud seat from here** — the limiter
+only sleeps/admits; it never makes a network call.
 
 Three admission axes (all OFF unless ``ED4ALL_CLOUD_RATE_LIMIT`` is
 truthy AND a ceiling is configured):

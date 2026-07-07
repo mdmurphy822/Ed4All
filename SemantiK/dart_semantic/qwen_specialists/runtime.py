@@ -130,8 +130,8 @@ def specialist_provider_is_endpoint() -> bool:
 # phase resolves its OWN {provider, model} seat from the registry/env, so any
 # composition works: local-draft→local-large-refine (fully on-device),
 # local-draft→hosted-refine, hosted-draft→hosted-refine, single-phase-any-
-# provider, etc. The hosted 70B is just ONE possible Phase-2 model, never a
-# hardcoded tier. base_url / api_key are resolved by the OpenAI-compatible
+# provider, etc. The hosted large seat is just ONE possible Phase-2 model,
+# never a hardcoded tier. base_url / api_key are resolved by the OpenAI-compatible
 # endpoint runtime from the shared SEMANTIK_SPECIALIST_BASE_URL/API_KEY (>
 # NVIDIA_*) env — per-phase provider + model are the per-phase knobs.
 #
@@ -217,10 +217,11 @@ def resolve_endpoint_displaces_local() -> bool:
     **Default OFF — the dereliction fix.** Selecting an endpoint provider via
     ``SEMANTIK_SPECIALIST_PROVIDER`` alone no longer silently skips the local
     GGUF specialists; the license-clean on-device specialists remain the
-    authoring tier and the hosted 70B is reachable only on an EXPLICIT opt-in:
+    authoring tier and the hosted large seat is reachable only on an EXPLICIT
+    opt-in:
 
-      * ``SEMANTIK_SPECIALIST_REFINE`` — the hybrid flow (local drafts → 70B
-        polish), OR
+      * ``SEMANTIK_SPECIALIST_REFINE`` — the hybrid flow (local drafts →
+        hosted-large polish), OR
       * ``SEMANTIK_SPECIALIST_ENDPOINT_DISPLACE`` (this flag) — full
         pure-endpoint displacement (the pre-fix ``provider=<endpoint>``
         behaviour, now gated behind an intentional flag).
@@ -240,7 +241,7 @@ def resolve_structure_review_model() -> str:
 
     Mirrors :func:`resolve_specialist_provider`'s parse-with-fallback
     posture and REUSES the endpoint config (the reviewer rides the same
-    hosted 70B seat as the Stage-6 endpoint specialists). Resolution chain
+    hosted large seat as the Stage-6 endpoint specialists). Resolution chain
     (high -> low):
 
         SEMANTIK_STRUCTURE_REVIEW_MODEL  (reviewer-specific override)
@@ -250,7 +251,7 @@ def resolve_structure_review_model() -> str:
 
     The literal default matches the Stage-6 endpoint runtime's
     ``_DEFAULT_MODEL`` so a reviewer + specialist on the same unconfigured
-    seat resolve to the same 70B. Key is NEVER read here (env-only,
+    seat resolve to the same large model. Key is NEVER read here (env-only,
     resolved at POST time by the endpoint runtime).
     """
     return (
@@ -907,12 +908,12 @@ def make_phase_runtime(
         (:class:`~.endpoint_runtime.OpenAICompatibleRuntime`) pointed at that
         seat's ``model`` (base_url / api_key resolved from the shared
         ``SEMANTIK_SPECIALIST_BASE_URL`` / ``_API_KEY`` > ``NVIDIA_*`` env). The
-        hosted 70B is just one possible value of ``model`` here — never a
-        special-cased tier.
+        hosted large seat is just one possible value of ``model`` here — never
+        a special-cased tier.
 
     The phase's provider decides local-vs-endpoint; ``mode`` only chooses the
-    deterministic mock for tests. No ``"70B"`` is hardcoded anywhere on this
-    path."""
+    deterministic mock for tests. No large-model id is hardcoded as a tier
+    anywhere on this path."""
     if phase not in _VALID_PHASES:
         raise ValueError(f"unknown phase {phase!r} (expected one of {_VALID_PHASES})")
     if mode == "mock":

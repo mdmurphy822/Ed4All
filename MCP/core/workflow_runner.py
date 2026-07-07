@@ -229,38 +229,48 @@ _TWO_PASS_TIER_PROVIDER_ENVS: Tuple[str, ...] = (
 _BLOCK_ROUTING_PATH_ENV = "COURSEFORGE_BLOCK_ROUTING_PATH"
 _TWO_PASS_ENV = "COURSEFORGE_TWO_PASS"
 
-# NVIDIA-70b-everywhere SETUP — the block-routing variant the single switch
-# points ``COURSEFORGE_BLOCK_ROUTING_PATH`` at on an explicit
-# ``--provider nvidia`` two-pass run. Sibling of the all-local variant above;
-# its ``large`` rewrite tier resolves ``provider: nvidia`` (the 70B hosted
-# seat), with the outline-tier first draft staying on the local 7B Qwen.
-# Repo-root-relative; ``load_block_routing_policy`` resolves it.
-_NVIDIA_LARGE_BLOCK_ROUTING_PATH = (
+# Hosted-large build profile SETUP — the block-routing variant the single
+# switch points ``COURSEFORGE_BLOCK_ROUTING_PATH`` at on an explicit
+# ``--provider nvidia`` (the vendor endpoint-registry key) two-pass run.
+# Sibling of the all-local variant above; its ``large`` rewrite tier resolves
+# ``provider: nvidia`` (the hosted large-model seat), with the outline-tier
+# first draft staying on the local 7B Qwen. Repo-root-relative;
+# ``load_block_routing_policy`` resolves it.
+_HOSTED_LARGE_BLOCK_ROUTING_PATH = (
     "Courseforge/config/block_routing.nvidia_large.yaml"
 )
+# Deprecated compat alias (external scripts + tests reach the old name).
+_NVIDIA_LARGE_BLOCK_ROUTING_PATH = _HOSTED_LARGE_BLOCK_ROUTING_PATH
 
-# NVIDIA-70b-everywhere SETUP — the canonical cloud model + the 70B model ID.
-# The branch setdefaults NVIDIA_LARGE_MODEL to close the 30B-nano registry
-# default leak (config/endpoints.yaml ``nvidia`` default_model is the
-# nemotron-3-nano-30b, NOT the 70B). The canonical cloud-model knob is
-# NVIDIA_LARGE_MODEL / the YAML ``model`` field — NEVER COURSEFORGE_REWRITE_MODEL
-# (that env's router projector fires for ``provider: local`` tiers ONLY, so it
-# is dead on the cloud tier — see Courseforge/router/router.py:3223 +
-# Trainforge/CLAUDE.md NVIDIA_LARGE_MODEL row).
-_NVIDIA_LARGE_MODEL_ENV = "NVIDIA_LARGE_MODEL"
-_NVIDIA_LARGE_MODEL_DEFAULT = "meta/llama-3.3-70b-instruct"
+# Hosted-large build profile SETUP — the canonical cloud-model env + its
+# default large-model ID. The branch setdefaults NVIDIA_LARGE_MODEL to close
+# the 30B-nano registry-default leak (config/endpoints.yaml ``nvidia``
+# default_model is the nemotron-3-nano-30b, NOT the large model). The canonical
+# cloud-model knob is NVIDIA_LARGE_MODEL / the YAML ``model`` field — NEVER
+# COURSEFORGE_REWRITE_MODEL (that env's router projector fires for
+# ``provider: local`` tiers ONLY, so it is dead on the cloud tier — see
+# Courseforge/router/router.py:3223 + Trainforge/CLAUDE.md NVIDIA_LARGE_MODEL
+# row).
+_HOSTED_LARGE_MODEL_ENV = "NVIDIA_LARGE_MODEL"
+_HOSTED_LARGE_MODEL_DEFAULT = "meta/llama-3.3-70b-instruct"
+# Deprecated compat aliases (external scripts + tests reach the old names).
+_NVIDIA_LARGE_MODEL_ENV = _HOSTED_LARGE_MODEL_ENV
+_NVIDIA_LARGE_MODEL_DEFAULT = _HOSTED_LARGE_MODEL_DEFAULT
 
-# NVIDIA-70b-everywhere GAP-1 fix — the textbook-synthesis seat (the env the
-# objective_extraction / course_planning / concept_extraction phases read,
+# Hosted-large build profile GAP-1 fix — the textbook-synthesis seat (the env
+# the objective_extraction / course_planning / concept_extraction phases read,
 # confirmed at Courseforge/generators/_textbook_synthesis_provider.py
 # ENV_PROVIDER/ENV_MODEL). ``--provider`` only fills the four authoring envs
 # and does NOT reach this seat, so WITHOUT this setdefault the synthesis phases
-# would silently stay on the local 7B while the rest of the build ran on 70B.
+# would silently stay on the local 7B while the rest of the build ran on the
+# hosted large seat.
 _TEXTBOOK_SYNTHESIS_PROVIDER_ROUTE_ENV = "TEXTBOOK_SYNTHESIS_PROVIDER"
 _TEXTBOOK_SYNTHESIS_MODEL_ROUTE_ENV = "TEXTBOOK_SYNTHESIS_MODEL"
 
-# NVIDIA-70b-everywhere — the canonical hosted-cloud provider token.
-_NVIDIA_PROVIDER = "nvidia"
+# Hosted-large build profile — the hosted cloud-seat endpoint-registry key.
+_CLOUD_SEAT_PROVIDER = "nvidia"
+# Deprecated compat alias (external scripts + tests reach the old name).
+_NVIDIA_PROVIDER = _CLOUD_SEAT_PROVIDER
 
 # Providers whose training-data outputs are ToS-restricted (corpus taint):
 # selecting one for the SLM TRAINING-PAIR seat (TRAINFORGE_SYNTHESIS_PROVIDER)
@@ -1508,8 +1518,8 @@ class WorkflowRunner:
             workflow_type, str(workflow_params.get("provider", "") or "")
         )
 
-        # NVIDIA-70b-everywhere GAP-2 fix — ``--stop-after <phase>``. When set,
-        # the phase loop halts cleanly AFTER the named phase completes, so a
+        # Hosted-large build profile GAP-2 fix — ``--stop-after <phase>``. When
+        # set, the phase loop halts cleanly AFTER the named phase completes, so a
         # ``--stop-after imscc_chunking`` slice stops BEFORE
         # trainforge_assessment / training_synthesis / libv2_archival /
         # finalization run. Default unset → no behaviour change (runs to
@@ -2204,7 +2214,7 @@ class WorkflowRunner:
             # (skipped earlier via ``continue``).
             await self._gpu_lifecycle_sweep(phase_name)
 
-            # NVIDIA-70b-everywhere GAP-2 fix — clean early-stop. The named
+            # Hosted-large build profile GAP-2 fix — clean early-stop. The named
             # phase has now completed successfully (its outputs are persisted +
             # gates passed); halt before any later phase runs. Records a
             # logged reason + a ``stopped_after`` marker on the workflow state
@@ -2487,7 +2497,7 @@ class WorkflowRunner:
             or "local"
         )
 
-        # NVIDIA-70b-everywhere GAP-3 fix (LICENSING). The Gap C loop below
+        # Hosted-large build profile GAP-3 fix (LICENSING). The Gap C loop below
         # fills ALL FOUR authoring envs — INCLUDING the
         # ``TRAINFORGE_SYNTHESIS_PROVIDER`` training seat — with the resolved
         # provider. For ``--provider nvidia`` that would route the SLM TRAINING
@@ -2508,7 +2518,7 @@ class WorkflowRunner:
             if os.environ.get(env_var, "").strip():
                 continue
             # GAP-3 licensing guard: never route the training seat to nvidia.
-            if resolved == _NVIDIA_PROVIDER and env_var == _training_seat_env:
+            if resolved == _CLOUD_SEAT_PROVIDER and env_var == _training_seat_env:
                 os.environ[env_var] = "local"
                 applied[env_var] = "local"
                 continue
@@ -2534,54 +2544,56 @@ class WorkflowRunner:
                 os.environ[env_var] = resolved
                 applied[env_var] = resolved
 
-        # NVIDIA-70b-everywhere SETUP — the THIRD branch (sibling of the Gap A
-        # local/together branch above). Only on an explicit ``--provider nvidia``
-        # AND the two-pass router enabled. Default-OFF: with no
-        # ``--provider nvidia`` this branch never fires, so every routing
-        # decision + emitted artifact is byte-identical to today. All setdefault
-        # (so explicit per-phase operator/GUI overrides always win). NOTHING
-        # dispatches to NVIDIA here — this only fills routing envs; the run is
-        # gated on the operator's explicit launch-script flip + a real key.
-        if resolved == _NVIDIA_PROVIDER and self._env_truthy(_TWO_PASS_ENV):
-            # (1) Redirect the block-routing policy to the nvidia-large variant
+        # Hosted-large build profile SETUP — the THIRD branch (sibling of the
+        # Gap A local/together branch above). Only on an explicit
+        # ``--provider nvidia`` (the vendor endpoint-registry key) AND the
+        # two-pass router enabled. Default-OFF: with no ``--provider nvidia``
+        # this branch never fires, so every routing decision + emitted artifact
+        # is byte-identical to today. All setdefault (so explicit per-phase
+        # operator/GUI overrides always win). NOTHING dispatches to the cloud
+        # seat here — this only fills routing envs; the run is gated on the
+        # operator's explicit launch-script flip + a real key.
+        if resolved == _CLOUD_SEAT_PROVIDER and self._env_truthy(_TWO_PASS_ENV):
+            # (1) Redirect the block-routing policy to the hosted-large variant
             #     (outline tier stays local 7B; rewrite tier escalates to the
-            #     70B NVIDIA seat). setdefault: an operator-pinned path wins.
+            #     hosted large seat). setdefault: an operator-pinned path wins.
             if not os.environ.get(_BLOCK_ROUTING_PATH_ENV, "").strip():
                 os.environ[_BLOCK_ROUTING_PATH_ENV] = (
-                    _NVIDIA_LARGE_BLOCK_ROUTING_PATH
+                    _HOSTED_LARGE_BLOCK_ROUTING_PATH
                 )
                 applied[_BLOCK_ROUTING_PATH_ENV] = (
-                    _NVIDIA_LARGE_BLOCK_ROUTING_PATH
+                    _HOSTED_LARGE_BLOCK_ROUTING_PATH
                 )
             # (2) Pin the cloud model. Closes the 30B-nano registry-default
             #     leak (config/endpoints.yaml ``nvidia`` default_model is the
             #     nano). The canonical cloud-model knob is NVIDIA_LARGE_MODEL /
             #     the YAML — NEVER COURSEFORGE_REWRITE_MODEL (dead on the cloud
             #     tier; router.py:3223).
-            if not os.environ.get(_NVIDIA_LARGE_MODEL_ENV, "").strip():
-                os.environ[_NVIDIA_LARGE_MODEL_ENV] = _NVIDIA_LARGE_MODEL_DEFAULT
-                applied[_NVIDIA_LARGE_MODEL_ENV] = _NVIDIA_LARGE_MODEL_DEFAULT
+            if not os.environ.get(_HOSTED_LARGE_MODEL_ENV, "").strip():
+                os.environ[_HOSTED_LARGE_MODEL_ENV] = _HOSTED_LARGE_MODEL_DEFAULT
+                applied[_HOSTED_LARGE_MODEL_ENV] = _HOSTED_LARGE_MODEL_DEFAULT
             # (3) GAP 1 fix — reach the synthesis phases (objective_extraction /
             #     course_planning / concept_extraction). ``--provider`` only
-            #     fills the four authoring envs above; WITHOUT this the
-            #     synthesis seat stays local 7B while the rest runs on 70B.
+            #     fills the four authoring envs above; WITHOUT this the synthesis
+            #     seat stays local 7B while the rest runs on the hosted large seat.
             if not os.environ.get(
                 _TEXTBOOK_SYNTHESIS_PROVIDER_ROUTE_ENV, ""
             ).strip():
                 os.environ[_TEXTBOOK_SYNTHESIS_PROVIDER_ROUTE_ENV] = (
-                    _NVIDIA_PROVIDER
+                    _CLOUD_SEAT_PROVIDER
                 )
-                applied[_TEXTBOOK_SYNTHESIS_PROVIDER_ROUTE_ENV] = _NVIDIA_PROVIDER
-                # Its model env too, so the synthesis seat resolves the 70B (not
-                # the registry nano). setdefault — operator override wins.
+                applied[_TEXTBOOK_SYNTHESIS_PROVIDER_ROUTE_ENV] = _CLOUD_SEAT_PROVIDER
+                # Its model env too, so the synthesis seat resolves the hosted
+                # large model (not the registry nano). setdefault — operator
+                # override wins.
                 if not os.environ.get(
                     _TEXTBOOK_SYNTHESIS_MODEL_ROUTE_ENV, ""
                 ).strip():
                     os.environ[_TEXTBOOK_SYNTHESIS_MODEL_ROUTE_ENV] = (
-                        _NVIDIA_LARGE_MODEL_DEFAULT
+                        _HOSTED_LARGE_MODEL_DEFAULT
                     )
                     applied[_TEXTBOOK_SYNTHESIS_MODEL_ROUTE_ENV] = (
-                        _NVIDIA_LARGE_MODEL_DEFAULT
+                        _HOSTED_LARGE_MODEL_DEFAULT
                     )
             # (4) GAP 3 fix (LICENSING) — DELIBERATELY DO NOT point the training
             #     seat at nvidia. ``TRAINFORGE_SYNTHESIS_PROVIDER`` is left
@@ -2593,10 +2605,10 @@ class WorkflowRunner:
             # (5) OPTIONAL product toggles LEFT UNSET by this branch — separate
             #     user decisions (gated on the later RUN discussion):
             #       - ED4ALL_OBJECTIVE_REVIEW_PROVIDER (objective-review pass)
-            #       - ED4ALL_DYNAMIC_BLOCK_PLAN / _PROVIDER (70B block planner)
-            #       - COURSEFORGE_OUTLINE_PROVIDER=nvidia (outline tier on 70B;
-            #         the YAML keeps the outline first draft on local 7B by
-            #         default)
+            #       - ED4ALL_DYNAMIC_BLOCK_PLAN / _PROVIDER (large-model planner)
+            #       - COURSEFORGE_OUTLINE_PROVIDER=nvidia (outline tier on the
+            #         hosted large seat; the YAML keeps the outline first draft
+            #         on local 7B by default)
 
         if applied:
             logger.info(
@@ -3499,7 +3511,10 @@ class WorkflowRunner:
             # Local import to keep the workflow_runner import-time
             # dependency surface unchanged (matches the sibling
             # aggregator helpers above).
-            from lib.aggregators.edge_consensus import EdgeConsensusAggregator
+            from lib.aggregators.edge_consensus import (
+                EdgeConsensusAggregator,
+                load_chunk_text_lookup,
+            )
 
             # ----------------------------------------------------------
             # Resolve candidate semantic-graph paths (both layouts).
@@ -3592,10 +3607,18 @@ class WorkflowRunner:
                         report_paths.append(report_path)
                         continue
 
+                    # TRAINFORGE_EDGE_NLI: build the chunk-text lookup from the
+                    # course tree (graph lives at <course_dir>/{graph,
+                    # concept_graph}/...). None when no chunkset is found / the
+                    # flag is off → the NLI extension no-ops.
+                    nli_chunk_lookup = load_chunk_text_lookup(
+                        graph_path.parent.parent
+                    )
                     aggregator = EdgeConsensusAggregator(
                         semantic_graph_path=graph_path,
                         course_slug=course_slug,
                         run_id=workflow_id,
+                        chunk_text_lookup=nli_chunk_lookup,
                     )
 
                     if not fully_stamped:
