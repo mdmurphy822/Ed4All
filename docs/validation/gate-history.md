@@ -10,10 +10,13 @@ focused on the current authoritative counts.
 > not re-derived as later waves added gates — so an intermediate subtotal here
 > (e.g. the IB7 note's "→101 warning") will NOT match the present total. The
 > single source of truth for the current per-workflow critical/warning/total
-> counts is the summary table in `CLAUDE.md` § "Active Gates" (re-derived from
-> `config/workflows.yaml`: **62 critical / 105 warning / 167 total**) plus the
-> per-gate detail in `docs/validation/gates.md`. The deltas below are kept for
-> per-wave provenance only; do not sum them to recover the current total.
+> counts is the summary table in `CLAUDE.md` § "Active Gates", re-derived from
+> `config/workflows.yaml`, plus the per-gate detail in `docs/validation/gates.md`.
+> (Do not restate the aggregate here — an inline number drifts. The prior
+> restatement "62 critical / 105 warning / 167 total" was already stale by the
+> time flip-wave-2 landed; consult `CLAUDE.md` for the live count.) The deltas
+> below are kept for per-wave provenance only; do not sum them to recover the
+> current total.
 
 ---
 
@@ -504,3 +507,71 @@ NO gate (it operates inside `objective_dedup.dedup_candidates`).
 The count table is re-derived from `config/workflows.yaml` (+1 warning gate on the
 `textbook_to_course` workflow only; `course_generation` has no `course_planning` phase):
 `textbook_to_course` 70→71 warning / 128→129 total, Total 100→101 warning / 194→195 total.
+
+---
+
+### flip-wave-2 — 7 calibration-validated warning→critical promotions + WCAG dead-ref repair — 2026-07-07
+
+The second calibration flip wave (successor to the 17-gate wave that promoted
+`anatomy_slot_presence` / `callout_structure` et al.). The calibration harness
+(`scripts/calibration_harness.py`) was re-run against the recorded calibration
+evidence — 5 distinct internal calibration corpora discovered dynamically (no
+slug pinned), 22 contributing runs, ≥2-corpora precondition satisfied. Seven
+gate families measured `flip_ready` (≥2 corpora, pooled AND worst-corpus
+fire-rate inside the documented band) and survived a NEW **flag-off no-op audit**
+(below), so they were promoted `severity: warning → critical` /
+`on_fail: warn → block` / `on_error: warn → fail_closed`, mirroring the prior
+wave's declarative pattern (the validators stay warning-day-1 `passed=True`, so
+default-off runs remain byte-stable — the flip reclassifies the gate into the
+critical gate-ledger column, it does not newly block clean runs):
+
+- `udl_coverage` (IB4.5) — pooled 0.0000 / 2 corpora — `course_generation` +
+  `textbook_to_course` `post_rewrite_validation`.
+- `interaction_feedback` (IB6.3) — pooled 0.036 / 2 corpora — both workflows.
+- `block_quality_rubric` (IB6.1) — pooled 0.018 / 2 corpora — both workflows.
+- `key_terms_definition_quality` (W1.5) — pooled 0.0000 / 2 corpora — both.
+- `mayer_ctml` — pooled ~0.090 / 2 corpora — both.
+- `recall_self_check_format` — pooled 0.0000 / 2 corpora — both.
+- `misconception_productive_failure` — pooled 0.0000 / 2 corpora —
+  `textbook_to_course` only (not wired in `course_generation`).
+
+**No-op audit (harness hardening).** The four 0.0000-fire families could in
+principle owe their clean rate to flag-off skip-passes counted as clean passes
+(these validators return `passed=True` + a single unattributed `*_DISABLED` info
+issue when their flag is unset). The harness now detects that skip signature in
+the `02_validation_report/report.json` phase-level section
+(`_is_block_skip_marker`: a BLOCK-scoped gate that passed, took no action, and
+logged only unattributed issues) and excludes those units from the fire-rate
+denominator (`no_op_evaluated`, surfaced per family) so an unexercised flag-off
+gate can never present as flip-ready. Re-run confirmed all seven ran flag-ON in
+both corpora (a flag-off run would have emitted the skip marker; the measured
+reports carry genuine `issue_count` with zero no-op inflation).
+
+**Out-of-band families NOT flipped** (blocker is a manual FP audit / generator
+fix, NOT a missing corpus — comments retagged from the obsolete "awaiting 2nd
+corpus / harness" framing): IB3 verb-triple/anchored-rubric/triangle pooled 0.32
+(worst 0.51); `block_cognitive_load` 0.31; `qa_checklist` 0.28;
+`retrieval_presence` 1.00; `source_coverage` 0.75; `bloom_distribution` /
+`cross_week_spacing` / `course_level_qa` 1.00; `rewrite_block_objective_delivery`
+0.27; `block_quality_rollup` 0.50. **Zero-observation families** (gate never
+exercised — needs ≥2 flag-on / assessment-emitting runs): `course_completeness`,
+`cumulative_assessment`, `difficulty_provenance`, `objective_specificity`,
+`prerequisite_sequencing`, `synthesized_quiz_distractor`,
+`terminal_objective_source_grounding`, `wcag_compliance`; plus `chunk_wcag_status`
++ `co_terminal_alignment` at a single corpus.
+
+**WCAG dead-ref repair.** The `textbook_to_course` `packaging` `wcag_compliance`
+gate pointed at `DART.pdf_converter.wcag_validator.WCAGValidator`, a module
+retired in the SemantiK migration; under `on_error: warn` the gate silently
+degraded to a warning every run and the validator never executed. Repaired to
+the live `lib.validators.wcag.WCAGValidator` (the class `course_generation`
+packaging already uses); a new regression test
+(`lib/tests/test_gate_validator_imports.py`) imports every gate's validator
+dotted path so a dead ref fails CI instead of silently warn-degrading. Gate
+stays warning day-1 (it now actually runs — measure before any flip).
+
+The count table is re-derived from `config/workflows.yaml`. flip-wave-2 is a pure
+warning→critical reclassification (no gates added/removed), +13 critical / −13
+warning overall: `course_generation` 30→36 critical / 27→21 warning (57 total,
+unchanged); `textbook_to_course` 58→65 critical / 71→64 warning (129 total,
+unchanged); Total 94→107 critical / 101→88 warning / 195 total (unchanged).

@@ -63,11 +63,11 @@ if str(_SCRIPTS_DIR) not in sys.path:
 from blocks import Block  # type: ignore[import-not-found]  # noqa: E402
 
 # IB4 — single source of truth for the generic-link-text list (2.4.4). Imported
-# from the existing page-level WCAGValidator so the per-block check and the
+# from the live page-level WCAGValidator so the per-block check and the
 # packaging gate agree. Defensive fallback keeps this module importable if the
-# DART package layout shifts (the SemantiK migration touches that tree).
+# validator package layout shifts.
 try:  # pragma: no cover — import-shape guard
-    from DART.pdf_converter.wcag_validator import WCAGValidator as _WCAGValidator
+    from lib.validators.wcag import WCAGValidator as _WCAGValidator
 
     _GENERIC_LINK_TEXT: Tuple[str, ...] = tuple(
         t.strip().lower() for t in _WCAGValidator.GENERIC_LINK_TEXT

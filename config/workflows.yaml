@@ -171,6 +171,12 @@ workflows:
           # target: verb-triple mismatch-rate measured on >=2 corpora with
           # manual FP audit; the per-pair verb_triple_status on every alignment
           # entry makes the audit replayable.
+          # MEASURED (flip-wave-2): pooled verb-triple/anchored-rubric/triangle
+          # fire-rate 0.32, worst-corpus 0.51 across 2 distinct internal
+          # calibration corpora — OUT of the low band, so the fast-flip did NOT
+          # clear. Blocker is now a generator-side alignment fix (mis-aligned
+          # blocks are genuinely being emitted), NOT a missing corpus/harness;
+          # re-measure after that fix. TODO(calibration) marker retained.
           - gate_id: outline_anchored_rubric
             validator: lib.validators.alignment.anchored_rubric.AnchoredRubricValidator
             severity: warning
@@ -517,27 +523,36 @@ workflows:
           # content-bearing block + a per-week engagement/autonomy floor;
           # QA-13 / D7) on the rewrite-tier Block batch. Deterministic (derives
           # on read); runs warning-day-1 regardless of ED4ALL_BLOCK_A11Y.
-          # TODO(calibration) — flip UDL_SINGLE_REPRESENTATION to critical after
-          # a >=2-corpus FP measurement (WS3/W4 deferred-flip pattern; IB3 is the
-          # single documented fastest-flip exception, this is NOT IB3).
+          # Flipped critical (calibration-validated, flip-wave-2): UDL_SINGLE_
+          # REPRESENTATION measured pooled fire-rate 0.0000 across 2 distinct
+          # internal calibration corpora (both in the [0.0, 0.10] band; the
+          # harness no-op audit confirmed the gate was genuinely exercised on
+          # both, not a flag-off skip). Still warning-day-1 at the validator
+          # (returns passed=True), so clean/warning-only runs never block.
           - gate_id: udl_coverage
             validator: lib.validators.udl_coverage.UdlCoverageValidator
-            severity: warning
+            severity: critical
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
-              on_error: warn
-            description: IB4.5 — UDL >=2-representations + per-week autonomy floor (post-rewrite). Warning day-1; deferred critical-flip.
+              on_fail: block
+              on_error: fail_closed
+            description: IB4.5 — UDL >=2-representations + per-week autonomy floor (post-rewrite). Critical (calibration-validated, flip-wave-2).
 
           # IB6 — eight-dimension block-quality rubric surface. All five gates
           # no-op (passed=True, info issue) when the IB6 keystone flag
           # ED4ALL_BLOCK_QUALITY_RUBRIC is unset, so default-off runs are
-          # byte-stable. Warning-day-1; TODO(calibration) — the hard-gate
-          # critical flip (mean>=2.0 floors + Accessibility=0 block-fail) is
-          # DEFERRED until the anchored 0-3 scale is calibrated on >=2 corpora
-          # (see plans/finegrain/ib6-*.md §4; the mean floors would block early
-          # runs).
+          # byte-stable. Flip status (flip-wave-2 measurement, 2 distinct
+          # internal calibration corpora): anatomy_slot_presence + block_quality_
+          # rubric + interaction_feedback are calibration-validated critical (in
+          # band, no no-op inflation per the harness no-op audit). The remaining
+          # two STAY warning — they are OUT OF the [0.0, 0.10] band, so the
+          # blocker is a manual FP audit / generator-side fix, NOT a missing
+          # corpus: block_cognitive_load (IB6.4) pooled fire-rate 0.31, worst-
+          # corpus 0.32; qa_checklist (IB6.7) pooled 0.28, worst 0.31. Both
+          # persistently fire on real content (the anchored 0-3 mean floors would
+          # block early runs); re-measure after the generator-side density fixes
+          # (see plans/finegrain/ib6-*.md §4) before any flip.
           - gate_id: block_cognitive_load
             validator: lib.validators.content.BlockCognitiveLoadValidator
             severity: warning
@@ -558,22 +573,22 @@ workflows:
             description: IB6.2 — six-slot anatomy presence (interaction/feedback/transition). Critical (calibration-validated).
           - gate_id: interaction_feedback
             validator: lib.validators.interaction_feedback.InteractionFeedbackValidator
-            severity: warning
+            severity: critical
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
-              on_error: warn
-            description: IB6.3 — universal interaction-feedback presence + elaboration gate. Warning day-1; TODO(calibration).
+              on_fail: block
+              on_error: fail_closed
+            description: IB6.3 — universal interaction-feedback presence + elaboration gate. Critical (calibration-validated, flip-wave-2 — pooled fire-rate 0.036 across 2 corpora, no no-op inflation); no-ops byte-stable when ED4ALL_BLOCK_QUALITY_RUBRIC unset.
           - gate_id: block_quality_rubric
             validator: lib.validators.block_quality_rubric.BlockQualityRubricValidator
-            severity: warning
+            severity: critical
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
-              on_error: warn
-            description: IB6.1 — per-block eight-dimension 0-3 rubric scoring (composes upstream signals). Warning day-1; TODO(calibration).
+              on_fail: block
+              on_error: fail_closed
+            description: IB6.1 — per-block eight-dimension 0-3 rubric scoring (composes upstream signals). Critical (calibration-validated, flip-wave-2 — pooled fire-rate 0.018 across 2 corpora, no no-op inflation); no-ops byte-stable when ED4ALL_BLOCK_QUALITY_RUBRIC unset.
           - gate_id: qa_checklist
             validator: lib.validators.qa_checklist.QaChecklistValidator
             severity: warning
@@ -722,17 +737,20 @@ workflows:
           # ceiling) / KEYTERM_DEF_NOT_DISTINCT (two terms share one gloss).
           # Consumes inputs['blocks']. Rides ED4ALL_KEYTERM_DEF_QUALITY — strict
           # no-op + byte-stable when the flag is unset. action=regenerate on miss.
-          # TODO(calibration) — flip the KEYTERM_DEF_* codes to critical after a
-          # >=2-corpus FP measurement (WS3/W4 deferred-flip pattern; NOT IB3).
+          # Flipped critical (calibration-validated, flip-wave-2): the KEYTERM_DEF_*
+          # codes measured pooled fire-rate 0.0000 across 2 distinct internal
+          # calibration corpora (in the [0.0, 0.10] band; the harness no-op audit
+          # confirmed the gate ran flag-ON on both — a flag-off run emits the
+          # KEYTERM_DEF_QUALITY_DISABLED skip marker the audit now excludes).
           - gate_id: key_terms_definition_quality
             validator: lib.validators.key_terms_definition_quality.KeyTermsDefinitionQualityValidator
-            severity: warning
+            severity: critical
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
-              on_error: warn
-            description: W1.5 — key-terms glossary definition-quality (circular / too-long / not-distinct). Warning day-1; TODO(calibration) deferred critical-flip; no-op when ED4ALL_KEYTERM_DEF_QUALITY unset.
+              on_fail: block
+              on_error: fail_closed
+            description: W1.5 — key-terms glossary definition-quality (circular / too-long / not-distinct). Critical (calibration-validated, flip-wave-2); no-ops byte-stable when ED4ALL_KEYTERM_DEF_QUALITY unset.
 
           # Mayer-CTML — structural multimedia-learning check on text+visual
           # blocks (B04 multimedia / B06 diagram / B05 worked_example, or any
@@ -741,17 +759,19 @@ workflows:
           # static HTML: SIGNALING / SPATIAL_CONTIGUITY / REDUNDANCY /
           # SEGMENTING. Consumes inputs['blocks']. Rides ED4ALL_MAYER_CTML —
           # strict no-op + byte-stable when the flag is unset.
-          # TODO(calibration) — flip the CTML_* codes to critical after a
-          # >=2-corpus FP measurement (WS3/W4 deferred-flip pattern; NOT IB3).
+          # Flipped critical (calibration-validated, flip-wave-2): the CTML_* codes
+          # measured pooled fire-rate ~0.090 across 2 distinct internal calibration
+          # corpora (in the [0.0, 0.10] band; the gate fired nonzero on both, so it
+          # was demonstrably exercised flag-ON — no no-op inflation).
           - gate_id: mayer_ctml
             validator: lib.validators.mayer_ctml.MayerCtmlValidator
-            severity: warning
+            severity: critical
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
-              on_error: warn
-            description: Mayer CTML 12-principles structural check on text+visual blocks (signaling/contiguity/redundancy/segmenting). Warning day-1; TODO(calibration) deferred critical-flip.
+              on_fail: block
+              on_error: fail_closed
+            description: Mayer CTML 12-principles structural check on text+visual blocks (signaling/contiguity/redundancy/segmenting). Critical (calibration-validated, flip-wave-2); no-ops byte-stable when ED4ALL_MAYER_CTML unset.
 
           # recall_self_check — free-recall / cloze produce-the-answer gate on
           # recall-marked self_check_question blocks. Flags
@@ -759,17 +779,20 @@ workflows:
           # RECALL_SELF_CHECK_ANSWER_INLINE (answer not behind a <details>
           # reveal). Consumes inputs['blocks']. Rides ED4ALL_RECALL_SELF_CHECK —
           # strict no-op + byte-stable when the flag is unset.
-          # TODO(calibration) — flip the RECALL_SELF_CHECK_* codes to critical
-          # after a >=2-corpus FP measurement (WS3/W4 deferred-flip pattern; NOT IB3).
+          # Flipped critical (calibration-validated, flip-wave-2): the RECALL_SELF_
+          # CHECK_* codes measured pooled fire-rate 0.0000 across 2 distinct
+          # internal calibration corpora (in the [0.0, 0.10] band; the harness
+          # no-op audit confirmed the gate ran flag-ON on both — a flag-off run
+          # emits the RECALL_SELF_CHECK_DISABLED skip marker the audit excludes).
           - gate_id: recall_self_check_format
             validator: lib.validators.recall_self_check.RecallSelfCheckFormatValidator
-            severity: warning
+            severity: critical
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
-              on_error: warn
-            description: recall_self_check — free-recall / cloze produce-the-answer self-check gate. Warning day-1; TODO(calibration) deferred critical-flip; no-op when ED4ALL_RECALL_SELF_CHECK unset.
+              on_fail: block
+              on_error: fail_closed
+            description: recall_self_check — free-recall / cloze produce-the-answer self-check gate. Critical (calibration-validated, flip-wave-2); no-ops byte-stable when ED4ALL_RECALL_SELF_CHECK unset.
 
           # IB6.6 — block->module->course quality-rollup GATE (framework
           # FR-07/13, §6.5). Surfaces the BlockQualityRollupAggregator's
@@ -3230,27 +3253,36 @@ workflows:
           # content-bearing block + a per-week engagement/autonomy floor;
           # QA-13 / D7) on the rewrite-tier Block batch. Deterministic (derives
           # on read); runs warning-day-1 regardless of ED4ALL_BLOCK_A11Y.
-          # TODO(calibration) — flip UDL_SINGLE_REPRESENTATION to critical after
-          # a >=2-corpus FP measurement (WS3/W4 deferred-flip pattern; IB3 is the
-          # single documented fastest-flip exception, this is NOT IB3).
+          # Flipped critical (calibration-validated, flip-wave-2): UDL_SINGLE_
+          # REPRESENTATION measured pooled fire-rate 0.0000 across 2 distinct
+          # internal calibration corpora (both in the [0.0, 0.10] band; the
+          # harness no-op audit confirmed the gate was genuinely exercised on
+          # both, not a flag-off skip). Still warning-day-1 at the validator
+          # (returns passed=True), so clean/warning-only runs never block.
           - gate_id: udl_coverage
             validator: lib.validators.udl_coverage.UdlCoverageValidator
-            severity: warning
+            severity: critical
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
-              on_error: warn
-            description: IB4.5 — UDL >=2-representations + per-week autonomy floor (post-rewrite). Warning day-1; deferred critical-flip.
+              on_fail: block
+              on_error: fail_closed
+            description: IB4.5 — UDL >=2-representations + per-week autonomy floor (post-rewrite). Critical (calibration-validated, flip-wave-2).
 
           # IB6 — eight-dimension block-quality rubric surface. All five gates
           # no-op (passed=True, info issue) when the IB6 keystone flag
           # ED4ALL_BLOCK_QUALITY_RUBRIC is unset, so default-off runs are
-          # byte-stable. Warning-day-1; TODO(calibration) — the hard-gate
-          # critical flip (mean>=2.0 floors + Accessibility=0 block-fail) is
-          # DEFERRED until the anchored 0-3 scale is calibrated on >=2 corpora
-          # (see plans/finegrain/ib6-*.md §4; the mean floors would block early
-          # runs).
+          # byte-stable. Flip status (flip-wave-2 measurement, 2 distinct
+          # internal calibration corpora): anatomy_slot_presence + block_quality_
+          # rubric + interaction_feedback are calibration-validated critical (in
+          # band, no no-op inflation per the harness no-op audit). The remaining
+          # two STAY warning — they are OUT OF the [0.0, 0.10] band, so the
+          # blocker is a manual FP audit / generator-side fix, NOT a missing
+          # corpus: block_cognitive_load (IB6.4) pooled fire-rate 0.31, worst-
+          # corpus 0.32; qa_checklist (IB6.7) pooled 0.28, worst 0.31. Both
+          # persistently fire on real content (the anchored 0-3 mean floors would
+          # block early runs); re-measure after the generator-side density fixes
+          # (see plans/finegrain/ib6-*.md §4) before any flip.
           - gate_id: block_cognitive_load
             validator: lib.validators.content.BlockCognitiveLoadValidator
             severity: warning
@@ -3271,22 +3303,22 @@ workflows:
             description: IB6.2 — six-slot anatomy presence (interaction/feedback/transition). Critical (calibration-validated).
           - gate_id: interaction_feedback
             validator: lib.validators.interaction_feedback.InteractionFeedbackValidator
-            severity: warning
+            severity: critical
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
-              on_error: warn
-            description: IB6.3 — universal interaction-feedback presence + elaboration gate. Warning day-1; TODO(calibration).
+              on_fail: block
+              on_error: fail_closed
+            description: IB6.3 — universal interaction-feedback presence + elaboration gate. Critical (calibration-validated, flip-wave-2 — pooled fire-rate 0.036 across 2 corpora, no no-op inflation); no-ops byte-stable when ED4ALL_BLOCK_QUALITY_RUBRIC unset.
           - gate_id: block_quality_rubric
             validator: lib.validators.block_quality_rubric.BlockQualityRubricValidator
-            severity: warning
+            severity: critical
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
-              on_error: warn
-            description: IB6.1 — per-block eight-dimension 0-3 rubric scoring (composes upstream signals). Warning day-1; TODO(calibration).
+              on_fail: block
+              on_error: fail_closed
+            description: IB6.1 — per-block eight-dimension 0-3 rubric scoring (composes upstream signals). Critical (calibration-validated, flip-wave-2 — pooled fire-rate 0.018 across 2 corpora, no no-op inflation); no-ops byte-stable when ED4ALL_BLOCK_QUALITY_RUBRIC unset.
           - gate_id: qa_checklist
             validator: lib.validators.qa_checklist.QaChecklistValidator
             severity: warning
@@ -3435,17 +3467,20 @@ workflows:
           # ceiling) / KEYTERM_DEF_NOT_DISTINCT (two terms share one gloss).
           # Consumes inputs['blocks']. Rides ED4ALL_KEYTERM_DEF_QUALITY — strict
           # no-op + byte-stable when the flag is unset. action=regenerate on miss.
-          # TODO(calibration) — flip the KEYTERM_DEF_* codes to critical after a
-          # >=2-corpus FP measurement (WS3/W4 deferred-flip pattern; NOT IB3).
+          # Flipped critical (calibration-validated, flip-wave-2): the KEYTERM_DEF_*
+          # codes measured pooled fire-rate 0.0000 across 2 distinct internal
+          # calibration corpora (in the [0.0, 0.10] band; the harness no-op audit
+          # confirmed the gate ran flag-ON on both — a flag-off run emits the
+          # KEYTERM_DEF_QUALITY_DISABLED skip marker the audit now excludes).
           - gate_id: key_terms_definition_quality
             validator: lib.validators.key_terms_definition_quality.KeyTermsDefinitionQualityValidator
-            severity: warning
+            severity: critical
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
-              on_error: warn
-            description: W1.5 — key-terms glossary definition-quality (circular / too-long / not-distinct). Warning day-1; TODO(calibration) deferred critical-flip; no-op when ED4ALL_KEYTERM_DEF_QUALITY unset.
+              on_fail: block
+              on_error: fail_closed
+            description: W1.5 — key-terms glossary definition-quality (circular / too-long / not-distinct). Critical (calibration-validated, flip-wave-2); no-ops byte-stable when ED4ALL_KEYTERM_DEF_QUALITY unset.
 
           # Mayer-CTML — structural multimedia-learning check on text+visual
           # blocks (B04 multimedia / B06 diagram / B05 worked_example, or any
@@ -3454,17 +3489,19 @@ workflows:
           # static HTML: SIGNALING / SPATIAL_CONTIGUITY / REDUNDANCY /
           # SEGMENTING. Consumes inputs['blocks']. Rides ED4ALL_MAYER_CTML —
           # strict no-op + byte-stable when the flag is unset.
-          # TODO(calibration) — flip the CTML_* codes to critical after a
-          # >=2-corpus FP measurement (WS3/W4 deferred-flip pattern; NOT IB3).
+          # Flipped critical (calibration-validated, flip-wave-2): the CTML_* codes
+          # measured pooled fire-rate ~0.090 across 2 distinct internal calibration
+          # corpora (in the [0.0, 0.10] band; the gate fired nonzero on both, so it
+          # was demonstrably exercised flag-ON — no no-op inflation).
           - gate_id: mayer_ctml
             validator: lib.validators.mayer_ctml.MayerCtmlValidator
-            severity: warning
+            severity: critical
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
-              on_error: warn
-            description: Mayer CTML 12-principles structural check on text+visual blocks (signaling/contiguity/redundancy/segmenting). Warning day-1; TODO(calibration) deferred critical-flip.
+              on_fail: block
+              on_error: fail_closed
+            description: Mayer CTML 12-principles structural check on text+visual blocks (signaling/contiguity/redundancy/segmenting). Critical (calibration-validated, flip-wave-2); no-ops byte-stable when ED4ALL_MAYER_CTML unset.
 
           # recall_self_check — free-recall / cloze produce-the-answer gate on
           # recall-marked self_check_question blocks. Flags
@@ -3472,17 +3509,20 @@ workflows:
           # RECALL_SELF_CHECK_ANSWER_INLINE (answer not behind a <details>
           # reveal). Consumes inputs['blocks']. Rides ED4ALL_RECALL_SELF_CHECK —
           # strict no-op + byte-stable when the flag is unset.
-          # TODO(calibration) — flip the RECALL_SELF_CHECK_* codes to critical
-          # after a >=2-corpus FP measurement (WS3/W4 deferred-flip pattern; NOT IB3).
+          # Flipped critical (calibration-validated, flip-wave-2): the RECALL_SELF_
+          # CHECK_* codes measured pooled fire-rate 0.0000 across 2 distinct
+          # internal calibration corpora (in the [0.0, 0.10] band; the harness
+          # no-op audit confirmed the gate ran flag-ON on both — a flag-off run
+          # emits the RECALL_SELF_CHECK_DISABLED skip marker the audit excludes).
           - gate_id: recall_self_check_format
             validator: lib.validators.recall_self_check.RecallSelfCheckFormatValidator
-            severity: warning
+            severity: critical
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
-              on_error: warn
-            description: recall_self_check — free-recall / cloze produce-the-answer self-check gate. Warning day-1; TODO(calibration) deferred critical-flip; no-op when ED4ALL_RECALL_SELF_CHECK unset.
+              on_fail: block
+              on_error: fail_closed
+            description: recall_self_check — free-recall / cloze produce-the-answer self-check gate. Critical (calibration-validated, flip-wave-2); no-ops byte-stable when ED4ALL_RECALL_SELF_CHECK unset.
 
           # misconception_rich — named subject-specific misconception +
           # productive-failure (predict -> reveal -> reconcile) gate on the B03/B12
@@ -3490,17 +3530,20 @@ workflows:
           # named target) / MISCONCEPTION_NO_PRODUCTIVE_FAILURE (generic
           # claim->correction card). Consumes inputs['blocks']. Rides
           # ED4ALL_MISCONCEPTION_RICH — strict no-op + byte-stable when unset.
-          # TODO(calibration) — flip the MISCONCEPTION_* codes to critical after a
-          # >=2-corpus FP measurement (WS3/W4 deferred-flip pattern; NOT IB3).
+          # Flipped critical (calibration-validated, flip-wave-2): the MISCONCEPTION_*
+          # codes measured pooled fire-rate 0.0000 across 2 distinct internal
+          # calibration corpora (in the [0.0, 0.10] band; the harness no-op audit
+          # confirmed the gate ran flag-ON on both — a flag-off run emits the
+          # MISCONCEPTION_RICH_DISABLED skip marker the audit excludes).
           - gate_id: misconception_productive_failure
             validator: lib.validators.misconception_productive_failure.MisconceptionProductiveFailureValidator
-            severity: warning
+            severity: critical
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
-              on_error: warn
-            description: misconception_rich — named misconception + productive-failure (predict->reveal->reconcile) gate. Warning day-1; TODO(calibration) deferred critical-flip; no-op when ED4ALL_MISCONCEPTION_RICH unset.
+              on_fail: block
+              on_error: fail_closed
+            description: misconception_rich — named misconception + productive-failure (predict->reveal->reconcile) gate. Critical (calibration-validated, flip-wave-2); no-ops byte-stable when ED4ALL_MISCONCEPTION_RICH unset.
 
           # IB6.6 — block->module->course quality-rollup GATE (framework
           # FR-07/13, §6.5). Surfaces the BlockQualityRollupAggregator's
@@ -3867,17 +3910,21 @@ workflows:
             description: "Phase 4 PoC SHACL parallel of page_objectives. Informational; Python gate remains authoritative."
 
           # IB4.3 — close the missing textbook_to_course packaging WCAG gate.
-          # Reuses DART's page-level WCAGValidator exactly as
-          # course_generation packaging wires it; the gate input router feeds
-          # it html_path per packaged page (via _build_wcag). Warning day-1:
-          # this path currently passes silently on real corpora, so per the
-          # roadmap "measure before block" risk note it lands warning.
+          # Uses lib.validators.wcag.WCAGValidator exactly as the
+          # course_generation wcag_compliance gate wires it; the gate input
+          # router feeds it html_path per packaged page (via _build_wcag).
+          # The prior dotted path (DART.pdf_converter.wcag_validator) was
+          # retired in the SemantiK migration, so this gate silently
+          # degraded to warn on every run (on_error: warn) and the validator
+          # never actually executed; repaired to the live lib validator.
+          # Warning day-1: measure real packaged-page WCAG output on >=2
+          # corpora before any critical flip.
           # TODO(calibration) — flip to severity: critical / on_fail: block /
           # on_error: fail_closed (matching course_generation packaging's
           # min_score: 0.9) after a >=2-corpus FP measurement confirms the
           # textbook-staged HTML passes clean.
           - gate_id: wcag_compliance
-            validator: DART.pdf_converter.wcag_validator.WCAGValidator
+            validator: lib.validators.wcag.WCAGValidator
             severity: warning
             threshold:
               max_critical_issues: 0

@@ -3179,7 +3179,11 @@ def default_router() -> GateInputRouter:
     # contract is IDENTICAL to QtiWellFormedValidator (it globs
     # ``inputs["qti_dir"] = <export>/06_assessments`` for ``*.xml``), so it
     # reuses that builder verbatim; no new builder. Warning day-1; deferred
-    # critical-flip.
+    # critical-flip. Flip-wave-2 measurement: ZERO observations across the
+    # discovered calibration corpora (the 06_assessments QTI artifact only
+    # exists on runs that emit synthesized assessments) — the blocker is a
+    # gate-never-exercised data gap needing >=2 assessment-emitting runs, NOT a
+    # missing corpus or an unbuilt harness.
     r.register(
         "lib.validators.synthesized_quiz_distractor.SynthesizedQuizDistractorValidator",
         _build_qti_well_formed,

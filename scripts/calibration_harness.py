@@ -389,10 +389,19 @@ MAX_SAMPLE_PER_FAMILY = 8  # bounded sample of fired blocks per gate family
 # --------------------------------------------------------------------------------------
 @dataclass
 class GateObservation:
-    """One gate family's tally within ONE corpus."""
+    """One gate family's tally within ONE corpus.
+
+    ``no_op_evaluated`` counts units the gate "saw" but did NOT really evaluate
+    because it short-circuited to a flag-off / deps-missing no-op skip-pass (see
+    ``_skip_marker_block_gate_ids``). Those units are EXCLUDED from ``evaluated``
+    (and therefore from ``fire_rate`` denominators and the >=2-corpora coverage
+    test) so an unexercised gate can never masquerade as a clean 0.0-fire,
+    flip-ready gate.
+    """
 
     fired: int = 0
     evaluated: int = 0
+    no_op_evaluated: int = 0
     samples: list[dict[str, Any]] = field(default_factory=list)
     sources: set[str] = field(default_factory=set)
 
@@ -559,14 +568,80 @@ def _record_fire(
     evaluated: int,
     source: str,
     sample: dict[str, Any] | None = None,
+    no_op: bool = False,
 ) -> None:
+    """Record one gate observation.
+
+    When ``no_op`` is True the gate short-circuited to a flag-off / deps-missing
+    skip-pass and did NOT really evaluate this unit: it is tallied under
+    ``no_op_evaluated`` (audit signal) and kept OUT of ``evaluated`` / ``fired``
+    so it cannot inflate a clean fire-rate. A no-op unit never "fires".
+    """
     obs = res.obs(family.family)
-    obs.evaluated += evaluated
     obs.sources.add(source)
+    if no_op:
+        obs.no_op_evaluated += evaluated
+        return
+    obs.evaluated += evaluated
     if fired:
         obs.fired += evaluated if family.scope == "module" else 1
         if sample is not None and len(obs.samples) < MAX_SAMPLE_PER_FAMILY:
             obs.samples.append(sample)
+
+
+def _phase_level_by_gate_id(data: dict) -> dict[str, dict]:
+    """Index ``phase_level_gate_results[]`` by ``gate_id`` (last-wins). Empty on absence."""
+    out: dict[str, dict] = {}
+    pl = data.get("phase_level_gate_results")
+    if isinstance(pl, list):
+        for gr in pl:
+            if isinstance(gr, dict) and gr.get("gate_id") is not None:
+                out[str(gr.get("gate_id"))] = gr
+    return out
+
+
+def _is_block_skip_marker(entry: dict) -> bool:
+    """True when a BLOCK-scoped gate's phase-level result is a flag-off no-op skip.
+
+    Flag-gated validators (``ED4ALL_UDL_*`` / ``ED4ALL_KEYTERM_DEF_QUALITY`` /
+    ``ED4ALL_MISCONCEPTION_RICH`` / ``ED4ALL_RECALL_SELF_CHECK`` / ``ED4ALL_MAYER_CTML``
+    / ``ED4ALL_BLOCK_QUALITY_RUBRIC`` ...) short-circuit to ``passed=True`` + a SINGLE
+    ``severity="info"`` ``*_DISABLED`` (or ``MISSING_BLOCKS_INPUT``) issue that carries no
+    ``location`` when their owning flag is unset. The 02_validation_report gate_results do
+    not persist issue CODES, but that skip has an unmistakable phase-level SHAPE: the gate
+    PASSED, took no action, and every issue it logged is UN-attributed to any block
+    (``issue_count == unattributed_issue_count >= 1``). For a BLOCK-scoped gate that
+    means NO block actually tripped it — i.e. it did no real work. Treated as a no-op so
+    its "evaluated" blocks are excluded from the fire-rate denominator (a 0.0 fire-rate
+    from an unexercised flag-off gate must NOT read as flip-ready).
+
+    Scoped to BLOCK gates on purpose: a MODULE-scoped gate legitimately reports its real
+    fires at module locations, which are also "unattributed" relative to block_ids, so
+    this shape would wrongly zero a genuine module fire — module-scoped no-ops are a known
+    limitation handled elsewhere.
+    """
+    if not bool(entry.get("passed", True)):
+        return False
+    if entry.get("action"):
+        return False
+    try:
+        issue_count = int(entry.get("issue_count") or 0)
+        unattributed = int(entry.get("unattributed_issue_count") or 0)
+    except (TypeError, ValueError):
+        return False
+    return issue_count >= 1 and issue_count == unattributed
+
+
+def _block_skip_marker_gate_ids(data: dict) -> set[str]:
+    """Gate_ids whose phase-level result is a BLOCK-scoped flag-off no-op skip."""
+    noop: set[str] = set()
+    for gid, entry in _phase_level_by_gate_id(data).items():
+        fam = _GATE_TO_FAMILY.get(gid)
+        if fam is None or fam.scope == "module":
+            continue
+        if _is_block_skip_marker(entry):
+            noop.add(gid)
+    return noop
 
 
 def read_validation_report(res: CorpusResult, report_path: Path) -> bool:
@@ -604,6 +679,12 @@ def read_validation_report(res: CorpusResult, report_path: Path) -> bool:
     src = f"validation_report:{report_path.name}"
     saw_any = False
 
+    # Gate_ids that short-circuited to a flag-off / deps-missing no-op skip this
+    # phase (BLOCK-scoped only). Their per-block units are recorded as
+    # ``no_op_evaluated`` and kept OUT of the fire-rate denominator so an
+    # unexercised flag-off gate cannot present as a clean, flip-ready 0.0-fire.
+    block_noop_gids = _block_skip_marker_gate_ids(data)
+
     # --- BLOCK-scoped: fire per block on that block's OWN issue_count. ---
     for block in per_block:
         if not isinstance(block, dict):
@@ -621,11 +702,12 @@ def read_validation_report(res: CorpusResult, report_path: Path) -> bool:
             if fam.scope == "module":
                 continue
             saw_any = True
+            is_noop = str(gid) in block_noop_gids
             try:
                 issue_count = int(gr.get("issue_count") or 0)
             except (TypeError, ValueError):
                 issue_count = 0
-            fired = issue_count > 0
+            fired = (not is_noop) and issue_count > 0
             sample = None
             if fired:
                 sample = {
@@ -637,7 +719,8 @@ def read_validation_report(res: CorpusResult, report_path: Path) -> bool:
                     "source": src,
                 }
             _record_fire(
-                res, fam, fired=fired, evaluated=1, source=src, sample=sample
+                res, fam, fired=fired, evaluated=1, source=src, sample=sample,
+                no_op=is_noop,
             )
 
     # --- Structural / module-scoped: read the phase-level section. ---
@@ -791,7 +874,9 @@ def read_courseforge_validation_report(res: CorpusResult, report_path: Path) -> 
     # source_coverage + objective_source_refs) DO each contribute a phase-level
     # observation, so this snapshot is taken ONCE up front (not re-checked per gate).
     pre_observed = {
-        name for name, o in res.observations.items() if o.evaluated > 0
+        name
+        for name, o in res.observations.items()
+        if o.evaluated > 0 or o.no_op_evaluated > 0
     }
     for phase_entry in per_phase:
         if not isinstance(phase_entry, dict):
@@ -851,9 +936,14 @@ def read_decision_captures(res: CorpusResult, capture_files: Iterable[Path]) -> 
     """
     saw_any = False
     # Track which families the richer report-based reader already covered so we don't
-    # double-count from the coarser JSONL rollups.
+    # double-count from the coarser JSONL rollups. A family the report OBSERVED AS A
+    # NO-OP (no_op_evaluated > 0, evaluated == 0) also counts as covered: the report's
+    # flag-off skip verdict is authoritative, so the coarse capture rollup must NOT
+    # re-inflate the denominator behind it.
     already_covered = {
-        name for name, o in res.observations.items() if o.evaluated > 0
+        name
+        for name, o in res.observations.items()
+        if o.evaluated > 0 or o.no_op_evaluated > 0
     }
     files_used: set[str] = set()
     for fpath in capture_files:
@@ -1384,20 +1474,48 @@ def aggregate(
         )[:max_corpora]
         by_key = {c.corpus_key: c for c in representatives}
 
+    # NO-OP-ONLY corpora: runs that observed some gate family ONLY as a flag-off
+    # no-op skip (no real ``evaluated`` unit anywhere) never enter ``contributing``
+    # / ``representatives`` and so do NOT count toward distinct_corpus_count or the
+    # >=2-corpora flip gate. They ARE surfaced (collapsed by corpus_key, excluding
+    # keys already represented by a real run) so the per-family audit can report WHY
+    # coverage is thin — the owning feature flag was unset, not that the gate is clean.
+    noop_only = [
+        c
+        for c in corpora
+        if not any(o.evaluated > 0 for o in c.observations.values())
+        and any(o.no_op_evaluated > 0 for o in c.observations.values())
+    ]
+    noop_by_key: dict[str, CorpusResult] = {}
+    for c in sorted(noop_only, key=lambda r: (_run_ts(r.corpus_id), r.corpus_id)):
+        if c.corpus_key in by_key:
+            continue
+        noop_by_key[c.corpus_key] = c  # latest-timestamp per key wins
+    noop_representatives = list(noop_by_key.values())
+
     gates_out: dict[str, Any] = {}
     for fam in GATE_FAMILIES:
         per_corpus: list[dict[str, Any]] = []
         samples: list[dict[str, Any]] = []
         total_fired = 0
         total_eval = 0
+        total_no_op = 0
+        no_op_only_corpora = 0
         contributing_corpora = 0
-        for c in representatives:
+        for c in representatives + noop_representatives:
             obs = c.observations.get(fam.family)
             if obs is None or obs.evaluated == 0:
+                # A corpus that saw this gate ONLY as a flag-off no-op skip does
+                # not contribute a real fire-rate observation, but is surfaced so
+                # the audit shows WHY coverage is thin (flag-off, not clean).
+                if obs is not None and obs.no_op_evaluated > 0:
+                    total_no_op += obs.no_op_evaluated
+                    no_op_only_corpora += 1
                 continue
             contributing_corpora += 1
             total_fired += obs.fired
             total_eval += obs.evaluated
+            total_no_op += obs.no_op_evaluated
             per_corpus.append(
                 {
                     "corpus": c.corpus_id,
@@ -1405,6 +1523,7 @@ def aggregate(
                     "origin": c.origin,
                     "fired": obs.fired,
                     "evaluated": obs.evaluated,
+                    "no_op_evaluated": obs.no_op_evaluated,
                     "fire_rate": round(obs.fire_rate, 6),
                     "sources": sorted(obs.sources),
                 }
@@ -1447,7 +1566,15 @@ def aggregate(
         # band (a per-corpus spike must not hide behind a clean pool).
         if contributing_corpora == 0:
             flip_ready = False
-            blocked = "no corpus produced an observation for this gate family"
+            if no_op_only_corpora > 0:
+                blocked = (
+                    f"gate short-circuited to a flag-off no-op skip on "
+                    f"{no_op_only_corpora} corpus/corpora ({total_no_op} unexercised "
+                    "units) and produced ZERO real observations — its owning feature "
+                    "flag was unset; needs >=2 flag-ON runs before any flip"
+                )
+            else:
+                blocked = "no corpus produced an observation for this gate family"
         elif contributing_corpora < 2:
             flip_ready = False
             blocked = (
@@ -1478,6 +1605,8 @@ def aggregate(
             "fire_rate": round(fire_rate, 6),
             "total_fired": total_fired,
             "total_evaluated": total_eval,
+            "total_no_op_evaluated": total_no_op,
+            "no_op_only_corpora": no_op_only_corpora,
             "corpora_count": contributing_corpora,
             "corpora": per_corpus,
             "across_corpora": across_corpora,

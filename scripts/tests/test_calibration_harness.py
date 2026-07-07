@@ -697,3 +697,149 @@ def test_legacy_v1_report_without_phase_level_section_degrades_gracefully():
     assert res.observations["IB4 UDL multiple-means coverage"].fired == 1
     # retrieval_presence never observed (no phase-level section).
     assert "IB7.5b retrieval presence (module-scoped)" not in res.observations
+
+
+# --------------------------------------------------------------------------------------
+# Flag-off no-op skip detection (fire-rate denominator hardening)
+# --------------------------------------------------------------------------------------
+def _noop_report(gid: str, total_blocks: int) -> dict:
+    """A report where a BLOCK-scoped flag-gated gate short-circuited to a no-op skip.
+
+    Mirrors what a flag-OFF validator emits: passed=True on every block with
+    issue_count=0, plus ONE phase-level info issue that is fully UN-attributed
+    (issue_count == unattributed_issue_count == 1), action None. This is the
+    signature ``_is_block_skip_marker`` treats as an unexercised no-op.
+    """
+    per_block = [
+        {
+            "block_id": f"blk_{i:03d}",
+            "gate_results": [
+                {"gate_id": gid, "passed": True, "issue_count": 0, "action": None},
+            ],
+        }
+        for i in range(total_blocks)
+    ]
+    return {
+        "per_block": per_block,
+        "phase_level_gate_results": [
+            {
+                "gate_id": gid,
+                "passed": True,
+                "action": None,
+                "issue_count": 1,
+                "unattributed_issue_count": 1,
+            }
+        ],
+    }
+
+
+def test_flag_off_noop_excluded_from_fire_rate_denominator():
+    # A flag-off no-op must NOT count as evaluated blocks: it is tallied under
+    # no_op_evaluated and kept out of the fire-rate denominator, so a 0.0-fire
+    # unexercised gate cannot present as a clean observation.
+    res = _read_report_dict(_noop_report("udl_coverage", total_blocks=12))
+    obs = res.observations["IB4 UDL multiple-means coverage"]
+    assert obs.evaluated == 0
+    assert obs.fired == 0
+    assert obs.no_op_evaluated == 12
+    assert obs.fire_rate == 0.0
+
+
+def test_flag_off_noop_two_corpora_not_flip_ready():
+    # Even across >=2 corpora, a family observed ONLY as a flag-off no-op is NOT
+    # flip_ready — the harness reports zero real observations + a no-op reason.
+    a = ch.CorpusResult(
+        corpus_id="noop-a-20260101000000", origin="courseforge_export",
+        path="/synth/noop-a", corpus_key="noop-a",
+    )
+    b = ch.CorpusResult(
+        corpus_id="noop-b-20260202000000", origin="courseforge_export",
+        path="/synth/noop-b", corpus_key="noop-b",
+    )
+    import json
+    import tempfile
+    for res in (a, b):
+        with tempfile.TemporaryDirectory() as td:
+            rp = Path(td) / "report.json"
+            rp.write_text(json.dumps(_noop_report("udl_coverage", 12)), encoding="utf-8")
+            ch.read_validation_report(res, rp)
+    report = ch.aggregate([a, b])
+    g = report["gate_families"]["IB4 UDL multiple-means coverage"]
+    assert g["corpora_count"] == 0
+    assert g["total_evaluated"] == 0
+    assert g["total_no_op_evaluated"] == 24
+    assert g["no_op_only_corpora"] == 2
+    assert g["flip_ready"] is False
+    assert "no-op skip" in g["flip_blocked_reason"]
+
+
+def test_flag_on_clean_run_is_a_real_observation_not_noop():
+    # A flag-ON clean run (per-block clean AND zero phase-level issues) is a REAL
+    # 0.0-fire observation, NOT a no-op — proving the detector does not suppress
+    # genuine clean signal. Two such corpora => flip_ready.
+    def _clean(gid: str, n: int) -> dict:
+        return {
+            "per_block": [
+                {
+                    "block_id": f"blk_{i:03d}",
+                    "gate_results": [
+                        {"gate_id": gid, "passed": True, "issue_count": 0,
+                         "action": None},
+                    ],
+                }
+                for i in range(n)
+            ],
+            "phase_level_gate_results": [
+                {"gate_id": gid, "passed": True, "action": None,
+                 "issue_count": 0, "unattributed_issue_count": 0},
+            ],
+        }
+    a = ch.CorpusResult(
+        corpus_id="clean-a-20260101000000", origin="courseforge_export",
+        path="/synth/clean-a", corpus_key="clean-a",
+    )
+    b = ch.CorpusResult(
+        corpus_id="clean-b-20260202000000", origin="courseforge_export",
+        path="/synth/clean-b", corpus_key="clean-b",
+    )
+    import json
+    import tempfile
+    for res in (a, b):
+        with tempfile.TemporaryDirectory() as td:
+            rp = Path(td) / "report.json"
+            rp.write_text(json.dumps(_clean("udl_coverage", 10)), encoding="utf-8")
+            ch.read_validation_report(res, rp)
+    obs = a.observations["IB4 UDL multiple-means coverage"]
+    assert obs.evaluated == 10 and obs.no_op_evaluated == 0
+    report = ch.aggregate([a, b])
+    g = report["gate_families"]["IB4 UDL multiple-means coverage"]
+    assert g["corpora_count"] == 2
+    assert g["fire_rate"] == 0.0
+    assert g["flip_ready"] is True
+
+
+def test_real_block_fires_are_not_misread_as_noop():
+    # A gate that genuinely fires on attributed blocks (issue_count>unattributed at
+    # phase level) is never mistaken for a no-op skip.
+    per_block = [
+        {
+            "block_id": f"blk_{i:03d}",
+            "gate_results": [
+                {"gate_id": "udl_coverage", "passed": True,
+                 "issue_count": 1 if i < 3 else 0, "action": "regenerate"},
+            ],
+        }
+        for i in range(10)
+    ]
+    report_dict = {
+        "per_block": per_block,
+        "phase_level_gate_results": [
+            {"gate_id": "udl_coverage", "passed": True, "action": "regenerate",
+             "issue_count": 3, "unattributed_issue_count": 0},
+        ],
+    }
+    res = _read_report_dict(report_dict)
+    obs = res.observations["IB4 UDL multiple-means coverage"]
+    assert obs.evaluated == 10
+    assert obs.fired == 3
+    assert obs.no_op_evaluated == 0
