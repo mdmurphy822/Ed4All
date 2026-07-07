@@ -24,7 +24,7 @@ This module exposes two pure-data helpers:
 
 The helpers are pure functions to keep them trivially callable from
 both ``CourseProcessor._create_chunk`` (emit time) and the retroactive
-regen script in ``scripts/wave76_retag_chunks.py``. They are
+regen script in ``scripts/archive/wave76_retag_chunks.py``. They are
 idempotent — running the retag twice on the same chunk does not
 duplicate refs.
 

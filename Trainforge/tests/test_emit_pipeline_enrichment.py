@@ -2,8 +2,8 @@
 
 Wave 75-78 added concept classification, concept-noise filtering,
 chunk retagging, and a real pedagogy graph builder. Pre-Wave-81 those
-all lived as retroactive scripts (``scripts/wave75_*``,
-``scripts/wave76_*``, ``scripts/wave78_*``) so a fresh Trainforge run
+all lived as retroactive scripts (``scripts/archive/wave75_*``,
+``scripts/archive/wave76_*``, ``scripts/archive/wave78_*``) so a fresh Trainforge run
 emitted a stub pedagogy graph (1 node / 0 edges) and unclassified
 concept-graph nodes. v2 Path B regen surfaced this — needed 4 manual
 scripts to bring the fresh archive up to current standards.

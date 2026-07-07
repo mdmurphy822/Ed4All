@@ -166,7 +166,7 @@ def test_packet_validator_no_objective_coverage_issues_after_retag():
     must report zero ``OBJECTIVE_NO_TEACHING_CHUNK`` and zero
     ``OBJECTIVE_NO_ASSESSMENT`` issues. The test runs the validator
     against the on-disk archive (which the Wave 81 retroactive
-    ``scripts/wave76_retag_chunks.py`` run produces). Skips when the
+    ``scripts/archive/wave76_retag_chunks.py`` run produces). Skips when the
     archive isn't present (e.g., shallow CI clones)."""
     from collections import Counter
     if _CALIBRATION_COURSE is None:
