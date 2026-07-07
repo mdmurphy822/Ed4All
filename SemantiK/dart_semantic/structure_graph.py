@@ -196,6 +196,194 @@ def resolve_bert_authoritative() -> bool:
     return raw in _BERT_AUTHORITATIVE_TRUTHY
 
 
+# ---------------------------------------------------------------------------
+# Content-type sanity guard (code_block / definition_list false-positive veto).
+#
+# Default OFF. When SEMANTIK_CONTENT_TYPE_GUARD is truthy, a deterministic,
+# domain-agnostic positive-evidence check is AND-ed into the Pass-6 code_block
+# and definition_list predicates: a region is only kept as code_block if its
+# text ACTUALLY looks like code, and only kept as definition_list if it has an
+# actual term-definition shape (not an arbitrary running-prose fragment). A
+# vetoed region loses its Pass-6 claim and falls through to the 1-FB paragraph
+# fallback (Pass ordering List->Paragraph->Code, then the unclaimed-FB paragraph
+# fallback — see the module docstring), so the safe demotion PRESERVES text.
+#
+# Byte-identical to today when off (both predicates short-circuit the positive
+# check). Gated per the house parse-with-fallback pattern of
+# ``resolve_bert_authoritative`` / ``resolve_reading_order_fix``.
+# ---------------------------------------------------------------------------
+
+_CONTENT_TYPE_GUARD_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def resolve_content_type_guard() -> bool:
+    """Return True when the content-type sanity guard vetoes mis-typed regions.
+
+    Reads ``SEMANTIK_CONTENT_TYPE_GUARD``. **Default OFF** (unset / blank /
+    falsey / garbage -> off; byte-identical to the confidence-floor-only
+    Pass-6 code_block / definition_list typing). A truthy value
+    (``1``/``true``/``yes``/``on``, case-insensitive) AND-s a positive-evidence
+    ``_looks_like_code`` / ``_looks_like_definition_list`` check into the
+    council-trusted predicates so a wiki table row / GPO printer furniture /
+    bare label can no longer ship as ``code_block`` and a mid-sentence
+    regulatory prose fragment can no longer ship as ``definition_list`` — the
+    vetoed region demotes to a text-preserving paragraph. Parse-with-fallback,
+    mirroring ``resolve_bert_authoritative``.
+    """
+    raw = (os.environ.get("SEMANTIK_CONTENT_TYPE_GUARD") or "").strip().lower()
+    return raw in _CONTENT_TYPE_GUARD_TRUTHY
+
+
+# --- code positive-evidence signals ----------------------------------------
+#
+# STRONG code operators that essentially never appear in prose / legal
+# citations / wiki table rows. Bare ``()`` ``.`` ``,`` ``;`` ``%`` ``|`` are
+# deliberately EXCLUDED (they appear in prose, legal cites, and numeric
+# tables). The ``++`` / ``--`` alternatives require adjacency to an identifier
+# char (post/pre-increment) so a spaced em-dash-substitute ``word -- word`` in
+# prose does not match. Multiline-anchored members (leading ``//`` comment,
+# brace-at-EOL) use ``re.MULTILINE``.
+_CODE_STRONG_OP_RE = re.compile(
+    r"""
+      ==|!=|<=|>=|=>|->|:=          # comparison / arrow / walrus operators
+    | \w(?:\+\+|--)|(?:\+\+|--)\w   # tight post/pre increment (i++, --n)
+    | &&|\|\||::                    # logical / scope-resolution
+    | /\*|\*/                       # C block-comment delimiters
+    | \#include                     # C preprocessor
+    | </\w|/>                       # HTML close / self-close tag
+    | \)\s*\{                       # ){  (control-flow brace)
+    | (?m:\{\s*$)                   # brace at end of a line
+    | (?m:^\s*//)                   # leading line comment
+    """,
+    re.VERBOSE,
+)
+
+# Line-initial programming keywords (case-SENSITIVE, lowercase only). Prose
+# sentence-starters are Capitalized (``For``/``If``/``While``/``Return``), so a
+# lowercase line-initial keyword avoids the sentence-start false-positive while
+# still catching ``def``/``import``/``for(``/``return`` code lines. Mid-line
+# keywords ("... for details") never match (anchored at line start).
+_CODE_KEYWORD_LINE_RE = re.compile(
+    r"^(?:"
+    r"def|class|return|import|from|function|func|var|const|let|public|private|"
+    r"protected|static|void|for|while|switch|case|do|try|except|catch|finally|"
+    r"throw|throws|new|package|namespace|struct|enum|interface|extends|"
+    r"implements|async|await|yield|lambda|print|println|printf|echo|elif|else|"
+    r"typedef|using|require|module|int|char|bool|float|double|long|unsigned"
+    r")\b"
+)
+
+# Leading-assignment line: ``ident(.ident|[idx])* = expr`` with a NON-empty RHS.
+# The LHS is a bare dotted/indexed identifier (no spaces), so a prose line with
+# an equals somewhere ("x is roughly = y in spirit") does not match. Reached
+# only AFTER the strong-op check, so the ``=`` here is a plain assignment (any
+# ``==``/``<=`` etc. already returned True).
+_CODE_ASSIGN_LINE_RE = re.compile(
+    r"^\s*[A-Za-z_][\w.]*(?:\[[^\]]*\])?\s*[-+*/|&^]?=\s*\S"
+)
+
+
+def _looks_like_code(text: str) -> bool:
+    """Positive-evidence predicate: does ``text`` actually look like code?
+
+    Domain-agnostic. Returns True when ANY of these fire; otherwise False:
+
+    * a STRONG code operator (``==`` ``!=`` ``<=`` ``>=`` ``=>`` ``->`` ``:=``
+      ``++`` ``--`` ``&&`` ``||`` ``::`` ``/*`` ``*/`` ``#include`` ``</tag``
+      ``/>`` ``){`` brace-at-EOL, leading ``//``) — see ``_CODE_STRONG_OP_RE``;
+    * a line whose first token is a lowercase programming keyword
+      (``def``/``import``/``for``/``return``/...);
+    * a leading-assignment line (``ident = expr``);
+    * >= 2 non-blank lines each indented by >= 2 leading spaces (an indented
+      code block).
+
+    Deliberately does NOT count bare ``()`` ``.`` ``,`` ``;`` ``%`` ``|`` — those
+    regress legal citations (``See section 3(a)(2) ...``) and wiki pipe-rows.
+    """
+    t = text or ""
+    if not t.strip():
+        return False
+    if _CODE_STRONG_OP_RE.search(t):
+        return True
+    lines = t.splitlines() or [t]
+    indented = 0
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if _CODE_KEYWORD_LINE_RE.match(stripped):
+            return True
+        if _CODE_ASSIGN_LINE_RE.match(line):
+            return True
+        if len(line) - len(line.lstrip(" ")) >= 2:
+            indented += 1
+    return indented >= 2
+
+
+# --- definition-list positive-evidence signals -----------------------------
+#
+# A definitional delimiter is a colon (optional leading space, mandatory
+# trailing space) or a spaced en/em dash. A HYPHEN is NOT a delimiter (it joins
+# compound words). The leading term must be short and phrase-like (not a
+# running-prose clause), so a long mid-sentence fragment that happens to carry a
+# colon is still rejected.
+_DEF_DELIM_RE = re.compile(r"\s*(?::|\s[–—]\s)\s*")
+_DEF_MAX_TERM_WORDS = 8
+_DEF_MAX_TERM_CHARS = 60
+
+
+def _is_definition_line(line: str) -> bool:
+    """True when ``line`` has a clean ``Term: definition`` / ``Term — definition``
+    shape (short phrase-like term, a definitional delimiter, a non-empty
+    definition)."""
+    m = _DEF_DELIM_RE.search(line)
+    if not m:
+        return False
+    term = line[: m.start()].strip()
+    definition = line[m.end() :].strip()
+    if not term or not definition:
+        return False
+    if len(term) > _DEF_MAX_TERM_CHARS or len(term.split()) > _DEF_MAX_TERM_WORDS:
+        return False
+    # A real term is a phrase, not a running-prose clause: reject a term that
+    # carries sentence punctuation or trails into the next clause with a comma.
+    if term.endswith(",") or re.search(r"[.!?]", term):
+        return False
+    return True
+
+
+def _is_running_prose_fragment(text: str) -> bool:
+    """True when ``text`` is a CLEAR mid-sentence running-prose fragment — the
+    fedregister defect shape: a multi-word run that begins mid-sentence
+    (lowercase first char) or trails into the next clause (ends with a comma),
+    with no definitional delimiter. Conservative: a short bare term or a
+    capitalized definition-body sentence is NOT a fragment."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    if len(t.split()) < 3:
+        return False
+    return t[:1].islower() or t.endswith(",")
+
+
+def _looks_like_definition_list(text: str) -> bool:
+    """Positive-evidence predicate: does ``text`` have a term-definition shape?
+
+    Conservative — only VETOES (returns False) when the region is clearly a
+    running-prose fragment with no definitional delimiter structure. Returns
+    True for a genuine ``Term: definition`` / ``Term — definition`` line, and
+    also for a bare short term or a capitalized definition-body sentence (so a
+    split ``definition_term`` / ``definition_def`` FB is never demoted).
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+    lines = [ln.strip() for ln in t.splitlines() if ln.strip()]
+    if any(_is_definition_line(ln) for ln in lines):
+        return True
+    return not _is_running_prose_fragment(t)
+
+
 # The role->kind table over the 9-role ``structural_role`` taxonomy (must match
 # ``council/structure.ROLE_NAMES``). table / math / figure are NEVER produced
 # here — those kinds are Stage-4 passthrough regions with structured payloads
@@ -1957,10 +2145,20 @@ def build_structure_graph(
     # ------------------------------------------------------------------
     # Pass 6 — Code, blockquote, metadata_drop, form, fallback.
     # ------------------------------------------------------------------
+    _content_guard = resolve_content_type_guard()
+
     def _is_code(idx: int) -> bool:
         sig = _get_signal(state, "structure", "structural_role", idx)
         label, conf = _top1(sig)
-        return label == "code_block" and conf >= _CODE_CONFIDENCE_FLOOR
+        if not (label == "code_block" and conf >= _CODE_CONFIDENCE_FLOOR):
+            return False
+        # Content sanity guard (default OFF -> byte-identical). Veto a council
+        # code_block whose text carries no positive code evidence (wiki table
+        # row / GPO printer furniture / bare label) so it falls through to a
+        # text-preserving paragraph.
+        if _content_guard and not _looks_like_code(_fb_text(feature_blocks, idx)):
+            return False
+        return True
 
     def _is_blockquote(idx: int) -> bool:
         sig = _get_signal(state, "structure", "structural_role", idx)
@@ -2009,10 +2207,18 @@ def build_structure_graph(
     def _is_definition(idx: int) -> bool:
         sig = _get_signal(state, "structure", "structural_role", idx)
         label, conf = _top1(sig)
-        return (
+        if not (
             label in ("definition_term", "definition_def")
             and conf >= _DEFINITION_CONFIDENCE_FLOOR
-        )
+        ):
+            return False
+        # Content sanity guard (default OFF -> byte-identical). Veto a council
+        # definition_term/def whose text is clearly a running-prose fragment
+        # (no term-definition shape) so it falls through to a paragraph. A bare
+        # short term or a capitalized definition-body sentence is NOT vetoed.
+        if _content_guard and not _looks_like_definition_list(_fb_text(feature_blocks, idx)):
+            return False
+        return True
 
     for start, end in list(_iter_runs(_is_definition, feature_blocks, claimed)):
         items = []
