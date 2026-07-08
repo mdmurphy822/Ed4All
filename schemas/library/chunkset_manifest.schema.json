@@ -16,6 +16,11 @@
       "pattern": "^(?:v\\d+|\\d+\\.\\d+\\.\\d+(?:[+-][A-Za-z0-9.+-]+)?)$",
       "description": "Version of the chunker-schema contract that produced the chunks. MIGRATION DRIFT (post-Phase-8 review): this field's semantics shifted from 'Python-package release version of ed4all-chunker' (resolved via importlib.metadata.version('ed4all-chunker'), e.g. '0.1.0') to 'chunker-schema-contract version' (resolved via Trainforge.chunker.CHUNKER_SCHEMA_VERSION, e.g. 'v4') after the ed4all-chunker workspace package was folded back into Trainforge/chunker/. The contract version is bumped only when the emit shape or semantics change, decoupled from any Python-package release cadence. Pattern alternation accepts BOTH shapes: the new ^v\\d+$ schema-version form ('v4') AND the legacy ^\\d+\\.\\d+\\.\\d+(?:[+-]...)?$ semver form ('0.1.0', '0.1.0+missing', '1.0.0-rc1') so any pre-migration manifest on disk — including the '0.0.0+missing' fallback sentinel emitted before Phase 7's editable-install landed — continues to validate. Mirrors the chunker_version pattern in course_manifest.schema.json."
     },
+    "extraction_contract": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Chunk-TEXT extraction-contract version — ORTHOGONAL to chunker_version (the emit SHAPE). Versions the semantics of WHAT TEXT lands in a chunk's `text` field: the always-on Trainforge/parsers/html_content_parser.py::HTMLTextExtractor contract (screen-reader-scaffolding suppression + structural delimiters). chunker_version deliberately stays 'v4' across extraction-text changes, so this finer integer marker is what a provenance consumer (e.g. the tier-2 citation-anchoring floor gate in Trainforge/tests/test_citation_anchor_contract.py) reads to tell whether the chunkset was produced under the CURRENT extraction-text contract. Sourced from Trainforge.chunker.EXTRACTION_TEXT_CONTRACT_VERSION at emit time (bumped whenever chunk-text extraction semantics change again). OPTIONAL: every chunkset archived before the marker landed lacks it and continues to validate; a corpus without it is treated as legacy (pre-marker) by the provenance gate."
+    },
     "chunkset_kind": {
       "type": "string",
       "enum": ["dart", "imscc"],

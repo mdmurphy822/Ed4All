@@ -666,6 +666,9 @@ class TestRunDartChunkingEmitsChunksJsonl:
         assert set(manifest.keys()).issubset({
             "chunks_sha256",
             "chunker_version",
+            # Chunk-TEXT extraction-contract provenance marker (orthogonal to
+            # chunker_version's emit shape). Stamped unconditionally.
+            "extraction_contract",
             "chunkset_kind",
             "source_dart_html_sha256",
             "source_imscc_sha256",
@@ -905,6 +908,9 @@ class TestRunImsccChunkingEmitsChunksJsonl:
         assert set(manifest.keys()).issubset({
             "chunks_sha256",
             "chunker_version",
+            # Chunk-TEXT extraction-contract provenance marker (orthogonal to
+            # chunker_version's emit shape). Stamped unconditionally.
+            "extraction_contract",
             "chunkset_kind",
             "source_dart_html_sha256",
             "source_imscc_sha256",

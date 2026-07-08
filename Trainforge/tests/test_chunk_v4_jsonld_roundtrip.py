@@ -54,15 +54,20 @@ def _libv2_courses_root() -> Path:
 SAMPLE_SIZE = 5  # First N chunks of the reference corpus.
 
 
-def _first_chunks_carry_source_refs(chunks_path: Path) -> bool:
-    """True when the first SAMPLE_SIZE chunks each carry source_references[].
+def _first_chunks_satisfy_preconditions(chunks_path: Path) -> bool:
+    """True when the first SAMPLE_SIZE chunks each satisfy every load-bearing
+    precondition the round-trip test asserts.
 
-    The round-trip test asserts every sampled chunk emits >=1
-    ``ed4all:sourceId`` triple, which requires the corpus to carry
-    ``source.source_references[]`` on its chunks. Newer general-textbook
-    corpora omit that sub-shape, so discovery must select a corpus that
-    satisfies the precondition (and skip cleanly when none does) rather
-    than hard-fail on the first sorted course.
+    ``test_each_chunk_emits_minimum_load_bearing_triples`` asserts every
+    sampled chunk emits (a) >=1 ``ed4all:sourceId`` triple — which requires
+    ``source.source_references[]`` — AND (b) >=1 tag/LO triple — which
+    requires a non-empty ``concept_tags`` OR ``learning_outcome_refs``.
+    Corpora built by an early / plan-only pipeline slice legitimately carry
+    chunks with neither tags nor LOs (no objective synthesis ran), and
+    newer general-textbook corpora may omit the source-ref sub-shape, so
+    discovery must select a corpus that satisfies BOTH preconditions (and
+    skip cleanly when none does) rather than hard-fail on the first sorted
+    course.
     """
     seen = 0
     try:
@@ -73,6 +78,11 @@ def _first_chunks_carry_source_refs(chunks_path: Path) -> bool:
                     continue
                 chunk = json.loads(line)
                 if not chunk.get("source", {}).get("source_references"):
+                    return False
+                if not (
+                    chunk.get("concept_tags")
+                    or chunk.get("learning_outcome_refs")
+                ):
                     return False
                 seen += 1
                 if seen >= SAMPLE_SIZE:
@@ -87,9 +97,10 @@ def _discover_chunks_jsonl() -> Path | None:
 
     Resolves each course's chunks via ``resolve_imscc_chunks_path`` so the
     ``imscc_chunks/`` → ``dart_chunks/`` → legacy ``corpus/`` layouts are
-    all found, then selects the first course whose sampled chunks carry
-    ``source.source_references[]`` (the test's precondition). Returns
-    ``None`` when none qualifies → the round-trip tests skip cleanly.
+    all found, then selects the first course whose sampled chunks satisfy
+    the test's load-bearing preconditions (source_references[] AND a
+    concept_tag / learning_outcome_ref). Returns ``None`` when none
+    qualifies → the round-trip tests skip cleanly.
     """
     courses_root = _libv2_courses_root()
     if not courses_root.is_dir():
@@ -98,7 +109,7 @@ def _discover_chunks_jsonl() -> Path | None:
         if not course_dir.is_dir():
             continue
         candidate = resolve_imscc_chunks_path(course_dir, "chunks.jsonl")
-        if candidate.exists() and _first_chunks_carry_source_refs(candidate):
+        if candidate.exists() and _first_chunks_satisfy_preconditions(candidate):
             return candidate
     return None
 

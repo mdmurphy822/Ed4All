@@ -24,6 +24,19 @@ that drops a rate below its kind's floor fails loudly. Manifest- and
 corpus-bearing chunksets resolve via archived source pages / text containment;
 ``corpus`` kind is loosest because it carries no archived source pages.
 
+Provenance gate (``LEGACY_EXTRACTION_CONTRACT``, supersedes the old
+``LEGACY_CHUNKER_VERSION`` token): a tier-2 arm ENFORCES the per-kind floor
+iff the corpus declares ``extraction_contract ==
+Trainforge.chunker.EXTRACTION_TEXT_CONTRACT_VERSION`` in EITHER its
+``course_manifest.json`` OR its chunkset sidecar ``manifest.json`` — otherwise
+it SKIPS loudly. This is finer than the coarse ``chunker_version`` (which
+deliberately stays ``"v4"`` across chunk-TEXT extraction-contract changes, so a
+chunk-only ``--stop-after chunking`` sidecar carrying ``chunker_version="v4"``
+can predate the extraction-text contract yet look current on that field). The
+integer ``extraction_contract`` marker is truthful: every existing on-disk
+corpus predates it and skips as legacy; every corpus chunked from now on
+(including chunk-only slices) carries it and gets full floor enforcement.
+
 Anti-silent-degradation: a course exposing an imscc chunkset must keep a
 ``*.imscc`` archived under ``source/imscc/`` (sha-verified against the imscc
 manifest's source_imscc_sha256). If that cartridge is removed, that arm flips
@@ -39,9 +52,54 @@ from pathlib import Path
 import pytest
 
 from lib.retrieval.citation_anchor import AnchorStatus, anchor_report
+from Trainforge.chunker import EXTRACTION_TEXT_CONTRACT_VERSION
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MINI_COURSE = PROJECT_ROOT / "tests" / "fixtures" / "retrieval" / "mini_course"
+
+
+def _corpus_provenance(course_dir: Path, chunks_path: Path):
+    """Resolve ``(extraction_contract, chunker_version)`` for a real corpus.
+
+    The tier-2 anchoring floor is enforced only on corpora produced under the
+    CURRENT chunk-TEXT extraction contract (the always-on ``HTMLTextExtractor``
+    screen-reader-scaffolding suppression + structural delimiters — see
+    ``Trainforge/CLAUDE.md`` § "Extraction-text change class"). That contract is
+    versioned as ``Trainforge.chunker.EXTRACTION_TEXT_CONTRACT_VERSION`` and
+    stamped as ``extraction_contract`` onto BOTH the ``course_manifest.json``
+    (fully-archived corpora) AND the chunkset sidecar ``manifest.json``
+    (chunk-only ``--stop-after chunking`` slices that never get a course
+    manifest). This helper scans BOTH sources — the course manifest first,
+    then the sidecar sitting next to ``chunks.jsonl`` — and returns the first
+    ``extraction_contract`` int found (or ``None`` when neither declares it),
+    alongside the ``chunker_version`` found (for the greppable skip message).
+
+    NB: ``chunker_version`` alone is TOO COARSE for this gate — it deliberately
+    stays ``"v4"`` across extraction-text changes (bumped only on emit-SHAPE
+    changes), so a chunk-only sidecar carrying ``chunker_version="v4"`` can
+    predate the extraction-text contract yet look current on that field. The
+    integer ``extraction_contract`` marker is what distinguishes them; a corpus
+    lacking it is legacy (pre-marker) and skips.
+    """
+    extraction_contract = None
+    chunker_version = None
+    for manifest in (
+        course_dir / "course_manifest.json",
+        chunks_path.parent / "manifest.json",
+    ):
+        if not manifest.is_file():
+            continue
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if extraction_contract is None and isinstance(
+            data.get("extraction_contract"), int
+        ):
+            extraction_contract = data.get("extraction_contract")
+        if chunker_version is None and data.get("chunker_version") is not None:
+            chunker_version = data.get("chunker_version")
+    return extraction_contract, chunker_version
 
 try:
     from lib.paths import libv2_path
@@ -49,6 +107,93 @@ try:
     LIBV2_COURSES = libv2_path() / "courses"
 except Exception:  # pragma: no cover
     LIBV2_COURSES = PROJECT_ROOT / "LibV2" / "courses"
+
+
+# ---------------------------------------------------------------------------
+# Provenance-helper unit coverage (synthetic tmp_path manifests, no live slugs)
+# ---------------------------------------------------------------------------
+#
+# The tier-2 floor is enforced iff `_corpus_provenance` resolves an
+# extraction_contract == EXTRACTION_TEXT_CONTRACT_VERSION from EITHER the
+# course_manifest.json OR the chunkset sidecar manifest. These exercise the
+# marker-present-current / marker-absent / marker-stale branches directly so
+# the gate's enforce/skip decision is regression-covered without a real corpus.
+
+
+def _write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_provenance_marker_current_from_course_manifest(tmp_path):
+    course_dir = tmp_path / "course"
+    chunks_path = course_dir / "dart_chunks" / "chunks.jsonl"
+    chunks_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(
+        course_dir / "course_manifest.json",
+        {
+            "chunker_version": "v4",
+            "extraction_contract": EXTRACTION_TEXT_CONTRACT_VERSION,
+        },
+    )
+    contract, cver = _corpus_provenance(course_dir, chunks_path)
+    assert contract == EXTRACTION_TEXT_CONTRACT_VERSION
+    assert cver == "v4"
+    # Gate decision: ENFORCE (marker current).
+    assert contract == EXTRACTION_TEXT_CONTRACT_VERSION
+
+
+def test_provenance_marker_current_from_sidecar_only(tmp_path):
+    """Chunk-only --stop-after slice: no course_manifest, marker lives on the
+    chunkset sidecar. The gate must still ENFORCE."""
+    course_dir = tmp_path / "course"
+    chunks_dir = course_dir / "dart_chunks"
+    chunks_path = chunks_dir / "chunks.jsonl"
+    _write_json(
+        chunks_dir / "manifest.json",
+        {
+            "chunker_version": "v4",
+            "extraction_contract": EXTRACTION_TEXT_CONTRACT_VERSION,
+            "chunkset_kind": "dart",
+        },
+    )
+    contract, cver = _corpus_provenance(course_dir, chunks_path)
+    assert contract == EXTRACTION_TEXT_CONTRACT_VERSION
+    assert cver == "v4"
+
+
+def test_provenance_marker_absent_skips_as_legacy(tmp_path):
+    """A stale sidecar-'v4' corpus with NO extraction_contract marker: the
+    coarse chunker_version looks current but the gate must SKIP (legacy)."""
+    course_dir = tmp_path / "course"
+    chunks_dir = course_dir / "dart_chunks"
+    chunks_path = chunks_dir / "chunks.jsonl"
+    _write_json(
+        chunks_dir / "manifest.json",
+        {"chunker_version": "v4", "chunkset_kind": "dart"},
+    )
+    contract, cver = _corpus_provenance(course_dir, chunks_path)
+    assert contract is None
+    assert cver == "v4"
+    # Gate decision: SKIP as legacy (marker absent despite chunker_version v4).
+    assert contract != EXTRACTION_TEXT_CONTRACT_VERSION
+
+
+def test_provenance_marker_stale_skips_as_legacy(tmp_path):
+    """A corpus stamped with a DIFFERENT extraction_contract than the live one
+    (the state a future contract bump creates for pre-bump corpora) must SKIP —
+    the marker is present but stale relative to EXTRACTION_TEXT_CONTRACT_VERSION."""
+    stale = EXTRACTION_TEXT_CONTRACT_VERSION + 1
+    course_dir = tmp_path / "course"
+    chunks_path = course_dir / "dart_chunks" / "chunks.jsonl"
+    _write_json(
+        course_dir / "course_manifest.json",
+        {"chunker_version": "v4", "extraction_contract": stale},
+    )
+    contract, _cver = _corpus_provenance(course_dir, chunks_path)
+    assert contract == stale
+    # Gate decision: SKIP as legacy (marker present but != live version).
+    assert contract != EXTRACTION_TEXT_CONTRACT_VERSION
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +340,43 @@ def test_tier2_real_corpus_anchoring_floor(course_slug, kind, chunks_path, floor
     if not chunks_path.is_file():
         pytest.skip(
             f"LibV2 corpus {course_slug}/{kind} absent on this checkout"
+        )
+    # Provenance gate (fresh corpora keep full enforcement; legacy corpora
+    # skip loudly). The per-kind anchoring floors were measured against
+    # corpora produced under the CURRENT chunk-TEXT extraction contract
+    # (HTMLTextExtractor sr-scaffolding suppression + structural delimiters).
+    # A corpus chunked before that contract carries chunk spans the current
+    # resolver can no longer anchor exactly, so its rate legitimately sits
+    # below the floor without being a REGRESSION on the current pipeline.
+    #
+    # Gate on the integer ``extraction_contract`` marker (read from EITHER the
+    # course_manifest.json OR the chunkset sidecar manifest) rather than the
+    # coarse ``chunker_version`` (formerly the LEGACY_CHUNKER_VERSION gate) —
+    # chunker_version deliberately stays "v4" across extraction-text changes,
+    # so 4 stale sidecar-"v4" corpora on this checkout predate the contract yet
+    # would look current on that field. The extraction_contract marker is
+    # truthful: EVERY existing on-disk corpus predates it -> skips as legacy;
+    # every corpus chunked from now on (including chunk-only --stop-after
+    # slices, whose sidecar carries the marker) -> full floor enforcement.
+    # Current corpora are enforced; legacy ones skip with a greppable
+    # LEGACY_EXTRACTION_CONTRACT reason (supersedes the old
+    # LEGACY_CHUNKER_VERSION token) naming what was found.
+    extraction_contract, chunker_version = _corpus_provenance(
+        course_dir, chunks_path
+    )
+    if extraction_contract != EXTRACTION_TEXT_CONTRACT_VERSION:
+        pytest.skip(
+            f"{course_slug}/{kind}: LEGACY_EXTRACTION_CONTRACT — "
+            f"extraction_contract={extraction_contract!r} != current "
+            f"EXTRACTION_TEXT_CONTRACT_VERSION="
+            f"{EXTRACTION_TEXT_CONTRACT_VERSION!r} "
+            f"(chunker_version={chunker_version!r}; the coarse chunker_version "
+            f"gate this replaces was LEGACY_CHUNKER_VERSION). The per-kind "
+            f"anchoring floor is enforced only on corpora chunked under the "
+            f"CURRENT extraction-text contract (HTMLTextExtractor "
+            f"sr-scaffolding suppression + structural delimiters); a corpus "
+            f"predating the extraction_contract marker skips here. Re-chunk / "
+            f"re-archive the course to enforce the floor on it."
         )
     report = anchor_report(chunks_path, course_dir, chunkset_kind=kind)
     counts = report["status_counts"]

@@ -16,6 +16,11 @@
       "pattern": "^(?:v\\d+|\\d+\\.\\d+\\.\\d+(?:[+-][A-Za-z0-9.+-]+)?)$",
       "description": "Phase 7a Subtask 8: version of the chunker that produced the archived chunks. MIGRATION DRIFT (post-Phase-8 review): this field's semantics shifted from 'Python-package release version of ed4all-chunker' (resolved via importlib.metadata.version('ed4all-chunker'), e.g. '0.1.0') to 'chunker-schema-contract version' (resolved via Trainforge.chunker.CHUNKER_SCHEMA_VERSION, e.g. 'v4') after the ed4all-chunker workspace package was folded back into Trainforge/chunker/. The contract version is bumped only when the emit shape or semantics change, decoupled from any Python-package release cadence. Optional in Phase 7a (Wave 7); promoted to required by the Phase 7c validator wiring once both the DART chunkset (Phase 7b) and IMSCC chunkset (Phase 7c) emitters are settled. Pattern alternation accepts BOTH the new ^v\\d+$ schema-version form ('v4') AND the legacy ^\\d+\\.\\d+\\.\\d+(?:[+-]...)?$ semver form ('0.1.0', '0.1.0+missing', '1.0.0-rc1') so any pre-migration manifest on disk continues to validate."
     },
+    "extraction_contract": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Chunk-TEXT extraction-contract version — ORTHOGONAL to chunker_version (the emit SHAPE). Versions the semantics of WHAT TEXT lands in a chunk's `text` field: the always-on Trainforge/parsers/html_content_parser.py::HTMLTextExtractor contract (screen-reader-scaffolding suppression + structural delimiters). chunker_version deliberately stays 'v4' across extraction-text changes, so this finer integer marker is what a provenance consumer (e.g. the tier-2 citation-anchoring floor gate in Trainforge/tests/test_citation_anchor_contract.py) reads to tell whether the archived corpus was produced under the CURRENT extraction-text contract. Sourced from Trainforge.chunker.EXTRACTION_TEXT_CONTRACT_VERSION at archive time (bumped whenever chunk-text extraction semantics change again). Mirrors the extraction_contract field on the chunkset sidecar manifests. OPTIONAL: legacy manifests that predate the marker validate without it and are treated as legacy (pre-marker) by the provenance gate."
+    },
     "concept_graph_sha256": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$",
@@ -309,7 +314,7 @@
     "library_format_version": {
       "type": "string",
       "pattern": "^\\d+\\.\\d+$",
-      "description": "OP4 library-format version — the on-disk LibV2 course-layout contract this manifest was written against (distinct from ``libv2_version``, the manifest-document schema version, and ``chunker_version``, the chunk-emit contract). Starts at '1.0'. Optional -> legacy manifests that predate the field validate without it (fsck/validators treat a missing field as the pre-1.0 baseline: serve read-only + warn, never silent). Bumped only when the course-directory layout / manifest contract changes in a way that requires a migration; the migration framework itself is deferred to v2.1. Contract: docs/operations/library-versioning.md."
+      "description": "OP4 library-format version — the on-disk LibV2 course-layout contract this manifest was written against (distinct from ``libv2_version``, the manifest-document schema version, and ``chunker_version``, the chunk-emit contract). Starts at '1.0'. Optional -> legacy manifests that predate the field validate without it (fsck/validators treat a missing field as the pre-1.0 baseline: serve read-only + warn, never silent). Bumped only when the course-directory layout / manifest contract changes in a way that requires a migration; the migration framework has shipped as the `libv2 migrate` subcommand (LibV2/tools/libv2/migrate.py — dry-run default, --apply, legacy->1.0 baseline step). Contract: docs/operations/library-versioning.md."
     },
     "license": {
       "type": "object",

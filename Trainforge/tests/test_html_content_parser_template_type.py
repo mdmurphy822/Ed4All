@@ -128,7 +128,7 @@ def test_content_type_schema_accepts_all_canonical_chunk_types():
     canonical value: 6 legacy + 4 Wave 81 + 3 Issue I6 + 5 instruction-
     palette block-wrapper additions (checklist, scenario, problem,
     vocabulary, formula) + 2 reflective/collaborative additions (reflection,
-    discussion).
+    discussion) + 1 IB5 B06 visual addition (diagram).
     """
     schema_path = PROJECT_ROOT / "schemas" / "taxonomies" / "content_type.json"
     with schema_path.open(encoding="utf-8") as fh:
@@ -160,6 +160,8 @@ def test_content_type_schema_accepts_all_canonical_chunk_types():
         # Two reflective/collaborative additions
         "reflection",
         "discussion",
+        # IB5 B06 visual block-wrapper addition
+        "diagram",
     }
     assert chunk_types == expected, (
         f"ChunkType enum mismatch: got {sorted(chunk_types)}, "

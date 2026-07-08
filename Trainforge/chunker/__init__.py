@@ -39,10 +39,32 @@ strip_boilerplate`` without reaching into the submodule.
 # when stamping ``chunker_version`` on ``course_manifest.json`` and
 # the ``dart_chunks/`` / ``imscc_chunks/`` sidecar manifests.
 # Decoupled from any Python-package version: the chunker_schema is the
-# emit contract, not the package release. Bump when the emit shape or
+# emit contract, not the package release. Bump when the emit SHAPE or
 # semantics change.
 CHUNKER_SCHEMA_VERSION = "v4"
 __version__ = CHUNKER_SCHEMA_VERSION
+
+# Chunk-TEXT extraction-contract version. ORTHOGONAL to
+# ``CHUNKER_SCHEMA_VERSION`` (the emit SHAPE): this integer versions the
+# semantics of WHAT TEXT lands in a chunk's ``text`` field — i.e. the
+# ``Trainforge/parsers/html_content_parser.py::HTMLTextExtractor`` contract
+# (see ``Trainforge/CLAUDE.md`` § "Extraction-text change class (no opt-out
+# by design)"). Version ``1`` is the current always-on contract:
+# screen-reader-scaffolding suppression (``sr-only`` / ``visually-hidden`` /
+# ``aria-hidden="true"`` subtree drop) + structural delimiters (per-``<li>`` /
+# table-row newlines, ``|`` between table cells, ``: `` after each ``<dt>``).
+#
+# ``CHUNKER_SCHEMA_VERSION`` deliberately stays ``"v4"`` across extraction-text
+# changes (the emit shape is unchanged), so a coarse ``chunker_version`` check
+# can't distinguish a corpus chunked before vs. after these semantics shifted.
+# This finer marker is stamped as ``extraction_contract`` on the chunkset
+# sidecar + course manifests so a provenance consumer (e.g. the tier-2
+# citation-anchoring floor gate) can tell whether a corpus was chunked under
+# the current extraction-text contract. BUMP THIS whenever chunk-text
+# extraction semantics change again (a new always-on suppression / delimiter
+# rule), so downstream provenance gates re-classify pre-change corpora as
+# legacy.
+EXTRACTION_TEXT_CONTRACT_VERSION = 1
 
 from Trainforge.chunker.boilerplate import (
     DEFAULT_MIN_DOC_FRAC,
@@ -84,6 +106,7 @@ from Trainforge.chunker.helpers import (
 __all__ = [
     "__version__",
     "CHUNKER_SCHEMA_VERSION",
+    "EXTRACTION_TEXT_CONTRACT_VERSION",
     "BoilerplateConfig",
     "CANONICAL_CHUNK_TYPES",
     "CHUNK_OVERLAP_WORDS_ENV",
