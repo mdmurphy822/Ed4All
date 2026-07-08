@@ -347,7 +347,12 @@ libv2 answer-eval --course <slug>                        # Grounded-answer eval 
 libv2 refusal-calibrate --course <slug>                  # Calibrate the refusal threshold (measure-then-pin)
 libv2 cross-index                                        # Build the cross-package concept index (catalog/cross_package_concepts.json)
 libv2 cross-discover "<query>"                           # Route a topic query to candidate courses via the cross-package concept index
+libv2 migrate <slug>                                     # OP4 — dry-run plan a course's library_format_version migration
+libv2 migrate <slug> --apply                             # Apply the migration (backup manifest + validate + rollback on failure)
+libv2 migrate --all [--apply]                            # Plan (or apply) across every discovered course
 ```
+
+OP4 (stage 2): `libv2 migrate [<slug>|--all] [--apply]` is the on-disk `library_format_version` migration framework (`LibV2/tools/libv2/migrate.py`). Dry-run by default (`plan_course_migration` never writes); `--apply` backs up `manifest.json` to a timestamped `.bak` sibling BEFORE writing, re-runs the LibV2 validate check on the migrated course, and **rolls the manifest back** on validation failure (never a silent half-migrated course). A manifest with no `library_format_version` is the pre-1.0 `legacy` baseline; the baseline step registered is `legacy -> 1.0` (stamp-only, no directory-layout change). An already-current course plans as the empty "already current" plan.
 
 W4.5: the cross-package concept index (`catalog/cross_package_concepts.json`, written by `libv2 cross-index`) is now CONSUMED by `LibV2/tools/libv2/cross_package_discovery.py` (via the additive `libv2 cross-discover` command) — no longer dead data. Additive read-only consumption: no env flag, no config/workflows.yaml/gate/schema change, and the `cross-index` writer path stays byte-identical.
 
@@ -370,7 +375,7 @@ Extended metadata including:
 - `attestation` (optional): I5 human-review sign-off — `{reviewed_by, reviewed_at (server-stamped when omitted), scope: objectives|content|full, note?}`. Stamped via the GUI PATCH `/api/courses/{id}/attestation` (`gui.services.course_service.save_attestation`); records that a person reviewed the course. Absent on legacy manifests (still validate).
 - `license` (optional): B3 license declaration for the archived source corpus — `{spdx_or_name, note?}`. Threaded from the `--license-note` run flag (`MCP/tools/pipeline_tools.py::_normalize_license_field`). Absent = byte-identical legacy manifest; when present, the archival step also writes a human-readable `NOTICE` file into the course dir.
 - `attribution` (optional): B3 source-attribution declaration — `{statement, ...}`. Threaded from the `--attribution` run flag (`_normalize_attribution_field`); the `statement` is mirrored into the `NOTICE` file at archive time. Absent = byte-identical legacy manifest.
-- `library_format_version` (optional): OP4 on-disk LibV2 course-layout contract version (starts `1.0`, pattern `^\d+\.\d+$`), distinct from `libv2_version` (manifest-document schema) and `chunker_version` (chunk-emit contract). Stamped `LIBRARY_FORMAT_VERSION` at archive time. A missing field is treated as the pre-1.0 baseline (serve read-only + warn, never silent). Contract: `docs/operations/library-versioning.md`.
+- `library_format_version` (optional): OP4 on-disk LibV2 course-layout contract version (starts `1.0`, pattern `^\d+\.\d+$`), distinct from `libv2_version` (manifest-document schema) and `chunker_version` (chunk-emit contract). Stamped `LIBRARY_FORMAT_VERSION` at archive time. A missing field is treated as the pre-1.0 `legacy` baseline (serve read-only + warn, never silent). The in-place upgrader has SHIPPED (OP4 stage 2) as the `libv2 migrate` command (`LibV2/tools/libv2/migrate.py`) — dry-run-by-default with backup + validate + rollback on `--apply`; the baseline step is `legacy -> 1.0`. Contract: `docs/operations/library-versioning.md`.
 
 Gated by `lib/validators/libv2_manifest.py::LibV2ManifestValidator` as the `libv2_manifest` gate on the `textbook_to_course` pipeline's `libv2_archival` phase. The validator runs critical-severity checks (JSON parse, schema match, on-disk artifact hash/size agreement) and warning-severity advisories (scaffold completeness, `source_provenance=false` gap flag).
 

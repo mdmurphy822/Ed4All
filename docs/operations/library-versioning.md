@@ -5,8 +5,8 @@ stamped on every freshly emitted `course_manifest.json` as
 `library_format_version` (start `"1.0"`). This doc defines the *upgrade
 contract* — what an old-format (or old-chunker) course means, who checks it,
 and what bumps the version. The migration *framework* (an actual in-place
-upgrader) is explicitly **deferred to v2.1**; today the contract is
-report-only.
+upgrader, `libv2 migrate`) shipped in **OP4 stage 2** — see § "The migration
+framework" below.
 
 ## The three version fields (do not conflate)
 
@@ -40,10 +40,12 @@ silent**:
   the in-repo constant.
 * **An older `library_format_version`** than the current
   `LIBRARY_FORMAT_VERSION` means the course dir was laid out against a
-  superseded contract. Until the v2.1 migration framework lands, the posture is:
-  read what is safely readable, warn loudly, and require a **re-chunk / re-emit**
-  (a fresh `ed4all run` archival) to bring the course to the current format.
-  There is deliberately **no silent in-place rewrite**.
+  superseded contract. Two paths bring it current: the deterministic in-place
+  `libv2 migrate` upgrader (§ "The migration framework"), or a full
+  **re-chunk / re-emit** (a fresh `ed4all run` archival). Either way there is
+  deliberately **no silent in-place rewrite** — `libv2 migrate` is dry-run by
+  default and only writes on an explicit `--apply` (with a manifest backup +
+  post-migration validate + rollback).
 
 ## Who checks it
 
@@ -64,25 +66,67 @@ in a **backward-compatible** way (a new optional subdir/file that older
 consumers can ignore). Bump the major version (`1.x` → `2.0`) on a
 **breaking** layout change — a rename or removal that would make an old
 consumer misread a new course, or a new consumer misread an old course. A major
-bump is the trigger for the v2.1 migration framework: at that point an operator
-needs a deterministic path from the old layout to the new one.
+bump is the trigger for a new migration step: at that point an operator needs a
+deterministic path from the old layout to the new one, registered in the
+migration framework below.
 
 Do **not** bump `library_format_version` for:
 
 * manifest-JSON-only key additions → bump `libv2_version`;
 * chunk-emit-shape changes → bump `chunker_version`.
 
-## Deferred: the migration framework (v2.1)
+## The migration framework (OP4 stage 2)
 
-The actual upgrader — a `libv2 migrate <slug>` command that reads an
-old-format course, transforms it to the current layout, re-stamps
-`library_format_version`, and re-verifies the three-hash triangle — is
-**out of scope for OP4** and deferred to v2.1. OP4 lands only:
+The actual upgrader shipped as **OP4 stage 2**. It has two pieces:
 
-1. the `library_format_version` **stamp** on fresh emits, and
-2. this **contract** (serve read-only + warn; re-chunk to upgrade; never
-   silent), plus the report-only validator awareness.
+* **The framework** — `LibV2/tools/libv2/migrate.py`:
+  * `detect_version(manifest)` — a manifest with no `library_format_version` is
+    the pre-1.0 baseline, reported as the `LEGACY_VERSION` sentinel (`"legacy"`,
+    deliberately not a real `^\d+\.\d+$` value so it never collides with a
+    stamped one); any present value is the on-disk layout version.
+  * `MigrationRegistry` — an ordered registry of `MigrationStep`s keyed
+    `from_version -> to_version` (one deterministic successor per version). The
+    registry's `target_version()` is the terminus of the chain from `legacy`;
+    the module-level drift guard test asserts it equals
+    `MCP/tools/pipeline_tools.py::LIBRARY_FORMAT_VERSION`.
+  * `plan_course_migration()` / `apply_course_migration()` — the dry-run planner
+    (never writes) and the apply engine (backup → transform → write → validate →
+    rollback-on-failure).
+  * `DEFAULT_REGISTRY` ships one baseline step: **`legacy -> 1.0`**, which stamps
+    `library_format_version = "1.0"` (the pre-1.0 baseline directory layout *is*
+    the 1.0 layout; only the explicit stamp was missing — the manifest
+    "otherwise conforming" is enforced by the post-write validate pass, not by
+    mutating any other key). A course already at `1.0` yields the empty
+    "already current" plan (a no-op).
 
-Until v2.1, "upgrading" an old-format course is a full re-run: re-chunk /
-re-archive it through `ed4all run`, which mints a current-format course dir with
-the current `library_format_version`.
+* **The CLI** — `libv2 migrate [SLUG] [--all] [--apply]`:
+  * **Dry-run by default**: prints the per-course plan (`from_version ->
+    current` plus the chained steps) and writes nothing.
+  * `--apply` executes. On apply the engine (1) backs up `manifest.json` to a
+    timestamped `manifest.json.<UTC-ts>.bak` sibling **before** any write,
+    (2) applies the chained transforms and writes the migrated manifest,
+    (3) re-runs the existing per-course LibV2 validate pass
+    (`validator.py::validate_course` — structure + manifest-schema + taxonomy),
+    and (4) **restores the manifest from the backup** if validation fails,
+    reporting `rolled_back` + the validation errors and exiting non-zero.
+  * `--all` iterates every course under `courses/` (`already current` courses
+    are skipped as no-ops).
+
+```bash
+libv2 migrate demo-course-1               # dry-run plan for one course
+libv2 migrate demo-course-1 --apply       # migrate one course (backup + validate + rollback)
+libv2 migrate --all                       # dry-run plan for every course
+libv2 migrate --all --apply               # migrate every course
+```
+
+A full **re-chunk / re-emit** through `ed4all run` remains the alternative
+upgrade path (it mints a fresh current-format course dir); `libv2 migrate` is
+the in-place path for a manifest-only layout bump. Either way there is **no
+silent in-place rewrite** — `migrate` only writes under an explicit `--apply`.
+
+The whole-repo `lib/libv2_fsck.py::run_fsck` check is intentionally NOT the
+per-migration validator: fsck is repo-scoped (blobs, catalog, run manifests) and
+heavier, whereas an in-place manifest migration needs the per-course granularity
+`validate_course` provides. `apply_course_migration` accepts an injectable
+`validator` callable if a caller wants a stricter or lighter post-migration
+check.

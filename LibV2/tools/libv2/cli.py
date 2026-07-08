@@ -1011,6 +1011,122 @@ def restore_cmd(ctx, backup_path, overwrite, dry_run, verify_only):
             print(f"    ! {rel}")
 
 
+@main.command("migrate")
+@click.argument("slug", required=False)
+@click.option("--all", "all_courses", is_flag=True,
+              help="Plan/migrate every discovered course under courses/.")
+@click.option("--apply", "apply_flag", is_flag=True,
+              help="Execute the migration (default is a dry-run plan only).")
+@click.pass_context
+def migrate_cmd(ctx, slug: Optional[str], all_courses: bool, apply_flag: bool):
+    """Migrate a course's on-disk library_format_version to the current layout.
+
+    DRY-RUN BY DEFAULT: prints the per-course migration plan (from-version ->
+    current, and the chained steps) without touching any file. Pass ``--apply``
+    to execute. On apply, ``manifest.json`` is backed up to a timestamped
+    ``.bak`` sibling BEFORE any write, the migrated course is re-validated with
+    the LibV2 validate pass, and the manifest is rolled back if validation
+    fails.
+
+    A manifest with no ``library_format_version`` is the pre-1.0 baseline
+    (``legacy``); a manifest already at the current version reports
+    "already current" and is a no-op.
+
+    \b
+    Examples:
+        libv2 migrate demo-course-1               # dry-run plan for one course
+        libv2 migrate demo-course-1 --apply       # migrate one course
+        libv2 migrate --all                       # dry-run plan for every course
+        libv2 migrate --all --apply               # migrate every course
+    """
+    from .migrate import (
+        DEFAULT_REGISTRY,
+        MigrationError,
+        apply_course_migration,
+        discover_courses,
+        plan_course_migration,
+    )
+
+    repo_root = _resolve_libv2_root(ctx)
+
+    if all_courses and slug:
+        print_error("Pass either a SLUG or --all, not both.")
+        sys.exit(1)
+    if not all_courses and not slug:
+        print_error("Specify a course SLUG or --all.")
+        sys.exit(1)
+
+    if all_courses:
+        course_dirs = discover_courses(repo_root)
+        if not course_dirs:
+            print_warning("No courses found to migrate.")
+            return
+    else:
+        course_dir = repo_root / "courses" / slug
+        if not course_dir.exists():
+            print_error(f"Course not found: {slug}")
+            sys.exit(1)
+        course_dirs = [course_dir]
+
+    target = DEFAULT_REGISTRY.target_version()
+    failures = 0
+
+    for course_dir in course_dirs:
+        cslug = course_dir.name
+        try:
+            plan = plan_course_migration(course_dir, cslug, DEFAULT_REGISTRY)
+        except MigrationError as exc:
+            print_error(f"{cslug}: {exc.code}: {exc.detail}")
+            failures += 1
+            continue
+
+        if plan.already_current:
+            print_success(
+                f"{cslug}: already current (library_format_version="
+                f"{plan.from_version} == {target}) — no migration needed."
+            )
+            continue
+
+        if not apply_flag:
+            print(f"{cslug}: PLAN {plan.from_version} -> {target}")
+            for step in plan.steps:
+                print(f"    - {step.from_version} -> {step.to_version}: {step.description}")
+            print_warning(
+                f"  dry-run: no files written. Re-run with --apply to migrate {cslug}."
+            )
+            continue
+
+        try:
+            outcome = apply_course_migration(
+                course_dir, repo_root, cslug, DEFAULT_REGISTRY
+            )
+        except MigrationError as exc:
+            print_error(f"{cslug}: {exc.code}: {exc.detail}")
+            failures += 1
+            continue
+
+        if outcome.rolled_back:
+            failures += 1
+            print_error(
+                f"{cslug}: migration FAILED validation — rolled back "
+                f"(backup: {outcome.backup_path})."
+            )
+            for err in outcome.validation_errors[:10]:
+                print(f"    - {err}")
+            continue
+
+        print_success(
+            f"{cslug}: migrated {outcome.from_version} -> {outcome.to_version} "
+            f"({', '.join(outcome.steps_applied)})."
+        )
+        if outcome.backup_path:
+            print(f"    backup: {outcome.backup_path}")
+
+    if failures:
+        print_error(f"\n{failures} course(s) failed migration.")
+        sys.exit(1)
+
+
 @main.command("link-outcomes")
 @click.argument("slug")
 @click.option("--objectives", "-o", type=click.Path(exists=True), required=True,
