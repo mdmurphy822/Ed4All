@@ -297,8 +297,10 @@ def test_gate_wired_in_both_workflows_post_rewrite():
         gate_ids = {g["gate_id"] for g in post["validation_gates"]}
         assert "mayer_ctml" in gate_ids, wf_name
         gate = next(g for g in post["validation_gates"] if g["gate_id"] == "mayer_ctml")
-        assert gate["severity"] == "warning"
-        assert gate["behavior"]["on_fail"] == "warn"
+        # Flipped critical at flip-wave-2 (calibration-validated) — see the
+        # gate comment in config/workflows.yaml.
+        assert gate["severity"] == "critical"
+        assert gate["behavior"]["on_fail"] == "block"
         assert gate["validator"] == "lib.validators.mayer_ctml.MayerCtmlValidator"
 
 

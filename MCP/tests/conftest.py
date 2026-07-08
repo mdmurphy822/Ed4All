@@ -2,6 +2,7 @@
 Ed4All orchestrator/ test configuration and shared fixtures.
 """
 import json
+import os
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock
@@ -11,6 +12,76 @@ import pytest
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+
+
+# =============================================================================
+# ENVIRONMENT HERMETICITY (cross-test pollution guard)
+# =============================================================================
+#
+# Several production code paths exercised by these tests write routing /
+# provider env vars DIRECTLY into ``os.environ`` rather than through
+# ``monkeypatch`` — most notably ``WorkflowRunner.run_workflow`` →
+# ``_apply_corpus_generalization_defaults`` / ``_apply_authoring_route_env``,
+# which fill ``COURSEFORGE_PROVIDER``, ``COURSEPLANNER_PROVIDER``, the
+# ``TRAINFORGE_*`` corpus-generalization quartet, and the synthesis-provider
+# seats. Because ``monkeypatch`` only tears down the changes IT made, those
+# direct writes survive teardown and leak into every downstream test that keys
+# behavior off the same envs (dispatch-routing short-circuits, textbook
+# synthesis/structure, plan_course_structure, …). Individually the polluting
+# files pass; the FULL suite in one process fails.
+#
+# This autouse fixture snapshots ``os.environ`` before each test and restores
+# it verbatim afterward, so a test can never observe env state leaked by an
+# earlier test. It is additive to ``monkeypatch`` (whose own teardown still
+# runs first) and makes the MCP suite hermetic regardless of test order.
+# Function-scoped and cheap (a dict copy); higher-scope fixtures instantiate
+# before it, so their env is captured in the snapshot and preserved.
+
+
+@pytest.fixture(autouse=True)
+def _restore_os_environ():
+    _snapshot = dict(os.environ)
+    try:
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(_snapshot)
+
+
+# =============================================================================
+# EMBEDDING-CLIENT IMPORT-FREEZE GUARD (cross-test pollution guard)
+# =============================================================================
+#
+# ``lib.objectives.objective_dedup`` binds ``build_embedding_client`` at module
+# import via ``from lib.embedding.providers import build_embedding_client``.
+# Several tests (test_textbook_synthesis_grounded, test_stage2_chapter_anchor,
+# test_textbook_synthesis_stage2, …) monkeypatch
+# ``lib.embedding.providers.build_embedding_client`` to inject a fake / None
+# embedder. If objective_dedup's FIRST import happens while such a patch is
+# active (it is a lazy import inside the Stage-2 synthesis path), the patched
+# callable freezes into objective_dedup's own module namespace. ``monkeypatch``
+# then restores the providers module attribute — but NOT objective_dedup's
+# independent binding — so the orphaned fake leaks into every later test whose
+# dedup pass builds its own client, cosine-collapsing distinct objectives
+# (e.g. 4 → 2) and failing assertions that pass in isolation.
+#
+# Fix the anti-pattern once, at collection time: import objective_dedup now
+# (before any test patch is active) and replace its module-level
+# ``build_embedding_client`` with a thin forwarder that resolves the LIVE
+# ``lib.embedding.providers`` attribute on every call. The name can no longer
+# freeze — a per-test monkeypatch of the providers module is honored while
+# active and cleanly reverts on teardown, making the dedup embedding path
+# order-independent.
+try:  # pragma: no cover - defensive; slim slices may lack the module
+    import lib.embedding.providers as _emb_providers_mod
+    import lib.objectives.objective_dedup as _objective_dedup_mod
+
+    def _live_build_embedding_client(*args, **kwargs):
+        return _emb_providers_mod.build_embedding_client(*args, **kwargs)
+
+    _objective_dedup_mod.build_embedding_client = _live_build_embedding_client
+except Exception:  # noqa: BLE001 - never block collection on this guard
+    pass
 
 # NOTE: the "absent local synthesis backend → skip" hookwrapper lives in the
 # repo-root conftest.py so it covers MCP synthesis-phase tests too. Not
