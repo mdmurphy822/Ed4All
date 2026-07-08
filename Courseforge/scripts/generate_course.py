@@ -430,6 +430,67 @@ def _courseforge_emit_blocks_enabled() -> bool:
     return os.getenv(_EMIT_BLOCKS_ENV, "").strip().lower() in _ENFORCE_TRUTHY_VALUES
 
 
+# T4 — generator provenance. Every page's JSON-LD carries a generic
+# schema.org-style ``generator`` object identifying the pipeline that
+# authored it. The name is intentionally vendor/model-agnostic — per-tier
+# model + provider attribution lives in the ``provenance.tiers[]`` envelope,
+# not here. The version is resolved from a SINGLE real source (the installed
+# ``ed4all`` distribution metadata, i.e. the pyproject ``version``) so the
+# emitted string can never drift from the package version; the same value
+# also feeds ``provenance.pipelineVersion``.
+_GENERATOR_NAME = "Ed4All Courseforge"
+
+
+@lru_cache(maxsize=1)
+def _generator_version() -> str:
+    """Resolve the generator version from the single ``ed4all`` version source.
+
+    Primary source is the installed distribution metadata (which reads the
+    pyproject ``version``). Source-tree fallback (package not installed):
+    parse the ``version = "..."`` line out of the repo-root ``pyproject.toml``.
+    No hardcoded version literal — both paths trace back to pyproject, so the
+    stamped version can never silently diverge from the released package.
+    """
+    try:
+        from importlib.metadata import PackageNotFoundError
+        from importlib.metadata import version as _dist_version
+
+        try:
+            return _dist_version("ed4all")
+        except PackageNotFoundError:
+            pass
+    except Exception:
+        pass
+    try:
+        for line in (_PROJECT_ROOT / "pyproject.toml").read_text(
+            encoding="utf-8"
+        ).splitlines():
+            match = re.match(r"""\s*version\s*=\s*["']([^"']+)["']""", line)
+            if match:
+                return match.group(1)
+    except Exception:
+        pass
+    return "0.0.0"
+
+
+def _generator_metadata() -> Dict[str, str]:
+    """Build the schema.org-style ``generator`` object for a page's JSON-LD.
+
+    Shape: ``{name, version, dateCreated}``. ``dateCreated`` is the ISO-8601
+    UTC timestamp at which the page metadata was generated. Emitted
+    unconditionally on the default path (not gated by any behavior flag);
+    kept out of the ``contentHash`` payload so a re-generation timestamp
+    never drifts the content-addressed hash.
+    """
+    from datetime import datetime, timezone
+
+    return {
+        "name": _GENERATOR_NAME,
+        "version": _generator_version(),
+        "dateCreated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+
+
 # FR-A11Y-03 — typed-callout emit flag (ED4ALL_CALLOUT_TYPED). Default OFF:
 # with this unset the callout renderer emits its legacy markup byte-identical.
 # When truthy, a typed B12 callout (carrying a ``callout_kind``) renders a
@@ -4075,6 +4136,14 @@ def _build_page_metadata(
         With the env-flag off OR ``blocks`` empty / None, the legacy
         emit path is byte-identical so the snapshot suite stays
         green.
+
+    T4 (generator provenance):
+      * ``generator``: an unconditional schema.org-style
+        ``{name, version, dateCreated}`` object identifying the pipeline
+        (generic name; version from the single ``ed4all`` package-version
+        source). Emitted on every page regardless of any behavior flag,
+        and appended AFTER ``contentHash`` so the per-render timestamp
+        stays out of the content-addressed hash.
     """
     meta: Dict[str, Any] = {
         "@context": "https://ed4all.dev/ns/courseforge/v1",
@@ -4112,12 +4181,16 @@ def _build_page_metadata(
         meta["blocks"] = [b.to_jsonld_entry() for b in blocks]
         meta["provenance"] = {
             "runId": os.environ.get("COURSEFORGE_RUN_ID", ""),
-            "pipelineVersion": "phase2",
+            "pipelineVersion": _generator_version(),
             "tiers": [],
         }
         meta["contentHash"] = hashlib.sha256(
             json.dumps(meta, sort_keys=True, ensure_ascii=False).encode("utf-8")
         ).hexdigest()
+    # T4 — unconditional generator attribution. Added AFTER the contentHash
+    # payload is finalized so the per-render ``dateCreated`` timestamp stays
+    # out of the content-addressed hash (contentHash is content-only).
+    meta["generator"] = _generator_metadata()
     return meta
 
 

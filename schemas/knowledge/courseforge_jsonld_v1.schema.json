@@ -116,6 +116,29 @@
       "type": "string",
       "pattern": "^PT(?:\\d+H)?(?:\\d+M)?(?:\\d+S)?$",
       "description": "W1.6: schema.org timeRequired ISO 8601 duration (e.g. PT25M) for the page's estimated learning time. Emitted only when ED4ALL_PAGE_EST_MINUTES is truthy; absent (byte-identical) by default."
+    },
+    "generator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "dateCreated"],
+      "description": "T4: schema.org-style generator attribution stamped on every page's JSON-LD on the default emit path (unconditional — not gated by any behavior flag). Identifies the pipeline that authored the page GENERICALLY: 'name' carries no model/vendor identity (per-tier model + provider attribution lives in provenance.tiers[]); 'version' is resolved from the single-source ed4all package metadata (the pyproject version); 'dateCreated' is the ISO-8601 UTC generation timestamp. Additive — optional at the top level so legacy fixtures / docs that predate T4 still validate. Excluded from contentHash (the per-render timestamp is provenance, not content).",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Generic generator name (e.g. 'Ed4All Courseforge'). Vendor/model-agnostic by contract — model + provider identity lives in provenance.tiers[]."
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Generator version, resolved from the single ed4all distribution version source (pyproject version)."
+        },
+        "dateCreated": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO-8601 UTC timestamp at which the page JSON-LD was generated."
+        }
+      }
     }
   },
   "$comment": "Phase 2 migration window: blocks[] is the stable intermediate projection of learningObjectives[]/sections[]/misconceptions[]. The redundancy is intentional and will be collapsed in a follow-up wave once Trainforge consumers prefer blocks[].",
