@@ -8,8 +8,11 @@ contract, mirroring ``gui.routers.learn``'s relationship to ``source_page``.
 
 Endpoint contract (Studio learner-facing, read-only):
 
-* ``GET "/library"`` → ``[{slug, title, page_count, has_vector_index}]`` — course
-  cards for every archived course carrying an IMSCC cartridge.
+* ``GET "/library"`` → ``[{slug, title, page_count, has_vector_index[,
+  course_status]}]`` — course cards for every archived course carrying an IMSCC
+  cartridge (``course_status`` present only when the course is governed).
+* ``GET "/library/{course_id}/scorecard"`` → per-course quality scorecard
+  (governance + eval sections, each present-if-available).
 * ``GET "/courses/{course_id}/manifest"`` → ``{slug, title, items: [...]}`` — the
   course organization tree (recursive module/unit/page nodes).
 * ``GET "/courses/{course_id}/page?item=<id>"`` → sanitised page HTML + CSP.
@@ -44,6 +47,28 @@ async def get_library() -> Any:
         return imscc_service.list_library()
     except Exception as exc:  # noqa: BLE001 — unexpected fs/parse failure
         return _error(500, "library_failed", str(exc))
+
+
+@router.get("/library/{course_id}/scorecard")
+async def get_scorecard(course_id: str) -> Any:
+    """Compose the per-course quality scorecard (T2).
+
+    Reads the course's governance / eval artifacts request-time and returns a
+    section-per-artifact scorecard; an un-evaluated course still returns 200
+    with every section marked ``not yet evaluated`` (never a fabricated number).
+    404 unknown course, 422 malformed slug.
+    """
+    try:
+        from gui.services import scorecard_service  # noqa: PLC0415
+    except ImportError as exc:
+        return _error(503, "scorecard_unavailable", str(exc))
+
+    try:
+        return scorecard_service.build_scorecard(course_id)
+    except scorecard_service.ScorecardServiceError as exc:
+        return _error(exc.status, exc.code, exc.detail)
+    except Exception as exc:  # noqa: BLE001 — unexpected fs/parse failure
+        return _error(500, "scorecard_failed", str(exc))
 
 
 @router.delete("/library/{course_id}")

@@ -77,20 +77,34 @@ async function renderLibrary() {
   cards.forEach((c) => {
     const metaParts = [`${c.page_count} page${c.page_count === 1 ? '' : 's'}`];
     if (typeof c.disk_bytes === 'number') metaParts.push(humanSize(c.disk_bytes));
+    const statusBadge = certificationBadge(c.course_status);
     const li = el('li', { class: 'card-li' }, [
       el('a', { class: 'card', href: `#/viewer/${encodeURIComponent(c.slug)}` }, [
         el('h2', { text: c.title || c.slug }),
         el('p', { class: 'meta', text: metaParts.join(' · ') }),
-        c.has_vector_index
-          ? el('span', { class: 'badge', text: 'Ask-ready' })
+        // Certification badge (T1) + Ask-ready badge sit in a real text row so
+        // the state is never conveyed by colour alone.
+        (statusBadge || c.has_vector_index)
+          ? el('p', { class: 'card-badges' }, [
+            statusBadge,
+            c.has_vector_index ? el('span', { class: 'badge', text: 'Ask-ready' }) : null,
+          ])
           : null,
       ]),
-      el('button', {
-        type: 'button',
-        class: 'card-delete',
-        'aria-label': `Delete ${c.title || c.slug}`,
-        onclick: () => openDeleteDialog(c),
-      }, ['Delete']),
+      el('div', { class: 'card-actions' }, [
+        el('button', {
+          type: 'button',
+          class: 'card-scorecard',
+          'aria-label': `Quality report for ${c.title || c.slug}`,
+          onclick: () => openScorecardDialog(c),
+        }, ['Quality report']),
+        el('button', {
+          type: 'button',
+          class: 'card-delete',
+          'aria-label': `Delete ${c.title || c.slug}`,
+          onclick: () => openDeleteDialog(c),
+        }, ['Delete']),
+      ]),
     ]);
     list.appendChild(li);
   });
@@ -106,6 +120,30 @@ function humanSize(n) {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
   return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+/* ---- certification badge (T1) ---- */
+/*
+ * Map the 5-value governance course_status enum to a human label + a tone
+ * class. The label is REAL TEXT (never colour-only), so the certification
+ * state is accessible; the tone class only tints it. An absent / unknown
+ * status returns null → no badge (an ungoverned course carries none).
+ */
+const CERTIFICATION = {
+  certified_trainable: { label: 'Certified · Trainable', tone: 'positive' },
+  certified_instructional: { label: 'Certified · Instructional', tone: 'positive' },
+  certified_accessible: { label: 'Certified · Accessible', tone: 'positive' },
+  non_certified_archive: { label: 'Archived (not certified)', tone: 'neutral' },
+  failed: { label: 'Did not certify', tone: 'negative' },
+};
+
+function certificationBadge(status) {
+  const spec = status && CERTIFICATION[status];
+  if (!spec) return null;
+  return el('span', {
+    class: `badge status-badge status-${spec.tone}`,
+    text: spec.label,
+  });
 }
 
 /* ===================================================================== */
@@ -225,6 +263,222 @@ function openDeleteDialog(card) {
   document.addEventListener('keydown', onKeydown, true);
   document.body.appendChild(overlay);
   input.focus();
+}
+
+/* ===================================================================== */
+/* Quality scorecard dialog (T2)                                         */
+/* ===================================================================== */
+/*
+ * An accessible modal (role=dialog + aria-modal, labelled by its title, focus
+ * trapped, Esc closes) that fetches GET /api/library/<slug>/scorecard and
+ * renders the composed governance + eval sections. Each section is
+ * present-if-available: an un-evaluated section shows an explicit "Not yet
+ * evaluated." line rather than a fabricated number. The body region is an
+ * aria-live="polite" container so the async load result is announced.
+ */
+function openScorecardDialog(card) {
+  const slug = card.slug;
+  const titleId = uid('sc-title');
+  const bodyId = uid('sc-body');
+
+  const closeBtn = el('button', { type: 'button', class: 'btn' }, ['Close']);
+  const body = el('div', {
+    id: bodyId,
+    class: 'scorecard-body',
+    'aria-live': 'polite',
+    'aria-busy': 'true',
+  }, [el('p', { class: 'loading', text: 'Loading the quality report…' })]);
+
+  const dialog = el('div', {
+    class: 'modal-dialog scorecard-dialog',
+    role: 'dialog',
+    'aria-modal': 'true',
+    'aria-labelledby': titleId,
+  }, [
+    el('h2', { id: titleId, text: `Quality report — ${card.title || slug}` }),
+    body,
+    el('div', { class: 'modal-actions' }, [closeBtn]),
+  ]);
+  const overlay = el('div', { class: 'modal-overlay' }, [dialog]);
+
+  const lastFocused = document.activeElement;
+  let closed = false;
+  function close() {
+    if (closed) return;
+    closed = true;
+    document.removeEventListener('keydown', onKeydown, true);
+    overlay.remove();
+    if (lastFocused && typeof lastFocused.focus === 'function') lastFocused.focus();
+  }
+
+  function focusables() {
+    return Array.from(
+      dialog.querySelectorAll('a[href], button:not([disabled]), input, select, textarea, [tabindex]:not([tabindex="-1"])'),
+    ).filter((n) => n.offsetParent !== null || n === document.activeElement);
+  }
+
+  function onKeydown(e) {
+    if (e.key === 'Escape') { e.preventDefault(); close(); return; }
+    if (e.key !== 'Tab') return;
+    const items = focusables();
+    if (!items.length) return;
+    const first = items[0];
+    const last = items[items.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault(); last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault(); first.focus();
+    }
+  }
+
+  closeBtn.addEventListener('click', close);
+  overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
+  document.addEventListener('keydown', onKeydown, true);
+  document.body.appendChild(overlay);
+  closeBtn.focus();
+
+  // Fetch + render (best-effort — a load failure shows an in-dialog error, the
+  // dialog itself stays operable).
+  (async () => {
+    let sc;
+    try {
+      sc = await api(`/api/library/${encodeURIComponent(slug)}/scorecard`);
+    } catch (e) {
+      clear(body).appendChild(el('p', { class: 'error', role: 'alert', text: errText(e) }));
+      body.setAttribute('aria-busy', 'false');
+      return;
+    }
+    clear(body);
+    renderScorecard(body, sc);
+    body.setAttribute('aria-busy', 'false');
+  })();
+}
+
+/** Render the composed scorecard object into the dialog body. */
+function renderScorecard(body, sc) {
+  const statusBadge = certificationBadge(sc && sc.course_status);
+  body.appendChild(el('p', { class: 'sc-status' }, [
+    el('span', { class: 'sc-status-label', text: 'Certification: ' }),
+    statusBadge || el('span', { class: 'muted', text: 'not governed' }),
+  ]));
+
+  const sections = (sc && sc.sections) || {};
+  renderScorecardSection(body, 'Retrieval evaluation', sections.retrieval_eval, renderRetrievalEval);
+  renderScorecardSection(body, 'Refusal calibration', sections.refusal_calibration, renderRefusalCalibration);
+  renderScorecardSection(body, 'Assessment quality', sections.assessment_quality, renderAssessmentQuality);
+  renderScorecardSection(body, 'Objective coverage', sections.coverage_map, renderCoverageMap);
+}
+
+/** A titled scorecard section; renders the not-yet-evaluated marker when absent. */
+function renderScorecardSection(parent, title, section, renderer) {
+  const sec = el('section', { class: 'sc-section', 'aria-label': title }, [
+    el('h3', { text: title }),
+  ]);
+  if (!section || section.available !== true) {
+    const marker = (section && section.status) || 'not yet evaluated';
+    sec.appendChild(el('p', { class: 'muted sc-not-evaluated', text: cap(marker) + '.' }));
+  } else {
+    renderer(sec, section);
+  }
+  parent.appendChild(sec);
+}
+
+function renderRetrievalEval(sec, section) {
+  const meta = [];
+  if (section.engine) meta.push(`Engine: ${section.engine}`);
+  if (section.generated_at) meta.push(`Run: ${section.generated_at}`);
+  if (meta.length) sec.appendChild(el('p', { class: 'meta', text: meta.join(' · ') }));
+
+  const arms = section.arms || {};
+  const armNames = Object.keys(arms);
+  if (armNames.length) {
+    const table = el('table', { class: 'sc-table' }, [
+      el('thead', {}, [el('tr', {}, [
+        el('th', { scope: 'col', text: 'Arm' }),
+        el('th', { scope: 'col', text: 'Key-point coverage' }),
+        el('th', { scope: 'col', text: 'Unsupported-claim rate' }),
+        el('th', { scope: 'col', text: 'Latency p50 / p95' }),
+      ])]),
+      el('tbody', {}, armNames.map((name) => {
+        const a = arms[name] || {};
+        return el('tr', {}, [
+          el('th', { scope: 'row', text: cap(name) }),
+          el('td', { text: fmtMetric(a.key_point_coverage_rate) }),
+          el('td', { text: fmtMetric(a.claim_level_unsupported_rate) }),
+          el('td', { text: fmtLatency(a.latency_ms) }),
+        ]);
+      })),
+    ]);
+    sec.appendChild(table);
+  }
+
+  const rs = section.refusal_safety || {};
+  if (typeof rs.answered_not_refused_rate !== 'undefined') {
+    sec.appendChild(el('p', { class: 'sc-note', text:
+      `Refusal-probe answered rate: ${fmtMetric(rs.answered_not_refused_rate)} (lower is safer).` }));
+  }
+}
+
+function renderRefusalCalibration(sec, section) {
+  const r = section.recommended || {};
+  const dl = el('dl', { class: 'sc-dl' });
+  addDef(dl, 'Recommended min top-score', fmtMetric(r.min_top_score));
+  addDef(dl, 'Refusal precision', fmtMetric(r.refusal_precision));
+  if (typeof r.answer_recall !== 'undefined') addDef(dl, 'Answer recall', fmtMetric(r.answer_recall));
+  if (typeof r.refusal_recall !== 'undefined') addDef(dl, 'Refusal recall', fmtMetric(r.refusal_recall));
+  sec.appendChild(dl);
+}
+
+function renderAssessmentQuality(sec, section) {
+  const dl = el('dl', { class: 'sc-dl' });
+  if (section.status) addDef(dl, 'Status', String(section.status));
+  const pd = section.promotion_decision || {};
+  if (pd.value) addDef(dl, 'Promotion decision', String(pd.value));
+  const s = section.summary || {};
+  if (typeof s.total_questions !== 'undefined') addDef(dl, 'Total questions', fmtMetric(s.total_questions));
+  if (typeof s.answerable_rate !== 'undefined') addDef(dl, 'Answerable rate', fmtMetric(s.answerable_rate));
+  if (typeof s.single_correct_rate !== 'undefined') addDef(dl, 'Single-correct rate', fmtMetric(s.single_correct_rate));
+  if (typeof s.source_support_rate !== 'undefined') addDef(dl, 'Source-support rate', fmtMetric(s.source_support_rate));
+  if (typeof s.bloom_alignment_rate !== 'undefined') addDef(dl, "Bloom alignment", fmtMetric(s.bloom_alignment_rate));
+  sec.appendChild(dl);
+}
+
+function renderCoverageMap(sec, section) {
+  const s = section.summary || {};
+  const dl = el('dl', { class: 'sc-dl' });
+  if (typeof s.objectives_with_chunks !== 'undefined') addDef(dl, 'Objectives with source chunks', fmtMetric(s.objectives_with_chunks));
+  if (typeof s.objectives_with_questions !== 'undefined') addDef(dl, 'Objectives with questions', fmtMetric(s.objectives_with_questions));
+  if (typeof s.objectives_with_training_pairs !== 'undefined') addDef(dl, 'Objectives with training pairs', fmtMetric(s.objectives_with_training_pairs));
+  if (typeof s.orphan_chunks_count !== 'undefined') addDef(dl, 'Orphan chunks', fmtMetric(s.orphan_chunks_count));
+  sec.appendChild(dl);
+}
+
+/* ---- scorecard formatting helpers ---- */
+function addDef(dl, term, value) {
+  dl.appendChild(el('dt', { text: term }));
+  dl.appendChild(el('dd', { text: value }));
+}
+
+function cap(s) {
+  const str = String(s || '');
+  return str ? str.charAt(0).toUpperCase() + str.slice(1) : str;
+}
+
+/** Format a metric: null/undefined/"—" → em dash; a 0..1 fraction → 2 dp. */
+function fmtMetric(v) {
+  if (v === null || typeof v === 'undefined' || v === '—') return '—';
+  if (typeof v === 'number' && Number.isFinite(v)) {
+    return Number.isInteger(v) ? String(v) : v.toFixed(2);
+  }
+  return String(v);
+}
+
+function fmtLatency(lat) {
+  if (!lat || typeof lat !== 'object') return '—';
+  const p50 = typeof lat.p50 === 'number' ? Math.round(lat.p50) : null;
+  const p95 = typeof lat.p95 === 'number' ? Math.round(lat.p95) : null;
+  if (p50 === null && p95 === null) return '—';
+  return `${p50 === null ? '—' : p50} / ${p95 === null ? '—' : p95} ms`;
 }
 
 /* ===================================================================== */

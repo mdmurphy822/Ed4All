@@ -35,6 +35,7 @@ org walk is self-contained here, single zip open per request).
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
@@ -190,6 +191,52 @@ def _validate_slug(slug: str, libv2_root: Path) -> Path:
     if not course_dir.is_dir():
         raise IMSCCServiceError(404, "course_not_found", f"course not found: {slug}")
     return course_dir
+
+
+# Promotion-chain report filename (governance master aggregator output). The
+# authoritative copy lands at ``<course_dir>/`` post-archival; a fallback copy
+# lands under the Trainforge workspace (archived as ``training_specs/``) when
+# LibV2 archival didn't resolve. See MCP.core.workflow_runner's
+# promotion-chain wrapper + lib.governance.course_status.derive_course_status.
+_CHAIN_REPORT_NAME = "courseforge_promotion_chain_report.json"
+
+# The 5-value governance enum (schemas/governance/course_status.schema.json).
+# Only these values badge; anything else is treated as absent so a malformed
+# report can never render a junk badge.
+_COURSE_STATUS_VALUES = frozenset({
+    "certified_accessible",
+    "certified_instructional",
+    "certified_trainable",
+    "non_certified_archive",
+    "failed",
+})
+
+
+def _read_course_status(course_dir: Path) -> Optional[str]:
+    """Best-effort read of a course's promotion-chain ``course_status`` enum.
+
+    Reads the governance promotion-chain report best-effort from both landing
+    paths — the post-archival canonical ``<course_dir>/`` copy first, then the
+    Trainforge-workspace fallback (``<course_dir>/training_specs/``) for a course
+    whose archival never resolved. Returns the ``course_status`` string when it
+    is one of the five canonical enum members; returns ``None`` on any failure
+    (absent file, unreadable JSON, missing / unknown field). Never raises — the
+    badge is additive, never load-bearing.
+    """
+    for cand in (
+        course_dir / _CHAIN_REPORT_NAME,
+        course_dir / "training_specs" / _CHAIN_REPORT_NAME,
+    ):
+        try:
+            with open(cand, encoding="utf-8") as f:
+                report = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if isinstance(report, dict):
+            status = report.get("course_status")
+            if isinstance(status, str) and status in _COURSE_STATUS_VALUES:
+                return status
+    return None
 
 
 def _find_cartridge(course_dir: Path) -> Optional[Path]:
@@ -397,7 +444,10 @@ def _invalidate_disk_cache(course_dir: Optional[Path] = None) -> None:
 def list_library(libv2_root: Optional[Path] = None) -> List[dict]:
     """Course cards for every archived course that carries an IMSCC cartridge.
 
-    Card shape: ``{slug, title, page_count, has_vector_index, disk_bytes}``.
+    Card shape: ``{slug, title, page_count, has_vector_index, disk_bytes}``,
+    plus an optional ``course_status`` (the 5-value governance certification
+    enum) when the course's promotion-chain report resolves — absent otherwise,
+    so a course that was never governed carries no badge (T1).
     Courses are discovered dynamically by scanning ``LibV2/courses/*`` — never
     hardcoded. A course with no cartridge is omitted (the Studio Library is the
     *viewable* set). Best-effort per course: a malformed cartridge degrades to a
@@ -426,15 +476,17 @@ def list_library(libv2_root: Optional[Path] = None) -> List[dict]:
                 page_count = len(_flatten_pages(org))
         except (IMSCCServiceError, zipfile.BadZipFile, OSError):
             pass
-        cards.append(
-            {
-                "slug": entry.name,
-                "title": title,
-                "page_count": page_count,
-                "has_vector_index": (entry / "vector_index").is_dir(),
-                "disk_bytes": _cached_disk_bytes(entry),
-            }
-        )
+        card = {
+            "slug": entry.name,
+            "title": title,
+            "page_count": page_count,
+            "has_vector_index": (entry / "vector_index").is_dir(),
+            "disk_bytes": _cached_disk_bytes(entry),
+        }
+        status = _read_course_status(entry)
+        if status is not None:
+            card["course_status"] = status
+        cards.append(card)
     return cards
 
 

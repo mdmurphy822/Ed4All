@@ -128,12 +128,44 @@ button[disabled] { opacity: 0.55; cursor: not-allowed; }
   font-size: 0.8rem;
 }
 
-/* ---- Card delete affordance (D5) ---- */
+/* ---- Certification badge (T1) + Ask-ready badge row ---- */
+.card-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.6rem 0 0;
+}
+.card-badges .badge { margin-top: 0; }
+/* Tone tints are additive — the badge always carries real text, so the
+ * certification state is never conveyed by colour alone. */
+.status-badge.status-positive {
+  border-color: #1e7a46;
+  background: #e7f4ec;
+  color: #14532d;
+}
+.status-badge.status-neutral {
+  border-color: var(--border);
+  background: var(--panel);
+  color: var(--fg);
+}
+.status-badge.status-negative {
+  border-color: #c0392b;
+  background: #fdecea;
+  color: #922b21;
+}
+
+/* ---- Card actions (scorecard + delete) ---- */
 .card-li { position: relative; display: flex; flex-direction: column; }
 .card-li .card { flex: 1; }
-.card-delete {
-  align-self: flex-end;
+.card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: flex-end;
   margin-top: 0.5rem;
+}
+.card-scorecard,
+.card-delete {
   min-height: 2.5rem;
   padding: 0.35rem 0.9rem;
   border: 1px solid var(--border);
@@ -142,8 +174,10 @@ button[disabled] { opacity: 0.55; cursor: not-allowed; }
   color: var(--fg);
   cursor: pointer;
 }
-.card-delete:hover { background: #fdecea; border-color: #c0392b; color: #922b21; }
+.card-scorecard:hover { background: var(--panel); }
+.card-scorecard:focus-visible,
 .card-delete:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.card-delete:hover { background: #fdecea; border-color: #c0392b; color: #922b21; }
 
 /* ---- Destructive-confirm modal (D5) ---- */
 .modal-overlay {
@@ -189,6 +223,40 @@ button[disabled] { opacity: 0.55; cursor: not-allowed; }
   opacity: 0.55;
   cursor: not-allowed;
 }
+
+/* ---- Quality scorecard dialog (T2) ---- */
+.scorecard-dialog { max-width: 42rem; }
+.scorecard-body { max-height: 65vh; overflow-y: auto; }
+.sc-status { margin: 0 0 1rem; }
+.sc-status-label { font-weight: 600; }
+.sc-section {
+  border-top: 1px solid var(--border);
+  padding-top: 0.8rem;
+  margin-top: 0.8rem;
+}
+.sc-section h3 { margin: 0 0 0.5rem; font-size: 1rem; }
+.sc-not-evaluated { margin: 0; }
+.sc-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+.sc-table th,
+.sc-table td {
+  text-align: left;
+  padding: 0.35rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+.sc-table thead th { color: var(--muted); font-weight: 600; }
+.sc-note { margin: 0.6rem 0 0; color: var(--muted); font-size: 0.9rem; }
+.sc-dl {
+  display: grid;
+  grid-template-columns: minmax(12rem, auto) 1fr;
+  gap: 0.3rem 1rem;
+  margin: 0;
+}
+.sc-dl dt { color: var(--muted); }
+.sc-dl dd { margin: 0; font-variant-numeric: tabular-nums; }
 
 /* ---- Viewer layout: tree (left) + content (center) + ask drawer (right) ---- */
 .viewer {
