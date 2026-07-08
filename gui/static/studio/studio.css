@@ -792,6 +792,81 @@ details.advanced summary:focus-visible { outline: 3px solid var(--focus); outlin
 .affordance { display: flex; flex-direction: column; gap: 0.2rem; }
 .affordance-hint { margin: 0; font-size: 0.85rem; }
 
+/* ------------------------------ I4 stage-2 per-page / per-block rewrite picker */
+/* Matches the failure-panel language (same CSS vars, light surface). The
+   stylesheet is single-theme (no prefers-color-scheme / data-theme block —
+   see :root), so the picker inherits that convention. */
+.rewrite-picker { margin-top: 0.9rem; }
+.picker-intro { margin: 0 0 0.6rem; font-size: 0.9rem; }
+.page-group {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  margin-bottom: 0.5rem;
+}
+.page-group-summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.45rem 0.6rem;
+  cursor: pointer;
+  list-style: none;
+  flex-wrap: wrap;
+}
+.page-group-summary::-webkit-details-marker { display: none; }
+.page-group-summary::before {
+  content: "\25B8";              /* ▸ collapsed */
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+.page-group[open] > .page-group-summary::before { content: "\25BE"; } /* ▾ open */
+.page-group-summary:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.page-group-label { font-weight: 600; }
+.page-group-count { font-size: 0.85rem; }
+.block-fieldset {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 0;
+  padding: 0.5rem 0.7rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.block-choice-row { display: flex; align-items: flex-start; gap: 0.5rem; }
+.block-choice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.5rem;
+  cursor: pointer;
+}
+.block-choice-type { font-weight: 600; }
+.picker-page-id,
+.block-choice-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  /* Code-styled block ids must WRAP, never overflow their container. */
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  background: var(--selected-bg);
+  padding: 0.05rem 0.3rem;
+  border-radius: 4px;
+}
+.block-choice-codes { color: var(--error-fg); font-size: 0.8rem; }
+.rewrite-picker input[type="checkbox"] { margin-top: 0.2rem; flex: 0 0 auto; }
+.rewrite-picker input[type="checkbox"]:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+.picker-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  flex-wrap: wrap;
+  margin-top: 0.6rem;
+}
+.picker-summary { margin: 0; font-size: 0.9rem; color: var(--muted); }
+
 /* ===================================================================== */
 /* Persona switcher (Author · Learner · Advanced)                        */
 /* ===================================================================== */

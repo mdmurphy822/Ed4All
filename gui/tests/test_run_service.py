@@ -1757,3 +1757,131 @@ def test_run_single_phase_no_gates_emits_no_gate_line(state_dir, monkeypatch):
         )
     )
     assert _gate_lines(run_id) == []
+
+
+# ---------------------------------------------------------------------------
+# I4 stage-2 — failure-panel scope normalization (--block-ids / --pages picker)
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_blocks_param_accepts_json_arrays():
+    """The picker posts JSON arrays; they normalize like CSV strings do."""
+    params = {
+        "block_ids": ["week_01_overview#objective_intro_01", "week_02_content_01#hook_a_02"],
+        "pages": ["week_03"],
+        "blocks": ["objective", "hook"],
+    }
+    run_service._normalize_blocks_param(params)
+    assert params["target_block_instance_ids"] == [
+        "week_01_overview#objective_intro_01",
+        "week_02_content_01#hook_a_02",
+    ]
+    assert params["target_page_ids"] == ["week_03"]
+    # blocks (type-level) is untouched + composable alongside the instance/page scopes.
+    assert params["target_block_ids"] == ["objective", "hook"]
+    # Source keys are consumed.
+    assert "block_ids" not in params and "pages" not in params and "blocks" not in params
+
+
+def test_normalize_blocks_param_accepts_csv_strings():
+    """API callers can still post CSV strings for every scope."""
+    params = {
+        "block_ids": "week_01_overview#objective_intro_01,week_02_content_01#hook_a_02",
+        "pages": "week_03,week_04",
+    }
+    run_service._normalize_blocks_param(params)
+    assert params["target_block_instance_ids"] == [
+        "week_01_overview#objective_intro_01",
+        "week_02_content_01#hook_a_02",
+    ]
+    assert params["target_page_ids"] == ["week_03", "week_04"]
+
+
+def test_normalize_blocks_param_dedups_preserving_order():
+    """Repeated tokens (array or CSV) collapse to first-seen order."""
+    params = {
+        "block_ids": ["a#x_1", "b#y_2", "a#x_1"],
+        "pages": ["week_02", "week_02"],
+    }
+    run_service._normalize_blocks_param(params)
+    assert params["target_block_instance_ids"] == ["a#x_1", "b#y_2"]
+    assert params["target_page_ids"] == ["week_02"]
+
+
+def test_normalize_blocks_param_subsumption_drops_page_covered_ids():
+    """A block-instance id whose page a selected pages token covers is dropped."""
+    params = {
+        "block_ids": [
+            "week_01_overview#objective_a_01",   # covered by module prefix week_01
+            "week_01#hook_b_02",                 # exact page match week_01
+            "week_02_content_01#objective_c_03",  # NOT covered -> kept
+        ],
+        "pages": ["week_01"],
+    }
+    run_service._normalize_blocks_param(params)
+    assert params["target_block_instance_ids"] == ["week_02_content_01#objective_c_03"]
+    assert params["target_page_ids"] == ["week_01"]
+
+
+def test_normalize_blocks_param_subsumption_prefix_boundary():
+    """Module-prefix coverage is underscore-bounded: week_01 never covers week_010."""
+    params = {
+        "block_ids": ["week_010_content_01#objective_a_01"],
+        "pages": ["week_01"],
+    }
+    run_service._normalize_blocks_param(params)
+    # week_010 is NOT covered by week_01 -> the id survives.
+    assert params["target_block_instance_ids"] == ["week_010_content_01#objective_a_01"]
+
+
+def test_normalize_blocks_param_subsumption_empties_the_key():
+    """When every id is page-covered no empty-list param is emitted."""
+    params = {
+        "block_ids": ["week_01_overview#objective_a_01"],
+        "pages": ["week_01"],
+    }
+    run_service._normalize_blocks_param(params)
+    assert "target_block_instance_ids" not in params
+    assert params["target_page_ids"] == ["week_01"]
+
+
+def test_normalize_blocks_param_block_id_without_separator_survives():
+    """Defensive: a block id with no '#' has no page, so it is never subsumed."""
+    params = {
+        "block_ids": ["loose_id_no_hash"],
+        "pages": ["week_01"],
+    }
+    run_service._normalize_blocks_param(params)
+    assert params["target_block_instance_ids"] == ["loose_id_no_hash"]
+
+
+def test_normalize_blocks_param_empty_and_whitespace_dropped():
+    """Empty / whitespace-only selections emit NO param keys (byte-identical)."""
+    params = {"block_ids": ["", "  ", "\t"], "pages": "", "blocks": []}
+    run_service._normalize_blocks_param(params)
+    assert "target_block_instance_ids" not in params
+    assert "target_page_ids" not in params
+    assert "target_block_ids" not in params
+
+
+def test_page_covers_matches_pipeline_tools():
+    """Parity: _page_covers agrees with the canonical _page_membership_match.
+
+    ``run_service`` mirrors the eviction matching rule rather than importing it
+    (import-light contract). This asserts the two verdicts are identical over a
+    table of cases, so the mirror never drifts from the source of truth.
+    """
+    from MCP.tools.pipeline_tools import _page_membership_match
+
+    cases = [
+        ("week_01_overview", "week_01"),   # module prefix -> covered
+        ("week_01", "week_01"),            # exact -> covered
+        ("week_010", "week_01"),           # prefix boundary -> NOT covered
+        ("week_01_content_02", "week_02"),  # different module -> NOT covered
+        ("week_01_overview", ""),          # empty token -> NOT covered
+        ("", "week_01"),                   # empty page -> NOT covered
+    ]
+    for page, token in cases:
+        assert run_service._page_covers(page, token) == _page_membership_match(
+            page, token
+        ), f"parity mismatch for page={page!r} token={token!r}"

@@ -1354,12 +1354,64 @@ def _normalize_csv_param(
         workflow_params[dst_key] = out
 
 
+def _page_covers(page: str, token: str) -> bool:
+    """True when ``token`` names ``page`` exactly or as its module prefix.
+
+    MIRRORS ``MCP.tools.pipeline_tools._page_membership_match`` — the SOURCE OF
+    TRUTH for the rewrite-phase page eviction. Reproduced here (not imported) so
+    ``run_service`` keeps its import-light contract (no MCP import at module
+    load — see the module docstring). A parity test
+    (``test_page_covers_matches_pipeline_tools``) imports BOTH and asserts
+    identical verdicts over a table of cases (``week_01`` vs ``week_01_overview``
+    vs ``week_010``, exact match, no match) so the two never drift.
+
+    A ``--pages`` token covers a page when it equals the page id (single-page
+    scope) OR is an underscore-bounded PREFIX of it (module scope — e.g.
+    ``week_01`` covers ``week_01_overview`` but never ``week_010``).
+    """
+    if not page or not token:
+        return False
+    return page == token or page.startswith(token + "_")
+
+
+def _drop_page_covered_block_ids(workflow_params: Dict[str, Any]) -> None:
+    """Subsumption dedup: drop block-instance ids already covered by a page token.
+
+    When a selected ``pages`` token (``target_page_ids``) covers the page of a
+    selected block-instance id (``target_block_instance_ids``), the page
+    eviction already re-authors that block, so the redundant instance id is
+    dropped. A block-instance id is shaped ``{page_id}#{block_type}_{slug}_{idx}``
+    (:func:`MCP.tools.pipeline_tools._page_id_for`); its page is the substring
+    BEFORE the ``#`` separator. Page coverage uses the SAME rule as the rewrite
+    eviction (:func:`_page_covers` ⇔ ``_page_membership_match``).
+
+    Defensive: a block-instance id with no ``#`` separator has no resolvable
+    page, so it is NEVER dropped (passes through). If every id is subsumed the
+    param key is removed entirely (no empty-list param emitted). Runs after both
+    lists are normalized; a no-op when either list is absent.
+    """
+    block_ids = workflow_params.get("target_block_instance_ids")
+    pages = workflow_params.get("target_page_ids")
+    if not block_ids or not pages:
+        return
+    kept: List[str] = []
+    for bid in block_ids:
+        page = bid.split("#", 1)[0] if "#" in bid else None
+        if page is not None and any(_page_covers(page, tok) for tok in pages):
+            continue  # page eviction already covers this instance — subsumed
+        kept.append(bid)
+    if kept:
+        workflow_params["target_block_instance_ids"] = kept
+    else:
+        workflow_params.pop("target_block_instance_ids", None)
+
+
 def _normalize_blocks_param(workflow_params: Dict[str, Any]) -> None:
     """Normalize failure-panel scope options into rewrite-eviction params.
 
     Q1 (--blocks) + I4 stage 2 (--block-ids / --pages). The studio failure
-    panel posts CSV-string scope options as phase options; the rewrite-phase
-    routing consumes list params:
+    panel posts scope options as phase options; the rewrite-phase routing
+    consumes list params:
 
     - ``blocks`` (block TYPES) → ``target_block_ids`` (stage-1 type eviction);
     - ``block_ids`` (exact block-instance IDs) →
@@ -1367,16 +1419,24 @@ def _normalize_blocks_param(workflow_params: Dict[str, Any]) -> None:
     - ``pages`` (page/module ids) → ``target_page_ids`` (I4 stage-2 page
       eviction).
 
-    Each is de-duplicated (order-preserving) and additive; an unknown id/page
-    fails LOUD in the rewrite handler (validated against the real outline
-    block set), never a silent no-op. No/empty → nothing added
-    (byte-identical). An explicit destination param already present wins.
+    Each source accepts BOTH a CSV string (API callers) and a JSON array of
+    strings (what the per-page/per-block picker posts) — see
+    :func:`_normalize_csv_param`. Each is trimmed, empties dropped, de-duplicated
+    (order-preserving) and additive; an unknown id/page fails LOUD in the
+    rewrite handler (validated against the real outline block set), never a
+    silent no-op. No/empty → nothing added (byte-identical). An explicit
+    destination param already present wins.
+
+    Finally a subsumption pass (:func:`_drop_page_covered_block_ids`) drops any
+    block-instance id whose page a selected ``pages`` token already covers, so
+    the picker can post overlapping selections without double-scoping.
     """
     _normalize_csv_param(workflow_params, "blocks", "target_block_ids")
     _normalize_csv_param(
         workflow_params, "block_ids", "target_block_instance_ids"
     )
     _normalize_csv_param(workflow_params, "pages", "target_page_ids")
+    _drop_page_covered_block_ids(workflow_params)
 
 
 async def _run_single_phase(

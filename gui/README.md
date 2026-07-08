@@ -603,6 +603,18 @@ progress view replaces the raw error string with an actionable failure panel
   `failed_gates` digest of `GET /api/runs/{run_id}/validation-report`) and, when
   a `courseforge_validation_report.json` exists for the run, a **per-block-type
   pass/fail/escalated summary** rolled up from `per_block_results[]`.
+- Below that summary the panel renders a **per-page / per-block rewrite picker**
+  (`create.js::renderRewritePicker`, I4 stage 2): one collapsible group per
+  failing `page_id` (rows with no page fall under an "Unassigned" group), each
+  with a whole-page checkbox (`pages` scope) and a labelled checkbox per failing
+  block (`block_ids` scope, block id code-styled). Ticking a whole page
+  checks+disables its child blocks; the page checkbox goes indeterminate on a
+  partial selection. A polite live-region summary bar counts the selection and a
+  single *Rewrite selected* CTA enqueues `courseforge_rewrite` with `block_ids` +
+  `pages` posted as raw arrays. The JS stays dumb — all selection composition,
+  dedup, and subsumption (dropping a block whose page is also selected) happen
+  server-side in `run_service._normalize_blocks_param`; unknown ids/pages fail
+  loudly at rewrite run time, not at enqueue.
 - **What-to-do-next affordances** (each confirms before enqueuing, then links to
   the new run's progress view), shown only when applicable:
   *Re-run validation* (`courseforge_validate`) and *Rewrite failing blocks*

@@ -767,6 +767,18 @@ async function renderFailurePanel(shell, box, runId, courseName, failedPhase, er
     detail.appendChild(table);
   }
 
+  // I4 stage-2 — the per-page / per-block rewrite PICKER. When the report
+  // carries per_block_results, let the operator choose exactly which failing
+  // blocks (or whole pages) to re-author, instead of only the coarse per-type
+  // affordance below. The JS is deliberately dumb: it renders checkboxes,
+  // gathers the raw checked values, and posts them as arrays — ALL selection
+  // composition / subsumption dedup lives server-side in run_service
+  // (_normalize_blocks_param). Unknown-token validation intentionally happens
+  // at rewrite RUN time (a loud phase failure), not at enqueue.
+  if (report && Array.isArray(report.per_block_results)) {
+    renderRewritePicker(shell, detail, report.per_block_results, courseName);
+  }
+
   panel.appendChild(detail);
 
   // ---- What to do next (affordances). Each confirms before enqueuing. ----
@@ -1102,6 +1114,191 @@ function summarizeBlocks(perBlock) {
   const rows = Array.from(byType.values()).sort((a, b) => a.block_type.localeCompare(b.block_type));
   const failingTypes = rows.filter((r) => r.failed > 0).map((r) => r.block_type);
   return { rows, failingTypes };
+}
+
+/**
+ * A row is "failing" (picker-eligible) when it failed validation OR was
+ * escalated. ``status`` is only ever ``passed``/``failed`` (see the aggregator's
+ * ``_build_per_block_results``); escalation is carried by ``escalation_marker``.
+ * We accept a literal ``escalated`` status too, defensively.
+ */
+function isFailingRow(r) {
+  return r && (r.status === 'failed' || r.status === 'escalated' || !!r.escalation_marker);
+}
+
+/** Failing check codes a per-block row carries (best-effort, may be empty). */
+function failingCodes(row) {
+  const codes = [];
+  if (Array.isArray(row.gate_chain)) {
+    row.gate_chain.forEach((g) => {
+      if (g && g.passed === false && g.gate_id) codes.push(g.gate_id);
+    });
+  }
+  if (row.escalation_marker) codes.push(`escalated:${row.escalation_marker}`);
+  return codes;
+}
+
+/**
+ * I4 stage-2 — render the per-page / per-block rewrite PICKER into `box`.
+ *
+ * The operator picks exactly which failing blocks (or whole pages) to
+ * re-author. Grouping: one <details class="page-group"> per distinct page_id
+ * (sorted); rows with a null/missing page_id fall under an "Unassigned" group
+ * whose blocks are only individually selectable (no whole-page checkbox). Each
+ * group's <summary> carries a whole-page checkbox (maps to the ``pages`` scope)
+ * + the failing count; inside, a labelled checkbox per failing block (maps to
+ * the ``block_ids`` scope).
+ *
+ * The JS is deliberately dumb: it gathers the RAW checked values and posts them
+ * as arrays. ALL selection composition + subsumption dedup lives server-side
+ * (run_service._normalize_blocks_param). The checked/disabled mechanics (a
+ * checked whole-page checkbox checks+disables its children) are a UI
+ * convenience only — the backend is the safety net, so we never dedup here.
+ *
+ * Unknown-token validation intentionally happens at rewrite RUN time (a loud
+ * phase failure), NOT at enqueue — an operator typo can only arise from a stale
+ * report, and the rewrite handler validates every id/page against the real
+ * outline block set.
+ */
+function renderRewritePicker(shell, box, perBlock, courseName) {
+  const failing = (Array.isArray(perBlock) ? perBlock : []).filter(isFailingRow);
+  if (!failing.length) return;
+
+  // Group by page_id; null/missing -> the special "Unassigned" bucket.
+  const UNASSIGNED = '\u0000unassigned';
+  const groups = new Map();
+  failing.forEach((r) => {
+    const key = r.page_id || UNASSIGNED;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(r);
+  });
+  const pageKeys = Array.from(groups.keys()).sort((a, b) => {
+    if (a === UNASSIGNED) return 1;   // Unassigned sinks to the bottom
+    if (b === UNASSIGNED) return -1;
+    return a.localeCompare(b);
+  });
+
+  const picker = el('div', { class: 'rewrite-picker' });
+  picker.appendChild(el('h3', { text: 'Choose what to rewrite' }));
+  picker.appendChild(el('p', {
+    class: 'picker-intro muted',
+    text: 'Select individual failing blocks, or tick a whole page to re-author everything on it. Only the selected content is regenerated.',
+  }));
+
+  const pageBoxes = [];
+  const blockBoxes = [];
+  let summaryBar; let cta;
+
+  function refresh() {
+    const pagesSel = pageBoxes.filter((b) => b.checked).length;
+    // Individually-selected blocks = checked AND enabled (a checked+disabled
+    // child is implied by its page, counted under the page, not on its own).
+    const blocksSel = blockBoxes.filter((b) => b.checked && !b.disabled).length;
+    const anySel = pagesSel > 0 || blockBoxes.some((b) => b.checked);
+    summaryBar.textContent = anySel
+      ? `${blocksSel} block${blocksSel === 1 ? '' : 's'} + ${pagesSel} whole page${pagesSel === 1 ? '' : 's'} selected`
+      : 'Nothing selected yet.';
+    cta.disabled = !anySel;
+  }
+
+  pageKeys.forEach((key) => {
+    const rows = groups.get(key);
+    const isUnassigned = key === UNASSIGNED;
+    const details = el('details', { class: 'page-group' });
+    const summary = el('summary', { class: 'page-group-summary' });
+    const childBoxes = [];
+
+    // Whole-page checkbox (module/page scope) — omitted for the Unassigned
+    // bucket (those blocks have no page to scope).
+    let pageCheck = null;
+    if (!isUnassigned) {
+      const pcId = uid('pg');
+      pageCheck = el('input', { type: 'checkbox', id: pcId, class: 'page-check', value: key });
+      pageBoxes.push(pageCheck);
+      // Toggling the checkbox must NOT open/close the disclosure.
+      pageCheck.addEventListener('click', (ev) => ev.stopPropagation());
+      pageCheck.addEventListener('change', () => {
+        childBoxes.forEach((cb) => {
+          if (pageCheck.checked) { cb.checked = true; cb.disabled = true; }
+          else { cb.disabled = false; }
+        });
+        pageCheck.indeterminate = false;
+        refresh();
+      });
+      summary.appendChild(pageCheck);
+      summary.appendChild(el('label', { for: pcId, class: 'page-group-label' }, [
+        el('code', { class: 'picker-page-id', text: key }),
+      ]));
+    } else {
+      summary.appendChild(el('span', { class: 'page-group-label', text: 'Unassigned blocks' }));
+    }
+    summary.appendChild(el('span', {
+      class: 'page-group-count muted',
+      text: `${rows.length} failing`,
+    }));
+    details.appendChild(summary);
+
+    const fieldset = el('fieldset', { class: 'block-fieldset' });
+    const legendText = isUnassigned
+      ? 'Failing blocks without a page'
+      : `Failing blocks on ${key}`;
+    fieldset.appendChild(el('legend', { class: 'visually-hidden', text: legendText }));
+
+    rows.forEach((r) => {
+      const cbId = uid('blk');
+      const cb = el('input', { type: 'checkbox', id: cbId, class: 'block-check', value: r.block_id || '' });
+      childBoxes.push(cb);
+      blockBoxes.push(cb);
+      cb.addEventListener('change', () => {
+        if (pageCheck) {
+          const n = childBoxes.filter((c) => c.checked).length;
+          pageCheck.indeterminate = n > 0 && n < childBoxes.length;
+        }
+        refresh();
+      });
+      const label = el('label', { for: cbId, class: 'block-choice' }, [
+        el('span', { class: 'block-choice-type', text: r.block_type || 'block' }),
+        el('code', { class: 'block-choice-id', text: r.block_id || '(no id)' }),
+      ]);
+      const codes = failingCodes(r);
+      if (codes.length) {
+        label.appendChild(el('span', { class: 'block-choice-codes', text: codes.join(', ') }));
+      }
+      const row = el('div', { class: 'block-choice-row' }, [cb, label]);
+      fieldset.appendChild(row);
+    });
+    details.appendChild(fieldset);
+    picker.appendChild(details);
+  });
+
+  // Selection summary (polite live region) + the single CTA.
+  const bar = el('div', { class: 'picker-actions' });
+  summaryBar = el('p', { class: 'picker-summary', 'aria-live': 'polite', role: 'status' });
+  cta = el('button', { type: 'button', class: 'btn primary', text: 'Rewrite selected', disabled: true });
+  cta.addEventListener('click', () => {
+    const block_ids = blockBoxes.filter((b) => b.checked).map((b) => b.value).filter(Boolean);
+    const pages = pageBoxes.filter((b) => b.checked).map((b) => b.value).filter(Boolean);
+    if (!block_ids.length && !pages.length) return;
+    const parts = [];
+    if (block_ids.length) parts.push(`${block_ids.length} block(s)`);
+    if (pages.length) parts.push(`${pages.length} whole page(s)`);
+    // Reuse the confirm-before-enqueue flow (mirrors affordanceBtn / the coarse
+    // affordances). enqueuePhaseRun toasts on failure via the shared api path.
+    if (!window.confirm(`Rewrite the selected ${parts.join(' + ')}?\n\nStart this now?`)) return;
+    cta.disabled = true;
+    enqueuePhaseRun(shell, {
+      workflow: 'courseforge_rewrite',
+      phase: 'content_generation_rewrite',
+      course_name: courseName,
+      options: { block_ids, pages },
+    }).finally(() => refresh());
+  });
+  bar.appendChild(summaryBar);
+  bar.appendChild(cta);
+  picker.appendChild(bar);
+
+  box.appendChild(picker);
+  refresh();
 }
 
 /* ----------------------------------------------------------- run log view */
