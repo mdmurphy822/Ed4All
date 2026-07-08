@@ -81,6 +81,35 @@ ed4all run courseforge-validate --course-name PHYS_101             # validators 
 ed4all run courseforge-rewrite --course-name PHYS_101 \
   --blocks assessment_item,objective                                # per-block-type rewrite
 ed4all run courseforge --course-name PHYS_101 --force               # full two-pass slice
+
+# --license-note / --attribution: optional corpus-provenance declarations
+# recorded on the LibV2 course_manifest (license.note / attribution.statement,
+# mirrored into the emitted NOTICE). See docs/operations/library-versioning.md
+# + docs/operations/demo-course.md.
+ed4all run textbook-to-course --corpus pdfs/ --course-name PHYS_101 \
+  --license-note 'CC-BY-4.0' --attribution 'Access for free at openstax.org'
+
+# Standalone verbs (no full pipeline run):
+# ed4all convert — thin accessible-HTML remediation slice: PDF (or dir of PDFs,
+# or dir of publisher HTML) → {stem}_accessible.html + sidecars, no course
+# scaffolding / LibV2 / index. See docs/operations/convert-verb.md.
+ed4all convert slice.pdf --output ./out/
+
+# ed4all import-docs — deterministic, LLM-free Markdown/docs-tree → clean
+# accessible-HTML corpus (honors mkdocs.yml nav) + import_manifest.json; feed
+# the output dir straight to `ed4all run textbook-to-course --corpus <DIR>`.
+ed4all import-docs ./docs-tree --output ./corpus/
+
+# ed4all support-bundle — assemble a redacted .tar.gz of run state + doctor
+# post-mortem for sharing (decision captures excluded unless --include-captures).
+# See docs/operations/support-bundle.md.
+ed4all support-bundle --output ./ed4all-support.tar.gz
+
+# ed4all backup — full data-dir backup .tar.gz (0600, honors ED4ALL_HOME);
+# --verify recomputes member sha256 vs manifest + runs LibV2 fsck. See
+# docs/operations/backup-restore.md.
+ed4all backup --output ./ed4all-backup.tar.gz
+ed4all backup --verify ./ed4all-backup.tar.gz
 ```
 
 Modes:
@@ -611,6 +640,8 @@ Top-level workflow aggregators run post-loop in `WorkflowRunner.run_workflow` an
 | `BlockQualityRollupAggregator` (IB6.6) | `<libv2_course>/block_quality_rollup_report.json` (falls back to `<project_path>/...`) — block→module→course 8-dim quality rollup. Only runs when `ED4ALL_BLOCK_QUALITY_RUBRIC` is on. | `schemas/aggregators/block_quality_rollup.schema.json` |
 | `ConceptCoverageAggregator` (W4.1) | `<libv2_course>/concept_coverage.json` (falls back to concept-graph dir) — concept-keyed coverage table. Only runs when `ED4ALL_CONCEPT_COVERAGE` is on (default OFF → no file). | `schemas/aggregators/concept_coverage.schema.json` |
 | `IntelligenceLevelAggregator` (W4.6) | `<libv2_course>/intelligence_level_report.json` (falls back to `<trainforge_dir>/...`) — deterministic 0-5 capability rubric. Only runs when `ED4ALL_INTELLIGENCE_RUBRIC` is on (default OFF → no file). | `schemas/aggregators/intelligence_level.schema.json` |
+| `AccessibilityConformanceAggregator` (roadmap T3) | `<libv2_course>/quality/accessibility_conformance.json` (falls back to `<trainforge_dir>/quality/...`) — inverts the gate WCAG issue stream into a per-success-criterion VPAT/WCAG-EM conformance table (`supports` / `partially_supports` / `does_not_support` / `not_evaluated`, with explicit `not_evaluated` rows for criteria outside automated static-HTML reach). | `schemas/aggregators/accessibility_conformance.schema.json` |
+| `BuildCostAggregator` (roadmap OP2) | `<libv2_course>/build_cost_report.json` (falls back to `<trainforge_dir>/...`) — pure metering (no LLM): per-phase wall-clock (checkpoints), GPU residency (`vram_trajectory.jsonl`, section omitted when absent), and LLM calls/tokens (`llm_usage.jsonl` from the OP2 usage tap, section omitted when absent). | `schemas/aggregators/build_cost.schema.json` |
 | `lib/governance/course_status.py::derive_course_status` | composes `course_status` enum on chain report | (helper, no separate file) |
 
 `PromotionChainAggregator` supersedes the per-aggregator `final_promotion_decision` heuristics. `derive_course_status` returns the canonical 5-value enum (`failed | non_certified_archive | certified_accessible | certified_instructional | certified_trainable`); a missing per-stage report shorts to `course_status: failed` (anti-silent-degradation contract).
@@ -689,7 +720,7 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `NVIDIA_*` (vendor endpoint-registry row for the hosted large-model seat — `NVIDIA_API_KEY` / `NVIDIA_BASE_URL` / `NVIDIA_LARGE_MODEL`) | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 3 |
 | `SEMANTIK_*` (DART replacement — SemantiK semantic-cascade converter; also honors the legacy `DART_THETA_DEVICE` compat env) | [`SemantiK/CLAUDE.md § Opt-In Behavior Flags`](SemantiK/CLAUDE.md) | 82 |
 | `COURSEFORGE_*` / `COURSEPLANNER_*` / `TEXTBOOK_SYNTHESIS_*` | [`Courseforge/CLAUDE.md § Opt-In Behavior Flags`](Courseforge/CLAUDE.md) | 35 |
-| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root index (below) + [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 176 |
+| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root index (below) + [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 178 |
 
 ### Cross-cutting flags (root-owned)
 

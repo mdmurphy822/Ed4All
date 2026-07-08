@@ -252,7 +252,7 @@ def test_redirected_routing_file_resolves_non_anthropic_large_tier(
 
 
 # ---------------------------------------------------------------------------
-# NVIDIA-70b-everywhere — the THIRD (nvidia) branch
+# Hosted-seat build profile — the THIRD (nvidia registry-key) branch
 # ---------------------------------------------------------------------------
 
 

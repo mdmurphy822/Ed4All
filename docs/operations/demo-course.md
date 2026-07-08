@@ -91,7 +91,7 @@ bytes when practical.
 ## Freezing + shipping
 
 1. Mint the full bundle (`--full`) with a real embedding provider pinned.
-2. Verify it: `libv2 validate --course demo-photosynthesis` and
+2. Verify it: `libv2 validate course demo-photosynthesis` and
    `libv2 vector-index verify --course demo-photosynthesis` (exit 1 on drift).
 3. Confirm the `NOTICE` file and the `manifest.json` `license` / `attribution`
    / `library_format_version` fields are present.

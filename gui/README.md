@@ -314,6 +314,8 @@ until it reaches `completed` / `failed` / `cancelled`.
 | PUT | `/api/courses/{id}/objectives` | `{terminal_objectives:[{id,text,...}], chapter_objectives:[...], mint_method?, duration_weeks?}` | reuse-compatible `synthesized_objectives.json` (422 invalid LO id, 404 no export) |
 | GET | `/api/courses/{id}/classification` | — | LibV2 manifest classification block (404 if no manifest) |
 | PATCH | `/api/courses/{id}/classification` | `{division?, primary_domain?, secondary_domains?, subdomains?, topics?, subtopics?, tags?}` | merged classification (422 schema violation, 404 no manifest) |
+| GET | `/api/courses/{id}/attestation` | — | the LibV2 human-review **attestation** block (empty `{}` for an un-attested course so the SPA can render the "not yet reviewed" affordance; 404 only when no manifest exists) |
+| PATCH | `/api/courses/{id}/attestation` | `{reviewed_by, scope, ...}` | schema-validated attestation stamped onto the manifest (`reviewed_at` server-stamped when omitted); 422 schema violation, 404 no manifest. Backs the Studio **attestation editor**. |
 
 Saving objectives stamps `mint_method="user_supplied_objectives_json"` so
 `ed4all run --reuse-objectives` accepts the result. LO ids are validated against
@@ -464,11 +466,24 @@ API keys, run launching, or the Claude bridge.
 | GET | `/api/learn/courses` | List answerable courses (`[{slug, chunk_count}]`). |
 | POST | `/api/learn/ask` | `{slug, query, engine="auto"}` → `{answer, html}`. Returns **200 for all answer outcomes** (answered / answered-with-warnings / both refusal states / both blocked states); typed backend failures map to 503/502/500. The `html` field is the server-rendered answer fragment the page swaps in (single rendering path — no client-side re-render). |
 | GET | `/api/learn/source/{slug}?item_path=…[&fragment=…]` | Serve the archived source page a citation links to, sanitized and wrapped, with a restrictive CSP. Path-traversal attempts are rejected (422) before any filesystem access. |
+| POST | `/api/learn/ask-jobs` | Enqueue a **durable async** ask (L4); returns `{ask_id, status, queue_position}`. Survives a refresh — the job record persists retrieved passages onto the running record so the drawer can disclose them **passages-first** during the compose window. |
+| GET | `/api/learn/ask-jobs/{ask_id}` | Poll one async ask job. While running it can already carry `passages` (+ `passages_refused`) for passages-first disclosure; on completion it carries the rendered answer. |
+| GET | `/api/learn/ask-capabilities` | Ask-drawer capability probe (L3): `{indexed_course_count, library_wide_eligible, library_wide_default}` — gates the **cross-course ("search all courses") toggle**. |
+| POST | `/api/learn/feedback` | Record thumbs up/down (+ optional trimmed comment) on a completed answer (I6). Fans out to the event log (`answer_feedback`) + a per-course `feedback.jsonl`. 422 bad verdict, 429 flood. |
+| GET | `/api/learn/quiz/{slug}` | List the course's playable assessments (quiz player, L1/Q6). |
+| GET | `/api/learn/quiz/{slug}/{assessment_id}` | One assessment as learner JSON — **stems only**, the answer key stripped by contract. |
+| POST | `/api/learn/quiz/{slug}/{assessment_id}/grade` | Grade a submitted attempt server-side and return per-item correctness + score; `GET …/attempts` lists prior attempts. |
 
 The answer engine is **synchronous and non-streaming**; the UI shows a polite
 busy state and a visual-only elapsed counter rather than faking token streaming.
-Groundedness/NLI is never loaded on the learner ask path (operator-only,
-advisory).
+The **Ask drawer** rides the durable async `ask-jobs` path so a refresh
+re-attaches to an in-flight ask; it discloses retrieved **passages first** while
+the answer composes, surfaces a per-answer **feedback** (thumbs up/down) control,
+and — when `ask-capabilities` reports the course library is eligible — a
+**cross-course ("search all courses") toggle** (`library_wide`). The learner page
+also mounts an **interactive quiz player** (served answer-key-free; graded
+server-side). Groundedness/NLI is never loaded on the learner ask path
+(operator-only, advisory).
 
 ### Learner-only serve mode
 
@@ -523,7 +538,8 @@ re-binds them accessibly *inside the iframe sandbox* (`allow-scripts` only — n
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/studio/` | The Studio shell (static; in `--mode studio` the bare `/` redirects here). |
-| GET | `/api/library` | Course cards: `[{slug, title, page_count, has_vector_index}]` for every archived course carrying an IMSCC cartridge. |
+| GET | `/api/library` | Course cards for every archived course carrying an IMSCC cartridge, each stamped with a **certification badge** (the derived `course_status` / promotion tier) so the Library grid shows trust at a glance. |
+| GET | `/api/library/{course_id}/scorecard` | The per-course **quality scorecard** (T2): a section-per-artifact rollup composed request-time from the course's governance / eval artifacts. An un-evaluated course still returns 200 with every section marked *not yet evaluated* (never a fabricated number). 404 unknown course, 422 malformed slug. |
 | GET | `/api/courses/{course_id}/manifest` | The course organization tree: `{slug, title, items: [...]}` (recursive module/unit/page nodes). |
 | GET | `/api/courses/{course_id}/page?item=<id>` | One sanitized cartridge page, resolved via its manifest **resource id** (never a raw path), with a restrictive CSP. |
 | GET | `/api/courses/{course_id}/asset?path=<rel>` | A whitelisted static asset (image/css/font) from the cartridge. **Path-traversal-safe:** the path is pre-rejected (no `..`/absolute/NUL/backslash) before any zip read, the extension must be in the content-type whitelist (never `.html` / active types), and the member must literally exist in the cartridge. Unknown course / cartridge / member → 404. |
@@ -594,6 +610,17 @@ progress view replaces the raw error string with an actionable failure panel
   block types) appear only when a validation report is present; *Re-run failed
   step* (`POST /api/runs/phase` for the failed phase) appears when a phase is
   known; *View / download build log* is always offered.
+
+**Pause for objectives review (I1)** — the wizard can launch a build with a
+`--stop-after` intent so it halts cleanly after course planning. The orchestrator
+returns `status="paused"` (exit-code-3 semantics), which `run_service` persists as
+a `paused` run status carrying the `paused_phase`. The progress view then renders
+an **objectives-review + resume panel** (instead of the failure panel): the
+operator edits the synthesized objectives via the existing
+`PUT /api/courses/{id}/objectives`, then resumes the SAME workflow by relaunching
+with `resume_run_id` (the documented `--resume WF-…` pathway — all other launch
+params are ignored on a resume). The persisted `--stop-after` intent is replayed
+so a bare resume doesn't silently drop the halt.
 
 **Studio settings page** — a strict subset of the operator settings catalog,
 served by `GET /api/settings/studio` (`settings_service.build_studio_settings_payload`):

@@ -6858,11 +6858,11 @@ async def create_textbook_pipeline(
         # rewrite succeeded). Unset → no key on params → byte-identical.
         if target_block_ids:
             params["target_block_ids"] = list(target_block_ids)
-        # NVIDIA-70b-everywhere GAP-2 fix — forward --stop-after so the workflow
+        # Hosted-seat build profile GAP-2 fix — forward --stop-after so the workflow
         # runner halts cleanly after the named phase (before later phases run).
         if stop_after:
             params["stop_after"] = stop_after
-        # W1 Gap C / NVIDIA-70b-everywhere — forward the EXPLICIT run provider
+        # W1 Gap C / hosted-seat build profile — forward the EXPLICIT run provider
         # so ``_apply_authoring_route_env`` resolves the authoring + nvidia
         # routing branch from it (else it falls to LLM_PROVIDER > local).
         if provider:

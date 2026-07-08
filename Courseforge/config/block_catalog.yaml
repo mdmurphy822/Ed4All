@@ -2,7 +2,7 @@
 #
 # Machine-readable catalog of every canonical block type in
 # ``Courseforge/scripts/blocks.py::BLOCK_TYPES`` (all 28). A large-model
-# planner (70B+) reads the ``use_when`` discriminators to pick the RIGHT
+# planner (hosted large-model seat) reads the ``use_when`` discriminators to pick the RIGHT
 # block for a given content / objective shape instead of defaulting to a
 # bare ``concept`` / ``explanation`` everywhere.
 #

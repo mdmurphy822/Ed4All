@@ -327,6 +327,13 @@ contract documented in root `CLAUDE.md`:
   `set_learning_objective_context()` / `log_question_generation()` /
   `log_distractor_rationale()` shortcuts. See
   `lib/trainforge_capture.py` (repo root) for the full surface.
+- OP2 usage tap: `Trainforge/generators/_openai_compatible_client.py`
+  additionally appends one metering row per `chat_completion` call to
+  `state/runs/<run_id>/llm_usage.jsonl` (provider / model / prompt +
+  completion tokens / duration) — but ONLY when `ED4ALL_RUN_ID` identifies
+  a run (`_maybe_append_usage_row`; best-effort, silently skipped otherwise).
+  This is metering, not decision capture; the post-loop `BuildCostAggregator`
+  reads it to tally per-provider / per-model call and token cost.
 
 ---
 

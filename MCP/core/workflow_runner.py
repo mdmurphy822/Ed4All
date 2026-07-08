@@ -614,6 +614,10 @@ _LEGACY_PHASE_PARAM_ROUTING: Dict[str, Dict[str, Tuple]] = {
         "dart_chunks_path": (
             "phase_outputs", "chunking", "dart_chunks_path",
         ),
+        # B3 license/attribution plumbing: mirrors the YAML routing at
+        # config/workflows.yaml::libv2_archival so the parity contract holds.
+        "license_note": ("workflow_params", "license_note"),
+        "attribution": ("workflow_params", "attribution"),
         # Objectives plumbing: thread the course_planning-emitted
         # synthesized_objectives.json so _archive_to_libv2 can project the
         # canonical archive-side objectives.json (with parent_terminal

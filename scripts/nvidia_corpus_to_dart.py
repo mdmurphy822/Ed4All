@@ -13,8 +13,7 @@ hierarchy, and the chunker keys off the rendered HTML body.
 The brand-neutral Markdown / MDX / notebook → HTML machinery lives in the
 shared :mod:`lib.importers._markdown` helpers; this script is only the
 NVIDIA-specific SOURCES spine + the forged-sidecar writer. Each emitted page
-mirrors the contract learned from
-``DART/output/think_python_accessible_synthesized.json``:
+mirrors the conversion-output synthesized-sidecar contract:
     {slug, title, source_pdf, sections[], document_provenance, metadata}
 
 For a general docs tree, prefer ``ed4all import-docs`` (no forged sidecars).
