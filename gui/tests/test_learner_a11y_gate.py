@@ -568,6 +568,137 @@ def test_busy_variant_carries_aria_hidden_ring_no_extra_live_region():
 
 
 # --------------------------------------------------------------------------- #
+# 6) L1 — the mounted quiz player. The idle page gains a Quizzes section; a
+#    loaded quiz mounts quiz.js markup (fieldset/legend items, labelled choices,
+#    a text input, and the graded per-item result) into #quiz-host. Both the
+#    idle section and a fully-graded quiz must pass the same WCAG gate. The quiz
+#    markup below mirrors quiz.js's renderQuiz/renderResult output byte-for-byte
+#    (there is no JS runner in CI, so the contract is pinned here in Python).
+# --------------------------------------------------------------------------- #
+
+
+# A fully-rendered + graded quiz exactly as quiz.js emits it: an mc (radio) item,
+# a multiple_response (checkbox) item, a free-text item, and a populated
+# graded-result region.
+_QUIZ_FRAGMENT = (
+    '<section class="quiz" aria-labelledby="quiz-h">'
+    '<h2 id="quiz-h" tabindex="-1">Week 1 Quiz</h2>'
+    '<ol class="quiz-list">'
+    '<li class="quiz-item" data-qid="q1"><fieldset>'
+    "<legend>1. What is 2 + 2?</legend>"
+    '<ul class="quiz-choices">'
+    '<li class="quiz-choice"><input type="radio" id="q-q1-opt-0" name="q-q1" value="A">'
+    '<label for="q-q1-opt-0">3</label></li>'
+    '<li class="quiz-choice"><input type="radio" id="q-q1-opt-1" name="q-q1" value="B">'
+    '<label for="q-q1-opt-1">4</label></li>'
+    "</ul></fieldset></li>"
+    '<li class="quiz-item" data-qid="q2"><fieldset>'
+    "<legend>2. Select the even numbers.</legend>"
+    '<ul class="quiz-choices">'
+    '<li class="quiz-choice"><input type="checkbox" id="q-q2-opt-0" name="q-q2" value="A">'
+    '<label for="q-q2-opt-0">2</label></li>'
+    '<li class="quiz-choice"><input type="checkbox" id="q-q2-opt-1" name="q-q2" value="B">'
+    '<label for="q-q2-opt-1">3</label></li>'
+    "</ul></fieldset></li>"
+    '<li class="quiz-item" data-qid="q3"><fieldset>'
+    "<legend>3. Enter pi to two places.</legend>"
+    '<input type="text" class="quiz-text" name="q-q3" aria-label="Your answer" autocomplete="off">'
+    "</fieldset></li>"
+    "</ol>"
+    '<button type="button" class="quiz-submit">Submit answers</button>'
+    '<div class="quiz-result" role="status" aria-live="polite">'
+    '<p class="quiz-score">Score: 2 / 3</p>'
+    '<ul class="quiz-result-list">'
+    '<li class="quiz-result-item" data-correct="true"><strong>Correct</strong> — Nice work.</li>'
+    '<li class="quiz-result-item" data-correct="false"><strong>Incorrect</strong> — '
+    "Review the section on even numbers.</li>"
+    '<li class="quiz-result-item" data-correct="true"><strong>Correct</strong> — </li>'
+    "</ul></div>"
+    "</section>"
+)
+
+
+def _assemble_page_with_quiz(quiz_html: str) -> str:
+    """Read the served learner index.html and mount quiz markup into #quiz-host,
+    exactly as quiz-panel.js/quiz.js do (``host.innerHTML = ...``), so the
+    validator sees the full document a learner gets after loading a quiz."""
+    BeautifulSoup = _bs4()
+    soup = BeautifulSoup(LEARN_INDEX.read_text(encoding="utf-8"), "html.parser")
+    host = soup.find(id="quiz-host")
+    assert host is not None, "learner index.html must carry #quiz-host"
+    host.append(BeautifulSoup(quiz_html, "html.parser"))
+    return str(soup)
+
+
+def test_idle_page_carries_quiz_section():
+    """The idle learner page carries the Quizzes section shell, correctly
+    labelled, with a text-labelled load button — and still zero CRITICAL/HIGH."""
+    soup = _soup(_assemble_page())
+    section = soup.find(id="quizzes")
+    assert section is not None, "learner page must carry the #quizzes section"
+    assert section.get("aria-labelledby") == "quizzes-h"
+    heading = soup.find(id="quizzes-h")
+    assert heading is not None and heading.name == "h2", "Quizzes heading is an h2"
+    btn = soup.find(id="quiz-load-btn")
+    assert btn is not None and btn.name == "button"
+    assert btn.get_text(strip=True), "load button must carry a text label"
+    assert soup.find(id="quiz-list-region") is not None
+    assert soup.find(id="quiz-host") is not None
+    # The idle page still passes the WCAG gate with the new section present.
+    _assert_clean("idle-with-quiz-section", str(soup))
+
+
+def test_idle_page_still_has_exactly_one_h1_with_quiz_section():
+    """Adding the Quizzes section did not add a second <h1>."""
+    assert len(_soup(_assemble_page()).find_all("h1")) == 1
+
+
+def test_quiz_list_region_is_not_a_second_status_region():
+    """#quiz-list-region announces politely but is NOT a role=status region, so
+    the ask #status stays the single role=status live region on the idle page."""
+    soup = _soup(_assemble_page())
+    region = soup.find(id="quiz-list-region")
+    assert region is not None
+    assert region.get("aria-live") == "polite", "quiz list region must be polite"
+    assert region.get("role") != "status", "quiz list must not be a second role=status"
+    # The single-status invariant holds on the idle page.
+    assert len(soup.find_all(attrs={"role": "status"})) == 1
+
+
+def test_mounted_quiz_zero_aa_findings():
+    """A fully-rendered + graded quiz (radio, checkbox, text-input items +
+    per-item result) mounted into #quiz-host passes the WCAG gate."""
+    _assert_clean("mounted-quiz", _assemble_page_with_quiz(_QUIZ_FRAGMENT))
+
+
+def test_mounted_quiz_heading_order_no_skip():
+    """Page h1 → Quizzes h2 → quiz-title h2: no heading-level skip."""
+    soup = _soup(_assemble_page_with_quiz(_QUIZ_FRAGMENT))
+    levels = [int(h.name[1]) for h in soup.find_all(re.compile(r"^h[1-6]$"))]
+    assert levels[0] == 1, "first heading must be the page h1"
+    prev = 0
+    for lvl in levels:
+        assert lvl <= prev + 1, f"heading level skip in {levels}"
+        prev = lvl
+
+
+def test_mounted_quiz_choices_are_label_paired():
+    """Every choice input in the mounted quiz has a paired <label> or aria-label
+    (the free-text input uses aria-label; radios/checkboxes use <label for>)."""
+    soup = _soup(_assemble_page_with_quiz(_QUIZ_FRAGMENT))
+    inputs = soup.select("#quiz-host input")
+    assert inputs, "mounted quiz must carry answer inputs"
+    for el in inputs:
+        if el.get("aria-label") or el.get("aria-labelledby"):
+            continue
+        cid = el.get("id")
+        assert cid, f"choice input {el} needs an id for label pairing"
+        assert soup.find("label", {"for": cid}) is not None, (
+            f"choice input #{cid} has no associated <label for>"
+        )
+
+
+# --------------------------------------------------------------------------- #
 # 4) Opt-in real-server smoke (fastapi TestClient) — the served page passes the
 #    same gate end-to-end. The model-dependent ask round-trip is gated behind a
 #    live-Ollama opt-in env (no model in CI).

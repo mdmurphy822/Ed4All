@@ -235,6 +235,143 @@ blockquote.src-quote {
   color: var(--fg);
 }
 
+/* --- Quizzes surface (L1) ------------------------------------------------- */
+
+#quizzes {
+  margin-top: 2.5rem;
+  border-top: 2px solid var(--border);
+  padding-top: 1.25rem;
+}
+#quizzes h2 {
+  font-size: 1.3rem;
+  margin: 0 0 0.5rem;
+}
+.quiz-intro {
+  margin: 0 0 1rem;
+  color: var(--muted);
+}
+
+/* Quiz picker: a plain list of full-width selectable quiz buttons. */
+#quiz-list-region {
+  margin-top: 1rem;
+}
+.quiz-list-label {
+  font-weight: 600;
+  margin: 0 0 0.5rem;
+}
+ul.quiz-picker {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.quiz-pick-item {
+  margin-bottom: 0.5rem;
+}
+.quiz-pick {
+  /* Inherits the base button min-height (>= 24px target); left-aligned so long
+   * titles read as a list, not centred pills. */
+  display: block;
+  width: 100%;
+  text-align: left;
+}
+.quiz-count {
+  font-weight: 400;
+  opacity: 0.85;
+}
+
+/* Rendered quiz (quiz.js markup: fieldset/legend per item, choices, submit). */
+#quiz-host {
+  margin-top: 1.25rem;
+}
+.quiz-loading {
+  color: var(--muted);
+  font-weight: 600;
+}
+.quiz h2 {
+  font-size: 1.2rem;
+  margin: 0 0 1rem;
+}
+ol.quiz-list {
+  padding-left: 1.4rem;
+  margin: 0 0 1.25rem;
+}
+.quiz-item {
+  margin-bottom: 1.25rem;
+}
+.quiz-item fieldset {
+  border: 2px solid var(--border);
+  border-radius: 6px;
+  padding: 0.75rem 1rem 1rem;
+  margin: 0;
+}
+.quiz-item legend {
+  font-weight: 600;
+  padding: 0 0.4rem;
+}
+ul.quiz-choices {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+}
+.quiz-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+  min-height: 1.75rem;
+}
+.quiz-choice label {
+  display: inline;
+  font-weight: 400;
+  margin: 0;
+}
+.quiz-text {
+  width: 100%;
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 2px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5rem;
+  min-height: 2.75rem;
+  margin-top: 0.5rem;
+}
+.quiz-submit {
+  margin-top: 0.5rem;
+}
+
+/* Graded result: text ("Correct"/"Incorrect") carries meaning; the left border
+ * is an enhancement, never the sole signal (WCAG 1.4.1). */
+.quiz-result {
+  margin-top: 1.25rem;
+}
+.quiz-score {
+  font-weight: 700;
+  font-size: 1.05rem;
+  margin: 0 0 0.5rem;
+}
+ul.quiz-result-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.quiz-result-item {
+  border-left: 4px solid var(--border);
+  padding: 0.4rem 0.8rem;
+  margin-bottom: 0.5rem;
+}
+.quiz-result-item[data-correct="true"] {
+  border-left-color: #1c6b2e;   /* >= 3:1 non-text border; text still says so */
+}
+.quiz-result-item[data-correct="false"] {
+  border-left-color: var(--error-fg);
+}
+.quiz-last-attempt {
+  font-weight: 600;
+  color: var(--muted);
+  margin: 0;
+}
+
 /* Respect reduced-motion (no animated busy state used, but guard anyway). */
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }

@@ -45,8 +45,27 @@
 
     <!-- Server-rendered answer fragment lands here. -->
     <div id="answer-region" aria-busy="false"></div>
+
+    <!-- Quizzes surface (L1) — lists the selected course's quizzes, loads one,
+         renders items, grades server-side, shows per-item feedback + score. The
+         quiz list + host use aria-live="polite" (NOT role=status) so the ONE
+         role=status live region on the page stays the ask #status region; the
+         graded-result region quiz.js injects into #quiz-host carries its own
+         role=status only once a quiz is mounted (dynamic, not on the idle page). -->
+    <section id="quizzes" aria-labelledby="quizzes-h">
+      <h2 id="quizzes-h">Quizzes</h2>
+      <p class="quiz-intro">
+        Check your understanding with a quiz from the course selected above.
+      </p>
+      <button type="button" id="quiz-load-btn">Show quizzes</button>
+      <!-- Quiz list / load-status. aria-live announces load + empty + error copy. -->
+      <div id="quiz-list-region" aria-live="polite"></div>
+      <!-- The active quiz (items + submit + graded result) mounts here. -->
+      <div id="quiz-host"></div>
+    </section>
   </main>
 
   <script type="module" src="/learn/learn.js"></script>
+  <script type="module" src="/learn/quiz-panel.js"></script>
 </body>
 </html>
