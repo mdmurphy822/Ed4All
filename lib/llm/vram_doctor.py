@@ -427,13 +427,17 @@ def write_trajectory_row(
 ) -> None:
     """Append one JSONL row to ``state/runs/<run_id>/vram_trajectory.jsonl``.
 
-    Row shape: ``{run_id, phase, when, event, free_mib, total_mib,
-    probe_source, resident_models, cuda_available, **extra}``. The parent
-    directory is created on first use. Best-effort: ANY failure (bad run_id,
-    unwritable path, serialization error) is logged and swallowed — a
-    trajectory write must NEVER crash the run it observes.
+    Row shape: ``{run_id, phase, when, ts, event, free_mib, total_mib,
+    probe_source, resident_models, cuda_available, **extra}``. ``when`` is the
+    boundary LABEL (``before`` / ``after``); ``ts`` is the wall-clock UTC
+    ISO-8601 instant the row was written, so residency-hours can be joined
+    across rows later. The parent directory is created on first use.
+    Best-effort: ANY failure (bad run_id, unwritable path, serialization error)
+    is logged and swallowed — a trajectory write must NEVER crash the run it
+    observes.
     """
     try:
+        from datetime import datetime, timezone
         from lib.paths import get_state_runs_dir
 
         runs_dir = get_state_runs_dir()
@@ -445,6 +449,7 @@ def write_trajectory_row(
             "run_id": run_id,
             "phase": phase,
             "when": when,
+            "ts": datetime.now(timezone.utc).isoformat(),
             "event": event,
             "free_mib": snapshot.free_mib,
             "total_mib": snapshot.total_mib,

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 from unittest.mock import MagicMock
 
@@ -539,6 +540,12 @@ def test_write_trajectory_row_writes_jsonl(
     assert row["cuda_available"] is True
     assert row["resident_models"] == [{"name": "qwen2.5:7b", "vram_mib": 5300}]
     assert row["note"] == "hello"
+    # ``when`` is the boundary LABEL; ``ts`` is a real wall-clock UTC instant so
+    # residency-hours can be joined across rows later.
+    assert "ts" in row
+    parsed = datetime.fromisoformat(row["ts"])
+    assert parsed.tzinfo is not None
+    assert parsed.utcoffset() == timedelta(0)
 
 
 def test_write_trajectory_row_appends(
