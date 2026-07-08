@@ -6591,6 +6591,7 @@ async def create_textbook_pipeline(
     skip_training: bool = False,
     stop_after: Optional[str] = None,
     provider: Optional[str] = None,
+    target_block_ids: Optional[List[str]] = None,
 ) -> str:
     """
     Create and orchestrate a textbook-to-course pipeline.
@@ -6731,6 +6732,12 @@ async def create_textbook_pipeline(
             params["force_rerun"] = True
         if skip_training:
             params["skip_training"] = True
+        # Phase 5 ST 1 (--blocks) — forward the parsed block-TYPE filter so
+        # the content_generation_rewrite phase additively evicts cached
+        # blocks of the named types (re-rolling them even when a prior
+        # rewrite succeeded). Unset → no key on params → byte-identical.
+        if target_block_ids:
+            params["target_block_ids"] = list(target_block_ids)
         # NVIDIA-70b-everywhere GAP-2 fix — forward --stop-after so the workflow
         # runner halts cleanly after the named phase (before later phases run).
         if stop_after:
@@ -15417,6 +15424,76 @@ def _emit_block_synthesis_manifest(
     return manifest_path
 
 
+def _evict_rewrite_cache_by_block_type(
+    rewrite_cache: Dict[str, dict],
+    outline_blocks: Sequence[Any],
+    target_block_types: Set[str],
+) -> int:
+    """Additively evict cached rewrites whose ``block_type`` is targeted.
+
+    Phase 5 ST 1 (``--blocks``). Deletes from ``rewrite_cache`` (keyed by
+    ``block_id``) every entry belonging to an outline block whose
+    ``block_type`` is in ``target_block_types``, so those blocks re-author
+    this pass even after a prior successful rewrite. Returns the number of
+    entries removed. An empty target set (the unset-flag default) or an
+    empty cache is a no-op returning 0 — the pure failure-driven reuse path
+    stays byte-identical. Purely additive: it never adds cache entries, only
+    removes named-type ones, so out-of-scope blocks keep byte-identical reuse.
+    """
+    if not target_block_types or not rewrite_cache:
+        return 0
+    evicted_ids = {
+        str(getattr(b, "block_id", "") or "")
+        for b in outline_blocks
+        if str(getattr(b, "block_type", "") or "") in target_block_types
+    }
+    removed = 0
+    for bid in evicted_ids:
+        if bid in rewrite_cache:
+            del rewrite_cache[bid]
+            removed += 1
+    return removed
+
+
+def _copy_export_assessments(
+    export_dir_candidates: Sequence[Path],
+    course_dir: Path,
+) -> int:
+    """Copy a Courseforge export's ``06_assessments/`` into the LibV2 course.
+
+    Q4. Walks ``export_dir_candidates`` in order; the first one that has a
+    real ``06_assessments/`` directory is the source. Copies every top-level
+    ``.xml`` (QTI / imsdt / assignment) + ``.json`` (manifest) file into
+    ``<course_dir>/06_assessments/`` so ``gui/services/quiz_service.py`` (which
+    scans ``LibV2/courses/<slug>/06_assessments/*.xml``) can surface them.
+    Returns the number of files copied. No candidate carries the dir (the
+    assessment_synthesis phase was skipped / never ran) → returns 0 and
+    writes nothing — a clean no-op, never an error.
+    """
+    src: Optional[Path] = None
+    for cand in export_dir_candidates:
+        maybe = cand / "06_assessments"
+        if maybe.exists() and maybe.is_dir():
+            src = maybe
+            break
+    if src is None:
+        return 0
+    dest_dir = course_dir / "06_assessments"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    for af in sorted(src.iterdir()):
+        if af.is_file() and af.suffix.lower() in (".xml", ".json"):
+            try:
+                shutil.copy2(af, dest_dir / af.name)
+                copied += 1
+            except OSError as exc:
+                logger.warning(
+                    "archive_to_libv2: failed to copy assessment %s: %s",
+                    af, exc,
+                )
+    return copied
+
+
 async def _run_content_generation_rewrite(**kwargs) -> str:
     """Run the rewrite tier of the Phase 3 two-pass content pipeline.
 
@@ -15986,6 +16063,53 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
             _n_rewrite_checkpoint_stale,
             "y" if _n_rewrite_checkpoint_stale == 1 else "ies",
         )
+
+    # Phase 5 ST 1 (--blocks) — ADDITIVE type-eviction over the
+    # failure-driven reuse cache above. When ``target_block_ids`` names one
+    # or more block TYPES (not ids), every cached (previously-successful)
+    # block whose ``block_type`` is in the set is evicted from
+    # ``_rewrite_cache`` so it re-rolls this pass; blocks of every other
+    # type keep their byte-identical cache reuse. Unset (the default) → no
+    # eviction → byte-identical to the pure failure-driven resume. Purely
+    # additive: never widens what is reused, only forces a re-author of the
+    # named types on top of the existing failed/degraded re-roll.
+    _target_block_types = {
+        str(_t) for _t in (kwargs.get("target_block_ids") or []) if _t
+    }
+    _n_evicted = _evict_rewrite_cache_by_block_type(
+        _rewrite_cache, outline_blocks, _target_block_types,
+    )
+    if _n_evicted:
+        logger.info(
+            "rewrite phase: --blocks %s evicted %d cached block(s) of the "
+            "named type(s); they re-author this pass (other types reused).",
+            sorted(_target_block_types), _n_evicted,
+        )
+        if capture is not None:
+            try:
+                capture.log_decision(
+                    decision_type="content_selection",
+                    decision=(
+                        f"--blocks type-eviction: re-rolling {_n_evicted} "
+                        f"cached block(s) of type(s) "
+                        f"{sorted(_target_block_types)} despite a prior "
+                        "successful rewrite."
+                    ),
+                    rationale=(
+                        "Operator passed --blocks to force a re-author of "
+                        f"the named block type(s) {sorted(_target_block_types)}"
+                        "; additive eviction drops their blocks_final.jsonl "
+                        "cache entries so they re-roll while every other "
+                        "block stays byte-identical to the input."
+                    ),
+                    ml_features={
+                        "gate_id": "_run_content_generation_rewrite",
+                        "target_block_types": sorted(_target_block_types),
+                        "evicted_blocks": _n_evicted,
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                pass
 
     if _rewrite_cache and capture is not None:
         try:
@@ -21274,6 +21398,38 @@ def _build_tool_registry() -> dict:
                         return flat.stat().st_mtime
                     return 0.0
                 trainforge_dir = max(candidates, key=_chunks_mtime)
+
+        # --- Copy Courseforge assessment_synthesis artifacts --------------
+        # Q4: the pre-packaging ``assessment_synthesis`` (W10) phase writes
+        # loose QTI 1.2 / imsdt / assignment XML + ``manifest.json`` into
+        # ``<export>/06_assessments/``. Copy that dir into the LibV2 course
+        # so the learner-facing quiz surface
+        # (``gui/services/quiz_service.py`` scans
+        # ``LibV2/courses/<slug>/06_assessments/*.xml``) can resolve them.
+        # Resolve the export dir from project_workspace / project_id /
+        # trainforge_dir.parent (first with a real 06_assessments/ wins).
+        # Absent (assessments skipped / not run) → no-op, never a failure.
+        _export_dir_candidates: list[Path] = []
+        if project_workspace_kw:
+            _pw = Path(project_workspace_kw)
+            _export_dir_candidates.append(
+                _pw.parent if _pw.name == "trainforge" else _pw
+            )
+        if project_id_kw:
+            _export_dir_candidates.append(
+                courseforge_exports_dir() / project_id_kw
+            )
+        if trainforge_dir is not None:
+            _export_dir_candidates.append(trainforge_dir.parent)
+        _copied_assessments = _copy_export_assessments(
+            _export_dir_candidates, course_dir,
+        )
+        if _copied_assessments:
+            archived["assessments_dir"] = str(course_dir / "06_assessments")
+            logger.info(
+                "archive_to_libv2: copied %d assessment artifact(s) into %s",
+                _copied_assessments, course_dir / "06_assessments",
+            )
 
         # --- Copy Trainforge outputs --------------------------------------
         # Worker β writes in CourseProcessor's native nested layout

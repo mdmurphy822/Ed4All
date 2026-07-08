@@ -51,8 +51,9 @@ ed4all run textbook-to-course --provider nvidia --course-name PHYS_101 \
 
 # --reuse-objectives: pin a prior objectives JSON instead of re-dispatching
 # the course-outliner (kills re-run LLM-nondeterminism drift). Accepts both
-# the Courseforge + LibV2 archive shapes; normalized on disk. See
-# docs/operations/pipeline-invocation.md § 3.
+# the Courseforge + LibV2 archive shapes; normalized on disk. Also valid on
+# --resume (patches the persisted params before the resumed course_planning
+# runs). See docs/operations/pipeline-invocation.md § 3.
 ed4all run textbook-to-course --corpus pdfs/ --course-name PHYS_101 \
   --reuse-objectives Courseforge/exports/PROJ-PHYS_101-.../01_learning_objectives/synthesized_objectives.json
 
@@ -136,7 +137,7 @@ image shipping `[gui,server,embedding]` on CPU torch): `docs/operations/docker.m
 | `trainforge_train` | Train a course-pinned SLM adapter (post-import LibV2 stage) | 1 |
 | `courseforge-outline` | Phase 5 stage subcommand — re-run only the outline tier (`content_generation_outline`) against an existing project export. Pre-Courseforge phases pre-populate from disk via `_synthesize_outline_output`; non-whitelisted two-pass + post-Courseforge phases skip via `courseforge_stage` whitelist. | 10 |
 | `courseforge-validate` | Phase 5 stage subcommand — re-run only the inter-tier + post-rewrite validators against an existing project export (no LLM dispatch). Emits `02_validation_report/report.json` aggregating per-block pass/fail/escalated counts. | 1 |
-| `courseforge-rewrite` | Phase 5 stage subcommand — re-run only the rewrite tier (`content_generation_rewrite` + `post_rewrite_validation`). Pairs with `--blocks <type1,type2>` for per-block-type re-execution scope; untouched blocks are byte-identical to the input. | 10 |
+| `courseforge-rewrite` | Phase 5 stage subcommand — re-run only the rewrite tier (`content_generation_rewrite` + `post_rewrite_validation`). Pairs with `--blocks <type1,type2>` (wired through `target_block_ids`) for ADDITIVE per-block-TYPE eviction over the tier's default failure-driven `blocks_final.jsonl` reuse: named-type blocks re-roll even after a prior success, all other types keep byte-identical cache reuse; `--blocks` unset → byte-identical failure-driven reuse. | 10 |
 | `courseforge` | Phase 5 stage subcommand — re-run the full four-phase Courseforge two-pass slice (outline → inter-tier-validate → rewrite → post-rewrite-validate); skips post-Courseforge phases (packaging, libv2_archival, etc.). | 10 |
 
 ---

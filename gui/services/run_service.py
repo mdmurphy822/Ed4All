@@ -1282,6 +1282,38 @@ async def launch_phase(req: Dict[str, Any]) -> Dict[str, Any]:
     return outcome
 
 
+def _normalize_blocks_param(workflow_params: Dict[str, Any]) -> None:
+    """Normalize a ``blocks`` option into the ``target_block_ids`` list param.
+
+    Q1 (--blocks). The studio failure panel posts ``{blocks: "type1,type2"}``
+    (a CSV string) as a phase option; the rewrite-phase routing consumes
+    ``target_block_ids`` (a list of block TYPES) for its additive
+    type-eviction. This pops the dead ``blocks`` key and, when it carries
+    tokens, writes the de-duplicated (order-preserving) list under
+    ``target_block_ids``. Mutates ``workflow_params`` in place. No/empty
+    ``blocks`` → nothing added (byte-identical). An explicit
+    ``target_block_ids`` already present wins (never overwritten).
+    """
+    blocks_raw = workflow_params.pop("blocks", None)
+    if "target_block_ids" in workflow_params:
+        return
+    tokens: List[str]
+    if isinstance(blocks_raw, str):
+        tokens = blocks_raw.split(",")
+    elif isinstance(blocks_raw, (list, tuple)):
+        tokens = [str(t) for t in blocks_raw]
+    else:
+        return
+    seen: set = set()
+    out: List[str] = []
+    for tok in (t.strip() for t in tokens):
+        if tok and tok not in seen:
+            seen.add(tok)
+            out.append(tok)
+    if out:
+        workflow_params["target_block_ids"] = out
+
+
 async def _run_single_phase(
     *,
     run_id: str,
@@ -1324,6 +1356,12 @@ async def _run_single_phase(
     if project_id:
         workflow_params["project_id"] = project_id
     workflow_params.update({k: v for k, v in options.items() if k not in workflow_params})
+
+    # Q1 (--blocks) — normalize the failure panel's ``options.blocks`` into
+    # the ``target_block_ids`` param the rewrite-phase routing consumes
+    # (additive type-eviction over the reuse cache). Absent/empty → no key
+    # added → byte-identical behavior.
+    _normalize_blocks_param(workflow_params)
 
     phase_outputs = _prepopulate_phase_outputs(project_id, course_name)
 

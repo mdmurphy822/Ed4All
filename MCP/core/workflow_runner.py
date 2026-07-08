@@ -534,6 +534,12 @@ _LEGACY_PHASE_PARAM_ROUTING: Dict[str, Dict[str, Tuple]] = {
         # separate blocks_final.jsonl --blocks byte-identity cache is
         # untouched).
         "force_rerun": ("workflow_params", "force_rerun"),
+        # Phase 5 ST 1 (--blocks) — thread the parsed block-TYPE filter so
+        # ``_run_content_generation_rewrite`` additively evicts cached
+        # blocks whose ``block_type`` is in the set (re-rolling them even
+        # after a prior successful rewrite). Unset (default) → the handler
+        # reads ``None`` → byte-identical failure-driven cache reuse.
+        "target_block_ids": ("workflow_params", "target_block_ids"),
     },
     "packaging": {
         "project_id": ("phase_outputs", "objective_extraction", "project_id"),

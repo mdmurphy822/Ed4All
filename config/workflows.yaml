@@ -2696,6 +2696,13 @@ workflows:
           - param: force_rerun
             source: workflow_params
             key: force_rerun
+          # Phase 5 ST 1 (--blocks): thread the parsed block-TYPE filter so
+          # the rewrite handler additively evicts cached blocks whose
+          # block_type is in the set (re-rolling them past the failure-
+          # driven cache). Unset → None → byte-identical cache reuse.
+          - param: target_block_ids
+            source: workflow_params
+            key: target_block_ids
 
         outputs:
           - content_paths

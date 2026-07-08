@@ -502,6 +502,10 @@ async def _create_textbook_workflow(
         skip_training=bool(params.get("skip_training", False)),
         stop_after=params.get("stop_after"),
         provider=params.get("provider"),
+        # Phase 5 ST 1 (--blocks): forward the parsed block-TYPE filter so
+        # the rewrite phase additively evicts cached blocks of the named
+        # types. Unset → None → byte-identical failure-driven cache reuse.
+        target_block_ids=params.get("target_block_ids"),
     )
     return json.loads(result)
 
@@ -933,6 +937,9 @@ def run_command(
             # Trap-2 hardening: an explicit --stop-after on the resume
             # command overrides the persisted halt point.
             stop_after=stop_after,
+            # I3: an explicit --reuse-objectives on resume pins the resumed
+            # course_planning phase (validated at parse time above).
+            reuse_objectives=reuse_objectives,
         )
         return
 
@@ -1693,6 +1700,55 @@ def _apply_resume_stop_after_override(
     return effective
 
 
+def _apply_resume_reuse_objectives_override(
+    workflow_id: str, explicit_reuse_objectives: Optional[str],
+) -> Optional[str]:
+    """Persist an explicit resume-time ``--reuse-objectives`` override.
+
+    Mirrors :func:`_apply_resume_stop_after_override`. The runner reads
+    ``reuse_objectives_path`` from the persisted workflow params to
+    synthesize the ``course_planning`` phase output from a pinned
+    objectives JSON instead of re-dispatching the outliner; so when the
+    operator passes ``--reuse-objectives`` on a ``--resume`` we patch
+    ``params.reuse_objectives_path`` (as a resolved absolute path — the
+    fresh-run contract) in the state file BEFORE the run. A no-op when no
+    override is supplied. Best-effort: a missing / unreadable / unwritable
+    state file is left untouched. Returns the effective path, or ``None``.
+    """
+    if not explicit_reuse_objectives:
+        return None
+
+    from lib.paths import STATE_PATH  # noqa: PLC0415
+
+    workflow_path = STATE_PATH / "workflows" / f"{workflow_id}.json"
+    try:
+        state = json.loads(workflow_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(state, dict):
+        return None
+    params = state.get("params")
+    if isinstance(params, str):
+        try:
+            params = json.loads(params)
+        except ValueError:
+            params = {}
+    if not isinstance(params, dict):
+        params = {}
+    state["params"] = params
+    resolved = str(Path(explicit_reuse_objectives).resolve())
+    if params.get("reuse_objectives_path") != resolved:
+        params["reuse_objectives_path"] = resolved
+        try:
+            workflow_path.write_text(
+                json.dumps(state, indent=2, default=str), encoding="utf-8",
+            )
+        except OSError:
+            # Non-fatal: fall back to whatever was already persisted.
+            pass
+    return resolved
+
+
 def _resume_workflow(
     *,
     workflow_id: str,
@@ -1702,6 +1758,7 @@ def _resume_workflow(
     output_json: bool,
     watch: bool,
     stop_after: Optional[str] = None,
+    reuse_objectives: Optional[str] = None,
 ) -> None:
     """Resume an existing workflow state through the orchestrator.
 
@@ -1718,6 +1775,11 @@ def _resume_workflow(
         # run_workflow (which reads stop_after from persisted params)
         # honors the effective halt point.
         _apply_resume_stop_after_override(workflow_id, stop_after)
+        # I3: an explicit --reuse-objectives on the resume command pins the
+        # resumed course_planning phase to a prior objectives JSON (parity
+        # with the fresh-run --reuse-objectives). Patched into the persisted
+        # params before the run; unset → persisted value governs.
+        _apply_resume_reuse_objectives_override(workflow_id, reuse_objectives)
         orchestrator = _build_orchestrator(mode, provider=provider, model=model)
         if watch:
             click.secho(

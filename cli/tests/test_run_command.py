@@ -712,6 +712,74 @@ class TestPhase5BlocksFilter:
         assert result.exit_code == 2
         assert "not_a_real_type" in result.output
 
+    @pytest.mark.asyncio
+    async def test_target_block_ids_forwarded_to_workflow_params(
+        self, tmp_path, monkeypatch
+    ):
+        """create_textbook_pipeline threads target_block_ids onto the
+        workflow params the runner persists (so the rewrite phase routing
+        can resolve it). Confirms the Q1 runtime seam, not just dry-run.
+        """
+        from MCP.tools import pipeline_tools
+        from MCP.tools.pipeline_tools import create_textbook_pipeline
+
+        pdf = tmp_path / "book.pdf"
+        pdf.write_bytes(b"%PDF-1.4 stub")
+        monkeypatch.setattr(pipeline_tools, "PROJECT_ROOT", tmp_path)
+
+        captured: dict = {}
+
+        async def _fake_create_workflow_impl(**kwargs):
+            captured.update(kwargs)
+            return json.dumps({"success": True, "workflow_id": "WF-BLK"})
+
+        with patch(
+            "MCP.tools.orchestrator_tools.create_workflow_impl",
+            new=_fake_create_workflow_impl,
+        ):
+            raw = await create_textbook_pipeline(
+                pdf_paths=str(pdf),
+                course_name="BLKTEST_101",
+                target_block_ids=["objective", "concept"],
+            )
+
+        assert json.loads(raw).get("success") is True
+        forwarded = json.loads(captured["params"])
+        assert forwarded.get("target_block_ids") == ["objective", "concept"]
+
+    @pytest.mark.asyncio
+    async def test_target_block_ids_absent_when_unset(
+        self, tmp_path, monkeypatch
+    ):
+        """Unset → no target_block_ids key on the persisted params
+        (byte-identical to the pre-Q1 behavior).
+        """
+        from MCP.tools import pipeline_tools
+        from MCP.tools.pipeline_tools import create_textbook_pipeline
+
+        pdf = tmp_path / "book.pdf"
+        pdf.write_bytes(b"%PDF-1.4 stub")
+        monkeypatch.setattr(pipeline_tools, "PROJECT_ROOT", tmp_path)
+
+        captured: dict = {}
+
+        async def _fake_create_workflow_impl(**kwargs):
+            captured.update(kwargs)
+            return json.dumps({"success": True, "workflow_id": "WF-NOBLK"})
+
+        with patch(
+            "MCP.tools.orchestrator_tools.create_workflow_impl",
+            new=_fake_create_workflow_impl,
+        ):
+            raw = await create_textbook_pipeline(
+                pdf_paths=str(pdf),
+                course_name="NOBLK_101",
+            )
+
+        assert json.loads(raw).get("success") is True
+        forwarded = json.loads(captured["params"])
+        assert "target_block_ids" not in forwarded
+
 
 class TestPhase5ForceFlag:
     """Phase 5 ST 5: ``--force`` flag plumbs through workflow params."""

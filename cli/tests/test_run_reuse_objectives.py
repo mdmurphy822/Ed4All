@@ -385,3 +385,106 @@ class TestReuseObjectivesCli:
         assert result.exit_code == 2
         assert "reuse-objectives" in result.output.lower()
         assert "textbook_to_course" in result.output
+
+
+# ---------------------------------------------------------------------
+# I3 — --reuse-objectives accepted on --resume
+# ---------------------------------------------------------------------
+
+
+class TestReuseObjectivesOnResume:
+    """I3: an explicit --reuse-objectives on a --resume run patches the
+    persisted workflow params so the resumed course_planning phase reuses
+    the pinned objectives (parity with the fresh-run contract)."""
+
+    def _write_state(self, tmp_path: Path, wid: str, params: dict) -> Path:
+        from lib.paths import STATE_PATH
+
+        wf_dir = STATE_PATH / "workflows"
+        wf_dir.mkdir(parents=True, exist_ok=True)
+        p = wf_dir / f"{wid}.json"
+        p.write_text(json.dumps({"params": params}), encoding="utf-8")
+        return p
+
+    def test_override_patches_persisted_params(
+        self, tmp_path, courseforge_objectives_file
+    ):
+        from cli.commands.run import _apply_resume_reuse_objectives_override
+
+        wid = "WF-RESUME-REUSE-1"
+        state_path = self._write_state(
+            tmp_path, wid, {"course_name": "X_101"}
+        )
+        try:
+            effective = _apply_resume_reuse_objectives_override(
+                wid, str(courseforge_objectives_file)
+            )
+            resolved = str(Path(courseforge_objectives_file).resolve())
+            assert effective == resolved
+            persisted = json.loads(state_path.read_text())
+            assert persisted["params"]["reuse_objectives_path"] == resolved
+        finally:
+            state_path.unlink(missing_ok=True)
+
+    def test_override_noop_when_unset(self, tmp_path):
+        from cli.commands.run import _apply_resume_reuse_objectives_override
+
+        wid = "WF-RESUME-REUSE-2"
+        state_path = self._write_state(
+            tmp_path, wid, {"course_name": "X_101"}
+        )
+        try:
+            effective = _apply_resume_reuse_objectives_override(wid, None)
+            assert effective is None
+            persisted = json.loads(state_path.read_text())
+            # Byte-identical: no reuse key introduced.
+            assert "reuse_objectives_path" not in persisted["params"]
+        finally:
+            state_path.unlink(missing_ok=True)
+
+    def test_resume_command_threads_reuse_objectives(
+        self, tmp_path, courseforge_objectives_file, monkeypatch
+    ):
+        """End-to-end: ``ed4all run ... --resume --reuse-objectives`` patches
+        the persisted params before the orchestrator runs."""
+        from unittest.mock import AsyncMock, patch
+
+        wid = "WF-RESUME-REUSE-3"
+        state_path = self._write_state(
+            tmp_path, wid, {"course_name": "X_101"}
+        )
+
+        fake_result = type(
+            "R",
+            (),
+            {
+                "status": "ok",
+                "error": None,
+                "to_dict": lambda self: {"status": "ok"},
+            },
+        )()
+
+        try:
+            with patch("cli.commands.run._build_orchestrator") as build_mock:
+                orch = build_mock.return_value
+                orch.run = AsyncMock(return_value=fake_result)
+                runner = CliRunner()
+                result = runner.invoke(
+                    cli,
+                    [
+                        "run",
+                        "textbook-to-course",
+                        "--resume",
+                        wid,
+                        "--reuse-objectives",
+                        str(courseforge_objectives_file),
+                    ],
+                )
+                assert result.exit_code == 0, result.output
+                orch.run.assert_awaited_once_with(wid)
+
+            resolved = str(Path(courseforge_objectives_file).resolve())
+            persisted = json.loads(state_path.read_text())
+            assert persisted["params"]["reuse_objectives_path"] == resolved
+        finally:
+            state_path.unlink(missing_ok=True)
