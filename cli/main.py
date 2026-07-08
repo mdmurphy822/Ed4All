@@ -191,6 +191,22 @@ except ImportError as _import_docs_err:  # pragma: no cover
     )
 
 
+# Register 'ed4all convert' command — the thin accessible-HTML remediation
+# slice (B1 DSO wedge): PDF / PDF-dir / vendor-HTML-dir → {stem}_accessible.html
+# with no course scaffolding. Lazy try/except so the CLI still loads if the
+# conversion seams (their SemantiK/bs4-optional deps) fail to import.
+try:
+    from cli.commands import register_convert_command
+
+    register_convert_command(cli)
+except ImportError as _convert_err:  # pragma: no cover
+    import logging as _logging
+    _logging.getLogger(__name__).warning(
+        "cli.commands.convert unavailable: %s",
+        _convert_err,
+    )
+
+
 # =============================================================================
 # VALIDATE-RUN COMMAND
 # =============================================================================
