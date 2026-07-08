@@ -60,6 +60,11 @@ class LaunchPipelineRequest(BaseModel):
     # workflow/course_name/corpus are ignored (the prior workflow state is
     # authoritative) — so they default empty to keep a resume body minimal.
     resume_run_id: Optional[str] = None
+    # I1 review flow: on a ``resume_run_id`` resume, clear the persisted
+    # ``--stop-after`` halt marker first so the resumed build continues PAST the
+    # objectives-review checkpoint instead of immediately re-pausing. Ignored on
+    # a fresh (non-resume) launch.
+    clear_stop_after: bool = False
     options: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -214,6 +219,22 @@ async def get_validation_report(run_id: str) -> Any:
         return _error(500, "validation_report_failed", str(exc))
 
 
+@router.get("/runs/{run_id}/review")
+async def get_run_review(run_id: str) -> Any:
+    """Return the objectives-review context for a paused run (I1 review flow).
+
+    Surfaces the paused-at-phase, the persisted ``--stop-after`` intent, and the
+    exact objectives file the editor writes / a plain resume reads (best-effort;
+    ``None`` when the export can't be resolved). The Create-wizard review panel
+    fetches this to render the "Edit objectives" + "Resume build" affordances.
+    404 (typed) when the run is unknown, mirroring ``get_run``.
+    """
+    info = run_service.paused_review_info(run_id)
+    if info is None:
+        return _error(404, "unknown_run", run_id)
+    return info
+
+
 @router.post("/runs/{run_id}/cancel")
 async def cancel_run(run_id: str) -> Any:
     """Request cancellation of a run (HONEST two-stage, Phase 4 §5.1(E)).
@@ -258,7 +279,10 @@ async def ws_run_logs(websocket: WebSocket, run_id: str) -> None:
         return
 
     offset = 0
-    terminal = {"completed", "failed", "cancelled", "interrupted"}
+    # ``paused`` (graceful stop / --stop-after) is terminal for THIS run's WS —
+    # the run halts at a checkpoint and only continues under a fresh resume run,
+    # so the socket must send the status frame + close instead of polling forever.
+    terminal = {"completed", "failed", "cancelled", "interrupted", "paused"}
     try:
         while True:
             text, offset = shared_state.tail_log(run_id, offset)

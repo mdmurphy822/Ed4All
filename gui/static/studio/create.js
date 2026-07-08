@@ -58,7 +58,7 @@ async function renderWizard(shell) {
   shell.setStatus('Create a new course. Step 1 of 3: upload your textbook.');
 
   // Wizard model held in a closure; steps mutate it.
-  const model = { step: 1, files: [], uploadId: null, courseName: '', weeks: '', advanced: {} };
+  const model = { step: 1, files: [], uploadId: null, courseName: '', weeks: '', pauseForReview: false, advanced: {} };
 
   v.appendChild(el('h1', { text: 'Create a course' }));
   v.appendChild(stepsIndicator(model.step));
@@ -283,6 +283,12 @@ function renderConfigureStep(shell, panel, model, summary, goto) {
   // AI-tier flow tree read from settings, with a link to settings per step.
   form.appendChild(providerFlowTree(summary, shell));
 
+  // Pause-for-objectives-review checkpoint (I1 review flow). A first-class
+  // configure option (not buried in Advanced): when checked, the build halts
+  // after planning the learning objectives so the author can review/edit them
+  // before the rest of the course is generated, then resume from the build view.
+  form.appendChild(reviewCheckpointField(model));
+
   // Advanced (collapsed by default).
   form.appendChild(advancedSection(model));
 
@@ -405,6 +411,35 @@ function providerText(tier) {
   return tier.model ? `${tier.provider} · ${tier.model}` : tier.provider;
 }
 
+/**
+ * The "Pause for objectives review" checkpoint field (I1 review flow).
+ *
+ * A labelled checkbox + a describing hint. When checked, ``renderLaunchStep``
+ * launches with ``stop_after=course_planning`` so the build halts after the
+ * learning objectives are planned; the progress view then offers an
+ * objectives-editor link + a "Resume build" button (a plain resume that picks
+ * up the edited objectives file in place).
+ */
+function reviewCheckpointField(model) {
+  const id = uid('pause-review');
+  const hintId = uid('pause-review-h');
+  return el('div', { class: 'field check review-check' }, [
+    el('input', {
+      id,
+      type: 'checkbox',
+      checked: !!model.pauseForReview,
+      'aria-describedby': hintId,
+      onchange: (e) => { model.pauseForReview = e.target.checked; },
+    }),
+    el('label', { for: id, text: 'Pause for objectives review' }),
+    el('p', {
+      id: hintId,
+      class: 'field-hint',
+      text: 'Stop the build after planning the learning objectives so you can review and edit them before the rest of the course is generated. You can resume from the build screen.',
+    }),
+  ]);
+}
+
 function advancedSection(model) {
   const details = el('details', { class: 'advanced' });
   details.appendChild(el('summary', { text: 'Advanced options' }));
@@ -445,6 +480,9 @@ async function renderLaunchStep(shell, panel, model) {
   const options = {};
   if (model.advanced.no_assessments) options.no_assessments = true;
   if (model.advanced.skip_training) options.skip_training = true;
+  // I1 review flow: halt the build after course_planning so the author can
+  // review + edit the learning objectives before the rest is generated.
+  if (model.pauseForReview) options.stop_after = 'course_planning';
 
   const body = {
     workflow: WORKFLOW,
@@ -552,6 +590,25 @@ async function renderProgress(shell, runId) {
   // the "last running" heuristic; the console tracks it for us.
   function finalize(status, errMsg) {
     clear(finalBox);
+    // I1 review flow: a PAUSED run halted at the objectives-review checkpoint —
+    // NOT a failure. The console's onStatus() has no paused arm (its else-branch
+    // reads as failed), so drive the paused presentation directly: freeze the
+    // timer, hide the cancel control, mark the review phase done, leave the
+    // downstream phases pending, and render the review panel.
+    if (status === 'paused') {
+      progress.freezeElapsed(record.finished_at && record.started_at
+        ? Date.parse(record.finished_at) - Date.parse(record.started_at)
+        : undefined);
+      progress.hideCancel();
+      const pausedPhase = record.paused_phase
+        || (record.params && record.params.stop_after)
+        || 'course_planning';
+      progress.setState(pausedPhase, 'done');
+      progress.announce('Build paused for objectives review.');
+      renderReviewPanel(shell, finalBox, record, courseName, pausedPhase);
+      shell.setStatus('Build paused for objectives review. Review the objectives, then resume the build.');
+      return;
+    }
     // Drive the console's terminal state (rings + the polite narrative line).
     progress.onStatus(status);
     if (status === 'completed') {
@@ -579,7 +636,7 @@ async function renderProgress(shell, runId) {
 
   // If the run is already terminal (refresh after completion), reflect it from
   // the record without opening a WS.
-  const terminal = ['completed', 'failed', 'cancelled', 'interrupted'];
+  const terminal = ['completed', 'failed', 'cancelled', 'interrupted', 'paused'];
   if (terminal.includes(record.status)) {
     progress.freezeElapsed(record.finished_at && record.started_at
       ? Date.parse(record.finished_at) - Date.parse(record.started_at)
@@ -894,6 +951,107 @@ async function enqueueResume(shell, record) {
   } catch (e) {
     toastErr(e, 'Could not resume');
     shell.setStatus(`Could not resume: ${shell.errText(e)}`);
+  }
+}
+
+/* ============================================ I1 objectives-review panel */
+
+/**
+ * Render the objectives-review panel for a run PAUSED at the review checkpoint
+ * (``stop_after=course_planning``).
+ *
+ * The composed loop's middle step: the build halted after planning the learning
+ * objectives, and this panel lets the author (a) open the objectives editor for
+ * the run's course and (b) resume the SAME build past the checkpoint with a
+ * plain resume — the edited objectives file is picked up in place.
+ *
+ * A11y: a labelled <section> (aria-labelledby its <h2>); the editor deep-link is
+ * a real <a> that announces it opens a new tab (WCAG 3.2.5); the resume control
+ * is a real <button>; status changes announce via the shell's single polite
+ * live region + the console's role=status line.
+ *
+ * Best-effort: the paused-at info (objectives file path + course id) is fetched
+ * from ``GET /api/runs/<id>/review``; a fetch failure still renders the editor
+ * link + resume button so the author is never stranded.
+ */
+async function renderReviewPanel(shell, box, record, courseName, pausedPhase) {
+  clear(box);
+  const panel = el('section', { class: 'review-panel', 'aria-labelledby': 'review-h' });
+  box.appendChild(panel);
+  panel.appendChild(el('h2', { id: 'review-h', class: 'review-title', text: 'Review the learning objectives' }));
+  panel.appendChild(el('p', {
+    class: 'review-intro',
+    text: 'The build paused after planning the learning objectives so you can review and edit them before the rest of the course is generated. When you are done, resume the build below.',
+  }));
+
+  // Best-effort paused-at context (objectives file + course id for the editor).
+  let info = null;
+  try {
+    info = await api(`/api/runs/${encodeURIComponent(record.run_id)}/review`);
+  } catch (_) { /* degrade: still render the editor link + resume below */ }
+
+  // Surface the EXACT objectives file the editor writes and a plain resume reads
+  // in place — this is the "which path will be used" disclosure.
+  if (info && info.objectives_path) {
+    panel.appendChild(el('p', { class: 'review-path' }, [
+      el('span', { class: 'review-path-label', text: 'Objectives file: ' }),
+      el('code', { class: 'kv', text: info.objectives_path }),
+    ]));
+  }
+
+  const courseId = (info && info.course_id) || courseName || '';
+
+  const actions = el('div', { class: 'review-actions' });
+  // (a) Edit objectives — the Advanced objectives editor (opens in a new tab so
+  // the build view stays put). There is no per-course deep link, so the course
+  // id to open is named explicitly below.
+  actions.appendChild(el('a', {
+    class: 'btn',
+    href: '/advanced/#/courses',
+    target: '_blank',
+    rel: 'noopener',
+    'aria-label': 'Edit objectives (opens the Advanced objectives editor in a new tab)',
+    text: 'Edit objectives',
+  }));
+  // (b) Resume build — a plain resume of THIS run past the review checkpoint.
+  const resumeBtn = el('button', { type: 'button', class: 'btn primary', text: 'Resume build' });
+  resumeBtn.addEventListener('click', () => resumeAfterReview(shell, record, resumeBtn));
+  actions.appendChild(resumeBtn);
+  panel.appendChild(actions);
+
+  // Name the course to open in the editor (the editor lists courses; there is
+  // no per-course deep link), and reassure that resume picks up the edits.
+  if (courseId) {
+    panel.appendChild(el('p', { class: 'review-hint muted' }, [
+      el('span', { text: 'In the objectives editor, open the course ' }),
+      el('code', { class: 'kv', text: String(courseId) }),
+      el('span', { text: ', save your edits, then return here and resume the build.' }),
+    ]));
+  }
+}
+
+/**
+ * Resume a review-paused build past the checkpoint. Re-POSTs /api/runs with the
+ * paused run's GUI run_id + ``clear_stop_after`` so the persisted --stop-after
+ * marker is stripped and the build runs on; navigates to the new run's progress
+ * view (progress continues in the same view).
+ */
+async function resumeAfterReview(shell, record, btn) {
+  if (btn) btn.disabled = true;
+  const body = {
+    workflow: record.workflow || WORKFLOW,
+    resume_run_id: record.run_id,
+    clear_stop_after: true,
+  };
+  try {
+    const resp = await apiJSON('/api/runs', 'POST', body);
+    toast('Resuming build…', 'Continuing past the objectives-review checkpoint.', 'success');
+    shell.setStatus('Resuming the build. Progress continues below.');
+    location.hash = `#/create/${encodeURIComponent(resp.run_id)}`;
+  } catch (e) {
+    if (btn) btn.disabled = false;
+    toastErr(e, 'Could not resume');
+    shell.setStatus(`Could not resume the build: ${shell.errText(e)}`);
   }
 }
 

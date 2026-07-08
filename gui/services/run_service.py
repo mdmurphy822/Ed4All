@@ -605,7 +605,19 @@ async def _drive_pipeline(
             progress_task.cancel()
 
     payload = result.to_dict() if hasattr(result, "to_dict") else dict(result or {})
-    status = "completed" if payload.get("status") == "ok" else "failed"
+    # Graceful-stop / ``--stop-after`` (I1 review flow): the orchestrator returns
+    # ``status="paused"`` (exit-code-3 semantics) when a run deliberately halts at
+    # a unit/phase boundary — NOT a failure. Map it to a first-class GUI
+    # ``paused`` run status so the Create-wizard progress view can render the
+    # objectives-review + resume panel instead of the A6 failure panel. Anything
+    # other than ok/paused is a real failure.
+    raw_status = payload.get("status")
+    if raw_status == "ok":
+        status = "completed"
+    elif raw_status == "paused":
+        status = "paused"
+    else:
+        status = "failed"
     gates_passed = payload.get("gates_passed")
     shared_state.append_log(
         run_id,
@@ -681,6 +693,27 @@ async def _drive_pipeline(
                 f"[{shared_state.now_iso()}] [phase] {failed_phase} failed "
                 f"— {label}: {reason}\n",
             )
+
+    # I1 review flow: when the run PAUSED (graceful stop / ``--stop-after``),
+    # surface which phase it halted at so the progress view can render the
+    # objectives-review panel. The runner persists ``stopped_after`` (a clean
+    # ``--stop-after`` halt) or ``paused_phase`` (a graceful mid-phase stop) on
+    # the workflow-state file; read it best-effort (a missing/corrupt file
+    # leaves it ``None`` and the view falls back to the persisted stop_after
+    # param). Persist it as ``paused_phase`` on the run record + log a friendly
+    # checkpoint line for the build log.
+    paused_phase: Optional[str] = None
+    if status == "paused":
+        paused_phase = _read_paused_after(workflow_id)
+        label = PHASE_LABELS.get(paused_phase, paused_phase) if paused_phase else None
+        shared_state.append_log(
+            run_id,
+            f"[{shared_state.now_iso()}] paused for review after phase "
+            f"{paused_phase or '?'}"
+            + (f" — {label}" if label else "")
+            + " (resume to continue the build)\n",
+        )
+
     # Phase 0 (Tier-1) — persist the GUI-side per-phase duration vector onto the
     # final run record. Best-effort: derived purely from log lines the backend
     # already emits (zero orchestrator change). A derivation failure here must
@@ -699,16 +732,24 @@ async def _drive_pipeline(
         "gates_passed": gates_passed,
         "failed_phase": failed_phase,
         "failure_reason": failure_reason,
+        "paused_phase": paused_phase,
         "finished_at": shared_state.now_iso(),
     }
     if phase_durations is not None:
         finalize_patch["phase_durations"] = phase_durations
 
     if _finalize_status(run_id, finalize_patch):
+        # A paused run emits a distinct ``run_paused`` activity event (the
+        # review-flow signal); a completed/failed run keeps ``run_finished``.
         shared_state.append_event(
             "gui",
-            "run_finished",
-            {"run_id": run_id, "workflow_id": workflow_id, "status": status},
+            "run_paused" if status == "paused" else "run_finished",
+            {
+                "run_id": run_id,
+                "workflow_id": workflow_id,
+                "status": status,
+                **({"paused_phase": paused_phase} if status == "paused" else {}),
+            },
         )
 
 
@@ -2005,6 +2046,144 @@ def _workflow_state_file(workflow_id: str) -> Path:
     return Path(STATE_PATH) / "workflows" / f"{workflow_id}.json"
 
 
+def _load_workflow_state(workflow_id: str) -> Optional[Dict[str, Any]]:
+    """Return the parsed workflow-state dict for ``workflow_id`` (or ``None``).
+
+    Best-effort: a missing / unreadable / corrupt / non-dict state file returns
+    ``None`` so callers never raise on a mid-write or absent checkpoint.
+    """
+    try:
+        state = json.loads(_workflow_state_file(workflow_id).read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, ValueError, json.JSONDecodeError):
+        return None
+    return state if isinstance(state, dict) else None
+
+
+def _read_paused_after(workflow_id: str) -> Optional[str]:
+    """Return the phase a paused run halted at (``None`` when not derivable).
+
+    The runner persists ``stopped_after`` for a clean ``--stop-after`` halt and
+    ``paused_phase`` for a graceful mid-phase stop. Prefer the ``--stop-after``
+    marker (the review-flow halt point); fall back to the graceful-stop marker.
+    """
+    state = _load_workflow_state(workflow_id)
+    if state is None:
+        return None
+    marker = state.get("stopped_after") or state.get("paused_phase")
+    return str(marker) if marker else None
+
+
+def _clear_stop_after(workflow_id: str) -> bool:
+    """Strip the persisted ``--stop-after`` marker from a workflow-state file.
+
+    The runner reads ``params.stop_after`` from the persisted workflow state, so
+    a PLAIN resume of a ``--stop-after``-paused run would immediately re-pause at
+    the same phase. The I1 review-flow "Resume build" action continues the build
+    PAST the review checkpoint, so we remove ``params.stop_after`` (and the
+    ``stopped_after`` halt marker) before the re-drive. Mirrors the CLI's
+    ``_apply_resume_stop_after_override`` write path.
+
+    Returns ``True`` when the file was changed (a stop marker existed and was
+    removed), ``False`` otherwise (nothing to clear / unreadable / unwritable).
+    Best-effort: a missing / unreadable / unwritable state file returns
+    ``False`` and the persisted value continues to govern.
+    """
+    path = _workflow_state_file(workflow_id)
+    state = _load_workflow_state(workflow_id)
+    if state is None:
+        return False
+    changed = False
+    params = state.get("params")
+    if isinstance(params, str):
+        try:
+            params = json.loads(params)
+        except ValueError:
+            params = {}
+    if isinstance(params, dict) and params.get("stop_after"):
+        params.pop("stop_after", None)
+        state["params"] = params
+        changed = True
+    if state.get("stopped_after"):
+        state.pop("stopped_after", None)
+        changed = True
+    if not changed:
+        return False
+    try:
+        path.write_text(json.dumps(state, indent=2, default=str), encoding="utf-8")
+    except OSError:
+        return False
+    return True
+
+
+def paused_review_info(run_id: str) -> Optional[Dict[str, Any]]:
+    """Return the objectives-review context for a paused run (I1 review flow).
+
+    Backs ``GET /api/runs/{run_id}/review``. Shape::
+
+        {
+          "run_id": ...,
+          "status": "paused" | ...,
+          "paused": <bool>,                 # status == "paused"
+          "paused_phase": "course_planning" | null,
+          "stop_after": "course_planning" | null,   # the persisted halt intent
+          "course_name": ...,
+          "course_id": ... | null,          # project_id for the editor (best-effort)
+          "objectives_path": "<abs path>" | null,   # the file the editor writes +
+                                            # a plain resume reads (best-effort)
+          "objectives_available": <bool>,   # the file exists on disk
+        }
+
+    ``course_id`` / ``objectives_path`` are resolved best-effort from the
+    Courseforge export via ``course_service`` — they degrade to ``None`` (never
+    raise) when the export can't be resolved. Returns ``None`` for an unknown
+    run (the router maps that to a 404).
+    """
+    record = shared_state.read_run(run_id)
+    if record is None:
+        return None
+    params = record.get("params") if isinstance(record.get("params"), dict) else {}
+    stop_after = (params or {}).get("stop_after") or record.get("stop_after")
+    course_name = record.get("course_name")
+    out: Dict[str, Any] = {
+        "run_id": run_id,
+        "status": record.get("status"),
+        "paused": record.get("status") == "paused",
+        "paused_phase": record.get("paused_phase"),
+        "stop_after": stop_after,
+        "course_name": course_name,
+        "course_id": None,
+        "objectives_path": None,
+        "objectives_available": False,
+    }
+    # Best-effort: resolve the exact objectives file the editor writes (and a
+    # plain resume reads in place) so the review panel can surface it.
+    if course_name:
+        try:
+            from gui.services import course_service  # noqa: PLC0415
+
+            resolved = course_service._resolve(str(course_name))
+            export = resolved.get("export") if isinstance(resolved, dict) else None
+            if export:
+                out["course_id"] = (
+                    export.get("project_id")
+                    or export.get("course_name")
+                    or course_name
+                )
+                obj_path = export.get("objectives_path")
+                if obj_path is not None:
+                    out["objectives_path"] = str(obj_path)
+                    out["objectives_available"] = Path(str(obj_path)).exists()
+        except Exception:  # noqa: BLE001 — objectives resolve is best-effort
+            logger.debug(
+                "paused_review_info: objectives resolve failed for %s",
+                run_id,
+                exc_info=True,
+            )
+    if out["course_id"] is None:
+        out["course_id"] = course_name
+    return out
+
+
 def _resumable_workflow_id(record: Dict[str, Any]) -> Optional[str]:
     """Return the orchestrator ``workflow_id`` IFF the run has resumable state.
 
@@ -2283,6 +2462,10 @@ async def resume_run(resume_run_id: str, req: Optional[Dict[str, Any]] = None) -
 
     ``req`` (optional) lets the caller override ``mode``/``provider``/``model`` for
     the resumed drive; absent, the prior run's persisted values are reused.
+    ``req["clear_stop_after"]`` (I1 review flow): when truthy, the persisted
+    ``--stop-after`` halt marker is stripped from the workflow-state file before
+    the re-drive so the resumed build continues PAST the review checkpoint rather
+    than immediately re-pausing at the same phase.
     """
     req = req or {}
     prior = shared_state.read_run(resume_run_id)
@@ -2330,6 +2513,24 @@ async def resume_run(resume_run_id: str, req: Optional[Dict[str, Any]] = None) -
     except Exception:  # noqa: BLE001 — the drive guardrail surfaces a hard error
         logger.exception("resume: failed to apply authoring-route env for %s", new_run_id)
 
+    # I1 review-flow resume: continue PAST the objectives-review checkpoint. A
+    # run paused via ``--stop-after`` persists that marker in its workflow
+    # params, so a PLAIN re-drive would immediately re-pause at the same phase.
+    # When the caller asks to clear it, strip the marker from the state file
+    # first (the runner reads it from there) AND from the resumed record's
+    # params echo so the new run doesn't misleadingly advertise a halt point.
+    resumed_params = prior.get("params")
+    cleared_stop_after = False
+    if req.get("clear_stop_after"):
+        try:
+            cleared_stop_after = _clear_stop_after(workflow_id)
+        except Exception:  # noqa: BLE001 — best-effort; the re-drive still runs
+            logger.exception("resume: failed to clear stop_after for %s", workflow_id)
+        if isinstance(resumed_params, dict) and resumed_params.get("stop_after"):
+            resumed_params = {
+                k: v for k, v in resumed_params.items() if k != "stop_after"
+            }
+
     record = {
         "run_id": new_run_id,
         "kind": "pipeline",
@@ -2341,7 +2542,7 @@ async def resume_run(resume_run_id: str, req: Optional[Dict[str, Any]] = None) -
         "provider": provider,
         "model": model,
         "status": "queued",
-        "params": prior.get("params"),
+        "params": resumed_params,
         "resumed_from": resume_run_id,
         "gate_results": None,
         "tasks": None,
@@ -2355,6 +2556,12 @@ async def resume_run(resume_run_id: str, req: Optional[Dict[str, Any]] = None) -
         f"[{shared_state.now_iso()}] resuming workflow {workflow_id} from "
         f"{resume_run_id} mode={mode} provider={provider}\n",
     )
+    if cleared_stop_after:
+        shared_state.append_log(
+            new_run_id,
+            f"[{shared_state.now_iso()}] cleared --stop-after marker; continuing "
+            "the build past the objectives-review checkpoint\n",
+        )
     shared_state.append_event(
         "gui",
         "run_resumed",
@@ -2374,6 +2581,7 @@ __all__ = [
     "list_workflows",
     "launch_pipeline",
     "resume_run",
+    "paused_review_info",
     "launch_phase",
     "run_status",
     "list_runs",
