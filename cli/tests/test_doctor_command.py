@@ -71,12 +71,26 @@ def _patch_run_checks(monkeypatch, results, *, capture=None):
 def test_bootstrap_registers_exactly_five_groups_and_is_idempotent():
     doctor_mod._bootstrap_checks()
     groups_once = {g for g, _ in registered_checks()}
-    assert groups_once == {"gpu", "window", "environment", "provider", "postmortem"}
+    assert groups_once == {
+        "gpu",
+        "gpu_profile",
+        "window",
+        "environment",
+        "provider",
+        "postmortem",
+    }
 
-    # Idempotent: a second bootstrap clears-then-registers, still five.
+    # Idempotent: a second bootstrap clears-then-registers, same set.
     doctor_mod._bootstrap_checks()
     groups_twice = {g for g, _ in registered_checks()}
-    assert groups_twice == {"gpu", "window", "environment", "provider", "postmortem"}
+    assert groups_twice == {
+        "gpu",
+        "gpu_profile",
+        "window",
+        "environment",
+        "provider",
+        "postmortem",
+    }
 
 
 # ---------------------------------------------------------------------- #
@@ -101,8 +115,8 @@ def test_doctor_prints_all_groups_and_ok_verdict(monkeypatch):
     assert "environment_provider summary" in result.output
     # Overall verdict.
     assert "OK" in result.output
-    # Bare default runs exactly gpu/window/environment — provider EXCLUDED.
-    assert capture["groups"] == ("gpu", "window", "environment")
+    # Bare default runs exactly gpu/gpu_profile/window/environment — provider EXCLUDED.
+    assert capture["groups"] == ("gpu", "gpu_profile", "window", "environment")
     assert "provider" not in capture["groups"]
     assert "[provider]" not in result.output
     # Bare default threads no run_config and no base-url.
@@ -386,14 +400,14 @@ def _provider_results() -> list[CheckResult]:
 
 
 def test_doctor_bare_excludes_provider_group(monkeypatch):
-    """No new flags → exactly gpu/window/environment; provider absent + no run_config."""
+    """No new flags → exactly gpu/gpu_profile/window/environment; provider absent + no run_config."""
     capture: dict = {}
     _patch_run_checks(monkeypatch, _all_ok_results(), capture=capture)
 
     result = CliRunner().invoke(doctor_command, [])
 
     assert result.exit_code == 0, result.output
-    assert capture["groups"] == ("gpu", "window", "environment")
+    assert capture["groups"] == ("gpu", "gpu_profile", "window", "environment")
     assert "provider" not in capture["groups"]
     assert capture["run_config"] is None
 
@@ -413,7 +427,7 @@ def test_doctor_run_adds_provider_group_and_threads_run_config(monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert "provider" in capture["groups"]
-    assert capture["groups"] == ("gpu", "window", "environment", "provider")
+    assert capture["groups"] == ("gpu", "gpu_profile", "window", "environment", "provider")
     rc = capture["run_config"]
     assert rc is not None
     assert rc["workflow"] == "textbook_to_course"

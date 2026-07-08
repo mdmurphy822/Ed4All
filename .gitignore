@@ -251,6 +251,11 @@ plans/
 docs/MANIFEST.md
 docker-compose.override.yml
 
+# Untracked operator runbook for the big-memory concurrent-serving profile.
+# Kept local-only so it can name the specific target hardware freely (tracked
+# docs stay machine-name-free per the hygiene contract).
+docs/operations/spark-profile.md
+
 # =============================================================================
 # SemantiK (Semantic v2 DART) — runtime artifacts never ship
 # =============================================================================

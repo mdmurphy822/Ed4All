@@ -729,7 +729,7 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `NVIDIA_*` (vendor endpoint-registry row for the hosted large-model seat — `NVIDIA_API_KEY` / `NVIDIA_BASE_URL` / `NVIDIA_LARGE_MODEL`) | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 3 |
 | `SEMANTIK_*` (DART replacement — SemantiK semantic-cascade converter; also honors the legacy `DART_THETA_DEVICE` compat env) | [`SemantiK/CLAUDE.md § Opt-In Behavior Flags`](SemantiK/CLAUDE.md) | 82 |
 | `COURSEFORGE_*` / `COURSEPLANNER_*` / `TEXTBOOK_SYNTHESIS_*` | [`Courseforge/CLAUDE.md § Opt-In Behavior Flags`](Courseforge/CLAUDE.md) | 35 |
-| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root index (below) + [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 178 |
+| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root index (below) + [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 179 |
 
 ### Cross-cutting flags (root-owned)
 
@@ -889,6 +889,7 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `ED4ALL_CALIB_EXTRA_CORPORA` | unset (off) | W8.3 multi-corpus discovery pointer for the calibration harness |
 | `ED4ALL_VRAM_DOCTOR` | unset (off) | VRAM-contention observability gate |
 | `ED4ALL_GPU_LIFECYCLE` | `on` (default ON — deviation) | Deterministic GPU-lifecycle LEASE: every model loads, runs, releases the card, hands it to the next stage. Phase-boundary sweep in `workflow_runner.run_workflow` (ollama `keep_alive:0` + torch `empty_cache`, best-effort, off-loop) + SemantiK cascade stage seams (`cascade._gpu_lifecycle_release` via the cross-venv twin). Residency/timing only — never an output byte (default-ON justified). Opt-out `=0` for perf. |
+| `ED4ALL_BIG_MEMORY_MIN_MIB` | `49152` (48 GiB) | Total-VRAM threshold above which the `ed4all doctor` `gpu_profile` group treats the box as a big-memory concurrent-serving host and emits ADVISORY warns for each small-box default still on (`ED4ALL_GPU_LIFECYCLE`, `ED4ALL_NLI_EVICT_FOR_CUDA`, `ED4ALL_CLOUD_RATE_LIMIT`, low `ED4ALL_GPU_MAX_USED_MB`); below threshold / unprobeable GPU → silent no-op. |
 | `ED4ALL_PLANNER_INTERLEAVE` | unset (off) | W6.2 TRUE cross-CO practice interleaving for the dynamic block planner |
 | `ED4ALL_PLANNER_FAR_TRANSFER` | unset (off) | W6.3 per-TO novel-context far-transfer floor for the dynamic block planner |
 | `ED4ALL_PLANNER_DUAL_CODING` | unset (off) | W6.5 per-CO dual-coding floor for the dynamic block planner |

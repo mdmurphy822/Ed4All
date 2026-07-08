@@ -11,6 +11,9 @@ self-register — the bootstrap wires them in explicitly):
 
 * ``gpu`` — GPU/VRAM-contention fit prediction (wraps
   :mod:`lib.llm.vram_doctor`; the historical VRAM-only doctor).
+* ``gpu_profile`` — big-memory concurrent-serving profile advisories
+  (WARNs, when a big-memory GPU is detected, for the small-box
+  concurrency-hostile defaults; a silent no-op otherwise).
 * ``window`` — serving-window / context-budget checks.
 * ``environment`` — environment / provider / dependency checks.
 * ``provider`` — provider/seat run-preflight (which provider every
@@ -55,6 +58,7 @@ from lib.diagnostics import (
 # The check modules do NOT self-register — importing them is
 # side-effect-free; the bootstrap calls their register_* fns explicitly.
 from lib.diagnostics.environment import register_environment_checks
+from lib.diagnostics.gpu_profile import register_gpu_profile_checks
 from lib.diagnostics.postmortem import register_postmortem_checks
 from lib.diagnostics.provider import register_provider_checks
 from lib.diagnostics.run_env import applied_run_env
@@ -79,8 +83,8 @@ from cli.commands.run import (
 #: a run-preflight concern, opted into via ``--run`` / ``--ping`` /
 #: ``--group provider`` (keeps the bare default free of class-default seat
 #: noise).
-_DEFAULT_GROUPS = ("gpu", "window", "environment")
-_RUN_GROUPS = ("gpu", "window", "environment", "provider")
+_DEFAULT_GROUPS = ("gpu", "gpu_profile", "window", "environment")
+_RUN_GROUPS = ("gpu", "gpu_profile", "window", "environment", "provider")
 
 #: Post-mortem mode (``--run-id``) is a DISTINCT mode — it analyzes a PAST run
 #: off disk (checkpoints + VRAM trajectory) and does ZERO live-env probing. It
@@ -151,6 +155,7 @@ def _bootstrap_checks() -> None:
     """
     clear_registry()
     register_gpu_checks()
+    register_gpu_profile_checks()
     register_serving_window_checks()
     register_environment_checks()
     register_provider_checks()
