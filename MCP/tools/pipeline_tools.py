@@ -2830,6 +2830,126 @@ def _resolve_chunker_version() -> str:
     return CHUNKER_SCHEMA_VERSION
 
 
+# OP4: the on-disk LibV2 course-layout contract version stamped on every
+# freshly emitted ``course_manifest.json`` (``library_format_version``). This
+# is DISTINCT from ``libv2_version`` (the manifest-document schema version) and
+# ``chunker_version`` (the chunk-emit contract). Starts at "1.0"; bump only when
+# the course-directory layout / manifest contract changes in a way that requires
+# a migration. The migration framework itself is deferred to v2.1 — see
+# docs/operations/library-versioning.md for the upgrade CONTRACT.
+LIBRARY_FORMAT_VERSION = "1.0"
+
+
+def _normalize_license_field(license_note: Any) -> Optional[Dict[str, str]]:
+    """Normalize the ``--license-note`` input into the manifest ``license``
+    object (``schemas/library/course_manifest.schema.json::license``).
+
+    B3: accepts either a plain string (the common CLI shape — the value of
+    ``--license-note``, mapped to ``spdx_or_name``) or a pre-shaped dict
+    carrying ``spdx_or_name`` / ``note``. Returns ``None`` when nothing usable
+    is present so callers can omit the field entirely (absent ==
+    byte-identical manifest).
+    """
+    if license_note is None:
+        return None
+    if isinstance(license_note, str):
+        s = license_note.strip()
+        return {"spdx_or_name": s} if s else None
+    if isinstance(license_note, dict):
+        out: Dict[str, str] = {}
+        for key in ("spdx_or_name", "note"):
+            val = license_note.get(key)
+            if isinstance(val, str) and val.strip():
+                out[key] = val.strip()
+        return out or None
+    return None
+
+
+def _normalize_attribution_field(attribution: Any) -> Optional[Dict[str, str]]:
+    """Normalize the ``--attribution`` input into the manifest ``attribution``
+    object (``schemas/library/course_manifest.schema.json::attribution``).
+
+    B3: accepts either a plain string (the common CLI shape — the value of
+    ``--attribution``, mapped to ``statement``) or a pre-shaped dict carrying
+    ``source_title`` / ``source_url`` / ``statement``. Returns ``None`` when
+    nothing usable is present (absent == byte-identical manifest).
+    """
+    if attribution is None:
+        return None
+    if isinstance(attribution, str):
+        s = attribution.strip()
+        return {"statement": s} if s else None
+    if isinstance(attribution, dict):
+        out: Dict[str, str] = {}
+        for key in ("source_title", "source_url", "statement"):
+            val = attribution.get(key)
+            if isinstance(val, str) and val.strip():
+                out[key] = val.strip()
+        return out or None
+    return None
+
+
+def _write_course_notice(
+    course_dir: Path,
+    slug: str,
+    course_title: Optional[str],
+    license_field: Optional[Dict[str, str]],
+    attribution_field: Optional[Dict[str, str]],
+) -> Optional[Path]:
+    """Write a human-readable ``NOTICE`` file into the course dir when a
+    license or attribution declaration is present (B3).
+
+    No-op (returns ``None``) when neither field is present — so an archival
+    call without ``--license-note`` / ``--attribution`` leaves the course dir
+    byte-identical to the pre-B3 layout. The NOTICE is a plain-text
+    redistribution/attribution record intended to ship alongside a bundled
+    course (e.g. the demo bundle). Written atomically.
+    """
+    if not license_field and not attribution_field:
+        return None
+
+    heading = f"NOTICE — {course_title or slug}"
+    lines: List[str] = [heading, "=" * len(heading), ""]
+    lines.append(f"Course: {course_title or slug}")
+    lines.append(f"Slug: {slug}")
+    lines.append("")
+
+    if license_field:
+        lines.append("License")
+        lines.append("-------")
+        name = license_field.get("spdx_or_name")
+        if name:
+            lines.append(name)
+        note = license_field.get("note")
+        if note:
+            lines.append(note)
+        lines.append("")
+
+    if attribution_field:
+        lines.append("Attribution")
+        lines.append("-----------")
+        title = attribution_field.get("source_title")
+        if title:
+            lines.append(f"Source: {title}")
+        url = attribution_field.get("source_url")
+        if url:
+            lines.append(f"URL: {url}")
+        statement = attribution_field.get("statement")
+        if statement:
+            lines.append(statement)
+        lines.append("")
+
+    lines.append(
+        "This NOTICE was generated automatically at archive time from the "
+        "license/attribution metadata recorded in course_manifest.json. "
+        "Redistribute this file with the course bundle."
+    )
+
+    notice_path = course_dir / "NOTICE"
+    _atomic_write_text(notice_path, "\n".join(lines).rstrip() + "\n")
+    return notice_path
+
+
 def _normalize_chapter_objectives_to_groups(raw: Any) -> List[Dict[str, Any]]:
     """Normalize ``chapter_objectives`` (any shape) to the canonical
     list-of-groups form: ``[{"chapter": <label>, "objectives": [...]}, ...]``.
@@ -7260,6 +7380,8 @@ def register_pipeline_tools(mcp):
         concept_graph_sha256: Optional[str] = None,
         dart_chunks_sha256: Optional[str] = None,
         imscc_chunks_sha256: Optional[str] = None,
+        license_note: Optional[str] = None,
+        attribution: Optional[str] = None,
     ) -> str:
         """
         Archive all pipeline artifacts to LibV2 unified repository.
@@ -7470,8 +7592,16 @@ def register_pipeline_tools(mcp):
             # level (Wave 11) provenance.
             evidence_source_provenance_flag = _detect_evidence_source_provenance(course_dir)
 
+            # B3: optional license/attribution declarations (parity with the
+            # registry variant). Absent == byte-identical manifest + no NOTICE.
+            license_field = _normalize_license_field(license_note)
+            attribution_field = _normalize_attribution_field(attribution)
+
             manifest = {
                 "libv2_version": "1.2.0",
+                # OP4: on-disk course-layout contract version (see registry
+                # variant + docs/operations/library-versioning.md).
+                "library_format_version": LIBRARY_FORMAT_VERSION,
                 "chunker_version": _resolve_chunker_version(),
                 "slug": slug,
                 "import_timestamp": datetime.now().isoformat(),
@@ -7490,6 +7620,10 @@ def register_pipeline_tools(mcp):
                     "evidence_source_provenance": evidence_source_provenance_flag,
                 },
             }
+            if license_field:
+                manifest["license"] = license_field
+            if attribution_field:
+                manifest["attribution"] = attribution_field
 
             # Phase 8 ST 1: persist the three SHA256 fields when callers thread
             # them via kwargs. Same ``^[0-9a-f]{64}$`` regex shape as the
@@ -7560,6 +7694,11 @@ def register_pipeline_tools(mcp):
             # W0.7: atomic temp-then-replace so a crash mid-write never leaves a
             # truncated course manifest (the LibV2ManifestValidator parses it).
             _atomic_write_text(manifest_path, json.dumps(manifest, indent=2))
+
+            # B3: write the human-readable NOTICE when license/attribution set.
+            _write_course_notice(
+                course_dir, slug, course_name, license_field, attribution_field
+            )
 
             # F6: register the course in the LibV2 master catalog so that
             # ``libv2 catalog list`` / ``libv2 info <slug>`` see it immediately
@@ -21216,6 +21355,15 @@ def _build_tool_registry() -> dict:
         synthesized_objectives_path_kw = (
             kwargs.get("synthesized_objectives_path") or ""
         )
+        # B3: optional license/attribution declarations threaded from the
+        # ``--license-note`` / ``--attribution`` run flags via the
+        # ``libv2_archival`` inputs_from routing. Both default absent — when
+        # neither is present the manifest + course dir are byte-identical to
+        # the pre-B3 layout (no ``license``/``attribution`` field, no NOTICE).
+        license_field = _normalize_license_field(kwargs.get("license_note"))
+        attribution_field = _normalize_attribution_field(
+            kwargs.get("attribution")
+        )
 
         if not course_name:
             return json.dumps({"error": "archive_to_libv2 requires course_name"})
@@ -21909,6 +22057,11 @@ def _build_tool_registry() -> dict:
 
         manifest = {
             "libv2_version": "1.2.0",
+            # OP4: stamp the on-disk course-layout contract version so
+            # fsck/validators can serve an old-format course read-only + warn
+            # (never silent) instead of assuming the current layout. See
+            # docs/operations/library-versioning.md for the upgrade contract.
+            "library_format_version": LIBRARY_FORMAT_VERSION,
             "chunker_version": _resolve_chunker_version(),
             "slug": slug,
             "import_timestamp": datetime.now().isoformat(),
@@ -21928,6 +22081,12 @@ def _build_tool_registry() -> dict:
                 "evidence_source_provenance": evidence_source_provenance_flag,
             },
         }
+        # B3: emit the optional license/attribution blocks only when present
+        # (absent == byte-identical manifest).
+        if license_field:
+            manifest["license"] = license_field
+        if attribution_field:
+            manifest["attribution"] = attribution_field
         if concept_graph_sha256_resolved is not None:
             manifest["concept_graph_sha256"] = concept_graph_sha256_resolved
 
@@ -22011,6 +22170,15 @@ def _build_tool_registry() -> dict:
         # W0.7: atomic temp-then-replace so a crash mid-write never leaves a
         # truncated course manifest (the LibV2ManifestValidator parses it).
         _atomic_write_text(manifest_path, json.dumps(manifest, indent=2))
+
+        # B3: when a license/attribution declaration is present, also write a
+        # human-readable NOTICE into the course dir (for shipped bundles).
+        # No-op when neither is present (byte-identical course dir).
+        _notice_path = _write_course_notice(
+            course_dir, slug, course_name, license_field, attribution_field
+        )
+        if _notice_path is not None:
+            archived["notice"] = str(_notice_path)
 
         # F6: register the course in the LibV2 master catalog so that
         # ``libv2 catalog list`` / ``libv2 info <slug>`` see it immediately

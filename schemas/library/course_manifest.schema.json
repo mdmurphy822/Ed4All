@@ -305,6 +305,56 @@
           "description": "Optional free-text reviewer note (capped)."
         }
       }
+    },
+    "library_format_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+$",
+      "description": "OP4 library-format version — the on-disk LibV2 course-layout contract this manifest was written against (distinct from ``libv2_version``, the manifest-document schema version, and ``chunker_version``, the chunk-emit contract). Starts at '1.0'. Optional -> legacy manifests that predate the field validate without it (fsck/validators treat a missing field as the pre-1.0 baseline: serve read-only + warn, never silent). Bumped only when the course-directory layout / manifest contract changes in a way that requires a migration; the migration framework itself is deferred to v2.1. Contract: docs/operations/library-versioning.md."
+    },
+    "license": {
+      "type": "object",
+      "description": "B3 optional license declaration for the archived source corpus. Optional -> legacy manifests validate without it (absent = byte-identical manifest). Threaded from the ``--license-note`` run flag. When present, the archival step also writes a human-readable NOTICE file into the course dir.",
+      "minProperties": 1,
+      "additionalProperties": false,
+      "properties": {
+        "spdx_or_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "SPDX identifier (e.g. 'CC-BY-4.0', 'CC0-1.0') or a human license name."
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 2000,
+          "description": "Optional free-text license note / redistribution terms."
+        }
+      }
+    },
+    "attribution": {
+      "type": "object",
+      "description": "B3 optional source-attribution declaration for the archived corpus. Optional -> legacy manifests validate without it (absent = byte-identical manifest). Threaded from the ``--attribution`` run flag. Mirrored into the human-readable NOTICE file at archive time.",
+      "minProperties": 1,
+      "additionalProperties": false,
+      "properties": {
+        "source_title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500,
+          "description": "Title of the upstream source work (e.g. the textbook title)."
+        },
+        "source_url": {
+          "type": "string",
+          "format": "uri",
+          "maxLength": 2000,
+          "description": "Canonical URL of the upstream source work, when one exists."
+        },
+        "statement": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000,
+          "description": "The required attribution statement to reproduce (e.g. 'Access for free at openstax.org')."
+        }
+      }
     }
   }
 }

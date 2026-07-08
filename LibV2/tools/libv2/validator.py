@@ -181,6 +181,19 @@ def validate_course_manifest(course_dir: Path, repo_root: Path) -> ValidationRes
         schema_result = validate_json_schema(manifest, schema, "manifest.json")
         result.merge(schema_result)
 
+    # OP4: REPORT (never enforce) the on-disk library-format version. A
+    # manifest without ``library_format_version`` predates the OP4 stamp and is
+    # treated as the pre-1.0 baseline — served read-only + warned, never
+    # silently upgraded. The migration framework is deferred to v2.1; until
+    # then this is advisory only (a warning, not an error). See
+    # docs/operations/library-versioning.md for the upgrade contract.
+    lib_fmt_version = manifest.get("library_format_version")
+    if not lib_fmt_version:
+        result.add_warning(
+            "manifest.json has no library_format_version — treating as the "
+            "pre-1.0 baseline layout (serve read-only; re-chunk to upgrade)."
+        )
+
     # Additional semantic validations
     if "classification" in manifest:
         classification = manifest["classification"]

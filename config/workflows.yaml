@@ -4455,6 +4455,16 @@ workflows:
           - param: pdf_paths
             source: workflow_params
             key: pdf_paths
+          # B3: optional license/attribution declarations threaded from the
+          # ``--license-note`` / ``--attribution`` run flags. Both default
+          # absent → the emitted course_manifest.json is byte-identical to the
+          # pre-B3 layout and no NOTICE is written.
+          - param: license_note
+            source: workflow_params
+            key: license_note
+          - param: attribution
+            source: workflow_params
+            key: attribution
           - param: html_paths
             source: phase_outputs
             phase: dart_conversion

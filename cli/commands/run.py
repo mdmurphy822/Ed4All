@@ -200,6 +200,8 @@ def _build_workflow_params(
     skip_training: bool = False,
     provider: Optional[str] = None,
     stop_after: Optional[str] = None,
+    license_note: Optional[str] = None,
+    attribution: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build the params dict for a workflow from CLI inputs.
 
@@ -319,6 +321,15 @@ def _build_workflow_params(
     # phases run). Default unset → no behaviour change.
     if stop_after:
         params["stop_after"] = stop_after
+
+    # B3: optional license/attribution declarations for the archived corpus.
+    # Threaded into the libv2_archival phase (via the phase's workflow_params
+    # inputs_from routing) where they land on course_manifest.json + drive the
+    # NOTICE emit. Default unset → byte-identical manifest + no NOTICE.
+    if license_note:
+        params["license_note"] = license_note
+    if attribution:
+        params["attribution"] = attribution
 
     return params
 
@@ -766,6 +777,29 @@ def _build_orchestrator(
     ),
 )
 @click.option(
+    "--license-note",
+    "license_note",
+    default=None,
+    help=(
+        "B3 — optional license declaration for the archived source corpus "
+        "(e.g. ``--license-note 'CC-BY-4.0'``). Recorded on the LibV2 "
+        "``course_manifest.json`` under ``license.spdx_or_name`` and mirrored "
+        "into a human-readable NOTICE file in the course dir. Absent → the "
+        "manifest + course dir are byte-identical to the pre-B3 layout."
+    ),
+)
+@click.option(
+    "--attribution",
+    "attribution",
+    default=None,
+    help=(
+        "B3 — optional source-attribution statement for the archived corpus "
+        "(e.g. ``--attribution 'Access for free at openstax.org'``). Recorded "
+        "on the manifest under ``attribution.statement`` and mirrored into the "
+        "NOTICE file. Absent → byte-identical manifest."
+    ),
+)
+@click.option(
     "--dry-run",
     is_flag=True,
     help="Show the planned pipeline without executing",
@@ -802,6 +836,8 @@ def run_command(
     libv2_root: Optional[str],
     skip_training: bool,
     stop_after: Optional[str],
+    license_note: Optional[str],
+    attribution: Optional[str],
     dry_run: bool,
     watch: bool,
     output_json: bool,
@@ -910,6 +946,8 @@ def run_command(
         libv2_root=libv2_root,
         skip_training=skip_training,
         stop_after=stop_after,
+        license_note=license_note,
+        attribution=attribution,
         # Pass the EXPLICIT flag (None when unset), not the
         # `_resolve_provider` anthropic-fallback value, so an unset provider
         # leaves the authoring-env resolution to LLM_PROVIDER > local.
