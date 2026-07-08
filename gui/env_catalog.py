@@ -783,6 +783,21 @@ def _build_catalog() -> List[Dict[str, Any]]:
             ),
             "applies_to": "retrieval",
         },
+        {
+            "key": "ED4ALL_ANSWER_LIBRARY_WIDE",
+            "label": "Library-Wide Ask",
+            "category": "answer",
+            "type": "boolean",
+            "default": False,
+            "help": (
+                "Union retrieval across ALL indexed courses on the grounded-"
+                "answer path (default off => single-course). Every citation keeps "
+                "its source course's provenance. A per-request 'search all "
+                "courses' toggle (ask + ask-jobs endpoints) WINS over this env "
+                "default."
+            ),
+            "applies_to": "retrieval",
+        },
     ]
 
 

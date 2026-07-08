@@ -38,7 +38,7 @@ import os
 import time
 from dataclasses import replace as _dc_replace
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from lib.retrieval.answer_composer import (
     ComposedAnswer,
@@ -59,6 +59,7 @@ from lib.retrieval.grounded_answer import (
     _blocked,
     _build_citation,
     _infer_chunkset_kind,
+    _invoke_progress,
     _libv2_root,
     _passage_chunk_record,
     _query_sha,
@@ -373,6 +374,7 @@ def answer_library_question(
     capture: Optional[Any] = None,
     containment_threshold: float = 0.85,
     max_passages: int = 8,
+    on_progress: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> GroundedAnswer:
     """Answer a question grounded across the WHOLE library (opt-in), else one course.
 
@@ -408,6 +410,7 @@ def answer_library_question(
             capture=capture,
             containment_threshold=containment_threshold,
             max_passages=max_passages,
+            on_progress=on_progress,
         )
 
     slugs = list_library_courses(libv2_root, course_slug, explicit=course_slugs)
@@ -425,6 +428,7 @@ def answer_library_question(
             validate_citations=validate_citations,
             with_groundedness=with_groundedness, capture=capture,
             containment_threshold=containment_threshold, max_passages=max_passages,
+            on_progress=on_progress,
         )
 
     # 1) Union retrieval (per-course fail-open + provenance stamping).
@@ -447,6 +451,7 @@ def answer_library_question(
             validate_citations=validate_citations,
             with_groundedness=with_groundedness, capture=capture,
             containment_threshold=containment_threshold, max_passages=max_passages,
+            on_progress=on_progress,
         )
 
     # 2) Trim to `limit` (always-keep >= 1).
@@ -468,6 +473,16 @@ def answer_library_question(
     verdict = evaluate_confidence(passages, policy)
     confidence_payload = verdict.to_dict()
     refusal_check = should_refuse(passages, policy)
+
+    # L4 passages-first disclosure (union path parity): surface the unioned
+    # passages + refusal short-circuit ONCE, after the gate, before compose.
+    _invoke_progress(
+        on_progress,
+        passages,
+        refused=refusal_check.refuse,
+        status=STATUS_REFUSED_LOW_CONFIDENCE if refusal_check.refuse else None,
+    )
+
     if refusal_check.refuse:
         return _refused(
             status=STATUS_REFUSED_LOW_CONFIDENCE,

@@ -30,6 +30,7 @@ the answer-service seam so this module imports without the retrieval stack
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import queue
@@ -60,8 +61,11 @@ _WORKER_LOCK = threading.Lock()
 
 # Test seam: the worker calls this to compute an answer. Defaults to the real
 # service; tests monkeypatch it (or ``gui.services.answer_service.ask``) to a
-# stub so no model is ever loaded. Signature mirrors ``answer_service.ask``.
-_answer_fn: Optional[Callable[[str, str, str], Dict[str, Any]]] = None
+# stub so no model is ever loaded. Signature mirrors ``answer_service.ask``:
+# ``(slug, query, engine, *, library_wide=None, on_progress=None)``. The extra
+# keyword args are passed only when the resolved callable actually accepts them
+# (introspection), so a legacy 3-arg stub stays byte-identical.
+_answer_fn: Optional[Callable[..., Dict[str, Any]]] = None
 
 
 # --------------------------------------------------------------------------- #
@@ -154,13 +158,42 @@ def _queue_position(ask_id: str) -> int:
 # --------------------------------------------------------------------------- #
 
 
-def _resolve_answer_fn() -> Callable[[str, str, str], Dict[str, Any]]:
+def _resolve_answer_fn() -> Callable[..., Dict[str, Any]]:
     """Resolve the answer callable (test seam → real service)."""
     if _answer_fn is not None:
         return _answer_fn
     from gui.services import answer_service  # noqa: PLC0415
 
     return answer_service.ask
+
+
+def _call_answer(
+    fn: Callable[..., Dict[str, Any]],
+    record: Dict[str, Any],
+    on_progress: Callable[[Dict[str, Any]], None],
+) -> Dict[str, Any]:
+    """Invoke the answer callable, threading the extra kwargs it actually accepts.
+
+    The real ``answer_service.ask`` takes keyword-only ``library_wide`` /
+    ``on_progress``; a legacy 3-positional-arg test stub takes neither. We inspect
+    the callable's signature and pass each extra kwarg ONLY when the parameter (or
+    a ``**kwargs`` catch-all) is present, so a 3-arg stub is called byte-identically
+    to before.
+    """
+    slug = record["slug"]
+    query = record["query"]
+    engine = record.get("engine", "auto")
+    kwargs: Dict[str, Any] = {}
+    try:
+        params = inspect.signature(fn).parameters
+        has_var_kw = any(p.kind == p.VAR_KEYWORD for p in params.values())
+        if "on_progress" in params or has_var_kw:
+            kwargs["on_progress"] = on_progress
+        if "library_wide" in params or has_var_kw:
+            kwargs["library_wide"] = record.get("library_wide")
+    except (TypeError, ValueError):
+        kwargs = {}
+    return fn(slug, query, engine, **kwargs)
 
 
 def _process(ask_id: str) -> None:
@@ -172,11 +205,28 @@ def _process(ask_id: str) -> None:
     record["started_at"] = shared_state.now_iso()
     _write_job(record)
 
+    def _on_progress(payload: Dict[str, Any]) -> None:
+        """L4: persist retrieved passages onto the RUNNING record (one extra write).
+
+        Fired once from the answer pipeline after the pre-LLM refusal gate. A poll
+        during the 35-50s compose window then finds the passages on the running
+        job and can disclose them "passages-first" before the answer lands. Best-
+        effort: a write failure never breaks the answer in flight.
+        """
+        try:
+            if not isinstance(payload, dict):
+                return
+            passages = payload.get("passages")
+            if passages:
+                record["passages"] = passages
+                record["passages_refused"] = bool(payload.get("refused"))
+                _write_job(record)
+        except Exception:  # noqa: BLE001 — disclosure persistence is advisory
+            pass
+
     started = time.monotonic()
     try:
-        answer = _resolve_answer_fn()(
-            record["slug"], record["query"], record.get("engine", "auto")
-        )
+        answer = _call_answer(_resolve_answer_fn(), record, _on_progress)
         record["status"] = STATUS_DONE
         record["answer"] = answer
     except Exception as exc:  # noqa: BLE001 — map typed pipeline errors for the poller
@@ -217,11 +267,20 @@ def _ensure_worker() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def submit(slug: str, query: str, engine: str = "auto") -> Dict[str, Any]:
+def submit(
+    slug: str,
+    query: str,
+    engine: str = "auto",
+    library_wide: Optional[bool] = None,
+) -> Dict[str, Any]:
     """Enqueue an ask job; return its ``pending`` record (with queue position).
 
     Writes the ``pending`` record to disk BEFORE enqueueing so a poll that races
     the worker always finds the job. Opportunistically sweeps expired jobs.
+
+    ``library_wide`` (L3) is the request-level "search all courses" override; it
+    is persisted on the record and threaded to the answer service by the worker
+    (``None`` => resolve from ``ED4ALL_ANSWER_LIBRARY_WIDE``).
     """
     sweep()  # opportunistic cleanup (best-effort; never blocks a submit)
     ask_id = shared_state.new_run_id(prefix="ASK")
@@ -233,6 +292,8 @@ def submit(slug: str, query: str, engine: str = "auto") -> Dict[str, Any]:
         "status": STATUS_PENDING,
         "created_at": shared_state.now_iso(),
     }
+    if library_wide is not None:
+        record["library_wide"] = bool(library_wide)
     _write_job(record)
     _ensure_worker()
     _QUEUE.put(ask_id)

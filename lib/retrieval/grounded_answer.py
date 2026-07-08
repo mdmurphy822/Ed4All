@@ -1775,6 +1775,69 @@ def _emit_hedge(
 
 
 # --------------------------------------------------------------------------- #
+# Progress disclosure (L4 — passages-first)
+# --------------------------------------------------------------------------- #
+
+# Cap on the per-passage snippet surfaced to a progress callback. A passages-
+# first pane is a preview while the LLM composes, not the citation body, so the
+# snippet is bounded — the full text still flows through compose + the citation
+# gate untouched.
+_PROGRESS_SNIPPET_CHARS = 320
+
+
+def _progress_payload(
+    passages: Sequence["RetrievedPassage"],
+    *,
+    refused: bool,
+    status: Optional[str],
+) -> Dict[str, Any]:
+    """Build the JSON-serializable passages-first payload for an ``on_progress``.
+
+    Surfaces the retrieved passages (bounded snippet + provenance) plus whether
+    the pre-LLM refusal gate short-circuited, so a caller can disclose "here is
+    what I found" while the 35-50s compose call runs. Serializable so an async
+    job store can persist it verbatim onto a running record.
+    """
+    out: List[Dict[str, Any]] = []
+    for p in passages:
+        text = str(getattr(p, "text", "") or "")
+        snippet = text[:_PROGRESS_SNIPPET_CHARS]
+        truncated = len(text) > _PROGRESS_SNIPPET_CHARS
+        out.append(
+            {
+                "chunk_id": str(getattr(p, "chunk_id", "") or ""),
+                "score": float(getattr(p, "score", 0.0) or 0.0),
+                "snippet": snippet + ("…" if truncated else ""),
+                "section_heading": getattr(p, "section_heading", None),
+                "item_path": str(getattr(p, "item_path", "") or ""),
+                "course_slug": str(getattr(p, "course_slug", "") or ""),
+            }
+        )
+    return {"passages": out, "refused": bool(refused), "status": status}
+
+
+def _invoke_progress(
+    on_progress: Optional[Callable[[Dict[str, Any]], None]],
+    passages: Sequence["RetrievedPassage"],
+    *,
+    refused: bool,
+    status: Optional[str],
+) -> None:
+    """Fire the passages-first ``on_progress`` callback (best-effort, never raises).
+
+    Off by default (``on_progress is None`` → strict no-op, byte-identical). A
+    callback exception is swallowed so a disclosure hook can never break — or
+    slow the failure mode of — the answer itself.
+    """
+    if on_progress is None:
+        return
+    try:
+        on_progress(_progress_payload(passages, refused=refused, status=status))
+    except Exception:  # noqa: BLE001 — progress disclosure is advisory
+        pass
+
+
+# --------------------------------------------------------------------------- #
 # The pipeline (D9)
 # --------------------------------------------------------------------------- #
 
@@ -1798,6 +1861,7 @@ def answer_course_question(
     prune_min_overlap: Optional[float] = None,
     completeness_recheck: Optional[bool] = None,
     prior_turns: Optional[Sequence[str]] = None,
+    on_progress: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> GroundedAnswer:
     """Answer a single-course question, grounded + citation-gated.
 
@@ -1983,6 +2047,18 @@ def answer_course_question(
     verdict = evaluate_confidence(passages, policy)
     confidence_payload = verdict.to_dict()
     refusal_check = should_refuse(passages, policy)
+
+    # L4 passages-first disclosure: surface the retrieved passages (and whether
+    # the refusal gate short-circuited) ONCE here, after the gate but before the
+    # 35-50s compose call, so a caller can show "here is what I found" while the
+    # LLM works. No-op (byte-identical) when no callback is threaded in.
+    _invoke_progress(
+        on_progress,
+        passages,
+        refused=refusal_check.refuse,
+        status=STATUS_REFUSED_LOW_CONFIDENCE if refusal_check.refuse else None,
+    )
+
     if refusal_check.refuse:
         _emit_refusal(
             capture,

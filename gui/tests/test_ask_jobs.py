@@ -187,3 +187,77 @@ def test_sweep_keeps_fresh_jobs(state_dir, monkeypatch):
     removed = ask_jobs.sweep(ttl_seconds=ask_jobs.DEFAULT_TTL_SECONDS)
     assert removed == 0
     assert (ask_jobs.ask_jobs_dir() / f"{rec['ask_id']}.json").is_file()
+
+
+# ---------------------------------------------- L4 passages-first + L3 library-wide
+
+
+def test_on_progress_persists_passages_on_running_record(state_dir, monkeypatch):
+    """The disclosure callback writes the passages onto the RUNNING record.
+
+    A slow stub holds the job in ``running`` after firing ``on_progress`` so the
+    test can observe the passages persisted mid-flight (the poll surface the
+    drawer's passages-first pane keys off), then releases it to ``done``.
+    """
+    import threading  # noqa: PLC0415
+
+    release = threading.Event()
+    passages = [
+        {"chunk_id": "c1", "snippet": "hello world", "score": 1.0, "course_slug": ""}
+    ]
+
+    def stub(slug, query, engine, *, library_wide=None, on_progress=None):
+        if on_progress is not None:
+            on_progress({"passages": passages, "refused": False, "status": None})
+        release.wait(3.0)
+        return _grounded()
+
+    monkeypatch.setattr(ask_jobs, "_answer_fn", stub)
+    rec = ask_jobs.submit("phys-101", "q")
+    ask_id = rec["ask_id"]
+
+    deadline = time.time() + 3.0
+    running = None
+    while time.time() < deadline:
+        r = ask_jobs.read_job(ask_id)
+        if r and r.get("status") == ask_jobs.STATUS_RUNNING and r.get("passages"):
+            running = r
+            break
+        time.sleep(0.02)
+    assert running is not None, "passages must be persisted onto the RUNNING record"
+    assert running["passages"] == passages
+    assert running["passages_refused"] is False
+
+    release.set()
+    done = _await_status(ask_id, ask_jobs.STATUS_DONE)
+    assert done["status"] == ask_jobs.STATUS_DONE
+    # The disclosed passages survive onto the terminal record too (harmless).
+    assert done.get("passages") == passages
+
+
+def test_library_wide_threaded_to_answer_fn(state_dir, monkeypatch):
+    seen = {}
+
+    def stub(slug, query, engine, *, library_wide=None, on_progress=None):
+        seen["library_wide"] = library_wide
+        return _grounded()
+
+    monkeypatch.setattr(ask_jobs, "_answer_fn", stub)
+    rec = ask_jobs.submit("phys-101", "q", library_wide=True)
+    assert rec.get("library_wide") is True
+    _await_status(rec["ask_id"], ask_jobs.STATUS_DONE)
+    assert seen["library_wide"] is True
+
+
+def test_legacy_three_arg_answer_fn_stays_byte_identical(state_dir, monkeypatch):
+    """A 3-positional-arg stub (no on_progress/library_wide) runs unchanged.
+
+    The introspection-guarded call passes neither extra kwarg, so the legacy
+    seam is called exactly as before and the record carries no passages key.
+    """
+    monkeypatch.setattr(ask_jobs, "_answer_fn", lambda slug, q, e: _grounded())
+    rec = ask_jobs.submit("phys-101", "q")
+    assert "library_wide" not in rec  # None default not persisted
+    done = _await_status(rec["ask_id"], ask_jobs.STATUS_DONE)
+    assert done["status"] == ask_jobs.STATUS_DONE
+    assert "passages" not in done

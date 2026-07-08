@@ -85,7 +85,7 @@ def test_submit_returns_ask_id_and_pending(client, monkeypatch):
     monkeypatch.setattr(
         ask_jobs,
         "submit",
-        lambda slug, query, engine: {
+        lambda slug, query, engine, library_wide=None: {
             "ask_id": "ASK-test-1",
             "status": "pending",
             "queue_position": 0,
@@ -100,8 +100,9 @@ def test_submit_returns_ask_id_and_pending(client, monkeypatch):
 def test_submit_passes_engine(client, monkeypatch):
     seen = {}
 
-    def stub(slug, query, engine):
+    def stub(slug, query, engine, library_wide=None):
         seen["engine"] = engine
+        seen["library_wide"] = library_wide
         return {"ask_id": "ASK-e", "status": "pending", "queue_position": 0}
 
     monkeypatch.setattr(ask_jobs, "submit", stub)
@@ -110,6 +111,7 @@ def test_submit_passes_engine(client, monkeypatch):
         json={"slug": "phys-101", "query": "q", "engine": "semantic"},
     )
     assert seen["engine"] == "semantic"
+    assert seen["library_wide"] is None
 
 
 # -------------------------------------------------------------------- poll states
@@ -246,10 +248,204 @@ def test_ask_jobs_mounted_on_studio_app(monkeypatch):
     monkeypatch.setattr(
         ask_jobs,
         "submit",
-        lambda slug, query, engine: {"ask_id": "ASK-s", "status": "pending", "queue_position": 0},
+        lambda slug, query, engine, library_wide=None: {
+            "ask_id": "ASK-s",
+            "status": "pending",
+            "queue_position": 0,
+        },
     )
     app = create_app(mode="studio")
     sc = TestClient(app)
     resp = sc.post("/api/learn/ask-jobs", json={"slug": "phys-101", "query": "q"})
     assert resp.status_code == 200
     assert resp.json()["ask_id"] == "ASK-s"
+
+
+# ------------------------------------------------ L4 poll passages / L3 library-wide
+
+
+def test_poll_running_surfaces_passages(client, monkeypatch):
+    """A running job carrying disclosed passages surfaces them on the poll (L4)."""
+    passages = [{"chunk_id": "c1", "snippet": "hello", "score": 1.0, "course_slug": ""}]
+    monkeypatch.setattr(
+        ask_jobs,
+        "status",
+        lambda ask_id: {
+            "ask_id": ask_id,
+            "status": "running",
+            "queue_position": 0,
+            "passages": passages,
+            "passages_refused": False,
+        },
+    )
+    resp = client.get("/api/learn/ask-jobs/ASK-x")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "running"
+    assert body["passages"] == passages
+    assert body["passages_refused"] is False
+
+
+def test_poll_running_without_passages_omits_field(client, monkeypatch):
+    """Byte-identical default: no passages on the record → no passages key."""
+    monkeypatch.setattr(
+        ask_jobs,
+        "status",
+        lambda ask_id: {"ask_id": ask_id, "status": "running", "queue_position": 0},
+    )
+    resp = client.get("/api/learn/ask-jobs/ASK-x")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "passages" not in body
+
+
+def test_submit_threads_explicit_library_wide(client, monkeypatch):
+    seen = {}
+
+    def stub(slug, query, engine, library_wide=None):
+        seen["library_wide"] = library_wide
+        return {"ask_id": "ASK-lw", "status": "pending", "queue_position": 0}
+
+    monkeypatch.setattr(ask_jobs, "submit", stub)
+    resp = client.post(
+        "/api/learn/ask-jobs",
+        json={"slug": "phys-101", "query": "q", "library_wide": True},
+    )
+    assert resp.status_code == 200
+    assert seen["library_wide"] is True
+
+
+# ------------------------------------------------------------- ask-capabilities (L3)
+
+
+def test_ask_capabilities_reports_single_course_not_eligible(client, monkeypatch):
+    from gui.services import answer_service
+
+    # A libv2 root whose courses dir has zero/one indexed course → not eligible.
+    monkeypatch.setattr(answer_service, "_libv2_root", lambda: __import__("pathlib").Path("/nonexistent"))
+    resp = client.get("/api/learn/ask-capabilities")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["library_wide_eligible"] is False
+    assert body["indexed_course_count"] == 0
+    assert "library_wide_default" in body
+
+
+def test_ask_capabilities_eligible_when_two_indexed(client, monkeypatch, tmp_path):
+    from gui.services import answer_service
+
+    courses = tmp_path / "courses"
+    for slug in ("a", "b"):
+        (courses / slug / "vector_index").mkdir(parents=True)
+        (courses / slug / "vector_index" / "manifest.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(answer_service, "_libv2_root", lambda: tmp_path)
+    resp = client.get("/api/learn/ask-capabilities")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["indexed_course_count"] == 2
+    assert body["library_wide_eligible"] is True
+
+
+# --------------------------------------------------------------- answer feedback (I6)
+
+
+def test_feedback_up_fans_out_to_event_log(client, monkeypatch):
+    seen = {}
+
+    def _cap(source, kind, payload):
+        seen["source"] = source
+        seen["kind"] = kind
+        seen["payload"] = payload
+        return {"seq": 0}
+
+    monkeypatch.setattr(learn_router.shared_state, "append_event", _cap)
+    resp = client.post(
+        "/api/learn/feedback",
+        json={"slug": "phys-101", "ask_id": "ASK-1", "verdict": "up", "comment": "nice"},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "verdict": "up"}
+    assert seen["source"] == "gui"
+    assert seen["kind"] == "answer_feedback"
+    assert seen["payload"]["verdict"] == "up"
+    assert seen["payload"]["comment"] == "nice"
+    assert seen["payload"]["ask_id"] == "ASK-1"
+
+
+def test_feedback_rejects_unknown_verdict(client):
+    resp = client.post(
+        "/api/learn/feedback", json={"slug": "phys-101", "verdict": "maybe"}
+    )
+    assert resp.status_code == 422
+    assert resp.json()["error"] == "invalid_verdict"
+
+
+def test_feedback_comment_is_size_capped(client, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        learn_router.shared_state,
+        "append_event",
+        lambda s, k, p: seen.setdefault("payload", p) or {"seq": 0},
+    )
+    long_comment = "x" * (learn_router._FEEDBACK_COMMENT_MAX + 500)
+    resp = client.post(
+        "/api/learn/feedback",
+        json={"slug": "phys-101", "verdict": "down", "comment": long_comment},
+    )
+    assert resp.status_code == 200
+    assert len(seen["payload"]["comment"]) == learn_router._FEEDBACK_COMMENT_MAX
+
+
+def test_feedback_writes_course_feedback_jsonl(client, monkeypatch, tmp_path):
+    import json as _json
+    from gui.services import answer_service
+
+    course_dir = tmp_path / "courses" / "phys-101"
+    course_dir.mkdir(parents=True)
+    monkeypatch.setattr(answer_service, "_libv2_root", lambda: tmp_path)
+    # Silence the event-log arm; only exercise the per-course file.
+    monkeypatch.setattr(learn_router.shared_state, "append_event", lambda s, k, p: {"seq": 0})
+    resp = client.post(
+        "/api/learn/feedback", json={"slug": "phys-101", "verdict": "up"}
+    )
+    assert resp.status_code == 200
+    fpath = course_dir / "feedback.jsonl"
+    assert fpath.is_file()
+    rec = _json.loads(fpath.read_text(encoding="utf-8").strip())
+    assert rec["verdict"] == "up"
+    assert rec["slug"] == "phys-101"
+
+
+def test_feedback_tolerates_absent_course_dir(client, monkeypatch, tmp_path):
+    from gui.services import answer_service
+
+    monkeypatch.setattr(answer_service, "_libv2_root", lambda: tmp_path)  # no courses/
+    monkeypatch.setattr(learn_router.shared_state, "append_event", lambda s, k, p: {"seq": 0})
+    resp = client.post(
+        "/api/learn/feedback", json={"slug": "phys-101", "verdict": "down"}
+    )
+    # No course dir → no file, but the request still succeeds.
+    assert resp.status_code == 200
+    assert not (tmp_path / "courses" / "phys-101" / "feedback.jsonl").exists()
+
+
+def test_feedback_rate_limit_returns_429(client, monkeypatch, tmp_path):
+    from gui.services import answer_service
+
+    monkeypatch.setattr(learn_router.shared_state, "append_event", lambda s, k, p: {"seq": 0})
+    monkeypatch.setattr(answer_service, "_libv2_root", lambda: tmp_path)  # no courses/
+    # Reset the shared limiter window, then exhaust it deterministically.
+    learn_router._feedback_hits.clear()
+    try:
+        for _ in range(learn_router._FEEDBACK_RATE_MAX):
+            ok = client.post(
+                "/api/learn/feedback", json={"slug": "phys-101", "verdict": "up"}
+            )
+            assert ok.status_code == 200
+        blocked = client.post(
+            "/api/learn/feedback", json={"slug": "phys-101", "verdict": "up"}
+        )
+        assert blocked.status_code == 429
+        assert blocked.json()["error"] == "rate_limited"
+    finally:
+        learn_router._feedback_hits.clear()  # leave the limiter clean for others

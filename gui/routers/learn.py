@@ -27,7 +27,11 @@ path) with the right status — never a fabricated success / answer.
 
 from __future__ import annotations
 
+import json
+import threading
+import time
 import xml.etree.ElementTree as ET
+from collections import deque
 from html import escape
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -35,6 +39,7 @@ from fastapi import APIRouter, Header, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
+from gui import shared_state
 from gui.services import answer_render, answer_service
 
 router = APIRouter()
@@ -55,6 +60,9 @@ class AskRequest(BaseModel):
     slug: str
     query: str
     engine: str = "auto"
+    # L3: request-level "search all courses" override. ``None`` => resolve from
+    # ``ED4ALL_ANSWER_LIBRARY_WIDE`` (env default); an explicit bool WINS over it.
+    library_wide: Optional[bool] = None
 
     model_config = {"extra": "allow"}
 
@@ -149,8 +157,14 @@ async def ask(req: AskRequest) -> Any:
             404, "course_not_found", "error_generic", f"unknown course: {req.slug!r}"
         )
 
+    # ``library_wide`` threaded ONLY when the request set it explicitly, so the
+    # default path stays byte-identical (a 3-arg ``answer_service.ask`` seam is
+    # unchanged; the request value wins over the env only when present).
+    ask_kwargs: Dict[str, Any] = {}
+    if req.library_wide is not None:
+        ask_kwargs["library_wide"] = req.library_wide
     try:
-        answer = answer_service.ask(req.slug, req.query, req.engine)
+        answer = answer_service.ask(req.slug, req.query, req.engine, **ask_kwargs)
     except Exception as exc:  # noqa: BLE001 — map typed pipeline errors by class name
         name = type(exc).__name__
         if name in _TYPED_ERROR_MAP:
@@ -198,6 +212,46 @@ async def ask_ready(slug: str) -> Any:
     return {"slug": slug, "exists": True, "has_vector_index": has_index}
 
 
+@router.get("/ask-capabilities")
+async def ask_capabilities() -> Any:
+    """Cheap capability probe for the Ask drawer (L3 library-wide gating).
+
+    Returns ``{indexed_course_count, library_wide_eligible, library_wide_default}``.
+    ``library_wide_eligible`` is true only when MORE THAN ONE course carries a
+    vector index (a single-course library has nothing to union), so the drawer's
+    "search all courses" control is shown only when it would do something.
+    ``library_wide_default`` surfaces the resolved ``ED4ALL_ANSWER_LIBRARY_WIDE``
+    env default so the checkbox can seed its initial state. All fs stats, no model
+    load; a scan failure degrades to "not eligible".
+    """
+    from gui.services.answer_service import _libv2_root  # noqa: PLC0415
+    from lib.retrieval.library_wide import resolve_library_wide  # noqa: PLC0415
+
+    indexed = 0
+    try:
+        courses_root = _libv2_root() / "courses"
+        if courses_root.is_dir():
+            for child in sorted(courses_root.iterdir()):
+                if child.is_dir() and (
+                    child / "vector_index" / "manifest.json"
+                ).is_file():
+                    indexed += 1
+    except Exception:  # noqa: BLE001 — a scan failure → not eligible (honest)
+        indexed = 0
+
+    default_on = False
+    try:
+        default_on = bool(resolve_library_wide(None))
+    except Exception:  # noqa: BLE001 — env parse failure → off
+        default_on = False
+
+    return {
+        "indexed_course_count": indexed,
+        "library_wide_eligible": indexed > 1,
+        "library_wide_default": default_on,
+    }
+
+
 @router.post("/ask-jobs")
 async def submit_ask_job(req: AskRequest) -> Any:
     """Enqueue a durable async ask job; return ``{ask_id, status, queue_position}``.
@@ -214,7 +268,10 @@ async def submit_ask_job(req: AskRequest) -> Any:
 
     from gui.services import ask_jobs  # noqa: PLC0415
 
-    record = ask_jobs.submit(req.slug, req.query, req.engine)
+    submit_kwargs: Dict[str, Any] = {}
+    if req.library_wide is not None:
+        submit_kwargs["library_wide"] = req.library_wide
+    record = ask_jobs.submit(req.slug, req.query, req.engine, **submit_kwargs)
     return {
         "ask_id": record["ask_id"],
         "status": record["status"],
@@ -274,11 +331,125 @@ async def poll_ask_job(ask_id: str) -> Any:
             "html": answer_render.render_error_fragment(copy_key),
         }
     # pending / running
-    return {
+    resp: Dict[str, Any] = {
         "ask_id": ask_id,
         "status": status_value,
         "queue_position": record.get("queue_position", -1),
     }
+    # L4 passages-first: once the pipeline has retrieved passages (persisted onto
+    # the running record after the refusal gate), surface them so a poll can
+    # disclose "here is what I found" while the compose call runs.
+    passages = record.get("passages")
+    if passages:
+        resp["passages"] = passages
+        resp["passages_refused"] = bool(record.get("passages_refused"))
+    return resp
+
+
+# ------------------------------------------------------- answer feedback (I6)
+#
+# Learner-open thumbs up/down (+ optional comment) on a completed grounded
+# answer. The signal fans out to (1) the Claude<->GUI event log
+# (``append_event('gui', 'answer_feedback', ...)``, so a Claude session sees it
+# via ``gui_read_events``) and (2) a per-course ``feedback.jsonl`` (best-effort;
+# an absent course dir is tolerated). No new decision_type — the training
+# round-trip is deferred. The endpoint is no-auth, so the comment is size-capped
+# and a coarse in-process rate limit damps floods (best-effort, not a security
+# boundary).
+
+_FEEDBACK_COMMENT_MAX = 2000  # chars; longer comments are truncated on store
+_FEEDBACK_RATE_MAX = 30  # accepted submissions ...
+_FEEDBACK_RATE_WINDOW_S = 60.0  # ... per this sliding window (per process)
+_feedback_hits: "deque[float]" = deque()
+_feedback_lock = threading.Lock()
+
+
+def _feedback_rate_ok() -> bool:
+    """Coarse per-process sliding-window admission (best-effort flood damping)."""
+    now = time.monotonic()
+    with _feedback_lock:
+        while _feedback_hits and now - _feedback_hits[0] > _FEEDBACK_RATE_WINDOW_S:
+            _feedback_hits.popleft()
+        if len(_feedback_hits) >= _FEEDBACK_RATE_MAX:
+            return False
+        _feedback_hits.append(now)
+        return True
+
+
+def _append_course_feedback(slug: str, payload: Dict[str, Any]) -> None:
+    """Append the feedback record to ``courses/<slug>/feedback.jsonl`` (best-effort).
+
+    An absent course dir is tolerated (no dir is created); a path-unsafe slug is
+    rejected before any filesystem touch. A write failure never surfaces to the
+    caller — the event-log fan-out is the authoritative signal.
+    """
+    if "/" in slug or "\\" in slug or ".." in slug:
+        return
+    try:
+        from gui.services.answer_service import _libv2_root  # noqa: PLC0415
+
+        course_dir = _libv2_root() / "courses" / slug
+        if not course_dir.is_dir():
+            return  # absent course dir tolerated
+        target = course_dir / "feedback.jsonl"
+        with target.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, default=str) + "\n")
+    except Exception:  # noqa: BLE001 — per-course persistence is advisory
+        pass
+
+
+class FeedbackRequest(BaseModel):
+    """Body for ``POST /api/learn/feedback``.
+
+    ``verdict ∈ {up, down}`` (required). ``ask_id`` (optional) ties the feedback
+    to the durable ask job it rates; ``comment`` (optional) is free text,
+    size-capped on store. Permissive ``extra="allow"`` mirrors ``AskRequest``.
+    """
+
+    slug: str
+    verdict: str
+    ask_id: Optional[str] = None
+    comment: Optional[str] = None
+
+    model_config = {"extra": "allow"}
+
+
+@router.post("/feedback")
+async def submit_feedback(req: FeedbackRequest) -> Any:
+    """Record thumbs up/down (+ optional comment) on a completed answer (I6).
+
+    Fans out to the event log (``answer_feedback``) AND a per-course
+    ``feedback.jsonl`` (best-effort). Rejects an unknown verdict (422) and a
+    flood (429); the comment is trimmed to ``_FEEDBACK_COMMENT_MAX`` chars.
+    """
+    verdict = (req.verdict or "").strip().lower()
+    if verdict not in ("up", "down"):
+        return _error(422, "invalid_verdict", "verdict must be 'up' or 'down'")
+    if not req.slug or not req.slug.strip():
+        return _error(422, "invalid_slug", "slug must be non-empty")
+    if not _feedback_rate_ok():
+        return _error(
+            429, "rate_limited", "too many feedback submissions; retry shortly"
+        )
+
+    comment = req.comment if isinstance(req.comment, str) else ""
+    comment = comment.strip()[:_FEEDBACK_COMMENT_MAX]
+
+    payload: Dict[str, Any] = {
+        "slug": req.slug,
+        "verdict": verdict,
+        "ask_id": (req.ask_id or None),
+        "comment": comment,
+        "ts": shared_state.now_iso(),
+    }
+
+    try:
+        shared_state.append_event("gui", "answer_feedback", payload)
+    except Exception:  # noqa: BLE001 — event-log append is best-effort
+        pass
+    _append_course_feedback(req.slug, payload)
+
+    return {"ok": True, "verdict": verdict}
 
 
 @router.get("/source/{slug}")

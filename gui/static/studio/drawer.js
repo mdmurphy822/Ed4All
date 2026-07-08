@@ -96,6 +96,22 @@ export function createAskDrawer({ slug, loadCitation, loadSourceDoc }) {
     placeholder: 'Ask a question about this course…',
   });
   const submitBtn = el('button', { type: 'button', class: 'ask-submit', text: 'Ask' });
+  // L3 "search all courses" toggle — hidden until the capability probe confirms
+  // MORE THAN ONE course is indexed (a single-course library has nothing to
+  // union). A visible checkbox's state always WINS over the env default.
+  const libWideId = uid('ask-libwide');
+  const libWideInput = el('input', {
+    type: 'checkbox',
+    id: libWideId,
+    class: 'ask-libwide-input',
+  });
+  const libWideLabel = el('label', {
+    class: 'ask-libwide-label',
+    for: libWideId,
+    text: 'Search all courses',
+  });
+  const libWideWrap = el('div', { class: 'ask-libwide' }, [libWideInput, libWideLabel]);
+  libWideWrap.hidden = true; // shown only when >1 course is indexed
   // Always-available (user directive): lives in the static shell, not the
   // lazily-rendered history block; clicking with nothing to clear announces
   // that via the live region instead of hiding the control.
@@ -105,7 +121,7 @@ export function createAskDrawer({ slug, loadCitation, loadSourceDoc }) {
     text: 'Clear history',
     'aria-label': 'Clear question and answer history',
   });
-  const form = el('form', { class: 'ask-form' }, [input, submitBtn]);
+  const form = el('form', { class: 'ask-form' }, [input, libWideWrap, submitBtn]);
   const historyBar = el('div', { class: 'ask-history-bar' }, [clearBtn]);
   clearBtn.addEventListener('click', () => clearHistory());
 
@@ -142,6 +158,16 @@ export function createAskDrawer({ slug, loadCitation, loadSourceDoc }) {
       ]);
       body.insertBefore(note, form);
     }
+    // L3: reveal the "search all courses" toggle only when the library has more
+    // than one indexed course to union across. Seed the checkbox from the
+    // resolved env default; whatever the learner leaves it at then WINS.
+    try {
+      const caps = await api('/api/learn/ask-capabilities');
+      if (caps && caps.library_wide_eligible) {
+        libWideWrap.hidden = false;
+        libWideInput.checked = !!caps.library_wide_default;
+      }
+    } catch (_) { /* probe failed → leave the toggle hidden (single-course) */ }
   }
 
   // --- history rendering --------------------------------------------------
@@ -184,11 +210,18 @@ export function createAskDrawer({ slug, loadCitation, loadSourceDoc }) {
       if (entry.status === 'done' && entry.html) {
         ansWrap.innerHTML = entry.html;
         wireCitations(ansWrap);
+        // I6 answer feedback: thumbs up/down + optional comment on a completed
+        // answer.
+        ansWrap.appendChild(feedbackBar(entry));
       } else if (entry.status === 'error') {
         ansWrap.innerHTML = entry.html || '';
       } else {
-        // pending/running — show busy chip + elapsed timer.
+        // pending/running — show busy chip + elapsed timer, and (L4) the
+        // passages-first preview once retrieval passages have arrived.
         ansWrap.appendChild(busyChip(entry));
+        if (Array.isArray(entry._passages) && entry._passages.length) {
+          ansWrap.appendChild(passagesPane(entry._passages, entry._passagesRefused));
+        }
       }
       li.appendChild(ansWrap);
       historyList.appendChild(li);
@@ -251,6 +284,109 @@ export function createAskDrawer({ slug, loadCitation, loadSourceDoc }) {
       entry._timer = null;
     }
     entry._busyLabelEl = null;
+  }
+
+  // --- L4 passages-first preview -----------------------------------------
+  // While the LLM composes (35-50s), disclose the passages retrieval already
+  // found so the learner sees progress. The pane is a polite live region so a
+  // screen reader hears "found passages" once, without per-second chatter.
+  function passagesPane(passages, refused) {
+    const pane = el('div', {
+      class: 'ask-passages',
+      role: 'region',
+      'aria-live': 'polite',
+      'aria-label': refused
+        ? 'Passages found (no confident answer yet)'
+        : 'Passages found while composing an answer',
+    });
+    pane.appendChild(el('p', {
+      class: 'ask-passages-head muted',
+      text: refused
+        ? 'Found these passages, but not a confident answer yet…'
+        : 'Found these passages — composing an answer…',
+    }));
+    const list = el('ol', { class: 'ask-passages-list' });
+    passages.forEach((p) => {
+      const li = el('li', { class: 'ask-passage' });
+      const src = ((p && (p.section_heading || p.course_slug)) || '').trim();
+      if (src) li.appendChild(el('p', { class: 'ask-passage-src', text: src }));
+      li.appendChild(el('p', { class: 'ask-passage-text', text: (p && p.snippet) || '' }));
+      list.appendChild(li);
+    });
+    pane.appendChild(list);
+    return pane;
+  }
+
+  // --- I6 answer feedback -------------------------------------------------
+  function feedbackBar(entry) {
+    const wrap = el('div', { class: 'ask-feedback' });
+    if (entry._feedbackDone) {
+      wrap.appendChild(el('p', {
+        class: 'ask-feedback-thanks',
+        role: 'status',
+        text: 'Thanks for your feedback.',
+      }));
+      return wrap;
+    }
+    const labelId = uid('ask-fb-l');
+    wrap.appendChild(el('p', { id: labelId, class: 'ask-feedback-label', text: 'Was this answer helpful?' }));
+    const group = el('div', {
+      class: 'ask-feedback-btns',
+      role: 'group',
+      'aria-labelledby': labelId,
+    });
+    const up = el('button', {
+      type: 'button',
+      class: 'ask-feedback-up',
+      'aria-label': 'Yes, this answer was helpful',
+      text: '👍 Helpful',
+    });
+    const down = el('button', {
+      type: 'button',
+      class: 'ask-feedback-down',
+      'aria-label': 'No, this answer was not helpful',
+      text: '👎 Not helpful',
+    });
+    group.appendChild(up);
+    group.appendChild(down);
+    const commentId = uid('ask-fb-c');
+    const commentLabel = el('label', {
+      class: 'ask-feedback-comment-label',
+      for: commentId,
+      text: 'Add a comment (optional)',
+    });
+    const comment = el('textarea', {
+      id: commentId,
+      class: 'ask-feedback-comment',
+      rows: '2',
+    });
+    up.addEventListener('click', () => sendFeedback(entry, 'up', comment.value));
+    down.addEventListener('click', () => sendFeedback(entry, 'down', comment.value));
+    wrap.appendChild(group);
+    wrap.appendChild(commentLabel);
+    wrap.appendChild(comment);
+    return wrap;
+  }
+
+  async function sendFeedback(entry, verdict, comment) {
+    // Optimistic: mark submitted so a double-click can't double-post; the
+    // re-render swaps the controls for the thank-you note.
+    entry._feedbackDone = true;
+    renderHistory();
+    try {
+      await apiJSON('/api/learn/feedback', 'POST', {
+        slug,
+        ask_id: entry.ask_id || null,
+        verdict,
+        comment: (comment || '').trim(),
+      });
+      announce('Thanks — your feedback was recorded.');
+    } catch (_) {
+      // Roll back so the learner can retry; announce the failure politely.
+      entry._feedbackDone = false;
+      renderHistory();
+      announce('Sorry, we could not record your feedback. Please try again.');
+    }
   }
 
   // --- citation interception ---------------------------------------------
@@ -328,9 +464,15 @@ export function createAskDrawer({ slug, loadCitation, loadSourceDoc }) {
     input.value = '';
     announce('Question submitted. Working on an answer…');
 
+    // L3: when the "search all courses" toggle is visible, its state is an
+    // EXPLICIT override that wins over the env default (checked → true, unchecked
+    // → false). When hidden (single-course library) send nothing (env resolves).
+    const body = { slug, query };
+    if (!libWideWrap.hidden) body.library_wide = libWideInput.checked;
+
     let job;
     try {
-      job = await apiJSON('/api/learn/ask-jobs', 'POST', { slug, query });
+      job = await apiJSON('/api/learn/ask-jobs', 'POST', body);
     } catch (err) {
       finishError(entry, err);
       busy = false;
@@ -359,10 +501,24 @@ export function createAskDrawer({ slug, loadCitation, loadSourceDoc }) {
       }
       if (rec.status === 'pending' || rec.status === 'running') {
         entry.queue_position = rec.queue_position;
-        // Update ONLY the busy chip's queue label in place — do NOT call
-        // renderHistory(), which would destroy the chip and reset its elapsed
-        // clock to 0s on every 1.5s tick (the timer-flicker bug).
-        updateBusyChip(entry);
+        // L4: the first tick that carries retrieved passages does ONE full
+        // render to surface the passages-first pane (transient `_passages` — not
+        // persisted; re-fetched on resume). Subsequent ticks update only the
+        // busy chip in place so the elapsed clock never resets (the flicker bug).
+        if (
+          Array.isArray(rec.passages) && rec.passages.length && !entry._passagesShown
+        ) {
+          entry._passages = rec.passages;
+          entry._passagesRefused = !!rec.passages_refused;
+          entry._passagesShown = true;
+          renderHistory();
+          announce('Found relevant passages. Composing an answer…');
+        } else {
+          // Update ONLY the busy chip's queue label in place — do NOT call
+          // renderHistory(), which would destroy the chip and reset its elapsed
+          // clock to 0s on every 1.5s tick (the timer-flicker bug).
+          updateBusyChip(entry);
+        }
         return;
       }
       clearTimer(t);

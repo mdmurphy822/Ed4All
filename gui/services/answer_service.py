@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Callable, Dict, Optional
 
 
 def _libv2_root() -> Path:
@@ -71,7 +71,14 @@ def _resolve_engine(engine: str, libv2_root: Path, slug: str) -> str:
     return requested
 
 
-def ask(slug: str, query: str, engine: str = "auto") -> Dict[str, Any]:
+def ask(
+    slug: str,
+    query: str,
+    engine: str = "auto",
+    *,
+    library_wide: Optional[bool] = None,
+    on_progress: Optional[Callable[[Dict[str, Any]], None]] = None,
+) -> Dict[str, Any]:
     """Answer a learner question; return ``GroundedAnswer.to_dict()``.
 
     Resolves the engine, wires a per-request ``DecisionCapture`` (best-effort —
@@ -79,6 +86,14 @@ def ask(slug: str, query: str, engine: str = "auto") -> Dict[str, Any]:
     failure is swallowed so it never blocks an answer), and calls
     ``answer_course_question(..., with_groundedness=False)`` (D4). Typed pipeline
     errors propagate to the router untouched.
+
+    ``library_wide`` (L3): an explicit request-level toggle that WINS over the
+    ``ED4ALL_ANSWER_LIBRARY_WIDE`` env — ``None`` (default) resolves from the env
+    flag (byte-identical to the prior behavior). ``on_progress`` (L4): an
+    optional passages-first disclosure callback, fired once after the pre-LLM
+    refusal gate with the retrieved passages, so a durable ask job can surface
+    "here is what I found" while the compose call runs. Both default to the
+    no-op path.
     """
     from lib.retrieval.library_wide import (  # noqa: PLC0415
         answer_library_question,
@@ -94,7 +109,8 @@ def ask(slug: str, query: str, engine: str = "auto") -> Dict[str, Any]:
     # is passed, it delegates VERBATIM to ``answer_course_question`` on ``slug``
     # (byte-identical single-course path). When the flag is on it unions
     # retrieval across the catalog's courses, keeping per-course provenance on
-    # every citation. ``library_wide=None`` => resolve from the env flag.
+    # every citation. ``library_wide`` threads the request-level override
+    # (``None`` => resolve from the env flag).
     result = answer_library_question(
         libv2_root,
         slug,
@@ -102,7 +118,8 @@ def ask(slug: str, query: str, engine: str = "auto") -> Dict[str, Any]:
         engine=resolved_engine,
         capture=capture,
         with_groundedness=False,
-        library_wide=None,
+        library_wide=library_wide,
+        on_progress=on_progress,
     )
     return result.to_dict()
 
