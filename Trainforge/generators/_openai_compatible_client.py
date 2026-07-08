@@ -92,6 +92,12 @@ _RETRY_AFTER_MAX_SECONDS: float = 60.0
 # ``ED4ALL_ANSWER_TIMEOUT_SECONDS`` in ``lib/retrieval/answer_backend.py``).
 ENV_REQUEST_TIMEOUT: str = "ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS"
 
+# OP2 usage tap: when this env identifies a run, every chat-completion call
+# appends one metering row to ``state/runs/<run_id>/llm_usage.jsonl`` (read
+# by ``lib/aggregators/build_cost.py``). Best-effort + no-op when unset, so a
+# bare library caller (no run id) is byte-identical to the pre-tap path.
+ENV_RUN_ID: str = "ED4ALL_RUN_ID"
+
 
 def resolve_default_timeout() -> float:
     """Return the default per-request timeout when no explicit value.
@@ -399,9 +405,15 @@ class OpenAICompatibleClient:
                     continue
                 payload[key] = value
 
+        _call_start = time.monotonic()
         body, retry_count = self._post_with_retry(payload)
+        _duration_ms = (time.monotonic() - _call_start) * 1000.0
         text = self._extract_text(body)
         usage = self._extract_usage(body)
+        # OP2 usage tap — best-effort per-call metering row (no-op when
+        # ``ED4ALL_RUN_ID`` is unset). Placed after ``_extract_usage`` so the
+        # row carries real server-reported token counts.
+        self._maybe_append_usage_row(usage=usage, duration_ms=_duration_ms)
         # Expose the server-reported token usage of the LAST call so a
         # caller can run a post-call check (e.g. the grounded-answer
         # truncation tripwire compares reported prompt_tokens against a
@@ -418,6 +430,47 @@ class OpenAICompatibleClient:
             decision_metadata=decision_metadata or {},
         )
         return text
+
+    # ------------------------------------------------------------------
+    # Internals — OP2 usage tap
+    # ------------------------------------------------------------------
+
+    def _maybe_append_usage_row(
+        self, *, usage: Dict[str, int], duration_ms: float
+    ) -> None:
+        """Append one metering row to ``state/runs/<run_id>/llm_usage.jsonl``.
+
+        Roadmap OP2. Fires only when ``ED4ALL_RUN_ID`` identifies a run;
+        otherwise a strict no-op so bare library callers stay byte-identical.
+        Row shape: ``{ts, provider, model, prompt_tokens, completion_tokens,
+        duration_ms}``. Fully best-effort — ANY failure (unresolvable run dir,
+        unwritable path, serialization error) is swallowed so metering never
+        perturbs a real LLM call.
+        """
+        run_id = os.environ.get(ENV_RUN_ID)
+        if not run_id or not str(run_id).strip():
+            return
+        try:
+            from datetime import datetime, timezone
+
+            from lib.paths import get_state_runs_dir
+
+            run_dir = get_state_runs_dir() / str(run_id).strip()
+            run_dir.mkdir(parents=True, exist_ok=True)
+            row = {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "provider": self._provider_label,
+                "model": self._model,
+                "prompt_tokens": int(usage.get("prompt_tokens", 0) or 0),
+                "completion_tokens": int(usage.get("completion_tokens", 0) or 0),
+                "duration_ms": round(float(duration_ms), 3),
+            }
+            with open(
+                run_dir / "llm_usage.jsonl", "a", encoding="utf-8"
+            ) as fh:
+                fh.write(_json.dumps(row) + "\n")
+        except Exception as exc:  # noqa: BLE001 — metering must never crash a call
+            logger.debug("llm_usage tap failed (ignoring): %s", exc)
 
     # ------------------------------------------------------------------
     # Internals — vision content-block translation (Wave W-D13)
@@ -1041,6 +1094,7 @@ __all__ = [
     "OpenAICompatibleClient",
     "DEFAULT_TIMEOUT_SECONDS",
     "ENV_REQUEST_TIMEOUT",
+    "ENV_RUN_ID",
     "resolve_default_timeout",
     "DEFAULT_MAX_RETRIES",
     "DEFAULT_RETRY_STATUS_CODES",

@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/aggregators/v1/accessibility_conformance.schema.json",
+  "title": "Ed4All accessibility_conformance.json",
+  "description": "Accessibility Conformance Report (ACR) — per-WCAG-2.2-success-criterion conformance table inverted from the gate-level WCAG issue stream. Built by lib/aggregators/accessibility_conformance.py::AccessibilityConformanceAggregator post-workflow and emitted at <libv2_course>/quality/accessibility_conformance.json (trainforge-dir fallback). Roadmap T3.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "course_code",
+    "run_id",
+    "generated_at",
+    "standard",
+    "target_level",
+    "criteria",
+    "summary"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0",
+      "description": "Schema version. 1.0 == roadmap T3 land."
+    },
+    "course_code": {
+      "type": "string",
+      "description": "Operator-facing course code so cross-run diffs key cleanly."
+    },
+    "run_id": {
+      "type": "string",
+      "description": "Workflow ID."
+    },
+    "generated_at": {
+      "type": "string",
+      "description": "ISO 8601 UTC timestamp of the build call (trailing 'Z')."
+    },
+    "standard": {
+      "type": "string",
+      "const": "WCAG 2.2"
+    },
+    "target_level": {
+      "type": "string",
+      "const": "AA"
+    },
+    "criteria": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/CriterionRow" },
+      "description": "One row per WCAG 2.2 Level A + AA success criterion, in canonical criterion order."
+    },
+    "summary": {
+      "$ref": "#/$defs/Summary"
+    }
+  },
+  "$defs": {
+    "CriterionRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "criterion",
+        "level",
+        "title",
+        "status",
+        "evidence_counts",
+        "pages"
+      ],
+      "properties": {
+        "criterion": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+$",
+          "description": "WCAG success-criterion number (e.g. 1.1.1)."
+        },
+        "level": {
+          "type": "string",
+          "enum": ["A", "AA"]
+        },
+        "title": {
+          "type": "string",
+          "description": "Success-criterion short name."
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "supports",
+            "partially_supports",
+            "does_not_support",
+            "not_evaluated"
+          ],
+          "description": "VPAT/WCAG-EM conformance verdict. supports = automated-evaluable AND clean; partially_supports = warning-only issues; does_not_support = >=1 critical issue; not_evaluated = outside automated static-HTML reach (see reason)."
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "contrast_computation",
+            "time_based_media",
+            "human_judgement",
+            "interaction_runtime"
+          ],
+          "description": "Present only on default not_evaluated rows — why the automated checker cannot verdict this criterion."
+        },
+        "evidence_counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["critical", "warning", "pages"],
+          "properties": {
+            "critical": { "type": "integer", "minimum": 0 },
+            "warning": { "type": "integer", "minimum": 0 },
+            "pages": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Distinct page/location count carrying an issue for this criterion."
+            }
+          }
+        },
+        "pages": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Sorted distinct page/location identifiers with a failing issue for this criterion."
+        }
+      }
+    },
+    "Summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total_criteria",
+        "supports",
+        "partially_supports",
+        "does_not_support",
+        "not_evaluated",
+        "conformant"
+      ],
+      "properties": {
+        "total_criteria": { "type": "integer", "minimum": 0 },
+        "supports": { "type": "integer", "minimum": 0 },
+        "partially_supports": { "type": "integer", "minimum": 0 },
+        "does_not_support": { "type": "integer", "minimum": 0 },
+        "not_evaluated": { "type": "integer", "minimum": 0 },
+        "conformant": {
+          "type": "boolean",
+          "description": "True when no criterion regressed to partially_supports / does_not_support. not_evaluated rows do not sink this flag."
+        }
+      }
+    }
+  }
+}

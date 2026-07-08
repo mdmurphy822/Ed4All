@@ -2375,6 +2375,34 @@ class WorkflowRunner:
             phase_outputs=phase_outputs,
         )
 
+        # Roadmap T3: post-loop accessibility-conformance (ACR) aggregator.
+        # Inverts the gate-level WCAG issue stream into a per-success-criterion
+        # conformance table (supports / partially_supports / does_not_support /
+        # not_evaluated) with EXPLICIT not_evaluated rows for criteria outside
+        # automated static-HTML reach. Emitted at
+        # ``<libv2_course>/quality/accessibility_conformance.json`` (trainforge-
+        # dir fallback). Best-effort — aggregator failure does NOT alter
+        # ``final_status``.
+        accessibility_conformance_path = (
+            self._maybe_write_accessibility_conformance(
+                workflow_id=workflow_id,
+                workflow_params=workflow_params,
+                phase_outputs=phase_outputs,
+            )
+        )
+
+        # Roadmap OP2: post-loop build-cost metering aggregator. Sums per-phase
+        # wall-clock (checkpoints), GPU residency (vram_trajectory.jsonl), and
+        # LLM calls/tokens (llm_usage.jsonl) into
+        # ``<libv2_course>/build_cost_report.json`` (trainforge-dir fallback).
+        # No LLM decisions — pure metering. Best-effort — aggregator failure
+        # does NOT alter ``final_status``.
+        build_cost_path = self._maybe_write_build_cost_report(
+            workflow_id=workflow_id,
+            workflow_params=workflow_params,
+            phase_outputs=phase_outputs,
+        )
+
         return {
             "workflow_id": workflow_id,
             "status": final_status,
@@ -2417,6 +2445,14 @@ class WorkflowRunner:
                 str(intelligence_level_path)
                 if intelligence_level_path
                 else None
+            ),
+            "accessibility_conformance_report_path": (
+                str(accessibility_conformance_path)
+                if accessibility_conformance_path
+                else None
+            ),
+            "build_cost_report_path": (
+                str(build_cost_path) if build_cost_path else None
             ),
         }
 
@@ -3457,6 +3493,167 @@ class WorkflowRunner:
             logger.warning(
                 "promotion_chain_report aggregator failed "
                 "(non-fatal, run_id=%s): %s",
+                workflow_id, exc,
+            )
+            return None
+
+    def _maybe_write_accessibility_conformance(
+        self,
+        *,
+        workflow_id: str,
+        workflow_params: Dict[str, Any],
+        phase_outputs: Dict[str, Dict],
+    ) -> Optional[Path]:
+        """Roadmap T3 helper — write accessibility_conformance.json if possible.
+
+        Output root resolution (mirrors the promotion-chain report):
+
+        1. ``phase_outputs.libv2_archival.course_dir`` — canonical LibV2
+           course root; output lands at
+           ``<course_dir>/quality/accessibility_conformance.json``.
+        2. Fallback to
+           ``phase_outputs.training_synthesis.corpus_dir`` /
+           ``phase_outputs.trainforge_assessment.trainforge_dir`` — the
+           Trainforge workspace root when archival hasn't run; output lands
+           at ``<trainforge_dir>/quality/accessibility_conformance.json``.
+
+        The aggregator inverts the WCAG gate stream deterministically, so it
+        always produces a full A+AA table (even a run with zero accessibility
+        gates emits a table where every criterion is supports / not_evaluated).
+        Best-effort — failure logs a warning and never alters ``final_status``.
+        """
+        try:
+            from lib.aggregators.accessibility_conformance import (
+                AccessibilityConformanceAggregator,
+            )
+
+            archival = phase_outputs.get("libv2_archival") or {}
+            course_dir_str = archival.get("course_dir")
+            output_path: Optional[Path] = None
+
+            if course_dir_str:
+                output_path = (
+                    Path(course_dir_str)
+                    / "quality"
+                    / "accessibility_conformance.json"
+                )
+
+            if output_path is None:
+                ta = phase_outputs.get("trainforge_assessment") or {}
+                tdir_str = ta.get("trainforge_dir")
+                if not tdir_str:
+                    ts = phase_outputs.get("training_synthesis") or {}
+                    tdir_str = ts.get("corpus_dir") or ts.get("trainforge_dir")
+                if tdir_str:
+                    output_path = (
+                        Path(tdir_str)
+                        / "quality"
+                        / "accessibility_conformance.json"
+                    )
+
+            if output_path is None:
+                logger.debug(
+                    "accessibility_conformance: no libv2_archival.course_dir "
+                    "/ training_synthesis.corpus_dir / trainforge_assessment."
+                    "trainforge_dir resolvable; skipping aggregator "
+                    "(run_id=%s)",
+                    workflow_id,
+                )
+                return None
+
+            project_path = self._resolve_courseforge_project_path(
+                phase_outputs
+            )
+            course_code = (workflow_params or {}).get("course_name") or ""
+            aggregator = AccessibilityConformanceAggregator(
+                phase_outputs=phase_outputs,
+                project_path=project_path,
+                course_code=course_code,
+                run_id=workflow_id,
+            )
+            aggregator.write(output_path)
+            logger.info(
+                "accessibility_conformance: wrote %s "
+                "(run_id=%s, course_code=%s)",
+                output_path, workflow_id, course_code,
+            )
+            return output_path
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            logger.warning(
+                "accessibility_conformance aggregator failed "
+                "(non-fatal, run_id=%s): %s",
+                workflow_id, exc,
+            )
+            return None
+
+    def _maybe_write_build_cost_report(
+        self,
+        *,
+        workflow_id: str,
+        workflow_params: Dict[str, Any],
+        phase_outputs: Dict[str, Dict],
+    ) -> Optional[Path]:
+        """Roadmap OP2 helper — write build_cost_report.json if possible.
+
+        Output root resolution (mirrors the coverage-map / promotion-chain
+        reports):
+
+        1. ``phase_outputs.libv2_archival.course_dir`` — canonical LibV2
+           course root; output lands at
+           ``<course_dir>/build_cost_report.json``.
+        2. Fallback to
+           ``phase_outputs.training_synthesis.corpus_dir`` /
+           ``phase_outputs.trainforge_assessment.trainforge_dir``.
+
+        The aggregator reads its cost inputs from ``state/runs/<run_id>/``
+        (checkpoints / vram_trajectory.jsonl / llm_usage.jsonl); the GPU +
+        LLM sections are omitted when their source files are absent. Pure
+        metering (no LLM decisions). Best-effort — failure logs a warning and
+        never alters ``final_status``.
+        """
+        try:
+            from lib.aggregators.build_cost import BuildCostAggregator
+
+            archival = phase_outputs.get("libv2_archival") or {}
+            course_dir_str = archival.get("course_dir")
+            output_path: Optional[Path] = None
+
+            if course_dir_str:
+                output_path = Path(course_dir_str) / "build_cost_report.json"
+
+            if output_path is None:
+                ta = phase_outputs.get("trainforge_assessment") or {}
+                tdir_str = ta.get("trainforge_dir")
+                if not tdir_str:
+                    ts = phase_outputs.get("training_synthesis") or {}
+                    tdir_str = ts.get("corpus_dir") or ts.get("trainforge_dir")
+                if tdir_str:
+                    output_path = Path(tdir_str) / "build_cost_report.json"
+
+            if output_path is None:
+                logger.debug(
+                    "build_cost: no libv2_archival.course_dir / "
+                    "training_synthesis.corpus_dir / trainforge_assessment."
+                    "trainforge_dir resolvable; skipping aggregator "
+                    "(run_id=%s)",
+                    workflow_id,
+                )
+                return None
+
+            course_code = (workflow_params or {}).get("course_name") or ""
+            aggregator = BuildCostAggregator(
+                course_code=course_code,
+                run_id=workflow_id,
+            )
+            aggregator.write(output_path)
+            logger.info(
+                "build_cost: wrote %s (run_id=%s, course_code=%s)",
+                output_path, workflow_id, course_code,
+            )
+            return output_path
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            logger.warning(
+                "build_cost aggregator failed (non-fatal, run_id=%s): %s",
                 workflow_id, exc,
             )
             return None

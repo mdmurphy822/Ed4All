@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/aggregators/v1/build_cost.schema.json",
+  "title": "Ed4All build_cost_report.json",
+  "description": "Build-cost metering report — per-phase wall-clock (from checkpoints), GPU residency (from vram_trajectory.jsonl), and LLM calls/tokens (from llm_usage.jsonl). Built by lib/aggregators/build_cost.py::BuildCostAggregator post-workflow and emitted at <libv2_course>/build_cost_report.json (trainforge-dir fallback). Roadmap OP2.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "course_code",
+    "run_id",
+    "generated_at",
+    "phases",
+    "totals"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0",
+      "description": "Schema version. 1.0 == roadmap OP2 land."
+    },
+    "course_code": { "type": "string" },
+    "run_id": { "type": "string" },
+    "generated_at": {
+      "type": "string",
+      "description": "ISO 8601 UTC timestamp of the build call (trailing 'Z')."
+    },
+    "phases": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/PhaseCost" },
+      "description": "Per-phase wall-clock rows in execution order."
+    },
+    "totals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "phase_count",
+        "measured_phase_count",
+        "total_wall_clock_seconds"
+      ],
+      "properties": {
+        "phase_count": { "type": "integer", "minimum": 0 },
+        "measured_phase_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Phases with both started_at + completed_at (a wall-clock measurement)."
+        },
+        "total_wall_clock_seconds": { "type": "number", "minimum": 0 }
+      }
+    },
+    "gpu_residency": {
+      "$ref": "#/$defs/GpuResidency",
+      "description": "Omitted entirely when vram_trajectory.jsonl is absent."
+    },
+    "llm_usage": {
+      "$ref": "#/$defs/LlmUsage",
+      "description": "Omitted entirely when llm_usage.jsonl is absent."
+    }
+  },
+  "$defs": {
+    "PhaseCost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phase", "wall_clock_seconds"],
+      "properties": {
+        "phase": { "type": "string" },
+        "phase_index": { "type": ["integer", "null"] },
+        "status": { "type": ["string", "null"] },
+        "started_at": { "type": ["string", "null"] },
+        "completed_at": { "type": ["string", "null"] },
+        "wall_clock_seconds": {
+          "type": ["number", "null"],
+          "description": "completed_at - started_at in seconds; null when either bound is missing or the pair is clock-skewed."
+        }
+      }
+    },
+    "GpuResidency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total_samples", "peak_resident_mib", "per_phase"],
+      "properties": {
+        "total_samples": { "type": "integer", "minimum": 0 },
+        "peak_resident_mib": { "type": "integer", "minimum": 0 },
+        "per_phase": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/GpuPhaseResidency" }
+        }
+      }
+    },
+    "GpuPhaseResidency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "phase",
+        "sample_count",
+        "resident_sample_count",
+        "residency_span_seconds",
+        "peak_resident_mib"
+      ],
+      "properties": {
+        "phase": { "type": "string" },
+        "sample_count": { "type": "integer", "minimum": 0 },
+        "resident_sample_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Samples where >=1 model was resident on the card."
+        },
+        "residency_span_seconds": { "type": "number", "minimum": 0 },
+        "peak_resident_mib": { "type": "integer", "minimum": 0 },
+        "observed_from": { "type": ["string", "null"] },
+        "observed_to": { "type": ["string", "null"] }
+      }
+    },
+    "LlmUsage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total_calls",
+        "total_prompt_tokens",
+        "total_completion_tokens",
+        "total_tokens",
+        "total_duration_ms",
+        "by_provider",
+        "by_model"
+      ],
+      "properties": {
+        "total_calls": { "type": "integer", "minimum": 0 },
+        "total_prompt_tokens": { "type": "integer", "minimum": 0 },
+        "total_completion_tokens": { "type": "integer", "minimum": 0 },
+        "total_tokens": { "type": "integer", "minimum": 0 },
+        "total_duration_ms": { "type": "number", "minimum": 0 },
+        "by_provider": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/UsageTally" }
+        },
+        "by_model": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/UsageTally" }
+        }
+      }
+    },
+    "UsageTally": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["calls", "prompt_tokens", "completion_tokens", "duration_ms"],
+      "properties": {
+        "calls": { "type": "integer", "minimum": 0 },
+        "prompt_tokens": { "type": "integer", "minimum": 0 },
+        "completion_tokens": { "type": "integer", "minimum": 0 },
+        "duration_ms": { "type": "number", "minimum": 0 }
+      }
+    }
+  }
+}
