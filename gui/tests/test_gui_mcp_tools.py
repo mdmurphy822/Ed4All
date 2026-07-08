@@ -112,10 +112,13 @@ async def test_set_setting_masks_secret(state_dir, gui_tools):
     doc = json.loads(out)
     assert doc["env"]["ANTHROPIC_API_KEY"] == "set"
     assert "sk-secret-123" not in out
-    # On disk the raw value persists (write-only secret), but the tool never
-    # returns it.
-    on_disk = json.loads(shared_state.settings_path().read_text())
-    assert on_disk["env"]["ANTHROPIC_API_KEY"] == "sk-secret-123"
+    # At rest the secret is split into the 0600 sidecar; settings.json holds no
+    # plaintext. The raw value stays resolvable for run-time consumers.
+    settings_text = shared_state.settings_path().read_text()
+    assert "sk-secret-123" not in settings_text
+    assert json.loads(settings_text)["env"]["ANTHROPIC_API_KEY"] is None
+    sidecar = shared_state.settings_path().parent / "secrets.json"
+    assert json.loads(sidecar.read_text())["ANTHROPIC_API_KEY"] == "sk-secret-123"
 
 
 async def test_set_setting_invalid_provider_typed_error(state_dir, gui_tools):

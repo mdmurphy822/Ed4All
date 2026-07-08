@@ -68,6 +68,98 @@ def test_save_objectives_round_trip(courseforge_export):
     assert reread["terminal_objectives"][0]["id"] == "TO-01"
 
 
+def test_save_objectives_preserves_citations_and_nested_extras(courseforge_export):
+    """GET-shaped objects with grounding metadata must round-trip byte-faithfully.
+
+    Mirrors the SPA contract (Q3/I2): the editor keeps the full objects it got
+    from GET and PUTs them back with only ``id`` + ``text`` rebound. The
+    citation/chunk/grounding/bloom + nested sub-objective fields must survive to
+    disk unchanged so an edited objectives doc does not regress the
+    objective-entailment / grounding gates on the next build. The only permitted
+    deltas are the edited statement, the ``text``→``statement`` remap, the
+    stamped ``hierarchy_level``, and the doc-level ``mint_method`` /
+    ``synthesized_at`` restamps.
+    """
+    # As the frontend now sends: the FULL object (extras verbatim) with the
+    # editor's `text`, and NO server-derived stale `statement`.
+    citations = [
+        {"chunk_id": "dart:phys-ch1#b07", "page": 12, "cosine": 0.83},
+        {"chunk_id": "dart:phys-ch1#b09", "page": 13, "cosine": 0.71},
+    ]
+    edited = {
+        "terminal_objectives": [
+            {
+                "id": "TO-01",
+                "text": "Analyze kinematics in one dimension.",  # edited text
+                "bloom_level": "analyze",
+                "cognitive_domain": "cognitive",
+                "citations": citations,
+                "chunk_ids": ["dart:phys-ch1#b07", "dart:phys-ch1#b09"],
+                "sub_objectives": [
+                    {"id": "TO-01.1", "statement": "Define displacement.", "chunk_ids": ["dart:phys-ch1#b07"]},
+                ],
+            },
+        ],
+        "chapter_objectives": [
+            {
+                "id": "CO-01",
+                "text": "Compute velocity.",  # unchanged text
+                "bloom_level": "apply",
+                "citations": [{"chunk_id": "dart:phys-ch1#b12", "page": 15}],
+                "source_refs": {"module": "M1", "confidence": 0.9},
+            },
+        ],
+    }
+    course_service.save_objectives(courseforge_export["project_id"], edited)
+    on_disk = json.loads(courseforge_export["objectives_path"].read_text())
+
+    to0 = on_disk["terminal_objectives"][0]
+    # Edited text became the statement; text key dropped; hierarchy stamped.
+    assert to0["statement"] == "Analyze kinematics in one dimension."
+    assert "text" not in to0
+    assert to0["hierarchy_level"] == "terminal"
+    # Every grounding/citation extra survived byte-faithfully.
+    assert to0["bloom_level"] == "analyze"
+    assert to0["cognitive_domain"] == "cognitive"
+    assert to0["citations"] == citations
+    assert to0["chunk_ids"] == ["dart:phys-ch1#b07", "dart:phys-ch1#b09"]
+    # Nested sub-objectives preserved verbatim (not flattened / re-shaped).
+    assert to0["sub_objectives"] == [
+        {"id": "TO-01.1", "statement": "Define displacement.", "chunk_ids": ["dart:phys-ch1#b07"]},
+    ]
+
+    co0 = on_disk["chapter_objectives"][0]
+    assert co0["statement"] == "Compute velocity."
+    assert co0["hierarchy_level"] == "chapter"
+    assert co0["citations"] == [{"chunk_id": "dart:phys-ch1#b12", "page": 15}]
+    assert co0["source_refs"] == {"module": "M1", "confidence": 0.9}
+
+    # Only the doc-level restamps changed relative to a reuse-compatible doc.
+    assert on_disk["mint_method"] == course_service.USER_SUPPLIED_MINT_METHOD
+    assert "synthesized_at" in on_disk
+
+
+def test_save_objectives_edited_text_wins_over_stale_statement(courseforge_export):
+    """If a caller sends BOTH `text` and a stale `statement`, `statement` wins.
+
+    This pins the service contract the SPA now relies on: because
+    ``_materialize_los`` prefers a present non-empty ``statement`` over ``text``,
+    the frontend must drop the server-derived ``statement`` for an edit to take
+    effect. This test documents that a client which fails to do so would persist
+    the stale statement — the guard rail behind the app.js `statement`-strip.
+    """
+    payload = {
+        "terminal_objectives": [
+            {"id": "TO-01", "statement": "OLD statement.", "text": "NEW edited text."},
+        ],
+        "chapter_objectives": [],
+    }
+    course_service.save_objectives(courseforge_export["project_id"], payload)
+    on_disk = json.loads(courseforge_export["objectives_path"].read_text())
+    # statement present → wins; this is exactly why the SPA strips it before PUT.
+    assert on_disk["terminal_objectives"][0]["statement"] == "OLD statement."
+
+
 def test_save_objectives_rejects_bad_lo_id(courseforge_export):
     bad = {
         "terminal_objectives": [{"id": "to_01_lowercase", "text": "bad id"}],

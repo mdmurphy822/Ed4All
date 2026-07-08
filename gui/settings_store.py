@@ -42,10 +42,14 @@ def _is_secret_key(key: str) -> bool:
 
 
 def load_settings() -> Dict[str, Any]:
-    """Return the persisted settings doc, or fresh defaults if none exists.
+    """Return the persisted settings doc (with raw secrets), or fresh defaults.
 
     The on-disk doc is overlaid onto the catalog defaults so a doc written by
-    an older schema still carries every expected key.
+    an older schema still carries every expected key. Secret values live in the
+    0600 ``secrets.json`` sidecar (never in ``settings.json``); they are merged
+    back into the ``env`` block here so run-time consumers still receive raw
+    values. A legacy ``settings.json`` that still carries plaintext secrets is
+    transparently migrated (split out to the sidecar, rewritten) on first load.
     """
     path = shared_state.settings_path()
     defaults = env_catalog.default_settings()
@@ -59,21 +63,43 @@ def load_settings() -> Dict[str, Any]:
         return defaults
     if not isinstance(on_disk, dict):
         return defaults
-    return _deep_merge(defaults, on_disk)
+    merged = _deep_merge(defaults, on_disk)
+
+    # Reconstitute raw secrets from the sidecar (sidecar is authoritative over
+    # any residual plaintext left in a not-yet-migrated settings.json).
+    secrets = _read_secrets()
+    if secrets:
+        env = merged.get("env")
+        if not isinstance(env, dict):
+            env = {}
+            merged["env"] = env
+        env.update(secrets)
+
+    # One-time transparent migration: an old-format file with plaintext secret
+    # values gets split (secrets → sidecar, settings.json rewritten clean).
+    if _has_plaintext_secrets(on_disk):
+        try:
+            _write_split(merged)
+        except OSError:
+            pass  # best-effort; a failed migration must not break a read
+    return merged
 
 
 def save_settings(doc: Dict[str, Any]) -> Dict[str, Any]:
     """Validate, stamp ``updated_at``, and atomically persist the full doc.
 
-    Returns the stored (unmasked) doc. Raises ``ValueError`` on validation
-    failure (unknown provider, bad mode, malformed structure).
+    Secret values (``*_API_KEY`` / ``*_KEY``) are split into the 0600
+    ``secrets.json`` sidecar; ``settings.json`` never holds plaintext secrets.
+    Returns the stored (unmasked) doc with raw secrets intact. Raises
+    ``ValueError`` on validation failure (unknown provider, bad mode, malformed
+    structure).
     """
     if not isinstance(doc, dict):
         raise ValueError("settings doc must be a dict")
     validated = _validate(doc)
     validated["version"] = int(validated.get("version", 1) or 1)
     validated["updated_at"] = shared_state.now_iso()
-    shared_state._atomic_write_json(shared_state.settings_path(), validated)
+    _write_split(validated)
     return validated
 
 
@@ -84,6 +110,89 @@ def update_settings(patch: Dict[str, Any]) -> Dict[str, Any]:
     current = load_settings()
     merged = _deep_merge(current, patch)
     return save_settings(merged)
+
+
+# ---------------------------------------------------------------- secrets sidecar
+
+
+def _secrets_path():
+    """Return the ``secrets.json`` sidecar path (sibling of ``settings.json``)."""
+    return shared_state.settings_path().parent / "secrets.json"
+
+
+def _split_secrets(doc: Dict[str, Any]) -> "tuple[Dict[str, Any], Dict[str, str]]":
+    """Split ``doc`` into a public copy (no plaintext secrets) + a secret map.
+
+    Every non-empty ``env`` secret value is moved into the returned secret map
+    and replaced with ``None`` in the public copy (a placeholder slot, never a
+    plaintext value). Empty/None secret slots stay ``None`` in both.
+    """
+    public = copy.deepcopy(doc) if isinstance(doc, dict) else {}
+    secrets: Dict[str, str] = {}
+    env = public.get("env")
+    if isinstance(env, dict):
+        for key in list(env.keys()):
+            if not _is_secret_key(key):
+                continue
+            value = env[key]
+            if value is None or (isinstance(value, str) and not value.strip()):
+                env[key] = _SECRET_UNSET
+            else:
+                secrets[key] = str(value)
+                env[key] = _SECRET_UNSET
+    return public, secrets
+
+
+def _write_split(doc: Dict[str, Any]) -> None:
+    """Persist ``doc`` as a plaintext-free ``settings.json`` + ``secrets.json``.
+
+    Both files are written atomically at 0600 (the ``_atomic_write_json``
+    default). ``secrets.json`` is rewritten wholesale each time so a removed
+    secret never lingers.
+    """
+    public, secrets = _split_secrets(doc)
+    shared_state._atomic_write_json(shared_state.settings_path(), public)
+    shared_state._atomic_write_json(_secrets_path(), secrets)
+
+
+def _read_secrets() -> Dict[str, str]:
+    """Return the sidecar secret map, or ``{}`` when absent/unreadable.
+
+    Only well-formed secret entries (secret key, non-empty string value) are
+    accepted so a corrupt sidecar can never inject junk into the env block.
+    """
+    path = _secrets_path()
+    if not path.exists():
+        return {}
+    try:
+        import json  # noqa: PLC0415
+
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {
+        key: value
+        for key, value in data.items()
+        if _is_secret_key(key) and isinstance(value, str) and value.strip()
+    }
+
+
+def _has_plaintext_secrets(on_disk: Dict[str, Any]) -> bool:
+    """True when a raw ``settings.json`` still carries a plaintext secret value.
+
+    Drives the one-time load-time migration. The current writer only ever
+    stores ``None`` in a secret slot, so any non-empty secret string on disk
+    is legacy plaintext.
+    """
+    env = on_disk.get("env") if isinstance(on_disk, dict) else None
+    if not isinstance(env, dict):
+        return False
+    for key, value in env.items():
+        if _is_secret_key(key) and isinstance(value, str) and value.strip():
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------- render

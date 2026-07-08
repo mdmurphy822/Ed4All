@@ -1351,7 +1351,10 @@ async function renderCourses(view) {
 
     function normLO(o) {
       if (typeof o === 'string') return { id: '', text: o };
-      return { id: o.id || o.lo_id || '', text: o.text || o.statement || o.objective || '' };
+      // Keep every field the server sent (citations, chunk refs, bloom_level,
+      // sub-objectives, …) so a text-only edit round-trips the rest verbatim;
+      // the editor only rebinds id + text on top of the full object.
+      return { ...o, id: o.id || o.lo_id || '', text: o.text || o.statement || o.objective || '' };
     }
 
     function objSection(title, listKey, idHint) {
@@ -1407,9 +1410,17 @@ async function renderCourses(view) {
         return;
       }
       errBox.textContent = '';
+      // PUT the FULL objects (unknown/extra fields preserved verbatim); id +
+      // text are the only editor outputs. Drop the server-derived stale
+      // `statement` so the edited text re-maps to statement on save (the
+      // service prefers a present statement over text).
+      const toPayload = (list) => list.filter((o) => o.text.trim()).map((o) => {
+        const { statement, ...rest } = o;
+        return { ...rest, id: o.id || null, text: o.text.trim() };
+      });
       const payload = {
-        terminal_objectives: draft.terminal.filter((o) => o.text.trim()).map((o) => ({ id: o.id || null, text: o.text.trim() })),
-        chapter_objectives: draft.chapter.filter((o) => o.text.trim()).map((o) => ({ id: o.id || null, text: o.text.trim() })),
+        terminal_objectives: toPayload(draft.terminal),
+        chapter_objectives: toPayload(draft.chapter),
         mint_method: 'user_supplied_objectives_json',
       };
       saveBtn.disabled = true;
