@@ -175,6 +175,22 @@ except ImportError as _doctor_import_err:  # pragma: no cover
     )
 
 
+# Register 'ed4all import-docs' command — deterministic Markdown/docs-tree →
+# clean accessible HTML corpus importer (corporate-docs beachhead). Lazy
+# try/except so the CLI still loads if the importer (its bs4/yaml-optional
+# deps) fails to import.
+try:
+    from cli.commands import register_import_docs_command
+
+    register_import_docs_command(cli)
+except ImportError as _import_docs_err:  # pragma: no cover
+    import logging as _logging
+    _logging.getLogger(__name__).warning(
+        "cli.commands.import_docs unavailable: %s",
+        _import_docs_err,
+    )
+
+
 # =============================================================================
 # VALIDATE-RUN COMMAND
 # =============================================================================

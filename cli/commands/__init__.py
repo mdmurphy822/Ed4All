@@ -16,6 +16,7 @@ natural-language query).
 from . import libv2_generate_quiz  # noqa: F401
 from .doctor import register_doctor_command
 from .gui_cmd import register_gui_command
+from .import_docs import register_import_docs_command
 from .libv2_ask import register_libv2_ask_command
 from .libv2_generate_study_pack import register_generate_study_pack_command
 from .libv2_query import register_libv2_query_command
@@ -57,4 +58,5 @@ __all__ = [
     "register_tutor_command",
     "register_gui_command",
     "register_doctor_command",
+    "register_import_docs_command",
 ]
