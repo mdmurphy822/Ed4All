@@ -26,6 +26,7 @@ from lib.paths import PROJECT_ROOT  # noqa: E402
 from lib.paths import courseforge_exports_dir as _lib_courseforge_exports_dir  # noqa: E402
 from lib.secure_paths import validate_path_within_root  # noqa: E402
 from Trainforge.chunker import CHUNKER_SCHEMA_VERSION  # noqa: E402
+from Trainforge.chunker import EXTRACTION_TEXT_CONTRACT_VERSION  # noqa: E402
 from Trainforge.chunker import (  # noqa: E402
     apply_chunk_overlap as _apply_chunk_overlap,
     resolve_chunk_overlap_words as _resolve_chunk_overlap_words,
@@ -2830,12 +2831,36 @@ def _resolve_chunker_version() -> str:
     return CHUNKER_SCHEMA_VERSION
 
 
+def _resolve_extraction_contract() -> int:
+    """Resolve the chunk-TEXT extraction-contract version stamped as
+    ``extraction_contract`` on chunkset sidecar manifests +
+    ``course_manifest.json``.
+
+    ORTHOGONAL to ``_resolve_chunker_version`` (the emit-SHAPE contract):
+    this integer versions the semantics of WHAT TEXT lands in a chunk's
+    ``text`` field — the always-on
+    ``Trainforge/parsers/html_content_parser.py::HTMLTextExtractor``
+    contract (screen-reader-scaffolding suppression + structural
+    delimiters). ``CHUNKER_SCHEMA_VERSION`` deliberately stays ``"v4"``
+    across extraction-text changes, so this finer marker is what a
+    provenance consumer (e.g. the tier-2 citation-anchoring floor gate)
+    reads to tell whether a corpus was chunked under the CURRENT
+    extraction-text contract vs. an earlier one. Returns the in-repo
+    constant ``Trainforge.chunker.EXTRACTION_TEXT_CONTRACT_VERSION``.
+    """
+    return EXTRACTION_TEXT_CONTRACT_VERSION
+
+
 # OP4: the on-disk LibV2 course-layout contract version stamped on every
 # freshly emitted ``course_manifest.json`` (``library_format_version``). This
 # is DISTINCT from ``libv2_version`` (the manifest-document schema version) and
 # ``chunker_version`` (the chunk-emit contract). Starts at "1.0"; bump only when
 # the course-directory layout / manifest contract changes in a way that requires
-# a migration. The migration framework itself is deferred to v2.1 — see
+# a migration. The migration framework has SHIPPED as the ``libv2 migrate``
+# subcommand (LibV2/tools/libv2/migrate.py — dry-run by default, ``--apply`` to
+# execute, with the ``legacy -> 1.0`` baseline step registered); its ordered
+# registry's target_version() tracks this constant (drift-guarded by
+# LibV2/tools/libv2/tests/test_libv2_migrate_framework.py). See
 # docs/operations/library-versioning.md for the upgrade CONTRACT.
 LIBRARY_FORMAT_VERSION = "1.0"
 
@@ -6712,6 +6737,8 @@ async def create_textbook_pipeline(
     stop_after: Optional[str] = None,
     provider: Optional[str] = None,
     target_block_ids: Optional[List[str]] = None,
+    target_block_instance_ids: Optional[List[str]] = None,
+    target_page_ids: Optional[List[str]] = None,
 ) -> str:
     """
     Create and orchestrate a textbook-to-course pipeline.
@@ -6858,6 +6885,16 @@ async def create_textbook_pipeline(
         # rewrite succeeded). Unset → no key on params → byte-identical.
         if target_block_ids:
             params["target_block_ids"] = list(target_block_ids)
+        # I4 stage 2 (--block-ids / --pages) — forward the instance-scoped +
+        # page/module-scoped eviction filters so the rewrite phase additively
+        # evicts the named block instance(s) + page/module block(s). Unset →
+        # no key on params → byte-identical failure-driven reuse.
+        if target_block_instance_ids:
+            params["target_block_instance_ids"] = list(
+                target_block_instance_ids
+            )
+        if target_page_ids:
+            params["target_page_ids"] = list(target_page_ids)
         # Hosted-seat build profile GAP-2 fix — forward --stop-after so the workflow
         # runner halts cleanly after the named phase (before later phases run).
         if stop_after:
@@ -7603,6 +7640,10 @@ def register_pipeline_tools(mcp):
                 # variant + docs/operations/library-versioning.md).
                 "library_format_version": LIBRARY_FORMAT_VERSION,
                 "chunker_version": _resolve_chunker_version(),
+                # Chunk-TEXT extraction-contract version (orthogonal to
+                # chunker_version) so a fully-archived corpus carries the
+                # same provenance marker as its chunkset sidecars.
+                "extraction_contract": _resolve_extraction_contract(),
                 "slug": slug,
                 "import_timestamp": datetime.now().isoformat(),
                 "classification": {
@@ -15594,6 +15635,102 @@ def _evict_rewrite_cache_by_block_type(
     return removed
 
 
+def _page_membership_match(page_id: str, token: str) -> bool:
+    """True when ``token`` names ``page_id`` exactly or as its module prefix.
+
+    Page ids are ``week_NN_<type>`` / ``week_NN_content_NN`` (see
+    :func:`_page_id_for`). A ``--pages`` token matches a block when it equals
+    the block's ``page_id`` (single-page scope) OR is a hyphen/underscore-
+    bounded PREFIX of it (module scope — e.g. ``week_01`` matches
+    ``week_01_overview`` and ``week_01_content_02`` but never ``week_010``).
+    """
+    if not page_id or not token:
+        return False
+    return page_id == token or page_id.startswith(token + "_")
+
+
+def _evict_rewrite_cache_by_block_id(
+    rewrite_cache: Dict[str, dict],
+    outline_blocks: Sequence[Any],
+    target_block_ids: Set[str],
+) -> Tuple[int, List[str]]:
+    """Additively evict cached rewrites by EXACT block-instance id.
+
+    I4 stage 2 (``--block-ids``). Deletes from ``rewrite_cache`` (keyed by
+    ``block_id``) every entry whose id is named in ``target_block_ids`` so
+    that specific block re-authors this pass even after a prior successful
+    rewrite. Returns ``(removed_count, unknown_ids)`` — an id not carried by
+    any ``outline_blocks`` member is an UNKNOWN and is returned (sorted) in
+    the second element so the caller fails LOUD instead of silently
+    no-op-ing on an operator typo. An empty target set (the unset-flag
+    default) short-circuits to ``(0, [])`` so the pure failure-driven reuse
+    path stays byte-identical. Purely additive: it only removes named-id
+    entries; out-of-scope blocks keep byte-identical reuse. Validation runs
+    against the outline block universe (NOT the cache), so an unknown id is
+    caught even on a first pass with no cache on disk.
+    """
+    if not target_block_ids:
+        return 0, []
+    known_ids = {
+        str(getattr(b, "block_id", "") or "") for b in outline_blocks
+    }
+    known_ids.discard("")
+    unknown = sorted(t for t in target_block_ids if t not in known_ids)
+    removed = 0
+    for bid in target_block_ids:
+        if bid in rewrite_cache:
+            del rewrite_cache[bid]
+            removed += 1
+    return removed, unknown
+
+
+def _evict_rewrite_cache_by_page(
+    rewrite_cache: Dict[str, dict],
+    outline_blocks: Sequence[Any],
+    target_page_ids: Set[str],
+) -> Tuple[int, List[str]]:
+    """Additively evict cached rewrites by page/module membership.
+
+    I4 stage 2 (``--pages``). Deletes from ``rewrite_cache`` every entry
+    belonging to an outline block whose ``page_id`` matches one of
+    ``target_page_ids`` (exact page id OR module prefix — see
+    :func:`_page_membership_match`), so a whole page/module re-authors this
+    pass even after prior successful rewrites. Returns ``(removed_count,
+    unknown_pages)`` — a page token that matches NO outline block is an
+    UNKNOWN and is returned (sorted) so the caller fails LOUD. Empty target
+    set → ``(0, [])`` (byte-identical failure-driven reuse). Purely
+    additive; validation runs against the outline block universe.
+    """
+    if not target_page_ids:
+        return 0, []
+    known_pages = {
+        str(getattr(b, "page_id", "") or "") for b in outline_blocks
+    }
+    known_pages.discard("")
+    unknown = sorted(
+        tok
+        for tok in target_page_ids
+        if not any(_page_membership_match(pg, tok) for pg in known_pages)
+    )
+    evicted_ids = {
+        str(getattr(b, "block_id", "") or "")
+        for b in outline_blocks
+        if any(
+            _page_membership_match(
+                str(getattr(b, "page_id", "") or ""), tok
+            )
+            for tok in target_page_ids
+        )
+    }
+    evicted_ids.discard("")
+    removed = 0
+    for bid in evicted_ids:
+        if bid in rewrite_cache:
+            del rewrite_cache[bid]
+            removed += 1
+    return removed, unknown
+
+
 def _copy_export_assessments(
     export_dir_candidates: Sequence[Path],
     course_dir: Path,
@@ -16245,6 +16382,87 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
                         "gate_id": "_run_content_generation_rewrite",
                         "target_block_types": sorted(_target_block_types),
                         "evicted_blocks": _n_evicted,
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+    # I4 stage 2 (--block-ids / --pages) — ADDITIVE instance-scoped and
+    # page/module-scoped eviction over the failure-driven reuse cache. Stage 1
+    # (--blocks) evicts every block of a TYPE; stage 2 lets an instructor
+    # re-roll ONE specific block instance or one page/module without touching
+    # sibling blocks of the same type. Both are purely additive on top of the
+    # type-eviction above and each other; all three unset → no eviction →
+    # byte-identical failure-driven reuse. Unknown ids / pages fail LOUD (a
+    # typo must not silently no-op) — validated against the outline block
+    # universe so the error fires even on a first pass with no cache on disk.
+    _target_block_instance_ids = {
+        str(_t) for _t in (kwargs.get("target_block_instance_ids") or []) if _t
+    }
+    _target_page_ids = {
+        str(_t) for _t in (kwargs.get("target_page_ids") or []) if _t
+    }
+    _n_id_evicted, _unknown_ids = _evict_rewrite_cache_by_block_id(
+        _rewrite_cache, outline_blocks, _target_block_instance_ids,
+    )
+    _n_page_evicted, _unknown_pages = _evict_rewrite_cache_by_page(
+        _rewrite_cache, outline_blocks, _target_page_ids,
+    )
+    if _unknown_ids or _unknown_pages:
+        _err_parts = []
+        if _unknown_ids:
+            _err_parts.append(
+                f"unknown --block-ids (not in the outline block set): "
+                f"{_unknown_ids}"
+            )
+        if _unknown_pages:
+            _err_parts.append(
+                f"unknown --pages (match no outline page/module): "
+                f"{_unknown_pages}"
+            )
+        return json.dumps({
+            "success": False,
+            "error": (
+                "_run_content_generation_rewrite: I4 stage-2 eviction "
+                "targets did not resolve — " + "; ".join(_err_parts)
+            ),
+        })
+    if _n_id_evicted or _n_page_evicted:
+        logger.info(
+            "rewrite phase: I4 stage-2 evicted %d cached block(s) by "
+            "--block-ids %s and %d by --pages %s; they re-author this pass "
+            "(all other blocks reused).",
+            _n_id_evicted, sorted(_target_block_instance_ids),
+            _n_page_evicted, sorted(_target_page_ids),
+        )
+        if capture is not None:
+            try:
+                capture.log_decision(
+                    decision_type="content_selection",
+                    decision=(
+                        f"I4 stage-2 eviction: re-rolling {_n_id_evicted} "
+                        f"instance(s) (--block-ids "
+                        f"{sorted(_target_block_instance_ids)}) + "
+                        f"{_n_page_evicted} page/module block(s) (--pages "
+                        f"{sorted(_target_page_ids)}) despite prior successful "
+                        "rewrites."
+                    ),
+                    rationale=(
+                        "Operator scoped a re-author to specific block "
+                        f"instance(s) {sorted(_target_block_instance_ids)} "
+                        f"and/or page(s)/module(s) {sorted(_target_page_ids)}; "
+                        "additive eviction drops only those blocks_final.jsonl "
+                        "cache entries so they re-roll while every other block "
+                        "stays byte-identical to the input."
+                    ),
+                    ml_features={
+                        "gate_id": "_run_content_generation_rewrite",
+                        "target_block_instance_ids": sorted(
+                            _target_block_instance_ids
+                        ),
+                        "target_page_ids": sorted(_target_page_ids),
+                        "instance_evicted_blocks": _n_id_evicted,
+                        "page_evicted_blocks": _n_page_evicted,
                     },
                 )
             except Exception:  # noqa: BLE001
@@ -22063,6 +22281,10 @@ def _build_tool_registry() -> dict:
             # docs/operations/library-versioning.md for the upgrade contract.
             "library_format_version": LIBRARY_FORMAT_VERSION,
             "chunker_version": _resolve_chunker_version(),
+            # Chunk-TEXT extraction-contract version (orthogonal to
+            # chunker_version) so a fully-archived corpus carries the same
+            # provenance marker as its chunkset sidecars.
+            "extraction_contract": _resolve_extraction_contract(),
             "slug": slug,
             "import_timestamp": datetime.now().isoformat(),
             "classification": {
@@ -25720,6 +25942,12 @@ def _build_tool_registry() -> dict:
         manifest = {
             "chunks_sha256": chunks_sha256,
             "chunker_version": chunker_version,
+            # Chunk-TEXT extraction-contract version (orthogonal to
+            # chunker_version's emit shape). Lets a provenance consumer tell
+            # this corpus was chunked under the CURRENT HTMLTextExtractor
+            # contract even for chunk-only --stop-after slices that never get
+            # a course_manifest.json.
+            "extraction_contract": _resolve_extraction_contract(),
             "chunkset_kind": "dart",
             "source_dart_html_sha256": source_dart_html_sha256,
             "chunks_count": len(chunks),
@@ -27108,6 +27336,9 @@ def _build_tool_registry() -> dict:
         manifest = {
             "chunks_sha256": chunks_sha256,
             "chunker_version": chunker_version,
+            # Chunk-TEXT extraction-contract version (orthogonal to
+            # chunker_version's emit shape). See the DART emit for rationale.
+            "extraction_contract": _resolve_extraction_contract(),
             "chunkset_kind": "imscc",
             "source_imscc_sha256": source_imscc_sha256,
             "chunks_count": len(chunks),

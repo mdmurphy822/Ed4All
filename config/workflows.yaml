@@ -2703,6 +2703,18 @@ workflows:
           - param: target_block_ids
             source: workflow_params
             key: target_block_ids
+          # I4 stage 2 (--block-ids / --pages): thread the instance-scoped +
+          # page/module-scoped eviction filters so the rewrite handler
+          # additively evicts the named block instance(s) + page/module
+          # block(s) past the failure-driven cache. Unset → None → byte-
+          # identical cache reuse. Kept in lock-step with the legacy routing
+          # dict (routing-parity test).
+          - param: target_block_instance_ids
+            source: workflow_params
+            key: target_block_instance_ids
+          - param: target_page_ids
+            source: workflow_params
+            key: target_page_ids
 
         outputs:
           - content_paths

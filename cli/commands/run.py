@@ -178,6 +178,33 @@ def _parse_blocks_filter(raw: Optional[str]) -> Optional[List[str]]:
     return out
 
 
+def _parse_csv_tokens(raw: Optional[str]) -> Optional[List[str]]:
+    """Parse a comma-separated token list into a de-duplicated list.
+
+    I4 stage 2: shared parser for ``--block-ids`` (exact block-instance IDs)
+    and ``--pages`` (page/module identifiers). Unlike ``--blocks``, these
+    tokens are NOT validated against a static enum at parse time — a block id
+    / page id is a runtime artifact of the outline, so validation happens in
+    the rewrite handler against the real outline block set (unknown token →
+    loud failure there, never a silent no-op). Returns ``None`` when ``raw``
+    is empty/None. Whitespace stripped per token; empty tokens ignored;
+    duplicates removed preserving first-seen order.
+    """
+    if raw is None:
+        return None
+    parts = [tok.strip() for tok in raw.split(",")]
+    parts = [tok for tok in parts if tok]
+    if not parts:
+        return None
+    seen: set = set()
+    out: List[str] = []
+    for tok in parts:
+        if tok not in seen:
+            seen.add(tok)
+            out.append(tok)
+    return out
+
+
 def _build_workflow_params(
     workflow: str,
     *,
@@ -194,6 +221,8 @@ def _build_workflow_params(
     reuse_objectives: Optional[str] = None,
     reuse_conversion: bool = False,
     target_block_ids: Optional[List[str]] = None,
+    target_block_instance_ids: Optional[List[str]] = None,
+    target_page_ids: Optional[List[str]] = None,
     force_rerun: bool = False,
     courseforge_stage: Optional[str] = None,
     libv2_root: Optional[str] = None,
@@ -269,6 +298,18 @@ def _build_workflow_params(
     # untouched blocks are byte-identical to the input.
     if target_block_ids:
         params["target_block_ids"] = list(target_block_ids)
+
+    # I4 stage 2: --block-ids / --pages plumbing. Instance-scoped and
+    # page/module-scoped eviction filters, additive over the stage-1
+    # type filter (--blocks). The rewrite handler evicts the named block
+    # instance(s) + page/module block(s) from the failure-driven cache so
+    # they re-roll even after a prior success; unknown tokens fail loud in
+    # the handler (validated against the real outline block set). Unset →
+    # byte-identical failure-driven reuse.
+    if target_block_instance_ids:
+        params["target_block_instance_ids"] = list(target_block_instance_ids)
+    if target_page_ids:
+        params["target_page_ids"] = list(target_page_ids)
 
     # Phase 5 ST 5: --force plumbing. When set, the workflow runner
     # ignores existing per-phase ``_completed`` checkpoints and
@@ -517,6 +558,11 @@ async def _create_textbook_workflow(
         # the rewrite phase additively evicts cached blocks of the named
         # types. Unset → None → byte-identical failure-driven cache reuse.
         target_block_ids=params.get("target_block_ids"),
+        # I4 stage 2 (--block-ids / --pages): forward the instance-scoped +
+        # page/module-scoped eviction filters. Unset → None → byte-identical
+        # failure-driven cache reuse.
+        target_block_instance_ids=params.get("target_block_instance_ids"),
+        target_page_ids=params.get("target_page_ids"),
     )
     return json.loads(result)
 
@@ -720,6 +766,36 @@ def _build_orchestrator(
     ),
 )
 @click.option(
+    "--block-ids",
+    "block_ids_filter",
+    default=None,
+    help=(
+        "I4 stage 2 — comma-separated list of EXACT block-instance IDs (as "
+        "they appear in the outline / ``blocks_final.jsonl``, shape "
+        "``{page_id}#{block_type}_{slug}_{idx}``) to re-roll. ADDITIVE over "
+        "``--blocks`` (type scope) and ``--pages``: only the named "
+        "instance(s) are evicted from the rewrite failure-driven cache and "
+        "re-authored; every other block is byte-identical to the input. An "
+        "id not present in the outline fails the rewrite phase loudly (never "
+        "a silent no-op). Consumed by the rewrite tier only."
+    ),
+)
+@click.option(
+    "--pages",
+    "pages_filter",
+    default=None,
+    help=(
+        "I4 stage 2 — comma-separated list of page/module identifiers "
+        "(exact ``page_id`` e.g. ``week_01_content_02`` for one page, or a "
+        "module prefix e.g. ``week_01`` for a whole week/module) to re-roll. "
+        "ADDITIVE over ``--blocks`` and ``--block-ids``: every block on a "
+        "matched page/module is evicted from the rewrite failure-driven "
+        "cache and re-authored; all other blocks stay byte-identical. A page "
+        "token matching no outline block fails the rewrite phase loudly. "
+        "Consumed by the rewrite tier only."
+    ),
+)
+@click.option(
     "--force",
     "force_rerun",
     is_flag=True,
@@ -832,6 +908,8 @@ def run_command(
     reuse_objectives: Optional[str],
     reuse_conversion: bool,
     blocks_filter: Optional[str],
+    block_ids_filter: Optional[str],
+    pages_filter: Optional[str],
     force_rerun: bool,
     libv2_root: Optional[str],
     skip_training: bool,
@@ -925,6 +1003,12 @@ def run_command(
     # Phase 5 ST 1: parse and validate the --blocks filter. Invalid
     # tokens raise click.BadParameter (Click prints + exits 2 itself).
     target_block_ids = _parse_blocks_filter(blocks_filter)
+    # I4 stage 2: parse the --block-ids / --pages filters. No parse-time
+    # enum check (block/page ids are runtime artifacts) — the rewrite
+    # handler validates them against the real outline block set and fails
+    # loud on an unknown token.
+    target_block_instance_ids = _parse_csv_tokens(block_ids_filter)
+    target_page_ids = _parse_csv_tokens(pages_filter)
 
     params = _build_workflow_params(
         workflow,
@@ -941,6 +1025,8 @@ def run_command(
         reuse_objectives=reuse_objectives,
         reuse_conversion=reuse_conversion,
         target_block_ids=target_block_ids,
+        target_block_instance_ids=target_block_instance_ids,
+        target_page_ids=target_page_ids,
         force_rerun=force_rerun,
         courseforge_stage=courseforge_stage,
         libv2_root=libv2_root,
@@ -1061,6 +1147,10 @@ def _dry_run_plan(
         # ``<FILTERED:type1,type2>`` mirroring the existing ``<REUSED>``
         # annotation precedent at ``_dry_run_plan`` for --reuse-objectives.
         target_block_ids = params.get("target_block_ids")
+        # I4 stage 2 — instance-scoped + page/module-scoped rewrite filters
+        # annotated alongside the stage-1 type filter.
+        target_block_instance_ids = params.get("target_block_instance_ids")
+        target_page_ids = params.get("target_page_ids")
         force_rerun_flag = bool(params.get("force_rerun", False))
         # Hosted-large build profile GAP-2 — the --stop-after halt phase
         # (annotated in the dry-run plan; phases after it are marked
@@ -1112,12 +1202,33 @@ def _dry_run_plan(
             # consume ``target_block_ids`` with ``<FILTERED:...>`` so the
             # operator sees which phases will run on a per-block scope.
             # Mirrors the ``<REUSED>`` precedent above.
-            if target_block_ids and phase.name in block_filtered_phases:
+            if (
+                (target_block_ids or target_block_instance_ids
+                 or target_page_ids)
+                and phase.name in block_filtered_phases
+            ):
                 phase_entry["status"] = "FILTERED"
-                phase_entry["blocks_filter"] = list(target_block_ids)
+                _reasons = []
+                if target_block_ids:
+                    phase_entry["blocks_filter"] = list(target_block_ids)
+                    _reasons.append(
+                        f"--blocks block_type(s) {list(target_block_ids)!r}"
+                    )
+                if target_block_instance_ids:
+                    phase_entry["block_ids_filter"] = list(
+                        target_block_instance_ids
+                    )
+                    _reasons.append(
+                        f"--block-ids instance(s) "
+                        f"{list(target_block_instance_ids)!r}"
+                    )
+                if target_page_ids:
+                    phase_entry["pages_filter"] = list(target_page_ids)
+                    _reasons.append(
+                        f"--pages page/module(s) {list(target_page_ids)!r}"
+                    )
                 phase_entry["filter_reason"] = (
-                    f"--blocks set; re-rolling only block_type(s) "
-                    f"{list(target_block_ids)!r}"
+                    "re-rolling only " + "; ".join(_reasons)
                 )
             # Hosted-large build profile GAP-2 — --stop-after annotation. Phases
             # AFTER the named stop phase are marked as not-running; the stop
@@ -1146,6 +1257,10 @@ def _dry_run_plan(
         # re-reading params.
         if target_block_ids:
             plan_dict["blocks_filter"] = list(target_block_ids)
+        if target_block_instance_ids:
+            plan_dict["block_ids_filter"] = list(target_block_instance_ids)
+        if target_page_ids:
+            plan_dict["pages_filter"] = list(target_page_ids)
         if force_rerun_flag:
             plan_dict["force_rerun"] = True
         if stop_after_phase:
@@ -1375,6 +1490,10 @@ def _print_dry_run_plan(plan: Dict[str, Any]) -> None:
     # operators see the run-wide flags without scanning every phase.
     if plan.get("blocks_filter"):
         click.echo(f"  Blocks:    {plan['blocks_filter']}")
+    if plan.get("block_ids_filter"):
+        click.echo(f"  BlockIDs:  {plan['block_ids_filter']}")
+    if plan.get("pages_filter"):
+        click.echo(f"  Pages:     {plan['pages_filter']}")
     if plan.get("force_rerun"):
         click.echo(f"  Force:     re-run completed phases (--force)")
     if plan.get("stop_after"):
@@ -1401,8 +1520,19 @@ def _print_dry_run_plan(plan: Dict[str, Any]) -> None:
         # Phase 5 ST 6: status suffix carries the FILTERED block list
         # inline so a quick eyeball of the dry-run output shows which
         # phase will run scoped to which block types.
-        if status == "FILTERED" and phase.get("blocks_filter"):
-            status_suffix = f"  <FILTERED:{','.join(phase['blocks_filter'])}>"
+        if status == "FILTERED" and (
+            phase.get("blocks_filter")
+            or phase.get("block_ids_filter")
+            or phase.get("pages_filter")
+        ):
+            _fparts = []
+            if phase.get("blocks_filter"):
+                _fparts.append(",".join(phase["blocks_filter"]))
+            if phase.get("block_ids_filter"):
+                _fparts.append("ids:" + ",".join(phase["block_ids_filter"]))
+            if phase.get("pages_filter"):
+                _fparts.append("pages:" + ",".join(phase["pages_filter"]))
+            status_suffix = f"  <FILTERED:{' '.join(_fparts)}>"
         elif status:
             status_suffix = f"  <{status}>"
         else:

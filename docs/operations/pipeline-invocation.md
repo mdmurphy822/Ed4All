@@ -87,7 +87,7 @@ Paths are relative to the Courseforge **export root**
 | 8 (single) | `content_generation` | `03_content_development/` pages + `course.json` | `COURSEFORGE_PROVIDER` | `--stop-after content_generation` |
 | 8a (two-pass) | `content_generation_outline` | `01_outline/blocks_outline.jsonl` | `COURSEFORGE_OUTLINE_PROVIDER` + block plan `ED4ALL_DYNAMIC_BLOCK_PLAN_PROVIDER` | `--stop-after content_generation_outline`; subcommand `courseforge-outline` |
 | 8b (two-pass) | `inter_tier_validation` | `01_outline/blocks_validated.jsonl`; `02_validation_report/report.json` | deterministic (validators) | `--stop-after inter_tier_validation`; subcommand `courseforge-validate` |
-| 8c (two-pass) | `content_generation_rewrite` | `04_rewrite/blocks_final.jsonl` + `03_content_development/` pages | `COURSEFORGE_REWRITE_PROVIDER` | `--stop-after content_generation_rewrite`; subcommand `courseforge-rewrite` (+ `--blocks <types>`) |
+| 8c (two-pass) | `content_generation_rewrite` | `04_rewrite/blocks_final.jsonl` + `03_content_development/` pages | `COURSEFORGE_REWRITE_PROVIDER` | `--stop-after content_generation_rewrite`; subcommand `courseforge-rewrite` (+ `--blocks <types>` / `--block-ids <ids>` / `--pages <ids>`) |
 | 8d (two-pass) | `post_rewrite_validation` | `04_rewrite/blocks_validated.jsonl`; `04_rewrite/02_validation_report/report.json` | deterministic (NLI/embedding scorers) | `--stop-after post_rewrite_validation`; subcommand `courseforge` runs the full 4-phase slice |
 | 9 | `assessment_synthesis` | `06_assessments/` (QTI/imsdt/assignment XML + `manifest.json`) | `TRAINFORGE_ASSESSMENT_PROVIDER` | `--stop-after assessment_synthesis`; skip via `generate_assessments=false` |
 | 10 | `packaging` | `05_final_package/<course>.imscc`; then `courseforge_validation_report.json` (export root) | deterministic | `--stop-after packaging` |
@@ -153,15 +153,30 @@ COURSEFORGE_TWO_PASS=true ed4all run textbook-to-course --corpus book.pdf \
 - **Courseforge stage subcommands** (two-pass only) re-drive just the content slice
   against an existing export, pre-populating upstream phases from disk:
   `courseforge-outline` (outline tier only), `courseforge-validate` (both validator
-  seams, no LLM), `courseforge-rewrite` (rewrite tier; pair with `--blocks <types>`),
+  seams, no LLM), `courseforge-rewrite` (rewrite tier; pair with `--blocks <types>`,
+  `--block-ids <ids>`, and/or `--pages <page/module ids>`),
   `courseforge` (full 4-phase slice). Add `--force` to re-run past `_completed`
   checkpoints. Post-Courseforge phases (packaging…) are always skipped by these — run
   them via the canonical `ed4all run textbook-to-course`.
+- **Rewrite re-roll scope (I4).** The rewrite tier normally reuses the
+  `blocks_final.jsonl`-cached successful rewrites and re-rolls only failed/degraded
+  blocks. Three ADDITIVE flags widen that eviction so specific blocks re-author even
+  after a prior success (all three unset → byte-identical failure-driven reuse):
+  `--blocks <types>` (stage 1 — every block of a TYPE),
+  `--block-ids <id1,id2>` (stage 2 — exact block-instance IDs as they appear in the
+  outline / `blocks_final.jsonl`, shape `{page_id}#{block_type}_{slug}_{idx}`), and
+  `--pages <page1,page2>` (stage 2 — an exact `page_id` e.g. `week_01_content_02`, or a
+  module prefix e.g. `week_01` for a whole week/module). The three compose. An unknown
+  `--block-ids` id or `--pages` token (matching no outline block) fails the rewrite
+  phase LOUDLY — never a silent no-op.
 
 ```bash
 export COURSEFORGE_TWO_PASS=true
 ed4all run courseforge-validate --course-name PHYS_101          # fire gates, no LLM
 ed4all run courseforge-rewrite  --course-name PHYS_101 --blocks assessment_item
+ed4all run courseforge-rewrite  --course-name PHYS_101 \
+  --block-ids 'week_03_content_01#objective_intro_0'            # one block instance
+ed4all run courseforge-rewrite  --course-name PHYS_101 --pages week_03   # one module
 ```
 
 **Resume** a crashed/stopped run past completed phases:

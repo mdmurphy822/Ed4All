@@ -1323,26 +1323,25 @@ async def launch_phase(req: Dict[str, Any]) -> Dict[str, Any]:
     return outcome
 
 
-def _normalize_blocks_param(workflow_params: Dict[str, Any]) -> None:
-    """Normalize a ``blocks`` option into the ``target_block_ids`` list param.
+def _normalize_csv_param(
+    workflow_params: Dict[str, Any], src_key: str, dst_key: str
+) -> None:
+    """Pop a CSV/list ``src_key`` option into a de-duplicated ``dst_key`` list.
 
-    Q1 (--blocks). The studio failure panel posts ``{blocks: "type1,type2"}``
-    (a CSV string) as a phase option; the rewrite-phase routing consumes
-    ``target_block_ids`` (a list of block TYPES) for its additive
-    type-eviction. This pops the dead ``blocks`` key and, when it carries
-    tokens, writes the de-duplicated (order-preserving) list under
-    ``target_block_ids``. Mutates ``workflow_params`` in place. No/empty
-    ``blocks`` → nothing added (byte-identical). An explicit
-    ``target_block_ids`` already present wins (never overwritten).
+    Shared normalizer for the failure panel's scope options. Accepts a CSV
+    string or a list/tuple; writes the de-duplicated (order-preserving) list
+    under ``dst_key``. Mutates ``workflow_params`` in place. No/empty source
+    → nothing added (byte-identical). An explicit ``dst_key`` already present
+    wins (never overwritten).
     """
-    blocks_raw = workflow_params.pop("blocks", None)
-    if "target_block_ids" in workflow_params:
+    raw = workflow_params.pop(src_key, None)
+    if dst_key in workflow_params:
         return
     tokens: List[str]
-    if isinstance(blocks_raw, str):
-        tokens = blocks_raw.split(",")
-    elif isinstance(blocks_raw, (list, tuple)):
-        tokens = [str(t) for t in blocks_raw]
+    if isinstance(raw, str):
+        tokens = raw.split(",")
+    elif isinstance(raw, (list, tuple)):
+        tokens = [str(t) for t in raw]
     else:
         return
     seen: set = set()
@@ -1352,7 +1351,32 @@ def _normalize_blocks_param(workflow_params: Dict[str, Any]) -> None:
             seen.add(tok)
             out.append(tok)
     if out:
-        workflow_params["target_block_ids"] = out
+        workflow_params[dst_key] = out
+
+
+def _normalize_blocks_param(workflow_params: Dict[str, Any]) -> None:
+    """Normalize failure-panel scope options into rewrite-eviction params.
+
+    Q1 (--blocks) + I4 stage 2 (--block-ids / --pages). The studio failure
+    panel posts CSV-string scope options as phase options; the rewrite-phase
+    routing consumes list params:
+
+    - ``blocks`` (block TYPES) → ``target_block_ids`` (stage-1 type eviction);
+    - ``block_ids`` (exact block-instance IDs) →
+      ``target_block_instance_ids`` (I4 stage-2 instance eviction);
+    - ``pages`` (page/module ids) → ``target_page_ids`` (I4 stage-2 page
+      eviction).
+
+    Each is de-duplicated (order-preserving) and additive; an unknown id/page
+    fails LOUD in the rewrite handler (validated against the real outline
+    block set), never a silent no-op. No/empty → nothing added
+    (byte-identical). An explicit destination param already present wins.
+    """
+    _normalize_csv_param(workflow_params, "blocks", "target_block_ids")
+    _normalize_csv_param(
+        workflow_params, "block_ids", "target_block_instance_ids"
+    )
+    _normalize_csv_param(workflow_params, "pages", "target_page_ids")
 
 
 async def _run_single_phase(

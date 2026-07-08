@@ -540,6 +540,17 @@ _LEGACY_PHASE_PARAM_ROUTING: Dict[str, Dict[str, Tuple]] = {
         # after a prior successful rewrite). Unset (default) → the handler
         # reads ``None`` → byte-identical failure-driven cache reuse.
         "target_block_ids": ("workflow_params", "target_block_ids"),
+        # I4 stage 2 (--block-ids / --pages) — thread the instance-scoped +
+        # page/module-scoped eviction filters so
+        # ``_run_content_generation_rewrite`` additively evicts the named
+        # block instance(s) and page/module block(s) on top of the stage-1
+        # type eviction. Unset (default) → the handler reads ``None`` →
+        # byte-identical failure-driven cache reuse. Kept in lock-step with
+        # the YAML ``inputs_from`` block (routing-parity test).
+        "target_block_instance_ids": (
+            "workflow_params", "target_block_instance_ids",
+        ),
+        "target_page_ids": ("workflow_params", "target_page_ids"),
     },
     "packaging": {
         "project_id": ("phase_outputs", "objective_extraction", "project_id"),
