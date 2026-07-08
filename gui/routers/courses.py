@@ -12,6 +12,8 @@ Routes::
     PUT   "/{course_id}/objectives"  → write reuse-compatible objectives JSON
     GET   "/{course_id}/classification"
     PATCH "/{course_id}/classification"
+    GET   "/{course_id}/attestation"  → human-review attestation block
+    PATCH "/{course_id}/attestation"  → stamp a reviewer sign-off
 
 Errors are surfaced as ``{error, detail}`` with the right status (404 unknown
 course / missing file, 422 validation). Never a fabricated success.
@@ -81,6 +83,19 @@ class ClassificationPatch(BaseModel):
     topics: Optional[List[str]] = None
     subtopics: Optional[List[str]] = None
     tags: Optional[List[str]] = None
+
+
+class AttestationPatch(BaseModel):
+    """Body for ``PATCH /{course_id}/attestation`` (I5 human-review sign-off).
+
+    ``reviewed_by`` + ``scope`` are the caller-supplied fields; ``reviewed_at``
+    is server-stamped when omitted. ``note`` is optional free text.
+    """
+
+    reviewed_by: Optional[str] = None
+    scope: Optional[str] = None
+    reviewed_at: Optional[str] = None
+    note: Optional[str] = None
 
 
 # --------------------------------------------------------------------------- #
@@ -182,6 +197,38 @@ def patch_classification(
         return _error(422, "invalid_classification", str(exc))
     except FileNotFoundError as exc:
         return _error(404, "classification_not_found", str(exc))
+
+
+@router.get("/{course_id}/attestation", response_model=None)
+def get_attestation(course_id: str) -> Dict[str, Any] | JSONResponse:
+    """Return the LibV2 human-review attestation block (404 if no manifest).
+
+    An un-attested course resolves to an empty ``{}`` (not a 404) so the SPA can
+    render the "not yet reviewed" affordance.
+    """
+    try:
+        return course_service.get_attestation(course_id)
+    except FileNotFoundError as exc:
+        return _error(404, "attestation_not_found", str(exc))
+
+
+@router.patch("/{course_id}/attestation", response_model=None)
+def patch_attestation(
+    course_id: str, body: AttestationPatch
+) -> Dict[str, Any] | JSONResponse:
+    """Stamp a human-review attestation onto the LibV2 manifest.
+
+    ``reviewed_at`` is server-stamped when omitted; the block is schema-validated
+    before write. Schema violation (e.g. bad ``scope``, empty ``reviewed_by``) →
+    422; no manifest → 404.
+    """
+    patch = body.model_dump(exclude_none=True)
+    try:
+        return course_service.save_attestation(course_id, patch)
+    except ValueError as exc:
+        return _error(422, "invalid_attestation", str(exc))
+    except FileNotFoundError as exc:
+        return _error(404, "attestation_not_found", str(exc))
 
 
 __all__ = ["router"]

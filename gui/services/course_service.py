@@ -646,6 +646,86 @@ def save_classification(slug: str, patch: Dict[str, Any]) -> Dict[str, Any]:
     return classification
 
 
+def get_attestation(slug: str) -> Dict[str, Any]:
+    """Return the ``attestation`` block from a LibV2 course manifest.
+
+    Args:
+        slug: A LibV2 course slug (or a course_id that resolves to one).
+
+    Returns:
+        The stored attestation block, or ``{}`` when the course has never been
+        attested.
+
+    Raises:
+        FileNotFoundError: if the slug resolves to no LibV2 manifest.
+    """
+    resolved = _resolve(slug)
+    manifest = resolved.get("manifest")
+    if manifest is None:
+        raise FileNotFoundError(
+            f"no LibV2 manifest found for course {slug!r}"
+        )
+    attestation = manifest.get("attestation")
+    return dict(attestation) if isinstance(attestation, dict) else {}
+
+
+def save_attestation(slug: str, patch: Dict[str, Any]) -> Dict[str, Any]:
+    """Stamp a human-review ``attestation`` block onto a LibV2 manifest.
+
+    I5 human-review sign-off (the liability answer): a named reviewer attests
+    that the course's objectives / content / full artifacts were checked by a
+    person. The rest of the manifest is preserved byte-for-byte (deep). The
+    attestation block is validated best-effort against the ``attestation``
+    subschema of ``schemas/library/course_manifest.schema.json``; a schema
+    violation raises ``ValueError`` before any write.
+
+    ``reviewed_at`` is server-stamped (UTC ISO-8601) when the caller omits it,
+    so a reviewer only has to supply ``reviewed_by`` + ``scope``.
+
+    Args:
+        slug: LibV2 course slug (or resolvable course_id).
+        patch: ``{reviewed_by, scope, reviewed_at?, note?}``.
+
+    Returns:
+        The stored attestation block.
+
+    Raises:
+        ValueError: on a non-dict patch or a schema violation.
+        FileNotFoundError: if the slug resolves to no LibV2 manifest.
+    """
+    if not isinstance(patch, dict):
+        raise ValueError("attestation patch must be a JSON object")
+
+    resolved = _resolve(slug)
+    libv2_dir = resolved.get("libv2_dir")
+    manifest = resolved.get("manifest")
+    if libv2_dir is None or manifest is None:
+        raise FileNotFoundError(
+            f"no LibV2 manifest found for course {slug!r}"
+        )
+
+    # Attestation is a full replace (a fresh sign-off supersedes any prior one),
+    # not a merge — only the known attestation keys are accepted.
+    allowed = {"reviewed_by", "reviewed_at", "scope", "note"}
+    attestation: Dict[str, Any] = {}
+    for key, value in patch.items():
+        if key not in allowed or value is None:
+            continue
+        attestation[key] = value
+
+    # Server-stamp reviewed_at when the caller did not supply one.
+    if not attestation.get("reviewed_at"):
+        attestation["reviewed_at"] = _now_iso()
+
+    _validate_attestation(attestation)
+
+    manifest = dict(manifest)
+    manifest["attestation"] = attestation
+    target = libv2_dir / "manifest.json"
+    _atomic_write_json(target, manifest)
+    return attestation
+
+
 # --------------------------------------------------------------------------- #
 # Internal write helpers
 # --------------------------------------------------------------------------- #
@@ -724,6 +804,36 @@ def _validate_classification(classification: Dict[str, Any]) -> None:
         ) from exc
 
 
+def _validate_attestation(attestation: Dict[str, Any]) -> None:
+    """Best-effort jsonschema validation of an attestation block.
+
+    Validates against the ``attestation`` subschema embedded in
+    ``schemas/library/course_manifest.schema.json``. jsonschema is a default
+    dep; if it (or the schema file) is unavailable, validation is skipped
+    silently (best-effort, per the spec). A real schema violation raises
+    ``ValueError``.
+    """
+    try:
+        import jsonschema  # noqa: PLC0415
+    except ImportError:
+        return
+    from lib.paths import SCHEMAS_PATH  # noqa: PLC0415
+
+    schema_path = Path(SCHEMAS_PATH) / "library" / "course_manifest.schema.json"
+    schema = _read_json(schema_path)
+    if not schema:
+        return
+    subschema = (schema.get("properties") or {}).get("attestation")
+    if not isinstance(subschema, dict):
+        return
+    try:
+        jsonschema.validate(instance=attestation, schema=subschema)
+    except jsonschema.ValidationError as exc:  # type: ignore[attr-defined]
+        raise ValueError(
+            f"attestation fails course_manifest schema: {exc.message}"
+        ) from exc
+
+
 def _default_weeks(chapter_count: int) -> int:
     """Objective-driven default pacing: ``max(8, ceil(chapters / 2))``.
 
@@ -748,4 +858,6 @@ __all__ = [
     "save_objectives",
     "get_classification",
     "save_classification",
+    "get_attestation",
+    "save_attestation",
 ]

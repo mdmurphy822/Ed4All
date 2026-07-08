@@ -367,6 +367,7 @@ Extended metadata including:
 - `content_profile`: chunk counts, token counts, difficulty distribution
 - `features.source_provenance`: advisory bool — true when any archived chunk carries `source.source_references[]`. Lets retrieval callers fast-skip source-grounded queries on pre-provenance corpora.
 - `features.evidence_source_provenance`: advisory bool — true when any concept-graph edge carries `provenance.evidence.source_references[]`.
+- `attestation` (optional): I5 human-review sign-off — `{reviewed_by, reviewed_at (server-stamped when omitted), scope: objectives|content|full, note?}`. Stamped via the GUI PATCH `/api/courses/{id}/attestation` (`gui.services.course_service.save_attestation`); records that a person reviewed the course. Absent on legacy manifests (still validate).
 
 Gated by `lib/validators/libv2_manifest.py::LibV2ManifestValidator` as the `libv2_manifest` gate on the `textbook_to_course` pipeline's `libv2_archival` phase. The validator runs critical-severity checks (JSON parse, schema match, on-disk artifact hash/size agreement) and warning-severity advisories (scaffold completeness, `source_provenance=false` gap flag).
 

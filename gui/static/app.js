@@ -1323,13 +1323,16 @@ async function renderCourses(view) {
   async function openCourse(c) {
     const id = courseId(c);
     clear(editCol).appendChild(el('div', { class: 'loading', text: 'Loading objectives…' }));
-    let obj = null, cls = null;
+    let obj = null, cls = null, att = null;
     try {
       obj = await api(`/api/courses/${encodeURIComponent(id)}/objectives`);
     } catch (e) { toastErr(e, 'objectives'); }
     try {
       cls = await api(`/api/courses/${encodeURIComponent(id)}/classification`).catch(() => null);
     } catch (_) { /* classification optional */ }
+    try {
+      att = await api(`/api/courses/${encodeURIComponent(id)}/attestation`).catch(() => null);
+    } catch (_) { /* attestation optional (no LibV2 manifest yet) */ }
 
     clear(editCol);
     editCol.appendChild(el('h2', { text: c.course_name || id }));
@@ -1340,6 +1343,9 @@ async function renderCourses(view) {
       renderObjectiveEditor(editCol, id, obj);
     }
     renderClassificationEditor(editCol, id, cls || {});
+    // Attestation only applies to an archived course (LibV2 manifest). A course
+    // with no manifest returns 404 → att stays null and the card is skipped.
+    if (att) renderAttestationEditor(editCol, id, att);
   }
 
   function renderObjectiveEditor(root, id, obj) {
@@ -1470,6 +1476,61 @@ async function renderCourses(view) {
       finally { saveBtn.disabled = false; }
     });
     root.appendChild(el('div', { class: 'btn-row' }, [saveBtn]));
+  }
+
+  function renderAttestationEditor(root, id, att) {
+    const a = att.attestation || att || {};
+    // Current status line. aria-live so a save re-render is announced.
+    const status = el('div', { class: 'help', 'aria-live': 'polite' });
+    function renderStatus(cur) {
+      if (cur && cur.reviewed_by) {
+        status.textContent = `Reviewed by ${cur.reviewed_by} — scope: ${cur.scope || '?'}`
+          + (cur.reviewed_at ? ` (at ${cur.reviewed_at})` : '')
+          + (cur.note ? ` — ${cur.note}` : '');
+      } else {
+        status.textContent = 'Not yet reviewed by a person.';
+      }
+    }
+    renderStatus(a);
+
+    const reviewer = el('input', { type: 'text', value: a.reviewed_by || '', placeholder: 'reviewer name' });
+    const scope = el('select', {}, [
+      el('option', { value: 'objectives', text: 'Objectives only' }),
+      el('option', { value: 'content', text: 'Content only' }),
+      el('option', { value: 'full', text: 'Full course' }),
+    ]);
+    scope.value = a.scope || 'full';
+    const note = el('input', { type: 'text', value: a.note || '', placeholder: 'optional note' });
+
+    root.appendChild(el('div', { class: 'card' }, [
+      el('h3', { text: 'Human review attestation' }),
+      status,
+      field('Reviewer name', reviewer),
+      field('Scope', scope),
+      field('Note', note),
+    ]));
+
+    const errBox = el('div', { class: 'help', style: `color:var(--bad)`, role: 'alert' });
+    const saveBtn = el('button', { text: 'Attest review' });
+    saveBtn.addEventListener('click', async () => {
+      const who = reviewer.value.trim();
+      if (!who) {
+        errBox.textContent = 'Reviewer name is required to attest a review.';
+        toast('Missing reviewer', 'Enter a reviewer name.', 'error');
+        return;
+      }
+      errBox.textContent = '';
+      // reviewed_at is server-stamped when omitted; scope + reviewer are ours.
+      const patch = { reviewed_by: who, scope: scope.value, note: note.value.trim() || null };
+      saveBtn.disabled = true;
+      try {
+        const saved = await apiJSON(`/api/courses/${encodeURIComponent(id)}/attestation`, 'PATCH', patch);
+        renderStatus(saved);
+        toast('Attested', 'Human review recorded.', 'success');
+      } catch (e) { toastErr(e, 'Attest review failed'); }
+      finally { saveBtn.disabled = false; }
+    });
+    root.appendChild(el('div', { class: 'btn-row' }, [saveBtn, errBox]));
   }
 }
 

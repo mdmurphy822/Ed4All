@@ -277,6 +277,34 @@
           "type": "string"
         }
       }
+    },
+    "attestation": {
+      "type": "object",
+      "description": "I5 human-review attestation: a named reviewer's sign-off that this course's objectives / content / full artifacts were checked by a person. Optional -> legacy manifests validate without it. Stamped via the GUI PATCH /api/courses/{id}/attestation (gui.services.course_service.save_attestation); reviewed_at is server-stamped (UTC ISO-8601) when the caller omits it.",
+      "required": ["reviewed_by", "reviewed_at", "scope"],
+      "additionalProperties": false,
+      "properties": {
+        "reviewed_by": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Name / identity of the person who reviewed the course."
+        },
+        "reviewed_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the review was attested (UTC ISO-8601). Server-stamped when omitted by the caller."
+        },
+        "scope": {
+          "type": "string",
+          "enum": ["objectives", "content", "full"],
+          "description": "What the reviewer attests to: the learning objectives only, the generated content only, or the full course."
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 2000,
+          "description": "Optional free-text reviewer note (capped)."
+        }
+      }
     }
   }
 }
