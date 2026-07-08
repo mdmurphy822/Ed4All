@@ -207,6 +207,37 @@ except ImportError as _convert_err:  # pragma: no cover
     )
 
 
+# Register 'ed4all support-bundle' command (OP1) — assemble a redacted
+# diagnostics tarball (doctor JSON + one run's state tree + GUI logs) for a
+# maintainer; secret-shaped files are dropped/masked. Lazy try/except so the
+# CLI still loads if the bundle seams fail to import.
+try:
+    from cli.commands import register_support_bundle_command
+
+    register_support_bundle_command(cli)
+except ImportError as _support_bundle_err:  # pragma: no cover
+    import logging as _logging
+    _logging.getLogger(__name__).warning(
+        "cli.commands.support_bundle unavailable: %s",
+        _support_bundle_err,
+    )
+
+
+# Register 'ed4all backup' command (OP3) — full data-dir backup (--output,
+# 0600, includes secrets.json) + restore verification (--verify). Lazy
+# try/except so the CLI still loads if the backup seams fail to import.
+try:
+    from cli.commands import register_backup_command
+
+    register_backup_command(cli)
+except ImportError as _backup_err:  # pragma: no cover
+    import logging as _logging
+    _logging.getLogger(__name__).warning(
+        "cli.commands.backup unavailable: %s",
+        _backup_err,
+    )
+
+
 # =============================================================================
 # VALIDATE-RUN COMMAND
 # =============================================================================
