@@ -76,6 +76,7 @@
         "assessment_design",
         "assessment_generation",
         "assessment_generator_call",
+        "assessment_guard_match",
         "assessment_numeric_equivalence_check",
         "assessment_objective_alignment_check",
         "assessment_planning",

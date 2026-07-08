@@ -94,7 +94,15 @@ def ask(
     refusal gate with the retrieved passages, so a durable ask job can surface
     "here is what I found" while the compose call runs. Both default to the
     no-op path.
+
+    ``ED4ALL_ANSWER_ASSESSMENT_GUARD`` (L2, three-valued off|shadow|on, default
+    OFF ⇒ byte-identical): when ``on``, a question that matches a known course
+    assessment stem short-circuits BEFORE the compose and returns a
+    redirect-with-hint envelope (never a hard refusal — "the tutor won't do your
+    homework"). ``shadow`` answers normally but records the would-have-matched
+    signal. ``off`` leaves this path untouched.
     """
+    from lib.retrieval import assessment_guard  # noqa: PLC0415
     from lib.retrieval.library_wide import (  # noqa: PLC0415
         answer_library_question,
     )
@@ -103,6 +111,28 @@ def ask(
     resolved_engine = _resolve_engine(engine, libv2_root, slug)
 
     capture = _build_capture(slug)
+
+    # L2 assessment guard: OFF (default) leaves the answer path byte-identical
+    # (no stem load, no capture, no signal). ``shadow`` / ``on`` evaluate the
+    # incoming question against the course's assessment stems; ``on`` + a match
+    # returns the redirect envelope WITHOUT dispatching the compose.
+    guard_mode = assessment_guard.resolve_guard_mode()
+    guard_outcome = None
+    if guard_mode != assessment_guard.GUARD_OFF:
+        try:
+            guard_outcome = assessment_guard.evaluate_guard(
+                libv2_root, slug, query, guard_mode, capture=capture
+            )
+        except Exception:  # noqa: BLE001 — guard is advisory; never block the answer
+            guard_outcome = None
+        if (
+            guard_outcome is not None
+            and guard_mode == assessment_guard.GUARD_ON
+            and guard_outcome.matched
+        ):
+            return assessment_guard.build_redirect_envelope(
+                libv2_root, slug, query, resolved_engine, guard_outcome
+            )
 
     # ``answer_library_question`` is the library-wide seam: when
     # ``ED4ALL_ANSWER_LIBRARY_WIDE`` is off (default) AND no explicit course set
@@ -121,7 +151,12 @@ def ask(
         library_wide=library_wide,
         on_progress=on_progress,
     )
-    return result.to_dict()
+    payload = result.to_dict()
+    # ``shadow`` (and an ``on`` no-match) answers normally but stamps the
+    # would-have-matched signal so an operator can measure guard hit-rate.
+    if guard_outcome is not None:
+        payload["assessment_guard"] = guard_outcome.signal()
+    return payload
 
 
 def source_materials_enabled(slug: str) -> bool:

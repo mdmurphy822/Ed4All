@@ -715,6 +715,8 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `ED4ALL_ANSWER_TIMEOUT_SECONDS` | `120` | Answer-client HTTP timeout |
 | `ED4ALL_ANSWER_NUM_CTX` | `4096` | Serving-window token budget for the grounded-answer prompt |
 | `ED4ALL_ANSWER_CITATION_PRUNE` | `shadow` | Three-valued governor of the claim-attribution citation **prune + add** pass at answer-composition time |
+| `ED4ALL_ANSWER_ASSESSMENT_GUARD` | unset (off) | L2 three-valued (off/shadow/on) assessment-aware answering guard — matches a learner question to a course assessment stem and redirects-with-hint (never refuses) instead of doing the homework |
+| `ED4ALL_ANSWER_ASSESSMENT_GUARD_THRESHOLD` | `0.75` | Float match floor (lexical containment / cosine) for the L2 assessment guard |
 | `ED4ALL_ANSWER_PRUNE_MIN_OVERLAP` | `0.25` | Float support threshold for the PRUNE decision |
 | `ED4ALL_ANSWER_ADD_MIN_SHINGLE` | `0.50` | Float shingle floor for the ADD decision |
 | `ED4ALL_ANSWER_NLI_ADD` | `off` | Three-valued governor of the **NLI-based citation-ADD** arm |
