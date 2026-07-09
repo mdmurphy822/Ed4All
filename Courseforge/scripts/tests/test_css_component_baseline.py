@@ -14,6 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from generate_course import (  # noqa: E402
     COURSEFORGE_CSS,
+    COURSEFORGE_RICHER_CSS,
+    _THEME_OVERRIDE_CSS,
     _wrap_page,
     patch_css_in_export,
     patch_css_in_html,
@@ -239,6 +241,64 @@ def test_patch_css_in_export_round_trip(tmp_path):
 
     # Second run is a no-op (idempotent).
     assert patch_css_in_export(tmp_path) == []
+
+
+# ---------------------------------------------------------------------------
+# §5.2 — block-TYPE identity CSS (left rail + uppercase eyebrow), keyed on the
+# already-emitted data-cf-content-type / data-cf-teaching-role attributes. Lives
+# ONLY in COURSEFORGE_RICHER_CSS so flags-off output stays byte-identical.
+# ---------------------------------------------------------------------------
+
+# (content_type value, eyebrow label, role token) triples the identity CSS
+# gives a rail + eyebrow. Exposition (explanation/overview/comparison) is
+# DELIBERATELY excluded (stays calm prose).
+_IDENTITY_CONTENT_TYPES = [
+    ("definition", "Definition", "--cf-role-definition"),
+    ("example", "Example", "--cf-role-example"),
+    ("procedure", "Procedure", "--cf-role-practice"),
+    ("exercise", "Practice", "--cf-role-practice"),
+    ("summary", "Summary", "--cf-role-summary"),
+]
+
+
+def test_block_identity_rail_and_eyebrow_in_richer_css():
+    for ct, label, token in _IDENTITY_CONTENT_TYPES:
+        # A heading-scoped rail selector + a matching ::before eyebrow.
+        assert f'h2[data-cf-content-type="{ct}"]' in COURSEFORGE_RICHER_CSS, (
+            f"no rail selector for content-type {ct}"
+        )
+        assert f'h3[data-cf-content-type="{ct}"]::before' in COURSEFORGE_RICHER_CSS
+        assert f'content: "{label}"' in COURSEFORGE_RICHER_CSS, (
+            f"eyebrow label {label!r} missing for {ct}"
+        )
+        assert f"var({token})" in COURSEFORGE_RICHER_CSS
+
+
+def test_block_identity_self_check_via_teaching_role():
+    # self-check carries data-cf-teaching-role="assess" (map_role output).
+    assert '[data-cf-teaching-role="assess"]::before' in COURSEFORGE_RICHER_CSS
+    assert 'content: "Self-Check"' in COURSEFORGE_RICHER_CSS
+    assert "var(--cf-role-assess)" in COURSEFORGE_RICHER_CSS
+
+
+def test_block_identity_eyebrow_is_uppercase_block():
+    # The eyebrow ::before is a block-level uppercase label.
+    assert "text-transform: uppercase" in COURSEFORGE_RICHER_CSS
+
+
+def test_block_identity_leaves_exposition_calm():
+    # Anti-over-decoration: the default/most-common content-type "explanation"
+    # (and the calm exposition siblings) get NO identity rail/eyebrow.
+    for ct in ("explanation", "overview", "comparison"):
+        assert f'data-cf-content-type="{ct}"]::before' not in COURSEFORGE_RICHER_CSS, (
+            f"exposition content-type {ct} should stay calm (no eyebrow)"
+        )
+
+
+def test_block_identity_absent_from_legacy_css():
+    # Byte-stability: the identity CSS never touches the always-emitted baseline.
+    assert '[data-cf-content-type="example"]::before' not in COURSEFORGE_CSS
+    assert '[data-cf-teaching-role="assess"]::before' not in COURSEFORGE_CSS
 
 
 def test_wrapped_page_has_real_head_and_stylesheet():

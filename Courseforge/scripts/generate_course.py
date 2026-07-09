@@ -1597,6 +1597,50 @@ COURSEFORGE_RICHER_CSS = """
     .reflection-prompt h3 { color: var(--cf-info-dark); }
 
     /* ===================================================================
+       §5.2 — BLOCK-TYPE IDENTITY (OpenStax-style typed headers). Keyed on
+       the ALREADY-EMITTED data-cf-content-type (on section h2/h3 headings)
+       + data-cf-teaching-role (on component wrappers): a left rail + an
+       uppercase ::before eyebrow label so definition / example / procedure /
+       practice / self-check read at a glance. Scoped to h2/h3 so the
+       already-styled component <section>/<figure> wrappers (which carry
+       data-cf-content-type too) are not double-decorated. The exposition
+       group (explanation / overview / comparison) is DELIBERATELY left calm
+       — no rail, no eyebrow — matching the group-B plain-prose philosophy.
+       Token-only rails so an a11y / dark theme re-points them.
+       =================================================================== */
+    h2[data-cf-content-type="definition"], h3[data-cf-content-type="definition"],
+    h2[data-cf-content-type="example"], h3[data-cf-content-type="example"],
+    h2[data-cf-content-type="procedure"], h3[data-cf-content-type="procedure"],
+    h2[data-cf-content-type="exercise"], h3[data-cf-content-type="exercise"],
+    h2[data-cf-content-type="summary"], h3[data-cf-content-type="summary"],
+    [data-cf-teaching-role="assess"] {
+      border-left: var(--cf-border-width-thick) solid var(--cf-role-exposition);
+      padding-left: var(--cf-space-3);
+    }
+    h2[data-cf-content-type="definition"]::before, h3[data-cf-content-type="definition"]::before,
+    h2[data-cf-content-type="example"]::before, h3[data-cf-content-type="example"]::before,
+    h2[data-cf-content-type="procedure"]::before, h3[data-cf-content-type="procedure"]::before,
+    h2[data-cf-content-type="exercise"]::before, h3[data-cf-content-type="exercise"]::before,
+    h2[data-cf-content-type="summary"]::before, h3[data-cf-content-type="summary"]::before,
+    [data-cf-teaching-role="assess"]::before {
+      display: block; font-size: var(--cf-font-size-xs); font-weight: var(--cf-font-weight-bold);
+      text-transform: uppercase; letter-spacing: var(--cf-letter-spacing-wide, 0.06em);
+      color: var(--cf-role-exposition);
+    }
+    h2[data-cf-content-type="definition"], h3[data-cf-content-type="definition"] { border-left-color: var(--cf-role-definition); }
+    h2[data-cf-content-type="definition"]::before, h3[data-cf-content-type="definition"]::before { content: "Definition"; color: var(--cf-role-definition); }
+    h2[data-cf-content-type="example"], h3[data-cf-content-type="example"] { border-left-color: var(--cf-role-example); }
+    h2[data-cf-content-type="example"]::before, h3[data-cf-content-type="example"]::before { content: "Example"; color: var(--cf-role-example); }
+    h2[data-cf-content-type="procedure"], h3[data-cf-content-type="procedure"] { border-left-color: var(--cf-role-practice); }
+    h2[data-cf-content-type="procedure"]::before, h3[data-cf-content-type="procedure"]::before { content: "Procedure"; color: var(--cf-role-practice); }
+    h2[data-cf-content-type="exercise"], h3[data-cf-content-type="exercise"] { border-left-color: var(--cf-role-practice); }
+    h2[data-cf-content-type="exercise"]::before, h3[data-cf-content-type="exercise"]::before { content: "Practice"; color: var(--cf-role-practice); }
+    h2[data-cf-content-type="summary"], h3[data-cf-content-type="summary"] { border-left-color: var(--cf-role-summary); }
+    h2[data-cf-content-type="summary"]::before, h3[data-cf-content-type="summary"]::before { content: "Summary"; color: var(--cf-role-summary); }
+    [data-cf-teaching-role="assess"] { border-left-color: var(--cf-role-assess); }
+    [data-cf-teaching-role="assess"]::before { content: "Self-Check"; color: var(--cf-role-assess); }
+
+    /* ===================================================================
        PHASE 3 — a11y completion: print, reduced-motion. (focus-visible +
        target-size rules live in the Phase 1 block above.) Emitted pages
        ship ZERO print / reduced-motion CSS on HEAD; these are authored
