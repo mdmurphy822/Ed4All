@@ -1818,6 +1818,52 @@ _THEME_OVERRIDE_CSS: Dict[str, str] = {
       --cf-paragraph-spacing: 1.5em;
     }
 """,
+    # §5.6 — DARK theme as a TOKEN-LEVEL override ONLY. This is deliberately
+    # NOT a `prefers-color-scheme: dark` media-query inversion — that was the
+    # old Defect-D root cause (near-white body text force-set on light boxes ->
+    # white-on-white). Instead we re-point the surface + ink + heading + tint
+    # tokens (and the -dark text variants used as box heading/claim colors) to a
+    # coherent dark palette; the token-consuming component rules then resolve to
+    # dark surfaces with light text. --cf-primary is lightened so it stays
+    # legible BOTH as text-on-dark (h2 / summary / rails) AND as a background
+    # under the dark `color: var(--cf-white)` th/flip-card text. Appended AFTER
+    # the token prelude so cascade-by-source-order wins (same seam as HC).
+    "dark": """
+    :root {
+      --cf-background: #16181d;
+      --cf-background-alt: #1f232a;
+      --cf-text: #e8eaed;
+      --cf-text-muted: #aab1ba;
+      --cf-ink: #e8eaed;
+      --cf-white: #1f232a;
+      --cf-gray-50: #23272e;
+      --cf-gray-100: #262b33;
+      --cf-gray-200: #2c313a;
+      --cf-gray-300: #3a3f47;
+      --cf-gray-400: #454b54;
+      --cf-border: #3a3f47;
+      --cf-border-light: #2c3138;
+      --cf-heading: #9ec5ff;
+      --cf-heading-strong: #e8eaed;
+      --cf-heading-muted: #aab1ba;
+      --cf-primary: #6aa3e0;
+      --cf-primary-dark: #8fbdec;
+      --cf-primary-light: #1c2b40;
+      --cf-primary-tint: #1c2b40;
+      --cf-success-light: #16311f;
+      --cf-success-dark: #7ee0a0;
+      --cf-warning-light: #33290a;
+      --cf-warning-dark: #ffd873;
+      --cf-danger-light: #341a1d;
+      --cf-danger-dark: #f0a6ac;
+      --cf-info-light: #123039;
+      --cf-info-dark: #6fd3e8;
+      --cf-accent-purple: #9a7be0;
+      --cf-accent-indigo: #8a63f0;
+      --cf-role-assess: #8fbdec;
+      --cf-role-summary: #6aa3e0;
+    }
+""",
 }
 
 #: The canonical a11y-theme names the Phase-0 seam can append (selection is a

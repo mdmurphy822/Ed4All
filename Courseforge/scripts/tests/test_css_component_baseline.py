@@ -16,6 +16,7 @@ from generate_course import (  # noqa: E402
     COURSEFORGE_CSS,
     COURSEFORGE_RICHER_CSS,
     _THEME_OVERRIDE_CSS,
+    _page_style_block,
     _wrap_page,
     collapse_adjacent_duplicate_headings,
     heading_token_overlap,
@@ -420,6 +421,58 @@ def test_breadcrumb_emitted_only_when_richer_on(monkeypatch):
     assert "Week 3" in on
     # No prev/next links are claimed (not derivable at wrap time).
     assert "rel=\"next\"" not in on and "rel=\"prev\"" not in on
+
+
+# ---------------------------------------------------------------------------
+# §5.6 — dark mode as a TOKEN-LEVEL theme override (never a prefers-color-scheme
+# inversion). Lives in _THEME_OVERRIDE_CSS, appended after the token prelude.
+# ---------------------------------------------------------------------------
+
+
+def _last_root_token_values(css: str) -> dict:
+    """Collapse every :root{} block in source order; last declaration wins."""
+    out: dict = {}
+    for m in re.finditer(r":root\s*\{([^}]*)\}", css, re.DOTALL):
+        for decl in m.group(1).split(";"):
+            if ":" in decl:
+                name, _, value = decl.partition(":")
+                name = name.strip()
+                if name.startswith("--cf-"):
+                    out[name] = " ".join(value.split())
+    return out
+
+
+def test_dark_theme_registered():
+    assert "dark" in _THEME_OVERRIDE_CSS
+
+
+def test_dark_theme_is_not_a_media_query():
+    # The whole point: a token override, NEVER a prefers-color-scheme inversion.
+    assert "prefers-color-scheme" not in _THEME_OVERRIDE_CSS["dark"]
+    assert "@media" not in _THEME_OVERRIDE_CSS["dark"]
+
+
+def test_dark_theme_repoints_background_and_ink(monkeypatch):
+    monkeypatch.setenv("ED4ALL_RICHER_VISUAL_SYSTEM", "1")
+    style = _page_style_block(theme="dark")
+    # Token prelude + dark override both present; override wins (declared last).
+    assert style.count(":root") >= 2
+    final = _last_root_token_values(style)
+    # Background flips dark; ink flips light — the opposite of Defect D.
+    assert final["--cf-background"] == "#16181d"
+    assert final["--cf-ink"] == "#e8eaed"
+    # A light-box surface token (--cf-white) is now a dark surface, and its
+    # -light tint siblings darken, so the token-consuming boxes render dark
+    # with the (light) --cf-ink text — no white-on-white.
+    assert final["--cf-white"] == "#1f232a"
+    assert final["--cf-info-light"] == "#123039"
+
+
+def test_dark_theme_no_media_query_in_composed_style(monkeypatch):
+    monkeypatch.setenv("ED4ALL_RICHER_VISUAL_SYSTEM", "1")
+    style = _page_style_block(theme="dark")
+    # The composed page carries no OS-scheme inversion block anywhere.
+    assert "prefers-color-scheme" not in style
 
 
 def test_wrapped_page_has_real_head_and_stylesheet():
