@@ -79,13 +79,16 @@ blocks:
     framework_block: B03
 
   - block_type: example
-    label: Worked Example
+    label: Example
     use_when: >-
-      A concept needs a single concrete worked instance — a numeric or
-      step-by-step solution the learner reads to see the procedure applied.
-      Choose this over concept when the learner has the definition and now
-      needs to see it executed once.
-    conveys: A complete, step-by-step instance of applying a procedure or concept.
+      A concept JUST TAUGHT needs ONE illustrative instance — a single concrete
+      case the learner reads to see the idea made concrete. Choose this over
+      `concept` when the definition is stated and now needs one worked-through
+      illustration. Choose this over `worked_example` when a LONE, one-off
+      instance suffices — NO subgoal labels, NO per-step "Why" gloss, NO fade
+      sequence toward independent practice. A single illustration, not a
+      scaffolded derivation.
+    conveys: A single illustrative instance making a just-taught concept concrete.
     bloom_fit: [understand, apply]
     format_summary: "<section> with an .example-box or multi-step .worked-example."
     framework_block: B05
@@ -407,12 +410,15 @@ blocks:
   - block_type: worked_example
     label: Worked Example (Faded)
     use_when: >-
-      A PROCEDURE needs a fully-worked instance carrying SUBGOAL LABELS, a
-      per-step "Why" gloss, and an explicit FADE-STATE (worked -> completion ->
-      independent). Choose this over `example` (a single un-labeled instance)
-      when the learner needs scaffolded sub-goal structure they can fade toward
-      independent practice. The distinct B05 block the framework reserves;
-      `example` is NOT renamed or removed.
+      A PROCEDURE needs a FULL DERIVATION worked start-to-finish, carrying
+      SUBGOAL LABELS, a per-step "Why" justification for every step, and an
+      explicit FADE-STATE (worked -> completion -> independent). This is the
+      fade-sequence ANCHOR: it PRECEDES `guided_practice` (the faded-scaffold
+      practice that follows) in a worked -> guided -> independent progression.
+      Choose this over `example` (a single un-labeled, one-off instance) when
+      the learner needs scaffolded sub-goal structure with per-step reasoning
+      they can fade toward independent practice. The distinct B05 block the
+      framework reserves; `example` is NOT renamed or removed.
     conveys: A subgoal-labeled, per-step-justified worked procedure with an explicit fade stage.
     bloom_fit: [understand, apply]
     format_summary: "<section class=worked-example> ordered <li> steps each with a subgoal label + a why gloss; data-cf-fade-state."

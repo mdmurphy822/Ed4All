@@ -458,6 +458,17 @@ def build_faq_blocks(
             objective_ids = (str(e["objective_id"]),)
         slug = str(e.get("slug") or f"q{idx}")
         try:
+            # Block identity: a FAQ card REUSES the ``vocab_card`` wrapper
+            # (``block_type`` must be a canonical ``BLOCK_TYPES`` member; minting
+            # a dedicated ``faq_card`` enum would have to learn ~a dozen
+            # enum/schema/validator/framework-map surfaces incl. the hard-pinned
+            # ``len(BLOCK_TYPES) == 30`` guards). The DISTINCT identity is the
+            # ``template_type=FAQ_TEMPLATE_TYPE`` marker — it (a) survives into
+            # the emitted blocks JSONL (so analytics can tell FAQ cards apart
+            # from key-terms glossary cards, both of which are ``vocab_card``),
+            # and (b) excludes the card from the glossary definition-quality
+            # audit (``lib/validators/key_terms_definition_quality`` keys on this
+            # marker). Do NOT drop the marker without updating that consumer.
             blk = Block(
                 block_id=Block.stable_id(
                     bound_page_id, "vocab_card", slug, idx

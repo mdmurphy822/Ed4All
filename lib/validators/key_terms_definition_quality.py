@@ -16,10 +16,15 @@ its provenance:
   SAME normalized definition (a copy-paste / wrong-chunk gloss).
 
 All three checks are PURE-DETERMINISTIC (no model, no embedding). The validator
-audits key-terms vocab cards only (``template_type == "key_terms"`` or
-``block_type == "vocab_card"``), reading the term + definition off the block's
-explicit fields when present, else parsing them out of the pre-rendered card
-HTML via the sibling ``key_terms`` helpers.
+audits key-terms vocab cards only (``template_type == "key_terms"`` or a
+``block_type == "vocab_card"`` that carries no other deterministic-card marker),
+reading the term + definition off the block's explicit fields when present, else
+parsing them out of the pre-rendered card HTML via the sibling ``key_terms``
+helpers. The deterministic FAQ page builder (``lib/generation/faq_page.py``)
+reuses the ``vocab_card`` wrapper but stamps ``template_type == "faq"``; such a
+card is a grounded Q/A entry, NOT a term/definition glossary card, so it is
+explicitly EXCLUDED here (auditing a Q/A answer as a "definition" would be a
+false positive — the block-identity aliasing this exclusion guards against).
 
 Gating (default OFF, byte-stable): a no-op (``passed=True`` + a single info
 issue) unless ``ED4ALL_KEYTERM_DEF_QUALITY`` is truthy. When on, fires
@@ -66,8 +71,16 @@ _KEYTERM_DEF_QUALITY_ENV = "ED4ALL_KEYTERM_DEF_QUALITY"
 _TRUTHY: frozenset = frozenset({"1", "true", "yes", "on"})
 
 #: The deterministic-block marker the key-terms builder stamps on
-#: ``Block.template_type``. Imported lazily to keep the validator dependency-thin.
+#: ``Block.template_type``. Kept as a local literal (not imported) to keep the
+#: validator dependency-thin.
 _KEY_TERMS_TEMPLATE_TYPE = "key_terms"
+
+#: The deterministic-block marker the FAQ page builder
+#: (``lib/generation/faq_page.py::FAQ_TEMPLATE_TYPE``) stamps on a ``vocab_card``
+#: it reuses. A FAQ card is a grounded Q/A entry, not a glossary term, so it is
+#: excluded from the glossary definition-quality audit. Local literal to stay
+#: dependency-thin (kept in lock-step with the builder's ``FAQ_TEMPLATE_TYPE``).
+_FAQ_TEMPLATE_TYPE = "faq"
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
@@ -97,9 +110,18 @@ def _template_type_of(block: Any) -> str:
 
 
 def _is_key_terms_card(block: Any) -> bool:
-    """True iff the block is a key-terms vocab card (either marker)."""
-    if _template_type_of(block) == _KEY_TERMS_TEMPLATE_TYPE:
+    """True iff the block is a key-terms vocab card (either marker).
+
+    A ``vocab_card`` carrying the FAQ marker (``template_type == "faq"``) is a
+    grounded Q/A card, not a glossary term, so it is excluded — otherwise the
+    two deterministic card families alias on the shared ``vocab_card``
+    ``block_type`` and FAQ answers get audited as term "definitions".
+    """
+    template_type = _template_type_of(block)
+    if template_type == _KEY_TERMS_TEMPLATE_TYPE:
         return True
+    if template_type == _FAQ_TEMPLATE_TYPE:
+        return False
     return _block_type_of(block) == "vocab_card"
 
 

@@ -153,6 +153,38 @@ def test_template_type_marker_audits_non_vocab_card():
     assert any(i.code == "KEYTERM_DEF_CIRCULAR" for i in res.issues)
 
 
+def test_faq_marker_vocab_card_not_audited_as_glossary():
+    """A FAQ card reuses the ``vocab_card`` wrapper but carries the ``faq``
+    marker — it must NOT be audited as a glossary term/definition (the two
+    deterministic card families would otherwise alias on ``block_type``)."""
+    faq = {
+        "block_type": "vocab_card",
+        "template_type": "faq",
+        "block_id": "f1",
+        # A Q/A "definition" that WOULD trip the circular + too-long checks if
+        # it were (wrongly) treated as a glossary definition.
+        "display": "What is a fraction?",
+        "definition": (
+            "A fraction is a fraction that represents a fraction of a whole; "
+            "it is written with a numerator over a denominator and describes "
+            "how many equal parts of a whole are being counted in total."
+        ),
+    }
+    res = _run([faq])
+    assert res.metadata["key_terms_definition_quality"]["cards_audited"] == 0
+    assert res.passed is True
+    assert not res.issues
+
+
+def test_plain_vocab_card_without_marker_still_audited():
+    """A bare ``vocab_card`` with NO template marker (legacy / planner-emitted
+    glossary card) stays in scope — the FAQ exclusion is marker-specific."""
+    block = _card("Prime", "A prime is a prime number.")  # circular
+    res = _run([block])
+    assert res.metadata["key_terms_definition_quality"]["cards_audited"] == 1
+    assert any(i.code == "KEYTERM_DEF_CIRCULAR" for i in res.issues)
+
+
 # ------------------------------------------------------- decision capture ----
 class _CaptureSpy:
     def __init__(self):

@@ -224,3 +224,34 @@ def test_render_faq_card_escapes():
 def test_render_faq_card_no_link():
     html = fp.render_faq_card(question="Q?", answer="A.")
     assert "View source" not in html
+
+
+# --------------------------------------------------------------------------- #
+# Distinct block identity — a FAQ card reuses the ``vocab_card`` wrapper but its
+# ``template_type="faq"`` marker must keep it OUT of the glossary
+# definition-quality audit (block-identity aliasing regression).
+# --------------------------------------------------------------------------- #
+
+def test_faq_blocks_not_classified_as_glossary_cards():
+    from lib.validators.key_terms_definition_quality import (
+        KeyTermsDefinitionQualityValidator,
+    )
+
+    blocks = fp.build_faq_blocks(
+        _OBJECTIVES,
+        _MISCONCEPTIONS,
+        _CHUNKS,
+        enabled=True,
+        course_slug="algebra-101",
+        page_id="week_01_faq",
+    )
+    assert blocks  # sanity: the builder produced FAQ cards
+    assert all(b.template_type == fp.FAQ_TEMPLATE_TYPE for b in blocks)
+
+    res = KeyTermsDefinitionQualityValidator().validate(
+        {"blocks": list(blocks), "keyterm_def_quality_enabled": True}
+    )
+    # The FAQ marker excludes every card from the glossary audit even though
+    # each carries block_type == "vocab_card".
+    assert res.metadata["key_terms_definition_quality"]["cards_audited"] == 0
+    assert res.passed is True
