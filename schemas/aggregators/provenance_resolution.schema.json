@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/aggregators/v1/provenance_resolution.schema.json",
+  "title": "Ed4All provenance_resolution_report.json",
+  "description": "Provenance-resolution report — whether course-page citations (data-cf-source-ids tokens on the IMSCC chunkset) resolve to their book source. Built by lib/aggregators/provenance_resolution.py::ProvenanceResolutionAggregator post-workflow and emitted at <libv2_course>/quality/provenance_resolution_report.json (<project_path> fallback).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "course_slug",
+    "run_id",
+    "generated_at",
+    "staging_dir_used",
+    "distinct_source_id_count",
+    "chunks_with_provenance",
+    "source_ids_anchor_resolved",
+    "source_ids_book_chunk_resolved",
+    "provenance_free_by_module",
+    "notes"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0",
+      "description": "Schema version. 1.0 == initial land."
+    },
+    "course_slug": { "type": "string" },
+    "run_id": { "type": "string" },
+    "generated_at": {
+      "type": "string",
+      "description": "ISO 8601 UTC timestamp of the build call (trailing 'Z')."
+    },
+    "staging_dir_used": {
+      "type": ["string", "null"],
+      "description": "The staged accessible-HTML root used for anchor resolution, or null when none resolved (anchor metric then skipped)."
+    },
+    "distinct_source_id_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Count of distinct non-empty data-cf-source-ids tokens across the whole chunkset."
+    },
+    "chunks_with_provenance": {
+      "$ref": "#/$defs/RatioBlock",
+      "description": "count = chunks carrying >=1 non-empty token; total = total chunks."
+    },
+    "source_ids_anchor_resolved": {
+      "oneOf": [
+        { "$ref": "#/$defs/ResolutionBlock" },
+        { "$ref": "#/$defs/SkippedBlock" }
+      ],
+      "description": "count = distinct tokens whose {anchor} exists as a data-dart-block-id in the staged {stem}.html; total = distinct tokens. Skipped shape when no staging-HTML root resolves."
+    },
+    "source_ids_book_chunk_resolved": {
+      "$ref": "#/$defs/ResolutionBlock",
+      "description": "count = distinct tokens carried by >=1 book-side dart chunk's source.source_references[].sourceId; total = distinct tokens."
+    },
+    "provenance_free_by_module": {
+      "type": "object",
+      "additionalProperties": { "type": "integer", "minimum": 0 },
+      "description": "Per-module_id count of provenance-free chunks (no non-empty token). Keyed by source.module_id ('unknown' when absent)."
+    },
+    "notes": {
+      "type": "string",
+      "description": "Human-readable explanation of the empty-provenance (Wave-27) semantics and the resolution methodology."
+    }
+  },
+  "$defs": {
+    "RatioBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["count", "total", "ratio"],
+      "properties": {
+        "count": { "type": "integer", "minimum": 0 },
+        "total": { "type": "integer", "minimum": 0 },
+        "ratio": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1,
+          "description": "count / total; null when total == 0."
+        }
+      }
+    },
+    "ResolutionBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["count", "total", "ratio", "unresolved"],
+      "properties": {
+        "count": { "type": "integer", "minimum": 0 },
+        "total": { "type": "integer", "minimum": 0 },
+        "ratio": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1,
+          "description": "count / total; null when total == 0."
+        },
+        "unresolved": {
+          "type": "array",
+          "items": { "type": "string" },
+          "maxItems": 25,
+          "description": "Capped (<=25) sample of distinct tokens that did NOT resolve."
+        }
+      }
+    },
+    "SkippedBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["skipped"],
+      "properties": {
+        "skipped": {
+          "type": "string",
+          "description": "Reason the metric was skipped (e.g. 'no_staging_dir')."
+        }
+      }
+    }
+  }
+}

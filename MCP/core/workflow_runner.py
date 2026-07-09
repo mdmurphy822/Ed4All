@@ -2418,6 +2418,21 @@ class WorkflowRunner:
             phase_outputs=phase_outputs,
         )
 
+        # Post-loop provenance-resolution aggregator. Walks the LibV2 course's
+        # IMSCC chunkset and reports whether course-page citations
+        # (data-cf-source-ids tokens) resolve back to their book source: the
+        # share of chunks carrying provenance, plus per-token anchor resolution
+        # (against the staged accessible HTML) and book-chunk resolution
+        # (against dart_chunks source_references). Pure regex/JSON — no LLM.
+        # Emitted at ``<libv2_course>/quality/provenance_resolution_report.json``
+        # (``<project_path>`` fallback). Best-effort — aggregator failure does
+        # NOT alter ``final_status``.
+        provenance_resolution_path = self._maybe_write_provenance_resolution_report(
+            workflow_id=workflow_id,
+            workflow_params=workflow_params,
+            phase_outputs=phase_outputs,
+        )
+
         return {
             "workflow_id": workflow_id,
             "status": final_status,
@@ -2468,6 +2483,11 @@ class WorkflowRunner:
             ),
             "build_cost_report_path": (
                 str(build_cost_path) if build_cost_path else None
+            ),
+            "provenance_resolution_report_path": (
+                str(provenance_resolution_path)
+                if provenance_resolution_path
+                else None
             ),
         }
 
@@ -3669,6 +3689,95 @@ class WorkflowRunner:
         except Exception as exc:  # noqa: BLE001 — best-effort
             logger.warning(
                 "build_cost aggregator failed (non-fatal, run_id=%s): %s",
+                workflow_id, exc,
+            )
+            return None
+
+    def _maybe_write_provenance_resolution_report(
+        self,
+        *,
+        workflow_id: str,
+        workflow_params: Dict[str, Any],
+        phase_outputs: Dict[str, Dict],
+    ) -> Optional[Path]:
+        """Write the provenance-resolution report if a LibV2 course resolves.
+
+        Output-root resolution:
+
+        1. ``phase_outputs.libv2_archival.course_dir`` — the canonical LibV2
+           course root. Output lands at
+           ``<course_dir>/quality/provenance_resolution_report.json`` (the
+           ``quality/`` subdir is created when missing).
+        2. Fallback: ``<project_path>/provenance_resolution_report.json``
+           (resolved via :meth:`_resolve_courseforge_project_path`) when no
+           LibV2 course dir resolves.
+
+        The aggregator itself further short-circuits (returns ``None``) when it
+        can't locate the IMSCC chunkset, so a run that stops before archival
+        writes no file. The anchor-resolution metric resolves the staged
+        accessible-HTML root from ``phase_outputs.staging.staging_dir`` and is
+        skipped (never fabricated) when that is absent. Pure regex/JSON (no
+        LLM). Best-effort — failure logs a warning and never alters
+        ``final_status``.
+        """
+        try:
+            from lib.aggregators.provenance_resolution import (
+                ProvenanceResolutionAggregator,
+            )
+
+            archival = phase_outputs.get("libv2_archival") or {}
+            course_dir_str = archival.get("course_dir")
+            libv2_course_path: Optional[Path] = None
+            output_path: Optional[Path] = None
+
+            if course_dir_str:
+                libv2_course_path = Path(course_dir_str)
+                output_path = (
+                    libv2_course_path
+                    / "quality"
+                    / "provenance_resolution_report.json"
+                )
+            else:
+                project_path = self._resolve_courseforge_project_path(
+                    phase_outputs
+                )
+                if project_path is not None:
+                    output_path = (
+                        project_path / "provenance_resolution_report.json"
+                    )
+
+            if output_path is None:
+                logger.debug(
+                    "provenance_resolution: no libv2_archival.course_dir / "
+                    "project_path resolvable; skipping aggregator (run_id=%s)",
+                    workflow_id,
+                )
+                return None
+
+            course_slug = (workflow_params or {}).get("course_name") or ""
+            aggregator = ProvenanceResolutionAggregator(
+                phase_outputs=phase_outputs,
+                course_slug=course_slug,
+                run_id=workflow_id,
+                libv2_course_path=libv2_course_path,
+            )
+            written = aggregator.write(output_path)
+            if written is None:
+                logger.debug(
+                    "provenance_resolution: aggregator skipped (no imscc "
+                    "chunkset, run_id=%s, course_slug=%s)",
+                    workflow_id, course_slug,
+                )
+                return None
+            logger.info(
+                "provenance_resolution: wrote %s (run_id=%s, course_slug=%s)",
+                written, workflow_id, course_slug,
+            )
+            return written
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            logger.warning(
+                "provenance_resolution aggregator failed "
+                "(non-fatal, run_id=%s): %s",
                 workflow_id, exc,
             )
             return None
