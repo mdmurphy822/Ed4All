@@ -99,6 +99,10 @@ _CONTENT_TYPE_SCHEMA_PATH = (
 )
 _ENFORCE_CONTENT_TYPE_ENV = "TRAINFORGE_ENFORCE_CONTENT_TYPE"
 _ENFORCE_TRUTHY_VALUES = frozenset({"1", "true", "yes", "on"})
+#: Falsey tokens for the DEFAULT-ON page-MathJax gate (parse-with-fallback,
+#: mirroring ``Courseforge/generators/_rewrite_fit_window.py::_FALSEY``).
+_MATHJAX_FALSEY_VALUES = frozenset({"0", "false", "no", "off"})
+_PAGE_MATHJAX_ENV = "COURSEFORGE_PAGE_MATHJAX"
 _CONTENT_TYPE_DEFAULT = "explanation"
 _CALLOUT_CONTENT_TYPE_DEFAULT = "note"
 
@@ -428,6 +432,49 @@ def _courseforge_emit_blocks_enabled() -> bool:
     ``plans/phase2_intermediate_format_detailed.md``).
     """
     return os.getenv(_EMIT_BLOCKS_ENV, "").strip().lower() in _ENFORCE_TRUTHY_VALUES
+
+
+#: The MathJax v3 include block injected into every packaged course page
+#: <head> when the DEFAULT-ON ``COURSEFORGE_PAGE_MATHJAX`` gate is enabled.
+#: Rendered course prose carries inline ``\( … \)`` / display ``\[ … \]`` LaTeX
+#: (415/659 blocks on a representative math corpus); without a renderer a
+#: standalone / preview page shows raw LaTeX source, and LMSes vary in whether
+#: they inject MathJax. The config block pins the two delimiter pairs and turns
+#: on MathJax's assistive-MML output (screen-reader accessible math); the loader
+#: uses the combined ``tex-chtml`` component from the jsDelivr CDN. Presentation
+#: only — no LLM/content change beyond these two script tags. Kept as a module
+#: constant so the on/off emit is byte-exact and testable.
+_PAGE_MATHJAX_INCLUDE = (
+    '  <script>\n'
+    '    window.MathJax = {\n'
+    '      tex: {\n'
+    "        inlineMath: [['\\\\(', '\\\\)']],\n"
+    "        displayMath: [['\\\\[', '\\\\]']]\n"
+    '      },\n'
+    '      options: { enableAssistiveMml: true }\n'
+    '    };\n'
+    '  </script>\n'
+    '  <script id="MathJax-script" async '
+    'src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>'
+)
+
+
+def _page_mathjax_enabled() -> bool:
+    """Return True unless ``COURSEFORGE_PAGE_MATHJAX`` is set to a falsey value.
+
+    **DEFAULT ON** — a documented deviation from the project's default-off
+    behavior-flag convention (mirroring how ``ED4ALL_GPU_LIFECYCLE`` documents
+    its default-ON deviation). Rationale: the include is presentation-only — a
+    single MathJax config + loader script pair — with no LLM/output-content
+    change beyond the two script tags, so rendered LaTeX math displays in
+    standalone / preview contexts and in LMSes that do not inject their own
+    MathJax. Read each call so tests can ``setenv``-toggle. Falsey tokens
+    (``0``/``false``/``no``/``off``, case-insensitive) omit the include
+    byte-identically; unset / garbage / truthy → on (parse-with-fallback,
+    mirroring the default-ON rewrite-tier resolvers in
+    ``Courseforge/generators/_rewrite_fit_window.py``).
+    """
+    return os.getenv(_PAGE_MATHJAX_ENV, "").strip().lower() not in _MATHJAX_FALSEY_VALUES
 
 
 # T4 — generator provenance. Every page's JSON-LD carries a generic
@@ -1870,13 +1917,22 @@ def _wrap_page(title: str, course_code: str, week_num: int, body_html: str,
             + json.dumps(page_metadata, indent=2, ensure_ascii=False)
             + "\n  </script>"
         )
+    # COURSEFORGE_PAGE_MATHJAX (default ON): inject the MathJax v3 loader +
+    # config so inline ``\\( … \\)`` / display ``\\[ … \\]`` LaTeX renders in
+    # standalone / preview contexts and in LMSes that don't inject their own
+    # MathJax. Falsey token → byte-identical omission (leading newline included
+    # so the OFF page is unchanged from HEAD).
+    mathjax_include = ""
+    if _page_mathjax_enabled():
+        mathjax_include = "\n" + _PAGE_MATHJAX_INCLUDE
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{safe_title} &mdash; {course_code}</title>
-  <style>{_page_style_block(theme)}</style>{json_ld}
+  <style>{_page_style_block(theme)}</style>{json_ld}{mathjax_include}
 </head>
 <body>
   <a href="#main-content" class="skip-link" data-cf-role="template-chrome">Skip to main content</a>
