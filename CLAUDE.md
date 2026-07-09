@@ -904,7 +904,7 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `ED4ALL_OBJECTIVE_INFER_BLOOM` | unset (off) | W1.4 infer a null LO bloom_level from its declared ABCD behavior.verb instead of skipping. |
 | `ED4ALL_CHUNK_COVERAGE_FLOOR` | unset (off) | W1.2 import-coverage gate floor on the existing `chunkset_manifest` gate |
 | `ED4ALL_MIN_CHUNKS` | unset (off) | W1.2 thin-chunkset floor on the `chunkset_manifest` gate (CHUNKSET_TOO_THIN warning). |
-| `ED4ALL_KEYTERM_DEF_QUALITY` | unset (off) | W1.5 glossary definition-quality gate (circular / too-long / not-distinct), warning-day-1. |
+| `ED4ALL_KEYTERM_DEF_QUALITY` | unset (off) | W1.5 glossary definition-quality gate (circular / too-long / not-distinct / missing-math-condition), warning-day-1; audits key-terms vocab cards AND inline `<div class="definition-box">` blocks parsed out of concept/explanation HTML. |
 | `ED4ALL_PAGE_EST_MINUTES` | unset (off) | W1.6 per-page estimated learning-time emit gate |
 | `ED4ALL_PAGE_WPM` | `200` | W1.6 satellite — reading-speed divisor for the `ED4ALL_PAGE_EST_MINUTES` estimate |
 | `ED4ALL_PAGE_INTERACTION_MINUTES` | `1.0` | W1.6 satellite — per-interaction minute cost for the `ED4ALL_PAGE_EST_MINUTES` estimate |

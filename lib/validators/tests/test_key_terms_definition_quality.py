@@ -185,6 +185,149 @@ def test_plain_vocab_card_without_marker_still_audited():
     assert any(i.code == "KEYTERM_DEF_CIRCULAR" for i in res.issues)
 
 
+# -------------------------------------------------- missing math condition ---
+def test_missing_nonzero_condition_flagged():
+    # A quotient definition with no nonzero-denominator side-condition.
+    block = _card("Quotient", "The quotient of one quantity divided by another.")
+    res = _run([block])
+    assert res.action == "regenerate"
+    codes = [i.code for i in res.issues if i.code == "KEYTERM_DEF_MISSING_CONDITION"]
+    assert codes == ["KEYTERM_DEF_MISSING_CONDITION"]
+    msg = next(
+        i.message for i in res.issues if i.code == "KEYTERM_DEF_MISSING_CONDITION"
+    )
+    assert "nonzero-denominator" in msg
+
+
+def test_present_nonzero_condition_passes():
+    block = _card(
+        "Quotient",
+        "The result of dividing a by b, where the denominator b is nonzero.",
+    )
+    res = _run([block])
+    assert not any(
+        i.code == "KEYTERM_DEF_MISSING_CONDITION" for i in res.issues
+    )
+
+
+def test_missing_nonzero_condition_operator_form_passes():
+    # The '!= 0' / '≠ 0' operator forms satisfy the side-condition.
+    block = _card("Ratio", "The value a / b for b != 0.")
+    res = _run([block])
+    assert not any(
+        i.code == "KEYTERM_DEF_MISSING_CONDITION" for i in res.issues
+    )
+
+
+def test_slope_missing_distinctness_flagged():
+    block = _card(
+        "Slope",
+        "The slope is the change in y divided by the change in x, "
+        "computed as (y2 - y1) / (x2 - x1).",
+    )
+    res = _run([block])
+    msg = next(
+        (i.message for i in res.issues if i.code == "KEYTERM_DEF_MISSING_CONDITION"),
+        None,
+    )
+    assert msg is not None
+    assert "distinct-points" in msg
+
+
+def test_slope_present_distinctness_passes():
+    block = _card(
+        "Slope",
+        "The slope of a line through two distinct points is "
+        "(y2 - y1) / (x2 - x1) where x2 ≠ x1.",
+    )
+    res = _run([block])
+    assert not any(
+        i.code == "KEYTERM_DEF_MISSING_CONDITION" for i in res.issues
+    )
+
+
+def test_non_ratio_definition_no_condition_flag():
+    block = _card("Factor", "A whole number that divides another exactly.")
+    res = _run([block])
+    assert not any(
+        i.code == "KEYTERM_DEF_MISSING_CONDITION" for i in res.issues
+    )
+
+
+# -------------------------------------------------- definition-box widening --
+_DEF_BOX = (
+    '<section data-cf-content-type="explanation"><h2>Fractions</h2>'
+    '<p>Some prose introducing the idea.</p>'
+    '<div class="definition-box"><strong>{term}</strong> {definition}</div>'
+    '</section>'
+)
+
+
+def _concept_block(term, definition, *, block_id="cx", block_type="concept"):
+    return {
+        "block_type": block_type,
+        "block_id": block_id,
+        "content": _DEF_BOX.format(term=term, definition=definition),
+    }
+
+
+def test_definition_box_extracted_from_concept_block():
+    block = _concept_block(
+        "Rational number",
+        "A number expressible as a quotient a/b of two integers with b nonzero.",
+        block_id="week_01_content_02",
+    )
+    res = _run([block])
+    meta = res.metadata["key_terms_definition_quality"]
+    assert meta["cards_audited"] == 1
+    # The synthetic unit is keyed off the parent block id (actionable via
+    # --block-ids).
+    per_block = meta["per_block"]
+    unit_key = next(iter(per_block))
+    assert unit_key.startswith("week_01_content_02#definition_box")
+    assert per_block[unit_key]["location"] == "week_01_content_02"
+
+
+def test_definition_box_circular_check_fires_via_widening():
+    # Proves the widened units feed the EXISTING circular check.
+    block = _concept_block(
+        "Slope",
+        "The slope is the slope of a straight line.",
+        block_id="week_02_content_01",
+    )
+    res = _run([block])
+    circular = [
+        i for i in res.issues if i.code == "KEYTERM_DEF_CIRCULAR"
+    ]
+    assert len(circular) == 1
+    assert circular[0].location == "week_02_content_01"
+
+
+def test_definition_box_missing_condition_fires_via_widening():
+    block = _concept_block(
+        "Quotient",
+        "The quotient of one number divided by another.",
+        block_id="week_03_content_01",
+    )
+    res = _run([block])
+    assert any(
+        i.code == "KEYTERM_DEF_MISSING_CONDITION"
+        and i.location == "week_03_content_01"
+        for i in res.issues
+    )
+
+
+def test_explanation_block_without_definition_box_is_noop():
+    block = {
+        "block_type": "explanation",
+        "block_id": "e1",
+        "content": "<section><h2>Intro</h2><p>Plain prose only.</p></section>",
+    }
+    res = _run([block])
+    assert res.metadata["key_terms_definition_quality"]["cards_audited"] == 0
+    assert not res.issues
+
+
 # ------------------------------------------------------- decision capture ----
 class _CaptureSpy:
     def __init__(self):
