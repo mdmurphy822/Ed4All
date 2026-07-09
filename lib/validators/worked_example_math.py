@@ -186,11 +186,31 @@ _RE_TAG = re.compile(r"<[^>]+>")
 
 #: Solution-context keywords — a fragment whose preceding window contains one of
 #: these is treated as a stated-solution context (pattern a/b harvest).
+#: ``intersect at`` (fix e) makes the stated intersection point of a linear
+#: system ("the lines intersect at (3, 2)") a checkable claimed solution.
 _SOLUTION_KEYWORDS: Tuple[str, ...] = (
     "solution", "therefore", "the answer", "answer is", "answer:", "thus",
-    "we get", "we find", "yields", "so ", "hence",
+    "we get", "we find", "yields", "so ", "hence", "intersect at",
 )
 _CTX_WINDOW: int = 120
+
+#: Premise markers (fix b) — a ``var = value`` equation whose TIGHT preceding
+#: window carries one of these is a PREMISE (an assumption / substitution input),
+#: NOT a claimed solution to verify. Demotes a keyword-derived solution context
+#: (``let x = 5`` under a nearby "answer"/"so" keyword is still a premise). A
+#: tight window keeps this from over-suppressing a genuine solution keyword far
+#: upstream. A fragment INSIDE a solution-line / \boxed span is NOT demoted (that
+#: is an unambiguous stated-solution carrier).
+_PREMISE_KEYWORDS: Tuple[str, ...] = (
+    "let ", "when ", "substituting", "substitute ", "suppose",
+)
+_PREMISE_WINDOW: int = 40
+
+
+def _premise_before(html: str, pos: int) -> bool:
+    """True when a premise marker sits in the tight window before ``pos``."""
+    window = _RE_TAG.sub(" ", html[max(0, pos - _PREMISE_WINDOW):pos]).lower()
+    return any(k in window for k in _PREMISE_KEYWORDS)
 
 
 def _clean_math(s: str) -> str:
@@ -321,6 +341,77 @@ def _split_equation_sides(fragment: str) -> Optional[List[str]]:
     return sides
 
 
+#: Implication markers (fix c). A fragment carrying a derivation-chain arrow
+#: (``2x + 3 = 11 \implies x = 4``) is TWO equations, not one; splitting on the
+#: arrow parses each independently (without the split the arrow is dropped as a
+#: stray ``\command`` and the two equalities collapse into a garbage chain that
+#: mis-evaluates). Covers LaTeX ``\implies`` / ``\Rightarrow`` / ``\Longrightarrow``
+#: and their unicode glyphs.
+_RE_IMPLICATION = re.compile(
+    r"\\implies|\\Longrightarrow|\\Rightarrow|⟹|⇒"
+)
+
+
+def _split_on_implication(fragment: str) -> List[str]:
+    """Split a fragment on implication arrows into independent sub-fragments."""
+    parts = _RE_IMPLICATION.split(fragment)
+    return [p for p in parts if p.strip()]
+
+
+#: Problem-restart markers (fix a). A block that presents several problems back-
+#: to-back restarts at an ``Example N:`` heading or a fresh ``Step 1:``. Pooling
+#: candidate equations block-wide across those restarts lets a solution pair from
+#: problem 1 be cross-checked against a system equation from problem 2 (a false
+#: positive), and mis-attributes a genuine defect to the wrong problem. Scoping
+#: the system check to one segment fixes both.
+_RE_PROBLEM_RESTART = re.compile(r"(?i)\b(?:example\s+\d+\s*:|step\s+1\s*:)")
+
+
+def _split_problem_segments(html: str) -> List[str]:
+    """Split block HTML into problem segments at ``Example N:`` / ``Step 1:``.
+
+    Each restart marker begins a new segment; any text before the first marker
+    is its own (usually equation-free) leading segment. A block with no restart
+    marker is one segment (byte-identical to the block-wide behavior).
+    """
+    starts = sorted({m.start() for m in _RE_PROBLEM_RESTART.finditer(html)})
+    if not starts:
+        return [html]
+    segments: List[str] = []
+    if starts[0] > 0:
+        segments.append(html[:starts[0]])
+    for i, s in enumerate(starts):
+        e = starts[i + 1] if i + 1 < len(starts) else len(html)
+        segments.append(html[s:e])
+    return segments
+
+
+#: Negation-suppression markers (fix d). When the window just AFTER a flagged
+#: equation says the candidate FAILS ("(False)" / "not a solution"), the block is
+#: DELIBERATELY teaching a non-solution — suppress the finding (it is intentional,
+#: not a defect).
+_RE_NEGATION_SUPPRESS = re.compile(r"\(\s*false\s*\)|not\s+a\s+solution", re.IGNORECASE)
+_SUPPRESS_WINDOW: int = 60
+
+
+def _is_taught_failure(content: str, raw: str) -> bool:
+    """True when a negation marker follows the flagged equation ``raw`` in ``content``.
+
+    Scans every occurrence of the flagged fragment text and inspects the
+    ``_SUPPRESS_WINDOW`` chars that follow it. Best-effort: if the fragment text
+    cannot be located, no suppression (the finding stands — conservative).
+    """
+    if not raw:
+        return False
+    idx = content.find(raw)
+    while idx != -1:
+        tail = content[idx + len(raw): idx + len(raw) + _SUPPRESS_WINDOW]
+        if _RE_NEGATION_SUPPRESS.search(tail):
+            return True
+        idx = content.find(raw, idx + 1)
+    return False
+
+
 def _iter_fragments(html: str) -> List[Tuple[str, bool]]:
     """Return ``[(fragment, in_solution_context), ...]`` for a block's HTML.
 
@@ -353,7 +444,15 @@ def _iter_fragments(html: str) -> List[Tuple[str, bool]]:
                 continue
             seen_spans.add(span)
             frag = m.group(1)
-            ctx = _in_solution_span(m.start()) or _ctx_keyword_before(m.start())
+            # A solution-line / \boxed span is an unambiguous stated-solution
+            # carrier; otherwise a keyword-derived context is demoted to a
+            # premise when a let/when/substituting marker sits immediately before
+            # (fix b — a premise is a substitution input, not a claim to verify).
+            in_span = _in_solution_span(m.start())
+            ctx = in_span or (
+                _ctx_keyword_before(m.start())
+                and not _premise_before(html, m.start())
+            )
             fragments.append((frag, ctx))
     return fragments
 
@@ -389,7 +488,10 @@ def _extract_solution_pairs(html: str) -> List[Tuple[Any, Any]]:
         if any(a <= pos <= b for a, b in solution_spans):
             return True
         window = _RE_TAG.sub(" ", html[max(0, pos - _CTX_WINDOW):pos]).lower()
-        return any(k in window for k in _SOLUTION_KEYWORDS)
+        if not any(k in window for k in _SOLUTION_KEYWORDS):
+            return False
+        # Demote a keyword-derived context to a premise (fix b).
+        return not _premise_before(html, pos)
 
     pairs: List[Tuple[Any, Any]] = []
     for m in _RE_PAIR.finditer(html):
@@ -484,7 +586,12 @@ def _collect_equations(
     """
     equations: List[Tuple[Any, Any, str, bool]] = []
     chains: List[Tuple[List[Any], str, bool]] = []
-    for frag, ctx in fragments:
+    # Split each fragment on implication arrows first (fix c) so a derivation
+    # chain like ``2x + 3 = 11 \implies x = 4`` is parsed as TWO equations.
+    exploded = [
+        (sub, ctx) for frag, ctx in fragments for sub in _split_on_implication(frag)
+    ]
+    for frag, ctx in exploded:
         sides = _split_equation_sides(frag)
         if sides is None:
             continue
@@ -531,12 +638,13 @@ def _stated_solutions(
 
 def _check_solve(
     equations: Sequence[Tuple[Any, Any, str, bool]]
-) -> List[Tuple[str, str, str]]:
+) -> List[Tuple[str, str, str, str]]:
     """Pattern (a) — single-variable solve verification.
 
-    Returns ``[(var, claimed, detail), ...]`` for each provable violation.
+    Returns ``[(var, claimed, detail, raw), ...]`` for each provable violation
+    (``raw`` is the failing equation fragment, used for negation-suppression).
     """
-    findings: List[Tuple[str, str, str]] = []
+    findings: List[Tuple[str, str, str, str]] = []
     solutions = _stated_solutions(equations)
     for var, vals in solutions.items():
         # Non-trivial single-variable equations of this variable in the block.
@@ -582,6 +690,7 @@ def _check_solve(
                 f"the claimed solution {var}={c} solves NONE of the block's "
                 f"equations for {var}; e.g. substituting into '{raw}' gives "
                 f"lhs-rhs = {resid} (must be 0)",
+                raw,
             ))
     return findings
 
@@ -606,7 +715,7 @@ def _check_system(
     equations: Sequence[Tuple[Any, Any, str, bool]],
     pairs: Sequence[Tuple[Any, Any]],
     block_text: str,
-) -> List[Tuple[str, str]]:
+) -> List[Tuple[str, str, str]]:
     """Pattern (b) — two-equation system + ordered-pair solution verification.
 
     Returns ``[(pair_str, detail), ...]`` per provable violation. Fires only when
@@ -642,7 +751,7 @@ def _check_system(
             (sympy.simplify(lhs - rhs), raw, (lhs, rhs))  # type: ignore[union-attr]
         )
 
-    findings: List[Tuple[str, str]] = []
+    findings: List[Tuple[str, str, str]] = []
     for varset, residuals in groups.items():
         # Keep distinct (non-equivalent) residuals.
         distinct: List[Tuple[Any, str]] = []
@@ -668,7 +777,8 @@ def _check_system(
                         f"({av}, {bv})",
                         f"the pair ({names[0]}={av}, {names[1]}={bv}) does not "
                         f"satisfy the system equation '{raw}' "
-                        f"(residual = {sympy.simplify(val)}, must be 0)"  # type: ignore[union-attr]
+                        f"(residual = {sympy.simplify(val)}, must be 0)",  # type: ignore[union-attr]
+                        raw,
                     ))
                     break
     return findings
@@ -938,7 +1048,10 @@ class WorkedExampleMathValidator:
             # (equations + chains registered). Precise per-fragment tracking is
             # not needed; report the aggregate signal.
             frags_with_eq = sum(
-                1 for f, _ in fragments if _split_equation_sides(f) is not None
+                1
+                for f, _ in fragments
+                for sub in _split_on_implication(f)
+                if _split_equation_sides(sub) is not None
             )
             parsed_units = len(
                 {raw for _, _, raw, _ in equations}
@@ -955,15 +1068,37 @@ class WorkedExampleMathValidator:
             pairs = _extract_solution_pairs(content)
 
             solve_findings = _check_solve(equations)
-            system_findings = _check_system(equations, pairs, content)
+            # Fix a — scope the system cross-check to one PROBLEM SEGMENT so a
+            # solution pair from one problem is never checked against another
+            # problem's equation. Marker detection still sees the whole block.
+            segments = _split_problem_segments(content)
+            if len(segments) > 1:
+                system_findings: List[Tuple[str, str, str]] = []
+                for seg in segments:
+                    seg_eqs, _seg_chains = _collect_equations(_iter_fragments(seg))
+                    seg_pairs = _extract_solution_pairs(seg)
+                    system_findings.extend(
+                        _check_system(seg_eqs, seg_pairs, content)
+                    )
+            else:
+                system_findings = _check_system(equations, pairs, content)
             chain_findings = _check_numeric_chains(chains, equations)
 
+            # Fix d — suppress a finding when the block is DELIBERATELY teaching a
+            # non-solution ("(False)" / "not a solution" within ~60 chars after
+            # the flagged equation).
             block_details: List[str] = []
-            for _var, claimed, detail in solve_findings:
+            for _var, claimed, detail, raw in solve_findings:
+                if _is_taught_failure(content, raw):
+                    continue
                 block_details.append(f"solve: claimed {claimed}; {detail}")
-            for _pair, detail in system_findings:
+            for _pair, detail, raw in system_findings:
+                if _is_taught_failure(content, raw):
+                    continue
                 block_details.append(f"system: {detail}")
-            for _raw, detail in chain_findings:
+            for raw, detail in chain_findings:
+                if _is_taught_failure(content, raw):
+                    continue
                 block_details.append(f"chain: {detail}")
 
             if not block_details:

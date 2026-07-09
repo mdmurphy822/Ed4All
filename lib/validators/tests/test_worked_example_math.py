@@ -311,3 +311,187 @@ def test_shadow_forces_warning_severity() -> None:
     )
     assert all(i.severity == "warning" for i in result.issues)
     assert result.passed is True
+
+
+# --------------------------------------------------------------------- #
+# Precision pass — five audited false-positive fixes
+# (a) per-segment system scoping   (b) premise contexts
+# (c) implication-chain split      (d) taught-failure suppression
+# (e) "intersect at" solution keyword
+# --------------------------------------------------------------------- #
+
+
+# (a) Two DISTINCT problems, each with its own correct system + solution pair.
+# Block-wide pooling cross-checks problem-1's pair (3,2) against problem-2's
+# equation x+y=9 (3+2=5 != 9) and vice-versa -> two false positives. Scoping the
+# system cross-check to one problem segment (split at "Example N:") kills both.
+_TWO_CORRECT_SYSTEMS = """
+<section data-cf-content-type="example">
+  <h3>Two Systems</h3>
+  <p>Example 1: Solve the system \\(x + y = 5\\) and \\(x - y = 1\\).</p>
+  <div class="solution-line">The solution is \\((3, 2)\\).</div>
+  <p>Example 2: Solve the system \\(x + y = 9\\) and \\(x - y = 3\\).</p>
+  <div class="solution-line">The solution is \\((6, 3)\\).</div>
+</section>
+"""
+
+# (a) TP — problem 2's stated solution (6, 5) is WRONG (6+5=11 != 9). Segmenting
+# still flags it, correctly localized to problem 2 (problem 1 stays clean).
+_TWO_SYSTEMS_SECOND_WRONG = """
+<section data-cf-content-type="example">
+  <h3>Two Systems</h3>
+  <p>Example 1: Solve the system \\(x + y = 5\\) and \\(x - y = 1\\).</p>
+  <div class="solution-line">The solution is \\((3, 2)\\).</div>
+  <p>Example 2: Solve the system \\(x + y = 9\\) and \\(x - y = 3\\).</p>
+  <div class="solution-line">The solution is \\((6, 5)\\).</div>
+</section>
+"""
+
+
+def test_a_per_segment_two_correct_systems_not_flagged() -> None:
+    result = _run([_block(
+        block_id="p#example_two_sys", block_type="example",
+        content=_TWO_CORRECT_SYSTEMS,
+    )])
+    assert not _wrong_codes(result), (
+        "each problem's pair satisfies ITS OWN system; block-wide pooling would "
+        "cross-attribute — per-segment scoping must not flag"
+    )
+
+
+def test_a_per_segment_localizes_real_defect() -> None:
+    result = _run([_block(
+        block_id="p#example_two_sys_wrong", block_type="example",
+        content=_TWO_SYSTEMS_SECOND_WRONG,
+    )])
+    assert _wrong_codes(result), "problem 2's wrong pair (6,5) must still flag"
+    joined = " ".join(i.message for i in result.issues)
+    # Localized to problem 2's equation, not problem 1's.
+    assert "6" in joined and "5" in joined
+
+
+# (b) A premise: "let x = 5" under a nearby "the answer" keyword. x=5 is a
+# substitution INPUT, not a claimed solution; 2x+3=11 (true x=4) must NOT flag.
+_PREMISE_CONTEXT = """
+<section data-cf-content-type="example">
+  <p>To find the answer, let \\(x = 5\\), then substitute into \\(2x + 3 = 11\\).</p>
+</section>
+"""
+
+# (b) TP — a GENUINE claimed solution (no premise marker) still flags.
+_PREMISE_TP_REAL_SOLUTION = """
+<section data-cf-content-type="example">
+  <p>Therefore the answer is \\(x = 5\\); check \\(2x + 3 = 11\\).</p>
+</section>
+"""
+
+
+def test_b_premise_context_not_flagged() -> None:
+    result = _run([_block(
+        block_id="p#example_premise", block_type="example",
+        content=_PREMISE_CONTEXT,
+    )])
+    assert not _wrong_codes(result), (
+        "'let x = 5' is a premise/substitution input, not a claimed solution"
+    )
+
+
+def test_b_real_stated_solution_still_flags() -> None:
+    result = _run([_block(
+        block_id="p#example_premise_tp", block_type="example",
+        content=_PREMISE_TP_REAL_SOLUTION,
+    )])
+    assert _wrong_codes(result), (
+        "a genuine claimed solution x=5 for 2x+3=11 (true x=4) must still flag"
+    )
+
+
+# (c) A CORRECT derivation chain across an implication arrow. Without splitting
+# on \implies, the two true equalities collapse into a garbage all-numeric chain
+# [3, 36, 12] that mis-evaluates and false-flags.
+_IMPLICATION_CORRECT = """
+<section data-cf-content-type="explanation">
+  <p>Simplify: <code>6 / 2 = 3 \\implies 3 * 4 = 12</code>.</p>
+</section>
+"""
+
+# (c) TP — the second equality is WRONG (6 + 1 = 7, not 8); the split isolates
+# it so it still flags.
+_IMPLICATION_WRONG = """
+<section data-cf-content-type="explanation">
+  <p>Chain: <code>2 * 3 = 6 \\implies 6 + 1 = 8</code>.</p>
+</section>
+"""
+
+
+def test_c_implication_correct_chain_not_flagged() -> None:
+    result = _run([_block(
+        block_id="p#explanation_impl_ok", block_type="explanation",
+        content=_IMPLICATION_CORRECT,
+    )])
+    assert not _wrong_codes(result), (
+        "both equalities across \\implies are true — splitting must not flag"
+    )
+
+
+def test_c_implication_wrong_chain_flags() -> None:
+    result = _run([_block(
+        block_id="p#explanation_impl_wrong", block_type="explanation",
+        content=_IMPLICATION_WRONG,
+    )])
+    assert _wrong_codes(result), "6 + 1 = 8 is false; the split must flag it"
+
+
+# (d) The block DELIBERATELY teaches a non-solution: x=5 fails 2x+3=11 and the
+# block SAYS so ("(False)" / "not a solution") right after. Intentional -> no flag.
+_TAUGHT_FAILURE = """
+<section data-cf-content-type="example">
+  <p>Solution: \\(x = 5\\). Check \\(2x + 3 = 11\\) which gives 13 (False), so x = 5 is not a solution.</p>
+</section>
+"""
+
+# (d) TP — same wrong solve WITHOUT the negation markers must still flag.
+_TAUGHT_FAILURE_TP = """
+<section data-cf-content-type="example">
+  <p>Solution: \\(x = 5\\). Check \\(2x + 3 = 11\\).</p>
+</section>
+"""
+
+
+def test_d_taught_failure_suppressed() -> None:
+    result = _run([_block(
+        block_id="p#example_taught", block_type="example",
+        content=_TAUGHT_FAILURE,
+    )])
+    assert not _wrong_codes(result), (
+        "the block itself teaches that x=5 is NOT a solution — do not flag"
+    )
+
+
+def test_d_wrong_solve_without_negation_still_flags() -> None:
+    result = _run([_block(
+        block_id="p#example_taught_tp", block_type="example",
+        content=_TAUGHT_FAILURE_TP,
+    )])
+    assert _wrong_codes(result), "no negation marker -> the wrong solve flags"
+
+
+# (e) A stated intersection point of a linear system. "intersect at" is the new
+# solution keyword; the true intersection of x+y=4, x-y=0 is (2,2), so a stated
+# (3, 5) does not satisfy x+y=4 and must flag.
+_INTERSECT_WRONG = """
+<section data-cf-content-type="example">
+  <p>Find the point of intersection of \\(x + y = 4\\) and \\(x - y = 0\\). The lines intersect at \\((3, 5)\\).</p>
+</section>
+"""
+
+
+def test_e_intersect_at_wrong_point_flags() -> None:
+    result = _run([_block(
+        block_id="p#example_intersect", block_type="example",
+        content=_INTERSECT_WRONG,
+    )])
+    assert _wrong_codes(result), (
+        "stated intersection (3,5) fails x+y=4 (true is (2,2)); 'intersect at' "
+        "makes it a checkable claimed solution"
+    )
