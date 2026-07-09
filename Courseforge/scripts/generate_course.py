@@ -1667,6 +1667,11 @@ COURSEFORGE_RICHER_CSS = """
     .place-value-table { border-collapse: collapse; margin: var(--cf-space-4) 0; }
     .place-value-table td, .place-value-table th { text-align: center; min-width: 3.5rem; color: var(--cf-ink); }
 
+    /* §5.5(a) — week breadcrumb chrome (emitted only when the richer flag is
+       on; see _wrap_page). Calm, small, high-contrast. */
+    .cf-breadcrumb { font-size: var(--cf-font-size-sm); color: var(--cf-text-muted); margin-top: var(--cf-space-1); }
+    .cf-breadcrumb a { color: var(--cf-primary); text-decoration: underline; }
+
     /* ===================================================================
        PHASE 3 — a11y completion: print, reduced-motion. (focus-visible +
        target-size rules live in the Phase 1 block above.) Emitted pages
@@ -1997,6 +2002,21 @@ def _wrap_page(title: str, course_code: str, week_num: int, body_html: str,
     if _page_mathjax_enabled():
         mathjax_include = "\n" + _PAGE_MATHJAX_INCLUDE
 
+    # §5.5(a) — week breadcrumb, richer-visual-gated (byte-identical off). The
+    # week-overview filename is deterministic from week_num, so an "up to Week
+    # N overview" crumb is derivable at wrap time without threading sibling
+    # ordering. Prev/next page links are NOT emitted — _wrap_page receives no
+    # sibling-page list/position, so they can't be derived here.
+    breadcrumb = ""
+    if _richer_visual_system_enabled():
+        overview_href = f"week_{week_num:02d}_overview.html"
+        breadcrumb = (
+            f'\n    <nav aria-label="Breadcrumb" class="cf-breadcrumb" '
+            f'data-cf-role="template-chrome">'
+            f'<a href="{overview_href}">Week {week_num}</a> '
+            f'&rsaquo; <span aria-current="page">{safe_title}</span></nav>'
+        )
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2008,7 +2028,7 @@ def _wrap_page(title: str, course_code: str, week_num: int, body_html: str,
 <body>
   <a href="#main-content" class="skip-link" data-cf-role="template-chrome">Skip to main content</a>
   <header role="banner" data-cf-role="template-chrome">
-    <p>{course_code} &mdash; Week {week_num}</p>
+    <p>{course_code} &mdash; Week {week_num}</p>{breadcrumb}
   </header>
   <main id="main-content" role="main"{est_attr}>
     <h1>{safe_title}</h1>
@@ -3144,6 +3164,79 @@ def _infer_content_type(section: Dict) -> str:
     return _validate_section_content_type(_infer_content_type_raw(section))
 
 
+# ---------------------------------------------------------------------------
+# §5.5(c) — adjacent near-duplicate heading dedup (deterministic, no LLM).
+# A pure function collapsing ADJACENT same-level headings whose normalized
+# token overlap meets a threshold — the 7B sometimes restates a section
+# heading verbatim (or near-verbatim) on the next block, producing a doubled
+# H2. Collapsing keeps the first heading and merges the duplicate's body
+# (list-valued keys are concatenated, so no prose is lost). Byte-stability:
+# only wired behind ED4ALL_RICHER_VISUAL_SYSTEM, so default output is unchanged.
+# ---------------------------------------------------------------------------
+
+_HEADING_TOKEN_RE = re.compile(r"[a-z0-9]+")
+# List-valued section keys that must be CONCATENATED when two sections merge
+# (so the dropped duplicate's content survives).
+_MERGEABLE_SECTION_LIST_KEYS = ("paragraphs", "flip_cards", "key_terms")
+
+
+def _normalized_heading_tokens(text: str) -> FrozenSet[str]:
+    """Lowercase, punctuation-stripped token set for a heading string."""
+    return frozenset(_HEADING_TOKEN_RE.findall((text or "").lower()))
+
+
+def heading_token_overlap(a: str, b: str) -> float:
+    """Jaccard overlap of two headings' normalized token sets (0.0..1.0).
+
+    Two empty headings overlap fully (1.0); one empty vs non-empty is 0.0.
+    """
+    ta, tb = _normalized_heading_tokens(a), _normalized_heading_tokens(b)
+    if not ta and not tb:
+        return 1.0
+    union = ta | tb
+    if not union:
+        return 0.0
+    return len(ta & tb) / len(union)
+
+
+def collapse_adjacent_duplicate_headings(
+    sections: List[Dict], *, threshold: float = 0.8
+) -> List[Dict]:
+    """Return a new sections list with ADJACENT near-duplicate headings merged.
+
+    A section is merged INTO the immediately-preceding kept section when both
+    share the same heading ``level`` (default 2 → H2) AND their normalized
+    heading token overlap is >= ``threshold``. The merge concatenates the
+    list-valued body keys (``paragraphs`` / ``flip_cards`` / ``key_terms``) so
+    no content is dropped; scalar keys keep the first section's value. Pure —
+    the input list + its section dicts are never mutated (shallow copies are
+    taken for merged sections).
+    """
+    out: List[Dict] = []
+    for section in sections:
+        if out:
+            prev = out[-1]
+            same_level = section.get("level", 2) == prev.get("level", 2)
+            overlap = heading_token_overlap(
+                prev.get("heading", ""), section.get("heading", "")
+            )
+            if same_level and overlap >= threshold:
+                merged = dict(prev)  # shallow copy — never mutate the input
+                for key in _MERGEABLE_SECTION_LIST_KEYS:
+                    a = list(prev.get(key, []) or [])
+                    b = list(section.get(key, []) or [])
+                    if a or b:
+                        merged[key] = a + b
+                # Carry any scalar body the kept section lacks (e.g. a callout).
+                for key, value in section.items():
+                    if key not in merged and key not in _MERGEABLE_SECTION_LIST_KEYS:
+                        merged[key] = value
+                out[-1] = merged
+                continue
+        out.append(section)
+    return out
+
+
 def _render_content_sections(
     sections: List[Dict],
     *,
@@ -3179,6 +3272,10 @@ def _render_content_sections(
       internally.
     """
     bound_page_id = page_id or _LEGACY_PAGE_ID
+    # §5.5(c) — collapse adjacent near-duplicate H2s. Deterministic (no LLM);
+    # gated behind ED4ALL_RICHER_VISUAL_SYSTEM so default output is byte-identical.
+    if _richer_visual_system_enabled():
+        sections = collapse_adjacent_duplicate_headings(sections)
     parts: List[str] = []
     for sec_idx, section in enumerate(sections):
         heading = html_mod.escape(section["heading"])

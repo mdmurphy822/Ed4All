@@ -17,6 +17,8 @@ from generate_course import (  # noqa: E402
     COURSEFORGE_RICHER_CSS,
     _THEME_OVERRIDE_CSS,
     _wrap_page,
+    collapse_adjacent_duplicate_headings,
+    heading_token_overlap,
     patch_css_in_export,
     patch_css_in_html,
 )
@@ -347,6 +349,77 @@ def test_reveal_repair_absent_from_legacy_css():
 # A color declaration OR a token-based color (var(--cf-ink)) for §5.4 checks.
 def _TEXT_COLOR_OR_TOKEN(body: str) -> bool:
     return bool(_TEXT_COLOR_RE.search(body)) or "color: var(--cf-ink)" in body
+
+
+# ---------------------------------------------------------------------------
+# §5.5 — page chrome: week breadcrumb (richer-gated) + adjacent-H2 dedup.
+# ---------------------------------------------------------------------------
+
+
+def test_heading_token_overlap_basics():
+    assert heading_token_overlap("Adding Fractions", "Adding Fractions") == 1.0
+    assert heading_token_overlap("Adding Fractions", "Adding fractions!") == 1.0
+    assert heading_token_overlap("Adding Fractions", "Subtracting Integers") == 0.0
+    # Near-duplicate (one extra token) is high but < 1.0.
+    ov = heading_token_overlap("Adding Fractions", "Adding Fractions Together")
+    assert 0.5 < ov < 1.0
+    assert heading_token_overlap("", "") == 1.0
+    assert heading_token_overlap("Something", "") == 0.0
+
+
+def test_collapse_adjacent_duplicate_headings_merges_body():
+    sections = [
+        {"heading": "Adding Fractions", "level": 2, "paragraphs": ["p1"]},
+        {"heading": "Adding Fractions", "level": 2, "paragraphs": ["p2"]},
+        {"heading": "Subtracting", "level": 2, "paragraphs": ["p3"]},
+    ]
+    out = collapse_adjacent_duplicate_headings(sections)
+    assert [s["heading"] for s in out] == ["Adding Fractions", "Subtracting"]
+    # No prose lost — the duplicate's paragraph merged into the kept section.
+    assert out[0]["paragraphs"] == ["p1", "p2"]
+    assert out[1]["paragraphs"] == ["p3"]
+
+
+def test_collapse_is_pure_no_input_mutation():
+    sections = [
+        {"heading": "Topic A", "level": 2, "paragraphs": ["p1"]},
+        {"heading": "Topic A", "level": 2, "paragraphs": ["p2"]},
+    ]
+    before = [dict(s) for s in sections]
+    collapse_adjacent_duplicate_headings(sections)
+    assert sections == before, "input sections must not be mutated"
+
+
+def test_collapse_respects_level_and_non_adjacency():
+    # Different levels are not collapsed even with identical headings.
+    mixed = [
+        {"heading": "Summary", "level": 2, "paragraphs": ["a"]},
+        {"heading": "Summary", "level": 3, "paragraphs": ["b"]},
+    ]
+    assert len(collapse_adjacent_duplicate_headings(mixed)) == 2
+    # Non-adjacent duplicates are preserved (only ADJACENT collapse).
+    spread = [
+        {"heading": "Recap", "level": 2, "paragraphs": ["a"]},
+        {"heading": "Details", "level": 2, "paragraphs": ["b"]},
+        {"heading": "Recap", "level": 2, "paragraphs": ["c"]},
+    ]
+    assert len(collapse_adjacent_duplicate_headings(spread)) == 3
+
+
+def test_breadcrumb_emitted_only_when_richer_on(monkeypatch):
+    kwargs = dict(title="week_03_content_01", course_code="PHYS_101",
+                  week_num=3, body_html="<section><p>x</p></section>")
+    monkeypatch.delenv("ED4ALL_RICHER_VISUAL_SYSTEM", raising=False)
+    off = _wrap_page(**kwargs)
+    assert "cf-breadcrumb" not in off  # byte-stable off
+    monkeypatch.setenv("ED4ALL_RICHER_VISUAL_SYSTEM", "1")
+    on = _wrap_page(**kwargs)
+    assert 'class="cf-breadcrumb"' in on
+    # Links up to the deterministically-named week overview page.
+    assert 'href="week_03_overview.html"' in on
+    assert "Week 3" in on
+    # No prev/next links are claimed (not derivable at wrap time).
+    assert "rel=\"next\"" not in on and "rel=\"prev\"" not in on
 
 
 def test_wrapped_page_has_real_head_and_stylesheet():
