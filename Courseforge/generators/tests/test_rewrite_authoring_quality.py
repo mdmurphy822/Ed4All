@@ -17,6 +17,8 @@ Items covered:
 - ⑯  "Key Idea"-style framing on key-rule / callout content.
 """
 
+import pytest
+
 import Courseforge.generators._rewrite_provider as rp
 
 
@@ -186,3 +188,121 @@ def test_concept_contract_leads_key_rule_with_key_idea():
     contract = rp._BLOCK_TYPE_OUTPUT_CONTRACTS["concept"]
     assert "Key Idea" in contract
     assert "key-rule" in contract
+
+
+# ---------------------------------------------------------------------------
+# ⑬ — Per-block-type §4 anatomy / definition-in-context contracts
+# ---------------------------------------------------------------------------
+
+# Every §4 type must carry its anatomy contract in the built prompt so
+# thinness becomes shapeable (enforced downstream by ED4ALL_BLOCK_ANATOMY +
+# ED4ALL_BLOCK_QUALITY_RUBRIC). Each entry pins one load-bearing phrase from the
+# §4 bullet so a future edit cannot silently drop the anatomy.
+
+_ANATOMY_TYPES = [
+    "concept",
+    "explanation",
+    "example",
+    "worked_example",
+    "activity",
+    "self_check_question",
+    "objective",
+    "summary_takeaway",
+    "recap",
+    "misconception",
+    "callout",
+    "scenario",
+    "hook",
+    "guided_practice",
+    "diagram",
+    "resources",
+]
+
+
+@pytest.mark.parametrize("block_type", _ANATOMY_TYPES)
+def test_every_section4_type_has_anatomy_contract(block_type):
+    # A registered, non-generic contract carrying the §4 anatomy marker.
+    assert block_type in rp._BLOCK_TYPE_OUTPUT_CONTRACTS
+    contract = rp._block_type_output_contract(block_type)
+    assert "ANATOMY (§4)" in contract
+    generic = (
+        f"Emit the rendered HTML body for a block of type "
+        f"{block_type!r}. Carry `data-cf-source-ids` on the top "
+        f"wrapper to attribute the source chunks."
+    )
+    assert contract != generic
+
+
+def test_concept_contract_has_definition_in_context():
+    # Definition-in-context: formal definition WITH its side-condition, plus a
+    # non-example and a prior-concept link.
+    contract = rp._BLOCK_TYPE_OUTPUT_CONTRACTS["concept"]
+    assert "DEFINITION-IN-CONTEXT" in contract
+    assert "nonzero denominator" in contract
+    assert "NON-EXAMPLE" in contract
+
+
+def test_example_contract_has_prediction_and_check_and_wrong_turn():
+    contract = rp._BLOCK_TYPE_OUTPUT_CONTRACTS["example"]
+    assert "PREDICTION prompt" in contract
+    assert "CHECK-BY-SUBSTITUTION" in contract
+    assert "Common wrong turn:" in contract
+    # Try-It with a hidden reveal (interaction + feedback slots downstream).
+    assert "Try-It" in contract
+    assert "<details>" in contract
+
+
+def test_worked_example_contract_is_fade_anchor():
+    contract = rp._BLOCK_TYPE_OUTPUT_CONTRACTS["worked_example"]
+    assert "fade-sequence ANCHOR" in contract
+    assert "guided_practice" in contract
+    assert "CHECK-BY-SUBSTITUTION" in contract
+
+
+def test_guided_practice_contract_is_completion_fade_state():
+    contract = rp._BLOCK_TYPE_OUTPUT_CONTRACTS["guided_practice"]
+    # The completion fade-state between worked and independent practice.
+    assert 'data-cf-fade-state="completion"' in contract
+    assert "LEFT BLANK" in contract
+    assert "<details>" in contract
+
+
+def test_activity_contract_has_faded_mixed_sequence():
+    contract = rp._BLOCK_TYPE_OUTPUT_CONTRACTS["activity"]
+    assert "FADED sequence" in contract
+    assert "MIXED types" in contract
+
+
+def test_self_check_contract_keys_named_misconception_and_honest_bloom():
+    contract = rp._BLOCK_TYPE_OUTPUT_CONTRACTS["self_check_question"]
+    assert "NAMED misconception" in contract
+    assert "HONESTLY" in contract
+
+
+def test_misconception_contract_is_named_with_diagnosis():
+    contract = rp._BLOCK_TYPE_OUTPUT_CONTRACTS["misconception"]
+    assert "faulty mental model" in contract
+    assert "DIAGNOSE" in contract
+    assert "productive-failure" in contract
+
+
+def test_recap_contract_is_cumulative_retrieval():
+    contract = rp._BLOCK_TYPE_OUTPUT_CONTRACTS["recap"]
+    assert "CUMULATIVE RETRIEVAL" in contract
+    assert "two weeks" in contract
+    # Stays consistent with the pre-existing anti-MCQ guard.
+    assert "never multiple-choice options" in contract
+
+
+def test_resources_contract_has_descriptive_link_text():
+    contract = rp._BLOCK_TYPE_OUTPUT_CONTRACTS["resources"]
+    assert "DESCRIPTIVE link text" in contract
+    assert "2.4.4" in contract
+
+
+def test_anatomy_contracts_reach_the_built_prompt():
+    # The per-type contract is what _block_type_output_contract returns and what
+    # the RewriteProvider embeds in the per-block user prompt — so a phrase in
+    # the contract surfaces in the built prompt for that block type.
+    for block_type in ("example", "guided_practice", "recap"):
+        assert "ANATOMY (§4)" in rp._block_type_output_contract(block_type)

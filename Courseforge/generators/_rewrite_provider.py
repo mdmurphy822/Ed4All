@@ -913,7 +913,11 @@ _BLOCK_TYPE_OUTPUT_CONTRACTS: Dict[str, str] = {
         "Emit a `<li>` carrying `data-cf-objective-id` (canonical "
         "TO-NN / CO-NN), `data-cf-bloom-level`, `data-cf-bloom-verb`, "
         "and `data-cf-cognitive-domain` attributes. The objective "
-        "statement is the `<li>`'s text content."
+        "statement is the `<li>`'s text content. "
+        "ANATOMY (§4): frame the objective ANALYTICALLY and tie it to its "
+        "terminal objective (TO) — not a bare one-sentence skill restatement. "
+        "Align `data-cf-bloom-level` to the objective's actual main verb "
+        "(do NOT inflate a recall verb to \"analyze\")."
     ),
     "concept": (
         "Emit a `<section data-cf-source-ids=...>` opening with an `<h2>` "
@@ -938,7 +942,13 @@ _BLOCK_TYPE_OUTPUT_CONTRACTS: Dict[str, str] = {
         "...</div>` — LEAD the key-rule box with a recognizable "
         "\"Key Idea\"-style framing label so the learner spots the rule — "
         "so the styled callout boxes render. Carry "
-        "`data-cf-teaching-role=\"introduce\"` on the `<section>`."
+        "`data-cf-teaching-role=\"introduce\"` on the `<section>`. "
+        "ANATOMY (§4) — DEFINITION-IN-CONTEXT: state each formal definition "
+        "WITH the condition / exclusions it needs (e.g. a nonzero denominator, "
+        "`a≠0`, \"not both zero\", the principal root) — a definition missing "
+        "its side-condition is incomplete. Include ONE example AND ONE "
+        "NON-EXAMPLE (a near-miss that violates a condition so the boundary is "
+        "visible), and LINK the concept back to a prior-taught concept."
     ),
     "example": (
         "Emit a `<section data-cf-source-ids=...>` wrapping an `<h3>` "
@@ -955,7 +965,16 @@ _BLOCK_TYPE_OUTPUT_CONTRACTS: Dict[str, str] = {
         "`data-cf-teaching-role=\"elaborate\"` on the `<section>`. "
         "Copy worked-example arithmetic verbatim from the source; if your "
         "verification check fails, fix the algebra — NEVER substitute source "
-        "numbers to force agreement."
+        "numbers to force agreement. "
+        "ANATOMY (§4): open with the STATED problem, then a one-line "
+        "PREDICTION prompt (ask the learner to predict the result before the "
+        "steps). Give 3-7 steps, EACH stating the operation AND its "
+        "justification (never a label-only step — say WHY, e.g. \"combine like "
+        "terms because addition is associative\"). Close with a "
+        "CHECK-BY-SUBSTITUTION that verifies the answer, a \"Common wrong "
+        "turn:\" line naming the typical error, and ONE Try-It practice item "
+        "whose answer sits behind a hidden "
+        "`<details><summary>Show answer</summary> … </details>` reveal."
     ),
     "explanation": (
         "Emit a `<section data-cf-source-ids=...>` opening with an `<h2>` "
@@ -974,7 +993,11 @@ _BLOCK_TYPE_OUTPUT_CONTRACTS: Dict[str, str] = {
         "style framing label (e.g. `<strong>Key Idea: ...</strong>`) so the "
         "learner spots the rule, and any illustrative worked instance in "
         "`<div class=\"example-box\">` so the styled boxes render. Carry "
-        "`data-cf-teaching-role=\"elaborate\"` on the `<section>`."
+        "`data-cf-teaching-role=\"elaborate\"` on the `<section>`. "
+        "ANATOMY (§4): an explanation MUST NOT restate the concept block — "
+        "explain WHY the idea works and WHEN to use which method, and connect "
+        "back to the prior week. On first use of a technical term, inline a "
+        "one-sentence bolded definition WITH its side-condition."
     ),
     "summary_takeaway": (
         "Emit a `<div class=\"takeaway-card\" data-cf-source-ids=...>` "
@@ -991,7 +1014,12 @@ _BLOCK_TYPE_OUTPUT_CONTRACTS: Dict[str, str] = {
         "assessment. Cover the week's distinct themes across the sections "
         "rather than collapsing everything into one undifferentiated list — "
         "but use ONLY points the source actually taught (no invented "
-        "sections or takeaways)."
+        "sections or takeaways). "
+        "ANATOMY (§4): include a distinct MISCONCEPTION-REVIEW section (the "
+        "week's common errors and how to avoid them) among the takeaway "
+        "sections, and REFERENCE the week's Key Terms page rather than "
+        "re-stating full definitions (a summary points back, it does not "
+        "re-teach)."
     ),
     "callout": (
         "Emit a `<div class=\"callout callout-{kind}\">` carrying "
@@ -1009,7 +1037,9 @@ _BLOCK_TYPE_OUTPUT_CONTRACTS: Dict[str, str] = {
         "instructional content belongs in concept / explanation / example "
         "blocks, never here. Keep the highlight grounded in the source "
         "material (no fabricated facts) — surface the single most "
-        "important alert about the surrounding content, not a mini-lesson."
+        "important alert about the surrounding content, not a mini-lesson. "
+        "ANATOMY (§4): ONE focused highlight keyed to the surrounding content "
+        "— a single tip, warning, caution, or note behind its framing label."
     ),
     "flip_card_grid": (
         "Emit a `<div class=\"flip-card-grid\">` whose children are "
@@ -1053,7 +1083,12 @@ _BLOCK_TYPE_OUTPUT_CONTRACTS: Dict[str, str] = {
         "event handlers, which would leave the answer permanently hidden). "
         "Do NOT pad with invented questions: every question and its answer "
         "must be grounded in the source — if the source only supports one "
-        "or two questions, author only those."
+        "or two questions, author only those. "
+        "ANATOMY (§4): key each distractor-bearing item to a NAMED "
+        "misconception (its wrong options are the values that named error "
+        "produces), and tag each item's Bloom level HONESTLY — do NOT label a "
+        "recall / apply item \"analyze\". Every item's answer sits behind its "
+        "own `<details>` reveal with brief feedback."
     ),
     "activity": (
         "Emit a `<div class=\"activity-card\">` carrying "
@@ -1074,7 +1109,11 @@ _BLOCK_TYPE_OUTPUT_CONTRACTS: Dict[str, str] = {
         "do. NEVER emit BARE EXERCISE / REFERENCE NUMBERS (e.g. "
         "\"83, 84, 85\") or cite SOURCE EXERCISE INDICES as items — a "
         "textbook exercise number is meaningless to a learner; write out "
-        "the actual problem instead."
+        "the actual problem instead. "
+        "ANATOMY (§4): author 4-6 problems as a FADED sequence of MIXED types "
+        "(interleave methods so CHOOSING the method is part of the practice — "
+        "never the same operation repeated N times in a row), and give EVERY "
+        "item a worked `<details>` solution (never a bare answer)."
     ),
     "misconception": (
         "Emit a `<div class=\"misconception-card\" data-cf-source-ids=...>` "
@@ -1087,7 +1126,12 @@ _BLOCK_TYPE_OUTPUT_CONTRACTS: Dict[str, str] = {
         "`<p class=\"misconception-correction\">` (why it is wrong and the "
         "correct understanding), both grounded in the source. A "
         "misconception is NOT an assessment item or a fresh worked example "
-        "— it names a specific error and corrects it."
+        "— it names a specific error and corrects it. "
+        "ANATOMY (§4): NAME the specific faulty mental model (e.g. canceling "
+        "terms vs factors, `(a+b)²=a²+b²`, distributing an exponent, a sign "
+        "error in polynomial subtraction, dividing by a variable and losing a "
+        "solution), DIAGNOSE why a learner falls into it, then give the "
+        "productive-failure correction — all grounded in the source."
     ),
     "assessment_item": (
         "Emit a `<div class=\"assessment-item\">` carrying the question "
@@ -1183,7 +1227,12 @@ _BLOCK_TYPE_OUTPUT_CONTRACTS: Dict[str, str] = {
         "never emit "
         "multiple-choice options, `<li data-cf-distractor-index>`, answer "
         "keys, or a fresh worked example — it only restates already-taught "
-        "terms."
+        "terms. "
+        "ANATOMY (§4): strengthen the recap into CUMULATIVE RETRIEVAL — pose "
+        "2-3 short recall questions that reach back AT LEAST two weeks (not "
+        "just last week), each answer behind a `<details>` reveal. Keep them "
+        "FREE-RESPONSE recall prompts — never multiple-choice options or an "
+        "answer key."
     ),
     "scenario": (
         "Emit a `<div class=\"scenario-card\" data-cf-source-ids=...>` "
@@ -1193,7 +1242,11 @@ _BLOCK_TYPE_OUTPUT_CONTRACTS: Dict[str, str] = {
         "task in a `<p>` prompting the learner to APPLY the concept to that "
         "scenario. Keep it ONE focused scenario — never a multi-part lesson, "
         "never re-teach the concept as expository prose; the scenario sets up "
-        "a context and the prompt asks the learner to act on it."
+        "a context and the prompt asks the learner to act on it. "
+        "ANATOMY (§4): ground the scenario in a REAL-WORLD application context "
+        "(a concrete situation where the concept matters) and prompt the "
+        "learner to APPLY the concept to it — one focused scenario, not a "
+        "lesson."
     ),
     "problem": (
         "Emit a `<div class=\"problem-card\" data-cf-source-ids=...>` "
@@ -1286,7 +1339,11 @@ _BLOCK_TYPE_OUTPUT_CONTRACTS: Dict[str, str] = {
         "before you read on …\") then a `<p>` forward-transition into what the "
         "section will teach. Carry NO new teaching content / definitions — a "
         "hook ACTIVATES; the exposition blocks teach. Keep it 2-3 short "
-        "sentences total, grounded in the source topic."
+        "sentences total, grounded in the source topic. "
+        "ANATOMY (§4): prefer a REAL-WORLD application context (a concrete "
+        "situation where the topic matters — e.g. projectile height, area, "
+        "revenue for quadratics) as the attention-grabber before the "
+        "prediction prompt and the forward transition."
     ),
     "multimedia": (
         "Emit a `<figure class=\"multimedia\" data-cf-source-ids=...>` for a "
@@ -1315,7 +1372,12 @@ _BLOCK_TYPE_OUTPUT_CONTRACTS: Dict[str, str] = {
         "reserves; it is richer than a single un-labeled `example`. "
         "Copy worked-example arithmetic verbatim from the source; if your "
         "verification check fails, fix the algebra — NEVER substitute source "
-        "numbers to force agreement."
+        "numbers to force agreement. "
+        "ANATOMY (§4): as the fade-sequence ANCHOR that precedes "
+        "`guided_practice`, keep EVERY step fully worked here — state the "
+        "problem, prompt a PREDICTION, give per-step operation AND \"Why\" "
+        "justification, a CHECK-BY-SUBSTITUTION, and a \"Common wrong turn:\" "
+        "line naming the typical error."
     ),
     "diagram": (
         "Emit a `<figure class=\"diagram\" data-cf-source-ids=...>` for a "
@@ -1327,7 +1389,35 @@ _BLOCK_TYPE_OUTPUT_CONTRACTS: Dict[str, str] = {
         "order), AND a `<table>` data-table EQUIVALENT carrying the same "
         "nodes / edges / values so the spatial relationships are available "
         "non-visually (caption + scoped `<th>` headers). Use ONLY the "
-        "relationships the source supplies — never invent a node or edge."
+        "relationships the source supplies — never invent a node or edge. "
+        "ANATOMY (§4): when the source supplies an equation or numeric "
+        "relationship, render the matching visual (number line / coordinate "
+        "grid / line / parabola) keyed off THAT equation alongside the "
+        "data-table equivalent — dual-code the relationship instead of "
+        "describing it in prose alone."
+    ),
+    "guided_practice": (
+        "Emit a `<section class=\"guided-practice\" data-cf-source-ids=...>` "
+        "carrying `data-cf-fade-state=\"completion\"` — the FADED middle of "
+        "the gradual-release ladder that sits BETWEEN a fully-worked "
+        "`worked_example` and independent practice. Present a problem with "
+        "MOST steps worked but 1-2 steps LEFT BLANK for the learner to "
+        "complete (a `____` blank or an empty "
+        "`<div class=\"step-row\">` they fill in), then put the omitted "
+        "step(s) AND the final answer behind a "
+        "`<details><summary>Show the completed steps</summary> … </details>` "
+        "reveal. ANATOMY (§4): it FADES the scaffolding — do NOT re-work every "
+        "step; the learner supplies the missing move. Use ONLY the procedure "
+        "the source supplies — never invent a step."
+    ),
+    "resources": (
+        "Emit a `<section class=\"resources\" data-cf-source-ids=...>` "
+        "(Resources / Further Reading) wrapping an `<h2>` or `<h3>` and a "
+        "`<ul>` of curated links. ANATOMY (§4): EACH `<a>` MUST carry "
+        "DESCRIPTIVE link text naming the destination and why it helps "
+        "(WCAG 2.4.4) — NEVER \"click here\", a bare URL, or \"read more\". "
+        "List ONLY resources the source supplies or names; never fabricate a "
+        "link or a citation the source does not contain."
     ),
 }
 
