@@ -1641,6 +1641,33 @@ COURSEFORGE_RICHER_CSS = """
     [data-cf-teaching-role="assess"]::before { content: "Self-Check"; color: var(--cf-role-assess); }
 
     /* ===================================================================
+       §5.4 — ANSWER-REVEAL repair + improvised-class aliases. The rewrite
+       tier + pipeline_tools emit a BARE <div class="solution-line"> (NOT
+       nested under .worked-example, so the .worked-example .solution-line
+       rule never matched it), and <details>/<summary> reveals shipped no
+       base affordance CSS. Give the bare solution-line the same treatment,
+       give every disclosure a real summary cursor + open-state panel, and
+       alias the handful of classes the local 7B improvises onto the nearest
+       existing token style. The improvised classes below are NOT in tracked
+       fixtures/prompts — they are defensive aliases sourced from real-output
+       analysis (course-quality plan §5.4); inert until the class appears.
+       =================================================================== */
+    .solution-line { background: var(--cf-success-light); border-left: var(--cf-border-width-thick) solid var(--cf-role-success); padding: var(--cf-space-2) var(--cf-space-4); margin-top: var(--cf-space-2); color: var(--cf-ink); }
+    /* Generic disclosure affordance for bare <details>. Component-scoped
+       rules (.problem-card / .reveal / .diagram-longdesc / transcript) keep
+       their own summary colors via higher (class) specificity. */
+    details > summary { cursor: pointer; font-weight: var(--cf-font-weight-bold); color: var(--cf-primary); }
+    details[open] { border: var(--cf-frame-flat); border-radius: var(--cf-border-radius-sm); padding: var(--cf-space-2) var(--cf-space-3); margin: var(--cf-space-2) 0; background: var(--cf-white); color: var(--cf-ink); }
+    /* Improvised-class aliases (see header note). */
+    .expert-tip { background: var(--cf-info-light); border-left: var(--cf-border-width-thick) solid var(--cf-info); border-radius: var(--cf-box-radius); padding: var(--cf-space-3) var(--cf-space-4); color: var(--cf-ink); }
+    .verification-line { background: var(--cf-success-light); border-left: var(--cf-border-width-thick) solid var(--cf-role-success); padding: var(--cf-space-2) var(--cf-space-4); margin-top: var(--cf-space-2); color: var(--cf-ink); }
+    .equation, .rational-expression { font-family: var(--cf-font-family-mono); background: var(--cf-gray-50); padding: var(--cf-space-1) var(--cf-space-2); border-radius: var(--cf-border-radius-sm); color: var(--cf-ink); }
+    /* .place-value-table — the baseline CSS targets table.place-value, but the
+       7B emits class="place-value-table"; alias the identical treatment. */
+    .place-value-table { border-collapse: collapse; margin: var(--cf-space-4) 0; }
+    .place-value-table td, .place-value-table th { text-align: center; min-width: 3.5rem; color: var(--cf-ink); }
+
+    /* ===================================================================
        PHASE 3 — a11y completion: print, reduced-motion. (focus-visible +
        target-size rules live in the Phase 1 block above.) Emitted pages
        ship ZERO print / reduced-motion CSS on HEAD; these are authored

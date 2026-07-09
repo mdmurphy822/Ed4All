@@ -301,6 +301,54 @@ def test_block_identity_absent_from_legacy_css():
     assert '[data-cf-teaching-role="assess"]::before' not in COURSEFORGE_CSS
 
 
+# ---------------------------------------------------------------------------
+# §5.4 — details/summary answer-reveal repair + improvised-class aliases. All
+# in COURSEFORGE_RICHER_CSS (byte-stable off).
+# ---------------------------------------------------------------------------
+
+
+def test_bare_solution_line_styled():
+    # The rewrite tier emits a BARE <div class="solution-line"> (outside any
+    # .worked-example), so a bare .solution-line rule must exist.
+    body = _rule_body(COURSEFORGE_RICHER_CSS, ".solution-line")
+    assert "var(--cf-role-success)" in body
+    assert _TEXT_COLOR_OR_TOKEN(body), "bare .solution-line needs explicit text color"
+
+
+def test_generic_details_summary_affordance():
+    body = _rule_body(COURSEFORGE_RICHER_CSS, "details > summary")
+    assert "cursor: pointer" in body
+    assert "var(--cf-font-weight-bold)" in body
+    # Open-state gets a bordered panel.
+    open_body = _rule_body(COURSEFORGE_RICHER_CSS, "details[open]")
+    assert "border" in open_body
+
+
+def test_improvised_class_aliases_present():
+    for cls in (".expert-tip", ".verification-line", ".equation",
+                ".rational-expression"):
+        assert cls in COURSEFORGE_RICHER_CSS, f"{cls} alias missing"
+
+
+def test_place_value_table_class_alias_matches_element_rule():
+    # The 7B emits class="place-value-table"; the baseline CSS targets
+    # table.place-value. The alias must exist so both selectors are styled.
+    assert "table.place-value" in COURSEFORGE_CSS  # legacy element+class rule
+    assert ".place-value-table" in COURSEFORGE_RICHER_CSS  # class alias
+
+
+def test_reveal_repair_absent_from_legacy_css():
+    # Byte-stability: none of the §5.4 repairs touch the always-emitted baseline.
+    assert "details > summary" not in COURSEFORGE_CSS
+    assert ".expert-tip" not in COURSEFORGE_CSS
+    assert ".place-value-table" not in COURSEFORGE_CSS
+
+
+# A color declaration OR a token-based color (var(--cf-ink)) for §5.4 checks.
+def _TEXT_COLOR_OR_TOKEN(body: str) -> bool:
+    return bool(_TEXT_COLOR_RE.search(body)) or "color: var(--cf-ink)" in body
+
+
 def test_wrapped_page_has_real_head_and_stylesheet():
     page = _wrap_page(
         title="week_01_content_01",
