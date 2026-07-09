@@ -40,6 +40,27 @@ def test_example_contract_pins_step_colon_inside_badge():
 
 
 # ---------------------------------------------------------------------------
+# Verbatim source-arithmetic rule — never reconcile to source numbers.
+# ---------------------------------------------------------------------------
+
+def _asserts_verbatim_arithmetic_rule(contract: str) -> None:
+    assert "Copy worked-example arithmetic verbatim from the source" in contract
+    assert "fix the algebra" in contract
+    # The load-bearing prohibition: never fudge numbers to force agreement.
+    assert "NEVER substitute source numbers to force agreement" in contract
+
+
+def test_example_contract_pins_verbatim_source_arithmetic_rule():
+    _asserts_verbatim_arithmetic_rule(rp._BLOCK_TYPE_OUTPUT_CONTRACTS["example"])
+
+
+def test_worked_example_contract_pins_verbatim_source_arithmetic_rule():
+    _asserts_verbatim_arithmetic_rule(
+        rp._BLOCK_TYPE_OUTPUT_CONTRACTS["worked_example"]
+    )
+
+
+# ---------------------------------------------------------------------------
 # ⑤ — self_check authors MULTIPLE questions, each with a JS-free reveal
 # ---------------------------------------------------------------------------
 

@@ -952,7 +952,10 @@ _BLOCK_TYPE_OUTPUT_CONTRACTS: Dict[str, str] = {
         "...</div>` per step (the colon goes INSIDE the `step-label` span — "
         "`Step N:</span>`, never `Step N</span>:`) and the final answer in "
         "`<div class=\"solution-line\">...</div>`. Carry "
-        "`data-cf-teaching-role=\"elaborate\"` on the `<section>`."
+        "`data-cf-teaching-role=\"elaborate\"` on the `<section>`. "
+        "Copy worked-example arithmetic verbatim from the source; if your "
+        "verification check fails, fix the algebra — NEVER substitute source "
+        "numbers to force agreement."
     ),
     "explanation": (
         "Emit a `<section data-cf-source-ids=...>` opening with an `<h2>` "
@@ -1309,7 +1312,10 @@ _BLOCK_TYPE_OUTPUT_CONTRACTS: Dict[str, str] = {
         "(`<span class=\"why\">Why: …</span>`) justifying the step. Use ONLY "
         "the procedure the source supplies — never invent a step. A "
         "worked_example is the SCAFFOLDED, fade-able instance the framework "
-        "reserves; it is richer than a single un-labeled `example`."
+        "reserves; it is richer than a single un-labeled `example`. "
+        "Copy worked-example arithmetic verbatim from the source; if your "
+        "verification check fails, fix the algebra — NEVER substitute source "
+        "numbers to force agreement."
     ),
     "diagram": (
         "Emit a `<figure class=\"diagram\" data-cf-source-ids=...>` for a "
