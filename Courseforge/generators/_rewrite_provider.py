@@ -81,13 +81,17 @@ from Courseforge.generators._base import (
     _default_supported_providers,
 )
 from Courseforge.generators._rewrite_fit_window import (  # noqa: E402
+    RESERVE_TOKENS,
     cited_chunk_ids_from_content,
     resolve_fit_window,
     resolve_rewrite_num_ctx,
     resolve_truncation_tripwire,
     select_chunks_under_budget,
 )
-from lib.llm.truncation_guard import check_prompt_not_truncated  # noqa: E402
+from lib.llm.truncation_guard import (  # noqa: E402
+    check_prompt_fits_window,
+    check_prompt_not_truncated,
+)
 from lib.retrieval.answer_backend import (  # noqa: E402
     PromptTruncatedError as _PromptTruncatedError,
 )
@@ -291,6 +295,31 @@ MAX_PARSE_RETRIES = 2
 # surfaces the block as ``escalated`` (not ``failed``) in the validation
 # report and routes it through the W5 packager-side escalation filter.
 _INPUT_PROMPT_TRUNCATED_MARKER = "input_prompt_truncated"
+
+# rewrite-overflow-fix-2026-07: escalation marker stamped when the whole-prompt
+# fit-window budget finds the NON-CHUNK scaffold (system prompt + outline dict +
+# per-claim + objectives + contract) already overflows the served window, so no
+# grounding chunk fits and the prompt cannot be authored without silent head-
+# truncation. Member of ``Courseforge/scripts/blocks.py::_ESCALATION_MARKERS``.
+_SCAFFOLD_OVERFLOW_MARKER = "rewrite_scaffold_overflow"
+
+
+class _ScaffoldOverflowError(Exception):
+    """Raised by the whole-prompt budget when the non-chunk scaffold alone
+    cannot fit the served window (num_ctx). Carries the token accounting so
+    the caller can stamp ``rewrite_scaffold_overflow`` + emit a decision.
+    """
+
+    def __init__(
+        self, *, sys_tokens: int, scaffold_tokens: int, num_ctx: int
+    ) -> None:
+        self.sys_tokens = sys_tokens
+        self.scaffold_tokens = scaffold_tokens
+        self.num_ctx = num_ctx
+        super().__init__(
+            f"rewrite scaffold overflow: sys={sys_tokens} + "
+            f"scaffold={scaffold_tokens} tok >= num_ctx={num_ctx}"
+        )
 
 # Worker W6: per-block transient-retry budget for dispatch-side
 # failures (Ollama 503 / connection reset / read timeout). Transient
@@ -2866,39 +2895,110 @@ class RewriteProvider(_BaseLLMProvider):
     # Fit-window helpers (rewrite-overflow-fix-2026-06)
     # ------------------------------------------------------------------
 
-    def _scaffold_tokens_estimate(self) -> int:
-        """Worst-case (escalated) user-scaffold token estimate.
+    def _num_ctx_options_payload(self) -> Optional[Dict[str, Any]]:
+        """Request-body extras pinning the SERVED window to ``_rewrite_num_ctx``.
 
-        The chunk-window budget must reserve the scaffold (everything in
-        the user prompt EXCEPT the grounding chunks). The ESCALATED prompt
-        is the larger of the two scaffolds, so budget against it — a budget
-        sized for the worst case never overflows the standard path. A
-        small, fixed structural estimate is sufficient (the precise outline
-        / objectives text is block-specific and bounded); this mirrors the
-        outline tier's fixed ``draft_block`` reserve posture.
+        num_ctx single-source-of-truth (rewrite-overflow-fix-2026-07): the
+        budget + both truncation tripwires size against ``self._rewrite_num_ctx``
+        (``ED4ALL_REWRITE_NUM_CTX``), but the OpenAI-compatible REQUEST omitted
+        it, so a local Ollama/vLLM/llama.cpp server served ITS OWN default
+        window (often 8192) — even when the Modelfile / env said 16384. That
+        split-brain silently head-truncated the prompt while the tripwire
+        message reported the assumed (larger) num_ctx. Passing
+        ``options.num_ctx`` makes the SERVED window the SAME value the budget
+        assumes, so the request, the budget, and the tripwire all resolve one
+        number.
+
+        Scoped to the LOCAL LOOPBACK lane: ``num_ctx`` is an Ollama/vLLM/
+        llama.cpp served-window option. Cloud OpenAI endpoints carry a large
+        native context and may REJECT an unknown ``options`` field, so we do
+        NOT send it there. ``anthropic`` / ``claude_session`` have no
+        server-side num_ctx (return ``None``). Servers that ignore
+        ``options`` are no worse off than today — the pre/post-dispatch
+        tripwires remain the deterministic backstop for the min-rule case
+        (request cannot guarantee the window).
         """
-        # ≈1,124 tok empirical rewrite scaffold (per the design doc) — the
-        # block context + outline payload + per-claim + objectives +
-        # contract + closing instructions, minus the chunk block the budget
-        # is selecting. Fixed-cost; the chunk budget shrinks the variable
-        # part.
-        return 1124
+        if self._provider in ("anthropic", "claude_session"):
+            return None
+        base = self._base_url or ""
+        host_local = any(
+            token in base
+            for token in ("localhost", "127.0.0.1", "0.0.0.0", "[::1]", "::1")
+        )
+        if not host_local:
+            return None
+        return {"options": {"num_ctx": int(self._rewrite_num_ctx)}}
+
+    def _scaffold_prompt_for_block(
+        self,
+        block: Block,
+        objectives: Optional[Sequence[Any]],
+    ) -> str:
+        """Render the user prompt with NO source chunks — the non-chunk scaffold.
+
+        Whole-prompt budget (rewrite-overflow-fix-2026-07): the chunk budget
+        must reserve the ACTUAL scaffold (block context + outline dict +
+        per-claim + objectives + output contract + closing instructions),
+        which is block-specific and can be large (a big outline payload alone
+        can blow the window). Rendering with an empty chunk list measures it
+        exactly, on the SAME render path (escalated vs standard) the real
+        dispatch will use — so the chunk budget bounds the WHOLE prompt, not
+        just the chunks.
+        """
+        if block.escalation_marker is not None:
+            return self._render_escalated_user_prompt(
+                block=block, source_chunks=[], objectives=objectives
+            )
+        return self._render_user_prompt(
+            block=block, source_chunks=[], objectives=objectives
+        )
 
     def _select_source_chunks_for_budget(
         self,
         block: Block,
         source_chunks: Optional[Sequence[Any]],
+        objectives: Optional[Sequence[Any]] = None,
     ) -> Tuple[List[Any], List[str]]:
         """Trim ``source_chunks`` to the num_ctx budget when fit-window ON.
 
         Returns ``(selected, dropped_cited_chunk_ids)``. OFF → the input
         list verbatim + no drops (byte-stable). ON → the num_ctx-aware
-        selection (cited-first, cosine-ranked, always-keep-≥1, drop-
-        trailing-whole, per-chunk cap). Anti-fabrication: ``selected`` ⊆
-        the input universe; never invents a chunk.
+        selection budgeted against the WHOLE prompt (cited-first, cosine-
+        ranked, always-keep-≥1, drop-trailing-whole, per-chunk cap). Anti-
+        fabrication: ``selected`` ⊆ the input universe; never invents a chunk.
+
+        Whole-prompt budget (rewrite-overflow-fix-2026-07): the scaffold token
+        cost is MEASURED (render with empty chunks) rather than a fixed
+        estimate, so a huge outline payload can no longer smuggle an over-
+        window prompt past a chunk-only budget. When the non-chunk scaffold
+        ALONE (system prompt + scaffold + reserve) cannot fit the served
+        window, :class:`_ScaffoldOverflowError` is raised so the caller
+        stamps ``rewrite_scaffold_overflow`` and NEVER dispatches a prompt
+        that cannot fit.
         """
         chunks = list(source_chunks or [])
-        if not self._fit_window or not chunks:
+        if not self._fit_window:
+            return chunks, []
+        # Trimmed system prompt is already on ``self._system_prompt`` (ON
+        # state), so its token cost is consistent with the budget.
+        sys_tokens = _estimate_tokens(self._system_prompt)
+        # Measure the ACTUAL non-chunk scaffold on the render path the real
+        # dispatch will use (escalated vs standard).
+        scaffold_prompt = self._scaffold_prompt_for_block(block, objectives)
+        scaffold_tokens = _estimate_tokens(scaffold_prompt)
+        # Loud escalation: the scaffold alone (system prompt + scaffold +
+        # reserve) can't fit the served window → no chunk could ever fit and
+        # the prompt WILL head-truncate. Fail closed BEFORE any dispatch.
+        # (max_tokens — the OUTPUT budget — is intentionally NOT part of the
+        # input-fit test; an output that overruns is a separate
+        # finish_reason='length' concern handled by the brevity remediation.)
+        if sys_tokens + scaffold_tokens + RESERVE_TOKENS >= self._rewrite_num_ctx:
+            raise _ScaffoldOverflowError(
+                sys_tokens=sys_tokens,
+                scaffold_tokens=scaffold_tokens,
+                num_ctx=self._rewrite_num_ctx,
+            )
+        if not chunks:
             return chunks, []
         cited = cited_chunk_ids_from_content(block.content)
         # Rank query = the block's key-claim / objective text (what the
@@ -2906,20 +3006,40 @@ class RewriteProvider(_BaseLLMProvider):
         # embedder; absence degrades to citation-order (NOT fail-closed).
         rank_query = _rank_query_for_block(block)
         embedder = _try_rewrite_embedder()
-        # Trimmed system prompt is already on ``self._system_prompt`` (ON
-        # state), so its token cost is consistent with the budget.
-        sys_tokens = _estimate_tokens(self._system_prompt)
         selected, dropped_cited = select_chunks_under_budget(
             chunks,
             num_ctx=self._rewrite_num_ctx,
             sys_tokens=sys_tokens,
-            scaffold_tokens=self._scaffold_tokens_estimate(),
+            scaffold_tokens=scaffold_tokens,
             max_tokens=self._max_tokens,
             cited_chunk_ids=cited,
             rank_query=rank_query,
             embedder=embedder,
         )
         return selected, dropped_cited
+
+    def _check_input_fits_predispatch(self, user_prompt: str) -> None:
+        """PRE-dispatch deterministic tripwire (fit-window ON only).
+
+        After the whole-prompt budget, assert the FINAL rendered prompt's
+        local estimate does not exceed the served window BEFORE dispatch —
+        the cheapest, server-usage-independent truncation guard. Catches the
+        always-keep-≥1 chunk overshoot or any residual the budget could not
+        shrink. Gated on ``_fit_window`` so the OFF (byte-stable, un-
+        budgeted) default path is unchanged, and on ``_truncation_tripwire``
+        so the escape hatch disables it too. The caller maps the raise to the
+        ``input_prompt_truncated`` marker, exactly like the post-dispatch arm.
+        """
+        if not (self._fit_window and self._truncation_tripwire):
+            return
+        estimated = _estimate_tokens(self._system_prompt) + _estimate_tokens(
+            user_prompt
+        )
+        check_prompt_fits_window(
+            estimated,
+            model_id=self._model,
+            num_ctx=self._rewrite_num_ctx,
+        )
 
     def _check_truncation(
         self,
@@ -3323,10 +3443,42 @@ class RewriteProvider(_BaseLLMProvider):
         # Fit-window (rewrite-overflow-fix-2026-06): trim the grounding to
         # the num_ctx budget BEFORE rendering. OFF → ``budgeted_chunks`` is
         # the input verbatim + no drops (byte-stable). Anti-fabrication:
-        # ``budgeted_chunks`` ⊆ the input universe.
-        budgeted_chunks, dropped_cited_chunk_ids = (
-            self._select_source_chunks_for_budget(block, source_chunks)
-        )
+        # ``budgeted_chunks`` ⊆ the input universe. rewrite-overflow-fix-
+        # 2026-07: the budget now measures the WHOLE prompt (real scaffold),
+        # and a scaffold that alone overflows the window is a LOUD, non-
+        # dispatched escalation (never author a prompt that cannot fit).
+        try:
+            budgeted_chunks, dropped_cited_chunk_ids = (
+                self._select_source_chunks_for_budget(
+                    block, source_chunks, objectives
+                )
+            )
+        except _ScaffoldOverflowError as exc:
+            logger.warning(
+                "RewriteProvider: non-chunk scaffold overflows the served "
+                "window for block %r (sys=%d + scaffold=%d >= num_ctx=%d) — "
+                "stamping rewrite_scaffold_overflow (never dispatched)",
+                block.block_id,
+                exc.sys_tokens,
+                exc.scaffold_tokens,
+                exc.num_ctx,
+            )
+            self._emit_per_call_decision(
+                raw_text="",
+                retry_count=0,
+                block_id=block.block_id,
+                block_type=block.block_type,
+                page_id=block.page_id,
+                escalation_marker=block.escalation_marker,
+                outline_curie_count=len(outline_curies),
+                remediation_attempts=0,
+                scaffold_overflow=True,
+                estimated_prompt_tokens=exc.sys_tokens + exc.scaffold_tokens,
+                num_ctx=exc.num_ctx,
+            )
+            return dataclasses.replace(
+                block, escalation_marker=_SCAFFOLD_OVERFLOW_MARKER
+            )
 
         # Build the initial user prompt per the escalation flag.
         if block.escalation_marker is not None:
@@ -3367,9 +3519,46 @@ class RewriteProvider(_BaseLLMProvider):
         # ``for attempts in range(retry_budget)`` loop in
         # ``_local_provider._call_with_parse``.
         while attempt < MAX_PARSE_RETRIES + 1:
+            # PRE-dispatch deterministic tripwire (fit-window ON): a final
+            # prompt whose local estimate exceeds the served window WILL
+            # head-truncate — escalate BEFORE paying the round-trip rather
+            # than dispatch a prompt that cannot fit.
+            try:
+                self._check_input_fits_predispatch(user_prompt)
+            except _PromptTruncatedError as exc:
+                logger.warning(
+                    "RewriteProvider: pre-dispatch input over window for "
+                    "block %r (num_ctx=%d) — short-circuiting as escalated: %s",
+                    block.block_id,
+                    self._rewrite_num_ctx,
+                    exc,
+                )
+                self._emit_per_call_decision(
+                    raw_text="",
+                    retry_count=total_retries,
+                    block_id=block.block_id,
+                    block_type=block.block_type,
+                    page_id=block.page_id,
+                    escalation_marker=block.escalation_marker,
+                    outline_curie_count=len(outline_curies),
+                    remediation_attempts=attempt,
+                    input_truncated=True,
+                    estimated_prompt_tokens=(
+                        _estimate_tokens(self._system_prompt)
+                        + _estimate_tokens(user_prompt)
+                    ),
+                    reported_prompt_tokens=None,
+                    num_ctx=self._rewrite_num_ctx,
+                    dropped_cited_chunk_ids=dropped_cited_chunk_ids,
+                )
+                return dataclasses.replace(
+                    block,
+                    escalation_marker=_INPUT_PROMPT_TRUNCATED_MARKER,
+                )
             try:
                 html_response, retry_count, usage = self._dispatch_call(
-                    user_prompt
+                    user_prompt,
+                    extra_payload=self._num_ctx_options_payload(),
                 )
             except Exception as exc:
                 # Worker W6: classify the dispatch-side failure so a
@@ -3649,13 +3838,39 @@ class RewriteProvider(_BaseLLMProvider):
         # Track per-block fit-window cited-chunk drops for the decision
         # capture (empty when the flag is off → byte-stable).
         dropped_cited_by_id: Dict[str, List[str]] = {}
+        # Blocks whose non-chunk scaffold alone overflowed the served window
+        # are stamped + excluded from the batch POST (never dispatch a prompt
+        # that cannot fit); they surface as escalated in the return map.
+        overflow_results: Dict[str, Optional[Block]] = {}
+        batched_blocks: List[Block] = []
         for block in block_list:
             block_chunks = chunks_by_id.get(block.block_id) or []
             # Fit-window: trim each block's grounding to the budget BEFORE
             # rendering. OFF → verbatim input + no drops (byte-stable).
-            budgeted_chunks, dropped_cited = (
-                self._select_source_chunks_for_budget(block, block_chunks)
-            )
+            # rewrite-overflow-fix-2026-07: a scaffold that alone overflows the
+            # window is a loud per-block escalation (not batched).
+            try:
+                budgeted_chunks, dropped_cited = (
+                    self._select_source_chunks_for_budget(
+                        block, block_chunks, objectives
+                    )
+                )
+            except _ScaffoldOverflowError as exc:
+                logger.warning(
+                    "RewriteProvider.generate_rewrite_batch: non-chunk "
+                    "scaffold overflows the served window for block %r "
+                    "(sys=%d + scaffold=%d >= num_ctx=%d) — stamping "
+                    "rewrite_scaffold_overflow (excluded from batch)",
+                    block.block_id,
+                    exc.sys_tokens,
+                    exc.scaffold_tokens,
+                    exc.num_ctx,
+                )
+                overflow_results[block.block_id] = dataclasses.replace(
+                    block, escalation_marker=_SCAFFOLD_OVERFLOW_MARKER
+                )
+                continue
+            batched_blocks.append(block)
             if dropped_cited:
                 dropped_cited_by_id[block.block_id] = dropped_cited
             if block.escalation_marker is not None:
@@ -3681,21 +3896,54 @@ class RewriteProvider(_BaseLLMProvider):
             segments.append("")
         batch_prompt = "\n".join(segments)
 
+        # Every block's scaffold overflowed → nothing to POST; return the
+        # per-block escalations only.
+        if not batched_blocks:
+            return dict(overflow_results)
+
+        batched_ids = [b.block_id for b in batched_blocks]
+
+        # PRE-dispatch deterministic tripwire (fit-window ON): a batch prompt
+        # whose local estimate exceeds the served window WILL head-truncate
+        # (dropping the leading block(s)' authoring contracts). Stamp the whole
+        # batch escalated BEFORE the POST rather than dispatch a prompt that
+        # cannot fit.
+        try:
+            self._check_input_fits_predispatch(batch_prompt)
+        except _PromptTruncatedError as exc:
+            logger.warning(
+                "RewriteProvider.generate_rewrite_batch: pre-dispatch batch "
+                "prompt over window for %d block(s) (num_ctx=%d) — stamping "
+                "all as escalated: %s",
+                len(batched_blocks),
+                self._rewrite_num_ctx,
+                exc,
+            )
+            results = dict(overflow_results)
+            for b in batched_blocks:
+                results[b.block_id] = dataclasses.replace(
+                    b, escalation_marker=_INPUT_PROMPT_TRUNCATED_MARKER
+                )
+            return results
+
         # ONE POST. A dispatch raise degrades EVERY block in the batch to None
         # (the router re-batches them) rather than aborting the whole phase —
         # mirrors the per-block fail-soft contract.
         try:
             html_response, retry_count, usage = self._dispatch_call(
-                batch_prompt
+                batch_prompt,
+                extra_payload=self._num_ctx_options_payload(),
             )
         except Exception as exc:  # noqa: BLE001 — fail-soft per batch
             logger.warning(
                 "RewriteProvider.generate_rewrite_batch: batched POST "
                 "raised for %d block(s): %s — degrading those blocks to None",
-                len(block_list),
+                len(batched_blocks),
                 exc,
             )
-            return {bid: None for bid in block_ids}
+            results = dict(overflow_results)
+            results.update({bid: None for bid in batched_ids})
+            return results
 
         # Input-truncation tripwire (rewrite-overflow-fix-2026-06): the whole
         # batch travelled through ONE POST, so a silent head-truncation
@@ -3709,23 +3957,23 @@ class RewriteProvider(_BaseLLMProvider):
                 system_prompt=self._system_prompt,
                 user_prompt=batch_prompt,
                 usage=usage,
-                block_id=",".join(block_ids),
+                block_id=",".join(batched_ids),
             )
         except _PromptTruncatedError as exc:
             logger.warning(
                 "RewriteProvider.generate_rewrite_batch: input prompt "
                 "truncated for %d block(s) (num_ctx=%d) — stamping all as "
                 "escalated: %s",
-                len(block_list),
+                len(batched_blocks),
                 self._rewrite_num_ctx,
                 exc,
             )
-            return {
-                b.block_id: dataclasses.replace(
+            results = dict(overflow_results)
+            for b in batched_blocks:
+                results[b.block_id] = dataclasses.replace(
                     b, escalation_marker=_INPUT_PROMPT_TRUNCATED_MARKER
                 )
-                for b in block_list
-            }
+            return results
 
         # Repair entity-escaped comment closes (``--&gt;`` → ``-->``) at the
         # envelope level FIRST so an unterminated comment in one block's
@@ -3734,11 +3982,13 @@ class RewriteProvider(_BaseLLMProvider):
         # runs PER-BLOCK below (it needs the Block for its source-text fields).
         html_response = _fix_malformed_comment_closes(html_response)
         html_response = _escape_orphan_placeholder_tags(html_response)
-        parsed = parse_rewrite_batch_envelope(html_response, block_ids)
+        parsed = parse_rewrite_batch_envelope(html_response, batched_ids)
 
-        results: Dict[str, Optional[Block]] = {}
+        # Seed with the scaffold-overflow escalations so they surface in the
+        # return map alongside the batched results.
+        results: Dict[str, Optional[Block]] = dict(overflow_results)
         n_parsed = 0
-        for block in block_list:
+        for block in batched_blocks:
             fragment = parsed.get(block.block_id)
             if not (isinstance(fragment, str) and fragment.strip()):
                 results[block.block_id] = None
@@ -3785,17 +4035,20 @@ class RewriteProvider(_BaseLLMProvider):
                 self._emit_decision(
                     decision_type="block_rewrite_call",
                     decision=(
-                        f"batched rewrite: {n_parsed}/{len(block_list)} "
+                        f"batched rewrite: {n_parsed}/{len(batched_blocks)} "
                         f"block(s) parsed"
                     ),
                     rationale=(
-                        f"Batched rewrite POST authored {len(block_list)} "
+                        f"Batched rewrite POST authored {len(batched_blocks)} "
                         f"block(s) in ONE request via provider={self._provider}, "
                         f"model={self._model} (rate-limit defeat). Parsed "
                         f"{n_parsed} block slot(s) from the CF_BLOCK envelope; "
-                        f"{len(block_list) - n_parsed} slot(s) were absent/empty "
-                        f"and degrade to None for the router round-loop to "
-                        f"re-batch (fail-soft, never silently dropped)."
+                        f"{len(batched_blocks) - n_parsed} slot(s) were "
+                        f"absent/empty and degrade to None for the router "
+                        f"round-loop to re-batch (fail-soft, never silently "
+                        f"dropped). {len(overflow_results)} block(s) excluded "
+                        f"as rewrite_scaffold_overflow (scaffold alone exceeds "
+                        f"the served window)."
                     ),
                 )
             except Exception as exc:  # noqa: BLE001 — never break dispatch
@@ -3841,6 +4094,7 @@ class RewriteProvider(_BaseLLMProvider):
         enforced_curie_count = call_context.get("enforced_curie_count")
         pruned_curie_count = call_context.get("pruned_curie_count")
         input_truncated = bool(call_context.get("input_truncated", False))
+        scaffold_overflow = bool(call_context.get("scaffold_overflow", False))
         estimated_prompt_tokens = call_context.get("estimated_prompt_tokens")
         reported_prompt_tokens = call_context.get("reported_prompt_tokens")
         num_ctx = call_context.get("num_ctx")
@@ -3848,7 +4102,9 @@ class RewriteProvider(_BaseLLMProvider):
             call_context.get("dropped_cited_chunk_ids") or []
         )
 
-        if input_truncated:
+        if scaffold_overflow:
+            outcome = "scaffold_overflow"
+        elif input_truncated:
             outcome = "input_truncated"
         elif curie_force_injected:
             outcome = "curie_force_injected"
@@ -3874,6 +4130,18 @@ class RewriteProvider(_BaseLLMProvider):
                 f"on-topic CURIE(s), pruned {pruned_curie_count} the rewrite "
                 f"tier did not use (kept >=1 to satisfy the anchoring "
                 f"invariant) so the prose was not bloated past max_tokens."
+            )
+        if scaffold_overflow:
+            rationale_parts.append(
+                f"SCAFFOLD OVERFLOW: the non-chunk scaffold (system prompt + "
+                f"outline dict + per-claim + objectives + contract) estimated "
+                f"~{estimated_prompt_tokens} tokens, which alone exceeds the "
+                f"served window (num_ctx={num_ctx}) — no grounding chunk could "
+                f"fit, so the block was stamped rewrite_scaffold_overflow and "
+                f"NEVER dispatched (authoring an over-window prompt would "
+                f"silently head-truncate the CONTRACT). Raise the served "
+                f"window / ED4ALL_REWRITE_NUM_CTX, or shrink the upstream "
+                f"outline payload."
             )
         if input_truncated:
             rationale_parts.append(

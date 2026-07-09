@@ -53,9 +53,12 @@ def _success_body(content: str, *, model: str = "test-outline") -> dict:
             }
         ],
         "usage": {
-            "prompt_tokens": 200,
+            # outline-overflow-fix-2026-07: realistic served prompt-token
+            # count so the default-ON input-truncation tripwire does not
+            # false-fire on this stub (see test_outline_provider._success_body).
+            "prompt_tokens": 8000,
             "completion_tokens": 80,
-            "total_tokens": 280,
+            "total_tokens": 8080,
         },
     }
 

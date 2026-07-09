@@ -10929,6 +10929,121 @@ def _objectives_payload_sha(objectives_payload: Any) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# outline-overflow-fix-2026-07: per-block objectives filter.
+# --------------------------------------------------------------------------- #
+# The outline tier previously passed the ENTIRE course objectives list (often
+# ~90 entries, several KB) to EVERY per-block LLM call, so on a small-ctx
+# served model the prompt overflowed the window and the local server silently
+# head-truncated it — the model saw only the objectives TAIL and authored
+# wrong-topic outlines that the downstream gates re-stamped green. Each block
+# only needs the objectives RELEVANT to it: its own ``objective_ids`` (TO- or
+# CO-level) plus the COs rolling up to those TOs (and a directly-cited CO's
+# parent TO + sibling COs). The filter falls back to the FULL list whenever it
+# resolves to empty (never an empty objectives section).
+def _build_objective_rollup(
+    terminal_objectives: List[Dict[str, Any]],
+    chapter_objectives: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Build the TO/CO roll-up maps consumed by the per-block filter.
+
+    Returns a dict with ``co_ids_by_to`` (Dict[to_id, Set[co_id]]),
+    ``parent_to_by_co`` (Dict[co_id, to_id]), ``to_ids`` (Set[str]), and
+    ``co_ids`` (Set[str]). CO→TO membership is unioned from BOTH the TO's
+    ``child_co_ids`` and each CO's parent back-pointer (``parent_to`` /
+    ``parent_terminal`` / ``parent_terminal_id`` / ``terminal_id``).
+    """
+    co_ids_by_to: Dict[str, set] = {}
+    parent_to_by_co: Dict[str, str] = {}
+    to_ids: set = set()
+    co_ids: set = set()
+    for _to in terminal_objectives or []:
+        _tid = _to.get("id") if isinstance(_to, dict) else None
+        if not isinstance(_tid, str) or not _tid:
+            continue
+        to_ids.add(_tid)
+        _kids = co_ids_by_to.setdefault(_tid, set())
+        for _cid in (_to.get("child_co_ids") or []):
+            if isinstance(_cid, str) and _cid:
+                _kids.add(_cid)
+    for _co in chapter_objectives or []:
+        _cid = _co.get("id") if isinstance(_co, dict) else None
+        if not isinstance(_cid, str) or not _cid:
+            continue
+        co_ids.add(_cid)
+        _parent = (
+            _co.get("parent_to")
+            or _co.get("parent_terminal")
+            or _co.get("parent_terminal_id")
+            or _co.get("terminal_id")
+        )
+        if isinstance(_parent, str) and _parent:
+            parent_to_by_co[_cid] = _parent
+            co_ids_by_to.setdefault(_parent, set()).add(_cid)
+    return {
+        "co_ids_by_to": co_ids_by_to,
+        "parent_to_by_co": parent_to_by_co,
+        "to_ids": to_ids,
+        "co_ids": co_ids,
+    }
+
+
+def _relevant_objective_ids(
+    block_objective_ids: Any,
+    rollup: Dict[str, Any],
+) -> set:
+    """Resolve the set of objective ids relevant to a block.
+
+    For a TO target: the TO + its rolled-up COs. For a CO target: the CO +
+    its parent TO + that TO's sibling COs. An unknown id (not in the loaded
+    doc) is kept verbatim (may match a payload entry; never silently
+    dropped).
+    """
+    co_ids_by_to = rollup["co_ids_by_to"]
+    parent_to_by_co = rollup["parent_to_by_co"]
+    to_ids = rollup["to_ids"]
+    co_ids = rollup["co_ids"]
+    targets = {
+        t for t in (block_objective_ids or [])
+        if isinstance(t, str) and t
+    }
+    relevant: set = set()
+    for t in targets:
+        if t in to_ids:
+            relevant.add(t)
+            relevant |= co_ids_by_to.get(t, set())
+        elif t in co_ids:
+            relevant.add(t)
+            _parent = parent_to_by_co.get(t)
+            if _parent:
+                relevant.add(_parent)
+                relevant |= co_ids_by_to.get(_parent, set())
+        else:
+            relevant.add(t)
+    return relevant
+
+
+def _filter_objectives_payload_for_block(
+    block_objective_ids: Any,
+    objectives_payload: List[Dict[str, Any]],
+    rollup: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Filter ``objectives_payload`` to the ids relevant to a block.
+
+    Preserves the original payload item shape + order. Falls back to the
+    FULL payload when the filter resolves to empty (never an empty
+    objectives section).
+    """
+    relevant = _relevant_objective_ids(block_objective_ids, rollup)
+    if not relevant:
+        return objectives_payload
+    filtered = [
+        item for item in objectives_payload
+        if isinstance(item, dict) and item.get("id") in relevant
+    ]
+    return filtered or objectives_payload
+
+
+# --------------------------------------------------------------------------- #
 # Dynamic block-planner per-week resume sidecar (plan P4 item 4 / D5).
 # --------------------------------------------------------------------------- #
 # The outline tier's dynamic block planner (``ED4ALL_DYNAMIC_BLOCK_PLAN``)
@@ -14564,6 +14679,23 @@ async def _run_content_generation_outline(**kwargs) -> str:
         {"id": o.get("id"), "statement": o.get("statement")}
         for o in (terminal_objectives + chapter_objectives)
     ]
+
+    # outline-overflow-fix-2026-07: per-block objectives filter — build the
+    # TO/CO roll-up maps ONCE, then pass each outline call only the
+    # objectives relevant to its block (see the module-level helpers). Falls
+    # back to the full list on an empty filter (never an empty objectives
+    # section).
+    _objective_rollup = _build_objective_rollup(
+        terminal_objectives, chapter_objectives
+    )
+
+    def _objectives_payload_for_block(block: Any) -> List[Dict[str, Any]]:
+        return _filter_objectives_payload_for_block(
+            getattr(block, "objective_ids", ()) or (),
+            objectives_payload,
+            _objective_rollup,
+        )
+
     workflow_type = kwargs.get("workflow_type") or ""
     validators = _resolve_inter_tier_validators(workflow_type, capture)
 
@@ -14700,12 +14832,16 @@ async def _run_content_generation_outline(**kwargs) -> str:
                     _n_outline_resumed += 1
                     continue
         block_chunks = chunks_lookup.get(blk.block_id, [])
+        # outline-overflow-fix-2026-07: pass only the objectives relevant to
+        # this block (its TO(s) + rolled-up COs), falling back to the full
+        # list when the filter is empty. See ``_objectives_payload_for_block``.
+        _blk_objectives = _objectives_payload_for_block(blk)
         try:
             outlined = router.route_with_self_consistency(
                 blk,
                 validators=validators,
                 source_chunks=block_chunks,
-                objectives=objectives_payload,
+                objectives=_blk_objectives,
                 minted_curie_map=_minted_curie_map,
                 pre_validate_hook=_make_mint_hook(block_chunks),
             )

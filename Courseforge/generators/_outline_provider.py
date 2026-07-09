@@ -83,6 +83,16 @@ from lib.validators.content_type import (  # noqa: E402
 from lib.ontology.bloom import (  # noqa: E402
     BLOOM_LEVELS as _BLOOM_LEVELS,
 )
+from lib.retrieval._prompts import (  # noqa: E402
+    estimate_tokens as _estimate_tokens,
+    resolve_num_ctx as _resolve_num_ctx,
+)
+from lib.llm.truncation_guard import (  # noqa: E402
+    check_prompt_not_truncated,
+)
+from lib.retrieval.answer_backend import (  # noqa: E402
+    PromptTruncatedError as _PromptTruncatedError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -96,14 +106,67 @@ ENV_MODEL = "COURSEFORGE_OUTLINE_MODEL"
 ENV_N_CANDIDATES = "COURSEFORGE_OUTLINE_N_CANDIDATES"
 ENV_REGEN_BUDGET = "COURSEFORGE_OUTLINE_REGEN_BUDGET"
 ENV_GRAMMAR_MODE = "COURSEFORGE_OUTLINE_GRAMMAR_MODE"
+# outline-overflow-fix-2026-07: cap on the number of source chunks rendered
+# into a single outline-tier user prompt + the input-truncation tripwire.
+ENV_MAX_CHUNKS = "COURSEFORGE_OUTLINE_MAX_CHUNKS"
+ENV_TRUNCATION_TRIPWIRE = "COURSEFORGE_OUTLINE_TRUNCATION_TRIPWIRE"
 
 DEFAULT_PROVIDER = "local"
 DEFAULT_MODEL = "qwen2.5:7b-instruct-q4_K_M"
 DEFAULT_N_CANDIDATES = 3
 DEFAULT_REGEN_BUDGET = 3
+#: Default head-K cap on source chunks rendered per outline prompt. The
+#: median block resolves ~20 chunks (median chunk section ~24k chars); an
+#: un-capped render blows a small served window and the local server silently
+#: head-truncates the prompt, so the model sees only the objectives / closing
+#: TAIL. 8 keeps the grounding tight enough to fit a 4k-class window while
+#: preserving the top-of-list (already relevance/citation-ordered) chunks.
+DEFAULT_MAX_CHUNKS = 8
+
+#: Truthy / falsey tokens (case-insensitive) for the boolean env resolvers.
+#: Mirrors ``Courseforge/generators/_rewrite_fit_window.py``.
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+_FALSEY = frozenset({"0", "false", "no", "off"})
 
 _DEFAULT_MAX_TOKENS = 1200
 _DEFAULT_TEMPERATURE = 0.0
+
+
+def _resolve_outline_max_chunks(
+    env: Optional[Dict[str, str]] = None,
+) -> int:
+    """Resolve ``COURSEFORGE_OUTLINE_MAX_CHUNKS`` (default 8).
+
+    Head-K cap on the source chunks rendered into a single outline-tier
+    user prompt. Parse-with-fallback: garbage / non-positive / unset →
+    :data:`DEFAULT_MAX_CHUNKS` (a misconfigured cap must never silently
+    disable the guard, mirroring ``resolve_rewrite_num_ctx``).
+    """
+    raw = (env or os.environ).get(ENV_MAX_CHUNKS)
+    if not raw or not str(raw).strip():
+        return DEFAULT_MAX_CHUNKS
+    try:
+        val = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_CHUNKS
+    return val if val > 0 else DEFAULT_MAX_CHUNKS
+
+
+def _resolve_outline_truncation_tripwire(
+    env: Optional[Dict[str, str]] = None,
+) -> bool:
+    """Resolve ``COURSEFORGE_OUTLINE_TRUNCATION_TRIPWIRE`` (default ON).
+
+    The tripwire is output-neutral (it only fail-closes on a detected
+    silent head-truncation), so it ships ON by default; an explicit falsey
+    ``0/false/no/off`` (case-insensitive) is the escape hatch. Unset /
+    garbage / truthy → on. Mirrors the rewrite tier's
+    ``resolve_truncation_tripwire``.
+    """
+    raw = (env or os.environ).get(ENV_TRUNCATION_TRIPWIRE)
+    if raw is None:
+        return True
+    return str(raw).strip().lower() not in _FALSEY
 
 # Per-request HTTP timeout (seconds) for the outline tier's
 # OpenAI-compatible backends (local / together). The outline tier is a
@@ -2263,6 +2326,18 @@ class OutlineProvider(_BaseLLMProvider):
             or None
         )
 
+        # outline-overflow-fix-2026-07: read the chunk-count cap + the
+        # input-truncation tripwire ONCE at construction (mirrors the
+        # rewrite tier's ``resolve_rewrite_num_ctx`` / ``resolve_truncation_
+        # tripwire`` in ``RewriteProvider.__init__``). ``_outline_num_ctx``
+        # is the served-window number the tripwire's message + ratio read;
+        # it reuses the generic content-gen serving-window resolver
+        # (``ED4ALL_ANSWER_NUM_CTX``, default 4096) since the outline tier
+        # ships no dedicated window env.
+        self._max_chunks: int = _resolve_outline_max_chunks()
+        self._truncation_tripwire: bool = _resolve_outline_truncation_tripwire()
+        self._outline_num_ctx: int = _resolve_num_ctx()
+
     @staticmethod
     def _resolve_int(
         kwarg_value: Optional[int],
@@ -2284,6 +2359,28 @@ class OutlineProvider(_BaseLLMProvider):
                     default,
                 )
         return default
+
+    def _dispatch_call(
+        self,
+        user_prompt: str,
+        *,
+        extra_payload: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[str, int, Dict[str, Any]]:
+        """outline-overflow-fix-2026-07: usage-bearing dispatch override.
+
+        Returns a 3-tuple ``(text, retry_count, usage)`` (instead of the
+        base's 2-tuple) so :meth:`generate_outline` can read the server-
+        reported ``usage.prompt_tokens`` for the input-truncation tripwire.
+        Delegates to the base's :meth:`_dispatch_call_with_usage`; the usage
+        dict is EMPTY on the Anthropic path (no per-request token tally) so
+        the tripwire fail-OPENs there. Mirrors the rewrite tier's
+        ``RewriteProvider._dispatch_call`` 3-tuple contract. The seam name
+        is preserved so callers/tests that patch ``_dispatch_call`` stay on
+        the dispatch path.
+        """
+        return self._dispatch_call_with_usage(
+            user_prompt, extra_payload=extra_payload
+        )
 
     def generate_outline(
         self,
@@ -2399,7 +2496,13 @@ class OutlineProvider(_BaseLLMProvider):
                     f"{schema_hint}"
                 )
             try:
-                raw_text, retry_count = self._dispatch_call(
+                # outline-overflow-fix-2026-07: the outline provider's
+                # ``_dispatch_call`` override returns a 3-tuple carrying the
+                # server-reported ``usage`` so the input-truncation tripwire
+                # can read ``usage.prompt_tokens``. The seam name is kept so
+                # the existing transient-retry tests (which patch
+                # ``_dispatch_call``) stay on the path.
+                raw_text, retry_count, usage = self._dispatch_call(
                     user_prompt,
                     extra_payload=extra_payload or None,
                 )
@@ -2443,6 +2546,67 @@ class OutlineProvider(_BaseLLMProvider):
 
             total_retries += int(retry_count)
             last_raw = raw_text
+
+            # outline-overflow-fix-2026-07: input-truncation tripwire.
+            # Compare the server-reported ``usage.prompt_tokens`` against
+            # the local 2.5-char/token estimate of system + user prompt. A
+            # large shortfall means the served window silently dropped the
+            # prompt HEAD (the block header + source chunks), so the model
+            # authored from the surviving TAIL — a wrong-topic outline the
+            # downstream gates then re-stamp green. HARD, NON-RETRYABLE:
+            # re-dispatching the same over-window prompt re-truncates, so we
+            # fail the call LOUDLY instead of returning a silent-success
+            # stub. Gated by ``COURSEFORGE_OUTLINE_TRUNCATION_TRIPWIRE``
+            # (default ON); fail-OPEN when usage is absent/zero (Ollama may
+            # omit it) or empty (Anthropic returns no per-request tally).
+            # Mirrors the rewrite tier's ``_check_truncation``.
+            if self._truncation_tripwire and isinstance(usage, dict):
+                estimated_prompt_tokens = (
+                    _estimate_tokens(self._system_prompt)
+                    + _estimate_tokens(user_prompt)
+                )
+                try:
+                    check_prompt_not_truncated(
+                        usage.get("prompt_tokens"),
+                        estimated_prompt_tokens,
+                        model_id=self._model,
+                        num_ctx=self._outline_num_ctx,
+                    )
+                except _PromptTruncatedError as exc:
+                    logger.warning(
+                        "OutlineProvider: input prompt truncated for block "
+                        "%r (num_ctx=%d) — failing the call: %s",
+                        block.block_id,
+                        self._outline_num_ctx,
+                        exc,
+                    )
+                    self._emit_per_call_decision(
+                        raw_text=last_raw,
+                        retry_count=total_retries,
+                        block_id=block.block_id,
+                        block_type=block.block_type,
+                        page_id=block.page_id,
+                        success=False,
+                        attempts=attempt + 1,
+                        last_error=(
+                            f"input_prompt_truncated: estimated "
+                            f"~{estimated_prompt_tokens} prompt tokens but "
+                            f"server reported "
+                            f"{usage.get('prompt_tokens')!r} "
+                            f"(num_ctx={self._outline_num_ctx})"
+                        ),
+                    )
+                    raise OutlineProviderError(
+                        f"Outline tier detected silent input-prompt "
+                        f"truncation for block {block.block_id!r}: the "
+                        f"served window (num_ctx={self._outline_num_ctx}) "
+                        f"dropped the prompt HEAD, so the outline is "
+                        f"ungrounded. Raise the server window / "
+                        f"ED4ALL_ANSWER_NUM_CTX, lower "
+                        f"COURSEFORGE_OUTLINE_MAX_CHUNKS, or disable the "
+                        f"guard via COURSEFORGE_OUTLINE_TRUNCATION_TRIPWIRE=off.",
+                        code="outline_input_truncated",
+                    ) from exc
 
             candidate = OpenAICompatibleClient._extract_json_lenient(raw_text)
             if candidate is None:
@@ -2731,11 +2895,25 @@ class OutlineProvider(_BaseLLMProvider):
         block_type = block.block_type
         bounds = _OUTLINE_KIND_BOUNDS.get(block_type, {})
 
+        # outline-overflow-fix-2026-07: head-K cap on the number of source
+        # chunks rendered per block BEFORE the per-chunk char cap. An
+        # un-capped render (median ~20 chunks/block, chunk sections up to
+        # ~46k chars) blows a small served window so the local server
+        # silently head-truncates the prompt and the model sees only the
+        # objectives / closing TAIL — the outline-tier silent-truncation
+        # defect. ``source_chunks`` arrives already relevance/citation
+        # ordered on this lane (no ranking to reuse), so a deterministic
+        # head-K preserves the top-of-list grounding. ``_max_chunks <= 0``
+        # is guarded out by the resolver (never disables the cap).
+        capped_chunks = list(source_chunks or [])
+        if self._max_chunks > 0:
+            capped_chunks = capped_chunks[: self._max_chunks]
+
         # Truncate per-chunk body at 1200 chars; mirrors the
         # ``_LOCAL_INSTRUCTION_SYSTEM_PROMPT`` chunk-window heuristic
         # used in :mod:`Trainforge.generators._local_provider`.
         chunk_lines: List[str] = []
-        for chunk in source_chunks or []:
+        for chunk in capped_chunks:
             cid = str(chunk.get("id") or chunk.get("chunk_id") or "")
             body = str(chunk.get("body") or chunk.get("text") or "")
             if len(body) > 1200:
@@ -3138,10 +3316,15 @@ __all__ = [
     "ENV_N_CANDIDATES",
     "ENV_REGEN_BUDGET",
     "ENV_GRAMMAR_MODE",
+    "ENV_MAX_CHUNKS",
+    "ENV_TRUNCATION_TRIPWIRE",
     "DEFAULT_PROVIDER",
     "DEFAULT_MODEL",
     "DEFAULT_N_CANDIDATES",
     "DEFAULT_REGEN_BUDGET",
+    "DEFAULT_MAX_CHUNKS",
+    "_resolve_outline_max_chunks",
+    "_resolve_outline_truncation_tripwire",
     "SUPPORTED_PROVIDERS",
     "MAX_PARSE_RETRIES",
     "_OUTLINE_KIND_BOUNDS",

@@ -420,6 +420,17 @@ _ESCALATION_MARKERS: frozenset = frozenset(
         # Surfaces as ``escalated`` and routes through the W5 packager-side
         # escalation filter.
         "input_prompt_truncated",
+        # rewrite-overflow-fix-2026-07: the rewrite-tier whole-prompt budget
+        # (ED4ALL_REWRITE_FIT_WINDOW) found the NON-CHUNK scaffold alone (the
+        # trimmed system prompt + the outline dict + per-claim + objectives +
+        # contract) already exceeds the served window, so NO grounding chunk
+        # could fit and the prompt cannot be authored without silent head-
+        # truncation. HARD, NON-RETRYABLE — the block is stamped + never
+        # dispatched (dispatching a prompt that cannot fit would truncate the
+        # authoring CONTRACT). Surfaces as ``escalated`` and routes through the
+        # W5 packager-side escalation filter. Operator fix: raise the served
+        # window / ED4ALL_REWRITE_NUM_CTX, or shrink the upstream outline.
+        "rewrite_scaffold_overflow",
     }
 )
 
