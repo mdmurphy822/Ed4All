@@ -152,6 +152,15 @@ embedding = [
     # already arrives transitively via sentence-transformers; declared here
     # honestly because we now depend on it as a first-class import.
     "scikit-learn>=1.3,<2.0",
+    # WorkedExampleMathValidator (lib/validators/worked_example_math.py) imports
+    # sympy directly to symbolically re-check worked-example derivations (the
+    # math-correctness control the number-blind NLI + numeric-literal-grounding
+    # gates cannot provide). sympy already arrives transitively via torch, but
+    # is declared here honestly because we now depend on it as a first-class
+    # import. The validator graceful-degrades to a single warning-severity
+    # SYMPY_MISSING GateIssue (passed=True) when it is absent — so it stays out
+    # of the DEFAULT install (mirroring the EMBEDDING_DEPS_MISSING convention).
+    "sympy>=1.9",
 ]
 # Control-plane GUI (opt-in). FastAPI + uvicorn serve the vanilla-JS SPA and
 # the /api + /ws routers. Kept out of the default install so the MCP server

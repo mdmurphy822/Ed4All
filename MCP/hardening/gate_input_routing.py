@@ -3022,6 +3022,18 @@ def default_router() -> GateInputRouter:
         "lib.validators.numeric_literal_grounding.NumericLiteralGroundingValidator",
         _build_rewrite_block_input,
     )
+    # Symbolic worked-example verification gate — the CORRECTNESS control for the
+    # MATH in worked examples that provenance / number-blind NLI / numeric-literal
+    # grounding cannot provide (it re-checks the DERIVATION under sympy, not the
+    # grounding of individual numbers). Consumes ONLY ``inputs['blocks']`` (the
+    # symbolic re-check is internal to the block's own HTML — no source premise),
+    # so it reuses the rewrite-tier Block-input shim (NOT the +source_chunks
+    # builder the numeric-grounding gate needs). Falls through to the outline-tier
+    # path inside _build_block_input when only blocks_outline_path is present.
+    r.register(
+        "lib.validators.worked_example_math.WorkedExampleMathValidator",
+        _build_block_input_rewrite,
+    )
 
     # Group C — Block-only SHACL validator (one binding wired at both
     # outline and rewrite seams in YAML; same builder routes both).

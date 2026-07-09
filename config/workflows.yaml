@@ -443,6 +443,39 @@ workflows:
                 min_absent_fractions: 1
             description: "Numeric-literal grounding — cross-check prose fractions vs cited source (OCR-tolerant). The fabrication control for math content the number-blind NLI gate cannot provide. Critical (calibration-validated)."
 
+          # Symbolic worked-example verification — the CORRECTNESS control for the
+          # MATH in worked examples that provenance / number-blind NLI /
+          # numeric-literal grounding gates cannot provide. Real defects (7B
+          # vendor-HTML build, hand-found): a substitution example isolating
+          # x - 2y = -2 as x = 2y + 2 (SIGN error), deriving y = 3.5, then
+          # asserting solution (8, 5); a sibling block concluding (8, 3.5) which
+          # satisfies NEITHER equation. Every literal (8/5/3.5) is grounded, so
+          # numeric_literal_grounding + number-blind NLI both pass — only a
+          # symbolic re-check under sympy catches the wrong DERIVATION. Harvests
+          # well-delimited math (LaTeX \(...\)/\[...\], <code>, solution-line,
+          # \boxed) and checks three high-precision patterns (single-var solve /
+          # two-eq system / numeric simplify chain); anything unparseable skips
+          # silently (precision over recall). Day-1 SHADOW (warning): on the
+          # first full 7B vendor build (378 scored worked-example blocks) it
+          # flagged 31 (score 0.918) with a hand-audited high true-positive rate.
+          # TODO(calibration): flip to critical (severity: critical +
+          # on_fail: block + on_error: fail_closed) after a >=2-corpus FP-rate
+          # measurement. This gate is ALSO the named RE-PROMOTION condition for
+          # numeric_literal_grounding (commit 329aa9d3): once a symbolic
+          # step-verification gate can separate wrong math from novel-but-correct
+          # math, numeric_literal_grounding can return critical.
+          - gate_id: worked_example_math
+            validator: lib.validators.worked_example_math.WorkedExampleMathValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            config:
+              shadow: false
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: "Symbolic worked-example verification — sympy re-checks worked-example derivations (single-var solve / two-eq system / numeric simplify chain) to catch provably-wrong math the number-blind NLI + numeric-literal-grounding gates miss (e.g. a sign-error substitution asserting a pair that satisfies neither system equation). Warning day-1 (calibration); the named re-promotion condition for numeric_literal_grounding."
+
           # W3 — per-block synthesis-manifest RESOLUTION gate (two-pass mirror;
           # see textbook_to_course for the full rationale). Day-1 SHADOW
           # (warning) until a live run proves the rewrite-tier emission.
@@ -2959,6 +2992,39 @@ workflows:
               thresholds:
                 min_absent_fractions: 1
             description: "Numeric-literal grounding — cross-check prose fractions vs cited source (OCR-tolerant). The fabrication control for math content the number-blind NLI gate cannot provide. Critical (calibration-validated)."
+
+          # Symbolic worked-example verification — the CORRECTNESS control for the
+          # MATH in worked examples that provenance / number-blind NLI /
+          # numeric-literal grounding gates cannot provide. Real defects (7B
+          # vendor-HTML build, hand-found): a substitution example isolating
+          # x - 2y = -2 as x = 2y + 2 (SIGN error), deriving y = 3.5, then
+          # asserting solution (8, 5); a sibling block concluding (8, 3.5) which
+          # satisfies NEITHER equation. Every literal (8/5/3.5) is grounded, so
+          # numeric_literal_grounding + number-blind NLI both pass — only a
+          # symbolic re-check under sympy catches the wrong DERIVATION. Harvests
+          # well-delimited math (LaTeX \(...\)/\[...\], <code>, solution-line,
+          # \boxed) and checks three high-precision patterns (single-var solve /
+          # two-eq system / numeric simplify chain); anything unparseable skips
+          # silently (precision over recall). Day-1 SHADOW (warning): on the
+          # first full 7B vendor build (378 scored worked-example blocks) it
+          # flagged 31 (score 0.918) with a hand-audited high true-positive rate.
+          # TODO(calibration): flip to critical (severity: critical +
+          # on_fail: block + on_error: fail_closed) after a >=2-corpus FP-rate
+          # measurement. This gate is ALSO the named RE-PROMOTION condition for
+          # numeric_literal_grounding (commit 329aa9d3): once a symbolic
+          # step-verification gate can separate wrong math from novel-but-correct
+          # math, numeric_literal_grounding can return critical.
+          - gate_id: worked_example_math
+            validator: lib.validators.worked_example_math.WorkedExampleMathValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            config:
+              shadow: false
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: "Symbolic worked-example verification — sympy re-checks worked-example derivations (single-var solve / two-eq system / numeric simplify chain) to catch provably-wrong math the number-blind NLI + numeric-literal-grounding gates miss (e.g. a sign-error substitution asserting a pair that satisfies neither system equation). Warning day-1 (calibration); the named re-promotion condition for numeric_literal_grounding."
 
           # Phase 4 Wave N1 Subtask 12: SHACL parallel of the four
           # rewrite-tier Block validators above. Distinct gate_id
