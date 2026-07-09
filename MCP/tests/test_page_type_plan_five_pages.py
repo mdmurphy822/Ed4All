@@ -35,6 +35,7 @@ from Courseforge.generators._rewrite_provider import (
     _BLOCK_TYPE_OUTPUT_CONTRACTS,
 )
 from Courseforge.scripts.blocks import BLOCK_TYPES
+from lib.generation.block_planner import _DEFAULT_PAGE_PLAN
 from lib.ontology.bloom import BLOOM_LEVELS
 from MCP.tools.pipeline_tools import (
     _PAGE_BLOCK_PLAN,
@@ -85,27 +86,46 @@ def test_five_canonical_page_types_present():
 
 
 def test_each_page_type_has_expected_block_composition():
-    """Each page type carries the block mix mirroring the Sonnet pages."""
+    """Each page type carries the enriched block mix (back-ported from the
+    dynamic-planner fallback ``_DEFAULT_PAGE_PLAN``)."""
     plan = _PAGE_TYPE_BLOCK_PLAN
-    # overview = intro + objectives + roadmap (objective + explanation).
-    assert [bt for bt, _ in plan["overview"]] == ["objective", "explanation"]
-    # content = concept/definition + explanation + worked example.
+    # overview = objectives + prerequisites + roadmap.
+    assert [bt for bt, _ in plan["overview"]] == [
+        "objective",
+        "prereq_set",
+        "explanation",
+    ]
+    # content = concept + explanation + callout + misconception + worked
+    # example + comparison grid.
     assert [bt for bt, _ in plan["content"]] == [
         "concept",
         "explanation",
+        "callout",
+        "misconception",
         "example",
+        "flip_card_grid",
     ]
-    # application = scenario/problem cards + a worked example.
-    assert [bt for bt, _ in plan["application"]] == ["activity", "example"]
-    # self_check = two question/answer/reveal cards.
+    # application = activity + scenario + problem + peer discussion.
+    assert [bt for bt, _ in plan["application"]] == [
+        "activity",
+        "scenario",
+        "problem",
+        "discussion_prompt",
+    ]
+    # self_check = four question/answer/reveal cards + a reflection close.
     assert [bt for bt, _ in plan["self_check"]] == [
         "self_check_question",
         "self_check_question",
+        "self_check_question",
+        "self_check_question",
+        "reflection_prompt",
     ]
-    # summary = recap + checklist.
+    # summary = distilled takeaways + checklist + recap + reflection.
     assert [bt for bt, _ in plan["summary"]] == [
         "summary_takeaway",
+        "checklist",
         "recap",
+        "reflection_prompt",
     ]
 
 
@@ -139,6 +159,54 @@ def test_every_plan_entry_is_wireable():
             assert target_bloom in BLOOM_LEVELS, (
                 f"{page_type}: {target_bloom} not a Bloom level"
             )
+
+
+def test_static_plan_in_sync_with_planner_default():
+    """The static fixed plan and the dynamic-planner fallback
+    ``_DEFAULT_PAGE_PLAN`` stay identical across the five shared page types.
+
+    Guards the back-port: the two tables drifted once (the planner copy was
+    enriched, the static copy was not), so a planner FAILURE produced richer
+    pages than planner-OFF. ``key_terms`` is the only entry unique to the
+    static table (a deterministic post-pass absent from the planner copy).
+    """
+    shared = set(_DEFAULT_PAGE_PLAN)
+    assert set(_PAGE_TYPE_BLOCK_PLAN) - shared == {"key_terms"}
+    for page_type in shared:
+        assert _PAGE_TYPE_BLOCK_PLAN[page_type] == _DEFAULT_PAGE_PLAN[page_type], (
+            f"{page_type} drifted from block_planner._DEFAULT_PAGE_PLAN"
+        )
+
+
+def test_static_plan_deploys_enriched_block_variety():
+    """The back-port lifts the static plan's block variety to ~15 types.
+
+    Before the back-port the fixed plan deployed only 8 distinct block
+    types; the enriched plan must include the previously-unused framework
+    types (misconception / callout / flip_card_grid / prereq_set / scenario /
+    problem / discussion_prompt / checklist / reflection_prompt).
+    """
+    deployed = {
+        block_type
+        for page_type, plan in _PAGE_TYPE_BLOCK_PLAN.items()
+        if page_type != "key_terms"
+        for block_type, _ in plan
+    }
+    newly_deployed = {
+        "misconception",
+        "callout",
+        "flip_card_grid",
+        "prereq_set",
+        "scenario",
+        "problem",
+        "discussion_prompt",
+        "checklist",
+        "reflection_prompt",
+    }
+    assert newly_deployed <= deployed, (
+        f"missing enriched block types: {newly_deployed - deployed}"
+    )
+    assert len(deployed) >= 14
 
 
 def test_back_compat_alias_equals_content_plan():
@@ -227,14 +295,31 @@ def test_week_distributes_blocks_across_five_page_types():
     assert len(page_ids) == 7  # 4 singletons + 3 content
 
     # Blocks are NOT all on the content page(s) — each non-content type
-    # carries its own block mix.
-    assert pages["week_02_overview"] == ["objective", "explanation"]
-    assert pages["week_02_application"] == ["activity", "example"]
+    # carries its own enriched block mix.
+    assert pages["week_02_overview"] == [
+        "objective",
+        "prereq_set",
+        "explanation",
+    ]
+    assert pages["week_02_application"] == [
+        "activity",
+        "scenario",
+        "problem",
+        "discussion_prompt",
+    ]
     assert pages["week_02_self_check"] == [
         "self_check_question",
         "self_check_question",
+        "self_check_question",
+        "self_check_question",
+        "reflection_prompt",
     ]
-    assert pages["week_02_summary"] == ["summary_takeaway", "recap"]
+    assert pages["week_02_summary"] == [
+        "summary_takeaway",
+        "checklist",
+        "recap",
+        "reflection_prompt",
+    ]
 
 
 def test_zero_topic_week_still_emits_five_page_types():

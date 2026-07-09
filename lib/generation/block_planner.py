@@ -242,13 +242,16 @@ _PAGE_TYPE_FLOOR_FILLERS: Dict[str, Tuple[Tuple[str, str], ...]] = {
     ),
 }
 
-# Deterministic fixed-plan fallback — a VERBATIM copy of
-# ``MCP/tools/pipeline_tools.py::_PAGE_TYPE_BLOCK_PLAN``. Kept here (not
+# Deterministic fixed-plan fallback — kept IN SYNC with the five canonical
+# page types of ``MCP/tools/pipeline_tools.py::_PAGE_TYPE_BLOCK_PLAN`` (which
+# additionally carries a ``key_terms`` entry this copy omits). Kept here (not
 # imported) so the planner module has no dependency on the pipeline module
 # (avoids an import cycle: pipeline_tools imports this planner). The
 # off-path / fallback path is byte-identical to the fixed plan because the
 # CONSUMER falls back to its own ``_PAGE_TYPE_BLOCK_PLAN`` — this copy is
-# only consulted for the planner-internal coverage/top-up math.
+# only consulted for the planner-internal coverage/top-up math. The two
+# tables must stay identical across the five shared page types; the sync is
+# guarded by ``MCP/tests/test_page_type_plan_five_pages.py``.
 # The fixed fallback now satisfies the same per-page-type floors
 # (``_PAGE_TYPE_FLOORS``) so a planner FAILURE still yields a balanced week
 # (overview enumeration + ≥4 application / self_check / summary blocks) and

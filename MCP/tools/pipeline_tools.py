@@ -9931,12 +9931,20 @@ _COURSEFORGE_TWO_PASS_TRUTHY = frozenset({"1", "true", "yes", "on"})
 #
 # Each entry maps a page TYPE → the ordered ``(block_type, target_bloom)``
 # list that composes that page, mirroring the Sonnet composition:
-#   * overview     — intro + objectives + roadmap.
-#   * content      — concept/definition + explanation + worked example
-#                    (one such page per topic; the chunking-dense page type).
-#   * application  — scenario/problem cards + a worked example.
-#   * self_check   — question/answer/reveal cards (no answer inline).
-#   * summary      — key-rule recap + checklist.
+#   * overview     — objectives + prerequisites + roadmap.
+#   * content      — concept + explanation + callout + misconception +
+#                    worked example + comparison grid (one such page per
+#                    topic; the chunking-dense page type).
+#   * application  — activity + scenario + problem + peer discussion.
+#   * self_check   — four question/answer/reveal cards + a reflection close.
+#   * summary      — distilled takeaways + checklist + recap + reflection.
+#
+# Kept in sync with ``lib/generation/block_planner.py::_DEFAULT_PAGE_PLAN``
+# (the dynamic-planner fallback plan): the five canonical page types are
+# byte-identical across the two tables, so a dynamic-planner FAILURE and the
+# planner-OFF path yield the SAME enriched block variety (~15 block types, up
+# from the original 8). ``key_terms`` is the only entry unique to this table
+# (a deterministic post-pass; absent from the planner copy).
 #
 # Every block_type MUST be a member of
 # ``Courseforge.scripts.blocks.BLOCK_TYPES``, MUST have an outline-tier
@@ -9950,24 +9958,38 @@ _COURSEFORGE_TWO_PASS_TRUTHY = frozenset({"1", "true", "yes", "on"})
 _PAGE_TYPE_BLOCK_PLAN: Dict[str, Tuple[Tuple[str, str], ...]] = {
     "overview": (
         ("objective", "understand"),
+        ("prereq_set", "remember"),
         ("explanation", "understand"),
     ),
     "content": (
         ("concept", "understand"),
         ("explanation", "understand"),
+        ("callout", "understand"),
+        ("misconception", "analyze"),
         ("example", "apply"),
+        # flip_card_grid is the comparative/tabular block the tier can select
+        # (there is no dedicated table block_type); seated so even the fixed
+        # plan deploys the grid.
+        ("flip_card_grid", "understand"),
     ),
     "application": (
         ("activity", "apply"),
-        ("example", "apply"),
+        ("scenario", "apply"),
+        ("problem", "apply"),
+        ("discussion_prompt", "evaluate"),
     ),
     "self_check": (
         ("self_check_question", "analyze"),
         ("self_check_question", "apply"),
+        ("self_check_question", "understand"),
+        ("self_check_question", "remember"),
+        ("reflection_prompt", "evaluate"),
     ),
     "summary": (
         ("summary_takeaway", "understand"),
+        ("checklist", "evaluate"),
         ("recap", "remember"),
+        ("reflection_prompt", "evaluate"),
     ),
     # Feature I5 — the deterministic key-terms page composes vocab_card
     # blocks (one per term) OUTSIDE the LLM block-plan loop, so this entry is
