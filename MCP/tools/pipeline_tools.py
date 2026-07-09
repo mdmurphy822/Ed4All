@@ -15785,6 +15785,43 @@ def _page_membership_match(page_id: str, token: str) -> bool:
     return page_id == token or page_id.startswith(token + "_")
 
 
+def _normalize_token_list_param(value: Any) -> List[str]:
+    """Normalize a rewrite-eviction token param to a list of clean tokens.
+
+    Param-transport compat. ``WorkflowRunner._route_params`` comma-joins list
+    workflow params into a single string when building phase-task params (so
+    other tools such as ``pdf_paths`` keep receiving a comma-joined string).
+    The three rewrite-eviction token params (``target_block_ids`` /
+    ``target_block_instance_ids`` / ``target_page_ids``) therefore reach this
+    consumer as a comma-joined STRING, not the original list. Iterating a
+    string yields CHARACTERS (the bug that exploded one block id into
+    ``['#', '-', '0', ...]``), so the token set must be rebuilt by SPLITTING on
+    ',' — never by iterating the value. None of these token shapes
+    (``{page_id}#{block_type}_{slug}_{idx}``, ``week_01``, ``objective``) ever
+    contains a comma, so ',' is an unambiguous delimiter.
+
+    - ``str`` → split on ',', strip each token, drop empties.
+    - ``list``/``tuple``/``set`` → ``str()`` each member, strip, drop empties.
+    - ``None`` (unset flag) → ``[]``.
+    - any other scalar → single stripped token (defensive; never expected).
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [tok.strip() for tok in value.split(",") if tok.strip()]
+    if isinstance(value, (list, tuple, set)):
+        out: List[str] = []
+        for item in value:
+            if item is None:
+                continue
+            tok = str(item).strip()
+            if tok:
+                out.append(tok)
+        return out
+    tok = str(value).strip()
+    return [tok] if tok else []
+
+
 def _evict_rewrite_cache_by_block_id(
     rewrite_cache: Dict[str, dict],
     outline_blocks: Sequence[Any],
@@ -16485,9 +16522,12 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
     # eviction → byte-identical to the pure failure-driven resume. Purely
     # additive: never widens what is reused, only forces a re-author of the
     # named types on top of the existing failed/degraded re-roll.
-    _target_block_types = {
-        str(_t) for _t in (kwargs.get("target_block_ids") or []) if _t
-    }
+    # Consumer-side re-split: this param arrives comma-joined (a STRING) from
+    # WorkflowRunner._route_params, or as a list on direct/mailbox calls —
+    # _normalize_token_list_param handles both (never iterate the raw value).
+    _target_block_types = set(
+        _normalize_token_list_param(kwargs.get("target_block_ids"))
+    )
     _n_evicted = _evict_rewrite_cache_by_block_type(
         _rewrite_cache, outline_blocks, _target_block_types,
     )
@@ -16532,12 +16572,16 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
     # byte-identical failure-driven reuse. Unknown ids / pages fail LOUD (a
     # typo must not silently no-op) — validated against the outline block
     # universe so the error fires even on a first pass with no cache on disk.
-    _target_block_instance_ids = {
-        str(_t) for _t in (kwargs.get("target_block_instance_ids") or []) if _t
-    }
-    _target_page_ids = {
-        str(_t) for _t in (kwargs.get("target_page_ids") or []) if _t
-    }
+    # Consumer-side re-split (see _normalize_token_list_param): both params
+    # arrive comma-joined (a STRING) from WorkflowRunner._route_params, or as a
+    # list on direct/mailbox calls. Never iterate the raw value — a bare string
+    # would iterate into CHARACTERS.
+    _target_block_instance_ids = set(
+        _normalize_token_list_param(kwargs.get("target_block_instance_ids"))
+    )
+    _target_page_ids = set(
+        _normalize_token_list_param(kwargs.get("target_page_ids"))
+    )
     _n_id_evicted, _unknown_ids = _evict_rewrite_cache_by_block_id(
         _rewrite_cache, outline_blocks, _target_block_instance_ids,
     )

@@ -231,7 +231,8 @@ class CheckpointManager:
         self,
         phase_name: str,
         error: str,
-        error_details: Optional[Dict] = None
+        error_details: Optional[Dict] = None,
+        validation_results: Optional[Dict] = None,
     ) -> PhaseCheckpoint:
         """
         Mark phase as failed.
@@ -240,6 +241,11 @@ class CheckpointManager:
             phase_name: Name of the phase
             error: Error message
             error_details: Additional error context
+            validation_results: Optional per-gate results captured at failure
+                time. Without this, a gate-failed phase persists NO gate
+                detail (only the one-line ``failure_reason`` summary), which
+                forces operators to re-run the whole gate suite just to learn
+                which gates/blocks failed.
 
         Returns:
             Updated PhaseCheckpoint
@@ -255,6 +261,8 @@ class CheckpointManager:
         checkpoint.completed_at = datetime.now().isoformat()
         checkpoint.error = error
         checkpoint.error_details = error_details
+        if validation_results:
+            checkpoint.validation_results = validation_results
 
         self._write_checkpoint(checkpoint)
         logger.error(f"Phase checkpoint failed: {phase_name} - {error}")

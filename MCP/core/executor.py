@@ -2301,7 +2301,13 @@ class TaskExecutor:
                     self.checkpoint_manager.complete_phase(phase_name, validation_results)
                     logger.info(f"[{self.run_id}] Completed phase checkpoint: {phase_name}")
                 else:
-                    self.checkpoint_manager.fail_phase(phase_name, "Validation gates failed")
+                    self.checkpoint_manager.fail_phase(
+                        phase_name,
+                        "Validation gates failed",
+                        validation_results=(
+                            {'gate_results': gate_results} if gate_results else None
+                        ),
+                    )
                     logger.warning(f"[{self.run_id}] Phase {phase_name} failed validation gates")
             except Exception as e:
                 logger.warning(f"[{self.run_id}] Failed to finalize phase checkpoint: {e}")

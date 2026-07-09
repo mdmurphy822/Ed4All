@@ -3905,6 +3905,12 @@ class WorkflowRunner:
                 value = workflow_params.get(key)
                 if value is not None:
                     # Handle list values that need comma-joining for tool params
+                    # (tools like the SemantiK converter consume ``pdf_paths``
+                    # as a comma-joined string). Token-list eviction params
+                    # (target_block_ids / target_block_instance_ids /
+                    # target_page_ids) are re-split consumer-side via
+                    # pipeline_tools._normalize_token_list_param — do NOT stop
+                    # comma-joining here or those other tools break.
                     if isinstance(value, list):
                         value = ",".join(str(v) for v in value)
                     params[param_name] = value
