@@ -69,6 +69,7 @@ from dart_semantic.structure_graph import (
     Region,
     _get_signal,
     _top1,
+    compute_region_page_bboxes,
     resolve_reading_order_fix,
 )
 from dart_semantic.types import FeatureBlock
@@ -1070,7 +1071,10 @@ def _merged_region(
         "conservation_verified": True,
     }
     return dataclasses.replace(
-        first, feature_block_indices=merged_fb, payload=payload
+        first,
+        feature_block_indices=merged_fb,
+        payload=payload,
+        page_bboxes=compute_region_page_bboxes(merged_fb, feature_blocks),
     )
 
 
@@ -1133,7 +1137,10 @@ def _split_children(
         payload["resegment"] = breadcrumb
         children.append(
             dataclasses.replace(
-                region, feature_block_indices=child_fb, payload=payload
+                region,
+                feature_block_indices=child_fb,
+                payload=payload,
+                page_bboxes=compute_region_page_bboxes(child_fb, feature_blocks),
             )
         )
     return children

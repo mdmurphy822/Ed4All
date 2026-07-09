@@ -30,7 +30,11 @@ from dart_semantic.qwen_specialists.block_resegment import (
     resolve_unit_regroup_mode,
     resolve_unit_regroup_table_mode,
 )
-from dart_semantic.structure_graph import Region
+from dart_semantic.structure_graph import (
+    Region,
+    compute_region_page_bboxes,
+    stamp_region_page_bboxes,
+)
 from dart_semantic.types import FeatureBlock, RawBlock
 
 
@@ -1312,3 +1316,92 @@ def test_seam_inert_without_driver():
     out, ops = apply_proposed_regroups(regions, fbs, [])
     assert ops == []
     assert out is regions
+
+
+# ---------------------------------------------------------------------------
+# ITEM2 (region-bbox) Phase-2 — Stage-5e merge/split recompute Region.page_bboxes.
+# ---------------------------------------------------------------------------
+
+
+def _fb_bbox(page: int, bbox) -> FeatureBlock:
+    """A FeatureBlock with an explicit page + bbox (distinct geometry per FB)."""
+    raw = RawBlock(
+        text="x",
+        page=page,
+        bbox=bbox,
+        page_width=100.0,
+        page_height=100.0,
+    )
+    return FeatureBlock(
+        raw=raw,
+        size_bucket="md",
+        gap_above=None,
+        is_top_of_page=False,
+        is_centered=False,
+        caps=None,
+        indent_bucket=0,
+        relative_font_ratio=1.0,
+    )
+
+
+def test_merge_recomputes_geometry():
+    """A MERGE fuses two stamped same-kind regions on pages 1+2; the merged
+    region's page_bboxes is the union over BOTH pages, not the first region's
+    stale single-page value."""
+    a = (1.0, 2.0, 3.0, 4.0)
+    b = (5.0, 6.0, 7.0, 8.0)
+    fbs = [_fb_bbox(1, a), _fb_bbox(2, b)]
+    r0, r1 = stamp_region_page_bboxes(
+        [
+            Region(kind="paragraph", feature_block_indices=(0,)),
+            Region(kind="paragraph", feature_block_indices=(1,)),
+        ],
+        fbs,
+    )
+    assert r0.page_bboxes == ((1, a),)
+    assert r1.page_bboxes == ((2, b),)
+
+    op = ResegmentOp(op="merge", region_indices=(0, 1), source_ids=(0, 1))
+    out = apply_resegment([r0, r1], fbs, [op])
+    assert len(out) == 1
+    merged = out[0]
+
+    # Recomputed union over both pages — NOT the stale first-region value.
+    assert merged.page_bboxes == ((1, a), (2, b))
+    assert merged.page_bboxes != r0.page_bboxes
+    assert merged.page_bboxes == compute_region_page_bboxes((0, 1), fbs)
+
+
+def test_split_recomputes_geometry():
+    """A SPLIT cuts one stamped cross-page region into two children; each child's
+    page_bboxes is its own slice geometry, and the parent's union value appears
+    on neither child."""
+    a = (1.0, 2.0, 3.0, 4.0)
+    b = (5.0, 6.0, 7.0, 8.0)
+    fbs = [_fb_bbox(1, a), _fb_bbox(2, b)]
+    [parent] = stamp_region_page_bboxes(
+        [Region(kind="paragraph", feature_block_indices=(0, 1))], fbs
+    )
+    parent_geometry = parent.page_bboxes
+    assert parent_geometry == ((1, a), (2, b))
+
+    # Cut before FB 1 -> child0 = {FB0}, child1 = {FB1}.
+    op = ResegmentOp(
+        op="split", region_indices=(0,), split_at=(1,), source_ids=(0,)
+    )
+    out = apply_resegment([parent], fbs, [op])
+    assert len(out) == 2
+    child0, child1 = out
+
+    assert child0.page_bboxes == ((1, a),)
+    assert child1.page_bboxes == ((2, b),)
+    # Each child equals its own slice's recomputed geometry.
+    assert child0.page_bboxes == compute_region_page_bboxes(
+        child0.feature_block_indices, fbs
+    )
+    assert child1.page_bboxes == compute_region_page_bboxes(
+        child1.feature_block_indices, fbs
+    )
+    # The parent's union value is on NEITHER child (staleness recomputed away).
+    assert child0.page_bboxes != parent_geometry
+    assert child1.page_bboxes != parent_geometry
