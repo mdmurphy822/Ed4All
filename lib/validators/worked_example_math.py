@@ -49,6 +49,17 @@ well-DELIMITED math fragments — LaTeX inline ``\\(...\\)`` / display ``\\[...\
 * (c) **numeric simplify/evaluate chains**: an ``expr1 = expr2 = expr3`` chain
   whose sides are ALL variable-free is verified for pairwise equality; a definite
   (beyond rounding tolerance) mismatch is flagged.
+* (b') **plus-minus (±) solution sets**: a claimed ``x = a ± b`` (or the full
+  quadratic-formula shape ``x = \\frac{-b \\pm \\sqrt{b^2-4ac}}{2a}``) is expanded
+  into its two roots ``a+b`` / ``a-b``; it verifies iff BOTH roots satisfy the
+  same block equation for ``x``. Radicals (``\\sqrt{...}`` / ``\\sqrt[n]{...}`` /
+  unicode ``√``) are translated balanced-brace-aware by ``_translate_radicals``
+  (or failed closed), so radical equations — previously skipped wholesale — now
+  flow to the checker.
+* (d) **quadratic features (vertex / discriminant)**: for a block carrying a
+  single-variable quadratic ``a·v² + b·v + c``, a claimed ``vertex (h, k)`` is
+  re-derived as ``(-b/2a, c - b²/4a)`` and a claimed ``discriminant = N`` as
+  ``b² - 4ac``; a mismatch is flagged (deterministic sympy re-derivation).
 
 Anything unparseable is SKIPPED SILENTLY (counted in ``skipped_unparseable``,
 never an issue). An issue MUST mean the math is provably wrong under sympy — the
@@ -213,10 +224,119 @@ def _premise_before(html: str, pos: int) -> bool:
     return any(k in window for k in _PREMISE_KEYWORDS)
 
 
+def _find_brace_group(text: str, open_idx: int) -> Optional[Tuple[str, int]]:
+    """``text[open_idx]`` is ``{``; return ``(inner, idx_after_close)`` or None.
+
+    Balanced-brace aware (nested ``{}`` handled). None when the group never
+    closes (unbalanced) — the caller fails that fragment closed.
+    """
+    if open_idx >= len(text) or text[open_idx] != "{":
+        return None
+    depth = 0
+    j = open_idx
+    while j < len(text):
+        ch = text[j]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[open_idx + 1:j], j + 1
+        j += 1
+    return None
+
+
+def _find_paren_group(text: str, open_idx: int) -> Optional[Tuple[str, int]]:
+    """``text[open_idx]`` is ``(``; return ``(inner, idx_after_close)`` or None."""
+    if open_idx >= len(text) or text[open_idx] != "(":
+        return None
+    depth = 0
+    j = open_idx
+    while j < len(text):
+        ch = text[j]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return text[open_idx + 1:j], j + 1
+        j += 1
+    return None
+
+
+_RE_SQRT_HEAD = re.compile(r"\\sqrt\s*(?:\[([^\]]*)\])?\s*")
+
+
+def _translate_radicals(s: str) -> str:
+    """Translate ``\\sqrt`` / unicode ``√`` radicals to a sympy-parseable form.
+
+    * ``\\sqrt{body}`` -> ``sqrt((body))`` (balanced-brace aware, so a ``\\frac``
+      or nested ``\\sqrt`` inside the radicand keeps its grouping).
+    * ``\\sqrt[n]{body}`` -> ``((body)**(1/(n)))`` (principal nth root; sympy
+      auto-simplifies e.g. ``27**(1/3) -> 3``).
+    * ``√{body}`` / ``√(body)`` / ``√<number-or-token>`` -> ``sqrt(...)``.
+
+    FAIL-CLOSED: a radical that cannot be confidently resolved (a ``\\sqrt`` not
+    followed by a brace group, or an unbalanced radicand) is replaced with an
+    illegal ``@`` sentinel so the downstream ``parse_expr`` raises and the
+    fragment is SKIPPED (never mis-parsed into a false finding). Without this a
+    bare ``\\sqrt 27`` would lose its ``\\sqrt`` to the generic command-strip and
+    silently mis-verify as ``27``.
+    """
+    # \sqrt / \sqrt[n] forms (leftmost-outermost; nested radicals resolve on
+    # subsequent iterations because the balanced group captures them whole).
+    for _ in range(12):
+        m = _RE_SQRT_HEAD.search(s)
+        if not m:
+            break
+        start, idx, nth = m.start(), m.end(), m.group(1)
+        grp = _find_brace_group(s, idx) if idx < len(s) and s[idx] == "{" else None
+        if grp is None:
+            # No resolvable radicand -> poison (parse fails -> skip); len('\\sqrt')==5.
+            s = s[:start] + "@" + s[start + 5:]
+            continue
+        body, end = grp
+        if nth is not None and nth.strip():
+            repl = f"(({body})**(1/({nth})))"
+        else:
+            repl = f"sqrt(({body}))"
+        s = s[:start] + repl + s[end:]
+    # Unicode √ forms.
+    for _ in range(12):
+        k = s.find("√")
+        if k == -1:
+            break
+        after = k + 1
+        while after < len(s) and s[after] == " ":
+            after += 1
+        if after < len(s) and s[after] == "{":
+            grp = _find_brace_group(s, after)
+            if grp is None:
+                s = s[:k] + "@" + s[k + 1:]
+                continue
+            body, end = grp
+            s = s[:k] + f"sqrt(({body}))" + s[end:]
+        elif after < len(s) and s[after] == "(":
+            grp = _find_paren_group(s, after)
+            if grp is None:
+                s = s[:k] + "@" + s[k + 1:]
+                continue
+            body, end = grp
+            s = s[:k] + f"sqrt(({body}))" + s[end:]
+        else:
+            tok = re.match(r"\d+(?:\.\d+)?|[A-Za-z]\w*", s[after:])
+            if tok:
+                s = s[:k] + f"sqrt({tok.group(0)})" + s[after + tok.end():]
+            else:
+                s = s[:k] + "@" + s[k + 1:]  # nothing to root -> poison
+    return s
+
+
 def _clean_math(s: str) -> str:
     """Translate a restricted-LaTeX / ascii math string into a parseable form.
 
-    Deterministic (no antlr): unwraps ``\\boxed{}``, rewrites ``\\frac{a}{b}`` ->
+    Deterministic (no antlr): unwraps ``\\boxed{}``, translates ``\\sqrt`` /
+    unicode ``√`` radicals (``_translate_radicals``), rewrites ``\\frac{a}{b}`` ->
     ``((a)/(b))`` (recursively for nested fracs), maps ``\\cdot`` / ``·`` /
     ``\\times`` / ``×`` -> ``*`` and ``\\div`` / ``÷`` -> ``/``, folds unicode
     minus, drops any remaining ``\\command`` tokens and ``\\,`` spacing, strips
@@ -231,6 +351,9 @@ def _clean_math(s: str) -> str:
         if new == s:
             break
         s = new
+    # Radicals BEFORE fracs so a \frac{\sqrt{a}}{b} radicand keeps its grouping
+    # (once \sqrt -> sqrt((a)) the frac numerator is brace-free and expands).
+    s = _translate_radicals(s)
     # \frac{a}{b} -> ((a)/(b)), innermost-first for nesting.
     for _ in range(6):
         new = re.sub(
@@ -245,9 +368,6 @@ def _clean_math(s: str) -> str:
     s = s.replace(r"\div", "/").replace("÷", "/")
     s = s.replace("−", "-").replace("–", "-").replace("—", "-").replace("‐", "-")
     s = s.replace(r"\%", "").replace("%", "")
-    # \sqrt{x} -> sqrt(x) (handled by generic brace->paren + command strip below,
-    # but keep the function name).
-    s = re.sub(r"\\sqrt\s*\{", "sqrt{", s)
     # Drop remaining LaTeX \command tokens (\text, \mathrm, \displaystyle, ...).
     s = re.sub(r"\\[a-zA-Z]+", " ", s)
     s = _RE_TAG.sub(" ", s)  # any stray inner tags (from <code> content)
@@ -295,12 +415,17 @@ def _parse_side(side: str) -> Optional[Any]:
 
 #: Constructs the deterministic LaTeX->sympy translator handles UNRELIABLY, so a
 #: fragment carrying one is skipped (precision over recall). Radicals (``\sqrt``
-#: / ``√``) and ``\pm`` / ``±`` mis-group under the brace->paren fallback (a
-#: ``\frac`` numerator containing ``\sqrt{5}`` loses its grouping; a ``\pm`` root
-#: pair collapses to one side), and unicode ``√27`` is not a parseable token —
-#: all produce false positives, so any fragment with one of these is skipped.
+#: / ``√``) are NO LONGER here — ``_translate_radicals`` resolves them
+#: balanced-brace-aware (or fails closed), so a radical equation flows to the
+#: checker. ``\pm`` / ``±`` (and ``\mp`` / ``∓``) STAY skipped for the single-
+#: equation path — a ``\pm`` fragment is TWO-valued (``a+b`` and ``a-b``), not one
+#: equation; it is harvested + verified separately by ``_extract_pm_solutions`` /
+#: ``_check_pm_solutions``. Matrices, sums/integrals/products, limits/derivatives
+#: and other genuinely-unreliable constructs remain skipped.
 _UNRELIABLE_RE = re.compile(
-    r"\\sqrt|√|\bsqrt\b|\\pm(?![a-zA-Z])|±|\\mp|\\sum|\\int|\\prod"
+    r"\\pm(?![a-zA-Z])|±|\\mp(?![a-zA-Z])|∓|"
+    r"\\sum|\\int|\\iint|\\oint|\\prod|\\lim|\\partial|∂|\\infty|∞|\\nabla|"
+    r"\\begin\b|\\matrix|\\pmatrix|\\bmatrix|\\vmatrix|\\det\b"
 )
 
 
@@ -323,8 +448,9 @@ def _split_equation_sides(fragment: str) -> Optional[List[str]]:
     if "=" not in fragment:
         return None
     # A \frac that does not fully expand (nested-brace numerator/denominator) is
-    # mis-grouped by the brace->paren fallback → skip.
-    expanded = fragment
+    # mis-grouped by the brace->paren fallback → skip. Translate radicals first so
+    # a \frac{\sqrt{a}}{b} (radical numerator) still expands (matches _clean_math).
+    expanded = _translate_radicals(fragment)
     for _ in range(6):
         nxt = re.sub(
             r"\\d?frac\s*\{([^{}]+)\}\s*\{([^{}]+)\}", r"(\1/\2)", expanded
@@ -834,6 +960,277 @@ def _check_numeric_chains(
 
 
 # --------------------------------------------------------------------------- #
+# (b) plus-minus (±) solution-set verification
+# --------------------------------------------------------------------------- #
+
+#: A ``\pm`` / ``±`` operator (the two-root operator of the quadratic formula).
+_RE_PM = re.compile(r"\\pm(?![a-zA-Z])|±")
+
+
+def _num_equal(a: Any, b: Any) -> bool:
+    """True iff ``a`` and ``b`` are variable-free numbers equal within tolerance."""
+    try:
+        diff = sympy.simplify(a - b)  # type: ignore[union-attr]
+    except Exception:  # noqa: BLE001
+        return False
+    if getattr(diff, "free_symbols", set()):
+        return False
+    if diff == 0:
+        return True
+    try:
+        return abs(float(diff)) <= _NUMERIC_ABS_TOL
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _extract_pm_solutions(html: str) -> List[Tuple[str, List[Any]]]:
+    """Return ``[(var, [v_plus, v_minus]), ...]`` for solution-context ``v = a±b``.
+
+    A claimed ``x = a ± b`` (or the full quadratic-formula shape
+    ``x = \\frac{-b \\pm \\sqrt{...}}{2a}``) is EXPANDED into its two roots by
+    substituting ``+`` then ``-`` for the ``±``. Only solution-context fragments
+    of the shape ``<single variable> = <expr containing ±>`` whose two roots both
+    parse to variable-free numbers are returned. Fail-closed: any parse failure
+    drops the fragment.
+    """
+    if not _SYMPY_AVAILABLE:
+        return []
+    out: List[Tuple[str, List[Any]]] = []
+    for frag, ctx in _iter_fragments(html):
+        if not ctx:
+            continue
+        for sub in _split_on_implication(frag):
+            if not _RE_PM.search(sub):
+                continue
+            sides = re.split(r"(?<![<>=!])=(?![=])", sub)
+            sides = [s for s in sides if s.strip()]
+            if len(sides) != 2:
+                continue
+            lhs = _parse_side(sides[0])
+            if lhs is None or not getattr(lhs, "is_Symbol", False):
+                continue
+            vname = str(lhs)
+            plus = _parse_side(_RE_PM.sub("+", sides[1]))
+            minus = _parse_side(_RE_PM.sub("-", sides[1]))
+            if plus is None or minus is None:
+                continue
+            if getattr(plus, "free_symbols", set()) or getattr(
+                minus, "free_symbols", set()
+            ):
+                continue
+            out.append((vname, [plus, minus]))
+    return out
+
+
+def _check_pm_solutions(
+    pm_solutions: Sequence[Tuple[str, List[Any]]],
+    equations: Sequence[Tuple[Any, Any, str, bool]],
+) -> List[Tuple[str, str, str, str]]:
+    """Pattern (b') — ``±`` solution-set verification.
+
+    A claimed ``x = a ± b`` verifies iff BOTH roots ``a+b`` and ``a-b`` satisfy
+    the SAME block equation for ``x`` (a quadratic's two-element solution set).
+    Returns ``[(var, claimed, detail, raw), ...]`` per provable violation. Mirrors
+    the ``_check_solve`` precision rule: flags only when NO single block equation
+    for ``x`` is satisfied by BOTH roots AND at least one root definitely fails an
+    equation (so a multi-problem block never cross-fires).
+    """
+    findings: List[Tuple[str, str, str, str]] = []
+    for var, roots in pm_solutions:
+        sym = sympy.Symbol(var)  # type: ignore[union-attr]
+        var_eqs: List[Tuple[Any, Any, str]] = []
+        for lhs, rhs, raw, _ctx in equations:
+            free = {str(s) for s in (lhs.free_symbols | rhs.free_symbols)}
+            if free != {var}:
+                continue
+            if _is_trivial_solution_eq(lhs, rhs, var):
+                continue
+            var_eqs.append((lhs, rhs, raw))
+        if not var_eqs:
+            continue
+        # Is there an equation BOTH roots satisfy? (the correct solution set)
+        satisfied_together = False
+        for lhs, rhs, _raw in var_eqs:
+            both = True
+            for r in roots:
+                try:
+                    d = sympy.simplify((lhs - rhs).subs(sym, r))  # type: ignore[union-attr]
+                except Exception:  # noqa: BLE001
+                    both = False
+                    break
+                if getattr(d, "free_symbols", set()) or d != 0:
+                    both = False
+                    break
+            if both:
+                satisfied_together = True
+                break
+        if satisfied_together:
+            continue
+        # Flag: locate an equation + root that DEFINITELY fails.
+        for lhs, rhs, raw in var_eqs:
+            failing_root = None
+            resid = None
+            for r in roots:
+                try:
+                    d = sympy.simplify((lhs - rhs).subs(sym, r))  # type: ignore[union-attr]
+                except Exception:  # noqa: BLE001
+                    continue
+                if _definitely_nonzero(d):
+                    failing_root, resid = r, d
+                    break
+            if failing_root is None:
+                continue
+            root_str = ", ".join(str(r) for r in roots)
+            findings.append((
+                var,
+                f"{var} = {{{root_str}}}",
+                f"the claimed ± solution set {var} ∈ {{{root_str}}} is wrong: "
+                f"root {failing_root} does not satisfy '{raw}' "
+                f"(lhs-rhs = {resid}, must be 0 for BOTH roots)",
+                raw,
+            ))
+            break
+    return findings
+
+
+# --------------------------------------------------------------------------- #
+# Quadratic features — vertex + discriminant re-derivation (gap #9)
+# --------------------------------------------------------------------------- #
+
+#: A claimed discriminant value: ``discriminant ... = / is / : N``.
+_RE_DISCRIMINANT = re.compile(
+    r"discriminant\b.{0,40}?(?:=|is|equals|:)\s*(-?\d+(?:\.\d+)?)",
+    re.IGNORECASE | re.DOTALL,
+)
+#: A ``vertex`` keyword (the ordered pair is harvested from the following window).
+_RE_VERTEX_KW = re.compile(r"vertex", re.IGNORECASE)
+_VERTEX_WINDOW: int = 80
+
+
+def _quadratic_coeffs(content: str) -> List[Tuple[Any, Any, Any, Any]]:
+    """Return ``[(a, b, c, var), ...]`` for every single-variable quadratic found.
+
+    Scans each math fragment side (split on ``=`` / implication) for a degree-2
+    polynomial ``a·v² + b·v + c`` in exactly one variable. Deduplicated by
+    coefficient tuple. Non-quadratics / multi-variable / unparseable are skipped.
+    """
+    if not _SYMPY_AVAILABLE:
+        return []
+    out: List[Tuple[Any, Any, Any, Any]] = []
+    seen: set = set()
+    for frag, _ctx in _iter_fragments(content):
+        for sub in _split_on_implication(frag):
+            for piece in re.split(r"(?<![<>=!])=(?![=])", sub):
+                expr = _parse_side(piece)
+                if expr is None:
+                    continue
+                syms = list(getattr(expr, "free_symbols", set()))
+                if len(syms) != 1:
+                    continue
+                v = syms[0]
+                try:
+                    poly = sympy.Poly(expr, v)  # type: ignore[union-attr]
+                except Exception:  # noqa: BLE001
+                    continue
+                if poly.degree() != 2:
+                    continue
+                coeffs = poly.all_coeffs()
+                if len(coeffs) != 3:
+                    continue
+                a, b, c = coeffs
+                if a == 0:
+                    continue
+                key = (a, b, c, str(v))
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append((a, b, c, v))
+    return out
+
+
+def _check_quadratic_features(content: str) -> List[Tuple[str, str, str, str]]:
+    """Gap #9 — re-derive a claimed VERTEX / DISCRIMINANT and flag a mismatch.
+
+    For a block carrying a single-variable quadratic ``a·v² + b·v + c``:
+
+    * a claimed ``discriminant = N`` is compared against ``b² - 4ac``;
+    * a claimed ``vertex (h, k)`` is compared against ``(-b/2a, c - b²/4a)``.
+
+    PRECISION RULE (matches the solve/system checks): a claim is flagged ONLY when
+    it matches NONE of the block's quadratic candidates (a block with two
+    quadratics never mis-attributes). Returns ``[(kind, claimed, detail, raw), ...]``.
+    """
+    candidates = _quadratic_coeffs(content)
+    if not candidates:
+        return []
+    findings: List[Tuple[str, str, str, str]] = []
+
+    plain = content
+    for delim in (r"\(", r"\)", r"\[", r"\]"):
+        plain = plain.replace(delim, " ")
+    plain = _RE_TAG.sub(" ", plain)
+
+    def _disc(a: Any, b: Any, c: Any) -> Any:
+        return sympy.simplify(b ** 2 - 4 * a * c)  # type: ignore[union-attr]
+
+    def _vertex(a: Any, b: Any, c: Any) -> Tuple[Any, Any]:
+        h = sympy.simplify(-b / (2 * a))  # type: ignore[union-attr]
+        k = sympy.simplify(c - b ** 2 / (4 * a))  # type: ignore[union-attr]
+        return h, k
+
+    # Discriminant claims.
+    for m in _RE_DISCRIMINANT.finditer(plain):
+        claimed = _parse_side(m.group(1))
+        if claimed is None or getattr(claimed, "free_symbols", set()):
+            continue
+        computed = [_disc(a, b, c) for (a, b, c, _v) in candidates]
+        if any(_num_equal(claimed, cv) for cv in computed):
+            continue
+        a, b, c, v = candidates[0]
+        cv = _disc(a, b, c)
+        findings.append((
+            "discriminant",
+            f"discriminant = {claimed}",
+            f"claimed discriminant {claimed} != b^2-4ac = {cv} for the quadratic "
+            f"{a}*{v}^2 + {b}*{v} + {c}",
+            m.group(0).strip(),
+        ))
+
+    # Vertex claims.
+    for vm in _RE_VERTEX_KW.finditer(plain):
+        window = plain[vm.end(): vm.end() + _VERTEX_WINDOW]
+        pm = _RE_PAIR.search(window)
+        if not pm:
+            continue
+        h_claim = _parse_side(pm.group(1))
+        k_claim = _parse_side(pm.group(2))
+        if h_claim is None or k_claim is None:
+            continue
+        if getattr(h_claim, "free_symbols", set()) or getattr(
+            k_claim, "free_symbols", set()
+        ):
+            continue
+        matched = False
+        for (a, b, c, _v) in candidates:
+            vh, vk = _vertex(a, b, c)
+            if _num_equal(h_claim, vh) and _num_equal(k_claim, vk):
+                matched = True
+                break
+        if matched:
+            continue
+        a, b, c, v = candidates[0]
+        vh, vk = _vertex(a, b, c)
+        findings.append((
+            "vertex",
+            f"vertex ({h_claim}, {k_claim})",
+            f"claimed vertex ({h_claim}, {k_claim}) != computed vertex "
+            f"({vh}, {vk}) for the quadratic {a}*{v}^2 + {b}*{v} + {c}",
+            pm.group(0).strip(),
+        ))
+    return findings
+
+
+# --------------------------------------------------------------------------- #
 # Coercion + decision capture
 # --------------------------------------------------------------------------- #
 
@@ -1060,7 +1457,16 @@ class WorkedExampleMathValidator:
             skipped = max(0, frags_with_eq - parsed_units)
             total_skipped += skipped
 
-            if not equations and not chains:
+            # (b') ± solution sets + (gap #9) quadratic vertex/discriminant
+            # claims are their own checkable math even when the ordinary single-
+            # ``=`` equation harvest is thin, so they contribute to the scored
+            # condition below.
+            pm_solutions = _extract_pm_solutions(content)
+            quad_candidates = _quadratic_coeffs(content)
+
+            if not equations and not chains and not pm_solutions and (
+                not quad_candidates
+            ):
                 # No parseable math — skip silently (no event).
                 continue
 
@@ -1068,6 +1474,10 @@ class WorkedExampleMathValidator:
             pairs = _extract_solution_pairs(content)
 
             solve_findings = _check_solve(equations)
+            pm_findings = _check_pm_solutions(pm_solutions, equations)
+            quad_findings = (
+                _check_quadratic_features(content) if quad_candidates else []
+            )
             # Fix a — scope the system cross-check to one PROBLEM SEGMENT so a
             # solution pair from one problem is never checked against another
             # problem's equation. Marker detection still sees the whole block.
@@ -1088,18 +1498,33 @@ class WorkedExampleMathValidator:
             # non-solution ("(False)" / "not a solution" within ~60 chars after
             # the flagged equation).
             block_details: List[str] = []
+            _seen_details: set = set()
+
+            def _add(detail: str) -> None:
+                if detail not in _seen_details:
+                    _seen_details.add(detail)
+                    block_details.append(detail)
+
             for _var, claimed, detail, raw in solve_findings:
                 if _is_taught_failure(content, raw):
                     continue
-                block_details.append(f"solve: claimed {claimed}; {detail}")
+                _add(f"solve: claimed {claimed}; {detail}")
+            for _var, claimed, detail, raw in pm_findings:
+                if _is_taught_failure(content, raw):
+                    continue
+                _add(f"pm: claimed {claimed}; {detail}")
             for _pair, detail, raw in system_findings:
                 if _is_taught_failure(content, raw):
                     continue
-                block_details.append(f"system: {detail}")
+                _add(f"system: {detail}")
             for raw, detail in chain_findings:
                 if _is_taught_failure(content, raw):
                     continue
-                block_details.append(f"chain: {detail}")
+                _add(f"chain: {detail}")
+            for _kind, _claimed, detail, raw in quad_findings:
+                if _is_taught_failure(content, raw):
+                    continue
+                _add(f"quadratic: {detail}")
 
             if not block_details:
                 passed_blocks += 1

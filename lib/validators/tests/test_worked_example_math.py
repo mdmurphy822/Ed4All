@@ -495,3 +495,305 @@ def test_e_intersect_at_wrong_point_flags() -> None:
         "stated intersection (3,5) fails x+y=4 (true is (2,2)); 'intersect at' "
         "makes it a checkable claimed solution"
     )
+
+
+# --------------------------------------------------------------------- #
+# Radical (\sqrt / √) coverage — previously skipped wholesale by
+# _UNRELIABLE_RE; now translated balanced-brace-aware (or failed closed).
+# --------------------------------------------------------------------- #
+
+
+# \sqrt{x} = 4 with the CORRECT claimed solution x = 16.
+_RADICAL_CORRECT = """
+<section data-cf-content-type="example">
+  <p>Solve \\(\\sqrt{x} = 4\\).</p>
+  <div class="solution-line">Solution: \\(x = 16\\).</div>
+</section>
+"""
+
+# Same radical equation, WRONG claimed solution x = 15 (15 != 16).
+_RADICAL_WRONG = """
+<section data-cf-content-type="example">
+  <p>Solve \\(\\sqrt{x} = 4\\).</p>
+  <div class="solution-line">Solution: \\(x = 15\\).</div>
+</section>
+"""
+
+# Nested radical \sqrt{\sqrt{x}} = 4 ; correct x = 256 (sqrt(sqrt(256))=4).
+_NESTED_RADICAL_CORRECT = """
+<section data-cf-content-type="example">
+  <p>Solve \\(\\sqrt{\\sqrt{x}} = 4\\).</p>
+  <div class="solution-line">Solution: \\(x = 256\\).</div>
+</section>
+"""
+
+# Unicode √ with a numeric argument in a plain numeric identity: √27 = 5.196...
+# but the block asserts the WRONG value 6 -> flagged.
+_UNICODE_RADICAL_WRONG = """
+<section data-cf-content-type="explanation">
+  <p>Evaluate <code>√25 = 6</code>.</p>
+</section>
+"""
+
+# An untranslatable radicand (unbalanced brace) must be SKIPPED, not flagged.
+_RADICAL_UNTRANSLATABLE = """
+<section data-cf-content-type="example">
+  <p>Solve \\(\\sqrt{x = 4\\).</p>
+  <div class="solution-line">Solution: \\(x = 99\\).</div>
+</section>
+"""
+
+
+def test_radical_equation_correct_solution_not_flagged() -> None:
+    result = _run([_block(
+        block_id="p#example_rad_ok", block_type="example",
+        content=_RADICAL_CORRECT,
+    )])
+    assert not _wrong_codes(result), "x=16 solves sqrt(x)=4 -> must not flag"
+
+
+def test_radical_equation_wrong_solution_flagged() -> None:
+    result = _run([_block(
+        block_id="p#example_rad_wrong", block_type="example",
+        content=_RADICAL_WRONG,
+    )])
+    assert _wrong_codes(result), "x=15 does not solve sqrt(x)=4 -> must flag"
+
+
+def test_nested_radical_correct_solution_not_flagged() -> None:
+    result = _run([_block(
+        block_id="p#example_rad_nested", block_type="example",
+        content=_NESTED_RADICAL_CORRECT,
+    )])
+    assert not _wrong_codes(result), (
+        "x=256 solves sqrt(sqrt(x))=4 -> balanced-brace translation must pass"
+    )
+
+
+def test_unicode_radical_wrong_value_flagged() -> None:
+    result = _run([_block(
+        block_id="p#explanation_rad_uni", block_type="explanation",
+        content=_UNICODE_RADICAL_WRONG,
+    )])
+    assert _wrong_codes(result), "√25 = 6 is false (√25 = 5) -> must flag"
+
+
+def test_untranslatable_radical_skipped_not_flagged() -> None:
+    result = _run([_block(
+        block_id="p#example_rad_bad", block_type="example",
+        content=_RADICAL_UNTRANSLATABLE,
+    )])
+    assert not _wrong_codes(result), (
+        "an unbalanced \\sqrt{ radicand is failed closed (skipped), never flagged"
+    )
+    assert result.passed is True
+
+
+# --------------------------------------------------------------------- #
+# Plus-minus (±) solution-set verification
+# --------------------------------------------------------------------- #
+
+
+# x^2 = 4 with the CORRECT ± solution set x = ±2 (both roots satisfy).
+_PM_BOTH_CORRECT = """
+<section data-cf-content-type="example">
+  <p>Solve \\(x^2 = 4\\).</p>
+  <div class="solution-line">The solution is \\(x = \\pm 2\\).</div>
+</section>
+"""
+
+# x^2 - 5x + 6 = 0 (roots 2, 3). Claimed x = 3 ± 1 -> {4, 2}; 4 is NOT a root
+# (one wrong half) -> must flag.
+_PM_WRONG_HALF = """
+<section data-cf-content-type="example">
+  <p>Solve \\(x^2 - 5x + 6 = 0\\).</p>
+  <div class="solution-line">The solution is \\(x = 3 \\pm 1\\).</div>
+</section>
+"""
+
+# Quadratic-formula shape with a radical: x^2 + 5x + 6 = 0,
+# x = (-5 ± √1)/2 -> {-2, -3}; both roots -> must NOT flag.
+_PM_QUAD_FORMULA_CORRECT = """
+<section data-cf-content-type="example">
+  <p>Solve \\(x^2 + 5x + 6 = 0\\).</p>
+  <div class="solution-line">\\(x = \\frac{-5 \\pm \\sqrt{1}}{2}\\).</div>
+</section>
+"""
+
+# Same equation, WRONG radicand \sqrt{9}: x = (-5 ± 3)/2 -> {-1, -4}; neither
+# is a root of x^2+5x+6 -> must flag.
+_PM_QUAD_FORMULA_WRONG = """
+<section data-cf-content-type="example">
+  <p>Solve \\(x^2 + 5x + 6 = 0\\).</p>
+  <div class="solution-line">\\(x = \\frac{-5 \\pm \\sqrt{9}}{2}\\).</div>
+</section>
+"""
+
+
+def test_pm_both_roots_correct_not_flagged() -> None:
+    result = _run([_block(
+        block_id="p#example_pm_ok", block_type="example",
+        content=_PM_BOTH_CORRECT,
+    )])
+    assert not _wrong_codes(result), "±2 both solve x^2=4 -> must not flag"
+
+
+def test_pm_wrong_half_flagged() -> None:
+    result = _run([_block(
+        block_id="p#example_pm_half", block_type="example",
+        content=_PM_WRONG_HALF,
+    )])
+    assert _wrong_codes(result), (
+        "x = 3 ± 1 -> {4,2}; 4 is not a root of x^2-5x+6=0 -> must flag"
+    )
+
+
+def test_pm_quadratic_formula_correct_not_flagged() -> None:
+    result = _run([_block(
+        block_id="p#example_pm_qf_ok", block_type="example",
+        content=_PM_QUAD_FORMULA_CORRECT,
+    )])
+    assert not _wrong_codes(result), (
+        "x = (-5 ± √1)/2 -> {-2,-3}; both roots of x^2+5x+6=0 -> must not flag"
+    )
+
+
+def test_pm_quadratic_formula_wrong_radicand_flagged() -> None:
+    result = _run([_block(
+        block_id="p#example_pm_qf_wrong", block_type="example",
+        content=_PM_QUAD_FORMULA_WRONG,
+    )])
+    assert _wrong_codes(result), (
+        "x = (-5 ± √9)/2 -> {-1,-4}; neither is a root -> must flag"
+    )
+
+
+# --------------------------------------------------------------------- #
+# Gap #9 — quadratic vertex + discriminant re-derivation
+# --------------------------------------------------------------------- #
+
+
+# Discriminant defect (synthetic equivalent of the audited (-3)^2 - 4*3*6
+# claimed as -57; actual -63). Prose claim, quadratic given separately.
+_DISCRIMINANT_WRONG = """
+<section data-cf-content-type="example">
+  <p>For the quadratic \\(3x^2 - 3x + 6 = 0\\), the discriminant is \\(-57\\).</p>
+</section>
+"""
+
+# Correct discriminant: x^2 + 5x + 6 -> 25 - 24 = 1.
+_DISCRIMINANT_CORRECT = """
+<section data-cf-content-type="example">
+  <p>For the quadratic \\(x^2 + 5x + 6 = 0\\), the discriminant is \\(1\\).</p>
+</section>
+"""
+
+# The audited arithmetic shape itself: (-3)^2 - 4*3*6 = -57 (actual -63).
+_DISCRIMINANT_ARITHMETIC = """
+<section data-cf-content-type="explanation">
+  <p>Compute the discriminant: <code>(-3)^2 - 4*3*6 = -57</code>.</p>
+</section>
+"""
+
+# Vertex defect (synthetic equivalent of the audited claimed vertex (-3, 5)).
+# y = x^2 + 6x + 5 -> vertex (-3, -4); block claims (-3, 5) -> must flag.
+_VERTEX_WRONG = """
+<section data-cf-content-type="example">
+  <p>The parabola \\(y = x^2 + 6x + 5\\) has vertex \\((-3, 5)\\).</p>
+</section>
+"""
+
+# Correct vertex for the same quadratic: (-3, -4).
+_VERTEX_CORRECT = """
+<section data-cf-content-type="example">
+  <p>The parabola \\(y = x^2 + 6x + 5\\) has vertex \\((-3, -4)\\).</p>
+</section>
+"""
+
+
+def test_discriminant_wrong_value_flagged() -> None:
+    result = _run([_block(
+        block_id="p#example_disc_wrong", block_type="example",
+        content=_DISCRIMINANT_WRONG,
+    )])
+    assert _wrong_codes(result), (
+        "claimed discriminant -57 != b^2-4ac = -63 for 3x^2-3x+6 -> must flag"
+    )
+
+
+def test_discriminant_correct_value_not_flagged() -> None:
+    result = _run([_block(
+        block_id="p#example_disc_ok", block_type="example",
+        content=_DISCRIMINANT_CORRECT,
+    )])
+    assert not _wrong_codes(result), (
+        "claimed discriminant 1 == 25-24 for x^2+5x+6 -> must not flag"
+    )
+
+
+def test_discriminant_arithmetic_defect_flagged() -> None:
+    result = _run([_block(
+        block_id="p#explanation_disc_arith", block_type="explanation",
+        content=_DISCRIMINANT_ARITHMETIC,
+    )])
+    assert _wrong_codes(result), (
+        "(-3)^2 - 4*3*6 = -63, not -57 -> the numeric identity must flag"
+    )
+
+
+def test_vertex_wrong_value_flagged() -> None:
+    result = _run([_block(
+        block_id="p#example_vertex_wrong", block_type="example",
+        content=_VERTEX_WRONG,
+    )])
+    assert _wrong_codes(result), (
+        "claimed vertex (-3, 5) != computed (-3, -4) for y=x^2+6x+5 -> must flag"
+    )
+
+
+def test_vertex_correct_value_not_flagged() -> None:
+    result = _run([_block(
+        block_id="p#example_vertex_ok", block_type="example",
+        content=_VERTEX_CORRECT,
+    )])
+    assert not _wrong_codes(result), (
+        "claimed vertex (-3, -4) matches the computed vertex -> must not flag"
+    )
+
+
+# --------------------------------------------------------------------- #
+# Genuinely-unreliable constructs stay SKIPPED (precision preserved)
+# --------------------------------------------------------------------- #
+
+
+# An integral is not verifiable by the deterministic translator -> skipped.
+_INTEGRAL_SKIP = """
+<section data-cf-content-type="example">
+  <p class="solution-line">\\(\\int x^2 dx = F\\), so \\(F = 99\\).</p>
+</section>
+"""
+
+# A matrix determinant construct -> skipped.
+_MATRIX_SKIP = """
+<section data-cf-content-type="example">
+  <p class="solution-line">\\(\\det\\begin{pmatrix} 1 & 2 \\\\ 3 & 4 \\end{pmatrix} = 99\\).</p>
+</section>
+"""
+
+
+def test_integral_construct_skipped_not_flagged() -> None:
+    result = _run([_block(
+        block_id="p#example_integral", block_type="example",
+        content=_INTEGRAL_SKIP,
+    )])
+    assert not _wrong_codes(result), "calculus notation is skipped, never flagged"
+    assert result.passed is True
+
+
+def test_matrix_construct_skipped_not_flagged() -> None:
+    result = _run([_block(
+        block_id="p#example_matrix", block_type="example",
+        content=_MATRIX_SKIP,
+    )])
+    assert not _wrong_codes(result), "matrix notation is skipped, never flagged"
+    assert result.passed is True
