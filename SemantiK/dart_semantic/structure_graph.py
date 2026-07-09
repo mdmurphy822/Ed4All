@@ -538,6 +538,11 @@ class Region:
     ``source_region_id`` indexes back into the Stage-4 ``regions``
     list for table/math passthrough; ``None`` for prose-built
     regions that have no Stage-4 RegionCandidate ancestor.
+
+    ``page_bboxes`` carries the per-page union of the member
+    FeatureBlocks' raw bboxes (see the field comment for the exact
+    shape, coordinate space, ``None``/``()`` semantics, and the
+    staleness contract).
     """
 
     kind: RegionKind
@@ -546,6 +551,63 @@ class Region:
     aria_hints: tuple[str, ...] = ()
     provenance: dict[str, Any] = field(default_factory=dict)
     source_region_id: int | None = None
+    # ITEM2 (region-bbox): per-page union of the member FeatureBlocks' raw
+    # bboxes — ``((page, (x0, y0, x1, y1)), ...)`` sorted by 1-indexed page.
+    # Coordinates are VERBATIM ``raw.bbox`` space (PDF points, top-left, for
+    # pdfplumber/pypdfium2 pages; image pixels for Tesseract pages — same
+    # posture as Stage-5c). ``None`` = never computed (bare constructions);
+    # ``()`` = computed, no member had usable geometry. Inert provenance:
+    # NO emit/gate/cache surface reads it (byte-identical guarantee).
+    # STALENESS CONTRACT: any pass that changes ``feature_block_indices``
+    # MUST pass a recomputed ``compute_region_page_bboxes(...)``; as of
+    # ITEM2 only block_resegment's merge/split constructors do (kind/payload
+    # rewrites via dataclasses.replace carry it through for free).
+    page_bboxes: tuple[tuple[int, tuple[float, float, float, float]], ...] | None = None
+
+
+def compute_region_page_bboxes(
+    fb_indices: tuple[int, ...] | list[int] | None,
+    feature_blocks: list[FeatureBlock],
+) -> tuple[tuple[int, tuple[float, float, float, float]], ...]:
+    """Per-page union of the member FBs' raw bboxes (ITEM2 geometry SoT).
+
+    Skips out-of-range indices and FBs whose raw/page/bbox is missing,
+    None, or malformed (defensive-getattr posture mirroring
+    block_resegment._region_pages). Deterministic; pages sorted ascending.
+    """
+    by_page: dict[int, tuple[float, float, float, float]] = {}
+    for idx in fb_indices or ():
+        try:
+            fb = feature_blocks[idx]
+        except (IndexError, TypeError):
+            continue
+        raw = getattr(fb, "raw", None)
+        page = getattr(raw, "page", None)
+        bbox = getattr(raw, "bbox", None)
+        if page is None or bbox is None:
+            continue
+        try:
+            x0, y0, x1, y1 = (float(v) for v in bbox)
+        except (TypeError, ValueError):
+            continue
+        cur = by_page.get(int(page))
+        if cur is None:
+            by_page[int(page)] = (x0, y0, x1, y1)
+        else:
+            by_page[int(page)] = (
+                min(cur[0], x0), min(cur[1], y0), max(cur[2], x1), max(cur[3], y1),
+            )
+    return tuple((p, by_page[p]) for p in sorted(by_page))
+
+
+def stamp_region_page_bboxes(
+    regions: list["Region"], feature_blocks: list[FeatureBlock]
+) -> list["Region"]:
+    """Return a new list with ``page_bboxes`` stamped on every region."""
+    return [
+        replace(r, page_bboxes=compute_region_page_bboxes(r.feature_block_indices, feature_blocks))
+        for r in regions
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -2431,6 +2493,12 @@ def build_structure_graph(
         assert {id(r) for r in regions_out} == _pre_ids, (
             "reading-order sort dropped/added a region"
         )
+
+    # ITEM2 (region-bbox): stamp per-page geometry ONCE at graph exit. Runs
+    # AFTER the reading-order sort so the sort's object-identity assert is
+    # untouched, and AFTER the coverage invariant so every index is valid.
+    # Inert provenance — no emit/cache surface reads it (byte-identical).
+    regions_out = stamp_region_page_bboxes(regions_out, feature_blocks)
 
     return regions_out
 
