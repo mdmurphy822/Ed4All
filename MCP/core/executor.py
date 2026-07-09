@@ -2185,19 +2185,50 @@ class TaskExecutor:
 
             gate_results_list = []
             parsed_gates = []
+            # gate_id -> declared severity string. ``GateResult`` carries
+            # NO severity field, so unless the executor stamps the parsed
+            # ``GateConfig`` severity onto each persisted/returned result
+            # dict a post-hoc reader cannot tell a blocking (critical)
+            # failure from an advisory (warning) one. That ambiguity is
+            # exactly what let an all-warning ``post_rewrite_validation``
+            # failure set be misfiled as a phase-level gates_passed=False
+            # "harness anomaly" (run TTC_alg-vendor-rag-01_20260708_173318).
+            severity_by_gate_id: Dict[str, str] = {}
             for gc in gate_configs:
                 try:
-                    gate = GateConfig(
-                        gate_id=gc.get('gate_id', 'unknown'),
-                        validator_path=gc.get('validator', gc.get('validator_path', '')),
-                        severity=GateSeverity(gc.get('severity', 'critical')),
-                        threshold=gc.get('threshold', {}),
-                        # Wave 78: forward the gate's YAML ``config:``
-                        # block into GateConfig so the manager can merge
-                        # it into the validator's input dict at run time.
-                        config=gc.get('config', {}) or {},
-                    )
+                    if isinstance(gc, GateConfig):
+                        gate = gc
+                    else:
+                        # Loud, non-fatal signal when a gate omits an
+                        # explicit severity: the fail-closed default is
+                        # CRITICAL, so a silent omission BLOCKS the phase.
+                        # Surfacing it here keeps the "why did a phase
+                        # block?" diagnosis honest.
+                        if 'severity' not in gc:
+                            logger.warning(
+                                f"[{self.run_id}] Gate "
+                                f"{gc.get('gate_id', 'unknown')} declares no "
+                                "'severity' — defaulting to CRITICAL "
+                                "(fail-closed, so a failure will BLOCK). "
+                                "Set 'severity' explicitly in workflows.yaml "
+                                "to silence this."
+                            )
+                        # Parse via the canonical ``from_dict`` so the YAML
+                        # ``behavior:`` block (on_fail / on_error) is
+                        # forwarded into GateConfig — the prior hand-rolled
+                        # construction silently dropped it (defaulting to
+                        # BLOCK / FAIL_CLOSED). Copy first: ``from_dict``
+                        # pops ``behavior`` and would otherwise mutate the
+                        # shared ``phase.validation_gates`` dict. Normalise
+                        # the ``validator``/``validator_path`` alias the old
+                        # path accepted before delegating.
+                        gc2 = dict(gc)
+                        gc2.setdefault(
+                            'validator', gc2.get('validator_path', ''),
+                        )
+                        gate = GateConfig.from_dict(gc2)
                     parsed_gates.append(gate)
+                    severity_by_gate_id[gate.gate_id] = gate.severity.value
                 except Exception as e:
                     logger.warning(f"[{self.run_id}] Invalid gate config: {e}")
 
@@ -2277,7 +2308,23 @@ class TaskExecutor:
                     if gate.severity == GateSeverity.CRITICAL:
                         gates_passed = False
 
-            gate_results = [gr.to_dict() if hasattr(gr, 'to_dict') else gr for gr in gate_results_list]
+            # NOTE (no truncation / no cap): every parsed gate that ran
+            # (or was structured-skipped) contributes exactly one entry
+            # here — ``len(gate_results) == len(parsed_gates)``. There is
+            # no 50-entry cap or merge; a persisted checkpoint with N
+            # entries reflects N configured gates, nothing hidden.
+            gate_results = []
+            for gr in gate_results_list:
+                d = gr.to_dict() if hasattr(gr, 'to_dict') else dict(gr)
+                # Stamp the declared gate severity onto each result so the
+                # persisted checkpoint + the returned chain stay
+                # severity-auditable (warning vs critical) long after the
+                # run. GateResult itself has no severity field.
+                if isinstance(d, dict) and d.get('severity') is None:
+                    sev = severity_by_gate_id.get(d.get('gate_id'))
+                    if sev is not None:
+                        d['severity'] = sev
+                gate_results.append(d)
 
             # Log gate results
             if self.capture:
