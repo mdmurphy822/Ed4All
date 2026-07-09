@@ -2528,6 +2528,52 @@ def _render_multimedia_section(block: "Block") -> str:
     return "\n".join(parts)
 
 
+_RE_SVG_ID_SANITIZE = re.compile(r"[^A-Za-z0-9]+")
+
+
+def _diagram_plot_svg(
+    block: "Block", content: dict, caption: str, long_desc: str
+) -> Optional[str]:
+    """Return an accessible plotted SVG for a B06 diagram block, or ``None``.
+
+    Deterministic, no-LLM. Gated on ``ED4ALL_RICHER_VISUAL_SYSTEM`` so the
+    flag-off emit is byte-identical to the legacy "diagram pending" placeholder.
+    Keys off an equation already present on the block — an explicit
+    ``content["equation"]`` first, then the caption, then the long description —
+    and fails closed (``None``) when none parses unambiguously (the caller then
+    emits its placeholder). Returns the SVG string indented into the figure.
+    """
+    if not _richer_visual_system_enabled():
+        return None
+    try:
+        from lib.generation.svg_plots import svg_for_equation  # noqa: PLC0415
+    except Exception:  # noqa: BLE001 — never break page emit on a plot import
+        return None
+    # Candidate equation carriers, in priority order (skip the bare defaults).
+    candidates = [
+        str(content.get("equation") or ""),
+        caption if caption and caption != "Diagram" else "",
+        long_desc if long_desc and long_desc != "Long description pending." else "",
+    ]
+    raw_id = str(getattr(block, "block_id", "") or getattr(block, "page_id", "")
+                 or "diagram")
+    id_prefix = _RE_SVG_ID_SANITIZE.sub("-", raw_id).strip("-") or "diagram"
+    for text in candidates:
+        if not text.strip():
+            continue
+        try:
+            result = svg_for_equation(text, id_prefix=f"plot-{id_prefix}")
+        except Exception:  # noqa: BLE001 — a plot failure never breaks the page
+            result = None
+        if result is not None:
+            svg, _alt = result
+            # Indent the SVG under the <figure> for readable emit.
+            return "\n".join(
+                "      " + line if line else line for line in svg.split("\n")
+            )
+    return None
+
+
 def _render_diagram_section(block: "Block") -> str:
     """IB5 — render a B06 diagram/visual-model section (deterministic).
 
@@ -2561,11 +2607,22 @@ def _render_diagram_section(block: "Block") -> str:
             f'alt="{html_mod.escape(caption)}">'
         )
     else:
-        parts.append(
-            '      <p class="diagram-pending">Diagram pending — the visual '
-            'artifact is not yet available; the data table below carries the '
-            'same relationships.</p>'
-        )
+        # Deterministic SVG math-plotter (gated on ED4ALL_RICHER_VISUAL_SYSTEM):
+        # when the corpus supplies NO image but the block carries a parseable
+        # equation (number line / line / parabola), hand-roll an accessible SVG
+        # figure instead of the "diagram pending" placeholder — closing the
+        # dual-coding hole for graphing weeks. Fails closed to the placeholder
+        # when the equation is absent / ambiguous (never a wrong plot). Flag off
+        # ⇒ byte-identical to the legacy placeholder emit.
+        plot_svg = _diagram_plot_svg(block, content, caption, long_desc)
+        if plot_svg:
+            parts.append(plot_svg)
+        else:
+            parts.append(
+                '      <p class="diagram-pending">Diagram pending — the visual '
+                'artifact is not yet available; the data table below carries the '
+                'same relationships.</p>'
+            )
     parts.append(f'      <figcaption>{html_mod.escape(caption)}</figcaption>')
     parts.append(
         f'      <details class="diagram-longdesc">'

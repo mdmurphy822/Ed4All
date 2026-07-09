@@ -229,6 +229,60 @@ def test_render_diagram_section_has_longdesc_and_table():
     assert '<th scope="col">' in html
 
 
+# --------------------------------------------------------------------------- #
+# Deterministic SVG plotter wire-in (gated on ED4ALL_RICHER_VISUAL_SYSTEM).
+# The plotter closes the dual-coding hole for graphing weeks — a diagram block
+# carrying an equation but no image renders a real accessible SVG figure.
+# --------------------------------------------------------------------------- #
+def _diagram_block_with_equation():
+    return Block(
+        block_id="week_03_content_01#diagram_graph_02", block_type="diagram",
+        page_id="week_03_content_01", sequence=2,
+        content={"caption": r"Graph of \( y = x^2 - 4 \)"},
+    )
+
+
+def test_diagram_plot_svg_flag_off_is_placeholder(monkeypatch):
+    monkeypatch.delenv("ED4ALL_RICHER_VISUAL_SYSTEM", raising=False)
+    from Courseforge.scripts.generate_course import _render_diagram_section
+    html = _render_diagram_section(_diagram_block_with_equation())
+    assert "diagram-pending" in html
+    assert "<svg" not in html
+
+
+def test_diagram_plot_svg_flag_on_injects_accessible_svg(monkeypatch):
+    monkeypatch.setenv("ED4ALL_RICHER_VISUAL_SYSTEM", "1")
+    from Courseforge.scripts.generate_course import _render_diagram_section
+    pytest.importorskip("sympy")
+    html = _render_diagram_section(_diagram_block_with_equation())
+    assert "diagram-pending" not in html
+    assert "<svg" in html
+    assert 'role="img"' in html
+    assert "aria-labelledby=" in html
+    # id_prefix is derived (sanitized) from the block id for on-page uniqueness.
+    assert "plot-week-03-content-01" in html
+
+
+def test_diagram_plot_svg_flag_on_is_deterministic(monkeypatch):
+    monkeypatch.setenv("ED4ALL_RICHER_VISUAL_SYSTEM", "1")
+    pytest.importorskip("sympy")
+    from Courseforge.scripts.generate_course import _render_diagram_section
+    blk = _diagram_block_with_equation()
+    assert _render_diagram_section(blk) == _render_diagram_section(blk)
+
+
+def test_diagram_plot_svg_fails_closed_without_equation(monkeypatch):
+    monkeypatch.setenv("ED4ALL_RICHER_VISUAL_SYSTEM", "1")
+    from Courseforge.scripts.generate_course import _render_diagram_section
+    blk = Block(
+        block_id="p#diagram_x_0", block_type="diagram", page_id="p", sequence=0,
+        content={"caption": "A concept map of the water cycle"},
+    )
+    html = _render_diagram_section(blk)
+    assert "diagram-pending" in html  # no parseable equation ⇒ placeholder
+    assert "<svg" not in html
+
+
 def test_render_hook_section():
     from Courseforge.scripts.generate_course import _render_hook_section
     blk = Block(
