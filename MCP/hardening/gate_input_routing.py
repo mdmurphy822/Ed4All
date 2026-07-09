@@ -3034,6 +3034,19 @@ def default_router() -> GateInputRouter:
         "lib.validators.worked_example_math.WorkedExampleMathValidator",
         _build_block_input_rewrite,
     )
+    # Deterministic rewrite-tier content lint — the STRUCTURAL-shape control for
+    # leaked authoring machinery (escaped/namespaced/custom-element pseudo-tags,
+    # \text{} slug leftovers, generic numbered-publisher-apparatus cross-refs,
+    # doubled-term / bare-slug definition glue) the semantic gates (NLI /
+    # numeric / symbolic-math) are blind to. Regex-only over the block's own
+    # rendered HTML — no source premise — so it reuses the rewrite-tier
+    # Block-input shim (NOT the +source_chunks builder), mirroring
+    # worked_example_math. Issues carry the block id so courseforge-rewrite
+    # --block-ids can re-roll exactly the leaking blocks.
+    r.register(
+        "lib.validators.rewrite_content_lint.RewriteContentLintValidator",
+        _build_block_input_rewrite,
+    )
 
     # Group C — Block-only SHACL validator (one binding wired at both
     # outline and rewrite seams in YAML; same builder routes both).

@@ -476,6 +476,39 @@ workflows:
               on_error: warn
             description: "Symbolic worked-example verification — sympy re-checks worked-example derivations (single-var solve / two-eq system / numeric simplify chain) to catch provably-wrong math the number-blind NLI + numeric-literal-grounding gates miss (e.g. a sign-error substitution asserting a pair that satisfies neither system equation). Warning day-1 (calibration); the named re-promotion condition for numeric_literal_grounding."
 
+          # Deterministic rewrite-tier content lint — the STRUCTURAL-shape
+          # control for leaked authoring machinery the semantic gates (NLI
+          # entailment, numeric grounding, symbolic math) are blind to. Real
+          # defects (7B vendor-HTML builds, hand-found): a concept slug that
+          # should render as prose surfacing as a literal pseudo-tag
+          # (escaped <solution>, namespaced <course:concept>, custom-element
+          # <associative-property>, or a \text{associative_property} LaTeX
+          # leftover); a source textbook's numbered apparatus copied verbatim
+          # into prose (Try It 3.2, Example 3.2 dotted section-refs,
+          # (see Figure 3, see Section 3.2); and slug-glue (a doubled term
+          # "the discriminant, discriminant" or a definition sentence starting
+          # with a bare lowercase slug "decimal provides ..."). Regex-only (no
+          # LLM); every pattern matches a domain/course-agnostic structural
+          # shape (wide-net discipline) — the single-word escaped-tag arm is
+          # guarded by a universal HTML-tag denylist so a legit escaped
+          # &lt;p&gt; in a code sample is not flagged. Issues carry the block id
+          # so courseforge-rewrite --block-ids can re-roll exactly the leaking
+          # blocks. Warning day-1 (calibration posture, mirroring
+          # worked_example_math). TODO(calibration): flip to critical
+          # (severity: critical + on_fail: block + on_error: fail_closed) after
+          # a >=2-corpus FP-rate measurement.
+          - gate_id: rewrite_content_lint
+            validator: lib.validators.rewrite_content_lint.RewriteContentLintValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            config:
+              shadow: false
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: "Deterministic rewrite-tier content lint — regex-only structural-shape scan of rendered HTML catches leaked authoring machinery the semantic gates miss: pseudo-markup (escaped/namespaced/custom-element angle-tags + \\text{} slug leftovers), publisher apparatus (generic numbered cross-refs — Try It N.M / Example N.M / see Figure N), and slug-glue (doubled term / bare-slug definition sentence). Course-agnostic patterns (wide-net). Issues carry the block id for courseforge-rewrite --block-ids. Warning day-1 (calibration)."
+
           # W3 — per-block synthesis-manifest RESOLUTION gate (two-pass mirror;
           # see textbook_to_course for the full rationale). Day-1 SHADOW
           # (warning) until a live run proves the rewrite-tier emission.
@@ -3025,6 +3058,39 @@ workflows:
               on_fail: warn
               on_error: warn
             description: "Symbolic worked-example verification — sympy re-checks worked-example derivations (single-var solve / two-eq system / numeric simplify chain) to catch provably-wrong math the number-blind NLI + numeric-literal-grounding gates miss (e.g. a sign-error substitution asserting a pair that satisfies neither system equation). Warning day-1 (calibration); the named re-promotion condition for numeric_literal_grounding."
+
+          # Deterministic rewrite-tier content lint — the STRUCTURAL-shape
+          # control for leaked authoring machinery the semantic gates (NLI
+          # entailment, numeric grounding, symbolic math) are blind to. Real
+          # defects (7B vendor-HTML builds, hand-found): a concept slug that
+          # should render as prose surfacing as a literal pseudo-tag
+          # (escaped <solution>, namespaced <course:concept>, custom-element
+          # <associative-property>, or a \text{associative_property} LaTeX
+          # leftover); a source textbook's numbered apparatus copied verbatim
+          # into prose (Try It 3.2, Example 3.2 dotted section-refs,
+          # (see Figure 3, see Section 3.2); and slug-glue (a doubled term
+          # "the discriminant, discriminant" or a definition sentence starting
+          # with a bare lowercase slug "decimal provides ..."). Regex-only (no
+          # LLM); every pattern matches a domain/course-agnostic structural
+          # shape (wide-net discipline) — the single-word escaped-tag arm is
+          # guarded by a universal HTML-tag denylist so a legit escaped
+          # &lt;p&gt; in a code sample is not flagged. Issues carry the block id
+          # so courseforge-rewrite --block-ids can re-roll exactly the leaking
+          # blocks. Warning day-1 (calibration posture, mirroring
+          # worked_example_math). TODO(calibration): flip to critical
+          # (severity: critical + on_fail: block + on_error: fail_closed) after
+          # a >=2-corpus FP-rate measurement.
+          - gate_id: rewrite_content_lint
+            validator: lib.validators.rewrite_content_lint.RewriteContentLintValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            config:
+              shadow: false
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: "Deterministic rewrite-tier content lint — regex-only structural-shape scan of rendered HTML catches leaked authoring machinery the semantic gates miss: pseudo-markup (escaped/namespaced/custom-element angle-tags + \\text{} slug leftovers), publisher apparatus (generic numbered cross-refs — Try It N.M / Example N.M / see Figure N), and slug-glue (doubled term / bare-slug definition sentence). Course-agnostic patterns (wide-net). Issues carry the block id for courseforge-rewrite --block-ids. Warning day-1 (calibration)."
 
           # Phase 4 Wave N1 Subtask 12: SHACL parallel of the four
           # rewrite-tier Block validators above. Distinct gate_id
