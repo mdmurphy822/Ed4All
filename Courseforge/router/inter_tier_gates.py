@@ -616,37 +616,54 @@ def _curie_anchored(
     minted_curie_map: Optional[Dict[str, Any]],
     source_chunk_text: str = "",
     objective_statement_text: str = "",
-) -> bool:
-    """Return True when ``curie`` is anchored in the block's surface.
+    page_sibling_text: str = "",
+) -> Optional[str]:
+    """Return the anchoring SCOPE of ``curie`` (``"block"`` / ``"page"``) or None.
+
+    ``None`` means the CURIE is not anchored (a miss). A non-empty string
+    is truthy, so ``if _curie_anchored(...)`` still reads as "anchored?";
+    the string additionally distinguishes a BLOCK-local anchor from a
+    PAGE-level one (for decision-capture / report provenance).
 
     Two anchoring contracts, dispatched on whether the CURIE is a
     minted (corpus-derived) CURIE or an RDF CURIE:
 
     * **Minted CURIE** — ``curie`` is a key in ``minted_curie_map``. It
-      is "anchored" when EITHER the literal CURIE token appears in
-      ``surface_curies`` (after the R1 force-injection fix the minted
-      token lands in the str-path text, so force-injected blocks pass
-      legitimately) OR any of that CURIE's vocabulary ``surface_forms``
-      (the concept's canonical name + aliases) appears as a
-      **word-boundary** match in the block's ``text_blob`` (the
-      ``key_claims`` prose) OR in the block's ``source_chunk_text``
-      (its grounded provenance — the source chunks ARE tagged with the
-      domain vocabulary, so a concept present there is genuinely the
-      block's subject; this is provenance-aware anchoring, NOT a
-      relaxation) OR in the block's ``objective_statement_text`` (the
-      resolved statement text of the objectives the block DECLARES via
-      ``objective_refs`` — a block is legitimately about the concepts its
-      objectives name, so a concept surfacing there is genuinely the
-      block's subject; "objective-refs-concept anchoring", also NOT a
-      relaxation). Surface forms that are too short or are common
-      English function words are filtered out (see
+      is **block-anchored** (``"block"``) when EITHER the literal CURIE
+      token appears in ``surface_curies`` (after the R1 force-injection
+      fix the minted token lands in the str-path text, so force-injected
+      blocks pass legitimately) OR any of that CURIE's vocabulary
+      ``surface_forms`` (the concept's canonical name + aliases) appears
+      as a **word-boundary** match in the block's ``text_blob`` (the
+      ``key_claims`` prose) OR in the block's ``source_chunk_text`` (its
+      grounded provenance — the source chunks ARE tagged with the domain
+      vocabulary, so a concept present there is genuinely the block's
+      subject; this is provenance-aware anchoring, NOT a relaxation) OR in
+      the block's ``objective_statement_text`` (the resolved statement
+      text of the objectives the block DECLARES via ``objective_refs`` —
+      "objective-refs-concept anchoring", also NOT a relaxation). When
+      NONE of those block-local surfaces carry the surface form, a final
+      **page-level fallback** checks ``page_sibling_text`` (the
+      concatenated text surface of the block's SAME-PAGE sibling blocks):
+      a match there anchors the CURIE at ``"page"`` scope — the concept is
+      genuinely discussed on the page the block belongs to. This is the
+      inheritance-consistent reading for a support block (callout /
+      flip_card / misconception / extra example) that INHERITED its page's
+      modal minted CURIE via the outline minter's sibling-page fallback
+      (commit 69079d09) but paraphrases the concept, so the surface form is
+      absent from its OWN prose. Surface forms that are too short or are
+      common English function words are filtered out (see
       :func:`_surface_form_can_anchor`) so a form like ``"ion"`` cannot
       vacuously match inside "definition".
     * **RDF CURIE** — ``curie`` is NOT in the map. The legacy literal-
       token check is preserved verbatim: the CURIE counts as anchored
-      only when the literal token appears in ``surface_curies`` (the
-      CURIEs ``extract_curies`` scraped from the surface text). RDF
-      CURIEs never consult ``source_chunk_text``.
+      (``"block"``) only when the literal token appears in
+      ``surface_curies`` (the CURIEs ``extract_curies`` scraped from the
+      surface text). RDF CURIEs NEVER consult ``source_chunk_text`` /
+      ``objective_statement_text`` / ``page_sibling_text`` — the
+      page-level fallback is minted-only, so a sibling containing the
+      literal RDF token can never anchor a block that lacks it (strictness
+      preserved).
 
     When ``minted_curie_map`` is ``None`` / empty, every CURIE takes the
     RDF arm — byte-identical to the pre-minting contract.
@@ -656,32 +673,112 @@ def _curie_anchored(
         # CURIE token survives into the str-path text, so a literal
         # match is a legitimate pass for force-injected blocks.
         if curie in surface_curies:
-            return True
+            return "block"
         entry = minted_curie_map.get(curie) or {}
         surface_forms = entry.get("surface_forms") if isinstance(entry, dict) else None
         if not surface_forms:
             # Minted CURIE with no surface forms — literal check only
             # (already failed above) rather than auto-passing.
-            return False
-        # Provenance-aware anchoring: the concept counts as discussed
-        # when its surface form appears in the block's key_claims prose
-        # OR in the block's grounded source-chunk text OR in the resolved
-        # statement text of the objectives the block declares
+            return None
+        anchorable_forms = [
+            sf.strip() for sf in surface_forms if _surface_form_can_anchor(sf)
+        ]
+        # Provenance-aware BLOCK-LOCAL anchoring: the concept counts as
+        # discussed when its surface form appears in the block's key_claims
+        # prose OR in the block's grounded source-chunk text OR in the
+        # resolved statement text of the objectives the block declares
         # (objective-refs-concept anchoring).
-        blob = "\n".join(
+        block_blob = "\n".join(
             b
             for b in (text_blob, source_chunk_text, objective_statement_text)
             if b
         )
-        for sf in surface_forms:
-            if not _surface_form_can_anchor(sf):
-                continue
+        for sf in anchorable_forms:
             if re.search(
-                r"\b" + re.escape(sf.strip()) + r"\b", blob, re.IGNORECASE
+                r"\b" + re.escape(sf) + r"\b", block_blob, re.IGNORECASE
             ):
-                return True
-        return False
-    return curie in surface_curies
+                return "block"
+        # PAGE-LEVEL fallback (MINTED curies only): the concept surface
+        # form appears in a SAME-PAGE sibling block's text. The block
+        # legitimately inherited the page's minted CURIE and the page
+        # genuinely discusses the concept — no fabrication.
+        if page_sibling_text:
+            for sf in anchorable_forms:
+                if re.search(
+                    r"\b" + re.escape(sf) + r"\b",
+                    page_sibling_text,
+                    re.IGNORECASE,
+                ):
+                    return "page"
+        return None
+    return "block" if curie in surface_curies else None
+
+
+def _page_id_of_block(block: Block) -> str:
+    """Return the page_id a block belongs to: the block_id prefix before ``#``.
+
+    Matches the canonical block-instance-id shape
+    ``{page_id}#{block_type}_{slug}_{idx}`` (see
+    ``Courseforge/scripts/blocks.py::Block.stable_id``). Falls back to the
+    whole block_id when no ``#`` is present so a malformed / bare id still
+    groups deterministically (it just forms its own singleton page).
+    """
+    bid = getattr(block, "block_id", "") or ""
+    if "#" in bid:
+        return bid.split("#", 1)[0]
+    return bid
+
+
+def _block_text_surface(block: Block) -> str:
+    """Concatenate a block's OWN textual surface for page-level anchoring.
+
+    Dict path (outline tier): the ``key_claims`` prose (legacy ``List[str]``
+    OR structured ``List[{claim, ...}]`` — same shape-dispatch the
+    CURIE-anchoring walk uses to build ``text_blob``). Str path (rewrite
+    tier): the stripped HTML body. Non-dict / non-str content contributes
+    nothing. Keeping the page-sibling surface the same KIND of text as the
+    per-block surface means a page-level match is exactly a block-local
+    match that happened to land in a sibling.
+    """
+    content = getattr(block, "content", None)
+    if isinstance(content, dict):
+        claims_raw = content.get("key_claims") or []
+        parts: List[str] = []
+        for c in claims_raw:
+            if isinstance(c, str):
+                parts.append(c)
+            elif isinstance(c, dict):
+                claim_text = c.get("claim", "")
+                if isinstance(claim_text, str):
+                    parts.append(claim_text)
+        return "\n".join(parts)
+    if isinstance(content, str):
+        return _strip_html(content)
+    return ""
+
+
+def _build_page_sibling_text_map(blocks: List[Block]) -> Dict[str, str]:
+    """Map ``page_id -> concatenated text surface of every block on the page``.
+
+    Built ONCE per ``validate()`` call over the whole validation batch —
+    the batch IS the page context (all of a page's blocks are hydrated into
+    the same ``inputs["blocks"]`` list), so no per-block gate-input plumbing
+    is needed. Consumed by the MINTED-CURIE page-level anchoring fallback in
+    :func:`_curie_anchored`: a support block that inherited its page's modal
+    minted CURIE (outline minter sibling-page fallback, commit 69079d09) but
+    paraphrases the concept anchors when the surface form appears in a
+    same-page sibling's text. The map includes the block's own surface,
+    which is harmless — a self-match would already have been caught by
+    block-local anchoring, so a NEW page-scope pass can only come from a
+    genuine sibling.
+    """
+    page_parts: Dict[str, List[str]] = {}
+    for block in blocks:
+        surface = _block_text_surface(block)
+        if not surface:
+            continue
+        page_parts.setdefault(_page_id_of_block(block), []).append(surface)
+    return {pid: "\n".join(parts) for pid, parts in page_parts.items()}
 
 
 class BlockCurieAnchoringValidator:
@@ -742,6 +839,13 @@ class BlockCurieAnchoringValidator:
                 issues=[err],
                 action="regenerate",
             )
+
+        # Page-level anchoring surface: concatenated text of every block on
+        # each page, keyed by page_id (block_id prefix before '#'). Built once
+        # over the whole batch — the batch IS the page context, so no extra
+        # gate-input plumbing is threaded. Consumed ONLY by the minted-CURIE
+        # page-level fallback in ``_curie_anchored``; RDF CURIEs ignore it.
+        page_sibling_text_map = _build_page_sibling_text_map(blocks)
 
         issues: List[GateIssue] = []
         audited = 0
@@ -821,13 +925,31 @@ class BlockCurieAnchoringValidator:
             objective_statement_text = _objective_statement_text_for_block(
                 block, objective_statements
             )
-            anchored_count = sum(
-                1
-                for c in curies
-                if _curie_anchored(
+            # Page-level anchoring surface for THIS block: the concatenated
+            # text of every block sharing its page_id. Consumed only by the
+            # minted-CURIE fallback in ``_curie_anchored``.
+            page_sibling_text = page_sibling_text_map.get(
+                _page_id_of_block(block), ""
+            )
+            anchor_scopes = [
+                _curie_anchored(
                     c, surface_curies, text_blob, minted_curie_map,
                     source_chunk_text, objective_statement_text,
+                    page_sibling_text,
                 )
+                for c in curies
+            ]
+            anchored_count = sum(1 for s in anchor_scopes if s is not None)
+            block_anchored_count = sum(1 for s in anchor_scopes if s == "block")
+            page_anchored_count = sum(1 for s in anchor_scopes if s == "page")
+            # A block's anchoring_scope is "page" only when it passed SOLELY
+            # via the page-level fallback (no CURIE anchored block-locally) —
+            # the distinguishable metadata the fallback owes decision captures
+            # / reports. Otherwise "block" (block-local anchoring won).
+            anchoring_scope = (
+                "page"
+                if (page_anchored_count > 0 and block_anchored_count == 0)
+                else "block"
             )
             anchoring_rate = (
                 (anchored_count / len(curies)) if curies else 0.0
@@ -896,6 +1018,8 @@ class BlockCurieAnchoringValidator:
                         "surface_curies_count": len(surface_curies),
                         "minted_curie_count": minted_curie_count,
                         "minted_anchoring_used": minted_curie_map is not None,
+                        "anchoring_scope": anchoring_scope,
+                        "page_anchored_count": page_anchored_count,
                     },
                 )
             else:
@@ -926,6 +1050,8 @@ class BlockCurieAnchoringValidator:
                         "surface_curies_count": len(surface_curies),
                         "minted_curie_count": minted_curie_count,
                         "minted_anchoring_used": minted_curie_map is not None,
+                        "anchoring_scope": "none",
+                        "page_anchored_count": 0,
                     },
                 )
 

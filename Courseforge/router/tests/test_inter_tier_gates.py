@@ -578,6 +578,190 @@ def test_short_domain_term_still_anchors():
 
 
 # --------------------------------------------------------------------------- #
+# 1c. Minted-CURIE PAGE-LEVEL anchoring fallback (curie-page-anchoring)
+# --------------------------------------------------------------------------- #
+
+
+class _ScopeRecordingCapture:
+    """Minimal DecisionCapture stand-in recording the full kwargs of each
+    log_decision call so a test can inspect the rendered rationale (the
+    ``anchoring_scope`` signal is interpolated into it)."""
+
+    def __init__(self) -> None:
+        self.calls: List[Dict[str, Any]] = []
+
+    def log_decision(self, **kwargs: Any) -> None:
+        self.calls.append(kwargs)
+
+
+def test_minted_curie_anchored_via_page_sibling():
+    """(a) A support block that INHERITED its page's modal minted CURIE
+    (outline minter sibling-page fallback) but paraphrases the concept —
+    so its OWN key_claims carry no surface form — anchors because a
+    SAME-PAGE sibling block's text carries the surface form. The pass is
+    tagged anchoring_scope="page" in the decision capture."""
+    minted_map = {
+        "algvendorrag02:evaluating_algebraic_expressions": {
+            "canonical": "evaluating algebraic expressions",
+            "surface_forms": [
+                "evaluating algebraic expressions",
+                "evaluate an expression",
+            ],
+        },
+    }
+    # Sibling concept block on the SAME page discusses the concept...
+    concept_block = _outline_block(
+        block_id="week_01_content_07#concept_eval_0",
+        block_type="concept",
+        page_id="week_01_content_07",
+        curies=("algvendorrag02:evaluating_algebraic_expressions",),
+        key_claims=[
+            "Evaluating algebraic expressions means substituting values "
+            "for variables and simplifying."
+        ],
+    )
+    # ...the callout inherited the same minted CURIE but only paraphrases
+    # (its own prose has no surface form — the live-example shape).
+    callout_block = _outline_block(
+        block_id="week_01_content_07#callout_evaluate-an-expression_2",
+        block_type="callout",
+        page_id="week_01_content_07",
+        curies=("algvendorrag02:evaluating_algebraic_expressions",),
+        key_claims=["Evaluate the expression: 3x + 4 when x = -2."],
+    )
+    capture = _ScopeRecordingCapture()
+    result = BlockCurieAnchoringValidator().validate({
+        "blocks": [concept_block, callout_block],
+        "minted_curie_map": minted_map,
+        "decision_capture": capture,
+    })
+    assert result.passed is True
+    assert result.action is None
+    # The callout passed SOLELY via page-level anchoring → scope "page".
+    callout_calls = [
+        c for c in capture.calls
+        if "callout_evaluate-an-expression_2" in c.get("rationale", "")
+    ]
+    assert len(callout_calls) == 1
+    assert "anchoring_scope='page'" in callout_calls[0]["rationale"]
+    # The concept block anchored block-locally → scope "block".
+    concept_calls = [
+        c for c in capture.calls
+        if "concept_eval_0" in c.get("rationale", "")
+    ]
+    assert len(concept_calls) == 1
+    assert "anchoring_scope='block'" in concept_calls[0]["rationale"]
+
+
+def test_minted_curie_surface_form_nowhere_on_page_still_fails():
+    """(b) When the surface form appears in NO block on the page (not the
+    block itself and not any sibling), the minted CURIE still fails
+    closed — the page-level fallback does not fabricate an anchor."""
+    minted_map = {
+        "introbio101:slope": {
+            "canonical": "slope",
+            "surface_forms": ["slope", "gradient"],
+        },
+    }
+    sibling = _outline_block(
+        block_id="page_01#concept_other_0",
+        block_type="concept",
+        page_id="page_01",
+        curies=("introbio101:slope",),
+        key_claims=["This page discusses entirely unrelated material."],
+    )
+    orphan = _outline_block(
+        block_id="page_01#callout_x_1",
+        block_type="callout",
+        page_id="page_01",
+        curies=("introbio101:slope",),
+        key_claims=["Another sentence about nothing in particular."],
+    )
+    result = BlockCurieAnchoringValidator().validate({
+        "blocks": [sibling, orphan],
+        "minted_curie_map": minted_map,
+    })
+    assert result.passed is False
+    assert result.action == "regenerate"
+    codes = [i.code for i in result.issues if i.severity == "critical"]
+    assert "OUTLINE_BLOCK_CURIE_NOT_ANCHORED" in codes
+
+
+def test_rdf_curie_not_anchored_by_sibling_token():
+    """(c) An RDF (non-minted) literal-token CURIE stays strict: even
+    when a SAME-PAGE sibling's text carries the literal token, a block
+    that lacks it in its OWN surface still fails. The page-level fallback
+    is minted-only, so RDF strictness is preserved."""
+    # No minted_curie_map → every CURIE takes the RDF literal-token arm.
+    sibling_with_token = _outline_block(
+        block_id="page_01#concept_rdf_0",
+        block_type="concept",
+        page_id="page_01",
+        curies=("sh:path",),
+        key_claims=["The sh:path predicate constrains the property path."],
+    )
+    block_without_token = _outline_block(
+        block_id="page_01#callout_rdf_1",
+        block_type="callout",
+        page_id="page_01",
+        curies=("sh:path",),
+        # Declares sh:path but its own prose never contains the token.
+        key_claims=["This callout paraphrases without naming the term."],
+    )
+    result = BlockCurieAnchoringValidator().validate({
+        "blocks": [sibling_with_token, block_without_token],
+    })
+    assert result.passed is False
+    assert result.action == "regenerate"
+    # The token-bearing sibling passes; only the token-less block fails.
+    failed_locations = {
+        i.location for i in result.issues if i.severity == "critical"
+    }
+    assert "page_01#callout_rdf_1" in failed_locations
+    assert "page_01#concept_rdf_0" not in failed_locations
+
+
+def test_block_local_anchoring_still_wins_scope_block():
+    """(d) A block whose OWN key_claims carry the surface form anchors
+    block-locally exactly as before (no behavior change) — the decision
+    capture tags it anchoring_scope="block", never "page", even when a
+    sibling ALSO carries the surface form."""
+    minted_map = {
+        "introbio101:slope": {
+            "canonical": "slope",
+            "surface_forms": ["slope", "gradient"],
+        },
+    }
+    block_a = _outline_block(
+        block_id="page_01#concept_a_0",
+        block_type="concept",
+        page_id="page_01",
+        curies=("introbio101:slope",),
+        key_claims=["The gradient of a line measures steepness."],
+    )
+    block_b = _outline_block(
+        block_id="page_01#concept_b_1",
+        block_type="concept",
+        page_id="page_01",
+        curies=("introbio101:slope",),
+        key_claims=["Slope is rise over run for a straight line."],
+    )
+    capture = _ScopeRecordingCapture()
+    result = BlockCurieAnchoringValidator().validate({
+        "blocks": [block_a, block_b],
+        "minted_curie_map": minted_map,
+        "decision_capture": capture,
+    })
+    assert result.passed is True
+    assert result.action is None
+    # Both blocks anchored block-locally → scope "block" for each.
+    assert capture.calls, "expected at least one decision capture"
+    for c in capture.calls:
+        assert "anchoring_scope='block'" in c["rationale"]
+        assert "anchoring_scope='page'" not in c["rationale"]
+
+
+# --------------------------------------------------------------------------- #
 # 2. Content-type taxonomy
 # --------------------------------------------------------------------------- #
 
