@@ -88,7 +88,7 @@ def _region_obj(
         page = getattr(getattr(fb, "raw", None), "page", None)
         if page is not None and int(page) not in pages:
             pages.append(int(page))
-    return {
+    obj = {
         "region_index": region_index,
         "kind": region.kind,
         "feature_block_indices": fb_indices,
@@ -96,6 +96,13 @@ def _region_obj(
         "is_passthrough": getattr(region, "source_region_id", None) is not None,
         "text_snippet": _region_snippet(region, feature_blocks),
     }
+    # ITEM6 — additive council role-distribution evidence (stamped on
+    # region.provenance by stamp_role_distributions before Stage-5e runs).
+    # Absent for unstamped/mock regions -> byte-stable digest.
+    role_top_k = (getattr(region, "provenance", {}) or {}).get("role_top_k")
+    if role_top_k:
+        obj["role_top_k"] = role_top_k
+    return obj
 
 
 def build_resegment_request(

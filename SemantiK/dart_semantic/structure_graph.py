@@ -2260,6 +2260,11 @@ def build_structure_graph(
     # Pass 6 — Code, blockquote, metadata_drop, form, fallback.
     # ------------------------------------------------------------------
     _content_guard = resolve_content_type_guard()
+    # ITEM6 — record which FB each guard veto rejected + the vetoed label, so
+    # the defensive paragraph fallback can consult the council's runner-up
+    # (structural_role) before degrading to paragraph. Empty (byte-identical)
+    # whenever the guard is off (the vetoes never fire).
+    guard_vetoed: dict[int, str] = {}
 
     def _is_code(idx: int) -> bool:
         sig = _get_signal(state, "structure", "structural_role", idx)
@@ -2271,6 +2276,7 @@ def build_structure_graph(
         # row / GPO printer furniture / bare label) so it falls through to a
         # text-preserving paragraph.
         if _content_guard and not _looks_like_code(_fb_text(feature_blocks, idx)):
+            guard_vetoed[idx] = "code_block"
             return False
         return True
 
@@ -2331,6 +2337,7 @@ def build_structure_graph(
         # (no term-definition shape) so it falls through to a paragraph. A bare
         # short term or a capitalized definition-body sentence is NOT vetoed.
         if _content_guard and not _looks_like_definition_list(_fb_text(feature_blocks, idx)):
+            guard_vetoed[idx] = label
             return False
         return True
 
@@ -2452,6 +2459,17 @@ def build_structure_graph(
     for i in range(n_fb):
         if i in claimed:
             continue
+        # ITEM6 — a content-guard veto means the council's top-1 kind failed its
+        # positive-evidence predicate; consult the runner-up label (the full
+        # structural_role distribution) before the blanket paragraph demotion.
+        # ``guard_vetoed`` is only ever populated under the guard flag, so this
+        # is byte-identical when the guard is off (heading never minted here).
+        if i in guard_vetoed:
+            alt = _guard_runner_up_region(state, feature_blocks, i, guard_vetoed[i])
+            if alt is not None:
+                regions_out.append(alt)
+                claimed.add(i)
+                continue
         fb = feature_blocks[i]
         text = (getattr(getattr(fb, "raw", None), "text", "") or "").strip()
         regions_out.append(
@@ -2562,6 +2580,85 @@ def build_structure_graph(
 
 def _fb_text(feature_blocks: list[FeatureBlock], j: int) -> str:
     return (getattr(getattr(feature_blocks[j], "raw", None), "text", "") or "").strip()
+
+
+def _guard_runner_up_region(
+    state: Any,
+    feature_blocks: list[FeatureBlock],
+    idx: int,
+    vetoed_label: str,
+) -> "Region | None":
+    """ITEM6 — runner-up re-type for a content-guard-vetoed FB (D3a table).
+
+    Walks the FB's full ``structural_role`` distribution (already all-classes
+    per the orchestrator's ``top_k_per_head={'structural_role': None}``),
+    skipping the vetoed label, and mints a 1-FB Region for the first runner-up
+    that clears its OWN existing floor + shape predicate — the SAME positive
+    evidence that gates top-1. ``heading`` / ``form_label`` / ``caption`` /
+    ``paragraph`` / unknown → ``None`` ("stay with the paragraph fallback";
+    heading membership stays Pass-2-owned, never minted here). Deterministic,
+    no LLM. Byte-identical when the guard is off (never reached).
+    """
+    sig = _get_signal(state, "structure", "structural_role", idx)
+    labels = list(getattr(sig, "top_k_labels", None) or [])
+    confs = list(getattr(sig, "top_k_confidences", None) or [])
+    text = _fb_text(feature_blocks, idx)
+    for label, conf in zip(labels, confs):
+        if label == vetoed_label:
+            continue
+        conf = float(conf)
+        prov = {
+            "pass": "guard_runner_up",
+            "vetoed": vetoed_label,
+            "runner_up": label,
+            "runner_up_conf": round(conf, 4),
+        }
+        if label == "blockquote":
+            if conf < _BLOCKQUOTE_CONFIDENCE_FLOOR:
+                continue
+            return Region(
+                kind="blockquote",
+                feature_block_indices=(idx,),
+                payload={"text": text},
+                provenance=prov,
+            )
+        if label == "code_block":
+            if conf < _CODE_CONFIDENCE_FLOOR or not _looks_like_code(text):
+                continue
+            return Region(
+                kind="code_block",
+                feature_block_indices=(idx,),
+                payload={"text": text},
+                provenance=prov,
+            )
+        if label in ("definition_term", "definition_def"):
+            if conf < _DEFINITION_CONFIDENCE_FLOOR or not _looks_like_definition_list(text):
+                continue
+            return Region(
+                kind="definition_list",
+                feature_block_indices=(idx,),
+                payload={
+                    "text": text,
+                    "items": [{"role": label, "text": text}],
+                },
+                provenance=prov,
+            )
+        if label == "list_item":
+            if conf < _LIST_ITEM_CONFIDENCE_FLOOR or not _has_list_marker(text):
+                continue
+            return Region(
+                kind="list",
+                feature_block_indices=(idx,),
+                payload={
+                    "ordered": _is_ordered_list(text),
+                    "items": [{"fb_index": idx, "text": text, "depth": 0}],
+                },
+                aria_hints=("aria-posinset",),
+                provenance=prov,
+            )
+        # heading / form_label / caption / paragraph / unknown → stay paragraph.
+        return None
+    return None
 
 
 def _join_dehyphenated(

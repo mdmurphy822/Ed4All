@@ -1761,6 +1761,16 @@ def _build_window_capture_meta(
     for m in members:
         kind = str(record_by_idx.get(m, {}).get("council_kind"))
         kind_counts[kind] = kind_counts.get(kind, 0) + 1
+    # ITEM6 — top1-top2 margin over members carrying council_top_k (len >= 2);
+    # members lacking the additive key are excluded. Replayable capture
+    # enrichment (free-form metadata, no schema change); absent margin stats
+    # when no member carries the key (byte-stable pre-ITEM6 capture).
+    margins = [
+        float(tk[0][1]) - float(tk[1][1])
+        for m in members
+        for tk in (record_by_idx.get(m, {}).get("council_top_k"),)
+        if isinstance(tk, (list, tuple)) and len(tk) >= 2
+    ]
     meta: dict[str, Any] = {
         "window_index": int(window_index),
         "members": len(members),
@@ -1777,6 +1787,9 @@ def _build_window_capture_meta(
             round(sum(confidences) / len(confidences), 4) if confidences else None
         ),
     }
+    if margins:
+        meta["council_margin_min"] = round(min(margins), 4)
+        meta["council_margin_mean"] = round(sum(margins) / len(margins), 4)
     return meta
 
 

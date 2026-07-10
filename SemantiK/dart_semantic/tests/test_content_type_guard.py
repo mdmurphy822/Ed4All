@@ -286,3 +286,139 @@ def test_definition_guard_on_demotes_prose_fragment(monkeypatch):
     assert _kind_of_fb(regions, 1) == "definition_list", (
         "genuine definition was wrongly demoted"
     )
+
+
+# ---------------------------------------------------------------------------
+# ITEM6 Phase 2 — guard runner-up fallback (D3a). A vetoed FB consults the
+# council's full structural_role distribution and mints the runner-up kind
+# when it clears that kind's existing floor + shape predicate, instead of the
+# blanket paragraph demotion. heading is never minted; flag-off byte-identical.
+# ---------------------------------------------------------------------------
+
+
+def _region_for_fb(regions, fb_idx: int):
+    for r in regions:
+        if fb_idx in r.feature_block_indices:
+            return r
+    raise AssertionError(f"FB {fb_idx} not owned by any region")
+
+
+def _runner_up_graph(text: str, top_label: str, runner_label: str, runner_conf: float):
+    """FB0 = a block the council typed ``top_label`` (a guard-vetoed kind) with
+    ``runner_label`` as the distribution runner-up; FB1 = filler prose so the
+    graph is non-trivial. No GPU / model."""
+    feature_blocks = [_fb(text), _fb("Ordinary filler prose sentence here.")]
+    struct_signals: list[TypedSignal] = [
+        TypedSignal("is_heading", 0, ["body", "heading"], [0.99, 0.01]),
+        TypedSignal(
+            "structural_role",
+            0,
+            [top_label, runner_label, "paragraph"],
+            [0.70, runner_conf, max(0.0, 0.30 - runner_conf)],
+        ),
+        TypedSignal("is_heading", 1, ["body", "heading"], [0.99, 0.01]),
+        TypedSignal("structural_role", 1, ["paragraph", "list_item"], [0.9, 0.1]),
+    ]
+    state = CouncilState(outputs={"structure": BertOutput("structure", struct_signals)})
+    decisions = arbitrate(state, [])
+    return state, feature_blocks, [], decisions
+
+
+_WIKI_ROW = "Centerville 1,234,567 1,102,845 86.49% | 187,663 24.78% | 84,007"
+
+
+def test_runner_up_blockquote_from_code_veto(monkeypatch):
+    monkeypatch.setenv(_FLAG, "on")
+    # code_block top-1 vetoed (non-code); runner-up blockquote@0.45 >= 0.4 floor.
+    state, fbs, cands, decs = _runner_up_graph(_WIKI_ROW, "code_block", "blockquote", 0.45)
+    regions = build_structure_graph(state, fbs, cands, decs)
+    _assert_full_coverage(regions, len(fbs))
+    reg = _region_for_fb(regions, 0)
+    assert reg.kind == "blockquote"
+    assert reg.provenance.get("pass") == "guard_runner_up"
+    assert reg.provenance.get("vetoed") == "code_block"
+    assert reg.provenance.get("runner_up") == "blockquote"
+
+
+def test_runner_up_blockquote_below_floor_stays_paragraph(monkeypatch):
+    monkeypatch.setenv(_FLAG, "on")
+    # runner-up blockquote@0.30 < 0.4 floor -> paragraph fallback.
+    state, fbs, cands, decs = _runner_up_graph(_WIKI_ROW, "code_block", "blockquote", 0.30)
+    regions = build_structure_graph(state, fbs, cands, decs)
+    _assert_full_coverage(regions, len(fbs))
+    reg = _region_for_fb(regions, 0)
+    assert reg.kind == "paragraph"
+    assert reg.provenance.get("pass") != "guard_runner_up"
+
+
+def test_runner_up_definition_requires_shape(monkeypatch):
+    monkeypatch.setenv(_FLAG, "on")
+    # runner-up definition_term but the lowercase prose fragment has no
+    # term-definition shape (_looks_like_definition_list False) -> paragraph.
+    state, fbs, cands, decs = _runner_up_graph(
+        "processing of invoices, arranging transport",
+        "code_block",
+        "definition_term",
+        0.45,
+    )
+    regions = build_structure_graph(state, fbs, cands, decs)
+    _assert_full_coverage(regions, len(fbs))
+    assert _kind_of_fb(regions, 0) == "paragraph"
+
+
+def test_runner_up_list_requires_marker(monkeypatch):
+    monkeypatch.setenv(_FLAG, "on")
+    # list_item@0.6 but no list marker -> paragraph.
+    state, fbs, cands, decs = _runner_up_graph(_WIKI_ROW, "code_block", "list_item", 0.6)
+    regions = build_structure_graph(state, fbs, cands, decs)
+    assert _kind_of_fb(regions, 0) == "paragraph"
+    # With a real ordered-list marker -> 1-item list, Pass-4 payload shape.
+    state, fbs, cands, decs = _runner_up_graph(
+        "1. Combine like terms before isolating the variable.",
+        "code_block",
+        "list_item",
+        0.6,
+    )
+    regions = build_structure_graph(state, fbs, cands, decs)
+    _assert_full_coverage(regions, len(fbs))
+    reg = _region_for_fb(regions, 0)
+    assert reg.kind == "list"
+    assert reg.provenance.get("pass") == "guard_runner_up"
+    assert reg.payload["ordered"] is True
+    assert reg.payload["items"] == [
+        {"fb_index": 0, "text": "1. Combine like terms before isolating the variable.", "depth": 0}
+    ]
+
+
+def test_runner_up_paragraph_byte_identical_to_legacy(monkeypatch):
+    # Runner-up is paragraph -> _guard_runner_up_region returns None, so the
+    # normal paragraph fallback mints it: identical to pre-change guard demote.
+    monkeypatch.setenv(_FLAG, "on")
+    state, fbs, cands, decs = _runner_up_graph(_WIKI_ROW, "code_block", "paragraph", 0.28)
+    regions = build_structure_graph(state, fbs, cands, decs)
+    _assert_full_coverage(regions, len(fbs))
+    reg = _region_for_fb(regions, 0)
+    assert reg.kind == "paragraph"
+    assert reg.provenance.get("pass") != "guard_runner_up"
+
+
+def test_runner_up_never_mints_heading(monkeypatch):
+    monkeypatch.setenv(_FLAG, "on")
+    # Even a high-confidence heading runner-up -> paragraph (heading membership
+    # stays Pass-2-owned; never minted in the guard fallback).
+    state, fbs, cands, decs = _runner_up_graph(_WIKI_ROW, "code_block", "heading", 0.29)
+    regions = build_structure_graph(state, fbs, cands, decs)
+    reg = _region_for_fb(regions, 0)
+    assert reg.kind != "heading"
+    assert reg.kind == "paragraph"
+
+
+def test_runner_up_empty_without_guard(monkeypatch):
+    # Guard OFF -> guard_vetoed stays empty -> the wiki row keeps its council
+    # code_block (byte-identical legacy), no runner-up path taken.
+    monkeypatch.setenv(_FLAG, "0")
+    state, fbs, cands, decs = _runner_up_graph(_WIKI_ROW, "code_block", "blockquote", 0.45)
+    regions = build_structure_graph(state, fbs, cands, decs)
+    reg = _region_for_fb(regions, 0)
+    assert reg.kind == "code_block"
+    assert reg.provenance.get("pass") != "guard_runner_up"

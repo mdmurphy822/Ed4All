@@ -297,3 +297,61 @@ def test_no_envelope_json_only():
     prompt = build_reviewer_request(region, (None, None), 0).lower()
     assert "convert the single" not in prompt
     assert "into one accessible html5 fragment" not in prompt
+
+
+# ---------------------------------------------------------------------------
+# ITEM6 — council_top_k edge-record evidence (k=3, probs @2dp). From the live
+# council_state, or a fallback to the persisted region.provenance['role_top_k']
+# on the post-run re-drive path (state absent). Byte-stable when neither exists.
+# ---------------------------------------------------------------------------
+
+
+class _MultiStructSignal:
+    def __init__(self, region_id, labels, confs, head_name="structural_role"):
+        self.head_name = head_name
+        self.region_id = region_id
+        self.top_k_labels = list(labels)
+        self.top_k_confidences = list(confs)
+
+
+class _MultiState:
+    def __init__(self, region_id, labels, confs):
+        self.outputs = {
+            "structure": _BertOut([_MultiStructSignal(region_id, labels, confs)])
+        }
+
+
+def test_edge_record_council_top_k_k3_2dp():
+    region = _region("code_block", (0,), text="x = 1")
+    fbs = [_fb("x = 1")]
+    state = _MultiState(
+        0,
+        ["code_block", "paragraph", "math", "list_item"],
+        [0.512, 0.301, 0.092, 0.05],
+    )
+    rec = build_edge_input(region, block_id=3, feature_blocks=fbs, council_state=state)
+    assert rec["council_top_k"] == [
+        ["code_block", 0.51],
+        ["paragraph", 0.3],
+        ["math", 0.09],
+    ]
+
+
+def test_edge_record_council_top_k_from_provenance_fallback():
+    # State absent -> read the persisted provenance stamp; @2dp re-round.
+    region = Region(
+        kind="paragraph",
+        feature_block_indices=(0,),
+        payload={"text": "hi"},
+        provenance={"role_top_k": [["paragraph", 0.7123], ["blockquote", 0.2011]]},
+    )
+    fbs = [_fb("hi")]
+    rec = build_edge_input(region, block_id=1, feature_blocks=fbs, council_state=None)
+    assert rec["council_top_k"] == [["paragraph", 0.71], ["blockquote", 0.2]]
+
+
+def test_edge_record_no_key_without_signal_or_stamp():
+    region = _region("paragraph", (0,), text="plain")
+    fbs = [_fb("plain")]
+    rec = build_edge_input(region, block_id=2, feature_blocks=fbs, council_state=None)
+    assert "council_top_k" not in rec

@@ -2707,3 +2707,40 @@ def test_one_to_one_preserved_on_subset_redrive(monkeypatch):
     )
     assert len(out) == n
     assert len(verdicts) == n
+
+
+# ---------------------------------------------------------------------------
+# ITEM6 — window capture meta gains council_margin_min / _mean (top1-top2 over
+# members carrying council_top_k; members lacking the key excluded).
+# ---------------------------------------------------------------------------
+
+
+def test_window_capture_meta_margin_stats():
+    from dart_semantic.qwen_specialists.reviewer import _build_window_capture_meta
+
+    record_by_idx = {
+        0: {"page": 1, "confidence": 0.7, "council_kind": "code_block",
+            "council_top_k": [["code_block", 0.6], ["paragraph", 0.3]]},  # margin 0.3
+        1: {"page": 1, "confidence": 0.8, "council_kind": "paragraph",
+            "council_top_k": [["paragraph", 0.5], ["list_item", 0.4]]},   # margin 0.1
+        2: {"page": 2, "confidence": 0.9, "council_kind": "table"},        # no key -> excluded
+    }
+    meta = _build_window_capture_meta(
+        0, [0, 1, 2], record_by_idx, model="m", max_tokens=256
+    )
+    assert meta["council_margin_min"] == 0.1
+    assert meta["council_margin_mean"] == 0.2
+
+
+def test_window_capture_meta_margin_absent_without_key():
+    from dart_semantic.qwen_specialists.reviewer import _build_window_capture_meta
+
+    record_by_idx = {
+        0: {"page": 1, "confidence": 0.7, "council_kind": "paragraph"},
+        1: {"page": 1, "confidence": 0.8, "council_kind": "table"},
+    }
+    meta = _build_window_capture_meta(
+        0, [0, 1], record_by_idx, model="m", max_tokens=256
+    )
+    assert "council_margin_min" not in meta
+    assert "council_margin_mean" not in meta

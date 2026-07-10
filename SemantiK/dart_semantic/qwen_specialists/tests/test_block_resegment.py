@@ -1412,3 +1412,32 @@ def test_split_recomputes_geometry():
     # The parent's union value is on NEITHER child (staleness recomputed away).
     assert child0.page_bboxes != parent_geometry
     assert child1.page_bboxes != parent_geometry
+
+
+# ---------------------------------------------------------------------------
+# ITEM6 — the Stage-5e op-proposal digest carries the additive role_top_k
+# evidence read off region.provenance (stamped before Stage-5e runs).
+# ---------------------------------------------------------------------------
+
+
+def test_resegment_digest_carries_role_top_k_when_stamped():
+    from dart_semantic.qwen_specialists.block_resegment_prompt import _region_obj
+    from dart_semantic.structure_graph import Region as _R
+
+    region = _R(
+        kind="paragraph",
+        feature_block_indices=(0,),
+        payload={"text": "hi"},
+        provenance={"role_top_k": [["paragraph", 0.7], ["code_block", 0.3]]},
+    )
+    obj = _region_obj(region, 0, [_fb("hi")])
+    assert obj["role_top_k"] == [["paragraph", 0.7], ["code_block", 0.3]]
+
+
+def test_resegment_digest_role_top_k_absent_when_unstamped():
+    from dart_semantic.qwen_specialists.block_resegment_prompt import _region_obj
+    from dart_semantic.structure_graph import Region as _R
+
+    region = _R(kind="paragraph", feature_block_indices=(0,), payload={"text": "hi"})
+    obj = _region_obj(region, 0, [_fb("hi")])
+    assert "role_top_k" not in obj

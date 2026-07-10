@@ -511,6 +511,17 @@ _CONTENT_RETYPE_DIRECTIVE = (
 )
 
 
+# ITEM6 — council top-k distribution directive. Appended (windowed prompt ONLY)
+# when any record carries ``council_top_k`` so the model reads the ranked
+# alternatives as re-typing evidence.
+_COUNCIL_TOPK_DIRECTIVE = (
+    "Some records carry council_top_k: the classifier's ranked alternative "
+    "content types with probabilities. A close runner-up means the printed "
+    "council_kind is uncertain. When you re-type, prefer a listed alternative "
+    "over an unlisted kind unless the text plainly demands otherwise."
+)
+
+
 # ---------------------------------------------------------------------------
 # Gold accessible semantic-CLASS menu + assign directive (Phase 5, flag-gated
 # on ``SEMANTIK_SEMANTIC_CLASS`` via ``resolve_semantic_class_mode``).
@@ -667,6 +678,13 @@ def build_windowed_reviewer_request(
     # prompt is byte-identical to the legacy assembly.
     if _semantic_class_enabled():
         system_parts.append(_semantic_class_directive())
+    # ITEM6 (windowed ONLY): append the council-top-k directive when any record
+    # carries the additive ``council_top_k`` evidence key. Gated on presence so
+    # a window with no stamped records (mock state + unstamped regions) is
+    # byte-identical to the legacy assembly; the single-block heading path never
+    # reaches this builder, so it stays byte-identical too.
+    if any("council_top_k" in r for r in enriched):
+        system_parts.append(_COUNCIL_TOPK_DIRECTIVE)
     system = "\n\n".join(system_parts)
     return f"SYSTEM: {system}\nUSER: {user_json}"
 
@@ -1021,6 +1039,27 @@ def build_edge_input(
         "n_tokens": n_tokens,
         "dup_count": dup_count,
     }
+    # ITEM6 — additive council role-distribution evidence (k=3, probs @2dp for
+    # the prompt copy). Prefer the live council_state; fall back to the
+    # persisted region.provenance['role_top_k'] on the post-run re-drive path
+    # (state absent). Absent (byte-stable record) without either source.
+    sig = (
+        _get_signal(council_state, "structure", "structural_role", first_idx)
+        if council_state is not None and first_idx is not None
+        else None
+    )
+    labels = list(getattr(sig, "top_k_labels", None) or [])
+    confs = list(getattr(sig, "top_k_confidences", None) or [])
+    if labels and confs:
+        record["council_top_k"] = [
+            [str(lab), round(float(c), 2)] for lab, c in list(zip(labels, confs))[:3]
+        ]
+    else:
+        prov_top_k = (getattr(region, "provenance", {}) or {}).get("role_top_k")
+        if prov_top_k:
+            record["council_top_k"] = [
+                [str(lab), round(float(c), 2)] for lab, c in prov_top_k[:3]
+            ]
     if n_tokens <= 2 * n:
         # Short block — the full verbatim text IS the edge (head/tail omitted).
         record["text"] = source

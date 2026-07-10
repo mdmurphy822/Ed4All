@@ -486,3 +486,43 @@ def test_feedback_injected_windowed_record():
     # No-feedback windowed prompt is byte-identical (no stray key).
     assert build_windowed_reviewer_request(_window_records()) == \
         build_windowed_reviewer_request(_window_records(), feedback_by_idx=None)
+
+
+# ---------------------------------------------------------------------------
+# ITEM6 — windowed prompt appends the council-top-k directive ONLY when a record
+# carries council_top_k; single-block (legacy heading) path stays byte-stable.
+# ---------------------------------------------------------------------------
+
+from dart_semantic.qwen_specialists.reviewer_prompt import _COUNCIL_TOPK_DIRECTIVE  # noqa: E402
+
+
+def test_windowed_prompt_appends_topk_directive_only_when_present():
+    with_key = [
+        {"idx": 0, "council_kind": "code_block", "role": "code_block",
+         "text": "x = 1", "n_tokens": 3, "dup_count": 1,
+         "council_top_k": [["code_block", 0.51], ["paragraph", 0.3]]},
+        {"idx": 1, "council_kind": "paragraph", "role": "paragraph",
+         "text": "ordinary prose", "n_tokens": 2, "dup_count": 1},
+    ]
+    prompt = build_windowed_reviewer_request(with_key)
+    assert _COUNCIL_TOPK_DIRECTIVE in prompt
+    # The record JSON is serialized verbatim (the additive key rides in USER).
+    assert "council_top_k" in prompt
+
+
+def test_windowed_prompt_no_topk_directive_when_absent():
+    no_key = [
+        {"idx": 0, "council_kind": "code_block", "role": "code_block",
+         "text": "x = 1", "n_tokens": 3, "dup_count": 1},
+        {"idx": 1, "council_kind": "table", "role": "table",
+         "text": "a b c", "n_tokens": 3, "dup_count": 1},
+    ]
+    prompt = build_windowed_reviewer_request(no_key)
+    assert _COUNCIL_TOPK_DIRECTIVE not in prompt
+
+
+def test_single_block_prompt_unchanged():
+    # The legacy heading single-block builder never carries the council-top-k
+    # directive (byte-stable legacy path).
+    prompt = build_reviewer_request(_heading_region(), (None, None), 0)
+    assert _COUNCIL_TOPK_DIRECTIVE not in prompt
