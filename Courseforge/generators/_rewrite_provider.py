@@ -1868,6 +1868,17 @@ _ESCALATION_MARKER_CONTEXT: Dict[str, str] = {
         "BlockProviderSpec.escalate_immediately). Create the block "
         "from scratch using the supplied source chunks and objectives."
     ),
+    # dispatch-resilience-2026-07: the outline-tier dispatch raised an
+    # infrastructure exception (endpoint flap / transport / 5xx / timeout)
+    # and gave up after bounded retries, so NO usable outline draft exists.
+    # Symmetric with ``outline_skipped_by_policy`` — synthesise from scratch.
+    "outline_dispatch_error": (
+        "The outline tier failed to produce a draft — its dispatch raised "
+        "an infrastructure error (endpoint unavailable / transport / "
+        "timeout) after bounded retries. No usable outline exists; create "
+        "the block from scratch using the supplied source chunks and "
+        "objectives."
+    ),
     # Wave 1.5 W1.5.C: per-claim attribution unfixable. Fires when the
     # outline-tier regen budget exhausted purely on per-claim source-
     # attribution misses (no block-level structural miss).

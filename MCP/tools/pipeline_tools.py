@@ -10902,6 +10902,68 @@ def _checkpoint_enabled(env_name: str) -> bool:
     return _llm_checkpoint_enabled(env_name)
 
 
+# ------------------------------------------------------------------------- #
+# Outline-tier dispatch resilience (dispatch-resilience-2026-07).
+# ------------------------------------------------------------------------- #
+# The outline per-block loop dispatches ``route_with_self_consistency`` for
+# every block. An intermittent infrastructure failure (a flapping local-LLM
+# endpoint under VRAM contention, a transport reset, a 429/5xx from a hosted
+# seat) must NOT be conflated with SEMANTIC regen-budget exhaustion:
+#   * transient errors are RETRYABLE (bounded in-loop retry) per the project
+#     error taxonomy, and on give-up stamp the canonical
+#     ``outline_dispatch_error`` marker — NOT ``outline_budget_exhausted``,
+#     which is reserved for the router's regen-budget exhaustion path;
+#   * a PERSISTENT outage would otherwise chew through the whole remaining
+#     block list stamping every block escalated in minutes, so a
+#     consecutive-failure circuit breaker halts the phase LOUDLY instead
+#     (mirrors the batch-level poison-pill pattern in the executor).
+_COURSEFORGE_OUTLINE_DISPATCH_BREAKER_ENV = "COURSEFORGE_OUTLINE_DISPATCH_BREAKER"
+_OUTLINE_DISPATCH_BREAKER_DEFAULT = 5
+_OUTLINE_DISPATCH_MAX_RETRIES = 3
+# Modest per-block backoff ladder (seconds). Shorter than the batch-level
+# transient ladder (5/30/120) — this is an in-loop per-block retry, not the
+# phase retry.
+_OUTLINE_DISPATCH_RETRY_BACKOFFS = (2.0, 8.0, 30.0)
+
+
+def _resolve_outline_dispatch_breaker() -> int:
+    """Consecutive-dispatch-failure circuit-breaker threshold (default 5).
+
+    ``COURSEFORGE_OUTLINE_DISPATCH_BREAKER`` overrides the default; ``0``
+    disables the breaker (legacy chew-through, but with the CORRECTED
+    ``outline_dispatch_error`` marker). Parse-with-fallback: unset / garbage
+    / negative → the default. Read each call so tests can toggle it inline.
+    """
+    raw = os.environ.get(_COURSEFORGE_OUTLINE_DISPATCH_BREAKER_ENV)
+    if raw is None or not str(raw).strip():
+        return _OUTLINE_DISPATCH_BREAKER_DEFAULT
+    try:
+        val = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return _OUTLINE_DISPATCH_BREAKER_DEFAULT
+    return val if val >= 0 else _OUTLINE_DISPATCH_BREAKER_DEFAULT
+
+
+def _outline_dispatch_is_transient(exc: Optional[Exception]) -> bool:
+    """True when an outline-tier dispatch exception is transient (retry-safe).
+
+    Reuses the shared MCP error taxonomy (``MCP/hardening/error_classifier``):
+    connection resets / 5xx / 429 / timeouts / transport errors classify
+    TRANSIENT, and UNKNOWN classifications inherit the taxonomy's
+    ``retry_recommended=True`` default so an unclassified endpoint flap still
+    gets the bounded retry rather than an instant permanent give-up. PERMANENT
+    (bad input / schema) and POISON_PILL (OOM / auth-failed / disk-full) are
+    NOT retried. Never lets a classification failure break the loop.
+    """
+    if exc is None:
+        return False
+    try:
+        from MCP.hardening.error_classifier import classify_error
+        return bool(classify_error(exc, "outline_dispatch").retry_recommended)
+    except Exception:  # noqa: BLE001 — classification is best-effort
+        return False
+
+
 def _tier_block_fingerprint(
     blk: Any,
     *,
@@ -15042,6 +15104,14 @@ async def _run_content_generation_outline(**kwargs) -> str:
     _n_outline_resumed = 0
     _n_outline_authored_fresh = 0
 
+    # dispatch-resilience-2026-07: circuit-breaker state. Consecutive
+    # dispatch EXCEPTIONS across blocks (a successful dispatch — even one
+    # returning a semantic escalation marker — resets the counter, since the
+    # endpoint is alive). At the threshold the phase halts LOUDLY instead of
+    # stamping the rest of the course.
+    _outline_dispatch_breaker = _resolve_outline_dispatch_breaker()
+    _consecutive_dispatch_failures = 0
+
     outline_blocks: List[Any] = []
     for blk in all_blocks:
         # Graceful stop (checkpoint on command): raise at the unit boundary
@@ -15075,15 +15145,55 @@ async def _run_content_generation_outline(**kwargs) -> str:
         # this block (its TO(s) + rolled-up COs), falling back to the full
         # list when the filter is empty. See ``_objectives_payload_for_block``.
         _blk_objectives = _objectives_payload_for_block(blk)
-        try:
-            outlined = router.route_with_self_consistency(
-                blk,
-                validators=validators,
-                source_chunks=block_chunks,
-                objectives=_blk_objectives,
-                minted_curie_map=_minted_curie_map,
-                pre_validate_hook=_make_mint_hook(block_chunks),
-            )
+        # dispatch-resilience-2026-07: bounded classify+retry around the
+        # per-block dispatch. Transient errors (endpoint flap / transport /
+        # 429 / 5xx / timeout) are retried in-loop with a short exponential
+        # backoff; a permanent error (or exhausted transient retries) gives
+        # up on the block.
+        outlined = None
+        _dispatch_exc: Optional[Exception] = None
+        _dispatch_attempts = 0
+        for _attempt in range(_OUTLINE_DISPATCH_MAX_RETRIES + 1):
+            _dispatch_attempts = _attempt + 1
+            try:
+                outlined = router.route_with_self_consistency(
+                    blk,
+                    validators=validators,
+                    source_chunks=block_chunks,
+                    objectives=_blk_objectives,
+                    minted_curie_map=_minted_curie_map,
+                    pre_validate_hook=_make_mint_hook(block_chunks),
+                )
+                _dispatch_exc = None
+                break
+            except Exception as exc:  # noqa: BLE001
+                _dispatch_exc = exc
+                if (
+                    _outline_dispatch_is_transient(exc)
+                    and _attempt < _OUTLINE_DISPATCH_MAX_RETRIES
+                ):
+                    _backoff = _OUTLINE_DISPATCH_RETRY_BACKOFFS[
+                        min(
+                            _attempt,
+                            len(_OUTLINE_DISPATCH_RETRY_BACKOFFS) - 1,
+                        )
+                    ]
+                    logger.warning(
+                        "outline phase: transient dispatch error for "
+                        "block_id=%s (attempt %d/%d), retrying in %.0fs: %s",
+                        blk.block_id, _dispatch_attempts,
+                        _OUTLINE_DISPATCH_MAX_RETRIES + 1, _backoff, exc,
+                    )
+                    time.sleep(_backoff)
+                    continue
+                # Permanent, or transient retries exhausted → give up.
+                break
+
+        if _dispatch_exc is None and outlined is not None:
+            # Dispatch succeeded (a returned block — even a semantically-
+            # escalated one — means the endpoint is alive): reset the
+            # consecutive-failure breaker counter.
+            _consecutive_dispatch_failures = 0
             outline_blocks.append(outlined)
             _n_outline_authored_fresh += 1
             # Checkpoint the freshly-authored block (NOT marker-bearing —
@@ -15099,21 +15209,126 @@ async def _run_content_generation_outline(**kwargs) -> str:
                     _outline_checkpoint_path,
                     _outline_entry,
                 )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "outline phase: route_with_self_consistency() failed "
-                "for block_id=%s: %s",
-                blk.block_id, exc,
-            )
-            # Persist a stub-with-marker so downstream sees the failure.
-            # NOT checkpointed (marker blocks re-attempt on resume).
+            continue
+
+        # --- give-up path: dispatch raised and was not recoverable ---
+        _consecutive_dispatch_failures += 1
+        _exc_cls = (
+            type(_dispatch_exc).__name__ if _dispatch_exc else "Unknown"
+        )
+        _exc_msg = str(_dispatch_exc) if _dispatch_exc else ""
+        _was_transient = _outline_dispatch_is_transient(_dispatch_exc)
+        logger.warning(
+            "outline phase: route_with_self_consistency() dispatch failed "
+            "for block_id=%s after %d attempt(s) [%s]: %s (consecutive "
+            "dispatch failures=%d)",
+            blk.block_id, _dispatch_attempts, _exc_cls, _exc_msg,
+            _consecutive_dispatch_failures,
+        )
+        # Decision capture: dynamic rationale carries the exception class +
+        # message + attempt count so a postmortem is replayable.
+        if capture is not None:
             try:
-                import dataclasses as _dc
-                outline_blocks.append(_dc.replace(
-                    blk, escalation_marker="outline_budget_exhausted",
-                ))
-            except (TypeError, ValueError):
-                continue
+                capture.log_decision(
+                    decision_type="content_selection",
+                    decision=(
+                        f"Outline block {blk.block_id} stamped "
+                        f"outline_dispatch_error after "
+                        f"{_dispatch_attempts} dispatch attempt(s)."
+                    ),
+                    rationale=(
+                        f"block_id={blk.block_id} (type="
+                        f"{getattr(blk, 'block_type', '?')}) failed dispatch "
+                        f"after {_dispatch_attempts} attempt(s): "
+                        f"route_with_self_consistency raised {_exc_cls}: "
+                        f"{_exc_msg[:200]!r} — classified "
+                        + (
+                            "transient (retries exhausted)"
+                            if _was_transient else "permanent"
+                        )
+                        + "; stamped the canonical outline_dispatch_error "
+                        f"marker (NOT outline_budget_exhausted, reserved for "
+                        f"semantic regen-budget exhaustion) so postmortems "
+                        f"separate endpoint/transport failures from budget "
+                        f"exhaustion. Consecutive dispatch failures now "
+                        f"{_consecutive_dispatch_failures} (breaker="
+                        f"{_outline_dispatch_breaker})."
+                    ),
+                    ml_features={
+                        "gate_id": "_run_content_generation_outline",
+                        "block_id": blk.block_id,
+                        "exception_class": _exc_cls,
+                        "dispatch_attempts": _dispatch_attempts,
+                        "transient": _was_transient,
+                        "consecutive_dispatch_failures": (
+                            _consecutive_dispatch_failures
+                        ),
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        # Persist a stub-with-marker so downstream sees the failure. Use the
+        # canonical ``outline_dispatch_error`` marker (a ``_ESCALATION_MARKERS``
+        # member) — NOT ``outline_budget_exhausted``. NOT checkpointed
+        # (marker blocks re-attempt on resume).
+        try:
+            import dataclasses as _dc
+            outline_blocks.append(_dc.replace(
+                blk, escalation_marker="outline_dispatch_error",
+            ))
+        except (TypeError, ValueError):
+            pass
+
+        # Circuit breaker: a persistent outage would stamp the entire
+        # remaining course. Trip LOUDLY at the threshold instead. Already-
+        # authored blocks stay checkpointed (the sidecar is only deleted on a
+        # successful final write below), so a plain --resume re-attempts the
+        # marker blocks + the never-reached blocks.
+        if (
+            _outline_dispatch_breaker > 0
+            and _consecutive_dispatch_failures >= _outline_dispatch_breaker
+        ):
+            _breaker_msg = (
+                f"outline dispatch circuit breaker tripped after "
+                f"{_consecutive_dispatch_failures} consecutive failures — "
+                f"endpoint likely down (last error {_exc_cls}: "
+                f"{_exc_msg[:200]})"
+            )
+            logger.error("outline phase: %s", _breaker_msg)
+            if capture is not None:
+                try:
+                    capture.log_decision(
+                        decision_type="content_selection",
+                        decision=(
+                            "Outline dispatch circuit breaker tripped; "
+                            "halting phase."
+                        ),
+                        rationale=(
+                            f"{_consecutive_dispatch_failures} consecutive "
+                            f"outline dispatch failures reached the "
+                            f"COURSEFORGE_OUTLINE_DISPATCH_BREAKER threshold "
+                            f"({_outline_dispatch_breaker}); halting rather "
+                            f"than stamping the remaining "
+                            f"{len(all_blocks) - len(outline_blocks)} block(s) "
+                            f"so the already-authored/checkpointed blocks stay "
+                            f"resumable on the next run. Last error "
+                            f"{_exc_cls}."
+                        ),
+                        ml_features={
+                            "gate_id": "_run_content_generation_outline",
+                            "consecutive_dispatch_failures": (
+                                _consecutive_dispatch_failures
+                            ),
+                            "breaker_threshold": _outline_dispatch_breaker,
+                        },
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+            return json.dumps({
+                "success": False,
+                "error_code": "OUTLINE_DISPATCH_CIRCUIT_BREAKER",
+                "error": _breaker_msg,
+            })
 
     # Resume decision capture (dynamic rationale: units resumed / authored
     # fresh / sidecar path). Mirrors the phase_start capture in this function.
