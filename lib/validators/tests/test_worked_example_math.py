@@ -1006,3 +1006,263 @@ def test_f4_set_x_zero_real_solution_flags() -> None:
         "x=0 stated as a genuine solution (no set/choose premise) fails 2x+5=11 "
         "-> still flags"
     )
+
+
+# --------------------------------------------------------------------- #
+# Second precision pass — three audited FALSE-POSITIVE mechanisms.
+# Each pair below reproduces the EXACT residual-corpus shape (the FP flags on
+# the pre-fix validator) alongside a genuinely-wrong twin that MUST still flag.
+#
+# Mechanism A — cross-context solution-pair pooling
+#   (A2) bare ``Example`` / ``Self-Check`` headings collapse into one segment;
+#   (A1) an intro verification pair pools with a later \begin{cases} system;
+#   (A3) a pair for variables a, s is remapped onto the system read as s, a.
+# Mechanism B — the discriminant tail crosses into a following standard-form
+#   equation and its ``= 0`` RHS is misread as the claimed discriminant.
+# Mechanism C — a quadratic living as <span data-cf-term> plain text is invisible
+#   to the candidate harvest, so a CORRECT discriminant claim mis-flags.
+# --------------------------------------------------------------------- #
+
+
+# (A2) A BARE ``Example`` heading (no colon) plus a ``Self-Check`` heading. The
+# old split regex (colon+digit only) collapsed both problems into ONE segment,
+# so the Self-Check pair (4, 5) pooled with the Example's system {x+y=5, x-y=1}
+# (and vice versa) -> two cross-context false positives. Heading-anchored
+# segmentation isolates each problem.
+_MA_A2_BARE_HEADING_POOL = """
+<section data-cf-content-type="example">
+  <h3>Example</h3>
+  <p>Solve the system \\(x + y = 5\\) and \\(x - y = 1\\).</p>
+  <div class="solution-line">The solution is \\((3, 2)\\).</div>
+  <h4>Self-Check</h4>
+  <p>Verify the solution \\((4, 5)\\) for the equation \\(x + y = 9\\).</p>
+</section>
+"""
+
+# (A2 TP) SAME bare-heading shape but the Example's stated solution (4, 2) is
+# WRONG (4 + 2 = 6 != 5). Segmentation keeps the defect localized and flagged.
+_MA_A2_BARE_HEADING_TP = """
+<section data-cf-content-type="example">
+  <h3>Example</h3>
+  <p>Solve the system \\(x + y = 5\\) and \\(x - y = 1\\).</p>
+  <div class="solution-line">The solution is \\((4, 2)\\).</div>
+  <h4>Self-Check</h4>
+  <p>Verify the solution \\((4, 5)\\) for the equation \\(x + y = 9\\).</p>
+</section>
+"""
+
+
+def test_ma_a2_bare_heading_pool_not_flagged() -> None:
+    result = _run([_block(
+        block_id="p#example_ma_a2", block_type="example",
+        content=_MA_A2_BARE_HEADING_POOL,
+    )])
+    assert not _wrong_codes(result), (
+        "bare 'Example' / 'Self-Check' headings must segment so the Self-Check "
+        "pair (4,5) never pools with the Example's system"
+    )
+
+
+def test_ma_a2_bare_heading_wrong_solution_flags() -> None:
+    result = _run([_block(
+        block_id="p#example_ma_a2_tp", block_type="example",
+        content=_MA_A2_BARE_HEADING_TP,
+    )])
+    assert _wrong_codes(result), (
+        "the Example's own stated solution (4,2) fails x+y=5 -> still flags"
+    )
+
+
+# (A1) An intro single-equation verification pair (3, 4) stated BEFORE a
+# \begin{cases} system in a DIFFERENT variable pair {a, b} with its own solution
+# (3, 2). The old cases-path checked ALL segment pairs against the cases rows, so
+# the intro pair (3,4) was substituted into {a+b=5, a-b=1} -> false positive.
+# Position-aware scoping checks a pair only against the cases block PRECEDING it.
+_MA_A1_INTRO_PAIR_CASES = """
+<section data-cf-content-type="example">
+  <p>First, verify that \\((3, 4)\\) satisfies \\(x + y = 7\\). The solution is \\((3, 4)\\).</p>
+  <p>Now solve the system \\[\\begin{cases} a + b = 5 \\\\ a - b = 1 \\end{cases}\\]</p>
+  <div class="solution-line">The solution to the system is \\((3, 2)\\).</div>
+</section>
+"""
+
+# (A1 TP) The cases system's OWN stated solution (3, 3) is WRONG (3 + 3 = 6 != 5).
+# It sits AFTER the cases block, so position-aware scoping still checks + flags it.
+_MA_A1_CASES_TP = """
+<section data-cf-content-type="example">
+  <p>First, verify that \\((3, 4)\\) satisfies \\(x + y = 7\\). The solution is \\((3, 4)\\).</p>
+  <p>Now solve the system \\[\\begin{cases} a + b = 5 \\\\ a - b = 1 \\end{cases}\\]</p>
+  <div class="solution-line">The solution to the system is \\((3, 3)\\).</div>
+</section>
+"""
+
+
+def test_ma_a1_intro_pair_not_pooled_with_cases() -> None:
+    result = _run([_block(
+        block_id="p#example_ma_a1", block_type="example",
+        content=_MA_A1_INTRO_PAIR_CASES,
+    )])
+    assert not _wrong_codes(result), (
+        "the intro pair (3,4) precedes the cases block; it must not be checked "
+        "against the {a+b=5, a-b=1} system"
+    )
+
+
+def test_ma_a1_cases_own_wrong_solution_flags() -> None:
+    result = _run([_block(
+        block_id="p#example_ma_a1_tp", block_type="example",
+        content=_MA_A1_CASES_TP,
+    )])
+    assert _wrong_codes(result), (
+        "(3,3) fails a+b=5 of the cases system it FOLLOWS -> still flags"
+    )
+
+
+# (A3) A system in variables s, a whose solution (8, 5) is stated in the author's
+# coordinate order (s=8, a=5) — which satisfies s+a=13, s-a=3. Sorted-name order
+# maps the pair as a=8, s=5, so s-a = -3 != 3 -> a REMAP false positive. Trying
+# both coordinate orderings (and flagging only when BOTH fail) kills it.
+_MA_A3_REMAP = """
+<section data-cf-content-type="example">
+  <p>Solve the system \\(s + a = 13\\) and \\(s - a = 3\\) for students s and adults a.</p>
+  <div class="solution-line">The solution is \\((8, 5)\\).</div>
+</section>
+"""
+
+# (A3 TP) A genuinely wrong pair (8, 7): s+a = 15 != 13 under EITHER ordering, so
+# both orderings fail -> still flags.
+_MA_A3_REMAP_TP = """
+<section data-cf-content-type="example">
+  <p>Solve the system \\(s + a = 13\\) and \\(s - a = 3\\) for students s and adults a.</p>
+  <div class="solution-line">The solution is \\((8, 7)\\).</div>
+</section>
+"""
+
+
+def test_ma_a3_variable_remap_not_flagged() -> None:
+    result = _run([_block(
+        block_id="p#example_ma_a3", block_type="example",
+        content=_MA_A3_REMAP,
+    )])
+    assert not _wrong_codes(result), (
+        "(8,5) satisfies s+a=13, s-a=3 under the s,a order; the sorted a,s remap "
+        "must not create a false positive"
+    )
+
+
+def test_ma_a3_genuinely_wrong_pair_flags() -> None:
+    result = _run([_block(
+        block_id="p#example_ma_a3_tp", block_type="example",
+        content=_MA_A3_REMAP_TP,
+    )])
+    assert _wrong_codes(result), (
+        "(8,7) gives s+a=15 != 13 under BOTH orderings -> still flags"
+    )
+
+
+# (B) A CORRECT discriminant chain ``9^2 - 4(2)(-5) = 121`` for 2x^2+9x-5,
+# followed IN THE NEXT SENTENCE by a standard-form recap ``ax^2 + bx + c = 0``.
+# The old DOTALL tail ran into the recap and split('=')[-1] read its ``0`` as the
+# claimed discriminant -> false positive. Bounding the claim at the sentence
+# boundary resolves it to 121 (correct).
+_MB_DISC_TRAILING_STDFORM_OK = (
+    r'<section data-cf-content-type="example">'
+    r"<p>For the quadratic \(2x^2 + 9x - 5 = 0\), the discriminant is "
+    r"\(9^2 - 4(2)(-5) = 121\). The standard form is \(ax^2 + bx + c = 0\).</p>"
+    r"</section>"
+)
+
+# (B TP) SAME trailing-standard-form shape but the discriminant value 130 is
+# WRONG (b^2-4ac = 121). Sentence-bounding isolates 130, which still flags.
+_MB_DISC_TRAILING_STDFORM_WRONG = (
+    r'<section data-cf-content-type="example">'
+    r"<p>For the quadratic \(2x^2 + 9x - 5 = 0\), the discriminant is "
+    r"\(9^2 - 4(2)(-5) = 130\). The standard form is \(ax^2 + bx + c = 0\).</p>"
+    r"</section>"
+)
+
+# (B) A comma-joined crossing (no sentence boundary): ``... = 1 and the general
+# form ax^2 + bx + c = 0 applies``. The quadratic-RHS guard rejects a final ``= 0``
+# whose left side is a full one-variable quadratic, so the correct value 1 is not
+# overwritten by the recap's 0 -> no false positive.
+_MB_DISC_COMMA_CROSS_OK = (
+    r'<section data-cf-content-type="example">'
+    r"<p>For \(x^2 + 5x + 6 = 0\), the discriminant is \(25 - 24 = 1\) and the "
+    r"general form ax^2 + bx + c = 0 applies.</p></section>"
+)
+
+
+def test_mb_discriminant_trailing_standard_form_not_flagged() -> None:
+    result = _run([_block(
+        block_id="p#example_mb_ok", block_type="example",
+        content=_MB_DISC_TRAILING_STDFORM_OK,
+    )])
+    assert not _wrong_codes(result), (
+        "the claim is 121 (correct); the trailing 'ax^2+bx+c = 0' recap must not "
+        "be read as a claimed discriminant of 0"
+    )
+
+
+def test_mb_discriminant_trailing_standard_form_wrong_flags() -> None:
+    result = _run([_block(
+        block_id="p#example_mb_tp", block_type="example",
+        content=_MB_DISC_TRAILING_STDFORM_WRONG,
+    )])
+    assert _wrong_codes(result), (
+        "the sentence-bounded claim 130 != b^2-4ac = 121 -> still flags"
+    )
+
+
+def test_mb_discriminant_comma_crossing_guard_not_flagged() -> None:
+    result = _run([_block(
+        block_id="p#example_mb_comma", block_type="example",
+        content=_MB_DISC_COMMA_CROSS_OK,
+    )])
+    assert not _wrong_codes(result), (
+        "the comma-joined 'ax^2+bx+c = 0' recap must be rejected by the quadratic-"
+        "RHS guard, not read as a claimed discriminant of 0"
+    )
+
+
+# (C) A CORRECT discriminant claim (1) whose quadratic x^2+5x+6 lives as the
+# plain-text content of a <span data-cf-term> (invisible to the delimited-math
+# harvest). A DIFFERENT delimited quadratic x^2+4x+1 (discriminant 12) is the only
+# candidate the old harvest saw, so the correct claim mis-flagged as unmatched.
+# Harvesting the span text adds x^2+5x+6 (discriminant 1) to the candidate pool.
+_MC_CF_TERM_QUADRATIC_OK = (
+    r'<section data-cf-content-type="example">'
+    r"<p>Compare with \(x^2 + 4x + 1 = 0\).</p>"
+    r'<p>Consider the quadratic <span data-cf-term="quadratic">x^2 + 5x + 6</span>'
+    r", whose discriminant is \(1\).</p></section>"
+)
+
+# (C TP) SAME span-borne quadratic x^2+5x+6 (discriminant 1) but the claim 7 is
+# WRONG. Harvesting the span makes it a candidate AND enables the (previously
+# impossible) detection: 7 != 1 -> flags.
+_MC_CF_TERM_QUADRATIC_WRONG = (
+    r'<section data-cf-content-type="example">'
+    r'<p>Consider the quadratic <span data-cf-term="quadratic">x^2 + 5x + 6</span>'
+    r", whose discriminant is \(7\).</p></section>"
+)
+
+
+def test_mc_cf_term_quadratic_correct_claim_not_flagged() -> None:
+    result = _run([_block(
+        block_id="p#example_mc_ok", block_type="example",
+        content=_MC_CF_TERM_QUADRATIC_OK,
+    )])
+    assert not _wrong_codes(result), (
+        "the correct discriminant 1 belongs to the span-borne x^2+5x+6; harvesting "
+        "the data-cf-term text must suppress the mis-flag against x^2+4x+1"
+    )
+
+
+def test_mc_cf_term_quadratic_wrong_claim_flags() -> None:
+    result = _run([_block(
+        block_id="p#example_mc_tp", block_type="example",
+        content=_MC_CF_TERM_QUADRATIC_WRONG,
+    )])
+    assert _wrong_codes(result), (
+        "discriminant 7 != 1 for the span-borne x^2+5x+6 -> flags (a detection the "
+        "delimited-only harvest could not make)"
+    )

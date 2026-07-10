@@ -495,20 +495,39 @@ def _split_on_implication(fragment: str) -> List[str]:
 
 
 #: Problem-restart markers (fix a). A block that presents several problems back-
-#: to-back restarts at an ``Example N:`` heading or a fresh ``Step 1:``. Pooling
-#: candidate equations block-wide across those restarts lets a solution pair from
-#: problem 1 be cross-checked against a system equation from problem 2 (a false
-#: positive), and mis-attributes a genuine defect to the wrong problem. Scoping
-#: the system check to one segment fixes both.
-_RE_PROBLEM_RESTART = re.compile(r"(?i)\b(?:example\s+\d+\s*:|step\s+1\s*:)")
+#: to-back restarts at an ``Example`` / ``Self-Check`` / ``Try It`` heading or a
+#: fresh ``Step 1``. Pooling candidate equations block-wide across those restarts
+#: lets a solution pair from problem 1 be cross-checked against a system equation
+#: from problem 2 (a false positive), and mis-attributes a genuine defect to the
+#: wrong problem. Scoping the system check to one segment fixes both.
+#:
+#: Mechanism A (second precision pass): the original marker set only caught the
+#: colon+digit forms (``Example N:`` / ``Step 1:``), so a block using a BARE
+#: ``Example`` / ``Example 1`` heading (no colon), the ``Step 1.`` period form,
+#: or a ``Self-Check`` / ``Try It`` heading collapsed into ONE segment and
+#: cross-pooled. The bare-heading forms are anchored to a ``>`` tag-close so a
+#: mid-prose "for example" never triggers a split (and the ``data-cf-content-type
+#: ="example"`` ATTRIBUTE — whose ``example`` is not preceded by ``>`` — is never
+#: matched); the colon/period ``Example N`` / ``Step 1`` forms keep the looser
+#: ``\b`` word-boundary anchor (they are already unambiguous).
+_RE_PROBLEM_RESTART = re.compile(
+    r"(?i)(?:"
+    r"\bexample\s+\d+\s*[:.]"           # "Example 1:" / "Example 2."
+    r"|\bstep\s+1\s*[:.]"              # "Step 1:" / "Step 1."
+    r"|>\s*example(?:\s+\d+)?\b"       # heading "<h3>Example</h3>" / "Example 2"
+    r"|>\s*self[\s-]*check\b"          # heading "Self-Check" / "Self Check"
+    r"|>\s*try\s+it\b"                 # heading "Try It"
+    r")"
+)
 
 
 def _split_problem_segments(html: str) -> List[str]:
-    """Split block HTML into problem segments at ``Example N:`` / ``Step 1:``.
+    """Split block HTML into problem segments at the ``_RE_PROBLEM_RESTART`` marks.
 
-    Each restart marker begins a new segment; any text before the first marker
-    is its own (usually equation-free) leading segment. A block with no restart
-    marker is one segment (byte-identical to the block-wide behavior).
+    Each restart marker (``Example`` / ``Self-Check`` / ``Try It`` heading, or a
+    fresh ``Step 1:`` / ``Step 1.``) begins a new segment; any text before the
+    first marker is its own (usually equation-free) leading segment. A block with
+    no restart marker is one segment (byte-identical to the block-wide behavior).
     """
     starts = sorted({m.start() for m in _RE_PROBLEM_RESTART.finditer(html)})
     if not starts:
@@ -567,19 +586,35 @@ def _segment_system_findings(
 ) -> List[Tuple[str, str, str]]:
     """System-check one problem segment against ITS OWN equation set (family 3).
 
-    When the segment carries a ``\\begin{cases}`` environment the real system
-    lives THERE; the segment's standalone equations (self-checks, given/derived
-    lines) are foreign to the system, so the pair is checked ONLY against the
-    parsed cases rows — and the check is SKIPPED when those rows did not parse (a
-    cases block we cannot read must not fall back to foreign standalone
-    equations). Otherwise the standalone equations are used as before.
+    When the segment carries one or more ``\\begin{cases}`` environments the real
+    system lives THERE; the segment's standalone equations (self-checks,
+    given/derived lines) are foreign to the system. Mechanism A: each solution
+    pair is checked ONLY against the cases block that PRECEDES it (the nearest
+    enclosing/preceding one), so an intro single-equation verification pair
+    stated BEFORE any cases block — or a pair belonging to a different cases
+    block earlier in the same segment — never pools with a foreign system. A pair
+    with no preceding cases block is not a cases-system solution and is skipped;
+    a cases block whose rows did not parse is skipped (never falls back to
+    foreign standalone equations). Segments with no cases block use the standalone
+    equations as before.
     """
-    seg_pairs = _extract_solution_pairs(segment)
     if _RE_CASES.search(segment):
-        cases_eqs = _cases_equations(segment)
-        if not cases_eqs:
+        cases_blocks: List[Tuple[int, List[Tuple[Any, Any, str, bool]]]] = []
+        for cm in _RE_CASES.finditer(segment):
+            cases_blocks.append((cm.start(), _cases_equations(cm.group(0))))
+        if not cases_blocks:
             return []
-        return _check_system(cases_eqs, seg_pairs, block_text)
+        findings: List[Tuple[str, str, str]] = []
+        for pair, pos in _extract_solution_pairs_pos(segment):
+            preceding = [(s, eqs) for s, eqs in cases_blocks if s <= pos]
+            if not preceding:
+                continue
+            _start, eqs = max(preceding, key=lambda t: t[0])
+            if not eqs:
+                continue
+            findings.extend(_check_system(eqs, [pair], block_text))
+        return findings
+    seg_pairs = _extract_solution_pairs(segment)
     seg_eqs, _seg_chains = _collect_equations(_iter_fragments(segment))
     return _check_system(seg_eqs, seg_pairs, block_text)
 
@@ -673,13 +708,18 @@ _RE_PAIR = re.compile(
 )
 
 
-def _extract_solution_pairs(html: str) -> List[Tuple[Any, Any]]:
-    """Return numeric ordered pairs ``(a, b)`` that appear in a solution context.
+def _extract_solution_pairs_pos(
+    html: str,
+) -> List[Tuple[Tuple[Any, Any], int]]:
+    """Return ``[((a, b), start_pos), ...]`` for solution-context ordered pairs.
 
     Only pairs whose preceding ``_CTX_WINDOW`` window carries a solution keyword
     (or that sit inside a solution-line / boxed span) are returned — this keeps
     the ubiquitous points-on-a-line graphing tables (``(0, -2)`` / ``(3, 0)``)
-    out of the system check. Each coordinate is parsed to a sympy number.
+    out of the system check. Each coordinate is parsed to a sympy number. The
+    match start position (Mechanism A) lets the caller scope a pair to the cases
+    system that PRECEDES it (an intro verification pair stated before any cases
+    block never pools with a later foreign system).
     """
     if not _SYMPY_AVAILABLE:
         return []
@@ -698,7 +738,7 @@ def _extract_solution_pairs(html: str) -> List[Tuple[Any, Any]]:
         # Demote a keyword-derived context to a premise (fix b).
         return not _premise_before(html, pos)
 
-    pairs: List[Tuple[Any, Any]] = []
+    pairs: List[Tuple[Tuple[Any, Any], int]] = []
     for m in _RE_PAIR.finditer(html):
         if not _ctx(m.start()):
             continue
@@ -708,8 +748,17 @@ def _extract_solution_pairs(html: str) -> List[Tuple[Any, Any]]:
             continue
         if av.free_symbols or bv.free_symbols:
             continue
-        pairs.append((av, bv))
+        pairs.append(((av, bv), m.start()))
     return pairs
+
+
+def _extract_solution_pairs(html: str) -> List[Tuple[Any, Any]]:
+    """Numeric solution-context ordered pairs (positions dropped).
+
+    Thin wrapper over ``_extract_solution_pairs_pos`` for callers that do not
+    need the positional scoping (the standalone-equation system path).
+    """
+    return [pair for pair, _pos in _extract_solution_pairs_pos(html)]
 
 
 # --------------------------------------------------------------------------- #
@@ -965,27 +1014,56 @@ def _check_system(
                 distinct.append((res, raw))
         if len(distinct) < 2:
             continue
-        # Determine coordinate -> variable mapping. (x, y) convention when the
-        # pair is {x, y}; else sorted-name order (first coord -> first name).
+        # Coordinate -> variable mapping. For the {x, y} convention the reading
+        # order (x, y) is canonical, so a SINGLE mapping is used (unchanged
+        # behavior). For any OTHER variable pair the coordinate order is
+        # ambiguous — a pair stated for a system in variables a, s must not be
+        # remapped onto the same system read as s, a (Mechanism A3 remap false
+        # positive). So BOTH orderings are tried and the pair is flagged ONLY
+        # when it fails the system under EVERY ordering (precision over recall: a
+        # genuinely wrong pair fails both, while a correctly-stated pair whose
+        # coordinate order merely differs from sorted-name order satisfies one).
         names = sorted(varset)
         if set(names) == {"x", "y"}:
-            names = ["x", "y"]
+            orderings = [["x", "y"]]
+        elif names[0] == names[1]:  # degenerate single-name (defensive)
+            orderings = [names]
+        else:
+            orderings = [names, [names[1], names[0]]]
         for (av, bv) in pairs:
-            subs = {sympy.Symbol(names[0]): av, sympy.Symbol(names[1]): bv}  # type: ignore[union-attr]
-            for res, raw in distinct:
-                try:
-                    val = res.subs(subs)
-                except Exception:  # noqa: BLE001
-                    continue
-                if _definitely_nonzero(val):
-                    findings.append((
-                        f"({av}, {bv})",
-                        f"the pair ({names[0]}={av}, {names[1]}={bv}) does not "
-                        f"satisfy the system equation '{raw}' "
-                        f"(residual = {sympy.simplify(val)}, must be 0)",  # type: ignore[union-attr]
-                        raw,
-                    ))
+            ordering_fails: List[Tuple[str, List[str], Any]] = []
+            satisfied_some = False
+            for order in orderings:
+                subs = {  # type: ignore[union-attr]
+                    sympy.Symbol(order[0]): av, sympy.Symbol(order[1]): bv
+                }
+                this_fail: Optional[Tuple[str, List[str], Any]] = None
+                for res, raw in distinct:
+                    try:
+                        val = res.subs(subs)
+                    except Exception:  # noqa: BLE001
+                        continue
+                    if _definitely_nonzero(val):
+                        this_fail = (raw, order, res)
+                        break
+                if this_fail is None:
+                    satisfied_some = True
                     break
+                ordering_fails.append(this_fail)
+            if satisfied_some or not ordering_fails:
+                continue
+            raw, order, res = ordering_fails[0]
+            subs = {  # type: ignore[union-attr]
+                sympy.Symbol(order[0]): av, sympy.Symbol(order[1]): bv
+            }
+            resid = sympy.simplify(res.subs(subs))  # type: ignore[union-attr]
+            findings.append((
+                f"({av}, {bv})",
+                f"the pair ({order[0]}={av}, {order[1]}={bv}) does not "
+                f"satisfy the system equation '{raw}' "
+                f"(residual = {resid}, must be 0)",
+                raw,
+            ))
     return findings
 
 
@@ -1195,6 +1273,20 @@ _ARITH_CONTINUATION: frozenset = frozenset(
     {"+", "-", "*", "/", "^", "(", "·", "×", "÷", "−", "–", "—"}
 )
 
+#: Sentence / clause boundary in a discriminant tail (Mechanism B). The DOTALL
+#: ``_RE_DISCRIMINANT`` tail can run PAST the discriminant value into the next
+#: sentence — often a standard-form recap ``ax^2 + bx + c = 0`` — and the old
+#: ``split('=')[-1]`` then read that trailing ``= 0`` as the claimed value. The
+#: claim is bounded at the first sentence/clause terminator (period or semicolon
+#: followed by whitespace, or a newline). A decimal point (``12.5``) is NOT a
+#: boundary because it is not followed by whitespace.
+_RE_DISC_CLAUSE_END = re.compile(r"[.;]\s|\n")
+#: A VARIABLE (letter) raised to the 2nd power — the signature of a full
+#: one-variable quadratic equation that crossed into the tail (``x^2 ... = 0``).
+#: A NUMERIC power like ``9^2`` (the discriminant's own b^2 first term) has a
+#: digit, not a letter, before the exponent and is deliberately NOT matched.
+_RE_VAR_SQUARED = re.compile(r"[A-Za-z]\s*(?:\^\s*2|\*\*\s*2|²)")
+
 
 def _claimed_discriminant(tail: str) -> Optional[Any]:
     """Resolve the claimed discriminant value from a ``_RE_DISCRIMINANT`` tail.
@@ -1204,10 +1296,27 @@ def _claimed_discriminant(tail: str) -> Optional[Any]:
     expression (``b^2 - 4ac``) that carries no numeric claim. Returns the
     variable-free numeric claim, or None (skip — precision over recall) when the
     final segment is not a clean, finished number.
+
+    Mechanism B — the tail is first bounded at the first sentence/clause boundary
+    so a following standard-form equation (``ax^2 + bx + c = 0`` in the next
+    sentence) is not read as the claim. As a belt-and-suspenders for a
+    comma-joined crossing (no sentence boundary), a final ``= 0`` whose immediate
+    left side is a full one-variable quadratic (a variable squared) is rejected
+    (that ``= 0`` is the quadratic's own RHS, not the discriminant).
     """
     if not _SYMPY_AVAILABLE:
         return None
-    seg = tail.split("=")[-1].strip()
+    # Bound the claim at the first sentence / clause boundary (Mechanism B).
+    tail = _RE_DISC_CLAUSE_END.split(tail, 1)[0]
+    parts = tail.split("=")
+    if len(parts) >= 2:
+        rhs_final = parts[-1].strip()
+        lhs_before_final = parts[-2]
+        if re.match(r"0(?![.\d])", rhs_final) and _RE_VAR_SQUARED.search(
+            lhs_before_final
+        ):
+            return None
+    seg = parts[-1].strip()
     m = re.match(r"[+-]?\d+(?:\.\d+)?", seg)
     if not m:
         return None
@@ -1225,6 +1334,20 @@ def _claimed_discriminant(tail: str) -> Optional[Any]:
 _RE_VERTEX_KW = re.compile(r"vertex", re.IGNORECASE)
 _VERTEX_WINDOW: int = 80
 
+#: A ``<span data-cf-term="...">`` element's inner text (Mechanism C). An equation
+#: that lives as the plain-text CONTENT of a term span (``<span data-cf-term=
+#: "quadratic">x^2 + 5x + 6</span>``) carries no LaTeX delimiter, so the ordinary
+#: ``_iter_fragments`` harvest (delimited math only) never sees it — leaving the
+#: quadratic invisible to ``_quadratic_coeffs`` and a CORRECT discriminant/vertex
+#: claim mis-flagged against some OTHER (delimited) quadratic. Adding the span
+#: text to the quadratic CANDIDATE pool can only SUPPRESS a claim (more candidates
+#: for a claim to match), never mint a finding, so it is scoped to the quadratic-
+#: feature candidate harvest and never widens the solve/system/chain surfaces.
+_RE_CF_TERM = re.compile(
+    r"<span\b[^>]*\bdata-cf-term\b[^>]*>(.*?)</span>",
+    re.DOTALL | re.IGNORECASE,
+)
+
 
 def _quadratic_coeffs(content: str) -> List[Tuple[Any, Any, Any, Any]]:
     """Return ``[(a, b, c, var), ...]`` for every single-variable quadratic found.
@@ -1232,12 +1355,21 @@ def _quadratic_coeffs(content: str) -> List[Tuple[Any, Any, Any, Any]]:
     Scans each math fragment side (split on ``=`` / implication) for a degree-2
     polynomial ``a·v² + b·v + c`` in exactly one variable. Deduplicated by
     coefficient tuple. Non-quadratics / multi-variable / unparseable are skipped.
+
+    Mechanism C: in addition to the well-delimited ``_iter_fragments`` math, the
+    plain-text content of every ``<span data-cf-term="...">`` is harvested as a
+    candidate (a quadratic that lives as term-span text is otherwise invisible).
     """
     if not _SYMPY_AVAILABLE:
         return []
+    frags: List[Tuple[str, bool]] = list(_iter_fragments(content))
+    for cm in _RE_CF_TERM.finditer(content):
+        inner = _RE_TAG.sub(" ", cm.group(1)).strip()
+        if inner:
+            frags.append((inner, False))
     out: List[Tuple[Any, Any, Any, Any]] = []
     seen: set = set()
-    for frag, _ctx in _iter_fragments(content):
+    for frag, _ctx in frags:
         for sub in _split_on_implication(frag):
             for piece in re.split(r"(?<![<>=!])=(?![=])", sub):
                 expr = _parse_side(piece)
