@@ -137,6 +137,41 @@ def resolve_split_fused_section_titles_mode() -> bool:
     return raw in _TRUTHY
 
 
+# Explicit falsey tokens for the THREE-VALUED move gate (D8). ``0/false/no/off``
+# -> the byte-identical-including-audit revert lever; anything else that is not
+# ``live`` (unset / blank / garbage / any other truthy) -> the audit-only
+# ``shadow`` default.
+_MOVE_OFF_TOKENS = frozenset({"0", "false", "no", "off"})
+
+
+def resolve_move_op_mode() -> str:
+    """Return the Stage-5e MOVE-op mode: ``"off"`` / ``"shadow"`` / ``"live"``.
+
+    Reads ``SEMANTIK_MOVE_OP`` (D8, ITEM3). Three-valued parse-with-fallback:
+
+      * the explicit falsey tokens ``0`` / ``false`` / ``no`` / ``off`` -> ``off``
+        (byte-identical INCLUDING audit rows — the revert lever);
+      * ``live`` -> ``live`` (the detector's moves are APPLIED — order changes);
+      * unset / blank / garbage / ANY other truthy -> ``shadow`` (the DEFAULT —
+        the detector runs, each candidate is validated + fully audited with
+        ``applied=false, mode="shadow"``, but ZERO output bytes change).
+
+    Default ``shadow`` (not ``live``) because MOVE is the first order-changing op
+    in this pipeline and a wrong move is a reader-visible coherence defect no
+    conservation gate can catch; shadow produces calibration evidence on the
+    operator's own corpora at zero output-byte cost, and ``off`` is the
+    byte-identical revert. Mirrors the ``SEMANTIK_READING_ORDER_FIX`` house
+    default-flip posture (a planned later shadow->live flip once precision is
+    measured). Selects no provider/model — no ``docs/LICENSING.md`` row.
+    """
+    raw = (os.environ.get("SEMANTIK_MOVE_OP") or "").strip().lower()
+    if raw in _MOVE_OFF_TOKENS:
+        return "off"
+    if raw == "live":
+        return "live"
+    return "shadow"
+
+
 # ``resolve_unit_regroup_mode`` (the ``SEMANTIK_UNIT_REGROUP`` gate) is co-homed
 # in the neutral ``dart_semantic.pedagogical_units`` module (Phase 1) so the
 # assembler ``shell.py`` can import it cycle-free; re-exported here for
@@ -165,6 +200,17 @@ _MERGE_SIGNAL_THRESHOLD = 0.5
 # Terminal punctuation that closes a sentence/paragraph (the cross-page
 # continuation cue uses its ABSENCE on the prev region's last FB).
 _TERMINAL_PUNCT = (".", "!", "?", ":", ";", '"', "”", ")", "]")
+
+# ITEM3 MOVE-detector bounds (D1 / §3.1). Deterministic, CPU-only. Kept
+# conservative so a v1 move never reaches across a section: at most this many
+# regions between src and dest anchor (list order), this many FBs between the
+# label's min-FB and the body's min-FB, and — for the live bbox corroboration —
+# the body top must sit within this many points below the label bottom with at
+# least this horizontal-overlap ratio on the shared page.
+_MOVE_MAX_REGION_DISTANCE = 12
+_MOVE_MAX_FB_GAP = 40
+_MOVE_BBOX_Y_EPS = 24.0
+_MOVE_BBOX_X_OVERLAP = 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +257,26 @@ class ResegmentOp:
     # audit row byte-identical (the audit row reads this only when
     # ``subtype=='regroup'``). It does NOT enter the apply path / R-PART gates.
     semantic_class: str | None = None
+    # ITEM3 MoveOp fields (D1). Set ONLY on ``op == "move"`` ops; the documented
+    # defaults keep EVERY existing merge/split/regroup/fused op (and its
+    # hash/serialization/audit row) BYTE-IDENTICAL (same additive posture as the
+    # ``subtype`` / ``semantic_class`` fields above). For a MOVE: ``op == "move"``
+    # and ``region_indices == (src,)`` (v1 relocates exactly ONE region — a
+    # unit-start LABEL — to immediately after the ``move_after`` anchor).
+    #
+    # ``move_after`` — INPUT-list index of the destination anchor region; ``-1``
+    # = document start. ``None`` on every non-move op.
+    move_after: int | None = None
+    # ``reason`` — detector taxonomy token (e.g. ``"unit_label_distant_body"`` for
+    # the deterministic detector, ``"example_misordered_from_body"`` for the
+    # reviewer channel). ``None`` on non-move ops.
+    reason: str | None = None
+    # ``evidence`` — hashable k/v evidence pairs (frozen dataclass -> no dict
+    # field), built via ``tuple(sorted(d.items()))``: pages, src_bbox, dest_bbox,
+    # ``fb_gap``, ``region_distance``, ``dest_source_id``, detector id, and (for a
+    # shadow-mode audit row) the ``("mode", "shadow")`` marker. ``()`` on non-move
+    # ops.
+    evidence: tuple[tuple[str, Any], ...] = ()
 
 
 class PartitionConservationError(RuntimeError):
@@ -246,19 +312,105 @@ def _ordered_fb_sequence(regions: list[Region]) -> list[int]:
     return seq
 
 
+def _compute_move_order(
+    n: int, move_ops: Sequence[ResegmentOp], *, strict: bool
+) -> tuple[list[int], list[ResegmentOp]]:
+    """Resolve the INPUT-index permutation produced by a MOVE op list (ITEM3 D2).
+
+    Returns ``(order, applied)`` where ``order`` is a permutation of
+    ``range(n)``. Each ``op == "move"`` relocates its single source region
+    (``region_indices == (src,)``) to immediately AFTER the ``move_after`` anchor
+    (an INPUT index; ``-1`` = document front). Ops apply in list order; the
+    anchor is resolved by INPUT index (its current position in the running
+    ``order``). A region TOUCHED by an earlier op (as src OR dest anchor) may not
+    be touched again, and every index must be in range (dest may be ``-1``):
+
+      * ``strict=True`` (the R-PART replay path) RAISES
+        :class:`PartitionConservationError` on any overlap / out-of-range op —
+        interacting moves are never guessed at (fail-closed);
+      * ``strict=False`` (the apply path) DROPS the offending op with a warning,
+        mirroring ``apply_resegment``'s first-registered-wins overlap guard.
+
+    Non-move ops in the list are ignored. With no move ops the order is the
+    identity ``range(n)`` (so every legacy caller is byte-identical).
+    """
+    order = list(range(n))
+    touched: set[int] = set()
+    applied: list[ResegmentOp] = []
+    for op in move_ops or ():
+        if getattr(op, "op", None) != "move":
+            continue
+        src = list(op.region_indices)
+        dest = op.move_after if op.move_after is not None else -1
+        bad = (
+            not src
+            or any(not (0 <= s < n) for s in src)
+            or (dest != -1 and not (0 <= dest < n))
+            or dest in src
+        )
+        overlap = bool(touched.intersection(src)) or (dest in touched)
+        if bad or overlap:
+            if strict:
+                raise PartitionConservationError(
+                    "block-resegment MOVE replay FAILED: op is out-of-range or "
+                    f"overlaps an earlier move (op={op!r})"
+                )
+            logger.warning(
+                "block-resegment MOVE op rejected (out-of-range/overlap) -> "
+                "dropped: %r",
+                op,
+            )
+            continue
+        for s in src:
+            order.remove(s)
+        insert_at = 0 if dest == -1 else order.index(dest) + 1
+        for offset, s in enumerate(src):
+            order.insert(insert_at + offset, s)
+        touched.update(src)
+        touched.add(dest)
+        applied.append(op)
+    return order, applied
+
+
+def _replay_moves(
+    in_regions: list[Region], move_ops: Sequence[ResegmentOp]
+) -> list[int]:
+    """Expected flattened doc-order FB sequence after applying ``move_ops`` (D2).
+
+    Pure: relocates each move's source region's FB-tuple to immediately after
+    its anchor (input index; ``-1`` = front) and flattens. RAISES
+    :class:`PartitionConservationError` on an overlapping / out-of-range op set
+    (``strict=True``). With ``move_ops == ()`` the result IS the input's
+    doc-order FB sequence (so the R-PART default path is byte-identical)."""
+    order, _ = _compute_move_order(len(in_regions), move_ops, strict=True)
+    seq: list[int] = []
+    for k in order:
+        seq.extend(in_regions[k].feature_block_indices or ())
+    return seq
+
+
 def assert_partition_conservation(
-    in_regions: list[Region], out_regions: list[Region]
+    in_regions: list[Region],
+    out_regions: list[Region],
+    *,
+    move_ops: Sequence[ResegmentOp] = (),
 ) -> None:
     """R-PART (1)+(2) — the FB-partition multiset + document-order assertion.
 
     Asserts:
       * ``multiset(out FB indices) == multiset(in FB indices)`` — every FB
-        owned exactly once; none added / dropped / duplicated.
-      * the flattened document-order FB sequence is byte-identical — no FB
-        was re-ordered (a merge/split only moves region boundaries WITHIN the
-        sequence, never permutes it).
+        owned exactly once; none added / dropped / duplicated. **Clause 1 is
+        UNCONDITIONAL** (never relaxed by ``move_ops``).
+      * the flattened document-order FB sequence equals the EXPECTED sequence —
+        ``in_seq`` when ``move_ops`` is empty (a merge/split only moves region
+        boundaries WITHIN the sequence, never permutes it), else
+        ``_replay_moves(in_regions, move_ops)`` (ITEM3: every order change MUST
+        be explained by an explicit audited MoveOp — an UNexplained permutation
+        still raises).
 
-    Raises :class:`PartitionConservationError` on any mismatch (fail-closed).
+    The keyword-only ``move_ops`` defaults to ``()`` so every existing call is
+    BYTE-IDENTICAL (expected == ``in_seq``). Raises
+    :class:`PartitionConservationError` on any mismatch (fail-closed).
     """
     in_ms = _partition_multiset(in_regions)
     out_ms = _partition_multiset(out_regions)
@@ -269,12 +421,16 @@ def assert_partition_conservation(
             "block-resegment partition conservation FAILED: FB multiset "
             f"changed (dropped={dict(missing)!r}, added/duplicated={dict(extra)!r})"
         )
-    in_seq = _ordered_fb_sequence(in_regions)
     out_seq = _ordered_fb_sequence(out_regions)
-    if in_seq != out_seq:
+    expected = (
+        _ordered_fb_sequence(in_regions)
+        if not move_ops
+        else _replay_moves(in_regions, move_ops)
+    )
+    if out_seq != expected:
         raise PartitionConservationError(
             "block-resegment partition conservation FAILED: document order "
-            f"changed (in={in_seq!r}, out={out_seq!r})"
+            f"changed (expected={expected!r}, out={out_seq!r})"
         )
 
 
@@ -1203,6 +1359,59 @@ def apply_resegment(
 
 
 # ---------------------------------------------------------------------------
+# ITEM3 — MOVE apply machinery (region-object relocation, breadcrumb stamp).
+# ---------------------------------------------------------------------------
+
+
+def _apply_moves(
+    regions: list[Region],
+    feature_blocks: list[FeatureBlock],
+    move_ops: Sequence[ResegmentOp],
+) -> list[Region]:
+    """Relocate region OBJECTS per the MOVE ops (D3). Returns a NEW list.
+
+    Indices resolve against the INPUT list; an op that overlaps an earlier move
+    or is out-of-range is DROPPED with a warning (``_compute_move_order``'s
+    non-strict guard, mirroring ``apply_resegment``). The relocation permutation
+    is IDENTICAL to :func:`_replay_moves` for the same (non-overlapping) op set,
+    so ``_ordered_fb_sequence(_apply_moves(...)) == _replay_moves(...)`` holds by
+    construction. The moved (source) region gets a
+    ``payload['resegment_move']`` breadcrumb (D6) — a SEPARATE key from
+    ``payload['resegment']`` so a subsequent merge (which overwrites
+    ``payload['resegment']``) never clobbers the move record. Every UNMOVED
+    region keeps object identity; a moved region is a ``dataclasses.replace``
+    clone carrying only the extra breadcrumb key (its FB indices / kind /
+    source_region_id / page_bboxes are untouched — MOVE has ZERO sourceId blast
+    radius). NEVER raises."""
+    n = len(regions)
+    order, applied = _compute_move_order(n, move_ops, strict=False)
+    breadcrumb_by_src: dict[int, dict[str, Any]] = {}
+    for op in applied:
+        dest = op.move_after if op.move_after is not None else -1
+        dest_source_id = _region_first_raw(regions[dest]) if dest != -1 else -1
+        crumb = {
+            "op": "move",
+            "dest_source_id": dest_source_id,
+            "reason": op.reason,
+            "evidence": {k: v for k, v in (op.evidence or ())},
+            "conservation_verified": True,
+        }
+        for s in op.region_indices:
+            breadcrumb_by_src[s] = crumb
+    out: list[Region] = []
+    for k in order:
+        region = regions[k]
+        if k in breadcrumb_by_src:
+            payload = {
+                **(region.payload or {}),
+                "resegment_move": breadcrumb_by_src[k],
+            }
+            region = dataclasses.replace(region, payload=payload)
+        out.append(region)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Phase 9 — decision-capture audit-row build (rides the block_resegment enum).
 # ---------------------------------------------------------------------------
 
@@ -1228,15 +1437,29 @@ def build_resegment_audit_rows(ops: list[ResegmentOp]) -> list[dict[str, Any]]:
     not an LLM call site); this row supplies the replayable signals."""
     rows: list[dict[str, Any]] = []
     for op in ops:
+        is_move = op.op == "move"
         is_regroup = op.subtype == "regroup"
         is_fused_title = op.subtype == "fused_title"
         row = {
-            "op": "regroup" if is_regroup else op.op,
+            "op": "move" if is_move else ("regroup" if is_regroup else op.op),
             "source_ids": list(op.source_ids),
             "origin": op.origin,
             "conservation_verified": True,
         }
-        if is_regroup:
+        if is_move:
+            # ITEM3 D6: additive move branch. ``mode``/``applied`` come from the
+            # evidence pairs (``("mode","shadow")`` on a shadow-audited op ->
+            # ``applied=false``; absent -> a live/applied op). A run with NO move
+            # op is BYTE-IDENTICAL (this branch is never entered).
+            ev = dict(op.evidence or ())
+            mode = ev.get("mode", "live")
+            row["reason"] = op.reason
+            row["dest_source_id"] = ev.get("dest_source_id")
+            row["region_distance"] = ev.get("region_distance")
+            row["fb_gap"] = ev.get("fb_gap")
+            row["mode"] = mode
+            row["applied"] = mode != "shadow"
+        elif is_regroup:
             row["semantic_class"] = op.semantic_class
             row["regions_folded"] = max(0, len(op.region_indices) - 1)
         elif is_fused_title:
@@ -1564,6 +1787,7 @@ __all__ = [
     "resegment_blocks",
     "resolve_block_resegment_llm_mode",
     "resolve_block_resegment_mode",
+    "resolve_move_op_mode",
     "resolve_split_fused_section_titles_mode",
     "resolve_unit_regroup_mode",
     "resolve_unit_regroup_table_mode",
