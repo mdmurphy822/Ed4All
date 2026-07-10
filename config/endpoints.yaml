@@ -127,6 +127,50 @@ endpoints:
       chat_template_kwargs:
         thinking: false
 
+  # ---------------------------------------------------------------------
+  # DGX Spark self-hosted seats. NVIDIA Nemotron 3 models served LOCALLY on
+  # a DGX Spark via a local vLLM OpenAI-compatible server (default port
+  # 8000). One server, two served-model-names — both rows share
+  # SPARK_BASE_URL / SPARK_API_KEY and differ only in the served model name.
+  # Provenance is GENUINELY "local" (self-hosted OSS weights on our own box,
+  # NVIDIA Open Model License permits commercial use + training on outputs) —
+  # NOT the cloud "nvidia" provenance (that is the hosted integrate.api
+  # seat, and stamping it here would both lie about origin and mis-flag the
+  # corpus as license-restricted). "local" is already a provenance value, so
+  # NO provenance-enum codegen is needed.
+  # ---------------------------------------------------------------------
+  spark-super:
+    kind: openai_compatible
+    base_url: http://localhost:8000/v1
+    base_url_env: SPARK_BASE_URL
+    api_key_env: SPARK_API_KEY
+    api_key_default: local
+    api_key_required: false
+    model_env: SPARK_SUPER_MODEL
+    # NVIDIA Nemotron 3 Super 120B-A12B (12B active MoE, NVFP4/MTP), served
+    # locally on DGX Spark via vLLM; NVIDIA Open Model License (commercial +
+    # train-on-outputs OK).
+    default_model: nemotron-3-super-120b-a12b
+    loopback_only: false
+    provenance_provider: local
+    vision_capable: false
+
+  spark-nano:
+    kind: openai_compatible
+    base_url: http://localhost:8000/v1
+    base_url_env: SPARK_BASE_URL
+    api_key_env: SPARK_API_KEY
+    api_key_default: local
+    api_key_required: false
+    model_env: SPARK_NANO_MODEL
+    # NVIDIA Nemotron 3 Nano 30B-A3B (3.2B active), served locally on DGX
+    # Spark via vLLM; fast tier + interactive answer. NVIDIA Open Model
+    # License (commercial + train-on-outputs OK).
+    default_model: nemotron-3-nano-30b-a3b
+    loopback_only: false
+    provenance_provider: local
+    vision_capable: false
+
   claude_session:
     kind: claude_session            # LocalDispatcher subagent — NOT an HTTP endpoint
     base_url: null
