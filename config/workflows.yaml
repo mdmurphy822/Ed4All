@@ -281,6 +281,26 @@ workflows:
               on_error: fail_closed
             description: IB7.6c — per-type Bloom-range ceiling (block Bloom <= type bloom_ceiling). Critical (calibration-validated).
 
+          # Gap #11 — within-module recurring anchor-example detector. Flags one
+          # worked example (its normalized number-sequence signature) recurring
+          # across >= min_repeat (default 3) blocks in a module — a monotony /
+          # cognitive-load defect the NLI / numeric-grounding / symbolic-math
+          # gates are blind to (each recurrence is individually grounded and
+          # correct; they just repeat the SAME example). Consumes
+          # inputs['blocks']; runs warning-day-1 regardless of any flag (mirrors
+          # retrieval_presence / block_sequence_order). The generation-side cure
+          # is ED4ALL_CHUNK_ROLE_DIVERSIFY (chunk-universe remap — beats the
+          # re-roll treadmill).
+          - gate_id: near_dup_example
+            validator: lib.validators.near_dup_example.NearDupExampleValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: Gap #11 — same worked example (number-sequence signature) recurring across >= 3 blocks per module. Warning day-1.
+
       - name: content_generation_rewrite
         agents: [content-generator]
         # NOTE: parallel/batch_by intentionally disabled. The handler
@@ -2695,6 +2715,26 @@ workflows:
               on_fail: warn
               on_error: warn
             description: Prerequisite-sequencing gate — flags a dependent terminal objective taught before its prerequisite. Warning day-1; deferred critical-flip; no-op when ED4ALL_PREREQ_SEQUENCING unset.
+
+          # Gap #11 — within-module recurring anchor-example detector. Flags one
+          # worked example (its normalized number-sequence signature) recurring
+          # across >= min_repeat (default 3) blocks in a module — a monotony /
+          # cognitive-load defect the NLI / numeric-grounding / symbolic-math
+          # gates are blind to (each recurrence is individually grounded and
+          # correct; they just repeat the SAME example). Consumes
+          # inputs['blocks']; runs warning-day-1 regardless of any flag (mirrors
+          # retrieval_presence / block_sequence_order). The generation-side cure
+          # is ED4ALL_CHUNK_ROLE_DIVERSIFY (chunk-universe remap — beats the
+          # re-roll treadmill).
+          - gate_id: near_dup_example
+            validator: lib.validators.near_dup_example.NearDupExampleValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: Gap #11 — same worked example (number-sequence signature) recurring across >= 3 blocks per module. Warning day-1.
 
       - name: content_generation_rewrite
         agents: [content-generator]

@@ -3048,6 +3048,16 @@ def default_router() -> GateInputRouter:
         _build_block_input_rewrite,
     )
 
+    # Gap #11 near-dup anchor-example gate — flags one worked example (its
+    # normalized number-sequence signature) recurring across >= N blocks in a
+    # module. Wired at inter_tier_validation (outline tier), so it reuses the
+    # outline-tier Block-input shim (``inputs['blocks']`` only; no source
+    # premise). Issues carry the module key in GateIssue.location.
+    r.register(
+        "lib.validators.near_dup_example.NearDupExampleValidator",
+        _build_block_input_outline,
+    )
+
     # Group C — Block-only SHACL validator (one binding wired at both
     # outline and rewrite seams in YAML; same builder routes both).
     r.register(
