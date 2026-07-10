@@ -21,9 +21,12 @@ from dart_semantic.qwen_specialists.block_resegment import (
     PartitionConservationError,
     ResegmentOp,
     _apply_moves,
+    _detect_unit_merges,
     _detect_unit_moves,
     _ordered_fb_sequence,
     _replay_moves,
+    apply_proposed_regroups,
+    apply_proposed_unit_fix,
     assert_partition_conservation,
     build_resegment_audit_rows,
     resegment_blocks,
@@ -541,3 +544,126 @@ def test_driver_live_no_bbox_stays_shadow(monkeypatch):
     move_ops = [o for o in ops if o.op == "move"]
     assert len(move_ops) == 1
     assert dict(move_ops[0].evidence)["mode"] == "shadow"
+
+
+# ===========================================================================
+# Phase 3 — verifier-channel graduation (MOVE+merge) + breadcrumb adjacency.
+# ===========================================================================
+
+
+def _contiguous_unit_fixture():
+    """label(0, pedagogy-example) + body(1), FB-adjacent -> a contiguous run."""
+    fbs = [_fb("EXAMPLE 1"), _fb("solve the problem here")]
+    regions = [
+        _mk("paragraph", [0], fbs, text="EXAMPLE 1", css_class="pedagogy-example"),
+        _mk("paragraph", [1], fbs, text="solve the problem here"),
+    ]
+    return regions, fbs
+
+
+def _noncontiguous_unit_fixture():
+    """label(0) then two intervening regions then body(3): NON-contiguous run
+    (0, 3). All same page, no heading between -> boundable."""
+    fbs = [
+        _fb("EXAMPLE 1"),
+        _fb("unrelated aside one"),
+        _fb("unrelated aside two"),
+        _fb("solve the derivative here"),
+    ]
+    regions = [
+        _mk("paragraph", [0], fbs, text="EXAMPLE 1", css_class="pedagogy-example"),
+        _mk("paragraph", [1], fbs, text="unrelated aside one"),
+        _mk("paragraph", [2], fbs, text="unrelated aside two"),
+        _mk("paragraph", [3], fbs, text="solve the derivative here"),
+    ]
+    return regions, fbs
+
+
+def test_apply_proposed_unit_fix_contiguous_delegates(monkeypatch):
+    regions, fbs = _contiguous_unit_fixture()
+    # Non-live: byte-parity with apply_proposed_regroups on a contiguous run.
+    for mode in ("0", "shadow"):
+        monkeypatch.setenv("SEMANTIK_MOVE_OP", mode)
+        out_fix, ops_fix = apply_proposed_unit_fix(regions, fbs, [(0, 1)])
+        out_reg, ops_reg = apply_proposed_regroups(regions, fbs, [(0, 1)])
+        assert _ordered_fb_sequence(out_fix) == _ordered_fb_sequence(out_reg)
+        assert [o.op for o in ops_fix] == [o.op for o in ops_reg]
+    # Live contiguous also delegates (single regroup, no move).
+    monkeypatch.setenv("SEMANTIK_MOVE_OP", "live")
+    out_live, ops_live = apply_proposed_unit_fix(regions, fbs, [(0, 1)])
+    assert [o.op for o in ops_live if o.op == "move"] == []
+    assert len(out_live) == 1  # fused
+
+
+def test_non_contiguous_run_decomposes_live(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_MOVE_OP", "live")
+    regions, fbs = _noncontiguous_unit_fixture()
+    out, ops = apply_proposed_unit_fix(regions, fbs, [(0, 3)])
+    move_ops = [o for o in ops if o.op == "move"]
+    merge_ops = [o for o in ops if o.subtype == "regroup"]
+    assert len(move_ops) == 1
+    assert len(merge_ops) == 1
+    # The label(fb0) + body(fb3) are fused into ONE region; asides survive.
+    merged = [r for r in out if set(r.feature_block_indices) == {0, 3}]
+    assert len(merged) == 1
+    # FB multiset conserved end-to-end.
+    assert sorted(_ordered_fb_sequence(out)) == [0, 1, 2, 3]
+
+
+def test_non_contiguous_run_dropped_when_not_live(monkeypatch):
+    regions, fbs = _noncontiguous_unit_fixture()
+    for mode in ("0", "shadow"):
+        monkeypatch.setenv("SEMANTIK_MOVE_OP", mode)
+        out, ops = apply_proposed_unit_fix(regions, fbs, [(0, 3)])
+        # Delegates to apply_proposed_regroups -> non-contiguous run dropped.
+        assert ops == []
+        assert _ordered_fb_sequence(out) == [0, 1, 2, 3]
+        assert len(out) == len(regions)
+
+
+def test_unboundable_member_drops_whole_run(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_MOVE_OP", "live")
+    fbs = [
+        _fb("EXAMPLE 1"),
+        _fb("A Heading"),
+        _fb("solve the derivative here"),
+    ]
+    regions = [
+        _mk("paragraph", [0], fbs, text="EXAMPLE 1", css_class="pedagogy-example"),
+        _mk("heading", [1], fbs, text="A Heading"),
+        _mk("paragraph", [2], fbs, text="solve the derivative here"),
+    ]
+    out, ops = apply_proposed_unit_fix(regions, fbs, [(0, 2)])
+    # Heading strictly between -> unboundable -> whole run dropped.
+    assert ops == []
+    assert _ordered_fb_sequence(out) == [0, 1, 2]
+
+
+def test_regroup_breadcrumb_adjacency(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "on")
+    # label(fb0) then body(fb5) list-adjacent but FB-GAPPED; the body carries a
+    # landed-move breadcrumb whose dest chains to the label -> regroup fuses them.
+    fbs = [_fb("EXAMPLE 1")] + [_fb(f"x{i}") for i in range(1, 6)]
+    label = _mk("paragraph", [0], fbs, text="EXAMPLE 1", css_class="pedagogy-example")
+    body = Region(
+        kind="paragraph",
+        feature_block_indices=(5,),
+        payload={
+            "text": "solve it",
+            "resegment_move": {"op": "move", "dest_source_id": 0},
+        },
+    )
+    ops = _detect_unit_merges([label, body], fbs, _State())
+    assert len(ops) == 1
+    assert ops[0].subtype == "regroup"
+    assert ops[0].region_indices == (0, 1)
+
+
+def test_regroup_breadcrumb_absent_still_breaks(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "on")
+    # Same FB gap but NO breadcrumb -> the non-adjacency is a hard boundary
+    # (flag-off / no-move byte-identical to the pre-ITEM3 behaviour).
+    fbs = [_fb("EXAMPLE 1")] + [_fb(f"x{i}") for i in range(1, 6)]
+    label = _mk("paragraph", [0], fbs, text="EXAMPLE 1", css_class="pedagogy-example")
+    body = _mk("paragraph", [5], fbs, text="solve it")
+    assert _detect_unit_merges([label, body], fbs, _State()) == []

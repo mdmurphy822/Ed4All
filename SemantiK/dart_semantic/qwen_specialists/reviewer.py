@@ -702,13 +702,21 @@ class FlaggedBlock:
     the Phase-5 re-drive injects. ``fixable`` is False for the deferred
     merge/reorder modes (``section_no_body`` / ``example_misordered_from_body``
     / the merge-arm of ``no_context_answer_fragment_heading``) — the index-keyed
-    reviewer emits per-block re-type/re-stamp ONLY.
+    per-block re-type/re-drive reviewer emits per-block re-type/re-stamp ONLY and
+    still cannot fix them. **ITEM3:** those merge/reorder modes are now FIXED by
+    the Phase-6b move+merge CHANNEL (not the re-drive) when
+    ``SEMANTIK_UNIT_REGROUP`` is on (+ ``SEMANTIK_MOVE_OP=live`` for a
+    NON-contiguous ``example_misordered_from_body`` run — the run decomposes into
+    MoveOps + a contiguous merge instead of being dropped); ``fixable`` stays
+    False here because it flags the RE-DRIVE, not the channel.
 
     ``proposed_regroup_run`` (RECONCILIATION DELTA 2026-06-28) is an OPTIONAL
     capped-index run, populated ONLY for the merge modes
     (``section_no_body`` / ``example_misordered_from_body``) and consumed by the
-    later Phase-6b merge channel (``block_resegment.apply_proposed_regroups``);
-    the re-type modes leave it the empty tuple (byte-stable default).
+    later Phase-6b merge channel (``block_resegment.apply_proposed_unit_fix`` —
+    a contiguous run merges directly, a NON-contiguous run decomposes to
+    MOVE+merge under ``SEMANTIK_MOVE_OP=live``); the re-type modes leave it the
+    empty tuple (byte-stable default).
     """
 
     region_index: int

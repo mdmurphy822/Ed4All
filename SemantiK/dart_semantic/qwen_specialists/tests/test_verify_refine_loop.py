@@ -768,3 +768,68 @@ def test_review_verdicts_none_guard(monkeypatch):
     # second_pass_adopted defaults False -> provenance join keeps pre_review_regions.
     assert "second_pass_adopted = False" in host_src
     assert "review_regions=(None if second_pass_adopted else pre_review_regions)" in host_src
+
+
+class _ScriptedMoveMergeReviewer:
+    """ITEM3 Phase-3 verifier: flags ``example_misordered_from_body`` with a
+    NON-contiguous ``proposed_regroup_run`` until the move+merge decomposition
+    shrinks the region list."""
+
+    def __init__(self, *, orig_len: int, run):
+        self.orig_len = orig_len
+        self.run = tuple(run)
+        self.verify_calls: list[dict] = []
+
+    def verify(self, assembled, regions, feature_blocks, runtime, *, council_state=None):
+        self.verify_calls.append({"n": len(regions)})
+        if len(regions) < self.orig_len:
+            return VerifierVerdict(passed=True, flagged=())
+        fb = FlaggedBlock(
+            region_index=self.run[0],
+            failure_mode="example_misordered_from_body",
+            fix_hint="move the misordered example body up to its label",
+            fixable=False,
+            proposed_regroup_run=self.run,
+        )
+        return VerifierVerdict(passed=False, flagged=(fb,))
+
+
+def test_verify_refine_merge_channel_move(monkeypatch):
+    """A deferred ``example_misordered_from_body`` flag whose
+    ``proposed_regroup_run=(0,2)`` is NON-contiguous is now FIXED under
+    ``SEMANTIK_MOVE_OP=live``: the Phase-6b channel (``apply_proposed_unit_fix``)
+    decomposes it into a MOVE + a contiguous merge, the region list shrinks, the
+    re-verify passes, and the round is adopted (previously this run was silently
+    dropped by the R-PART order gate)."""
+    monkeypatch.setenv("SEMANTIK_MOVE_OP", "live")
+    capped = _merge_capped()
+    lane_outputs = {"fast": _lane_dict(_FakeAssembledFB(capped))}
+    scripted = _ScriptedMoveMergeReviewer(orig_len=4, run=(0, 2))  # NON-contiguous
+    _patch_merge(monkeypatch, scripted)
+    (new_capped, _v, _r, signals), _ri, _fbs = _drive(
+        capped, lane_outputs, scripted, run_inner=_make_run_inner_fb(lane_outputs)
+    )
+    assert len(new_capped) < len(capped)  # the move+merge decomposition landed
+    assert signals["adopted"] is True
+    assert signals["rounds"][0]["merge_ops"] >= 1
+
+
+def test_verify_refine_noncontiguous_dropped_when_not_live(monkeypatch):
+    """The SAME non-contiguous run under the default (shadow) mode delegates to
+    ``apply_proposed_regroups`` and is DROPPED -> Pass-1 kept (byte-identical to
+    the pre-ITEM3 behaviour)."""
+    monkeypatch.setenv("SEMANTIK_MOVE_OP", "shadow")
+    capped = _merge_capped()
+    pass1_assembled = _FakeAssembledFB(capped)
+    lane_outputs = {"fast": _lane_dict(pass1_assembled)}
+    scripted = _ScriptedMoveMergeReviewer(orig_len=4, run=(0, 2))
+    pass1_verdicts = [
+        ReviewVerdict(i, "ok", r.kind, r.kind, None, None, "") for i, r in enumerate(capped)
+    ]
+    _patch_merge(monkeypatch, scripted)
+    (new_capped, _v, _r, signals), _ri, _fbs = _drive(
+        capped, lane_outputs, scripted, run_inner=_make_run_inner_fb(lane_outputs),
+        pass1_verdicts=pass1_verdicts,
+    )
+    assert [r.kind for r in new_capped] == [r.kind for r in capped]  # Pass-1 kept
+    assert signals["adopted"] is False

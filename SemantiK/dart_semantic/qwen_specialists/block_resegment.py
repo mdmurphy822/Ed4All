@@ -1057,6 +1057,22 @@ def _make_regroup_op(run: list[int], regions: list[Region]) -> ResegmentOp:
     return _build_regroup_op(run, regions, origin="deterministic")
 
 
+def _move_breadcrumb_adjacent(prev: Region, cur: Region) -> bool:
+    """ITEM3 Phase-3 shim (O3): whether a landed MOVE exactly explains a
+    non-FB-adjacent (prev, cur) pair — i.e. one region's ``payload
+    ['resegment_move']['dest_source_id']`` chains to the other's stable min-FB
+    id. Returns False when NEITHER region carries a move breadcrumb (so a
+    flag-off / no-move run is byte-identical). 10-line shim; ITEM4's containment
+    tree subsumes list-adjacency and deletes it."""
+    cur_mv = (getattr(cur, "payload", None) or {}).get("resegment_move") or {}
+    prev_mv = (getattr(prev, "payload", None) or {}).get("resegment_move") or {}
+    if not cur_mv and not prev_mv:
+        return False
+    prev_fb = _region_first_raw(prev)
+    cur_fb = _region_first_raw(cur)
+    return cur_mv.get("dest_source_id") == prev_fb or prev_mv.get("dest_source_id") == cur_fb
+
+
 def _detect_unit_merges(
     regions: list[Region],
     feature_blocks: list[FeatureBlock],
@@ -1122,7 +1138,13 @@ def _detect_unit_merges(
             # — a non-adjacent follower ends the run).
             prev_last = max(prev.feature_block_indices or (-1,))
             cur_first = min(cur.feature_block_indices or (-1,))
-            if cur_first != prev_last + 1:
+            if cur_first != prev_last + 1 and not _move_breadcrumb_adjacent(prev, cur):
+                # ITEM3 Phase-3 shim (O3): a non-FB-adjacent pair is normally a
+                # hard boundary, BUT accept it when a landed MOVE this run
+                # exactly explains the gap (the moved region's ``resegment_move``
+                # dest chains prev<->cur). Fires ONLY when a move breadcrumb is
+                # present -> flag-off / no-move runs are BYTE-IDENTICAL. Deleted
+                # by ITEM4's containment tree (which owns list-adjacency).
                 break
             # v1 passthrough stop (Phase 4): never fuse a Stage-4 table/math
             # region — ``_merged_region`` cannot preserve a child's
@@ -1736,6 +1758,131 @@ def apply_proposed_regroups(
 
 
 # ---------------------------------------------------------------------------
+# ITEM3 Phase 3 — verifier-channel graduation: NON-contiguous run -> MOVE+merge.
+# ---------------------------------------------------------------------------
+
+
+def _pos_by_fb(regions: list[Region], fb: int) -> int:
+    """Index of the region whose stable min-FB id == ``fb`` (the coverage
+    invariant makes this unique), else -1. Used to re-resolve a run member's
+    position as the list mutates under sequential moves (min-FB is move-stable)."""
+    for idx, region in enumerate(regions):
+        if _region_first_raw(region) == fb:
+            return idx
+    return -1
+
+
+def _apply_noncontiguous_unit_fix(
+    regions: list[Region], feature_blocks: list[FeatureBlock], run: list[int]
+) -> tuple[list[Region], list[ResegmentOp]] | None:
+    """Decompose a NON-contiguous ascending region-index ``run`` into MoveOps +
+    a contiguous merge (ITEM3 Phase 3, live-only path of
+    :func:`apply_proposed_unit_fix`).
+
+    Each subsequent member is relocated to immediately after the previous member
+    (gathering the run behind its anchor), applied SEQUENTIALLY so each move is
+    a single, non-overlapping op re-resolved against the running list by
+    move-stable min-FB id. Each move is bounded (region distance +
+    heading-barrier + same-page as the anchor) and individually re-validated
+    through the move-aware R-PART + token gates; the now-contiguous run is then
+    merged via :func:`apply_proposed_regroups`. Returns
+    ``(out_regions, move_ops + merge_ops)`` or ``None`` — fail-closed: an
+    unboundable member OR a rejected merge drops the WHOLE run (mirrors the
+    non-contiguous silent-drop this RETIRES, but now decomposable). NEVER
+    raises."""
+    member_fbs = [_region_first_raw(regions[k]) for k in run]
+    anchor_pages = _region_pages(regions[run[0]], feature_blocks)
+    cur = regions
+    move_ops: list[ResegmentOp] = []
+    prev_fb = member_fbs[0]  # the anchor never moves
+    for member_fb in member_fbs[1:]:
+        prev_pos = _pos_by_fb(cur, prev_fb)
+        member_pos = _pos_by_fb(cur, member_fb)
+        if prev_pos < 0 or member_pos < 0:
+            return None
+        lo, hi = min(prev_pos, member_pos), max(prev_pos, member_pos)
+        if hi - lo > _MOVE_MAX_REGION_DISTANCE:
+            return None
+        if any(
+            getattr(cur[k], "kind", None) == "heading" for k in range(lo + 1, hi)
+        ):
+            return None  # heading barrier inside the gap -> unboundable
+        if anchor_pages and not (
+            _region_pages(cur[member_pos], feature_blocks) & anchor_pages
+        ):
+            return None  # off-page member -> unboundable
+        op = ResegmentOp(
+            op="move",
+            region_indices=(member_pos,),
+            move_after=prev_pos,
+            source_ids=(member_fb,),
+            origin="llm",
+            reason="example_misordered_from_body",
+            evidence=(("detector", "verifier_noncontiguous_run"),),
+        )
+        scratch = _apply_moves(cur, feature_blocks, [op])
+        try:
+            assert_partition_conservation(cur, scratch, move_ops=[op])
+            assert_token_conservation(cur, scratch, feature_blocks)
+        except (PartitionConservationError, TokenConservationError) as exc:
+            logger.warning("verifier move op rejected (%s) -> whole run dropped", exc)
+            return None
+        cur = scratch
+        move_ops.append(op)
+        prev_fb = member_fb
+    # The run members are now contiguous behind the anchor; merge them.
+    positions = sorted(_pos_by_fb(cur, fb) for fb in member_fbs)
+    if any(p < 0 for p in positions) or positions != list(
+        range(positions[0], positions[0] + len(positions))
+    ):
+        return None
+    merged, merge_ops = apply_proposed_regroups(cur, feature_blocks, [positions])
+    if not merge_ops:
+        return None  # merge rejected -> fail-closed (drop the whole run)
+    return merged, move_ops + merge_ops
+
+
+def apply_proposed_unit_fix(
+    regions: list[Region],
+    feature_blocks: list[FeatureBlock],
+    proposed_runs: list[Sequence[int]],
+) -> tuple[list[Region], list[ResegmentOp]]:
+    """Graduate the verifier's ``section_no_body`` / ``example_misordered_from_body``
+    fix (ITEM3 Phase 3). A CONTIGUOUS proposed run delegates UNCHANGED to
+    :func:`apply_proposed_regroups`; a NON-contiguous run (previously silently
+    dropped at the R-PART order gate) is decomposed into MoveOps + a contiguous
+    merge when ``SEMANTIK_MOVE_OP == "live"`` (via
+    :func:`_apply_noncontiguous_unit_fix`, fail-closed per run).
+
+    **Non-live mode (off / shadow) delegates WHOLESALE to
+    :func:`apply_proposed_regroups` -> byte-identical** (the non-contiguous run
+    is dropped exactly as before; MOVE only graduates it under ``live``). Runs
+    are processed left-to-right against the running list; returns
+    ``(out_regions, applied_ops)``. NEVER raises."""
+    if resolve_move_op_mode() != "live":
+        return apply_proposed_regroups(regions, feature_blocks, proposed_runs)
+
+    cur = list(regions)
+    applied_ops: list[ResegmentOp] = []
+    for raw_run in proposed_runs or ():
+        run = sorted({int(x) for x in raw_run})
+        if len(run) < 2 or any(not (0 <= r < len(cur)) for r in run):
+            continue
+        is_contiguous = run == list(range(run[0], run[0] + len(run)))
+        if is_contiguous:
+            merged, ops = apply_proposed_regroups(cur, feature_blocks, [run])
+            if ops:
+                cur, applied_ops = merged, applied_ops + list(ops)
+            continue
+        result = _apply_noncontiguous_unit_fix(cur, feature_blocks, run)
+        if result is None:
+            continue  # unboundable / rejected -> whole run dropped, cur unchanged
+        cur, ops = result
+        applied_ops += ops
+    return cur, applied_ops
+
+
+# ---------------------------------------------------------------------------
 # Optional Stage-3 LLM op-proposal layer.
 # ---------------------------------------------------------------------------
 
@@ -2025,6 +2172,7 @@ __all__ = [
     "ResegmentOp",
     "apply_resegment",
     "apply_proposed_regroups",
+    "apply_proposed_unit_fix",
     "assert_partition_conservation",
     "build_resegment_audit_rows",
     "is_passthrough_region",

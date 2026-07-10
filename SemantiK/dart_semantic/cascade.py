@@ -1069,7 +1069,7 @@ def _verify_refine_loop(
             # the re-type channel's len-invariant check above is scoped to the
             # re-type branch and intentionally does NOT apply on this path.
             from .qwen_specialists.block_resegment import (
-                apply_proposed_regroups,
+                apply_proposed_unit_fix,
                 resolve_unit_regroup_mode,
             )
 
@@ -1090,10 +1090,13 @@ def _verify_refine_loop(
 
             row["merge_runs"] = [list(r) for r in merge_runs]
 
-            # (c1) Apply the proposed regroups through the SAME R-PART/token
+            # (c1) Apply the proposed unit fix through the SAME R-PART/token
             # conservation gates the deterministic detector rides. NEVER raises;
-            # a hallucinated / over-broad / non-contiguous run is dropped per-op.
-            merged_capped, ops = apply_proposed_regroups(
+            # a hallucinated / over-broad run is dropped per-op. ITEM3 Phase 3:
+            # a NON-contiguous run (previously silently dropped) is decomposed
+            # into MoveOps + a contiguous merge when SEMANTIK_MOVE_OP=live;
+            # non-live delegates to apply_proposed_regroups (byte-identical drop).
+            merged_capped, ops = apply_proposed_unit_fix(
                 current_capped, feature_blocks, merge_runs
             )
             if not ops or len(merged_capped) == len(current_capped):
