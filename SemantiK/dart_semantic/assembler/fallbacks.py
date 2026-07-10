@@ -47,6 +47,21 @@ def _source_text(region: Region, feature_blocks: Sequence[FeatureBlock]) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _containment_on() -> bool:
+    """Read the ITEM4 containment gate (function-local import — cycle-safe)."""
+    from ..containment import resolve_containment_mode
+
+    return resolve_containment_mode()
+
+
+def _fb_text_at(feature_blocks: Sequence[FeatureBlock], idx: Any) -> str:
+    """Stripped raw text of the FB at ``idx`` (``""`` when out of range)."""
+    if not isinstance(idx, int) or not (0 <= idx < len(feature_blocks)):
+        return ""
+    raw = getattr(feature_blocks[idx], "raw", None)
+    return ((getattr(raw, "text", None) or "") if raw is not None else "").strip()
+
+
 def _css_class_attr(region: Region) -> str:
     """`` class="…"`` for a region carrying a ``payload['css_class']`` hint.
 
@@ -118,6 +133,26 @@ def fallback_list(region: Region, feature_blocks: Sequence[FeatureBlock]) -> str
 def fallback_definition_list(
     region: Region, feature_blocks: Sequence[FeatureBlock],
 ) -> str:
+    # ITEM4: when the containment builder stamped ``payload['dl_pairs']`` (council
+    # structural_role term/def grouping), emit ONE <dt>/<dd> group per pair —
+    # closing the dl-flattening gap (the legacy path below collapses every FB
+    # after the first into ONE <dd>). Absent (no council state / flag off) ->
+    # the legacy single-pair flatten (byte-identical).
+    payload = region.payload or {}
+    pairs = payload.get("dl_pairs")
+    if pairs:
+        groups: list[str] = []
+        for pair in pairs:
+            if not isinstance(pair, (list, tuple)) or not pair:
+                continue
+            dt_text = _fb_text_at(feature_blocks, pair[0])
+            def_fbs = pair[1] if len(pair) > 1 and isinstance(pair[1], (list, tuple)) else []
+            dd_text = " ".join(
+                t for f in def_fbs if (t := _fb_text_at(feature_blocks, f))
+            )
+            groups.append(f"<dt>{escape(dt_text)}</dt><dd>{escape(dd_text)}</dd>")
+        if groups:
+            return "<dl>" + "".join(groups) + "</dl>"
     fbs = [
         feature_blocks[i]
         for i in region.feature_block_indices
@@ -167,7 +202,15 @@ def fallback_table(
     header_rows = set(payload.get("header_row_indices") or [])
     caption_idx = payload.get("caption_fb_index")
     parts: list[str] = ["<table>"]
-    if caption_idx is not None and 0 <= caption_idx < len(feature_blocks):
+    # ITEM4: suppress the duplicate <caption> when the containment walk nested
+    # the caption region's <p> after the table (payload['caption_nested']); the
+    # caption then ships exactly ONCE. Flag off / no caption edge -> legacy emit.
+    suppress_caption = bool(payload.get("caption_nested")) and _containment_on()
+    if (
+        not suppress_caption
+        and caption_idx is not None
+        and 0 <= caption_idx < len(feature_blocks)
+    ):
         raw = getattr(feature_blocks[caption_idx], "raw", None)
         cap = (getattr(raw, "text", None) or "") if raw is not None else ""
         cap = cap.strip()
@@ -303,7 +346,12 @@ def fallback_figure(region: Region, feature_blocks: Sequence[FeatureBlock]) -> s
         raw = getattr(feature_blocks[cap_idx], "raw", None)
         cap = (getattr(raw, "text", None) or "") if raw is not None else ""
         cap = cap.strip()
-    figcap = f"<figcaption>{escape(cap)}</figcaption>" if cap else ""
+    # ITEM4: suppress the duplicate <figcaption> when the containment walk nested
+    # the caption region's <p> inside this <figure> (payload['caption_nested']),
+    # so the caption ships exactly ONCE. The short ``alt`` is still caption-derived
+    # (alt_from_caption below reads ``cap``). Flag off / no caption edge -> legacy.
+    suppress_caption = bool(payload.get("caption_nested")) and _containment_on()
+    figcap = "" if suppress_caption else (f"<figcaption>{escape(cap)}</figcaption>" if cap else "")
     # alt_text from Stage 6b (figure_captioner) when present; otherwise empty
     # alt (the prior behaviour, which axe SC 1.1.1 flags for figure-bearing
     # docs — the gap Plans/09 closes).

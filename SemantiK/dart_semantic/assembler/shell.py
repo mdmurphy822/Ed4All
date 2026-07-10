@@ -97,7 +97,18 @@ def resolve_gold_absorb_mode() -> bool:
     neutral ``pedagogical_units`` and ``resolve_reading_order_fix`` from
     ``structure_graph`` (both dependency-light, no assembler edge); kept
     function-local as belt-and-braces against any future import cycle.
+
+    **ITEM4 (retire-in-effect):** when ``SEMANTIK_CONTAINMENT`` resolves ON
+    (default) the containment TREE owns unit grouping (its unit arm subsumes the
+    absorb), so this short-circuits to ``False`` BEFORE any other check — the
+    absorb machinery is consulted ONLY when ``SEMANTIK_CONTAINMENT=0`` (the
+    byte-identical OFF lever). The cycle-free function-local import mirrors the
+    regroup short-circuit below.
     """
+    from ..containment import resolve_containment_mode
+
+    if resolve_containment_mode():
+        return False
     if not resolve_gold_shell_mode():
         return False
     raw = (os.environ.get("SEMANTIK_GOLD_ABSORB") or "").strip().lower()
@@ -145,7 +156,17 @@ def resolve_narrow_table_absorb_mode() -> bool:
     box ENCLOSES its trailing FB-adjacent passthrough table (the v1 passthrough
     gap). Default off / regroup inert -> ``False`` -> byte-identical to v1
     (table renders adjacent). Parse-with-fallback throughout.
+
+    **ITEM4 (retired/subsumed):** the containment tree's unit arm claims the
+    trailing FB-adjacent passthrough table UNCONDITIONALLY, so when
+    ``SEMANTIK_CONTAINMENT`` resolves ON (default) this short-circuits to
+    ``False`` — the narrow absorb is consulted ONLY under
+    ``SEMANTIK_CONTAINMENT=0``.
     """
+    from ..containment import resolve_containment_mode
+
+    if resolve_containment_mode():
+        return False
     from ..pedagogical_units import (
         resolve_unit_regroup_mode,
         resolve_unit_regroup_table_mode,

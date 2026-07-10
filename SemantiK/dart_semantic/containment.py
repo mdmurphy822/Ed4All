@@ -483,6 +483,14 @@ def build_containment_tree(
         edge_kind[owner] = "caption"
         caption_claimed.add(owner)
         diagnostics["caption_edges"] += 1
+        # Phase-2 stamp: the figure/table's own duplicate <figcaption>/<caption>
+        # is suppressed at emit time (fallbacks reads this) because the caption
+        # region's fragment is now nested inside the parent by the walk. In-place
+        # payload stamp (the established pattern). Byte-inert until Phase 2's
+        # assembler consumption reads it.
+        payload = getattr(region, "payload", None)
+        if isinstance(payload, dict):
+            payload["caption_nested"] = True
 
     # Unit arm — body-bearing anchor -> following body regions. A caption child
     # is never re-claimed as a unit body (precedence).
@@ -536,6 +544,30 @@ def build_containment_tree(
     return _assert_tree_cover(tree, n)
 
 
+def _nest_caption_fragments(frag: str, caps: list[str]) -> str:
+    """Nest caption child fragment(s) INSIDE the parent figure/table fragment.
+
+    Inserts the caption bytes before the FINAL ``</figure>`` (so the caption
+    ``<p>`` is flow content inside the ``<figure>``); for a ``<table>`` the
+    caption ``<p>`` cannot live inside the table, so it is placed as a sibling
+    immediately AFTER ``</table>``. Absent both tags (Stage-6 authored
+    something else) -> degrade to a trailing sibling (D4). NEVER mutates the
+    caption bytes — it splices whole fragments between markup, so pass_9c
+    splice keys survive.
+    """
+    if not caps:
+        return frag
+    suffix = "".join(caps)
+    low = frag.rfind("</figure>")
+    if low != -1:
+        return frag[:low] + suffix + frag[low:]
+    low = frag.rfind("</table>")
+    if low != -1:
+        end = low + len("</table>")
+        return frag[:end] + suffix + frag[end:]
+    return frag + suffix
+
+
 def render_tree(
     tree: ContainmentTree,
     region_html: Sequence[str],
@@ -554,13 +586,25 @@ def render_tree(
     list, this linear stack walk over indices IS the pre-order tree walk.
 
     ``absorbed_indices`` (unit/caption descendants already composed INTO their
-    anchor's fragment) are SKIPPED here so they render exactly once. A heading
-    with no resolvable id is emitted un-sectioned (defensive; every heading gets
-    an id from Sub-task 2 in practice). The wrap adds ``<section>`` tags BETWEEN
-    whole fragments and NEVER mutates a fragment's bytes.
+    anchor's box, or caption children nested into a figure/table) are SKIPPED in
+    the linear walk so they render exactly once. A CAPTION child whose parent
+    figure/table IS emitted at top level (not itself absorbed) is nested INSIDE
+    that parent's fragment (``_nest_caption_fragments``), fixing the caption
+    double-render. A heading with no resolvable id is emitted un-sectioned
+    (defensive). The wrap adds ``<section>`` tags BETWEEN whole fragments and
+    NEVER mutates a fragment's bytes.
     """
-    absorbed = absorbed_indices or frozenset()
+    absorbed = set(absorbed_indices or ())
     levels = tree.levels
+    edge_kind = tree.edge_kind
+    parent = tree.parent
+    # caption children to nest into their figure/table parent fragment
+    caption_by_parent: dict[int, list[int]] = {}
+    for c, ek in enumerate(edge_kind):
+        if ek == "caption":
+            p = parent[c]
+            if p is not None:
+                caption_by_parent.setdefault(p, []).append(c)
     parts: list[str] = []
     open_levels: list[int] = []
     for idx, html in enumerate(region_html):
@@ -568,6 +612,12 @@ def render_tree(
             continue
         if idx in absorbed:
             continue
+        frag = html
+        caps = caption_by_parent.get(idx)
+        if caps:
+            frag = _nest_caption_fragments(
+                frag, [region_html[c] for c in sorted(caps) if region_html[c]]
+            )
         if idx in levels:
             lvl = levels[idx]
             while open_levels and open_levels[-1] >= lvl:
@@ -578,9 +628,9 @@ def render_tree(
                 safe = hid.replace('"', "&quot;")
                 parts.append(f'<section aria-labelledby="{safe}">')
                 open_levels.append(lvl)
-            parts.append(html)
+            parts.append(frag)
         else:
-            parts.append(html)
+            parts.append(frag)
     while open_levels:
         parts.append("</section>")
         open_levels.pop()

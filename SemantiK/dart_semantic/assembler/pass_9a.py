@@ -68,7 +68,11 @@ from collections.abc import Sequence
 from collections.abc import Set as AbstractSet
 from typing import TYPE_CHECKING, Any
 
-from ..containment import build_containment_tree, resolve_containment_mode
+from ..containment import (
+    build_containment_tree,
+    render_tree,
+    resolve_containment_mode,
+)
 from ..qwen_specialists.prompts import (
     COPYRIGHT_SUBFLAG_RE,
     COPYRIGHT_YEAR_RE,
@@ -422,6 +426,51 @@ def run_pass_9a(
     )
 
     # ------------------------------------------------------------------
+    # ITEM4 — materialized containment tree. Built here (ABOVE Sub-task 1b in
+    # Phase 2 so the unit-box walk can consume its unit edges), AFTER Sub-task 1
+    # so region_html carries the emitted fragments the section-level ladder /
+    # unit-boundary emptiness key on. The tree is a DERIVED sidecar (rebuilt at
+    # every assembly entry -> immune to later region-list mutations by
+    # construction), stashed for the cascade audit + provenance export. Section
+    # ids are resolved at render time (Sub-task 6, post Sub-task 2 injection).
+    # SEMANTIK_CONTAINMENT default ON; explicit falsey -> no build, no stash,
+    # legacy absorb/stack path (byte-identical).
+    # ------------------------------------------------------------------
+    containment_tree = None
+    if resolve_containment_mode():
+        containment_tree = build_containment_tree(
+            regions,
+            feature_blocks,
+            region_html=region_html,
+            council_state=council_state,
+        )
+        sub_task_log["containment"] = containment_tree
+        # Re-emit fallback fragments the builder's stamps now change (the stamp
+        # lands AFTER Sub-task 1's emit). Only fallback-emitted regions are
+        # touched (a stage6 candidate authored its own HTML and is left alone).
+        #   (a) definition_list with a council-derived payload['dl_pairs'] ->
+        #       emit the multi-pair <dl> (independent of the gold shell).
+        #   (b) figure/table with payload['caption_nested'] -> drop the
+        #       duplicate <figcaption>/<caption> because the caption region's
+        #       <p> is nested by the walk (gold shell ONLY — the walk that nests).
+        for idx, region in enumerate(regions):
+            if region_provenance_kinds[idx] != "fallback":
+                continue
+            kind = getattr(region, "kind", None)
+            payload = region.payload or {}
+            if kind == "definition_list" and payload.get("dl_pairs"):
+                region_html[idx] = emit_fallback(region, feature_blocks)
+            elif (
+                resolve_gold_shell_mode()
+                and kind in {"figure", "table"}
+                and payload.get("caption_nested")
+            ):
+                cell_roles = payload.get("cell_roles") if kind == "table" else None
+                region_html[idx] = emit_fallback(
+                    region, feature_blocks, cell_roles=cell_roles
+                )
+
+    # ------------------------------------------------------------------
     # Sub-task 1b — Gold-standard per-region ARIA wrap (gated;
     # SEMANTIK_GOLD_SHELL). POST-SELECTION step over the SELECTED
     # ``region_html[idx]`` AFTER the stage6-LLM-HTML / deterministic-fallback
@@ -448,16 +497,24 @@ def run_pass_9a(
     if resolve_gold_shell_mode():
         doc_ids = collect_doc_ids(region_html)
         absorb_runs: dict[int, int] = {}
-        # Branch precedence (table-v2 Phase 3): full-absorb (regroup inert) ->
-        # narrow-table-absorb (regroup firing + sub-flag) -> no absorb. The two
-        # are mutually exclusive — resolve_gold_absorb_mode short-circuits False
-        # whenever the regroup fires (shell.py), and resolve_narrow_table_absorb_mode
-        # requires the SAME regroup-firing composite, so they never co-fire. The
-        # narrow absorb runs POST-Stage-6 on RENDERED BYTES: the in-box passthrough
-        # table keeps its Stage-4 source_region_id (the absorb moves bytes, never
-        # the Region) and no post-9a document-level pass keys on the table's
-        # top-level position.
-        if resolve_gold_absorb_mode():
+        # Branch precedence: ITEM4 containment (the tree's unit edges) ->
+        # full-absorb (legacy, regroup inert) -> narrow-table-absorb (legacy).
+        # Under containment the two legacy absorb resolvers short-circuit False
+        # (shell.py), so this if-branch is the ONLY unit-box source; the walk
+        # (Sub-task 6) nests captions + skips descendants. The legacy branches
+        # remain the byte-identical OFF lever (SEMANTIK_CONTAINMENT=0).
+        if resolve_containment_mode() and containment_tree is not None:
+            # Unit-box runs from the tree's unit edges (contiguous by
+            # construction: unit children of an anchor are anchor+1..end-1).
+            for anchor in range(len(regions)):
+                kids = [
+                    c
+                    for c in containment_tree.children[anchor]
+                    if containment_tree.edge_kind[c] == "unit"
+                ]
+                if kids:
+                    absorb_runs[anchor] = max(kids) + 1
+        elif resolve_gold_absorb_mode():
             absorb_runs = compute_absorption_runs(regions, region_html)
         elif resolve_narrow_table_absorb_mode():
             absorb_runs = compute_absorption_runs(
@@ -549,27 +606,6 @@ def run_pass_9a(
         )
 
     # ------------------------------------------------------------------
-    # ITEM4 Phase 1 — materialized containment tree (metadata-only).
-    # Built here, AFTER Sub-task 2's heading-id injection, so region_html
-    # carries the ids the tree's section arm resolves against. The tree is
-    # a DERIVED sidecar (rebuilt at every assembly entry, immune to later
-    # region-list mutations by construction), stashed in sub_task_log for the
-    # cascade audit + provenance export (region_html-stash precedent :887).
-    # Phase 1 makes NO other use of the tree — render bytes are UNCHANGED
-    # (metadata-only proof). SEMANTIK_CONTAINMENT default ON; explicit falsey
-    # -> no build, no stash (byte-identical legacy).
-    # ------------------------------------------------------------------
-    containment_tree = None
-    if resolve_containment_mode():
-        containment_tree = build_containment_tree(
-            regions,
-            feature_blocks,
-            region_html=region_html,
-            council_state=council_state,
-        )
-        sub_task_log["containment"] = containment_tree
-
-    # ------------------------------------------------------------------
     # Sub-task 3 — Title detection (Plans/04 §1.5 ladder; v1 simplified).
     # ------------------------------------------------------------------
     title_text: str | None = None
@@ -651,10 +687,28 @@ def run_pass_9a(
     # pass_9c splice key survives.
     # ------------------------------------------------------------------
     if resolve_gold_shell_mode():
-        body_html = _group_regions_into_sections(
-            region_html, heading_indices, normalized,
-            absorbed_indices=absorbed_indices,
-        )
+        if resolve_containment_mode() and containment_tree is not None:
+            # ITEM4 — WALK the containment tree: <section> grouping from the
+            # tree's levels, caption children nested into their figure/table,
+            # unit/caption descendants skipped (already composed into their box
+            # / nested into their parent). The section walk is byte-equivalent
+            # to _group_regions_into_sections on a section-only tree (TREE-COVER
+            # (3) locks pre-order == list order); it additionally fixes the
+            # caption double-render + label-only box.
+            caption_children = {
+                i
+                for i, ek in enumerate(containment_tree.edge_kind)
+                if ek == "caption"
+            }
+            render_absorbed = set(absorbed_indices) | caption_children
+            body_html = render_tree(
+                containment_tree, region_html, absorbed_indices=render_absorbed
+            )
+        else:
+            body_html = _group_regions_into_sections(
+                region_html, heading_indices, normalized,
+                absorbed_indices=absorbed_indices,
+            )
     else:
         body_html = "".join(html for html in region_html if html)
 

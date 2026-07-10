@@ -604,6 +604,7 @@ def _css_region(idx: int, css_class: str, *, text: str | None = None) -> Region:
 
 
 def test_gold_absorb_mode_flag(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_CONTAINMENT", "0")  # ITEM4: this exercises the LEGACY absorb lever (retired-in-effect under containment)
     # Default OFF (shell on so the resolver's shell-gate isn't what zeroes it).
     monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "1")
     # ITEM1: pin the regroup OFF so the (now default-ON) regroup short-circuit
@@ -818,6 +819,7 @@ def _absorb_corpus():
 
 
 def test_absorb_flag_off_byte_identical(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_CONTAINMENT", "0")  # ITEM4: this exercises the LEGACY absorb lever (retired-in-effect under containment)
     # GOLD_SHELL ON throughout; only SEMANTIK_GOLD_ABSORB toggles. Absorb-off
     # (absent / off / 0) must be byte-identical to the pre-absorption gold wrap.
     monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "1")
@@ -916,6 +918,7 @@ def test_absorb_forced_off_when_regroup_firing(monkeypatch):
 
 
 def test_absorb_stays_on_when_regroup_inert(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_CONTAINMENT", "0")  # ITEM4: this exercises the LEGACY absorb lever (retired-in-effect under containment)
     # Regroup ON but reading-order OFF -> the regroup is INERT (its Phase-6
     # driver guard), so the absorb MUST stay the fallback (no regression vs
     # absorb-alone). Gating the short-circuit on unit_regroup alone would box
@@ -928,6 +931,7 @@ def test_absorb_stays_on_when_regroup_inert(monkeypatch):
 
 
 def test_absorb_short_circuit_engages_by_default(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_CONTAINMENT", "0")  # ITEM4: this exercises the LEGACY absorb lever (retired-in-effect under containment)
     # ITEM1: with the regroup default-ON, the absorb short-circuit is now the
     # DEFAULT. GOLD_SHELL + GOLD_ABSORB on, NO SEMANTIK_UNIT_REGROUP set,
     # reading-order unset (both default-ON) -> regroup is firing -> absorb forced
@@ -943,6 +947,7 @@ def test_absorb_short_circuit_engages_by_default(monkeypatch):
 
 
 def test_gold_absorb_deprecation_warns_once_when_engaged(monkeypatch, caplog):
+    monkeypatch.setenv("SEMANTIK_CONTAINMENT", "0")  # ITEM4: this exercises the LEGACY absorb lever (retired-in-effect under containment)
     # ITEM1 Phase C: the absorb engages ONLY under an explicit legacy revert
     # (SEMANTIK_UNIT_REGROUP=0); when it does, resolve_gold_absorb_mode emits a
     # ONE-SHOT deprecation warning (module-level latch).
@@ -1002,6 +1007,7 @@ def test_no_double_box_regroup_plus_absorb(monkeypatch):
 
 
 def test_absorb_unchanged_when_regroup_off(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_CONTAINMENT", "0")  # ITEM4: this exercises the LEGACY absorb lever (retired-in-effect under containment)
     # Regroup OFF -> resolve_gold_absorb_mode is byte-identical to its baseline:
     # absorb-on renders the absorbed body, absorb-off does not (the Phase-7
     # short-circuit never engages when SEMANTIK_UNIT_REGROUP is off).
@@ -1190,6 +1196,7 @@ def test_narrow_absorb_table_rendered_once(monkeypatch):
 
 
 def test_narrow_absorb_fires_with_gold_absorb_unset(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_CONTAINMENT", "0")  # ITEM4: this exercises the LEGACY absorb lever (retired-in-effect under containment)
     """The REAL default deployment: regroup firing + sub-flag on + GOLD_ABSORB
     UNSET -> the narrow path still boxes the table."""
     _narrow_env(monkeypatch, gold_absorb=None)
@@ -1223,6 +1230,7 @@ def test_narrow_absorb_non_merged_definition_anchor(monkeypatch):
 
 
 def test_narrow_absorb_off_table_adjacent_byte_identical(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_CONTAINMENT", "0")  # ITEM4: this exercises the LEGACY absorb lever (retired-in-effect under containment)
     """sub-flag OFF (regroup on) -> assembled HTML byte-identical to v1 (table
     renders adjacent, OUTSIDE the box)."""
     # sub-flag ON render.
@@ -1240,6 +1248,7 @@ def test_narrow_absorb_off_table_adjacent_byte_identical(monkeypatch):
 
 
 def test_narrow_absorb_does_not_grab_trailing_prose(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_CONTAINMENT", "0")  # ITEM4: this exercises the LEGACY absorb lever (retired-in-effect under containment)
     """merged-prose + table + closing-paragraph -> the box encloses prose+table
     ONLY; the closing paragraph stays a sibling (passthrough-only stop)."""
     _narrow_env(monkeypatch)
@@ -1282,6 +1291,7 @@ def test_no_double_box_narrow_table_absorb(monkeypatch):
 
 
 def test_full_absorb_stays_off_under_narrow(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_CONTAINMENT", "0")  # ITEM4: this exercises the LEGACY absorb lever (retired-in-effect under containment)
     """regroup firing + sub-flag on -> resolve_gold_absorb_mode still False (the
     full absorb never runs; only the narrow elif)."""
     _narrow_env(monkeypatch, gold_absorb="1")
@@ -1290,6 +1300,7 @@ def test_full_absorb_stays_off_under_narrow(monkeypatch):
 
 
 def test_narrow_inert_when_parent_regroup_off(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_CONTAINMENT", "0")  # ITEM4: this exercises the LEGACY absorb lever (retired-in-effect under containment)
     """sub-flag on + SEMANTIK_UNIT_REGROUP off -> narrow branch dead; with
     GOLD_ABSORB on the FULL absorb fires as the v1 fallback."""
     monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "1")
@@ -1303,6 +1314,7 @@ def test_narrow_inert_when_parent_regroup_off(monkeypatch):
 
 
 def test_narrow_inert_when_reading_order_off(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_CONTAINMENT", "0")  # ITEM4: this exercises the LEGACY absorb lever (retired-in-effect under containment)
     """sub-flag on + reading-order OFF + regroup on -> narrow dead, full absorb
     fires (no regression)."""
     monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "1")

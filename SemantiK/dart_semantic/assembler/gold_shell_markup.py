@@ -227,6 +227,14 @@ def compute_absorption_runs(
     """Map each body-bearing component anchor index -> EXCLUSIVE end index of the
     contiguous following-region run it absorbs (``[anchor .. end)``).
 
+    **DEPRECATED (ITEM4) — legacy; consulted only when SEMANTIK_CONTAINMENT=0.**
+    The materialized containment tree's unit arm (``containment._unit_runs``)
+    subsumes both the full absorb and the narrow-table passthrough absorb; under
+    the default ``SEMANTIK_CONTAINMENT`` the ``shell.resolve_gold_absorb_mode`` /
+    ``resolve_narrow_table_absorb_mode`` resolvers short-circuit ``False`` so this
+    helper is never reached. Retained solely as the OFF-lever fallback pending
+    the post-soak deletion (OPEN Q1).
+
     For each region whose ``payload['semantic_class']`` is a body-bearing
     component (and whose own fragment is non-empty), scan forward over the
     following regions, absorbing each until the FIRST
