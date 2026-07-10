@@ -485,6 +485,58 @@ def _apply_bert_authoritative_kinds(
 
 
 # ---------------------------------------------------------------------------
+# ITEM6 — persist the council top-k role distributions the six greedy claiming
+# passes consumed as argmax. Additive, provenance-only, idempotent stamp.
+# ---------------------------------------------------------------------------
+
+_ROLE_TOP_K = 3
+_ROLE_PROB_DECIMALS = 4
+
+
+def stamp_role_distributions(
+    regions: list["Region"], state: Any, *, k: int = _ROLE_TOP_K
+) -> list["Region"]:
+    """Stamp ``provenance['role_top_k']`` (+ ``'pedagogical_top_k'``) on
+    non-passthrough regions.
+
+    Additive + idempotent: kind / feature_block_indices / payload / aria_hints /
+    source_region_id / page_bboxes are untouched; re-stamping overwrites the
+    same keys. The representative FB is ``min(feature_block_indices)`` (the
+    ``_apply_bert_authoritative_kinds`` / ``build_edge_input`` convention). A
+    missing signal / empty state leaves the region unchanged (byte-identical
+    pass-through for mock/legacy states).
+    """
+    out: list["Region"] = []
+    for region in regions:
+        fb_indices = region.feature_block_indices or ()
+        if region.source_region_id is not None or not fb_indices:
+            out.append(region)
+            continue
+        rep_idx = min(fb_indices)
+        sig = _get_signal(state, "structure", "structural_role", rep_idx)
+        labels = list(getattr(sig, "top_k_labels", None) or [])
+        confs = list(getattr(sig, "top_k_confidences", None) or [])
+        if not labels or not confs:
+            out.append(region)
+            continue
+        prov = dict(region.provenance or {})
+        prov["role_top_k"] = [
+            [str(lab), round(float(c), _ROLE_PROB_DECIMALS)]
+            for lab, c in list(zip(labels, confs))[:k]
+        ]
+        ped = _get_signal(state, "structure", "pedagogical_role", rep_idx)
+        ped_labels = list(getattr(ped, "top_k_labels", None) or [])
+        ped_confs = list(getattr(ped, "top_k_confidences", None) or [])
+        if ped_labels and ped_confs:
+            prov["pedagogical_top_k"] = [
+                [str(lab), round(float(c), _ROLE_PROB_DECIMALS)]
+                for lab, c in list(zip(ped_labels, ped_confs))[:k]
+            ]
+        out.append(replace(region, provenance=prov))
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Public types
 # ---------------------------------------------------------------------------
 
@@ -2461,6 +2513,11 @@ def build_structure_graph(
             f"{n_fb} expected; missing={missing[:10]}{'…' if len(missing) > 10 else ''}"
         )
 
+    # ITEM6 — persist the council role distributions the six passes consumed as
+    # argmax. Additive provenance-only stamp (no kind/order/payload change);
+    # runs BEFORE the authoritative flip so the flip's inputs are on record.
+    regions_out = stamp_role_distributions(regions_out, state)
+
     # BERT-authoritative precedence flip (gated, default OFF). When on, the
     # council Structure head's structural_role argmax IS the region kind and
     # role_confidence / pedagogical semantic_class are stamped. Runs AFTER the
@@ -2785,4 +2842,5 @@ __all__ = [
     "build_structure_graph",
     "resolve_bert_authoritative",
     "resolve_reading_order_fix",
+    "stamp_role_distributions",
 ]

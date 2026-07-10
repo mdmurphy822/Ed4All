@@ -48,7 +48,7 @@ from .qwen_specialists.runtime import any_phase_provider_is_endpoint
 from .reading_order import resolve_deploy_profile
 from .soft_reranker import score_document
 from .stop_seam import check_cascade_stop
-from .structure_graph import Region, build_structure_graph
+from .structure_graph import Region, build_structure_graph, stamp_role_distributions
 from .theta import apply_repair_stats, decide_exit, evaluate, maybe_offline_retry
 from .v2_config import DEFAULT_V2_CONFIG, V2Config
 from .validate import HtmlValidator
@@ -705,6 +705,14 @@ def _build_region_provenance(
         # ``confidence`` above rides the existing key — no new confidence field.
         if payload.get("vlm_corroborated"):
             entry["vlm_corroborated"] = True
+        # OPTIONAL ``role_top_k`` key (additive, ITEM6). Present only when the
+        # Stage-5 stamp ran (a real council state); byte-stable to baseline
+        # (key simply absent) for mock/legacy runs. Deliberately NOT lifting
+        # ``pedagogical_top_k`` — no named wire consumer; it stays on
+        # Region.provenance for in-run consumers only.
+        role_top_k = (getattr(region, "provenance", {}) or {}).get("role_top_k")
+        if role_top_k:
+            entry["role_top_k"] = role_top_k
         # OPTIONAL caption text (additive). Present only for a figure/table
         # region whose ``caption_fb_index`` resolved to non-empty text;
         # absent for every other region (byte-stable to baseline). The adapter
@@ -1584,6 +1592,11 @@ def run_full_cascade(
             runtime=resegment_runtime,
         )
         structure_regions = resegmented_regions
+        # ITEM6 — re-stamp role distributions: Stage-5e merge/split/regroup mints
+        # fresh Regions whose provenance lacks role_top_k. Idempotent for
+        # untouched regions (a merged region's min(feature_block_indices) is the
+        # label region's rep-FB).
+        structure_regions = stamp_role_distributions(structure_regions, state)
         # Audit section — the op list (op type, source ids, conservation flag).
         # Parallel to the structure_review audit (~L948). Stays None when off.
         # Phase 9: a cross-kind pedagogical-unit op (subtype='regroup') records
