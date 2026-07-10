@@ -212,16 +212,26 @@ _CTX_WINDOW: int = 120
 #: tight window keeps this from over-suppressing a genuine solution keyword far
 #: upstream. A fragment INSIDE a solution-line / \boxed span is NOT demoted (that
 #: is an unambiguous stated-solution carrier).
-_PREMISE_KEYWORDS: Tuple[str, ...] = (
-    "let ", "when ", "substituting", "substitute ", "suppose",
+#: Word-boundaried so a genuine word never triggers on a coincidental substring
+#: (``offset`` must not read as ``set``, ``wallet`` must not read as ``let``).
+#: Covers the assumption / substitution-input phrasings (``let`` / ``when`` /
+#: ``suppose`` / ``substitute``) AND the graphing-premise phrasings (family 4 FP
+#: fix): ``set x = 0`` (the SET-x-to-0 y-intercept premise) and ``choose`` /
+#: ``pick`` an arbitrary graphing point (``choose x = 6``). A value introduced by
+#: one of these is a substitution INPUT / chosen coordinate, not a claimed
+#: solution to verify.
+_RE_PREMISE = re.compile(
+    r"\b(?:let|when|suppose|set|choose|choosing|chosen|pick|picking"
+    r"|substitut\w*)\b",
+    re.IGNORECASE,
 )
 _PREMISE_WINDOW: int = 40
 
 
 def _premise_before(html: str, pos: int) -> bool:
     """True when a premise marker sits in the tight window before ``pos``."""
-    window = _RE_TAG.sub(" ", html[max(0, pos - _PREMISE_WINDOW):pos]).lower()
-    return any(k in window for k in _PREMISE_KEYWORDS)
+    window = _RE_TAG.sub(" ", html[max(0, pos - _PREMISE_WINDOW):pos])
+    return bool(_RE_PREMISE.search(window))
 
 
 def _find_brace_group(text: str, open_idx: int) -> Optional[Tuple[str, int]]:
@@ -512,12 +522,81 @@ def _split_problem_segments(html: str) -> List[str]:
     return segments
 
 
+#: A ``\begin{cases}...\end{cases}`` system environment (family 3 FP fix). The
+#: real worked system frequently lives in a ``cases`` block, which the standalone
+#: fragment harvest SKIPS wholesale (``\begin`` is in ``_UNRELIABLE_RE``). That
+#: left a claimed solution pool-able against an UNRELATED same-page equation (a
+#: self-check / given line). ``_cases_equations`` parses the cases rows so the
+#: pair is checked against ITS OWN system, and a cases block present in a segment
+#: means the segment's standalone equations are treated as foreign to the system.
+_RE_CASES = re.compile(
+    r"\\begin\s*\{\s*cases\s*\}(.+?)\\end\s*\{\s*cases\s*\}",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _cases_equations(html: str) -> List[Tuple[Any, Any, str, bool]]:
+    """Parse every ``\\begin{cases}`` row into a ``(lhs, rhs, raw, ctx)`` equation.
+
+    Rows split on the LaTeX ``\\\\`` line break; a leading/trailing ``&`` alignment
+    marker is folded to whitespace. Rows that are not a plain two-side equality
+    (or fail to parse) are skipped silently — precision over recall.
+    """
+    if not _SYMPY_AVAILABLE:
+        return []
+    out: List[Tuple[Any, Any, str, bool]] = []
+    for cm in _RE_CASES.finditer(html):
+        body = cm.group(1)
+        for row in re.split(r"\\\\|\\newline\b", body):
+            row = row.replace("&", " ").strip()
+            if not row:
+                continue
+            sides = _split_equation_sides(row)
+            if sides is None or len(sides) != 2:
+                continue
+            lhs = _parse_side(sides[0])
+            rhs = _parse_side(sides[1])
+            if lhs is None or rhs is None:
+                continue
+            out.append((lhs, rhs, row, False))
+    return out
+
+
+def _segment_system_findings(
+    segment: str, block_text: str
+) -> List[Tuple[str, str, str]]:
+    """System-check one problem segment against ITS OWN equation set (family 3).
+
+    When the segment carries a ``\\begin{cases}`` environment the real system
+    lives THERE; the segment's standalone equations (self-checks, given/derived
+    lines) are foreign to the system, so the pair is checked ONLY against the
+    parsed cases rows — and the check is SKIPPED when those rows did not parse (a
+    cases block we cannot read must not fall back to foreign standalone
+    equations). Otherwise the standalone equations are used as before.
+    """
+    seg_pairs = _extract_solution_pairs(segment)
+    if _RE_CASES.search(segment):
+        cases_eqs = _cases_equations(segment)
+        if not cases_eqs:
+            return []
+        return _check_system(cases_eqs, seg_pairs, block_text)
+    seg_eqs, _seg_chains = _collect_equations(_iter_fragments(segment))
+    return _check_system(seg_eqs, seg_pairs, block_text)
+
+
 #: Negation-suppression markers (fix d). When the window just AFTER a flagged
 #: equation says the candidate FAILS ("(False)" / "not a solution"), the block is
 #: DELIBERATELY teaching a non-solution — suppress the finding (it is intentional,
 #: not a defect).
-_RE_NEGATION_SUPPRESS = re.compile(r"\(\s*false\s*\)|not\s+a\s+solution", re.IGNORECASE)
-_SUPPRESS_WINDOW: int = 60
+#: (family 2 FP fix) also covers ``Which is false`` / ``is false`` and the
+#: ``extraneous solution`` phrasing a taught non-solution demo uses to REJECT the
+#: candidate it just substituted; the window is widened (60 -> 120) because the
+#: rejection sentence often trails the flagged equation by a clause.
+_RE_NEGATION_SUPPRESS = re.compile(
+    r"\(\s*false\s*\)|not\s+a\s+solution|is\s+false|extraneous",
+    re.IGNORECASE,
+)
+_SUPPRESS_WINDOW: int = 120
 
 
 def _is_taught_failure(content: str, raw: str) -> bool:
@@ -1097,11 +1176,51 @@ def _check_pm_solutions(
 # Quadratic features — vertex + discriminant re-derivation (gap #9)
 # --------------------------------------------------------------------------- #
 
-#: A claimed discriminant value: ``discriminant ... = / is / : N``.
+#: A claimed discriminant value: ``discriminant ... = / is / : <tail>``. The tail
+#: is captured broadly (family 1 FP fix): a claimed discriminant is often written
+#: out as the arithmetic chain ``b^2 - 4ac`` and only THEN equated to its value —
+#: ``the discriminant is 9^2 - 4(2)(-5) = 121``. The old capture grabbed the
+#: leading ``9`` (the b^2 first term) and "verified" it against b^2-4ac, a
+#: false-positive family. ``_claimed_discriminant`` resolves the tail to the value
+#: AFTER the FINAL ``=`` (121), never the intermediate first term.
 _RE_DISCRIMINANT = re.compile(
-    r"discriminant\b.{0,40}?(?:=|is|equals|:)\s*(-?\d+(?:\.\d+)?)",
+    r"discriminant\b.{0,40}?(?:=|is|equals|:)\s*([^<\n]{1,80})",
     re.IGNORECASE | re.DOTALL,
 )
+
+#: Operators that mark a leading number as a SUB-TERM of an unfinished arithmetic
+#: expression (``9^2 - ...`` / ``9 * ...``) rather than a finished claim — used to
+#: reject the b^2 first term when the discriminant tail has no terminating ``=``.
+_ARITH_CONTINUATION: frozenset = frozenset(
+    {"+", "-", "*", "/", "^", "(", "·", "×", "÷", "−", "–", "—"}
+)
+
+
+def _claimed_discriminant(tail: str) -> Optional[Any]:
+    """Resolve the claimed discriminant value from a ``_RE_DISCRIMINANT`` tail.
+
+    The tail is a bare number (``121``), a chain (``9^2 - 4(2)(-5) = 121``) whose
+    CLAIM is the value after the final ``=``, or a symbolic / unfinished
+    expression (``b^2 - 4ac``) that carries no numeric claim. Returns the
+    variable-free numeric claim, or None (skip — precision over recall) when the
+    final segment is not a clean, finished number.
+    """
+    if not _SYMPY_AVAILABLE:
+        return None
+    seg = tail.split("=")[-1].strip()
+    m = re.match(r"[+-]?\d+(?:\.\d+)?", seg)
+    if not m:
+        return None
+    after = seg[m.end():].lstrip()
+    # A leading number followed by more arithmetic (an unfinished expression with
+    # NO terminating '=') is a sub-term (e.g. the b^2 in ``9^2 - 40``), not the
+    # claim -> skip. Trailing prose ("121 for the quadratic") is fine.
+    if after[:1] in _ARITH_CONTINUATION or after[:1].isdigit():
+        return None
+    val = _parse_side(m.group(0))
+    if val is None or getattr(val, "free_symbols", set()):
+        return None
+    return val
 #: A ``vertex`` keyword (the ordered pair is harvested from the following window).
 _RE_VERTEX_KW = re.compile(r"vertex", re.IGNORECASE)
 _VERTEX_WINDOW: int = 80
@@ -1180,8 +1299,8 @@ def _check_quadratic_features(content: str) -> List[Tuple[str, str, str, str]]:
 
     # Discriminant claims.
     for m in _RE_DISCRIMINANT.finditer(plain):
-        claimed = _parse_side(m.group(1))
-        if claimed is None or getattr(claimed, "free_symbols", set()):
+        claimed = _claimed_discriminant(m.group(1))
+        if claimed is None:
             continue
         computed = [_disc(a, b, c) for (a, b, c, _v) in candidates]
         if any(_num_equal(claimed, cv) for cv in computed):
@@ -1460,18 +1579,20 @@ class WorkedExampleMathValidator:
             # (b') ± solution sets + (gap #9) quadratic vertex/discriminant
             # claims are their own checkable math even when the ordinary single-
             # ``=`` equation harvest is thin, so they contribute to the scored
-            # condition below.
+            # condition below. Family 3 — a ``\begin{cases}`` system is checkable
+            # math too even when the block has no standalone equations (a pure-
+            # cases worked system), so it likewise counts toward "scored".
             pm_solutions = _extract_pm_solutions(content)
             quad_candidates = _quadratic_coeffs(content)
+            cases_equations = _cases_equations(content)
 
             if not equations and not chains and not pm_solutions and (
                 not quad_candidates
-            ):
+            ) and not cases_equations:
                 # No parseable math — skip silently (no event).
                 continue
 
             scored_blocks += 1
-            pairs = _extract_solution_pairs(content)
 
             solve_findings = _check_solve(equations)
             pm_findings = _check_pm_solutions(pm_solutions, equations)
@@ -1481,17 +1602,18 @@ class WorkedExampleMathValidator:
             # Fix a — scope the system cross-check to one PROBLEM SEGMENT so a
             # solution pair from one problem is never checked against another
             # problem's equation. Marker detection still sees the whole block.
+            # Family 3 — each segment is system-checked against ITS OWN equation
+            # set, with a \begin{cases} environment (the real system) parsed and
+            # foreign standalone equations excluded (_segment_system_findings).
             segments = _split_problem_segments(content)
             if len(segments) > 1:
                 system_findings: List[Tuple[str, str, str]] = []
                 for seg in segments:
-                    seg_eqs, _seg_chains = _collect_equations(_iter_fragments(seg))
-                    seg_pairs = _extract_solution_pairs(seg)
                     system_findings.extend(
-                        _check_system(seg_eqs, seg_pairs, content)
+                        _segment_system_findings(seg, content)
                     )
             else:
-                system_findings = _check_system(equations, pairs, content)
+                system_findings = _segment_system_findings(content, content)
             chain_findings = _check_numeric_chains(chains, equations)
 
             # Fix d — suppress a finding when the block is DELIBERATELY teaching a

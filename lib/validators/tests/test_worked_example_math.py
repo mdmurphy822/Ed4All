@@ -797,3 +797,212 @@ def test_matrix_construct_skipped_not_flagged() -> None:
     )])
     assert not _wrong_codes(result), "matrix notation is skipped, never flagged"
     assert result.passed is True
+
+
+# --------------------------------------------------------------------- #
+# FP-family precision pass (residual full-corpus false positives)
+# --------------------------------------------------------------------- #
+
+# Family 1 — discriminant intermediate-capture. The discriminant is written out
+# as ``b^2 - 4ac`` and THEN equated: ``9^2 - 4(2)(-5) = 121`` for the quadratic
+# 2x^2 + 9x - 5 (a=2, b=9, c=-5 -> b^2-4ac = 81 + 40 = 121). The old capture
+# grabbed the leading ``9`` (the b^2 first term) and "verified" it against
+# b^2-4ac = 121 -> false positive. The claim must be the value after the FINAL
+# ``=`` (121). Both LaTeX and plain-text renderings of the discriminant chain.
+_DISC_CHAIN_LATEX_OK = (
+    r'<section data-cf-content-type="example">'
+    r"<p>For the quadratic \(2x^2 + 9x - 5 = 0\), the discriminant is "
+    r"\(9^2 - 4(2)(-5) = 121\).</p></section>"
+)
+_DISC_CHAIN_LATEX_WRONG = (
+    r'<section data-cf-content-type="example">'
+    r"<p>For the quadratic \(2x^2 + 9x - 5 = 0\), the discriminant is "
+    r"\(9^2 - 4(2)(-5) = 130\).</p></section>"
+)
+_DISC_CHAIN_PLAIN_OK = (
+    r'<section data-cf-content-type="example">'
+    r"<p>For the quadratic \(2x^2 + 9x - 5 = 0\), the discriminant is "
+    r"9^2 - 4(2)(-5) = 121.</p></section>"
+)
+_DISC_CHAIN_PLAIN_WRONG = (
+    r'<section data-cf-content-type="example">'
+    r"<p>For the quadratic \(2x^2 + 9x - 5 = 0\), the discriminant is "
+    r"9^2 - 4(2)(-5) = 130.</p></section>"
+)
+
+
+def test_f1_discriminant_chain_latex_correct_not_flagged() -> None:
+    result = _run([_block(
+        block_id="p#example_disc_chain_latex_ok", block_type="example",
+        content=_DISC_CHAIN_LATEX_OK,
+    )])
+    assert not _wrong_codes(result), (
+        "final equality 121 IS the discriminant of 2x^2+9x-5; the b^2 first term "
+        "(9) must not be captured and mis-verified"
+    )
+
+
+def test_f1_discriminant_chain_latex_wrong_flagged() -> None:
+    result = _run([_block(
+        block_id="p#example_disc_chain_latex_wrong", block_type="example",
+        content=_DISC_CHAIN_LATEX_WRONG,
+    )])
+    assert _wrong_codes(result), (
+        "the FINAL value 130 != b^2-4ac = 121 -> the wrong discriminant flags"
+    )
+
+
+def test_f1_discriminant_chain_plain_correct_not_flagged() -> None:
+    result = _run([_block(
+        block_id="p#example_disc_chain_plain_ok", block_type="example",
+        content=_DISC_CHAIN_PLAIN_OK,
+    )])
+    assert not _wrong_codes(result), (
+        "plain-text discriminant chain resolves to 121 (correct) -> no flag"
+    )
+
+
+def test_f1_discriminant_chain_plain_wrong_flagged() -> None:
+    result = _run([_block(
+        block_id="p#example_disc_chain_plain_wrong", block_type="example",
+        content=_DISC_CHAIN_PLAIN_WRONG,
+    )])
+    assert _wrong_codes(result), (
+        "plain-text discriminant chain final value 130 != 121 -> flags"
+    )
+
+
+# Family 2 — taught-failure phrasing gap. A deliberate non-solution demo says
+# the substitution is FALSE ("Which is false") and calls x=2 an "extraneous
+# solution"; the old suppressor matched only "(false)" / "not a solution".
+_TAUGHT_FAILURE_IS_FALSE = (
+    r'<section data-cf-content-type="example">'
+    r"<p>Test \(x = 2\): substituting into \(3x + 1 = 11\) gives \(4 = 8\). "
+    r"Which is false, so x = 2 is an extraneous solution.</p></section>"
+)
+# TP — a genuinely wrong claimed solution with NO taught-failure phrasing flags.
+_TAUGHT_FAILURE_IS_FALSE_TP = (
+    r'<section data-cf-content-type="example">'
+    r"<p>Therefore the solution is \(x = 5\); check \(2x + 3 = 11\).</p>"
+    r"</section>"
+)
+
+
+def test_f2_is_false_extraneous_suppressed() -> None:
+    result = _run([_block(
+        block_id="p#example_extraneous", block_type="example",
+        content=_TAUGHT_FAILURE_IS_FALSE,
+    )])
+    assert not _wrong_codes(result), (
+        "'Which is false ... extraneous solution' teaches a rejected non-solution "
+        "-> must not flag"
+    )
+
+
+def test_f2_wrong_solution_without_taught_failure_flags() -> None:
+    result = _run([_block(
+        block_id="p#example_extraneous_tp", block_type="example",
+        content=_TAUGHT_FAILURE_IS_FALSE_TP,
+    )])
+    assert _wrong_codes(result), (
+        "x=5 fails 2x+3=11 with no is-false / extraneous phrasing -> still flags"
+    )
+
+
+# Family 3 — cross-equation pooling on a \begin{cases} page. The real worked
+# system lives in an (otherwise-skipped) cases environment; a foreign same-page
+# self-check equation must NOT pool with the worked system's solution pair.
+_CASES_FOREIGN_POOLING = (
+    r'<section data-cf-content-type="example">'
+    r"<h3>Solve the system by elimination</h3>"
+    r"<p>Solve the system \[\begin{cases} x + y = 10 \\ x - y = 2 "
+    r"\end{cases}\]</p>"
+    r'<div class="solution-line">The solution to the system is \((6, 4)\).</div>'
+    r"<p>Self-check: verify that \(x + 2y = 8\) and \(3x - y = 5\).</p></section>"
+)
+# TP — the cases system is now parsed, so a WRONG solution pair against its OWN
+# system flags (a capability the wholesale cases-skip previously missed).
+_CASES_WRONG_SOLUTION = (
+    r'<section data-cf-content-type="example">'
+    r"<h3>Solve the system</h3>"
+    r"<p>Solve the system \[\begin{cases} x + y = 10 \\ x - y = 2 "
+    r"\end{cases}\]</p>"
+    r'<div class="solution-line">The solution to the system is \((7, 4)\).</div>'
+    r"</section>"
+)
+
+
+def test_f3_cases_foreign_equation_not_pooled() -> None:
+    result = _run([_block(
+        block_id="p#example_cases_foreign", block_type="example",
+        content=_CASES_FOREIGN_POOLING,
+    )])
+    assert not _wrong_codes(result), (
+        "(6,4) solves the real cases system {x+y=10, x-y=2}; the foreign "
+        "self-check equations must not pool with it"
+    )
+
+
+def test_f3_cases_wrong_solution_flags() -> None:
+    result = _run([_block(
+        block_id="p#example_cases_wrong", block_type="example",
+        content=_CASES_WRONG_SOLUTION,
+    )])
+    assert _wrong_codes(result), (
+        "(7,4) fails x+y=10 of its own cases system -> parsing the cases rows "
+        "must flag it"
+    )
+
+
+# Family 4 — premise / chosen-point misread. ``set x = 0`` (the SET-x-to-0
+# y-intercept premise) and ``choose x = 6`` (an arbitrarily chosen graphing
+# point) are substitution INPUTS, not claimed solutions of a nearby equation.
+_SET_X_ZERO_PREMISE = (
+    r'<section data-cf-content-type="example">'
+    r"<p>The solution method: so we set \(x = 0\) and check "
+    r"\(2x + 5 = 11\).</p></section>"
+)
+_CHOOSE_POINT_PREMISE = (
+    r'<section data-cf-content-type="example">'
+    r"<p>To graph it, so we choose \(x = 6\); check the equation "
+    r"\(x + 1 = 3\).</p></section>"
+)
+# TP — the SAME value stated as a genuine solution (no premise marker) flags.
+_SET_X_ZERO_TP = (
+    r'<section data-cf-content-type="example">'
+    r"<p>Therefore the solution is \(x = 0\); check \(2x + 5 = 11\).</p>"
+    r"</section>"
+)
+
+
+def test_f4_set_x_zero_premise_not_flagged() -> None:
+    result = _run([_block(
+        block_id="p#example_set_premise", block_type="example",
+        content=_SET_X_ZERO_PREMISE,
+    )])
+    assert not _wrong_codes(result), (
+        "'set x = 0' is a y-intercept premise / substitution input, not a "
+        "claimed solution of 2x+5=11"
+    )
+
+
+def test_f4_choose_point_premise_not_flagged() -> None:
+    result = _run([_block(
+        block_id="p#example_choose_premise", block_type="example",
+        content=_CHOOSE_POINT_PREMISE,
+    )])
+    assert not _wrong_codes(result), (
+        "'choose x = 6' is an arbitrarily chosen graphing point, not a claimed "
+        "solution of x+1=3"
+    )
+
+
+def test_f4_set_x_zero_real_solution_flags() -> None:
+    result = _run([_block(
+        block_id="p#example_set_tp", block_type="example",
+        content=_SET_X_ZERO_TP,
+    )])
+    assert _wrong_codes(result), (
+        "x=0 stated as a genuine solution (no set/choose premise) fails 2x+5=11 "
+        "-> still flags"
+    )
