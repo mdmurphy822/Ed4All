@@ -107,7 +107,7 @@ workflows:
         max_concurrent: 1
         depends_on: [planning]
         timeout_minutes: 30
-        batch_timeout_minutes: 10
+        batch_timeout_minutes: 240  # 2026-07-10: was 10 — structurally too small for a pure-local 7B whole-course outline; graceful-stop converts a timeout to a pause so 240 is safe (matches the rewrite tier)
         description: Phase 3 — outline-tier Block emit (terse provider, no HTML body)
         enabled_when_env: "COURSEFORGE_TWO_PASS=true"
 
@@ -2210,7 +2210,7 @@ workflows:
         # byte-identical when the flag is off (the sequencer is a strict no-op).
         depends_on: [course_planning, source_mapping, staging, concept_extraction]
         timeout_minutes: 30
-        batch_timeout_minutes: 10
+        batch_timeout_minutes: 240  # 2026-07-10: was 10 — structurally too small for a pure-local 7B whole-course outline; graceful-stop converts a timeout to a pause so 240 is safe (matches the rewrite tier)
         description: Phase 3 — outline-tier Block emit (terse provider, no HTML body)
         enabled_when_env: "COURSEFORGE_TWO_PASS=true"
 
