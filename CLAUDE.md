@@ -730,7 +730,7 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `NVIDIA_*` (vendor endpoint-registry row for the hosted large-model seat — `NVIDIA_API_KEY` / `NVIDIA_BASE_URL` / `NVIDIA_LARGE_MODEL`) | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 3 |
 | `SEMANTIK_*` (DART replacement — SemantiK semantic-cascade converter; also honors the legacy `DART_THETA_DEVICE` compat env) | [`SemantiK/CLAUDE.md § Opt-In Behavior Flags`](SemantiK/CLAUDE.md) | 82 |
 | `COURSEFORGE_*` / `COURSEPLANNER_*` / `TEXTBOOK_SYNTHESIS_*` | [`Courseforge/CLAUDE.md § Opt-In Behavior Flags`](Courseforge/CLAUDE.md) | 35 |
-| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root index (below) + [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 179 |
+| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root index (below) + [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 180 |
 
 ### Cross-cutting flags (root-owned)
 
@@ -785,6 +785,7 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `ED4ALL_CONTENT_PAGE_PER_CO` | unset (off) | Page-per-CO content-emit gate |
 | `ED4ALL_CONTENT_PAGE_NUM_CTX` | `4096` (→ `ED4ALL_ANSWER_NUM_CTX` → 4096) | Authoring serving-window token budget for the page-per-CO per-page chunk cap |
 | `ED4ALL_CONTENT_PAGE_MAX_CHUNKS` | `5` | Hard top-K ceiling on chunks kept per CO page for the page-per-CO cap |
+| `ED4ALL_CHUNK_ROLE_DIVERSIFY` | unset (off) | Gap #11 — deterministic per-block-role rotation of a page's ranked chunk order so co-located blocks don't all lead with the same anchor example (chunk-universe remap; default off → byte-identical). |
 | `ED4ALL_COURSE_IDENTITY_DEDUP` | unset (off) | W0.5 course-identity SPLIT-BRAIN guard |
 | `ED4ALL_EMBEDDING_PROVIDER` | `st` | Selects the retrieval-index embedding backend (`st` / `local-openai` / `fake`). |
 | `ED4ALL_EMBEDDING_MODEL` | per-provider | Model ID override for the embedding provider |

@@ -180,3 +180,98 @@ def test_cap_embedding_absent_uses_citation_order():
     )
     assert stats["rank_method"] == "citation_order"
     assert kept == ["a", "b"]
+
+
+# --------------------------------------------------------------------------- #
+# Gap #11 — per-block-role chunk-order diversification
+# --------------------------------------------------------------------------- #
+def test_chunk_role_diversify_flag_default_off(monkeypatch):
+    monkeypatch.delenv("ED4ALL_CHUNK_ROLE_DIVERSIFY", raising=False)
+    assert cpb.chunk_role_diversify_enabled() is False
+
+
+def test_chunk_role_diversify_flag_truthy(monkeypatch):
+    for tok in ("1", "true", "yes", "on", "ON", "True"):
+        monkeypatch.setenv("ED4ALL_CHUNK_ROLE_DIVERSIFY", tok)
+        assert cpb.chunk_role_diversify_enabled() is True
+
+
+def test_chunk_role_diversify_flag_garbage_off(monkeypatch):
+    for tok in ("0", "false", "garbage", "", "  "):
+        monkeypatch.setenv("ED4ALL_CHUNK_ROLE_DIVERSIFY", tok)
+        assert cpb.chunk_role_diversify_enabled() is False
+
+
+def test_diversify_disabled_is_identity():
+    ids = ["c1", "c2", "c3", "c4", "c5"]
+    assert cpb.diversify_block_chunk_order(
+        ids, role_key="example:0", enabled=False
+    ) == ids
+
+
+def test_diversify_env_default_off_identity(monkeypatch):
+    monkeypatch.delenv("ED4ALL_CHUNK_ROLE_DIVERSIFY", raising=False)
+    ids = ["c1", "c2", "c3", "c4", "c5"]
+    # enabled=None → read env (off) → identity.
+    assert cpb.diversify_block_chunk_order(ids, role_key="example:0") == ids
+
+
+def test_diversify_is_a_permutation():
+    ids = ["a", "b", "c", "d", "e", "f"]
+    out = cpb.diversify_block_chunk_order(ids, role_key="concept:2", enabled=True)
+    assert sorted(out) == sorted(ids)
+    # Same universe, no drop / invent.
+    assert set(out) == set(ids)
+    assert len(out) == len(ids)
+
+
+def test_diversify_dedups_preserving_order_when_off():
+    ids = ["a", "b", "a", "c", "b"]
+    assert cpb.diversify_block_chunk_order(
+        ids, role_key="x:0", enabled=False
+    ) == ["a", "b", "c"]
+
+
+def test_diversify_short_lists_unchanged():
+    assert cpb.diversify_block_chunk_order([], role_key="e:0", enabled=True) == []
+    assert cpb.diversify_block_chunk_order(
+        ["only"], role_key="e:0", enabled=True
+    ) == ["only"]
+
+
+def test_diversify_empty_role_key_is_identity():
+    ids = ["a", "b", "c"]
+    assert cpb.diversify_block_chunk_order(ids, role_key="", enabled=True) == ids
+
+
+def test_diversify_distinct_roles_get_distinct_heads():
+    ids = [f"c{i}" for i in range(12)]
+    heads = {
+        role: cpb.diversify_block_chunk_order(ids, role_key=role, enabled=True)[0]
+        for role in ("example:0", "concept:1", "explanation:2", "practice:3")
+    }
+    # At least two distinct lead chunks across the four roles (diversification
+    # actually spreads the anchor head — not all identical).
+    assert len(set(heads.values())) >= 2
+
+
+def test_diversify_deterministic_repeat_calls():
+    ids = ["a", "b", "c", "d", "e"]
+    first = cpb.diversify_block_chunk_order(ids, role_key="r:1", enabled=True)
+    for _ in range(5):
+        assert cpb.diversify_block_chunk_order(
+            ids, role_key="r:1", enabled=True
+        ) == first
+
+
+def test_stable_offset_is_hashseed_independent():
+    # The offset must not depend on the builtin salted hash() — recompute here
+    # via the same sha1 contract and assert equality (a proxy for cross-process
+    # stability; the process-level PYTHONHASHSEED sweep runs in CI).
+    import hashlib
+
+    key = "example:0"
+    modulo = 7
+    expected = int.from_bytes(hashlib.sha1(key.encode()).digest()[:8], "big") % modulo
+    assert cpb._stable_offset(key, modulo) == expected
+    assert cpb._stable_offset("anything", 0) == 0

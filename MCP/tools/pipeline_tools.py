@@ -13787,6 +13787,17 @@ async def _run_content_generation_outline(**kwargs) -> str:
     # CO objective.
     _page_per_co = _content_page_per_co_enabled()
     _idx_duration = duration_weeks if _page_per_co else None
+    # Gap #11 — per-block-role chunk-order diversification. Resolved ONCE here
+    # (env read hoisted out of the per-block loop). Default OFF → the per-block
+    # chunk order below is byte-identical (every co-located block leads with the
+    # identical page-ranked head chunk). When ON, each block's offered chunk
+    # order is rotated by a stable per-role offset so co-located blocks of
+    # different roles do not all draw their anchor example from the same chunk.
+    from lib.generation.content_page_budget import (  # noqa: PLC0415
+        chunk_role_diversify_enabled as _chunk_role_diversify_enabled,
+        diversify_block_chunk_order as _diversify_block_chunk_order,
+    )
+    _chunk_role_diversify = _chunk_role_diversify_enabled()
     # Fix 2A (Step 2b): per-week per-CO chunk universe (parallel to the
     # week-wide union above) so each page can be NARROWED to a single
     # objective's chunks instead of the whole-week grab-bag.
@@ -14464,7 +14475,21 @@ async def _run_content_generation_outline(**kwargs) -> str:
                 # prose block is grounded identically to its objective.
                 resolved_chunks: List[Dict[str, str]] = []
                 if chunkset_present:
-                    for cid in page_chunk_cids:
+                    # Gap #11: when ED4ALL_CHUNK_ROLE_DIVERSIFY is on, rotate the
+                    # offered chunk order by a stable per-role offset so
+                    # co-located blocks don't all lead with the same anchor
+                    # example. The rotation is a PERMUTATION of page_chunk_cids
+                    # (same chunk universe, different priority head) — no id is
+                    # dropped or invented. Default OFF → identical order.
+                    _block_cids = page_chunk_cids
+                    if _chunk_role_diversify:
+                        _role_key = (
+                            f"{_teaching_role_for_block_type(spec_type)}:{spec_idx}"
+                        )
+                        _block_cids = _diversify_block_chunk_order(
+                            page_chunk_cids, role_key=_role_key, enabled=True,
+                        )
+                    for cid in _block_cids:
                         body = chunk_text_map.get(cid)
                         if body:
                             resolved_chunks.append({

@@ -27,6 +27,7 @@ least one chunk is always kept (always-keep-≥1) when the union is non-empty.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 import os
@@ -41,6 +42,12 @@ logger = logging.getLogger(__name__)
 ENV_CONTENT_PAGE_PER_CO = "ED4ALL_CONTENT_PAGE_PER_CO"
 ENV_CONTENT_PAGE_NUM_CTX = "ED4ALL_CONTENT_PAGE_NUM_CTX"
 ENV_CONTENT_PAGE_MAX_CHUNKS = "ED4ALL_CONTENT_PAGE_MAX_CHUNKS"
+
+#: Gap #11 — per-block-role chunk-order diversification. Default OFF →
+#: byte-identical (every co-located block keeps the identical page-ranked
+#: chunk head, so one anchor example recurs across a whole page's blocks). See
+#: :func:`diversify_block_chunk_order`.
+ENV_CHUNK_ROLE_DIVERSIFY = "ED4ALL_CHUNK_ROLE_DIVERSIFY"
 
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 
@@ -126,6 +133,84 @@ def resolve_content_page_max_chunks(value: Optional[int] = None) -> int:
         if ival >= 1:
             return ival
     return _DEFAULT_MAX_CHUNKS
+
+
+# ---------------------------------------------------------------------------
+# Gap #11 — per-block-role chunk-order diversification
+# ---------------------------------------------------------------------------
+def chunk_role_diversify_enabled() -> bool:
+    """Read ``ED4ALL_CHUNK_ROLE_DIVERSIFY`` each call (tests toggle inline).
+
+    Default OFF — only the canonical truthy tokens (``1``/``true``/``yes``/
+    ``on``) enable. Falsey / garbage → off (parse-with-fallback).
+    """
+    return os.environ.get(ENV_CHUNK_ROLE_DIVERSIFY, "").strip().lower() in _TRUTHY
+
+
+def _stable_offset(key: str, modulo: int) -> int:
+    """Deterministic, ``PYTHONHASHSEED``-independent offset in ``[0, modulo)``.
+
+    Uses sha1 (NOT the builtin ``hash()``, which is salted per-process) so the
+    rotation is byte-stable across processes and hash seeds. ``modulo <= 0`` →
+    ``0`` (caller guards the empty case).
+    """
+    if modulo <= 0:
+        return 0
+    digest = hashlib.sha1(key.encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big") % modulo
+
+
+def diversify_block_chunk_order(
+    ordered_ids: Sequence[str],
+    *,
+    role_key: str,
+    enabled: Optional[bool] = None,
+) -> List[str]:
+    """Role-keyed deterministic rotation of a page's ranked chunk id list.
+
+    Root cause of the within-week anchor-example duplication (plan §6 item 11):
+    every block on a page is handed the SAME page-ranked chunk universe in the
+    SAME order, so the authoring model draws its anchor example from the same
+    head chunk in block after block (one worked example recurring across 15/65
+    week-1 blocks). This rotates the offered order by a stable per-role offset so
+    co-located blocks of different roles lead with a DIFFERENT chunk — a
+    chunk-universe remap that beats the re-roll treadmill.
+
+    Contract:
+
+    * **Permutation, never a drop/invent** — the returned list is exactly the
+      input id set (de-duplicated, preserving first-seen order) rotated by an
+      offset; the SAME chunks are offered, only their priority order changes. No
+      anti-fabrication concern (no id added, none removed).
+    * **Deterministic** — the offset is ``sha1(role_key) % len`` (see
+      :func:`_stable_offset`), so it is stable across processes and
+      ``PYTHONHASHSEED`` values. No randomness.
+    * **Default OFF / byte-identical** — when ``enabled`` resolves falsey (env
+      ``ED4ALL_CHUNK_ROLE_DIVERSIFY`` unset), a fewer-than-2 id list, or an
+      empty ``role_key``, the input order is returned verbatim (as a fresh
+      list). The zero-offset case also returns the input order.
+
+    ``role_key`` is the diversification seed — the caller keys it by the block's
+    teaching role (and, to spread same-role siblings, its per-page sequence
+    index). Distinct roles land on distinct offsets; identical role_keys land on
+    the identical rotation (deterministic).
+    """
+    ids: List[str] = []
+    seen: set = set()
+    for cid in (ordered_ids or []):
+        if isinstance(cid, str) and cid and cid not in seen:
+            seen.add(cid)
+            ids.append(cid)
+
+    if enabled is None:
+        enabled = chunk_role_diversify_enabled()
+    if not enabled or len(ids) < 2 or not role_key:
+        return ids
+
+    offset = _stable_offset(str(role_key), len(ids))
+    if offset == 0:
+        return ids
+    return ids[offset:] + ids[:offset]
 
 
 # ---------------------------------------------------------------------------
@@ -498,9 +583,12 @@ __all__ = [
     "ENV_CONTENT_PAGE_PER_CO",
     "ENV_CONTENT_PAGE_NUM_CTX",
     "ENV_CONTENT_PAGE_MAX_CHUNKS",
+    "ENV_CHUNK_ROLE_DIVERSIFY",
     "content_page_per_co_enabled",
     "resolve_content_page_num_ctx",
     "resolve_content_page_max_chunks",
+    "chunk_role_diversify_enabled",
+    "diversify_block_chunk_order",
     "page_chunk_token_budget",
     "chunk_token_weight",
     "cap_page_chunks",
