@@ -730,7 +730,7 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `NVIDIA_*` (vendor endpoint-registry row for the hosted large-model seat — `NVIDIA_API_KEY` / `NVIDIA_BASE_URL` / `NVIDIA_LARGE_MODEL`) | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 3 |
 | `SEMANTIK_*` (DART replacement — SemantiK semantic-cascade converter; also honors the legacy `DART_THETA_DEVICE` compat env) | [`SemantiK/CLAUDE.md § Opt-In Behavior Flags`](SemantiK/CLAUDE.md) | 85 |
 | `COURSEFORGE_*` / `COURSEPLANNER_*` / `TEXTBOOK_SYNTHESIS_*` | [`Courseforge/CLAUDE.md § Opt-In Behavior Flags`](Courseforge/CLAUDE.md) | 36 |
-| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root index (below) + [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 180 |
+| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root index (below) + [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 181 |
 
 ### Cross-cutting flags (root-owned)
 
@@ -814,6 +814,7 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `ED4ALL_KEY_TERMS_PAGE` | unset (off) | Feature I5 — per-terminal-objective deterministic **"Key Terms" page** gate |
 | `ED4ALL_NEW_BLOCK_TYPES` | unset (off) | IB5 gate for four framework block types: hook, multimedia, worked_example, diagram. |
 | `ED4ALL_REFLECTION_CALIBRATION` | unset (off) | FR-INT-03 gate for the B11 reflection predict-then-reveal calibration contract. |
+| `ED4ALL_REASONING_THINKING_OFF` | unset (off) | Injects the Nemotron "detailed thinking off" system directive + `chat_template_kwargs.enable_thinking=false` on every composed OpenAI-compatible call so reasoning-token output doesn't trip the finish_reason=length truncation guard. |
 | `ED4ALL_RECALL_SELF_CHECK` | unset (off) | Free-recall / cloze self-check variant gate |
 | `ED4ALL_MISCONCEPTION_RICH` | unset (off) | Named subject-specific misconception + productive-failure gate for the B03/B12 `misconception` block |
 | `ED4ALL_MAYER_CTML` | unset (off) | Mayer CTML 12-principles structural check enriching the UDL/multimedia surface |

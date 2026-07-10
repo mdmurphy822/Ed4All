@@ -98,6 +98,27 @@ ENV_REQUEST_TIMEOUT: str = "ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS"
 # bare library caller (no run id) is byte-identical to the pre-tap path.
 ENV_RUN_ID: str = "ED4ALL_RUN_ID"
 
+# Nemotron "detailed thinking off" toggle. NVIDIA Nemotron-3 REASONING models
+# emit ``<think>`` reasoning tokens by default plus a large system preamble;
+# a bulk-authoring call whose preamble + reasoning + answer exceeds
+# ``max_tokens`` trips the ``finish_reason == "length"`` anti-truncation guard
+# in ``_extract_text`` and CRASHES the phase. When this env is truthy the
+# client disables reasoning on every composed OpenAI-compatible call via a
+# belt-and-suspenders dual-injection (mirroring the Wave-113 ``json_mode``
+# rationale — servers ignore what they don't understand): (a) a ``detailed
+# thinking off`` SYSTEM directive (the ollama-path mechanism) and (b)
+# ``chat_template_kwargs={"enable_thinking": False}`` (the vLLM / HF-native
+# mechanism the ``nemotron_v3`` reasoning parser honors). Default OFF →
+# byte-identical to the legacy path (no messages change, no payload key added),
+# so an existing Qwen / dev-box deployment is unaffected. Parse-with-fallback
+# truthy semantics mirror the other ``ED4ALL_*`` boolean knobs.
+ENV_REASONING_THINKING_OFF: str = "ED4ALL_REASONING_THINKING_OFF"
+
+# The exact system-directive phrase the Nemotron ollama path keys off. Kept as
+# a module constant so the injection site and the regression test agree on the
+# literal.
+_REASONING_THINKING_OFF_DIRECTIVE: str = "detailed thinking off"
+
 
 def resolve_default_timeout() -> float:
     """Return the default per-request timeout when no explicit value.
@@ -118,6 +139,23 @@ def resolve_default_timeout() -> float:
     if not math.isfinite(parsed) or parsed <= 0:
         return DEFAULT_TIMEOUT_SECONDS
     return parsed
+
+
+def resolve_reasoning_thinking_off() -> bool:
+    """Return whether the Nemotron "detailed thinking off" toggle is on.
+
+    Reads :data:`ENV_REASONING_THINKING_OFF` and parses it as a boolean.
+    Truthy values are ``1`` / ``true`` / ``yes`` / ``on`` (case-insensitive,
+    whitespace-trimmed); anything else — including an unset / empty / garbage
+    value — resolves to ``False``. Read at call time (not construction) so a
+    test can monkeypatch the env per call, and so a live run can flip the
+    behavior without rebuilding client instances. Mirrors the
+    parse-with-fallback robustness of :func:`resolve_default_timeout`.
+    """
+    raw = os.environ.get(ENV_REASONING_THINKING_OFF)
+    if not raw or not str(raw).strip():
+        return False
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +431,16 @@ class OpenAICompatibleClient:
         # regress.
         if images:
             messages = self._attach_vision_blocks(messages, images)
+        # Nemotron "detailed thinking off": resolve the toggle once per call
+        # (env-read so a test / live run can flip it without rebuilding the
+        # client). When on, inject the system directive here — AFTER the vision
+        # rewrite (which targets the LAST user message, unaffected by a
+        # prepended system message) and via a fresh list (non-mutation
+        # contract). The companion ``chat_template_kwargs`` setdefault runs
+        # below, AFTER the ``extra_payload`` merge, so a caller override wins.
+        thinking_off = resolve_reasoning_thinking_off()
+        if thinking_off:
+            messages = self._inject_thinking_off_system(messages)
         payload: Dict[str, Any] = {
             "model": self._model,
             "messages": messages,
@@ -404,6 +452,14 @@ class OpenAICompatibleClient:
                 if key in {"model", "messages"}:
                     continue
                 payload[key] = value
+        # vLLM / HF-native mechanism: the ``nemotron_v3`` reasoning parser
+        # honors ``chat_template_kwargs.get("enable_thinking") is False``.
+        # ``setdefault`` AFTER the merge so an explicit caller
+        # ``extra_payload["chat_template_kwargs"]`` wins over our default.
+        if thinking_off:
+            payload.setdefault(
+                "chat_template_kwargs", {"enable_thinking": False}
+            )
 
         _call_start = time.monotonic()
         body, retry_count = self._post_with_retry(payload)
@@ -545,6 +601,47 @@ class OpenAICompatibleClient:
             "role": "user",
             "content": new_content,
         }
+        return rewritten
+
+    # ------------------------------------------------------------------
+    # Internals — Nemotron "detailed thinking off" directive
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _inject_thinking_off_system(
+        messages: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Return a NEW messages list carrying the reasoning-off directive.
+
+        The ollama-path mechanism for disabling Nemotron reasoning: ensure a
+        system directive containing the literal phrase
+        :data:`_REASONING_THINKING_OFF_DIRECTIVE` (``"detailed thinking off"``)
+        rides at the FRONT of the conversation.
+
+        - When ``messages[0]`` is already a system message with string content,
+          the directive is PREPENDED to that content (some servers only honor
+          the first system message, so a second one is never added).
+        - Otherwise a fresh ``{"role": "system", ...}`` message is INSERTED at
+          index 0.
+
+        Builds a fresh list (does NOT mutate the caller's list in place) — the
+        same non-mutation contract as :meth:`_attach_vision_blocks`, so a
+        caller retaining a reference to ``messages`` still sees its original.
+        """
+        directive = _REASONING_THINKING_OFF_DIRECTIVE
+        rewritten = list(messages)
+        first = rewritten[0] if rewritten else None
+        if (
+            isinstance(first, dict)
+            and first.get("role") == "system"
+            and isinstance(first.get("content"), str)
+        ):
+            rewritten[0] = {
+                **first,
+                "content": f"{directive}\n\n{first['content']}",
+            }
+        else:
+            rewritten.insert(0, {"role": "system", "content": directive})
         return rewritten
 
     # ------------------------------------------------------------------
@@ -1095,7 +1192,9 @@ __all__ = [
     "DEFAULT_TIMEOUT_SECONDS",
     "ENV_REQUEST_TIMEOUT",
     "ENV_RUN_ID",
+    "ENV_REASONING_THINKING_OFF",
     "resolve_default_timeout",
+    "resolve_reasoning_thinking_off",
     "DEFAULT_MAX_RETRIES",
     "DEFAULT_RETRY_STATUS_CODES",
     "DEFAULT_INITIAL_BACKOFF_SECONDS",

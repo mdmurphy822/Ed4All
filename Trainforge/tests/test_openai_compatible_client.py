@@ -708,6 +708,143 @@ def test_no_retry_after_header_uses_exponential_backoff():
     assert 0.0 <= slept[1] <= 2.0
 
 
+# ---------------------------------------------------------------------------
+# Nemotron "detailed thinking off" toggle (ED4ALL_REASONING_THINKING_OFF)
+# ---------------------------------------------------------------------------
+
+
+def _capture_request_body(
+    monkeypatch: Any,
+    *,
+    env: str | None,
+    messages: List[Dict[str, Any]],
+    extra_payload: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    """Run one chat_completion under a given env and return the request JSON.
+
+    Toggles ``ED4ALL_REASONING_THINKING_OFF`` via monkeypatch (with cleanup),
+    captures the outgoing request body in the MockTransport handler, and
+    returns the parsed JSON so a test can assert on messages + payload keys.
+    """
+    import json as _json
+
+    if env is None:
+        monkeypatch.delenv("ED4ALL_REASONING_THINKING_OFF", raising=False)
+    else:
+        monkeypatch.setenv("ED4ALL_REASONING_THINKING_OFF", env)
+
+    seen: List[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=_success_body("ok"))
+
+    client = _build(transport_handler=handler)
+    client.chat_completion(
+        messages,
+        max_tokens=64,
+        temperature=0.0,
+        extra_payload=extra_payload,
+    )
+    return _json.loads(seen[0].content.decode("utf-8"))
+
+
+def test_thinking_off_unset_is_byte_identical(monkeypatch):
+    """Flag unset → NO ``chat_template_kwargs`` key AND messages unchanged.
+
+    This is the hard backward-compat property: an existing Qwen / dev-box
+    deployment must see a byte-identical payload.
+    """
+    input_messages = [{"role": "user", "content": "hi"}]
+    body = _capture_request_body(
+        monkeypatch, env=None, messages=input_messages
+    )
+    assert "chat_template_kwargs" not in body
+    # Messages equal the input verbatim — no injected system directive.
+    assert body["messages"] == input_messages
+
+
+def test_thinking_off_on_no_existing_system_inserts_directive(monkeypatch):
+    """Flag on + no pre-existing system message → a system directive is
+    inserted at index 0 AND ``chat_template_kwargs`` is set."""
+    body = _capture_request_body(
+        monkeypatch,
+        env="1",
+        messages=[{"role": "user", "content": "hi"}],
+    )
+    first = body["messages"][0]
+    assert first["role"] == "system"
+    assert "detailed thinking off" in first["content"]
+    # Original user message preserved after the inserted system message.
+    assert body["messages"][1] == {"role": "user", "content": "hi"}
+    assert body["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+def test_thinking_off_on_prepends_to_existing_system(monkeypatch):
+    """Flag on + pre-existing system message → the directive is PREPENDED
+    (not replaced); still exactly one system message."""
+    body = _capture_request_body(
+        monkeypatch,
+        env="true",
+        messages=[
+            {"role": "system", "content": "You are a helpful tutor."},
+            {"role": "user", "content": "hi"},
+        ],
+    )
+    system_msgs = [m for m in body["messages"] if m.get("role") == "system"]
+    assert len(system_msgs) == 1
+    content = system_msgs[0]["content"]
+    assert content.startswith("detailed thinking off")
+    # Original system text retained.
+    assert "You are a helpful tutor." in content
+    assert body["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+def test_thinking_off_caller_chat_template_kwargs_wins(monkeypatch):
+    """Flag on + caller-supplied ``chat_template_kwargs`` → caller wins.
+
+    ``setdefault`` must not clobber an explicit ``extra_payload`` override.
+    """
+    body = _capture_request_body(
+        monkeypatch,
+        env="on",
+        messages=[{"role": "user", "content": "hi"}],
+        extra_payload={"chat_template_kwargs": {"enable_thinking": True}},
+    )
+    assert body["chat_template_kwargs"] == {"enable_thinking": True}
+
+
+def test_thinking_off_does_not_mutate_callers_messages(monkeypatch):
+    """The caller's messages list is never mutated in place (non-mutation
+    contract, same as ``_attach_vision_blocks``)."""
+    monkeypatch.setenv("ED4ALL_REASONING_THINKING_OFF", "yes")
+    input_messages = [{"role": "user", "content": "hi"}]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_success_body("ok"))
+
+    client = _build(transport_handler=handler)
+    client.chat_completion(input_messages)
+    # Caller's list still holds exactly the original single user message.
+    assert input_messages == [{"role": "user", "content": "hi"}]
+
+
+def test_resolve_reasoning_thinking_off_parse_with_fallback(monkeypatch):
+    """Truthy parse: ``1/true/yes/on`` (case-insensitive) → True; else False."""
+    from Trainforge.generators._openai_compatible_client import (
+        resolve_reasoning_thinking_off,
+    )
+
+    for truthy in ("1", "true", "TRUE", "Yes", "on", "  on  "):
+        monkeypatch.setenv("ED4ALL_REASONING_THINKING_OFF", truthy)
+        assert resolve_reasoning_thinking_off() is True
+    for falsey in ("0", "false", "no", "off", "garbage", ""):
+        monkeypatch.setenv("ED4ALL_REASONING_THINKING_OFF", falsey)
+        assert resolve_reasoning_thinking_off() is False
+    monkeypatch.delenv("ED4ALL_REASONING_THINKING_OFF", raising=False)
+    assert resolve_reasoning_thinking_off() is False
+
+
 def test_compute_backoff_upper_bound_matches_legacy_schedule():
     """``_compute_backoff`` never exceeds the legacy fixed exponential.
 
