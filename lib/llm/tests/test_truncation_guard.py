@@ -74,13 +74,16 @@ def test_custom_fraction_and_floor():
 
 
 # ---------------------------------------------------------------------------
-# Defect 3 — mid-size truncation arm (reported ~= window cap but > estimate/2)
+# Mid-size truncation arm (redesigned 2026-07-10). A mid-size clip now requires
+# POSITIVE evidence, NOT coincidence with the assumed window:
+#   (1) the assembled estimate overflows the assumed window (est >= 1.1*num_ctx)
+#   (2) reported is pinned at the ceiling from below ([0.98, 1.02]*num_ctx)
 # ---------------------------------------------------------------------------
 def test_mid_size_arm_catches_8192_cap_on_12k_estimate():
     """The bug the /2 severe arm misses: an 8192-served window on a ~12k
     estimate reports ~8194 (> estimate/2 = 6000, so the severe arm PASSES),
-    but the head WAS silently dropped. The mid-size arm — materially below
-    the estimate AND sitting at the known window cap — trips it."""
+    but the head WAS silently dropped. The mid-size arm trips it — the estimate
+    (12000) overflows 1.1*8192=9011 AND 8194 is inside [0.98, 1.02]*8192."""
     with pytest.raises(PromptTruncatedError) as exc:
         check_prompt_not_truncated(
             8194, 12000, model_id="qwen2.5:7b", num_ctx=8192
@@ -89,44 +92,94 @@ def test_mid_size_arm_catches_8192_cap_on_12k_estimate():
 
 
 def test_mid_size_arm_needs_both_conditions():
-    """Materially-below alone must NOT trip (the estimate over-counts ~1.6x,
-    so a NON-truncated call legitimately reports ~0.6x the estimate). The
-    reported count must ALSO sit at the served-window cap."""
-    # reported 7000 is materially below 12000 (< 9000) but NOWHERE near the
-    # 16384 cap → not consistent with truncation → no-op.
+    """Condition 2 alone (reported near a window) must NOT trip when the
+    estimate does not overflow the assumed window — a clip is not even
+    plausible."""
+    # est 12000 does NOT clear 1.1*16384=18022 (condition 1 fails), so even
+    # though 7000 is far from the 16384 cap the arm is off regardless → no-op.
     check_prompt_not_truncated(7000, 12000, model_id="m", num_ctx=16384)
 
 
+def test_mid_size_arm_noops_when_estimate_fits_under_window():
+    """A prompt whose estimate fits comfortably under num_ctx can NEVER
+    mid-size-trip, no matter where `reported` lands (incl. right at the cap)."""
+    # est 8000 < 1.1*8192=9011 → condition 1 fails; reported 8192 sits exactly
+    # at the cap but is irrelevant because the prompt could not have overflowed.
+    check_prompt_not_truncated(8192, 8000, model_id="m", num_ctx=8192)
+
+
 def test_mid_size_arm_noops_when_reported_above_cap_band():
-    """A reported count above the cap band is not a window-truncation signal."""
-    # reported 9000 vs num_ctx 8192: outside the +/-5% (floor 64) band, and
-    # not below estimate*0.75=6600 → no-op.
-    check_prompt_not_truncated(9000, 8800, model_id="m", num_ctx=8192)
+    """A reported count above the [0.98, 1.02] ceiling band is not a
+    window-truncation signal even when the estimate overflows."""
+    # est 12000 overflows 1.1*8192=9011 (condition 1 met) but reported 9000 is
+    # above 1.02*8192=8356 → condition 2 fails → no-op.
+    check_prompt_not_truncated(9000, 12000, model_id="m", num_ctx=8192)
 
 
 # ---------------------------------------------------------------------------
-# Recalibration (2026-07-09) — the mid-size arm must NOT false-trip a
-# legitimate near-full-window prompt, but MUST still trip a report that
-# saturated the window cap. The 2.5-c/t estimate over-counts ~1.35x, so a real
-# 15.5k-token prompt reports ~15.5k against a 21k UPPER-bound estimate.
+# Live FALSE-POSITIVE kill (2026-07-10). The observed FP: a HEALTHY 16k server,
+# an ASSUMED window of 4096, true prompts ~4.0-4.3k tokens whose 2.5-c/t
+# estimate over-shoots 4096. Condition 1 (estimate over-window) is satisfied,
+# so the ONLY separator is where `reported` falls vs the ceiling band. Reports
+# in the tails of the true-size distribution (strictly below 0.98*num_ctx or
+# above 1.02*num_ctx) must NOT trip. A 9637-token probe round-trips unclipped
+# on the real 16k server, confirming nothing was actually truncated.
 # ---------------------------------------------------------------------------
-def test_mid_size_arm_no_false_trip_on_legit_full_window_prompt():
-    """est 21000 (upper bound), reported 15500, num_ctx 16384 → must NOT trip.
-    Real tokenization ~3.38 c/t means calibrated estimate ~15532, so 15500 is
-    a legitimate near-full-window prompt that FITS the 16384 window; it sits
-    BELOW the cap ceiling (884 below, outside a report>=cap saturation) and is
-    NOT materially below the calibrated estimate, so neither arm fires."""
-    check_prompt_not_truncated(15500, 21000, model_id="qwen2.5:7b", num_ctx=16384)
+def test_live_fp_reported_below_band_does_not_trip():
+    """True ~3.9k prompt, assumed window 4096, estimate ~5400 (over-window).
+    reported 3900 is strictly BELOW 0.98*4096=4014.08 → NOT pinned at the
+    ceiling → must NOT trip (the old rule false-fired here)."""
+    check_prompt_not_truncated(3900, 5400, model_id="qwen2.5:7b", num_ctx=4096)
 
 
+def test_live_fp_reported_above_band_does_not_trip():
+    """True ~4.3k prompt, assumed window 4096, estimate ~5400 (over-window).
+    reported 4300 is ABOVE 1.02*4096=4177.92 → outside the ceiling band →
+    must NOT trip (a healthy 16k server whose true size just exceeded the
+    assumed 4096 cap)."""
+    check_prompt_not_truncated(4300, 5400, model_id="qwen2.5:7b", num_ctx=4096)
+
+
+# ---------------------------------------------------------------------------
+# True-POSITIVE detection preserved.
+# ---------------------------------------------------------------------------
 def test_mid_size_arm_trips_when_reported_saturates_cap():
-    """est 21000, reported 16386, num_ctx 16384 → MUST trip. reported has
-    reached/exceeded the window ceiling (16386 >= 16384, within the cap band)
-    — the saturation signature of a head-truncation — so it trips even though
-    16386 is NOT materially below the (over-counting) 21000 upper bound."""
+    """est 21000, reported 16386, num_ctx 16384 → MUST trip. estimate overflows
+    1.1*16384=18022 AND 16386 is inside [0.98, 1.02]*16384 (the ceiling band) —
+    the signature of a head-clip."""
     with pytest.raises(PromptTruncatedError) as exc:
         check_prompt_not_truncated(16386, 21000, model_id="qwen2.5:7b", num_ctx=16384)
     assert "16384" in str(exc.value)
+
+
+def test_tp_clipped_prompt_estimate_1_5x_reported_at_cap_trips():
+    """The canonical genuine clip: estimate 1.5*num_ctx, reported == num_ctx →
+    MUST still trip. est 6144 overflows 1.1*4096=4505.6 AND reported 4096 sits
+    exactly in [0.98, 1.02]*4096."""
+    with pytest.raises(PromptTruncatedError) as exc:
+        check_prompt_not_truncated(4096, 6144, model_id="qwen2.5:7b", num_ctx=4096)
+    assert "num_ctx=4096" in str(exc.value)
+
+
+def test_tp_severe_arm_untouched():
+    """The historical severe case (reported < estimate/2) must still trip,
+    independent of any window/cap consideration."""
+    with pytest.raises(PromptTruncatedError):
+        check_prompt_not_truncated(2000, 5000, model_id="m", num_ctx=16384)
+
+
+def test_residual_fp_band_is_documented_and_still_trips():
+    """HONEST residual: an honestly-served prompt whose TRUE size lands exactly
+    at the assumed cap is INDISTINGUISHABLE from a clip and still trips. This
+    pins the documented inner-band limit so a future narrowing is a deliberate
+    change, not a silent one. est 5400 over 1.1*4096, reported 4096 in band."""
+    with pytest.raises(PromptTruncatedError) as exc:
+        check_prompt_not_truncated(4096, 5400, model_id="m", num_ctx=4096)
+    # Message surfaces the estimate/reported ratio + the larger-real-window
+    # caveat so an operator can spot the ambiguity.
+    msg = str(exc.value)
+    assert "estimate/reported" in msg
+    assert "ACTUAL window is LARGER" in msg
 
 
 # ---------------------------------------------------------------------------

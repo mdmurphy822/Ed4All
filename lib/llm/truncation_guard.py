@@ -146,8 +146,8 @@ def check_prompt_not_truncated(
     num_ctx: int,
     reported_fraction: float = 0.5,
     min_estimate: int = 256,
-    materially_below_fraction: float = 0.75,
-    cap_margin: float = 0.05,
+    over_window_fraction: float = 1.1,
+    cap_margin: float = 0.02,
 ) -> None:
     """Raise when the server silently truncated the prompt HEAD.
 
@@ -175,38 +175,65 @@ def check_prompt_not_truncated(
         prompts carry too little signal for the ratio to be meaningful,
         and a small window can't truncate them anyway). Mirrors the
         answer path's ``_TRUNCATION_MIN_ESTIMATE_TOKENS``.
-    materially_below_fraction:
-        MID-SIZE arm — fraction below which ``reported`` is "materially
-        below" the CALIBRATED estimate (default ``0.75``). The 2.5-char/token
-        estimate is a ~1.35x UPPER bound (2026-07-09 measurement: real
-        tokenization ~3.38 c/t), so this fraction is applied to the estimate
-        CONVERTED by that ratio (``estimated * 2.5/3.38``) — an effective
-        ~0.55x of the raw upper bound — so a NON-truncated near-full-window
-        call (reporting ~0.74x the raw estimate) does not false-trip. The
-        mid-size arm still requires the SECOND condition (``reported`` sitting
-        right at the served-window cap); a report that has reached/exceeded
-        the cap trips on the cap-saturation signal alone.
+    over_window_fraction:
+        MID-SIZE arm, condition 1 — the assembled prompt must be over the
+        ASSUMED window by a real margin before a clip is even plausible
+        (default ``1.1`` → ``estimated >= 1.1 * num_ctx``). This is POSITIVE
+        evidence: a prompt whose (over-counting 2.5-c/t) estimate does not
+        clear ``1.1 * num_ctx`` could not have overflowed the assumed window,
+        so its reported count landing near ``num_ctx`` is coincidence, not a
+        clip — and it must NEVER mid-size-trip. Replaces the old
+        ``materially_below_fraction`` degenerate rule, which (because the
+        estimate over-counts ~1.35x) was satisfied by virtually every honestly
+        served prompt and collapsed the arm to "reported ~= num_ctx", false-
+        firing on any prompt whose TRUE token count coincidentally landed near
+        the assumed cap (the live ``outline_input_truncated`` false-positive).
     cap_margin:
-        MID-SIZE arm — relative tolerance for "reported sits at the served
-        window cap" (default ``0.05`` → within +/-5% of ``num_ctx``, floor
-        64 tokens). When the server truncates to its window, the reported
-        prompt-token count lands ~= ``num_ctx``; combined with materially-
-        below-estimate that is the signature of a mid-size head-truncation
-        the ``/2`` severe arm misses (e.g. an 8192-served window on a ~12k
-        estimate reports ~8194 > estimate/2 and would otherwise PASS).
+        MID-SIZE arm, condition 2 — relative half-width of the "reported is
+        pinned AT the window ceiling from below" band (default ``0.02`` →
+        ``0.98 * num_ctx <= reported <= 1.02 * num_ctx``). When a server
+        actually clips to its window, ``usage.prompt_tokens`` lands within a
+        whisker of ``num_ctx``; combined with condition 1 that is the
+        signature of a mid-size head-truncation the ``/2`` severe arm misses
+        (e.g. an 8192-served window on a ~12k estimate reports ~8194 >
+        estimate/2 and would otherwise PASS). The lower bound is deliberately
+        tight (``0.98``, not the old ``0.95``) to shrink — but NOT eliminate —
+        the residual-FP band (see Notes).
 
     Raises
     ------
     PromptTruncatedError:
         When ``reported`` is a positive int, ``estimated`` clears the
         ``min_estimate`` floor, and EITHER (severe) ``reported < estimated
-        * reported_fraction`` OR (mid-size) ``reported`` is materially below
-        the estimate AND consistent with the served-window cap. The message
-        names the two operator fixes (raise the server window AND the
-        matching num_ctx env var).
+        * reported_fraction`` OR (mid-size) BOTH the assembled estimate
+        overflows the assumed window (``estimated >= over_window_fraction *
+        num_ctx``) AND ``reported`` is pinned at the window ceiling from below
+        (``|reported - num_ctx| <= cap_margin * num_ctx``). The message names
+        the two operator fixes (raise the server window AND the matching
+        num_ctx env var) and surfaces the estimate/reported ratio so an
+        operator can judge a borderline call.
 
     Notes
     -----
+    **Residual false-positive band (honest limit).** A genuine head-clip and
+    an honestly-served prompt whose TRUE token count happens to land inside
+    ``[0.98, 1.02] * num_ctx`` are INDISTINGUISHABLE from
+    ``usage.prompt_tokens`` alone: both report a count pinned at the assumed
+    ceiling. The live FP had a HEALTHY 16k server, an assumed window of 4096,
+    and true prompts ~4.0-4.3k tokens whose 2.5-c/t estimate over-shot 4096 —
+    so condition 1 (estimate over-window) was satisfied and the ONLY separator
+    was where ``reported`` fell relative to the cap band. Narrowing the band to
+    ``[0.98, 1.02]`` (from the old ``[0.95, 1.05]``) kills the tails of that
+    distribution (reported strictly below ``0.98 * num_ctx`` or above
+    ``1.02 * num_ctx`` no longer trips), but a served prompt whose true size
+    lands *exactly* at the assumed cap will still trip. There is no
+    deterministic separator for that inner band without a healthy-completion
+    signal (``finish_reason`` / completion-token count), which this helper does
+    not receive; the message therefore surfaces the estimate/reported ratio so
+    an operator can spot the ambiguity, and the real fix for a chronic FP is to
+    set the num_ctx env var to the server's ACTUAL window (so the assumed cap
+    stops coinciding with real prompt sizes).
+
     ``PromptTruncatedError`` is imported lazily from
     ``lib.retrieval.answer_backend`` so this module stays a leaf with no
     import-time dependency on the retrieval package (the rewrite tier
@@ -221,50 +248,60 @@ def check_prompt_not_truncated(
     if estimated < min_estimate:
         return  # too small for the ratio to be meaningful.
     threshold = estimated * reported_fraction
-    # SEVERE arm (legacy): reported far below the raw upper-bound estimate.
-    # Kept on the raw 2.5-c/t bound — a >2x shortfall is unambiguous under
-    # either tokenization, and a normal ~0.74x report never clears it.
+    # SEVERE arm (legacy, UNTOUCHED): reported far below the raw upper-bound
+    # estimate. Kept on the raw 2.5-c/t bound — a >2x shortfall is unambiguous
+    # under either tokenization, and a normal ~0.74x report never clears it.
     severe = reported_int < threshold
-    # MID-SIZE arm. The server truncated the prompt to its window, so the
-    # reported prompt-token count lands AT that window (~= num_ctx) even though
-    # it is only modestly below the local estimate (the /2 severe arm would let
-    # it pass). Recalibrated (2026-07-09): the 2.5-c/t estimate is a ~1.35x
-    # UPPER bound, so a NON-truncated call legitimately reports ~0.74x the
-    # estimate — the "materially below" comparison therefore runs against the
-    # estimate CONVERTED by the measured 3.38 c/t ratio, not the raw upper
-    # bound, so a legitimate near-full-window prompt (reporting ~0.74x the
-    # estimate and sitting just under the cap) no longer false-trips.
+    # MID-SIZE arm (redesigned 2026-07-10). A mid-size clip requires POSITIVE
+    # evidence, not mere coincidence with the assumed window. BOTH must hold:
+    #   (1) the ASSEMBLED prompt overflows the ASSUMED window by a real margin
+    #       (estimated >= over_window_fraction * num_ctx) — so a clip is even
+    #       plausible. A prompt whose estimate fits comfortably under num_ctx
+    #       can NEVER mid-size-trip, no matter where `reported` lands.
+    #   (2) `reported` is pinned at the window ceiling FROM BELOW
+    #       ([0.98, 1.02] * num_ctx) — a real clip lands usage within a whisker
+    #       of num_ctx.
+    # The old rule ("reported materially below a calibrated estimate AND within
+    # +/-5% of num_ctx") degenerated to "reported ~= num_ctx" because the
+    # 2.5-c/t estimate over-counts ~1.35x, so `materially_below` was true for
+    # virtually every honest prompt — false-firing on any prompt whose TRUE
+    # token count coincidentally sat near the assumed cap (the live
+    # outline_input_truncated FP on a healthy 16k server, assumed window 4096).
+    over_window = num_ctx > 0 and estimated >= over_window_fraction * float(num_ctx)
+    if num_ctx > 0:
+        cap_tolerance = float(num_ctx) * cap_margin
+        at_window_cap = (
+            float(num_ctx) - cap_tolerance
+        ) <= reported_int <= (float(num_ctx) + cap_tolerance)
+    else:
+        at_window_cap = False
+    mid_size = over_window and at_window_cap
+    # Surfaced in the message so an operator can judge a borderline call that
+    # falls in the irreducible residual-FP band (see the docstring Notes).
     calibrated_estimate = estimated * (
         UPPER_BOUND_CHARS_PER_TOKEN / MEASURED_CHARS_PER_TOKEN
     )
-    materially_below = reported_int < calibrated_estimate * materially_below_fraction
-    cap_tolerance = max(64, int(int(num_ctx) * cap_margin)) if num_ctx > 0 else 0
-    at_window_cap = (
-        num_ctx > 0 and abs(reported_int - int(num_ctx)) <= cap_tolerance
-    )
-    # A report that has REACHED/exceeded the window ceiling (within the cap
-    # band above) is the saturation signature of a head-truncation — the server
-    # clipped the prompt to its window, so usage lands at ~num_ctx regardless of
-    # how far below the (over-counting) estimate that is. A report BELOW the
-    # ceiling only trips when the CALIBRATED estimate corroborates that the
-    # untruncated prompt was materially larger than what came back.
-    reached_cap = num_ctx > 0 and reported_int >= int(num_ctx)
-    mid_size = at_window_cap and (reached_cap or materially_below)
     if severe or mid_size:
         # Lazy import keeps this module a leaf (no retrieval import at
         # module load). PromptTruncatedError is the canonical fail-closed
         # error type shared with the answer path.
         from lib.retrieval.answer_backend import PromptTruncatedError
 
+        ratio = (float(estimated) / reported_int) if reported_int else 0.0
         raise PromptTruncatedError(
             f"Prompt HEAD was silently truncated by the model server for "
             f"model {model_id!r}: local UPPER-bound estimate ~{estimated} "
             f"prompt tokens (~{int(calibrated_estimate)} at the measured 3.38 "
-            f"char/token) but the server reported {reported_int} — a shortfall "
-            f"/ at-cap saturation consistent with the served context window "
-            f"(num_ctx={num_ctx}) being too small for this prompt, so the "
-            f"system prompt + leading tokens were dropped and any output is "
-            f"ungrounded. Fixes: raise the server "
+            f"char/token) but the server reported {reported_int} "
+            f"(estimate/reported ~{ratio:.2f}x) — the assembled prompt "
+            f"overflows the assumed context window and the reported count is "
+            f"pinned at that window ceiling (num_ctx={num_ctx}), the signature "
+            f"of a head-clip that dropped the system prompt + leading tokens, "
+            f"leaving any output ungrounded. NOTE: if the server's ACTUAL "
+            f"window is LARGER than num_ctx={num_ctx}, a true prompt size that "
+            f"coincidentally landed near {num_ctx} can trip this without a real "
+            f"clip — set the num_ctx env var to the server's real window to "
+            f"rule that out. Fixes: raise the server "
             f"window (OLLAMA_CONTEXT_LENGTH or a Modelfile 'PARAMETER "
             f"num_ctx') AND set the matching num_ctx env var "
             f"(ED4ALL_ANSWER_NUM_CTX for answers, ED4ALL_REWRITE_NUM_CTX "
