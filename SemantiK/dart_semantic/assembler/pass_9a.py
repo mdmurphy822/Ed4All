@@ -586,7 +586,22 @@ def run_pass_9a(
             lvl = _extract_heading_level(region_html[idx]) or 2
         heading_indices.append(idx)
         raw_levels.append(lvl)
-    normalized = normalize_heading_levels(raw_levels)
+    # ITEM4 Phase 3 — the containment builder is the ONE owner of STRUCTURAL
+    # heading levels. When the tree covers every heading region, APPLY its
+    # levels (computed from the SAME level_hint/<hN>/2 ladder + the SAME
+    # normalize_heading_levels, so byte-identical to the legacy local
+    # computation — a pure ownership move locked by the §5 parity test).
+    # ``raw_levels`` is still collected for the ``missing_title`` gap check
+    # (which reads RAW levels). Flag off / uncovered tree -> legacy computation.
+    if (
+        resolve_containment_mode()
+        and containment_tree is not None
+        and heading_indices
+        and all(i in containment_tree.levels for i in heading_indices)
+    ):
+        normalized = [containment_tree.levels[i] for i in heading_indices]
+    else:
+        normalized = normalize_heading_levels(raw_levels)
     sub_task_log["heading_normalize"] = (
         f"in={raw_levels} out={normalized}" if heading_indices else "no headings"
     )

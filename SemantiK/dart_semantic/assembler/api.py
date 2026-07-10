@@ -95,6 +95,43 @@ def assemble_document(
     return _finalize_heading_contiguity(post)
 
 
+def _count_structural_heading_drift(doc: AssembledDoc, new_html: str) -> int:
+    """Count STRUCTURAL headings whose level the whole-doc contiguity pass
+    CHANGED (ITEM4 Phase 3 diagnostic — expected 0).
+
+    A structural heading is a ``sub_task_log['region_html']`` fragment carrying a
+    Sub-task-2-injected ``<hN id="...">``. The id survives the contiguity pass
+    (it re-levels only, never touches ids), so we match by id and compare the
+    level. A change means the region-blind doc pass overrode a level the
+    containment builder owns — a builder bug, surfaced loudly (not asserted).
+    """
+    import re as _re
+
+    region_html = (doc.sub_task_log or {}).get("region_html") or []
+    open_re = _re.compile(r"<h([1-6])\b([^>]*)>", _re.IGNORECASE)
+    id_re = _re.compile(r'\bid\s*=\s*"([^"]+)"')
+    drift = 0
+    for frag in region_html:
+        if not frag:
+            continue
+        om = open_re.search(frag)
+        if om is None:
+            continue
+        idm = id_re.search(om.group(2) or "")
+        if idm is None:
+            continue
+        hid = idm.group(1)
+        orig_level = int(om.group(1))
+        nm = _re.search(
+            r'<h([1-6])\b[^>]*\bid\s*=\s*"' + _re.escape(hid) + r'"',
+            new_html,
+            _re.IGNORECASE,
+        )
+        if nm is not None and int(nm.group(1)) != orig_level:
+            drift += 1
+    return drift
+
+
 def _finalize_heading_contiguity(doc: AssembledDoc) -> AssembledDoc:
     """Re-level EVERY ``<hN>`` in the final HTML to a contiguous tree.
 
@@ -110,11 +147,26 @@ def _finalize_heading_contiguity(doc: AssembledDoc) -> AssembledDoc:
     unchanged (``html`` byte-identical, ``heading_tree`` untouched). When
     a rewrite occurs, ``heading_tree`` is re-derived from the corrected
     HTML so the metadata matches the emitted levels.
+
+    ITEM4 Phase 3 — this whole-doc pass is DEMOTED to verification + embedded-tag
+    repair for STRUCTURAL headings: the containment builder owns structural
+    heading levels (pass_9a Sub-task 2 applies ``tree.levels``), so if this pass
+    re-levels a heading that IS a structural heading region (matched by its
+    Sub-task-2-injected id), that is a builder disagreement — counted as
+    ``sub_task_log["heading_contiguity_structural_drift"]`` (expected 0, a loud
+    diagnostic NOT an assert). Re-levels of specialist-EMBEDDED ``<hN>`` tags
+    (the only thing this region-blind pass can see that the tree cannot) remain
+    silent normal operation.
     """
+    from ..containment import resolve_containment_mode
     from .heading_contiguity import normalize_document_heading_levels
     from .pass_9a import _HEADING_CLOSE_RE, _HEADING_OPEN_RE
 
     new_html = normalize_document_heading_levels(doc.html)
+    if resolve_containment_mode():
+        drift = _count_structural_heading_drift(doc, new_html)
+        doc.sub_task_log = dict(doc.sub_task_log or {})
+        doc.sub_task_log["heading_contiguity_structural_drift"] = drift
     if new_html == doc.html:
         return doc
 

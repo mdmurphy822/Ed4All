@@ -1,5 +1,15 @@
 """Whole-document heading-contiguity normalization (post-assembly).
 
+ITEM4 Phase 3 — OWNERSHIP MOVE: the containment builder
+(``containment._heading_levels`` via ``pass_9a`` Sub-task 2, apply-only) is now
+the ONE decider of STRUCTURAL heading levels. This whole-doc pass is DEMOTED to
+(a) embedded-tag repair (the only thing a region-blind string pass sees that the
+region-granular tree cannot) and (b) VERIFICATION: if it re-levels a heading that
+IS a structural heading region, that is a builder disagreement, surfaced as
+``sub_task_log['heading_contiguity_structural_drift']`` (expected 0;
+``api._count_structural_heading_drift``) — a loud diagnostic, not an assert, so
+the safety net doing its job never fails a real doc.
+
 Stage 9's Sub-task 2 (``pass_9a``) normalizes the heading tree only over
 regions whose ``Region.kind == "heading"``. That is correct for the
 STRUCTURAL headings the council/structure-graph identified — but it does
