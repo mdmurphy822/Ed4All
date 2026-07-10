@@ -1266,3 +1266,55 @@ def test_mc_cf_term_quadratic_wrong_claim_flags() -> None:
         "discriminant 7 != 1 for the span-borne x^2+5x+6 -> flags (a detection the "
         "delimited-only harvest could not make)"
     )
+
+
+# --------------------------------------------------------------------- #
+# Self-check COMPONENT-DIV segment boundary (third precision round):
+# a worked system's correct pair must not pool with a foreign equation
+# inside a <div class="self-check"> component (no Self-Check heading).
+# --------------------------------------------------------------------- #
+
+
+_SELF_CHECK_DIV_FP = """
+<section data-cf-content-type="concept">
+  <p>Solve the system.</p>
+  \\[\\begin{cases} y = -4x + 2 \\\\ 2x + y = 0 \\end{cases}\\]
+  <div class="solution-line">The solution is \\((1, -2)\\).</div>
+  <div class="self-check self-check-item">
+    Determine if (2, -4) is a solution to \\(3x + y = 5\\).
+  </div>
+</section>
+"""
+
+_SELF_CHECK_DIV_TP = """
+<section data-cf-content-type="concept">
+  <p>Solve the system.</p>
+  \\[\\begin{cases} y = -4x + 2 \\\\ 2x + y = 0 \\end{cases}\\]
+  <div class="solution-line">The solution is \\((3, 1)\\).</div>
+  <div class="self-check self-check-item">
+    Determine if (2, -4) is a solution to \\(3x + y = 5\\).
+  </div>
+</section>
+"""
+
+
+def test_self_check_component_div_does_not_pool() -> None:
+    result = _run([_block(
+        block_id="p#concept_sc_div_fp", block_type="concept",
+        content=_SELF_CHECK_DIV_FP,
+    )])
+    assert not _wrong_codes(result), (
+        "(1,-2) solves its own system; the self-check DIV's foreign equation "
+        "3x+y=5 must sit in its own segment and never pool"
+    )
+
+
+def test_self_check_component_div_tp_preserved() -> None:
+    result = _run([_block(
+        block_id="p#concept_sc_div_tp", block_type="concept",
+        content=_SELF_CHECK_DIV_TP,
+    )])
+    assert _wrong_codes(result), (
+        "(3,1) fails the block's OWN system (2x+y: 7 != 0) -> must still flag "
+        "even with a self-check div present"
+    )

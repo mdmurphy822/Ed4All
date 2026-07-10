@@ -517,6 +517,7 @@ _RE_PROBLEM_RESTART = re.compile(
     r"|>\s*example(?:\s+\d+)?\b"       # heading "<h3>Example</h3>" / "Example 2"
     r"|>\s*self[\s-]*check\b"          # heading "Self-Check" / "Self Check"
     r"|>\s*try\s+it\b"                 # heading "Try It"
+    r"|<\w+[^>]*\bclass=\"[^\"]*self-check[^\"]*\""  # self-check COMPONENT div
     r")"
 )
 
