@@ -12372,9 +12372,121 @@ def _build_outline_curie_minter(
         }
         return new_block, meta
 
+    def _domain_curies(block: Any) -> List[str]:
+        """Return the block's per-course minted DOMAIN CURIEs (keys of the
+        minted map), preserving list order and ignoring generic tokens."""
+        content = getattr(block, "content", None)
+        if not isinstance(content, dict):
+            return []
+        return [
+            c for c in (content.get("curies") or [])
+            if isinstance(c, str) and c in minted_map
+        ]
+
+    def _page_prefix(block: Any) -> str:
+        """The block's page id — the ``block_id`` prefix before ``#``
+        (shape ``{page_id}#{block_type}_{slug}_{idx}``)."""
+        bid = getattr(block, "block_id", "") or ""
+        return bid.split("#", 1)[0]
+
+    def sibling_fallback_sweep(
+        blocks: List[Any],
+    ) -> "List[Tuple[int, Any, Dict[str, Any]]]":
+        """SECOND-sweep sibling-page CURIE inheritance (order-independent).
+
+        Runs AFTER the per-block ``mint_block`` sweep has populated the
+        blocks list, so it observes the FINAL minted state regardless of
+        block order. For every block that STILL carries no domain CURIE
+        (its key_claims + source-chunks + objective-refs surfaces all
+        missed), it inherits the modal (most frequent) minted domain
+        CURIE(s) — capped at 2 — from its same-page siblings that DID end
+        up with a domain CURIE (pre-existing or minted earlier this pass).
+        A page's blocks share the page's chunk universe and objective
+        scope, so the page's dominant concept is genuinely the support
+        block's subject — grounded inheritance, NOT fabrication. When NO
+        same-page sibling carries a domain CURIE, the block inherits
+        nothing (unchanged fail-closed behavior).
+
+        Returns ``[(idx, new_block, meta), ...]`` for every block that
+        inherited; the caller applies them to its own list representation
+        and emits the decision capture. DETERMINISTIC: the modal tie-break
+        sorts by (frequency desc, CURIE lexicographically), never by
+        dict / set iteration order — so it is stable under PYTHONHASHSEED.
+        """
+        from collections import Counter, defaultdict
+
+        # Per-page frequency of each domain CURIE (count = number of blocks
+        # on that page carrying it) + per-page donor-block count. Built in
+        # a FIRST loop over the whole list so per-candidate inheritance is
+        # independent of block order.
+        page_curie_counts: "Dict[str, Counter]" = defaultdict(Counter)
+        page_donor_count: "Dict[str, int]" = defaultdict(int)
+        for b in blocks:
+            if b is None:
+                continue
+            dc = _domain_curies(b)
+            if not dc:
+                continue
+            page = _page_prefix(b)
+            page_donor_count[page] += 1
+            for c in set(dc):
+                page_curie_counts[page][c] += 1
+
+        results: "List[Tuple[int, Any, Dict[str, Any]]]" = []
+        for idx, b in enumerate(blocks):
+            if b is None:
+                continue
+            content = getattr(b, "content", None)
+            if not isinstance(content, dict):
+                continue
+            if _domain_curies(b):
+                # Already anchored (pre-existing or first-sweep mint) —
+                # never overwrite a real domain CURIE.
+                continue
+            page = _page_prefix(b)
+            counts = page_curie_counts.get(page)
+            if not counts:
+                # No same-page sibling carries a domain CURIE — fail
+                # closed, mint nothing.
+                continue
+            # Modal selection, deterministic: frequency descending, then
+            # CURIE lexicographically ascending (never dict / set order).
+            # Capped at 2 inherited CURIEs.
+            ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+            inherited = [c for c, _ in ranked[:2]]
+            if not inherited:
+                continue
+            existing = [
+                c for c in (content.get("curies") or [])
+                if isinstance(c, str) and c
+            ]
+            merged = list(existing)
+            for c in inherited:
+                if c not in merged:
+                    merged.append(c)
+            new_content = dict(content)
+            new_content["curies"] = merged
+            new_block = _dc.replace(b, content=new_content)
+            meta = {
+                "block_id": b.block_id,
+                "minted_curies": inherited,
+                "matched_canonicals": [],
+                "matched_surface": "sibling_page_fallback",
+                "existing": existing,
+                "minted_map_size": len(minted_map),
+                "sibling_count": page_donor_count.get(page, 0),
+                "page_id": page,
+            }
+            results.append((idx, new_block, meta))
+        return results
+
     from types import SimpleNamespace
 
-    return SimpleNamespace(minted_map=minted_map, mint_block=mint_block)
+    return SimpleNamespace(
+        minted_map=minted_map,
+        mint_block=mint_block,
+        sibling_fallback_sweep=sibling_fallback_sweep,
+    )
 
 
 def _mint_outline_curies(
@@ -12438,6 +12550,16 @@ def _mint_outline_curies(
         minted_block_count += 1
         minted_curie_total += len(meta["minted_curies"])
         _emit_curie_minting_capture(capture, block, meta)
+
+    # SECOND sweep: sibling-page fallback. Runs after the per-block sweep
+    # so it observes the FINAL minted state (order-independent). A block
+    # whose key_claims + source-chunks + objective-refs all missed inherits
+    # the modal domain CURIE(s) from its same-page minted siblings.
+    for idx, new_block, meta in minter.sibling_fallback_sweep(outline_blocks):
+        outline_blocks[idx] = new_block
+        minted_block_count += 1
+        minted_curie_total += len(meta["minted_curies"])
+        _emit_curie_minting_capture(capture, new_block, meta)
 
     if minted_block_count:
         logger.info(
@@ -12525,6 +12647,15 @@ def remint_blocks_outline_jsonl(
         new_block, meta = minter.mint_block(block, None)
         if new_block is None or meta is None:
             continue
+        blocks[idx] = new_block
+        entries[idx] = _block_to_snake_case_entry(new_block)
+        reminted += 1
+        minted_curie_total += len(meta["minted_curies"])
+
+    # SECOND sweep: sibling-page fallback (shared minter layer, mirrors the
+    # in-phase _mint_outline_curies pass). Order-independent — reads the
+    # final minted state after the per-block sweep completes.
+    for idx, new_block, meta in minter.sibling_fallback_sweep(blocks):
         blocks[idx] = new_block
         entries[idx] = _block_to_snake_case_entry(new_block)
         reminted += 1
@@ -12789,6 +12920,46 @@ def _emit_curie_minting_capture(
     matched_surface = meta["matched_surface"]
     existing = meta["existing"]
     minted_map_size = meta["minted_map_size"]
+    sibling_count = meta.get("sibling_count")
+    page_id = meta.get("page_id")
+    if matched_surface == "sibling_page_fallback":
+        # Grounded sibling-page inheritance: neither key_claims,
+        # source-chunks, nor objective-refs matched a vocab surface form,
+        # so the block inherited its page's dominant minted CURIE(s) from
+        # same-page siblings. Rationale interpolates the sibling count +
+        # inherited CURIEs (dynamic-rationale contract).
+        rationale = (
+            f"Block {block.block_id} (type={block.block_type}) on page "
+            f"{page_id!r} matched no vocab surface form on key_claims, "
+            f"source-chunks, or objective-refs; it inherited the modal "
+            f"minted domain CURIE(s) {minted_curies} (cap 2) from "
+            f"{sibling_count} same-page sibling(s) that carry a minted "
+            f"domain CURIE — the page's shared chunk universe makes the "
+            f"page's dominant concept the block's grounded subject, so "
+            f"the anchoring gate has a prose-corpus-valid CURIE to anchor."
+        )
+    else:
+        rationale = (
+            f"Block {block.block_id} (type={block.block_type}) "
+            f"carried {'empty' if not existing else 'generic'} "
+            f"content['curies']={existing!r}; its {matched_surface} "
+            f"text matched {len(matched_canonicals)} of the "
+            f"{minted_map_size} domain-concept-vocabulary "
+            f"concepts, minting {minted_curies} from the "
+            f"per-course CURIE map so the anchoring gate has a "
+            f"prose-corpus-valid CURIE to anchor against."
+        )
+    ml_features = {
+        "block_id": block.block_id,
+        "minted_curie_count": len(minted_curies),
+        "vocabulary_concept_count": minted_map_size,
+        "matched_concept_count": len(matched_canonicals),
+        "matched_surface": matched_surface,
+        "had_generic_curies": bool(existing),
+    }
+    if matched_surface == "sibling_page_fallback":
+        ml_features["sibling_donor_count"] = sibling_count
+        ml_features["page_id"] = page_id
     try:
         capture.log_decision(
             decision_type="curie_minting",
@@ -12796,24 +12967,8 @@ def _emit_curie_minting_capture(
                 f"minted {len(minted_curies)} CURIE(s) onto "
                 f"block {block.block_id}"
             ),
-            rationale=(
-                f"Block {block.block_id} (type={block.block_type}) "
-                f"carried {'empty' if not existing else 'generic'} "
-                f"content['curies']={existing!r}; its {matched_surface} "
-                f"text matched {len(matched_canonicals)} of the "
-                f"{minted_map_size} domain-concept-vocabulary "
-                f"concepts, minting {minted_curies} from the "
-                f"per-course CURIE map so the anchoring gate has a "
-                f"prose-corpus-valid CURIE to anchor against."
-            ),
-            ml_features={
-                "block_id": block.block_id,
-                "minted_curie_count": len(minted_curies),
-                "vocabulary_concept_count": minted_map_size,
-                "matched_concept_count": len(matched_canonicals),
-                "matched_surface": matched_surface,
-                "had_generic_curies": bool(existing),
-            },
+            rationale=rationale,
+            ml_features=ml_features,
         )
     except Exception:  # noqa: BLE001
         pass
