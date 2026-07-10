@@ -1390,12 +1390,14 @@ def run_full_cascade(
     t = time.perf_counter()
     state, council_regions, feature_blocks = run_council(pdf_path)
     decisions = arbitrate(state, council_regions)
+    order_audit: dict = {}
     structure_regions = build_structure_graph(
         state,
         feature_blocks,
         council_regions,
         decisions,
         pdf_path=pdf_path,
+        order_audit=order_audit,
     )
     stages["stage1_5"] = time.perf_counter() - t
 
@@ -2265,6 +2267,14 @@ def run_full_cascade(
     # to a no-Stage-5e run). Parallel to the structure_review audit.
     if resegment_ops_audit is not None:
         result["block_resegment"] = resegment_ops_audit
+    # ITEM5 — Stage-5 geometric region-order divergence audit. Populated
+    # whenever SEMANTIK_REGION_ORDER != off (default fb -> the SHADOW
+    # measurement; the order is NOT changed in fb mode). Additive
+    # operator/tooling-facing key (parallel to block_resegment); the
+    # region_provenance ORDER + HTML are byte-identical to a pre-ITEM5 run in
+    # fb/off modes (the audit dict is the only new surface). ``None`` in off
+    # mode (the pass never ran).
+    result["geom_order"] = order_audit or None
     # Stage 9-verify (Phase 6) audit section — emitted ONLY when the verify-
     # refine loop actually ran (SEMANTIK_SECOND_PASS on AND a Pass-1 reviewer
     # produced verdicts AND >=1 round executed). Default OFF -> the key is

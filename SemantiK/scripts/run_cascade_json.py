@@ -44,9 +44,13 @@ On SUCCESS — all JSON-serializable fields the P3a/P3b seam consumes::
       "block_resegment":    [ {op, source_ids, ...}, ... ] | null,
                                           # Stage-5e SEMANTIK_BLOCK_RESEGMENT ops;
                                           # null when the re-segmenter is off
-      "second_pass_verify": { adopted, rounds:[...] } | null
+      "second_pass_verify": { adopted, rounds:[...] } | null,
                                           # Stage-9 SEMANTIK_SECOND_PASS per-round
                                           # audit; null when the loop is off
+      "geom_order":         { mode, applied, doc_divergence, pages:[...],
+                               bboxless_regions, warnings } | null
+                                          # ITEM5 Stage-5 SEMANTIK_REGION_ORDER
+                                          # divergence audit; null when off
     }
 
 On FAILURE — a clear error object (the seam fails closed on this, NEVER a
@@ -262,6 +266,31 @@ def _resolve_second_pass_verify(result: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _resolve_geom_order(result: Any) -> Optional[Dict[str, Any]]:
+    """Pull the ITEM5 Stage-5 geometric region-order divergence audit DICT off
+    the cascade result and promote it to a top-level bridge key.
+
+    Like ``second_pass_verify`` this is a DICT (``{"mode", "applied",
+    "doc_divergence", "pages", "bboxless_regions", "warnings"}``);
+    ``run_full_cascade`` emits it at the result-dict top level
+    (``result.cascade["geom_order"]``) and ``None`` when SEMANTIK_REGION_ORDER
+    resolved ``off`` (the pass never ran). A conformance-nested runtime is also
+    accepted (checked first). Operator/tooling-facing only (no DecisionCapture —
+    a deterministic pass).
+    """
+    cascade = getattr(result, "cascade", None)
+    if isinstance(cascade, dict):
+        conformance = cascade.get("conformance_audit")
+        if isinstance(conformance, dict):
+            arm = conformance.get("geom_order")
+            if isinstance(arm, dict):
+                return dict(arm)
+        arm = cascade.get("geom_order")
+        if isinstance(arm, dict):
+            return dict(arm)
+    return None
+
+
 def _build_bridge_dict(result: Any, pdf: str) -> Dict[str, Any]:
     """Assemble the JSON-serializable bridge dict from a cascade result."""
     theta = getattr(result, "theta_score", None)
@@ -293,6 +322,10 @@ def _build_bridge_dict(result: Any, pdf: str) -> Dict[str, Any]:
         # (None when SEMANTIK_SECOND_PASS was off / no round ran). The seam
         # emits one ``structure_review`` DecisionCapture per verify round off it.
         "second_pass_verify": _resolve_second_pass_verify(result),
+        # ITEM5 — the Stage-5 geometric region-order divergence audit DICT
+        # (None when SEMANTIK_REGION_ORDER resolved off). Operator/tooling-facing
+        # only; the region_provenance ORDER already reflects the applied order.
+        "geom_order": _resolve_geom_order(result),
     }
 
 

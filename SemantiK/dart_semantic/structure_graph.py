@@ -100,6 +100,7 @@ from .region_detection import (
     RegionCandidate,
     TableCandidate,
 )
+from .region_order import apply_region_order, resolve_region_order_mode
 from .types import FeatureBlock
 
 
@@ -111,20 +112,20 @@ _READING_ORDER_FALSEY = frozenset({"0", "false", "no", "off"})
 
 
 def resolve_reading_order_fix() -> bool:
-    """Return True when the Stage-5 region reading-order re-sort runs.
+    """Return True when Stage-5 region ordering is active (any mode but ``off``).
 
-    Reads ``SEMANTIK_READING_ORDER_FIX``. **Default ON** (unset / blank /
-    truthy / garbage -> on): the final stable sort of
-    ``build_structure_graph``'s region list into document reading order runs,
-    so the assembled HTML + ``region_provenance`` are in reading order. Only
-    an EXPLICIT falsey value (``0``/``false``/``no``/``off``, case-insensitive)
-    reverts to the legacy segregated pass-order list (the revert lever).
-    Default-on parse-with-fallback semantics mirror
-    ``deterministic_structure.resolve_structure_clean_mode`` /
-    ``toc_frontmatter_detector._flag_enabled``.
+    **Shim over ``SEMANTIK_REGION_ORDER`` (ITEM5).** The min-FB reading-order
+    re-sort is now one mode (``fb``) of the single ordering owner
+    :func:`dart_semantic.region_order.resolve_region_order_mode`; this shim
+    returns ``resolve_region_order_mode() != "off"``. It is KEPT because it is a
+    load-bearing guard for the ITEM1 ``SEMANTIK_UNIT_REGROUP`` pass + the gold
+    absorb mutual-exclusion (consumers in ``assembler/shell.py`` /
+    ``qwen_specialists/block_resegment.py``). The legacy
+    ``SEMANTIK_READING_ORDER_FIX=0`` revert lever still resolves ``off`` via the
+    region-order resolver's alias (one-shot deprecation log), so those consumers
+    are untouched by this item.
     """
-    raw = (os.environ.get("SEMANTIK_READING_ORDER_FIX") or "").strip().lower()
-    return raw not in _READING_ORDER_FALSEY
+    return resolve_region_order_mode() != "off"
 
 
 # ---------------------------------------------------------------------------
@@ -1422,6 +1423,7 @@ def build_structure_graph(
     is_heading_threshold: float = 0.8,
     doc_role_threshold: float = 0.5,
     pdf_path: Any = None,
+    order_audit: Any = None,
 ) -> list[Region]:
     """Run the six deterministic passes described in the module
     docstring. Returns a flat list of :class:`Region` covering every
@@ -2545,35 +2547,33 @@ def build_structure_graph(
     if resolve_bert_authoritative():
         regions_out = _apply_bert_authoritative_kinds(regions_out, state)
 
-    # Reading-order restoration (gated). The six passes append regions in
-    # PASS order (headings, then tables/math, then lists, then paragraphs,
-    # then code) and never re-sort, so the region list is segregated by kind
-    # rather than monotone in document order. Restore reading order with a
-    # final STABLE sort by the region's first owned FeatureBlock index. The
-    # coverage invariant just verified guarantees disjoint FB sets, so the
-    # sort key is a TOTAL order with no ties -> deterministic. Off by default
-    # -> byte-identical to the legacy segregated list.
-    #
-    # Column-aware reading order (Fix A, SEMANTIK_COLUMN_ORDER): this sort keys
-    # off feature_block_indices, NOT bboxes. When the FB stream was reordered
-    # column-major upstream (features.py), min(feature_block_indices) already
-    # reflects column-major order, so regions sort column-correctly here with
-    # NO change to this logic.
-    if resolve_reading_order_fix():
-        _pre_ids = {id(r) for r in regions_out}
-        regions_out.sort(
-            key=lambda r: min(r.feature_block_indices)
-            if r.feature_block_indices else len(feature_blocks)
-        )
-        assert {id(r) for r in regions_out} == _pre_ids, (
-            "reading-order sort dropped/added a region"
-        )
-
-    # ITEM2 (region-bbox): stamp per-page geometry ONCE at graph exit. Runs
-    # AFTER the reading-order sort so the sort's object-identity assert is
-    # untouched, and AFTER the coverage invariant so every index is valid.
-    # Inert provenance — no emit/cache surface reads it (byte-identical).
+    # ITEM2 (region-bbox): stamp per-page geometry BEFORE the ordering pass so
+    # the ITEM5 geometric derivation can read ``page_bboxes`` as its preferred
+    # geometry source. Runs AFTER the coverage invariant so every index is
+    # valid. Inert provenance — no emit/cache surface reads it (byte-identical).
     regions_out = stamp_region_page_bboxes(regions_out, feature_blocks)
+
+    # ITEM5 — single geometry-grounded ordering owner (SEMANTIK_REGION_ORDER).
+    # Three modes, each byte-identical to a today-reachable behavior:
+    #   * off  -> the legacy segregated PASS-order list (the six passes append
+    #             regions in pass order — headings, then tables/math, lists,
+    #             paragraphs, code — and never re-sort). Byte-identical to the
+    #             legacy SEMANTIK_READING_ORDER_FIX=0 revert lever.
+    #   * fb   -> the min-FB stable sort restoring document reading order
+    #             (byte-identical to the historic default-ON reading-order fix);
+    #             the geometric divergence tripwire is MEASURED (shadow) here.
+    #   * geom -> the geometry-grounded per-page order (page -> column -> y0 ->
+    #             x0 -> min_fb) with a per-page divergence-ceiling fb-fallback.
+    # The coverage invariant just verified guarantees disjoint FB sets, so the
+    # min-FB key is a TOTAL order (deterministic); apply_region_order holds the
+    # permutation (id-set) conservation assert internally. SEMANTIK_COLUMN_ORDER
+    # is orthogonal: it reorders the FB STREAM upstream (features.py), so min-FB
+    # already reflects column-major order in fb mode.
+    mode = resolve_region_order_mode()
+    if mode != "off":
+        regions_out = apply_region_order(
+            regions_out, feature_blocks, mode=mode, audit=order_audit,
+        )
 
     return regions_out
 
