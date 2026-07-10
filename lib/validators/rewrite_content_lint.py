@@ -184,7 +184,7 @@ def _find_pseudo_markup(raw: str) -> List[str]:
 # Pattern (2) — publisher apparatus leaks (generic numbered-apparatus shapes)
 # --------------------------------------------------------------------------- #
 
-#: ``Try It 3.2`` — OpenStax-style numbered practice apparatus (generic shape).
+#: ``Try It 3.2`` — numbered practice-apparatus cross-ref (generic shape).
 _RE_TRY_IT = re.compile(r"\bTry It\s+\d+\.\d+")
 #: ``Example 3.2`` — a DOTTED section-number cross-ref (distinct from the
 #: legitimate ``Example 3.`` worked-example label the contract emits).

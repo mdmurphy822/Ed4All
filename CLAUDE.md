@@ -689,11 +689,11 @@ Summary by workflow (counts derived from `config/workflows.yaml`):
 
 | Workflow | Critical | Warning | Total |
 |----------|---------:|--------:|------:|
-| `course_generation` | 36 | 24 | 60 |
+| `course_generation` | 35 | 25 | 60 |
 | `rag_training` | 4 | 3 | 7 |
-| `textbook_to_course` | 65 | 67 | 132 |
+| `textbook_to_course` | 64 | 68 | 132 |
 | `trainforge_train` | 2 | 0 | 2 |
-| **Total** | **107** | **94** | **201** |
+| **Total** | **105** | **96** | **201** |
 
 Per-wave gate-landing history (additions, demotions, deferred severity flips, with the intermediate running subtotals at each wave): `docs/validation/gate-history.md`. The table above is the current authoritative count; the history file's per-wave subtotals are provenance-only and do not sum to the current total.
 
@@ -905,7 +905,7 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `ED4ALL_OBJECTIVE_INFER_BLOOM` | unset (off) | W1.4 infer a null LO bloom_level from its declared ABCD behavior.verb instead of skipping. |
 | `ED4ALL_CHUNK_COVERAGE_FLOOR` | unset (off) | W1.2 import-coverage gate floor on the existing `chunkset_manifest` gate |
 | `ED4ALL_MIN_CHUNKS` | unset (off) | W1.2 thin-chunkset floor on the `chunkset_manifest` gate (CHUNKSET_TOO_THIN warning). |
-| `ED4ALL_KEYTERM_DEF_QUALITY` | unset (off) | W1.5 glossary definition-quality gate (circular / too-long / not-distinct / missing-math-condition), warning-day-1; audits key-terms vocab cards AND inline `<div class="definition-box">` blocks parsed out of concept/explanation HTML. |
+| `ED4ALL_KEYTERM_DEF_QUALITY` | unset (off) | W1.5 glossary definition-quality gate (circular / too-long / not-distinct / missing-math-condition) — critical gate (flip-wave-2) emitting warning-severity issues; audits key-terms vocab cards AND inline `<div class="definition-box">` blocks parsed out of concept/explanation HTML. |
 | `ED4ALL_PAGE_EST_MINUTES` | unset (off) | W1.6 per-page estimated learning-time emit gate |
 | `ED4ALL_PAGE_WPM` | `200` | W1.6 satellite — reading-speed divisor for the `ED4ALL_PAGE_EST_MINUTES` estimate |
 | `ED4ALL_PAGE_INTERACTION_MINUTES` | `1.0` | W1.6 satellite — per-interaction minute cost for the `ED4ALL_PAGE_EST_MINUTES` estimate |

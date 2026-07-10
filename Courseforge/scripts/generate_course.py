@@ -1597,7 +1597,7 @@ COURSEFORGE_RICHER_CSS = """
     .reflection-prompt h3 { color: var(--cf-info-dark); }
 
     /* ===================================================================
-       §5.2 — BLOCK-TYPE IDENTITY (OpenStax-style typed headers). Keyed on
+       §5.2 — BLOCK-TYPE IDENTITY (textbook-style typed headers). Keyed on
        the ALREADY-EMITTED data-cf-content-type (on section h2/h3 headings)
        + data-cf-teaching-role (on component wrappers): a left rail + an
        uppercase ::before eyebrow label so definition / example / procedure /

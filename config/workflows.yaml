@@ -461,7 +461,7 @@ workflows:
               shadow: false
               thresholds:
                 min_absent_fractions: 1
-            description: "Numeric-literal grounding — cross-check prose fractions vs cited source (OCR-tolerant). The fabrication control for math content the number-blind NLI gate cannot provide. Critical (calibration-validated)."
+            description: "Numeric-literal grounding — cross-check prose fractions vs cited source (OCR-tolerant). The fabrication control for math content the number-blind NLI gate cannot provide. Warning (re-calibrated 329aa9d3; re-promotion keyed on the worked_example_math sympy gate separating wrong math from novel-but-correct math)."
 
           # Symbolic worked-example verification — the CORRECTNESS control for the
           # MATH in worked examples that provenance / number-blind NLI /
@@ -3064,7 +3064,7 @@ workflows:
               shadow: false
               thresholds:
                 min_absent_fractions: 1
-            description: "Numeric-literal grounding — cross-check prose fractions vs cited source (OCR-tolerant). The fabrication control for math content the number-blind NLI gate cannot provide. Critical (calibration-validated)."
+            description: "Numeric-literal grounding — cross-check prose fractions vs cited source (OCR-tolerant). The fabrication control for math content the number-blind NLI gate cannot provide. Warning (re-calibrated 329aa9d3; re-promotion keyed on the worked_example_math sympy gate separating wrong math from novel-but-correct math)."
 
           # Symbolic worked-example verification — the CORRECTNESS control for the
           # MATH in worked examples that provenance / number-blind NLI /
