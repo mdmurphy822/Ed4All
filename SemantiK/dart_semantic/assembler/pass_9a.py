@@ -68,6 +68,7 @@ from collections.abc import Sequence
 from collections.abc import Set as AbstractSet
 from typing import TYPE_CHECKING, Any
 
+from ..containment import build_containment_tree, resolve_containment_mode
 from ..qwen_specialists.prompts import (
     COPYRIGHT_SUBFLAG_RE,
     COPYRIGHT_YEAR_RE,
@@ -546,6 +547,27 @@ def run_pass_9a(
             region_html[region_idx],
             ident,
         )
+
+    # ------------------------------------------------------------------
+    # ITEM4 Phase 1 — materialized containment tree (metadata-only).
+    # Built here, AFTER Sub-task 2's heading-id injection, so region_html
+    # carries the ids the tree's section arm resolves against. The tree is
+    # a DERIVED sidecar (rebuilt at every assembly entry, immune to later
+    # region-list mutations by construction), stashed in sub_task_log for the
+    # cascade audit + provenance export (region_html-stash precedent :887).
+    # Phase 1 makes NO other use of the tree — render bytes are UNCHANGED
+    # (metadata-only proof). SEMANTIK_CONTAINMENT default ON; explicit falsey
+    # -> no build, no stash (byte-identical legacy).
+    # ------------------------------------------------------------------
+    containment_tree = None
+    if resolve_containment_mode():
+        containment_tree = build_containment_tree(
+            regions,
+            feature_blocks,
+            region_html=region_html,
+            council_state=council_state,
+        )
+        sub_task_log["containment"] = containment_tree
 
     # ------------------------------------------------------------------
     # Sub-task 3 — Title detection (Plans/04 §1.5 ladder; v1 simplified).

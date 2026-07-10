@@ -593,6 +593,7 @@ def _build_region_provenance(
     review_verdicts: list[Any] | None = None,
     review_regions: list[Region] | None = None,
     ocr_repair_edits: dict[int, dict[str, Any]] | None = None,
+    containment_tree: Any | None = None,
 ) -> list[dict[str, Any]]:
     """Distill one provenance dict per region in DOCUMENT (emission) order.
 
@@ -761,6 +762,24 @@ def _build_region_provenance(
             if isinstance(repair, dict) and repair.get("repaired_text"):
                 entry["repaired_text"] = repair["repaired_text"]
                 entry["ocr_repair"] = repair["ocr_repair"]
+        # OPTIONAL ITEM4 containment key (additive; present only when the
+        # SEMANTIK_CONTAINMENT tree was built AND covers this region index).
+        # Exposes the derived forest as a flat parent-pointer column
+        # (``parent_region_index`` / ``edge_kind``) downstream consumers can
+        # read without knowing the sidecar type. Key ABSENT when no tree is
+        # threaded (flag off) -> byte-stable to baseline. The adapter ignores
+        # unknown keys (the ``review`` block precedent).
+        if containment_tree is not None:
+            try:
+                parents = containment_tree.parent
+                kinds = containment_tree.edge_kind
+                if 0 <= region_index < len(parents):
+                    entry["containment"] = {
+                        "parent_region_index": parents[region_index],
+                        "edge_kind": kinds[region_index],
+                    }
+            except (AttributeError, IndexError, TypeError):
+                pass
         provenance.append(entry)
     return provenance
 
@@ -2084,6 +2103,12 @@ def run_full_cascade(
         list(capped),
         feature_blocks,
         chosen["stage7_results"],
+        # ITEM4: the derived containment forest the FINAL assembly walked
+        # (stashed by pass_9a; None when SEMANTIK_CONTAINMENT is off or the
+        # assembler did not surface it). Additive provenance key only.
+        containment_tree=(getattr(assembled, "sub_task_log", None) or {}).get(
+            "containment"
+        ),
         review_verdicts=review_verdicts,
         # Phase 5: the pre-5e region list the verdict block_ids index into, so
         # the verdict->provenance join re-keys by stable min-FB and survives a

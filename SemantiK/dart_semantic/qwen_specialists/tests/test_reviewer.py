@@ -1154,7 +1154,15 @@ def test_class_only_run_html_byte_identical(monkeypatch):
     classed = _assemble([_para("Worked example body.", 0, semantic_class="worked_example"),
                          _para("Second paragraph.", 1)])
 
-    assert classed == baseline                            # shell flag off -> identical
+    # HTML byte-identical (the assembler does not read payload['semantic_class']
+    # with the shell flag off). The full AssembledDoc is NOT compared: ITEM4's
+    # additive, metadata-only ``sub_task_log['containment']`` stash legitimately
+    # reflects the unit structure (the classed run's worked_example anchor forms
+    # a unit edge), which is exactly the derived-forest metadata — it never
+    # touches render bytes. Assert the documented invariant: the HTML.
+    assert classed.html == baseline.html                  # shell flag off -> identical
+    assert classed.region_provenance == baseline.region_provenance
+    assert classed.gaps_found == baseline.gaps_found
 
 
 def test_audit_byte_stable_flag_off(monkeypatch):
