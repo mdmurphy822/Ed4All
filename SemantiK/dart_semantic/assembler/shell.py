@@ -14,6 +14,7 @@ land before any other body content).
 """
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Sequence
 from typing import Any
@@ -27,11 +28,18 @@ from .gold_shell_markup import (
 )
 from .wcag22_css import WCAG22_CSS
 
+logger = logging.getLogger(__name__)
 
 # Truthy tokens for the parse-with-fallback gate below. Replicated inline
 # (the assembler has no shared frozenset) to match the reviewer's
 # ``reviewer._TRUTHY`` set exactly — keep the two in sync.
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+# One-shot de-duplicated deprecation warning latch for SEMANTIK_GOLD_ABSORB
+# (mirrors ``extract_shared.resolve_tesseract_user_words``'s once-per-run
+# warning). ITEM1: the absorb is superseded by the default-on Stage-5e regroup;
+# it can now engage only under an explicit legacy revert, and warns when it does.
+_GOLD_ABSORB_DEPRECATION_WARNED = False
 
 
 def resolve_gold_shell_mode() -> bool:
@@ -49,7 +57,13 @@ def resolve_gold_shell_mode() -> bool:
 
 
 def resolve_gold_absorb_mode() -> bool:
-    """Return True when a body-bearing gold component box ABSORBS the
+    """**DEPRECATED (ITEM1)** — superseded by the default-on Stage-5e regroup
+    (``SEMANTIK_UNIT_REGROUP``); scheduled for removal with the containment-tree
+    wave (ITEM4). It can now engage ONLY under an explicit legacy revert
+    (``SEMANTIK_UNIT_REGROUP=0`` or ``SEMANTIK_READING_ORDER_FIX=0``) and emits a
+    one-shot ``logger.warning`` when it does.
+
+    Return True when a body-bearing gold component box ABSORBS the
     following sibling body regions into its container.
 
     Stopgap for the split EXAMPLE-label/body defect: the council emits an
@@ -97,6 +111,18 @@ def resolve_gold_absorb_mode() -> bool:
 
     if resolve_unit_regroup_mode() and resolve_reading_order_fix():
         return False
+    # ITEM1: reaching here means the absorb ACTUALLY engages — i.e. an operator
+    # explicitly reverted the default-on regroup (SEMANTIK_UNIT_REGROUP=0) or the
+    # reading-order fix (SEMANTIK_READING_ORDER_FIX=0). Warn once per run that the
+    # stopgap is deprecated and scheduled for removal with the containment tree.
+    global _GOLD_ABSORB_DEPRECATION_WARNED
+    if not _GOLD_ABSORB_DEPRECATION_WARNED:
+        _GOLD_ABSORB_DEPRECATION_WARNED = True
+        logger.warning(
+            "SEMANTIK_GOLD_ABSORB is DEPRECATED (superseded by the default-on "
+            "SEMANTIK_UNIT_REGROUP regroup); scheduled for removal with the "
+            "containment-tree wave"
+        )
     return True
 
 

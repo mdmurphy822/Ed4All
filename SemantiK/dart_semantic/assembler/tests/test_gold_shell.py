@@ -942,6 +942,25 @@ def test_absorb_short_circuit_engages_by_default(monkeypatch):
     assert resolve_gold_absorb_mode() is True  # revert lever re-arms the fallback
 
 
+def test_gold_absorb_deprecation_warns_once_when_engaged(monkeypatch, caplog):
+    # ITEM1 Phase C: the absorb engages ONLY under an explicit legacy revert
+    # (SEMANTIK_UNIT_REGROUP=0); when it does, resolve_gold_absorb_mode emits a
+    # ONE-SHOT deprecation warning (module-level latch).
+    import dart_semantic.assembler.shell as shell_mod
+
+    monkeypatch.setattr(shell_mod, "_GOLD_ABSORB_DEPRECATION_WARNED", False)
+    monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "1")
+    monkeypatch.setenv("SEMANTIK_GOLD_ABSORB", "1")
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "0")  # explicit legacy revert
+
+    with caplog.at_level("WARNING", logger=shell_mod.__name__):
+        assert shell_mod.resolve_gold_absorb_mode() is True
+        assert shell_mod.resolve_gold_absorb_mode() is True  # second call: latched
+
+    warnings = [r for r in caplog.records if "SEMANTIK_GOLD_ABSORB is DEPRECATED" in r.message]
+    assert len(warnings) == 1, [r.message for r in caplog.records]
+
+
 def test_no_double_box_regroup_plus_absorb(monkeypatch):
     # The regroup is firing AND SEMANTIK_GOLD_ABSORB is on. The merged unit
     # arrives as ONE worked_example region (Stage-5e already fused it); the
