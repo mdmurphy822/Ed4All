@@ -1450,11 +1450,16 @@ _ESCALATION_SOURCE_TOKEN_CAP = 2048
 # delta, OR a cross-head conflict (is_heading disagrees with the structural_role
 # argmax on heading membership). The blanket _UNCONDITIONAL_DISPATCH_KINDS
 # code_block/table re-typing is NOT used in this mode (the head's argmax is now
-# trusted). Defaults are conservative (trust the head; dispatch rarely) and are
-# # TODO(calibration): calibrate tau/delta against the real-PDF gold corpus.
+# trusted). Defaults are conservative (trust the head; dispatch rarely). The
+# ITEM6 persisted role distributions (region_provenance[].role_top_k) now make
+# these calibratable offline: sweep them against a run's structure_review
+# verdicts with SemantiK/scripts/calibrate_dispatch_thresholds.py (CPU-only, no
+# LLM/GPU). The constants stay 0.5 / 0.15 pending an owner-reviewed measured run.
 # ---------------------------------------------------------------------------
-_AUTHORITATIVE_DISPATCH_TAU = 0.5  # TODO(calibration): top-1 confidence floor
-_AUTHORITATIVE_DISPATCH_DELTA = 0.15  # TODO(calibration): top1-top2 margin floor
+# calibration harness: SemantiK/scripts/calibrate_dispatch_thresholds.py (ITEM6);
+# constants pending an owner-reviewed measured run.
+_AUTHORITATIVE_DISPATCH_TAU = 0.5  # top-1 confidence floor
+_AUTHORITATIVE_DISPATCH_DELTA = 0.15  # top1-top2 margin floor
 
 
 def _top1_top2_confidences(signal: Any) -> tuple[float, float]:

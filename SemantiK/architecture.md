@@ -1042,7 +1042,11 @@ determinism key), `pages` (sorted 1-indexed physical PDF pages),
 caption), `raw_text` (the deterministic extracted text the sid hashes), and
 an OPTIONAL `review` block (present only when Stage-5d ran and corrected a
 heading: `corrected_from`/`corrected_to`/`level_from`/`level_to`/
-`reason_code`/`reverted`/`note`). The adapter consumes this list to build
+`reason_code`/`reverted`/`note`), and an OPTIONAL `role_top_k` key (ITEM6 —
+the council's top-3 `[[label, prob@4dp], …]` `structural_role` distribution the
+six greedy claiming passes consumed as argmax; present only on a real-council
+run, absent for mock/legacy runs, mirroring the `image_src` additive-key
+posture). The adapter consumes this list to build
 the chapter IR and apply the deterministic phantom-TOC / front-matter filter
 (§14, `lib/semantik/toc_frontmatter_detector.py`) before chapters assemble.
 
