@@ -207,54 +207,65 @@ def test_cascade_gate_widened_to_unit_regroup(monkeypatch):
     assert (resolve_block_resegment_mode() or resolve_unit_regroup_mode()) is True
 
 
-def test_cascade_gate_byte_identical_flag_off(monkeypatch):
-    """LOAD-BEARING: with SEMANTIK_UNIT_REGROUP ABSENT vs explicitly OFF (both
-    with block-resegment off), the full Stage-5e seam result dict is BYTE-
-    IDENTICAL — the widened gate stays closed exactly as the legacy
-    resolve_block_resegment_mode()-only gate, and no block_resegment key leaks."""
+def _build_example_unit_regions():
+    # A contiguous label->body unit that regroups into ONE region when the
+    # (now default-ON) regroup fires — the shared fixture for the flipped pair.
+    from dart_semantic.structure_graph import Region
+
+    def _r(kind, idxs, text, css=None):
+        payload = {"text": text}
+        if css is not None:
+            payload["css_class"] = css
+        return Region(kind=kind, feature_block_indices=tuple(idxs), payload=payload)
+
+    return [
+        _r("paragraph", [0], "EXAMPLE 1", css="pedagogy-example"),
+        _r("paragraph", [1], "solve x"),
+        _r("paragraph", [2], "Solution factor", css="pedagogy-solution"),
+    ]
+
+
+def test_cascade_gate_default_equals_explicit_on(monkeypatch):
+    """ITEM1: with SEMANTIK_UNIT_REGROUP ABSENT (default-ON) vs explicitly "1"
+    the Stage-5e seam result dict is BYTE-IDENTICAL — the default IS the on
+    behavior — and the regroup FIRES (block_resegment key present, the 3-region
+    label->body unit folds to ONE). Reading-order is left unset (default-ON), the
+    Phase-6 driver co-guard."""
     fbs = [_fb("EXAMPLE 1"), _fb("solve x"), _fb("Solution factor")]
-
-    def _build_regions():
-        # Build a contiguous label->body unit that WOULD regroup if the gate
-        # opened — proving the byte-identity is the GATE staying closed, not an
-        # empty input.
-        from dart_semantic.structure_graph import Region
-
-        def _r(kind, idxs, text, css=None):
-            payload = {"text": text}
-            if css is not None:
-                payload["css_class"] = css
-            return Region(kind=kind, feature_block_indices=tuple(idxs), payload=payload)
-
-        return [
-            _r("paragraph", [0], "EXAMPLE 1", css="pedagogy-example"),
-            _r("paragraph", [1], "solve x"),
-            _r("paragraph", [2], "Solution factor", css="pedagogy-solution"),
-        ]
-
     monkeypatch.delenv("SEMANTIK_BLOCK_RESEGMENT", raising=False)
+    monkeypatch.delenv("SEMANTIK_READING_ORDER_FIX", raising=False)
 
-    # Run A: SEMANTIK_UNIT_REGROUP entirely ABSENT.
+    # Run A: SEMANTIK_UNIT_REGROUP entirely ABSENT (default-ON).
     monkeypatch.delenv("SEMANTIK_UNIT_REGROUP", raising=False)
-    result_absent = _stage5e_seam(_build_regions(), fbs, _EmptyState())
+    result_absent = _stage5e_seam(_build_example_unit_regions(), fbs, _EmptyState())
 
-    # Run B: SEMANTIK_UNIT_REGROUP explicitly OFF.
+    # Run B: SEMANTIK_UNIT_REGROUP explicitly "1".
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "1")
+    result_on = _stage5e_seam(_build_example_unit_regions(), fbs, _EmptyState())
+
+    assert result_absent == result_on
+    assert "block_resegment" in result_absent
+    # The label->body unit merged into one region.
+    assert result_absent["n_regions"] == 1
+
+
+def test_cascade_gate_explicit_zero_byte_identical_legacy(monkeypatch):
+    """LOAD-BEARING revert lever: SEMANTIK_UNIT_REGROUP="0" reverts to the
+    byte-identical legacy partition — NO block_resegment key, the 3 regions
+    stay split (n_regions == 3)."""
+    fbs = [_fb("EXAMPLE 1"), _fb("solve x"), _fb("Solution factor")]
+    monkeypatch.delenv("SEMANTIK_BLOCK_RESEGMENT", raising=False)
     monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "0")
-    result_off = _stage5e_seam(_build_regions(), fbs, _EmptyState())
-
-    # Byte-identical result dicts, and NO block_resegment key in either.
-    assert result_absent == result_off
-    assert "block_resegment" not in result_absent
+    result_off = _stage5e_seam(_build_example_unit_regions(), fbs, _EmptyState())
     assert "block_resegment" not in result_off
-    # And the gate is closed in both (no resegment ran -> region count unchanged).
-    assert result_absent["n_regions"] == 3
+    assert result_off["n_regions"] == 3
 
 
 def test_cascade_gate_closed_when_both_flags_off(monkeypatch):
     """With resegment + regroup + fused-title all off the gate is byte-identical
     to a no-Stage-5e run (no key, regions untouched)."""
     monkeypatch.delenv("SEMANTIK_BLOCK_RESEGMENT", raising=False)
-    monkeypatch.delenv("SEMANTIK_UNIT_REGROUP", raising=False)
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "0")  # ITEM1: pin off (default is ON)
     monkeypatch.delenv("SEMANTIK_SPLIT_FUSED_SECTION_TITLES", raising=False)
     fbs = [_fb("EXAMPLE 1"), _fb("solve x")]
     from dart_semantic.structure_graph import Region
@@ -272,7 +283,7 @@ def test_cascade_gate_widened_to_fused_title(monkeypatch):
     """The widened gate fires Stage-5e on SEMANTIK_SPLIT_FUSED_SECTION_TITLES
     alone (block-resegment + regroup off)."""
     monkeypatch.delenv("SEMANTIK_BLOCK_RESEGMENT", raising=False)
-    monkeypatch.delenv("SEMANTIK_UNIT_REGROUP", raising=False)
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "0")  # ITEM1: pin off (default is ON)
     monkeypatch.setenv("SEMANTIK_SPLIT_FUSED_SECTION_TITLES", "on")
     assert (
         resolve_block_resegment_mode()
@@ -285,7 +296,7 @@ def test_cascade_fused_title_alone_enters_stage5e(monkeypatch):
     """Fused-title flag alone drives a real N.M split through the Stage-5e seam,
     and the audit section is populated (block_resegment key present)."""
     monkeypatch.delenv("SEMANTIK_BLOCK_RESEGMENT", raising=False)
-    monkeypatch.delenv("SEMANTIK_UNIT_REGROUP", raising=False)
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "0")  # ITEM1: pin off (default is ON)
     monkeypatch.setenv("SEMANTIK_SPLIT_FUSED_SECTION_TITLES", "on")
     prose = "A system of two linear equations can be solved together by substitution."
     fbs = [_fb("4.2 Solve Linear Systems"), _fb(prose)]
@@ -300,7 +311,7 @@ def test_cascade_fused_title_alone_enters_stage5e(monkeypatch):
 
 def test_cascade_all_three_flags_off_no_key(monkeypatch):
     monkeypatch.delenv("SEMANTIK_BLOCK_RESEGMENT", raising=False)
-    monkeypatch.delenv("SEMANTIK_UNIT_REGROUP", raising=False)
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "0")  # ITEM1: pin off (default is ON)
     monkeypatch.delenv("SEMANTIK_SPLIT_FUSED_SECTION_TITLES", raising=False)
     prose = "A system of two linear equations can be solved together by substitution."
     fbs = [_fb("4.2 Solve Linear Systems"), _fb(prose)]

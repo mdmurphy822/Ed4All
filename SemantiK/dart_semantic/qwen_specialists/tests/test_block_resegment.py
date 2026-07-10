@@ -536,12 +536,14 @@ def test_apply_skips_overlapping_ops():
 # ---------------------------------------------------------------------------
 
 
-def test_unit_regroup_mode_off_by_default(monkeypatch):
+def test_unit_regroup_mode_on_by_default(monkeypatch):
+    # ITEM1: default-ON falsey-set (mirrors resolve_reading_order_fix). Unset /
+    # blank -> on.
     monkeypatch.delenv("SEMANTIK_UNIT_REGROUP", raising=False)
-    assert resolve_unit_regroup_mode() is False
+    assert resolve_unit_regroup_mode() is True
     for v in ("", "  "):
         monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", v)
-        assert resolve_unit_regroup_mode() is False
+        assert resolve_unit_regroup_mode() is True
 
 
 def test_unit_regroup_mode_truthy_tokens(monkeypatch):
@@ -550,8 +552,13 @@ def test_unit_regroup_mode_truthy_tokens(monkeypatch):
         assert resolve_unit_regroup_mode() is True
 
 
-def test_unit_regroup_mode_garbage_is_off(monkeypatch):
-    for v in ("banana", "0", "off", "false", "no", "maybe"):
+def test_unit_regroup_mode_garbage_is_on_only_falsey_reverts(monkeypatch):
+    # Garbage is ON (default-ON parse-with-fallback); ONLY an explicit falsey
+    # token reverts to the byte-identical legacy partition.
+    for v in ("banana", "maybe"):
+        monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", v)
+        assert resolve_unit_regroup_mode() is True
+    for v in ("0", "off", "false", "no"):
         monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", v)
         assert resolve_unit_regroup_mode() is False
 

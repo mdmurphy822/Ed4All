@@ -27,21 +27,32 @@ import os
 from typing import Any
 
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
+_FALSEY = frozenset({"0", "false", "no", "off"})
 
 
 def resolve_unit_regroup_mode() -> bool:
     """Return True when the Stage-5e pedagogical-unit REGROUP pass is enabled.
 
-    Reads ``SEMANTIK_UNIT_REGROUP``. Default OFF (unset / blank / falsey /
-    garbage) -> byte-identical to today (mirrors
-    ``block_resegment.resolve_block_resegment_mode``). A truthy value
-    (``1``/``true``/``yes``/``on``, case-insensitive) enables it. The merge
-    additionally REQUIRES the reading-order fix on (the Phase-6 driver guard);
-    the user-visible gold box additionally requires ``SEMANTIK_GOLD_SHELL`` —
-    but the merge itself FIRES off ``payload['css_class']`` alone.
+    Reads ``SEMANTIK_UNIT_REGROUP``. **Default ON** (unset / blank / truthy /
+    garbage -> on): only an EXPLICIT falsey value (``0``/``false``/``no``/``off``,
+    case-insensitive) reverts to the byte-identical legacy split-label/body
+    partition — the one-env-var revert lever. Mirrors the default-ON falsey-set
+    pattern of ``structure_graph.resolve_reading_order_fix`` (house pattern for
+    ``SEMANTIK_STRUCTURE_CLEAN`` / ``SEMANTIK_READING_ORDER_FIX`` /
+    ``SEMANTIK_SPECIALIST_BATCH``), NOT the truthy-set opt-in it used pre-ITEM1.
+
+    Calibrated 2026-07 (ITEM1 Phase A, ``scripts/regroup_calibration_ab.py``):
+    0 dual-oracle over-merges, full elimination of the residual label-only-box
+    population on an anchored corpus, and a byte-identical no-op on an
+    anchor-free control. The merge additionally REQUIRES the reading-order fix
+    on (the Phase-6 driver guard at ``block_resegment.resegment_blocks`` —
+    ``resolve_unit_regroup_mode() AND resolve_reading_order_fix()``, both now
+    default-ON so the default composite is ON); the user-visible gold box
+    additionally requires ``SEMANTIK_GOLD_SHELL`` — but the merge itself FIRES
+    off ``payload['css_class']`` alone.
     """
     raw = (os.environ.get("SEMANTIK_UNIT_REGROUP") or "").strip().lower()
-    return raw in _TRUTHY
+    return raw not in _FALSEY
 
 
 def resolve_unit_regroup_table_mode() -> bool:
@@ -55,8 +66,13 @@ def resolve_unit_regroup_table_mode() -> bool:
     effective no-op-unless-the-regroup-is-firing behaviour is enforced at the
     Phase-2 call site by the composite
     ``assembler.shell.resolve_narrow_table_absorb_mode`` (``SEMANTIK_UNIT_REGROUP``
-    AND ``SEMANTIK_READING_ORDER_FIX`` both on). Mirrors
-    ``resolve_unit_regroup_mode``'s parse-with-fallback body verbatim.
+    AND ``SEMANTIK_READING_ORDER_FIX`` both on).
+
+    NOTE: this is a **truthy-set opt-in** (only ``1``/``true``/``yes``/``on``
+    enable it) — deliberately NOT flipped to the default-ON falsey-set posture
+    that ``resolve_unit_regroup_mode`` adopted in ITEM1. The table-v2 absorb is
+    render-inert while ``SEMANTIK_GOLD_SHELL`` is off, so its default stays off;
+    the two resolver bodies therefore no longer match.
     """
     raw = (os.environ.get("SEMANTIK_UNIT_REGROUP_TABLE") or "").strip().lower()
     return raw in _TRUTHY

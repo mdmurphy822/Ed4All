@@ -606,6 +606,9 @@ def _css_region(idx: int, css_class: str, *, text: str | None = None) -> Region:
 def test_gold_absorb_mode_flag(monkeypatch):
     # Default OFF (shell on so the resolver's shell-gate isn't what zeroes it).
     monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "1")
+    # ITEM1: pin the regroup OFF so the (now default-ON) regroup short-circuit
+    # doesn't zero the absorb — this test isolates the absorb's own resolver.
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "0")
     monkeypatch.delenv("SEMANTIK_GOLD_ABSORB", raising=False)
     assert resolve_gold_absorb_mode() is False
     for v in ("", "  ", "0", "false", "no", "off", "garbage"):
@@ -624,6 +627,7 @@ def test_gold_absorb_mode_flag(monkeypatch):
 def test_worked_example_absorbs_solution_and_body(monkeypatch):
     monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "1")
     monkeypatch.setenv("SEMANTIK_GOLD_ABSORB", "1")
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "0")  # ITEM1: isolate the absorb (regroup default-ON)
     fbs = [_fb("h"), _fb("ex"), _fb("sol"), _fb("p1"), _fb("p2"), _fb("h2")]
     regions = [
         _heading_region(0, level=1),
@@ -661,6 +665,7 @@ def test_worked_example_absorbs_solution_and_body(monkeypatch):
 def test_absorption_stops_at_next_example(monkeypatch):
     monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "1")
     monkeypatch.setenv("SEMANTIK_GOLD_ABSORB", "1")
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "0")  # ITEM1: isolate the absorb (regroup default-ON)
     fbs = [_fb("h"), _fb("ex1"), _fb("sol1"), _fb("ex2"), _fb("sol2")]
     regions = [
         _heading_region(0, level=1),
@@ -704,6 +709,7 @@ def test_absorption_stops_at_next_example(monkeypatch):
 def test_absorption_stops_at_heading(monkeypatch):
     monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "1")
     monkeypatch.setenv("SEMANTIK_GOLD_ABSORB", "1")
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "0")  # ITEM1: isolate the absorb (regroup default-ON)
     fbs = [_fb("h"), _fb("ex"), _fb("sol"), _fb("h2"), _fb("p")]
     regions = [
         _heading_region(0, level=1),
@@ -752,6 +758,7 @@ def test_absorption_cap():
 def test_splice_keys_survive_absorption(monkeypatch):
     monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "1")
     monkeypatch.setenv("SEMANTIK_GOLD_ABSORB", "1")
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "0")  # ITEM1: isolate the absorb (regroup default-ON)
     fbs = [_fb("h"), _fb("ex"), _fb("sol"), _fb("p1"), _fb("h2")]
     regions = [
         _heading_region(0, level=1),
@@ -814,6 +821,7 @@ def test_absorb_flag_off_byte_identical(monkeypatch):
     # GOLD_SHELL ON throughout; only SEMANTIK_GOLD_ABSORB toggles. Absorb-off
     # (absent / off / 0) must be byte-identical to the pre-absorption gold wrap.
     monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "1")
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "0")  # ITEM1: isolate the absorb (regroup default-ON)
 
     monkeypatch.delenv("SEMANTIK_GOLD_ABSORB", raising=False)
     absent = _assemble(*_absorb_corpus()).html
@@ -919,6 +927,21 @@ def test_absorb_stays_on_when_regroup_inert(monkeypatch):
     assert resolve_gold_absorb_mode() is True
 
 
+def test_absorb_short_circuit_engages_by_default(monkeypatch):
+    # ITEM1: with the regroup default-ON, the absorb short-circuit is now the
+    # DEFAULT. GOLD_SHELL + GOLD_ABSORB on, NO SEMANTIK_UNIT_REGROUP set,
+    # reading-order unset (both default-ON) -> regroup is firing -> absorb forced
+    # off. Explicitly reverting the regroup (=0) re-arms the absorb fallback.
+    monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "1")
+    monkeypatch.setenv("SEMANTIK_GOLD_ABSORB", "1")
+    monkeypatch.delenv("SEMANTIK_UNIT_REGROUP", raising=False)
+    monkeypatch.delenv("SEMANTIK_READING_ORDER_FIX", raising=False)
+    assert resolve_gold_absorb_mode() is False  # supersession is the default
+
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "0")
+    assert resolve_gold_absorb_mode() is True  # revert lever re-arms the fallback
+
+
 def test_no_double_box_regroup_plus_absorb(monkeypatch):
     # The regroup is firing AND SEMANTIK_GOLD_ABSORB is on. The merged unit
     # arrives as ONE worked_example region (Stage-5e already fused it); the
@@ -964,7 +987,7 @@ def test_absorb_unchanged_when_regroup_off(monkeypatch):
     # absorb-on renders the absorbed body, absorb-off does not (the Phase-7
     # short-circuit never engages when SEMANTIK_UNIT_REGROUP is off).
     monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "1")
-    monkeypatch.delenv("SEMANTIK_UNIT_REGROUP", raising=False)
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "0")  # ITEM1: pin off (default is ON)
     monkeypatch.setenv("SEMANTIK_READING_ORDER_FIX", "on")
 
     monkeypatch.delenv("SEMANTIK_GOLD_ABSORB", raising=False)
@@ -1251,7 +1274,7 @@ def test_narrow_inert_when_parent_regroup_off(monkeypatch):
     """sub-flag on + SEMANTIK_UNIT_REGROUP off -> narrow branch dead; with
     GOLD_ABSORB on the FULL absorb fires as the v1 fallback."""
     monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "1")
-    monkeypatch.delenv("SEMANTIK_UNIT_REGROUP", raising=False)
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "0")  # ITEM1: pin off (default is ON)
     monkeypatch.setenv("SEMANTIK_READING_ORDER_FIX", "on")
     monkeypatch.setenv("SEMANTIK_UNIT_REGROUP_TABLE", "on")
     monkeypatch.setenv("SEMANTIK_GOLD_ABSORB", "1")

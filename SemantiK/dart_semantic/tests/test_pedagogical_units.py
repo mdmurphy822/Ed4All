@@ -122,12 +122,14 @@ def test_text_pattern_arm_html_path_unchanged():
     assert is_unit_boundary(ex_no_css, html=None) is True
 
 
-def test_resolve_unit_regroup_mode_parse_with_fallback(monkeypatch):
+def test_resolve_unit_regroup_mode_default_on(monkeypatch):
+    # ITEM1: default-ON falsey-set. Unset / blank / truthy / garbage -> on;
+    # only an EXPLICIT falsey value reverts (byte-identical legacy lever).
     monkeypatch.delenv("SEMANTIK_UNIT_REGROUP", raising=False)
-    assert resolve_unit_regroup_mode() is False
-    for v in ("1", "true", "yes", "on"):
+    assert resolve_unit_regroup_mode() is True
+    for v in ("1", "true", "yes", "on", "banana", "", "  "):
         monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", v)
         assert resolve_unit_regroup_mode() is True
-    for v in ("0", "off", "banana", ""):
+    for v in ("0", "false", "no", "off"):
         monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", v)
         assert resolve_unit_regroup_mode() is False

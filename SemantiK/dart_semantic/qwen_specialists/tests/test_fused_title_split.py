@@ -117,7 +117,7 @@ def test_resolver_truthy_on(monkeypatch):
 def test_flag_off_byte_identical(monkeypatch):
     monkeypatch.delenv("SEMANTIK_SPLIT_FUSED_SECTION_TITLES", raising=False)
     monkeypatch.delenv("SEMANTIK_BLOCK_RESEGMENT", raising=False)
-    monkeypatch.delenv("SEMANTIK_UNIT_REGROUP", raising=False)
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "0")  # ITEM1: pin off (default is ON)
     regions, fbs = _happy_regions()
     out, ops = resegment_blocks(regions, fbs, _EmptyState(), runtime=None)
     assert ops == []
@@ -133,7 +133,7 @@ def test_flag_off_byte_identical(monkeypatch):
 def test_happy_path_nm_split(monkeypatch):
     monkeypatch.setenv("SEMANTIK_SPLIT_FUSED_SECTION_TITLES", "on")
     monkeypatch.delenv("SEMANTIK_BLOCK_RESEGMENT", raising=False)
-    monkeypatch.delenv("SEMANTIK_UNIT_REGROUP", raising=False)
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "0")  # ITEM1: pin off (default is ON)
     regions, fbs = _happy_regions()
     out, ops = resegment_blocks(regions, fbs, _EmptyState(), runtime=None)
 
@@ -378,7 +378,7 @@ def test_orthogonality_fused_only(monkeypatch):
     """Fused-title on + block-resegment off + regroup off -> ONLY fused ops."""
     monkeypatch.setenv("SEMANTIK_SPLIT_FUSED_SECTION_TITLES", "on")
     monkeypatch.delenv("SEMANTIK_BLOCK_RESEGMENT", raising=False)
-    monkeypatch.delenv("SEMANTIK_UNIT_REGROUP", raising=False)
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "0")  # ITEM1: pin off (default is ON)
     regions, fbs = _happy_regions()
     _out, ops = resegment_blocks(regions, fbs, _EmptyState(), runtime=None)
     assert ops and all(o.subtype == "fused_title" for o in ops)
@@ -388,7 +388,7 @@ def test_orthogonality_block_resegment_on_no_fused(monkeypatch):
     """Block-resegment on + fused-title off -> zero fused-title ops."""
     monkeypatch.delenv("SEMANTIK_SPLIT_FUSED_SECTION_TITLES", raising=False)
     monkeypatch.setenv("SEMANTIK_BLOCK_RESEGMENT", "on")
-    monkeypatch.delenv("SEMANTIK_UNIT_REGROUP", raising=False)
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "0")  # ITEM1: pin off (default is ON)
     regions, fbs = _happy_regions()
     _out, ops = resegment_blocks(regions, fbs, _EmptyState(), runtime=None)
     assert all(o.subtype != "fused_title" for o in ops)
@@ -402,7 +402,7 @@ def test_orthogonality_block_resegment_on_no_fused(monkeypatch):
 def test_overlap_fused_title_wins_over_same_kind(monkeypatch):
     monkeypatch.setenv("SEMANTIK_SPLIT_FUSED_SECTION_TITLES", "on")
     monkeypatch.setenv("SEMANTIK_BLOCK_RESEGMENT", "on")
-    monkeypatch.delenv("SEMANTIK_UNIT_REGROUP", raising=False)
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "0")  # ITEM1: pin off (default is ON)
     fbs = [
         _fb("4.2 Solve Systems"),
         _fb(_PROSE),
@@ -428,7 +428,7 @@ def test_overlap_fused_title_wins_over_same_kind(monkeypatch):
 def test_same_kind_split_breadcrumb_has_no_subtype(monkeypatch):
     monkeypatch.delenv("SEMANTIK_SPLIT_FUSED_SECTION_TITLES", raising=False)
     monkeypatch.setenv("SEMANTIK_BLOCK_RESEGMENT", "on")
-    monkeypatch.delenv("SEMANTIK_UNIT_REGROUP", raising=False)
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "0")  # ITEM1: pin off (default is ON)
     fbs = [_fb("Body prose sentence one here."), _fb("Solution factor the expression")]
     regions = [_reg("paragraph", [0, 1], fbs, text="Body prose sentence one here. Solution factor the expression")]
     out, ops = resegment_blocks(regions, fbs, _EmptyState(), runtime=None)
