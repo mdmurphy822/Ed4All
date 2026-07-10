@@ -1161,6 +1161,193 @@ def _detect_unit_merges(
 
 
 # ---------------------------------------------------------------------------
+# ITEM3 — deterministic unit-misorder MOVE detector (Phase 2).
+# ---------------------------------------------------------------------------
+
+
+def _region_bbox_by_page(
+    region: Region,
+) -> dict[int, tuple[float, float, float, float]] | None:
+    """The SINGLE tolerant accessor for the ITEM2-landed per-page bbox (§3.2).
+
+    ITEM2 stamps ``Region.page_bboxes`` = ``((page, (x0,y0,x1,y1)), ...)`` (PDF
+    points, top-left, verbatim ``raw.bbox`` space). Returns a ``{page: bbox}``
+    dict, or ``None`` when absent (``None``/empty ``page_bboxes`` — a bare
+    construction). **DEPENDENCY: ITEM2. If its shape drifts, THIS helper is the
+    only edit** (the detector's live arm degrades to shadow-only without bbox)."""
+    pb = getattr(region, "page_bboxes", None)
+    if not pb:
+        return None
+    out: dict[int, tuple[float, float, float, float]] = {}
+    for entry in pb:
+        try:
+            page, box = entry
+            out[int(page)] = (
+                float(box[0]),
+                float(box[1]),
+                float(box[2]),
+                float(box[3]),
+            )
+        except (TypeError, ValueError, IndexError):
+            continue
+    return out or None
+
+
+def _region_label_text(region: Region, feature_blocks: list[FeatureBlock]) -> str:
+    """The region's label text — ``payload['text']`` (storage SoT), else the
+    joined raw-FB text (never post-model HTML)."""
+    payload = getattr(region, "payload", None) or {}
+    txt = payload.get("text")
+    if txt:
+        return str(txt)
+    return _region_first_fb_text(region, feature_blocks)
+
+
+def _move_bbox_corroborates(
+    label: Region, body: Region, feature_blocks: list[FeatureBlock]
+) -> tuple[bool, str, Any, Any]:
+    """Live-mode geometric corroboration (§3.2). Returns
+    ``(ok, reason, src_bbox, dest_bbox)``.
+
+    Corroborated iff, on a page SHARED by both, the body top sits within
+    ``_MOVE_BBOX_Y_EPS`` of the label bottom (top-left space -> y grows down;
+    the misordered label is physically just above its body) AND their horizontal
+    overlap ratio (over the narrower box) is >= ``_MOVE_BBOX_X_OVERLAP``. Bbox
+    absent on either -> ``(False, "bbox_missing", ...)`` (the op stays
+    shadow-only; the audit's ``bbox`` reason measures ITEM2 coverage)."""
+    lb = _region_bbox_by_page(label)
+    bb = _region_bbox_by_page(body)
+    if not lb or not bb:
+        return False, "bbox_missing", None, None
+    shared = sorted(set(lb) & set(bb))
+    if not shared:
+        return False, "no_shared_page", None, None
+    for page in shared:
+        lx0, ly0, lx1, ly1 = lb[page]
+        bx0, by0, bx1, by1 = bb[page]
+        if abs(by0 - ly1) > _MOVE_BBOX_Y_EPS:
+            continue
+        overlap = max(0.0, min(lx1, bx1) - max(lx0, bx0))
+        min_w = max(1e-6, min(lx1 - lx0, bx1 - bx0))
+        if overlap / min_w >= _MOVE_BBOX_X_OVERLAP:
+            return True, "ok", lb[page], bb[page]
+    return False, "geom_mismatch", lb.get(shared[0]), bb.get(shared[0])
+
+
+def _detect_unit_moves(
+    regions: list[Region], feature_blocks: list[FeatureBlock]
+) -> list[ResegmentOp]:
+    """Deterministic unit-misorder MOVE detection (Phase 2, §3.2).
+
+    Emits at most one ``ResegmentOp(op='move', region_indices=(i,),
+    move_after=j-1, reason='unit_label_distant_body')`` per label region ``i``
+    whose unit is BROKEN (its list-successor cannot be its body) and whose real
+    body is the UNIQUE same-page, heading-barrier-free candidate at ``j`` within
+    the region-distance + FB-gap bounds. The move relocates the LABEL to
+    immediately before its body (D5 — minimal blast radius, provably-misplaced
+    region). ALL predicates are fail-closed; two-or-more candidates -> NOTHING
+    for that label. The bbox corroboration is recorded in ``evidence['bbox']``
+    (``ok`` -> live-eligible; else shadow-only) — it never disqualifies a
+    candidate, only governs live application. Self-gates OFF -> ``[]`` (the
+    driver also gates; this is the defensive belt). Pure / CPU / GPU-free."""
+    if resolve_move_op_mode() == "off":
+        return []
+    ops: list[ResegmentOp] = []
+    n = len(regions)
+    consumed: set[int] = set()
+    for i in range(n):
+        if i in consumed:
+            continue
+        label = regions[i]
+        # (1) non-passthrough unit-start LABEL, label-shaped (<=12 tokens).
+        if _is_passthrough(label) or not _is_unit_anchor(label):
+            continue
+        label_text = _region_label_text(label, feature_blocks)
+        if not _pedagogical_label_at(label_text):
+            continue
+        if len(label_text.split()) > 12:
+            continue
+        # (2) the unit is BROKEN: the successor cannot be its body.
+        succ = i + 1
+        broken = (
+            succ >= n
+            or is_unit_boundary(regions[succ], html=None)
+            or _is_passthrough(regions[succ])
+        )
+        if not broken:
+            continue
+        # (3) scan for body candidates within the region-distance window.
+        label_pages = _region_pages(label, feature_blocks)
+        label_min_fb = _region_first_raw(label)
+        candidates: list[int] = []
+        hi = min(i + 1 + _MOVE_MAX_REGION_DISTANCE, n)
+        for j in range(i + 1, hi):
+            if j in consumed:
+                continue
+            cur = regions[j]
+            # (4) heading barrier: a heading strictly between i and j ends the
+            # scan (same-section constraint, conservative v1).
+            if getattr(cur, "kind", None) == "heading":
+                break
+            if _is_passthrough(cur) or _is_unit_anchor(cur):
+                continue
+            if cur.kind not in ("paragraph", "list"):
+                continue
+            cur_text = _region_label_text(cur, feature_blocks)
+            if not cur_text.strip():
+                continue
+            if label_pages and not (_region_pages(cur, feature_blocks) & label_pages):
+                continue
+            if abs(_region_first_raw(cur) - label_min_fb) > _MOVE_MAX_FB_GAP:
+                continue
+            candidates.append(j)
+        # (5) uniqueness fail-closed.
+        if len(candidates) != 1:
+            continue
+        j = candidates[0]
+        bbox_ok, bbox_reason, src_bbox, dest_bbox = _move_bbox_corroborates(
+            label, regions[j], feature_blocks
+        )
+        evidence: dict[str, Any] = {
+            "detector": "unit_label_distant_body",
+            "pages": tuple(sorted(label_pages)),
+            "region_distance": j - i,
+            "fb_gap": abs(_region_first_raw(regions[j]) - label_min_fb),
+            "dest_source_id": _region_first_raw(regions[j - 1]),
+            "bbox": bbox_reason,
+        }
+        if src_bbox is not None:
+            evidence["src_bbox"] = src_bbox
+        if dest_bbox is not None:
+            evidence["dest_bbox"] = dest_bbox
+        ops.append(
+            ResegmentOp(
+                op="move",
+                region_indices=(i,),
+                move_after=j - 1,
+                source_ids=(label_min_fb,),
+                origin="deterministic",
+                reason="unit_label_distant_body",
+                evidence=tuple(sorted(evidence.items())),
+            )
+        )
+        # Non-overlap: consume the whole touched span so the detector's own op
+        # set is guaranteed mutually non-overlapping (strict replay never raises
+        # on it).
+        consumed.update(range(i, j + 1))
+    return ops
+
+
+def _mark_shadow_move(op: ResegmentOp) -> ResegmentOp:
+    """Return a copy of a MOVE op tagged ``evidence[('mode','shadow')]`` so
+    ``build_resegment_audit_rows`` emits ``applied=false, mode="shadow"``. The
+    apply path never sees these (they ride ONLY the returned op list / audit)."""
+    ev = dict(op.evidence or ())
+    ev["mode"] = "shadow"
+    return dataclasses.replace(op, evidence=tuple(sorted(ev.items())))
+
+
+# ---------------------------------------------------------------------------
 # Op application.
 # ---------------------------------------------------------------------------
 
@@ -1686,6 +1873,35 @@ def resegment_blocks(
     if not regions:
         return regions, []
 
+    # ITEM3 MOVE arm (Phase 2) — runs FIRST so the downstream regroup / fused /
+    # same-kind detectors see the corrected list order in the SAME Stage-5e
+    # invocation (D3). ``pre_move_regions`` is the fail-closed revert snapshot.
+    # Each detected candidate is validated INDIVIDUALLY (scratch _apply_moves +
+    # both R-PART/token gates); a failure is dropped with a warning. A validated
+    # op APPLIES only in ``live`` mode AND when its bbox corroborates (D8) — every
+    # other validated op (shadow mode, or live-without-bbox) is SHADOW-marked and
+    # rides ONLY the returned op list / audit (applied=false), never the regions.
+    pre_move_regions = regions
+    move_mode = resolve_move_op_mode()
+    applied_moves: list[ResegmentOp] = []
+    shadow_moves: list[ResegmentOp] = []
+    if move_mode != "off":
+        for op in _detect_unit_moves(regions, feature_blocks):
+            try:
+                scratch = _apply_moves(regions, feature_blocks, [op])
+                assert_partition_conservation(regions, scratch, move_ops=[op])
+                assert_token_conservation(regions, scratch, feature_blocks)
+            except (PartitionConservationError, TokenConservationError) as exc:
+                logger.warning("block-resegment MOVE op rejected (%s) -> dropped", exc)
+                continue
+            bbox_ok = dict(op.evidence or ()).get("bbox") == "ok"
+            if move_mode == "live" and bbox_ok:
+                applied_moves.append(op)
+            else:
+                shadow_moves.append(_mark_shadow_move(op))
+        if applied_moves:
+            regions = _apply_moves(regions, feature_blocks, applied_moves)
+
     # Per-flag gating INSIDE the driver (Phase 6): each flag owns ONLY its own
     # detector(s). The cascade gate is widened to fire Stage-5e on EITHER flag,
     # so gating here is what keeps the flags ORTHOGONAL — a regroup-on /
@@ -1755,25 +1971,53 @@ def resegment_blocks(
     if resolve_block_resegment_llm_mode() and runtime is not None:
         llm_ops = _llm_propose_ops(regions, feature_blocks, runtime)
 
-    # Try the full op set, then deterministic-only, then no-op. Each candidate
-    # is gated; the first that passes both conservation gates ships.
+    # ITEM3: the LIVE moves are already applied to ``regions``. The det/llm op
+    # set is order-conserving RELATIVE to the moved list, so the whole-set gate
+    # uses the PRE-MOVE input + ``move_ops=applied_moves`` (out_seq ==
+    # replay(pre_move_seq, moves) holds through the composition, D3). ANY gate
+    # failure reverts ALL THE WAY to the pre-move input (never ships a half-moved
+    # list). ``shadow_moves`` ride the RETURNED op list only (audit-only rows;
+    # the apply path never saw them).
+    returned_move_ops = list(applied_moves) + list(shadow_moves)
+
+    # Try the full op set, then deterministic-only, then move-only. Each
+    # candidate is gated; the first that passes both conservation gates ships.
     for candidate_ops in ([*det_ops, *llm_ops], det_ops):
         if not candidate_ops:
             continue
         try:
             out = apply_resegment(regions, feature_blocks, candidate_ops)
-            assert_partition_conservation(regions, out)
-            assert_token_conservation(regions, out, feature_blocks)
+            assert_partition_conservation(
+                pre_move_regions, out, move_ops=applied_moves
+            )
+            assert_token_conservation(pre_move_regions, out, feature_blocks)
         except (PartitionConservationError, TokenConservationError) as exc:
             logger.warning(
                 "block-resegment op set rejected (%s) -> trying a narrower set",
                 exc,
             )
             continue
-        return out, list(candidate_ops)
+        return out, list(candidate_ops) + returned_move_ops
 
-    # No ops, or every candidate set failed a gate -> byte-stable pass-through.
-    return regions, []
+    # No det/llm ops. If LIVE moves were applied, ship the moved list (gated) +
+    # the move ops; a gate failure reverts to the pre-move input. Otherwise
+    # (shadow-only or off) byte-stable pass-through of the pre-move input, with
+    # only the audit-only shadow rows in the returned op list.
+    if applied_moves:
+        try:
+            assert_partition_conservation(
+                pre_move_regions, regions, move_ops=applied_moves
+            )
+            assert_token_conservation(pre_move_regions, regions, feature_blocks)
+        except (PartitionConservationError, TokenConservationError) as exc:
+            logger.warning(
+                "block-resegment move-only set rejected (%s) -> reverting to "
+                "the pre-move input",
+                exc,
+            )
+            return pre_move_regions, list(shadow_moves)
+        return regions, returned_move_ops
+    return pre_move_regions, list(shadow_moves)
 
 
 __all__ = [

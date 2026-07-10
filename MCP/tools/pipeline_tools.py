@@ -8648,6 +8648,43 @@ def _emit_block_resegment_capture(
             for o in ops
             if isinstance(o, dict) and isinstance(o.get("regions_folded"), int)
         )
+        # ITEM3 MOVE arm: additive move / shadow-move tallies + reason set + a
+        # bounded (src -> dest) source_id sample. Built CONDITIONALLY (the
+        # ``move_segment`` is "" when no move op rode this doc), so a doc with NO
+        # move op produces a BYTE-IDENTICAL rationale (mirrors the regroup-only
+        # enrichment posture). A shadow-mode move row carries mode="shadow" /
+        # applied=false; a live-applied move row carries applied=true.
+        move_rows = [
+            o
+            for o in ops
+            if isinstance(o, dict) and str(o.get("op") or "") == "move"
+        ]
+        moves_applied = sum(1 for o in move_rows if o.get("applied") is True)
+        moves_shadow = sum(
+            1 for o in move_rows if str(o.get("mode") or "") == "shadow"
+        )
+        move_reasons = sorted(
+            {
+                str(o.get("reason"))
+                for o in move_rows
+                if o.get("reason")
+            }
+        )
+        move_pairs: List[str] = []
+        for o in move_rows:
+            sids = o.get("source_ids")
+            src = sids[0] if isinstance(sids, (list, tuple)) and sids else None
+            dest = o.get("dest_source_id")
+            move_pairs.append(f"{src}->{dest}")
+            if len(move_pairs) >= 8:
+                break
+        move_segment = ""
+        if move_rows:
+            move_segment = (
+                f" MOVE: {moves_applied} applied / {moves_shadow} shadow "
+                f"move(s), reasons=[{', '.join(move_reasons) or 'none'}], "
+                f"src->dest={move_pairs}."
+            )
         class_counter = Counter(
             str(o.get("semantic_class"))
             for o in ops
@@ -8693,7 +8730,7 @@ def _emit_block_resegment_capture(
             f"region(s); classes=[{semantic_class_summary or 'none'}]; "
             f"source_ids={sample_ids}; conservation_verified="
             f"{conservation_verified}. Structure-only block boundary edits "
-            f"(no text rewritten)."
+            f"(no text rewritten).{move_segment}"
         )
         capture.log_decision(
             decision_type="block_resegment",

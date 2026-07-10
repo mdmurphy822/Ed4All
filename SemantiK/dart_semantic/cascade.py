@@ -1517,22 +1517,28 @@ def run_full_cascade(
         resegment_blocks,
         resolve_block_resegment_llm_mode,
         resolve_block_resegment_mode,
+        resolve_move_op_mode,
         resolve_split_fused_section_titles_mode,
         resolve_unit_regroup_mode,
     )
 
-    # Widened gate (Phase 6 + lane B): enter Stage-5e when the same-kind block
-    # resegment OR the cross-kind pedagogical-unit regroup OR the fused-section-
-    # title split is on. Because per-flag gating lives INSIDE resegment_blocks,
-    # this gate only DECIDES WHETHER to enter Stage-5e — it does not leak one
-    # flag's arm into another flag's run (new-flag-on / others-off emits ONLY
-    # fused-title ops, and vice versa). Flag-off byte-stable: with ALL flags off
-    # this is byte-identical to the legacy resolve_block_resegment_mode()-only
-    # gate.
+    # Widened gate (Phase 6 + lane B + ITEM3): enter Stage-5e when the same-kind
+    # block resegment OR the cross-kind pedagogical-unit regroup OR the
+    # fused-section-title split OR the MOVE arm is on. Because per-flag gating
+    # lives INSIDE resegment_blocks, this gate only DECIDES WHETHER to enter
+    # Stage-5e — it does not leak one flag's arm into another flag's run.
+    # ITEM3 note: ``resolve_move_op_mode() != "off"`` defaults to shadow, and
+    # post-ITEM1 (regroup default-ON) the regroup clause already enters Stage-5e
+    # by default, so this widening is a practical NO-OP for a default run; it
+    # only matters when the regroup is reverted (SEMANTIK_UNIT_REGROUP=0) but the
+    # MOVE arm is still on (audit-only shadow rows — document output bytes
+    # unchanged, since shadow never mutates the region list). All-flags-off
+    # (including SEMANTIK_MOVE_OP=0) stays byte-identical to the legacy gate.
     if (
         resolve_block_resegment_mode()
         or resolve_unit_regroup_mode()
         or resolve_split_fused_section_titles_mode()
+        or resolve_move_op_mode() != "off"
     ):
         t = time.perf_counter()
         # The LLM layer rides the SAME hosted-70B endpoint seat as Stage-5d /

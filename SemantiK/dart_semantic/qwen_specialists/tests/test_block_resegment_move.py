@@ -16,16 +16,21 @@ import dataclasses
 import pytest
 
 from dart_semantic.qwen_specialists.block_resegment import (
+    _MOVE_MAX_FB_GAP,
+    _MOVE_MAX_REGION_DISTANCE,
     PartitionConservationError,
     ResegmentOp,
     _apply_moves,
+    _detect_unit_moves,
     _ordered_fb_sequence,
     _replay_moves,
     assert_partition_conservation,
     build_resegment_audit_rows,
+    resegment_blocks,
     resolve_move_op_mode,
 )
-from dart_semantic.structure_graph import Region
+from dart_semantic.structure_graph import Region, compute_region_page_bboxes
+from dart_semantic.types import FeatureBlock, RawBlock
 
 
 # ---------------------------------------------------------------------------
@@ -277,3 +282,262 @@ def test_resolve_move_op_mode_parse(monkeypatch, value, expected):
     else:
         monkeypatch.setenv("SEMANTIK_MOVE_OP", value)
     assert resolve_move_op_mode() == expected
+
+
+# ===========================================================================
+# Phase 2 — deterministic detector + driver + shadow default.
+# ===========================================================================
+
+
+def _fb(text, page=1, bbox=(0.0, 0.0, 10.0, 10.0)):
+    raw = RawBlock(
+        text=text, page=page, bbox=bbox, page_width=100.0, page_height=100.0
+    )
+    return FeatureBlock(
+        raw=raw,
+        size_bucket="md",
+        gap_above=None,
+        is_top_of_page=False,
+        is_centered=False,
+        caps=None,
+        indent_bucket=0,
+        relative_font_ratio=1.0,
+    )
+
+
+def _mk(
+    kind,
+    fb_idx,
+    feature_blocks,
+    *,
+    text=None,
+    css_class=None,
+    semantic_class=None,
+    source_region_id=None,
+    with_bbox=True,
+):
+    payload = {}
+    if text is not None:
+        payload["text"] = text
+    if css_class is not None:
+        payload["css_class"] = css_class
+    if semantic_class is not None:
+        payload["semantic_class"] = semantic_class
+    pb = (
+        compute_region_page_bboxes(tuple(fb_idx), feature_blocks)
+        if with_bbox
+        else None
+    )
+    return Region(
+        kind=kind,
+        feature_block_indices=tuple(fb_idx),
+        payload=payload,
+        source_region_id=source_region_id,
+        page_bboxes=pb,
+    )
+
+
+class _State:
+    """Minimal CouncilState stand-in (the move arm never reads it)."""
+
+    outputs: dict = {}
+
+
+def _misordered_fixture(with_bbox=True):
+    """label(0) -> passthrough(1) -> body(2) -> heading(3): the body is the
+    UNIQUE same-page candidate; move_after == 1 (j-1, j==2)."""
+    fbs = [
+        _fb("EXAMPLE 2 here", page=1, bbox=(0.0, 0.0, 10.0, 10.0)),
+        _fb("some table", page=1, bbox=(0.0, 12.0, 10.0, 20.0)),
+        _fb("Consider the derivative of the function.", page=1, bbox=(0.0, 11.0, 10.0, 18.0)),
+        _fb("Next Section", page=1, bbox=(0.0, 30.0, 10.0, 34.0)),
+    ]
+    regions = [
+        _mk("paragraph", [0], fbs, text="EXAMPLE 2 here", css_class="pedagogy-example", with_bbox=with_bbox),
+        _mk("table", [1], fbs, text="some table", source_region_id=99, with_bbox=with_bbox),
+        _mk("paragraph", [2], fbs, text="Consider the derivative of the function.", with_bbox=with_bbox),
+        _mk("heading", [3], fbs, text="Next Section", with_bbox=with_bbox),
+    ]
+    return regions, fbs
+
+
+@pytest.fixture(autouse=True)
+def _move_shadow_default(monkeypatch):
+    """Default the module env clean; each test sets SEMANTIK_MOVE_OP itself.
+    UNIT_REGROUP off so the driver tests isolate the MOVE arm."""
+    monkeypatch.delenv("SEMANTIK_MOVE_OP", raising=False)
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "0")
+    monkeypatch.delenv("SEMANTIK_BLOCK_RESEGMENT", raising=False)
+    monkeypatch.delenv("SEMANTIK_SPLIT_FUSED_SECTION_TITLES", raising=False)
+
+
+def test_detect_unit_moves_fires_on_misordered_label(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_MOVE_OP", "shadow")
+    regions, fbs = _misordered_fixture()
+    ops = _detect_unit_moves(regions, fbs)
+    assert len(ops) == 1
+    op = ops[0]
+    assert op.op == "move"
+    assert op.region_indices == (0,)
+    assert op.move_after == 1  # j - 1, j == 2
+    assert op.reason == "unit_label_distant_body"
+    assert op.source_ids == (0,)
+    ev = dict(op.evidence)
+    assert ev["bbox"] == "ok"
+    assert ev["dest_source_id"] == 1
+    assert ev["region_distance"] == 2
+    assert ev["fb_gap"] == 2
+
+
+def test_detect_ambiguous_two_candidates_fail_closed(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_MOVE_OP", "shadow")
+    fbs = [
+        _fb("EXAMPLE 2"),
+        _fb("passthrough"),
+        _fb("first body candidate here"),
+        _fb("second body candidate here"),
+    ]
+    regions = [
+        _mk("paragraph", [0], fbs, text="EXAMPLE 2", css_class="pedagogy-example"),
+        _mk("table", [1], fbs, text="passthrough", source_region_id=7),
+        _mk("paragraph", [2], fbs, text="first body candidate here"),
+        _mk("paragraph", [3], fbs, text="second body candidate here"),
+    ]
+    assert _detect_unit_moves(regions, fbs) == []
+
+
+def test_heading_barrier_blocks_move(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_MOVE_OP", "shadow")
+    fbs = [_fb("EXAMPLE 2"), _fb("passthrough"), _fb("A Heading"), _fb("the body prose here")]
+    regions = [
+        _mk("paragraph", [0], fbs, text="EXAMPLE 2", css_class="pedagogy-example"),
+        _mk("table", [1], fbs, text="passthrough", source_region_id=7),
+        _mk("heading", [2], fbs, text="A Heading"),
+        _mk("paragraph", [3], fbs, text="the body prose here"),
+    ]
+    assert _detect_unit_moves(regions, fbs) == []
+
+
+def test_distance_and_fb_gap_caps(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_MOVE_OP", "shadow")
+    # Body FB index far beyond the FB-gap cap -> not a candidate.
+    big = _MOVE_MAX_FB_GAP + 5
+    fbs = [_fb("EXAMPLE 2")] + [_fb("filler")] * (big - 1) + [_fb("the body prose here")]
+    regions = [
+        _mk("paragraph", [0], fbs, text="EXAMPLE 2", css_class="pedagogy-example"),
+        _mk("table", [1], fbs, text="filler", source_region_id=7),
+        _mk("paragraph", [big], fbs, text="the body prose here"),
+    ]
+    # Region distance is only 2, but the FB gap (big) exceeds the cap.
+    assert _detect_unit_moves(regions, fbs) == []
+
+
+def test_passthrough_never_moves(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_MOVE_OP", "shadow")
+    # (a) a passthrough LABEL is never the src.
+    fbs = [_fb("EXAMPLE 2"), _fb("body prose here")]
+    regions = [
+        _mk("paragraph", [0], fbs, text="EXAMPLE 2", css_class="pedagogy-example", source_region_id=5),
+        _mk("paragraph", [1], fbs, text="body prose here"),
+    ]
+    assert _detect_unit_moves(regions, fbs) == []
+    # (b) when the only follower is passthrough there is no body candidate.
+    fbs2 = [_fb("EXAMPLE 2"), _fb("tbl a"), _fb("tbl b")]
+    regions2 = [
+        _mk("paragraph", [0], fbs2, text="EXAMPLE 2", css_class="pedagogy-example"),
+        _mk("table", [1], fbs2, text="tbl a", source_region_id=7),
+        _mk("table", [2], fbs2, text="tbl b", source_region_id=8),
+    ]
+    assert _detect_unit_moves(regions2, fbs2) == []
+
+
+def test_no_bbox_shadow_only_evidence(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_MOVE_OP", "live")
+    regions, fbs = _misordered_fixture(with_bbox=False)
+    ops = _detect_unit_moves(regions, fbs)
+    assert len(ops) == 1
+    assert dict(ops[0].evidence)["bbox"] == "bbox_missing"
+
+
+def test_detector_off_returns_empty(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_MOVE_OP", "0")
+    regions, fbs = _misordered_fixture()
+    assert _detect_unit_moves(regions, fbs) == []
+
+
+# --- driver ---------------------------------------------------------------
+
+
+def test_driver_shadow_no_region_change(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_MOVE_OP", "shadow")
+    regions, fbs = _misordered_fixture()
+    out, ops = resegment_blocks(regions, fbs, _State())
+    # Shadow: the returned region list is the UNCHANGED pre-move input (identity).
+    assert out is regions
+    move_ops = [o for o in ops if o.op == "move"]
+    assert len(move_ops) == 1
+    assert dict(move_ops[0].evidence)["mode"] == "shadow"
+    (row,) = [r for r in build_resegment_audit_rows(ops) if r["op"] == "move"]
+    assert row["applied"] is False
+    assert row["mode"] == "shadow"
+
+
+def test_driver_live_applies_and_gates(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_MOVE_OP", "live")
+    regions, fbs = _misordered_fixture()
+    out, ops = resegment_blocks(regions, fbs, _State())
+    # Live: the label (region 0) is relocated to immediately after region 1.
+    assert _ordered_fb_sequence(out) == _replay_moves(regions, [_apply_ref(regions, fbs)])
+    move_ops = [o for o in ops if o.op == "move"]
+    assert len(move_ops) == 1
+    (row,) = [r for r in build_resegment_audit_rows(ops) if r["op"] == "move"]
+    assert row["applied"] is True
+    assert row["mode"] == "live"
+    # The whole-set gate held (out is a clean permutation of the input FBs).
+    assert sorted(_ordered_fb_sequence(out)) == sorted(_ordered_fb_sequence(regions))
+
+
+def _apply_ref(regions, fbs):
+    """The single move op the detector emits on the fixture (for replay-cmp)."""
+    return _detect_unit_moves(regions, fbs)[0]
+
+
+def test_driver_live_drops_poisoned_move(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_MOVE_OP", "live")
+    regions, fbs = _misordered_fixture()
+    good = _detect_unit_moves(regions, fbs)[0]
+    poisoned = ResegmentOp(
+        op="move",
+        region_indices=(0,),
+        move_after=999,  # out of range -> individually dropped
+        source_ids=(0,),
+        reason="unit_label_distant_body",
+        evidence=(("bbox", "ok"),),
+    )
+    import dart_semantic.qwen_specialists.block_resegment as br
+
+    monkeypatch.setattr(br, "_detect_unit_moves", lambda r, f: [good, poisoned])
+    out, ops = resegment_blocks(regions, fbs, _State())
+    # Only the good op survived + applied; the poisoned one was dropped alone.
+    move_ops = [o for o in ops if o.op == "move"]
+    assert len(move_ops) == 1
+    assert _ordered_fb_sequence(out) == _replay_moves(regions, [good])
+
+
+def test_driver_flag_off_byte_identical(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_MOVE_OP", "0")
+    regions, fbs = _misordered_fixture()
+    out, ops = resegment_blocks(regions, fbs, _State())
+    assert out is regions
+    assert [o for o in ops if o.op == "move"] == []
+
+
+def test_driver_live_no_bbox_stays_shadow(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_MOVE_OP", "live")
+    regions, fbs = _misordered_fixture(with_bbox=False)
+    out, ops = resegment_blocks(regions, fbs, _State())
+    # Live mode but NO bbox corroboration -> the op stays shadow-only (not applied).
+    assert out is regions
+    move_ops = [o for o in ops if o.op == "move"]
+    assert len(move_ops) == 1
+    assert dict(move_ops[0].evidence)["mode"] == "shadow"
