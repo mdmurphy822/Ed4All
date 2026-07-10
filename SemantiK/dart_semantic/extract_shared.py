@@ -64,6 +64,7 @@ from .vlm_furniture import (
 from .reading_order import (
     _DEFAULT_PAGE_WIDTH,
     _GUTTER_GAP_FRAC,
+    column_edges_from_lines,
     column_ids_for_bboxes,
     column_ids_for_x0s,
     resolve_column_extract_mode,
@@ -423,13 +424,20 @@ def _compute_extract_cache_key(pdf_path: Path) -> str:
       and the reverse serves hint-carrying blocks with the flag off. Append-only
       keeps the flag-off key byte-identical to the fusion key.
     * ``col_key`` — SEMANTIK_COLUMN_EXTRACT (asymmetric, append-only-when-on):
-      the column-aware ``_pdfplumber_page`` line assembly re-segments each page
-      into column bands BEFORE the space-join, so the extracted text-block SHAPE
-      changes (columns no longer fused). Append-only ``|col1`` when on keeps the
-      flag-OFF key byte-identical to the historic key (no ``col0`` salt), so
-      every existing extract cache survives untouched when the feature is off,
-      while flipping it ON never serves a stale column-fused extraction. Mirrors
-      the sibling ``vlm_key`` / ``fuse_key`` / ``hints_key`` append-only shape.
+      the column-aware ``_pdfplumber_page`` AND ``_tesseract_page_blocks`` line
+      assembly re-segments each page into column bands BEFORE the space-join, so
+      the extracted text-block SHAPE changes (columns no longer fused). Bumped
+      ``|col1`` → ``|col2`` when the Tesseract path became column-aware (prong 1
+      changed the extracted shape for OCR pages under the same flag, so a
+      ``|col1``-warmed cache must NOT be served). Append-only ``|col2`` when on
+      keeps the flag-OFF key byte-identical to the historic key (no ``col0``
+      salt), so every existing extract cache survives untouched when off.
+    * ``ord_key`` — SEMANTIK_COLUMN_ORDER (asymmetric, append-only-when-on AND
+      extract-off): the column-major merged-block re-sort in ``_merge_page``
+      changes the cached ``merged`` order, but SEMANTIK_COLUMN_ORDER was absent
+      from this key (a verified pre-existing hole). Append-only ``|ord1`` when
+      column-order is on AND column-extract is OFF (extract-on already salts via
+      ``col_key`` and forces order on) keeps every flag-off key byte-identical.
 
     NB the render-scale / tesseract-config / user-words flags are deliberately
     kept OUT of the key (they do not change the extracted SHAPE and keeping them
@@ -442,9 +450,19 @@ def _compute_extract_cache_key(pdf_path: Path) -> str:
     vlm_key = "|vlm1" if resolve_vlm_extract_mode() else ""
     fuse_key = "|vlmfuse5" if resolve_vlm_fusion_mode() else ""
     hints_key = "|vlmhints1" if resolve_vlm_struct_hints_mode() else ""
-    col_key = "|col1" if resolve_column_extract_mode() else ""
+    col_key = "|col2" if resolve_column_extract_mode() else ""
+    # ord_key closes the pre-existing hole where SEMANTIK_COLUMN_ORDER (the
+    # column-major merged-block re-sort) changed the cached `merged` order but
+    # was ABSENT from the cache key. Append-only-when-on (and only when
+    # column-extract is OFF, since extract-on already implies + salts the order
+    # via col_key) keeps every flag-off key byte-identical.
+    ord_key = (
+        "|ord1"
+        if resolve_column_order_mode() and not resolve_column_extract_mode()
+        else ""
+    )
     key_raw = (
-        f"v{EXTRACT_CACHE_VERSION}|{fig_key}{vlm_key}{fuse_key}{hints_key}{col_key}|"
+        f"v{EXTRACT_CACHE_VERSION}|{fig_key}{vlm_key}{fuse_key}{hints_key}{col_key}{ord_key}|"
         f"{pdf_path.resolve()}|{st.st_size}|{int(st.st_mtime)}"
     )
     return hashlib.sha256(key_raw.encode()).hexdigest()[:24]
@@ -958,7 +976,6 @@ def _assemble_text_blocks_columnaware(
         return []
     if page_w is None or page_w <= 0:
         page_w = _DEFAULT_PAGE_WIDTH
-    gutter_gap = _GUTTER_GAP_FRAC * page_w
 
     phys_lines = _bucket_lines_by_top(words)
     in_table = (
@@ -967,33 +984,27 @@ def _assemble_text_blocks_columnaware(
         else None
     )
 
-    # --- 1. column-start seeds -> detect columns via the REUSED detector ---
-    seed_x0s: list[float] = []
+    # --- 1. column-start seeds -> detect columns via the SHARED gutter engine
+    # (reading_order.column_edges_from_lines — one engine, two callers; D2). The
+    # seed_masks arm excludes table-cell words from SEEDING while the helper
+    # still advances the previous-word x1 chain through them, keeping the
+    # gap-to-previous seeding byte-identical to the historic inline loop. ---
+    lines_xs: list[list[tuple[float, float]]] = []
+    seed_masks: list[list[bool]] = []
     for line in phys_lines:
-        prev_x1: float | None = None
-        for w in sorted(line, key=lambda w: float(w.get("x0", 0))):
-            wx0 = float(w.get("x0", 0))
-            is_col_start = prev_x1 is None or (wx0 - prev_x1) > gutter_gap
-            prev_x1 = float(w.get("x1", 0))
-            if is_col_start and not (in_table and in_table.get(id(w))):
-                seed_x0s.append(wx0)
-    if not seed_x0s:
+        ln_sorted = sorted(line, key=lambda w: float(w.get("x0", 0)))
+        lines_xs.append(
+            [(float(w.get("x0", 0)), float(w.get("x1", 0))) for w in ln_sorted]
+        )
+        seed_masks.append(
+            [not (in_table and in_table.get(id(w))) for w in ln_sorted]
+        )
+    edges = column_edges_from_lines(lines_xs, page_w, seed_masks=seed_masks)
+    if edges is None:
+        # No seeds / genuine single-column page / defensive seedless band ->
+        # identical to the full-width path.
         return _assemble_text_blocks_singlewidth(words, table_bboxes)
-
-    seed_cols = column_ids_for_x0s(seed_x0s, page_w, single_column_guard=True)
-    ncols = (max(seed_cols) + 1) if seed_cols else 1
-    if ncols <= 1:
-        # Genuine single-column page -> identical to the full-width path.
-        return _assemble_text_blocks_singlewidth(words, table_bboxes)
-
-    # column left-edge = smallest seed x0 in each detected band
-    left_edges: list[float | None] = [None] * ncols
-    for x0, c in zip(seed_x0s, seed_cols):
-        if left_edges[c] is None or x0 < left_edges[c]:
-            left_edges[c] = x0
-    if any(le is None for le in left_edges):  # defensive; should not happen
-        return _assemble_text_blocks_singlewidth(words, table_bboxes)
-    edges: list[float] = [float(le) for le in left_edges]
+    ncols = len(edges)
 
     def _col_of(x0: float) -> int:
         c = 0
@@ -1041,6 +1052,106 @@ def _assemble_text_blocks_columnaware(
             if blk is not None:
                 blocks.append(blk)
     return blocks
+
+
+def _split_tesseract_lines_by_column(lines: dict, page_w: float) -> dict:
+    """Column-aware re-key of Tesseract's ``(block, par, line)`` word groups.
+
+    The OCR analog of :func:`_assemble_text_blocks_columnaware`, sharing the
+    same gutter engine (D2/D3). Each Tesseract line group carries parallel
+    ``words/heights/confs/lefts/rights/tops/bottoms`` arrays. Bboxes here are
+    in image-PIXEL space, so ``page_w`` is the image width (the same space —
+    this is what makes the seeding correct where ``_merge_page`` was not).
+
+    Behavior:
+      * Build per-group ``(left, right)`` word tuples sorted by left and seed
+        the SHARED :func:`reading_order.column_edges_from_lines`; ``None`` (the
+        single-column guard collapsed the split, or no seeds) → return ``lines``
+        UNCHANGED (byte-identical — a single-column scan is never re-keyed).
+      * Otherwise, per group: a group with a word STRADDLING an interior column
+        edge (``left < edge < right``) is a full-width header → whole group
+        keyed ``(0, *old_key)``; else words are split by ``_col_of(left)`` into
+        per-column sub-groups keyed ``(col, *old_key)`` (parallel arrays rebuilt
+        in original within-line order so text join + bbox stay faithful; word
+        multiset conserved).
+      * Deterministic output-dict insertion order: sorted by
+        ``(col, min(tops), min(lefts))``.
+
+    Deterministic, CPU-only. No table detection on the OCR path (no seed mask).
+    """
+    lines_xs: list[list[tuple[float, float]]] = []
+    group_items = list(lines.items())
+    for _key, ln in group_items:
+        order = sorted(range(len(ln["lefts"])), key=lambda i: float(ln["lefts"][i]))
+        lines_xs.append(
+            [(float(ln["lefts"][i]), float(ln["rights"][i])) for i in order]
+        )
+    edges = column_edges_from_lines(lines_xs, page_w)
+    if edges is None:
+        return lines
+    ncols = len(edges)
+
+    def _col_of(x0: float) -> int:
+        c = 0
+        for j in range(1, ncols):
+            if x0 >= edges[j]:
+                c = j
+            else:
+                break
+        return c
+
+    _ARRAY_KEYS = ("words", "heights", "confs", "lefts", "rights", "tops", "bottoms")
+
+    def _empty_group() -> dict:
+        return {k: [] for k in _ARRAY_KEYS}
+
+    def _append_word(dst: dict, src: dict, i: int) -> None:
+        for k in _ARRAY_KEYS:
+            dst[k].append(src[k][i])
+
+    # (new_key, group, col, min_top, min_left) so we can order deterministically.
+    built: list[tuple[tuple, dict, int, float, float]] = []
+    for key, ln in group_items:
+        n = len(ln["lefts"])
+        # Full-width header: any word straddles an interior column edge.
+        straddles = any(
+            float(ln["lefts"][i]) < edges[j] < float(ln["rights"][i])
+            for i in range(n)
+            for j in range(1, ncols)
+        )
+        if straddles:
+            new_key = (0, *key)
+            built.append(
+                (
+                    new_key,
+                    ln,
+                    0,
+                    min((float(t) for t in ln["tops"]), default=0.0),
+                    min((float(x) for x in ln["lefts"]), default=0.0),
+                )
+            )
+            continue
+        buckets: dict[int, dict] = {}
+        for i in range(n):
+            c = _col_of(float(ln["lefts"][i]))
+            _append_word(buckets.setdefault(c, _empty_group()), ln, i)
+        for c, grp in buckets.items():
+            new_key = (c, *key)
+            built.append(
+                (
+                    new_key,
+                    grp,
+                    c,
+                    min((float(t) for t in grp["tops"]), default=0.0),
+                    min((float(x) for x in grp["lefts"]), default=0.0),
+                )
+            )
+
+    built.sort(key=lambda t: (t[2], t[3], t[4]))
+    out: dict = {}
+    for new_key, grp, _c, _mt, _ml in built:
+        out[new_key] = grp
+    return out
 
 
 def _pdfplumber_page(pdf_path: Path, page_num: int) -> dict:
@@ -1260,17 +1371,6 @@ def _tesseract_page_blocks(pdf_path: Path, page_num: int) -> dict:
     page_h = float(image.height)
 
     # Group words -> lines using (block_num, par_num, line_num).
-    #
-    # TODO(column-extract v1 pdfplumber-only): the SEMANTIK_COLUMN_EXTRACT
-    # column-band assembly is NOT yet applied to this OCR path — v1 ships the
-    # pdfplumber path only (the c2 fixtures that motivated the feature are all
-    # born-digital, so they route through _pdfplumber_page and never here). A
-    # follow-up would re-key this grouping to (column, block_num, par_num,
-    # line_num) via column_ids_for_x0s over the per-word `left` (page_w = image
-    # width). Tesseract's own block/par segmentation is already partly
-    # column-aware, so a naive re-key risks regressing single-column OCR; done
-    # deliberately behind the SAME flag as a separate, tested change rather than
-    # half-broken here.
     lines: dict[tuple, dict] = {}
     for j, word in enumerate(data["text"]):
         if not word.strip():
@@ -1300,6 +1400,14 @@ def _tesseract_page_blocks(pdf_path: Path, page_num: int) -> dict:
         ln["rights"].append(left + w)
         ln["tops"].append(top)
         ln["bottoms"].append(top + h)
+
+    # Column-aware re-key when SEMANTIK_COLUMN_EXTRACT is on (prong 1): split a
+    # Tesseract line that fused two columns into per-column line groups so the
+    # merged stream is not glued across the gutter. page_w is the IMAGE width
+    # (same pixel space as the word coordinates). Single-column scans collapse
+    # via the guard → byte-identical grouping (see helper).
+    if resolve_column_extract_mode() and lines:
+        lines = _split_tesseract_lines_by_column(lines, page_w)
 
     blocks: list[dict] = []
     for ln in lines.values():
@@ -1821,7 +1929,13 @@ def _merge_page(page: dict, text_layer_ok: bool) -> dict:
     # spurious column. Single-column -> one column -> byte-identical to the
     # raster (y0, x0) key. Default OFF -> the legacy raster sort.
     if resolve_column_order_mode() and merged_blocks:
-        page_w = float(page.get("width") or _DEFAULT_PAGE_WIDTH)
+        if not text_layer_ok and page.get("tesseract_width"):
+            # OCR-path bboxes are image pixels (see _tesseract_page_blocks); the
+            # gutter fraction must scale in the SAME space or the threshold is
+            # wrong by the render scale (verified: 0.06*612pt vs a 1224px page).
+            page_w = float(page["tesseract_width"])
+        else:
+            page_w = float(page.get("width") or _DEFAULT_PAGE_WIDTH)
         table_bboxes = [
             t.get("bbox")
             for t in page.get("pdfplumber", {}).get("tables", [])

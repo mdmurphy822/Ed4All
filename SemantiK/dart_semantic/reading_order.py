@@ -205,6 +205,69 @@ def column_ids_for_x0s(
     return out
 
 
+def column_edges_from_lines(
+    lines_xs: list[list[tuple[float, float]]],
+    page_w: float,
+    *,
+    seed_masks: list[list[bool]] | None = None,
+) -> list[float] | None:
+    """Column left-edges from per-line ``(x0, x1)`` word runs, or ``None``.
+
+    Lifts the column-start seeding out of
+    :func:`dart_semantic.extract_shared._assemble_text_blocks_columnaware`
+    steps 1-2 so the pdfplumber and Tesseract line assemblers share ONE gutter
+    engine (D2). For each line the seeds are the first word plus any word
+    opening past a gutter-sized gap (``_GUTTER_GAP_FRAC * page_w``); the seeds
+    run :func:`column_ids_for_x0s` with ``single_column_guard=True``; the return
+    value is the per-column minimum seed x0 (ascending) — i.e. each detected
+    column's left edge — or ``None`` when the guard collapses to one column /
+    there are no seeds / a column is left seedless (defensive). Deterministic,
+    stdlib-only.
+
+    ``seed_masks`` (optional, parallel to ``lines_xs``): a per-word boolean —
+    ``False`` excludes that word from SEEDING the gutter detection (e.g. a
+    table-cell word) while STILL advancing the previous-word ``x1`` chain, so
+    the gap-to-previous computation stays byte-identical to the historic inline
+    seeding. ``None`` / a short / all-empty mask → every word seeds (the
+    byte-identical default).
+    """
+    if page_w is None or page_w <= 0:
+        page_w = _DEFAULT_PAGE_WIDTH
+    gutter_gap = _GUTTER_GAP_FRAC * page_w
+
+    seed_x0s: list[float] = []
+    for li, line in enumerate(lines_xs):
+        mask = (
+            seed_masks[li]
+            if seed_masks is not None and li < len(seed_masks)
+            else None
+        )
+        prev_x1: float | None = None
+        for wi, wx in enumerate(line):
+            wx0 = float(wx[0])
+            wx1 = float(wx[1])
+            is_col_start = prev_x1 is None or (wx0 - prev_x1) > gutter_gap
+            prev_x1 = wx1
+            allowed = True if mask is None else (mask[wi] if wi < len(mask) else True)
+            if is_col_start and allowed:
+                seed_x0s.append(wx0)
+    if not seed_x0s:
+        return None
+
+    seed_cols = column_ids_for_x0s(seed_x0s, page_w, single_column_guard=True)
+    ncols = (max(seed_cols) + 1) if seed_cols else 1
+    if ncols <= 1:
+        return None
+
+    left_edges: list[float | None] = [None] * ncols
+    for x0, c in zip(seed_x0s, seed_cols):
+        if left_edges[c] is None or x0 < left_edges[c]:
+            left_edges[c] = x0
+    if any(le is None for le in left_edges):
+        return None
+    return [float(le) for le in left_edges]
+
+
 def _centroid_in_any(bbox, floats: list) -> bool:
     """True when the bbox centroid lies inside any float (figure/table) bbox.
 
@@ -261,4 +324,5 @@ __all__ = [
     "resolve_deploy_profile",
     "column_ids_for_x0s",
     "column_ids_for_bboxes",
+    "column_edges_from_lines",
 ]

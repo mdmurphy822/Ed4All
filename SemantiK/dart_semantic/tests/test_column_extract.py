@@ -251,17 +251,18 @@ def test_cache_key_flag_off_has_no_col_salt():
     assert off == expected
 
 
-def test_cache_key_flag_on_appends_col1():
+def test_cache_key_flag_on_appends_col2():
     off = _key()
     os.environ[_FLAG] = "1"
     on = _key()
     assert on != off
-    # The on-key is exactly the off shape with |col1 appended into the salt band.
+    # The on-key is exactly the off shape with |col2 appended into the salt band
+    # (bumped from |col1 when the Tesseract path became column-aware — prong 1).
     import hashlib
 
     fig_key = "fig1" if extract_shared._detect_figures_enabled() else "fig0"
     expected_raw = (
-        f"v{extract_shared.EXTRACT_CACHE_VERSION}|{fig_key}|col1|"
+        f"v{extract_shared.EXTRACT_CACHE_VERSION}|{fig_key}|col2|"
         f"/abs/fixture.pdf|1234|1700000000"
     )
     expected = hashlib.sha256(expected_raw.encode()).hexdigest()[:24]
