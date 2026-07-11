@@ -468,6 +468,85 @@ def test_e_section_number_path_reuses_real_chapter_title():
     assert "Chapter 2" in titles
 
 
+def _meta(idx: int, text: str, *, raw: int = 0) -> dict:
+    """A ``metadata_drop`` furniture region (e.g. a dropped running header)."""
+    return {
+        "region_index": idx,
+        "region_kind": "metadata_drop",
+        "role": "metadata_drop",
+        "confidence": None,
+        "wcag_status": "failed",
+        "first_raw_block_index": raw,
+        "pages": [max(1, idx)],
+        "heading_text": None,
+        "level": 1,
+        "figure_alt": None,
+        "raw_text": text,
+    }
+
+
+def test_e_section_number_path_recovers_title_from_running_header():
+    """D13 — when the real 'Chapter N: Title' opener never survived but the
+    page-glued running header ("Chapter 1 Foundations 7/9/11") was dropped to
+    metadata_drop furniture by the D6 backstop, the derived chapter recovers the
+    fuller title (folio stripped) instead of falling back to a bare "Chapter N".
+    """
+    prov = [
+        # The recurring page-glued running header the D6 backstop dropped. Only
+        # its NAME ("Foundations") survives attached to the ordinal here — there
+        # is NO real "Chapter 1: Foundations" content heading.
+        _meta(0, "Chapter 1 Foundations 7"),
+        _h(1, "1.1 Introduction to Whole Numbers", raw=1),
+        _p(2, "Counting numbers and zero.", raw=2),
+        _meta(3, "Chapter 1 Foundations 9"),
+        _h(4, "1.2 Use the Language of Algebra", raw=3),
+        _p(5, "A variable is a letter standing for a number.", raw=4),
+        _meta(6, "Chapter 1 Foundations 11"),
+    ]
+    chapters = build_chapters_ir(prov)
+    titles = [c.title for c in chapters]
+    # Recovered "Chapter 1 Foundations", NOT bare "Chapter 1".
+    assert titles == ["Chapter 1 Foundations"], titles
+    # And it drives the document <h1> / <title> selection.
+    from lib.semantik.adapter import _select_document_title
+
+    assert (
+        _select_document_title(chapters, "stem") == "Chapter 1 Foundations"
+    )
+
+
+def test_e_running_header_recovery_ignores_fused_content_paragraph():
+    """A CONTENT paragraph that merely OPENS with the running-header text (a
+    fused OCR block, region_kind='paragraph') must NOT be mined for the title —
+    only genuine metadata_drop furniture is. Absent any furniture header, the
+    bare "Chapter N" fallback is kept (no garbage title from a long sentence)."""
+    prov = [
+        # A fused content paragraph — NOT furniture. Ends in a digit ("7") that
+        # a naive strip would treat as a folio, yielding a garbage title.
+        _p(0, "Chapter 1 Foundations 55 Solution a Take 5 positive from 7", raw=1),
+        _h(1, "1.1 Introduction to Whole Numbers", raw=2),
+        _p(2, "Counting numbers.", raw=3),
+    ]
+    chapters = build_chapters_ir(prov)
+    assert [c.title for c in chapters] == ["Chapter 1"], [
+        c.title for c in chapters
+    ]
+
+
+def test_e_real_opener_wins_over_running_header_recovery():
+    """A real 'Chapter N: Title' content heading still wins over the
+    running-header-recovered title (the furniture recovery is a fallback tier,
+    never an override)."""
+    prov = [
+        _h(0, "Chapter 1: Foundations of Algebra", level=1, raw=1),
+        _meta(1, "Chapter 1 Foundations 7"),  # furniture — must NOT win
+        _h(2, "1.1 Whole Numbers", raw=2),
+        _p(3, "Counting numbers.", raw=3),
+    ]
+    chapters = build_chapters_ir(prov)
+    assert "Chapter 1: Foundations of Algebra" in [c.title for c in chapters]
+
+
 def test_e_l1_openers_present_keeps_legacy_path():
     """When real L1 chapter openers ARE present in content (each with content),
     the legacy boundary path is kept — the synthetic two-chapter fixture must

@@ -55,6 +55,28 @@ _SECTION_NUMBER_RE = re.compile(r"^\s*(\d+)\.(\d+)(?:\.\d+)*\s+(\S.*)$")
 # L1-opener fixtures).
 _CHAPTER_OPENER_RE = re.compile(r"^\s*chapter\s+(\d+)\b", re.IGNORECASE)
 
+# A page-glued running-header "Chapter N <Title> <page-folio>" — e.g.
+# "Chapter 1 Foundations 7". The deterministic running-header backstop
+# (``deterministic_structure._RUNNING_HEADER_TEXT_RE``, D6) re-types these to
+# ``metadata_drop`` furniture so they never mint a bogus <h2>, but the header
+# text IS the canonical chapter title — often the ONLY surviving place the
+# chapter NAME ("Foundations") stays attached to its ordinal once the page-glued
+# opener is dropped. Group 1 is the ordinal-plus-title with the trailing page
+# folio removed; group 2 the ordinal. At least one alphabetic title character is
+# required between the ordinal and the folio (mirrors the backstop's own
+# conservative shape) so a bare "Chapter 12" (no name) never matches; the
+# trailing ``\d{1,4}\s*$`` anchor means only a header ENDING in a folio matches
+# (a content sentence that merely opens with the header is left alone).
+_RUNNING_HEADER_TITLE_RE = re.compile(
+    r"^\s*(chapter\s+(\d+)\b.*?[A-Za-z].*?)\s+\d{1,4}\s*$", re.IGNORECASE
+)
+
+# Compactness band for a recovered running-header title: at least 3 tokens
+# ("Chapter", "N", plus >=1 title word) and no more than 8 (a real chapter name
+# is short — a longer blob is a mis-typed content region, not a title).
+_RUNNING_HEADER_TITLE_MIN_WORDS = 3
+_RUNNING_HEADER_TITLE_MAX_WORDS = 8
+
 # One-or-more trailing " (cont.)" continuation suffixes. Used to STRIP any
 # existing continuation suffix off a chapter title before appending a single
 # one, so an N-times-overflowing chapter reads "Title (cont.)" — never the
@@ -699,6 +721,64 @@ def _chapter_titles_from_provenance(
     return titles
 
 
+def _running_header_chapter_titles(
+    provenance: Sequence[Mapping[str, Any]],
+) -> Dict[int, str]:
+    """Map chapter ordinal → the chapter title recovered from a page-glued
+    running header the running-header backstop (D6) re-typed to furniture.
+
+    When a scan's chapter opener is printed as a per-page running header
+    ("Chapter 1 Foundations 7 / 9 / 11 …"), the deterministic backstop drops it
+    to ``metadata_drop`` so it never mints a bogus <h2>. But that header text is
+    the only surviving place the chapter NAME ("Foundations") stays attached to
+    its ordinal — the real ``Chapter N: Title`` heading never survived, so
+    :func:`_chapter_titles_from_provenance` yields nothing and the derived
+    chapter falls back to a bare ``"Chapter N"``. This recovers the fuller title
+    by stripping the trailing page folio at DERIVATION time: it only READS the
+    furniture region's text to compose a DISPLAY title (the region itself is
+    never mutated and stays dropped — no content-stream / token-conservation
+    invariant is touched, exactly as the sibling ``real_titles`` lookup already
+    reads heading text to title a chapter).
+
+    Conservative — only ``metadata_drop`` furniture regions are scanned (a fused
+    CONTENT paragraph that merely OPENS with the header keeps its text), the
+    recovered title must be compact (``_RUNNING_HEADER_TITLE_MIN_WORDS`` ..
+    ``_MAX_WORDS`` words, no sentence terminal), and the MODAL recovered form per
+    ordinal wins so OCR noise on a single page can never outvote the header
+    repeated identically on every page.
+    """
+    counts: Dict[int, Dict[str, int]] = {}
+    for prov in provenance:
+        if str(prov.get("region_kind")) != "metadata_drop":
+            continue
+        text = str(prov.get("heading_text") or prov.get("raw_text") or "")
+        m = _RUNNING_HEADER_TITLE_RE.match(text)
+        if not m:
+            continue
+        try:
+            ordinal = int(m.group(2))
+        except (TypeError, ValueError):
+            continue
+        title = re.sub(r"\s+", " ", m.group(1)).strip()
+        words = title.split()
+        if not (
+            _RUNNING_HEADER_TITLE_MIN_WORDS
+            <= len(words)
+            <= _RUNNING_HEADER_TITLE_MAX_WORDS
+        ):
+            continue
+        if title[-1] in ".!?":
+            continue
+        tally = counts.setdefault(ordinal, {})
+        tally[title] = tally.get(title, 0) + 1
+    titles: Dict[int, str] = {}
+    for ordinal, tally in counts.items():
+        # Most frequent recovered form wins; ties broken deterministically by
+        # sorting the candidate titles first.
+        titles[ordinal] = max(sorted(tally), key=lambda t: tally[t])
+    return titles
+
+
 def _build_chapters_by_section_number(
     provenance: Sequence[Mapping[str, Any]],
     heading_tree: Sequence[Sequence[Any]],
@@ -714,11 +794,24 @@ def _build_chapters_by_section_number(
     ``N.M`` section form an implicit leading chapter (titled from the heading
     tree, mirroring the legacy path).
 
+    Chapter title precedence for ordinal ``N``: a real ``Chapter N: Title``
+    content heading, else a title recovered from the page-glued running header
+    the D6 backstop dropped as furniture (``"Chapter 1 Foundations"`` with the
+    page folio stripped), else a generic ``"Chapter N"``.
+
     The same per-chapter overflow guard applies (a chapter never exceeds
     ``_MAX_BLOCKS_PER_CHAPTER`` blocks → spills into a ``(cont.)`` continuation),
     but a correctly section-grouped chapter never trips it.
     """
     real_titles = _chapter_titles_from_provenance(provenance)
+    header_titles = _running_header_chapter_titles(provenance)
+
+    def _title_for(ordinal: int) -> str:
+        return (
+            real_titles.get(ordinal)
+            or header_titles.get(ordinal)
+            or f"Chapter {ordinal}"
+        )
     chapters: List[_AdapterChapter] = []
     current: Optional[_AdapterChapter] = None
     current_ordinal: Optional[int] = None
@@ -750,7 +843,7 @@ def _build_chapters_by_section_number(
         if ordinal is not None and ordinal != current_ordinal:
             # A section whose chapter number differs from the current chapter
             # opens a new chapter.
-            title = real_titles.get(ordinal, f"Chapter {ordinal}")
+            title = _title_for(ordinal)
             current = _open_chapter(title)
             current_ordinal = ordinal
             # The N.M section heading becomes an in-chapter section block (it is
