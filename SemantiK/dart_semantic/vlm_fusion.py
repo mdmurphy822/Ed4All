@@ -74,7 +74,11 @@ import re
 
 __all__ = [
     "SEMANTIK_VLM_FUSION_ENV",
+    "SEMANTIK_VLM_ORDER_AUTHORITATIVE_ENV",
+    "SEMANTIK_VLM_ORDER_DIVERGENCE_ENV",
     "resolve_vlm_fusion_mode",
+    "resolve_vlm_order_authoritative_mode",
+    "resolve_vlm_order_divergence_floor",
     "fuse_page",
     "PAGE_VLM_CONTRACT",
 ]
@@ -85,6 +89,72 @@ __all__ = [
 
 SEMANTIK_VLM_FUSION_ENV = "SEMANTIK_VLM_FUSION"
 _TRUTHY = {"1", "true", "yes", "on"}
+
+# ---------------------------------------------------------------------------
+# VLM-authoritative reading-order (dense multi-column repair).
+# ---------------------------------------------------------------------------
+#
+# On a clean single-column page the Tesseract line geometry is a faithful
+# reading order, so the fused blocks ride their real bboxes and the downstream
+# ``_merge_page`` ``(y0, x0)`` sort reconstructs document order. On a DENSE
+# MULTI-COLUMN page (answer grids, 3-column exercise banks) Tesseract's line
+# segmentation fractures across the gutter and the DP alignment degrades into
+# many gap lines — the fused list carries poorly-interpolated VLM-only inserts
+# and orphaned tesseract-only tails, and the ``_merge_page`` bbox re-sort then
+# interleaves them across columns (the clean VLM order is LOST: numbers drop /
+# orphan, garbage tails append). The per-page ``divergence`` already measures
+# exactly this (gap lines / total) — when it is high, Tesseract geometry is
+# unreliable, so the VLM's known-good LINEAR order is made authoritative:
+# emit the VLM-bearing blocks in VLM (gold) order, DROP the unmatched
+# tesseract-only garbage, and overwrite each block's bbox with a synthetic
+# MONOTONIC single-column band so the downstream ``(y0, x0)`` re-sort (and the
+# region-level ``min(feature_block_indices)`` sort) preserve VLM order instead
+# of re-scrambling it. Low-divergence (clean) pages fall below the threshold →
+# byte-identical to the legacy path.
+SEMANTIK_VLM_ORDER_AUTHORITATIVE_ENV = "SEMANTIK_VLM_ORDER_AUTHORITATIVE"
+SEMANTIK_VLM_ORDER_DIVERGENCE_ENV = "SEMANTIK_VLM_ORDER_DIVERGENCE"
+# Divergence at/above which Tesseract order is treated as unreliable and the
+# VLM linear order is made authoritative. A clean single-column page aligns
+# almost every line (divergence well under 0.1); a fractured multi-column grid
+# runs far higher. 0.25 sits comfortably between the two regimes.
+_DEFAULT_ORDER_DIVERGENCE = 0.25
+# Synthetic single-column band height when the page height is unknown.
+_SYNTH_LINE_H = 12.0
+
+
+def resolve_vlm_order_authoritative_mode() -> bool:
+    """Whether the VLM-authoritative reading-order repair may fire.
+
+    **Default OFF** (opt-in, mirroring the rest of the ``SEMANTIK_VLM_*``
+    lane — the whole VLM fusion path is opt-in): parse-with-fallback truthy
+    set (``1`` / ``true`` / ``yes`` / ``on``, case-insensitive); unset /
+    blank / falsey / garbage → off. When ON it is STILL gated per-page by
+    :func:`resolve_vlm_order_divergence_floor`, so it is a NO-OP on clean
+    low-divergence pages even when enabled — only a genuinely fractured
+    multi-column page (high divergence) is re-ordered. The whole path is inert
+    unless ``SEMANTIK_VLM_FUSION`` is on (no ``fuse_page`` call otherwise).
+    Read at CALL time so tests / Docker can flip it without a re-import.
+    """
+    return os.environ.get(
+        SEMANTIK_VLM_ORDER_AUTHORITATIVE_ENV, ""
+    ).strip().lower() in _TRUTHY
+
+
+def resolve_vlm_order_divergence_floor() -> float:
+    """Per-page divergence at/above which VLM order becomes authoritative.
+
+    Parse-with-fallback float in ``[0.0, 1.0]``; blank / non-float / NaN /
+    Inf / out-of-range → :data:`_DEFAULT_ORDER_DIVERGENCE` (0.25). Read at
+    CALL time so tests / Docker can tune it without a re-import.
+    """
+    raw = os.environ.get(SEMANTIK_VLM_ORDER_DIVERGENCE_ENV, "").strip()
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_ORDER_DIVERGENCE
+    if not _finite(val) or not (0.0 <= val <= 1.0):
+        return _DEFAULT_ORDER_DIVERGENCE
+    return val
 
 
 def resolve_vlm_fusion_mode() -> bool:
@@ -193,6 +263,13 @@ _MD_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+")
 _MD_BLOCKQUOTE_RE = re.compile(r"^\s{0,3}>\s+")
 _MD_BULLET_RE = re.compile(r"^\s{0,3}[-*+]\s+")
 _MD_ORDERED_RE = re.compile(r"^\s{0,3}\d+[.)]\s+")
+# Ordered-marker ANYWHERE on the line (line-start OR after whitespace). Used to
+# tell a genuine single-item markdown ordered-list line ("1. First point…") from
+# an ANSWER-GRID / exercise row where several "N." pairs are jammed onto one line
+# ("37. 84  38. 9,696  39. 75") — in a grid row each "N." is a CONTENT exercise
+# label, NOT a list marker, so the line-leading number must be PRESERVED (else
+# every row-leading exercise number is silently stripped: "37. 84" -> "84").
+_MD_ORDERED_GLOBAL_RE = re.compile(r"(?:^|\s)\d+[.)]\s")
 # Defect 2 — a WHOLE-LINE markdown code fence: ``` optionally with a language
 # tag (```markdown / ```math). The VLM wraps a whole page in ```markdown … ```
 # and the fence line leaks into visible text (worst: an <h2> reading
@@ -248,7 +325,11 @@ def _strip_markdown_structure(line: str) -> str:
     s = _MD_HEADING_RE.sub("", s)
     s = _MD_BLOCKQUOTE_RE.sub("", s)
     s = _MD_BULLET_RE.sub("", s)
-    s = _MD_ORDERED_RE.sub("", s)
+    # Strip the leading ordered-list marker ONLY for a genuine single-item list
+    # line. A line carrying MULTIPLE "N." markers is an answer-grid / exercise
+    # row where each number is a CONTENT exercise label — preserve it verbatim.
+    if len(_MD_ORDERED_GLOBAL_RE.findall(s)) <= 1:
+        s = _MD_ORDERED_RE.sub("", s)
     # Bold wrappers only (single * / _ can be multiplication / subscript).
     s = s.replace("**", "").replace("__", "")
     # Literal HTML entities (ch02 nbsp defect): decode the common ones, drop
@@ -517,6 +598,11 @@ def _reconstruct(
     vlm_gap_set = set(vlm_only_all)
 
     fused: list[dict] = []
+    # Parallel to ``fused``: the representative VLM (gold) index each block
+    # covers, or ``None`` for a tesseract-only block (no VLM content). Used
+    # ONLY by the VLM-authoritative reorder; discarded on the clean path, so
+    # building it unconditionally is byte-neutral.
+    sort_keys: list[int | None] = []
     counts = {
         "matched": 0,
         "split": 0,
@@ -552,6 +638,7 @@ def _reconstruct(
                 "vlm_coverage": coverage,
             }
         )
+        sort_keys.append(min(u["vlm"]))
         anchors.append(
             {
                 "vlm_lo": min(u["vlm"]),
@@ -610,6 +697,7 @@ def _reconstruct(
                 "vlm_coverage": coverage,
             }
         )
+        sort_keys.append(min(region_vlm))
         anchors.append(
             {
                 "vlm_lo": min(region_vlm),
@@ -629,6 +717,7 @@ def _reconstruct(
         if t in rescued_tess:
             continue
         fused.append({**tess[t], "fusion": "tesseract-only"})
+        sort_keys.append(None)  # no VLM content → dropped by the reorder
 
     # --- vlm-only (unrescued GOLD gaps) → flagged low-confidence inserts -----
     global_font = _median([b.get("font_size") for b in tess])
@@ -653,12 +742,66 @@ def _reconstruct(
                 "vlm_coverage": "whole_block",
             }
         )
+        sort_keys.append(v)
 
     total = n_tess + n_vlm
-    counts["divergence"] = (
+    divergence = (
         (counts["tesseract_only"] + counts["vlm_only"]) / total if total else 0.0
     )
+    counts["divergence"] = divergence
+
+    # VLM-authoritative reading-order repair on high-divergence pages (dense
+    # multi-column): Tesseract geometry is unreliable, so re-emit the
+    # VLM-bearing blocks in VLM order over synthetic monotonic single-column
+    # bboxes and DROP the tesseract-only garbage. Low-divergence (clean) pages
+    # fall below the floor → the fused list + counts are byte-identical.
+    if (
+        divergence >= resolve_vlm_order_divergence_floor()
+        and resolve_vlm_order_authoritative_mode()
+    ):
+        fused = _apply_vlm_order(fused, sort_keys, page_w, page_h)
+        counts["vlm_authoritative"] = True
+    else:
+        counts["vlm_authoritative"] = False
     return fused, counts
+
+
+def _apply_vlm_order(
+    fused: list[dict],
+    sort_keys: list[int | None],
+    page_w: float,
+    page_h: float,
+) -> list[dict]:
+    """Re-emit VLM-bearing blocks in VLM order with synthetic monotonic bboxes.
+
+    Keeps only blocks that carry VLM content (``sort_keys[i] is not None`` —
+    aligned / rescued / VLM-only inserts), orders them by their representative
+    VLM (gold) index (a total order — every VLM line belongs to exactly one
+    block), and overwrites each block's bbox with a single-column band whose
+    ``y0`` is strictly increasing in VLM order. Because all bands share
+    ``x0 == 0`` (one column) and ascend in ``y0``, BOTH the downstream
+    ``_merge_page`` ``(y0, x0)`` sort AND the region-level
+    ``min(feature_block_indices)`` sort reproduce VLM order instead of the
+    scrambled Tesseract geometry. Unmatched tesseract-only garbage lines carry
+    ``None`` → they are dropped. Fail-open: an empty VLM-bearing set returns
+    ``fused`` unchanged (nothing to reorder)."""
+    indexed = [
+        (k, b) for k, b in zip(sort_keys, fused) if k is not None
+    ]
+    if not indexed:
+        return fused
+    indexed.sort(key=lambda kb: kb[0])
+    n = len(indexed)
+    line_h = (page_h / n) if (page_h and page_h > 0) else _SYNTH_LINE_H
+    width = page_w if (page_w and page_w > 0) else 1.0
+    out: list[dict] = []
+    for rank, (_k, block) in enumerate(indexed):
+        y0 = rank * line_h
+        y1 = y0 + line_h
+        nb = dict(block)
+        nb["bbox"] = _sanitize_bbox([0.0, y0, width, y1], page_w, page_h)
+        out.append(nb)
+    return out
 
 
 def _rescue_sim(

@@ -20,8 +20,12 @@ import pytest
 from dart_semantic import extract_shared
 from dart_semantic.vlm_fusion import (
     SEMANTIK_VLM_FUSION_ENV,
+    SEMANTIK_VLM_ORDER_AUTHORITATIVE_ENV,
+    SEMANTIK_VLM_ORDER_DIVERGENCE_ENV,
     fuse_page,
     resolve_vlm_fusion_mode,
+    resolve_vlm_order_authoritative_mode,
+    resolve_vlm_order_divergence_floor,
 )
 
 
@@ -369,6 +373,24 @@ def test_markdown_structure_stripped_latex_preserved():
     assert by_y[0]["text"] == "heading text"  # '##' stripped
     assert by_y[1]["text"] == "bullet item text"  # '- ' stripped
     assert by_y[2]["text"] == r"the value is $\sqrt{ab}$"  # LaTeX kept verbatim
+
+
+def test_answer_grid_row_preserves_exercise_numbers():
+    """A VLM line with MULTIPLE 'N.' markers is an answer-grid / exercise row —
+    each number is a CONTENT exercise label, not a list marker, so the leading
+    number must be PRESERVED (regression: '37. 84' was stripped to '84')."""
+    from SemantiK.dart_semantic.vlm_fusion import _strip_markdown_structure
+
+    # Multi-marker grid rows: leading exercise number kept verbatim.
+    assert _strip_markdown_structure("37. 84 38. 9,696 39. 75") == "37. 84 38. 9,696 39. 75"
+    assert _strip_markdown_structure("46. 550 47. 22,335 48. 39,075") == (
+        "46. 550 47. 22,335 48. 39,075"
+    )
+    # Genuine SINGLE-item ordered-list line: leading marker still stripped.
+    assert _strip_markdown_structure("1. First point of the argument") == (
+        "First point of the argument"
+    )
+    assert _strip_markdown_structure("3. See the theorem") == "See the theorem"
 
 
 # --------------------------------------------------------------------------
@@ -719,6 +741,174 @@ def test_fusion_carries_clean_text_not_entity_runs():
     assert stats["matched"] == 1
     assert fused[0]["text"] == "Divide. 45 by 9 to simplify"
     assert "nbsp" not in fused[0]["text"]
+
+
+# --------------------------------------------------------------------------
+# VLM-authoritative reading-order repair (dense multi-column pages).
+# --------------------------------------------------------------------------
+
+
+def test_order_authoritative_resolver_default_off(monkeypatch):
+    monkeypatch.delenv(SEMANTIK_VLM_ORDER_AUTHORITATIVE_ENV, raising=False)
+    assert resolve_vlm_order_authoritative_mode() is False
+
+
+@pytest.mark.parametrize("val", ["1", "true", "yes", "on", "ON", "  True "])
+def test_order_authoritative_resolver_truthy_on(monkeypatch, val):
+    monkeypatch.setenv(SEMANTIK_VLM_ORDER_AUTHORITATIVE_ENV, val)
+    assert resolve_vlm_order_authoritative_mode() is True
+
+
+@pytest.mark.parametrize("val", ["", "0", "false", "no", "off", "garbage", "2x"])
+def test_order_authoritative_resolver_falsey_and_garbage_off(monkeypatch, val):
+    # Opt-in posture (mirrors resolve_vlm_fusion_mode): only truthy enables.
+    monkeypatch.setenv(SEMANTIK_VLM_ORDER_AUTHORITATIVE_ENV, val)
+    assert resolve_vlm_order_authoritative_mode() is False
+
+
+def test_order_divergence_floor_default(monkeypatch):
+    monkeypatch.delenv(SEMANTIK_VLM_ORDER_DIVERGENCE_ENV, raising=False)
+    assert resolve_vlm_order_divergence_floor() == pytest.approx(0.25)
+
+
+@pytest.mark.parametrize("val,exp", [("0.4", 0.4), ("0.0", 0.0), ("1.0", 1.0)])
+def test_order_divergence_floor_parsed(monkeypatch, val, exp):
+    monkeypatch.setenv(SEMANTIK_VLM_ORDER_DIVERGENCE_ENV, val)
+    assert resolve_vlm_order_divergence_floor() == pytest.approx(exp)
+
+
+@pytest.mark.parametrize("val", ["", "abc", "-0.1", "1.5", "nan", "inf"])
+def test_order_divergence_floor_falls_back(monkeypatch, val):
+    monkeypatch.setenv(SEMANTIK_VLM_ORDER_DIVERGENCE_ENV, val)
+    assert resolve_vlm_order_divergence_floor() == pytest.approx(0.25)
+
+
+def test_apply_vlm_order_reorders_and_drops_garbage():
+    # Direct, deterministic unit test of the reorder helper (no aligner): a
+    # scrambled fused list (blocks at scrambled bboxes, one garbage-only
+    # tesseract line carrying sort_key None) is re-emitted in VLM (gold)
+    # order over synthetic monotonic single-column bands, garbage dropped.
+    from dart_semantic.vlm_fusion import _apply_vlm_order
+
+    fused = [
+        {"text": "B second col2", "bbox": [300.0, 200.0, 560.0, 212.0], "fusion": "vlm+tesseract"},
+        {"text": "D fourth col2", "bbox": [300.0, 400.0, 560.0, 412.0], "fusion": "vlm-only-flagged"},
+        {"text": "A first col1", "bbox": [10.0, 100.0, 270.0, 112.0], "fusion": "vlm+tesseract"},
+        {"text": "garbage ocr tail fragment", "bbox": [10.0, 900.0, 400.0, 912.0], "fusion": "tesseract-only"},
+        {"text": "C third col1", "bbox": [10.0, 300.0, 270.0, 312.0], "fusion": "vlm-only-flagged"},
+    ]
+    # VLM (gold) indices for each block; the garbage line carries None.
+    sort_keys = [1, 3, 0, None, 2]
+    out = _apply_vlm_order(fused, sort_keys, 612.0, 792.0)
+    # Emitted in VLM order; the tesseract-only garbage line is dropped.
+    assert [b["text"] for b in out] == [
+        "A first col1",
+        "B second col2",
+        "C third col1",
+        "D fourth col2",
+    ]
+    assert not any("garbage" in b["text"] for b in out)
+    # Synthetic bboxes: single column (x0 == 0), strictly monotonic y0 in-range.
+    ys = [b["bbox"][1] for b in out]
+    assert ys == sorted(ys) and len(set(ys)) == len(ys)
+    assert all(b["bbox"][0] == 0.0 and 0.0 <= b["bbox"][1] < b["bbox"][3] <= 792.0 for b in out)
+    # End-to-end: the downstream _merge_page (y0, x0) sort — which previously
+    # re-scrambled the columns — now reconstructs VLM order.
+    merged = extract_shared._merge_page(
+        {"tesseract": {"text_blocks": out}}, text_layer_ok=False
+    )
+    assert [b["text"] for b in merged["text_blocks"]] == [
+        "A first col1",
+        "B second col2",
+        "C third col1",
+        "D fourth col2",
+    ]
+
+
+def test_apply_vlm_order_empty_vlm_set_is_noop():
+    # No VLM-bearing block (all tesseract-only) → nothing to reorder, returned
+    # unchanged (fail-open, never an empty page).
+    from dart_semantic.vlm_fusion import _apply_vlm_order
+
+    fused = [{"text": "only ocr line", "bbox": [1.0, 2.0, 3.0, 4.0], "fusion": "tesseract-only"}]
+    out = _apply_vlm_order(fused, [None], 100.0, 100.0)
+    assert out == fused
+
+
+def _garbled_multicol_case():
+    """One clean anchor line (col1) + two garbled-OCR lines that cannot align
+    (col2 top + a bottom fragment) against a CLEAN 4-line VLM transcription.
+    The garble → gaps → HIGH divergence; the garbled tesseract lines are the
+    'garbage tails' the reorder must drop."""
+    tess = [
+        _tb(300, 100, 560, 112, "garbage xxxx yyyy zzzz top"),
+        _tb(10, 100, 270, 112, "clean anchor line zero here"),
+        _tb(10, 200, 270, 212, "garbage qwer asdf bottom fragment"),
+    ]
+    vlm = [
+        "clean anchor line zero here",
+        "clean prose line one alpha",
+        "clean prose line two bravo",
+        "clean prose line three charlie",
+    ]
+    return tess, vlm
+
+
+def test_high_divergence_page_fuses_vlm_order_and_drops_garbage(monkeypatch):
+    # Integration through fuse_page: a genuinely high-divergence page fires the
+    # authoritative reorder — all VLM content survives in order, the garbled
+    # tesseract 'tails' are dropped, and bboxes are synthetic monotonic.
+    monkeypatch.setenv(SEMANTIK_VLM_ORDER_AUTHORITATIVE_ENV, "1")
+    tess, vlm = _garbled_multicol_case()
+    fused, stats = fuse_page(tess, vlm, (612.0, 792.0))
+    assert stats["divergence"] >= 0.25
+    assert stats["vlm_authoritative"] is True
+    # The garbled OCR tails are gone.
+    assert not any("garbage" in b["text"] for b in fused)
+    # All VLM ordinal markers survive in VLM linear order across the emission.
+    joined = " ".join(b["text"] for b in sorted(fused, key=lambda b: b["bbox"][1]))
+    order = [joined.index(m) for m in ("zero", "alpha", "bravo", "charlie")]
+    assert order == sorted(order)
+    assert all(m in joined for m in ("zero", "alpha", "bravo", "charlie"))
+    # Bboxes are strictly monotonic single-column bands.
+    ys = [b["bbox"][1] for b in sorted(fused, key=lambda b: b["bbox"][1])]
+    assert ys == sorted(ys) and len(set(ys)) == len(ys)
+
+
+def test_authoritative_off_keeps_legacy_behavior_on_high_divergence(monkeypatch):
+    # Explicit revert (default-off): the same high-divergence page keeps the
+    # legacy fused list — garbled tesseract tails retained, no reorder.
+    monkeypatch.setenv(SEMANTIK_VLM_ORDER_AUTHORITATIVE_ENV, "0")
+    tess, vlm = _garbled_multicol_case()
+    fused, stats = fuse_page(tess, vlm, (612.0, 792.0))
+    assert stats["divergence"] >= 0.25
+    assert stats["vlm_authoritative"] is False
+    assert any("garbage" in b["text"] for b in fused)  # tails retained
+
+
+def test_low_divergence_page_byte_identical_regardless_of_authoritative(monkeypatch):
+    # A clean single-column page (all MATCH → divergence 0) is byte-identical
+    # whether the authoritative reorder is enabled or reverted — the divergence
+    # floor gates it out, so real Tesseract bboxes are preserved.
+    tess = [
+        _tb(10, 10, 190, 20, "the quick brown fox jumps"),
+        _tb(10, 30, 190, 40, "over the lazy dog today"),
+        _tb(10, 50, 190, 60, "pack my box with five jugs"),
+    ]
+    vlm = [
+        "the quick brown fox jumps",
+        "over the lazy dog today",
+        "pack my box with five jugs",
+    ]
+    monkeypatch.setenv(SEMANTIK_VLM_ORDER_AUTHORITATIVE_ENV, "1")
+    on, on_stats = fuse_page(copy.deepcopy(tess), list(vlm), (200.0, 300.0))
+    monkeypatch.setenv(SEMANTIK_VLM_ORDER_AUTHORITATIVE_ENV, "0")
+    off, off_stats = fuse_page(copy.deepcopy(tess), list(vlm), (200.0, 300.0))
+    assert on == off  # blocks byte-identical on a clean low-divergence page
+    assert on_stats["vlm_authoritative"] is False
+    assert on_stats["divergence"] == pytest.approx(0.0)
+    # Real Tesseract bboxes preserved (no synthetic single-column rewrite).
+    assert on[0]["bbox"] == [10.0, 10.0, 190.0, 20.0]
 
 
 def test_extract_cache_salt_bumped_to_vlmfuse5():

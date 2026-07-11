@@ -51,6 +51,7 @@ import hashlib
 import io
 import json
 import logging
+import os
 import threading
 from pathlib import Path
 
@@ -251,6 +252,43 @@ def _chat_completions_url(base_url: str) -> str:
     return f"{_strip_trailing_v1(base_url)}/v1/chat/completions"
 
 
+_VLM_DISABLE_THINKING_ENV = "SEMANTIK_VLM_DISABLE_THINKING"
+_VLM_MAX_TOKENS_ENV = "SEMANTIK_VLM_MAX_TOKENS"
+_VLM_THINKING_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def resolve_vlm_disable_thinking() -> bool:
+    """Parse-with-fallback ``SEMANTIK_VLM_DISABLE_THINKING`` (default off).
+
+    When truthy, the transcription POST carries
+    ``chat_template_kwargs={"thinking": False, "enable_thinking": False}`` so a
+    REASONING VLM (e.g. Nemotron-Omni, whose vLLM ``nemotron_v3`` parser honors
+    ``enable_thinking is False``) skips the ``<think>`` block. Faithful page
+    transcription is a copy task that gains nothing from chain-of-thought, and
+    on a reasoning seat the ``<think>`` budget balloons the per-page latency by
+    ~10× (measured: 23.7s off vs >4min on) while risking a null-content
+    truncation. Default OFF → byte-identical for the non-reasoning default seat
+    (``qwen2.5vl:7b``), which ignores the field anyway."""
+    return (os.environ.get(_VLM_DISABLE_THINKING_ENV) or "").strip().lower() in _VLM_THINKING_TRUTHY
+
+
+def resolve_vlm_max_tokens() -> int:
+    """Parse-with-fallback ``SEMANTIK_VLM_MAX_TOKENS`` (default 0 → unset).
+
+    A completion cap on the transcription POST. Default 0 sends NO ``max_tokens``
+    (byte-identical to the historic call — the server generates to EOS). A
+    positive value bounds runaway generation on a reasoning seat. Non-positive /
+    garbage → 0 (unset)."""
+    raw = os.environ.get(_VLM_MAX_TOKENS_ENV)
+    if not raw:
+        return 0
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return 0
+    return val if val > 0 else 0
+
+
 def _post_chat_completion(
     *,
     base_url: str,
@@ -285,6 +323,13 @@ def _post_chat_completion(
         # Greedy → deterministic → cache-safe (the glm_ocr_cache rationale).
         "temperature": 0,
     }
+    _mt = resolve_vlm_max_tokens()
+    if _mt > 0:
+        body["max_tokens"] = _mt
+    if resolve_vlm_disable_thinking():
+        # Reasoning-VLM CoT suppression (Nemotron etc.); harmless no-op field
+        # for a non-reasoning seat. See resolve_vlm_disable_thinking.
+        body["chat_template_kwargs"] = {"thinking": False, "enable_thinking": False}
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"

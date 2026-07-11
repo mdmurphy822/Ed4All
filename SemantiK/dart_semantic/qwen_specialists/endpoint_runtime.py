@@ -185,6 +185,42 @@ def resolve_disable_thinking() -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def resolve_specialist_max_tokens_floor() -> int:
+    """Parse-with-fallback ``SEMANTIK_SPECIALIST_MAX_TOKENS_FLOOR`` (default 0).
+
+    A per-completion FLOOR on ``max_tokens`` applied at the single
+    :meth:`_one_completion` chokepoint that every endpoint lane funnels
+    through — Stage-6 authoring (``generate`` / ``generate_batch`` /
+    ``generate_multi``), the Stage-5d structure/block reviewer, and the
+    Stage-5e resegment op-lists all reach it.
+
+    Motivation: on a REASONING endpoint (thinking ON — the default when
+    ``SEMANTIK_SPECIALIST_DISABLE_THINKING`` is unset), the model spends its
+    first completion tokens inside a ``<think>`` block that the
+    ``nemotron_v3`` parser peels off into ``reasoning_content``. The
+    per-adapter authoring budgets (prose 512, table 1024, math 960) and the
+    reviewer/resegment budgets (512 / 1024) are sized for ANSWER-only, so the
+    ``<think>`` block truncates the completion (``finish_reason=length``) and
+    the answer ``content`` comes back ``None`` — the exact null-content
+    fail-soft that reasoning models trip on small budgets. Raising the floor
+    gives ``<think>`` + answer room; vLLM stops at EOS naturally, so a larger
+    ceiling costs nothing when the answer is short.
+
+    FLOOR semantics: only ever RAISES a caller's ``max_tokens`` up to this
+    value; never lowers a budget the caller already sized larger (so the
+    batched :meth:`generate_multi` summed-budget ceiling is untouched).
+    Default 0 / unset / non-positive / garbage → no floor → byte-identical
+    to the pre-flag path."""
+    raw = os.environ.get("SEMANTIK_SPECIALIST_MAX_TOKENS_FLOOR")
+    if not raw:
+        return 0
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return 0
+    return val if val > 0 else 0
+
+
 def resolve_specialist_concurrency() -> int:
     """Parse-with-fallback ``SEMANTIK_SPECIALIST_CONCURRENCY`` (default 8).
 
@@ -798,6 +834,13 @@ class OpenAICompatibleRuntime:
         # llama_cpp import).
         import requests  # noqa: WPS433
 
+        # Reasoning-headroom FLOOR: on a thinking-ON endpoint the per-adapter
+        # answer-only budgets (512/1024/960 ...) truncate the completion
+        # inside the <think> block -> null content. Raise (never lower) the
+        # caller's budget to the configured floor so <think> + answer fit.
+        # Default 0 -> no-op / byte-stable.
+        max_tokens = max(int(max_tokens), resolve_specialist_max_tokens_floor())
+
         body: dict = {
             "model": self._model,
             "messages": [
@@ -819,7 +862,15 @@ class OpenAICompatibleRuntime:
             # budget is spent on the answer, not a <think> block that overruns
             # max_tokens (e.g. deepseek-ai/deepseek-v4-pro). Honored via the
             # endpoint's chat template; ignored by non-reasoning models.
-            body["chat_template_kwargs"] = {"thinking": False}
+            # Send BOTH the generic ``thinking`` key and Nemotron's
+            # ``enable_thinking`` key — the vLLM ``nemotron_v3`` reasoning
+            # parser honors ``enable_thinking is False`` (a plain ``thinking``
+            # key is a no-op for Nemotron); a server ignores whichever key it
+            # doesn't recognize.
+            body["chat_template_kwargs"] = {
+                "thinking": False,
+                "enable_thinking": False,
+            }
 
         headers = {
             "Authorization": f"Bearer {self._api_key}",
