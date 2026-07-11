@@ -104,6 +104,11 @@ state/runs/*
 !state/runs/.gitkeep
 state/gui/*
 !state/gui/.gitkeep
+# Defensive catch-all: ANY subdir under state/ holds runtime output — ignore its
+# contents so a NEW runtime dir (e.g. state/benchmarks/, state/qa/) can never leak
+# to git. Keep the .gitkeep placeholders. (Prevents "folders that just happen".)
+state/*/*
+!state/*/.gitkeep
 # Operator working notes dropped at the state/ root (untracked scratch)
 state/nvidia_*
 
