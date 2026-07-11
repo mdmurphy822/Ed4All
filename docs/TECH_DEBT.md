@@ -37,6 +37,7 @@ L (days) · XL (multi-day/coordination). Status: `open` · `in-progress` ·
 | D10 | **Doc/count drift risk** — the CLAUDE.md family carries many hand-maintained counts + flag tables (gate counts, flag indices) that can drift from code | docs | 🟡 | ongoing | open | `doc-sanitation-reviewer` agent, flag-doc-sync |
 | D11 | **Test-bed representativeness** — small slices behave differently from full runs (a 3-page slice dropped content a 198-page run kept), so slice-based validation can mislead | process | 🟡 | ongoing | open | 2026-07-11 fusion-fix debugging |
 | D12 | **Marketable-v2 open items** — LTI fork + pilot decisions, demo build un-run, chunker 10-vs-21 drift | product-open-items | 🟡 | var | open | memory `project_marketable_v2_implemented` |
+| D14 | **Council BERT `merge_or_split` CUDA-OOMs under a vLLM GPU pin** — when Omni (vLLM) owns the whole card, the in-process ModernBERT structure-council `merge_or_split` step raises `CUDA error: out of memory`, is caught, and is silently SKIPPED — the run still reports `gates=pass`, so heading merge/split refinement degrades invisibly. Seen on the ch01-03 Spark run 2026-07-11 (WF-20260711-bd0d1eda). Fix belongs in task #10's per-model GPU lifecycle: either lease the card to the council BERT at its stage seam, or fall the merge_or_split BERT back to CPU like NLI (`ED4ALL_NLI_DEVICE=cpu`) instead of swallowing the OOM. | gpu-contention/silent-degradation | 🟠 | M | open | task #10; `[council] BERT 'merge_or_split'` call site |
 
 ---
 
