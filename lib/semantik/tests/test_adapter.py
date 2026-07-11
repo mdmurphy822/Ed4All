@@ -200,7 +200,7 @@ def result_html_and_sidecar():
 
 
 def test_a_single_sid_invariant(result_html_and_sidecar):
-    """The sid anchors ``#{sid}`` == data-dart-block-id == sidecar section_id,
+    """The sid anchors ``#{sid}`` == data-semantik-block-id == sidecar section_id,
     all from ONE mint fn. B4 (2026-07-04): a genuine HEADING block names its
     section via ``aria-labelledby`` → a VISIBLE ``<hN id={sid}>`` (descriptive
     region landmark). A CONTENT block carries the sid as a bare ``id`` on the
@@ -220,7 +220,7 @@ def test_a_single_sid_invariant(result_html_and_sidecar):
 
     seen_block_ids = set()
     for sec in sections:
-        block_id = re.search(r'data-dart-block-id="([^"]+)"', sec).group(1)
+        block_id = re.search(r'data-semantik-block-id="([^"]+)"', sec).group(1)
         aria_m = re.search(r'aria-labelledby="([^"]+)"', sec)
         if aria_m:
             # Heading block: aria-labelledby target is a VISIBLE <hN id={sid}>.
@@ -262,7 +262,7 @@ def test_a_content_hash_mode_parity(monkeypatch):
         _make_cascade_result(), pdf_stem="sample_text_ch1"
     )
     html = out["html"]
-    html_ids = set(re.findall(r'data-dart-block-id="([^"]+)"', html))
+    html_ids = set(re.findall(r'data-semantik-block-id="([^"]+)"', html))
     sidecar_ids = {
         s["section_id"] for s in out["synthesized_sidecar"]["sections"]
     }
@@ -283,9 +283,9 @@ def test_b_dart_markers_validator_passes(result_html_and_sidecar):
     critical = [i for i in res.issues if i.severity == "critical"]
     assert res.passed, f"dart_markers failed: {[i.code for i in critical]}"
     assert not critical
-    # No empty data-dart-source anywhere.
-    assert 'data-dart-source=""' not in out["html"]
-    assert "data-dart-source=\"synthesized\"" in out["html"]
+    # No empty data-semantik-source anywhere.
+    assert 'data-semantik-source=""' not in out["html"]
+    assert "data-semantik-source=\"synthesized\"" in out["html"]
 
 
 # ---------------------------------------------------------------------------
@@ -303,10 +303,10 @@ def test_c_source_ids_match_regex_and_resolve(result_html_and_sidecar):
     }
     # Every emitted block_id forms a valid sourceId AND resolves against the
     # sidecar id universe.
-    html_ids = set(re.findall(r'data-dart-block-id="([^"]+)"', out["html"]))
+    html_ids = set(re.findall(r'data-semantik-block-id="([^"]+)"', out["html"]))
     assert html_ids
     for bid in html_ids:
-        source_id = f"dart:{slug}#{bid}"
+        source_id = f"semantik:{slug}#{bid}"
         assert SOURCE_ID_RE.match(source_id), f"bad sourceId: {source_id}"
         assert bid in sidecar_ids, f"{bid} unresolved against sidecar"
 
@@ -431,13 +431,13 @@ def test_figure_and_page_provenance(result_html_and_sidecar):
     """Pages stamped as physical; figure_alt carried into the sidecar."""
     out = result_html_and_sidecar
     html = out["html"]
-    assert 'data-dart-page-kind="physical"' in html
-    assert 'data-dart-pages="2-3"' in html  # contiguous range collapse
-    # 1.0-confidence figure omits data-dart-confidence (§3.6).
+    assert 'data-semantik-page-kind="physical"' in html
+    assert 'data-semantik-pages="2-3"' in html  # contiguous range collapse
+    # 1.0-confidence figure omits data-semantik-confidence (§3.6).
     fig_sec = re.search(
-        r'<section[^>]*data-dart-block-role="figure"[^>]*>', html
+        r'<section[^>]*data-semantik-block-role="figure"[^>]*>', html
     )
-    assert fig_sec and "data-dart-confidence" not in fig_sec.group(0)
+    assert fig_sec and "data-semantik-confidence" not in fig_sec.group(0)
     # figure_alt rides along into the sidecar.
     alts = [
         s["data"].get("figure_alt")
@@ -503,7 +503,7 @@ def test_metadata_drop_furniture_not_emitted_to_body():
     assert footer not in html
     assert "cnx.org" not in html
     assert running not in html
-    assert 'data-dart-block-role="metadata_drop"' not in html
+    assert 'data-semantik-block-role="metadata_drop"' not in html
     # Sidecar parity: no metadata_drop section survives either.
     sidecar_texts = [s["data"]["text"] for s in out["synthesized_sidecar"]["sections"]]
     assert footer not in sidecar_texts

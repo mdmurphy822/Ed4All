@@ -116,8 +116,8 @@ def test_flow_emitted_as_attribute():
         ],
     )
     html = normalize_cascade_to_ed4all(_Result([ch]), pdf_stem="s_ch09")["html"]
-    assert 'data-dart-flow="statement"' in html
-    assert 'data-dart-flow="solution-steps"' in html
+    assert 'data-semantik-flow="statement"' in html
+    assert 'data-semantik-flow="solution-steps"' in html
 
 
 # ---------------------------------------------------------------------------

@@ -1,10 +1,10 @@
 """Build #23 — adapter-side unit page rollup (unconditional) + Tier-3 hook.
 
-* ``_wrap_composite_unit`` stamps a ``data-dart-pages`` rollup spanning member
+* ``_wrap_composite_unit`` stamps a ``data-semantik-pages`` rollup spanning member
   pages, flag-independent (provenance).
 * ``normalize_cascade_to_ed4all`` runs the subclass pass ONLY when the flag is
   on or a client is injected; flag-off + no client is byte-identical (no
-  ``data-dart-subclass`` attribute, ``subclass_report`` is None).
+  ``data-semantik-subclass`` attribute, ``subclass_report`` is None).
 """
 from __future__ import annotations
 
@@ -67,8 +67,8 @@ def test_unit_section_carries_page_rollup():
     assert m is not None
     tag = m.group(0)
     # Members span pages 3..5 → rollup "3-5".
-    assert 'data-dart-pages="3-5"' in tag
-    assert 'data-dart-page-kind="physical"' in tag
+    assert 'data-semantik-pages="3-5"' in tag
+    assert 'data-semantik-page-kind="physical"' in tag
 
 
 def test_single_page_unit_rollup_is_single_value():
@@ -90,7 +90,7 @@ def test_single_page_unit_rollup_is_single_value():
     )
     html = _render_chapters([ch])
     m = re.search(r'<section class="dart-unit dart-unit-worked_example"[^>]*>', html)
-    assert 'data-dart-pages="7"' in m.group(0)
+    assert 'data-semantik-pages="7"' in m.group(0)
 
 
 # ---------------------------------------------------------------------------
@@ -99,7 +99,7 @@ def test_single_page_unit_rollup_is_single_value():
 def test_flag_off_no_client_byte_identical(monkeypatch):
     monkeypatch.delenv("SEMANTIK_SEMANTIC_SUBCLASS", raising=False)
     out = normalize_cascade_to_ed4all(_Result([_worked_example_chapter()]), pdf_stem="ch09")
-    assert "data-dart-subclass=" not in out["html"]
+    assert "data-semantik-subclass=" not in out["html"]
     assert out["subclass_report"] is None
 
 
@@ -123,7 +123,7 @@ def test_injected_client_runs_subclass_pass(monkeypatch):
         subclass_client=_client,
         subclass_capture=cap,
     )
-    assert 'data-dart-subclass="symbolic-manipulation"' in out["html"]
+    assert 'data-semantik-subclass="symbolic-manipulation"' in out["html"]
     assert out["subclass_report"]["total_units"] >= 1
     assert cap.calls and cap.calls[0]["decision_type"] == "unit_subclass_assignment"
 
@@ -135,4 +135,4 @@ def test_flag_on_builds_default_seat_but_tolerates_failure(monkeypatch):
     monkeypatch.setenv("SEMANTIK_SEMANTIC_SUBCLASS", "true")
     monkeypatch.setenv("LOCAL_SYNTHESIS_BASE_URL", "http://127.0.0.1:1/v1")
     out = normalize_cascade_to_ed4all(_Result([_worked_example_chapter()]), pdf_stem="ch09")
-    assert "data-dart-subclass=" not in out["html"]
+    assert "data-semantik-subclass=" not in out["html"]

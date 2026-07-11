@@ -78,8 +78,10 @@ _WS_RE = re.compile(r"\s+")
 # DART Wave 8+ stamps ``data-dart-block-id="{block_id}"`` on every top-
 # level section; we carry it through onto the Courseforge page's section
 # element as ``data-cf-source-ids="dart:{slug}#{block_id}"``.
+# DART->semantik purge Stage 3 (dual-READ): the section wrapper may carry the
+# freshly-emitted ``data-semantik-block-id`` OR a legacy ``data-dart-block-id``.
 _DATA_DART_BLOCK_ID_RE = re.compile(
-    r"""(?is)data-dart-block-id\s*=\s*["']([^"']+)["']"""
+    r"""(?is)data-(?:dart|semantik)-block-id\s*=\s*["']([^"']+)["']"""
 )
 
 # Wave 24: DART Wave 13+ emits each chapter as <article role="doc-chapter">.
@@ -1446,7 +1448,7 @@ def _topic_objective_source_ref(
         block_slug = re.sub(r"[^a-z0-9_-]+", "", block_id.lower())
         if not block_slug:
             continue
-        chunk_ids.append(f"dart:{slug}#{block_slug}")
+        chunk_ids.append(f"semantik:{slug}#{block_slug}")
     if not chunk_ids:
         return None
     chapter_id = topic.get("chapter_id")
@@ -2671,7 +2673,7 @@ def _topic_source_references(
         if not block_slug:
             continue
         refs.append({
-            "sourceId": f"dart:{slug}#{block_slug}",
+            "sourceId": f"semantik:{slug}#{block_slug}",
             "role": "primary" if idx == 0 else "contributing",
         })
     return refs

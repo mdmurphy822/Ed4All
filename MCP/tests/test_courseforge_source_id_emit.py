@@ -187,7 +187,7 @@ class TestTopicSourceReferences:
         }
         refs = _cgh._topic_source_references(topic)
         assert refs == [
-            {"sourceId": "dart:photosynthesis#s3_c0", "role": "primary"},
+            {"sourceId": "semantik:photosynthesis#s3_c0", "role": "primary"},
         ]
 
     def test_multiple_block_ids_first_primary_rest_contributing(self):
@@ -209,10 +209,10 @@ class TestTopicSourceReferences:
         ) == []
 
     def test_source_id_matches_schema_pattern(self):
-        """``dart:{slug}#{block_id}`` must match the canonical pattern
+        """``semantik:{slug}#{block_id}`` must match the canonical pattern
         from ``schemas/knowledge/source_reference.schema.json``.
         """
-        pattern = re.compile(r"^dart:[a-z0-9_-]+#[a-z0-9_-]+$")
+        pattern = re.compile(r"^semantik:[a-z0-9_-]+#[a-z0-9_-]+$")
         topic = {
             "dart_block_ids": ["s3_c0"],
             "source_file": "photosynthesis",
@@ -243,16 +243,16 @@ class TestCourseforgeEmitsDataCfSourceIds:
 
         week_01 = project_path / "03_content_development" / "week_01"
         # At least one content page should carry a data-cf-source-ids
-        # attribute whose value starts with ``dart:photosynthesis#``.
+        # attribute whose value starts with ``semantik:photosynthesis#``.
         found = False
         for html_file in week_01.glob("*content*.html"):
             body = html_file.read_text(encoding="utf-8")
-            if 'data-cf-source-ids="dart:photosynthesis#' in body:
+            if 'data-cf-source-ids="semantik:photosynthesis#' in body:
                 found = True
                 break
         assert found, (
             "No Courseforge page carries data-cf-source-ids with the "
-            "expected dart:photosynthesis# prefix"
+            "expected semantik:photosynthesis# prefix"
         )
 
     def test_legacy_dart_no_source_ids_emitted(self, pipeline_registry):
@@ -278,10 +278,10 @@ class TestCourseforgeEmitsDataCfSourceIds:
             # The Wave 9 page-level path may still inject a
             # data-cf-source-ids from source_module_map.json, but this
             # test's project has no such map — assert there is no
-            # ``dart:legacy#`` attribute value derived from a real block.
-            assert 'data-cf-source-ids="dart:legacy#' not in body, (
+            # ``semantik:legacy#`` attribute value derived from a real block.
+            assert 'data-cf-source-ids="semantik:legacy#' not in body, (
                 "Legacy DART HTML (no data-dart-block-id) must not yield "
-                "dart:legacy# attributes on Courseforge pages"
+                "semantik:legacy# attributes on Courseforge pages"
             )
 
     def test_jsonld_sections_carry_source_references(self, pipeline_registry):
@@ -320,7 +320,7 @@ class TestCourseforgeEmitsDataCfSourceIds:
                     # Pattern-validate every ref.
                     for ref in refs:
                         assert "sourceId" in ref
-                        assert ref["sourceId"].startswith("dart:photosynthesis#"), ref
+                        assert ref["sourceId"].startswith("semantik:photosynthesis#"), ref
         assert any_page_has_refs, (
             "No section-level sourceReferences populated in JSON-LD"
         )
@@ -357,7 +357,7 @@ class TestCourseforgeEmitsDataCfSourceIds:
         found = False
         for html_file in week_01.glob("*content*.html"):
             body = html_file.read_text(encoding="utf-8")
-            if "dart:xyz_201#" in body:
+            if "semantik:xyz_201#" in body:
                 found = True
                 break
         assert found, "Expected source slug 'xyz_201' derived from XYZ_201 filename"
@@ -378,7 +378,7 @@ class TestCourseforgeEmitsDataCfSourceIds:
         ))
 
         week_01 = project_path / "03_content_development" / "week_01"
-        pattern = re.compile(r"^dart:[a-z0-9_-]+#[a-z0-9_-]+$")
+        pattern = re.compile(r"^semantik:[a-z0-9_-]+#[a-z0-9_-]+$")
         attr_re = re.compile(r'data-cf-source-ids="([^"]+)"')
         checked = 0
         for html_file in week_01.glob("*.html"):
@@ -442,7 +442,7 @@ class TestTrainforgeHarvestsSourceReferences:
                 for ref in refs:
                     assert isinstance(ref, dict)
                     sid = ref.get("sourceId", "")
-                    assert sid.startswith("dart:photosynthesis#"), ref
+                    assert sid.startswith("semantik:photosynthesis#"), ref
                 break
 
         assert found_ref, (
@@ -477,11 +477,11 @@ class TestPageSourceRefValidatorNonVacuous:
         from lib.validators.source_refs import PageSourceRefValidator
 
         validator = PageSourceRefValidator()
-        # Seed the valid-id set with every dart:photosynthesis# id we
+        # Seed the valid-id set with every semantik:photosynthesis# id we
         # can possibly emit (s1_c0, s2_c0, s3_c0); validator passes when
         # every emitted sid resolves against this set.
         valid_ids = {
-            f"dart:photosynthesis#s{i}_c0" for i in range(1, 10)
+            f"semantik:photosynthesis#s{i}_c0" for i in range(1, 10)
         }
         result = validator.validate({
             "gate_id": "source_refs",

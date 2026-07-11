@@ -332,12 +332,19 @@ class TestSidecarWalker:
             ],
         }
         ids = sorted(_iter_sidecar_block_ids(sidecar))
-        # Document slug is lower-cased via _slugify_doc.
+        # Document slug is lower-cased via _slugify_doc. Stage-3 dual valid-
+        # universe: every id is yielded under BOTH the legacy ``dart:`` and the
+        # ratified ``semantik:`` prefix so a freshly-emitted semantik: sourceId
+        # and a legacy dart: sourceId both resolve against the same sidecar.
         assert ids == [
             "dart:science_of_learning#s0",
             "dart:science_of_learning#s0_c0",
             "dart:science_of_learning#s1",
             "dart:science_of_learning#s1_r0",
+            "semantik:science_of_learning#s0",
+            "semantik:science_of_learning#s0_c0",
+            "semantik:science_of_learning#s1",
+            "semantik:science_of_learning#s1_r0",
         ]
 
     def test_walker_prefers_explicit_document_slug(self):

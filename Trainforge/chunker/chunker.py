@@ -1803,7 +1803,11 @@ def _enclosing_section_dart_ref(
     Returns ``None`` when ``heading`` isn't found, the document carries no DART
     blocks, or no block precedes the heading.
     """
-    if not raw_html or not heading or "data-dart-block-id" not in raw_html:
+    # DART->semantik purge Stage 3 (dual-READ): accept either attr spelling.
+    if not raw_html or not heading or (
+        "data-dart-block-id" not in raw_html
+        and "data-semantik-block-id" not in raw_html
+    ):
         return None
     h_re = re.compile(
         r"<h([1-6])\b[^>]*>\s*" + re.escape(heading) + r"\s*</h\1>",

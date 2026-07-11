@@ -2,7 +2,7 @@
 
 Defect 3 — obviously-fused headings refused (demoted to prose / continuation).
 Defect 4 — end-of-chapter apparatus paragraphs promoted back to headings.
-Defect 5 — colliding ``data-dart-block-id`` slugs uniquified at minting.
+Defect 5 — colliding ``data-semantik-block-id`` slugs uniquified at minting.
 
 All synthetic IR built inline — no course-data path, no model, no cascade run.
 """
@@ -160,7 +160,7 @@ def test_duplicate_heading_slugs_uniquified():
         )
     ]
     out = normalize_cascade_to_ed4all(_Result(chapters), pdf_stem="ea_ch9")
-    ids = re.findall(r'data-dart-block-id="([^"]+)"', out["html"])
+    ids = re.findall(r'data-semantik-block-id="([^"]+)"', out["html"])
     assert len(ids) == len(set(ids)), f"duplicate block ids: {ids}"
     # Stable -2 / -3 suffix scheme (first keeps the bare base).
     assert ids == [
@@ -182,7 +182,7 @@ def test_html_sidecar_block_id_parity_under_collision():
     ]
     result = _Result(chapters)
     out = normalize_cascade_to_ed4all(result, pdf_stem="ea_ch9")
-    html_ids = re.findall(r'data-dart-block-id="([^"]+)"', out["html"])
+    html_ids = re.findall(r'data-semantik-block-id="([^"]+)"', out["html"])
     sidecar = out["synthesized_sidecar"]
     sidecar_ids = [s["section_id"] for s in sidecar["sections"]]
     assert html_ids == sidecar_ids  # §3.3 parity holds under uniquification
@@ -303,9 +303,9 @@ def test_leading_apparatus_split_preserves_provenance_on_both_halves():
     out = normalize_cascade_to_ed4all(_Result(chapters), pdf_stem="ea_ch9")
     html = out["html"]
     # Both split halves inherit the source block's page provenance (page 2).
-    assert html.count('data-dart-pages="2"') == 2
+    assert html.count('data-semantik-pages="2"') == 2
     # The unrelated heading keeps its own page-1 provenance.
-    assert html.count('data-dart-pages="1"') == 1
+    assert html.count('data-semantik-pages="1"') == 1
 
 
 def test_leading_apparatus_lowercase_midsentence_not_split():
@@ -443,7 +443,7 @@ def test_interior_key_concepts_split_three_blocks_with_provenance():
     # the fused one-block form no longer exists
     assert "without end. KEY CONCEPTS 1.1" not in html
     # provenance: all THREE emitted sections carry the source block's page (5)
-    assert html.count('data-dart-pages="5"') == 3
+    assert html.count('data-semantik-pages="5"') == 3
     # sidecar parity: three sections, same page range
     secs = out["synthesized_sidecar"]["sections"]
     assert len(secs) == 3

@@ -55,8 +55,8 @@ def test_worked_example_unit_wraps_example_solution_practice():
         ],
     )
     html = _render_chapters([ch])
-    assert 'data-dart-unit="worked_example"' in html
-    assert html.count('data-dart-unit="worked_example"') == 1
+    assert 'data-semantik-unit="worked_example"' in html
+    assert html.count('data-semantik-unit="worked_example"') == 1
     # role=group with an accessible name pointing at the example heading id.
     assert 'role="group"' in html
     assert 'aria-labelledby="example-9-1"' in html
@@ -65,7 +65,7 @@ def test_worked_example_unit_wraps_example_solution_practice():
         r'<section class="dart-unit dart-unit-worked_example"[^>]*>(.*)',
         html, re.DOTALL,
     ).group(1)
-    assert unit.count("data-dart-opener-group=") == 3
+    assert unit.count("data-semantik-opener-group=") == 3
 
 
 def test_section_opener_unit_objectives_plus_readiness():
@@ -79,7 +79,7 @@ def test_section_opener_unit_objectives_plus_readiness():
         ],
     )
     html = _render_chapters([ch])
-    assert 'data-dart-unit="section_opener"' in html
+    assert 'data-semantik-unit="section_opener"' in html
     assert 'aria-labelledby="learning-objectives"' in html
 
 
@@ -89,9 +89,9 @@ def test_lone_example_not_wrapped_in_unit():
         blocks=[_opener("Example 1.1", 0, "worked_example"), _para("body", 1)],
     )
     html = _render_chapters([ch])
-    assert "data-dart-unit=" not in html
+    assert "data-semantik-unit=" not in html
     # The callout-group box still renders.
-    assert 'data-dart-opener-group="worked_example"' in html
+    assert 'data-semantik-opener-group="worked_example"' in html
 
 
 def test_unit_never_crosses_section_heading():
@@ -107,7 +107,7 @@ def test_unit_never_crosses_section_heading():
     )
     html = _render_chapters([ch])
     # No worked_example unit forms across the <h3> boundary.
-    assert "data-dart-unit=" not in html
+    assert "data-semantik-unit=" not in html
     assert "<h3" in html and "New Section" in html
 
 
@@ -121,7 +121,7 @@ def test_exercise_set_unit_two_exercise_lists():
         ],
     )
     html = _render_chapters([ch])
-    assert 'data-dart-unit="exercise_set"' in html
+    assert 'data-semantik-unit="exercise_set"' in html
     # No heading on the lead -> aria-label fallback carries the accessible name.
     assert 'aria-label="Exercise set"' in html
 

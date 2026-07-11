@@ -212,21 +212,41 @@ def _chapters_from_html(
         for section in article.find_all(
             "section", attrs={"class": "dart-section"}, recursive=True
         ):
-            sid = section.get("data-dart-block-id") or ""
-            block_role = section.get("data-dart-block-role")
-            pages = _parse_pages(section.get("data-dart-pages"))
-            conf = section.get("data-dart-confidence")
+            # DART->semantik purge Stage 3 (dual-READ): the parsed HTML may be
+            # freshly-emitted ``data-semantik-*`` OR a legacy ``data-dart-*``
+            # corpus, so every attribute read falls back to the dart spelling.
+            sid = (
+                section.get("data-semantik-block-id")
+                or section.get("data-dart-block-id")
+                or ""
+            )
+            block_role = section.get("data-semantik-block-role") or section.get(
+                "data-dart-block-role"
+            )
+            pages = _parse_pages(
+                section.get("data-semantik-pages")
+                or section.get("data-dart-pages")
+            )
+            conf = section.get("data-semantik-confidence") or section.get(
+                "data-dart-confidence"
+            )
             try:
                 confidence = float(conf) if conf is not None else None
             except ValueError:
                 confidence = None
-            wcag_status = section.get("data-dart-wcag")
+            wcag_status = section.get("data-semantik-wcag") or section.get(
+                "data-dart-wcag"
+            )
             # SEMANTIK_OCR_CONFUSABLE_REPAIR — preserve the repair annotation on
             # re-render so a --from-html round-trip does not silently drop the
-            # data-dart-repair attribute (the body html is already the repaired
-            # bytes; we only need to re-stamp the marker + count).
-            repair_marker = section.get("data-dart-repair")
-            repair_count_raw = section.get("data-dart-repair-count")
+            # data-semantik-repair attribute (the body html is already the
+            # repaired bytes; we only need to re-stamp the marker + count).
+            repair_marker = section.get("data-semantik-repair") or section.get(
+                "data-dart-repair"
+            )
+            repair_count_raw = section.get(
+                "data-semantik-repair-count"
+            ) or section.get("data-dart-repair-count")
             try:
                 repair_count = int(repair_count_raw) if repair_count_raw else 0
             except (TypeError, ValueError):

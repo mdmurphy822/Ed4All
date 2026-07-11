@@ -2,7 +2,7 @@
 
 A ``region_provenance`` entry carrying the additive ``repaired_text`` +
 ``ocr_repair`` keys must render the REPAIRED text in the body, stamp
-``data-dart-repair`` / ``data-dart-repair-count`` on the ``<section>`` OPENING
+``data-semantik-repair`` / ``data-semantik-repair-count`` on the ``<section>`` OPENING
 tag, and carry the repaired text (+ a mirrored ``repair`` object) in the
 ``_synthesized.json`` sidecar — WITHOUT moving the content-hash sourceId (which
 stays pinned to the verbatim ``raw_text``). An entry with no repair keys is
@@ -95,18 +95,18 @@ def test_repaired_block_renders_repaired_text_and_marker():
     out = _normalize(_prov(repaired=True))
     html = out["html"]
     assert "Solve √x = 4" in html
-    assert 'data-dart-repair="ocr-confusable"' in html
-    assert 'data-dart-repair-count="1"' in html
+    assert 'data-semantik-repair="ocr-confusable"' in html
+    assert 'data-semantik-repair-count="1"' in html
     # Placement: the marker is on the same <section ...> opening tag as
-    # data-dart-block-id (never a leaf node).
-    m = re.search(r"<section [^>]*data-dart-repair=\"ocr-confusable\"[^>]*>", html)
+    # data-semantik-block-id (never a leaf node).
+    m = re.search(r"<section [^>]*data-semantik-repair=\"ocr-confusable\"[^>]*>", html)
     assert m is not None
-    assert "data-dart-block-id=" in m.group(0)
+    assert "data-semantik-block-id=" in m.group(0)
 
 
 def test_unrepaired_block_is_byte_identical_baseline():
     baseline = _normalize(_prov(repaired=False))["html"]
-    assert "data-dart-repair" not in baseline
+    assert "data-semantik-repair" not in baseline
     assert "Solve Vx = 4" in baseline  # verbatim garbled text (no repair)
 
 
@@ -121,7 +121,7 @@ def test_content_hash_sid_pinned_to_raw_text(monkeypatch):
     plain_html = _normalize(_prov(repaired=False))["html"]
 
     def _block_ids(html: str) -> set[str]:
-        return set(re.findall(r'data-dart-block-id="([^"]+)"', html))
+        return set(re.findall(r'data-semantik-block-id="([^"]+)"', html))
 
     # raw_text is identical across repair on/off, so the content-hash sids are
     # identical — the repair never moves a sourceId.
@@ -145,8 +145,8 @@ def test_sidecar_repaired_text_and_repair_object():
     assert repair["n_edits"] == 1
     assert repair["original_text"] == "Solve Vx = 4 for the value of x."
 
-    # Block-id parity: every sidecar section_id is a data-dart-block-id in HTML.
-    html_ids = set(re.findall(r'data-dart-block-id="([^"]+)"', out["html"]))
+    # Block-id parity: every sidecar section_id is a data-semantik-block-id in HTML.
+    html_ids = set(re.findall(r'data-semantik-block-id="([^"]+)"', out["html"]))
     for s in sidecar["sections"]:
         assert s["section_id"] in html_ids
 
@@ -158,5 +158,5 @@ def test_replay_check_reverts_on_tampered_repair():
     prov[1]["repaired_text"] = "Solve √y = 9 tampered."  # not the recorded edit
     out = _normalize(prov)
     html = out["html"]
-    assert "data-dart-repair" not in html
+    assert "data-semantik-repair" not in html
     assert "Solve Vx = 4" in html  # reverted to verbatim

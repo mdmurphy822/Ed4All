@@ -100,13 +100,16 @@ _TRUTHY = {"1", "true", "yes", "on"}
 # Tag scanner — matches BOTH ``<section ...>`` and ``</section>`` so spans can be
 # recovered with a depth stack (a unit section can nest child dart-sections).
 _SECTION_TAG_RE = re.compile(r"<(/?)section\b([^>]*)>", re.IGNORECASE)
-_DATA_DART_UNIT_RE = re.compile(r'data-dart-unit="([^"]*)"')
-_DATA_DART_SUBCLASS_RE = re.compile(r'data-dart-subclass="')
+# DART->semantik purge Stage 3 (dual-READ): the rendered HTML this locator
+# scans may be freshly-emitted ``data-semantik-*`` OR a legacy ``data-dart-*``
+# corpus, so both attr spellings are harvested identically.
+_DATA_DART_UNIT_RE = re.compile(r'data-(?:dart|semantik)-unit="([^"]*)"')
+_DATA_DART_SUBCLASS_RE = re.compile(r'data-(?:dart|semantik)-subclass="')
 _CLASS_ATTR_RE = re.compile(r'class="([^"]*)"')
 _HEADING_RE = re.compile(r"<h[1-6]\b[^>]*>(.*?)</h[1-6]>", re.IGNORECASE | re.DOTALL)
 _TAG_STRIP_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
-_PAGES_RE = re.compile(r'data-dart-pages="([^"]*)"')
+_PAGES_RE = re.compile(r'data-(?:dart|semantik)-pages="([^"]*)"')
 
 _DATA_DART_PAGE_KIND = "physical"
 
@@ -394,7 +397,7 @@ def _annotate_open_tag(open_tag: str, attrs: str, label: str) -> str:
     )
     if new_attrs == attrs:  # no class attr (defensive) — add one
         new_attrs = f'{attrs} class="dart-sub-{label}"'
-    new_attrs = f'{new_attrs} data-dart-subclass="{label}"'
+    new_attrs = f'{new_attrs} data-semantik-subclass="{label}"'
     return f"<section{new_attrs}>"
 
 

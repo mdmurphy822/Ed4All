@@ -773,8 +773,8 @@ def run_pass_9a(
                 semantic_top1=None,
                 semantic_confidence=None,
                 fallback_html=(
-                    '<title data-dart-fabricated="title">Untitled document</title>'
-                    '<h1 data-dart-fabricated="title">Untitled document</h1>'
+                    '<title data-semantik-fabricated="title">Untitled document</title>'
+                    '<h1 data-semantik-fabricated="title">Untitled document</h1>'
                 ),
             )
         )

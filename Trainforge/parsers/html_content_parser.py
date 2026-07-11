@@ -1131,13 +1131,13 @@ class HTMLContentParser:
             for sec_open in reversed(section_opens):
                 if sec_open.start() < heading_start:
                     op_match = re.search(
-                        r'data-dart-opener="([^"]*)"', sec_open.group(1)
+                        r'data-(?:dart|semantik)-opener="([^"]*)"', sec_open.group(1)
                     )
                     if op_match and op_match.group(1).strip():
                         data_dart_opener = op_match.group(1).strip()
                     break
             if not data_dart_opener:
-                op_attr = re.search(r'data-dart-opener="([^"]*)"', attrs_str)
+                op_attr = re.search(r'data-(?:dart|semantik)-opener="([^"]*)"', attrs_str)
                 if op_attr and op_attr.group(1).strip():
                     data_dart_opener = op_attr.group(1).strip()
 
@@ -1160,26 +1160,26 @@ class HTMLContentParser:
             if nearest_idx is not None:
                 nearest_attrs = section_opens[nearest_idx].group(1)
                 self_unit = re.search(
-                    r'data-dart-unit="([^"]*)"', nearest_attrs
+                    r'data-(?:dart|semantik)-unit="([^"]*)"', nearest_attrs
                 )
                 if self_unit and self_unit.group(1).strip():
                     # The heading's own enclosing section IS a unit wrapper
                     # (rare: a headingless-lead unit whose wrapper is nearest).
                     data_dart_unit = self_unit.group(1).strip()
                     sub = re.search(
-                        r'data-dart-subclass="([^"]*)"', nearest_attrs
+                        r'data-(?:dart|semantik)-subclass="([^"]*)"', nearest_attrs
                     )
                     if sub and sub.group(1).strip():
                         data_dart_subclass = sub.group(1).strip()
                 elif nearest_idx >= 1:
                     prev_attrs = section_opens[nearest_idx - 1].group(1)
                     prev_unit = re.search(
-                        r'data-dart-unit="([^"]*)"', prev_attrs
+                        r'data-(?:dart|semantik)-unit="([^"]*)"', prev_attrs
                     )
                     if prev_unit and prev_unit.group(1).strip():
                         data_dart_unit = prev_unit.group(1).strip()
                         sub = re.search(
-                            r'data-dart-subclass="([^"]*)"', prev_attrs
+                            r'data-(?:dart|semantik)-subclass="([^"]*)"', prev_attrs
                         )
                         if sub and sub.group(1).strip():
                             data_dart_subclass = sub.group(1).strip()
@@ -1196,7 +1196,7 @@ class HTMLContentParser:
                 {
                     f.strip()
                     for f in re.findall(
-                        r'data-dart-flow="([^"]*)"', section_html
+                        r'data-(?:dart|semantik)-flow="([^"]*)"', section_html
                     )
                     if f.strip()
                 }

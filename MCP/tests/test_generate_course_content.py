@@ -345,6 +345,10 @@ class TestContentGenerationShape:
         assert overview.exists()
         body = overview.read_text(encoding="utf-8")
         assert "sourceReferences" in body
+        # Legacy-dart source_module_map passthrough: content_gen copies the map's
+        # sourceIds verbatim, so a legacy ``dart:`` map still flows through
+        # unchanged (dual-read contract; the emitter only mints ``semantik:`` when
+        # it derives refs itself from block-ids).
         assert "dart:photosynthesis" in body
 
 

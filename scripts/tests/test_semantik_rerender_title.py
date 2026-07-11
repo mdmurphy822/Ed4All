@@ -147,8 +147,8 @@ def test_rerender_from_ir_roundtrips_repair_keys(tmp_path):
     assert rc == 0
     html = out.read_text(encoding="utf-8")
     # The repair annotation is re-stamped on the section opening tag.
-    assert 'data-dart-repair="ocr-confusable"' in html
-    assert 'data-dart-repair-count="1"' in html
+    assert 'data-semantik-repair="ocr-confusable"' in html
+    assert 'data-semantik-repair-count="1"' in html
     # The rendered body carries the REPAIRED glyph, not the OCR garble.
     assert "Solve √x = 4" in html
     assert "Solve Vx = 4" not in html
@@ -203,8 +203,8 @@ def test_rerender_from_html_preserves_repair_attrs(tmp_path):
     assert rc == 0
     html = out.read_text(encoding="utf-8")
     # The data-dart-repair marker survives the --from-html reconstruction.
-    assert 'data-dart-repair="ocr-confusable"' in html
-    assert 'data-dart-repair-count="1"' in html
+    assert 'data-semantik-repair="ocr-confusable"' in html
+    assert 'data-semantik-repair-count="1"' in html
     # The repaired body bytes are carried verbatim (not reverted to the garble).
     assert "Solve √x = 4 for the value." in html
     assert "Solve Vx = 4" not in html

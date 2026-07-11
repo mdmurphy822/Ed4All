@@ -87,7 +87,7 @@ def _mk_topic(
 def test_path_a_populates_structured_source_refs_from_topic_dart_block_ids() -> None:
     """Path A emits one structured source_refs[] entry per LO derived
     from the topic; ``ref`` falls back to the heading slug, ``chunk_ids``
-    is the topic's DART block-IDs projected to ``dart:{slug}#{block_id}``.
+    is the topic's DART block-IDs projected to ``semantik:{slug}#{block_id}``.
     """
     topics = [
         _mk_topic(
@@ -120,7 +120,7 @@ def test_path_a_populates_structured_source_refs_from_topic_dart_block_ids() -> 
         assert isinstance(entry["chunk_ids"], list)
         assert len(entry["chunk_ids"]) >= 1
         assert entry["chunk_ids"] == [
-            "dart:rdf_primer_accessible#sec3-1-targets",
+            "semantik:rdf_primer_accessible#sec3-1-targets",
         ]
 
 
@@ -146,7 +146,7 @@ def test_path_a_uses_chapter_id_when_present() -> None:
     all_los = terminal + chapter
     assert len(all_los) == 1
     assert all_los[0]["source_refs"] == [
-        {"ref": "ch7", "chunk_ids": ["dart:rdf_primer_accessible#s7"]},
+        {"ref": "ch7", "chunk_ids": ["semantik:rdf_primer_accessible#s7"]},
     ]
 
 
@@ -174,7 +174,7 @@ def test_path_b_single_heading_populates_single_element_source_refs() -> None:
     assert "source_refs" in lo
     assert lo["source_refs"] == [
         {"ref": "introduction-to-photosynthesis",
-         "chunk_ids": ["dart:biology_textbook#s1"]},
+         "chunk_ids": ["semantik:biology_textbook#s1"]},
     ]
     assert chapter == []
 
@@ -225,9 +225,9 @@ def test_path_b_multi_heading_aggregates_terminal_source_refs() -> None:
         "distinct heading, NOT flattened into one entry"
     )
     refs_by_ref = {entry["ref"]: entry for entry in refs}
-    assert refs_by_ref["ch1"]["chunk_ids"] == ["dart:rdf_primer#s1"]
-    assert refs_by_ref["ch5"]["chunk_ids"] == ["dart:sparql_primer#s5"]
-    assert refs_by_ref["ch7"]["chunk_ids"] == ["dart:shacl_spec#s7"]
+    assert refs_by_ref["ch1"]["chunk_ids"] == ["semantik:rdf_primer#s1"]
+    assert refs_by_ref["ch5"]["chunk_ids"] == ["semantik:sparql_primer#s5"]
+    assert refs_by_ref["ch7"]["chunk_ids"] == ["semantik:shacl_spec#s7"]
     # Each chunk_ids entry is its OWN heading's chunks — not unified.
     for entry in refs:
         assert len(entry["chunk_ids"]) == 1
@@ -263,8 +263,8 @@ def test_path_b_multi_block_ids_within_one_topic_collects_chunks_in_one_entry() 
     entry = refs[0]
     assert entry["ref"] == "ch8"
     assert entry["chunk_ids"] == [
-        "dart:shacl_spec#sec4-1-core",
-        "dart:shacl_spec#sec4-2-property",
+        "semantik:shacl_spec#sec4-1-core",
+        "semantik:shacl_spec#sec4-2-property",
     ]
 
 
@@ -285,18 +285,18 @@ def test_normalize_objective_entry_preserves_legacy_list_str_source_refs() -> No
         "bloom_level": "create",
         "bloom_verb": "develop",
         "source_refs": [
-            "dart:owl2_primer_accessible#s1",
-            "dart:owl2_primer_accessible#s2",
-            "dart:owl2_primer_accessible#s3",
+            "semantik:owl2_primer_accessible#s1",
+            "semantik:owl2_primer_accessible#s2",
+            "semantik:owl2_primer_accessible#s3",
         ],
     }
     normalized = _cgh._normalize_objective_entry(raw)
     assert normalized is not None
     assert "source_refs" in normalized
     assert normalized["source_refs"] == [
-        "dart:owl2_primer_accessible#s1",
-        "dart:owl2_primer_accessible#s2",
-        "dart:owl2_primer_accessible#s3",
+        "semantik:owl2_primer_accessible#s1",
+        "semantik:owl2_primer_accessible#s2",
+        "semantik:owl2_primer_accessible#s3",
     ]
     # Defensive: each entry MUST be a string (no shape coercion).
     for ref in normalized["source_refs"]:
@@ -314,13 +314,13 @@ def test_normalize_objective_entry_preserves_structured_source_refs() -> None:
         "source_refs": [
             {
                 "ref": "ch7",
-                "chunk_ids": ["dart:shacl-spec#sec3-1-targets"],
+                "chunk_ids": ["semantik:shacl-spec#sec3-1-targets"],
             },
             {
                 "ref": "ch8",
                 "chunk_ids": [
-                    "dart:shacl-spec#sec4-1-core-constraints",
-                    "dart:shacl-spec#sec4-2-property-shapes",
+                    "semantik:shacl-spec#sec4-1-core-constraints",
+                    "semantik:shacl-spec#sec4-2-property-shapes",
                 ],
             },
         ],
@@ -333,13 +333,13 @@ def test_normalize_objective_entry_preserves_structured_source_refs() -> None:
     second = normalized["source_refs"][1]
     assert first == {
         "ref": "ch7",
-        "chunk_ids": ["dart:shacl-spec#sec3-1-targets"],
+        "chunk_ids": ["semantik:shacl-spec#sec3-1-targets"],
     }
     assert second == {
         "ref": "ch8",
         "chunk_ids": [
-            "dart:shacl-spec#sec4-1-core-constraints",
-            "dart:shacl-spec#sec4-2-property-shapes",
+            "semantik:shacl-spec#sec4-1-core-constraints",
+            "semantik:shacl-spec#sec4-2-property-shapes",
         ],
     }
 

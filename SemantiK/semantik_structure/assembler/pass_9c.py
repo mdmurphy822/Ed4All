@@ -248,8 +248,13 @@ def _splice_missing_title(html: str, candidate_text: str) -> str:
         open_m = _TITLE_OPEN_RE.search(candidate_text)
         attrs = (open_m.group(1) or "").strip() if open_m else ""
         title_open = "<title>"
-        if 'data-dart-fabricated="title"' in attrs:
-            title_open = '<title data-dart-fabricated="title">'
+        # DART->semantik purge Stage 3: emit the semantik marker, but dual-READ
+        # so a legacy dart-fabricated title (re-run over prior output) is honored.
+        if (
+            'data-semantik-fabricated="title"' in attrs
+            or 'data-dart-fabricated="title"' in attrs
+        ):
+            title_open = '<title data-semantik-fabricated="title">'
         html = _TITLE_RE.sub(
             f"{title_open}{safe_title}</title>",
             html,
@@ -395,8 +400,8 @@ def _fallback_for(gap: GapSlot) -> str:
         return gap.fallback_html
     if gap.kind is GapKind.MISSING_TITLE:
         return (
-            '<title data-dart-fabricated="title">Untitled document</title>'
-            '<h1 data-dart-fabricated="title">Untitled document</h1>'
+            '<title data-semantik-fabricated="title">Untitled document</title>'
+            '<h1 data-semantik-fabricated="title">Untitled document</h1>'
         )
     return ""
 

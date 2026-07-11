@@ -187,9 +187,9 @@ main[role="main"] a:focus {
 
 /* ---- Worked EXAMPLE box (A2) ------------------------------------------- */
 .dart-example,
-.dart-section[data-dart-opener="worked_example"],
-.dart-section[data-dart-block-role="worked_example"],
-[data-dart-opener-group="worked_example"] {
+.dart-section[data-semantik-opener="worked_example"],
+.dart-section[data-semantik-block-role="worked_example"],
+[data-semantik-opener-group="worked_example"] {
     border-left: 4px solid var(--dart-rail-example);
     background: var(--dart-box-example);
     color: var(--text-color);
@@ -201,9 +201,9 @@ main[role="main"] a:focus {
 /* ---- SOLUTION region --------------------------------------------------- */
 .dart-solution,
 .pedagogy-solution,
-.dart-section[data-dart-opener="solution"],
-.dart-section[data-dart-block-role="solution"],
-[data-dart-opener-group="solution"] {
+.dart-section[data-semantik-opener="solution"],
+.dart-section[data-semantik-block-role="solution"],
+[data-semantik-opener-group="solution"] {
     border-left: 4px solid var(--dart-rail-solution);
     background: var(--dart-box-quiet);
     color: var(--text-color);
@@ -213,8 +213,8 @@ main[role="main"] a:focus {
 }
 
 /* ---- Learning Objectives opener (A7) ----------------------------------- */
-.dart-section[data-dart-opener="objectives"],
-[data-dart-opener-group="objectives"] {
+.dart-section[data-semantik-opener="objectives"],
+[data-semantik-opener-group="objectives"] {
     border-left: 4px solid var(--dart-rail-objectives);
     background: var(--dart-box-example);
     color: var(--text-color);
@@ -225,9 +225,9 @@ main[role="main"] a:focus {
 
 /* ---- TRY IT callout ----------------------------------------------------- */
 .dart-callout--try-it,
-.dart-section[data-dart-opener="try_it"],
-.dart-section[data-dart-block-role="try_it"],
-[data-dart-opener-group="try_it"] {
+.dart-section[data-semantik-opener="try_it"],
+.dart-section[data-semantik-block-role="try_it"],
+[data-semantik-opener-group="try_it"] {
     border-left: 4px solid var(--dart-rail-tryit);
     background: var(--dart-box-tryit);
     color: var(--text-color);
@@ -238,9 +238,9 @@ main[role="main"] a:focus {
 
 /* ---- BE PREPARED readiness check --------------------------------------- */
 .dart-callout--be-prepared,
-.dart-section[data-dart-opener="readiness_check"],
-.dart-section[data-dart-block-role="readiness_check"],
-[data-dart-opener-group="readiness_check"] {
+.dart-section[data-semantik-opener="readiness_check"],
+.dart-section[data-semantik-block-role="readiness_check"],
+[data-semantik-opener-group="readiness_check"] {
     border-left: 4px solid var(--dart-rail-prepared);
     background: var(--dart-box-prepared);
     color: var(--text-color);
@@ -251,9 +251,9 @@ main[role="main"] a:focus {
 
 /* ---- HOW TO procedure --------------------------------------------------- */
 .dart-callout--how-to,
-.dart-section[data-dart-opener="how_to"],
-.dart-section[data-dart-block-role="how_to"],
-[data-dart-opener-group="how_to"] {
+.dart-section[data-semantik-opener="how_to"],
+.dart-section[data-semantik-block-role="how_to"],
+[data-semantik-opener-group="how_to"] {
     border-left: 4px solid var(--dart-rail-howto);
     background: var(--dart-box-quiet);
     color: var(--text-color);
@@ -264,18 +264,18 @@ main[role="main"] a:focus {
 
 /* ---- Callout GROUP container (opener + its following content) ----------- */
 /* The adapter wraps a promoted opener heading and the content blocks that
-   follow it (steps / solution / prose) in ONE ``[data-dart-opener-group]``
+   follow it (steps / solution / prose) in ONE ``[data-semantik-opener-group]``
    div, so the per-kind box rules above enclose the WHOLE pedagogical unit.
    The inner opener SECTION must then NOT re-draw its own box (double-box), and
    the inner content sections sit transparent on the group fill. */
-[data-dart-opener-group] > .dart-section[data-dart-opener] {
+[data-semantik-opener-group] > .dart-section[data-semantik-opener] {
     border-left: 0;
     background: transparent;
     padding: 0;
     margin-block: 0;
     border-radius: 0;
 }
-[data-dart-opener-group] > .dart-section {
+[data-semantik-opener-group] > .dart-section {
     background: transparent;
 }
 
@@ -304,7 +304,7 @@ main[role="main"] a:focus {
 }
 
 /* ---- Degraded-figure notice (A8/B6) ------------------------------------ */
-.dart-section[data-dart-wcag="failed"] figure,
+.dart-section[data-semantik-wcag="failed"] figure,
 .dart-figure-degraded {
     border: 1px dashed var(--dart-degraded-text);
     background: var(--dart-box-degraded);
@@ -312,7 +312,7 @@ main[role="main"] a:focus {
     border-radius: 4px;
     color: var(--dart-degraded-text);
 }
-.dart-section[data-dart-wcag="failed"] figcaption,
+.dart-section[data-semantik-wcag="failed"] figcaption,
 .dart-figure-degraded figcaption {
     color: var(--dart-degraded-text);
     font-size: 0.875rem;

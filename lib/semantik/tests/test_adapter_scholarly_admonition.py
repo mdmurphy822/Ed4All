@@ -80,7 +80,7 @@ def test_theorem_block_wraps_statement_proof_corollary(monkeypatch):
         ],
     )
     html = _render_chapters([ch])
-    assert html.count('data-dart-unit="theorem_block"') == 1
+    assert html.count('data-semantik-unit="theorem_block"') == 1
     assert 'role="group"' in html
     # aria-labelledby -> the theorem STATEMENT heading (the block lead).
     assert 'aria-labelledby="theorem-3-1"' in html
@@ -89,7 +89,7 @@ def test_theorem_block_wraps_statement_proof_corollary(monkeypatch):
         r'<section class="dart-unit dart-unit-theorem_block"[^>]*>(.*)',
         html, re.DOTALL,
     ).group(1)
-    assert unit.count("data-dart-opener-group=") == 3
+    assert unit.count("data-semantik-opener-group=") == 3
 
 
 def test_lone_theorem_not_wrapped(monkeypatch):
@@ -102,8 +102,8 @@ def test_lone_theorem_not_wrapped(monkeypatch):
         ],
     )
     html = _render_chapters([ch])
-    assert "data-dart-unit=" not in html
-    assert 'data-dart-opener-group="theorem"' in html  # callout box still renders
+    assert "data-semantik-unit=" not in html
+    assert 'data-semantik-opener-group="theorem"' in html  # callout box still renders
 
 
 def test_theorem_block_never_crosses_section_heading(monkeypatch):
@@ -119,7 +119,7 @@ def test_theorem_block_never_crosses_section_heading(monkeypatch):
         ],
     )
     html = _render_chapters([ch])
-    assert "data-dart-unit=" not in html
+    assert "data-semantik-unit=" not in html
     assert "<h3" in html and "New Section" in html
 
 
@@ -137,7 +137,7 @@ def test_definition_group_reuses_existing_shape(monkeypatch):
         ],
     )
     html = _render_chapters([ch])
-    assert 'data-dart-unit="definition_group"' in html
+    assert 'data-semantik-unit="definition_group"' in html
 
 
 # ---------------------------------------------------------------------------
@@ -155,7 +155,7 @@ def test_admonition_wraps_label_plus_body(monkeypatch):
         ],
     )
     html = _render_chapters([ch])
-    assert 'data-dart-unit="admonition"' in html
+    assert 'data-semantik-unit="admonition"' in html
     assert 'role="group"' in html
     assert 'aria-labelledby="warning"' in html  # the label names the unit
 
@@ -172,7 +172,7 @@ def test_two_admonitions_stay_separate_units(monkeypatch):
         ],
     )
     html = _render_chapters([ch])
-    assert html.count('data-dart-unit="admonition"') == 2
+    assert html.count('data-semantik-unit="admonition"') == 2
 
 
 def test_bare_admonition_label_not_wrapped(monkeypatch):
@@ -186,7 +186,7 @@ def test_bare_admonition_label_not_wrapped(monkeypatch):
         ],
     )
     html = _render_chapters([ch])
-    assert "data-dart-unit=" not in html
+    assert "data-semantik-unit=" not in html
 
 
 # ---------------------------------------------------------------------------
@@ -209,7 +209,7 @@ def test_default_profile_ignores_scholarly_roles():
         ],
     )
     html = _render_chapters([ch])
-    assert "data-dart-unit=" not in html
+    assert "data-semantik-unit=" not in html
 
 
 def test_adapter_globals_are_pristine_after_monkeypatch():

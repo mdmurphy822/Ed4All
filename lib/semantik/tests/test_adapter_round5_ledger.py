@@ -260,11 +260,11 @@ def test_item4_label_only_block_promotes_stacked_headings():
     out = normalize_cascade_to_ed4all(_result(chapters), pdf_stem="ea2e_ch2")
     html = out["html"]
     # The example number is a real opener heading (empty group).
-    assert 'data-dart-opener="worked_example"' in html
+    assert 'data-semantik-opener="worked_example"' in html
     assert "Example 2.3</h" in html
     # The Solution marker is honestly surfaced (opener role), never dropped, and
     # the raw run-on "EXAMPLE 2.3 Solution" prose is gone.
-    assert 'data-dart-opener="solution"' in html or "pedagogy-solution" in html
+    assert 'data-semantik-opener="solution"' in html or "pedagogy-solution" in html
     assert "EXAMPLE 2.3 Solution" not in html
 
 

@@ -26,7 +26,7 @@ Covers (SemantiK migration P3d):
     NOT the vendor seam.
   * ``dart_conversion`` phase fails closed clear on an unknown input.
   * ``_run_vendor_ingest_conversion`` writes {stem}_accessible.html + both
-    sidecars, returns the required contract keys + data-dart-source="vendor".
+    sidecars, returns the required contract keys + data-semantik-source="vendor".
   * Fail-closed-clear on an empty / unreadable input.
 """
 
@@ -149,7 +149,7 @@ async def test_dart_conversion_html_dir_routes_to_vendor(monkeypatch, tmp_path):
     assert Path(payload["synthesized_sidecar_path"]).exists()
     assert Path(payload["quality_sidecar_path"]).exists()
     # Provenance survives into the emitted HTML.
-    assert 'data-dart-source="vendor"' in html_path.read_text(encoding="utf-8")
+    assert 'data-semantik-source="vendor"' in html_path.read_text(encoding="utf-8")
     # Required Ed4All tool JSON keys present (parity with the PDF seam).
     for key in (
         "output_path",

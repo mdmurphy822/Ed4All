@@ -103,9 +103,12 @@ PAGE_CRITICAL_UNGROUNDED_FRACTION = 0.5
 # Aggregate empty-page thresholds.
 AGGREGATE_EMPTY_CRITICAL_FRACTION = 0.25
 
-# Regex to extract block IDs from DART source HTML / synthesized JSON.
+# Regex to extract block IDs from source HTML / synthesized JSON.
+# DART->semantik purge Stage 3 (dual-READ): staged HTML may carry the
+# freshly-emitted ``data-semantik-block-id`` OR a legacy ``data-dart-block-id``;
+# both spellings are harvested identically for the valid-block-id universe.
 _DART_BLOCK_ID_RE = re.compile(
-    r'data-dart-block-id\s*=\s*(["\'])([^"\']+)\1',
+    r'data-(?:dart|semantik)-block-id\s*=\s*(["\'])([^"\']+)\1',
     re.IGNORECASE,
 )
 
@@ -402,9 +405,12 @@ class ContentGroundingValidator:
                 continue
             for match in _DART_BLOCK_ID_RE.finditer(content):
                 raw_block_id = match.group(2).strip()
-                # Normalize to the canonical dart:{slug}#{block_id} shape.
+                # Normalize to the canonical {dart,semantik}:{slug}#{block_id}
+                # shape — BOTH prefixes yielded (Stage-3 dual valid-universe) so
+                # a semantik: or a legacy dart: emitted sourceId both resolve.
                 slug = html_path.stem.lower().replace(" ", "-")
                 valid.add(f"dart:{slug}#{raw_block_id}")
+                valid.add(f"semantik:{slug}#{raw_block_id}")
                 # Also allow the bare block_id for tests that use it directly.
                 valid.add(raw_block_id)
 
@@ -428,6 +434,7 @@ class ContentGroundingValidator:
                     # Normalize stem: strip trailing "_synthesized" if present.
                     normalized_stem = stem.replace("_synthesized", "").lower().replace(" ", "-")
                     yield f"dart:{normalized_stem}#{val}"
+                    yield f"semantik:{normalized_stem}#{val}"
                     yield val
                 elif isinstance(val, (dict, list)):
                     yield from ContentGroundingValidator._iter_sidecar_block_ids(val, stem)

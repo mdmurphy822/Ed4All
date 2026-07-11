@@ -110,18 +110,18 @@
     },
     "source_block_role": {
       "type": "string",
-      "description": "SemantiK migration §4 (chunk-accompanying data): the council/Qwen role label of the source SemantiK region this chunk derives from (e.g. 'body' / 'figure' / 'heading'). Harvested from the data-dart-block-role HTML attribute (Trainforge/chunker/helpers.py::_DATA_DART_BLOCK_ROLE_RE) on the same opening tag as data-dart-block-id. Optional; absent on legacy / non-SemantiK corpora whose HTML carries no data-dart-block-role attribute — those chunks validate unchanged (mirrors observed_bloom_level)."
+      "description": "SemantiK migration §4 (chunk-accompanying data): the council/Qwen role label of the source SemantiK region this chunk derives from (e.g. 'body' / 'figure' / 'heading'). Harvested from the data-semantik-block-role HTML attribute (Trainforge/chunker/helpers.py::_DATA_DART_BLOCK_ROLE_RE) on the same opening tag as data-semantik-block-id. Optional; absent on legacy / non-SemantiK corpora whose HTML carries no data-semantik-block-role attribute — those chunks validate unchanged (mirrors observed_bloom_level)."
     },
     "source_block_confidence": {
       "type": "number",
       "minimum": 0,
       "maximum": 1,
-      "description": "SemantiK migration §4: the cascade per-region classification confidence (pinned 5-point band 0.2/0.4/0.6/0.8; 1.0 is omitted by the adapter) of the source SemantiK region. Harvested from the data-dart-confidence HTML attribute. Optional float in [0,1]; absent on legacy corpora and on blocks the adapter emitted at confidence 1.0."
+      "description": "SemantiK migration §4: the cascade per-region classification confidence (pinned 5-point band 0.2/0.4/0.6/0.8; 1.0 is omitted by the adapter) of the source SemantiK region. Harvested from the data-semantik-confidence HTML attribute. Optional float in [0,1]; absent on legacy corpora and on blocks the adapter emitted at confidence 1.0."
     },
     "wcag_block_status": {
       "type": "string",
       "enum": ["passed", "flagged", "skipped"],
-      "description": "SemantiK migration §4: the Stage-7 per-region WCAG gate verdict for the source SemantiK region. Harvested from the data-dart-wcag HTML attribute. Optional; absent on legacy corpora whose HTML carries no per-block WCAG status."
+      "description": "SemantiK migration §4: the Stage-7 per-region WCAG gate verdict for the source SemantiK region. Harvested from the data-semantik-wcag HTML attribute. Optional; absent on legacy corpora whose HTML carries no per-block WCAG status."
     },
     "figure_alt": {
       "type": "string",
@@ -143,19 +143,19 @@
         { "type": "string", "minLength": 1 },
         { "type": "null" }
       ],
-      "description": "Wave #22 quick-wins: the composite pedagogical-unit type of this chunk's constituent section(s), harvested from the SemantiK data-dart-unit attribute (e.g. 'worked_example' / 'section_opener' / 'exercise_set'). A chunk whose sections all belong to one unit carries that type; a chunk straddling multiple units carries the plurality winner, or null on a tie (no fabricated unit — Trainforge/chunker/chunker.py::aggregate_composite_unit). Values are drawn from the SemantiK lexicon unit vocabulary (schemas/taxonomies/semantik_lexicon.json), which is profile-extensible, so no fixed enum is imposed. Optional; null/absent on legacy / non-SemantiK corpora whose HTML carries no data-dart-unit attribute (byte-identical, mirrors source_block_role)."
+      "description": "Wave #22 quick-wins: the composite pedagogical-unit type of this chunk's constituent section(s), harvested from the SemantiK data-semantik-unit attribute (e.g. 'worked_example' / 'section_opener' / 'exercise_set'). A chunk whose sections all belong to one unit carries that type; a chunk straddling multiple units carries the plurality winner, or null on a tie (no fabricated unit — Trainforge/chunker/chunker.py::aggregate_composite_unit). Values are drawn from the SemantiK lexicon unit vocabulary (schemas/taxonomies/semantik_lexicon.json), which is profile-extensible, so no fixed enum is imposed. Optional; null/absent on legacy / non-SemantiK corpora whose HTML carries no data-semantik-unit attribute (byte-identical, mirrors source_block_role)."
     },
     "unit_roles": {
       "type": "array",
       "items": { "type": "string", "minLength": 1 },
-      "description": "Wave #22 quick-wins: distinct pedagogical flow/opener role slugs present across this chunk's constituent section(s) — the union of SemantiK data-dart-flow values (statement / solution-steps / procedure-steps) and data-dart-opener role slugs (objectives / worked_example / try_it / how_to / solution / …). Sorted for deterministic diffs. Drawn from the SemantiK lexicon role vocabulary + the flow vocabulary; profile-extensible, so no fixed enum. Optional; absent on legacy / non-SemantiK corpora (byte-identical)."
+      "description": "Wave #22 quick-wins: distinct pedagogical flow/opener role slugs present across this chunk's constituent section(s) — the union of SemantiK data-semantik-flow values (statement / solution-steps / procedure-steps) and data-semantik-opener role slugs (objectives / worked_example / try_it / how_to / solution / …). Sorted for deterministic diffs. Drawn from the SemantiK lexicon role vocabulary + the flow vocabulary; profile-extensible, so no fixed enum. Optional; absent on legacy / non-SemantiK corpora (byte-identical)."
     },
     "unit_subclass": {
       "oneOf": [
         { "type": "string", "minLength": 1 },
         { "type": "null" }
       ],
-      "description": "Build #23 Tier-3: the finer SUBCLASS of this chunk's composite pedagogical unit (e.g. a worked_example that is an 'application-problem' vs 'symbolic-manipulation'; an exercise_set that is a 'drill' vs 'mixed-review'), harvested from the SemantiK data-dart-subclass attribute the model-assisted subclassifier (lib/semantik/subclassifier.py, gated by SEMANTIK_SEMANTIC_SUBCLASS) stamps on the unit <section> wrapper. The subclass RIDES the composite unit — a chunk carries unit_subclass ONLY when its composite_unit resolved (Trainforge/chunker/chunker.py::aggregate_unit_subclass pairs the subclass with the resolved unit); a chunk straddling multiple units (composite_unit null) carries no subclass. Values are kebab-case labels drawn from the SemantiK lexicon subclass seed vocabulary (schemas/taxonomies/semantik_lexicon.json), profile-extensible plus model-proposed new labels, so no fixed enum is imposed. Adding data-dart-subclass attributes NEVER changes chunk text or chunk ids (payload-only). Optional; null/absent on legacy / non-SemantiK / un-subclassed corpora (byte-identical, mirrors composite_unit)."
+      "description": "Build #23 Tier-3: the finer SUBCLASS of this chunk's composite pedagogical unit (e.g. a worked_example that is an 'application-problem' vs 'symbolic-manipulation'; an exercise_set that is a 'drill' vs 'mixed-review'), harvested from the SemantiK data-semantik-subclass attribute the model-assisted subclassifier (lib/semantik/subclassifier.py, gated by SEMANTIK_SEMANTIC_SUBCLASS) stamps on the unit <section> wrapper. The subclass RIDES the composite unit — a chunk carries unit_subclass ONLY when its composite_unit resolved (Trainforge/chunker/chunker.py::aggregate_unit_subclass pairs the subclass with the resolved unit); a chunk straddling multiple units (composite_unit null) carries no subclass. Values are kebab-case labels drawn from the SemantiK lexicon subclass seed vocabulary (schemas/taxonomies/semantik_lexicon.json), profile-extensible plus model-proposed new labels, so no fixed enum is imposed. Adding data-semantik-subclass attributes NEVER changes chunk text or chunk ids (payload-only). Optional; null/absent on legacy / non-SemantiK / un-subclassed corpora (byte-identical, mirrors composite_unit)."
     },
     "bloom_level_source": {
       "type": "string",

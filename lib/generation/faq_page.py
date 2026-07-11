@@ -452,7 +452,7 @@ def build_faq_blocks(
         if isinstance(chunk, dict):
             cid = chunk.get("id")
             if isinstance(cid, str) and cid and course_slug:
-                source_ids = (f"dart:{course_slug}#{cid}",)
+                source_ids = (f"semantik:{course_slug}#{cid}",)
         objective_ids: Tuple[str, ...] = ()
         if e.get("objective_id"):
             objective_ids = (str(e["objective_id"]),)

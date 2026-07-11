@@ -251,11 +251,11 @@ def test_b_dart_markers_validator_passes(chained_out):
     critical = [i for i in res.issues if i.severity == "critical"]
     assert res.passed, f"dart_markers failed: {[i.code for i in critical]}"
     assert not critical
-    assert 'data-dart-source=""' not in out["html"]
-    assert 'data-dart-source="synthesized"' in out["html"]
+    assert 'data-semantik-source=""' not in out["html"]
+    assert 'data-semantik-source="synthesized"' in out["html"]
     # Page provenance survived the conversion.
-    assert 'data-dart-page-kind="physical"' in out["html"]
-    assert 'data-dart-pages="2-3"' in out["html"]  # contiguous-range collapse
+    assert 'data-semantik-page-kind="physical"' in out["html"]
+    assert 'data-semantik-pages="2-3"' in out["html"]  # contiguous-range collapse
 
 
 def test_b_source_ids_resolve(chained_out):
@@ -266,10 +266,10 @@ def test_b_source_ids_resolve(chained_out):
     sidecar_ids = {
         s["section_id"] for s in out["synthesized_sidecar"]["sections"]
     }
-    html_ids = set(re.findall(r'data-dart-block-id="([^"]+)"', out["html"]))
+    html_ids = set(re.findall(r'data-semantik-block-id="([^"]+)"', out["html"]))
     assert html_ids
     for bid in html_ids:
-        source_id = f"dart:{slug}#{bid}"
+        source_id = f"semantik:{slug}#{bid}"
         assert SOURCE_ID_RE.match(source_id), f"bad sourceId: {source_id}"
         assert bid in sidecar_ids, f"{bid} unresolved against sidecar"
 
@@ -319,11 +319,11 @@ def test_c_determinism_identical_block_ids():
         res = _Res()
         res.chapters = chapters
         out = normalize_cascade_to_ed4all(res, pdf_stem="sample_text_ch1")
-        return set(re.findall(r'data-dart-block-id="([^"]+)"', out["html"]))
+        return set(re.findall(r'data-semantik-block-id="([^"]+)"', out["html"]))
 
     ids_a = _run()
     ids_b = _run()
-    assert ids_a == ids_b, "non-deterministic data-dart-block-id set"
+    assert ids_a == ids_b, "non-deterministic data-semantik-block-id set"
     assert ids_a, "no block ids emitted"
 
     # And the first_raw_block_index anchors are identical too.

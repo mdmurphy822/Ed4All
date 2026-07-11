@@ -9,7 +9,7 @@ cascade (a hand-built bridge JSON stands in for the cascade output):
       → normalize_cascade_to_ed4all                  (lib/semantik/adapter)
       → write {stem}_accessible.html + quality sidecar
       → run_dart_chunking                            (Ed4All chunker; P2b/P3b)
-          → assert chunks carry data-dart-* markers + the 6 SemantiK fields
+          → assert chunks carry data-semantik-* markers + the 6 SemantiK fields
       → run_vector_indexing (fake provider)          (P-vector-indexing)
           → assert an index is built AND queryable
 
@@ -187,7 +187,7 @@ def _write_accessible_html(tmp_path, bridge: dict):
 
 
 # ---------------------------------------------------------------------------
-# (1) Adapter HTML carries the data-dart-* markers (gate-clean).
+# (1) Adapter HTML carries the data-semantik-* markers (gate-clean).
 # ---------------------------------------------------------------------------
 
 
@@ -201,15 +201,15 @@ def test_1_adapter_html_has_dart_markers(tmp_path):
     res = DartMarkersValidator().validate({"html_content": html})
     critical = [i for i in res.issues if i.severity == "critical"]
     assert res.passed, [i.code for i in critical]
-    assert 'data-dart-source="synthesized"' in html
-    assert 'data-dart-block-id=' in html
+    assert 'data-semantik-source="synthesized"' in html
+    assert 'data-semantik-block-id=' in html
     # Page provenance survived (contiguous-range collapse 2-3).
-    assert 'data-dart-pages="2-3"' in html
+    assert 'data-semantik-pages="2-3"' in html
     # Block-level enrichment the chunker harvests is present on the body block
-    # (adapter attr names: data-dart-block-role / -confidence / -wcag).
-    assert 'data-dart-block-role=' in html
-    assert 'data-dart-confidence=' in html
-    assert 'data-dart-wcag=' in html
+    # (adapter attr names: data-semantik-block-role / -confidence / -wcag).
+    assert 'data-semantik-block-role=' in html
+    assert 'data-semantik-confidence=' in html
+    assert 'data-semantik-wcag=' in html
 
 
 # ---------------------------------------------------------------------------
@@ -243,7 +243,7 @@ async def test_2_chunks_carry_six_fields(tmp_path):
 
     # At least one chunk carries the harvested per-block + doc-level enrichment.
     role_chunks = [c for c in chunks if c.get("source_block_role")]
-    assert role_chunks, "no chunk stamped source_block_role from data-dart-*"
+    assert role_chunks, "no chunk stamped source_block_role from data-semantik-*"
     c = role_chunks[0]
     # 5 of the 6 SemantiK §4 chunk-accompanying fields land on the chunk
     # (P2b/P3b): 3 HTML-harvested + 2 doc-level. The synthetic doc is small
@@ -251,7 +251,7 @@ async def test_2_chunks_carry_six_fields(tmp_path):
     # (pipeline_tools ``_run_dart_chunking``: "when a chunk spans several DART
     # blocks the FIRST in document order supplies the values") the merged
     # chunk's block-role reflects its leading section — the "Order of
-    # Operations" heading (``data-dart-block-role="heading"``). The
+    # Operations" heading (``data-semantik-block-role="heading"``). The
     # structural-delimiter HTMLTextExtractor now surfaces that heading's text as
     # the first source ref, so ``source_block_role`` honestly harvests
     # ``"heading"`` rather than skipping to the first body block. Assert it is a

@@ -184,7 +184,7 @@ def test_declared_list_with_shape_delivers_ul_keeps_role():
         blocks=[_block("• one • two • three", 0, role="list")],
     )
     html = _render([ch])
-    assert "<ul>" in html and 'data-dart-block-role="list"' in html
+    assert "<ul>" in html and 'data-semantik-block-role="list"' in html
 
 
 def test_declared_list_without_shape_demoted_to_paragraph(monkeypatch):
@@ -195,7 +195,7 @@ def test_declared_list_without_shape_demoted_to_paragraph(monkeypatch):
         blocks=[_block("9.2 Simplify Square Roots 9.3 Add Square Roots", 0, role="list")],
     )
     html = _render([ch])
-    assert 'data-dart-block-role="list"' not in html
+    assert 'data-semantik-block-role="list"' not in html
     assert "<ul>" not in html and "<ol>" not in html
     assert "<p>9.2 Simplify Square Roots 9.3 Add Square Roots</p>" in html
 
@@ -206,11 +206,11 @@ def test_declared_table_without_pipes_demoted():
         blocks=[_block("This is just explanatory prose, no pipes at all.", 0, role="table")],
     )
     html = _render([ch])
-    assert 'data-dart-block-role="table"' not in html
+    assert 'data-semantik-block-role="table"' not in html
     assert "<table>" not in html
     # Blind-spot guard — the honest demotion is stamped so the scorecard can
     # count it (the declaration is otherwise invisible post-reconciliation).
-    assert 'data-dart-demoted-role="table"' in html
+    assert 'data-semantik-demoted-role="table"' in html
 
 
 # ---------------------------------------------------------------------------
@@ -304,8 +304,8 @@ def test_pipe_table_survives_scrub_end_to_end():
     )
     html = _render([ch])
     assert "<table>" in html
-    assert 'data-dart-block-role="table"' in html
-    assert "data-dart-demoted-role" not in html  # delivered, not demoted
+    assert 'data-semantik-block-role="table"' in html
+    assert "data-semantik-demoted-role" not in html  # delivered, not demoted
 
 
 def test_ch02_debris_shape_with_fused_marker_parses_to_table():
@@ -326,7 +326,7 @@ def test_ch02_debris_shape_with_fused_marker_parses_to_table():
     html = _render([ch])
     assert "<table>" in html
     assert "::" not in html
-    assert 'data-dart-opener' in html  # the split-off marker promoted
+    assert 'data-semantik-opener' in html  # the split-off marker promoted
 
 
 # ---------------------------------------------------------------------------

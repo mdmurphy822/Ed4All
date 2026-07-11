@@ -25,7 +25,7 @@ It also lands two more §Top-5 fixes at the packaging seam:
     screen readers get real MathML for every ``$…$`` run (not "dollar backslash
     sqrt").
   * B5/item-6 — an optional ``--css-hooks`` flag inlines the new
-    ``Courseforge/templates/accessibility/dart_content.css`` so the textbook
+    ``Courseforge/templates/accessibility/semantik_content.css`` so the textbook
     semantics (examples, solutions, TRY-IT / BE-PREPARED / HOW-TO openers,
     key-terms glossaries, responsive tables) render with visual affordance.
 
@@ -58,7 +58,7 @@ _DEFAULT_TEMPLATE = (
     / "Courseforge/templates/accessibility/accessible_content_template.html"
 )
 _DEFAULT_DART_CSS = (
-    _REPO_ROOT / "Courseforge/templates/accessibility/dart_content.css"
+    _REPO_ROOT / "Courseforge/templates/accessibility/semantik_content.css"
 )
 
 # MathJax v3 config WITH assistive-MML (B2): injects visually-hidden MathML
@@ -310,7 +310,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     ap.add_argument(
         "--dart-css", default=None,
-        help="Path to dart_content.css (default: templates/accessibility/).",
+        help="Path to semantik_content.css (default: templates/accessibility/).",
     )
     ap.add_argument(
         "--description", default="",

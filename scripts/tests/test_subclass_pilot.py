@@ -96,7 +96,7 @@ def test_pilot_apply_writes_annotated_html(tmp_path):
     html_files = list(out_dir.glob("*_accessible.html"))
     assert html_files
     html = html_files[0].read_text(encoding="utf-8")
-    assert "data-dart-subclass=" in html
+    assert "data-semantik-subclass=" in html
 
 
 def test_pilot_chapters_filter_selects_by_token(tmp_path):

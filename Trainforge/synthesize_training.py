@@ -374,8 +374,10 @@ import re as _w9_re  # local alias so Wave 9 helpers don't shadow re imports
 # Single source of truth would be a re-export from content_grounding,
 # but the pattern is two lines + the import topology there is heavier
 # than this module wants — copy is the smaller blast radius.
+# DART->semantik purge Stage 3 (dual-READ): staged HTML may carry either attr
+# spelling; both are harvested identically.
 _W9_DART_BLOCK_ID_RE = _w9_re.compile(
-    r'data-dart-block-id\s*=\s*(["\'])([^"\']+)\1',
+    r'data-(?:dart|semantik)-block-id\s*=\s*(["\'])([^"\']+)\1',
     _w9_re.IGNORECASE,
 )
 # Captures the body of a <section ...> wrapper; used to scope each
@@ -438,13 +440,19 @@ def _resolve_dart_block_text_map(
             text = _W9_WHITESPACE_RE.sub(" ", text).strip()
             if not text:
                 continue
-            key = f"dart:{slug}#{raw_block_id}"
+            # DART->semantik purge Stage 3: key the lookup under BOTH sourceId
+            # prefixes so a chunk carrying a freshly-minted ``semantik:`` ref
+            # AND a legacy ``dart:`` ref both resolve into this text map.
             # First-write-wins on duplicate keys — mirrors the W2.F /
             # source_module_map.json precedent. Duplicates inside one
             # staging dir are typically the same block_id reused
             # across re-staged HTML files, so first-seen is fine.
-            if key not in block_text_map:
-                block_text_map[key] = text
+            for key in (
+                f"dart:{slug}#{raw_block_id}",
+                f"semantik:{slug}#{raw_block_id}",
+            ):
+                if key not in block_text_map:
+                    block_text_map[key] = text
     return block_text_map
 
 

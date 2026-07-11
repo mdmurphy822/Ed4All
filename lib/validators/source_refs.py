@@ -628,9 +628,16 @@ def _iter_sidecar_block_ids(
 
     Block shapes recognized:
 
-    - Top-level ``sections[]`` → emit ``dart:{slug}#{section_id}`` and
-      ``dart:{slug}#{block_id}`` for every leaf block.
+    - Top-level ``sections[]`` → emit ``{dart,semantik}:{slug}#{section_id}``
+      and ``{dart,semantik}:{slug}#{block_id}`` for every leaf block.
     - Any nested ``block_id`` key encountered while walking.
+
+    DART->semantik purge Stage 3 (dual valid-universe): BOTH the legacy
+    ``dart:`` prefix AND the ratified ``semantik:`` prefix are yielded for
+    every id, so a freshly-emitted ``semantik:`` sourceId (Stage-3 emitters)
+    AND a legacy ``dart:`` sourceId (unmigrated corpora) both resolve against
+    the same sidecar — a READER widening that keeps the source_refs gate green
+    across the emitter flip. Mirrors ``SOURCE_ID_RE``'s dual pattern.
     """
     if not isinstance(data, dict):
         return
@@ -647,9 +654,11 @@ def _iter_sidecar_block_ids(
             section_id = section.get("section_id")
             if isinstance(section_id, str) and section_id:
                 yield f"dart:{slug}#{section_id}"
+                yield f"semantik:{slug}#{section_id}"
             # Block IDs live anywhere under data[]
             for block_id in _iter_nested_block_ids(section):
                 yield f"dart:{slug}#{block_id}"
+                yield f"semantik:{slug}#{block_id}"
 
 
 def _iter_nested_block_ids(value: Any) -> Iterable[str]:

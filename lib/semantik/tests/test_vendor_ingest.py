@@ -4,7 +4,7 @@ Exercises ``lib.semantik.vendor_ingest`` against a small synthetic vendor
 HTML document and the REAL Ed4All contract validators (``DartMarkersValidator``,
 ``source_refs``, ``SemanticStructureExtractor``). Mirrors the SemantiK adapter
 test assertions (the vendor path REUSES the adapter), with the added
-``data-dart-source="vendor"`` provenance-discriminator checks.
+``data-semantik-source="vendor"`` provenance-discriminator checks.
 
 NO models / NO GPU.
 
@@ -72,18 +72,18 @@ def vendor_out():
 
 
 def test_vendor_source_discriminator(vendor_out):
-    """Every <section> carries data-dart-source="vendor" (authoritative),
+    """Every <section> carries data-semantik-source="vendor" (authoritative),
     NOT the SemantiK "synthesized" default."""
     html = vendor_out["html"]
     assert vendor_out["data_dart_source"] == "vendor"
-    assert 'data-dart-source="vendor"' in html
-    assert 'data-dart-source="synthesized"' not in html
-    assert 'data-dart-source=""' not in html
+    assert 'data-semantik-source="vendor"' in html
+    assert 'data-semantik-source="synthesized"' not in html
+    assert 'data-semantik-source=""' not in html
     # Every section open tag has the vendor value.
     sections = re.findall(r"<section\b[^>]*>", html)
     assert sections
     for tag in sections:
-        assert 'data-dart-source="vendor"' in tag
+        assert 'data-semantik-source="vendor"' in tag
 
     # Sidecar provenance agrees with the markup.
     for sec in vendor_out["synthesized_sidecar"]["sections"]:
@@ -106,7 +106,7 @@ def test_vendor_dart_markers_pass(vendor_out):
 
 
 def test_vendor_source_ids_resolve(vendor_out):
-    """Every emitted data-dart-block-id forms a valid dart: sourceId AND
+    """Every emitted data-semantik-block-id forms a valid dart: sourceId AND
     resolves against the sidecar id universe (source_refs gate parity)."""
     from lib.validators.source_refs import SOURCE_ID_RE
 
@@ -115,10 +115,10 @@ def test_vendor_source_ids_resolve(vendor_out):
     sidecar_ids = {
         s["section_id"] for s in out["synthesized_sidecar"]["sections"]
     }
-    html_ids = set(re.findall(r'data-dart-block-id="([^"]+)"', out["html"]))
+    html_ids = set(re.findall(r'data-semantik-block-id="([^"]+)"', out["html"]))
     assert html_ids
     for bid in html_ids:
-        source_id = f"dart:{slug}#{bid}"
+        source_id = f"semantik:{slug}#{bid}"
         assert SOURCE_ID_RE.match(source_id), f"bad sourceId: {source_id}"
         assert bid in sidecar_ids, f"{bid} unresolved against sidecar"
 
@@ -200,5 +200,5 @@ def test_adapter_default_still_synthesized():
 
     out = normalize_cascade_to_ed4all(_R(), pdf_stem="t")
     assert out["data_dart_source"] == "synthesized"
-    assert 'data-dart-source="synthesized"' in out["html"]
-    assert 'data-dart-source="vendor"' not in out["html"]
+    assert 'data-semantik-source="synthesized"' in out["html"]
+    assert 'data-semantik-source="vendor"' not in out["html"]

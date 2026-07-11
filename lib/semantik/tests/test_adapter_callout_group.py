@@ -2,7 +2,7 @@
 seam (end-user-HTML audit, ch02 shots). Synthetic block IR only.
 
   * A promoted opener heading (How To / Example / Solution / Try It / …) and the
-    content blocks that FOLLOW it are wrapped in ONE ``data-dart-opener-group``
+    content blocks that FOLLOW it are wrapped in ONE ``data-semantik-opener-group``
     box container, so ``dart_content.css`` encloses the whole unit (the "How To
     box wraps only the label, steps spill outside" defect).
   * ":: " / ": : " colon-run + stray ">"/"|" gutter residue is folded out of
@@ -79,7 +79,7 @@ def test_opener_and_following_content_share_one_box():
     )
     html = _render_chapters([ch])
     m = re.search(
-        r'<div class="dart-callout-group" data-dart-opener-group="how_to">'
+        r'<div class="dart-callout-group" data-semantik-opener-group="how_to">'
         r"(.*?)</div>",
         html,
         re.DOTALL,
@@ -103,7 +103,7 @@ def test_genuine_heading_closes_the_group():
     )
     html = _render_chapters([ch])
     m = re.search(
-        r'data-dart-opener-group="how_to">(.*?)</div>', html, re.DOTALL
+        r'data-semantik-opener-group="how_to">(.*?)</div>', html, re.DOTALL
     )
     box = m.group(1)
     assert "Step 1." in box
@@ -124,12 +124,12 @@ def test_new_opener_starts_a_fresh_group():
         ],
     )
     html = _render_chapters([ch])
-    assert html.count("data-dart-opener-group=") == 2
+    assert html.count("data-semantik-opener-group=") == 2
     ex = re.search(
-        r'data-dart-opener-group="worked_example">(.*?)</div>', html, re.DOTALL
+        r'data-semantik-opener-group="worked_example">(.*?)</div>', html, re.DOTALL
     ).group(1)
     sol = re.search(
-        r'data-dart-opener-group="solution">(.*?)</div>', html, re.DOTALL
+        r'data-semantik-opener-group="solution">(.*?)</div>', html, re.DOTALL
     ).group(1)
     assert "worked content" in ex and "solution content" not in ex
     assert "solution content" in sol and "worked content" not in sol
@@ -194,4 +194,4 @@ def test_scrub_promotes_de_doubled_try_it_end_to_end():
         _Result([ch]), pdf_stem="synthetic_ch02"
     )["html"]
     assert "::" not in html
-    assert 'data-dart-opener-group="try_it"' in html
+    assert 'data-semantik-opener-group="try_it"' in html

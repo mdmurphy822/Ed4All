@@ -4,7 +4,7 @@
 
 The canonical chunker harvests the ``{block_id, pages}`` pairs and the
 DART-side ``_create_chunk`` callback mints
-``dart:{slug}#{block_id}`` sourceIds (slug = staged-HTML file stem,
+``semantik:{slug}#{block_id}`` sourceIds (slug = staged-HTML file stem,
 matching the source_refs validator + source-router key). DART HTML without
 those attributes keeps ``source_references`` unset — legacy corpora are
 byte-stable.
@@ -28,7 +28,7 @@ from MCP.tools import pipeline_tools  # noqa: E402
 from MCP.tools.pipeline_tools import _build_tool_registry  # noqa: E402
 
 # Canonical sourceId pattern (mirrors source_reference.schema.json).
-_SOURCE_ID_RE = re.compile(r"^dart:[a-z0-9_-]+#[a-z0-9_-]+$")
+_SOURCE_ID_RE = re.compile(r"^semantik:[a-z0-9_-]+#[a-z0-9_-]+$")
 
 
 @pytest.fixture
@@ -102,10 +102,10 @@ def test_dart_chunks_carry_source_references(dart_chunking_tool, tmp_path):
             by_slug[ref["sourceId"]] = ref
 
     # Slug = file stem lower-hyphenated; block_id from the attribute.
-    assert "dart:lesson_01#s1" in by_slug
-    assert by_slug["dart:lesson_01#s1"]["pages"] == [1, 2, 3]
-    assert "dart:lesson_02#s2" in by_slug
-    assert by_slug["dart:lesson_02#s2"]["pages"] == [7]
+    assert "semantik:lesson_01#s1" in by_slug
+    assert by_slug["semantik:lesson_01#s1"]["pages"] == [1, 2, 3]
+    assert "semantik:lesson_02#s2" in by_slug
+    assert by_slug["semantik:lesson_02#s2"]["pages"] == [7]
 
 
 def test_dart_chunks_without_attrs_have_no_source_references(
@@ -168,8 +168,8 @@ def test_synthesized_suffix_stripped_from_minted_slug(
     minted sourceId slug MUST strip the ``_synthesized`` suffix so it matches
     the join key the source_refs validator + source-router derive from the
     SAME filename (both apply ``dart_slug_from_filename``). Without the strip
-    the chunker keys ``dart:intro_chapter_synthesized#s3_c0`` while every
-    other consumer keys ``dart:intro_chapter#s3_c0`` -> unresolvable."""
+    the chunker keys ``semantik:intro_chapter_synthesized#s3_c0`` while every
+    other consumer keys ``semantik:intro_chapter#s3_c0`` -> unresolvable."""
     from lib.validators.source_refs import (
         SOURCE_ID_RE as VALIDATOR_RE,
         dart_slug_from_filename,
@@ -186,7 +186,7 @@ def test_synthesized_suffix_stripped_from_minted_slug(
     # filename. This is the authoritative join key the chunk must mint.
     canonical_slug = dart_slug_from_filename(fname)
     assert canonical_slug == "intro_chapter", canonical_slug
-    expected_id = f"dart:{canonical_slug}#s3_c0"
+    expected_id = f"semantik:{canonical_slug}#s3_c0"
 
     chunks = _load_chunks(asyncio.run(dart_chunking_tool(
         course_name="DART_SYNTH_TEST",
@@ -203,4 +203,4 @@ def test_synthesized_suffix_stripped_from_minted_slug(
         f"expected suffix-stripped sourceId {expected_id!r}; got {minted!r}"
     )
     # The un-stripped form must NEVER be minted (the regression).
-    assert "dart:intro_chapter_synthesized#s3_c0" not in minted
+    assert "semantik:intro_chapter_synthesized#s3_c0" not in minted

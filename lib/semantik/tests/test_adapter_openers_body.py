@@ -121,7 +121,7 @@ def test_render_strips_body_latex_no_leak():
 
 
 # ---------------------------------------------------------------------------
-# A7 — opener promotion + data-dart-opener; A5 — nearest-ancestor heading level.
+# A7 — opener promotion + data-semantik-opener; A5 — nearest-ancestor heading level.
 # ---------------------------------------------------------------------------
 
 
@@ -132,7 +132,7 @@ def test_standalone_example_under_section_promoted_to_h4_opener():
         blocks=[_section("9.1 Simplify Square Roots", 0), _para("EXAMPLE 9.1", 1)],
     )
     html = _render([ch])
-    assert re.search(r'data-dart-opener="worked_example"', html)
+    assert re.search(r'data-semantik-opener="worked_example"', html)
     assert re.search(r"<h4 id=\"[^\"]+\">Example 9\.1</h4>", html)
 
 
@@ -144,7 +144,7 @@ def test_standalone_example_directly_under_chapter_is_h3_no_skip():
         blocks=[_para("EXAMPLE 9.1", 0)],
     )
     html = _render([ch])
-    assert re.search(r'data-dart-opener="worked_example"', html)
+    assert re.search(r'data-semantik-opener="worked_example"', html)
     assert re.search(r"<h3 id=\"[^\"]+\">Example 9\.1</h3>", html)
     assert "<h4" not in html  # no skipped level
 
@@ -159,9 +159,9 @@ def test_try_it_and_be_prepared_promoted():
         ],
     )
     html = _render([ch])
-    assert 'data-dart-opener="try_it"' in html
+    assert 'data-semantik-opener="try_it"' in html
     assert ">Try It 9.7</h4>" in html
-    assert 'data-dart-opener="readiness_check"' in html
+    assert 'data-semantik-opener="readiness_check"' in html
     assert ">Be Prepared 9.1</h4>" in html
 
 
@@ -177,7 +177,7 @@ def test_leading_objectives_split_emits_heading_plus_ul():
         blocks=[_section("9.1 Simplify Square Roots", 0), _para(fused, 1)],
     )
     html = _render([ch])
-    assert 'data-dart-opener="objectives"' in html
+    assert 'data-semantik-opener="objectives"' in html
     assert ">Learning Objectives</h4>" in html
     assert "<ul>" in html
     assert "<li>Simplify expressions with square roots</li>" in html
@@ -207,7 +207,7 @@ def test_prose_example_not_promoted():
         blocks=[_para("Examples are common when learning algebra.", 0)],
     )
     html = _render([ch])
-    assert "data-dart-opener" not in html
+    assert "data-semantik-opener" not in html
     assert "<h4" not in html
 
 
@@ -231,4 +231,4 @@ def test_table_block_trailing_openers_surface():
     html = _render([ch])
     assert ">Try It 2.36</h4>" in html
     assert ">Example 2.19</h4>" in html
-    assert 'data-dart-opener="try_it"' in html
+    assert 'data-semantik-opener="try_it"' in html

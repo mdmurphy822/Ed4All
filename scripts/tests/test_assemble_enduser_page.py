@@ -123,7 +123,7 @@ def test_mathjax_config_processes_escapes():
 def test_css_hooks_inlines_dart_content_css():
     page = _assemble(css_hooks=True)
     assert ".dart-example" in page
-    assert 'data-dart-opener="try_it"' in page
+    assert 'data-semantik-opener="try_it"' in page
     assert ".dart-key-terms dt" in page
 
 

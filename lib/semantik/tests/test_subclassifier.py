@@ -33,14 +33,14 @@ def _unit_html(
     body: str = "Solve 2x plus 3 equals 7 for x by isolating the variable.",
 ) -> str:
     members = "\n".join(
-        f'<section class="dart-section" data-dart-block-id="s{i}" '
-        f'data-dart-pages="{p}"><p>{body}</p></section>'
+        f'<section class="dart-section" data-semantik-block-id="s{i}" '
+        f'data-semantik-pages="{p}"><p>{body}</p></section>'
         for i, p in enumerate(member_pages)
     )
     return (
         f'<section class="dart-unit dart-unit-{unit_type}" '
-        f'data-dart-unit="{unit_type}" role="group" aria-label="X" '
-        f'data-dart-pages="{pages}" data-dart-page-kind="physical">\n'
+        f'data-semantik-unit="{unit_type}" role="group" aria-label="X" '
+        f'data-semantik-pages="{pages}" data-semantik-page-kind="physical">\n'
         f"<h4>Example 1.1</h4>\n{members}\n</section>"
     )
 
@@ -104,7 +104,7 @@ def test_parse_reject_leaves_unit_unsubclassed():
         html, client=_fixed_client("this is prose not a label at all"),
         capture=_Capture(),
     )
-    assert "data-dart-subclass=" not in out
+    assert "data-semantik-subclass=" not in out
     assert report["status_counts"].get("parse_reject") == 1
 
 
@@ -145,7 +145,7 @@ def test_genuinely_new_label_accepted_and_logged(tmp_path):
         html, client=_fixed_client("proof-sketch"), capture=_Capture(),
         review_sidecar_path=str(sidecar),
     )
-    assert 'data-dart-subclass="proof-sketch"' in out
+    assert 'data-semantik-subclass="proof-sketch"' in out
     assert report["new_labels"] == [
         {"unit_id": "unit-0000", "unit_type": "worked_example", "label": "proof-sketch"}
     ]
@@ -162,7 +162,7 @@ def test_page_anomaly_skip_non_monotonic_members():
     out, report = sc.annotate_html_subclasses(
         html, client=_fixed_client("drill"), capture=_Capture(),
     )
-    assert "data-dart-subclass=" not in out
+    assert "data-semantik-subclass=" not in out
     assert report["status_counts"].get("skipped_anomaly") == 1
 
 
@@ -171,7 +171,7 @@ def test_monotonic_pages_not_skipped():
     out, report = sc.annotate_html_subclasses(
         html, client=_fixed_client("symbolic-manipulation"), capture=_Capture(),
     )
-    assert "data-dart-subclass=" in out
+    assert "data-semantik-subclass=" in out
     assert report["status_counts"].get("assigned") == 1
 
 
@@ -186,7 +186,7 @@ def test_payload_only_html_differs_by_two_attrs_only():
     assert out != html
     # Stripping ONLY the two added tokens recovers the input byte-for-byte.
     recovered = out.replace(
-        ' data-dart-subclass="symbolic-manipulation"', ""
+        ' data-semantik-subclass="symbolic-manipulation"', ""
     ).replace(" dart-sub-symbolic-manipulation", "")
     assert recovered == html
 
@@ -202,8 +202,8 @@ def test_no_units_html_unchanged():
 
 def test_idempotent_on_already_subclassed_unit():
     html = _unit_html().replace(
-        'data-dart-unit="worked_example"',
-        'data-dart-unit="worked_example" data-dart-subclass="drill"',
+        'data-semantik-unit="worked_example"',
+        'data-semantik-unit="worked_example" data-semantik-subclass="drill"',
     )
     out, report = sc.annotate_html_subclasses(
         html, client=_fixed_client("symbolic-manipulation"), capture=_Capture(),
@@ -283,7 +283,7 @@ def test_client_error_does_not_break_render():
     out, report = sc.annotate_html_subclasses(
         _unit_html(), client=_boom, capture=_Capture(),
     )
-    assert "data-dart-subclass=" not in out
+    assert "data-semantik-subclass=" not in out
     assert report["status_counts"].get("error") == 1
 
 
@@ -310,7 +310,7 @@ def test_majority_vote_wins_and_confidence_is_agreement(monkeypatch):
     out, report = sc.annotate_html_subclasses(
         _unit_html(), client=client, capture=_Capture(),
     )
-    assert 'data-dart-subclass="application-problem"' in out
+    assert 'data-semantik-subclass="application-problem"' in out
     a = report["assignments"][0]
     assert a["label"] == "application-problem"
     assert a["status"] == "assigned"
@@ -336,7 +336,7 @@ def test_all_samples_parse_fail_leaves_unit_unsubclassed(monkeypatch):
     out, report = sc.annotate_html_subclasses(
         _unit_html(), client=client, capture=_Capture(),
     )
-    assert "data-dart-subclass=" not in out
+    assert "data-semantik-subclass=" not in out
     assert report["status_counts"].get("parse_reject") == 1
 
 
@@ -349,7 +349,7 @@ def test_all_samples_raise_reports_error(monkeypatch):
     out, report = sc.annotate_html_subclasses(
         _unit_html(), client=_boom, capture=_Capture(),
     )
-    assert "data-dart-subclass=" not in out
+    assert "data-semantik-subclass=" not in out
     assert report["status_counts"].get("error") == 1
 
 
@@ -408,7 +408,7 @@ def test_annotate_threads_lexicon_glosses_into_prompt():
 
     html = (
         '<section class="dart-unit dart-unit-worked_example" '
-        'data-dart-unit="worked_example" role="group" '
+        'data-semantik-unit="worked_example" role="group" '
         'aria-labelledby="example-1-1">'
         "<h4 id=\"example-1-1\">Example 1.1</h4><p>A ball costs 3 dollars.</p>"
         "</section>"
@@ -418,4 +418,4 @@ def test_annotate_threads_lexicon_glosses_into_prompt():
     )
     assert seen and "Match on the DEFINITION" in seen[0]
     assert "real-world" in seen[0]  # the lexicon gloss reached the model
-    assert 'data-dart-subclass="application-problem"' in out
+    assert 'data-semantik-subclass="application-problem"' in out

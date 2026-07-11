@@ -3810,7 +3810,7 @@ def _dart_block_source_references(
         block_id = str(ref.get("block_id") or "").strip()
         if not block_id:
             continue
-        source_id = f"dart:{slug}#{block_id}"
+        source_id = f"semantik:{slug}#{block_id}"
         if source_id in seen or not _DART_SOURCE_ID_RE.match(source_id):
             continue
         seen.add(source_id)
@@ -13623,7 +13623,7 @@ def _build_key_terms_blocks(
         if isinstance(_chunk, dict):
             _cid = _chunk.get("id")
             if isinstance(_cid, str) and _cid:
-                block_sids = (f"dart:{course_slug}#{_cid}",)
+                block_sids = (f"semantik:{course_slug}#{_cid}",)
         try:
             blk = Block(
                 block_id=Block.stable_id(
@@ -23228,7 +23228,7 @@ def _build_tool_registry() -> dict:
                         "slug": slug,
                         "title": title,
                         "keywords": keywords,
-                        "source_id": f"dart:{slug}#{block_id}",
+                        "source_id": f"semantik:{slug}#{block_id}",
                     })
 
         # ------------------------------------------------------------- #

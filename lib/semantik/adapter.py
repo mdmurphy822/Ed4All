@@ -7,7 +7,7 @@ Ed4All's downstream contract consumers require.
 
 Without this adapter the critical ``dart_markers`` gate blocks every run
 (Semantic v2 emits NO ``role="main"`` / ``aria-labelledby`` sections /
-``dart-*`` classes / ``data-dart-*`` attrs / page provenance / sidecar) and
+``dart-*`` classes / ``data-semantik-*`` attrs / page provenance / sidecar) and
 the chunker / ``SemanticStructureExtractor`` / ``source_refs`` gate silently
 lose all structure.
 
@@ -15,7 +15,7 @@ lose all structure.
 --------------------------------
 * §3.0  single ``sid`` INVARIANT ......... :func:`_mint_sid` (the ONE shared
   minting fn) + :func:`_AdapterSection.sid` — the same value feeds
-  ``aria-labelledby`` / heading ``id`` / ``data-dart-block-id`` / sidecar
+  ``aria-labelledby`` / heading ``id`` / ``data-semantik-block-id`` / sidecar
   ``section_id`` / ``#fragment``.
 * §3.1  four critical markers ............ :func:`_render_html`
   (``role="main"`` + ``class="dart-document"`` on ``<main>``;
@@ -34,7 +34,7 @@ lose all structure.
   + non-content-heading filtering (:func:`_is_noncontent_heading`) so a
   single chapter never trips the >40-section collapse.
 * §3.5  page-provenance ................... :func:`_format_pages` +
-  ``data-dart-page-kind="physical"`` (honest; never fabricated ``printed``);
+  ``data-semantik-page-kind="physical"`` (honest; never fabricated ``printed``);
   ``#fragment == #{sid}``.
 * §3.5b sidecars ......................... :func:`build_synthesized_sidecar`
   + :func:`build_quality_sidecar` (canonical shapes, ported here so this
@@ -133,12 +133,12 @@ from lib.semantik.heading_classifier import (
 
 
 # ---------------------------------------------------------------------------
-# §3.2 — the M6 data-dart-source decision.
+# §3.2 — the M6 data-semantik-source decision.
 #
 # Grep evidence (settled this session): NO consumer of the
-# ``data-dart-source`` HTML attribute VALUE branches on a specific enum
+# ``data-semantik-source`` HTML attribute VALUE branches on a specific enum
 # value. The chunker (``Trainforge/chunker/helpers.py``) harvests only
-# block-id / pages / page-kind — there is NO ``data-dart-source`` value
+# block-id / pages / page-kind — there is NO ``data-semantik-source`` value
 # regex. ``lib/validators/dart_markers.py`` checks presence + non-empty
 # only (``_DATA_DART_SOURCE_RE`` is a presence regex; the empty check is
 # ``_EMPTY_DATA_DART_SOURCE_RE``). ``_build_source_module_map`` /
@@ -155,7 +155,7 @@ from lib.semantik.heading_classifier import (
 # Vendor-ingest discriminator (this session): the publisher-supplied
 # accessible-HTML path (``lib/semantik/vendor_ingest.py``) threads
 # ``source="vendor"`` through ``normalize_cascade_to_ed4all`` so its blocks
-# carry ``data-dart-source="vendor"`` — the AUTHORITATIVE provenance label
+# carry ``data-semantik-source="vendor"`` — the AUTHORITATIVE provenance label
 # for already-accessible HTML we did NOT synthesize. Same M6 finding holds:
 # no consumer branches on the VALUE, so adding the ``vendor`` value
 # mis-routes nothing; ``synthesized`` stays the SemantiK default.
@@ -171,12 +171,12 @@ _KNOWN_DATA_DART_SOURCE_VALUES = frozenset({"synthesized", "vendor"})
 
 
 def _resolve_source_value(source: Optional[str]) -> str:
-    """Resolve the per-document ``data-dart-source`` value (§3.2 + vendor).
+    """Resolve the per-document ``data-semantik-source`` value (§3.2 + vendor).
 
     ``None``/empty → the SemantiK default ``synthesized``. A known value
     (``synthesized``/``vendor``) is honored verbatim. NEVER empty (the
     ``EMPTY_DATA_DART_SOURCE`` gate is critical), so a blank override falls
-    back to the default rather than stamping ``data-dart-source=""``.
+    back to the default rather than stamping ``data-semantik-source=""``.
     """
     val = (source or "").strip()
     if not val:
@@ -270,14 +270,14 @@ class _AdapterBlock:
     # edit count. ``repaired_text`` drives the emitted body + the sidecar
     # ``text`` (downstream chunker/retrieval fidelity); ``raw_text`` STAYS
     # verbatim (the content-hash sid basis). Absent (None/0) → byte-identical to
-    # a no-repair block (no ``data-dart-repair`` attribute).
+    # a no-repair block (no ``data-semantik-repair`` attribute).
     repaired_text: Optional[str] = None
     ocr_repair_count: int = 0
     # Scorecard blind-spot guard (wave-19 table-regression, 2026-07-04): when
     # ``_emit_structured_bodies`` reconciles a block that DECLARED list/table/
     # definition_list but delivered no high-confidence shape down to
     # ``paragraph``, the original declared role is recorded here and stamped as
-    # ``data-dart-demoted-role`` so the structure-scorecard can COUNT the honest
+    # ``data-semantik-demoted-role`` so the structure-scorecard can COUNT the honest
     # demotions (otherwise invisible post-reconciliation — a mass demotion, e.g.
     # a scrub eating every pipe row, would silently show a perfect deliver rate).
     demoted_role: Optional[str] = None
@@ -285,7 +285,7 @@ class _AdapterBlock:
     # a content block WITHIN a pedagogical unit: ``statement`` (an example's
     # problem, between the example opener and its solution), ``solution-steps``
     # (the worked steps after the solution opener), or ``procedure-steps`` (the
-    # steps after a How-To opener). Annotation-only (stamped as ``data-dart-flow``
+    # steps after a How-To opener). Annotation-only (stamped as ``data-semantik-flow``
     # on the section wrapper); never changes text or structure. ``None`` -> no
     # attribute (byte-stable to a pre-annotation block).
     flow: Optional[str] = None
@@ -349,7 +349,7 @@ def _emitted_blocks(
     """Yield blocks in canonical EMIT order, applying the shared drop filters.
 
     The single source of truth for which blocks reach the HTML / sidecar (and
-    in what order), so the ``data-dart-block-id`` uniquifier assigns identical
+    in what order), so the ``data-semantik-block-id`` uniquifier assigns identical
     ids to both renders (§3.3 parity). Mirrors the furniture / non-content
     filters in ``_render_chapters`` + ``build_synthesized_sidecar`` exactly.
     """
@@ -374,7 +374,7 @@ def _mint_unique_sids(
 
     ``_mint_sid`` is deterministic per block, so two headings sharing a slug
     (the SAME section title on two pages) or two blocks with identical
-    content-hash text collide on ``data-dart-block-id`` — breaking
+    content-hash text collide on ``data-semantik-block-id`` — breaking
     ``dart:{slug}#{block_id}`` anchor uniqueness (9 collisions on the audited
     chapter). This walks the emit-order block stream ONCE and appends a stable
     ``-2`` / ``-3`` … suffix to each repeat of a base sid (the first occurrence
@@ -559,7 +559,7 @@ def _is_furniture_block(block: _AdapterBlock) -> bool:
     the render") was not mirrored on THIS adapter path, so on OCR-sourced scans
     the running header / footer leaked into 198 ``<p>`` bodies (the footer 61×,
     the running header 136×). Filtered from BOTH the rendered HTML and the
-    ``build_synthesized_sidecar`` so ``data-dart-block-id`` parity (the
+    ``build_synthesized_sidecar`` so ``data-semantik-block-id`` parity (the
     source_refs gate's valid-ID universe) is preserved.
     """
     return (
@@ -573,8 +573,8 @@ def _render_section(
 ) -> str:
     """Render one ``<section>`` wrapper for a block (§3.1/§3.2/§3.5).
 
-    All ``data-dart-*`` attributes land on the SAME opening tag as
-    ``data-dart-block-id`` (placement rule — never on leaf nodes; chunker
+    All ``data-semantik-*`` attributes land on the SAME opening tag as
+    ``data-semantik-block-id`` (placement rule — never on leaf nodes; chunker
     same-element pairing requires it).
 
     B4 (2026-07-04 end-user-HTML audit) — a genuine heading block gets a
@@ -585,7 +585,7 @@ def _render_section(
     as a bare ``id`` on the ``<section>`` (so ``#{sid}`` still deep-links) but
     NO ``aria-labelledby`` and NO ``sr-only`` label — so it is NOT a landmark
     named "Paragraph block" (the ~5,000 generic-region-landmark defect). This
-    does not affect the chunker (it keys on the ``data-dart-block-id``
+    does not affect the chunker (it keys on the ``data-semantik-block-id``
     attribute, and already skips ``sr-only`` subtrees — removing a label it was
     already skipping changes no chunk text). ``source_value`` is the resolved
     provenance discriminator (``synthesized`` for SemantiK; ``vendor`` for
@@ -594,46 +594,46 @@ def _render_section(
     attrs: List[str] = [
         'class="dart-section"',
         # index 1 reserved: aria-labelledby (heading blocks) OR id (content).
-        f'data-dart-block-id="{_esc_attr(sid)}"',
-        f'data-dart-source="{_esc_attr(source_value)}"',
+        f'data-semantik-block-id="{_esc_attr(sid)}"',
+        f'data-semantik-source="{_esc_attr(source_value)}"',
     ]
     pages = _format_pages(block.pages)
     if pages:
-        attrs.append(f'data-dart-pages="{_esc_attr(pages)}"')
-        attrs.append(f'data-dart-page-kind="{_DATA_DART_PAGE_KIND}"')
+        attrs.append(f'data-semantik-pages="{_esc_attr(pages)}"')
+        attrs.append(f'data-semantik-page-kind="{_DATA_DART_PAGE_KIND}"')
     conf = _band_confidence(block.confidence)
     if conf is not None:
-        attrs.append(f'data-dart-confidence="{conf:.2f}"')
+        attrs.append(f'data-semantik-confidence="{conf:.2f}"')
     if block.block_role:
-        attrs.append(f'data-dart-block-role="{_esc_attr(block.block_role)}"')
+        attrs.append(f'data-semantik-block-role="{_esc_attr(block.block_role)}"')
     if block.wcag_status:
-        attrs.append(f'data-dart-wcag="{_esc_attr(block.wcag_status)}"')
+        attrs.append(f'data-semantik-wcag="{_esc_attr(block.wcag_status)}"')
     # Scorecard blind-spot guard — a block whose declared list/table/
     # definition_list role was reconciled to paragraph (no delivered shape)
     # carries the original declared role so the structure-scorecard can COUNT
     # the honest demotion (post-reconciliation it is otherwise invisible).
     if block.demoted_role:
         attrs.append(
-            f'data-dart-demoted-role="{_esc_attr(block.demoted_role)}"'
+            f'data-semantik-demoted-role="{_esc_attr(block.demoted_role)}"'
         )
     # SEMANTIK_OCR_CONFUSABLE_REPAIR — a block whose body carries gated OCR
-    # micro-repairs is stamped on the SAME opening tag as data-dart-block-id
+    # micro-repairs is stamped on the SAME opening tag as data-semantik-block-id
     # (placement rule — never a leaf node) so a downstream text-vs-source
-    # auditor can EXEMPT the (data-dart-repair-annotated) diff. Present ONLY
+    # auditor can EXEMPT the (data-semantik-repair-annotated) diff. Present ONLY
     # when >=1 edit landed → byte-stable to a no-repair block otherwise.
     if block.repaired_text is not None and block.ocr_repair_count > 0:
-        attrs.append('data-dart-repair="ocr-confusable"')
-        attrs.append(f'data-dart-repair-count="{int(block.ocr_repair_count)}"')
+        attrs.append('data-semantik-repair="ocr-confusable"')
+        attrs.append(f'data-semantik-repair-count="{int(block.ocr_repair_count)}"')
     # A7 — a promoted pedagogical opener carries a machine-readable role so a
     # downstream consumer (chunker boundary / retrieval) can key on the
     # structure without string-matching the visible label.
     if _is_opener_promoted(block):
-        attrs.append(f'data-dart-opener="{_esc_attr(block.block_role or "")}"')
+        attrs.append(f'data-semantik-opener="{_esc_attr(block.block_role or "")}"')
     # Wave #22 Tier-1 — the reading-order FLOW phase (statement / solution-steps
     # / procedure-steps) on a content block inside a pedagogical unit. Present
     # only when the sequence grammar assigned one (byte-stable otherwise).
     if block.flow:
-        attrs.append(f'data-dart-flow="{_esc_attr(block.flow)}"')
+        attrs.append(f'data-semantik-flow="{_esc_attr(block.flow)}"')
 
     raw_heading = block.heading_text or ""
     heading_block = _is_heading_block(block)
@@ -685,8 +685,8 @@ def _first_text_line(block: _AdapterBlock) -> str:
 def _wrap_callout_group(parts: Sequence[str], role: str) -> str:
     """Wrap an opener + its following content sections in ONE boxed container.
 
-    The ``data-dart-opener-group`` attribute mirrors the opener's
-    ``data-dart-opener`` value so ``dart_content.css`` can draw a SINGLE box that
+    The ``data-semantik-opener-group`` attribute mirrors the opener's
+    ``data-semantik-opener`` value so ``dart_content.css`` can draw a SINGLE box that
     encloses the whole pedagogical unit (opener label + steps/solution/prose),
     instead of the opener heading floating in its own box while the content spills
     outside it. Standalone (no-CSS) re-render output is unaffected — the wrapper
@@ -695,7 +695,7 @@ def _wrap_callout_group(parts: Sequence[str], role: str) -> str:
     inner = "\n".join(parts)
     return (
         f'<div class="dart-callout-group" '
-        f'data-dart-opener-group="{_esc_attr(role)}">\n{inner}\n</div>'
+        f'data-semantik-opener-group="{_esc_attr(role)}">\n{inner}\n</div>'
     )
 
 
@@ -739,16 +739,16 @@ def _standalone_unit_role(block: _AdapterBlock, html: str) -> Optional[str]:
     return None
 
 
-_MEMBER_PAGES_RE = re.compile(r'data-dart-pages="([^"]*)"')
+_MEMBER_PAGES_RE = re.compile(r'data-semantik-pages="([^"]*)"')
 
 
 def _rollup_unit_pages(parts: Sequence[str]) -> Optional[str]:
-    """Roll up member blocks' ``data-dart-pages`` into a min..max span string.
+    """Roll up member blocks' ``data-semantik-pages`` into a min..max span string.
 
     Build #23 deterministic bonus (adapter-side, flag-INDEPENDENT provenance):
     the composite-unit ``<section>`` carries the page span of its members so a
     unit is deep-linkable to its page range as a whole. Scans every
-    ``data-dart-pages`` value across the rendered member ``parts``, unions the
+    ``data-semantik-pages`` value across the rendered member ``parts``, unions the
     physical page numbers, and formats ``"lo"`` (single page) or ``"lo-hi"``
     (a contiguous span across min..max — gaps are absorbed since the unit is one
     pedagogical whole). Returns ``None`` when no member carried a page number
@@ -778,10 +778,10 @@ def _wrap_composite_unit(
 ) -> str:
     """Wrap the constituent rendered items of a composite unit (Tier-2).
 
-    Emits ``<section class="dart-unit dart-unit-<type>" data-dart-unit="<type>"
+    Emits ``<section class="dart-unit dart-unit-<type>" data-semantik-unit="<type>"
     role="group" …>`` with an accessible name: ``aria-labelledby`` -> the lead
     item's heading id when present, else ``aria-label`` -> the unit-type name.
-    The unit ``<section>`` also carries a ``data-dart-pages`` rollup spanning its
+    The unit ``<section>`` also carries a ``data-semantik-pages`` rollup spanning its
     members' page range (Build #23, unconditional provenance).
     """
     inner = "\n".join(parts)
@@ -793,12 +793,12 @@ def _wrap_composite_unit(
     rollup = _rollup_unit_pages(parts)
     if rollup:
         pages_attr = (
-            f' data-dart-pages="{_esc_attr(rollup)}"'
-            f' data-dart-page-kind="{_DATA_DART_PAGE_KIND}"'
+            f' data-semantik-pages="{_esc_attr(rollup)}"'
+            f' data-semantik-page-kind="{_DATA_DART_PAGE_KIND}"'
         )
     return (
         f'<section class="dart-unit dart-unit-{unit_type}" '
-        f'data-dart-unit="{_esc_attr(unit_type)}" role="group" {name}{pages_attr}>\n'
+        f'data-semantik-unit="{_esc_attr(unit_type)}" role="group" {name}{pages_attr}>\n'
         f"{inner}\n</section>"
     )
 
@@ -1164,10 +1164,10 @@ def build_synthesized_sidecar(
     """Return the canonical ``{stem}_synthesized.json`` sidecar (§3.5b).
 
     PARITY INVARIANT (§3.3): every ``sections[].section_id`` here EQUALS the
-    ``data-dart-block-id`` stamped in the HTML — both call :func:`_mint_sid`.
+    ``data-semantik-block-id`` stamped in the HTML — both call :func:`_mint_sid`.
     The source_refs gate harvests its valid-ID universe from this sidecar, so
     any divergence trips ``UNRESOLVED_SOURCE_ID`` on every run.
-    ``source_value`` matches the HTML ``data-dart-source`` discriminator so
+    ``source_value`` matches the HTML ``data-semantik-source`` discriminator so
     the sidecar provenance agrees with the markup (``vendor`` vs the SemantiK
     ``synthesized`` default).
     """
@@ -1417,7 +1417,7 @@ def _is_opener_promoted(block: _AdapterBlock) -> bool:
     9.1`` / ``Be Prepared 9.1`` / ``How To`` / ``Solution``) carries an
     :data:`~lib.semantik.opener_classifier.OPENER_ROLES` block_role. Such a
     heading BYPASSES the ``_is_noncontent_heading`` emit filter (like the
-    apparatus-promoted case) and drives the ``data-dart-opener`` attribute +
+    apparatus-promoted case) and drives the ``data-semantik-opener`` attribute +
     the ``<h4>`` level in :func:`_render_section`.
     """
     return (block.block_role or "") in OPENER_ROLES
@@ -1852,7 +1852,7 @@ def _split_leading_apparatus_blocks(
     Both arms emit a promoted apparatus HEADING block (same
     ``_APPARATUS_HEADING_ROLE`` path as the standalone promotion) followed by
     the REMAINDER paragraph. Both halves inherit the source block's provenance
-    (``pages`` / ``confidence`` / ``wcag_status``) so their ``data-dart-*``
+    (``pages`` / ``confidence`` / ``wcag_status``) so their ``data-semantik-*``
     attributes agree — mirroring the in-place demote/promote paths, which
     preserve provenance by mutating the same block. Returns a NEW ordered block
     list (a non-matching block passes through untouched — including the
@@ -1951,7 +1951,7 @@ def _split_leading_apparatus_blocks(
 # opener label to a real <h4> heading, and SPLITS a paragraph that FUSED a
 # leading opener into an <h4> heading + a remainder paragraph — both carrying a
 # machine-readable ``block_role`` (an OPENER_ROLES member) so ``_render_section``
-# stamps ``data-dart-opener`` and the emit-filter bypass (``_is_opener_promoted``)
+# stamps ``data-semantik-opener`` and the emit-filter bypass (``_is_opener_promoted``)
 # keeps the heading. Deterministic; a strict no-op on prose with no opener label.
 
 
@@ -2005,7 +2005,7 @@ def _split_interior_openers_in_blocks(
     9.102 …" is split at each interior numbered-opener marker into: the preceding
     prose (mutated in place, keeping provenance), then per marker an opener
     HEADING block (``block_role`` in OPENER_ROLES, so the emit filter keeps it and
-    ``_render_section`` stamps ``data-dart-opener``) + its remainder paragraph.
+    ``_render_section`` stamps ``data-semantik-opener``) + its remainder paragraph.
     Both new blocks inherit the source block's provenance. Runs BEFORE
     :func:`_promote_openers_in_blocks` (which then promotes a LEADING opener + the
     interior heading levels) and only owns flat ``<p>`` bodies (never a delivered
@@ -2211,7 +2211,7 @@ def _promote_openers_in_blocks(
 # Owner directives 2 (logical reading order as a semantic signal) + the heading
 # re-derivation half of directive 1. Both are deterministic, block-level, and
 # run AFTER opener promotion (so example/solution/how_to opener roles are final)
-# and BEFORE render. The flow pass is ANNOTATION-ONLY (stamps ``data-dart-flow``,
+# and BEFORE render. The flow pass is ANNOTATION-ONLY (stamps ``data-semantik-flow``,
 # never touches text/structure); the heading re-derivation demotes ONLY the
 # unambiguous mis-typed heading that severs a worked example's problem statement
 # from its solution, and reports the count.
@@ -2250,7 +2250,7 @@ def _annotate_reading_order_flow(chapters: Sequence[_AdapterChapter]) -> None:
 
     Within each section segment: the content between an ``worked_example`` opener
     and its following ``solution`` opener is the example STATEMENT
-    (``data-dart-flow="statement"``); the content after the ``solution`` opener
+    (``data-semantik-flow="statement"``); the content after the ``solution`` opener
     (until the next opener / segment end) is the WORKED STEPS
     (``solution-steps``); the content after a ``how_to`` opener is the PROCEDURE
     STEPS (``procedure-steps``). Annotation-only; a lone example (no following
@@ -2833,7 +2833,7 @@ def _normalize_ocr_headings(
 
     # A7 (end-user-HTML audit) — promote / split pedagogical openers (Learning
     # Objectives / Be Prepared / Try It / Example / How To / Solution) to real
-    # <h4> headings carrying a data-dart-opener role. Runs AFTER the apparatus
+    # <h4> headings carrying a data-semantik-opener role. Runs AFTER the apparatus
     # split (so "Key Terms …" stays apparatus-owned) and BEFORE the heading
     # furniture loop (the promoted opener heading is then kept, not demoted).
     for ch in chapters:
@@ -3146,7 +3146,7 @@ def normalize_cascade_to_ed4all(
 
     # Build #23 Tier-3 — model-assisted composite-unit subclassing (opt-in).
     # Runs WITHIN the render path so the emitted HTML is the fully-rendered
-    # chapter PLUS the payload-only data-dart-subclass / dart-sub-<label>
+    # chapter PLUS the payload-only data-semantik-subclass / dart-sub-<label>
     # attributes. Gated on SEMANTIK_SEMANTIC_SUBCLASS (default off → byte-
     # identical) OR an explicitly injected client (the pilot / corpus-apply
     # driver forces the pass with a mock or the real local seat). No client
