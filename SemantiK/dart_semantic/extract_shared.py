@@ -413,7 +413,15 @@ def _compute_extract_cache_key(pdf_path: Path) -> str:
       may carry literal entity text (corrected downstream by the adapter-seam
       scrub in ``lib/semantik/adapter.py``, so the CURRENT corpus deliberately
       stays on its ``vlmfuse4`` caches; the salt protects future fresh
-      conversions). The
+      conversions). ``vlmfuse6``: the Nemotron-Omni special-token strip
+      (``vlm_fusion._strip_vlm_special_tokens`` now removes leaked
+      ``<|ref|>…<|/ref|>`` / ``<|det|>[[…]]<|/det|>`` grounding tokens from VLM
+      text as it ENTERS fusion, keeping the ref inner text + dropping the det
+      bbox payload) changes the fused block text UNCONDITIONALLY when fusion is
+      on (independent of the garbage-tail-drop mode), so a ``vlmfuse5`` cache is
+      invalid — bumped on ``fuse_key`` (not ``gtail_key``) precisely because it
+      fires even on the ``SEMANTIK_VLM_DROP_GARBAGE_TAILS=0`` escape-hatch path.
+      The
       ``SEMANTIK_VLM_STRIP_FURNITURE`` escape hatch is deliberately kept OUT of
       the key (the render-scale kept-out-of-key precedent) — flipping the strip
       off after a warm cache needs a manual extract-cache clear. The P0
@@ -423,13 +431,17 @@ def _compute_extract_cache_key(pdf_path: Path) -> str:
       append-only-when-fusion-on-AND-mode-on): the default-ON garbage-tail drop
       changes what ``fuse_page`` emits (unrescued tesseract-only junk-glyph
       fragments are dropped, so the merged block list — and thus which FBs /
-      sourceIds exist — differs from a warm ``vlmfuse5`` cache). A NEW
-      append-only ``|gtail1`` salt (rather than a ``vlmfuse6`` bump) is used
+      sourceIds exist — differs from a warm non-``gtail`` cache). A NEW
+      append-only ``|gtail`` salt (rather than a ``fuse_key`` bump) is used
       DELIBERATELY: because the mode has a ``=0`` escape hatch whose output is
-      byte-identical to the pre-change ``vlmfuse5`` behavior, salting on the
-      MODE (fusion-on AND drop-on) means a ``=0`` run keys back to the historic
-      ``vlmfuse5`` (its warm cache stays valid) while the default (drop-on) run
-      re-extracts once. The flag-OFF (no-fusion) key is byte-identical (no
+      byte-identical to the plain-``fuse_key`` behavior, salting on the
+      MODE (fusion-on AND drop-on) means a ``=0`` run keys back to the plain
+      ``fuse_key`` (its warm cache stays valid) while the default (drop-on) run
+      re-extracts once. ``gtail1`` → ``gtail2``: the ®/© re-OCR duplicate-tail
+      recognizer (``vlm_fusion._looks_like_reocr_marker_garbage`` now also drops
+      a tesseract-only block dominated by circled-marker + pipe-junk re-OCR
+      garble) drops MORE blocks than ``gtail1``, so a ``gtail1`` cache is
+      invalid for a default (drop-on) run. The flag-OFF (no-fusion) key is byte-identical (no
       ``fuse_key`` → no ``gtail_key``). Matches the ``vlm_furniture`` escape-hatch
       posture but, unlike that flag, the shape change IS keyed (it is default-ON
       and reader-visible, not a furniture-only refinement folded into a salt bump).
@@ -465,13 +477,13 @@ def _compute_extract_cache_key(pdf_path: Path) -> str:
     st = pdf_path.stat()
     fig_key = "fig1" if _detect_figures_enabled() else "fig0"
     vlm_key = "|vlm1" if resolve_vlm_extract_mode() else ""
-    fuse_key = "|vlmfuse5" if resolve_vlm_fusion_mode() else ""
+    fuse_key = "|vlmfuse6" if resolve_vlm_fusion_mode() else ""
     # gtail_key: the default-ON garbage-tail drop is a fusion-only, mode-gated
     # shape change (see the docstring). Keyed only when fusion AND the drop are
-    # both on, so a ``=0`` run keeps its warm ``vlmfuse5`` cache and the
+    # both on, so a ``=0`` run keeps its warm ``gtail``-less cache and the
     # no-fusion key stays byte-identical.
     gtail_key = (
-        "|gtail1"
+        "|gtail2"
         if resolve_vlm_fusion_mode() and _resolve_drop_garbage_tails_mode()
         else ""
     )

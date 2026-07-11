@@ -1023,23 +1023,167 @@ def test_non_garbage_tesseract_only_kept_even_when_mode_on(monkeypatch):
 
 
 def test_extract_cache_salt_gated_on_garbage_tail_mode():
-    # The default-ON garbage drop keys a NEW append-only |gtail1 salt when
-    # fusion AND the drop are both on; the =0 escape hatch keys back to the
-    # historic vlmfuse5 (warm cache stays valid), and the no-fusion key omits it.
+    # The default-ON garbage drop keys an append-only |gtail salt when fusion
+    # AND the drop are both on; the =0 escape hatch keys back to the plain
+    # fuse_key (warm cache stays valid), and the no-fusion key omits it. Bumped
+    # |gtail1 -> |gtail2 by the ®/© re-OCR duplicate-tail recognizer (drops more
+    # blocks, so a gtail1 cache is invalid for a default drop-on run).
     import inspect
 
     src = inspect.getsource(extract_shared._compute_extract_cache_key)
-    assert '"|gtail1"' in src
+    assert '"|gtail2"' in src
+    assert '"|gtail1"' not in src
     assert "_resolve_drop_garbage_tails_mode" in src
 
 
-def test_extract_cache_salt_bumped_to_vlmfuse5():
-    # The entity scrub changes what fuse_page emits: a vlmfuse4 cache may carry
-    # literal entity text (corrected downstream by the adapter scrub — current
-    # corpus stays on vlmfuse4 deliberately), so FRESH conversions must key on
-    # vlmfuse5.
+def test_extract_cache_salt_bumped_to_vlmfuse6():
+    # The Nemotron-Omni special-token strip changes what fuse_page emits
+    # UNCONDITIONALLY when fusion is on (independent of the garbage-tail mode),
+    # so a vlmfuse5 cache is invalid — FRESH conversions must key on vlmfuse6.
     import inspect
 
     src = inspect.getsource(extract_shared._compute_extract_cache_key)
-    assert '"|vlmfuse5"' in src
-    assert '"|vlmfuse4"' not in src
+    assert '"|vlmfuse6"' in src
+    assert '"|vlmfuse5"' not in src
+
+
+# --------------------------------------------------------------------------
+# FIX 1 — Nemotron-Omni grounding/detection special-token strip (ch03 p.101).
+# --------------------------------------------------------------------------
+
+
+from dart_semantic.vlm_fusion import _strip_vlm_special_tokens  # noqa: E402
+
+
+def test_strip_vlm_special_tokens_ref_kept_det_dropped():
+    # The live-fire ch03 leak: keep the ref inner text, drop the det bbox pair.
+    assert (
+        _strip_vlm_special_tokens(
+            "<|ref|>Question<|/ref|><|det|>[[155, 100, 760, 120]]<|/det|>"
+        )
+        == "Question"
+    )
+
+
+def test_strip_vlm_special_tokens_ref_inner_text_preserved_in_context():
+    # A ref pair embedded in surrounding prose keeps its inner text in place.
+    assert (
+        _strip_vlm_special_tokens("See <|ref|>Example 3<|/ref|> below")
+        == "See Example 3 below"
+    )
+
+
+def test_strip_vlm_special_tokens_stray_unpaired_tokens_removed():
+    # Stray unpaired ref/det-family tokens + a bare det bbox payload are scrubbed.
+    assert _strip_vlm_special_tokens("Question <|/ref|> tail") == "Question tail"
+    assert _strip_vlm_special_tokens("prefix <|det|> [[10, 20, 30, 40]]") == "prefix"
+    assert _strip_vlm_special_tokens("<|ref|>Answer") == "Answer"
+
+
+def test_strip_vlm_special_tokens_token_free_line_byte_identical():
+    # No ``<|`` sigil → returned byte-identical (LaTeX, entities, brackets safe).
+    for line in (
+        r"$-|b|$ when $b = -12$",
+        "See section 3(a) for details",
+        "A normal [[bracketed]] phrase",
+        "",
+    ):
+        assert _strip_vlm_special_tokens(line) == line
+
+
+def test_fusion_strips_special_tokens_from_vlm_text():
+    # End-to-end through fuse_page: a leaked-token VLM line fuses onto the
+    # tesseract bbox with the grounding tokens stripped (ref inner kept).
+    tess = [_tb(10, 10, 100, 20, "Question", conf=0.6)]
+    vlm = ["<|ref|>Question<|/ref|><|det|>[[155, 100, 760, 120]]<|/det|>"]
+    fused, stats = fuse_page(tess, vlm, (200.0, 300.0))
+    assert fused[0]["text"] == "Question"
+    assert "<|ref|>" not in fused[0]["text"] and "<|det|>" not in fused[0]["text"]
+    assert "[[155" not in fused[0]["text"]
+
+
+def test_vlm_only_insert_strips_special_tokens():
+    # The strip applies regardless of alignment: a VLM-only insert is cleaned too.
+    tess = [
+        _tb(10, 10, 100, 20, "alpha beta gamma"),
+        _tb(10, 50, 100, 60, "delta epsilon zeta"),
+    ]
+    vlm = [
+        "alpha beta gamma",
+        "<|ref|>inserted only line<|/ref|><|det|>[[1, 2, 3, 4]]<|/det|>",
+        "delta epsilon zeta",
+    ]
+    fused, _ = fuse_page(tess, vlm, (200.0, 300.0))
+    insert = [b for b in fused if b["fusion"] == "vlm-only-flagged"]
+    assert len(insert) == 1
+    assert insert[0]["text"] == "inserted only line"
+
+
+# --------------------------------------------------------------------------
+# FIX 2 — ®/© re-OCR duplicate-tail recognizer (ch01 exercises 207/208).
+# --------------------------------------------------------------------------
+
+
+from dart_semantic.vlm_fusion import _looks_like_reocr_marker_garbage  # noqa: E402
+
+
+# The live-fire ch01 evidence: a clean-math head fused with a Tesseract re-OCR
+# tail enumerated by ®/© mis-reads + junk-glyph pipe-runs.
+_REOCR_TAIL_EVIDENCE = (
+    "b $-|b|$ when $b = -12$ ® -Iq| when g = -33 © —|b| when b = —12 Add Integers"
+)
+
+
+def test_reocr_marker_garbage_catches_evidence():
+    assert _looks_like_reocr_marker_garbage(_REOCR_TAIL_EVIDENCE) is True
+    # Reaches the whole predicate too (bypassing the length + math-span guards).
+    assert _looks_like_ocr_garbage(_REOCR_TAIL_EVIDENCE) is True
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # clean LaTeX math ALONE must survive — the ®/© + pipe-junk is the
+        # signal, not the LaTeX.
+        r"$-|b|$ when $b = -12$",
+        r"$-|b|$",
+        r"$b = -12$",
+        r"$|n| \geq 0$ for all numbers",
+        # a table row with pipes but no circled markers is not re-OCR garble
+        "value | result | note",
+        # circled markers but no pipe-junk (a plain copyright/reg line)
+        "© 2026 Example ® brand",
+    ],
+)
+def test_reocr_marker_garbage_keeps_clean_math_and_non_garble(line):
+    assert _looks_like_reocr_marker_garbage(line) is False
+
+
+def test_reocr_tail_dropped_through_fusion(monkeypatch):
+    # A tesseract-only block that is a ®/© re-OCR duplicate tail is dropped by
+    # the (default-ON) garbage-tail pass; the clean VLM anchor still ships.
+    monkeypatch.delenv(SEMANTIK_VLM_DROP_GARBAGE_TAILS_ENV, raising=False)
+    tess = [
+        _tb(10, 10, 100, 20, "Simplify each expression"),
+        _tb(10, 90, 380, 100, _REOCR_TAIL_EVIDENCE, conf=0.4),
+    ]
+    vlm = ["Simplify each expression"]
+    fused, stats = fuse_page(tess, vlm, (400.0, 300.0))
+    assert not any("Add Integers" in b["text"] for b in fused)
+    assert not any("-Iq|" in b["text"] for b in fused)
+    assert stats["garbage_tail_dropped"] == 1
+    assert any(b["fusion"] == "vlm+tesseract" for b in fused)
+
+
+def test_reocr_tail_kept_when_drop_mode_off(monkeypatch):
+    # The escape hatch keeps the re-OCR tail byte-verbatim (no whole-block nuke
+    # of real content when an operator opts out).
+    monkeypatch.setenv(SEMANTIK_VLM_DROP_GARBAGE_TAILS_ENV, "0")
+    tess = [
+        _tb(10, 10, 100, 20, "Simplify each expression"),
+        _tb(10, 90, 380, 100, _REOCR_TAIL_EVIDENCE, conf=0.4),
+    ]
+    vlm = ["Simplify each expression"]
+    fused, stats = fuse_page(tess, vlm, (400.0, 300.0))
+    assert any("Add Integers" in b["text"] for b in fused)
+    assert stats["garbage_tail_dropped"] == 0

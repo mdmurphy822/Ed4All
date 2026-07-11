@@ -246,6 +246,47 @@ _GARBAGE_JUNK_RATIO = 0.20
 _GARBAGE_MAX_CHARS = 40
 _GARBAGE_MAX_TOKENS = 6
 
+# ---------------------------------------------------------------------------
+# ®/© re-OCR duplicate-tail recognizer (ch01 exercises 207/208).
+# ---------------------------------------------------------------------------
+#
+# A clean VLM-transcribed exercise block sometimes ships with a Tesseract
+# RE-OCR of the same exercises appended as a garbage tesseract-only tail block,
+# using the circled-marker confusables ``®``/``©``/``⓪`` as list-enumeration
+# mis-reads INTERLEAVED with junk-glyph pipe-runs (``-Iq|`` / ``—|b|``):
+#   "…b $-|b|$ when $b = -12$ ® -Iq| when g = -33 © —|b| when b = —12 Add Integers"
+# The base ``_looks_like_ocr_garbage`` missed it — it is long (> the char cap),
+# carries a ``$…$`` math span (the defensive math exemption), and its OCR
+# fragments look like plausible words. This recognizer fires on the
+# ®/©-marker + pipe-junk COMBINATION specifically, which is the signal — a
+# clean LaTeX span alone (``$-|b|$``, ``$b = -12$``) is NOT (those are stripped
+# out before the marker/junk scan, so clean math can never be the trigger).
+# Conservative: requires ≥2 circled markers AND a pipe-junk run in the
+# OUT-OF-MATH remainder before it will drop.
+_REOCR_CIRCLED_MARKERS = frozenset("®©⓪①②③④⑤⑥⑦⑧⑨")
+_REOCR_MIN_MARKERS = 2
+# A pipe-bearing OCR-garble run outside a math span: a hyphen/dash/pipe run
+# butted against a short letter run and a pipe (``-Iq|``, ``—|b|``, ``|b|``).
+_REOCR_PIPE_JUNK_RE = re.compile(r"[-—–|][A-Za-z]{0,3}\||\|[A-Za-z]{0,3}[-—–|]")
+
+
+def _looks_like_reocr_marker_garbage(s: str) -> bool:
+    """True for a ®/©-enumerated re-OCR duplicate tail (see the block comment).
+
+    Strips ``$…$`` / ``\\(…\\)`` / ``\\[…\\]`` math spans FIRST so a legitimate
+    ``$-|b|$`` can never be the trigger, then requires BOTH a clear run of
+    circled-marker confusables (``>= _REOCR_MIN_MARKERS``) AND a pipe-junk run
+    in the out-of-math remainder. Domain-agnostic + conservative — a normal
+    sentence carries neither signal. Pure / deterministic.
+    """
+    remainder = _MATH_SPAN_RE.sub(" ", s)
+    markers = sum(1 for c in remainder if c in _REOCR_CIRCLED_MARKERS)
+    if markers < _REOCR_MIN_MARKERS:
+        return False
+    if "|" not in remainder:
+        return False
+    return _REOCR_PIPE_JUNK_RE.search(remainder) is not None
+
 
 def _looks_like_ocr_garbage(text: str) -> bool:
     """Conservative, domain-agnostic OCR-garbage test for a tesseract-only line.
@@ -272,6 +313,11 @@ def _looks_like_ocr_garbage(text: str) -> bool:
     s = (text or "").strip()
     if not s:
         return False
+    # ®/© re-OCR duplicate-tail: fires REGARDLESS of length / a clean math span
+    # (both of which the base short-junk path deliberately exempts) because the
+    # ®/©-marker + pipe-junk COMBINATION is the signal, not the LaTeX.
+    if _looks_like_reocr_marker_garbage(s):
+        return True
     if len(s) > _GARBAGE_MAX_CHARS:
         return False
     if len(s.split()) > _GARBAGE_MAX_TOKENS:
@@ -338,6 +384,49 @@ _FALLBACK_LINE_H = 12.0
 
 _LATEX_CMD_RE = re.compile(r"\\[a-zA-Z]+")
 _LATEX_PUNCT_RE = re.compile(r"[{}\\^_&$]")
+
+
+# ---------------------------------------------------------------------------
+# Nemotron-Omni grounding/detection special-token strip (ch03 p.101 defect).
+# ---------------------------------------------------------------------------
+#
+# The VLM (Nemotron-Omni) occasionally leaks its internal grounding/detection
+# special tokens verbatim into the page transcription, e.g.
+#   ``<|ref|>Question<|/ref|><|det|>[[155, 100, 760, 120]]<|/det|>``
+# which shipped straight into the HTML. The ``<|ref|>…<|/ref|>`` pair wraps the
+# REAL human-readable text ("Question" → KEEP the inner text); the
+# ``<|det|>…<|/det|>`` pair wraps a machine ``[[x1,y1,x2,y2]]`` bbox payload
+# (DROP it whole). This is a token STRIP, not a block DROP — do NOT fold it
+# into ``_looks_like_ocr_garbage`` (which drops whole blocks). Conservative:
+# only the Omni ``<|ref|>``/``<|det|>``-family tokens + the det bbox payload are
+# touched, and a token-free line is byte-identical (the ``"<|"`` guard).
+_VLM_DET_PAIR_RE = re.compile(r"<\|det\|>.*?<\|/det\|>", re.DOTALL)
+_VLM_REF_PAIR_RE = re.compile(r"<\|ref\|>(.*?)<\|/ref\|>", re.DOTALL)
+# Any residual UNPAIRED Omni ref/det-family special token.
+_VLM_STRAY_SPECIAL_RE = re.compile(r"<\|/?(?:ref|det)\|>")
+# A stray numeric det bbox payload ``[[x1, y1, x2, y2]]`` left by an unpaired
+# det token (bounded to the digits/space/.,;-shape so real ``[[text]]`` is safe).
+_VLM_DET_BBOX_RE = re.compile(r"\[\[[\s\d.,;+-]+\]\]")
+
+
+def _strip_vlm_special_tokens(text: str) -> str:
+    """Strip Nemotron-Omni ``<|ref|>``/``<|det|>`` grounding tokens from VLM text.
+
+    ``<|ref|>Question<|/ref|>`` → ``Question`` (keep the inner human text);
+    ``<|det|>[[…]]<|/det|>`` → dropped whole (machine bbox coords); any stray
+    unpaired ref/det token or bare det bbox payload is removed. Conservative:
+    a line WITHOUT the ``<|`` special-token sigil is returned byte-identical, so
+    the flag-off / no-leak path is unchanged. Whitespace the removals leave
+    behind is collapsed. Pure / deterministic.
+    """
+    if not text or "<|" not in text:
+        return text
+    s = _VLM_DET_PAIR_RE.sub("", text)  # det pair (+ its bbox payload) → gone
+    s = _VLM_REF_PAIR_RE.sub(lambda m: m.group(1), s)  # ref pair → inner text
+    s = _VLM_STRAY_SPECIAL_RE.sub("", s)  # stray unpaired ref/det tokens
+    s = _VLM_DET_BBOX_RE.sub("", s)  # stray det bbox payload
+    s = _WS_RUN_RE.sub(" ", s)
+    return s.strip()
 
 
 def _strip_latex(s: str) -> str:
@@ -605,7 +694,12 @@ def fuse_page(
     """
     page_w, page_h = float(page_dims[0] or 0.0), float(page_dims[1] or 0.0)
     tess = list(tesseract_blocks or [])
-    vlm = [ln for ln in (vlm_lines or [])]
+    # Strip Nemotron-Omni grounding/detection special tokens as the VLM text
+    # ENTERS fusion, so a leaked ``<|ref|>…<|/ref|><|det|>[[…]]<|/det|>`` is
+    # cleaned regardless of whether the line later aligns or lands VLM-only
+    # (both scoring + output flow from this list). Token-free lines are
+    # byte-identical (the ``"<|"`` guard).
+    vlm = [_strip_vlm_special_tokens(ln) for ln in (vlm_lines or [])]
     n_tess, n_vlm = len(tess), len(vlm)
 
     if n_tess == 0 or n_vlm == 0:
