@@ -107,10 +107,18 @@ class VlmExtractError(RuntimeError):
 
 _session = threading.local()
 
+# Sentinel distinguishing "capture not yet built for this document" from a
+# built-but-unavailable (``None``) capture, so a failed build is memoized once
+# per document rather than re-attempted per page.
+_CAPTURE_UNSET = object()
+
 
 def begin_document_session() -> None:
     """Reset the per-document live-POST counter (call before the page loop)."""
     _session.live_posts = 0
+    # Reset the per-document DecisionCapture so a new document rebuilds it
+    # lazily on its first live POST (see ``_document_capture``).
+    _session.capture = _CAPTURE_UNSET
 
 
 def _note_live_post() -> None:
@@ -451,6 +459,124 @@ def _build_source(
     }
 
 
+# --- Decision capture for the P0 VLM page-transcription call site ----------
+#
+# Every LLM/VLM call site must wire up a DecisionCapture and emit at least one
+# decision per LLM call (per LIVE page transcription here) with a DYNAMIC,
+# replayable rationale (root /CLAUDE.md § LLM call-site instrumentation).
+# Best-effort: a capture failure (``lib`` not importable in the SemantiK
+# subprocess venv, disk error, …) must NEVER break extraction — mirrors the
+# Stage-6b figure-captioner's ``_build_caption_capture`` posture and the MCP
+# bridge's ``structure_review`` capture.
+#
+# ONE capture per DOCUMENT (reset in :func:`begin_document_session`, built
+# lazily on the first live POST), ONE decision per LIVE page transcription — a
+# cache HIT makes no POST, so no LLM call fired and no decision is logged
+# (mirrors the ``_note_live_post`` live-only accounting).
+
+
+def _vlm_extract_course_code() -> str:
+    """Course code for the VLM-extract capture (best-effort context)."""
+    raw = (
+        os.environ.get("SEMANTIK_COURSE_CODE")
+        or os.environ.get("ED4ALL_COURSE_CODE")
+        or ""
+    ).strip()
+    return raw or "SEMANTIK"
+
+
+def _build_vlm_extract_capture():
+    """Construct a best-effort DecisionCapture for the VLM-extract call site.
+
+    Returns ``None`` (extraction proceeds unaffected) when
+    ``lib.decision_capture`` is unavailable (the cross-venv bridge venv may not
+    carry Ed4All's ``lib/``) or construction fails. Lands under the canonical
+    ``dart`` tool / ``dart-conversion`` phase, matching the Stage-6b
+    ``alt_text_generation`` capture and the Stage-5d ``structure_review``
+    capture at the MCP seam.
+    """
+    try:
+        from lib.decision_capture import DecisionCapture
+
+        return DecisionCapture(
+            course_code=_vlm_extract_course_code(),
+            phase="dart-conversion",
+            tool="dart",
+        )
+    except Exception as exc:  # noqa: BLE001 — capture is best-effort
+        logger.debug("vlm-extract DecisionCapture unavailable (non-fatal): %s", exc)
+        return None
+
+
+def _document_capture():
+    """Lazily build + memoize the per-document VLM-extract capture.
+
+    Keyed off the per-document thread-local session so a 400-page document
+    emits ONE capture carrying N per-page decisions (not N sessions/files). A
+    failed build is memoized as ``None`` and never re-attempted for the same
+    document. Safe to call when :func:`begin_document_session` was never called
+    (e.g. a unit test that drives one page directly) — the sentinel default
+    triggers a lazy build.
+    """
+    cap = getattr(_session, "capture", _CAPTURE_UNSET)
+    if cap is _CAPTURE_UNSET:
+        cap = _build_vlm_extract_capture()
+        _session.capture = cap
+    return cap
+
+
+def _log_page_transcription_decision(
+    capture,
+    *,
+    pdf_sha: str,
+    page_num: int,
+    model: str,
+    provider: str,
+    render_px: list[int],
+    markdown: str,
+    disable_thinking: bool,
+    max_tokens: int,
+) -> None:
+    """Emit ONE decision for a LIVE VLM page transcription.
+
+    Rationale is dynamic + replayable (pdf sha / page number, model + provider,
+    render pixels, prompt version, thinking-off flag, ``max_tokens``, and the
+    produced Markdown length + non-empty line count) so a post-hoc replay can
+    attribute the transcription to its exact input. Best-effort: never raises
+    into the extraction path.
+    """
+    if capture is None:
+        return
+    try:
+        md = markdown or ""
+        line_count = sum(1 for ln in md.splitlines() if ln.strip())
+        try:
+            px = tuple(int(v) for v in (render_px or ()))
+        except (TypeError, ValueError):
+            px = ()
+        rationale = (
+            f"Qwen2.5-VL page transcription pdf_sha256={(pdf_sha or '')[:16]} "
+            f"page={page_num} (model={model} provider={provider} render_px={px} "
+            f"prompt_version={PROMPT_VERSION} disable_thinking={disable_thinking} "
+            f"max_tokens={max_tokens}): produced markdown_len={len(md)} chars "
+            f"non_empty_lines={line_count} (P0 fusion-free — VLM source stamped "
+            f"on page['vlm'], never entered _merge_page)."
+        )
+        capture.log_decision(
+            decision_type="structure_detection",
+            decision=(
+                f"transcribe page {page_num} image to Markdown "
+                f"({len(md)} chars, {line_count} non-empty lines)"
+            ),
+            rationale=rationale,
+        )
+    except Exception as exc:  # noqa: BLE001 — capture is best-effort
+        logger.debug(
+            "vlm-extract DecisionCapture log failed (non-fatal) on page %s: %s",
+            page_num, exc,
+        )
+
+
 def extract_page_markdown(
     pdf_path: Path,
     page_num: int,
@@ -517,6 +643,19 @@ def extract_page_markdown(
         requests_module=req,
     )
     _note_live_post()
+    # One DecisionCapture per LIVE page transcription (cache hits made no POST,
+    # so nothing to log). Best-effort + non-fatal — never breaks extraction.
+    _log_page_transcription_decision(
+        _document_capture(),
+        pdf_sha=pdf_sha,
+        page_num=page_num,
+        model=model,
+        provider=provider,
+        render_px=render_px,
+        markdown=markdown,
+        disable_thinking=resolve_vlm_disable_thinking(),
+        max_tokens=resolve_vlm_max_tokens(),
+    )
     _cache_put(
         path,
         {
