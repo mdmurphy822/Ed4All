@@ -26,7 +26,7 @@ dependencies = [
 # fine-tuning-only deps on top via the self-referencing `semantic[runtime]`.
 runtime = [
     # In-process Qwen GGUF inference for the Stage-6 council runtime
-    # (dart_semantic/qwen_specialists/runtime.py: LlamaCppRuntime).
+    # (semantik_structure/qwen_specialists/runtime.py: LlamaCppRuntime).
     # MUST be built from source against the system CUDA toolkit — the
     # PyPI wheels are CPU-only, and on CPU per-region MathML generation
     # is unusably slow. Install with:
@@ -67,7 +67,7 @@ dev = [
 no-binary-package = ["llama-cpp-python"]
 
 [tool.setuptools]
-packages = ["dart_semantic"]
+packages = ["semantik_structure"]
 
 [tool.ruff]
 line-length = 100

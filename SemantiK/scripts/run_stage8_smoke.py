@@ -34,11 +34,11 @@ from pathlib import Path
 # Make the package importable when invoked as a script.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from dart_semantic.council.cross_reranker import arbitrate
-from dart_semantic.council.orchestrator import run_council
-from dart_semantic.gates import gate_per_region, rerank_per_region
-from dart_semantic.qwen_specialists.runner import run_qwen_specialists
-from dart_semantic.structure_graph import Region, build_structure_graph
+from semantik_structure.council.cross_reranker import arbitrate
+from semantik_structure.council.orchestrator import run_council
+from semantik_structure.gates import gate_per_region, rerank_per_region
+from semantik_structure.qwen_specialists.runner import run_qwen_specialists
+from semantik_structure.structure_graph import Region, build_structure_graph
 
 
 def _cap_regions_per_kind(

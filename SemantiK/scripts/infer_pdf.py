@@ -17,10 +17,10 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-from dart_semantic.classify import load_classifier
-from dart_semantic.pipeline import run_pipeline
-from dart_semantic.reason import load_reasoner, unload_reasoner
-from dart_semantic.glm_ocr import load_glm_ocr, unload_glm_ocr
+from semantik_structure.classify import load_classifier
+from semantik_structure.pipeline import run_pipeline
+from semantik_structure.reason import load_reasoner, unload_reasoner
+from semantik_structure.glm_ocr import load_glm_ocr, unload_glm_ocr
 
 
 def summarize(result) -> None:

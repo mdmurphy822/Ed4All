@@ -27,9 +27,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from dart_semantic.extract_shared import extract_shared_cached
-from dart_semantic.features import featurize_from_shared
-from dart_semantic.text_utils import jaccard_overlap
+from semantik_structure.extract_shared import extract_shared_cached
+from semantik_structure.features import featurize_from_shared
+from semantik_structure.text_utils import jaccard_overlap
 from data.build_qwen_data import (
     align_to_ground_truth as align_new,
     extract_html_blocks,
@@ -85,7 +85,7 @@ def audit_pair(pair_path: Path) -> dict:
     if local_pdf and Path(local_pdf).exists():
         pdf = Path(local_pdf)
     else:
-        from dart_semantic.prerender_cache import cache_path_for
+        from semantik_structure.prerender_cache import cache_path_for
         pdf = cache_path_for(output_html)
         if not pdf.exists():
             return {"pair": pair_path.name, "error": "no_pdf"}

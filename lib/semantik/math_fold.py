@@ -26,7 +26,7 @@ transform so they meet in a shared vocabulary)
 2. **All other LaTeX control sequences → dropped to a space**, so their
    ARGUMENT survives: ``\\frac{a}{b}`` → `` a  b `` matches gold ``a/b`` →
    ``a b``; ``\\text{hi}`` → ``hi``. This mirrors
-   ``SemantiK/dart_semantic/vlm_fusion.py::_strip_latex`` (the fusion-local
+   ``SemantiK/semantik_structure/vlm_fusion.py::_strip_latex`` (the fusion-local
    scoring precedent) — the same "strip control sequences / braces / ``$`` to
    their plain content" transform. The vlm_fusion sibling is *scoring-only and
    fusion-local* (it additionally applies the aggressive ``√``-OCR ``V``-strip
@@ -213,7 +213,7 @@ def strip_latex_commands(s: str) -> str:
     """Drop every LaTeX control sequence + delimiter to a space.
 
     The general, prose-safe mirror of
-    ``SemantiK/dart_semantic/vlm_fusion.py::_strip_latex`` (kept behaviourally
+    ``SemantiK/semantik_structure/vlm_fusion.py::_strip_latex`` (kept behaviourally
     consistent so this is not a divergent third implementation). Unlike
     :func:`fold_math` it does NOT keep symbol-commands as words — it is the raw
     "everything to its plain argument" strip. Harmless on text with no

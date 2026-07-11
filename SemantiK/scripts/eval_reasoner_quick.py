@@ -99,7 +99,7 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"[out] {out_dir}")
 
-    from dart_semantic.reason import load_reasoner, _generate
+    from semantik_structure.reason import load_reasoner, _generate
 
     print(f"[load] base={args.base_model} adapter={args.adapter}")
     reasoner = load_reasoner(base_model=args.base_model,

@@ -11,7 +11,7 @@ do NOT preserve per-element bboxes from ar5iv (they only carry a
 cleaned-html `output_html` and a structured `output_json` that does not
 include math/table coordinates). So the rigorous IoU pass cannot run on
 the existing corpus without re-running the ar5iv-to-PDF alignment in
-`dart_semantic/arxiv_sections.py`, which is out of scope for Phase 1.
+`semantik_structure/arxiv_sections.py`, which is out of scope for Phase 1.
 
 Fallback (per Phase-1 plan latitude): we use *presence-based* recall:
 for each held-out PDF, we infer ground truth from two channels:
@@ -47,8 +47,8 @@ _HERE = Path(__file__).resolve().parent.parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
-from dart_semantic.extract_shared import extract_shared  # noqa: E402
-from dart_semantic.region_detection import (  # noqa: E402
+from semantik_structure.extract_shared import extract_shared  # noqa: E402
+from semantik_structure.region_detection import (  # noqa: E402
     MATH_FONT_TOKENS,
     detect_math_region_candidates,
     detect_table_region_candidates,

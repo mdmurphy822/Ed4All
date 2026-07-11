@@ -2,7 +2,7 @@
 
 Embeds every figure image in ``data/figure_alt_dataset/`` (train/val/test) AND
 the 437 empty-figcaption rows of ``data/figure_catalog/catalog.jsonl``, runs the
-zero-shot subtype router (``dart_semantic.figure_router``), and writes per-split
+zero-shot subtype router (``semantik_structure.figure_router``), and writes per-split
 ``.npz`` files plus:
 
   * an agreement report (zero-shot vs caption-keyword weak labels) — the P1
@@ -547,7 +547,7 @@ def main(argv: list[str] | None = None) -> int:
 
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
-    from dart_semantic.figure_router import (
+    from semantik_structure.figure_router import (
         embed_images,
         subtype_prototype_embeddings,
         zero_shot_subtype,

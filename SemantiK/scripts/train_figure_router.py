@@ -51,7 +51,7 @@ import numpy as np
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from dart_semantic.figure_router import SUBTYPES  # noqa: E402 — torch-free import
+from semantik_structure.figure_router import SUBTYPES  # noqa: E402 — torch-free import
 
 EMB_DIR = REPO_ROOT / "data/figure_embeddings"
 EMB_SPLITS = ("train", "val", "test")

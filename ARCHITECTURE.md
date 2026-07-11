@@ -93,7 +93,7 @@ Conversion output goes beyond generic heading tags. Each content type receives s
 - `{name}.quality.json` - Quality report with confidence score, WCAG results, content profile
 
 **Entry Points**:
-- `SemantiK/dart_semantic/cascade.py::run_full_cascade()` - Full v2 cascade over a single PDF
+- `SemantiK/semantik_structure/cascade.py::run_full_cascade()` - Full v2 cascade over a single PDF
 - `MCP/tools/pipeline_tools.py::_run_semantik_v2_conversion` - In-process Ed4All bridge seam (the `dart_conversion` phase)
 
 ---

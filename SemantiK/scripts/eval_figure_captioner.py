@@ -3,9 +3,9 @@
 Plans/09 §5 / §8 step 4. Mirror of ``scripts/eval_qwen_table_adapter.py``
 (structure, CLI, report shape, axe-gate invocation) retargeted to the
 **figure captioner** — the component under eval is
-``dart_semantic.figure_captioner.caption_figure_regions`` /
+``semantik_structure.figure_captioner.caption_figure_regions`` /
 ``_run_smolvlm_caption`` (Stage 6b), feeding the assembler figure emitter
-``dart_semantic.assembler.fallbacks.fallback_figure`` (which now emits
+``semantik_structure.assembler.fallbacks.fallback_figure`` (which now emits
 ``alt`` + ``aria-describedby``). The eval data is
 ``data/figure_alt_dataset/test.jsonl`` (figure image path + ground-truth
 ``caption``, joined to the rendered PNG under ``data/figure_images/``).
@@ -16,7 +16,7 @@ ground truth a good alt must derive from):
 
   1. **axe pass / regression.** Render each sampled figure's HTML fragment
      via the assembler figure emitter and run the per-region wcag22aa axe
-     gate (``dart_semantic.validate.HtmlValidator`` — the SAME gate the
+     gate (``semantik_structure.validate.HtmlValidator`` — the SAME gate the
      table and gap_fill evals use, and the one behind
      ``tests/test_hard_region_gate.py``). ``axe_pass`` is the fragment's
      pass rate; ``axe_regression`` is "an EMPTY-alt baseline passed but the
@@ -90,7 +90,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 # Shared no-hallucination guard — the SAME function production's
 # fallback_figure applies, so the eval measures the shipped behaviour.
-from dart_semantic.figure_captioner import (  # noqa: E402
+from semantik_structure.figure_captioner import (  # noqa: E402
     alt_from_caption,
     guard_figure_alt,
     strip_numeric_hallucinations,
@@ -142,7 +142,7 @@ def make_smolvlm_caption_fn(run_extended: bool = True) -> CaptionFn:
     SmolVLM2-256M on first call). Honours ``feedback_no_silent_fallbacks`` —
     a generation failure raises ``FigureCaptionError``, which the caller
     records as a failed row rather than swallowing."""
-    from dart_semantic.figure_captioner import (  # local import: avoids torch at import time
+    from semantik_structure.figure_captioner import (  # local import: avoids torch at import time
         _ALT_PROMPT,
         _EXTENDED_PROMPT,
         FigureCaptionError,
@@ -240,9 +240,9 @@ def emit_figure_html(result: CaptionResult, row: dict, region_idx: int) -> str:
     ground-truth ``caption`` (the ``<figcaption>`` source), alt /
     extended_description from the captioner result.
     """
-    from dart_semantic.assembler.fallbacks import fallback_figure
-    from dart_semantic.structure_graph import Region
-    from dart_semantic.types import FeatureBlock, RawBlock
+    from semantik_structure.assembler.fallbacks import fallback_figure
+    from semantik_structure.structure_graph import Region
+    from semantik_structure.types import FeatureBlock, RawBlock
 
     cap = (row.get("caption") or "").strip()
     feature_blocks: list[FeatureBlock] = []
@@ -424,7 +424,7 @@ def _wrap_doc(fragment: str) -> str:
 
 
 def run_axe(fragments: list[str]) -> list[dict]:
-    from dart_semantic.validate import HtmlValidator
+    from semantik_structure.validate import HtmlValidator
 
     results: list[dict] = []
     with HtmlValidator() as v:
@@ -545,7 +545,7 @@ def run_eval(
     base_fragments, axe_summary). ``axe_summary`` is None when
     ``run_axe_pass`` is False. ``load_image_bytes`` is injectable for the
     self-test (synthetic rows carry inline bytes instead of a file path)."""
-    from dart_semantic.figure_captioner import FigureCaptionError
+    from semantik_structure.figure_captioner import FigureCaptionError
 
     per_row: list[dict] = []
     gen_fragments: list[str] = []

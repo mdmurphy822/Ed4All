@@ -1,7 +1,7 @@
 """Synthesize Structure ``table_region`` training rows from HTML tables.
 
 Hardens BERT-Structure's ``table_region`` binary head (see
-``dart_semantic/council/structure.py`` —
+``semantik_structure/council/structure.py`` —
 ``TABLE_REGION_LABELS = ("not_table_region", "table_region")``,
 ``head_table_region``) by turning the project's new HTML table corpus
 (PMC JATS / OpenStax HTML5 / NCES / CFR+FedReg GPOTABLE) into labeled
@@ -40,7 +40,7 @@ For each HTML ``<table>`` in the corpus:
      layout vector via the **same**
      ``data.build_structure_data.compute_span_layout_features``. No
      divergent reimplementation — the runtime
-     (``dart_semantic/council/structure.py``) mirrors these and MUST see
+     (``semantik_structure/council/structure.py``) mirrors these and MUST see
      the same distribution at train and inference time.
   5. Label: ``table_region=1`` if the block sits inside a
      pdfplumber-detected table region OR its text aligns (Jaccard) to a
@@ -91,10 +91,10 @@ from data.build_structure_data import (
     compute_span_layout_features,
 )
 from data.build_table_specialist_data import parse_html_tables
-from dart_semantic.classify import Role
-from dart_semantic.extract_shared import extract_shared
-from dart_semantic.text_utils import jaccard_overlap
-from dart_semantic.validate import HtmlValidator
+from semantik_structure.classify import Role
+from semantik_structure.extract_shared import extract_shared
+from semantik_structure.text_utils import jaccard_overlap
+from semantik_structure.validate import HtmlValidator
 
 
 # ---------------------------------------------------------------------------

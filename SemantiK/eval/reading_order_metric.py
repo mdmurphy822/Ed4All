@@ -11,7 +11,7 @@ permuting the block sequence permutes the per-block rows but changes no
 per-block feature vector and therefore no per-block prediction.
 
 The committed column-order fix (``SEMANTIK_COLUMN_ORDER``,
-``dart_semantic/reading_order.py``) re-sorts a two-column page column-major
+``semantik_structure/reading_order.py``) re-sorts a two-column page column-major
 instead of raster (``y0, x0``) so a screen reader reads down one column then
 the next instead of line-interleaving across the gutter. Because role-F1 is
 order-invariant, that fix CANNOT show up in role-F1 — its real value is

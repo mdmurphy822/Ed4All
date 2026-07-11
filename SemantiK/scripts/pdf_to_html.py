@@ -1,6 +1,6 @@
 """scripts/pdf_to_html.py — one command: PDF -> accessible HTML file.
 
-Thin wrapper over :func:`dart_semantic.cascade.run_full_cascade` with
+Thin wrapper over :func:`semantik_structure.cascade.run_full_cascade` with
 ``return_html=True``. Runs the full v2 cascade (Stage 1..13) on ONE PDF and
 writes the assembled, WCAG-2.2-AA-gated HTML *document* to ``--out``.
 
@@ -54,14 +54,14 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# run_full_cascade imports dart_semantic.validate, which imports
+# run_full_cascade imports semantik_structure.validate, which imports
 # axe_playwright_python at module load (validate.py:26). When axe is absent the
 # import fails BEFORE any flag is read, so --no-validate cannot rescue it — the
 # only honest handling is a clear remediation message (exit 3), not a raw
 # traceback. (Present in .venv; absent from a bare system python.)
 try:
-    from dart_semantic.cascade import run_full_cascade
-    from dart_semantic.validate import HtmlValidator
+    from semantik_structure.cascade import run_full_cascade
+    from semantik_structure.validate import HtmlValidator
 
     _IMPORT_ERROR: ImportError | None = None
 except ImportError as exc:  # pragma: no cover - env-dependent
@@ -252,7 +252,7 @@ def main(argv: list[str] | None = None) -> int:
         # The product never ships without its verifiability artifact
         # (Plan 12 A1). write_conformance_audit raises on any failure;
         # that propagates as a hard nonzero exit like every other error.
-        from dart_semantic.conformance_audit import write_conformance_audit
+        from semantik_structure.conformance_audit import write_conformance_audit
 
         audit = result.get("conformance_audit")
         if audit is None:

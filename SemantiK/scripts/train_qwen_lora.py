@@ -1,6 +1,6 @@
 """Phase 1.5 — train one Qwen LoRA adapter (math/table/prose/gap_fill).
 
-Thin wrapper around ``dart_semantic.qwen_specialists.training.train``.
+Thin wrapper around ``semantik_structure.qwen_specialists.training.train``.
 The shared trainer holds all the per-adapter logic; this CLI just picks
 the adapter id and routes the args.
 
@@ -27,12 +27,12 @@ import logging
 import sys
 from pathlib import Path
 
-from dart_semantic.qwen_specialists.train_config import ADAPTER_CONFIGS
-from dart_semantic.qwen_specialists.training import (
+from semantik_structure.qwen_specialists.train_config import ADAPTER_CONFIGS
+from semantik_structure.qwen_specialists.training import (
     AdapterTrainError,
     train,
 )
-from dart_semantic.qwen_specialists.training_lock import TrainingSlotBusy
+from semantik_structure.qwen_specialists.training_lock import TrainingSlotBusy
 
 
 def main() -> int:

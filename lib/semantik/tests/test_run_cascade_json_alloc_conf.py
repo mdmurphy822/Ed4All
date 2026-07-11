@@ -29,7 +29,7 @@ def _load_runner():
     """Load run_cascade_json.py in isolation (stdlib-only module top).
 
     The module-top ``_maybe_set_alloc_conf()`` call runs at import time; the
-    heavy ``dart_semantic`` cascade import is lazy inside ``main()`` and is NOT
+    heavy ``semantik_structure`` cascade import is lazy inside ``main()`` and is NOT
     triggered here. We re-exec fresh so the loaded module object exposes the
     helper for direct calls.
     """

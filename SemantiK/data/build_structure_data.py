@@ -84,15 +84,15 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from bs4 import BeautifulSoup, Tag
-from dart_semantic.classify import Role
-from dart_semantic.extract_shared import extract_shared, extract_shared_cached
-from dart_semantic.reading_order import (
+from semantik_structure.classify import Role
+from semantik_structure.extract_shared import extract_shared, extract_shared_cached
+from semantik_structure.reading_order import (
     column_ids_for_bboxes,
     resolve_column_order_mode,
 )
-from dart_semantic.text_utils import jaccard_overlap
-from dart_semantic.validate import HtmlValidator
-from dart_semantic.worker_pool import run_in_pool
+from semantik_structure.text_utils import jaccard_overlap
+from semantik_structure.validate import HtmlValidator
+from semantik_structure.worker_pool import run_in_pool
 from data import structure_align
 from data.render_augment import (
     augment_html,
@@ -181,7 +181,7 @@ LIST_NESTING_BUCKETS = (0, 1, 2, 3)
 #
 # Gold labels are extracted by REUSING the single-source-of-truth
 # `_PEDAGOGICAL_LABEL_CLASSES` regexes from
-# `dart_semantic.qwen_specialists.deterministic_structure` (so the gold-side
+# `semantik_structure.qwen_specialists.deterministic_structure` (so the gold-side
 # label predicate can never drift from the always-on clean pass) plus one
 # supplementary `exercise_open` regex (OpenStax "Exercises" has no pedagogy-*
 # CSS class of its own). Non-matches → `none`.
@@ -237,7 +237,7 @@ def pedagogical_role_for(text: str) -> str:
         return "none"
     # Import lazily so build_structure_data has no import-time dependency on the
     # qwen_specialists package (keeps the data builder importable in lean CI).
-    from dart_semantic.qwen_specialists.deterministic_structure import (
+    from semantik_structure.qwen_specialists.deterministic_structure import (
         _pedagogical_class_for,
     )
 
@@ -619,7 +619,7 @@ def _reading_order_sorted(merged: list[dict], page_w: float) -> list[dict]:
     Default (``SEMANTIK_COLUMN_ORDER`` off, ``resolve_column_order_mode()`` ->
     False) is the byte-identical legacy raster key ``(y0, x0)``. When the flag
     is on, the blocks are clustered into columns by left-edge ``x0`` (reusing
-    the committed cascade core ``dart_semantic.reading_order.column_ids_for_bboxes``)
+    the committed cascade core ``semantik_structure.reading_order.column_ids_for_bboxes``)
     and sorted column-major ``(column_index, y0, x0)`` so a two-column page is
     read down one column then the next instead of line-interleaved across the
     gutter. On a single-column page the clustering yields one column for every

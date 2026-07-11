@@ -1,7 +1,7 @@
 """P3b tests for the SemantiK v2 conversion seam + inline chunk wiring.
 
 Run with NO models / GPU. The cascade (``run_pipeline_v2``) is MOCKED via a
-synthetic ``SemantiK.dart_semantic.pipeline_v2`` module injected into
+synthetic ``SemantiK.semantik_structure.pipeline_v2`` module injected into
 ``sys.modules`` so the seam's LAZY import resolves to the mock — proving the
 seam never touches SemantiK's heavy runtime deps (axe_playwright_python /
 llama_cpp / torch).
@@ -101,9 +101,9 @@ class _MockPipelineResult:
 
 
 def _install_mock_cascade(monkeypatch, *, result=None, recorder=None):
-    """Inject a fake ``SemantiK.dart_semantic.cascade`` carrying a mocked
+    """Inject a fake ``SemantiK.semantik_structure.cascade`` carrying a mocked
     ``run_pipeline_v2`` so the seam's lazy import resolves to it. (The seam's
-    in-process import is ``from SemantiK.dart_semantic.cascade import
+    in-process import is ``from SemantiK.semantik_structure.cascade import
     run_pipeline_v2`` — run_pipeline_v2 lives in cascade.py, not pipeline_v2.py.)"""
     res = result if result is not None else _MockPipelineResult()
 
@@ -114,13 +114,13 @@ def _install_mock_cascade(monkeypatch, *, result=None, recorder=None):
 
     pkg = types.ModuleType("SemantiK")
     pkg.__path__ = []  # mark as package
-    sub = types.ModuleType("SemantiK.dart_semantic")
+    sub = types.ModuleType("SemantiK.semantik_structure")
     sub.__path__ = []
-    mod = types.ModuleType("SemantiK.dart_semantic.cascade")
+    mod = types.ModuleType("SemantiK.semantik_structure.cascade")
     mod.run_pipeline_v2 = _fake_run_pipeline_v2
     monkeypatch.setitem(sys.modules, "SemantiK", pkg)
-    monkeypatch.setitem(sys.modules, "SemantiK.dart_semantic", sub)
-    monkeypatch.setitem(sys.modules, "SemantiK.dart_semantic.cascade", mod)
+    monkeypatch.setitem(sys.modules, "SemantiK.semantik_structure", sub)
+    monkeypatch.setitem(sys.modules, "SemantiK.semantik_structure.cascade", mod)
     return res
 
 
@@ -254,13 +254,13 @@ def test_d_missing_semantik_deps_clear_error(monkeypatch, tmp_path):
     # raises ImportError on run_pipeline_v2.
     pkg = types.ModuleType("SemantiK")
     pkg.__path__ = []
-    sub = types.ModuleType("SemantiK.dart_semantic")
+    sub = types.ModuleType("SemantiK.semantik_structure")
     sub.__path__ = []
-    mod = types.ModuleType("SemantiK.dart_semantic.pipeline_v2")
+    mod = types.ModuleType("SemantiK.semantik_structure.pipeline_v2")
     # No run_pipeline_v2 attribute → ImportError on `from ... import`.
     monkeypatch.setitem(sys.modules, "SemantiK", pkg)
-    monkeypatch.setitem(sys.modules, "SemantiK.dart_semantic", sub)
-    monkeypatch.setitem(sys.modules, "SemantiK.dart_semantic.pipeline_v2", mod)
+    monkeypatch.setitem(sys.modules, "SemantiK.semantik_structure", sub)
+    monkeypatch.setitem(sys.modules, "SemantiK.semantik_structure.pipeline_v2", mod)
 
     out = tmp_path / "doc_accessible.html"
     result = _run_semantik_v2_conversion("doc.pdf", str(out))
@@ -503,7 +503,7 @@ async def test_f_inline_chunk_omits_fields_without_enrichment(
 def test_g_resolver_populates_from_on_disk_weights(tmp_path):
     """V2Config.from_model_dir / resolve_local_v2_config flips the
     runtime_mode gate ONLY when the artifacts exist on disk."""
-    from SemantiK.dart_semantic.v2_config import (
+    from SemantiK.semantik_structure.v2_config import (
         DEFAULT_V2_CONFIG,
         V2Config,
         resolve_local_v2_config,
@@ -545,7 +545,7 @@ def test_g_resolver_populates_from_on_disk_weights(tmp_path):
 
 
 def _install_mock_cascade_with_config(monkeypatch, *, captured, runtime_mode="real"):
-    """Like _install_mock_cascade, but the synthetic SemantiK.dart_semantic
+    """Like _install_mock_cascade, but the synthetic SemantiK.semantik_structure
     subpackage ALSO carries a v2_config module exposing a recording
     resolve_local_v2_config, and the fake run_pipeline_v2 records the
     ``config`` kwarg the seam passes. Proves the seam (a) imports the resolver
@@ -570,16 +570,16 @@ def _install_mock_cascade_with_config(monkeypatch, *, captured, runtime_mode="re
 
     pkg = types.ModuleType("SemantiK")
     pkg.__path__ = []
-    sub = types.ModuleType("SemantiK.dart_semantic")
+    sub = types.ModuleType("SemantiK.semantik_structure")
     sub.__path__ = []
-    casc = types.ModuleType("SemantiK.dart_semantic.cascade")
+    casc = types.ModuleType("SemantiK.semantik_structure.cascade")
     casc.run_pipeline_v2 = _fake_run_pipeline_v2
-    vcfg = types.ModuleType("SemantiK.dart_semantic.v2_config")
+    vcfg = types.ModuleType("SemantiK.semantik_structure.v2_config")
     vcfg.resolve_local_v2_config = _fake_resolve_local_v2_config
     monkeypatch.setitem(sys.modules, "SemantiK", pkg)
-    monkeypatch.setitem(sys.modules, "SemantiK.dart_semantic", sub)
-    monkeypatch.setitem(sys.modules, "SemantiK.dart_semantic.cascade", casc)
-    monkeypatch.setitem(sys.modules, "SemantiK.dart_semantic.v2_config", vcfg)
+    monkeypatch.setitem(sys.modules, "SemantiK.semantik_structure", sub)
+    monkeypatch.setitem(sys.modules, "SemantiK.semantik_structure.cascade", casc)
+    monkeypatch.setitem(sys.modules, "SemantiK.semantik_structure.v2_config", vcfg)
     return sentinel
 
 
@@ -615,7 +615,7 @@ def test_g_seam_degrades_when_resolver_raises(monkeypatch, tmp_path):
         raise RuntimeError("simulated resolver failure")
 
     monkeypatch.setitem(
-        sys.modules["SemantiK.dart_semantic.v2_config"].__dict__,
+        sys.modules["SemantiK.semantik_structure.v2_config"].__dict__,
         "resolve_local_v2_config",
         _boom,
     )
@@ -690,7 +690,7 @@ def test_h_seam_ships_real_in_process_result(monkeypatch, tmp_path):
     captured: dict = {}
     _install_mock_cascade_with_config(monkeypatch, captured=captured)
     # Point the fake run_pipeline_v2 at our provenance-shaped result.
-    sys.modules["SemantiK.dart_semantic.cascade"].run_pipeline_v2 = (
+    sys.modules["SemantiK.semantik_structure.cascade"].run_pipeline_v2 = (
         lambda pdf_path, *a, **k: res
     )
 
@@ -738,7 +738,7 @@ def test_i_seam_handles_frozen_pipeline_result(monkeypatch, tmp_path):
 
     captured: dict = {}
     _install_mock_cascade_with_config(monkeypatch, captured=captured)
-    sys.modules["SemantiK.dart_semantic.cascade"].run_pipeline_v2 = (
+    sys.modules["SemantiK.semantik_structure.cascade"].run_pipeline_v2 = (
         lambda pdf_path, *a, **k: frozen
     )
 

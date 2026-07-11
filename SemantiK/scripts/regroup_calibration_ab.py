@@ -6,7 +6,7 @@ Measured-experiment arbiter (mirrors ``scripts/ocr_recall_ab.py``) for ITEM1 of
 the SemantiK restructuring campaign: it quantifies what flipping the regroup
 default ON does — over-merge rate (must be 0), the reduction in split
 label-only boxes, the per-doc box count delta, and the sourceId id-set shrink —
-so the flip lands only on evidence. CPU-only, stdlib + ``dart_semantic`` imports,
+so the flip lands only on evidence. CPU-only, stdlib + ``semantik_structure`` imports,
 no GPU, no LLM call.
 
 Two modes:
@@ -80,15 +80,15 @@ for _p in (str(_SEMANTIK), str(_REPO)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from dart_semantic.pedagogical_units import (  # noqa: E402
+from semantik_structure.pedagogical_units import (  # noqa: E402
     ABSORB_MAX_RUN,
     BODY_BEARING_COMPONENT_CLASSES,
     UNIT_START_PEDAGOGY_CLASSES,
     is_passthrough_region,
     is_unit_boundary,
 )
-from dart_semantic.qwen_specialists import block_resegment as brs  # noqa: E402
-from dart_semantic.qwen_specialists.deterministic_structure import (  # noqa: E402
+from semantik_structure.qwen_specialists import block_resegment as brs  # noqa: E402
+from semantik_structure.qwen_specialists.deterministic_structure import (  # noqa: E402
     _pedagogical_class_for,
 )
 

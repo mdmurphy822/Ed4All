@@ -2,7 +2,7 @@
 
 One row per HTML ``<table>`` element in an ar5iv pair's ``raw_source_html``.
 The source side is the EXACT JSON envelope that
-``dart_semantic.qwen_specialists.prompts.build_table_request`` emits at
+``semantik_structure.qwen_specialists.prompts.build_table_request`` emits at
 inference time, given a ``Region`` derived from the same table. The
 target side is an HTML5 ``<table>`` fragment, normalized to include
 ``<caption>`` (when ar5iv provides one via the wrapping
@@ -56,7 +56,7 @@ from lxml import etree, html as lxml_html
 # Live prompt builder — the contract surface this dataset is bound to.
 # Any drift in prompts.py surfaces as failure in
 # tests/test_qwen_table_dataset_contract.py.
-from dart_semantic.qwen_specialists.prompts import build_table_request
+from semantik_structure.qwen_specialists.prompts import build_table_request
 
 from data._splits import stable_split_for_id
 

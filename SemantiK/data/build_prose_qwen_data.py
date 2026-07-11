@@ -2,7 +2,7 @@ r"""Build the Qwen-prose LoRA adapter training dataset (Phase 1.3).
 
 One row per prose-shaped HTML region in an ar5iv pair's
 ``raw_source_html``. The source side is the EXACT JSON envelope that
-``dart_semantic.qwen_specialists.prompts.build_prose_request`` emits at
+``semantik_structure.qwen_specialists.prompts.build_prose_request`` emits at
 inference time, given a ``Region`` derived from the same element. The
 target side is the literal HTML5 fragment (lxml.etree.tostring of the
 element subtree) so the adapter learns to reproduce the structural
@@ -11,7 +11,7 @@ wrapper byte-for-byte.
 What "prose" covers
 -------------------
 
-Per ``dart_semantic.qwen_specialists.routing.REGION_KIND_TO_ADAPTER``,
+Per ``semantik_structure.qwen_specialists.routing.REGION_KIND_TO_ADAPTER``,
 the prose adapter handles every Stage-5 ``Region.kind`` except
 ``table`` and ``math``. Concretely:
 
@@ -120,10 +120,10 @@ from lxml import etree, html as lxml_html
 # Live prompt builder — the contract surface this dataset is bound to.
 # Any drift in prompts.py surfaces as failure in
 # tests/test_qwen_prose_dataset_contract.py.
-from dart_semantic.qwen_specialists.prompts import build_prose_request
+from semantik_structure.qwen_specialists.prompts import build_prose_request
 # Single source of truth for the chat-template wrap; the length filter
 # below must measure exactly what the trainer/inference path tokenizes.
-from dart_semantic.qwen_specialists.chat_format import wrap_for_qwen
+from semantik_structure.qwen_specialists.chat_format import wrap_for_qwen
 
 from data._splits import stable_split_for_id
 
@@ -1041,7 +1041,7 @@ def main() -> None:
                 "semantic_preservation builders."
             ),
             "kinds_covered": (
-                "Per dart_semantic.qwen_specialists.routing, the prose "
+                "Per semantik_structure.qwen_specialists.routing, the prose "
                 "adapter handles every Stage-5 region kind except table "
                 "and math: paragraph, heading, list, definition_list, "
                 "code_block, blockquote, figure, form, metadata_drop. "

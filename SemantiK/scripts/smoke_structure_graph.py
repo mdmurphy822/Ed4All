@@ -125,9 +125,9 @@ def main() -> None:
     print(f"Stage 5 smoke: {args.pdf}")
     print("=" * 70)
 
-    from dart_semantic.council.cross_reranker import arbitrate
-    from dart_semantic.council.orchestrator import run_council
-    from dart_semantic.structure_graph import build_structure_graph
+    from semantik_structure.council.cross_reranker import arbitrate
+    from semantik_structure.council.orchestrator import run_council
+    from semantik_structure.structure_graph import build_structure_graph
 
     t0 = time.time()
     state, regions, feature_blocks = run_council(

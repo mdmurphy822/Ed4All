@@ -1,9 +1,9 @@
 """R7 VRAM-OOM mitigation — theta device-resolution unit tests.
 
-Exercises ``dart_semantic.theta.semantic_preservation``'s
+Exercises ``semantik_structure.theta.semantic_preservation``'s
 ``SEMANTIK_THETA_DEVICE`` resolution + the ``_place_theta_on_device``
 graceful-CUDA-fallback helper WITHOUT any GPU, real torch, or the theta
-model artifacts. The vendored SemantiK ``dart_semantic.theta`` package
+model artifacts. The vendored SemantiK ``semantik_structure.theta`` package
 ``__init__`` eagerly imports the cascade's heavy deps (axe / llama-cpp /
 torch), which are absent from Ed4All's slim venv, so we load the
 ``semantic_preservation`` SUBMODULE under its real qualified name behind
@@ -30,26 +30,26 @@ import pytest
 # ---------------------------------------------------------------------------
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_SEMANTIK_THETA = _REPO_ROOT / "SemantiK" / "dart_semantic" / "theta"
+_SEMANTIK_THETA = _REPO_ROOT / "SemantiK" / "semantik_structure" / "theta"
 _SP_PATH = _SEMANTIK_THETA / "semantic_preservation.py"
 
 
 def _load_sp():
-    """Import dart_semantic.theta.semantic_preservation in isolation.
+    """Import semantik_structure.theta.semantic_preservation in isolation.
 
-    Registers minimal empty namespace packages for ``dart_semantic`` and
-    ``dart_semantic.theta`` (pointing at the real vendored dirs) so the
+    Registers minimal empty namespace packages for ``semantik_structure`` and
+    ``semantik_structure.theta`` (pointing at the real vendored dirs) so the
     submodule imports under its real ``__name__`` — required because the
     module defines a frozen dataclass whose field annotations are resolved
     against ``sys.modules[__module__]``. We do NOT run the package
     ``__init__`` (which pulls the heavy cascade deps).
     """
-    if "dart_semantic.theta.semantic_preservation" in sys.modules:
-        return sys.modules["dart_semantic.theta.semantic_preservation"]
+    if "semantik_structure.theta.semantic_preservation" in sys.modules:
+        return sys.modules["semantik_structure.theta.semantic_preservation"]
 
     for name, path in (
-        ("dart_semantic", _REPO_ROOT / "SemantiK" / "dart_semantic"),
-        ("dart_semantic.theta", _SEMANTIK_THETA),
+        ("semantik_structure", _REPO_ROOT / "SemantiK" / "semantik_structure"),
+        ("semantik_structure.theta", _SEMANTIK_THETA),
     ):
         if name not in sys.modules:
             pkg = types.ModuleType(name)
@@ -58,7 +58,7 @@ def _load_sp():
             sys.modules[name] = pkg
 
     spec = importlib.util.spec_from_file_location(
-        "dart_semantic.theta.semantic_preservation", str(_SP_PATH)
+        "semantik_structure.theta.semantic_preservation", str(_SP_PATH)
     )
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
@@ -70,16 +70,16 @@ def _load_sp():
 sp = _load_sp()
 
 
-_PATHS_PATH = _REPO_ROOT / "SemantiK" / "dart_semantic" / "paths.py"
+_PATHS_PATH = _REPO_ROOT / "SemantiK" / "semantik_structure" / "paths.py"
 _MODULE_STATE_PATH = _SEMANTIK_THETA / "_module_state.py"
 
 
 def _load_module_state():
-    """Import dart_semantic.theta._module_state in isolation (Bug-1 proof).
+    """Import semantik_structure.theta._module_state in isolation (Bug-1 proof).
 
     Mirrors :func:`_load_sp`: reuses the same empty namespace-package shims for
-    ``dart_semantic`` + ``dart_semantic.theta`` (no heavy ``__init__``), but
-    ALSO loads ``dart_semantic.paths`` from the real file (it imports only
+    ``semantik_structure`` + ``semantik_structure.theta`` (no heavy ``__init__``), but
+    ALSO loads ``semantik_structure.paths`` from the real file (it imports only
     os+pathlib) so ``_module_state._model_dir`` can route through the single
     env-aware resolver. Always re-execs ``_module_state`` so a fresh module is
     returned per call (the env-sensitive ``_model_dir`` reads os.environ at
@@ -87,8 +87,8 @@ def _load_module_state():
     self-contained and side-effect-light).
     """
     for name, path in (
-        ("dart_semantic", _REPO_ROOT / "SemantiK" / "dart_semantic"),
-        ("dart_semantic.theta", _SEMANTIK_THETA),
+        ("semantik_structure", _REPO_ROOT / "SemantiK" / "semantik_structure"),
+        ("semantik_structure.theta", _SEMANTIK_THETA),
     ):
         if name not in sys.modules:
             pkg = types.ModuleType(name)
@@ -96,9 +96,9 @@ def _load_module_state():
             pkg.__package__ = name
             sys.modules[name] = pkg
 
-    if "dart_semantic.paths" not in sys.modules:
+    if "semantik_structure.paths" not in sys.modules:
         pspec = importlib.util.spec_from_file_location(
-            "dart_semantic.paths", str(_PATHS_PATH)
+            "semantik_structure.paths", str(_PATHS_PATH)
         )
         assert pspec and pspec.loader
         pmod = importlib.util.module_from_spec(pspec)
@@ -106,7 +106,7 @@ def _load_module_state():
         pspec.loader.exec_module(pmod)
 
     spec = importlib.util.spec_from_file_location(
-        "dart_semantic.theta._module_state", str(_MODULE_STATE_PATH)
+        "semantik_structure.theta._module_state", str(_MODULE_STATE_PATH)
     )
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)

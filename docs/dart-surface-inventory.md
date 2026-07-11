@@ -64,8 +64,8 @@ Frequency (raw occ): `block-id` 206, `pages` 110, `unit` 75, `source` 75, bare `
 - `lib/semantik/adapter.py` — **the single canonical emitter** (lines 597–801 stamp
   block-id/source/pages/page-kind/confidence/block-role/wcag/demoted-role/repair-count/opener/
   flow/opener-group/unit). 53 refs.
-- `SemantiK/dart_semantic/assembler/pass_9a.py`, `pass_9c.py` — cascade assembler emit.
-- `SemantiK/dart_semantic/qwen_specialists/ocr_repair.py` — `data-dart-repair` / `-repair-count`.
+- `SemantiK/semantik_structure/assembler/pass_9a.py`, `pass_9c.py` — cascade assembler emit.
+- `SemantiK/semantik_structure/qwen_specialists/ocr_repair.py` — `data-dart-repair` / `-repair-count`.
 - `lib/semantik/subclassifier.py` (`data-dart-subclass`), `opener_classifier.py`,
   `vendor_ingest.py`, `scripts/semantik_rerender.py`.
 - `MCP/tools/_content_gen_helpers.py` — **MIXED**: parses source `data-dart-block-id`, then
@@ -209,7 +209,7 @@ Canonical env-flag set (9): `DART_ALLOW_THETA_STUB`, `DART_SEMANTIC_MODEL_DIR`,
 and four GUI knobs `DART_VISION_PROVIDER`, `DART_CLAUDE_MODEL`, `DART_LLM_CLASSIFICATION`,
 `DART_VISION_MODEL`.
 
-- Theta/council knobs are **operator-set** (consumers in `SemantiK/dart_semantic/theta/*`,
+- Theta/council knobs are **operator-set** (consumers in `SemantiK/semantik_structure/theta/*`,
   `council/structure.py`; producer only in `scripts/calibrate_theta.py`).
 - The four GUI knobs are **PRODUCER-ONLY** in the tracked tree (`gui/env_catalog.py` renders them;
   no in-repo consumer — their consumer was the retired AGPL DART engine).
@@ -372,7 +372,7 @@ old data keeps resolving while new data adopts `semantik:`.
 | `chunkset_kind: "dart"` | `chunkset_kind: "semantik"` |
 | `source_dart_html_sha256` (chunkset manifest) | `source_semantik_html_sha256` |
 | `dart_chunks_sha256` (course manifest) | `semantik_chunks_sha256` |
-| `SemantiK/dart_semantic/` package | `semantik_structure` |
+| `SemantiK/semantik_structure/` package | `semantik_structure` |
 
 ### Staged rollout
 
@@ -404,7 +404,7 @@ old data keeps resolving while new data adopts `semantik:`.
   archives via a backfill script; attach the deprecation warn to the
   `dart_chunks/` fallback once `semantik_chunks/` is canonical.
 - **Stage 3 — emitter flip.** Flip every WRITER (attrs, sourceIds, phase
-  declaration in `config/workflows.yaml`, `SemantiK/dart_semantic/` →
+  declaration in `config/workflows.yaml`, `SemantiK/semantik_structure/` →
   `semantik_structure`, sha field emit, `chunkset_kind` emit) + the
   "deliberately preserved" narrative notes in `SemantiK/CLAUDE.md` /
   `agents.yaml` / `ARCHITECTURE.md`, then retire the dual-read shims.

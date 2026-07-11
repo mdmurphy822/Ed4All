@@ -5,7 +5,7 @@ adapter (``lib/semantik/adapter.py``). The cascade computes per-region
 provenance (page / role / confidence / WCAG / raw-block index) during the
 run but historically dropped it from its result; P3a surfaces a distilled
 ``region_provenance`` list on the cascade result + ``PipelineV2Result``
-(see ``SemantiK/dart_semantic/cascade.py::_build_region_provenance``), and
+(see ``SemantiK/semantik_structure/cascade.py::_build_region_provenance``), and
 THIS module converts that list into the ``List[_AdapterChapter]`` the
 adapter's :func:`~lib.semantik.adapter.normalize_cascade_to_ed4all`
 consumes.

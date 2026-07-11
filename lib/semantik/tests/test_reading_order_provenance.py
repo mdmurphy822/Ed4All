@@ -41,23 +41,23 @@ import re
 
 import pytest
 
-from dart_semantic.cascade import _build_region_provenance
-from dart_semantic.council.cross_reranker import arbitrate
-from dart_semantic.council.types import (
+from semantik_structure.cascade import _build_region_provenance
+from semantik_structure.council.cross_reranker import arbitrate
+from semantik_structure.council.types import (
     BertOutput,
     CouncilState,
     TableCandidate,
     TypedSignal,
 )
-from dart_semantic.structure_graph import build_structure_graph
-from dart_semantic.types import FeatureBlock, RawBlock
+from semantik_structure.structure_graph import build_structure_graph
+from semantik_structure.types import FeatureBlock, RawBlock
 
 _FLAG = "SEMANTIK_READING_ORDER_FIX"
 
 
 # ---------------------------------------------------------------------------
 # Part A — synthetic interleaved FB stream + the REAL build_structure_graph.
-# Mirrors the harness in dart_semantic/tests/test_structure_reading_order.py.
+# Mirrors the harness in semantik_structure/tests/test_structure_reading_order.py.
 # ---------------------------------------------------------------------------
 
 

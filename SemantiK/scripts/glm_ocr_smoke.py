@@ -17,11 +17,11 @@ import argparse
 from datetime import datetime
 from pathlib import Path
 
-from dart_semantic.extract_shared import (
+from semantik_structure.extract_shared import (
     extract_shared_cached,
     _pypdfium2_render_page_to_image,
 )
-from dart_semantic.region_detection import (
+from semantik_structure.region_detection import (
     Region,
     detect_math_regions,
     detect_table_regions,
@@ -129,7 +129,7 @@ def main() -> None:
 
     # ---------- GLM-OCR ----------
     import time
-    from dart_semantic.glm_ocr import (
+    from semantik_structure.glm_ocr import (
         load_glm_ocr, ocr_image, unload_glm_ocr,
         PROMPT_TEXT, PROMPT_FORMULA, PROMPT_TABLE,
     )

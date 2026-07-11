@@ -45,9 +45,9 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from dart_semantic.extract_shared import extract_shared  # noqa: E402
-from dart_semantic.reading_order import column_ids_for_bboxes  # noqa: E402
-from dart_semantic.validate import HtmlValidator  # noqa: E402
+from semantik_structure.extract_shared import extract_shared  # noqa: E402
+from semantik_structure.reading_order import column_ids_for_bboxes  # noqa: E402
+from semantik_structure.validate import HtmlValidator  # noqa: E402
 from data import structure_align  # noqa: E402
 from data.build_structure_data import extract_html_blocks  # noqa: E402
 from data.render_augment import augment_html  # noqa: E402

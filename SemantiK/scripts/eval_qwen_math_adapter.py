@@ -226,7 +226,7 @@ def gen_safetensors(
         BitsAndBytesConfig,
     )
 
-    from dart_semantic.qwen_specialists.chat_format import wrap_for_qwen
+    from semantik_structure.qwen_specialists.chat_format import wrap_for_qwen
 
     tok = AutoTokenizer.from_pretrained(adapter_dir, trust_remote_code=True)
     bnb = BitsAndBytesConfig(
@@ -295,7 +295,7 @@ def gen_gguf(
 
         from transformers import AutoTokenizer
 
-        from dart_semantic.qwen_specialists.chat_format import wrap_for_qwen
+        from semantik_structure.qwen_specialists.chat_format import wrap_for_qwen
 
         tok = AutoTokenizer.from_pretrained(
             adapter_dir or DEFAULT_ADAPTER_DIR, trust_remote_code=True
@@ -325,7 +325,7 @@ def gen_gguf(
                 print(f"[gguf] {i + 1}/{len(sample)}", flush=True)
         return outs
 
-    from dart_semantic.qwen_specialists.runtime import LlamaCppRuntime
+    from semantik_structure.qwen_specialists.runtime import LlamaCppRuntime
 
     rt = LlamaCppRuntime()
     print(f"[gguf] loading {gguf_path}")

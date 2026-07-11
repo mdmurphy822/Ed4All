@@ -25,9 +25,9 @@ import os
 import sys
 from pathlib import Path
 
-from dart_semantic.council.cross_reranker import arbitrate
-from dart_semantic.council.orchestrator import run_council
-from dart_semantic.structure_graph import build_structure_graph
+from semantik_structure.council.cross_reranker import arbitrate
+from semantik_structure.council.orchestrator import run_council
+from semantik_structure.structure_graph import build_structure_graph
 
 # The 9 held-out eval opinions (mirrors the constructor --holdout; never trained).
 HOLDOUT = [

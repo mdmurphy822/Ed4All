@@ -4,7 +4,7 @@ Scope
 -----
 
 Per ``Plans/04_assembler_layer_investigation.md`` §1/§2 and the live
-gap-detection logic in ``dart_semantic.assembler.pass_9a.run_pass_9a``,
+gap-detection logic in ``semantik_structure.assembler.pass_9a.run_pass_9a``,
 the assembler flags these gap kinds (and this builder emits rows for
 each):
 
@@ -51,7 +51,7 @@ Source side / contract
 ----------------------
 
 The source side of every row is the EXACT JSON envelope that
-``dart_semantic.qwen_specialists.prompts.build_gap_fill_request``
+``semantik_structure.qwen_specialists.prompts.build_gap_fill_request``
 emits at inference time, given a ``GapSlot`` reconstructed from the
 ar5iv ground-truth HTML. Because the prompt builder reads two
 ``GapSlot`` attributes (``kind`` and ``context``) plus a third
@@ -69,7 +69,7 @@ K=8 diversity / paraphrastic targets
 ------------------------------------
 
 The gap-fill adapter generates K=8 candidates at inference (per
-``dart_semantic/qwen_specialists/config.yaml``). To teach diversity
+``semantik_structure/qwen_specialists/config.yaml``). To teach diversity
 without inventing facts, we emit 2-3 deterministic, rule-based
 paraphrastic gold targets per slot where the source allows:
 
@@ -145,9 +145,9 @@ from lxml import etree, html as lxml_html
 
 # Live inference-time prompt builder.
 #
-# We deliberately do NOT import ``dart_semantic.assembler.types.GapKind``
+# We deliberately do NOT import ``semantik_structure.assembler.types.GapKind``
 # even though that is the canonical source — importing the assembler
-# package transitively triggers ``dart_semantic.gates.__init__`` which
+# package transitively triggers ``semantik_structure.gates.__init__`` which
 # imports ``axe_playwright_python``, an inference-time-only dependency
 # that is not always installed in the dataset-build environment. The
 # live ``build_gap_fill_request`` only reads ``slot.kind.value`` (or
@@ -170,7 +170,7 @@ class GapKind(str, Enum):
 # detector (pass_9a imports the same names) so the copyright-vs-
 # disclaimer split and the legal_subkind discriminator can never drift
 # between training rows and inference GapSlots.
-from dart_semantic.qwen_specialists.prompts import (
+from semantik_structure.qwen_specialists.prompts import (
     COPYRIGHT_SUBFLAG_RE,
     COPYRIGHT_YEAR_RE,
     build_gap_fill_request,

@@ -2,7 +2,7 @@
 
 Built + run with NO models / GPU. Exercises ``build_chapters_ir`` against a
 SYNTHETIC ``region_provenance`` (the distilled per-region provenance the
-cascade surfaces — see ``SemantiK/dart_semantic/cascade.py::
+cascade surfaces — see ``SemantiK/semantik_structure/cascade.py::
 _build_region_provenance``), then chains the produced IR through the REAL
 P2a adapter (``normalize_cascade_to_ed4all``) and the REAL Ed4All contract
 validators (``DartMarkersValidator``, ``source_refs``,

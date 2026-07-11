@@ -72,18 +72,18 @@ from pathlib import Path
 
 from bs4 import BeautifulSoup
 
-from dart_semantic.classify import classify_blocks, load_classifier
-from dart_semantic.extract_shared import extract_shared_cached
-from dart_semantic.features import featurize_from_shared
-from dart_semantic.prerender_cache import cache_path_for
-from dart_semantic.reason import SYSTEM_PROMPT
-from dart_semantic.reason_chunking import build_page_chunks
-from dart_semantic.reason_schema import (
+from semantik_structure.classify import classify_blocks, load_classifier
+from semantik_structure.extract_shared import extract_shared_cached
+from semantik_structure.features import featurize_from_shared
+from semantik_structure.prerender_cache import cache_path_for
+from semantik_structure.reason import SYSTEM_PROMPT
+from semantik_structure.reason_chunking import build_page_chunks
+from semantik_structure.reason_schema import (
     chunk_header,
     page_separator,
     serialize_block,
 )
-from dart_semantic.text_utils import jaccard_overlap
+from semantik_structure.text_utils import jaccard_overlap
 
 
 # HTML tag → role map. Same vocabulary v2 classifier data uses.
@@ -361,7 +361,7 @@ def process_pair_cpu(pair_path_str: str,
 
     if use_glm_ocr:
         try:
-            from dart_semantic.glm_ocr_enrich import enrich_from_cache
+            from semantik_structure.glm_ocr_enrich import enrich_from_cache
             enrich_from_cache(shared, pdf_path)
         except Exception as exc:
             return {"pair_path": pair_path_str, "error": f"glm_ocr_cache: {exc}"}
@@ -463,7 +463,7 @@ def _classify_glm_ocr_regions(classifier,
                               glm_ocr_by_page: dict[int, list[dict]]) -> None:
     """Run DistilBERT on each region's OCR text and stash the predicted
     role + confidence onto the region dict in-place."""
-    from dart_semantic.types import FeatureBlock, RawBlock
+    from semantik_structure.types import FeatureBlock, RawBlock
 
     # Page metrics: we pass these to the synthetic RawBlocks so the
     # classifier's input-serializer sees plausible geometry.
@@ -644,14 +644,14 @@ def _glm_ocr_prepass(pair_paths: list[Path], model_path: str) -> None:
 
     Idempotent.
     """
-    from dart_semantic.extract_shared import extract_shared_cached
-    from dart_semantic.glm_ocr_cache import CacheKey, get as cache_get, sha256_file
-    from dart_semantic.region_detection import (
+    from semantik_structure.extract_shared import extract_shared_cached
+    from semantik_structure.glm_ocr_cache import CacheKey, get as cache_get, sha256_file
+    from semantik_structure.region_detection import (
         detect_low_conf_tesseract_regions,
         detect_math_regions,
         detect_table_regions,
     )
-    from dart_semantic.glm_ocr import PROMPT_FORMULA, PROMPT_TABLE, PROMPT_TEXT
+    from semantik_structure.glm_ocr import PROMPT_FORMULA, PROMPT_TABLE, PROMPT_TEXT
 
     def _prompt_for(kind: str) -> str:
         return {"math": PROMPT_FORMULA,
@@ -703,8 +703,8 @@ def _glm_ocr_prepass(pair_paths: list[Path], model_path: str) -> None:
         return
 
     # Phase 2: OCR the misses
-    from dart_semantic.glm_ocr import load_glm_ocr, unload_glm_ocr
-    from dart_semantic.glm_ocr_enrich import enrich_shared
+    from semantik_structure.glm_ocr import load_glm_ocr, unload_glm_ocr
+    from semantik_structure.glm_ocr_enrich import enrich_shared
     print(f"[glm-ocr] loading {model_path}", file=sys.stderr)
     glm = load_glm_ocr(model_path)
     try:

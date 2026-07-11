@@ -297,7 +297,7 @@ its own subworld.
 
 The deterministic mapping from typed BERT signals to a flat list of
 typed `Region` candidates. Implementation:
-[`dart_semantic/structure_graph.py`](dart_semantic/structure_graph.py).
+[`semantik_structure/structure_graph.py`](semantik_structure/structure_graph.py).
 
 **Eleven region kinds** (Stage 6 specialists consume each):
 
@@ -638,7 +638,7 @@ Full schema in [`Plans/03_theta_investigation.md`](Plans/03_theta_investigation.
 
 ### 6.6 v1 implementation status (Stage 12)
 
-The Stage 12 evaluator (`dart_semantic/theta/evaluator.py`) implements
+The Stage 12 evaluator (`semantik_structure/theta/evaluator.py`) implements
 all 8 dimensions. Status as of 2026-06-11 — **no stubbed dimension
 remains**:
 
@@ -758,7 +758,7 @@ held-out set before any threshold ever ships.
 
 ### 7.5 v1 implementation status (Stage 13)
 
-The Stage 13 exit decider (`dart_semantic/theta/exits.py`) implements
+The Stage 13 exit decider (`semantik_structure/theta/exits.py`) implements
 the full §7 decision table. **The offline-Qwen lane is wired and live**
 (`theta/offline_retry.py:maybe_offline_retry` re-runs the failing
 regions through the offline lane and keeps the offline output iff

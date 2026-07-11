@@ -48,8 +48,8 @@ from pathlib import Path
 # Make the package importable when invoked as a script.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from dart_semantic.arxiv_license import extract_arxiv_id  # noqa: E402
-from dart_semantic.prerender_cache import cache_path_for  # noqa: E402
+from semantik_structure.arxiv_license import extract_arxiv_id  # noqa: E402
+from semantik_structure.prerender_cache import cache_path_for  # noqa: E402
 
 # Reuse the eval driver's held-out machinery verbatim — same dataset files,
 # same pair-id semantics — so the manifest and the eval can never disagree

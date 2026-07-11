@@ -173,10 +173,10 @@ def _eval_test_split(adapter_dir: Path, test_path: Path,
 
 def _eval_pdf_latency(adapter_dir: Path, pdf_path: Path) -> dict:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from dart_semantic.extract_shared import extract_shared
-    from dart_semantic.features import featurize_from_shared
-    from dart_semantic.council.runner import run_bert
-    from dart_semantic.council.base import SharedBackbone
+    from semantik_structure.extract_shared import extract_shared
+    from semantik_structure.features import featurize_from_shared
+    from semantik_structure.council.runner import run_bert
+    from semantik_structure.council.base import SharedBackbone
     SharedBackbone.reset_cache()
 
     if not pdf_path.exists():
@@ -221,8 +221,8 @@ def _adapter_swap_test(adapter_dir: Path, test_path: Path) -> dict:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from types import SimpleNamespace
 
-    from dart_semantic.council.base import LoRAAdapter, SharedBackbone
-    from dart_semantic.council.merge_or_split import ADAPTER_SPEC, run_inputs
+    from semantik_structure.council.base import LoRAAdapter, SharedBackbone
+    from semantik_structure.council.merge_or_split import ADAPTER_SPEC, run_inputs
 
     SharedBackbone.reset_cache()
     backbone = SharedBackbone.get(

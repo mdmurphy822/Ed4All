@@ -90,7 +90,7 @@ def _load_or_fetch_ar5iv(
     if offline:
         return None
     # Live fetch — single network call point.
-    from dart_semantic.parse_ar5iv import Ar5ivParseError, fetch_ar5iv_html
+    from semantik_structure.parse_ar5iv import Ar5ivParseError, fetch_ar5iv_html
     try:
         html = fetch_ar5iv_html(arxiv_id, timeout=timeout)
     except Ar5ivParseError as exc:

@@ -32,17 +32,17 @@ from pathlib import Path
 # Make the package importable when invoked as a script.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from dart_semantic.assembler import AssemblerConfig, assemble_document  # noqa: E402
-from dart_semantic.council.cross_reranker import arbitrate  # noqa: E402
-from dart_semantic.council.orchestrator import run_council  # noqa: E402
-from dart_semantic.gates import (  # noqa: E402
+from semantik_structure.assembler import AssemblerConfig, assemble_document  # noqa: E402
+from semantik_structure.council.cross_reranker import arbitrate  # noqa: E402
+from semantik_structure.council.orchestrator import run_council  # noqa: E402
+from semantik_structure.gates import (  # noqa: E402
     gate_document,
     gate_per_region,
     rerank_per_region,
 )
-from dart_semantic.qwen_specialists.runner import run_qwen_specialists  # noqa: E402
-from dart_semantic.structure_graph import Region, build_structure_graph  # noqa: E402
-from dart_semantic.validate import HtmlValidator  # noqa: E402
+from semantik_structure.qwen_specialists.runner import run_qwen_specialists  # noqa: E402
+from semantik_structure.structure_graph import Region, build_structure_graph  # noqa: E402
+from semantik_structure.validate import HtmlValidator  # noqa: E402
 
 
 def _cap_regions_per_kind(regions: list[Region], *, cap: int) -> list[Region]:

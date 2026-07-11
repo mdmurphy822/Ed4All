@@ -126,10 +126,10 @@ def _eval_test_split(
 def _eval_pdf_latency(adapter_dir: Path, pdf_path: Path) -> dict:
     """Time the runner on the v7 sample PDF (math-heavy, 20-page-class)."""
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from dart_semantic.extract_shared import extract_shared
-    from dart_semantic.region_detection import detect_math_region_candidates
-    from dart_semantic.council.runner import run_bert
-    from dart_semantic.council.base import SharedBackbone
+    from semantik_structure.extract_shared import extract_shared
+    from semantik_structure.region_detection import detect_math_region_candidates
+    from semantik_structure.council.runner import run_bert
+    from semantik_structure.council.base import SharedBackbone
     SharedBackbone.reset_cache()
 
     if not pdf_path.exists():
@@ -171,9 +171,9 @@ def _eval_pdf_latency(adapter_dir: Path, pdf_path: Path) -> dict:
 def _adapter_swap_test(adapter_dir: Path, test_path: Path) -> dict:
     """Load the adapter, run, swap-out, swap-in, run again — compare."""
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from dart_semantic.council.base import LoRAAdapter, SharedBackbone
-    from dart_semantic.council.math_specialist import ADAPTER_SPEC, run_inputs
-    from dart_semantic.council.types import MathCandidate
+    from semantik_structure.council.base import LoRAAdapter, SharedBackbone
+    from semantik_structure.council.math_specialist import ADAPTER_SPEC, run_inputs
+    from semantik_structure.council.types import MathCandidate
 
     SharedBackbone.reset_cache()
     backbone = SharedBackbone.get(

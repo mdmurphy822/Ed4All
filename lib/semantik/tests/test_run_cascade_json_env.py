@@ -3,7 +3,7 @@
 The bridge runner ``SemantiK/scripts/run_cascade_json.py`` may set
 ``PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`` at module top, BEFORE
 any torch/transformers/llama-cpp import (those are pulled lazily by the
-``dart_semantic.cascade`` import inside ``main()``) — but ONLY when the
+``semantik_structure.cascade`` import inside ``main()``) — but ONLY when the
 opt-in ``SEMANTIK_EXPANDABLE_SEGMENTS`` is truthy (the conf backfired with a
 CUDACachingAllocator INTERNAL ASSERT, so it is OFF by default; theta->CPU is
 the primary OOM fix). These tests prove:
@@ -29,11 +29,11 @@ _RUNNER = _REPO_ROOT / "SemantiK" / "scripts" / "run_cascade_json.py"
 
 def test_runner_sets_alloc_conf_before_torch_in_source():
     """The gated ``_maybe_set_alloc_conf()`` call precedes the only line that
-    can trigger a torch import (the lazy ``from dart_semantic.cascade import ...``
+    can trigger a torch import (the lazy ``from semantik_structure.cascade import ...``
     inside main())."""
     src = _RUNNER.read_text(encoding="utf-8")
     alloc_idx = src.index("_maybe_set_alloc_conf()")
-    cascade_idx = src.index("from dart_semantic.cascade import run_pipeline_v2")
+    cascade_idx = src.index("from semantik_structure.cascade import run_pipeline_v2")
     assert alloc_idx < cascade_idx, (
         "_maybe_set_alloc_conf() must be called before the cascade import (the "
         "torch entry point)."

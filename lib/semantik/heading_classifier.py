@@ -26,7 +26,7 @@ render path AND the ``scripts/semantik_rerender.py`` re-render path (which
 reconstructs heading blocks from already-emitted HTML/IR and never re-runs the
 Region-level ``clean_structure`` pass) benefit without a cascade re-run. The
 conversion path additionally mirrors (a)/(b) at the Region level in
-``SemantiK/dart_semantic/qwen_specialists/deterministic_structure.py`` so a
+``SemantiK/semantik_structure/qwen_specialists/deterministic_structure.py`` so a
 FRESH conversion never mints the phantom chapters in the first place.
 
 Conservative by design: a genuine section title (``9.3 Add and Subtract Square

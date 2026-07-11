@@ -6,7 +6,7 @@ For each PDF:
     2. featurize_from_shared → list[FeatureBlock]
     3. v1: classify.classify_blocks(features, distilbert_classifier_v5)
        → role per block
-    4. v2: dart_semantic.council.structure.run_inputs(adapter, features)
+    4. v2: semantik_structure.council.structure.run_inputs(adapter, features)
        → 4 typed signals per block (structural_role, is_heading,
        table_region, list_nesting)
 
@@ -31,14 +31,14 @@ import time
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from dart_semantic import classify
-from dart_semantic.extract_shared import extract_shared_cached
-from dart_semantic.features import featurize_from_shared
-from dart_semantic.council.base import (
+from semantik_structure import classify
+from semantik_structure.extract_shared import extract_shared_cached
+from semantik_structure.features import featurize_from_shared
+from semantik_structure.council.base import (
     load_lora_adapter,
     load_shared_backbone,
 )
-from dart_semantic.council import structure as bert_structure
+from semantik_structure.council import structure as bert_structure
 
 
 V1_ADAPTER_PATH = Path("models/classifier_v5/final")

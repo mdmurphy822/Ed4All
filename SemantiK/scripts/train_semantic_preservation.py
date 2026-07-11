@@ -18,8 +18,8 @@ Output layout (matches train_semantic.py's adapter pattern):
     models/theta/semantic_preservation/v1/_ckpt/  # rolling intermediates
 
 Phase 4b is BUILD + LAUNCH; Phase 4c integrates into theta/evaluator.py.
-This script does NOT modify dart_semantic/theta/evaluator.py or
-dart_semantic/theta/config.yaml.
+This script does NOT modify semantik_structure/theta/evaluator.py or
+semantik_structure/theta/config.yaml.
 """
 from __future__ import annotations
 

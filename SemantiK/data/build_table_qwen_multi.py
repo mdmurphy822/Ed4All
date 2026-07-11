@@ -49,7 +49,7 @@ from typing import Any, Iterator
 
 from lxml import html as lxml_html
 
-from dart_semantic.qwen_specialists.chat_format import wrap_for_qwen
+from semantik_structure.qwen_specialists.chat_format import wrap_for_qwen
 
 from data._splits import stable_split_for_id
 

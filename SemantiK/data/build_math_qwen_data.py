@@ -2,7 +2,7 @@
 
 One row per ``<math>`` element in an ar5iv pair's ``raw_source_html``.
 The source side is the EXACT JSON envelope that
-``dart_semantic.qwen_specialists.prompts.build_math_request`` emits at
+``semantik_structure.qwen_specialists.prompts.build_math_request`` emits at
 inference time, given a ``Region`` derived from the same math element.
 The target side is the literal MathML subtree (so the adapter learns
 to emit MathML tokens verbatim, including ``display`` / ``alttext``
@@ -50,8 +50,8 @@ from lxml import etree, html as lxml_html
 # Same package path the rest of the repo uses; ensures we import the
 # LIVE prompt builder (any drift in prompts.py would surface as a test
 # failure in tests/test_qwen_math_dataset_contract.py).
-from dart_semantic.qwen_specialists.prompts import build_math_request
-from dart_semantic.qwen_specialists.chat_format import wrap_for_qwen
+from semantik_structure.qwen_specialists.prompts import build_math_request
+from semantik_structure.qwen_specialists.chat_format import wrap_for_qwen
 
 from data._splits import stable_split_for_id
 

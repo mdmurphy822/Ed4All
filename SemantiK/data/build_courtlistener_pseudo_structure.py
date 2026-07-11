@@ -32,7 +32,7 @@ from data.build_structure_data import (
     _block_in_any_table,
     compute_span_layout_features,
 )
-from dart_semantic.extract_shared import extract_shared_cached
+from semantik_structure.extract_shared import extract_shared_cached
 
 # --- legal-heading text signals (run on DART-SEPARATED blocks) ---------------
 _ROMAN = re.compile(r"^[IVXLC]{1,4}\.\s")

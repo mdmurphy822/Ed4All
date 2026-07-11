@@ -1266,7 +1266,7 @@ Additive section. Descriptive record of what Waves 1–6 (commits `fea48f8` → 
 
 The PDF → accessible-HTML converter that produces the upstream of the entire ontology (`Section` /
 `ContentBlock` / source provenance) is now **SemantiK** — a license-clean semantic-cascade ML
-pipeline under `SemantiK/dart_semantic/` + `lib/semantik/` — which **wholesale replaced DART**
+pipeline under `SemantiK/semantik_structure/` + `lib/semantik/` — which **wholesale replaced DART**
 (PyMuPDF/AGPL, retired). The data contract is deliberately UNCHANGED: SemantiK still emits the
 `data-dart-*` HTML provenance attributes, the `dart:{slug}#{block_id}` `sourceId` shape, runs under
 the `dart_conversion` workflow phase, and is dispatched via the `dart-converter` / `dart-chunker`

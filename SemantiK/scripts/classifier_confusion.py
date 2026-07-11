@@ -26,7 +26,7 @@ def main() -> None:
                     help="Cap rows for a faster smoke run (0 = all)")
     args = ap.parse_args()
 
-    from dart_semantic.classify import load_classifier
+    from semantik_structure.classify import load_classifier
     print(f"[load] {args.classifier}")
     m = load_classifier(args.classifier)
     tok = m["tokenizer"]

@@ -27,7 +27,7 @@ Design goals (in priority order):
 
 Pure module: stdlib + numpy only. NO torch, NO model loads, no IO. The
 ONLY first-party import is ``normalize_for_match`` from
-``dart_semantic.text_utils`` — reused (not re-implemented) so this aligner's
+``semantik_structure.text_utils`` — reused (not re-implemented) so this aligner's
 tokenization can never drift from the rest of the pipeline's match
 normalization.
 
@@ -46,7 +46,7 @@ from functools import lru_cache
 
 import numpy as np
 
-from dart_semantic.text_utils import normalize_for_match
+from semantik_structure.text_utils import normalize_for_match
 
 __all__ = [
     "SCHEMA_VERSION",
@@ -153,7 +153,7 @@ class FBView:
 class GoldView:
     """A normalized gold (HTML ground-truth) element view.
 
-    ``role`` is over the FULL gold role space (``dart_semantic.classify.Role``
+    ``role`` is over the FULL gold role space (``semantik_structure.classify.Role``
     values, as strings) — projection to the active head vocabulary happens at
     write time via :func:`project_rows`, NOT here.
     """

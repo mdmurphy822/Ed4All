@@ -94,16 +94,16 @@ def _bridge_json(*, runtime_mode: str = "real", exit_action: str = "ship_with_co
 
 
 def _force_inprocess_import_fail(monkeypatch):
-    """Inject a SemantiK.dart_semantic.pipeline_v2 WITHOUT run_pipeline_v2 so
+    """Inject a SemantiK.semantik_structure.pipeline_v2 WITHOUT run_pipeline_v2 so
     the seam's in-process lazy import raises ImportError → bridge arm."""
     pkg = types.ModuleType("SemantiK")
     pkg.__path__ = []
-    sub = types.ModuleType("SemantiK.dart_semantic")
+    sub = types.ModuleType("SemantiK.semantik_structure")
     sub.__path__ = []
-    mod = types.ModuleType("SemantiK.dart_semantic.pipeline_v2")
+    mod = types.ModuleType("SemantiK.semantik_structure.pipeline_v2")
     monkeypatch.setitem(sys.modules, "SemantiK", pkg)
-    monkeypatch.setitem(sys.modules, "SemantiK.dart_semantic", sub)
-    monkeypatch.setitem(sys.modules, "SemantiK.dart_semantic.pipeline_v2", mod)
+    monkeypatch.setitem(sys.modules, "SemantiK.semantik_structure", sub)
+    monkeypatch.setitem(sys.modules, "SemantiK.semantik_structure.pipeline_v2", mod)
 
 
 class _FakeCompleted:

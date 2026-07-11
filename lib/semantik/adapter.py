@@ -475,7 +475,7 @@ def _esc_text(value: str) -> str:
 
 # Region kinds that carry a GENUINE document heading (the SemantiK structure
 # graph's only heading kind is ``"heading"`` — see
-# ``SemantiK/dart_semantic/structure_graph.py::REGION_KINDS``). Only a block
+# ``SemantiK/semantik_structure/structure_graph.py::REGION_KINDS``). Only a block
 # of one of these kinds, AND carrying real ``heading_text``, gets a VISIBLE
 # ``<h3>``; every other block satisfies the aria-labelledby contract with a
 # visually-hidden label so we never fabricate a visible heading (the
@@ -1452,7 +1452,7 @@ def _promote_paragraph_block_to_heading(block: _AdapterBlock) -> None:
 # the audited ch02 — 509 of its 685 repeated-12gram excess in gold_compare).
 # Scrubbed HERE (the adapter seam) so the planned ``--ir`` re-render corrects
 # the CURRENT corpus without a re-conversion; the fusion-side scrub in
-# ``SemantiK/dart_semantic/vlm_fusion.py::_strip_markdown_structure`` keeps
+# ``SemantiK/semantik_structure/vlm_fusion.py::_strip_markdown_structure`` keeps
 # FUTURE extractions clean at source (salted ``|vlmfuse5``).
 #
 # Conservative by design: ONLY the nbsp entity-artifact shapes are folded —

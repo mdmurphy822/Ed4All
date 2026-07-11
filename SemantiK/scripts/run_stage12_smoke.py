@@ -23,7 +23,7 @@ Usage::
         --save-json /tmp/stage12_smoke.json
 
 The cascade body has been extracted into :func:`run_full_cascade`, which
-now lives in ``dart_semantic/cascade.py``, so the corpus-level eval
+now lives in ``semantik_structure/cascade.py``, so the corpus-level eval
 driver (`scripts/eval_full_cascade.py`) can call it once per PDF while
 the smoke harness keeps its original CLI surface and print contract.
 """
@@ -39,9 +39,9 @@ from pathlib import Path
 # Make the package importable when invoked as a script.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from dart_semantic.cascade import run_full_cascade  # noqa: E402
-from dart_semantic.theta import StageThirteenStubRequired  # noqa: E402
-from dart_semantic.validate import HtmlValidator  # noqa: E402
+from semantik_structure.cascade import run_full_cascade  # noqa: E402
+from semantik_structure.theta import StageThirteenStubRequired  # noqa: E402
+from semantik_structure.validate import HtmlValidator  # noqa: E402
 
 
 def main() -> int:
@@ -75,7 +75,7 @@ def main() -> int:
         print(msg.replace("[cascade]", "[smoke12]"), flush=True)
 
     # Theta strict-by-default banner (mirror eval driver — see
-    # dart_semantic/theta/_module_state.py).
+    # semantik_structure/theta/_module_state.py).
     if os.environ.get("DART_ALLOW_THETA_STUB", "").strip() == "1":
         print(
             "[smoke12] WARNING: DART_ALLOW_THETA_STUB=1 — semantic_preservation "

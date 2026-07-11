@@ -25,7 +25,7 @@ Three load-bearing guarantees (carried over from ``run_realpdf_build``)
   * FEATURE PARITY — the 20-dim layout vector is built by the SAME
     ``compute_span_layout_features`` the training rows + the eval rows use, whose
     formula is byte-identical to the council INFERENCE path
-    (``dart_semantic/council/structure.py::_compute_span_layout``). So a label the
+    (``semantik_structure/council/structure.py::_compute_span_layout``). So a label the
     head later mispredicts is attributable to the taxonomy/target gap, never to a
     feature skew between build-time and deploy-time.
   * COLUMN-CORRECT ORDER — extraction runs with ``SEMANTIK_COLUMN_ORDER=1`` AND
@@ -59,7 +59,7 @@ import os
 import sys
 from pathlib import Path
 
-# --- path bootstrap: make `data.*` / `dart_semantic.*` importable however invoked
+# --- path bootstrap: make `data.*` / `semantik_structure.*` importable however invoked
 _ROOT = Path(__file__).resolve().parents[1]  # the SemantiK repo root
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
@@ -88,13 +88,13 @@ from data.build_structure_data import (  # noqa: E402
     compute_span_layout_features,
     pedagogical_role_for,
 )
-from dart_semantic.extract_shared import (  # noqa: E402
+from semantik_structure.extract_shared import (  # noqa: E402
     _DEFAULT_PAGE_WIDTH,
     _pypdfium2_render_page_to_image,
     extract_shared,
     extract_shared_cached,
 )
-from dart_semantic.reading_order import column_ids_for_bboxes  # noqa: E402
+from semantik_structure.reading_order import column_ids_for_bboxes  # noqa: E402
 
 SCHEMA_VERSION = "realpdf-label-task/1.0"
 

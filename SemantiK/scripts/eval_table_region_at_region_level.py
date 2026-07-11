@@ -35,10 +35,10 @@ import time
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from dart_semantic.extract_shared import extract_shared, extract_shared_cached
-from dart_semantic.features import featurize_from_shared
-from dart_semantic.text_utils import jaccard_overlap
-from dart_semantic.validate import HtmlValidator
+from semantik_structure.extract_shared import extract_shared, extract_shared_cached
+from semantik_structure.features import featurize_from_shared
+from semantik_structure.text_utils import jaccard_overlap
+from semantik_structure.validate import HtmlValidator
 
 # Phase 3b builder reuse — same html walker + alignment
 from data.build_structure_data import extract_html_blocks
@@ -258,8 +258,8 @@ def process_pair(
 def load_structure_runtime():
     import torch  # noqa
     from transformers import AutoTokenizer  # noqa
-    from dart_semantic.council import structure as bert_structure
-    from dart_semantic.council.base import (
+    from semantik_structure.council import structure as bert_structure
+    from semantik_structure.council.base import (
         load_lora_adapter, load_shared_backbone,
     )
 
@@ -294,7 +294,7 @@ def _run_structure(features, peft_model, tok, heads, device,
     for each FeatureBlock — softmax probabilities, P(positive class) for
     binary heads."""
     import torch  # noqa
-    from dart_semantic.council.structure import (
+    from semantik_structure.council.structure import (
         _compute_span_layout, _group_by_page, _page_medians,
         LAYOUT_FEATURE_DIM, _block_in_table,
     )

@@ -1,7 +1,7 @@
 """Wave E / plan P6 — Ed4All-side SemantiK cascade graceful-stop boundary.
 
 Pins the ``MCP/tools/pipeline_tools.py`` half of the P6 contract (the SemantiK
-seam owns ``dart_semantic.stop_seam`` + its ``CascadeStopRequested``; this suite
+seam owns ``semantik_structure.stop_seam`` + its ``CascadeStopRequested``; this suite
 owns the Ed4All boundary that hands the sentinel PATH in and translates the
 SemantiK-local stop exception back to ``lib.generation.stop_control``):
 
@@ -57,7 +57,7 @@ def _clean_stop_env(monkeypatch):
 # SemantiK-local CascadeStopRequested, + a stop_seam carrying that class.
 # --------------------------------------------------------------------------
 class _FakeCascadeStop(RuntimeError):
-    """Stand-in for ``dart_semantic.stop_seam.CascadeStopRequested``."""
+    """Stand-in for ``semantik_structure.stop_seam.CascadeStopRequested``."""
 
     def __init__(self, site_id, sentinel_path=None):
         self.site_id = site_id
@@ -75,16 +75,16 @@ def _install_stopping_cascade(monkeypatch, sentinel_path):
 
     pkg = types.ModuleType("SemantiK")
     pkg.__path__ = []
-    sub = types.ModuleType("SemantiK.dart_semantic")
+    sub = types.ModuleType("SemantiK.semantik_structure")
     sub.__path__ = []
-    cascade = types.ModuleType("SemantiK.dart_semantic.cascade")
+    cascade = types.ModuleType("SemantiK.semantik_structure.cascade")
     cascade.run_pipeline_v2 = _raise_stop
-    seam = types.ModuleType("SemantiK.dart_semantic.stop_seam")
+    seam = types.ModuleType("SemantiK.semantik_structure.stop_seam")
     seam.CascadeStopRequested = _FakeCascadeStop
     monkeypatch.setitem(sys.modules, "SemantiK", pkg)
-    monkeypatch.setitem(sys.modules, "SemantiK.dart_semantic", sub)
-    monkeypatch.setitem(sys.modules, "SemantiK.dart_semantic.cascade", cascade)
-    monkeypatch.setitem(sys.modules, "SemantiK.dart_semantic.stop_seam", seam)
+    monkeypatch.setitem(sys.modules, "SemantiK.semantik_structure", sub)
+    monkeypatch.setitem(sys.modules, "SemantiK.semantik_structure.cascade", cascade)
+    monkeypatch.setitem(sys.modules, "SemantiK.semantik_structure.stop_seam", seam)
 
 
 def _install_importfail_cascade(monkeypatch):
@@ -92,12 +92,12 @@ def _install_importfail_cascade(monkeypatch):
     in-process import raises ImportError and falls to the bridge arm."""
     pkg = types.ModuleType("SemantiK")
     pkg.__path__ = []
-    sub = types.ModuleType("SemantiK.dart_semantic")
+    sub = types.ModuleType("SemantiK.semantik_structure")
     sub.__path__ = []
     monkeypatch.setitem(sys.modules, "SemantiK", pkg)
-    monkeypatch.setitem(sys.modules, "SemantiK.dart_semantic", sub)
-    # No ``SemantiK.dart_semantic.cascade`` submodule → ImportError on
-    # ``from SemantiK.dart_semantic.cascade import run_pipeline_v2``.
+    monkeypatch.setitem(sys.modules, "SemantiK.semantik_structure", sub)
+    # No ``SemantiK.semantik_structure.cascade`` submodule → ImportError on
+    # ``from SemantiK.semantik_structure.cascade import run_pipeline_v2``.
 
 
 # --------------------------------------------------------------------------

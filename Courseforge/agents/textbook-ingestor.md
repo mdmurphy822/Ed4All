@@ -79,7 +79,7 @@ def process_pdf_textbook(pdf_path: str, workspace: str) -> ProcessingResult:
     SemantiK is the sole conversion engine; the legacy DART / PyMuPDF batch
     processor is retired. The single chokepoint is
     MCP/tools/pipeline_tools.py::_run_semantik_v2_conversion, which runs
-    SemantiK.dart_semantic.cascade.run_pipeline_v2(pdf) -> build_chapters_ir
+    SemantiK.semantik_structure.cascade.run_pipeline_v2(pdf) -> build_chapters_ir
     -> normalize_cascade_to_ed4all, writes {stem}_accessible.html + two
     sidecars, and preserves the data-dart-* / dart:{slug}#{block_id}
     source-provenance wire contract that downstream stages still consume.

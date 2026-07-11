@@ -4,7 +4,7 @@ Usage:
     .venv/bin/python scripts/gen_wcag_coverage_doc.py
 
 The doc is GENERATED — edit
-``dart_semantic/gates/wcag_coverage.py:COVERAGE`` and re-run this.
+``semantik_structure/gates/wcag_coverage.py:COVERAGE`` and re-run this.
 ``tests/test_wcag_coverage.py`` fails when the two drift.
 """
 
@@ -16,7 +16,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from dart_semantic.gates.wcag_coverage import render_markdown  # noqa: E402
+from semantik_structure.gates.wcag_coverage import render_markdown  # noqa: E402
 
 OUT = REPO_ROOT / "docs" / "wcag_coverage.md"
 

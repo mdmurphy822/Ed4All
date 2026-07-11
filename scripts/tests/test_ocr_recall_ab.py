@@ -176,10 +176,10 @@ def test_side_cache_dir_stable_for_equal_configs(tmp_path):
 
 
 def _install_fake_extract(monkeypatch, capture: dict, *, raise_after: bool = False):
-    """Inject a fake dart_semantic.extract_shared with a capturing
+    """Inject a fake semantik_structure.extract_shared with a capturing
     extract_shared_cached, so run_side's lazy import resolves without SemantiK."""
-    pkg = types.ModuleType("dart_semantic")
-    mod = types.ModuleType("dart_semantic.extract_shared")
+    pkg = types.ModuleType("semantik_structure")
+    mod = types.ModuleType("semantik_structure.extract_shared")
 
     def extract_shared_cached(pdf_path, cache_dir=None):
         capture["config"] = os.environ.get(ab._ENV_CONFIG)
@@ -191,8 +191,8 @@ def _install_fake_extract(monkeypatch, capture: dict, *, raise_after: bool = Fal
 
     mod.extract_shared_cached = extract_shared_cached
     pkg.extract_shared = mod
-    monkeypatch.setitem(sys.modules, "dart_semantic", pkg)
-    monkeypatch.setitem(sys.modules, "dart_semantic.extract_shared", mod)
+    monkeypatch.setitem(sys.modules, "semantik_structure", pkg)
+    monkeypatch.setitem(sys.modules, "semantik_structure.extract_shared", mod)
 
 
 def test_run_side_pdf_sets_and_restores_env(monkeypatch, tmp_path):

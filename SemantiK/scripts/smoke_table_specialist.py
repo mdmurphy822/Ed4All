@@ -25,7 +25,7 @@ from collections import Counter
 from pathlib import Path
 
 
-# Repo root on sys.path so we can import dart_semantic.* and scripts.*
+# Repo root on sys.path so we can import semantik_structure.* and scripts.*
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
@@ -41,10 +41,10 @@ LABEL_LETTER = {
 
 def _run_inline_validation() -> None:
     """4a + 4b: synthetic 3x3, parity check vs. eval _format_input."""
-    from dart_semantic.council.table_cell_builder import (
+    from semantik_structure.council.table_cell_builder import (
         LAYOUT_FEATURE_DIM_V3, build_cells,
     )
-    from dart_semantic.region_detection import TableCandidate
+    from semantik_structure.region_detection import TableCandidate
     from scripts.eval_table_specialist_per_source import _format_input
 
     grid = [
@@ -157,10 +157,10 @@ def main() -> None:
     print(f"end-to-end smoke: {args.pdf}")
     print("=" * 70)
 
-    from dart_semantic.council.runner import run_bert
-    from dart_semantic.council.table_cell_builder import build_cells
-    from dart_semantic.extract_shared import extract_shared_cached
-    from dart_semantic.region_detection import detect_table_region_candidates
+    from semantik_structure.council.runner import run_bert
+    from semantik_structure.council.table_cell_builder import build_cells
+    from semantik_structure.extract_shared import extract_shared_cached
+    from semantik_structure.region_detection import detect_table_region_candidates
 
     print(f"[extract] {args.pdf}")
     shared = extract_shared_cached(args.pdf)

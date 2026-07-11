@@ -95,7 +95,7 @@ def _load_lora_into_model(
 ) -> None:
     """Replace the model's encoder with the saved PEFT adapter.
 
-    Mirrors how `dart_semantic.council.structure._load_heads` + the
+    Mirrors how `semantik_structure.council.structure._load_heads` + the
     council runner do it: PEFT's encoder is saved by
     `model.encoder.save_pretrained(adapter_dir)`, which writes
     `adapter_config.json` + `adapter_model.safetensors`. We use

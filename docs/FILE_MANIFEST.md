@@ -23,17 +23,17 @@ gitignore + trash cleanup list.
 
 ## SemantiK — PDF → accessible-HTML conversion engine
 
-The sole conversion path (replaced DART). `dart_semantic/` is the live v2
+The sole conversion path (replaced DART). `semantik_structure/` is the live v2
 semantic cascade; `data/ training/ scripts/ eval/` are the model-training +
 evaluation harness that produces its LoRA adapters and classifiers.
 
 | Kind | Paths |
 |------|-------|
-| Live conversion engine | `dart_semantic/` (205 tracked files): `pipeline_v2.py`, cascade, `region_detection.py`, `reading_order.py`, `region_order.py`, `structure_graph.py`, `pedagogical_units.py`, `vlm_extract.py`/`vlm_fusion.py`/`vlm_furniture.py` |
+| Live conversion engine | `semantik_structure/` (205 tracked files): `pipeline_v2.py`, cascade, `region_detection.py`, `reading_order.py`, `region_order.py`, `structure_graph.py`, `pedagogical_units.py`, `vlm_extract.py`/`vlm_fusion.py`/`vlm_furniture.py` |
 | Cascade subpackages | `assembler/` (27), `council/` (23), `qwen_specialists/` (47), `gates/` (13), `theta/` (8), `math_reconstruct/` (7), `soft_reranker/` (4), `tests/` (33) |
 | Training/eval harness | `training/` (8 `train_*.py`), `data/` (27 dataset builders), `scripts/` (69 eval/smoke/calibrate/infer utils incl. `run_cascade_json.py`, `infer_pdf.py`, `pdf_to_html.py`), `eval/` (4 metric scripts) |
 | Docs/config | `CLAUDE.md`, `architecture.md`, `README.semantic.md`, `pyproject.semantic.toml`, `LICENSE`, `docs/` |
-| **DATA / RUNTIME (gitignored)** | `models/`, `eval_reports/`, `data/*` (~55 dataset/cache/logs subdirs), `Plans/`, `MANIFEST.md`, `**/__pycache__/`, plus corpus-provenance **harvester source** deliberately kept out of the repo (`scripts/pair_from_*`, `fetch_*`, `crawl_*`, `mine_*`, `dart_semantic/parse_*.py`) |
+| **DATA / RUNTIME (gitignored)** | `models/`, `eval_reports/`, `data/*` (~55 dataset/cache/logs subdirs), `Plans/`, `MANIFEST.md`, `**/__pycache__/`, plus corpus-provenance **harvester source** deliberately kept out of the repo (`scripts/pair_from_*`, `fetch_*`, `crawl_*`, `mine_*`, `semantik_structure/parse_*.py`) |
 
 > The `_`-prefixed tracked scripts in `scripts/` (`_aggregate_v7_eval.py`,
 > `_compare_*_adapter_on_test.py`, `_diag_merge_structure.py`, etc.) are private

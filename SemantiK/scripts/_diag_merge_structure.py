@@ -13,8 +13,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from dart_semantic.council.orchestrator import run_council
-from dart_semantic.structure_graph import _get_signal, _top1
+from semantik_structure.council.orchestrator import run_council
+from semantik_structure.structure_graph import _get_signal, _top1
 
 
 def _fb_text(fb) -> str:

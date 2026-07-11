@@ -42,7 +42,7 @@ protects ARTIFACTS) is not in scope; the opt-out
 (``ED4ALL_GPU_LIFECYCLE=0/false/no/off``) exists for perf-sensitive runs where
 the per-boundary cold reload of a same-seat model hurts.
 
-Cross-venv twin: :mod:`SemantiK.dart_semantic.gpu_lifecycle` is a
+Cross-venv twin: :mod:`SemantiK.semantik_structure.gpu_lifecycle` is a
 self-contained ~parallel implementation of the ollama + torch arms, because the
 out-of-process SemantiK cascade bridge cannot import Ed4All's ``lib/``. Any
 change to the ``/api/ps`` sweep shape must land in BOTH modules — the twin

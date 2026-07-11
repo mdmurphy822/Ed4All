@@ -28,7 +28,7 @@ License discipline (feedback_license_policy — commercial-OK only):
     * Wikipedia/Commons (CC-BY-SA) is intentionally NOT a source here.
 
 Parsing reuses the repo's existing approach: BeautifulSoup with the ``lxml``
-tree-builder for HTML (as in ``dart_semantic/parse_ar5iv.py``) and the
+tree-builder for HTML (as in ``semantik_structure/parse_ar5iv.py``) and the
 ``lxml-xml`` tree-builder for JATS (as in ``scripts/pair_from_pmc.py``).
 
 Usage (always pin the GPU off — a QLoRA train owns it):

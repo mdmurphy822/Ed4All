@@ -7237,7 +7237,7 @@ def register_pipeline_tools(mcp):
                 "skip_link": 'class="skip' in content or "class='skip" in content,
                 "main_role": 'role="main"' in content or "role='main'" in content,
                 "aria_sections": 'aria-labelledby="' in content or "aria-labelledby='" in content,
-                "dart_semantic_classes": 'dart-section' in content or 'dart-document' in content
+                "semantik_structure_classes": 'dart-section' in content or 'dart-document' in content
             }
 
             all_valid = all(markers.values())
@@ -7831,7 +7831,7 @@ _SEMANTIK_RUNTIME_DIR_ENV = "SEMANTIK_RUNTIME_DIR"
 # or the fully out-of-process JSON bridge) and MUST NOT import Ed4All's
 # ``lib/generation/stop_control`` — so, exactly like the GPU-lifecycle
 # cross-venv twin, Ed4All resolves the active run's stop-sentinel PATH(s) and
-# hands them to the cascade's own ``dart_semantic.stop_seam`` via this env var
+# hands them to the cascade's own ``semantik_structure.stop_seam`` via this env var
 # (``os.pathsep``-joined). It carries a PATH, selects no provider/model, and is
 # a byte-identical no-op when unset → declared-env plumbing, NOT a behavior flag
 # (no LICENSING / behavior-flags row). The seam raises the SemantiK-local
@@ -7936,7 +7936,7 @@ def _semantik_stop_sentinel_env_value() -> Optional[str]:
     run's stop sentinels — the global ``<state_runs>/STOP_ALL`` and, when an
     ``ED4ALL_RUN_ID`` resolves, the run-scoped
     ``<state_runs>/<run_id>/control/STOP_REQUESTED`` — and joins them with
-    ``os.pathsep`` so the SemantiK cascade's cross-venv ``dart_semantic.stop_seam``
+    ``os.pathsep`` so the SemantiK cascade's cross-venv ``semantik_structure.stop_seam``
     twin (which must NOT import Ed4All's ``lib/``) can poll them at a seam
     boundary. Paths are built from ``stop_control``'s public sentinel-name
     constants + ``lib.paths.get_state_runs_dir`` (the SAME resolution
@@ -8023,7 +8023,7 @@ def _run_semantik_bridge_subprocess(
         # PRIMARY OOM fix and is ALWAYS applied (setdefault — an operator who
         # exported SEMANTIK_THETA_DEVICE=cuda to opt the theta head back onto
         # the GPU keeps their choice). SEMANTIK_THETA_DEVICE is read by
-        # dart_semantic.theta.semantic_preservation.load.
+        # semantik_structure.theta.semantic_preservation.load.
         #
         # PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True is OPT-IN via
         # SEMANTIK_EXPANDABLE_SEGMENTS because it can trigger a
@@ -8036,7 +8036,7 @@ def _run_semantik_bridge_subprocess(
         bridge_env.setdefault("SEMANTIK_THETA_DEVICE", "cpu")
         # Graceful-stop (P6): hand the child the run's stop-sentinel PATH(s) via
         # declared-env plumbing (alongside SEMANTIK_PYTHON / SEMANTIK_RUNTIME_DIR)
-        # so the cascade's cross-venv ``dart_semantic.stop_seam`` twin polls them
+        # so the cascade's cross-venv ``semantik_structure.stop_seam`` twin polls them
         # at a seam boundary and self-terminates instead of running the full
         # (~hours) authoring pass. Unset ⇒ every seam is a byte-identical no-op.
         _stop_sentinel = _semantik_stop_sentinel_env_value()
@@ -9252,7 +9252,7 @@ def _run_semantik_v2_conversion(
     from lib.semantik.adapter import normalize_cascade_to_ed4all
 
     # Graceful-stop (P6): publish the run's stop-sentinel PATH(s) into the env
-    # so BOTH the in-process cascade (its ``dart_semantic.stop_seam`` twin reads
+    # so BOTH the in-process cascade (its ``semantik_structure.stop_seam`` twin reads
     # ``os.environ`` per seam call) AND the bridge subprocess (``bridge_env =
     # dict(os.environ)``) can poll them and self-terminate at a seam boundary.
     # Declared-env plumbing (a PATH), unset ⇒ byte-identical no-op. Set (not
@@ -9270,16 +9270,16 @@ def _run_semantik_v2_conversion(
     #   (c) neither → fail-closed clear error (NO silent DART fallback).
     result: Any
     # The SemantiK package uses BARE top-level imports throughout
-    # (``from dart_semantic.assembler.types import ...``), so the
-    # ``dart_semantic`` package must be importable as a TOP-LEVEL name. Put the
+    # (``from semantik_structure.assembler.types import ...``), so the
+    # ``semantik_structure`` package must be importable as a TOP-LEVEL name. Put the
     # ``SemantiK/`` dir on sys.path before the in-process import attempt — this
     # mirrors ``SemantiK/scripts/run_cascade_json.py`` and lets the bare
-    # ``dart_semantic.*`` re-imports inside ``cascade`` resolve. Idempotent.
+    # ``semantik_structure.*`` re-imports inside ``cascade`` resolve. Idempotent.
     _semantik_dir = str(PROJECT_ROOT / "SemantiK")
     if _semantik_dir not in sys.path:
         sys.path.insert(0, _semantik_dir)
     try:
-        from SemantiK.dart_semantic.cascade import run_pipeline_v2
+        from SemantiK.semantik_structure.cascade import run_pipeline_v2
     except ImportError as imp_exc:
         # (b) Subprocess bridge — only when the operator wired the env vars.
         if (os.environ.get(_SEMANTIK_PYTHON_ENV) or "").strip():
@@ -9334,14 +9334,14 @@ def _run_semantik_v2_conversion(
         # vendored Qwen GGUFs + council weights are on disk — which the R4
         # mock-trap (step 2 below) then refuses to ship. ``resolve_local_v2_config``
         # builds a config populated from the on-disk vendored weights (via
-        # ``dart_semantic.paths.model_dir`` → honors SEMANTIK_MODEL_DIR /
+        # ``semantik_structure.paths.model_dir`` → honors SEMANTIK_MODEL_DIR /
         # SEMANTIK_HOME), flipping the gate to ``"real"`` for the local arm.
         # Each slot is None when its artifact is absent, so a partial install
         # degrades gracefully (it does not fabricate a path). Endpoint mode is
         # unaffected — ``specialist_provider_is_endpoint()`` already forces
         # ``"real"`` regardless of the local config.
         try:
-            from SemantiK.dart_semantic.v2_config import resolve_local_v2_config
+            from SemantiK.semantik_structure.v2_config import resolve_local_v2_config
 
             _semantik_config = resolve_local_v2_config()
         except Exception as cfg_exc:  # noqa: BLE001 — config resolution must never crash the seam
@@ -9351,7 +9351,7 @@ def _run_semantik_v2_conversion(
                 cfg_exc,
             )
             _semantik_config = None
-        # Graceful-stop (P6): the in-process cascade's ``dart_semantic.stop_seam``
+        # Graceful-stop (P6): the in-process cascade's ``semantik_structure.stop_seam``
         # twin raises the SemantiK-local ``CascadeStopRequested`` at a seam
         # boundary when it observes the handed-in sentinel. Import it lazily
         # here (the ``run_pipeline_v2`` import already succeeded, so the seam
@@ -9359,7 +9359,7 @@ def _run_semantik_v2_conversion(
         # match if the seam is somehow absent, so the broad handler below still
         # fails closed.
         try:
-            from SemantiK.dart_semantic.stop_seam import (
+            from SemantiK.semantik_structure.stop_seam import (
                 CascadeStopRequested as _CascadeStopRequested,
             )
         except Exception:  # noqa: BLE001 — seam absent → never-matching except

@@ -1,6 +1,6 @@
 """Phase 1.5 — atomically register a converted Qwen GGUF in config.yaml.
 
-Updates ``dart_semantic/qwen_specialists/config.yaml`` so
+Updates ``semantik_structure/qwen_specialists/config.yaml`` so
 ``adapters.<name>.adapter_path`` points at a freshly-converted GGUF.
 The previous config is backed up to
 ``models/qwen_specialists/_config_history/config.<UNIX-TS>.yaml.bak``
@@ -35,7 +35,7 @@ import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CONFIG = REPO_ROOT / "dart_semantic" / "qwen_specialists" / "config.yaml"
+DEFAULT_CONFIG = REPO_ROOT / "semantik_structure" / "qwen_specialists" / "config.yaml"
 DEFAULT_BACKUP_DIR = REPO_ROOT / "models" / "qwen_specialists" / "_config_history"
 
 KNOWN_ADAPTERS = {"math", "table", "prose", "gap_fill"}

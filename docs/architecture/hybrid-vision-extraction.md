@@ -3,7 +3,7 @@
 **Status:** design / proposal (2026-07-11)
 **Owner workstream:** scan-fidelity (folds into pipeline-dev)
 **Measurement harness:** `scripts/integration/vision_ocr_probe.py`
-**Relates to:** SemantiK 13-stage cascade (`SemantiK/dart_semantic/cascade.py`),
+**Relates to:** SemantiK 13-stage cascade (`SemantiK/semantik_structure/cascade.py`),
 `docs/LICENSING.md`, `docs/operations/nemotron-spark-serving.md`
 
 ## 1. Problem: Tesseract is the quality ceiling

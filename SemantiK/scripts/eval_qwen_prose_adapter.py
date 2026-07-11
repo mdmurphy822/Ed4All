@@ -26,7 +26,7 @@ Metrics (all mirror the math harness, retargeted to accessible HTML):
     and tag imbalance the model introduces.
   * ``axe_pass`` — prose targets ARE accessible HTML, so we run the real
     axe-core wcag22aa ruleset (the same gate that admitted the training
-    data, ``dart_semantic.validate.HtmlValidator``) over each fragment
+    data, ``semantik_structure.validate.HtmlValidator``) over each fragment
     wrapped in a minimal lang-tagged document. Reported alongside the
     GOLD pass rate as a baseline, because some WCAG 2.2 rules (e.g.
     target-size on small inline cite links) fire on gold too without real
@@ -268,7 +268,7 @@ def run_axe(fragments: list[str]) -> list[dict]:
     """Run the wcag22aa axe gate over each fragment. Returns one dict per
     fragment: {ok, error, blocking:[rule ids]}. Malformed HTML is reported
     as a failure rather than crashing the batch."""
-    from dart_semantic.validate import HtmlValidator
+    from semantik_structure.validate import HtmlValidator
 
     results: list[dict] = []
     with HtmlValidator() as v:
@@ -321,7 +321,7 @@ def gen_safetensors(
         BitsAndBytesConfig,
     )
 
-    from dart_semantic.qwen_specialists.chat_format import wrap_for_qwen
+    from semantik_structure.qwen_specialists.chat_format import wrap_for_qwen
 
     tok = AutoTokenizer.from_pretrained(adapter_dir, trust_remote_code=True)
     bnb = BitsAndBytesConfig(

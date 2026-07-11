@@ -50,12 +50,12 @@ from pathlib import Path
 
 from bs4 import BeautifulSoup
 
-from dart_semantic.extract_shared import extract_shared, extract_shared_cached
-from dart_semantic.types import FeatureBlock, RawBlock
-from dart_semantic.features import _caps_pattern, feature_block_to_classifier_input
-from dart_semantic.text_utils import jaccard_overlap
-from dart_semantic.validate import HtmlValidator
-from dart_semantic.worker_pool import run_in_pool
+from semantik_structure.extract_shared import extract_shared, extract_shared_cached
+from semantik_structure.types import FeatureBlock, RawBlock
+from semantik_structure.features import _caps_pattern, feature_block_to_classifier_input
+from semantik_structure.text_utils import jaccard_overlap
+from semantik_structure.validate import HtmlValidator
+from semantik_structure.worker_pool import run_in_pool
 
 
 # ---------- ground-truth label extraction ----------

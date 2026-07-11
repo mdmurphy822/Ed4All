@@ -54,10 +54,10 @@ from typing import Any
 # Make the package importable when invoked as a script.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from dart_semantic.theta import StageThirteenStubRequired  # noqa: E402
-from dart_semantic.validate import HtmlValidator  # noqa: E402
+from semantik_structure.theta import StageThirteenStubRequired  # noqa: E402
+from semantik_structure.validate import HtmlValidator  # noqa: E402
 
-from dart_semantic.cascade import run_full_cascade  # noqa: E402
+from semantik_structure.cascade import run_full_cascade  # noqa: E402
 
 
 # Pair-id stem regex: "0704_1551__00_quantum_zeno_effect..." -> the
@@ -308,7 +308,7 @@ def _aggregate(per_pdf: list[dict]) -> dict[str, Any]:
         "region_kinds_total": dict(rk_counter),
         # merge_or_split "missing" == page-boundary count by design (builder
         # pairs within-page only; expected is global N-1) — see the expected
-        # computation in dart_semantic/council/orchestrator.py.
+        # computation in semantik_structure/council/orchestrator.py.
         "council_signal_coverage_missing_total": dict(coverage_missing),
         "council_signal_coverage_expected_total": dict(coverage_expected),
         "council_signal_coverage_observed_total": dict(coverage_observed),
@@ -666,7 +666,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # ---------- theta stub-fallback banner ----------
     # The theta semantic-preservation cross-encoder is strict-by-default
-    # (see dart_semantic/theta/_module_state.py). When the model is
+    # (see semantik_structure/theta/_module_state.py). When the model is
     # missing/broken, evaluate() raises unless DART_ALLOW_THETA_STUB=1
     # is set. Surface the active state loudly so a human reading the
     # log knows whether theta_score includes a 0.7 placeholder.

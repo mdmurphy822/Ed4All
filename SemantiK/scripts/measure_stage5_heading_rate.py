@@ -98,7 +98,7 @@ def _measure_one(pdf_path: Path) -> dict:
     Stage-5 build lets us reuse a single council run across all
     thresholds.
     """
-    from dart_semantic.council.orchestrator import run_council
+    from semantik_structure.council.orchestrator import run_council
 
     t0 = time.time()
     state, regions, feature_blocks = run_council(pdf_path)
@@ -108,7 +108,7 @@ def _measure_one(pdf_path: Path) -> dict:
     #
     # Stage 5's heading-pass reads the *calibrated* twin (post-hoc
     # temperature applied at inference time; see
-    # ``dart_semantic/council/structure.py``). Mirror that here so the
+    # ``semantik_structure/council/structure.py``). Mirror that here so the
     # heading-rate measurement reflects what Stage 5 actually emits.
     # Fall back to the raw ``is_heading`` signal for pre-calibration
     # checkpoints where the calibrated twin doesn't exist.

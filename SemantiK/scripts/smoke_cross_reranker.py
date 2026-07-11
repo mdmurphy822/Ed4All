@@ -34,7 +34,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 
 def _make_signal(head_name, region_id, top_k_labels, top_k_confidences):
-    from dart_semantic.council.types import TypedSignal
+    from semantik_structure.council.types import TypedSignal
     return TypedSignal(
         head_name=head_name,
         region_id=region_id,
@@ -44,8 +44,8 @@ def _make_signal(head_name, region_id, top_k_labels, top_k_confidences):
 
 
 def _validate_arbiter() -> None:
-    from dart_semantic.council.cross_reranker import arbitrate
-    from dart_semantic.council.types import (
+    from semantik_structure.council.cross_reranker import arbitrate
+    from semantik_structure.council.types import (
         BertOutput,
         CouncilState,
         MathCandidate,
@@ -177,7 +177,7 @@ def _validate_arbiter() -> None:
 
 
 def _validate_topo_order() -> None:
-    from dart_semantic.council.routing import topological_order
+    from semantik_structure.council.routing import topological_order
     order = topological_order()
     assert len(order) == 5, order
     assert "merge_or_split" in order
@@ -300,8 +300,8 @@ def main() -> None:
     print(f"end-to-end smoke: {args.pdf}")
     print("=" * 70)
 
-    from dart_semantic.council.cross_reranker import arbitrate
-    from dart_semantic.council.orchestrator import run_council
+    from semantik_structure.council.cross_reranker import arbitrate
+    from semantik_structure.council.orchestrator import run_council
 
     t0 = time.time()
     state, regions, _feature_blocks = run_council(

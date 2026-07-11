@@ -14,7 +14,7 @@ from pathlib import Path
 
 
 def _pair_pdf_path(pair_path: Path) -> Path | None:
-    from dart_semantic.prerender_cache import cache_path_for
+    from semantik_structure.prerender_cache import cache_path_for
     try:
         pair = json.loads(pair_path.read_text())
     except Exception:
@@ -44,16 +44,16 @@ def main() -> None:
     ap.add_argument("--model-path", default="zai-org/GLM-OCR")
     args = ap.parse_args()
 
-    from dart_semantic.extract_shared import extract_shared_cached
-    from dart_semantic.glm_ocr_cache import (
+    from semantik_structure.extract_shared import extract_shared_cached
+    from semantik_structure.glm_ocr_cache import (
         CacheKey, get as cache_get, sha256_file,
     )
-    from dart_semantic.region_detection import (
+    from semantik_structure.region_detection import (
         detect_low_conf_tesseract_regions,
         detect_math_regions,
         detect_table_regions,
     )
-    from dart_semantic.glm_ocr import PROMPT_FORMULA, PROMPT_TABLE, PROMPT_TEXT
+    from semantik_structure.glm_ocr import PROMPT_FORMULA, PROMPT_TABLE, PROMPT_TEXT
 
     def _prompt_for(kind: str) -> str:
         return {"math": PROMPT_FORMULA,
@@ -109,8 +109,8 @@ def main() -> None:
         return
 
     # Phase 2: OCR the misses
-    from dart_semantic.glm_ocr import load_glm_ocr, unload_glm_ocr
-    from dart_semantic.glm_ocr_enrich import enrich_shared
+    from semantik_structure.glm_ocr import load_glm_ocr, unload_glm_ocr
+    from semantik_structure.glm_ocr_enrich import enrich_shared
     print(f"[load] {args.model_path}", file=sys.stderr)
     glm = load_glm_ocr(args.model_path)
     try:

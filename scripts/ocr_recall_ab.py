@@ -45,7 +45,7 @@ import sys
 from pathlib import Path
 
 # sys.path: repo root + scripts/ + SemantiK/ so ``gold_compare`` and (lazily)
-# ``dart_semantic.extract_shared`` resolve when run directly (mirrors
+# ``semantik_structure.extract_shared`` resolve when run directly (mirrors
 # semantik_rerender.py + test_gold_compare.py precedents).
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _SCRIPTS_DIR = Path(__file__).resolve().parent
@@ -150,7 +150,7 @@ def run_side(
         else:
             os.environ.pop(_ENV_USER_WORDS, None)
 
-        from dart_semantic.extract_shared import extract_shared_cached  # noqa: E402
+        from semantik_structure.extract_shared import extract_shared_cached  # noqa: E402
 
         shared = extract_shared_cached(path, cache_dir=cache_dir)
     finally:

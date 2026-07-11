@@ -5,7 +5,7 @@ candidate). Against a hosted endpoint (NVIDIA) that ~40-req/min rate cap is
 exhausted by hundreds of per-block POSTs that then HTTP-429 on ~every call.
 This module is the Courseforge-native batching primitive that packs many
 blocks into ONE POST — mirroring the SHAPE of the SemantiK Stage-6 batch
-(``SemantiK/dart_semantic/qwen_specialists/runner.py::_pack_batches`` +
+(``SemantiK/semantik_structure/qwen_specialists/runner.py::_pack_batches`` +
 ``endpoint_runtime.py::parse_batch_envelope``) without sharing the SemantiK
 code: the envelope keys differ (``CF_BLOCK`` not ``DART_REGION``), the
 per-block budget is the rewrite max_tokens (not a region ``max_new_tokens``),

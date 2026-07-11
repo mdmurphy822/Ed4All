@@ -15,7 +15,7 @@ Covers the Phase-0 contract of ``data/structure_align.py``:
     loop matched PLUS at least one block the greedy version would have dropped
 
 No GPU, no model, no IO — pure data structures + numpy. This file inlines the
-SemantiK-root sys.path bootstrap (mirroring ``dart_semantic/tests/conftest.py``)
+SemantiK-root sys.path bootstrap (mirroring ``semantik_structure/tests/conftest.py``)
 so ``from data.structure_align import ...`` resolves when pytest collects it
 directly, without adding a conftest.py (Phase-0 ships exactly two new files).
 """
@@ -43,7 +43,7 @@ from data.structure_align import (  # noqa: E402
     project_rows,
     sim,
 )
-from dart_semantic.text_utils import jaccard_overlap  # noqa: E402
+from semantik_structure.text_utils import jaccard_overlap  # noqa: E402
 
 # The active head vocabulary the trainer uses (mirror of
 # build_structure_data.ROLE_NAMES — kept local so the test is independent of

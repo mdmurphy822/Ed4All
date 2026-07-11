@@ -185,7 +185,7 @@ def _wrap_doc(fragment: str) -> str:
 
 
 def run_axe(fragments: list[str]) -> list[dict]:
-    from dart_semantic.validate import HtmlValidator
+    from semantik_structure.validate import HtmlValidator
     out: list[dict] = []
     with HtmlValidator() as v:
         for frag in fragments:
@@ -216,7 +216,7 @@ def gen_safetensors(sample, adapter_dir, base_model, max_new_tokens):
     from peft import PeftModel
     from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
-    from dart_semantic.qwen_specialists.chat_format import wrap_for_qwen
+    from semantik_structure.qwen_specialists.chat_format import wrap_for_qwen
 
     tok = AutoTokenizer.from_pretrained(adapter_dir, trust_remote_code=True)
     bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16,

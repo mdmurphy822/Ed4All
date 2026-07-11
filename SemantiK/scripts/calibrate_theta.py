@@ -12,7 +12,7 @@ semantic-preservation cross-encoder, forced onto CPU), fits
 per-dimension weights that separate clean from degraded variants, picks
 thresholds/floors from the fitted composite distribution, and writes a
 provenance-carrying report. ``--write-config`` regenerates
-``dart_semantic/theta/config.yaml`` (theta-config-2.0) from the fit.
+``semantik_structure/theta/config.yaml`` (theta-config-2.0) from the fit.
 
 Perturbation taxonomy (adapted from the document-level analogues of
 ``scripts/build_semantic_preservation_dataset.py`` — sentence
@@ -61,7 +61,7 @@ from __future__ import annotations
 import os
 
 # CPU enforcement MUST precede any torch import (transitively via
-# dart_semantic.theta). The GPU is off-limits during calibration runs
+# semantik_structure.theta). The GPU is off-limits during calibration runs
 # (train CUDA-context guard) and the v8 cross-encoder runs fine on CPU.
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
 os.environ["DART_THETA_DEVICE"] = "cpu"
@@ -87,10 +87,10 @@ from lxml import html as lxml_html
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from dart_semantic.assembler.types import AssembledDoc, GapKind, GapSlot  # noqa: E402
-from dart_semantic.theta.evaluator import evaluate  # noqa: E402
-from dart_semantic.theta.types import _WEIGHT_KEYS  # noqa: E402
-from dart_semantic.types import FeatureBlock, RawBlock  # noqa: E402
+from semantik_structure.assembler.types import AssembledDoc, GapKind, GapSlot  # noqa: E402
+from semantik_structure.theta.evaluator import evaluate  # noqa: E402
+from semantik_structure.theta.types import _WEIGHT_KEYS  # noqa: E402
+from semantik_structure.types import FeatureBlock, RawBlock  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -1058,7 +1058,7 @@ def main() -> None:
     parser.add_argument(
         "--write-config",
         action="store_true",
-        help="regenerate dart_semantic/theta/config.yaml from the fit",
+        help="regenerate semantik_structure/theta/config.yaml from the fit",
     )
     parser.add_argument(
         "--date",
@@ -1074,7 +1074,7 @@ def main() -> None:
     # DART_ALLOW_THETA_STUB scrubbed above) if it can't load, so we never
     # calibrate 8 weights against 7 real dims + a 0.7 constant.
     _print("[calibrate] loading semantic-preservation cross-encoder (CPU)...")
-    from dart_semantic.theta._module_state import _get_model
+    from semantik_structure.theta._module_state import _get_model
 
     bundle = _get_model()
     if bundle is None:
@@ -1236,11 +1236,11 @@ def main() -> None:
     _print(f"[calibrate] report written to {args.out}")
 
     if args.write_config:
-        config_path = REPO_ROOT / "dart_semantic/theta/config.yaml"
+        config_path = REPO_ROOT / "semantik_structure/theta/config.yaml"
         write_config(config_path, weights, tau_conf, tau_retry, floors, calibration_block)
         _print(f"[calibrate] config regenerated at {config_path} ({CONFIG_VERSION})")
         # Validate the regenerated config loads (loudly catches a bad write).
-        from dart_semantic.theta.types import _reset_theta_config_cache, load_theta_config
+        from semantik_structure.theta.types import _reset_theta_config_cache, load_theta_config
 
         _reset_theta_config_cache()
         cfg = load_theta_config()

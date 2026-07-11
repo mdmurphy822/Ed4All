@@ -72,10 +72,10 @@ from pathlib import Path
 
 from bs4 import BeautifulSoup, Tag
 
-from dart_semantic.extract_shared import extract_shared, extract_shared_cached
-from dart_semantic.text_utils import jaccard_overlap
-from dart_semantic.validate import HtmlValidator
-from dart_semantic.worker_pool import run_in_pool
+from semantik_structure.extract_shared import extract_shared, extract_shared_cached
+from semantik_structure.text_utils import jaccard_overlap
+from semantik_structure.validate import HtmlValidator
+from semantik_structure.worker_pool import run_in_pool
 
 # Reuse Phase 3b layout helpers — the cascade input rides the SAME 20-dim
 # layout vector (order/dim must match exactly so the trained Structure
@@ -1248,8 +1248,8 @@ def _load_structure_inference_bundle():
     ``layout_norm``, ``layout_mlp``."""
     from transformers import AutoTokenizer  # noqa: WPS433
 
-    from dart_semantic.council import structure as bert_structure
-    from dart_semantic.council.base import (
+    from semantik_structure.council import structure as bert_structure
+    from semantik_structure.council.base import (
         load_lora_adapter,
         load_shared_backbone,
     )

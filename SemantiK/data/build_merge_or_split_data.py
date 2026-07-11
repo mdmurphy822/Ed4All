@@ -81,7 +81,7 @@ JOIN_TYPE_TO_ID = {n: i for i, n in enumerate(JOIN_TYPES)}
 #
 # ORDER IS STABLE — the layout MLP weights are tied to this exact
 # dimension order. Both the trainer and the runtime
-# (dart_semantic/council/merge_or_split.py) MUST produce vectors in this
+# (semantik_structure/council/merge_or_split.py) MUST produce vectors in this
 # order. To add a feature: append to the end and bump LAYOUT_FEATURE_DIM.
 # Re-training is required because the MLP input dim changes.
 
@@ -551,7 +551,7 @@ def _column_ids(spans: list[dict], page_w: float) -> list[int]:
 
 
 def _is_artifact(span: dict, *, page_h: float) -> bool:
-    """Heuristic from `dart_semantic.classify`'s _rule_page_header /
+    """Heuristic from `semantik_structure.classify`'s _rule_page_header /
     _rule_page_footer: short text in the top/bottom 5% of the page.
     """
     bbox = span.get("bbox") or []
@@ -808,7 +808,7 @@ def build_pair_rows_for_paper(
     Returns ``(rows, paper_stats)``. Stats include n_pages, n_spans,
     n_pairs, n_aligned_spans for the coverage report.
     """
-    from dart_semantic.extract_shared import extract_shared_cached
+    from semantik_structure.extract_shared import extract_shared_cached
 
     shared = extract_shared_cached(pdf_path, cache_dir=extract_cache_dir)
     blocks = walk_ar5iv_blocks(html)
@@ -991,7 +991,7 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
 
-    # Make repo importable so dart_semantic.extract_shared resolves.
+    # Make repo importable so semantik_structure.extract_shared resolves.
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
     pair_files = sorted(args.pairs_dir.glob("*.json"))

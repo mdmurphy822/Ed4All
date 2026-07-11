@@ -9,13 +9,13 @@ subprocess bridge that ``MCP/tools/pipeline_tools.py::_run_semantik_v2_conversio
 shells out to when the in-process ``run_pipeline_v2`` import is unavailable
 (the heavy deps are absent from Ed4All's venv by design).
 
-The cascade (``dart_semantic.cascade.run_pipeline_v2``) resolves its models
+The cascade (``semantik_structure.cascade.run_pipeline_v2``) resolves its models
 relative to the current working directory (council/theta/qwen/figure-router
 caches). Therefore this script MUST be invoked with ``cwd`` set to the
 SemantiK runtime repo root (the Ed4All seam passes
 ``cwd=SEMANTIK_RUNTIME_DIR``), OR the operator must export the model-dir env
 the cascade reads. The script itself is cwd-independent in its own imports
-(it imports ``dart_semantic`` which the runtime venv has installed/on-path),
+(it imports ``semantik_structure`` which the runtime venv has installed/on-path),
 but the cascade's relative model resolution is NOT — hence the cwd contract.
 
 Output contract (the JSON file written to ``--out-json``):
@@ -107,9 +107,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 # Prioritize the VENDORED SemantiK package (this script's repo) over any
-# ``dart_semantic`` an interpreter's venv may have editable-installed (e.g. the
+# ``semantik_structure`` an interpreter's venv may have editable-installed (e.g. the
 # Semantic source repo whose venv we borrow for the heavy runtime deps). Only
-# the vendored copy carries the relocatable ``dart_semantic.paths`` resolver
+# the vendored copy carries the relocatable ``semantik_structure.paths`` resolver
 # (honors SEMANTIK_MODEL_DIR) + the region_provenance surfacing + the R7 theta
 # device knob; the installed copy uses CWD-relative model paths and would break.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -162,7 +162,7 @@ def _resolve_structure_review(result: Any) -> Optional[List[Dict[str, Any]]]:
     result and promote it to a top-level bridge key (Phase 3 item 7).
 
     The audit lives at ``result.cascade["conformance_audit"]["structure_review"]``
-    (``SemantiK/dart_semantic/cascade.py`` builds it as a list of
+    (``SemantiK/semantik_structure/cascade.py`` builds it as a list of
     ``ReviewVerdict``-as-dicts when the Stage-5d reviewer ran, ``None`` when
     the reviewer was off). The per-region ``review`` keys already ride through
     ``_coerce_region_provenance`` verbatim (it copies each region dict); this
@@ -371,10 +371,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     pdf = args.pdf
 
     # Lazy/guarded import — a missing runtime dep (axe_playwright_python /
-    # llama_cpp / torch / dart_semantic not on path) becomes a structured
+    # llama_cpp / torch / semantik_structure not on path) becomes a structured
     # {"error": ...} JSON rather than a bare traceback the seam can't parse.
     try:
-        from dart_semantic.cascade import run_pipeline_v2
+        from semantik_structure.cascade import run_pipeline_v2
     except Exception as exc:  # noqa: BLE001 — any import failure → clear error
         _write_json(
             out_json,

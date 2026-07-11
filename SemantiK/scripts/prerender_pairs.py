@@ -1,7 +1,7 @@
 """One-time batch: warm the HTML→PDF render cache.
 
 For every pair file without `local_pdf`, compute the deterministic
-cache path (see dart_semantic.prerender_cache) and render the
+cache path (see semantik_structure.prerender_cache) and render the
 `output_html` to that path with Playwright. Skips entries already in
 the cache, so the script is idempotent and safely resumable.
 
@@ -25,8 +25,8 @@ import sys
 import time
 from pathlib import Path
 
-from dart_semantic.prerender_cache import DEFAULT_CACHE_DIR, cache_path_for
-from dart_semantic.worker_pool import run_in_pool
+from semantik_structure.prerender_cache import DEFAULT_CACHE_DIR, cache_path_for
+from semantik_structure.worker_pool import run_in_pool
 
 
 def iter_pairs(pair_dirs: list[Path]) -> list[tuple[str, str]]:
@@ -57,7 +57,7 @@ def iter_pairs(pair_dirs: list[Path]) -> list[tuple[str, str]]:
 
 def render_one(validator, work: tuple[str, str]) -> dict:
     """Worker body: render one HTML→PDF into the cache, atomically."""
-    from dart_semantic.prerender_cache import cache_path_for, get_or_render
+    from semantik_structure.prerender_cache import cache_path_for, get_or_render
     pair_path, html = work
     stats = {"pair": Path(pair_path).name, "ok": False, "error": None}
     try:

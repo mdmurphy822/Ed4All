@@ -98,7 +98,7 @@ _REQUIRED_MARKERS: Dict[str, Tuple[str, ...]] = {
     "skip_link": ('class="skip', "class='skip"),
     "main_role": ('role="main"', "role='main'"),
     "aria_sections": ('aria-labelledby="', "aria-labelledby='"),
-    "dart_semantic_classes": ("dart-section", "dart-document"),
+    "semantik_structure_classes": ("dart-section", "dart-document"),
 }
 
 # Regex for finding top-level <section> open tags. Used for Wave 8

@@ -25,7 +25,7 @@ rules that produce conformance are visible code, not weights.
 
 | Path | What |
 |------|------|
-| `SemantiK/dart_semantic/` | The 13-stage cascade + model runtimes |
+| `SemantiK/semantik_structure/` | The 13-stage cascade + model runtimes |
 | `lib/semantik/` | The Ed4All-facing adapter seam (output-contract normalizer + deterministic front-matter filter) |
 | `MCP/tools/pipeline_tools.py` | The bridge wiring into the Ed4All pipeline |
 | [`architecture.md`](architecture.md) | **Canonical** cascade deep-dive (read this for the design) |
@@ -34,7 +34,7 @@ rules that produce conformance are visible code, not weights.
 
 ## The cascade at a glance
 
-Entry point: `dart_semantic/cascade.py::run_full_cascade` (reachable as
+Entry point: `semantik_structure/cascade.py::run_full_cascade` (reachable as
 `pipeline_v2.run(pdf, mode="v2")`). Per-stage depth is in
 [`architecture.md`](architecture.md); the one-liner map:
 

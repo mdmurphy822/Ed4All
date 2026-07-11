@@ -45,7 +45,7 @@ Metrics
   * ``wellformed`` — fragment parses as XML (catches truncation / tag
     imbalance).
   * ``axe_pass`` / ``axe_regression`` — the real wcag22aa axe gate
-    (``dart_semantic.validate.HtmlValidator``) over each table wrapped in a
+    (``semantik_structure.validate.HtmlValidator``) over each table wrapped in a
     minimal lang-tagged doc. Tables trigger table-specific WCAG rules
     (td-headers-attr, th-has-data-cells, scope-attr-valid), so this is the
     sharpest accessibility signal of any adapter. ``axe_regression`` (gold
@@ -314,7 +314,7 @@ def _wrap_doc(fragment: str) -> str:
 
 
 def run_axe(fragments: list[str]) -> list[dict]:
-    from dart_semantic.validate import HtmlValidator
+    from semantik_structure.validate import HtmlValidator
 
     results: list[dict] = []
     with HtmlValidator() as v:
@@ -364,7 +364,7 @@ def gen_safetensors(
     from peft import PeftModel
     from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
-    from dart_semantic.qwen_specialists.chat_format import wrap_for_qwen
+    from semantik_structure.qwen_specialists.chat_format import wrap_for_qwen
 
     tok = AutoTokenizer.from_pretrained(adapter_dir, trust_remote_code=True)
     bnb = BitsAndBytesConfig(

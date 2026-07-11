@@ -155,7 +155,7 @@ def _parse_flags(flags_str: str) -> dict:
 
 # ---------- alignment ----------
 
-from dart_semantic.text_utils import jaccard_overlap as _text_overlap
+from semantik_structure.text_utils import jaccard_overlap as _text_overlap
 
 
 def align(ocr_lines: list[tuple[str, dict]],

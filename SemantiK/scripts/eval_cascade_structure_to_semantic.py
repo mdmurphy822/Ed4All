@@ -124,8 +124,8 @@ def _load_semantic_runtime():
     import torch  # noqa
     from transformers import AutoTokenizer  # noqa
 
-    from dart_semantic.council import semantic as bert_semantic
-    from dart_semantic.council.base import (
+    from semantik_structure.council import semantic as bert_semantic
+    from semantik_structure.council.base import (
         load_lora_adapter, load_shared_backbone,
     )
 
@@ -199,7 +199,7 @@ def run_teacher_mode(
     """Re-run Semantic on the test split using stored cascade vectors.
     No Structure inference. Adds per-source breakdown to what the
     trainer already prints."""
-    from dart_semantic.council.semantic import (
+    from semantik_structure.council.semantic import (
         BOILERPLATE_LABELS, DOC_ROLE_NAMES,
     )
 
@@ -326,8 +326,8 @@ def _structure_runtime():
     import torch  # noqa
     from transformers import AutoTokenizer  # noqa
 
-    from dart_semantic.council import structure as bert_structure
-    from dart_semantic.council.base import (
+    from semantik_structure.council import structure as bert_structure
+    from semantik_structure.council.base import (
         load_lora_adapter, load_shared_backbone,
     )
 
@@ -419,16 +419,16 @@ def run_endtoend_mode(
     and match each predicted span back to test.jsonl rows by
     (pair, page, bbox) for ground-truth.
     """
-    from dart_semantic.council.semantic import (
+    from semantik_structure.council.semantic import (
         BOILERPLATE_LABELS, CASCADE_DIM, DOC_ROLE_NAMES,
         compute_positional_features as _compute_positional,
     )
-    from dart_semantic.council.structure import (
+    from semantik_structure.council.structure import (
         LAYOUT_FEATURE_DIM, _block_in_table, _compute_span_layout,
         _group_by_page, _page_medians,
     )
-    from dart_semantic.extract_shared import extract_shared_cached
-    from dart_semantic.features import featurize_from_shared
+    from semantik_structure.extract_shared import extract_shared_cached
+    from semantik_structure.features import featurize_from_shared
 
     # Build (pair, page, bbox) → ground-truth labels lookup
     print(f"[endtoend] indexing test split: {test_path}")
@@ -701,7 +701,7 @@ def main() -> None:
                     help="endtoend-mode: cap pairs per source")
     args = ap.parse_args()
 
-    # Make sure dart_semantic.council.semantic is on the registry path
+    # Make sure semantik_structure.council.semantic is on the registry path
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
     test_path = Path(args.test_path)

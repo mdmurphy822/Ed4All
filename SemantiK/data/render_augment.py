@@ -29,7 +29,7 @@ is **DejaVu Serif** (a permissively-licensed, freely-redistributable font that
 ships on the box), used to exercise ligature extraction.
 
 Mirrors the parse-with-fallback posture of
-:func:`dart_semantic.reading_order.resolve_column_order_mode`.
+:func:`semantik_structure.reading_order.resolve_column_order_mode`.
 """
 from __future__ import annotations
 
@@ -92,7 +92,7 @@ def resolve_render_augment_mode() -> str:
     """Resolve the render-augmentation mode from ``SEMANTIK_RENDER_AUGMENT``.
 
     **Default OFF.** Resolution (parse-with-fallback, mirroring
-    :func:`dart_semantic.reading_order.resolve_column_order_mode`):
+    :func:`semantik_structure.reading_order.resolve_column_order_mode`):
 
     * unset / blank / falsey / garbage -> ``"off"`` (every doc renders
       ``clean`` -> byte-identical to today).

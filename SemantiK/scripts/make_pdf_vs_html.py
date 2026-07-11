@@ -261,8 +261,8 @@ def _run_council(args) -> tuple[str, dict]:
     runtime_mode='real' and a Chromium-backed axe validator, so the
     verdict here is a genuine WCAG-2.2-AA pass, not a mock.
     """
-    from dart_semantic.cascade import run_full_cascade
-    from dart_semantic.validate import HtmlValidator
+    from semantik_structure.cascade import run_full_cascade
+    from semantik_structure.validate import HtmlValidator
 
     print(
         f"[council] real runtime: loading council BERTs + 4 Qwen GGUFs + theta v8 "
@@ -307,9 +307,9 @@ def _run_council(args) -> tuple[str, dict]:
 
 def _run_v1(args) -> tuple[str, dict]:
     """Legacy v1 pipeline (distilbert classify -> Qwen reason). NOT the council."""
-    from dart_semantic.classify import load_classifier
-    from dart_semantic.pipeline import run_pipeline
-    from dart_semantic.reason import load_reasoner, unload_reasoner
+    from semantik_structure.classify import load_classifier
+    from semantik_structure.pipeline import run_pipeline
+    from semantik_structure.reason import load_reasoner, unload_reasoner
 
     print(f"[v1] load classifier {args.classifier}")
     classifier = load_classifier(args.classifier)
