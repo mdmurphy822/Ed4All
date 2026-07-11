@@ -106,6 +106,7 @@ from lib.retrieval.graph_expand import (
     expand_passages_via_graph,
     graph_expand_enabled,
 )
+from lib.page_label import page_citation
 
 __all__ = [
     "Citation",
@@ -309,22 +310,76 @@ class GroundedAnswer:
 # --------------------------------------------------------------------------- #
 
 
+def _aggregate_source_pages(source: Dict[str, Any]) -> Tuple[List[int], Optional[str]]:
+    """De-duplicated, sorted PDF pages across ALL of a source's references.
+
+    Unlike ``_provenance_from_source`` (which pins the ONE chosen ref for the
+    ``source_block``/anchor), the citation LABEL spans every ref — a citation may
+    straddle multiple ``source_references[]`` / a page range — so pages are
+    unioned across the whole list. ``source_reference`` carries no ``pages_kind``
+    slot today, so pages are physical; if a ref ever surfaces a kind at runtime
+    we honor the first one seen, else the kind stays ``None`` (→ physical). No
+    refs / no pages → ``([], None)`` so the caller appends nothing (page-less
+    surfaces stay byte-identical).
+    """
+    refs = (source or {}).get("source_references")
+    if not isinstance(refs, list) or not refs:
+        return [], None
+    pages: List[int] = []
+    kind: Optional[str] = None
+    for ref in refs:
+        if not isinstance(ref, dict):
+            continue
+        if kind is None:
+            ref_kind = ref.get("pages_kind")
+            if isinstance(ref_kind, str) and ref_kind.strip():
+                kind = ref_kind.strip()
+        pages_raw = ref.get("pages")
+        if not isinstance(pages_raw, list):
+            continue
+        for p in pages_raw:
+            try:
+                ip = int(p)
+            except (TypeError, ValueError):
+                continue
+            if ip > 0 and ip not in pages:
+                pages.append(ip)
+    return sorted(pages), kind
+
+
 def page_label_for_source(source: Dict[str, Any]) -> str:
     """Human link text for a chunk source: heading, else prettified path stem.
 
     Prefers ``section_heading``; falls back to the ``item_path`` stem with
     separators turned into spaces and title-cased. Empty source → ``"Source"``.
+
+    When the chunk's ``source_references[]`` carry non-empty ``pages``, an honest
+    page citation ("PDF p. N") is appended to the base label via the shared
+    ``lib/page_label.py::page_citation`` formatter — the SAME treatment
+    Courseforge's LO-map deep links use, so retrieval and course-content cite
+    pages consistently. Pages are physical (no ``pages_kind`` on the ref today),
+    so the qualifier stays "PDF p." — a front-matter offset never reads as a
+    wrong printed folio. Page-less chunks are byte-identical to today (no
+    suffix).
     """
     heading = (source or {}).get("section_heading")
     if heading:
-        return str(heading).strip()
-    item_path = (source or {}).get("item_path")
-    if item_path:
-        stem = Path(str(item_path)).stem
-        pretty = re.sub(r"[-_]+", " ", stem).strip()
-        if pretty:
-            return pretty.title()
-    return "Source"
+        base = str(heading).strip()
+    else:
+        base = "Source"
+        item_path = (source or {}).get("item_path")
+        if item_path:
+            stem = Path(str(item_path)).stem
+            pretty = re.sub(r"[-_]+", " ", stem).strip()
+            if pretty:
+                base = pretty.title()
+
+    pages, kind = _aggregate_source_pages(source)
+    if pages:
+        citation = page_citation(pages, kind=kind or "physical")
+        if citation:
+            return "{} ({})".format(base, citation)
+    return base
 
 
 def _first_supporting_quote(

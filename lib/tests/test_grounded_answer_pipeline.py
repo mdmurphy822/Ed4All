@@ -901,6 +901,65 @@ def test_page_label_empty_source():
 
 
 # --------------------------------------------------------------------------- #
+# task #26: source PDF page surfaced in the citation label (attr-free win)
+# --------------------------------------------------------------------------- #
+
+
+def test_page_label_appends_pdf_page_from_source_references():
+    """A source whose refs carry pages → the label appends the page citation."""
+    from lib.page_label import page_citation
+
+    source = {
+        "section_heading": "Vector Stores",
+        "source_references": [
+            {"sourceId": "dart:x#s1_c0", "role": "primary", "pages": [12]},
+        ],
+    }
+    label = page_label_for_source(source)
+    # Physical pages (no pages_kind on the ref) → honest "PDF p. N".
+    assert label == "Vector Stores (PDF p. 12)"
+    # Reuses the shared formatter verbatim (no reimplemented formatting).
+    assert page_citation([12], kind="physical") in label
+
+
+def test_page_label_aggregates_pages_across_multiple_refs():
+    """Pages union across ALL refs, de-duplicated + sorted, before formatting."""
+    from lib.page_label import page_citation
+
+    source = {
+        "item_path": "module/intro_to_chunking.html",
+        "source_references": [
+            {"sourceId": "dart:x#s1_c0", "role": "primary", "pages": [7, 12, 7]},
+            {"sourceId": "dart:x#s2_c1", "role": "contributing", "pages": [3, 12]},
+        ],
+    }
+    label = page_label_for_source(source)
+    assert label == "Intro To Chunking ({})".format(
+        page_citation([3, 7, 12], kind="physical")
+    )
+    assert label == "Intro To Chunking (PDF pp. 3, 7, 12)"
+
+
+def test_page_label_no_pages_is_byte_identical():
+    """No pages present → label is byte-identical to the pre-change behavior."""
+    # Empty / absent source_references, and a ref with an empty page list.
+    assert page_label_for_source(
+        {"section_heading": "Vector Stores"}
+    ) == "Vector Stores"
+    assert page_label_for_source(
+        {
+            "section_heading": "Vector Stores",
+            "source_references": [
+                {"sourceId": "dart:x#s1_c0", "role": "primary", "pages": []},
+            ],
+        }
+    ) == "Vector Stores"
+    assert page_label_for_source(
+        {"item_path": "module/intro_to_chunking.html"}
+    ) == "Intro To Chunking"
+
+
+# --------------------------------------------------------------------------- #
 # E6/E7 fix: semantic engine + chunkset_kind=None aligns the citation gate
 # with the vector index's manifest (NOT the directory-presence heuristic).
 # --------------------------------------------------------------------------- #
