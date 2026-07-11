@@ -107,11 +107,15 @@ _SOURCE_IDS_ATTR_RE = re.compile(
     r'\s*data-cf-source-ids=["\']([^"\']*)["\']'
 )
 
-# Canonical ``dart:{slug}#{block_id}`` source-id shape — mirrors
+# Canonical ``{dart|semantik}:{slug}#{block_id}`` source-id shape — mirrors
 # ``Courseforge/router/inter_tier_gates._SOURCE_ID_RE`` (the validator's
 # read-side check). A scraped attribute token already matching this shape is a
 # legitimate source ref and is preserved; anything else (a CURIE) is replaced.
-_CANONICAL_DART_SOURCE_ID_RE = re.compile(r"^dart:[a-z0-9_-]+#[a-z0-9_-]+$")
+# DART->semantik purge Stage 1 (dual-READ): accepts the legacy ``dart:`` prefix
+# AND the ratified ``semantik:`` prefix. Emitters unchanged this stage.
+_CANONICAL_DART_SOURCE_ID_RE = re.compile(
+    r"^(?:dart|semantik):[a-z0-9_-]+#[a-z0-9_-]+$"
+)
 
 # First HTML start tag, capturing the tag name and the rest of the open
 # tag (used to inject a dropped ``data-cf-block-id`` attribute).

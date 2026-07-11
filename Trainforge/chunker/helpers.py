@@ -69,9 +69,11 @@ __all__ = [
 # yields ``[]`` (legacy / IMSCC / Courseforge corpora stay byte-identical —
 # the callback emits no ``source_references`` and the chunk is unchanged).
 
-#: ``data-dart-block-id`` attribute value (the block this wrapper carries).
+#: ``data-dart-block-id`` / ``data-semantik-block-id`` attribute value (the block
+#: this wrapper carries). DART->semantik purge Stage 1 (dual-READ): both attr
+#: spellings are harvested identically; emitters still stamp ``data-dart-*``.
 _DATA_DART_BLOCK_ID_RE = re.compile(
-    r'data-dart-block-id\s*=\s*(["\'])([^"\']*)\1',
+    r'data-(?:dart|semantik)-block-id\s*=\s*(["\'])([^"\']*)\1',
     re.IGNORECASE,
 )
 
@@ -81,7 +83,7 @@ _DATA_DART_BLOCK_ID_RE = re.compile(
 #: Shape is ``"3"`` (single), ``"3-5"`` (contiguous range), or ``"3,5,7"``
 #: (non-contiguous list) per ``_format_pages_attr``.
 _DATA_DART_PAGES_RE = re.compile(
-    r'data-dart-pages\s*=\s*(["\'])([^"\']*)\1',
+    r'data-(?:dart|semantik)-pages\s*=\s*(["\'])([^"\']*)\1',
     re.IGNORECASE,
 )
 
@@ -94,7 +96,7 @@ _DATA_DART_PAGES_RE = re.compile(
 #: downstream consumer (grounded-answer) can eventually be honest about
 #: printed-vs-physical too — without breaking the existing ``pages[]`` shape.
 _DATA_DART_PAGE_KIND_RE = re.compile(
-    r'data-dart-page-kind\s*=\s*(["\'])([^"\']*)\1',
+    r'data-(?:dart|semantik)-page-kind\s*=\s*(["\'])([^"\']*)\1',
     re.IGNORECASE,
 )
 
@@ -110,7 +112,7 @@ _DART_PAGE_KINDS = frozenset({"printed", "interpolated", "physical"})
 #: is simply OMITTED from the ref dict so existing harvest shapes stay
 #: byte-identical.
 _DATA_DART_BLOCK_ROLE_RE = re.compile(
-    r'data-dart-block-role\s*=\s*(["\'])([^"\']*)\1',
+    r'data-(?:dart|semantik)-block-role\s*=\s*(["\'])([^"\']*)\1',
     re.IGNORECASE,
 )
 
@@ -120,7 +122,7 @@ _DATA_DART_BLOCK_ROLE_RE = re.compile(
 #: ``data-dart-block-id``. Harvested as a float into the ref dict's
 #: ``confidence`` field. ABSENT / unparseable -> field omitted (back-compat).
 _DATA_DART_CONFIDENCE_RE = re.compile(
-    r'data-dart-confidence\s*=\s*(["\'])([^"\']*)\1',
+    r'data-(?:dart|semantik)-confidence\s*=\s*(["\'])([^"\']*)\1',
     re.IGNORECASE,
 )
 
@@ -129,7 +131,7 @@ _DATA_DART_CONFIDENCE_RE = re.compile(
 #: element as ``data-dart-block-id``. Harvested into the ref dict's
 #: ``wcag_status`` field. ABSENT -> field omitted (back-compat).
 _DATA_DART_WCAG_RE = re.compile(
-    r'data-dart-wcag\s*=\s*(["\'])([^"\']*)\1',
+    r'data-(?:dart|semantik)-wcag\s*=\s*(["\'])([^"\']*)\1',
     re.IGNORECASE,
 )
 
@@ -198,7 +200,7 @@ def _harvest_dart_enrichment(tag: str) -> Dict[str, Any]:
 #: *same* element (rather than a document-global scan that would mis-pair a
 #: block-id on one wrapper with a pages value on another).
 _DART_BLOCK_TAG_RE = re.compile(
-    r"<[a-zA-Z][^>]*\bdata-dart-block-id\s*=\s*[\"'][^\"']*[\"'][^>]*>",
+    r"<[a-zA-Z][^>]*\bdata-(?:dart|semantik)-block-id\s*=\s*[\"'][^\"']*[\"'][^>]*>",
     re.IGNORECASE,
 )
 
@@ -273,7 +275,12 @@ def harvest_dart_source_refs(html: str) -> List[Dict[str, Any]]:
     is skipped: an empty block id can't form a valid
     ``dart:{slug}#{block_id}`` sourceId.
     """
-    if not html or "data-dart-block-id" not in html:
+    # DART->semantik purge Stage 1 (dual-READ): short-circuit only when NEITHER
+    # attr spelling is present.
+    if not html or (
+        "data-dart-block-id" not in html
+        and "data-semantik-block-id" not in html
+    ):
         return []
 
     refs: List[Dict[str, Any]] = []
@@ -348,7 +355,12 @@ def _block_element_spans(html: str) -> List[Tuple[int, int, Dict[str, Any]]]:
     downstream.
     """
     spans: List[Tuple[int, int, Dict[str, Any]]] = []
-    if not html or "data-dart-block-id" not in html:
+    # DART->semantik purge Stage 1 (dual-READ): short-circuit only when NEITHER
+    # attr spelling is present.
+    if not html or (
+        "data-dart-block-id" not in html
+        and "data-semantik-block-id" not in html
+    ):
         return spans
     matches = list(_DART_BLOCK_TAG_RE.finditer(html))
     for i, m in enumerate(matches):

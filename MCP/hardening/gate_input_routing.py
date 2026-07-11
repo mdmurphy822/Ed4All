@@ -238,7 +238,13 @@ def _first_html_path(
     ``workflow_params`` (optional) is threaded into ``_find_content_dir``
     so the disk-glob export-root fallback can fire.
     """
-    dc = phase_outputs.get("dart_conversion") or {}
+    # DART->semantik purge Stage 1 (dual-READ): accept the future
+    # ``semantik_conversion`` phase-output key as an alias of ``dart_conversion``.
+    dc = (
+        phase_outputs.get("dart_conversion")
+        or phase_outputs.get("semantik_conversion")
+        or {}
+    )
     op = dc.get("output_path")
     if isinstance(op, str) and op:
         return Path(op)
@@ -284,8 +290,13 @@ def _all_html_paths(
             return walked
 
     # Fallback: DART conversion outputs (serves the DART-phase dart_markers
-    # gate, and content-less workflows).
-    dc = phase_outputs.get("dart_conversion") or {}
+    # gate, and content-less workflows). DART->semantik purge Stage 1
+    # (dual-READ): accept the future ``semantik_conversion`` phase-output key.
+    dc = (
+        phase_outputs.get("dart_conversion")
+        or phase_outputs.get("semantik_conversion")
+        or {}
+    )
     ops = dc.get("output_paths")
     if isinstance(ops, str) and ops:
         return [p.strip() for p in ops.split(",") if p.strip()]

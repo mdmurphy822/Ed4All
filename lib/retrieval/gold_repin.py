@@ -63,7 +63,9 @@ class GoldRepinError(Exception):
 
 
 # Chunkset kind -> default course-dir-relative chunks path.
+# DART->semantik purge Stage 1 (dual-READ): accept the ratified kind + dir.
 _KIND_DEFAULT_PATH = {
+    "semantik": "semantik_chunks/chunks.jsonl",
     "dart": "dart_chunks/chunks.jsonl",
     "imscc": "imscc_chunks/chunks.jsonl",
     "corpus": "corpus/chunks.jsonl",

@@ -483,11 +483,15 @@ def _retrieve(
 def _infer_chunkset_kind(libv2_root: Path, course_slug: str) -> str:
     """Infer the chunkset kind from which chunks dir resolves for the course.
 
-    ``dart_chunks/`` -> ``"dart"``; ``imscc_chunks/`` -> ``"imscc"``; legacy
-    ``corpus/`` -> ``"corpus"``. Falls back to ``"dart"`` (the common
-    DART-staged pipeline shape) when nothing resolves.
+    ``semantik_chunks/`` -> ``"semantik"``; ``dart_chunks/`` -> ``"dart"``;
+    ``imscc_chunks/`` -> ``"imscc"``; legacy ``corpus/`` -> ``"corpus"``. Falls
+    back to ``"dart"`` (the common DART-staged pipeline shape) when nothing
+    resolves. DART->semantik purge Stage 1 (dual-READ): ``semantik_chunks``
+    preferred over ``dart_chunks``; no such dir exists yet, so byte-identical.
     """
     course_dir = libv2_root / "courses" / course_slug
+    if (course_dir / "semantik_chunks" / "chunks.jsonl").is_file():
+        return "semantik"
     if (course_dir / "dart_chunks" / "chunks.jsonl").is_file():
         return "dart"
     if (course_dir / "imscc_chunks" / "chunks.jsonl").is_file():

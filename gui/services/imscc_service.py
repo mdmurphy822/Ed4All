@@ -77,7 +77,11 @@ _PAGE_HEADERS: Dict[str, str] = {
 # passage (finding 3) via the existing ``/source-doc`` endpoint, which injects
 # ``id="dart-<anchor>"`` so the ``#dart-<anchor>`` fragment lands on the block.
 _CF_SOURCE_ATTR = "data-cf-source-ids"
-_DART_SOURCE_ID_RE = re.compile(r"^dart:(?P<doc>[^#]+)#(?P<anchor>.+)$")
+# DART->semantik purge Stage 1 (dual-READ): accepts both ``dart:`` and
+# ``semantik:`` prefixes.
+_DART_SOURCE_ID_RE = re.compile(
+    r"^(?:dart|semantik):(?P<doc>[^#]+)#(?P<anchor>.+)$"
+)
 
 # Cap on "View in textbook" links emitted per block. A grounded block can carry
 # tens of chunk-ids, but they collapse to a handful of distinct source targets

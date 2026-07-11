@@ -9,8 +9,8 @@
   "properties": {
     "sourceId": {
       "type": "string",
-      "pattern": "^dart:[a-z0-9_-]+#[a-z0-9_-]+$",
-      "description": "Canonical DART block identifier: dart:{document_slug}#{block_id}. block_id is content-hash (16-hex) when TRAINFORGE_CONTENT_HASH_IDS=true, positional (s3_c0 style) otherwise."
+      "pattern": "^(?:dart|semantik):[a-z0-9_-]+#[a-z0-9_-]+$",
+      "description": "Canonical source block identifier: {dart|semantik}:{document_slug}#{block_id}. DART->semantik naming purge Stage 1 (dual-READ, ratified 2026-07-11): the pattern accepts BOTH the legacy `dart:` prefix and the ratified `semantik:` prefix; emitters still mint `dart:` this stage (they flip in a later gated stage). block_id is content-hash (16-hex) when TRAINFORGE_CONTENT_HASH_IDS=true, positional (s3_c0 style) otherwise."
     },
     "role": {
       "type": "string",

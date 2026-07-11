@@ -95,15 +95,16 @@ def course_is_populated(course_dir: Path) -> bool:
     """Return True when ``course_dir`` holds real archived content.
 
     Populated = a course ``manifest.json`` exists, OR a non-empty
-    ``chunks.jsonl`` exists in any known chunkset dir (``dart_chunks`` /
-    ``imscc_chunks`` / legacy ``corpus``).
+    ``chunks.jsonl`` exists in any known chunkset dir (``semantik_chunks`` /
+    ``dart_chunks`` / ``imscc_chunks`` / legacy ``corpus``).
     """
     course_dir = Path(course_dir)
     if not course_dir.is_dir():
         return False
     if (course_dir / "manifest.json").is_file():
         return True
-    for sub in ("dart_chunks", "imscc_chunks", "corpus"):
+    # DART->semantik purge Stage 1 (dual-READ): ``semantik_chunks`` preferred.
+    for sub in ("semantik_chunks", "dart_chunks", "imscc_chunks", "corpus"):
         chunks = course_dir / sub / "chunks.jsonl"
         try:
             if chunks.is_file() and chunks.stat().st_size > 0:

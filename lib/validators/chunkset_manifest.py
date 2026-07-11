@@ -117,12 +117,16 @@ _CHUNKER_VERSION_RE = re.compile(
 _BASE_REQUIRED_FIELDS = ("chunks_sha256", "chunker_version", "chunkset_kind")
 
 # Allowed chunkset_kind values per the schema enum.
-_ALLOWED_CHUNKSET_KINDS = {"dart", "imscc"}
+# DART->semantik naming purge Stage 1 (dual-READ): accept the ratified
+# "semantik" kind alongside legacy "dart". Emitters still write "dart".
+_ALLOWED_CHUNKSET_KINDS = {"dart", "semantik", "imscc"}
 
 # Conditional source-SHA field per chunkset_kind (driven by the schema's
-# allOf / if-then clauses).
+# allOf / if-then clauses). The ratified "semantik" kind requires the ratified
+# source-SHA field name ``source_semantik_html_sha256``.
 _CONDITIONAL_SOURCE_FIELD = {
     "dart": "source_dart_html_sha256",
+    "semantik": "source_semantik_html_sha256",
     "imscc": "source_imscc_sha256",
 }
 
@@ -133,6 +137,7 @@ _KNOWN_FIELDS = frozenset({
     "chunker_version",
     "chunkset_kind",
     "source_dart_html_sha256",
+    "source_semantik_html_sha256",
     "source_imscc_sha256",
     "chunks_count",
     "generated_at",

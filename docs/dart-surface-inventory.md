@@ -356,3 +356,55 @@ loudly — it makes **every existing course** fail its source-ref / manifest gat
 validation, and desyncs the emitted `data-dart-*` HTML value from the parsed `dart:` prefix. The
 mandatory mitigation is the **read-side dual-accept shim landed *before* any emitter flips**, so
 old data keeps resolving while new data adopts `semantik:`.
+
+---
+
+## 8. Naming RATIFIED 2026-07-11 + Stage 1 landing
+
+**Owner ratified the target vocabulary `semantik`** (2026-07-11). Canonical mapping:
+
+| Legacy (`dart`) surface | Ratified (`semantik`) successor |
+|-------------------------|----------------------------------|
+| `data-dart-*` HTML attrs | `data-semantik-*` |
+| `dart:{slug}#{id}` sourceId | `semantik:{slug}#{id}` |
+| `dart_conversion` phase | `semantik_conversion` |
+| `dart_chunks/` on-disk chunkset dir | `semantik_chunks/` |
+| `chunkset_kind: "dart"` | `chunkset_kind: "semantik"` |
+| `source_dart_html_sha256` (chunkset manifest) | `source_semantik_html_sha256` |
+| `dart_chunks_sha256` (course manifest) | `semantik_chunks_sha256` |
+| `SemantiK/dart_semantic/` package | `semantik_structure` |
+
+### Staged rollout
+
+- **Stage 1 — dual-READ shims (LANDED now).** Every READER accepts BOTH the
+  legacy `dart` form AND the new `semantik` form; **EMITTERS ARE UNCHANGED**
+  (they still mint `dart`), so behavior is byte-identical on existing corpora.
+  Widened surfaces this stage: the sourceId regexes (`lib/validators/source_refs.py`,
+  `MCP/tools/pipeline_tools.py`, `Courseforge/router/inter_tier_gates.py`,
+  `gui/services/answer_render.py`, `gui/services/imscc_service.py`,
+  `lib/objectives/chunk_window.py`, `lib/objectives/lo_map_builder.py`,
+  `lib/aggregators/provenance_resolution.py`); the `data-dart-*`/`data-semantik-*`
+  attr-harvest regexes (`Trainforge/chunker/helpers.py`, `lib/validators/dart_markers.py`,
+  `lib/aggregators/provenance_resolution.py`); the `source_reference.schema.json`
+  sourceId pattern; the chunks-dir resolver (`lib/libv2_storage.py::resolve_imscc_chunks_dir`
+  now prefers `semantik_chunks/` then falls back to `dart_chunks/` with no
+  deprecation warn — `dart_chunks/` is still the active emit dir) plus the
+  scattered read-discovery tuples/maps in `lib/course_identity.py`,
+  `lib/retrieval/{library_wide,cross_course_negatives,grounded_answer,gold_repin,graph_expand,citation_anchor}.py`;
+  the manifest validators (`lib/validators/chunkset_manifest.py` accepts
+  `chunkset_kind: "semantik"` + `source_semantik_html_sha256`;
+  `lib/validators/libv2/manifest.py` accepts `semantik_chunks_sha256`) + the
+  `chunkset_manifest.schema.json` / `course_manifest.schema.json` schemas; and
+  the `dart_conversion`↔`semantik_conversion` phase-name alias on the READ side
+  (`MCP/hardening/checkpoint.py` checkpoint lookup + `MCP/hardening/gate_input_routing.py`
+  + `MCP/core/workflow_runner.py` phase-output resolution). Regression net:
+  `lib/tests/test_semantik_dual_read.py`.
+- **Stage 2 — corpus migration (GATED on owner approval).** Rename the on-disk
+  `dart_chunks/` → `semantik_chunks/` (+ the manifest field names) for existing
+  archives via a backfill script; attach the deprecation warn to the
+  `dart_chunks/` fallback once `semantik_chunks/` is canonical.
+- **Stage 3 — emitter flip.** Flip every WRITER (attrs, sourceIds, phase
+  declaration in `config/workflows.yaml`, `SemantiK/dart_semantic/` →
+  `semantik_structure`, sha field emit, `chunkset_kind` emit) + the
+  "deliberately preserved" narrative notes in `SemantiK/CLAUDE.md` /
+  `agents.yaml` / `ARCHITECTURE.md`, then retire the dual-read shims.

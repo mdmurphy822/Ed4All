@@ -103,6 +103,17 @@ class CheckpointManager:
         self.checkpoints_dir = run_path / "checkpoints"
         self.checkpoints_dir.mkdir(parents=True, exist_ok=True)
 
+    # DART->semantik naming purge Stage 1 (dual-READ): the conversion phase is
+    # still declared ``dart_conversion`` in config/workflows.yaml this stage, but
+    # a future gated rename to ``semantik_conversion`` (Stage 3) must not break a
+    # cross-rename resume. Map each name to its counterpart so a checkpoint written
+    # under one name is still found under the other. No file exists under the alias
+    # in Stage 1, so this is byte-identical on existing runs.
+    _PHASE_NAME_ALIASES = {
+        "dart_conversion": "semantik_conversion",
+        "semantik_conversion": "dart_conversion",
+    }
+
     def _checkpoint_path(self, phase_name: str) -> Path:
         """Get path for checkpoint file."""
         safe_name = sanitize_path_component(phase_name, allow_dots=True)
@@ -330,7 +341,18 @@ class CheckpointManager:
         """
         path = self._checkpoint_path(phase_name)
         if not path.exists():
-            return None
+            # DART->semantik purge Stage 1 (dual-READ): a checkpoint written
+            # under the counterpart phase name (dart_conversion <->
+            # semantik_conversion) is still resumable across a future rename.
+            alias = self._PHASE_NAME_ALIASES.get(phase_name)
+            if alias is not None:
+                alias_path = self._checkpoint_path(alias)
+                if alias_path.exists():
+                    path = alias_path
+                else:
+                    return None
+            else:
+                return None
 
         try:
             with open(path) as f:

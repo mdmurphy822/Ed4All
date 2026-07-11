@@ -107,8 +107,14 @@ _REQUIRED_MARKERS: Dict[str, Tuple[str, ...]] = {
 _SECTION_OPEN_RE = re.compile(r"<section\b[^>]*>", re.IGNORECASE)
 
 # Attribute presence checks run against each section's attribute string.
-_DATA_DART_SOURCE_RE = re.compile(r'\bdata-dart-source\s*=', re.IGNORECASE)
-_DATA_DART_BLOCK_ID_RE = re.compile(r'\bdata-dart-block-id\s*=', re.IGNORECASE)
+# DART->semantik purge Stage 1 (dual-READ): accept both ``data-dart-*`` and
+# ``data-semantik-*`` spellings. Emitters still stamp ``data-dart-*`` this stage.
+_DATA_DART_SOURCE_RE = re.compile(
+    r'\bdata-(?:dart|semantik)-source\s*=', re.IGNORECASE,
+)
+_DATA_DART_BLOCK_ID_RE = re.compile(
+    r'\bdata-(?:dart|semantik)-block-id\s*=', re.IGNORECASE,
+)
 
 # Wave 9: critical-severity checks for malformed attributes. An attribute
 # that is *present but empty* is a bug in the emit path and must block —
@@ -116,10 +122,10 @@ _DATA_DART_BLOCK_ID_RE = re.compile(r'\bdata-dart-block-id\s*=', re.IGNORECASE)
 # remain at warning severity per the graceful-fallback rule documented
 # at the top of this module.
 _EMPTY_DATA_DART_SOURCE_RE = re.compile(
-    r'\bdata-dart-source\s*=\s*(["\'])\1', re.IGNORECASE,
+    r'\bdata-(?:dart|semantik)-source\s*=\s*(["\'])\1', re.IGNORECASE,
 )
 _EMPTY_DATA_DART_BLOCK_ID_RE = re.compile(
-    r'\bdata-dart-block-id\s*=\s*(["\'])\1', re.IGNORECASE,
+    r'\bdata-(?:dart|semantik)-block-id\s*=\s*(["\'])\1', re.IGNORECASE,
 )
 
 

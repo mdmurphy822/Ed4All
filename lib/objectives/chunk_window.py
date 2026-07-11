@@ -93,8 +93,9 @@ class ChunkWindow:
 # ---------------------------------------------------------------------------
 # Slug / sourceId helpers
 # ---------------------------------------------------------------------------
-#: ``dart:{slug}#{block_id}`` — capture the slug between ``dart:`` and ``#``.
-_SOURCE_ID_RE = re.compile(r"^dart:(?P<slug>[^#]+)#")
+#: ``{dart|semantik}:{slug}#{block_id}`` — capture the slug between the prefix
+#: and ``#``. DART->semantik purge Stage 1 (dual-READ): accepts both prefixes.
+_SOURCE_ID_RE = re.compile(r"^(?:dart|semantik):(?P<slug>[^#]+)#")
 
 
 def _basename_stem(path_str: str) -> str:

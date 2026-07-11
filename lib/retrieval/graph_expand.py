@@ -61,7 +61,9 @@ DECISION_TYPE_GRAPH_EXPAND = "grounded_answer_graph_expand"
 _DEFAULT_MAX_ADD = 4
 
 #: chunkset_kind -> chunks.jsonl relative path (mirrors citation_anchor).
+#: DART->semantik purge Stage 1 (dual-READ): accept the ratified kind + dir.
 _CHUNKS_REL_BY_KIND: Dict[str, str] = {
+    "semantik": "semantik_chunks/chunks.jsonl",
     "dart": "dart_chunks/chunks.jsonl",
     "imscc": "imscc_chunks/chunks.jsonl",
     "corpus": "corpus/chunks.jsonl",
@@ -72,6 +74,7 @@ _CHUNKS_REL_BY_KIND: Dict[str, str] = {
 _GRAPH_REL_CANDIDATES: Tuple[str, ...] = (
     "graph/concept_graph_semantic.json",
     "imscc_chunks/concept_graph_semantic.json",
+    "semantik_chunks/concept_graph_semantic.json",
     "dart_chunks/concept_graph_semantic.json",
     "corpus/concept_graph_semantic.json",
 )

@@ -53,8 +53,9 @@ from Trainforge.chunker.helpers import (
 _TO_RE = re.compile(r"^TO-\d{2,}$", re.IGNORECASE)
 _CO_RE = re.compile(r"^CO-\d{2,}$", re.IGNORECASE)
 
-# A ``dart:<src>#<anchor>`` provenance fragment (the deep-link source).
-_DART_REF_RE = re.compile(r"^dart:(?P<src>[^#]+)#(?P<anchor>.+)$")
+# A ``{dart|semantik}:<src>#<anchor>`` provenance fragment (the deep-link
+# source). DART->semantik purge Stage 1 (dual-READ): accepts both prefixes.
+_DART_REF_RE = re.compile(r"^(?:dart|semantik):(?P<src>[^#]+)#(?P<anchor>.+)$")
 
 # Content-block element discovery. Blocks are ``<section …>`` carrying a
 # ``data-cf-block-id`` (+ optionally ``data-cf-source-ids`` /

@@ -18,6 +18,7 @@ locks down:
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any, Dict
@@ -91,12 +92,20 @@ def test_schema_has_expected_top_level_keys():
 
 
 def test_source_id_pattern_is_declared():
-    """The sourceId pattern must match the design doc's canonical shape."""
+    """The sourceId pattern must match the design doc's canonical shape.
+
+    DART->semantik naming purge Stage 1 (dual-READ, ratified 2026-07-11): the
+    pattern accepts BOTH the legacy ``dart:`` prefix and the ratified
+    ``semantik:`` prefix. Emitters still mint ``dart:`` this stage.
+    """
     schema = _load_schema()
-    assert (
-        schema["properties"]["sourceId"]["pattern"]
-        == r"^dart:[a-z0-9_-]+#[a-z0-9_-]+$"
-    )
+    pattern = schema["properties"]["sourceId"]["pattern"]
+    assert pattern == r"^(?:dart|semantik):[a-z0-9_-]+#[a-z0-9_-]+$"
+    # Both prefixes accepted; a non-prefix sourceId still rejected.
+    compiled = re.compile(pattern)
+    assert compiled.match("dart:doc#block")
+    assert compiled.match("semantik:doc#block")
+    assert compiled.match("imscc:doc#block") is None
 
 
 def test_role_enum_is_locked():

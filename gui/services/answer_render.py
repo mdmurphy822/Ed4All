@@ -24,8 +24,23 @@ from __future__ import annotations
 
 import re
 from html import escape
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
+
+# DART->semantik purge Stage 1 (dual-READ): a sourceId is ``{prefix}:{doc}#{block}``
+# where the prefix is the legacy ``dart`` OR the ratified ``semantik``. Emitters
+# still mint ``dart:`` this stage; the reader accepts both, byte-identically on
+# existing dart-form data.
+_SOURCE_ID_PREFIXES: Tuple[str, ...] = ("dart:", "semantik:")
+
+
+def _strip_source_prefix(source_id: str) -> Optional[str]:
+    """Return the ``{doc}#{block}`` remainder after a legacy ``dart:`` or new
+    ``semantik:`` prefix, or ``None`` when neither prefix is present."""
+    for prefix in _SOURCE_ID_PREFIXES:
+        if source_id.startswith(prefix):
+            return source_id[len(prefix):]
+    return None
 
 # --------------------------------------------------------------------------- #
 # Status / reason-code constants (mirrors of the grounded-answer contract).
@@ -356,10 +371,12 @@ def source_pdf_page_url(citation: Dict[str, Any], slug: str, page: int) -> str:
     serving the wrong bytes.
     """
     source_id = str(citation.get("source_block") or "")
-    # sourceId shape: dart:{slug}#{block_id}. The slug half names the document.
+    # sourceId shape: {dart|semantik}:{slug}#{block_id}. The slug half names the
+    # document.
     file_hint = ""
-    if source_id.startswith("dart:") and "#" in source_id:
-        file_hint = source_id[len("dart:") :].split("#", 1)[0]
+    _remainder = _strip_source_prefix(source_id)
+    if _remainder is not None and "#" in _remainder:
+        file_hint = _remainder.split("#", 1)[0]
     return "/api/courses/{slug}/source-pdf?file={file}&page={page}".format(
         slug=quote(str(slug), safe=""),
         file=quote(file_hint, safe=""),
@@ -382,9 +399,10 @@ def original_source_url(citation: Dict[str, Any], slug: str) -> str:
     Returns ``""`` when ``source_block`` doesn't parse as ``dart:{doc}#{block}``.
     """
     source_id = str(citation.get("source_block") or "")
-    if not source_id.startswith("dart:") or "#" not in source_id:
+    _remainder = _strip_source_prefix(source_id)
+    if _remainder is None or "#" not in _remainder:
         return ""
-    doc, block = source_id[len("dart:"):].split("#", 1)
+    doc, block = _remainder.split("#", 1)
     doc = doc.strip()
     block = block.strip()
     if not doc or not block:

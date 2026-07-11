@@ -4,7 +4,11 @@
   "title": "Course Manifest",
   "description": "Extended metadata for a course in the LibV2 repository",
   "type": "object",
-  "required": ["libv2_version", "slug", "import_timestamp", "sourceforge_manifest", "classification", "content_profile", "dart_chunks_sha256", "imscc_chunks_sha256", "concept_graph_sha256"],
+  "required": ["libv2_version", "slug", "import_timestamp", "sourceforge_manifest", "classification", "content_profile", "imscc_chunks_sha256", "concept_graph_sha256"],
+  "anyOf": [
+    {"required": ["dart_chunks_sha256"]},
+    {"required": ["semantik_chunks_sha256"]}
+  ],
   "properties": {
     "libv2_version": {
       "type": "string",
@@ -29,7 +33,12 @@
     "dart_chunks_sha256": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$",
-      "description": "Phase 7b/7c: SHA-256 of LibV2/courses/<slug>/dart_chunks/chunks.jsonl produced by the chunking workflow phase (Phase 7b ST 11). Required by Phase 7c Subtask 17; ties the archived DART chunkset to the course manifest. Validator: lib.validators.libv2_manifest.LibV2ManifestValidator._check_dart_chunks_sha256."
+      "description": "Phase 7b/7c: SHA-256 of LibV2/courses/<slug>/dart_chunks/chunks.jsonl produced by the chunking workflow phase (Phase 7b ST 11). Required by Phase 7c Subtask 17; ties the archived DART chunkset to the course manifest. Validator: lib.validators.libv2_manifest.LibV2ManifestValidator._check_dart_chunks_sha256. DART->semantik purge Stage 1 (dual-READ): a manifest may carry EITHER this field OR the ratified successor semantik_chunks_sha256 (enforced by the top-level anyOf); emitters still write this legacy field this stage."
+    },
+    "semantik_chunks_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "DART->semantik purge Stage 1 (ratified 2026-07-11): ratified successor of dart_chunks_sha256. SHA-256 of LibV2/courses/<slug>/semantik_chunks/chunks.jsonl. NO emitter writes it yet (dual-READ shim); the top-level anyOf accepts either field so an existing dart-form manifest stays valid byte-for-byte."
     },
     "imscc_chunks_sha256": {
       "type": "string",

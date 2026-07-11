@@ -52,6 +52,14 @@ class LibV2StorageError(Exception):
 
 IMSCC_CHUNKS_DIRNAME = "imscc_chunks"
 DART_CHUNKS_DIRNAME = "dart_chunks"
+# DART->semantik naming purge (ratified 2026-07-11), Stage 1 (dual-READ): the
+# ratified on-disk name for the DART-staged chunkset is ``semantik_chunks/``.
+# NO emitter writes it yet (Stage 2 migrates the on-disk dir, gated on owner
+# approval); readers PREFER it and transparently fall back to ``dart_chunks/``.
+# No DeprecationWarning is attached to the dart_chunks fallback this stage —
+# dart_chunks is still the ACTIVE emit dir, so warning on every current course
+# would break byte-identical behavior. The warn arrives with Stage 2.
+SEMANTIK_CHUNKS_DIRNAME = "semantik_chunks"
 LEGACY_CORPUS_DIRNAME = "corpus"
 
 # Canonical chunkset-dir-name <-> manifest ``chunkset_kind`` discriminator.
@@ -61,6 +69,7 @@ LEGACY_CORPUS_DIRNAME = "corpus"
 # (vector_index) and the query path (resolve_chunks_path_for_query below).
 DIRNAME_TO_CHUNKSET_KIND = {
     IMSCC_CHUNKS_DIRNAME: "imscc",
+    SEMANTIK_CHUNKS_DIRNAME: "semantik",
     DART_CHUNKS_DIRNAME: "dart",
     LEGACY_CORPUS_DIRNAME: "corpus-legacy",
 }
@@ -84,10 +93,14 @@ def resolve_imscc_chunks_dir(
     Resolution order (precedence):
 
     1. ``<course_dir>/imscc_chunks`` — canonical IMSCC-derived chunkset.
-    2. ``<course_dir>/dart_chunks`` — DART-staged pipeline chunkset. A
+    2. ``<course_dir>/semantik_chunks`` — ratified DART->semantik purge name
+       for the staged chunkset (Stage 1 dual-READ). Preferred over
+       ``dart_chunks/`` but NO emitter writes it yet, so it resolves here only
+       once the Stage-2 on-disk migration has run (resolving here does NOT warn).
+    3. ``<course_dir>/dart_chunks`` — DART-staged pipeline chunkset. A
        first-class location for courses produced by the DART → chunking
        path that never ran IMSCC packaging (resolving here does NOT warn).
-    3. ``<course_dir>/corpus`` — legacy pre-Phase-7c name; resolving here
+    4. ``<course_dir>/corpus`` — legacy pre-Phase-7c name; resolving here
        emits a DeprecationWarning naming the migration script.
 
     When ``filename`` is provided, prefer the first candidate directory
@@ -114,6 +127,7 @@ def resolve_imscc_chunks_dir(
     """
     course_dir = Path(course_dir)
     canonical = course_dir / IMSCC_CHUNKS_DIRNAME
+    semantik = course_dir / SEMANTIK_CHUNKS_DIRNAME
     dart = course_dir / DART_CHUNKS_DIRNAME
     legacy = course_dir / LEGACY_CORPUS_DIRNAME
 
@@ -126,6 +140,13 @@ def resolve_imscc_chunks_dir(
 
     if _present(canonical):
         return canonical
+    # DART->semantik purge Stage 1 (dual-READ): PREFER the ratified
+    # ``semantik_chunks/`` name, then fall back to the still-active
+    # ``dart_chunks/`` (no deprecation warn — dart_chunks is the current emit
+    # dir; the warn lands with the Stage-2 migration). No such dir exists on
+    # disk yet, so this is byte-identical to the pre-purge dart-first resolution.
+    if _present(semantik):
+        return semantik
     if _present(dart):
         return dart
     if _present(legacy):

@@ -74,18 +74,26 @@ _NOTES = (
 
 # ``data-cf-source-ids="..."`` — capture the raw (possibly empty) attr value.
 _ATTR_RE = re.compile(r'data-cf-source-ids="([^"]*)"')
-# ``data-dart-block-id="..."`` in the staged accessible HTML.
-_BLOCK_ID_RE = re.compile(r'data-dart-block-id="([^"]*)"')
+# ``data-dart-block-id="..."`` / ``data-semantik-block-id="..."`` in the staged
+# accessible HTML. DART->semantik purge Stage 1 (dual-READ): harvests both attr
+# spellings identically. Emitters still stamp ``data-dart-*`` this stage.
+_BLOCK_ID_RE = re.compile(r'data-(?:dart|semantik)-block-id="([^"]*)"')
 
 
 def _split_token(token: str) -> Optional[Tuple[str, str]]:
-    """Split a ``dart:{stem}#{anchor}`` token into ``(stem, anchor)``.
+    """Split a ``{dart|semantik}:{stem}#{anchor}`` token into ``(stem, anchor)``.
 
-    Returns ``None`` when the token is not a well-formed dart source token.
+    Returns ``None`` when the token is not a well-formed source token.
+
+    DART->semantik purge Stage 1 (dual-READ): accepts both the legacy ``dart:``
+    prefix and the ratified ``semantik:`` prefix.
     """
-    if not token.startswith("dart:"):
+    for _prefix in ("dart:", "semantik:"):
+        if token.startswith(_prefix):
+            rest = token[len(_prefix):]
+            break
+    else:
         return None
-    rest = token[len("dart:"):]
     stem, sep, anchor = rest.partition("#")
     if not sep or not stem or not anchor:
         return None

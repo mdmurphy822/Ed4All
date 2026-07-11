@@ -69,9 +69,11 @@ _ISSUE_LIST_CAP = 50
 
 # Canonical sourceId pattern (kept in sync with
 # lib/validators/source_refs.py:34 / source_reference.schema.json).
+# DART->semantik purge Stage 1 (dual-READ): accepts BOTH the legacy ``dart:``
+# prefix AND the ratified ``semantik:`` prefix. Emitters unchanged this stage.
 import re
 
-_SOURCE_ID_RE = re.compile(r"^dart:[a-z0-9_-]+#[a-z0-9_-]+$")
+_SOURCE_ID_RE = re.compile(r"^(?:dart|semantik):[a-z0-9_-]+#[a-z0-9_-]+$")
 
 # Scaffolding block types that carry no chunk-level ``content_type`` label.
 # An ``objective`` block's canonical emit (``Block._objective_attrs`` /

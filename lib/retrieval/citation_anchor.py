@@ -488,6 +488,8 @@ def _main(argv: Optional[List[str]] = None) -> int:  # pragma: no cover - CLI
 
     course_dir = libv2_path() / "courses" / args.course_slug
     default_rel = {
+        # DART->semantik purge Stage 1 (dual-READ): accept the ratified kind.
+        "semantik": "semantik_chunks/chunks.jsonl",
         "dart": "dart_chunks/chunks.jsonl",
         "imscc": "imscc_chunks/chunks.jsonl",
         "corpus": "corpus/chunks.jsonl",

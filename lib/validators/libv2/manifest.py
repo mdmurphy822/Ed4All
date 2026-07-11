@@ -647,9 +647,22 @@ class LibV2ManifestValidator:
              on-disk ``chunks.jsonl`` diverges from the manifest value.
         """
         issues: List[GateIssue] = []
-        chunks_file = course_dir / "dart_chunks" / "chunks.jsonl"
+        # DART->semantik naming purge Stage 1 (dual-READ): prefer the ratified
+        # ``semantik_chunks/`` dir + ``semantik_chunks_sha256`` field, falling
+        # back to the still-active legacy ``dart_chunks/`` + ``dart_chunks_sha256``.
+        # No emitter writes the semantik form yet, so this is byte-identical on
+        # existing archives (semantik_chunks/ never exists → dart path taken).
+        semantik_chunks_file = course_dir / "semantik_chunks" / "chunks.jsonl"
+        dart_chunks_file = course_dir / "dart_chunks" / "chunks.jsonl"
+        chunks_file = (
+            semantik_chunks_file
+            if semantik_chunks_file.exists()
+            else dart_chunks_file
+        )
 
         dh = manifest.get("dart_chunks_sha256")
+        if dh is None:
+            dh = manifest.get("semantik_chunks_sha256")
         if dh is None:
             location = str(chunks_file) if chunks_file.exists() else None
             issues.append(GateIssue(

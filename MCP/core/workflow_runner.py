@@ -4074,7 +4074,11 @@ class WorkflowRunner:
         """
         if not isinstance(phase_outputs, dict):
             return set()
-        entry = phase_outputs.get("dart_conversion")
+        # DART->semantik purge Stage 1 (dual-READ): accept the future
+        # ``semantik_conversion`` phase-output key as an alias.
+        entry = phase_outputs.get("dart_conversion") or phase_outputs.get(
+            "semantik_conversion"
+        )
         if not isinstance(entry, dict) or entry.get("_completed"):
             return set()
         conv_dir = DART_PATH / "output"

@@ -23,13 +23,18 @@
     },
     "chunkset_kind": {
       "type": "string",
-      "enum": ["dart", "imscc"],
-      "description": "Which chunkset this manifest describes. 'dart' is the Phase 7b chunkset emitted from staged DART HTML during the `chunking` workflow phase (sibling files at `LibV2/courses/<slug>/dart_chunks/`). 'imscc' is the Phase 7c chunkset emitted from a packaged IMSCC at `LibV2/courses/<slug>/imscc_chunks/` (renamed from the legacy `corpus/` directory per ST 15). The discriminator drives the conditional source-SHA requirement below."
+      "enum": ["dart", "semantik", "imscc"],
+      "description": "Which chunkset this manifest describes. 'dart' is the Phase 7b chunkset emitted from staged DART HTML during the `chunking` workflow phase (sibling files at `LibV2/courses/<slug>/dart_chunks/`). 'imscc' is the Phase 7c chunkset emitted from a packaged IMSCC at `LibV2/courses/<slug>/imscc_chunks/` (renamed from the legacy `corpus/` directory per ST 15). 'semantik' is the ratified DART->semantik naming-purge successor of 'dart' (Stage 1 dual-READ, ratified 2026-07-11): validators accept it, but NO emitter writes it yet (Stage 2 migrates the on-disk chunkset dir + emit, gated on owner approval); it requires source_semantik_html_sha256. The discriminator drives the conditional source-SHA requirement below."
     },
     "source_dart_html_sha256": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$",
       "description": "SHA-256 (hex, lowercase) of the staged DART HTML inputs that produced this chunkset. For multi-file inputs, the SHA is computed over the deterministic concatenation of input files (filename-sorted then content-concatenated) so the value is stable across re-runs. Required when chunkset_kind == 'dart'; absent when chunkset_kind == 'imscc'. Forward-link to Triangle-invariant chain validation (decision #8): the source_pdf_sha256 → source_dart_html_sha256 → chunks_sha256 chain is validated end-to-end as a Phase 7c followup."
+    },
+    "source_semantik_html_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "DART->semantik purge Stage 1: ratified successor field name of source_dart_html_sha256. SHA-256 (hex, lowercase) of the staged SemantiK HTML inputs that produced this chunkset. Required when chunkset_kind == 'semantik'. NO emitter writes it yet (dual-READ shim)."
     },
     "source_imscc_sha256": {
       "type": "string",
@@ -104,6 +109,15 @@
       },
       "then": {
         "required": ["source_dart_html_sha256"]
+      }
+    },
+    {
+      "if": {
+        "properties": {"chunkset_kind": {"const": "semantik"}},
+        "required": ["chunkset_kind"]
+      },
+      "then": {
+        "required": ["source_semantik_html_sha256"]
       }
     },
     {

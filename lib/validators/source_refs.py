@@ -74,13 +74,18 @@ def _emit_decision(
             exc,
         )
 
-# Matches the canonical shape: dart:{slug}#{block_id}
+# Matches the canonical shape: {dart|semantik}:{slug}#{block_id}
 # (lowercase slug/block, kept in sync with schemas/knowledge/source_reference.schema.json).
 # Public alias ``SOURCE_ID_RE`` is the single source of truth for the canonical
 # sourceId pattern; ``MCP.tools.pipeline_tools`` imports it (the validator owns
 # the rule, MCP/tools depending on lib/validators is the allowed layering
 # direction).
-SOURCE_ID_RE = re.compile(r"^dart:[a-z0-9_-]+#[a-z0-9_-]+$")
+#
+# DART->semantik naming purge, Stage 1 (dual-READ): the pattern accepts BOTH the
+# legacy ``dart:`` prefix AND the ratified ``semantik:`` prefix. Emitters still
+# mint ``dart:`` this stage; widening the reader is byte-identical on existing
+# dart-form data. The emitter flips to ``semantik:`` in a later gated stage.
+SOURCE_ID_RE = re.compile(r"^(?:dart|semantik):[a-z0-9_-]+#[a-z0-9_-]+$")
 _SOURCE_ID_RE = SOURCE_ID_RE  # back-compat private alias
 
 # Extract data-cf-source-ids values from emitted HTML. The attribute holds
