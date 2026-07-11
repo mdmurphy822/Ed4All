@@ -365,6 +365,59 @@ class SharedBackbone:
     def is_loaded(self) -> bool:
         return self._model is not None
 
+    def force_to_cpu(self) -> None:
+        """Pin this backbone to CPU and move its (loaded) weights off the GPU.
+
+        The GPU-contention CPU-fallback lever (see
+        ``runner.run_bert``): when another process (e.g. a vLLM-served LLM)
+        has pinned the whole card, a council backbone forward raises a CUDA
+        OOM. Rather than silently skipping the step, the runner moves the
+        backbone to CPU and re-runs the forward there. This method makes that
+        move idempotent + safe:
+
+        * If the model is already loaded, ``.to("cpu")`` relocates its
+          weights and ``torch.cuda.empty_cache()`` reclaims the freed VRAM.
+        * If the model is NOT yet loaded, only ``_device`` is pinned so the
+          next lazy load materialises directly on CPU.
+        * The resident LoRA-adapter binding is dropped so the next
+          ``LoRAAdapter.load()`` rebuilds the ``peft`` wrapper over the
+          now-CPU base model (a stale binding would keep a GPU-wrapped
+          ``PeftModel`` alive).
+
+        Fail-soft: every torch touchpoint is guarded so a box without CUDA
+        (or a torch that cannot ``empty_cache``) is unaffected — the only
+        guaranteed effect there is pinning ``_device = "cpu"``.
+        """
+        try:
+            import torch  # noqa: WPS433 — deferred; keeps bare import torch-free
+        except Exception:  # noqa: BLE001 — torch absent → nothing to move
+            torch = None  # type: ignore[assignment]
+
+        if torch is not None:
+            try:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:  # noqa: BLE001 — best-effort reclaim
+                pass
+        if self._model is not None:
+            try:
+                self._model.to("cpu")
+            except Exception:  # noqa: BLE001 — best-effort relocate
+                pass
+        self._device = "cpu"
+        # Drop the resident adapter binding so a fresh adapter.load() rebuilds
+        # the peft wrapper over the CPU base model.
+        try:
+            LoRAAdapter._CURRENT_PER_BACKBONE.pop(id(self), None)
+        except Exception:  # noqa: BLE001
+            pass
+        if torch is not None:
+            try:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:  # noqa: BLE001
+                pass
+
 
 # ---------------------------------------------------------------------------
 # Concrete LoRA adapter (one-resident-per-backbone discipline)

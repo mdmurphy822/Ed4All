@@ -21,11 +21,68 @@ light — it threads the registered callable, never embeds per-BERT logic.
 
 from __future__ import annotations
 
+import sys
 from typing import Any, Callable
 
 from .base import LoRAAdapter, load_shared_backbone
 from .registry import get_adapter
 from .types import BertOutput
+
+
+# ---------------------------------------------------------------------------
+# GPU-contention CPU fallback (D14)
+# ---------------------------------------------------------------------------
+#
+# When another process pins the whole GPU (e.g. a vLLM-served LLM holding all
+# VRAM), an in-process council backbone forward raises a CUDA out-of-memory
+# error deep inside the model. Historically the orchestrator's ``_safe_run``
+# caught that exception and SILENTLY SKIPPED the head — the run still reported
+# ``gates=pass`` while losing e.g. merge_or_split heading refinement on a
+# chapter (a silent-degradation defect). Instead, we detect the CUDA-OOM class
+# specifically, move the shared backbone to CPU, and RE-RUN the forward there
+# so the refinement is preserved. Once an OOM is hit we LATCH to CPU for the
+# rest of the process so subsequent span-batches go straight to CPU rather than
+# re-attempting CUDA and re-OOMing on every batch.
+_CPU_FALLBACK_LATCH = False
+
+
+def cpu_fallback_latched() -> bool:
+    """True once a CUDA OOM has forced the council onto CPU for this process."""
+    return _CPU_FALLBACK_LATCH
+
+
+def _reset_cpu_fallback_latch() -> None:
+    """Clear the process-scoped CPU-fallback latch. Test-only."""
+    global _CPU_FALLBACK_LATCH
+    _CPU_FALLBACK_LATCH = False
+
+
+def _warn(msg: str) -> None:
+    """Loud, unconditional stderr warning (mirrors orchestrator._log)."""
+    print(f"[council] {msg}", file=sys.stderr, flush=True)
+
+
+def is_cuda_oom(exc: BaseException) -> bool:
+    """Return True iff ``exc`` is a CUDA out-of-memory error.
+
+    Matches the specific ``torch.cuda.OutOfMemoryError`` class when torch is
+    importable AND defensively string-matches ``out of memory`` /
+    ``CUDA error: out of memory`` in the exception text — some torch /
+    accelerator versions surface a CUDA OOM as ``torch.AcceleratorError`` or a
+    plain ``RuntimeError`` rather than the dedicated class. A host
+    ``MemoryError`` (empty ``str``) never matches, so a genuinely CPU-only
+    allocation failure is NOT misclassified as a retry-on-CPU OOM.
+    """
+    try:
+        import torch  # noqa: WPS433 — deferred; keeps bare import torch-free
+
+        oom_type = getattr(torch.cuda, "OutOfMemoryError", None)
+        if oom_type is not None and isinstance(exc, oom_type):
+            return True
+    except Exception:  # noqa: BLE001 — torch absent / import failure
+        pass
+    text = str(exc).lower()
+    return "out of memory" in text or "cuda error: out of memory" in text
 
 
 # Per-BERT runners. Populated by each BERT module on import (see
@@ -98,20 +155,47 @@ def run_bert(
     spec = get_adapter(name)
     if name not in BERT_RUNNERS:
         raise KeyError(f"no runner registered for {name!r}; known: {sorted(BERT_RUNNERS)}")
-
-    backbone = load_shared_backbone(
-        backbone_name,
-        revision=backbone_revision,
-        dtype=backbone_dtype,
-    )
-    adapter = LoRAAdapter(backbone, spec)
-    adapter.load()  # releases any previously-bound adapter on the backbone
     fn = BERT_RUNNERS[name]
-    return fn(adapter=adapter, inputs=inputs, **runner_kwargs)
+
+    def _load_and_run() -> BertOutput:
+        backbone = load_shared_backbone(
+            backbone_name,
+            revision=backbone_revision,
+            dtype=backbone_dtype,
+        )
+        # If a prior forward already OOM'd, go straight to CPU (no re-attempt
+        # on CUDA — that would just re-OOM on every span-batch).
+        if cpu_fallback_latched():
+            backbone.force_to_cpu()
+        adapter = LoRAAdapter(backbone, spec)
+        adapter.load()  # releases any previously-bound adapter on the backbone
+        return fn(adapter=adapter, inputs=inputs, **runner_kwargs)
+
+    try:
+        return _load_and_run()
+    except Exception as exc:  # noqa: BLE001 — narrowed below to CUDA OOM only
+        # Only a CUDA OOM on a not-yet-latched (i.e. still-on-GPU) forward is
+        # retried on CPU. An already-latched forward runs on CPU, so any error
+        # there is genuine — and a non-OOM error keeps the historic
+        # propagate-to-orchestrator behavior (``_safe_run`` logs + records it).
+        if cpu_fallback_latched() or not is_cuda_oom(exc):
+            raise
+        global _CPU_FALLBACK_LATCH
+        _warn(
+            f"council BERT {name!r} fell back to CPU after CUDA OOM — GPU is "
+            f"pinned by another model; refinement continues on CPU (slower). "
+            f"exc={exc!r}"
+        )
+        _CPU_FALLBACK_LATCH = True
+        # force_to_cpu() runs inside _load_and_run() now that the latch is set,
+        # moving the backbone off the GPU and rebuilding the adapter on CPU.
+        return _load_and_run()
 
 
 __all__ = [
     "BERT_RUNNERS",
+    "cpu_fallback_latched",
+    "is_cuda_oom",
     "register_runner",
     "run_bert",
 ]
