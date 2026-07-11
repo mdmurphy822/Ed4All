@@ -1,23 +1,26 @@
 """
-Phase 7b Subtask 9 — regression test for ``dart-chunker`` agent
-registration.
+Phase 7b Subtask 9 — regression test for the chunker agent registration.
+
+DART->semantik naming purge (task #19 Stage 3): the agent was renamed
+``dart-chunker`` -> ``semantik-chunker``. The legacy ``dart-chunker`` name
+is kept as a read-compat dispatch alias in ``AGENT_TOOL_MAPPING`` so old
+resume states / configs still route.
 
 Pins both registration sites so a future refactor can't silently drop
-either half of the ``dart-chunker`` wiring:
+either half of the chunker wiring:
 
 1. ``MCP/core/executor.py::AGENT_TOOL_MAPPING`` carries a
-   ``"dart-chunker": "run_dart_chunking"`` entry. The actual
-   ``run_dart_chunking`` helper is implemented by ST 11 and registered
-   in ``MCP/tools/pipeline_tools.py::_build_tool_registry``; this test
-   asserts only the mapping shape (the helper-resolution check belongs
-   in ``test_pipeline_tools.py`` once ST 11 lands).
+   ``"semantik-chunker": "run_dart_chunking"`` entry (canonical) plus the
+   legacy ``"dart-chunker"`` alias. The actual ``run_dart_chunking`` helper
+   is implemented by ST 11 and registered in
+   ``MCP/tools/pipeline_tools.py::_build_tool_registry``; this test asserts
+   only the mapping shape.
 
-2. ``config/agents.yaml`` has a ``dart-chunker`` entry under ``agents``
-   with ``type: utility`` (mirroring the ``textbook-stager``
-   precedent — deterministic transformation, in-code dispatcher, no
-   ``.md`` spec).
+2. ``config/agents.yaml`` has a ``semantik-chunker`` entry under ``agents``
+   with ``type: utility`` (mirroring the ``textbook-stager`` precedent —
+   deterministic transformation, in-code dispatcher, no ``.md`` spec).
 
-3. ``dart-chunker`` does NOT leak into ``AGENT_SUBAGENT_SET`` — it is
+3. ``semantik-chunker`` does NOT leak into ``AGENT_SUBAGENT_SET`` — it is
    a deterministic chunker, not an LLM-reasoning agent, so it must
    stay on the in-process ``_invoke_tool`` path regardless of
    ``ED4ALL_AGENT_DISPATCH``.
@@ -41,33 +44,39 @@ AGENTS_YAML = REPO_ROOT / "config" / "agents.yaml"
 
 
 @pytest.mark.unit
-def test_dart_chunker_in_agent_tool_mapping():
-    """``dart-chunker`` must map to ``run_dart_chunking``."""
-    assert "dart-chunker" in AGENT_TOOL_MAPPING, (
-        "Phase 7b ST 9 regression — dart-chunker missing from "
+def test_semantik_chunker_in_agent_tool_mapping():
+    """``semantik-chunker`` (canonical) must map to ``run_dart_chunking``,
+    and the legacy ``dart-chunker`` alias must still resolve (read-compat)."""
+    assert "semantik-chunker" in AGENT_TOOL_MAPPING, (
+        "task #19 Stage 3 regression — semantik-chunker missing from "
         "AGENT_TOOL_MAPPING in MCP/core/executor.py"
     )
-    assert AGENT_TOOL_MAPPING["dart-chunker"] == "run_dart_chunking", (
-        "Phase 7b ST 9 regression — dart-chunker must map to "
+    assert AGENT_TOOL_MAPPING["semantik-chunker"] == "run_dart_chunking", (
+        "task #19 Stage 3 regression — semantik-chunker must map to "
         "run_dart_chunking (the ST 11 helper registered in "
         "MCP/tools/pipeline_tools.py::_build_tool_registry); got "
-        f"{AGENT_TOOL_MAPPING['dart-chunker']!r}"
+        f"{AGENT_TOOL_MAPPING['semantik-chunker']!r}"
+    )
+    # Legacy dart-chunker dispatch alias survives (Stage-1 read-compat).
+    assert AGENT_TOOL_MAPPING.get("dart-chunker") == "run_dart_chunking", (
+        "task #19 Stage 3 regression — legacy dart-chunker dispatch alias "
+        "must still resolve to run_dart_chunking for old resume states"
     )
 
 
 @pytest.mark.unit
-def test_dart_chunker_in_agents_yaml():
-    """``dart-chunker`` must be registered in ``config/agents.yaml``."""
+def test_semantik_chunker_in_agents_yaml():
+    """``semantik-chunker`` must be registered in ``config/agents.yaml``."""
     data = yaml.safe_load(AGENTS_YAML.read_text())
     agents = data.get("agents", {})
-    assert "dart-chunker" in agents, (
-        "Phase 7b ST 9 regression — dart-chunker missing from "
+    assert "semantik-chunker" in agents, (
+        "task #19 Stage 3 regression — semantik-chunker missing from "
         "config/agents.yaml::agents"
     )
 
-    entry = agents["dart-chunker"]
+    entry = agents["semantik-chunker"]
     assert entry.get("type") == "utility", (
-        "Phase 7b ST 9 regression — dart-chunker must be type=utility "
+        "task #19 Stage 3 regression — semantik-chunker must be type=utility "
         "(deterministic chunker, no LLM dispatch — mirrors "
         f"textbook-stager precedent); got type={entry.get('type')!r}"
     )
@@ -76,18 +85,18 @@ def test_dart_chunker_in_agents_yaml():
     # don't pin the exact strings.
     capabilities = entry.get("capabilities") or []
     assert capabilities, (
-        "Phase 7b ST 9 regression — dart-chunker must declare at least "
-        "one capability"
+        "task #19 Stage 3 regression — semantik-chunker must declare at "
+        "least one capability"
     )
 
 
 @pytest.mark.unit
-def test_dart_chunker_is_not_subagent():
-    """``dart-chunker`` is a deterministic utility — must NOT be in
+def test_semantik_chunker_is_not_subagent():
+    """``semantik-chunker`` is a deterministic utility — must NOT be in
     ``AGENT_SUBAGENT_SET`` (which would route it through
     ``dispatcher.dispatch_task`` when ``ED4ALL_AGENT_DISPATCH=true``)."""
-    assert "dart-chunker" not in AGENT_SUBAGENT_SET, (
-        "Phase 7b ST 9 regression — dart-chunker leaked into "
+    assert "semantik-chunker" not in AGENT_SUBAGENT_SET, (
+        "task #19 Stage 3 regression — semantik-chunker leaked into "
         "AGENT_SUBAGENT_SET. The chunker is a deterministic "
         "transformation with no LLM dispatch; it must stay on the "
         "in-process _invoke_tool path."

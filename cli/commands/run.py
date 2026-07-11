@@ -425,8 +425,8 @@ def _validate_skip_dart_inputs(
     root = Path(dart_output_dir)
     if not root.is_dir():
         return (
-            f"--skip-dart requires --dart-output-dir to point at an existing "
-            f"directory; got: {dart_output_dir!r}"
+            f"--skip-dart requires --semantik-output-dir to point at an "
+            f"existing directory; got: {dart_output_dir!r}"
         )
     htmls = _discover_dart_htmls(dart_output_dir)
     if not htmls:
@@ -708,18 +708,30 @@ def _build_orchestrator(
     help=(
         "Skip the dart_conversion phase and reuse existing DART HTML output. "
         "Useful when re-running textbook-to-course after tweaking downstream "
-        "phases. Requires --dart-output-dir to contain ``*_accessible.html`` "
-        "files (defaults to DART/output/)."
+        "phases. Requires --semantik-output-dir to contain "
+        "``*_accessible.html`` files (defaults to DART/output/)."
     ),
 )
 @click.option(
-    "--dart-output-dir",
+    "--semantik-output-dir",
+    "dart_output_dir",
     type=click.Path(),
     default=None,
     help=(
         "Directory containing ``*_accessible.html`` files. Only consulted "
         "when --skip-dart is set. Defaults to DART/output/."
     ),
+)
+@click.option(
+    # DART->semantik naming purge (task #19 Stage 3): --dart-output-dir is the
+    # legacy back-compat alias of --semantik-output-dir. Hidden from --help but
+    # still honored; coalesced into ``dart_output_dir`` in the body below.
+    "--dart-output-dir",
+    "dart_output_dir_legacy",
+    type=click.Path(),
+    default=None,
+    hidden=True,
+    help="Deprecated alias of --semantik-output-dir (back-compat).",
 )
 @click.option(
     "--reuse-objectives",
@@ -905,6 +917,7 @@ def run_command(
     resume_run_id: Optional[str],
     skip_dart: bool,
     dart_output_dir: Optional[str],
+    dart_output_dir_legacy: Optional[str],
     reuse_objectives: Optional[str],
     reuse_conversion: bool,
     blocks_filter: Optional[str],
@@ -937,6 +950,12 @@ def run_command(
 
     See ``config/workflows.yaml`` for the full list of available workflows.
     """
+    # DART->semantik naming purge (task #19 Stage 3): coalesce the legacy
+    # --dart-output-dir alias into the canonical dart_output_dir param. The
+    # canonical --semantik-output-dir wins if both are somehow provided.
+    if dart_output_dir is None and dart_output_dir_legacy is not None:
+        dart_output_dir = dart_output_dir_legacy
+
     workflow = _normalize_workflow(workflow_name)
 
     if workflow not in {_normalize_workflow(w) for w in SUPPORTED_WORKFLOWS}:

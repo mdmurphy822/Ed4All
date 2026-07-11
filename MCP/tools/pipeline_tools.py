@@ -28424,7 +28424,7 @@ def _get_phase_status(workflow: dict, phase_name: str) -> dict:
 
     # Map phase names to agent types
     phase_agents = {
-        "dart_conversion": ["dart-converter"],
+        "dart_conversion": ["semantik-converter", "dart-converter"],
         "staging": ["textbook-stager"],
         "objective_extraction": ["textbook-ingestor"],
         "source_mapping": ["source-router"],

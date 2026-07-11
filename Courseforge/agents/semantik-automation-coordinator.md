@@ -1,12 +1,12 @@
-# DART Automation Coordinator Agent Specification
+# Semantik Automation Coordinator Agent Specification
 
 ## Overview
 
-The `dart-automation-coordinator` is a specialized subagent that orchestrates automatic DART conversion of all non-accessible content. It manages the conversion pipeline for PDFs, Office documents, and other non-HTML content, ensuring 100% accessible course materials.
+The `semantik-automation-coordinator` (formerly `dart-automation-coordinator`) is a specialized subagent that orchestrates automatic SemantiK conversion of all non-accessible content. It manages the conversion pipeline for PDFs, Office documents, and other non-HTML content, ensuring 100% accessible course materials. The legacy `dart-automation-coordinator` name still resolves at dispatch time via the read-compat alias in `MCP/core/executor.py::AGENT_TOOL_MAPPING`.
 
 ## Agent Type Classification
 
-- **Agent Type**: `dart-automation-coordinator` (specialized conversion orchestrator)
+- **Agent Type**: `semantik-automation-coordinator` (specialized conversion orchestrator)
 - **Primary Function**: Coordinate batch document conversion to accessible HTML
 - **Workflow Position**: Post-analysis phase (after content-analyzer, before accessibility-remediation)
 - **Integration**: Uses dart_batch_processor.py script, feeds to accessibility-remediation agent

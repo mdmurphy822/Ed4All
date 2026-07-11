@@ -59,11 +59,15 @@ agents:
     max_instances: 2
 
   # =============================================================================
-  # DART/REMEDIATION AGENTS
+  # SEMANTIK/REMEDIATION AGENTS
   # =============================================================================
+  # DART->semantik naming purge (task #19 Stage 3): agent keys renamed
+  # dart-* -> semantik-*. The legacy dart-* names still RESOLVE at dispatch
+  # time via read-compat aliases in MCP/core/executor.py::AGENT_TOOL_MAPPING,
+  # so old resume states / configs keep routing.
 
-  dart-automation-coordinator:
-    source: Courseforge/agents/dart-automation-coordinator.md
+  semantik-automation-coordinator:
+    source: Courseforge/agents/semantik-automation-coordinator.md
     type: conversion-orchestrator
     capabilities:
       - pdf_conversion
@@ -75,9 +79,9 @@ agents:
   # legacy DART converter (DART/multi_source_interpreter.py) was retired; this
   # agent now drives the license-clean SemantiK v2 cascade via the
   # ``extract_and_convert_pdf`` registry tool → ``_run_semantik_v2_conversion``
-  # seam. Agent name kept for wire-contract continuity (the ``dart_conversion``
-  # phase + ``data-dart-*`` / ``dart:{slug}#{block_id}`` provenance vocabulary).
-  dart-converter:
+  # seam. Renamed dart-converter -> semantik-converter (task #19 Stage 3); the
+  # legacy dart-converter name still resolves via the AGENT_TOOL_MAPPING alias.
+  semantik-converter:
     source: SemantiK/CLAUDE.md
     type: converter
     capabilities:
@@ -176,13 +180,16 @@ agents:
       - confidence_scoring
     max_instances: 1
 
-  dart-chunker:
+  semantik-chunker:
     # Phase 7b ST 9: emits LibV2/courses/<slug>/dart_chunks/chunks.jsonl
     # from staged DART HTML output via Trainforge.chunker.chunk_content.
     # Deterministic chunker transformation with no LLM dispatch — no
     # standalone .md spec, in-code dispatcher per textbook-stager
     # precedent. Backed by `_run_dart_chunking` (ST 11) registered in
-    # MCP/tools/pipeline_tools.py::_build_tool_registry.
+    # MCP/tools/pipeline_tools.py::_build_tool_registry. Renamed
+    # dart-chunker -> semantik-chunker (task #19 Stage 3); legacy dart-chunker
+    # still resolves via the AGENT_TOOL_MAPPING alias. The on-disk dart_chunks/
+    # dir name is unchanged (Stage-1 read fallback owns semantik_chunks/->dart).
     type: utility
     capabilities:
       - dart_html_chunking

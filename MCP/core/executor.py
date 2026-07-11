@@ -177,27 +177,37 @@ AGENT_TOOL_MAPPING = {
     # ``MCP/tools/pipeline_tools.py::_build_tool_registry``) is the
     # in-process tool that produces the concept graph + manifest.
     "pedagogy-graph-builder": "run_concept_extraction",
-    # Phase 7b ST 9/11: dart-chunker is the agent backing the new
+    # Phase 7b ST 9/11: semantik-chunker is the agent backing the
     # ``chunking`` workflow phase. Utility-style agent (no LLM dispatch);
     # ``run_dart_chunking`` (registered in
     # ``MCP/tools/pipeline_tools.py::_build_tool_registry`` by ST 11) is
     # the in-process tool that emits ``LibV2/courses/<slug>/dart_chunks/
     # chunks.jsonl`` + ``manifest.json`` via ``Trainforge.chunker.chunk_content``.
-    "dart-chunker": "run_dart_chunking",
+    # DART->semantik purge (task #19 Stage 3): agent renamed dart-chunker ->
+    # semantik-chunker; the legacy dart-chunker key is kept as a read-compat
+    # dispatch alias so old resume states / configs still route.
+    "semantik-chunker": "run_dart_chunking",
+    "dart-chunker": "run_dart_chunking",  # legacy alias (read-compat)
 
     # -------------------------------------------------------------------------
     # CONVERSION / REMEDIATION AGENTS
     # -------------------------------------------------------------------------
-    # SemantiK migration: ``dart-converter`` backs the surviving
+    # SemantiK migration: ``semantik-converter`` backs the surviving
     # ``dart_conversion`` phase; ``extract_and_convert_pdf`` routes that phase
     # to the SemantiK v2 cascade seam (the legacy DART converter was retired).
-    # ``dart-automation-coordinator`` (a Courseforge IMSCC-conversion
+    # ``semantik-automation-coordinator`` (a Courseforge IMSCC-conversion
     # orchestrator) and ``remediation-validator`` previously bound the retired
     # ``batch_convert_multi_source`` / ``validate_wcag_compliance`` DART tools;
     # they now route to ``extract_and_convert_pdf`` / ``get_courseforge_status``
     # respectively (WCAG validation runs as the ``wcag_compliance`` gate).
-    "dart-automation-coordinator": "extract_and_convert_pdf",
-    "dart-converter": "extract_and_convert_pdf",
+    # DART->semantik purge (task #19 Stage 3): agents renamed dart-converter ->
+    # semantik-converter, dart-automation-coordinator ->
+    # semantik-automation-coordinator; the legacy dart-* keys are kept as
+    # read-compat dispatch aliases so old resume states / configs still route.
+    "semantik-automation-coordinator": "extract_and_convert_pdf",
+    "semantik-converter": "extract_and_convert_pdf",
+    "dart-automation-coordinator": "extract_and_convert_pdf",  # legacy alias
+    "dart-converter": "extract_and_convert_pdf",  # legacy alias (read-compat)
     "imscc-intake-parser": "intake_imscc_package",
     "content-analyzer": "analyze_imscc_content",
     "accessibility-remediation": "remediate_course_content",

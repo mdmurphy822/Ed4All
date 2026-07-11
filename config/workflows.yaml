@@ -1400,7 +1400,7 @@ workflows:
 
     phases:
       - name: dart_conversion
-        agents: [dart-converter]
+        agents: [semantik-converter]
         parallel: true
         # One 8GB card: a full-cascade conversion holds council BERTs + the
         # ollama reviewer seat; concurrent cascades OOM the GPU. Serialized
@@ -1477,7 +1477,7 @@ workflows:
       # ST 14.5 reconciliation, eliminating the inline v4-chunk
       # projection that previously lived inside _run_concept_extraction.
       - name: chunking
-        agents: [dart-chunker]
+        agents: [semantik-chunker]
         parallel: false
         max_concurrent: 1
         depends_on: [staging]
@@ -4139,7 +4139,7 @@ workflows:
       # ordering now ensures the IMSCC chunkset is on disk before any
       # downstream synthesis / training phase reads it.
       - name: imscc_chunking
-        agents: [dart-chunker]
+        agents: [semantik-chunker]
         parallel: false
         max_concurrent: 1
         depends_on: [packaging]

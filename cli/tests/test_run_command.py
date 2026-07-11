@@ -345,7 +345,10 @@ class TestSkipDartFlag:
         result = runner.invoke(cli, ["run", "--help"])
         assert result.exit_code == 0
         assert "--skip-dart" in result.output
-        assert "--dart-output-dir" in result.output
+        # task #19 Stage 3: --semantik-output-dir is the canonical flag; the
+        # legacy --dart-output-dir alias is hidden from --help (back-compat only).
+        assert "--semantik-output-dir" in result.output
+        assert "--dart-output-dir" not in result.output
 
     def test_build_params_sets_skip_dart_keys(self):
         params = _build_workflow_params(
