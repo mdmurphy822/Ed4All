@@ -911,6 +911,128 @@ def test_low_divergence_page_byte_identical_regardless_of_authoritative(monkeypa
     assert on[0]["bbox"] == [10.0, 10.0, 190.0, 20.0]
 
 
+# --------------------------------------------------------------------------
+# OCR-garbage tail drop (SEMANTIK_VLM_DROP_GARBAGE_TAILS, default ON in-fusion)
+# --------------------------------------------------------------------------
+
+
+from dart_semantic.vlm_fusion import (  # noqa: E402
+    SEMANTIK_VLM_DROP_GARBAGE_TAILS_ENV,
+    _looks_like_ocr_garbage,
+    resolve_drop_garbage_tails_mode,
+)
+
+
+# The four live-fire evidence lines (unrescued tesseract-only OCR garbage that
+# shipped verbatim into an OpenStax Algebra ch01 scan conversion).
+_GARBAGE_EVIDENCE = [
+    "TRY Tiss ® ©",
+    "©) obi Dom -19",
+    "© Solution No.",
+    "2,791 © 2,795",
+]
+
+
+@pytest.mark.parametrize("line", _GARBAGE_EVIDENCE)
+def test_looks_like_ocr_garbage_catches_evidence_lines(line):
+    assert _looks_like_ocr_garbage(line) is True
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "The quick brown fox jumps over the lazy dog.",  # normal sentence
+        "See the theorem.",  # short normal sentence, no junk glyph
+        r"$|n| \geq 0$ for all numbers",  # real math line (pipes are in a math span)
+        "Solution",  # legit short label
+        "37. 84 38. 9,696 39. 75",  # clean numeric answer row (no junk glyph)
+        "(a) first option",  # leading paren is NOT a junk glyph
+    ],
+)
+def test_looks_like_ocr_garbage_keeps_real_content(line):
+    assert _looks_like_ocr_garbage(line) is False
+
+
+def test_drop_garbage_tails_resolver_default_on(monkeypatch):
+    monkeypatch.delenv(SEMANTIK_VLM_DROP_GARBAGE_TAILS_ENV, raising=False)
+    assert resolve_drop_garbage_tails_mode() is True
+
+
+@pytest.mark.parametrize("val", ["1", "true", "yes", "on", "garbage", "2x", ""])
+def test_drop_garbage_tails_resolver_on_unless_explicit_falsey(monkeypatch, val):
+    # Default-ON parse posture (mirrors resolve_strip_furniture_mode): unset /
+    # truthy / garbage / blank keep it on.
+    monkeypatch.setenv(SEMANTIK_VLM_DROP_GARBAGE_TAILS_ENV, val)
+    assert resolve_drop_garbage_tails_mode() is True
+
+
+@pytest.mark.parametrize("val", ["0", "false", "no", "off", "OFF", " Off "])
+def test_drop_garbage_tails_resolver_explicit_falsey_off(monkeypatch, val):
+    monkeypatch.setenv(SEMANTIK_VLM_DROP_GARBAGE_TAILS_ENV, val)
+    assert resolve_drop_garbage_tails_mode() is False
+
+
+def _garbage_tail_case():
+    """A clean MATCH anchor + one unrescued tesseract-only OCR-garbage line."""
+    tess = [
+        _tb(10, 10, 100, 20, "clean anchor line here"),
+        _tb(10, 90, 100, 100, "© Solution No.", conf=0.4),
+    ]
+    vlm = ["clean anchor line here"]
+    return tess, vlm
+
+
+def test_garbage_tail_dropped_when_mode_on(monkeypatch):
+    monkeypatch.delenv(SEMANTIK_VLM_DROP_GARBAGE_TAILS_ENV, raising=False)  # default on
+    tess, vlm = _garbage_tail_case()
+    fused, stats = fuse_page(tess, vlm, (200.0, 300.0))
+    # The garbage tesseract-only block is gone; the drop is tallied but the RAW
+    # ledger gap count (tesseract_only) is unchanged (divergence invariant).
+    assert not any("Solution No" in b["text"] for b in fused)
+    assert stats["garbage_tail_dropped"] == 1
+    assert stats["tesseract_only"] == 1
+    # The aligned anchor still ships.
+    assert any(b["fusion"] == "vlm+tesseract" for b in fused)
+
+
+def test_garbage_tail_kept_when_mode_off(monkeypatch):
+    monkeypatch.setenv(SEMANTIK_VLM_DROP_GARBAGE_TAILS_ENV, "0")  # escape hatch
+    tess, vlm = _garbage_tail_case()
+    fused, stats = fuse_page(tess, vlm, (200.0, 300.0))
+    only = [b for b in fused if b["fusion"] == "tesseract-only"]
+    assert len(only) == 1
+    assert only[0]["text"] == "© Solution No."  # byte-verbatim retained
+    assert stats["garbage_tail_dropped"] == 0
+    assert stats["tesseract_only"] == 1
+
+
+def test_non_garbage_tesseract_only_kept_even_when_mode_on(monkeypatch):
+    # A junk-glyph-free tesseract-only line (real content the VLM dropped) is
+    # NEVER touched by the conservative predicate, even with the drop on.
+    monkeypatch.delenv(SEMANTIK_VLM_DROP_GARBAGE_TAILS_ENV, raising=False)
+    tess = [
+        _tb(10, 10, 100, 20, "clean anchor line here"),
+        _tb(10, 90, 100, 100, "ocr only unique zzz", conf=0.71),
+    ]
+    vlm = ["clean anchor line here"]
+    fused, stats = fuse_page(tess, vlm, (200.0, 300.0))
+    only = [b for b in fused if b["fusion"] == "tesseract-only"]
+    assert len(only) == 1
+    assert only[0]["text"] == "ocr only unique zzz"
+    assert stats["garbage_tail_dropped"] == 0
+
+
+def test_extract_cache_salt_gated_on_garbage_tail_mode():
+    # The default-ON garbage drop keys a NEW append-only |gtail1 salt when
+    # fusion AND the drop are both on; the =0 escape hatch keys back to the
+    # historic vlmfuse5 (warm cache stays valid), and the no-fusion key omits it.
+    import inspect
+
+    src = inspect.getsource(extract_shared._compute_extract_cache_key)
+    assert '"|gtail1"' in src
+    assert "_resolve_drop_garbage_tails_mode" in src
+
+
 def test_extract_cache_salt_bumped_to_vlmfuse5():
     # The entity scrub changes what fuse_page emits: a vlmfuse4 cache may carry
     # literal entity text (corrected downstream by the adapter scrub — current

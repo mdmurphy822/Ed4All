@@ -174,13 +174,21 @@ _CHAPTER_HEADING_RE = re.compile(r"^\s*chapter\s+(\d+)\b", re.IGNORECASE)
 # FB-position-based ``structure_graph._detect_running_headers`` MISSES when OCR
 # bbox noise pushes the recurring header out of the top/bottom margin band, so
 # it survives as a heading and is promoted to a bogus <h2> (39× on the EA2e
-# scan). Text-based backstop: a "Chapter N <words> <3-4 digit page>" heading is
-# furniture ANYWHERE in the document (not zone-confined). Conservative — the
-# "Chapter N" prefix AND a standalone trailing 3-4-digit page number are BOTH
-# required, so a real chapter title "Chapter 9 Roots and Radicals" (no trailing
-# number) never matches.
+# scan). Text-based backstop: a "Chapter N <words> <page>" heading is
+# furniture ANYWHERE in the document (not zone-confined).
+#
+# Defect 3(a) follow-up — SINGLE-DIGIT trailing page numbers (early chapters):
+# the trailing page match was ``\d{2,4}`` (2-4 digits), so a chapter opening on
+# physical page 7/9 ("Chapter 1 Foundations 7", "Chapter 1 Foundations 9")
+# survived as a bogus <h1>/<h2> (the running header on the book's early pages
+# carries a 1-digit page number). Widened to ``\d{1,4}`` so single-digit page
+# numbers are caught. To stay conservative — a real chapter title with NO
+# trailing page ("Chapter 1 Foundations", "Chapter 9 Roots and Radicals") must
+# NEVER match, and a bare "Chapter N <digit>" with no title must not either —
+# at least one ALPHABETIC character (a real title) is REQUIRED between the
+# "Chapter N" prefix and the trailing page number.
 _RUNNING_HEADER_TEXT_RE = re.compile(
-    r"^\s*chapter\s+\d+\b.*\s\d{2,4}\s*$", re.IGNORECASE
+    r"^\s*chapter\s+\d+\b.*[A-Za-z].*\s\d{1,4}\s*$", re.IGNORECASE
 )
 # Defect 3(b) — the LEADING-page-number running-header form the audit surfaced
 # ("188 Chapter 1 Foundations", "686 Chapter 6 Polynomials"): a 2-4-digit page
@@ -731,10 +739,11 @@ def _is_running_header_region(region: Region) -> bool:
 
     Text-based backstop for the FB-position-based
     ``structure_graph._detect_running_headers`` (which misses headers OCR bbox
-    noise pushed out of the margin band). A "Chapter N <words> <3-4 digit page>"
-    heading — e.g. "Chapter 9 Roots and Radicals 1039" — is page furniture; a
-    real chapter title ("Chapter 9 Roots and Radicals", no trailing number) is
-    NOT. Non-heading regions are never running headers here.
+    noise pushed out of the margin band). A "Chapter N <words> <1-4 digit page>"
+    heading — e.g. "Chapter 9 Roots and Radicals 1039" or an early-chapter
+    single-digit "Chapter 1 Foundations 7" — is page furniture; a real chapter
+    title ("Chapter 9 Roots and Radicals", no trailing number) is NOT.
+    Non-heading regions are never running headers here.
     """
     if not _is_heading(region):
         return False

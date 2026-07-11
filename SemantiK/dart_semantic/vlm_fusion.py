@@ -76,9 +76,11 @@ __all__ = [
     "SEMANTIK_VLM_FUSION_ENV",
     "SEMANTIK_VLM_ORDER_AUTHORITATIVE_ENV",
     "SEMANTIK_VLM_ORDER_DIVERGENCE_ENV",
+    "SEMANTIK_VLM_DROP_GARBAGE_TAILS_ENV",
     "resolve_vlm_fusion_mode",
     "resolve_vlm_order_authoritative_mode",
     "resolve_vlm_order_divergence_floor",
+    "resolve_drop_garbage_tails_mode",
     "fuse_page",
     "PAGE_VLM_CONTRACT",
 ]
@@ -89,6 +91,9 @@ __all__ = [
 
 SEMANTIK_VLM_FUSION_ENV = "SEMANTIK_VLM_FUSION"
 _TRUTHY = {"1", "true", "yes", "on"}
+# Explicit falsey set for the default-ON garbage-tail drop (mirrors
+# ``vlm_furniture._FALSEY``): only these disable an otherwise-on switch.
+_FALSEY = {"0", "false", "no", "off"}
 
 # ---------------------------------------------------------------------------
 # VLM-authoritative reading-order (dense multi-column repair).
@@ -113,6 +118,8 @@ _TRUTHY = {"1", "true", "yes", "on"}
 # byte-identical to the legacy path.
 SEMANTIK_VLM_ORDER_AUTHORITATIVE_ENV = "SEMANTIK_VLM_ORDER_AUTHORITATIVE"
 SEMANTIK_VLM_ORDER_DIVERGENCE_ENV = "SEMANTIK_VLM_ORDER_DIVERGENCE"
+# Default-ON-within-fusion garbage-tail drop (see resolve_drop_garbage_tails_mode).
+SEMANTIK_VLM_DROP_GARBAGE_TAILS_ENV = "SEMANTIK_VLM_DROP_GARBAGE_TAILS"
 # Divergence at/above which Tesseract order is treated as unreliable and the
 # VLM linear order is made authoritative. A clean single-column page aligns
 # almost every line (divergence well under 0.1); a fractured multi-column grid
@@ -173,6 +180,121 @@ def resolve_vlm_fusion_mode() -> bool:
     mode (source cached, merged output unchanged).
     """
     return os.environ.get(SEMANTIK_VLM_FUSION_ENV, "").strip().lower() in _TRUTHY
+
+
+def resolve_drop_garbage_tails_mode() -> bool:
+    """Whether unrescued tesseract-only OCR-garbage blocks are dropped (default ON).
+
+    Reads ``SEMANTIK_VLM_DROP_GARBAGE_TAILS`` with the **default-ON**
+    parse posture of :func:`vlm_furniture.resolve_strip_furniture_mode`: only an
+    explicit falsey value (``0`` / ``false`` / ``no`` / ``off``,
+    case-insensitive) disables it; unset / truthy / garbage keeps it on.
+
+    It is a **NO-OP without VLM fusion** (the only caller,
+    :func:`_reconstruct`'s tesseract-only loop, runs on the fusion path — itself
+    off by default), so the flag-off pipeline is byte-identical; ``=0`` is the
+    operator escape hatch (a run where an unrescued tesseract-only block should
+    stay byte-verbatim even when it looks like OCR noise). Read at CALL time
+    (mirrors :func:`resolve_vlm_fusion_mode`) so tests / Docker can flip it
+    without a re-import.
+    """
+    raw = os.environ.get(SEMANTIK_VLM_DROP_GARBAGE_TAILS_ENV)
+    if raw is None:
+        return True
+    return str(raw).strip().lower() not in _FALSEY
+
+
+# ---------------------------------------------------------------------------
+# Conservative OCR-garbage predicate for unrescued tesseract-only blocks.
+# ---------------------------------------------------------------------------
+#
+# On a cleanly-VLM-transcribed scan a tesseract-only block (the DP aligner
+# matched it to NO vlm line AND the gap-pairing rescue skipped it) is almost
+# always OCR noise the VLM correctly omitted — BUT it can occasionally be REAL
+# content the VLM dropped (the documented "VLM-drop protection" rationale). So
+# this predicate is deliberately CONSERVATIVE: it drops only SHORT lines that
+# are unambiguously junk-glyph fragments, and errs toward KEEPING (a
+# false-negative — a bit of surviving garbage) over dropping (a false-positive
+# — deleted real content). Real content lands on the VLM-aligned / rescued path,
+# never here; and this predicate never even looks at a line carrying a math span.
+#
+# The four live-fire evidence lines it MUST catch (unrescued tesseract-only
+# blocks that shipped verbatim into an OpenStax Algebra ch01 scan conversion):
+#   "TRY Tiss ® ©"      (junk-symbol-dominated fragment)
+#   "©) obi Dom -19"    (leading junk glyph + word soup)
+#   "© Solution No."    (leading junk glyph + fragment)
+#   "2,791 © 2,795"     (embedded junk glyph, no real word — a numeric misread)
+# and must NOT catch a normal short sentence, a real math line, or a legit short
+# label ("Solution").
+
+# The "junk" glyph set (the task-specified isolated symbols almost never a
+# legitimate LINE-LEADING content character): copyright/trademark/registered,
+# pipe, tilde, caret, backtick, logical-not, degree. Brackets/parens are
+# DELIBERATELY excluded so a real "(a) first option" / "See section 3(a)" line
+# is never flagged.
+_GARBAGE_JUNK_CHARS = frozenset("®™©|~^`¬°")
+# A run of >= 3 consecutive ASCII letters — a "plausible word". Its ABSENCE (on
+# a short junk-bearing line) is a strong garbage signal.
+_PLAUSIBLE_WORD_RE = re.compile(r"[A-Za-z]{3,}")
+# A math span (real math arrives via the VLM-aligned path, never tesseract-only,
+# but be defensive): $...$, \(...\), \[...\].
+_MATH_SPAN_RE = re.compile(r"\$[^$]+\$|\\\([^)]*\\\)|\\\[[^]]*\\]")
+# Junk-glyph share of non-space characters at/above which a short line is judged
+# junk-dominated even when it carries a plausible word ("TRY Tiss ® ©").
+_GARBAGE_JUNK_RATIO = 0.20
+# Only SHORT lines are drop-eligible (BOTH ceilings must hold → conservative).
+_GARBAGE_MAX_CHARS = 40
+_GARBAGE_MAX_TOKENS = 6
+
+
+def _looks_like_ocr_garbage(text: str) -> bool:
+    """Conservative, domain-agnostic OCR-garbage test for a tesseract-only line.
+
+    Returns True ONLY for a SHORT line (``<= _GARBAGE_MAX_CHARS`` chars AND
+    ``<= _GARBAGE_MAX_TOKENS`` whitespace tokens) that CONTAINS at least one
+    junk glyph (:data:`_GARBAGE_JUNK_CHARS`) AND meets one of three
+    corroborating conditions:
+
+    * no plausible word at all (no ``[A-Za-z]{3,}`` run) — e.g. a numeric
+      misread ``"2,791 © 2,795"``;
+    * the first non-space character is itself a junk glyph — e.g.
+      ``"© Solution No."`` / ``"©) obi Dom -19"`` (a real content line
+      practically never opens with ©/®/™/|);
+    * the junk glyphs dominate (``>= _GARBAGE_JUNK_RATIO`` of non-space chars)
+      — e.g. ``"TRY Tiss ® ©"``.
+
+    A line with NO junk glyph is NEVER garbage here (a clean short sentence, a
+    legit ``"Solution"`` label, a clean numeric answer line ``"37. 84"`` all
+    have zero junk glyphs → kept). A line carrying a ``$...$`` / ``\\(...\\)``
+    math span is never garbage (defensive). Long lines are kept (the target is
+    short junk fragments; err toward keeping). Pure / deterministic.
+    """
+    s = (text or "").strip()
+    if not s:
+        return False
+    if len(s) > _GARBAGE_MAX_CHARS:
+        return False
+    if len(s.split()) > _GARBAGE_MAX_TOKENS:
+        return False
+    if _MATH_SPAN_RE.search(s):
+        return False
+    non_space = [c for c in s if not c.isspace()]
+    if not non_space:
+        return False
+    junk = sum(1 for c in non_space if c in _GARBAGE_JUNK_CHARS)
+    if junk == 0:
+        # No junk glyph → not our (unambiguous) target; keep.
+        return False
+    if _PLAUSIBLE_WORD_RE.search(s) is None:
+        # Short + junk + no real word (a numeric / symbol misread).
+        return True
+    if non_space[0] in _GARBAGE_JUNK_CHARS:
+        # Short + leads with a junk glyph (real content rarely opens with one).
+        return True
+    if junk / len(non_space) >= _GARBAGE_JUNK_RATIO:
+        # Short + junk-symbol-dominated even though a word survives.
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -610,6 +732,11 @@ def _reconstruct(
         "tesseract_only": len(tess_only_all),
         "vlm_only": len(vlm_only_all),
         "rescued": 0,
+        # Unrescued tesseract-only blocks dropped as unambiguous OCR garbage by
+        # SEMANTIK_VLM_DROP_GARBAGE_TAILS (auditable; mirrors vlm_furniture's
+        # per-page ``vlm_furniture_dropped``). ``tesseract_only`` stays the RAW
+        # ledger gap count (divergence invariant), so this is ADDITIVE.
+        "garbage_tail_dropped": 0,
     }
 
     # Anchors (aligned units + rescue fusions) used to interpolate VLM-only
@@ -713,8 +840,22 @@ def _reconstruct(
     anchors.sort(key=lambda x: x["vlm_lo"])
 
     # --- tesseract-only (unrescued PDF gaps) → byte-verbatim ----------------
+    # An unrescued tesseract-only block is one the DP aligner matched to NO vlm
+    # line AND the gap-pairing rescue skipped; on a cleanly-VLM-transcribed scan
+    # it is almost always OCR noise the VLM correctly omitted. The default-ON
+    # (within-fusion) SEMANTIK_VLM_DROP_GARBAGE_TAILS pass DROPS the
+    # unambiguously-garbage ones (isolated junk-glyph fragments — "© Solution
+    # No.", "2,791 © 2,795") via the conservative :func:`_looks_like_ocr_garbage`
+    # predicate; everything else is kept byte-verbatim (VLM-drop protection).
+    # ``tesseract_only`` in ``counts`` is the RAW ledger gap count (the
+    # divergence invariant) and is NOT decremented — the drop is tallied
+    # separately in ``garbage_tail_dropped``. ``=0`` reverts to keep-verbatim.
+    drop_garbage_tails = resolve_drop_garbage_tails_mode()
     for t in tess_only_all:
         if t in rescued_tess:
+            continue
+        if drop_garbage_tails and _looks_like_ocr_garbage(tess[t].get("text", "")):
+            counts["garbage_tail_dropped"] += 1
             continue
         fused.append({**tess[t], "fusion": "tesseract-only"})
         sort_keys.append(None)  # no VLM content → dropped by the reorder

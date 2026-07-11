@@ -57,7 +57,10 @@ from urllib.parse import urlparse
 
 from . import paths as _semantik_paths
 from . import vlm_extract as _vlm_extract
-from .vlm_fusion import resolve_vlm_fusion_mode
+from .vlm_fusion import (
+    resolve_drop_garbage_tails_mode as _resolve_drop_garbage_tails_mode,
+    resolve_vlm_fusion_mode,
+)
 from .vlm_furniture import (
     resolve_strip_furniture_mode as _resolve_strip_furniture_mode,
 )
@@ -416,6 +419,20 @@ def _compute_extract_cache_key(pdf_path: Path) -> str:
       off after a warm cache needs a manual extract-cache clear. The P0
       per-page VLM markdown cache (``vlm_extract_cache``) is keyed
       independently and survives; only tesseract OCR + fusion re-run.
+    * ``gtail_key`` — SEMANTIK_VLM_DROP_GARBAGE_TAILS (asymmetric,
+      append-only-when-fusion-on-AND-mode-on): the default-ON garbage-tail drop
+      changes what ``fuse_page`` emits (unrescued tesseract-only junk-glyph
+      fragments are dropped, so the merged block list — and thus which FBs /
+      sourceIds exist — differs from a warm ``vlmfuse5`` cache). A NEW
+      append-only ``|gtail1`` salt (rather than a ``vlmfuse6`` bump) is used
+      DELIBERATELY: because the mode has a ``=0`` escape hatch whose output is
+      byte-identical to the pre-change ``vlmfuse5`` behavior, salting on the
+      MODE (fusion-on AND drop-on) means a ``=0`` run keys back to the historic
+      ``vlmfuse5`` (its warm cache stays valid) while the default (drop-on) run
+      re-extracts once. The flag-OFF (no-fusion) key is byte-identical (no
+      ``fuse_key`` → no ``gtail_key``). Matches the ``vlm_furniture`` escape-hatch
+      posture but, unlike that flag, the shape change IS keyed (it is default-ON
+      and reader-visible, not a furniture-only refinement folded into a salt bump).
     * ``hints_key`` — SEMANTIK_VLM_STRUCT_HINTS (asymmetric, append-only-when-on):
       the P2 hint mint (`_attach_vlm_struct_hints`) runs INSIDE `_merge_page`, so
       the `vlm_hint` payload is baked into the cached merged blocks. Without this
@@ -449,6 +466,15 @@ def _compute_extract_cache_key(pdf_path: Path) -> str:
     fig_key = "fig1" if _detect_figures_enabled() else "fig0"
     vlm_key = "|vlm1" if resolve_vlm_extract_mode() else ""
     fuse_key = "|vlmfuse5" if resolve_vlm_fusion_mode() else ""
+    # gtail_key: the default-ON garbage-tail drop is a fusion-only, mode-gated
+    # shape change (see the docstring). Keyed only when fusion AND the drop are
+    # both on, so a ``=0`` run keeps its warm ``vlmfuse5`` cache and the
+    # no-fusion key stays byte-identical.
+    gtail_key = (
+        "|gtail1"
+        if resolve_vlm_fusion_mode() and _resolve_drop_garbage_tails_mode()
+        else ""
+    )
     hints_key = "|vlmhints1" if resolve_vlm_struct_hints_mode() else ""
     col_key = "|col2" if resolve_column_extract_mode() else ""
     # ord_key closes the pre-existing hole where SEMANTIK_COLUMN_ORDER (the
@@ -462,7 +488,7 @@ def _compute_extract_cache_key(pdf_path: Path) -> str:
         else ""
     )
     key_raw = (
-        f"v{EXTRACT_CACHE_VERSION}|{fig_key}{vlm_key}{fuse_key}{hints_key}{col_key}{ord_key}|"
+        f"v{EXTRACT_CACHE_VERSION}|{fig_key}{vlm_key}{fuse_key}{gtail_key}{hints_key}{col_key}{ord_key}|"
         f"{pdf_path.resolve()}|{st.st_size}|{int(st.st_mtime)}"
     )
     return hashlib.sha256(key_raw.encode()).hexdigest()[:24]

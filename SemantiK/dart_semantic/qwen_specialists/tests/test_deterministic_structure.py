@@ -608,6 +608,65 @@ def test_real_chapter_title_without_page_number_kept():
     assert diag["running_header_dropped"] == 0
 
 
+@pytest.mark.parametrize("header", [
+    "Chapter 1 Foundations 7",   # early chapter opens on physical page 7
+    "Chapter 1 Foundations 9",   # ... and page 9
+])
+def test_running_header_single_digit_page_dropped(header):
+    """Defect 3(a) follow-up: a running header with a SINGLE-DIGIT trailing page
+    number (early chapters, e.g. physical page 7/9) is page furniture and is
+    re-tagged metadata_drop. The old ``\\d{2,4}`` backstop missed these so they
+    survived as bogus <h2> mid-body running headers on the EA2e ch01 scan."""
+    regions, fbs = _build([
+        ("heading", "1.1 Introduction to Whole Numbers", 7, 2),  # real anchor
+        ("paragraph", "Whole numbers are counting numbers.", 7),
+        ("heading", header, 7, 2),                                # furniture
+    ])
+    out, diag = clean_structure(regions, fbs)
+    assert out[0].kind == "heading"               # real section survives
+    assert out[2].kind == "metadata_drop"         # single-digit header dropped
+    assert diag["running_header_dropped"] == 1
+
+
+@pytest.mark.parametrize("real_title", [
+    "Chapter 1 Foundations",             # real opener, no trailing page
+    "Chapter 9 Roots and Radicals",      # ditto
+    "Chapter 1",                         # bare "Chapter N" (no title, no page)
+    "Chapter 12",                        # bare number-only title
+])
+def test_running_header_single_digit_widening_preserves_anti_fp(real_title):
+    """Widening the trailing-page match to 1-4 digits must not make the
+    running-header backstop fire on a real chapter title (no trailing page) or
+    a bare 'Chapter N' — the required alphabetic-title-before-page guard keeps
+    'Chapter N <digit>' shapes with no real title from matching too. Asserted on
+    ``running_header_dropped`` (the precise contract of this change); the bare
+    'Chapter N' openers may still be dropped by an UNRELATED front-matter
+    sub-pass, so the region-survival assertion is scoped to the titled cases."""
+    regions, fbs = _build([
+        ("heading", real_title, 30, 1),
+        ("paragraph", "Body content.", 30),
+    ])
+    out, diag = clean_structure(regions, fbs)
+    assert diag["running_header_dropped"] == 0
+
+
+@pytest.mark.parametrize("real_title", [
+    "Chapter 1 Foundations",
+    "Chapter 9 Roots and Radicals",
+])
+def test_real_titled_chapter_opener_survives_clean_structure(real_title):
+    """A genuine 'Chapter N Title' opener with no trailing page survives the
+    whole clean_structure pass (anti-FP for the widened running-header match)."""
+    regions, fbs = _build([
+        ("heading", "9.1 Simplify Expressions with Roots", 30, 2),
+        ("heading", real_title, 30, 1),
+        ("paragraph", "Body content.", 30),
+    ])
+    out, diag = clean_structure(regions, fbs)
+    assert out[1].kind == "heading"
+    assert diag["running_header_dropped"] == 0
+
+
 # ---------------------------------------------------------------------------
 # Defect 3(b) — OCR-garbled pedagogical labels routed to the pedagogy path.
 # ---------------------------------------------------------------------------
