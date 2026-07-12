@@ -19,10 +19,13 @@ import pytest
 
 from semantik_structure import extract_shared
 from semantik_structure.vlm_fusion import (
+    SEMANTIK_VLM_COLLAPSE_REPETITION_ENV,
     SEMANTIK_VLM_FUSION_ENV,
     SEMANTIK_VLM_ORDER_AUTHORITATIVE_ENV,
     SEMANTIK_VLM_ORDER_DIVERGENCE_ENV,
+    _collapse_degenerate_repetition,
     fuse_page,
+    resolve_collapse_repetition_mode,
     resolve_vlm_fusion_mode,
     resolve_vlm_order_authoritative_mode,
     resolve_vlm_order_divergence_floor,
@@ -440,6 +443,141 @@ def test_empty_vlm_is_noop_verbatim_tesseract():
     assert stats["matched"] == 0
     assert [b["text"] for b in fused] == ["line a", "line b"]
     assert all(b["fusion"] == "tesseract-only" for b in fused)
+
+
+# --------------------------------------------------------------------------
+# degenerate-repetition tripwire (SEMANTIK_VLM_COLLAPSE_REPETITION)
+# --------------------------------------------------------------------------
+
+
+def test_collapse_resolver_default_on(monkeypatch):
+    monkeypatch.delenv(SEMANTIK_VLM_COLLAPSE_REPETITION_ENV, raising=False)
+    assert resolve_collapse_repetition_mode() is True
+
+
+@pytest.mark.parametrize("val", ["1", "true", "yes", "on", "garbage", ""])
+def test_collapse_resolver_on_unless_explicit_falsey(monkeypatch, val):
+    # Default-ON parse posture: unset / truthy / garbage / blank → on.
+    monkeypatch.setenv(SEMANTIK_VLM_COLLAPSE_REPETITION_ENV, val)
+    assert resolve_collapse_repetition_mode() is True
+
+
+@pytest.mark.parametrize("val", ["0", "false", "no", "off", "OFF"])
+def test_collapse_resolver_explicit_falsey_off(monkeypatch, val):
+    monkeypatch.setenv(SEMANTIK_VLM_COLLAPSE_REPETITION_ENV, val)
+    assert resolve_collapse_repetition_mode() is False
+
+
+def test_collapse_period2_cycle_from_manipulative_figure():
+    # The real defect: a "x + x + x + …" algebra-tiles transcription. Domain-
+    # agnostic period-2 detection collapses it to a bounded representative.
+    run = "x + " * 4047 + "x"
+    text = f"[4x + 7x + x] [{run}] equations into English phrases."
+    out = _collapse_degenerate_repetition(text)
+    # The 8k-token poison is gone; a bounded marker + representative remain.
+    assert "repeated" in out
+    assert out.count("x +") <= 6  # only the kept representative cycles survive
+    assert len(out.split()) < 30
+    # Surrounding real content is preserved.
+    assert "equations into English phrases." in out
+    assert "4x" in out
+
+
+def test_collapse_period1_single_glyph_run():
+    text = "before " + ("0 " * 100).strip() + " after"
+    out = _collapse_degenerate_repetition(text)
+    assert "repeated 100 times" in out
+    assert out.startswith("before ")
+    assert out.endswith("after")
+
+
+def test_collapse_count_marker_is_accurate():
+    text = "lead " + ("- " * 50).strip()
+    out = _collapse_degenerate_repetition(text)
+    assert "[repeated 50 times]" in out
+
+
+# --- false-positive guards: clean / legitimate input stays byte-identical ---
+
+
+def test_collapse_noop_on_normal_prose():
+    text = (
+        "The quick brown fox jumps over the lazy dog. "
+        "Addition combines like terms into a single expression."
+    )
+    out = _collapse_degenerate_repetition(text)
+    assert out is text  # same object → byte-identical
+
+
+def test_collapse_noop_on_legitimate_short_repeated_list():
+    # A real short repeated list (well under the generous cycle floor) is kept.
+    text = "Scores: 5 5 5 5 5 5 5 5 across the eight trials."
+    out = _collapse_degenerate_repetition(text)
+    assert out is text
+
+
+def test_collapse_noop_on_long_word_repetition_below_floor():
+    # Even a longish repeated token stays byte-identical below the cycle floor.
+    text = " ".join(["really"] * 20)
+    out = _collapse_degenerate_repetition(text)
+    assert out is text
+
+
+def test_collapse_noop_on_long_token_even_when_repeated_past_floor():
+    # A LONG token repeated past the floor is left alone (only short tokens are
+    # collapse-eligible — conservative, avoids collapsing a repeated real word).
+    text = " ".join(["elephant"] * 60)
+    out = _collapse_degenerate_repetition(text)
+    assert out is text
+
+
+def test_collapse_deterministic():
+    text = "x + " * 100
+    assert _collapse_degenerate_repetition(text) == _collapse_degenerate_repetition(text)
+
+
+# --- fuse_page integration + flag gating ---
+
+
+def test_fuse_page_collapses_degenerate_block_by_default(monkeypatch):
+    monkeypatch.delenv(SEMANTIK_VLM_COLLAPSE_REPETITION_ENV, raising=False)
+    run = "x + " * 200 + "x"
+    tess = [_tb(10, 10, 100, 20, run)]
+    vlm = [run]
+    fused, stats = fuse_page(tess, vlm, (200.0, 300.0))
+    assert stats["repetition_collapsed"] == 1
+    assert "repeated" in fused[0]["text"]
+    assert len(fused[0]["text"].split()) < 30
+
+
+def test_fuse_page_flag_off_keeps_degenerate_block_verbatim(monkeypatch):
+    monkeypatch.setenv(SEMANTIK_VLM_COLLAPSE_REPETITION_ENV, "0")
+    run = "x + " * 200 + "x"
+    tess = [_tb(10, 10, 100, 20, run)]
+    vlm = [run]
+    fused, stats = fuse_page(tess, vlm, (200.0, 300.0))
+    assert "repetition_collapsed" not in stats
+    # The (poison) text ships verbatim — the =0 escape hatch.
+    assert fused[0]["text"].count("x +") > 100
+
+
+def test_fuse_page_clean_block_byte_identical_with_collapse_on(monkeypatch):
+    # Collapse-on must be byte-identical to collapse-off on NON-pathological
+    # fused text (the byte-identical-on-clean-input guarantee).
+    tess = [
+        _tb(10, 10, 100, 20, "the quick brown"),
+        _tb(10, 22, 100, 32, "fox jumps over"),
+    ]
+    vlm = ["the quick brown fox jumps over"]
+    monkeypatch.setenv(SEMANTIK_VLM_COLLAPSE_REPETITION_ENV, "1")
+    on_fused, on_stats = fuse_page(copy.deepcopy(tess), list(vlm), (200.0, 300.0))
+    monkeypatch.setenv(SEMANTIK_VLM_COLLAPSE_REPETITION_ENV, "0")
+    off_fused, off_stats = fuse_page(copy.deepcopy(tess), list(vlm), (200.0, 300.0))
+    assert [b["text"] for b in on_fused] == [b["text"] for b in off_fused]
+    # The only stats delta is the additive zero-count tally.
+    assert on_stats.get("repetition_collapsed") == 0
+    off_stats["repetition_collapsed"] = 0
+    assert on_stats == off_stats
 
 
 # --------------------------------------------------------------------------

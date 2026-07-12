@@ -77,10 +77,12 @@ __all__ = [
     "SEMANTIK_VLM_ORDER_AUTHORITATIVE_ENV",
     "SEMANTIK_VLM_ORDER_DIVERGENCE_ENV",
     "SEMANTIK_VLM_DROP_GARBAGE_TAILS_ENV",
+    "SEMANTIK_VLM_COLLAPSE_REPETITION_ENV",
     "resolve_vlm_fusion_mode",
     "resolve_vlm_order_authoritative_mode",
     "resolve_vlm_order_divergence_floor",
     "resolve_drop_garbage_tails_mode",
+    "resolve_collapse_repetition_mode",
     "fuse_page",
     "PAGE_VLM_CONTRACT",
 ]
@@ -120,6 +122,9 @@ SEMANTIK_VLM_ORDER_AUTHORITATIVE_ENV = "SEMANTIK_VLM_ORDER_AUTHORITATIVE"
 SEMANTIK_VLM_ORDER_DIVERGENCE_ENV = "SEMANTIK_VLM_ORDER_DIVERGENCE"
 # Default-ON-within-fusion garbage-tail drop (see resolve_drop_garbage_tails_mode).
 SEMANTIK_VLM_DROP_GARBAGE_TAILS_ENV = "SEMANTIK_VLM_DROP_GARBAGE_TAILS"
+# Default-ON-within-fusion degenerate-repetition collapse (see
+# resolve_collapse_repetition_mode).
+SEMANTIK_VLM_COLLAPSE_REPETITION_ENV = "SEMANTIK_VLM_COLLAPSE_REPETITION"
 # Divergence at/above which Tesseract order is treated as unreliable and the
 # VLM linear order is made authoritative. A clean single-column page aligns
 # almost every line (divergence well under 0.1); a fractured multi-column grid
@@ -202,6 +207,128 @@ def resolve_drop_garbage_tails_mode() -> bool:
     if raw is None:
         return True
     return str(raw).strip().lower() not in _FALSEY
+
+
+def resolve_collapse_repetition_mode() -> bool:
+    """Whether a pathological repeated-token/n-gram run is collapsed (default ON).
+
+    Reads ``SEMANTIK_VLM_COLLAPSE_REPETITION`` with the **default-ON** parse
+    posture of :func:`resolve_drop_garbage_tails_mode`: only an explicit falsey
+    value (``0`` / ``false`` / ``no`` / ``off``, case-insensitive) disables it;
+    unset / truthy / garbage keeps it on.
+
+    It is a **NO-OP without VLM fusion** (the only caller is
+    :func:`fuse_page`'s post-reconstruction pass, itself on the fusion path —
+    off by default) AND a no-op on non-pathological text (a fused block whose
+    text has no degenerate run is byte-identical), so the flag-off / no-fusion /
+    clean-input pipeline is byte-identical; ``=0`` is the operator escape hatch
+    (keep a fused block byte-verbatim even when it carries a degenerate run).
+    Read at CALL time (mirrors :func:`resolve_drop_garbage_tails_mode`) so
+    tests / Docker can flip it without a re-import.
+    """
+    raw = os.environ.get(SEMANTIK_VLM_COLLAPSE_REPETITION_ENV)
+    if raw is None:
+        return True
+    return str(raw).strip().lower() not in _FALSEY
+
+
+# ---------------------------------------------------------------------------
+# Domain-agnostic degenerate-repetition tripwire.
+# ---------------------------------------------------------------------------
+#
+# The VLM (or the VLM×Tesseract fusion) occasionally transcribes a visual
+# MANIPULATIVE / diagram figure — a row of algebra tiles, a tally grid, a ruler
+# scale — as an endless literal repetition of a tiny token cycle
+# ("x + x + x + …", "0 0 0 0 …", "- - - - …"). Because the fused text ships
+# verbatim as prose (`raw_text` → the accessible HTML `<p>` AND the retrieval
+# chunk), one such figure produced an 8k-word mega-chunk of pure retrieval
+# poison (2026-07 OpenStax Algebra ch01 scan audit — a single region carried
+# ~4,047 repetitions of the `x +` cycle).
+#
+# This tripwire is DOMAIN-AGNOSTIC (it keys on the STRUCTURE — a short token or
+# n-gram repeated far more than a legitimate list ever would — never on any
+# specific token like `x`/`+`) and CONSERVATIVE (it collapses ONLY an
+# unambiguous degenerate run: a unit of ≤`_REPEAT_MAX_TOKEN_CHARS`-char tokens,
+# period ≤`_REPEAT_MAX_PERIOD`, repeating STRICTLY MORE than `_REPEAT_MIN_CYCLES`
+# consecutive times). A normal sentence, a real short repeated list, a table
+# row, or a long-word repetition is left byte-identical (it errs toward
+# KEEPING). The generous cycle floor (30) is far above any legitimate short
+# list, so a false-positive is effectively impossible.
+
+# Max token length (chars) for a token to count as part of a short repeating
+# unit — a genuinely degenerate glyph run is tiny tokens ("x", "+", "-", "."),
+# never long words. Long-token repetition is left untouched.
+_REPEAT_MAX_TOKEN_CHARS = 4
+# Max period (in whitespace tokens) of the repeating unit scanned. Covers a
+# single glyph (period 1: "0 0 0 …") through a short n-gram cycle (period 2:
+# "x + x + …") up to a small bound. Kept small so a genuinely repetitive but
+# meaningful clause structure is never mistaken for a degenerate glyph run.
+_REPEAT_MAX_PERIOD = 4
+# Consecutive-cycle count STRICTLY ABOVE which a run is unambiguously
+# degenerate. Generous (30) so a real short repeated list never trips it.
+_REPEAT_MIN_CYCLES = 30
+# Cycles of the unit kept as a bounded representative before the count marker.
+_REPEAT_KEEP_CYCLES = 3
+
+
+def _collapse_degenerate_repetition(text: str) -> str:
+    """Collapse an unambiguous degenerate repeated-token run to a bounded
+    representative + a count marker.
+
+    Domain-agnostic + conservative (see the block comment). Scans the
+    whitespace-token stream left-to-right for a maximal run in which a unit of
+    ``<= _REPEAT_MAX_TOKEN_CHARS``-char tokens (period ``1..
+    _REPEAT_MAX_PERIOD``) repeats STRICTLY MORE than ``_REPEAT_MIN_CYCLES``
+    consecutive times; each such run is replaced by ``_REPEAT_KEEP_CYCLES``
+    copies of the unit followed by a ``[repeated N times]`` marker (N = the
+    collapsed cycle count). Surrounding tokens are preserved.
+
+    Returns the input string UNCHANGED (the same object) when NO degenerate run
+    is present — so a clean fused block is byte-identical (the collapse only
+    rebuilds pathological text, where whitespace normalization is immaterial).
+    Pure / deterministic.
+    """
+    s = text or ""
+    # A run of > K cycles needs > K tokens even at period 1; short strings can
+    # never hold one, so skip the tokenization entirely (byte-identical).
+    if s.count(" ") < _REPEAT_MIN_CYCLES:
+        return text
+    toks = s.split()
+    n = len(toks)
+    out: list[str] = []
+    i = 0
+    changed = False
+    while i < n:
+        best: tuple[int, int] | None = None  # (period, cycles)
+        for p in range(1, _REPEAT_MAX_PERIOD + 1):
+            if i + p > n:
+                break
+            unit = toks[i : i + p]
+            if any(len(t) > _REPEAT_MAX_TOKEN_CHARS for t in unit):
+                continue
+            cycles = 1
+            j = i + p
+            while j + p <= n and toks[j : j + p] == unit:
+                cycles += 1
+                j += p
+            if cycles > _REPEAT_MIN_CYCLES:
+                # Prefer the run covering the most tokens (fundamental period
+                # wins ties deterministically via the strict >).
+                if best is None or cycles * p > best[1] * best[0]:
+                    best = (p, cycles)
+        if best is not None:
+            p, cycles = best
+            unit = toks[i : i + p]
+            out.extend(unit * _REPEAT_KEEP_CYCLES)
+            out.append(f"[repeated {cycles} times]")
+            i += p * cycles
+            changed = True
+        else:
+            out.append(toks[i])
+            i += 1
+    if not changed:
+        return text
+    return " ".join(out)
 
 
 # ---------------------------------------------------------------------------
@@ -769,6 +896,25 @@ def fuse_page(
         # cross-page reuse and ratchets ~750 B/entry — clear per page (the
         # SEMANTIK_WORKER_MAX_TASKS per-pair-clear precedent).
         _sa._sim_cached.cache_clear()
+
+    # Degenerate-repetition tripwire (SEMANTIK_VLM_COLLAPSE_REPETITION, default
+    # ON within fusion): a manipulative/diagram figure the VLM transcribed as an
+    # endless "x + x + x …" cycle would otherwise ship verbatim as an 8k-word
+    # prose mega-chunk of retrieval poison. Collapse each fused block's TEXT to
+    # a bounded representative + count marker. Conservative (only an unambiguous
+    # > K-cycle run is touched) → byte-identical on non-pathological input; the
+    # per-block collapse count is tallied additively in ``stats``.
+    if resolve_collapse_repetition_mode():
+        collapsed = 0
+        for b in fused_blocks:
+            txt = b.get("text")
+            if not isinstance(txt, str):
+                continue
+            new = _collapse_degenerate_repetition(txt)
+            if new is not txt:
+                b["text"] = new
+                collapsed += 1
+        stats["repetition_collapsed"] = collapsed
 
     return fused_blocks, stats
 
