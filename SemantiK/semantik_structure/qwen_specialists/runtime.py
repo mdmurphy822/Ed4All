@@ -385,7 +385,7 @@ class MockRuntime:
         # Each fragment carries the candidate index ``{i}`` so the
         # K outputs remain distinct strings — assert in
         # ``test_mock_runtime_basic`` requires len(set(out)) == n.
-        # Every emitted candidate carries ``data-dart-mock="true"`` on
+        # Every emitted candidate carries ``data-semantik-mock="true"`` on
         # its outer tag so a developer reading the assembled HTML can
         # tell at a glance the content is fabricated, not real-OCR
         # output. See feedback_no_silent_fallbacks.md — placeholder
