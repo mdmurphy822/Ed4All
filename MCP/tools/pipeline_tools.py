@@ -4064,11 +4064,20 @@ def _load_dart_chunkset_for_planning(
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     """W2 §1.6 — load the DART chunkset for the window-map (Pass B).
 
-    Resolves ``<libv2>/courses/<slug>/dart_chunks/chunks.jsonl`` (the same path
-    :func:`_backfill_dart_chunk_lo_refs` uses) and returns
-    ``(chunks_by_id, all_chunks)`` in document order. Missing / unreadable
-    chunkset → ``({}, [])`` so the caller falls back to the chapter-grained path
-    (``grounding_mode="chapter_fallback"``) — never a hard crash on a legacy run.
+    Resolves the staged chunkset under
+    ``<libv2>/courses/<slug>/`` (via :func:`resolve_staged_chunks_path`, which
+    dual-reads ``semantik_chunks/`` -> ``dart_chunks/`` -> legacy ``corpus/``)
+    and returns ``(chunks_by_id, all_chunks)`` in document order. Missing /
+    unreadable chunkset → ``({}, [])`` so the caller falls back to the
+    chapter-grained path (``grounding_mode="chapter_fallback"``) — never a hard
+    crash on a legacy run.
+
+    ``course_slug`` is resolved robustly: callers pass the RAW course name (e.g.
+    ``OPENSTAX_ALG_MC3_OFF6``) but the LibV2 course directory is created with the
+    SLUGIFIED name (``openstax-alg-mc3-off6`` via
+    :meth:`LibV2Storage._generate_slug`). We try the name as given first
+    (backward-compat: a caller may already pass a correct slug), then fall back
+    to the LibV2 slug transform, using whichever resolves to an existing file.
 
     Each chunk record is annotated in-memory with a ``chapter_id`` (resolved via
     the sourceId-slug join against the loaded ``textbook_structure`` chapters) so
@@ -4076,11 +4085,23 @@ def _load_dart_chunkset_for_planning(
     annotation is best-effort: chunks that don't join carry no ``chapter_id``.
     """
     # DART->semantik purge Stage 3c: dual-read staged chunkset (semantik ->
-    # dart -> corpus) so new-name courses ground correctly.
-    from lib.libv2_storage import resolve_staged_chunks_path
-    chunks_path = resolve_staged_chunks_path(
-        _resolve_libv2_root(kwargs.get("libv2_root")) / "courses" / course_slug
-    )
+    # dart -> corpus) so new-name courses ground correctly. Slug fix: try the
+    # raw course_slug first, then the LibV2 _generate_slug transform (lower +
+    # '_'/' ' -> '-'), so a RAW course name resolves to its slugified dir.
+    from lib.libv2_storage import LibV2Storage, resolve_staged_chunks_path
+    libv2_courses_root = _resolve_libv2_root(kwargs.get("libv2_root")) / "courses"
+    slug_candidates: List[str] = [course_slug]
+    libv2_slug = LibV2Storage._generate_slug(course_slug)
+    if libv2_slug not in slug_candidates:
+        slug_candidates.append(libv2_slug)
+
+    chunks_path = resolve_staged_chunks_path(libv2_courses_root / course_slug)
+    for candidate in slug_candidates:
+        candidate_path = resolve_staged_chunks_path(libv2_courses_root / candidate)
+        chunks_path = candidate_path
+        if candidate_path.exists() and candidate_path.is_file():
+            break
+
     if not chunks_path.exists() or not chunks_path.is_file():
         logger.warning(
             "plan_course_structure: DART chunkset missing at %s; Stage-2 "
