@@ -1520,6 +1520,7 @@ def chunk_text_block(
     curie_anchors: Optional[List[str]] = None,
     forced_curie_anchors: Optional[List[str]] = None,
     dart_source_refs: Optional[List[Dict[str, Any]]] = None,
+    dart_block_scope_html: Optional[str] = None,
     max_chunk_size: int = MAX_CHUNK_SIZE,
     target_chunk_size: int = TARGET_CHUNK_SIZE,
     fragment_floor: int = 0,
@@ -1583,6 +1584,16 @@ def chunk_text_block(
     non-DART corpora stay byte-identical. When a chunk is sentence-split,
     every sub-chunk receives the same section-level DART refs (block-level
     provenance is per-section, not per-sentence).
+
+    ``dart_block_scope_html`` (optional): the DART-block-aligned HTML slice for
+    THIS chunk's own synthesized section (see
+    :func:`_section_block_scope_html`). When supplied, the per-chunk block-probe
+    index is built over it instead of the whole item HTML, so a chunk can only
+    be attributed blocks belonging to its own section — cross-section /
+    cross-chapter provenance smear is eliminated by construction (no locality
+    threshold). ``None`` (the unsectioned item path, or a section whose heading
+    couldn't be located) falls back to the whole-item scope, byte-identical to
+    the pre-scope behavior.
     """
 
     word_count = len(text.split())
@@ -1662,12 +1673,23 @@ def chunk_text_block(
     # ONLY as the bounded no-match fallback: when text-containment resolution
     # finds no block inside a chunk's text, the chunk gets AT MOST ONE
     # enclosing-section reference (the first section block) — never the
-    # whole-document list. The probe index is built against the item's full
-    # raw HTML so every block has a probe regardless of per-section container
-    # scoping; matching is by chunk-text containment so a merged multi-section
-    # chunk is attributed every block whose prose it contains, in doc order.
+    # whole-document list.
+    #
+    # The probe index is built over the SECTION's own DART block range
+    # (``dart_block_scope_html``, computed by ``_section_block_scope_html`` at
+    # the caller from the section's heading→next-heading boundary) rather than
+    # the whole document, so a chunk can only ever be attributed blocks that
+    # belong to its own synthesized section — cross-section / cross-chapter
+    # smear (a Section-1.1 chunk citing a distant chapter's "Solution" block) is
+    # eliminated BY CONSTRUCTION, with no locality distance threshold. When the
+    # caller couldn't cleanly bound the section (``dart_block_scope_html`` is
+    # None — the unsectioned item path, or a heading we couldn't locate) we fall
+    # back to the whole-item HTML so provenance is never LOST, only narrowed;
+    # matching stays chunk-text containment so a merged multi-section chunk is
+    # attributed every in-scope block whose prose it contains, in doc order.
+    _probe_scope_html = dart_block_scope_html or raw_html_for_xpath
     block_probe_index = (
-        build_dart_block_offset_index(raw_html_for_xpath)
+        build_dart_block_offset_index(_probe_scope_html)
         if dart_source_refs
         else []
     )
@@ -1831,6 +1853,85 @@ def _enclosing_section_dart_ref(
     if enclosing is None:
         return None
     return {"block_id": enclosing.get("block_id"), "pages": list(enclosing.get("pages") or [])}
+
+
+def _heading_char_pos(raw_html: str, heading: str) -> Optional[int]:
+    """Return the char offset of ``heading``'s ``<hN>`` element in ``raw_html``.
+
+    Uses the same tolerant heading regex as :func:`_enclosing_section_dart_ref`
+    / :func:`extract_section_html`. Returns ``None`` when the heading isn't
+    found (so the caller can degrade to whole-document scope rather than
+    fabricate a boundary).
+    """
+    if not raw_html or not heading:
+        return None
+    h_re = re.compile(
+        r"<h([1-6])\b[^>]*>\s*" + re.escape(heading) + r"\s*</h\1>",
+        re.DOTALL | re.IGNORECASE,
+    )
+    m = h_re.search(raw_html)
+    return m.start() if m else None
+
+
+def _section_block_scope_html(
+    raw_html: str, heading: str, next_heading_pos: Optional[int]
+) -> Optional[str]:
+    """Return the DART-block-aligned HTML slice for ONE synthesized section.
+
+    THRESHOLD-FREE per-section provenance scope. DART emits its blocks as flat
+    document-order ``<section data-dart-block-id=...>`` siblings; a synthesized
+    section owns every block from its own heading up to (but excluding) the
+    NEXT section's heading. This returns ``raw_html`` sliced to exactly that
+    block range so the caller's block-probe index carries ONLY the section's
+    own blocks — cross-section (and cross-chapter) attribution is eliminated by
+    construction, NOT by any locality distance heuristic.
+
+    Boundaries are snapped to DART block openings so the slice always begins at
+    a complete ``<section>`` opening tag (a mid-block slice would drop the block
+    from the probe index): ``scope_start`` is the opening of the block enclosing
+    /nearest-preceding ``heading``; ``scope_end`` is the opening of the block
+    enclosing ``next_heading_pos`` (that block belongs to the NEXT section, so it
+    is excluded). When the next heading is not wrapped in a block, the cut falls
+    at the heading position itself. The last section (``next_heading_pos`` None)
+    runs to the end of the document — it owns its own trailing blocks, never
+    another section's.
+
+    Returns ``None`` (=> caller keeps the whole-document scope, byte-identical
+    legacy behavior) when the heading can't be located, the document carries no
+    DART blocks, or the computed range is degenerate — so a section we can't
+    cleanly bound never LOSES provenance, it just isn't narrowed.
+    """
+    h_pos = _heading_char_pos(raw_html, heading)
+    if h_pos is None:
+        return None
+    spans = _block_element_spans(raw_html)
+    if not spans:
+        return None
+
+    # scope_start: opening of the block enclosing / nearest-preceding the
+    # heading (the latest block whose open tag is at-or-before the heading).
+    scope_start = 0
+    for html_start, _html_next, _ref in spans:
+        if html_start <= h_pos:
+            scope_start = html_start
+        else:
+            break
+
+    # scope_end: default to end-of-doc (last section owns its tail). When there
+    # IS a next section, cut at the opening of the block that wraps its heading
+    # so that block stays with the NEXT section; if the next heading isn't
+    # block-wrapped, cut at the heading position itself.
+    scope_end = len(raw_html)
+    if next_heading_pos is not None:
+        scope_end = next_heading_pos
+        for html_start, html_next, _ref in spans:
+            if html_start <= next_heading_pos < html_next:
+                scope_end = html_start
+                break
+
+    if scope_end <= scope_start:
+        return None
+    return raw_html[scope_start:scope_end]
 
 
 def _generate_chunk_id(
@@ -2022,7 +2123,18 @@ def chunk_content(
             section_hard_break=_section_hard_break,
         )
 
-        for merged_result in merged:
+        # THRESHOLD-FREE per-section DART-provenance scope: each merged group's
+        # primary heading marks a section boundary in ``raw_html``. Precompute
+        # every group's primary-heading char position (in document order) so a
+        # section's block-probe scope can be bounded by the NEXT group's heading
+        # — a structural section boundary, never a distance heuristic. A heading
+        # we can't locate contributes ``None`` and is skipped as a boundary
+        # (that section degrades to whole-document scope, never LOSING refs).
+        _group_head_positions = [
+            _heading_char_pos(raw_html, mr[0]) for mr in merged
+        ]
+
+        for _group_idx, merged_result in enumerate(merged):
             # W5.F: legacy 5-element destructure preserved via
             # ``MergedSectionResult.__iter__``; new W1.5 / W1.7 audit
             # fields read off the dataclass via attribute access. Keeps
@@ -2099,6 +2211,20 @@ def chunk_content(
                     # document block is used only as the last-resort ≤1 fallback.
                     doc_refs = harvest_dart_source_refs(raw_html)
                     section_dart_refs = doc_refs[:1] if doc_refs else []
+            # Bound this section's block-probe scope by the NEXT group's heading
+            # (structural section boundary). None → whole-item scope fallback in
+            # chunk_text_block (heading unlocatable / no DART blocks).
+            _next_head_pos = next(
+                (
+                    _group_head_positions[j]
+                    for j in range(_group_idx + 1, len(merged))
+                    if _group_head_positions[j] is not None
+                ),
+                None,
+            )
+            _section_scope_html = _section_block_scope_html(
+                raw_html, heading, _next_head_pos
+            )
             item_chunks = chunk_text_block(
                 text=text,
                 html=html_block,
@@ -2116,6 +2242,7 @@ def chunk_content(
                 curie_anchors=section_curies,
                 forced_curie_anchors=section_forced_curies,
                 dart_source_refs=section_dart_refs,
+                dart_block_scope_html=_section_scope_html,
                 ctx=ctx,
                 max_chunk_size=max_chunk_size,
                 target_chunk_size=target_chunk_size,
