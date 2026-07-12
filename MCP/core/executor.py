@@ -193,8 +193,9 @@ AGENT_TOOL_MAPPING = {
     # CONVERSION / REMEDIATION AGENTS
     # -------------------------------------------------------------------------
     # SemantiK migration: ``semantik-converter`` backs the surviving
-    # ``dart_conversion`` phase; ``extract_and_convert_pdf`` routes that phase
-    # to the SemantiK v2 cascade seam (the legacy DART converter was retired).
+    # ``semantik_conversion`` phase (renamed from ``dart_conversion`` in task
+    # #19 Stage 3d); ``extract_and_convert_pdf`` routes that phase to the
+    # SemantiK v2 cascade seam (the legacy DART converter was retired).
     # ``semantik-automation-coordinator`` (a Courseforge IMSCC-conversion
     # orchestrator) and ``remediation-validator`` previously bound the retired
     # ``batch_convert_multi_source`` / ``validate_wcag_compliance`` DART tools;

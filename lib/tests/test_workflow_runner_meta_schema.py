@@ -385,10 +385,12 @@ def test_dart_markers_gate_wired_to_textbook_pipeline(
     """
     wf = workflows_yaml_data["workflows"]
 
-    # textbook_to_course: gate is on `dart_conversion`
+    # textbook_to_course: gate is on `semantik_conversion` (renamed from
+    # `dart_conversion` in task #19 Stage 3d).
     tbc_phases = {p["name"]: p for p in wf["textbook_to_course"]["phases"]}
     tbc_gates = [
-        g["gate_id"] for g in (tbc_phases["dart_conversion"].get("validation_gates") or [])
+        g["gate_id"]
+        for g in (tbc_phases["semantik_conversion"].get("validation_gates") or [])
     ]
     assert "dart_markers" in tbc_gates
 

@@ -4,7 +4,7 @@ resume trap (the Bug A / Bug B live-fire).
 
 Symptom this repairs
 --------------------
-A multi-task phase (canonically ``dart_conversion``: one task per corpus PDF)
+A multi-task phase (canonically ``semantik_conversion``: one task per corpus PDF)
 partially completed — some tasks COMPLETE-d, others timed out — but the pre-fix
 workflow runner stamped the phase ``_completed=True, _gates_passed=True`` on
 disk anyway (Bug A). A subsequent ``--resume`` then treated that phase as
@@ -18,7 +18,7 @@ Rewrites ``state/workflows/<workflow_id>.json`` so the next ``--resume`` re-runs
 the incomplete phase AND every downstream phase fresh, WITHOUT discarding the
 legitimately-completed task result(s):
 
-  * The ``--incomplete-phase`` (default ``dart_conversion``) has its
+  * The ``--incomplete-phase`` (default ``semantik_conversion``) has its
     ``_completed`` flag flipped to ``False`` (and ``_resume_restored`` cleared)
     so the runner re-dispatches it. Its recorded output keys (e.g. the ch09
     ``output_paths``) and the workflow ``tasks`` array are left untouched — the
@@ -44,7 +44,7 @@ Usage
     python scripts/repair_partial_resume_state.py --workflow-id WF-XXXX            # dry-run
     python scripts/repair_partial_resume_state.py --workflow-id WF-XXXX --apply     # write
     python scripts/repair_partial_resume_state.py --workflow-id WF-XXXX \
-        --incomplete-phase dart_conversion --reset-phases staging,course_planning
+        --incomplete-phase semantik_conversion --reset-phases staging,course_planning
 """
 from __future__ import annotations
 
@@ -169,8 +169,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--workflow-id", required=True, help="e.g. WF-20260420-abc12345")
     ap.add_argument(
         "--incomplete-phase",
-        default="dart_conversion",
-        help="Multi-task phase to un-complete (default: dart_conversion).",
+        default="semantik_conversion",
+        help=(
+            "Multi-task phase to un-complete (default: semantik_conversion; "
+            "pass 'dart_conversion' for runs created before task #19 Stage 3d)."
+        ),
     )
     ap.add_argument(
         "--reset-phases",

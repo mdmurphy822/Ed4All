@@ -523,7 +523,7 @@ class MailboxBrokeredBackend(_CaptureMixin):
         Wave 73 code-review P1: the original implementation returned
         ``f"{prefix}-{counter:04d}"`` with a per-instance counter. Two
         parallel phase tasks (``TaskExecutor._execute_parallel`` dispatches
-        via ``asyncio.gather``; ``textbook_to_course.dart_conversion``
+        via ``asyncio.gather``; ``textbook_to_course.semantik_conversion``
         runs with ``max_concurrent: 4``) each auto-resolve their own
         ``MailboxBrokeredBackend`` at the ``pipeline_tools.py`` injection
         site, so both started from ``llm-0001`` and collided on

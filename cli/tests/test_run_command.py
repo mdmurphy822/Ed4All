@@ -47,7 +47,7 @@ class TestDryRun:
         )
         assert result.exit_code == 0, result.output
         assert "Dry run" in result.output or "textbook_to_course" in result.output
-        assert "dart_conversion" in result.output
+        assert "semantik_conversion" in result.output
 
     def test_dry_run_json_output(self):
         runner = CliRunner()
@@ -69,7 +69,7 @@ class TestDryRun:
         assert payload["workflow"] == "textbook_to_course"
         assert payload["mode"] in ("local", "api")
         assert isinstance(payload["phases"], list)
-        assert any(p["name"] == "dart_conversion" for p in payload["phases"])
+        assert any(p["name"] == "semantik_conversion" for p in payload["phases"])
 
     def test_dry_run_no_assessments_skips_phase(self):
         runner = CliRunner()
@@ -332,7 +332,7 @@ class TestSkipDartFlag:
 
     Pins:
     * CLI flag parses and sets workflow params (skip_dart + dart_output_dir).
-    * Dry-run plan marks dart_conversion as SKIPPED with a reason line.
+    * Dry-run plan marks semantik_conversion as SKIPPED with a reason line.
     * Default (--skip-dart absent) leaves params + plan unchanged
       (regression guard).
     * Invalid inputs (no dir / empty dir / non-textbook workflow) fail
@@ -410,13 +410,13 @@ class TestSkipDartFlag:
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
         dart_phase = next(
-            p for p in payload["phases"] if p["name"] == "dart_conversion"
+            p for p in payload["phases"] if p["name"] == "semantik_conversion"
         )
         assert dart_phase.get("status") == "SKIPPED"
         assert "skip-dart" in dart_phase.get("skip_reason", "").lower()
-        # staging should still be in the plan and depend on dart_conversion.
+        # staging should still be in the plan and depend on semantik_conversion.
         staging = next(p for p in payload["phases"] if p["name"] == "staging")
-        assert "dart_conversion" in staging["depends_on"]
+        assert "semantik_conversion" in staging["depends_on"]
         # Workflow params carry the skip_dart + dart_output_dir keys.
         assert payload["params"]["skip_dart"] is True
         assert payload["params"]["dart_output_dir"] == str(tmp_path)
@@ -440,7 +440,7 @@ class TestSkipDartFlag:
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
         dart_phase = next(
-            p for p in payload["phases"] if p["name"] == "dart_conversion"
+            p for p in payload["phases"] if p["name"] == "semantik_conversion"
         )
         assert "status" not in dart_phase
         assert "skip_reason" not in dart_phase

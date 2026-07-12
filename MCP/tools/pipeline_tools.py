@@ -7189,7 +7189,9 @@ def register_pipeline_tools(mcp):
                 "created_at": workflow.get("created_at"),
                 "updated_at": workflow.get("updated_at"),
                 "phases": {
-                    "dart_conversion": _get_phase_status(workflow, "dart_conversion"),
+                    "semantik_conversion": _get_phase_status(
+                        workflow, "semantik_conversion"
+                    ),
                     "staging": _get_phase_status(workflow, "staging"),
                     "objective_extraction": _get_phase_status(workflow, "objective_extraction"),
                     "course_planning": _get_phase_status(workflow, "course_planning"),
@@ -18576,7 +18578,13 @@ def _build_tool_registry() -> dict:
         #
         # Fails CLOSED with a clear SemantiK reason when the cascade is
         # unprovisioned — NEVER a silent fall-through to a deleted converter.
-        if kwargs.get("phase") == "dart_conversion":
+        #
+        # DART->semantik purge (task #19, Stage 3d): the phase was renamed
+        # ``dart_conversion`` -> ``semantik_conversion``. Both names route to
+        # the cascade seam (dual-READ) so a NEW run (declaring
+        # ``semantik_conversion``) AND an old resumed task (carrying the legacy
+        # phase tag) both reach the SemantiK path.
+        if kwargs.get("phase") in ("semantik_conversion", "dart_conversion"):
             # SemantiK migration P3d — INPUT-TYPE detection at the conversion
             # phase. A PDF input routes to the SemantiK cascade seam; an
             # already-accessible publisher HTML input (single .html/.htm file
@@ -18624,9 +18632,9 @@ def _build_tool_registry() -> dict:
                 return json.dumps({
                     "success": False,
                     "error": (
-                        f"dart_conversion: unrecognized input {pdf} — expected "
-                        "a .pdf file, a .html/.htm file, or a directory "
-                        "containing PDFs or accessible HTML pages."
+                        f"semantik_conversion: unrecognized input {pdf} — "
+                        "expected a .pdf file, a .html/.htm file, or a "
+                        "directory containing PDFs or accessible HTML pages."
                     ),
                     "method": "unknown",
                     "output_path": str(pdf),
@@ -18663,16 +18671,17 @@ def _build_tool_registry() -> dict:
         # SemantiK migration: the legacy DART converter
         # (``_raw_text_to_accessible_html`` + ``multi_source_interpreter`` +
         # ``pdf_converter``) was retired with the DART subsystem. The only
-        # phase that reaches this tool is ``dart_conversion`` (handled above
-        # via the SemantiK cascade / vendor-ingest seams). Any other phase is
+        # phase that reaches this tool is ``semantik_conversion`` (handled above
+        # via the SemantiK cascade / vendor-ingest seams; the legacy
+        # ``dart_conversion`` tag is accepted there too). Any other phase is
         # an unsupported caller — fail CLOSED with a clear reason rather than
         # silently fall through to a deleted converter.
         return json.dumps({
             "success": False,
             "error": (
                 "extract_and_convert_pdf is only reachable via the "
-                "'dart_conversion' phase (SemantiK cascade); the legacy DART "
-                f"converter was retired. Got phase={kwargs.get('phase')!r}."
+                "'semantik_conversion' phase (SemantiK cascade); the legacy "
+                f"DART converter was retired. Got phase={kwargs.get('phase')!r}."
             ),
             "method": "unsupported_phase",
             "output_path": str(pdf),
@@ -28461,8 +28470,12 @@ def _get_phase_status(workflow: dict, phase_name: str) -> dict:
     """Extract status for a specific phase from workflow tasks."""
     tasks = workflow.get("tasks", [])
 
-    # Map phase names to agent types
+    # Map phase names to agent types. The conversion phase is declared
+    # ``semantik_conversion`` (task #19 Stage 3d); the legacy ``dart_conversion``
+    # key is kept for status lookups on old workflows. Both resolve to the same
+    # converter agents (new ``semantik-converter`` + legacy ``dart-converter``).
     phase_agents = {
+        "semantik_conversion": ["semantik-converter", "dart-converter"],
         "dart_conversion": ["semantik-converter", "dart-converter"],
         "staging": ["textbook-stager"],
         "objective_extraction": ["textbook-ingestor"],

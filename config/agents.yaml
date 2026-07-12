@@ -75,7 +75,7 @@ agents:
       - conversion_queue_management
     max_instances: 1
 
-  # SemantiK migration: backs the surviving ``dart_conversion`` phase. The
+  # SemantiK migration: backs the surviving ``semantik_conversion`` phase. The
   # legacy DART converter (DART/multi_source_interpreter.py) was retired; this
   # agent now drives the license-clean SemantiK v2 cascade via the
   # ``extract_and_convert_pdf`` registry tool → ``_run_semantik_v2_conversion``

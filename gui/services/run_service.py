@@ -759,6 +759,9 @@ async def _drive_pipeline(
 # the run record / config, this only maps id -> human label. Unknown phases fall
 # back to a title-cased id client-side, so a new phase never breaks the UI.
 PHASE_LABELS: Dict[str, str] = {
+    # Task #19 Stage 3d renamed the conversion phase; keep the legacy id so
+    # old workflow records still render a friendly label.
+    "semantik_conversion": "Convert textbook to accessible HTML",
     "dart_conversion": "Convert textbook to accessible HTML",
     "staging": "Stage source files",
     "chunking": "Chunk source content",
@@ -1956,7 +1959,10 @@ def derive_phase_timeline(run_id: str) -> Dict[str, Any]:
 # the first build still shows an emotional "about Nm left," not a blank.
 # Real history (>= 2 runs) always supersedes these per phase.
 _PHASE_DURATION_PRIOR: Dict[str, int] = {
-    "dart_conversion": 600_000,           # OCR/synthesis over a full PDF — minutes
+    # Task #19 Stage 3d renamed dart_conversion -> semantik_conversion; keep
+    # the legacy key so old workflow records still get a prior estimate.
+    "semantik_conversion": 600_000,       # OCR/synthesis over a full PDF — minutes
+    "dart_conversion": 600_000,           # legacy alias (old runs)
     "staging": 5_000,
     "chunking": 30_000,
     "objective_extraction": 60_000,

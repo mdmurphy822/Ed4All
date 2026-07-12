@@ -1268,9 +1268,10 @@ The PDF → accessible-HTML converter that produces the upstream of the entire o
 `ContentBlock` / source provenance) is now **SemantiK** — a license-clean semantic-cascade ML
 pipeline under `SemantiK/semantik_structure/` + `lib/semantik/` — which **wholesale replaced DART**
 (PyMuPDF/AGPL, retired). The data contract is deliberately UNCHANGED: SemantiK still emits the
-`data-dart-*` HTML provenance attributes, the `dart:{slug}#{block_id}` `sourceId` shape, runs under
-the `dart_conversion` workflow phase, and is dispatched via the `dart-converter` / `dart-chunker`
-agents. So everything § 8 (data-cf / data-dart wire contract) and § 13 Wave 8/9 (source provenance)
+`data-dart-*` HTML provenance attributes, the `dart:{slug}#{block_id}` `sourceId` shape, and is
+dispatched via the `dart-converter` / `dart-chunker` agents. The workflow phase was renamed
+`dart_conversion` → `semantik_conversion` (task #19 Stage 3d; the legacy name is accepted on READ
+for resume compat). So everything § 8 (data-cf / data-dart wire contract) and § 13 Wave 8/9 (source provenance)
 describe is preserved verbatim — only the engine behind the contract changed.
 
 Canonical reference: **`SemantiK/CLAUDE.md`** (cascade stages 1–13, council adapters, the full
@@ -1445,7 +1446,7 @@ All loaders read from `schemas/taxonomies/`; single source of truth per domain:
 Two new gates wire into `config/workflows.yaml` (Worker V, Wave 6):
 
 - `page_objectives` on the `packaging` phase of `course_generation` (Wave 2, Worker L).
-- `dart_markers` on the `dart_conversion` phase of `textbook_to_course` (REC-CTR-06, Wave 6 Worker V).
+- `dart_markers` on the `semantik_conversion` phase (renamed from `dart_conversion`, task #19 Stage 3d) of `textbook_to_course` (REC-CTR-06, Wave 6 Worker V).
 
 ### Decision type enum expansion
 
@@ -1456,8 +1457,10 @@ Two new gates wire into `config/workflows.yaml` (Worker V, Wave 6):
 > **Historical-record note:** the Wave 8/9 bullets below describe the converter's emit path *as it
 > existed when those waves landed* (DART, since RETIRED). The SemantiK semantic-cascade converter now
 > produces this provenance, but the **`data-dart-*` HTML attribute names, the `dart:{slug}#{block_id}`
-> `sourceId` shape, the `dart_conversion` phase, and the `dart-converter`/`dart-chunker` agent names
-> are PRESERVED as the stable wire contract** (see § "SemantiK conversion engine"). Read "DART's emit
+> `sourceId` shape, and the `dart-converter`/`dart-chunker` agent names are PRESERVED as the stable
+> wire contract** (see § "SemantiK conversion engine"). The workflow PHASE was renamed
+> `dart_conversion` → `semantik_conversion` (task #19 Stage 3d; legacy name read-accepted for resume).
+> Read "DART's emit
 > path" below as "the converter's emit path."
 
 Wave 8 lands the shared `SourceReference` shape and threads per-block provenance through the converter's emit path:

@@ -317,3 +317,85 @@ def test_checkpoint_load_dual_read_phase_alias(tmp_path):
     assert mgr.load_checkpoint("dart_conversion") is not None
     # An unrelated phase with no checkpoint still returns None.
     assert mgr.load_checkpoint("packaging") is None
+
+
+# ---------------------------------------------------------------------------
+# 8. Conversion PHASE rename (task #19, Stage 3d):
+#    dart_conversion -> semantik_conversion.
+#    NEW runs DECLARE/EMIT ``semantik_conversion``; OLD runs (whose persisted
+#    phase_outputs are keyed ``dart_conversion``) still RESUME via a dual-read.
+# ---------------------------------------------------------------------------
+
+def test_conversion_phase_declared_semantik_in_config():
+    """The textbook_to_course conversion phase is EMITTED as
+    ``semantik_conversion`` — the legacy ``dart_conversion`` name is gone from
+    the declared phase list (readers still accept it; emitters do not)."""
+    from MCP.core.workflow_runner import _load_workflows_config
+
+    cfg = _load_workflows_config()
+    tbc = cfg["workflows"]["textbook_to_course"]
+    names = [p["name"] for p in tbc["phases"]]
+    assert "semantik_conversion" in names
+    assert "dart_conversion" not in names
+    # staging still depends on the (renamed) conversion phase.
+    staging = next(p for p in tbc["phases"] if p["name"] == "staging")
+    assert "semantik_conversion" in staging["depends_on"]
+
+
+def _dual_read_runner():
+    from unittest.mock import MagicMock
+
+    from MCP.core.config import WorkflowConfig
+    from MCP.core.workflow_runner import WorkflowRunner
+
+    return WorkflowRunner(
+        executor=MagicMock(),
+        config=WorkflowConfig(description="t", phases=[]),
+    )
+
+
+def test_route_params_resolves_legacy_dart_conversion_phase_output():
+    """RESUME COMPAT: staging's ``dart_html_paths`` selector now references the
+    renamed ``semantik_conversion`` phase output, but an OLD paused run
+    persisted its conversion output under the legacy ``dart_conversion`` key.
+    ``_route_params`` must still resolve it (dual-read)."""
+    runner = _dual_read_runner()
+    routed = runner._route_params(
+        "staging",
+        workflow_params={"run_id": "R1", "course_name": "C1"},
+        phase_outputs={"dart_conversion": {"output_paths": "a.html,b.html"}},
+    )
+    assert routed["dart_html_paths"] == "a.html,b.html"
+
+
+def test_route_params_resolves_new_semantik_conversion_phase_output():
+    """A NEW run keys the conversion output under ``semantik_conversion``; the
+    same staging selector resolves it directly."""
+    runner = _dual_read_runner()
+    routed = runner._route_params(
+        "staging",
+        workflow_params={"run_id": "R1", "course_name": "C1"},
+        phase_outputs={"semantik_conversion": {"output_paths": "a.html,b.html"}},
+    )
+    assert routed["dart_html_paths"] == "a.html,b.html"
+
+
+def test_extract_phase_outputs_keyed_under_both_conversion_names():
+    """``_extract_phase_outputs`` performs its per-PDF output_paths collection
+    for BOTH the declared ``semantik_conversion`` and (dual-read) the legacy
+    ``dart_conversion`` phase name."""
+    from unittest.mock import MagicMock
+
+    runner = _dual_read_runner()
+
+    def _result(path):
+        r = MagicMock()
+        r.status = "COMPLETE"
+        r.result = {"output_path": path, "html_path": path}
+        return r
+
+    results = {"t0": _result("a.html"), "t1": _result("b.html")}
+    for phase_name in ("semantik_conversion", "dart_conversion"):
+        extracted = runner._extract_phase_outputs(phase_name, results)
+        assert extracted["output_paths"] == "a.html,b.html"
+        assert extracted["html_paths"] == "a.html,b.html"

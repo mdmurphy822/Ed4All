@@ -94,7 +94,7 @@ Top-level ``status`` rules:
 * ``"pass"`` otherwise (warnings + skipped gates do not block).
 
 The aggregator never raises on a missing per-phase report — phases
-that legitimately don't emit a JSON report (e.g. ``dart_conversion``)
+that legitimately don't emit a JSON report (e.g. ``semantik_conversion``)
 still surface in ``per_phase`` via their in-memory ``gate_results`` if
 provided, otherwise are skipped silently and contribute to
 ``summary.skipped_count`` only when both signals are absent.

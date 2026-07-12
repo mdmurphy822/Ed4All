@@ -51,7 +51,7 @@ Consequences:
 **Single-pass** (`COURSEFORGE_TWO_PASS` unset):
 
 ```
-dart_conversion → staging → chunking → objective_extraction → source_mapping
+semantik_conversion → staging → chunking → objective_extraction → source_mapping
 → course_planning → concept_extraction → content_generation
 → assessment_synthesis → packaging → imscc_chunking → trainforge_assessment
 → training_synthesis → libv2_archival → vector_indexing → finalization
@@ -77,7 +77,7 @@ Paths are relative to the Courseforge **export root**
 
 | # | Phase | Writes (inspect this) | LLM seat | Stop-after / re-run / reuse |
 |---|---|---|---|---|
-| 1 | `dart_conversion` | staged `*_accessible.html` (out of tree) | SemantiK cascade (local) | `--stop-after dart_conversion`; skip via `--reuse-conversion` or `--skip-dart --dart-output-dir <dir>` |
+| 1 | `semantik_conversion` | staged `*_accessible.html` (out of tree) | SemantiK cascade (local) | `--stop-after semantik_conversion`; skip via `--reuse-conversion` or `--skip-dart --dart-output-dir <dir>`. Phase renamed from `dart_conversion` (task #19 Stage 3d); NEW runs use the new name, old paused runs still `--resume` via the checkpoint/phase_outputs read-alias. |
 | 2 | `staging` | `Courseforge/inputs/textbooks/<…>/` | deterministic | `--stop-after staging`; implied by `--skip-dart` |
 | 3 | `chunking` | **LibV2** `dart_chunks/chunks.jsonl` + `manifest.json` | deterministic | `--stop-after chunking` |
 | 4 | `objective_extraction` | `01_learning_objectives/textbook_structure.json` | `TEXTBOOK_SYNTHESIS_PROVIDER` | `--stop-after objective_extraction` |
@@ -484,7 +484,7 @@ Loss is bounded by the size of the *unit* each loop checkpoints:
 | Objective review / bloom-complement / sub-objectives | per-chunk / per-complement / per-CO | one in-flight LLM call |
 | Training-pair synthesis | one pair | one in-flight pair |
 | SLM training | trainer-native step/epoch checkpoint | since the last saved step |
-| SemantiK conversion (`dart_conversion`) | one **chapter** (paused resume auto-reuses finished `{stem}_accessible.html` + `.quality.json`) | one chapter — cascade seams land the mid-chapter stop at post-Stage-5e/pre-Stage-6, pre-Stage-13, and Stage-6 adapter-batch boundaries |
+| SemantiK conversion (`semantik_conversion`) | one **chapter** (paused resume auto-reuses finished `{stem}_accessible.html` + `.quality.json`) | one chapter — cascade seams land the mid-chapter stop at post-Stage-5e/pre-Stage-6, pre-Stage-13, and Stage-6 adapter-batch boundaries |
 | Vector indexing | aborts pre-write | none — never a partial index |
 
 ### Known follow-up (out of scope)

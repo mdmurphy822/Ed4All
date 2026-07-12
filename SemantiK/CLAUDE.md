@@ -170,7 +170,7 @@ process**, in its own venv, behind a JSON bridge:
   in → `run_full_cascade` → HTML + `region_provenance` + conformance audit as
   JSON on stdout.
 - `MCP/tools/pipeline_tools.py` invokes it (`_run_semantik_bridge_subprocess`,
-  the conversion seam for the `dart_conversion` phase). `SEMANTIK_PYTHON` =
+  the conversion seam for the `semantik_conversion` phase). `SEMANTIK_PYTHON` =
   absolute path to the SemantiK venv python; `SEMANTIK_RUNTIME_DIR` = SemantiK
   repo root used as the subprocess `cwd` (so model/cache dirs resolve). When
   the in-process deps are absent and `SEMANTIK_PYTHON` is unset, the bridge
@@ -271,7 +271,8 @@ secondary, conservative defensive layer.
 
 SemantiK has no dedicated `@mcp.tool()` surface of its own — it is wired in as
 the **conversion backend** in `MCP/tools/pipeline_tools.py`. The
-`dart_conversion` phase routes through the cross-venv bridge
+`semantik_conversion` phase (renamed from `dart_conversion`, task #19 Stage 3d)
+routes through the cross-venv bridge
 (`_run_semantik_bridge_subprocess`) when the SemantiK runtime is configured,
 producing the § Output contract shape that the downstream `stage_dart_outputs`
 / `validate_dart_markers` pipeline tools consume. Bridge env (`SEMANTIK_PYTHON`

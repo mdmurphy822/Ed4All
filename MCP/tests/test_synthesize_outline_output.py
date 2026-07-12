@@ -235,7 +235,7 @@ class TestSynthesizeOutlineOutputHappyPath:
         # All canonical phases reconstructed.
         expected_phases = {
             "staging",
-            "dart_conversion",
+            "semantik_conversion",
             "chunking",
             "objective_extraction",
             "source_mapping",
@@ -497,7 +497,7 @@ class TestSynthesizeOutlineOutputEdgeCases:
     def test_dart_conversion_derived_from_staging(
         self, runner_stub, tmp_path, monkeypatch
     ):
-        """When staging is reconstructed, dart_conversion follows."""
+        """When staging is reconstructed, semantik_conversion follows."""
         project_path = _make_project(tmp_path)
         _make_staging(tmp_path)
         monkeypatch.setattr(
@@ -506,8 +506,8 @@ class TestSynthesizeOutlineOutputEdgeCases:
 
         synth = runner_stub._synthesize_outline_output(project_path)
 
-        assert "dart_conversion" in synth
-        dc = synth["dart_conversion"]
+        assert "semantik_conversion" in synth
+        dc = synth["semantik_conversion"]
         # output_paths is comma-joined; should contain both staged HTMLs.
         assert "chapter_01_accessible.html" in dc["output_paths"]
         assert "chapter_02_accessible.html" in dc["output_paths"]
@@ -515,7 +515,7 @@ class TestSynthesizeOutlineOutputEdgeCases:
     def test_dart_conversion_omitted_when_staging_missing(
         self, runner_stub, tmp_path, monkeypatch
     ):
-        """No staging => no dart_conversion either."""
+        """No staging => no semantik_conversion either."""
         project_path = _make_project(tmp_path)
         # No staging dir.
         monkeypatch.setattr(
@@ -524,7 +524,7 @@ class TestSynthesizeOutlineOutputEdgeCases:
 
         synth = runner_stub._synthesize_outline_output(project_path)
 
-        assert "dart_conversion" not in synth
+        assert "semantik_conversion" not in synth
         assert "staging" not in synth
 
     def test_resolve_outline_dir_explicit_param_wins(

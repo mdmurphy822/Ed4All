@@ -3,7 +3,7 @@
 Walks a Markdown / MDX documentation tree and emits one clean semantic
 ``{slug}.html`` page per source document into an output directory, plus a small
 ``import_manifest.json`` provenance record. The user then passes that directory
-as ``--corpus`` to ``ed4all run textbook-to-course``: the ``dart_conversion``
+as ``--corpus`` to ``ed4all run textbook-to-course``: the ``semantik_conversion``
 phase classifies a directory of plain ``*.html`` as a vendor corpus and
 re-normalizes it into the canonical ``{stem}_accessible.html`` contract itself
 (``_run_vendor_ingest_conversion``). No PDF/OCR step, no forged provenance

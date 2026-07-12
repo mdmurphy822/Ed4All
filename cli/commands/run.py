@@ -266,7 +266,7 @@ def _build_workflow_params(
 
     # Wave 74 Session 3: reuse existing DART HTML instead of re-converting.
     # When --skip-dart is set, the workflow runner synthesizes a
-    # dart_conversion phase_output from the provided dir so staging's
+    # semantik_conversion phase_output from the provided dir so staging's
     # inputs_from resolves without the phase actually executing.
     if skip_dart:
         params["skip_dart"] = True
@@ -706,7 +706,8 @@ def _build_orchestrator(
     is_flag=True,
     default=False,
     help=(
-        "Skip the dart_conversion phase and reuse existing DART HTML output. "
+        "Skip the semantik_conversion phase and reuse existing conversion HTML "
+        "output. "
         "Useful when re-running textbook-to-course after tweaking downstream "
         "phases. Requires --semantik-output-dir to contain "
         "``*_accessible.html`` files (defaults to DART/output/)."
@@ -983,7 +984,7 @@ def run_command(
     # Wave 74 Session 3: validate --skip-dart inputs BEFORE building
     # params so CLI fails fast with a clear error. --skip-dart is
     # currently only honoured by textbook_to_course; other workflows
-    # don't have a dart_conversion phase to elide.
+    # don't have a semantik_conversion phase to elide.
     if skip_dart and workflow != "textbook_to_course":
         click.secho(
             f"--skip-dart is only supported for workflow 'textbook_to_course'; "
@@ -1194,12 +1195,16 @@ def _dry_run_plan(
                 "depends_on": list(phase.depends_on or []),
                 "optional": bool(getattr(phase, "optional", False)),
             }
-            # Wave 74 Session 3: mark dart_conversion as SKIPPED in the
+            # Wave 74 Session 3: mark the conversion phase as SKIPPED in the
             # dry-run plan when --skip-dart is set. The phase is still
             # listed so ordering is transparent, but its status reflects
             # that the runner will synthesize outputs from an existing
-            # DART/output/ directory instead of executing it.
-            if skip_dart_flag and phase.name == "dart_conversion":
+            # conversion output directory instead of executing it. Task #19
+            # Stage 3d renamed the phase ``dart_conversion`` ->
+            # ``semantik_conversion`` (legacy name accepted for old configs).
+            if skip_dart_flag and phase.name in (
+                "semantik_conversion", "dart_conversion"
+            ):
                 phase_entry["status"] = "SKIPPED"
                 phase_entry["skip_reason"] = (
                     f"--skip-dart set; reusing HTML from "

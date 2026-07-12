@@ -180,11 +180,11 @@ exports/YYYYMMDD_HHMMSS_coursename/
 ## Textbook Integration
 
 Textbooks must be pre-processed to accessible HTML before use. Conversion runs
-in-process via the `[semantik]` extra through the `dart_conversion` workflow
-phase (the `dart-converter` agent drives the SemantiK v2 cascade) — there is no
-standalone converter CLI:
+in-process via the `[semantik]` extra through the `semantik_conversion` workflow
+phase (renamed from `dart_conversion`, task #19 Stage 3d; the `dart-converter`
+agent drives the SemantiK v2 cascade) — there is no standalone converter CLI:
 
-1. Run the `dart_conversion` phase (e.g. via `ed4all run textbook-to-course`),
+1. Run the `semantik_conversion` phase (e.g. via `ed4all run textbook-to-course`),
    which converts the textbook PDF to accessible HTML and stages it for
    Courseforge.
 2. The SemantiK v2 cascade produces WCAG 2.2 AA accessible HTML.
@@ -580,7 +580,7 @@ Two provenance-anchored chunk surfaces emit per course: a **DART chunkset** (roo
 
 ## Operator stage subcommands
 
-Four operator-facing subcommands re-drive the Courseforge two-pass pipeline one tier at a time without re-executing the upstream `dart_conversion → staging → chunking → objective_extraction → source_mapping → course_planning → concept_extraction` chain. Use case: a previous full run produced an OUTLINE_DIR; the operator wants to re-run only the rewrite tier under a different teacher model, re-run validation after tweaking a gate threshold, or A/B-test outline-tier model swaps.
+Four operator-facing subcommands re-drive the Courseforge two-pass pipeline one tier at a time without re-executing the upstream `semantik_conversion → staging → chunking → objective_extraction → source_mapping → course_planning → concept_extraction` chain. Use case: a previous full run produced an OUTLINE_DIR; the operator wants to re-run only the rewrite tier under a different teacher model, re-run validation after tweaking a gate threshold, or A/B-test outline-tier model swaps.
 
 The four subcommands route through the canonical `textbook_to_course` workflow with the `courseforge_stage` workflow param set; the workflow runner pre-populates upstream phase outputs via `_synthesize_outline_output` and skips non-whitelisted phases via `_should_skip_phase`:
 
@@ -705,8 +705,8 @@ Courseforge can import and remediate IMSCC packages from:
 ### Remediation Capabilities
 | Capability | Target |
 |------------|--------|
-| PDF Conversion | 100% to accessible HTML via the SemantiK v2 cascade (`dart_conversion` phase) |
-| Office Documents | 100% to accessible HTML via the SemantiK v2 cascade (`dart_conversion` phase) |
+| PDF Conversion | 100% to accessible HTML via the SemantiK v2 cascade (`semantik_conversion` phase) |
+| Office Documents | 100% to accessible HTML via the SemantiK v2 cascade (`semantik_conversion` phase) |
 | Alt Text | AI-generated for all images |
 | Heading Structure | Automatic hierarchy correction |
 | Color Contrast | WCAG AA (4.5:1 minimum) |

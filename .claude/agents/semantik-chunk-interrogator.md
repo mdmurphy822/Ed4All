@@ -1,6 +1,6 @@
 ---
 name: semantik-chunk-interrogator
-description: Interrogate SemantiK-converted output (accessible HTML and/or the chunk_v4 chunks.jsonl derived from it) for conversion defects — OCR garbage, mojibake, repeated text, chunk bleeding, mishandled or phantom headers, reading-order artifacts, answer-key contamination. Use after any dart_conversion/chunking phase completes (per chapter or whole corpus), before Courseforge phases are allowed to run, and whenever a converted corpus looks suspicious. Reports findings with severity + evidence; never edits files.
+description: Interrogate SemantiK-converted output (accessible HTML and/or the chunk_v4 chunks.jsonl derived from it) for conversion defects — OCR garbage, mojibake, repeated text, chunk bleeding, mishandled or phantom headers, reading-order artifacts, answer-key contamination. Use after any semantik_conversion/chunking phase completes (per chapter or whole corpus), before Courseforge phases are allowed to run, and whenever a converted corpus looks suspicious. Reports findings with severity + evidence; never edits files.
 tools: Bash, Read, Grep, Glob
 ---
 

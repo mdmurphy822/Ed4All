@@ -11,7 +11,7 @@ absence is the documented root cause of several Ed4All failure modes:
   load-bearing for grounded quality → WARN), ``[gui]`` absent makes
   ``ed4all gui`` unavailable (only the optional GUI, not a pipeline run →
   INFO), ``[semantik]`` absent removes PDF→HTML conversion (only the
-  ``dart_conversion`` phase — a from-existing-HTML run does not need it →
+  ``semantik_conversion`` phase — a from-existing-HTML run does not need it →
   INFO);
 * a missing ``torch`` — NLI groundedness scoring + GPU VRAM probing are
   unavailable, so grounding validators degrade (load-bearing → WARN);
@@ -277,7 +277,7 @@ _EXTRA_PROBES = [
         "extra_semantik",
         "pypdfium2",
         "[semantik]",
-        "PDF->HTML conversion (dart_conversion phase) unavailable — a "
+        "PDF->HTML conversion (semantik_conversion phase) unavailable — a "
         "from-existing-HTML run does not need it",
         "pip install -e .[semantik]",
         "SemantiK runs as a subprocess bridge, so this find_spec probe of "

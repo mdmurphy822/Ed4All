@@ -167,14 +167,19 @@ data migration — **leave frozen** as back-compat.
 
 ### 3.2 Phase name & chunking helper (`phase-and-config`)
 
-- **`dart_conversion` — a real PHASE NAME and a WIRE CONTRACT.** Declared once at
-  `config/workflows.yaml:1402` (producer). Consumers route on the **exact string**:
-  `workflow_runner.py` INPUTS_FROM / phase→gate maps (31 refs, keyed
-  `("phase_outputs","dart_conversion",…)`), `cli/commands/run.py:1183`
-  (`phase.name == "dart_conversion"`), `gate_input_routing.py`, plus `depends_on`/`inputs_from`
-  cross-refs inside `workflows.yaml`. **Persisted:** phase-name string is embedded in
-  `phase_outputs` dict keys, `state/runs/*/checkpoints/`, and resume sidecars → an in-flight
-  `--resume` after a bare rename breaks without a state migration. Hence breaking, not internal.
+- **`dart_conversion` — a real PHASE NAME and a WIRE CONTRACT. RENAMED →
+  `semantik_conversion` (task #19 Stage 3d, LANDED).** Now declared once as
+  `semantik_conversion` in `config/workflows.yaml` (producer); every consumer that routes on
+  the phase string was flipped to the new name (`workflow_runner.py` INPUTS_FROM / phase→gate
+  maps + `_LEGACY_PHASE_PARAM_ROUTING`, `cli/commands/run.py` dry-run branch, the
+  `extract_and_convert_pdf` seam, `_get_phase_status` map, `depends_on`/`inputs_from`
+  cross-refs). **Persisted (resume compat):** the LEGACY name is accepted on READ so an in-flight
+  `--resume` of an old run still works — the `CheckpointManager` phase-name alias
+  (`dart_conversion` ↔ `semantik_conversion`), a `run_workflow` phase_outputs
+  resume-normalization that aliases a legacy-keyed conversion output to the new name, a dual-read
+  in `_route_params`, and the seam's `phase in {semantik_conversion, dart_conversion}` guard.
+  NEW runs emit `semantik_conversion` in logs, checkpoints, and phase_outputs. No on-disk state
+  migration needed.
 - **`run_dart_chunking` / `_run_dart_chunking`** — NOT a phase (the phase is `chunking`). Helper
   + MCP-registry tool symbol. Defined/registered in
   `pipeline_tools.py::_build_tool_registry`; tool-schema entry `tool_schemas.py:745`; routing
@@ -266,7 +271,7 @@ reword to "legacy DART" at most.
 | `source_dart_html_sha256` | `source_html_sha256` | Migration or additive alias field; `LibV2ManifestValidator` reads either. |
 | `dart_chunks_sha256` (required) | `chunks_sha256` | Additive: emit both keys one release, then drop old. |
 | `chunkset_kind: "dart"` | `"semantik"` | Accept both in discriminator conditionals during transition. |
-| `dart_conversion` (phase) | `conversion` (or `semantik_conversion`) | **Yes** — alias map in `workflow_runner` so old checkpoints/resume sidecars still resolve. |
+| `dart_conversion` (phase) | `semantik_conversion` | **DONE (Stage 3d)** — checkpoint + phase_outputs alias in `workflow_runner`/`CheckpointManager` so old checkpoints/resume sidecars still resolve; NEW runs emit `semantik_conversion`. |
 | `run_dart_chunking` / `_run_dart_chunking` | `run_semantik_chunking` / `_run_semantik_chunking` | Registry alias key for one release. |
 | `stage_dart_outputs` (MCP tool) | `stage_source_outputs` | **Yes** — keep old `@mcp.tool()` name as alias (external clients). |
 | `validate_dart_markers` / `DartMarkersValidator` / `dart_markers` gate | `validate_source_markers` / `SourceMarkersValidator` / `source_markers` | change `workflows.yaml` gate id + validator dotted-path together. |
@@ -299,8 +304,11 @@ reword to "legacy DART" at most.
 3. **Persisted schema fields** (`source_dart_html_sha256`, `dart_chunks_sha256`, `chunkset_kind`,
    drift fields, SHACL predicates) — schema + emitter + validator + fixtures together, paired
    with the on-disk LibV2 migration.
-4. **`dart_conversion` phase rename** — `workflows.yaml` + all `workflow_runner` routing maps +
-   `run.py` equality gate + `gate_input_routing.py` + resume/checkpoint state migration + tests.
+4. **`dart_conversion` phase rename — DONE (task #19 Stage 3d)** — `workflows.yaml` +
+   all `workflow_runner` routing maps + `run.py` equality gate + the `extract_and_convert_pdf`
+   seam + `_get_phase_status` map + tests flipped to `semantik_conversion`. No on-disk state
+   migration was needed: the checkpoint + phase_outputs READ-alias makes old paused runs resume
+   under the legacy name.
 5. **Tests** — the ~388 test files are the tripwire; each must flip **in the same commit** as the
    producer/consumer it gates. They are not separable work.
 
@@ -408,3 +416,15 @@ old data keeps resolving while new data adopts `semantik:`.
   `semantik_structure`, sha field emit, `chunkset_kind` emit) + the
   "deliberately preserved" narrative notes in `SemantiK/CLAUDE.md` /
   `agents.yaml` / `ARCHITECTURE.md`, then retire the dual-read shims.
+- **Stage 3d — `dart_conversion` → `semantik_conversion` phase rename (LANDED).**
+  The `textbook_to_course` conversion PHASE is now DECLARED/EMITTED as
+  `semantik_conversion` (`config/workflows.yaml` phase name + `depends_on` +
+  `inputs_from` selectors; `workflow_runner` routing maps + `_extract_phase_outputs` +
+  `_create_phase_tasks` + `_synthesize_outline_output`; the `extract_and_convert_pdf`
+  seam; `_get_phase_status`; `cli/commands/run.py`; the GUI phase label/duration/gate-count
+  maps). The **legacy name is retained on the READ side only** for resume compat: the
+  `CheckpointManager` phase-name alias, a `run_workflow` phase_outputs
+  resume-normalization, the `_route_params` dual-read, and the seam's dual-name guard —
+  so `state/runs/*/checkpoints/dart_conversion_checkpoint.json` and legacy-keyed
+  `phase_outputs` still resume with no on-disk migration. Regression net extended in
+  `lib/tests/test_semantik_dual_read.py`.

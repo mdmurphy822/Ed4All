@@ -431,8 +431,11 @@ tracker.update_status("content_generator", "IN_PROGRESS",
 ### Textbook-to-Course Workflow
 
 ```
-1. dart_conversion
-   └── Convert PDF textbooks to accessible HTML (multi-source synthesis)
+1. semantik_conversion
+   └── Convert PDF textbooks to accessible HTML (multi-source synthesis).
+       Renamed from `dart_conversion` (task #19 Stage 3d); the legacy name
+       is accepted on READ (checkpoint alias + phase_outputs resume-
+       normalization) so old paused runs still `--resume`.
 
 2. staging
    └── Stage DART outputs to Courseforge inputs
@@ -520,7 +523,7 @@ tracker.update_status("content_generator", "IN_PROGRESS",
 | Agent | Purpose |
 |-------|---------|
 | `dart-automation-coordinator` | Orchestrate PDF conversion |
-| `dart-converter` | Drives the SemantiK v2 cascade for the `dart_conversion` phase (PDF → accessible HTML + source provenance) |
+| `dart-converter` | Drives the SemantiK v2 cascade for the `semantik_conversion` phase (renamed from `dart_conversion`; PDF → accessible HTML + source provenance) |
 | `imscc-intake-parser` | Extract & inventory IMSCC packages |
 | `content-analyzer` | Detect accessibility & quality gaps |
 | `accessibility-remediation` | WCAG fixes, alt text, headings |

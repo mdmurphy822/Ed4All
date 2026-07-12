@@ -351,14 +351,24 @@ WORKFLOWS_META_SCHEMA_PATH = PROJECT_ROOT / "schemas" / "config" / "workflows_me
 # pre-flight.
 # =============================================================================
 
+# DART->semantik naming purge (task #19, Stage 3d): the PDF->HTML conversion
+# phase was renamed ``dart_conversion`` -> ``semantik_conversion``. NEW runs
+# DECLARE/EMIT ``semantik_conversion`` (config/workflows.yaml, phase_outputs
+# keys, checkpoints, run logs). The legacy name is accepted on READ for
+# resume/state compat (see the phase_outputs resume-normalization in
+# ``run_workflow`` and the checkpoint alias in MCP/hardening/checkpoint.py).
+_CONVERSION_PHASE = "semantik_conversion"
+_LEGACY_CONVERSION_PHASE = "dart_conversion"
+_CONVERSION_PHASE_NAMES = frozenset({_CONVERSION_PHASE, _LEGACY_CONVERSION_PHASE})
+
 _LEGACY_PHASE_PARAM_ROUTING: Dict[str, Dict[str, Tuple]] = {
-    "dart_conversion": {
+    "semantik_conversion": {
         # Task creation handled specially in _create_phase_tasks (one task per PDF)
         "course_code": ("workflow_params", "course_name"),
     },
     "staging": {
         "run_id": ("workflow_params", "run_id"),
-        "dart_html_paths": ("phase_outputs", "dart_conversion", "output_paths"),
+        "dart_html_paths": ("phase_outputs", "semantik_conversion", "output_paths"),
         "course_name": ("workflow_params", "course_name"),
     },
     "objective_extraction": {
@@ -601,7 +611,7 @@ _LEGACY_PHASE_PARAM_ROUTING: Dict[str, Dict[str, Tuple]] = {
         "domain": ("workflow_params", "domain"),
         "division": ("workflow_params", "division"),
         "pdf_paths": ("workflow_params", "pdf_paths"),
-        "html_paths": ("phase_outputs", "dart_conversion", "output_paths"),
+        "html_paths": ("phase_outputs", "semantik_conversion", "output_paths"),
         "imscc_path": ("phase_outputs", "packaging", "package_path"),
         # Phase 6 ST 18 / Phase 7c.5 / Phase 8 ST 5: thread the three
         # chunkset SHA-256s (concept graph from ``concept_extraction``,
@@ -665,6 +675,15 @@ _LEGACY_PHASE_OUTPUT_KEYS: Dict[str, List[str]] = {
     # ``dart_markers skipped — missing inputs: html_path`` because
     # ``_build_dart_markers`` looked for html_path but the phase only
     # surfaced output_path.
+    # Task #19 Stage 3d: the conversion phase was renamed dart_conversion ->
+    # semantik_conversion. YAML declares the outputs on the new name (YAML wins
+    # in _get_phase_output_keys); both keys are kept here so a legacy-named
+    # fallback lookup still resolves the same output keys.
+    "semantik_conversion": [
+        "output_path", "output_paths",
+        "html_path", "html_paths",
+        "success", "html_length",
+    ],
     "dart_conversion": [
         "output_path", "output_paths",
         "html_path", "html_paths",
@@ -1572,15 +1591,34 @@ class WorkflowRunner:
         # Initialize phase outputs (may already exist from partial run)
         phase_outputs: Dict[str, Dict] = workflow_state.get("phase_outputs", {})
 
+        # DART->semantik purge Stage 3d (dual-READ resume compat): the
+        # conversion phase was renamed ``dart_conversion`` ->
+        # ``semantik_conversion``. An OLD paused run persisted its conversion
+        # phase_output under the LEGACY key; alias it to the new name so every
+        # downstream read (the completed-phase skip guard, ``inputs_from``
+        # routing, the --skip-dart guard) resolves under the declared name.
+        # Strictly additive — the legacy key is preserved so any legacy reader
+        # still resolves; a no-op on a fresh run (empty phase_outputs) and on a
+        # new run that only ever wrote the new key.
+        if (
+            _LEGACY_CONVERSION_PHASE in phase_outputs
+            and _CONVERSION_PHASE not in phase_outputs
+        ):
+            phase_outputs[_CONVERSION_PHASE] = phase_outputs[_LEGACY_CONVERSION_PHASE]
+
         # Wave 74 Session 3: honour --skip-dart by synthesising the
-        # dart_conversion phase_output from an existing DART/output/
-        # directory before the phase loop runs. Downstream phases
-        # (staging, libv2_archival) then resolve their inputs_from
-        # without dart_conversion actually executing.
-        if workflow_params.get("skip_dart") and "dart_conversion" not in phase_outputs:
+        # semantik_conversion phase_output from an existing conversion output
+        # directory before the phase loop runs. Downstream phases (staging,
+        # libv2_archival) then resolve their inputs_from without the conversion
+        # phase actually executing. The --skip-dart CLI flag name is unchanged
+        # (operator-facing); only the phase it elides was renamed.
+        if workflow_params.get("skip_dart") and not (
+            _CONVERSION_PHASE in phase_outputs
+            or _LEGACY_CONVERSION_PHASE in phase_outputs
+        ):
             synthesized = self._synthesize_dart_skip_output(workflow_params)
             if synthesized is not None:
-                phase_outputs["dart_conversion"] = synthesized
+                phase_outputs[_CONVERSION_PHASE] = synthesized
 
         # Phase 5 Subtask 2: honour --outline / courseforge-* stage
         # subcommands by synthesising every upstream phase's
@@ -4037,7 +4075,17 @@ class WorkflowRunner:
             elif source_type == "phase_outputs":
                 phase_key = source_spec[1]
                 output_key = source_spec[2]
-                phase_data = phase_outputs.get(phase_key, {})
+                phase_data = phase_outputs.get(phase_key)
+                # DART->semantik purge Stage 3d (dual-READ): a routing selector
+                # that references ``semantik_conversion`` must still resolve
+                # against an OLD resumed run whose persisted phase_outputs is
+                # keyed under the legacy ``dart_conversion`` (and vice-versa).
+                if phase_data is None and phase_key in _CONVERSION_PHASE_NAMES:
+                    for alt in _CONVERSION_PHASE_NAMES:
+                        if alt != phase_key and alt in phase_outputs:
+                            phase_data = phase_outputs.get(alt)
+                            break
+                phase_data = phase_data or {}
                 value = phase_data.get(output_key)
                 if value is not None:
                     if isinstance(value, list):
@@ -4118,7 +4166,7 @@ class WorkflowRunner:
         Create task dicts for a phase.
 
         Handles special cases:
-        - dart_conversion: one task per PDF file
+        - semantik_conversion (legacy: dart_conversion): one task per PDF file
         - content_generation with batch_by=week: one task per week
         - Default: one task per agent in the phase
 
@@ -4135,8 +4183,10 @@ class WorkflowRunner:
         timestamp = datetime.now().strftime("%H%M%S")
         workflow_params = workflow_params or {}
 
-        # Special case: dart_conversion creates one task per PDF
-        if phase.name == "dart_conversion":
+        # Special case: the conversion phase creates one task per PDF. Matches
+        # the declared ``semantik_conversion`` and (dual-read) the legacy
+        # ``dart_conversion`` so an old resumed config still fans out per-PDF.
+        if phase.name in _CONVERSION_PHASE_NAMES:
             pdf_paths = workflow_params.get("pdf_paths", [])
             if isinstance(pdf_paths, str):
                 pdf_paths = [p.strip() for p in pdf_paths.split(",")]
@@ -4279,8 +4329,10 @@ class WorkflowRunner:
                 if key in result_data and key not in extracted:
                     extracted[key] = result_data[key]
 
-        # Special handling: collect multiple output_paths into output_paths list
-        if phase_name == "dart_conversion":
+        # Special handling: collect multiple output_paths into output_paths list.
+        # Matches the declared ``semantik_conversion`` and (dual-read) the
+        # legacy ``dart_conversion``.
+        if phase_name in _CONVERSION_PHASE_NAMES:
             paths = []
             for result in results.values():
                 if result.status == "COMPLETE" and isinstance(result.result, dict):
@@ -4643,7 +4695,7 @@ class WorkflowRunner:
         path_strs = [str(p) for p in ordered_htmls]
         joined = ",".join(path_strs)
         logger.info(
-            "skip_dart: synthesised dart_conversion phase_output "
+            "skip_dart: synthesised semantik_conversion phase_output "
             "from %d HTML(s) in %s",
             len(path_strs),
             dart_dir,
@@ -5064,7 +5116,7 @@ class WorkflowRunner:
 
         Recognized phase names (plan §5):
 
-        * ``dart_conversion`` — synthesises ``output_paths`` from the
+        * ``semantik_conversion`` — synthesises ``output_paths`` from the
           staging manifest's HTML inputs (each staged ``*_accessible.html``
           maps back to a DART output).
         * ``staging`` — ``staging_dir`` from project_config.json.
@@ -5105,7 +5157,7 @@ class WorkflowRunner:
         from pathlib import Path as _Path
 
         canonical_phases = [
-            "dart_conversion",
+            "semantik_conversion",
             "staging",
             "chunking",
             "objective_extraction",
@@ -5228,11 +5280,11 @@ class WorkflowRunner:
                 )
 
         # Resolve dart_html_paths from staging if available.
-        # ----- dart_conversion ---------------------------------------
-        if "dart_conversion" in phases and "staging" in synthesized:
+        # ----- semantik_conversion -----------------------------------
+        if "semantik_conversion" in phases and "staging" in synthesized:
             staged_files = synthesized["staging"].get("staged_files") or []
             if staged_files:
-                synthesized["dart_conversion"] = {
+                synthesized["semantik_conversion"] = {
                     "output_path": staged_files[0],
                     "output_paths": ",".join(staged_files),
                     "html_path": staged_files[0],

@@ -7,7 +7,7 @@ order when present, degrading to a sorted walk otherwise) and writes one clean
 ``import_manifest.json`` provenance record.
 
 Pass the output directory straight to ``ed4all run textbook-to-course
---corpus <DIR>``: the ``dart_conversion`` phase classifies a directory of plain
+--corpus <DIR>``: the ``semantik_conversion`` phase classifies a directory of plain
 ``*.html`` as a vendor corpus and re-normalizes it into the canonical
 ``{stem}_accessible.html`` contract itself — no forged sidecars, no PDF/OCR
 step, no LLM.

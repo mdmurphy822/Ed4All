@@ -94,7 +94,7 @@ Conversion output goes beyond generic heading tags. Each content type receives s
 
 **Entry Points**:
 - `SemantiK/semantik_structure/cascade.py::run_full_cascade()` - Full v2 cascade over a single PDF
-- `MCP/tools/pipeline_tools.py::_run_semantik_v2_conversion` - In-process Ed4All bridge seam (the `dart_conversion` phase)
+- `MCP/tools/pipeline_tools.py::_run_semantik_v2_conversion` - In-process Ed4All bridge seam (the `semantik_conversion` phase)
 
 ---
 
@@ -291,7 +291,7 @@ The primary unified workflow that chains all four components:
 Phase                    Component    Agent(s)                  Output
 =====                    =========    ========                  ======
 
-1. dart_conversion       SemantiK     dart-converter            Accessible HTML + Quality JSON
+1. semantik_conversion   SemantiK     dart-converter            Accessible HTML + Quality JSON
        |
        v
 2. staging               Pipeline     textbook-stager           Staged files in Courseforge/inputs/
@@ -318,10 +318,13 @@ Phase                    Component    Agent(s)                  Output
 9. finalization          Pipeline     brightspace-packager      Progress update + export
 ```
 
-> The `dart_conversion` phase name, the `dart-converter` agent, and the
-> `dart_html_paths` / `data-dart-*` identifiers are the **preserved
-> source-provenance wire contract** — SemantiK is the engine that backs them.
-> The names are kept for downstream-consumer continuity, not because DART runs.
+> The `dart-converter` agent and the `dart_html_paths` / `data-dart-*`
+> identifiers are the **preserved source-provenance wire contract** — SemantiK
+> is the engine that backs them, kept for downstream-consumer continuity, not
+> because DART runs. The workflow PHASE was renamed `dart_conversion` →
+> `semantik_conversion` (task #19 Stage 3d); NEW runs emit the new name, and the
+> legacy name is accepted on READ (checkpoint + phase_outputs alias) so old
+> paused runs still `--resume`.
 
 ### Inter-Phase Data Routing
 
@@ -329,13 +332,13 @@ Each phase's outputs are automatically routed to the next phase's inputs:
 
 | Source Phase | Output Key | Target Phase | Input Parameter |
 |---|---|---|---|
-| `dart_conversion` | `output_paths` | `staging` | `dart_html_paths` |
+| `semantik_conversion` | `output_paths` | `staging` | `dart_html_paths` |
 | `staging` | `staging_dir` | `objective_extraction` | (implicit) |
 | `objective_extraction` | `project_id`, `objective_ids` | `course_planning`, `content_generation` | `project_id` |
 | `content_generation` | `content_paths` | `packaging` | (implicit via project_id) |
 | `packaging` | `package_path` | `trainforge_assessment` | `imscc_path` |
 | `packaging` | `package_path` | `libv2_archival` | `imscc_path` |
-| `dart_conversion` | `output_paths` | `libv2_archival` | `html_paths` |
+| `semantik_conversion` | `output_paths` | `libv2_archival` | `html_paths` |
 | `trainforge_assessment` | `output_path` | `libv2_archival` | `assessment_path` |
 | `libv2_archival` | `course_slug` | `finalization` | `course_slug` |
 

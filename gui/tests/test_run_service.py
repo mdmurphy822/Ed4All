@@ -1502,8 +1502,8 @@ def test_emit_pipeline_gate_summary_only_on_all_pass(state_dir):
 def test_phase_gate_counts_reads_real_config(state_dir):
     """Declared per-phase gate counts come from the real workflows.yaml."""
     counts = run_service._phase_gate_counts("textbook_to_course")
-    # dart_conversion declares at least its dart_markers gate.
-    assert counts.get("dart_conversion", 0) >= 1
+    # semantik_conversion declares at least its dart_markers gate.
+    assert counts.get("semantik_conversion", 0) >= 1
     # Stage aliases resolve through the textbook_to_course machine.
     assert run_service._phase_gate_counts("courseforge_validate") == counts
 

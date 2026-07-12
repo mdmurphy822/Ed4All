@@ -13,7 +13,7 @@ the PNGs against a fixed exemplar reference.
 
 ## When to run
 
-- After any `dart_conversion` / assembly change that touches HTML, CSS,
+- After any `semantik_conversion` / assembly change that touches HTML, CSS,
   MathJax config, or the accessibility template.
 - Before signing off a converted corpus for Courseforge.
 - Whenever a page "looks wrong" and you need a reproducible record.

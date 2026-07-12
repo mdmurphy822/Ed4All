@@ -1399,7 +1399,13 @@ workflows:
       window_seconds: 300
 
     phases:
-      - name: dart_conversion
+      # DART->semantik naming purge (task #19, Stage 3d): the conversion phase
+      # is DECLARED ``semantik_conversion``. The legacy name ``dart_conversion``
+      # is accepted on READ everywhere (checkpoint alias, phase_outputs
+      # resume-normalization, the extract_and_convert_pdf seam, gate-input
+      # routing) so an old paused run still resumes. NEW runs emit
+      # ``semantik_conversion`` in run logs, checkpoints, and phase_outputs.
+      - name: semantik_conversion
         agents: [semantik-converter]
         parallel: true
         # One 8GB card: a full-cascade conversion holds council BERTs + the
@@ -1448,7 +1454,7 @@ workflows:
         agents: [textbook-stager]
         parallel: false
         max_concurrent: 1
-        depends_on: [dart_conversion]
+        depends_on: [semantik_conversion]
         timeout_minutes: 10
         description: Stage DART outputs to Courseforge inputs directory
 
@@ -1458,7 +1464,7 @@ workflows:
             key: run_id
           - param: dart_html_paths
             source: phase_outputs
-            phase: dart_conversion
+            phase: semantik_conversion
             output: output_paths
           - param: course_name
             source: workflow_params
@@ -4660,7 +4666,7 @@ workflows:
             key: attribution
           - param: html_paths
             source: phase_outputs
-            phase: dart_conversion
+            phase: semantik_conversion
             output: output_paths
           - param: imscc_path
             source: phase_outputs

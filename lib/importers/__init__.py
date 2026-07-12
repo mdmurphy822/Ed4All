@@ -2,7 +2,7 @@
 
 Importers here turn an already-digital source corpus (Markdown / MDX / docs
 site) into a directory of clean, semantic ``*.html`` pages that the
-``dart_conversion`` phase ingests first-class through its vendor-ingest seam
+``semantik_conversion`` phase ingests first-class through its vendor-ingest seam
 (``_detect_conversion_input_type`` → ``_run_vendor_ingest_conversion``). No
 PDF/OCR step, no LLM, no forged provenance sidecars: the pipeline re-normalizes
 the HTML into the canonical ``{stem}_accessible.html`` contract itself.
