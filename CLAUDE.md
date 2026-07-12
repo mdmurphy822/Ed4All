@@ -733,7 +733,7 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `NVIDIA_*` (vendor endpoint-registry row for the hosted large-model seat — `NVIDIA_API_KEY` / `NVIDIA_BASE_URL` / `NVIDIA_LARGE_MODEL`) | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 3 |
 | `SEMANTIK_*` (DART replacement — SemantiK semantic-cascade converter; also honors the legacy `DART_THETA_DEVICE` compat env) | [`SemantiK/CLAUDE.md § Opt-In Behavior Flags`](SemantiK/CLAUDE.md) | 87 |
 | `COURSEFORGE_*` / `COURSEPLANNER_*` / `TEXTBOOK_SYNTHESIS_*` | [`Courseforge/CLAUDE.md § Opt-In Behavior Flags`](Courseforge/CLAUDE.md) | 37 |
-| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root index (below) + [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 181 |
+| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root index (below) + [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 182 |
 
 ### Cross-cutting flags (root-owned)
 
@@ -843,6 +843,7 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `ED4ALL_OBJECTIVE_CITATION_RESELECT` | unset (off) | Post-hoc CO citation re-selection: re-cite the best in-window supporter by cosine. |
 | `ED4ALL_OBJECTIVE_RESELECT_EXERCISE_DEMOTE` | on (when reselect on) | Demotes exercise/answer-list chunks below instructional prose in the citation re-selection rank (opt-out). |
 | `ED4ALL_OBJECTIVE_RESELECT_KEEP_ORIGINAL` | on (when reselect on) | Keep-original union guard for citation re-selection: never STRIP a synthesis citation — unions every above-floor, non-exercise original into the kept set so the cosine top-K can only ADD supporters (fixes an entailment-gate regression; opt-out). |
+| `ED4ALL_OBJECTIVE_SANITIZE_CITATIONS` | on (default) | Write-time citation SANITIZER backstop — deterministically DROPS any `source_refs` / `source_chunk_ids` entry that resolves against NOTHING in the current chunkset/textbook-structure universe (fabricated topic-label / statement-echo citations the local synthesizer emits) just before `synthesized_objectives.json` is written, converting a would-be `objective_source_refs` ORPHANED_CITATIONS critical block into the benign `OBJECTIVE_NO_GROUNDING_SOURCE` warning path. Set-membership REMOVAL only (never invents/re-points an id — the complement of `ED4ALL_OBJECTIVE_CITATION_RESELECT`). No-op (byte-identical) on a healthy corpus, a legacy/no-chunkset run, or when set falsey. |
 | `ED4ALL_OBJECTIVE_ENTAILMENT_MATH_FOLD` | unset (off) | Opt-in LaTeX/unicode-math folding of premise + hypothesis before NLI in the `objective_entailment` gate (measured net-neutral on a math-scan corpus — see behavior-flags.md; deferred-flip candidate). |
 | `ED4ALL_OBJECTIVE_DEDUP_THRESHOLD` | `0.88` | W2 §4.2 cosine clustering threshold for the in-synthesis objective-dedup pass |
 | `ED4ALL_OBJECTIVE_DISTINCT_SKILL_SPLIT` | unset (off) | I3 PRONG A — distinct-skill SPLIT gate for the objective-dedup pass |

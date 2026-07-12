@@ -20352,6 +20352,93 @@ def _build_tool_registry() -> dict:
                 ),
                 "synthesized_at": datetime.now().isoformat(),
             }
+            # ---- Write-time citation SANITIZER (default ON, deterministic). --
+            # The local stage-2 synthesizer occasionally emits FABRICATED
+            # citations (a descriptive topic label or the objective statement
+            # echoed into source_refs / source_chunk_ids instead of a real
+            # chunk id). Those ids resolve against NOTHING in the current
+            # chunkset, so objective_source_refs' aggregate ORPHANED_CITATIONS
+            # net fires CRITICAL and hard-blocks course_planning. This pass
+            # DROPS every provably-unresolvable citation immediately before the
+            # artifact is written (set-membership REMOVAL only — never invents
+            # or re-points an id), converting the hard block into the benign
+            # OBJECTIVE_NO_GROUNDING_SOURCE warning path on both grounding
+            # gates. Universe-parity + empty-universe short-circuit mirror the
+            # gate, so on a healthy corpus (nothing fabricated) OR a legacy /
+            # no-chunkset run this is a byte-identical no-op regardless of the
+            # flag; opt out with ED4ALL_OBJECTIVE_SANITIZE_CITATIONS=0.
+            try:
+                from lib.objectives.citation_sanitize import (  # noqa: PLC0415
+                    build_chunk_universe as _build_chunk_universe,
+                    resolve_sanitize_citations as _resolve_sanitize_citations,
+                    sanitize_synthesized_objectives as _sanitize_objectives,
+                )
+
+                if _resolve_sanitize_citations():
+                    _san_chunk_universe: set = set()
+                    try:
+                        _san_chunks_by_id, _san_all_chunks = (
+                            _load_dart_chunkset_for_planning(
+                                course_slug=course_name, kwargs=kwargs,
+                            )
+                        )
+                        _san_chunk_universe = _build_chunk_universe(
+                            _san_all_chunks
+                        )
+                    except Exception:  # noqa: BLE001 — degrade to no universe
+                        _san_chunk_universe = set()
+                    _san_structure_universe: set = set()
+                    try:
+                        from lib.validators.objective_source_refs import (  # noqa: PLC0415
+                            _load_textbook_structure_universe as _load_ts_universe,
+                        )
+                        _san_structure_universe = _load_ts_universe(
+                            structure_path if structure_path.exists() else None
+                        )
+                    except Exception:  # noqa: BLE001 — degrade to no universe
+                        _san_structure_universe = set()
+
+                    _san_capture = None
+                    try:
+                        from lib.decision_capture import (  # noqa: PLC0415
+                            DecisionCapture as _SanDecisionCapture,
+                        )
+                        _san_capture = _SanDecisionCapture(
+                            course_code=course_name,
+                            phase="course_planning",
+                            tool="courseforge",
+                            streaming=True,
+                        )
+                    except Exception:  # noqa: BLE001 — capture is observability
+                        _san_capture = None
+
+                    _san_result = _sanitize_objectives(
+                        synthesized,
+                        chunk_universe=_san_chunk_universe,
+                        structure_universe=_san_structure_universe,
+                        capture=_san_capture,
+                    )
+                    if _san_result.available and _san_result.los_mutated:
+                        logger.info(
+                            "plan_course_structure: citation sanitizer dropped "
+                            "%d structured chunk_id(s), %d legacy string(s), "
+                            "%d flat id(s), %d fabricated entry/entries across "
+                            "%d/%d LO(s) (universe: chunks=%d, structure=%d).",
+                            _san_result.structured_chunk_ids_dropped,
+                            _san_result.legacy_strings_dropped,
+                            _san_result.flat_chunk_ids_dropped,
+                            _san_result.entries_dropped,
+                            _san_result.los_mutated,
+                            _san_result.los_scanned,
+                            len(_san_chunk_universe),
+                            len(_san_structure_universe),
+                        )
+            except Exception as _san_exc:  # noqa: BLE001 — never fail the phase
+                logger.warning(
+                    "plan_course_structure: citation sanitizer raised (%s); "
+                    "writing objectives unsanitized.", _san_exc,
+                )
+
             objectives_out_path = (
                 project_path / "01_learning_objectives" / "synthesized_objectives.json"
             )
