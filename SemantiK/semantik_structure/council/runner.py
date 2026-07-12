@@ -21,6 +21,7 @@ light — it threads the registered callable, never embeds per-BERT logic.
 
 from __future__ import annotations
 
+import os
 import sys
 from typing import Any, Callable
 
@@ -45,16 +46,63 @@ from .types import BertOutput
 # re-attempting CUDA and re-OOMing on every batch.
 _CPU_FALLBACK_LATCH = False
 
+_FORCE_CPU_ENV = "SEMANTIK_COUNCIL_FORCE_CPU"
+_FORCE_CPU_LOGGED = False
+
+
+def resolve_council_force_cpu() -> bool:
+    """PRE-EMPTIVE council-on-CPU gate (``SEMANTIK_COUNCIL_FORCE_CPU``).
+
+    Default OFF → byte-identical: the council runs on the GPU and only falls
+    back to CPU reactively via the D14 CUDA-OOM latch. Truthy
+    (``1``/``true``/``yes``/``on``, case-insensitive) → the council loads on CPU
+    from the FIRST head, skipping the OOM-crash-then-recover dance entirely.
+
+    Motivation: when a co-resident model (e.g. a vLLM-served LLM sized at a high
+    ``--gpu-memory-utilization``) already pins most of the card, the reactive
+    latch can crash PAST the fallback (a hard OOM during the Structure-head load
+    surfaces as "no Structure cascade available", a degraded conversion) rather
+    than cleanly recovering. Pre-forcing CPU trades council speed for a
+    non-degraded structure pass while the GPU stays leased to the VLM/authoring
+    seat — the intended posture on a big-memory concurrent-serving host (Spark).
+    Read at CALL time (tests/Docker can flip it without a re-import). Parse-with-
+    fallback: unset / blank / garbage → off.
+    """
+    return str(os.environ.get(_FORCE_CPU_ENV, "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
 
 def cpu_fallback_latched() -> bool:
-    """True once a CUDA OOM has forced the council onto CPU for this process."""
-    return _CPU_FALLBACK_LATCH
+    """True when the council must run on CPU for this process.
+
+    Either a CUDA OOM has reactively latched CPU (D14), OR the operator
+    pre-forced it via ``SEMANTIK_COUNCIL_FORCE_CPU`` (checked at call time so a
+    contended-GPU run degrades gracefully instead of crashing).
+    """
+    if _CPU_FALLBACK_LATCH:
+        return True
+    if resolve_council_force_cpu():
+        global _FORCE_CPU_LOGGED
+        if not _FORCE_CPU_LOGGED:
+            _FORCE_CPU_LOGGED = True
+            _warn(
+                "council pre-forced to CPU via SEMANTIK_COUNCIL_FORCE_CPU — GPU "
+                "left leased to the VLM/authoring seat; council refinement runs "
+                "on CPU (slower) but non-degraded."
+            )
+        return True
+    return False
 
 
 def _reset_cpu_fallback_latch() -> None:
     """Clear the process-scoped CPU-fallback latch. Test-only."""
-    global _CPU_FALLBACK_LATCH
+    global _CPU_FALLBACK_LATCH, _FORCE_CPU_LOGGED
     _CPU_FALLBACK_LATCH = False
+    _FORCE_CPU_LOGGED = False
 
 
 def _warn(msg: str) -> None:

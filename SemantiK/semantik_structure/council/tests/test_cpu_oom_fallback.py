@@ -145,6 +145,46 @@ def test_second_forward_goes_straight_to_cpu(_wire):
     assert backbone.force_to_cpu_calls > prior_force_calls
 
 
+def test_force_cpu_env_preloads_on_cpu_no_cuda_attempt(_wire, monkeypatch):
+    """SEMANTIK_COUNCIL_FORCE_CPU pre-forces CPU from the FIRST head.
+
+    On a contended-GPU host (a co-resident vLLM pinning the card) the reactive
+    OOM latch can crash PAST the fallback. Pre-forcing loads the backbone on CPU
+    from the start, so the runner callable NEVER sees ``cuda`` (no OOM to
+    recover from) and returns a real result.
+    """
+    backbone, record = _wire
+    monkeypatch.setenv("SEMANTIK_COUNCIL_FORCE_CPU", "1")
+
+    # The wired runner OOMs whenever it sees a cuda device; with force-cpu the
+    # backbone is moved to CPU BEFORE the first forward, so it never OOMs.
+    out = _runner.run_bert("oom_bert", ["span"])
+
+    assert record["devices"] == ["cpu"]  # first (and only) attempt already CPU
+    assert backbone.force_to_cpu_calls >= 1
+    assert isinstance(out, BertOutput)
+    assert len(out.signals) == 1
+    # cpu_fallback_latched() reports True via the env (even though no OOM
+    # reactively latched the module global).
+    assert _runner.cpu_fallback_latched() is True
+    assert _runner.resolve_council_force_cpu() is True
+
+
+def test_force_cpu_env_off_by_default_is_byte_identical(_wire, monkeypatch):
+    """Unset / falsey SEMANTIK_COUNCIL_FORCE_CPU → the reactive path is unchanged."""
+    _backbone, record = _wire
+    monkeypatch.delenv("SEMANTIK_COUNCIL_FORCE_CPU", raising=False)
+    assert _runner.resolve_council_force_cpu() is False
+    # Falsey values do not force CPU either.
+    for val in ("0", "false", "no", "off", "", "garbage"):
+        monkeypatch.setenv("SEMANTIK_COUNCIL_FORCE_CPU", val)
+        assert _runner.resolve_council_force_cpu() is False
+    monkeypatch.delenv("SEMANTIK_COUNCIL_FORCE_CPU", raising=False)
+    # Default path: first forward sees cuda (OOMs), retries on cpu (the D14 dance).
+    _runner.run_bert("oom_bert", ["span"])
+    assert record["devices"] == ["cuda", "cpu"]
+
+
 def test_non_oom_exception_propagates_without_latch(_wire, monkeypatch):
     backbone, record = _wire
 
