@@ -78,8 +78,13 @@ _TAG_STRIP_RE = re.compile(r"<[^>]+>")
 # i.e. BERT-TableSpecialist didn't supply per-cell header signals and
 # Qwen-Table inferred them on its own. See
 # ``semantik_structure.qwen_specialists.prompts.build_table_request``.
+# Dual-read (Stage-3 DART→semantik purge): the MockRuntime emit is flipped
+# to ``data-semantik-cell-roles``, while the trained Qwen-Table adapter still
+# stamps the legacy ``data-dart-cell-roles`` (a weights artifact — a clean
+# flip needs a retrain / post-process rename, deferred to the Stage-4
+# tighten), so this reader accepts BOTH prefixes.
 _TABLE_QWEN_INFERRED_RE = re.compile(
-    r'data-dart-cell-roles="qwen-inferred"',
+    r'data-(?:dart|semantik)-cell-roles="qwen-inferred"',
     re.IGNORECASE,
 )
 

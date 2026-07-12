@@ -394,7 +394,7 @@ class MockRuntime:
         # attribute (it copies ``open_m.group(2)`` verbatim); 9c's
         # missing-title and author-block splices replace whole tags
         # from the candidate text, so the attribute survives there too.
-        _MARK = ' data-dart-mock="true"'
+        _MARK = ' data-semantik-mock="true"'
         p = prompt.lower()
         if '"kind": "table"' in p or "kind=table" in p:
             # Surface the cell_roles_source marker on the outer <table>
@@ -408,7 +408,7 @@ class MockRuntime:
             # adapter's prompt template is responsible for the same
             # surfacing in production.
             cell_roles_mark = (
-                ' data-dart-cell-roles="qwen-inferred"'
+                ' data-semantik-cell-roles="qwen-inferred"'
                 if '"cell_roles_source": "qwen_inferred"' in p
                 else ""
             )

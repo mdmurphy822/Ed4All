@@ -198,7 +198,7 @@ def test_blocks_projection():
         assert b.page_id == "week_01_faq"
         assert 'data-cf-content-type="faq"' in b.content
         # each block is grounded to a real chunk source id.
-        assert b.source_ids and b.source_ids[0].startswith("dart:algebra-101#")
+        assert b.source_ids and b.source_ids[0].startswith("semantik:algebra-101#")
 
 
 def test_objective_block_carries_objective_id():
