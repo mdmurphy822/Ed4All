@@ -1663,6 +1663,45 @@ def run_full_cascade(
             )
         )
 
+    # ------------------------------------------------------------------
+    # Stage 5d-router — GENRE/CONFIDENCE STRUCTURE ROUTER (default OFF).
+    #
+    # Runs on the fully-built, det-cleaned, resegmented region list and
+    # BEFORE the per-kind cap + Stage 5b/5c/6/9, so both assembled.html and
+    # region_provenance derive from the routed list. The task-#25 oracle
+    # showed section-structure authority is DOMAIN-CONDITIONAL: default the
+    # council (BERT) structure, but on an off-domain document where the
+    # textbook-tuned heads collapse (few real headings, furniture-polluted,
+    # VLM diverges) promote the VLM markdown heading structure to
+    # authoritative. Deterministic scorer — NO new LLM call site, so NO
+    # DecisionCapture. Gated by SEMANTIK_STRUCTURE_ROUTER; OFF -> byte-
+    # identical (detector never runs). A natural NO-OP without VLM heading
+    # hints even when ON (no vlm_hint -> vlm_present False -> keep BERT).
+    # Partition-immutable re-type (kind + heading level only) riding the
+    # token-conservation invariant, fail-closed whole-revert.
+    # ------------------------------------------------------------------
+    from .structure_router import resolve_structure_router_mode
+
+    if resolve_structure_router_mode():
+        from .structure_router import apply_structure_router
+
+        structure_regions, router_diag = apply_structure_router(
+            structure_regions, feature_blocks
+        )
+        _rd = router_diag.get("decision", {})
+        log(
+            "[cascade] Stage 5d-router (genre/confidence structure router): "
+            f"bert_authoritative={_rd.get('bert_authoritative')}, "
+            f"promoted={router_diag.get('promoted')}, "
+            f"demoted={router_diag.get('demoted')}, "
+            f"reasons={_rd.get('reasons')}"
+            + (
+                " (REVERTED: token-conservation)"
+                if router_diag.get("reverted_for_invariant")
+                else ""
+            )
+        )
+
     # Stage 5b — optional GLM-OCR table enrichment. Runs ONLY on
     # table regions that the Structure council's table_region head
     # confirmed (cost-savings gate). Cache-only when glm_ocr_runtime
