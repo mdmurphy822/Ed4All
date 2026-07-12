@@ -287,13 +287,13 @@ class TestHelperLibV2RootThreading:
         )
 
         expected_chunks = (
-            custom_libv2 / "courses" / "libv2-root-test" / "dart_chunks"
+            custom_libv2 / "courses" / "libv2-root-test" / "semantik_chunks"
             / "chunks.jsonl"
         )
         assert expected_chunks.exists(), (
             f"DART chunkset should land under threaded libv2_root: "
-            f"{expected_chunks!r}; got payload['dart_chunks_path']="
-            f"{payload.get('dart_chunks_path')!r}."
+            f"{expected_chunks!r}; got payload['semantik_chunks_path']="
+            f"{payload.get('semantik_chunks_path')!r}."
         )
         assert not (
             fake_root / "LibV2" / "courses" / "libv2-root-test"
@@ -417,12 +417,12 @@ class TestHelperBackwardCompat:
         assert payload.get("success") is True
 
         expected_chunks = (
-            env_libv2 / "courses" / "libv2-root-test" / "dart_chunks"
+            env_libv2 / "courses" / "libv2-root-test" / "semantik_chunks"
             / "chunks.jsonl"
         )
         assert expected_chunks.exists(), (
             f"Env-var leg should route DART chunkset to "
-            f"$ED4ALL_LIBV2_ROOT/courses/<slug>/dart_chunks/; got "
-            f"payload['dart_chunks_path']="
-            f"{payload.get('dart_chunks_path')!r}."
+            f"$ED4ALL_LIBV2_ROOT/courses/<slug>/semantik_chunks/; got "
+            f"payload['semantik_chunks_path']="
+            f"{payload.get('semantik_chunks_path')!r}."
         )

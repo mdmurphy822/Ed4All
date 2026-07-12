@@ -339,6 +339,11 @@ class IntelligenceLevelAggregator:
             candidates.append(
                 self.libv2_course_path / "imscc_chunks" / "chunks.jsonl"
             )
+            # DART->semantik purge Stage 3c: the ratified staged emit dir is
+            # ``semantik_chunks/``; try it before the legacy ``dart_chunks/``.
+            candidates.append(
+                self.libv2_course_path / "semantik_chunks" / "chunks.jsonl"
+            )
             candidates.append(
                 self.libv2_course_path / "dart_chunks" / "chunks.jsonl"
             )

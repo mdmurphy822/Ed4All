@@ -997,7 +997,9 @@ def _load_chunks(repo_root: Path, course_slug: str) -> Dict[str, Any]:
     from lib.retrieval.gold_set import _load_chunks_by_id
 
     course_dir = _course_dir(repo_root, course_slug)
-    for sub in ("dart_chunks", "imscc_chunks"):
+    # DART->semantik purge Stage 3c: try the ratified semantik_chunks/ before
+    # the legacy dart_chunks/ fallback.
+    for sub in ("semantik_chunks", "dart_chunks", "imscc_chunks"):
         path = course_dir / sub / "chunks.jsonl"
         if path.exists():
             return _load_chunks_by_id(path)

@@ -102,7 +102,7 @@ def _emit_chunks(tool, course_name: str, staging: Path):
         staging_dir=str(staging),
     )))
     assert result.get("success"), f"chunking errored: {result}"
-    chunks_path = Path(result["dart_chunks_path"])
+    chunks_path = Path(result["semantik_chunks_path"])
     with chunks_path.open("r", encoding="utf-8") as fh:
         return [json.loads(line) for line in fh if line.strip()]
 

@@ -233,7 +233,7 @@ async def test_2_chunks_carry_six_fields(tmp_path):
     )
     payload = json.loads(out)
     assert payload.get("success"), payload
-    chunks_path = payload["dart_chunks_path"]
+    chunks_path = payload["semantik_chunks_path"]
     chunks = [
         json.loads(line)
         for line in open(chunks_path, encoding="utf-8")
@@ -299,7 +299,7 @@ async def test_3_chunks_indexed_and_queryable(tmp_path, monkeypatch):
     libv2_root = tmp_path / "libv2"
     registry = _build_tool_registry()
 
-    # Chunk first (writes LibV2/courses/<slug>/dart_chunks/chunks.jsonl).
+    # Chunk first (writes LibV2/courses/<slug>/semantik_chunks/chunks.jsonl).
     chunk_out = json.loads(
         await registry["run_dart_chunking"](
             staging_dir=str(staging),
@@ -308,7 +308,7 @@ async def test_3_chunks_indexed_and_queryable(tmp_path, monkeypatch):
         )
     )
     assert chunk_out.get("success"), chunk_out
-    chunks_path = chunk_out["dart_chunks_path"]
+    chunks_path = chunk_out["semantik_chunks_path"]
     chunks = [
         json.loads(line)
         for line in open(chunks_path, encoding="utf-8")

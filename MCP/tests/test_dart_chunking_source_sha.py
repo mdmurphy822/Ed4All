@@ -76,7 +76,7 @@ def test_dart_chunks_carry_source_document_sha256(dart_chunking_tool, tmp_path):
     result = json.loads(result_str)
     assert result.get("success"), f"chunking errored: {result}"
 
-    chunks_path = Path(result["dart_chunks_path"])
+    chunks_path = Path(result["semantik_chunks_path"])
     assert chunks_path.exists(), f"no chunks at {chunks_path}"
 
     manifest_path = Path(result["manifest_path"])

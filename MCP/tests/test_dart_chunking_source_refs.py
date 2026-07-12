@@ -70,7 +70,7 @@ def _write_dart_html(path: Path, *, block_id: str, pages: str, title: str) -> No
 def _load_chunks(result_str: str):
     result = json.loads(result_str)
     assert result.get("success"), f"chunking errored: {result}"
-    chunks_path = Path(result["dart_chunks_path"])
+    chunks_path = Path(result["semantik_chunks_path"])
     assert chunks_path.exists(), f"no chunks at {chunks_path}"
     with chunks_path.open("r", encoding="utf-8") as fh:
         return [json.loads(line) for line in fh if line.strip()]

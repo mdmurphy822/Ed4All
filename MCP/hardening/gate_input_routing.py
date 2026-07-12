@@ -318,6 +318,22 @@ def _locate(phase_outputs: Dict[str, Any], *keys: str) -> Optional[str]:
     return None
 
 
+def _chunking_chunks_path(chunking: Dict[str, Any]) -> Optional[str]:
+    """Dual-read the ``chunking`` phase's chunkset-path envelope key.
+
+    DART->semantik naming purge Stage 3c: the ``chunking`` emitter surfaces the
+    ratified ``semantik_chunks_path`` key; fall back to the legacy
+    ``dart_chunks_path`` so a run whose chunking phase_outputs were checkpointed
+    under the old key (pre-3c resume sidecar) still resolves. Mirrors the
+    on-disk ``resolve_imscc_chunks_dir`` dual-read for the emit-dir rename.
+    """
+    for key in ("semantik_chunks_path", "dart_chunks_path"):
+        val = chunking.get(key)
+        if isinstance(val, str) and val:
+            return val
+    return None
+
+
 # ---------------------------------------------------------------------- #
 # Per-validator builders
 # ---------------------------------------------------------------------- #
@@ -911,12 +927,25 @@ def _build_chunkset_drift(
     # DART chunkset resolution.
     dart_chunks_path: Optional[str] = None
     chunking = phase_outputs.get("chunking") or {}
-    candidate = chunking.get("dart_chunks_path")
+    candidate = _chunking_chunks_path(chunking)
     if isinstance(candidate, str) and candidate:
         dart_chunks_path = candidate
     if not dart_chunks_path and course_dir is not None:
-        derived = course_dir / "dart_chunks" / "chunks.jsonl"
-        dart_chunks_path = str(derived)
+        # DART->semantik purge Stage 3c: prefer the ratified on-disk
+        # ``semantik_chunks/`` dir (NEW conversions), falling back to the legacy
+        # ``dart_chunks/`` (un-migrated archives). This branch is DART-lineage
+        # specific — it must NOT resolve an ``imscc_chunks/`` sibling on a
+        # dual-chunkset course, so it does not route through the imscc-first
+        # ``resolve_imscc_chunks_dir``. The final fallback (neither dir present)
+        # keeps the canonical ratified path so a clean FileNotFoundError names it.
+        semantik_candidate = course_dir / "semantik_chunks" / "chunks.jsonl"
+        dart_candidate = course_dir / "dart_chunks" / "chunks.jsonl"
+        if semantik_candidate.exists():
+            dart_chunks_path = str(semantik_candidate)
+        elif dart_candidate.exists():
+            dart_chunks_path = str(dart_candidate)
+        else:
+            dart_chunks_path = str(semantik_candidate)
 
     # IMSCC chunkset resolution.
     imscc_chunks_path: Optional[str] = None
@@ -1012,7 +1041,7 @@ def _build_objective_source_refs(
     # (the validator wants the manifest sidecar; chunks.jsonl sits in
     # the same dir).
     chunking = phase_outputs.get("chunking") or {}
-    chunks_jsonl_raw = chunking.get("dart_chunks_path")
+    chunks_jsonl_raw = _chunking_chunks_path(chunking)
     if isinstance(chunks_jsonl_raw, str) and chunks_jsonl_raw:
         try:
             chunks_jsonl_path = Path(chunks_jsonl_raw)
@@ -1070,9 +1099,9 @@ def _build_manifest_completeness(
 
     # dart_chunks_manifest_path — same derivation as _build_objective_source_refs.
     chunking = phase_outputs.get("chunking") or {}
-    chunks_jsonl_raw = chunking.get("dart_chunks_path")
+    chunks_jsonl_raw = _chunking_chunks_path(chunking)
     if not (isinstance(chunks_jsonl_raw, str) and chunks_jsonl_raw):
-        chunks_jsonl_raw = _locate(phase_outputs, "dart_chunks_path")
+        chunks_jsonl_raw = _locate(phase_outputs, "semantik_chunks_path", "dart_chunks_path")
     if isinstance(chunks_jsonl_raw, str) and chunks_jsonl_raw:
         try:
             manifest_candidate = Path(chunks_jsonl_raw).parent / "manifest.json"
@@ -1423,9 +1452,9 @@ def _build_source_chunks_from_dart_jsonl(
     graceful-degrade path stays intact.
     """
     chunking = phase_outputs.get("chunking") or {}
-    dart_chunks_path = chunking.get("dart_chunks_path")
+    dart_chunks_path = _chunking_chunks_path(chunking)
     if not isinstance(dart_chunks_path, str) or not dart_chunks_path:
-        dart_chunks_path = _locate(phase_outputs, "dart_chunks_path")
+        dart_chunks_path = _locate(phase_outputs, "semantik_chunks_path", "dart_chunks_path")
     if not isinstance(dart_chunks_path, str) or not dart_chunks_path:
         return {}
     chunks_jsonl = Path(dart_chunks_path)
@@ -1733,7 +1762,7 @@ def _build_chunkset_manifest_inputs(
     # for the IMSCC sibling, so we won't mis-route).
     if not manifest_path:
         chunks_path_raw = (
-            chunking.get("dart_chunks_path")
+            _chunking_chunks_path(chunking)
             or imscc_chunking.get("imscc_chunks_path")
         )
         if isinstance(chunks_path_raw, str) and chunks_path_raw:
@@ -1771,8 +1800,8 @@ def _build_chunk_wcag_status(
     imscc_chunking = phase_outputs.get("imscc_chunking") or {}
 
     inputs: Dict[str, Any] = {}
-    dart_path = chunking.get("dart_chunks_path") or _locate(
-        phase_outputs, "dart_chunks_path"
+    dart_path = _chunking_chunks_path(chunking) or _locate(
+        phase_outputs, "semantik_chunks_path", "dart_chunks_path"
     )
     if isinstance(dart_path, str) and dart_path:
         inputs["dart_chunks_path"] = dart_path
@@ -2108,9 +2137,9 @@ def _build_chapter_objective_coverage_inputs(
     # gap. The chunking phase emits ``dart_chunks_path`` (chunks.jsonl). Optional
     # — the chunk arm no-op-passes on absence (measurement guardrail).
     chunking = phase_outputs.get("chunking") or {}
-    dart_chunks_path = chunking.get("dart_chunks_path")
+    dart_chunks_path = _chunking_chunks_path(chunking)
     if not (isinstance(dart_chunks_path, str) and dart_chunks_path):
-        dart_chunks_path = _locate(phase_outputs, "dart_chunks_path")
+        dart_chunks_path = _locate(phase_outputs, "semantik_chunks_path", "dart_chunks_path")
     if isinstance(dart_chunks_path, str) and dart_chunks_path:
         inputs["dart_chunks_path"] = dart_chunks_path
 

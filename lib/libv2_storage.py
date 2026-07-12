@@ -52,13 +52,15 @@ class LibV2StorageError(Exception):
 
 IMSCC_CHUNKS_DIRNAME = "imscc_chunks"
 DART_CHUNKS_DIRNAME = "dart_chunks"
-# DART->semantik naming purge (ratified 2026-07-11), Stage 1 (dual-READ): the
-# ratified on-disk name for the DART-staged chunkset is ``semantik_chunks/``.
-# NO emitter writes it yet (Stage 2 migrates the on-disk dir, gated on owner
-# approval); readers PREFER it and transparently fall back to ``dart_chunks/``.
-# No DeprecationWarning is attached to the dart_chunks fallback this stage —
-# dart_chunks is still the ACTIVE emit dir, so warning on every current course
-# would break byte-identical behavior. The warn arrives with Stage 2.
+# DART->semantik naming purge (ratified 2026-07-11). Stage 3c (2026-07-11)
+# flipped the EMITTER: ``MCP/tools/pipeline_tools.py::_run_dart_chunking`` and
+# the outline-reuse re-emit now WRITE ``semantik_chunks/`` — this is the ACTIVE
+# emit dir. ``dart_chunks/`` is now a PURE legacy READ fallback for archives
+# produced before Stage 3c (and for un-migrated on-disk courses; the operator
+# Stage-2 backfill physically renames them). A DeprecationWarning on the
+# ``dart_chunks/`` fallback (matching the ``corpus/`` precedent below) is
+# deferred — flipping it on would warn on every pre-3c course and add churn to
+# the many dart_chunks/ test fixtures; it can land once corpora migrate.
 SEMANTIK_CHUNKS_DIRNAME = "semantik_chunks"
 LEGACY_CORPUS_DIRNAME = "corpus"
 
@@ -94,12 +96,13 @@ def resolve_imscc_chunks_dir(
 
     1. ``<course_dir>/imscc_chunks`` — canonical IMSCC-derived chunkset.
     2. ``<course_dir>/semantik_chunks`` — ratified DART->semantik purge name
-       for the staged chunkset (Stage 1 dual-READ). Preferred over
-       ``dart_chunks/`` but NO emitter writes it yet, so it resolves here only
-       once the Stage-2 on-disk migration has run (resolving here does NOT warn).
-    3. ``<course_dir>/dart_chunks`` — DART-staged pipeline chunkset. A
-       first-class location for courses produced by the DART → chunking
-       path that never ran IMSCC packaging (resolving here does NOT warn).
+       for the staged chunkset. As of Stage 3c this is the ACTIVE emit dir
+       (``_run_dart_chunking`` writes it), so NEW conversions resolve here
+       (resolving here does NOT warn).
+    3. ``<course_dir>/dart_chunks`` — legacy pre-Stage-3c staged chunkset. A
+       first-class READ fallback for courses produced by the DART -> chunking
+       path before Stage 3c (resolving here does NOT warn — the deprecation
+       warn on this fallback is deferred; see the DART_CHUNKS_DIRNAME note).
     4. ``<course_dir>/corpus`` — legacy pre-Phase-7c name; resolving here
        emits a DeprecationWarning naming the migration script.
 
@@ -140,11 +143,11 @@ def resolve_imscc_chunks_dir(
 
     if _present(canonical):
         return canonical
-    # DART->semantik purge Stage 1 (dual-READ): PREFER the ratified
-    # ``semantik_chunks/`` name, then fall back to the still-active
-    # ``dart_chunks/`` (no deprecation warn — dart_chunks is the current emit
-    # dir; the warn lands with the Stage-2 migration). No such dir exists on
-    # disk yet, so this is byte-identical to the pre-purge dart-first resolution.
+    # DART->semantik purge (dual-READ): PREFER the ratified ``semantik_chunks/``
+    # name (the Stage-3c ACTIVE emit dir), then fall back to the legacy
+    # ``dart_chunks/`` for pre-3c archives (no deprecation warn — deferred; see
+    # the DART_CHUNKS_DIRNAME note). Existing archives have no semantik_chunks/
+    # dir, so they still resolve to dart_chunks/ exactly as before.
     if _present(semantik):
         return semantik
     if _present(dart):
@@ -181,6 +184,60 @@ def resolve_imscc_chunks_path(
     phase schedule.
     """
     return resolve_imscc_chunks_dir(course_dir, filename=filename) / filename
+
+
+def resolve_staged_chunks_dir(
+    course_dir: Union[str, Path],
+    filename: Optional[str] = None,
+) -> Path:
+    """Resolve the STAGED (DART-lineage) chunkset directory.
+
+    Precedence: ``semantik_chunks/`` -> ``dart_chunks/`` -> legacy ``corpus/``.
+
+    Unlike :func:`resolve_imscc_chunks_dir`, this does NOT prefer an
+    ``imscc_chunks/`` sibling — callers here specifically want the chunkset the
+    ``chunking`` workflow phase emitted from staged DART/SemantiK HTML (via
+    ``MCP/tools/pipeline_tools.py::_run_dart_chunking``), which a
+    dual-chunkset course (one that ALSO ran IMSCC packaging) carries alongside
+    an unrelated ``imscc_chunks/``.
+
+    DART->semantik naming purge Stage 3c: ``semantik_chunks/`` is the ACTIVE
+    emit dir; ``dart_chunks/`` is the legacy read fallback for pre-3c archives.
+    When ``filename`` is given, prefer the first candidate dir that actually
+    contains it (mirrors :func:`resolve_imscc_chunks_dir`). When no candidate
+    matches, returns the canonical ``semantik_chunks/`` path so a subsequent
+    read raises a clean ``FileNotFoundError`` naming the ratified location.
+    """
+    course_dir = Path(course_dir)
+
+    def _present(candidate: Path) -> bool:
+        if filename is not None:
+            return (candidate / filename).exists()
+        return candidate.exists()
+
+    for name in (
+        SEMANTIK_CHUNKS_DIRNAME,
+        DART_CHUNKS_DIRNAME,
+        LEGACY_CORPUS_DIRNAME,
+    ):
+        candidate = course_dir / name
+        if _present(candidate):
+            return candidate
+    return course_dir / SEMANTIK_CHUNKS_DIRNAME
+
+
+def resolve_staged_chunks_path(
+    course_dir: Union[str, Path],
+    filename: str = "chunks.jsonl",
+) -> Path:
+    """Path to ``filename`` inside the resolved staged (DART-lineage) chunkset.
+
+    Convenience wrapper over :func:`resolve_staged_chunks_dir` for the common
+    ``chunks.jsonl`` read. Threads ``filename`` into the resolver so the chosen
+    directory is the one that actually contains it (``semantik_chunks/`` first,
+    then ``dart_chunks/``, then legacy ``corpus/``).
+    """
+    return resolve_staged_chunks_dir(course_dir, filename=filename) / filename
 
 
 def resolve_chunks_path_for_query(
@@ -840,7 +897,11 @@ __all__ = [
     'validate_libv2_structure',
     'resolve_imscc_chunks_dir',
     'resolve_imscc_chunks_path',
+    'resolve_staged_chunks_dir',
+    'resolve_staged_chunks_path',
     'resolve_chunks_path_for_query',
+    'SEMANTIK_CHUNKS_DIRNAME',
+    'DART_CHUNKS_DIRNAME',
     'DIRNAME_TO_CHUNKSET_KIND',
     'CHUNKSET_KIND_TO_DIRNAME',
     'VECTOR_INDEX_DIRNAME',

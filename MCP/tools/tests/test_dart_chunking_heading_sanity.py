@@ -97,7 +97,7 @@ def _run_chunking(tmp_path: Path, staging: Path, *, flag_on: bool) -> list:
             os.environ["TRAINFORGE_HEADING_SANITY_FILTER"] = prev
 
     result = json.loads(result_json)
-    chunks_path = Path(result["dart_chunks_path"])
+    chunks_path = Path(result["semantik_chunks_path"])
     assert chunks_path.exists(), f"chunks.jsonl not emitted: {result}"
     chunks = [
         json.loads(line)

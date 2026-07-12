@@ -1501,9 +1501,14 @@ workflows:
             source: workflow_params
             key: libv2_root
 
+        # DART->semantik purge Stage 3c: the emitter surfaces the ratified
+        # ``semantik_chunks_path`` / ``semantik_chunks_sha256`` envelope keys
+        # (was ``dart_chunks_*``). Consumers route by these output names; the
+        # ``param:`` names they map INTO stay ``dart_chunks_*`` so the consumer
+        # tools' kwargs are unchanged.
         outputs:
-          - dart_chunks_path
-          - dart_chunks_sha256
+          - semantik_chunks_path
+          - semantik_chunks_sha256
 
         # Phase 7b ST 13 (Worker W13): ChunksetManifestValidator wires
         # here. Forward-reference — validator class lands in parallel
@@ -1972,7 +1977,9 @@ workflows:
           - param: dart_chunks_path
             source: phase_outputs
             phase: chunking
-            output: dart_chunks_path
+            # Stage 3c: producer key flipped to semantik_chunks_path; the
+            # param (kwarg) name stays dart_chunks_path.
+            output: semantik_chunks_path
           # Three-stage textbook synthesis — Stage 3 (Wave C). Route the
           # objective_extraction phase's textbook_structure.json so
           # _run_concept_extraction can read chapters[].chapter_text and
@@ -3907,7 +3914,9 @@ workflows:
           - param: dart_chunks_path
             source: phase_outputs
             phase: chunking
-            output: dart_chunks_path
+            # Stage 3c: producer key flipped to semantik_chunks_path; the
+            # param (kwarg) name stays dart_chunks_path.
+            output: semantik_chunks_path
           - param: bloom_levels
             source: workflow_params
             key: bloom_levels
@@ -4676,7 +4685,10 @@ workflows:
           - param: dart_chunks_sha256
             source: phase_outputs
             phase: chunking
-            output: dart_chunks_sha256
+            # Stage 3c: producer key flipped to semantik_chunks_sha256; the
+            # param (kwarg) name stays dart_chunks_sha256 (_archive_to_libv2
+            # reads that kwarg + persists it as semantik_chunks_sha256).
+            output: semantik_chunks_sha256
           - param: imscc_chunks_sha256
             source: phase_outputs
             phase: imscc_chunking
@@ -4701,7 +4713,9 @@ workflows:
           - param: dart_chunks_path
             source: phase_outputs
             phase: chunking
-            output: dart_chunks_path
+            # Stage 3c: producer key flipped to semantik_chunks_path; the
+            # param (kwarg) name stays dart_chunks_path.
+            output: semantik_chunks_path
           # Objectives plumbing: thread the course_planning-emitted
           # synthesized_objectives.json so _archive_to_libv2 can project
           # the canonical archive-side objectives.json (with parent_terminal

@@ -282,11 +282,11 @@ class TestSynthesizeOutlineOutputHappyPath:
         synth = runner_stub._synthesize_outline_output(project_path)
 
         chk = synth["chunking"]
-        # workflows.yaml::chunking.outputs: [dart_chunks_path,
-        # dart_chunks_sha256]
-        assert "dart_chunks_path" in chk
-        assert "dart_chunks_sha256" in chk
-        assert chk["dart_chunks_sha256"] == "a" * 64
+        # DART->semantik purge Stage 3c: workflows.yaml::chunking.outputs:
+        # [semantik_chunks_path, semantik_chunks_sha256]
+        assert "semantik_chunks_path" in chk
+        assert "semantik_chunks_sha256" in chk
+        assert chk["semantik_chunks_sha256"] == "a" * 64
 
     def test_concept_extraction_keys_match_workflows_yaml(
         self, runner_stub, tmp_path, monkeypatch

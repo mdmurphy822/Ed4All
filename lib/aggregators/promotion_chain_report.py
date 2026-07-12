@@ -477,7 +477,14 @@ class PromotionChainAggregator:
         course = self.course_path
         if course is None:
             return _missing_arrow_row(2, ARROW_NAMES[2])
-        manifest_path = course / "dart_chunks" / "manifest.json"
+        # DART->semantik purge Stage 3c: dual-read the staged chunkset dir
+        # (semantik_chunks/ -> dart_chunks/ -> corpus/) so arrow-2 resolves the
+        # manifest on new-name courses (drives course_status governance).
+        from lib.libv2_storage import resolve_staged_chunks_dir
+        manifest_path = (
+            resolve_staged_chunks_dir(course, filename="manifest.json")
+            / "manifest.json"
+        )
         if not manifest_path.exists():
             return _missing_arrow_row(2, ARROW_NAMES[2])
         payload = _read_json(manifest_path)

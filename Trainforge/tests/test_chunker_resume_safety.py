@@ -236,7 +236,7 @@ def test_dart_chunking_preserves_existing_on_missing_input(
     assert payload.get("preserved_existing") is True, (
         f"Expected preserved_existing=True; got payload={payload!r}"
     )
-    assert payload["dart_chunks_sha256"] == original_sha
+    assert payload["semantik_chunks_sha256"] == original_sha
     assert payload["chunks_count"] == len(_FIXTURE_CHUNKS)
     assert chunks_path.read_bytes() == original_bytes
 

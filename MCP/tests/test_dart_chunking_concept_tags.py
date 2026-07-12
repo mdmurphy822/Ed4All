@@ -87,7 +87,7 @@ def test_dart_chunks_carry_nonempty_concept_tags(dart_chunking_tool, tmp_path):
     result = json.loads(result_str)
     assert result.get("success"), f"chunking errored: {result}"
 
-    chunks_path = Path(result["dart_chunks_path"])
+    chunks_path = Path(result["semantik_chunks_path"])
     assert chunks_path.exists(), f"no chunks at {chunks_path}"
 
     with chunks_path.open("r", encoding="utf-8") as fh:
@@ -143,7 +143,7 @@ def test_dart_concept_tags_match_helper_output(dart_chunking_tool, tmp_path):
     )))
     assert result.get("success"), f"chunking errored: {result}"
 
-    chunks_path = Path(result["dart_chunks_path"])
+    chunks_path = Path(result["semantik_chunks_path"])
     with chunks_path.open("r", encoding="utf-8") as fh:
         chunks = [json.loads(line) for line in fh if line.strip()]
 

@@ -610,35 +610,35 @@ class TestRunDartChunkingEmitsChunksJsonl:
         payload = _invoke_dart_chunking(fx["course_name"], fx["staging_dir"])
 
         assert payload["success"] is True
-        assert "dart_chunks_path" in payload
-        assert "dart_chunks_sha256" in payload
+        assert "semantik_chunks_path" in payload
+        assert "semantik_chunks_sha256" in payload
 
-        chunks_path = Path(payload["dart_chunks_path"])
+        chunks_path = Path(payload["semantik_chunks_path"])
         assert chunks_path.exists(), (
             f"chunks.jsonl not written at {chunks_path}"
         )
         assert chunks_path.name == "chunks.jsonl"
 
-        # Path lands under LibV2/courses/<slug>/dart_chunks/.
+        # Path lands under LibV2/courses/<slug>/semantik_chunks/.
         rel = chunks_path.relative_to(fx["fake_root"])
         parts = rel.parts
         assert parts[0] == "LibV2"
         assert parts[1] == "courses"
         assert parts[2] == fx["course_slug"]
-        assert parts[3] == "dart_chunks"
+        assert parts[3] == "semantik_chunks"
         assert parts[4] == "chunks.jsonl"
 
     def test_dart_chunks_sha256_matches_file_bytes(self, dart_chunking_fixture):
         fx = dart_chunking_fixture
         payload = _invoke_dart_chunking(fx["course_name"], fx["staging_dir"])
 
-        assert _SHA256_RE.match(payload["dart_chunks_sha256"]), (
-            f"sha256 not in canonical hex shape: {payload['dart_chunks_sha256']!r}"
+        assert _SHA256_RE.match(payload["semantik_chunks_sha256"]), (
+            f"sha256 not in canonical hex shape: {payload['semantik_chunks_sha256']!r}"
         )
 
-        chunks_path = Path(payload["dart_chunks_path"])
+        chunks_path = Path(payload["semantik_chunks_path"])
         on_disk_hash = hashlib.sha256(chunks_path.read_bytes()).hexdigest()
-        assert on_disk_hash == payload["dart_chunks_sha256"], (
+        assert on_disk_hash == payload["semantik_chunks_sha256"], (
             "Returned sha256 must match on-disk chunks.jsonl bytes."
         )
 
@@ -653,7 +653,7 @@ class TestRunDartChunkingEmitsChunksJsonl:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
         # Required schema fields.
-        assert manifest["chunks_sha256"] == payload["dart_chunks_sha256"]
+        assert manifest["chunks_sha256"] == payload["semantik_chunks_sha256"]
         assert manifest["chunkset_kind"] == "dart"
         assert _SHA256_RE.match(manifest["source_dart_html_sha256"])
         assert isinstance(manifest["chunker_version"], str)
@@ -700,7 +700,7 @@ class TestRunDartChunkingEmitsChunksJsonl:
         fx = dart_chunking_fixture
         payload = _invoke_dart_chunking(fx["course_name"], fx["staging_dir"])
 
-        chunks_path = Path(payload["dart_chunks_path"])
+        chunks_path = Path(payload["semantik_chunks_path"])
         actual_lines = sum(1 for line in chunks_path.read_text(encoding="utf-8").splitlines() if line.strip())
         assert actual_lines == payload["chunks_count"]
 

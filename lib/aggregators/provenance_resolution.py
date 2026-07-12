@@ -292,7 +292,11 @@ class ProvenanceResolutionAggregator:
         course_path = self._resolve_libv2_course_path()
         if course_path is None:
             return out
-        dart_path = course_path / "dart_chunks" / "chunks.jsonl"
+        # DART->semantik purge Stage 3c: dual-read the staged chunkset dir
+        # (semantik_chunks/ -> dart_chunks/ -> corpus/) so provenance resolves
+        # on new-name courses AND un-migrated archives.
+        from lib.libv2_storage import resolve_staged_chunks_path
+        dart_path = resolve_staged_chunks_path(course_path)
         if not dart_path.exists():
             return out
         for chunk in self._read_jsonl(dart_path):

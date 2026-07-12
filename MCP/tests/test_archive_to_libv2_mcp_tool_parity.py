@@ -95,9 +95,9 @@ def test_archive_persists_all_three_well_formed_sha_kwargs(archive_tool):
         "Phase 8 ST 1: well-formed concept_graph_sha256 kwarg must persist "
         f"into manifest. Got: {manifest.get('concept_graph_sha256')!r}"
     )
-    assert manifest.get("dart_chunks_sha256") == _VALID_DART_CHUNKS_SHA, (
+    assert manifest.get("semantik_chunks_sha256") == _VALID_DART_CHUNKS_SHA, (
         "Phase 8 ST 1: well-formed dart_chunks_sha256 kwarg must persist "
-        f"into manifest. Got: {manifest.get('dart_chunks_sha256')!r}"
+        f"into manifest. Got: {manifest.get('semantik_chunks_sha256')!r}"
     )
     assert manifest.get("imscc_chunks_sha256") == _VALID_IMSCC_CHUNKS_SHA, (
         "Phase 8 ST 1: well-formed imscc_chunks_sha256 kwarg must persist "
@@ -147,7 +147,7 @@ def test_archive_drops_malformed_dart_chunks_sha(archive_tool):
     manifest = json.loads(
         Path(json.loads(result_str)["manifest_path"]).read_text()
     )
-    assert "dart_chunks_sha256" not in manifest, (
+    assert "semantik_chunks_sha256" not in manifest, (
         "Phase 8 ST 1: malformed dart_chunks_sha256 must be silently "
         "dropped (mirrors registry variant's INVALID_* fall-through)."
     )
@@ -195,7 +195,7 @@ def test_archive_legacy_call_omits_all_three_sha_fields(archive_tool):
         "Phase 8 ST 1 back-compat: absent concept_graph_sha256 kwarg must "
         "leave the manifest field absent."
     )
-    assert "dart_chunks_sha256" not in manifest, (
+    assert "semantik_chunks_sha256" not in manifest, (
         "Phase 8 ST 1 back-compat: absent dart_chunks_sha256 kwarg must "
         "leave the manifest field absent."
     )
@@ -233,5 +233,5 @@ def test_archive_partial_kwargs_persist_only_supplied_well_formed(archive_tool):
         Path(json.loads(result_str)["manifest_path"]).read_text()
     )
     assert manifest.get("concept_graph_sha256") == _VALID_CONCEPT_GRAPH_SHA
-    assert "dart_chunks_sha256" not in manifest
+    assert "semantik_chunks_sha256" not in manifest
     assert "imscc_chunks_sha256" not in manifest

@@ -3889,12 +3889,12 @@ def _backfill_dart_chunk_lo_refs(
             "reason": "empty_objective_ids_allowlist",
         }
 
-    chunks_path = (
-        _resolve_libv2_root(libv2_root)
-        / "courses"
-        / course_slug
-        / "dart_chunks"
-        / "chunks.jsonl"
+    # DART->semantik purge Stage 3c: dual-read the staged chunkset dir
+    # (semantik_chunks/ -> dart_chunks/ -> corpus/) so a new-name course and an
+    # un-migrated archive both resolve here.
+    from lib.libv2_storage import resolve_staged_chunks_path
+    chunks_path = resolve_staged_chunks_path(
+        _resolve_libv2_root(libv2_root) / "courses" / course_slug
     )
     if not chunks_path.exists() or not chunks_path.is_file():
         return {
@@ -4075,12 +4075,11 @@ def _load_dart_chunkset_for_planning(
     Pass C's re-ground rescue can scope to the candidate's chapter pool. The
     annotation is best-effort: chunks that don't join carry no ``chapter_id``.
     """
-    chunks_path = (
-        _resolve_libv2_root(kwargs.get("libv2_root"))
-        / "courses"
-        / course_slug
-        / "dart_chunks"
-        / "chunks.jsonl"
+    # DART->semantik purge Stage 3c: dual-read staged chunkset (semantik ->
+    # dart -> corpus) so new-name courses ground correctly.
+    from lib.libv2_storage import resolve_staged_chunks_path
+    chunks_path = resolve_staged_chunks_path(
+        _resolve_libv2_root(kwargs.get("libv2_root")) / "courses" / course_slug
     )
     if not chunks_path.exists() or not chunks_path.is_file():
         logger.warning(
@@ -7689,7 +7688,14 @@ def register_pipeline_tools(mcp):
             if concept_graph_sha256 and _re_sha.match(_SHA_RE, concept_graph_sha256):
                 manifest["concept_graph_sha256"] = concept_graph_sha256
             if dart_chunks_sha256 and _re_sha.match(_SHA_RE, dart_chunks_sha256):
-                manifest["dart_chunks_sha256"] = dart_chunks_sha256
+                # DART->semantik purge Stage 3c: persist the ratified
+                # ``semantik_chunks_sha256`` manifest key (was
+                # ``dart_chunks_sha256``). The kwarg name stays ``dart_chunks_sha256``
+                # (routed via the workflow-runner param name); the course_manifest
+                # schema's top-level anyOf accepts EITHER field and
+                # LibV2ManifestValidator._check_dart_chunks_sha256 dual-reads both,
+                # so existing dart-form manifests stay valid.
+                manifest["semantik_chunks_sha256"] = dart_chunks_sha256
             if imscc_chunks_sha256 and _re_sha.match(_SHA_RE, imscc_chunks_sha256):
                 manifest["imscc_chunks_sha256"] = imscc_chunks_sha256
 
@@ -13843,12 +13849,11 @@ async def _run_content_generation_outline(**kwargs) -> str:
     course_slug = (course_code or project_id or "").lower().replace(
         "_", "-"
     ).replace(" ", "-")
-    chunkset_path = (
-        _resolve_libv2_root(kwargs.get("libv2_root"))
-        / "courses"
-        / course_slug
-        / "dart_chunks"
-        / "chunks.jsonl"
+    # DART->semantik purge Stage 3c: dual-read staged chunkset (semantik ->
+    # dart -> corpus).
+    from lib.libv2_storage import resolve_staged_chunks_path
+    chunkset_path = resolve_staged_chunks_path(
+        _resolve_libv2_root(kwargs.get("libv2_root")) / "courses" / course_slug
     )
     chunk_text_map = _load_dart_chunkset_text_map(chunkset_path)
     chunkset_present = bool(chunk_text_map)
@@ -16642,12 +16647,14 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
     _course_slug_for_map = (course_code or project_id).lower().replace(
         "_", "-"
     ).replace(" ", "-")
-    _dart_chunks_path_for_map = (
+    # DART->semantik purge Stage 3c: dual-read staged chunkset (semantik ->
+    # dart -> corpus) so the rewrite-tier chunk->real-sourceId map resolves on
+    # new-name courses instead of failing closed to empty (deferred) attribution.
+    from lib.libv2_storage import resolve_staged_chunks_path
+    _dart_chunks_path_for_map = resolve_staged_chunks_path(
         _resolve_libv2_root(kwargs.get("libv2_root"))
         / "courses"
         / _course_slug_for_map
-        / "dart_chunks"
-        / "chunks.jsonl"
     )
     _chunk_source_id_map = _build_chunk_source_id_map(_dart_chunks_path_for_map)
     if capture is not None:
@@ -18137,12 +18144,13 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
     _course_slug = (course_code or project_id).lower().replace(
         "_", "-"
     ).replace(" ", "-")
-    _dart_chunks_path = (
+    # DART->semantik purge Stage 3c: dual-read staged chunkset (semantik ->
+    # dart -> corpus) so block source_chunk_ids resolve on new-name courses.
+    from lib.libv2_storage import resolve_staged_chunks_path
+    _dart_chunks_path = resolve_staged_chunks_path(
         _resolve_libv2_root(kwargs.get("libv2_root"))
         / "courses"
         / _course_slug
-        / "dart_chunks"
-        / "chunks.jsonl"
     )
     try:
         _emit_block_synthesis_manifest(
@@ -22961,7 +22969,11 @@ def _build_tool_registry() -> dict:
         if dart_chunks_sha256_kw and _re_cg.match(
             r"^[0-9a-f]{64}$", dart_chunks_sha256_kw,
         ):
-            manifest["dart_chunks_sha256"] = dart_chunks_sha256_kw
+            # DART->semantik purge Stage 3c: persist the ratified
+            # ``semantik_chunks_sha256`` (kwarg name unchanged; schema anyOf +
+            # validator dual-read accept both fields — see the @mcp.tool()
+            # variant above for the full rationale).
+            manifest["semantik_chunks_sha256"] = dart_chunks_sha256_kw
         if imscc_chunks_sha256_kw and _re_cg.match(
             r"^[0-9a-f]{64}$", imscc_chunks_sha256_kw,
         ):
@@ -25720,12 +25732,23 @@ def _build_tool_registry() -> dict:
         # Preserve when an existing artifact is found; fail-closed when
         # there's nothing to preserve.
         if not html_files:
-            existing_chunks_path = (
+            # DART->semantik purge Stage 3c: the current emitter writes
+            # ``semantik_chunks/``; a resume across the 3c boundary may still
+            # carry a pre-3c ``dart_chunks/`` emit. Prefer semantik, fall back
+            # to dart (DART-lineage specific — do NOT resolve an imscc sibling).
+            _course_root = (
                 _resolve_libv2_root(kwargs.get("libv2_root"))
                 / "courses"
                 / course_slug
-                / "dart_chunks"
-                / "chunks.jsonl"
+            )
+            _semantik_existing = (
+                _course_root / "semantik_chunks" / "chunks.jsonl"
+            )
+            _dart_existing = _course_root / "dart_chunks" / "chunks.jsonl"
+            existing_chunks_path = (
+                _semantik_existing
+                if _semantik_existing.exists()
+                else _dart_existing
             )
             if existing_chunks_path.exists():
                 existing_sha = _hashlib.sha256(
@@ -25753,8 +25776,8 @@ def _build_tool_registry() -> dict:
                 return json.dumps({
                     "success": True,
                     "preserved_existing": True,
-                    "dart_chunks_path": str(existing_chunks_path),
-                    "dart_chunks_sha256": existing_sha,
+                    "semantik_chunks_path": str(existing_chunks_path),
+                    "semantik_chunks_sha256": existing_sha,
                     "manifest_path": str(manifest_path),
                     "course_slug": course_slug,
                     "chunks_count": existing_count,
@@ -26503,15 +26526,21 @@ def _build_tool_registry() -> dict:
                 response_present=_irt_response_present,
             )
 
-        # Persist chunks + manifest to LibV2/courses/<slug>/dart_chunks/.
+        # Persist chunks + manifest to LibV2/courses/<slug>/semantik_chunks/.
         # Phase 8 ST 3: route through `_resolve_libv2_root` (see helper
         # docstring for resolution chain). Default behaviour unchanged.
+        # DART->semantik purge Stage 3c (2026-07-11): the ratified emit dir is
+        # ``semantik_chunks/`` (was ``dart_chunks/``). Readers dual-resolve via
+        # ``lib.libv2_storage.resolve_imscc_chunks_dir`` (semantik -> dart ->
+        # corpus), so un-migrated archives that still hold ``dart_chunks/`` keep
+        # resolving; only NEW conversions land under ``semantik_chunks/``.
+        from lib.libv2_storage import SEMANTIK_CHUNKS_DIRNAME
         course_dir = (
             _resolve_libv2_root(kwargs.get("libv2_root"))
             / "courses"
             / course_slug
         )
-        chunks_dir = course_dir / "dart_chunks"
+        chunks_dir = course_dir / SEMANTIK_CHUNKS_DIRNAME
         chunks_dir.mkdir(parents=True, exist_ok=True)
         chunks_path = chunks_dir / "chunks.jsonl"
 
@@ -26623,10 +26652,17 @@ def _build_tool_registry() -> dict:
             json.dumps(manifest, indent=2, ensure_ascii=False),
         )
 
+        # DART->semantik purge Stage 3c: the phase-output envelope keys flip to
+        # ``semantik_chunks_path`` / ``semantik_chunks_sha256`` (matching the
+        # ratified emit dir). Routed consumers still receive the value under the
+        # stable ``dart_chunks_path`` kwarg (the workflow-runner ``inputs_from``
+        # ``param:`` name is unchanged); only DIRECT phase_outputs readers that
+        # name the key dual-read (``semantik_chunks_path`` then legacy
+        # ``dart_chunks_path``) for resume-checkpoint compatibility.
         return json.dumps({
             "success": True,
-            "dart_chunks_path": str(chunks_path),
-            "dart_chunks_sha256": chunks_sha256,
+            "semantik_chunks_path": str(chunks_path),
+            "semantik_chunks_sha256": chunks_sha256,
             "manifest_path": str(manifest_path),
             "course_slug": course_slug,
             "chunks_count": len(chunks),
@@ -26780,9 +26816,12 @@ def _build_tool_registry() -> dict:
         if dart_chunks_kw:
             dart_chunks_path = Path(dart_chunks_kw)
         else:
-            dart_chunks_path = (
+            # DART->semantik purge Stage 3c: dual-read staged chunkset
+            # (semantik -> dart -> corpus) when no explicit path was threaded.
+            from lib.libv2_storage import resolve_staged_chunks_path
+            dart_chunks_path = resolve_staged_chunks_path(
                 _resolve_libv2_root(kwargs.get("libv2_root"))
-                / "courses" / course_slug / "dart_chunks" / "chunks.jsonl"
+                / "courses" / course_slug
             )
         loaded_chunks: List[Dict[str, Any]] = []
         if dart_chunks_path.exists():

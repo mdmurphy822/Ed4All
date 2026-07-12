@@ -237,6 +237,9 @@ _NLI_EDGE_TEMPLATES: Dict[str, Dict[str, str]] = {
 #: Chunkset locations searched by :func:`load_chunk_text_lookup`, relative
 #: to a LibV2 course dir (first hit per id wins).
 _CHUNK_JSONL_CANDIDATES: Tuple[str, ...] = (
+    # DART->semantik purge Stage 3c: the ratified staged emit dir; try it
+    # before the legacy dart_chunks/ fallback.
+    "semantik_chunks/chunks.jsonl",
     "dart_chunks/chunks.jsonl",
     "imscc_chunks/chunks.jsonl",
     "corpus/chunks.jsonl",

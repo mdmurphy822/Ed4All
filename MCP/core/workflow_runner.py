@@ -398,8 +398,13 @@ _LEGACY_PHASE_PARAM_ROUTING: Dict[str, Dict[str, Tuple]] = {
         "project_id": ("phase_outputs", "objective_extraction", "project_id"),
         "course_name": ("workflow_params", "course_name"),
         "staging_dir": ("phase_outputs", "staging", "staging_dir"),
+        # DART->semantik purge Stage 3c: the ``chunking`` emitter now surfaces
+        # ``semantik_chunks_path`` (was ``dart_chunks_path``); the dict KEY is
+        # the kwarg NAME passed to _run_concept_extraction (unchanged, so the
+        # tool still reads ``kwargs["dart_chunks_path"]``), only the output
+        # SELECTOR (3rd tuple element) flips to the ratified key.
         "dart_chunks_path": (
-            "phase_outputs", "chunking", "dart_chunks_path",
+            "phase_outputs", "chunking", "semantik_chunks_path",
         ),
         # Three-stage textbook synthesis — Stage 3 (Wave C). Routes the
         # objective_extraction phase's textbook_structure.json so
@@ -610,8 +615,11 @@ _LEGACY_PHASE_PARAM_ROUTING: Dict[str, Dict[str, Tuple]] = {
         "concept_graph_sha256": (
             "phase_outputs", "concept_extraction", "concept_graph_sha256",
         ),
+        # DART->semantik purge Stage 3c: output selector flips to the ratified
+        # ``semantik_chunks_sha256`` (dict key / kwarg name stays
+        # ``dart_chunks_sha256`` — _archive_to_libv2 still reads that kwarg).
         "dart_chunks_sha256": (
-            "phase_outputs", "chunking", "dart_chunks_sha256",
+            "phase_outputs", "chunking", "semantik_chunks_sha256",
         ),
         "imscc_chunks_sha256": (
             "phase_outputs", "imscc_chunking", "imscc_chunks_sha256",
@@ -622,8 +630,10 @@ _LEGACY_PHASE_PARAM_ROUTING: Dict[str, Dict[str, Tuple]] = {
         "imscc_chunks_path": (
             "phase_outputs", "imscc_chunking", "imscc_chunks_path",
         ),
+        # DART->semantik purge Stage 3c: output selector flips to the ratified
+        # ``semantik_chunks_path`` (dict key / kwarg name unchanged).
         "dart_chunks_path": (
-            "phase_outputs", "chunking", "dart_chunks_path",
+            "phase_outputs", "chunking", "semantik_chunks_path",
         ),
         # B3 license/attribution plumbing: mirrors the YAML routing at
         # config/workflows.yaml::libv2_archival so the parity contract holds.
@@ -5238,7 +5248,15 @@ class WorkflowRunner:
 
         # ----- chunking ----------------------------------------------
         if "chunking" in phases and libv2_course_dir is not None:
-            chunks_dir = libv2_course_dir / "dart_chunks"
+            # DART->semantik purge Stage 3c: resolve the on-disk chunkset dir
+            # via the dual-read resolver (semantik_chunks/ -> dart_chunks/ ->
+            # corpus/) so a NEW-name course (semantik_chunks/) AND an
+            # un-migrated archive (dart_chunks/) both pre-populate here. The
+            # re-emitted envelope keys mirror the ratified emitter keys.
+            from lib.libv2_storage import resolve_imscc_chunks_dir
+            chunks_dir = resolve_imscc_chunks_dir(
+                libv2_course_dir, filename="chunks.jsonl"
+            )
             chunks_path = chunks_dir / "chunks.jsonl"
             manifest_path = chunks_dir / "manifest.json"
             if chunks_path.exists() and manifest_path.exists():
@@ -5248,8 +5266,8 @@ class WorkflowRunner:
                     )
                     sha256 = cmanifest.get("chunks_sha256") or ""
                     synthesized["chunking"] = {
-                        "dart_chunks_path": str(chunks_path),
-                        "dart_chunks_sha256": sha256,
+                        "semantik_chunks_path": str(chunks_path),
+                        "semantik_chunks_sha256": sha256,
                         "manifest_path": str(manifest_path),
                         "course_slug": course_slug,
                         "chunks_count": cmanifest.get("chunks_count", 0),
@@ -5257,7 +5275,8 @@ class WorkflowRunner:
                         "_skipped": True,
                         "_gates_passed": True,
                         "_skip_reason": (
-                            "outline reuse: read dart_chunks/manifest.json"
+                            "outline reuse: read "
+                            f"{chunks_dir.name}/manifest.json"
                         ),
                     }
                 except (OSError, ValueError) as e:

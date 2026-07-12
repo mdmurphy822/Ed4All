@@ -415,7 +415,7 @@ async def test_f_inline_chunk_stamps_six_fields(monkeypatch, tmp_path):
     )
     payload = json.loads(out)
     assert payload.get("success"), payload
-    chunks_path = payload["dart_chunks_path"]
+    chunks_path = payload["semantik_chunks_path"]
     chunks = [
         json.loads(line)
         for line in open(chunks_path, encoding="utf-8")
@@ -470,7 +470,7 @@ async def test_f_inline_chunk_omits_fields_without_enrichment(
     assert payload.get("success"), payload
     chunks = [
         json.loads(line)
-        for line in open(payload["dart_chunks_path"], encoding="utf-8")
+        for line in open(payload["semantik_chunks_path"], encoding="utf-8")
         if line.strip()
     ]
     assert chunks
