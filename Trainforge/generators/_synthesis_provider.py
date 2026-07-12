@@ -652,6 +652,17 @@ class SynthesisProvider:
             "temperature": self._temperature,
             "max_tokens": self._max_tokens,
         }
+        # Nemotron "detailed thinking off": this path builds the payload dict
+        # directly and POSTs via ``_post_with_retry``, bypassing
+        # ``OpenAICompatibleClient.chat_completion`` (where the
+        # ``ED4ALL_REASONING_THINKING_OFF`` injection lives). Apply it here so a
+        # reasoning training-pair seat doesn't burn its ``max_tokens`` budget on
+        # ``<think>`` tokens. No-op when the env is off (byte-identical).
+        from Trainforge.generators._openai_compatible_client import (
+            apply_reasoning_thinking_off_payload,
+        )
+
+        apply_reasoning_thinking_off_payload(payload)
         body, retry_count = self._oa_client._post_with_retry(payload)
         text = self._oa_client._extract_text(body)
         usage = self._oa_client._extract_usage(body)

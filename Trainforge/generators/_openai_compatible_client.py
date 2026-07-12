@@ -1187,6 +1187,47 @@ class OpenAICompatibleClient:
         return ", ".join(parts)
 
 
+def apply_reasoning_thinking_off_payload(
+    payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Apply the Nemotron "detailed thinking off" transform to a built payload.
+
+    For call sites that assemble the ``/chat/completions`` request body dict
+    THEMSELVES and POST it via :meth:`OpenAICompatibleClient._post_with_retry`,
+    thereby BYPASSING :meth:`OpenAICompatibleClient.chat_completion` — which is
+    where the reasoning-off dual-injection normally lives. Two such bypass
+    sites exist: ``Courseforge/generators/_base.py::_dispatch_call_with_usage``
+    (every Courseforge / textbook-synthesis / outline / rewrite tier) and
+    ``Trainforge/generators/_synthesis_provider.py::_chat_completion_raw`` (the
+    training-pair seat). Without this helper those paths silently ignore
+    ``ED4ALL_REASONING_THINKING_OFF``, so a REASONING model (nemotron_v3) burns
+    its ``max_tokens`` budget on ``<think>`` tokens and trips the
+    ``finish_reason == "length"`` truncation guard in :meth:`_extract_text`.
+
+    No-op (byte-identical) when the env toggle is off. When on: (a) rewrites
+    ``payload["messages"]`` via
+    :meth:`OpenAICompatibleClient._inject_thinking_off_system` (fresh list — the
+    caller's message list is never mutated in place) so the ``detailed thinking
+    off`` SYSTEM directive rides at the front, and (b) ``setdefault``s
+    ``chat_template_kwargs={"enable_thinking": False}`` (the vLLM / HF-native
+    mechanism the ``nemotron_v3`` reasoning parser honors) so an explicit value
+    already present on the payload (a caller override / endpoint-row
+    ``extra_body``) wins. Mirrors the injection ``chat_completion`` performs;
+    the actual message rewrite is the SAME shared static, so the two paths can't
+    drift on the directive text. Call it AFTER any ``extra_payload`` /
+    ``extra_body`` merge so a caller-supplied override takes precedence.
+    """
+    if not resolve_reasoning_thinking_off():
+        return payload
+    messages = payload.get("messages")
+    if isinstance(messages, list) and messages:
+        payload["messages"] = OpenAICompatibleClient._inject_thinking_off_system(
+            messages
+        )
+    payload.setdefault("chat_template_kwargs", {"enable_thinking": False})
+    return payload
+
+
 __all__ = [
     "OpenAICompatibleClient",
     "DEFAULT_TIMEOUT_SECONDS",
@@ -1195,6 +1236,7 @@ __all__ = [
     "ENV_REASONING_THINKING_OFF",
     "resolve_default_timeout",
     "resolve_reasoning_thinking_off",
+    "apply_reasoning_thinking_off_payload",
     "DEFAULT_MAX_RETRIES",
     "DEFAULT_RETRY_STATUS_CODES",
     "DEFAULT_INITIAL_BACKOFF_SECONDS",

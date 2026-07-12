@@ -1358,3 +1358,127 @@ def test_normalise_preserves_explicit_bloom_verb():
         {"statement": "Anything.", "bloom_level": "apply", "bloom_verb": "solve"}
     )
     assert e["bloom_verb"] == "solve"
+
+
+# ===========================================================================
+# Reasoning "detailed thinking off" on the LOCAL dispatch path +
+# TEXTBOOK_SYNTHESIS_MAX_TOKENS knob (nano-omni authoring-seat blocker fix)
+# ===========================================================================
+
+import httpx  # noqa: E402
+
+from Courseforge.generators._textbook_synthesis_provider import (  # noqa: E402
+    ENV_MAX_TOKENS,
+    _DEFAULT_MAX_TOKENS,
+    _resolve_synthesis_max_tokens,
+)
+
+
+def _local_body_capture(
+    monkeypatch: Any,
+    *,
+    thinking_env: str | None,
+    max_tokens_env: str | None = None,
+    max_tokens_kwarg: int | None = None,
+) -> Dict[str, Any]:
+    """Dispatch one local call through a MockTransport + return the request JSON.
+
+    Builds a ``TextbookSynthesisProvider(provider="local")`` whose embedded
+    OpenAICompatibleClient is wired to an injected httpx MockTransport, so the
+    outgoing ``/chat/completions`` body can be asserted without a live server.
+    """
+    monkeypatch.delenv(ENV_PROVIDER, raising=False)
+    if thinking_env is None:
+        monkeypatch.delenv("ED4ALL_REASONING_THINKING_OFF", raising=False)
+    else:
+        monkeypatch.setenv("ED4ALL_REASONING_THINKING_OFF", thinking_env)
+    if max_tokens_env is None:
+        monkeypatch.delenv(ENV_MAX_TOKENS, raising=False)
+    else:
+        monkeypatch.setenv(ENV_MAX_TOKENS, max_tokens_env)
+
+    seen: List[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {"content": '{"themes": []}'},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+            },
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    kwargs: Dict[str, Any] = {"provider": "local", "client": client}
+    if max_tokens_kwarg is not None:
+        kwargs["max_tokens"] = max_tokens_kwarg
+    p = TextbookSynthesisProvider(**kwargs)
+    p._dispatch_call("author the objectives")
+    assert seen, "no request captured"
+    return json.loads(seen[0].content.decode("utf-8")), p
+
+
+def test_local_dispatch_applies_thinking_off_when_env_on(monkeypatch):
+    """ED4ALL_REASONING_THINKING_OFF=1 → the composed LOCAL synthesis request
+    carries chat_template_kwargs.enable_thinking=false AND the system directive.
+
+    Regression for the objective_extraction blocker: this dispatch path
+    (_base.py::_dispatch_call_with_usage) builds the payload directly and
+    bypasses OpenAICompatibleClient.chat_completion, so before the fix the
+    thinking-off injection never reached a reasoning model here.
+    """
+    body, _p = _local_body_capture(monkeypatch, thinking_env="1")
+    assert body["chat_template_kwargs"] == {"enable_thinking": False}
+    system_msgs = [m for m in body["messages"] if m.get("role") == "system"]
+    assert system_msgs, "expected a system message"
+    assert "detailed thinking off" in system_msgs[0]["content"]
+
+
+def test_local_dispatch_thinking_off_unset_is_byte_identical(monkeypatch):
+    """Flag unset → NO chat_template_kwargs key on the LOCAL synthesis body
+    (byte-compat for a non-reasoning Qwen deployment)."""
+    body, _p = _local_body_capture(monkeypatch, thinking_env=None)
+    assert "chat_template_kwargs" not in body
+
+
+def test_local_dispatch_max_tokens_env_knob_lands_on_wire(monkeypatch):
+    """TEXTBOOK_SYNTHESIS_MAX_TOKENS is honoured and rides the request body."""
+    body, p = _local_body_capture(
+        monkeypatch, thinking_env=None, max_tokens_env="6000"
+    )
+    assert p._max_tokens == 6000
+    assert body["max_tokens"] == 6000
+
+
+def test_max_tokens_default_when_env_unset(monkeypatch):
+    """Unset env → the generous provider default (not an 800-style floor)."""
+    monkeypatch.delenv(ENV_PROVIDER, raising=False)
+    monkeypatch.delenv(ENV_MAX_TOKENS, raising=False)
+    p = TextbookSynthesisProvider(provider="local")
+    assert p._max_tokens == _DEFAULT_MAX_TOKENS == 4096
+
+
+def test_max_tokens_kwarg_beats_env(monkeypatch):
+    """Resolution chain: kwarg > env > default."""
+    monkeypatch.setenv(ENV_MAX_TOKENS, "6000")
+    p = TextbookSynthesisProvider(provider="local", max_tokens=1234)
+    assert p._max_tokens == 1234
+
+
+def test_resolve_synthesis_max_tokens_parse_with_fallback(monkeypatch):
+    """Garbage / non-positive env → the default; explicit kwarg always wins."""
+    monkeypatch.delenv(ENV_MAX_TOKENS, raising=False)
+    assert _resolve_synthesis_max_tokens(None) == _DEFAULT_MAX_TOKENS
+    for bad in ("not-an-int", "0", "-5", "  "):
+        monkeypatch.setenv(ENV_MAX_TOKENS, bad)
+        assert _resolve_synthesis_max_tokens(None) == _DEFAULT_MAX_TOKENS
+    monkeypatch.setenv(ENV_MAX_TOKENS, "9000")
+    assert _resolve_synthesis_max_tokens(None) == 9000
+    # Explicit kwarg wins over env.
+    assert _resolve_synthesis_max_tokens(2048) == 2048

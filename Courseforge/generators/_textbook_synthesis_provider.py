@@ -79,6 +79,16 @@ logger = logging.getLogger(__name__)
 
 ENV_PROVIDER = "TEXTBOOK_SYNTHESIS_PROVIDER"
 ENV_MODEL = "TEXTBOOK_SYNTHESIS_MODEL"
+# Per-call generation cap (max_tokens) for the three-stage synthesis LLM
+# calls. Whole-chapter objective / structure synthesis emits multiple TO/CO
+# statements + sub-objectives, and a REASONING model (nemotron_v3) that leaks
+# any residual thinking tokens can overrun a tight budget → the OpenAI-compat
+# ``finish_reason='length'`` truncation guard fires and fails the phase. The
+# provider sources a generous default from this env. Resolution (high → low):
+# ``max_tokens`` kwarg > ``TEXTBOOK_SYNTHESIS_MAX_TOKENS`` env > the
+# ``_DEFAULT_MAX_TOKENS`` provider default. Garbage / non-positive → default
+# (parse-with-fallback, mirroring ``ENV_TIMEOUT`` above).
+ENV_MAX_TOKENS = "TEXTBOOK_SYNTHESIS_MAX_TOKENS"
 # Per-call HTTP timeout (seconds) for the OpenAI-compatible backends.
 # Synthesis calls are long-context (24-40k-char inputs, multi-k-token
 # output) — a live needle-probe against Ollama 0.21.2 measured 7B
@@ -336,6 +346,39 @@ class TextbookSynthesisProviderError(RuntimeError):
 # ---------------------------------------------------------------------------
 
 
+def _resolve_synthesis_max_tokens(explicit: Optional[int]) -> int:
+    """Resolve the per-call generation cap: kwarg > env > default.
+
+    ``explicit`` (the ``max_tokens`` kwarg) wins when supplied. Otherwise read
+    :data:`ENV_MAX_TOKENS` (``TEXTBOOK_SYNTHESIS_MAX_TOKENS``) and parse it as a
+    positive int; a missing / unparseable / non-positive value falls back to
+    :data:`_DEFAULT_MAX_TOKENS`. Parse-with-fallback mirrors the other
+    ``TEXTBOOK_SYNTHESIS_*`` knobs so a garbage env value never shrinks the cap.
+    """
+    if explicit is not None:
+        return int(explicit)
+    raw = os.environ.get(ENV_MAX_TOKENS)
+    if not raw or not str(raw).strip():
+        return _DEFAULT_MAX_TOKENS
+    try:
+        parsed = int(str(raw).strip())
+    except (TypeError, ValueError):
+        logger.warning(
+            "TextbookSynthesisProvider: ignoring non-integer %s=%r; "
+            "using default %d",
+            ENV_MAX_TOKENS, raw, _DEFAULT_MAX_TOKENS,
+        )
+        return _DEFAULT_MAX_TOKENS
+    if parsed <= 0:
+        logger.warning(
+            "TextbookSynthesisProvider: ignoring non-positive %s=%r; "
+            "using default %d",
+            ENV_MAX_TOKENS, raw, _DEFAULT_MAX_TOKENS,
+        )
+        return _DEFAULT_MAX_TOKENS
+    return parsed
+
+
 def _build_supported_providers() -> Tuple[str, ...]:
     """Compose the supported-providers tuple at call time.
 
@@ -377,7 +420,9 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         capture: Optional[Any] = None,
-        max_tokens: int = _DEFAULT_MAX_TOKENS,
+        # ``None`` sentinel → resolve from ``TEXTBOOK_SYNTHESIS_MAX_TOKENS``
+        # env (falling back to ``_DEFAULT_MAX_TOKENS``). An explicit int wins.
+        max_tokens: Optional[int] = None,
         temperature: float = _DEFAULT_TEMPERATURE,
         # Per-call HTTP timeout (seconds). Resolution chain (high →
         # low): this kwarg > ``TEXTBOOK_SYNTHESIS_TIMEOUT_SECONDS``
@@ -399,6 +444,10 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
             or os.environ.get(ENV_MODEL)
             or None  # let the base resolve from the synthesis env vars
         )
+        # Resolve the per-call generation cap: kwarg > env > default. A
+        # reasoning model doing whole-chapter objective synthesis needs a
+        # generous cap (an 800-style default truncates the multi-TO/CO output).
+        resolved_max_tokens = _resolve_synthesis_max_tokens(max_tokens)
         supported = _build_supported_providers()
         resolved_provider = (
             provider
@@ -455,7 +504,7 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
             api_key=api_key,
             base_url=base_url,
             capture=capture,
-            max_tokens=max_tokens,
+            max_tokens=resolved_max_tokens,
             temperature=temperature,
             timeout=resolved_timeout,
             client=client,
@@ -2318,8 +2367,10 @@ __all__ = [
     "TextbookSynthesisProviderError",
     "ENV_PROVIDER",
     "ENV_MODEL",
+    "ENV_MAX_TOKENS",
     "ENV_GRAMMAR_MODE",
     "DEFAULT_PROVIDER",
+    "_DEFAULT_MAX_TOKENS",
     "_SYNTHESIS_NUM_CTX_ENV",
     "_MAX_SYNTHESIS_PARSE_RETRIES",
     "_WINDOW_OBJECTIVES_SCHEMA",

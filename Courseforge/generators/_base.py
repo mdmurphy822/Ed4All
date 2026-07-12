@@ -66,6 +66,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from Trainforge.generators._openai_compatible_client import (
     OpenAICompatibleClient,
+    apply_reasoning_thinking_off_payload,
 )
 
 # Per-backend IDENTITY (base_url / default_model) is sourced from the unified
@@ -611,6 +612,18 @@ class _BaseLLMProvider(ABC):
             # OpenAI-compatible call sites.
             for key, value in extra_payload.items():
                 payload[key] = value
+        # Nemotron "detailed thinking off": this call site builds the payload
+        # dict directly and POSTs via ``_post_with_retry``, BYPASSING
+        # ``OpenAICompatibleClient.chat_completion`` where the
+        # ``ED4ALL_REASONING_THINKING_OFF`` dual-injection normally lives. Apply
+        # it here so a reasoning model (nemotron_v3) served on the local /
+        # together / nvidia / registry OpenAI-compatible seat doesn't spend its
+        # ``max_tokens`` budget on ``<think>`` tokens and trip the
+        # ``finish_reason='length'`` truncation guard (the objective_extraction
+        # / textbook-synthesis failure mode). No-op when the env is off
+        # (byte-identical). Applied AFTER the ``extra_body`` + ``extra_payload``
+        # merges so an explicit caller / endpoint-row override still wins.
+        apply_reasoning_thinking_off_payload(payload)
         body, retry_count = self._oa_client._post_with_retry(payload)
         text = self._oa_client._extract_text(body)
         usage = body.get("usage") if isinstance(body, dict) else None
