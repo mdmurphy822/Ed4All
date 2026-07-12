@@ -245,43 +245,129 @@ def resolve_collapse_repetition_mode() -> bool:
 # poison (2026-07 OpenStax Algebra ch01 scan audit — a single region carried
 # ~4,047 repetitions of the `x +` cycle).
 #
-# This tripwire is DOMAIN-AGNOSTIC (it keys on the STRUCTURE — a short token or
-# n-gram repeated far more than a legitimate list ever would — never on any
-# specific token like `x`/`+`) and CONSERVATIVE (it collapses ONLY an
-# unambiguous degenerate run: a unit of ≤`_REPEAT_MAX_TOKEN_CHARS`-char tokens,
-# period ≤`_REPEAT_MAX_PERIOD`, repeating STRICTLY MORE than `_REPEAT_MIN_CYCLES`
-# consecutive times). A normal sentence, a real short repeated list, a table
-# row, or a long-word repetition is left byte-identical (it errs toward
-# KEEPING). The generous cycle floor (30) is far above any legitimate short
-# list, so a false-positive is effectively impossible.
+# This tripwire is DOMAIN-AGNOSTIC (it keys on the STRUCTURE — a repeated UNIT,
+# never on any specific token like `x`/`+` or any specific sentence) and
+# CONSERVATIVE. It has TWO arms, both scanned in ONE left-to-right pass over the
+# whitespace-token stream (they compose — a document carrying both a token loop
+# and a sentence loop collapses both):
+#
+#   * SHORT-TOKEN arm — an unambiguous glyph run: a unit of
+#     ≤`_REPEAT_MAX_TOKEN_CHARS`-char tokens, period ≤`_REPEAT_MAX_PERIOD`,
+#     repeating STRICTLY MORE than `_REPEAT_MIN_CYCLES` (30) consecutive times.
+#     This is the original arm ("x + x + …", "0 0 0 …").
+#   * SENTENCE / MULTI-WORD arm — an unambiguous SENTENCE loop: a
+#     clause/sentence-shaped unit of `_REPEAT_SENTENCE_MIN_WORDS`..
+#     `_REPEAT_SENTENCE_MAX_WORDS` (~25) tokens repeating at least
+#     `_REPEAT_MIN_SENTENCE_CYCLES` (6) consecutive times. This closes the
+#     sentence-granularity blind spot the token arm misses (the VLM looping a
+#     whole SENTENCE ~33× into a ~15 KB blob that the chunker then windowed into
+#     byte-identical chunks — 2026-07 OpenStax Algebra ch01 scan re-audit).
+#
+# Both arms err toward KEEPING. A repeated SENTENCE is a far stronger degeneracy
+# signal than a repeated word, so its cycle floor (6) is small — but to stay
+# false-positive-proof the sentence unit must be genuinely clause-shaped: it ends
+# in terminal punctuation (`.`/`!`/`?`) AND NO interior token ends in terminal
+# punctuation. That interior rule is the load-bearing guard — it rejects a real
+# numbered list (`1. 2. 3. 4.`), a table of repeated SHORT labels
+# (`Pending. Pending. …`), and abbreviation-dense refrains, because each of
+# those repeats a unit whose interior tokens themselves end in `.`. A real
+# short repeated list, a 2×-incidental phrase repeat (well under the 6-cycle
+# floor), a poem/refrain (separated by verses → not CONSECUTIVE), a table row,
+# and normal prose are all left byte-identical.
 
 # Max token length (chars) for a token to count as part of a short repeating
 # unit — a genuinely degenerate glyph run is tiny tokens ("x", "+", "-", "."),
 # never long words. Long-token repetition is left untouched.
 _REPEAT_MAX_TOKEN_CHARS = 4
-# Max period (in whitespace tokens) of the repeating unit scanned. Covers a
-# single glyph (period 1: "0 0 0 …") through a short n-gram cycle (period 2:
-# "x + x + …") up to a small bound. Kept small so a genuinely repetitive but
-# meaningful clause structure is never mistaken for a degenerate glyph run.
+# Max period (in whitespace tokens) of the SHORT-TOKEN repeating unit scanned.
+# Covers a single glyph (period 1: "0 0 0 …") through a short n-gram cycle
+# (period 2: "x + x + …") up to a small bound. Kept small so a genuinely
+# repetitive but meaningful clause structure is never mistaken for a glyph run.
 _REPEAT_MAX_PERIOD = 4
-# Consecutive-cycle count STRICTLY ABOVE which a run is unambiguously
+# Consecutive-cycle count STRICTLY ABOVE which a SHORT-TOKEN run is unambiguously
 # degenerate. Generous (30) so a real short repeated list never trips it.
 _REPEAT_MIN_CYCLES = 30
-# Cycles of the unit kept as a bounded representative before the count marker.
+# Cycles of the unit kept as a bounded representative before the count marker
+# (shared by both arms).
 _REPEAT_KEEP_CYCLES = 3
+
+# --- SENTENCE / multi-word arm calibration ---------------------------------
+# Min tokens for a unit to be considered a clause/sentence (below this a repeat
+# is a short label/refrain, kept). Chosen conservatively — a genuine degenerate
+# sentence loop is a substantial multi-word clause, and requiring ≥4 words keeps
+# repeated 1–3 word table/column labels byte-identical.  # calibration
+_REPEAT_SENTENCE_MIN_WORDS = 4
+# Max tokens (~words) of a sentence unit scanned (K). A sentence longer than
+# this is not a "loop" we collapse; keeps the per-position scan bounded.  # calibration
+_REPEAT_SENTENCE_MAX_WORDS = 25
+# Minimum CONSECUTIVE identical sentence repeats (M) to collapse. Small (6)
+# because a verbatim ≥4-word clause repeated 6× back-to-back is already
+# pathological — legitimate prose / refrains essentially never do this
+# consecutively — yet far above an incidental 2× restatement.  # calibration
+_REPEAT_MIN_SENTENCE_CYCLES = 6
+# Terminal sentence punctuation + trailing wrappers stripped before the check.
+_SENTENCE_TERMINALS = (".", "!", "?")
+_SENTENCE_TRAILING = "\"'”’)]}»"
+# Fast-path guard: the smallest token count either arm can possibly collapse —
+# the SHORT-TOKEN arm needs > _REPEAT_MIN_CYCLES tokens (period 1), the SENTENCE
+# arm needs _REPEAT_MIN_SENTENCE_CYCLES × _REPEAT_SENTENCE_MIN_WORDS tokens.
+# Below the smaller of these (minus one, in spaces) no run can exist, so skip
+# the tokenization entirely (byte-identical).
+_REPEAT_MIN_SCAN_SPACES = min(
+    _REPEAT_MIN_CYCLES,
+    _REPEAT_MIN_SENTENCE_CYCLES * _REPEAT_SENTENCE_MIN_WORDS - 1,
+)
+
+
+def _ends_sentence(tok: str) -> bool:
+    """True if ``tok`` ends a clause/sentence (terminal punct, wrappers stripped)."""
+    return tok.rstrip(_SENTENCE_TRAILING).endswith(_SENTENCE_TERMINALS)
+
+
+def _is_sentence_shaped(unit: list[str]) -> bool:
+    """True for a clause/sentence-shaped multi-word unit (see the block comment).
+
+    Requires ``>= _REPEAT_SENTENCE_MIN_WORDS`` tokens, the LAST token to end in
+    terminal punctuation, and NO interior token to end in terminal punctuation
+    (the load-bearing guard against repeated labels / numbered lists / `N.`
+    grids, each of whose repeated unit carries interior terminal punctuation).
+    Pure / deterministic.
+    """
+    if len(unit) < _REPEAT_SENTENCE_MIN_WORDS:
+        return False
+    if not _ends_sentence(unit[-1]):
+        return False
+    return not any(_ends_sentence(t) for t in unit[:-1])
+
+
+def _count_cycles(toks: list[str], i: int, p: int, n: int, unit: list[str]) -> int:
+    """Consecutive repeats of ``unit`` (== ``toks[i:i+p]``) starting at ``i``."""
+    cycles = 1
+    j = i + p
+    while j + p <= n and toks[j : j + p] == unit:
+        cycles += 1
+        j += p
+    return cycles
 
 
 def _collapse_degenerate_repetition(text: str) -> str:
-    """Collapse an unambiguous degenerate repeated-token run to a bounded
+    """Collapse an unambiguous degenerate repeated UNIT to a bounded
     representative + a count marker.
 
     Domain-agnostic + conservative (see the block comment). Scans the
-    whitespace-token stream left-to-right for a maximal run in which a unit of
-    ``<= _REPEAT_MAX_TOKEN_CHARS``-char tokens (period ``1..
-    _REPEAT_MAX_PERIOD``) repeats STRICTLY MORE than ``_REPEAT_MIN_CYCLES``
-    consecutive times; each such run is replaced by ``_REPEAT_KEEP_CYCLES``
-    copies of the unit followed by a ``[repeated N times]`` marker (N = the
-    collapsed cycle count). Surrounding tokens are preserved.
+    whitespace-token stream left-to-right; at each position it considers BOTH
+    arms and takes the highest-coverage degenerate run:
+
+    * SHORT-TOKEN — a unit of ``<= _REPEAT_MAX_TOKEN_CHARS``-char tokens (period
+      ``1.._REPEAT_MAX_PERIOD``) repeating STRICTLY MORE than
+      ``_REPEAT_MIN_CYCLES`` times;
+    * SENTENCE — a clause-shaped unit (``_is_sentence_shaped``, period
+      ``_REPEAT_SENTENCE_MIN_WORDS.._REPEAT_SENTENCE_MAX_WORDS``) repeating at
+      least ``_REPEAT_MIN_SENTENCE_CYCLES`` times.
+
+    Each collapsed run becomes ``_REPEAT_KEEP_CYCLES`` copies of the unit
+    followed by a ``[repeated N times]`` marker (N = the collapsed cycle count).
+    Surrounding tokens are preserved; both arms compose in one pass.
 
     Returns the input string UNCHANGED (the same object) when NO degenerate run
     is present — so a clean fused block is byte-identical (the collapse only
@@ -289,9 +375,8 @@ def _collapse_degenerate_repetition(text: str) -> str:
     Pure / deterministic.
     """
     s = text or ""
-    # A run of > K cycles needs > K tokens even at period 1; short strings can
-    # never hold one, so skip the tokenization entirely (byte-identical).
-    if s.count(" ") < _REPEAT_MIN_CYCLES:
+    # Too short to hold a run under either arm → skip tokenization (byte-identical).
+    if s.count(" ") < _REPEAT_MIN_SCAN_SPACES:
         return text
     toks = s.split()
     n = len(toks)
@@ -299,21 +384,30 @@ def _collapse_degenerate_repetition(text: str) -> str:
     i = 0
     changed = False
     while i < n:
-        best: tuple[int, int] | None = None  # (period, cycles)
+        best: tuple[int, int] | None = None  # (period, cycles) — maximize p*cycles
+        # SHORT-TOKEN arm.
         for p in range(1, _REPEAT_MAX_PERIOD + 1):
             if i + p > n:
                 break
             unit = toks[i : i + p]
             if any(len(t) > _REPEAT_MAX_TOKEN_CHARS for t in unit):
                 continue
-            cycles = 1
-            j = i + p
-            while j + p <= n and toks[j : j + p] == unit:
-                cycles += 1
-                j += p
+            cycles = _count_cycles(toks, i, p, n, unit)
             if cycles > _REPEAT_MIN_CYCLES:
                 # Prefer the run covering the most tokens (fundamental period
                 # wins ties deterministically via the strict >).
+                if best is None or cycles * p > best[1] * best[0]:
+                    best = (p, cycles)
+        # SENTENCE / multi-word arm (composes with the token arm; a longer
+        # clause loop the token arm cannot express is caught here).
+        for p in range(_REPEAT_SENTENCE_MIN_WORDS, _REPEAT_SENTENCE_MAX_WORDS + 1):
+            if i + p > n:
+                break
+            unit = toks[i : i + p]
+            if not _is_sentence_shaped(unit):
+                continue
+            cycles = _count_cycles(toks, i, p, n, unit)
+            if cycles >= _REPEAT_MIN_SENTENCE_CYCLES:
                 if best is None or cycles * p > best[1] * best[0]:
                     best = (p, cycles)
         if best is not None:
@@ -899,11 +993,13 @@ def fuse_page(
 
     # Degenerate-repetition tripwire (SEMANTIK_VLM_COLLAPSE_REPETITION, default
     # ON within fusion): a manipulative/diagram figure the VLM transcribed as an
-    # endless "x + x + x …" cycle would otherwise ship verbatim as an 8k-word
-    # prose mega-chunk of retrieval poison. Collapse each fused block's TEXT to
-    # a bounded representative + count marker. Conservative (only an unambiguous
-    # > K-cycle run is touched) → byte-identical on non-pathological input; the
-    # per-block collapse count is tallied additively in ``stats``.
+    # endless "x + x + x …" token cycle — OR a whole SENTENCE the VLM looped ~33×
+    # into a ~15 KB blob — would otherwise ship verbatim as a mega-chunk of
+    # retrieval poison. Collapse each fused block's TEXT to a bounded
+    # representative + count marker (both the token arm and the sentence arm).
+    # Conservative (only an unambiguous degenerate run is touched) →
+    # byte-identical on non-pathological input; the per-block collapse count is
+    # tallied additively in ``stats``.
     if resolve_collapse_repetition_mode():
         collapsed = 0
         for b in fused_blocks:

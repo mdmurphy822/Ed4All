@@ -461,7 +461,11 @@ def _compute_extract_cache_key(pdf_path: Path) -> str:
       run re-extracts once. The flag-OFF (no-fusion) key is byte-identical (no
       ``fuse_key`` → no ``colrep_key``); a clean corpus (no degenerate run) is
       byte-identical in CONTENT too — only the key salt differs, forcing one
-      harmless re-extract.
+      harmless re-extract. ``colrep1`` → ``colrep2``: the collapse gained a
+      SECOND arm (a repeated clause/SENTENCE unit — the token arm's
+      sentence-granularity blind spot) so a warm ``colrep1`` cache carrying an
+      un-collapsed looped-sentence blob must re-fuse once; a ``=0`` run stays
+      byte-identical to the plain ``fuse_key`` (no salt) as before.
     * ``hints_key`` — SEMANTIK_VLM_STRUCT_HINTS (asymmetric, append-only-when-on):
       the P2 hint mint (`_attach_vlm_struct_hints`) runs INSIDE `_merge_page`, so
       the `vlm_hint` payload is baked into the cached merged blocks. Without this
@@ -513,7 +517,7 @@ def _compute_extract_cache_key(pdf_path: Path) -> str:
     # behavior, so it keys back to the warm ``fuse_key`` cache while a default
     # (collapse-on) run re-extracts once; the no-fusion key stays byte-identical.
     colrep_key = (
-        "|colrep1"
+        "|colrep2"
         if resolve_vlm_fusion_mode() and _resolve_collapse_repetition_mode()
         else ""
     )

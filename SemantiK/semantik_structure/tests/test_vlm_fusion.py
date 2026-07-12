@@ -23,6 +23,7 @@ from semantik_structure.vlm_fusion import (
     SEMANTIK_VLM_FUSION_ENV,
     SEMANTIK_VLM_ORDER_AUTHORITATIVE_ENV,
     SEMANTIK_VLM_ORDER_DIVERGENCE_ENV,
+    _REPEAT_KEEP_CYCLES,
     _collapse_degenerate_repetition,
     fuse_page,
     resolve_collapse_repetition_mode,
@@ -578,6 +579,126 @@ def test_fuse_page_clean_block_byte_identical_with_collapse_on(monkeypatch):
     assert on_stats.get("repetition_collapsed") == 0
     off_stats["repetition_collapsed"] = 0
     assert on_stats == off_stats
+
+
+# --------------------------------------------------------------------------
+# SENTENCE / multi-word arm — the sentence-granularity blind spot
+# --------------------------------------------------------------------------
+#
+# NB: no hardcoded corpus sentence — every unit below is a generic synthetic
+# clause, keying on the repetition STRUCTURE, never a specific sentence.
+
+
+def test_collapse_sentence_level_loop_collapses():
+    # A whole SENTENCE looped ~33x (the token arm's blind spot — the repeating
+    # unit is a long multi-word clause, not a <=4-char token). Collapses to a
+    # bounded representative + an accurate count marker.
+    unit = "There are two operations here and each one matters greatly. "
+    blob = unit * 33
+    out = _collapse_degenerate_repetition(blob)
+    assert "[repeated 33 times]" in out
+    # Only the kept representative copies of the clause survive.
+    assert out.count("matters greatly.") <= _REPEAT_KEEP_CYCLES
+    # The ~330-token poison blob is gone.
+    assert len(out.split()) < 40
+
+
+def test_collapse_sentence_count_marker_accurate():
+    unit = "The measured value stays exactly the same here. "
+    out = _collapse_degenerate_repetition(unit * 9)
+    assert "[repeated 9 times]" in out
+
+
+def test_collapse_sentence_deterministic():
+    blob = "Everything here is quietly repeating once again now. " * 20
+    assert (
+        _collapse_degenerate_repetition(blob)
+        == _collapse_degenerate_repetition(blob)
+    )
+
+
+def test_collapse_both_arms_compose():
+    # A doc with BOTH a token loop AND a sentence loop collapses BOTH in one pass.
+    token_run = "x + " * 200 + "x"
+    sentence = "The result does not change between the trials. "
+    blob = f"{token_run} lead {sentence * 10} tail here."
+    out = _collapse_degenerate_repetition(blob)
+    assert "[repeated 200 times]" in out  # token arm
+    assert "[repeated 10 times]" in out  # sentence arm
+    assert out.count("x +") <= 6
+    assert out.count("between the trials.") <= _REPEAT_KEEP_CYCLES
+    # Surrounding real content survives.
+    assert "lead" in out.split()
+    assert out.rstrip().endswith("tail here.")
+
+
+# --- false-positive guards: legitimate repetition stays byte-identical ------
+
+
+def test_collapse_noop_on_two_time_phrase_repeat():
+    # An incidental 2x phrase restatement is far below the >=6 sentence floor;
+    # padded past the fast-path space guard so the scan actually runs.
+    phrase = "Please review the attached summary document very carefully today. "
+    text = (
+        phrase * 2
+        + "Then something completely different follows in the remaining body text here."
+    )
+    out = _collapse_degenerate_repetition(text)
+    assert out is text  # same object -> byte-identical
+
+
+def test_collapse_noop_on_repeated_short_table_labels():
+    # A table column of repeated SHORT labels: each unit is a 1-word label whose
+    # interior/terminal tokens themselves end in '.', so the sentence arm's
+    # interior-terminal-punct guard rejects it (and the token arm needs
+    # <=4-char tokens). Byte-identical even at a high repeat count.
+    text = "Column status values: " + ("Pending. " * 30).strip()
+    out = _collapse_degenerate_repetition(text)
+    assert out is text
+
+
+def test_collapse_noop_on_numbered_list_repeat():
+    # A numbered-list-ish run: the repeated unit's interior tokens end in '.'
+    # (the 'N.' markers), so the sentence arm never fires. Byte-identical.
+    text = "Items follow below here now: " + ("1. 2. 3. 4. " * 8).strip()
+    out = _collapse_degenerate_repetition(text)
+    assert out is text
+
+
+def test_collapse_noop_on_normal_prose_past_guard():
+    # Long, varied prose (past the fast-path space guard) is byte-identical —
+    # no 4+-word clause repeats 6x consecutively.
+    text = (
+        "The quick brown fox jumps over the lazy dog while the sun sets slowly. "
+        "Addition combines like terms into a single simplified expression today. "
+        "Meanwhile the river flows gently past the old stone bridge downstream."
+    )
+    out = _collapse_degenerate_repetition(text)
+    assert out is text
+
+
+def test_fuse_page_collapses_sentence_loop_by_default(monkeypatch):
+    monkeypatch.delenv(SEMANTIK_VLM_COLLAPSE_REPETITION_ENV, raising=False)
+    unit = "The answer to the exercise is always the same value. "
+    blob = unit * 33
+    tess = [_tb(10, 10, 100, 20, blob)]
+    vlm = [blob]
+    fused, stats = fuse_page(tess, vlm, (200.0, 300.0))
+    assert stats["repetition_collapsed"] == 1
+    assert "[repeated 33 times]" in fused[0]["text"]
+    assert len(fused[0]["text"].split()) < 40
+
+
+def test_fuse_page_flag_off_keeps_sentence_loop_verbatim(monkeypatch):
+    monkeypatch.setenv(SEMANTIK_VLM_COLLAPSE_REPETITION_ENV, "0")
+    unit = "The answer to the exercise is always the same value. "
+    blob = unit * 33
+    tess = [_tb(10, 10, 100, 20, blob)]
+    vlm = [blob]
+    fused, stats = fuse_page(tess, vlm, (200.0, 300.0))
+    assert "repetition_collapsed" not in stats
+    # The looped sentence ships verbatim — the =0 escape hatch.
+    assert fused[0]["text"].count("the same value.") > 20
 
 
 # --------------------------------------------------------------------------
