@@ -694,9 +694,9 @@ Summary by workflow (counts derived from `config/workflows.yaml`):
 |----------|---------:|--------:|------:|
 | `course_generation` | 35 | 25 | 60 |
 | `rag_training` | 4 | 3 | 7 |
-| `textbook_to_course` | 64 | 68 | 132 |
+| `textbook_to_course` | 65 | 68 | 133 |
 | `trainforge_train` | 2 | 0 | 2 |
-| **Total** | **105** | **96** | **201** |
+| **Total** | **106** | **96** | **202** |
 
 Per-wave gate-landing history (additions, demotions, deferred severity flips, with the intermediate running subtotals at each wave): `docs/validation/gate-history.md`. The table above is the current authoritative count; the history file's per-wave subtotals are provenance-only and do not sum to the current total.
 
@@ -729,11 +729,11 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 
 | Prefix | Owner | Flag count |
 |--------|-------|-----------:|
-| `TRAINFORGE_*` / `LOCAL_SYNTHESIS_*` / `TOGETHER_*` / `ANTHROPIC_SYNTHESIS_*` / `CURRICULUM_ALIGNMENT_*` / `WAVE18_*` | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 55 |
+| `TRAINFORGE_*` / `LOCAL_SYNTHESIS_*` / `TOGETHER_*` / `ANTHROPIC_SYNTHESIS_*` / `CURRICULUM_ALIGNMENT_*` / `WAVE18_*` | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 56 |
 | `NVIDIA_*` (vendor endpoint-registry row for the hosted large-model seat — `NVIDIA_API_KEY` / `NVIDIA_BASE_URL` / `NVIDIA_LARGE_MODEL`) | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 3 |
-| `SEMANTIK_*` (DART replacement — SemantiK semantic-cascade converter; also honors the legacy `DART_THETA_DEVICE` compat env) | [`SemantiK/CLAUDE.md § Opt-In Behavior Flags`](SemantiK/CLAUDE.md) | 87 |
+| `SEMANTIK_*` (DART replacement — SemantiK semantic-cascade converter; also honors the legacy `DART_THETA_DEVICE` compat env) | [`SemantiK/CLAUDE.md § Opt-In Behavior Flags`](SemantiK/CLAUDE.md) | 94 |
 | `COURSEFORGE_*` / `COURSEPLANNER_*` / `TEXTBOOK_SYNTHESIS_*` | [`Courseforge/CLAUDE.md § Opt-In Behavior Flags`](Courseforge/CLAUDE.md) | 37 |
-| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root index (below) + [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 182 |
+| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root index (below) + [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 183 |
 
 ### Cross-cutting flags (root-owned)
 
@@ -910,6 +910,7 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `ED4ALL_OBJECTIVE_INFER_BLOOM` | unset (off) | W1.4 infer a null LO bloom_level from its declared ABCD behavior.verb instead of skipping. |
 | `ED4ALL_CHUNK_COVERAGE_FLOOR` | unset (off) | W1.2 import-coverage gate floor on the existing `chunkset_manifest` gate |
 | `ED4ALL_MIN_CHUNKS` | unset (off) | W1.2 thin-chunkset floor on the `chunkset_manifest` gate (CHUNKSET_TOO_THIN warning). |
+| `ED4ALL_CHUNK_HEALTH_GATE` | unset (off) | Opt-in master switch for the pre-synthesis `chunk_health` gate (`lib/validators/chunk_health.py::ChunkHealthValidator`) at `textbook_to_course::objective_extraction` — audits the emitted chunkset + `textbook_structure.json` for synthesis-poisoning defects (phantom-chapter/resegment/section-explosion/instructional-starvation/empty-chunk → critical/block; OCR mojibake/furniture/reading-order → warning) BEFORE `course_planning`. Default OFF → skip-with-pass. C2 counts WORKED examples (`example`/`worked_example` chunks with a `Solution`/`Try It`/`Step N` marker) as instructional so a worked-example workbook is not false-starved; C10 evaluates only non-apparatus PROSE chunks. Thresholds env-overridable (`ED4ALL_CHUNK_HEALTH_{CHAPTER_RATIO_FAIL,CHAPTER_RATIO_WARN,SECTIONS_PER_CHAPTER,INSTRUCTIONAL_FAIL,INSTRUCTIONAL_WARN,APPARATUS_FAIL,APPARATUS_WARN,MIN_CHUNKS,TINY_WORDS,MEGA_WORDS,MOJIBAKE_RATE,NUMDUMP_RATE,WORKED_EXAMPLE_INSTRUCTIONAL}`; parse-with-fallback). |
 | `ED4ALL_KEYTERM_DEF_QUALITY` | unset (off) | W1.5 glossary definition-quality gate (circular / too-long / not-distinct / missing-math-condition) — critical gate (flip-wave-2) emitting warning-severity issues; audits key-terms vocab cards AND inline `<div class="definition-box">` blocks parsed out of concept/explanation HTML. |
 | `ED4ALL_PAGE_EST_MINUTES` | unset (off) | W1.6 per-page estimated learning-time emit gate |
 | `ED4ALL_PAGE_WPM` | `200` | W1.6 satellite — reading-speed divisor for the `ED4ALL_PAGE_EST_MINUTES` estimate |

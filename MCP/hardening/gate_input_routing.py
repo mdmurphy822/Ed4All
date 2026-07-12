@@ -1714,6 +1714,57 @@ def _build_degraded_chunk_input(
     return {}, ["wrong_validator_class"]
 
 
+def _build_chunk_health(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Dict[str, Any],
+) -> BuilderResult:
+    """Input builder for ChunkHealthValidator (pre-synthesis chunk-health gate).
+
+    Surfaces ``{chunks_path, textbook_structure_path?}`` so the validator can
+    audit the emitted chunkset + structure the course is about to be
+    synthesized from. Wired on ``textbook_to_course::objective_extraction`` (it
+    runs AFTER ``chunking`` + the extractor, BEFORE ``course_planning``), so at
+    gate time both phase outputs are on ``phase_outputs``:
+
+    * ``chunks_path`` — the ``chunking`` phase's ratified
+      ``semantik_chunks_path`` (legacy ``dart_chunks_path``) via
+      :func:`_chunking_chunks_path`; falls back to any ``*chunks_path`` key.
+    * ``textbook_structure_path`` — the ``objective_extraction`` phase's
+      declared YAML output (optional; the validator skips its S-class structure
+      checks when absent).
+
+    The validator is opt-in (``ED4ALL_CHUNK_HEALTH_GATE``, default OFF) and
+    skips-with-pass BEFORE touching inputs when the flag is unset, so we NEVER
+    emit a missing-key marker for ``textbook_structure_path`` (its absence is a
+    graceful skip, not a gate skip). We DO surface a missing ``chunks_path`` so
+    the gate is structured-skipped rather than crashing when no chunkset
+    resolved at all on a default-off run; when the flag is ON the validator's
+    own fail-closed arm handles an absent chunkset.
+    """
+    inputs: Dict[str, Any] = {}
+
+    chunking = phase_outputs.get("chunking") or {}
+    chunks_path = _chunking_chunks_path(chunking)
+    if not (isinstance(chunks_path, str) and chunks_path):
+        chunks_path = _locate(
+            phase_outputs, "semantik_chunks_path", "dart_chunks_path", "chunks_path"
+        )
+    if isinstance(chunks_path, str) and chunks_path:
+        inputs["chunks_path"] = chunks_path
+
+    oe = phase_outputs.get("objective_extraction") or {}
+    ts_path = oe.get("textbook_structure_path")
+    if not (isinstance(ts_path, str) and ts_path):
+        ts_path = _locate(phase_outputs, "textbook_structure_path")
+    if isinstance(ts_path, str) and ts_path:
+        inputs["textbook_structure_path"] = ts_path
+
+    # Always let the validator RUN (it reads ED4ALL_CHUNK_HEALTH_GATE itself and
+    # skips-with-pass when OFF). Never mark a missing textbook_structure_path —
+    # its absence is a graceful skip inside the validator, not a gate skip.
+    return inputs, []
+
+
 def _build_chunkset_manifest_inputs(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
@@ -3367,6 +3418,20 @@ def default_router() -> GateInputRouter:
     r.register(
         "lib.validators.textbook_structure.TextbookOutlineValidator",
         _build_textbook_outline_inputs,
+    )
+
+    # Pre-synthesis chunk-health gate: ChunkHealthValidator fires at
+    # ``textbook_to_course::objective_extraction`` (AFTER chunking + the
+    # extractor, BEFORE course_planning) as the opt-in
+    # ``chunk_health`` gate. The builder routes the emitted chunkset
+    # (chunking.semantik_chunks_path) + textbook_structure_path so the
+    # validator can audit the chunkset the course is about to be synthesized
+    # from. Opt-in via ED4ALL_CHUNK_HEALTH_GATE (default OFF); the validator
+    # skips-with-pass BEFORE touching inputs when the flag is unset, so a
+    # default-off run is byte-identical.
+    r.register(
+        "lib.validators.chunk_health.ChunkHealthValidator",
+        _build_chunk_health,
     )
 
     # Activate-the-dormant-gate: KGQualityValidator fires at

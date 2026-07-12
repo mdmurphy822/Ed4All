@@ -8005,6 +8005,12 @@ class _SemantikBridgeResult:
         # converted doc (``ocr_confusable_repair`` metadata discriminator).
         ocr = bridge.get("ocr_repair")
         self.ocr_repair = ocr if isinstance(ocr, dict) else None
+        # Stage 9b — the reasoning-QC audit DICT the cascade surfaces at top
+        # level (``None`` when SEMANTIK_REASONING_QC was off). Like the
+        # second_pass_verify / ocr_repair arms this is a DICT; the seam reads it
+        # to emit ONE ``structure_detection`` DecisionCapture per converted doc.
+        rqc = bridge.get("reasoning_qc")
+        self.reasoning_qc = rqc if isinstance(rqc, dict) else None
 
 
 def _semantik_stop_sentinel_env_value() -> Optional[str]:
@@ -9159,6 +9165,140 @@ def _emit_ocr_repair_capture(
         )
 
 
+def _semantik_resolve_reasoning_qc(result: Any) -> Optional[Dict[str, Any]]:
+    """Pull the Stage-9b reasoning-QC audit DICT off a cascade result, from
+    EITHER seam arm (mirrors ``_semantik_resolve_ocr_repair``).
+
+    Resolution order: ``result.reasoning_qc`` (the bridge arm) →
+    ``result.cascade["conformance_audit"]["reasoning_qc"]`` (in-process nested,
+    defensive) → ``result.cascade["reasoning_qc"]`` (the in-process top-level
+    arm the real cascade emits). Returns ``None`` when the pass did NOT run
+    (SEMANTIK_REASONING_QC off / no audit key) so the caller skips.
+    """
+    rqc = getattr(result, "reasoning_qc", None)
+    if rqc is not None:
+        return rqc if isinstance(rqc, dict) else None
+    cascade = getattr(result, "cascade", None)
+    if isinstance(cascade, dict):
+        conformance = cascade.get("conformance_audit")
+        if isinstance(conformance, dict):
+            arm = conformance.get("reasoning_qc")
+            if isinstance(arm, dict):
+                return arm
+        arm = cascade.get("reasoning_qc")
+        if isinstance(arm, dict):
+            return arm
+    return None
+
+
+def _emit_reasoning_qc_capture(
+    audit: Optional[Dict[str, Any]],
+    *,
+    canonical_course_code: Optional[str],
+    pdf_stem: str,
+) -> None:
+    """Emit ONE ``structure_detection`` DecisionCapture for the Stage-9b
+    reasoning-QC pass when it ran (SEMANTIK_REASONING_QC != off).
+
+    Rides the canonical ``decision_type='structure_detection'`` enum member (the
+    same channel the reasoning-QC module's per-window VLM judgment uses — NO
+    schema/enum edit; mirrors ``_emit_ocr_repair_capture``'s posture) and carries
+    a ``reasoning_qc=True`` metadata discriminator so downstream analysis
+    separates QC rows on a FIELD, not the free text. The rationale is
+    DYNAMIC/replayable: it interpolates the mode, model, window count, ToC
+    declared/missing-ordinal counts, the flagged-op tally, and the
+    re-type/merge-move applied vs proposed counts. Best-effort by contract —
+    ANY failure logs a warning and returns, NEVER breaking the conversion. Skips
+    cleanly on ``audit is None``.
+    """
+    if not isinstance(audit, dict):
+        return
+    try:
+        from lib.decision_capture import DecisionCapture, normalize_course_code
+
+        course_code = (
+            (canonical_course_code or "").strip()
+            or normalize_course_code(pdf_stem or "unknown")
+        )
+        mode = str(audit.get("mode") or "?")
+        model = str(audit.get("model") or "?")
+        n_windows = int(audit.get("n_windows") or 0)
+        toc = audit.get("toc") if isinstance(audit.get("toc"), dict) else {}
+        declared = toc.get("declared_ordinals") or []
+        declared_missing = toc.get("declared_missing") or []
+        n_declared = len(declared) if isinstance(declared, (list, tuple)) else 0
+        n_missing = (
+            len(declared_missing)
+            if isinstance(declared_missing, (list, tuple))
+            else 0
+        )
+        flagged = audit.get("flagged") or []
+        n_flagged = len(flagged) if isinstance(flagged, (list, tuple)) else 0
+        retype = audit.get("retype") if isinstance(audit.get("retype"), dict) else {}
+        merge_move = (
+            audit.get("merge_move")
+            if isinstance(audit.get("merge_move"), dict)
+            else {}
+        )
+        retype_applied = int(retype.get("applied") or 0)
+        retype_proposed = int(retype.get("proposed") or 0)
+        mm_applied = int(merge_move.get("applied") or 0)
+        mm_proposed = int(merge_move.get("proposed") or 0)
+        capture_fired = int(audit.get("capture_fired") or 0)
+
+        capture = DecisionCapture(
+            course_code=course_code,
+            phase="dart-conversion",
+            tool="dart",
+        )
+        rationale = (
+            f"reasoning-QC ({mode}, model={model}) on {pdf_stem}: "
+            f"{n_windows} page-window(s) judged, {capture_fired} per-window "
+            f"capture(s) fired; ToC spine declared {n_declared} ordinal(s) "
+            f"({n_missing} declared-but-absent, advisory/not invented); "
+            f"{n_flagged} reconcile op(s) flagged → re-type {retype_applied}/"
+            f"{retype_proposed} applied, merge/move {mm_applied}/{mm_proposed} "
+            f"applied. VLM adjudicates via block-ID reconcile ops only "
+            f"(re-type / drop-phantom / reorder), never a free-text rewrite; "
+            f"conservation-gated with whole-revert on raise (never-ship-worse)."
+        )
+        capture.log_decision(
+            decision_type="structure_detection",
+            decision=(
+                f"reasoning_qc mode={mode} windows={n_windows} flagged={n_flagged} "
+                f"retype={retype_applied}/{retype_proposed} "
+                f"merge_move={mm_applied}/{mm_proposed}"
+            ),
+            rationale=rationale,
+            alternatives_considered=[
+                {
+                    "option": "let the VLM rewrite the flagged region text",
+                    "reason_rejected": (
+                        "the reviewer-redesign directive makes LLM editors "
+                        "structural-only; reasoning-QC proposes block-ID "
+                        "reconcile ops that the existing reviewer/resegment "
+                        "layer applies under token-conservation, so verbatim "
+                        "source always rides deterministic assembly"
+                    ),
+                },
+            ],
+            # STRUCTURED discriminator (open metadata) so analysis separates
+            # reasoning-QC rows from Pass-1/Pass-2 reviewer + OCR-repair rows.
+            reasoning_qc=True,
+            reasoning_qc_mode=mode,
+            reasoning_qc_windows=n_windows,
+            reasoning_qc_flagged=n_flagged,
+            reasoning_qc_retype_applied=retype_applied,
+            reasoning_qc_merge_move_applied=mm_applied,
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort; never break conversion
+        logger.warning(
+            "reasoning_qc DecisionCapture failed (non-fatal) on %s: %s",
+            pdf_stem,
+            exc,
+        )
+
+
 def _relocate_figure_sidecars(
     html: str,
     *,
@@ -9555,6 +9695,22 @@ def _run_semantik_v2_conversion(
     except Exception as exc:  # noqa: BLE001 — best-effort; never break conversion
         logger.warning(
             "ocr_confusable_repair DecisionCapture failed (non-fatal): %s", exc
+        )
+
+    # 2f. SEMANTIK_REASONING_QC Stage-9b per-doc DecisionCapture. Fires for BOTH
+    # the in-process and bridge arms (the resolver reads either shape); skips
+    # cleanly when the reasoning-QC pass was off (SEMANTIK_REASONING_QC unset /
+    # no reasoning_qc audit arm). Best-effort — a capture failure logs a warning,
+    # never breaks conversion.
+    try:
+        _emit_reasoning_qc_capture(
+            _semantik_resolve_reasoning_qc(result),
+            canonical_course_code=canonical_course_code,
+            pdf_stem=pdf_stem,
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort; never break conversion
+        logger.warning(
+            "reasoning_qc DecisionCapture failed (non-fatal): %s", exc
         )
 
     # 3. cascade result → chapters IR → output-contract adapter.
@@ -26298,12 +26454,31 @@ def _build_tool_registry() -> dict:
                 )
                 _heading_to_stamp = section_heading
                 _heading_suspect_flag = False
+            # Title sanitizer (SEMANTIK_TITLE_SANITIZE, default OFF →
+            # byte-identical). Scanned-textbook OCR fuses the chapter title
+            # with the running header + page number + first content word
+            # ("Chapter 1 Foundations 83 ✓ Solution"); left un-sanitized that
+            # furniture lands on every chunk's provenance title (144/185 chunks
+            # on a real 3-chapter scan). Strip it to the clean chapter title.
+            _module_title = item.get("module_title") or ""
+            _lesson_title = item.get("title") or ""
+            try:
+                from lib.textbook_title_sanitize import (
+                    sanitize_running_header_title as _san_title,
+                    title_sanitize_enabled as _san_enabled,
+                )
+                if _san_enabled():
+                    _module_title = _san_title(_module_title)
+                    _lesson_title = _san_title(_lesson_title)
+            except Exception:  # noqa: BLE001 — sanitizer is best-effort
+                _module_title = item.get("module_title") or ""
+                _lesson_title = item.get("title") or ""
             source: Dict[str, Any] = {
                 "course_id": course_code,
                 "module_id": item.get("module_id") or "",
-                "module_title": item.get("module_title") or "",
+                "module_title": _module_title,
                 "lesson_id": item.get("item_id") or "",
-                "lesson_title": item.get("title") or "",
+                "lesson_title": _lesson_title,
                 "resource_type": item.get("resource_type") or "page",
                 "section_heading": _heading_to_stamp,
                 "position_in_module": position_in_module,
@@ -26661,6 +26836,88 @@ def _build_tool_registry() -> dict:
                             except Exception as _exc:  # noqa: BLE001
                                 logger.debug(
                                     "M1: log_decision failed for %s (%s)",
+                                    verdict.chunk_id,
+                                    _exc,
+                                )
+                chunks = kept_chunks
+
+        # Apparatus-dump filter (TRAINFORGE_DROP_APPARATUS_DUMPS, default OFF →
+        # byte-identical legacy emit). Sibling to the front-matter filter, but
+        # for MID-corpus non-instructional noise the cover-region front-matter
+        # pass can't see: OCR'd end-of-chapter ANSWER-KEY runs
+        # ("46. 550 47. 22,335 ...") and chapter-outline / Table-of-Contents
+        # chunks ("Chapter Outline 1.2 Use the Language of Algebra ..."). Both
+        # get cited by synthesized objectives and poison grounding. High
+        # precision: only unambiguous answer-key runs (dominant "N. <number>"
+        # pairs) + explicit outline/ToC headers are dropped; math-dense
+        # exercise/example chunks (LaTeX + legitimate numbers) are never
+        # touched. Each drop emits a decision-capture event.
+        if (
+            chunks
+            and os.getenv("TRAINFORGE_DROP_APPARATUS_DUMPS", "").lower() == "true"
+        ):
+            try:
+                from Trainforge.chunker.apparatus_dumps import (
+                    partition_apparatus_dumps,
+                )
+
+                kept_chunks, dropped_verdicts = partition_apparatus_dumps(chunks)
+            except Exception as exc:  # noqa: BLE001 — filter is best-effort
+                logger.warning(
+                    "apparatus-dump filter raised (%s); keeping all %d chunks "
+                    "unfiltered.",
+                    exc,
+                    len(chunks),
+                )
+            else:
+                if dropped_verdicts:
+                    logger.info(
+                        "apparatus-dump: dropped %d answer-key/ToC chunk(s) of "
+                        "%d for course %s: %s",
+                        len(dropped_verdicts),
+                        len(chunks),
+                        course_slug,
+                        ", ".join(v.chunk_id for v in dropped_verdicts),
+                    )
+                    _ap_capture = None
+                    try:
+                        from lib.decision_capture import DecisionCapture
+
+                        _ap_capture = DecisionCapture(
+                            course_code=course_code,
+                            phase="textbook-ingestor",
+                            tool="trainforge",
+                        )
+                    except Exception as _exc:  # noqa: BLE001 — capture best-effort
+                        logger.debug(
+                            "apparatus-dump: DecisionCapture init failed (%s); "
+                            "continuing without capture.",
+                            _exc,
+                        )
+                    if _ap_capture is not None:
+                        for verdict in dropped_verdicts:
+                            try:
+                                _ap_capture.log_decision(
+                                    decision_type="apparatus_chunk_drop",
+                                    decision=(
+                                        f"drop chunk {verdict.chunk_id} "
+                                        f"(answer-key/ToC apparatus dump)"
+                                    ),
+                                    rationale=verdict.rationale(),
+                                    alternatives_considered=[
+                                        {
+                                            "option": "retain chunk",
+                                            "reason_rejected": (
+                                                "answer-key/ToC layout pollutes "
+                                                "objective citation + grounding"
+                                            ),
+                                        },
+                                    ],
+                                )
+                            except Exception as _exc:  # noqa: BLE001
+                                logger.debug(
+                                    "apparatus-dump: log_decision failed for "
+                                    "%s (%s)",
                                     verdict.chunk_id,
                                     _exc,
                                 )
@@ -27889,12 +28146,31 @@ def _build_tool_registry() -> dict:
                 )
                 _heading_to_stamp = section_heading
                 _heading_suspect_flag = False
+            # Title sanitizer (SEMANTIK_TITLE_SANITIZE, default OFF →
+            # byte-identical). Scanned-textbook OCR fuses the chapter title
+            # with the running header + page number + first content word
+            # ("Chapter 1 Foundations 83 ✓ Solution"); left un-sanitized that
+            # furniture lands on every chunk's provenance title (144/185 chunks
+            # on a real 3-chapter scan). Strip it to the clean chapter title.
+            _module_title = item.get("module_title") or ""
+            _lesson_title = item.get("title") or ""
+            try:
+                from lib.textbook_title_sanitize import (
+                    sanitize_running_header_title as _san_title,
+                    title_sanitize_enabled as _san_enabled,
+                )
+                if _san_enabled():
+                    _module_title = _san_title(_module_title)
+                    _lesson_title = _san_title(_lesson_title)
+            except Exception:  # noqa: BLE001 — sanitizer is best-effort
+                _module_title = item.get("module_title") or ""
+                _lesson_title = item.get("title") or ""
             source: Dict[str, Any] = {
                 "course_id": course_code,
                 "module_id": item.get("module_id") or "",
-                "module_title": item.get("module_title") or "",
+                "module_title": _module_title,
                 "lesson_id": item.get("item_id") or "",
-                "lesson_title": item.get("title") or "",
+                "lesson_title": _lesson_title,
                 "resource_type": item.get("resource_type") or "page",
                 "section_heading": _heading_to_stamp,
                 "position_in_module": position_in_module,

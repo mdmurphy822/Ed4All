@@ -589,10 +589,26 @@ class ChapterStructure:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
+        # Title sanitizer (SEMANTIK_TITLE_SANITIZE, default OFF →
+        # byte-identical). A scanned-textbook chapter <h1>/<title> is OCR'd
+        # WITH the running-header + page number + first content word fused in
+        # ("Chapter 1 Foundations 83 ✓ Solution"). The structure guards recover
+        # the real chapter node but not a clean title; strip the furniture here
+        # (CHAPTER heading only — sections are untouched). Best-effort.
+        _heading_text = self.heading_text
+        try:
+            from lib.textbook_title_sanitize import (
+                sanitize_running_header_title as _san_title,
+                title_sanitize_enabled as _san_enabled,
+            )
+            if _san_enabled():
+                _heading_text = _san_title(self.heading_text)
+        except Exception:  # noqa: BLE001 — sanitizer is best-effort
+            _heading_text = self.heading_text
         result = {
             "id": self.id,
             "headingLevel": self.heading_level,
-            "headingText": self.heading_text,
+            "headingText": _heading_text,
             "headingId": self.heading_id,
             "explicitObjectives": self.explicit_objectives,
             "contentBlocks": [b.to_dict() for b in self.content_blocks],

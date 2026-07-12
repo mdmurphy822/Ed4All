@@ -291,6 +291,32 @@ def _resolve_geom_order(result: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _resolve_reasoning_qc(result: Any) -> Optional[Dict[str, Any]]:
+    """Pull the Stage-9b reasoning-QC audit DICT off the cascade result and
+    promote it to a top-level bridge key.
+
+    Like ``second_pass_verify`` / ``geom_order`` this is a DICT (``{"schema",
+    "mode", "ran", "model", "n_windows", "toc", "windows", "flagged",
+    "retype", "merge_move", ...}``); ``run_full_cascade`` emits it at the
+    result-dict top level (``result.cascade["reasoning_qc"]``) and ``None``
+    (key absent) when SEMANTIK_REASONING_QC resolved ``off`` (the pass never
+    ran). A conformance-nested runtime is also accepted (checked first). The
+    Ed4All seam reads this to emit ONE ``structure_detection`` DecisionCapture
+    per converted doc off the doc-level QC judgment tally.
+    """
+    cascade = getattr(result, "cascade", None)
+    if isinstance(cascade, dict):
+        conformance = cascade.get("conformance_audit")
+        if isinstance(conformance, dict):
+            arm = conformance.get("reasoning_qc")
+            if isinstance(arm, dict):
+                return dict(arm)
+        arm = cascade.get("reasoning_qc")
+        if isinstance(arm, dict):
+            return dict(arm)
+    return None
+
+
 def _build_bridge_dict(result: Any, pdf: str) -> Dict[str, Any]:
     """Assemble the JSON-serializable bridge dict from a cascade result."""
     theta = getattr(result, "theta_score", None)
@@ -326,6 +352,11 @@ def _build_bridge_dict(result: Any, pdf: str) -> Dict[str, Any]:
         # (None when SEMANTIK_REGION_ORDER resolved off). Operator/tooling-facing
         # only; the region_provenance ORDER already reflects the applied order.
         "geom_order": _resolve_geom_order(result),
+        # Stage 9b — the reasoning-QC audit DICT (None when SEMANTIK_REASONING_QC
+        # resolved off). The Ed4All seam emits one ``structure_detection``
+        # DecisionCapture per doc off this arm; the per-region re-type/reorder
+        # effects already ride through ``region_provenance`` verbatim.
+        "reasoning_qc": _resolve_reasoning_qc(result),
     }
 
 

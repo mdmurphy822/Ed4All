@@ -1610,6 +1610,32 @@ workflows:
               on_fail: block
               on_error: warn
 
+          # Pre-synthesis chunk + structure HEALTH gate. Runs AFTER chunking +
+          # the extractor, BEFORE the expensive course_planning /
+          # content_generation synthesis, so a POISONED chunkset (phantom
+          # chapters from a collapsed structure, an apparatus-dominated
+          # chunkset with no instructional prose to ground objectives in,
+          # empty chunks) blocks the GPU-hours instead of poisoning them.
+          # Opt-in via ED4ALL_CHUNK_HEALTH_GATE (default OFF → the validator
+          # skips-with-pass BEFORE touching inputs, byte-identical to pre-gate
+          # runs). CRITICAL issues: CHUNK_HEALTH_CHAPTER_EXPLOSION (S1),
+          # CHUNK_HEALTH_ARBITRARY_RESEGMENT (S2), CHUNK_HEALTH_SECTION_
+          # EXPLOSION (S3), CHUNK_HEALTH_INSTRUCTIONAL_STARVED (C2),
+          # CHUNK_HEALTH_EMPTY_CHUNKS (C7), plus the fail-closed input-
+          # integrity criticals CHUNK_HEALTH_CHUNKS_NOT_FOUND / _UNREADABLE.
+          # Everything else (S4/S5/C1/C3/C4/C5/C6/C8/C9/C10) is warning. The
+          # gate config declares on_fail: block / on_error: fail_closed so a
+          # bad chunkset (or a validator error) with the flag ON stops the run.
+          - gate_id: chunk_health
+            validator: lib.validators.chunk_health.ChunkHealthValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+            description: "Pre-synthesis chunk + structure health gate (opt-in ED4ALL_CHUNK_HEALTH_GATE, default OFF). Blocks synthesis from a poisoned chunkset — phantom chapters / arbitrary resegment / section explosion / instructional starvation / empty chunks (critical); OCR mojibake, furniture, reading-order scramble (warning)."
+
       - name: source_mapping
         agents: [source-router]
         parallel: false

@@ -1412,6 +1412,12 @@ def run_full_cascade(
     # byte-identical to a no-Stage-5d run).
     # ------------------------------------------------------------------
     review_verdicts: list[Any] | None = None
+    # The Stage-5d reviewer runtime (the hosted/ollama endpoint seat). Assigned
+    # below ONLY when SEMANTIK_STRUCTURE_REVIEW is on; initialized here so it is
+    # always in scope for the Stage-9 second-pass loop AND the Stage-9b
+    # reasoning-QC seam (which threads this REAL reviewer runtime into its
+    # re-type channel). Stays None when Stage-5d did not run.
+    review_runtime: Any = None
     stage5d_metadata_drop_ids: frozenset[int] = frozenset()
 
     # Stage-5e block JOIN/SPLIT audit — list of applied-op dicts when the pass
@@ -2056,6 +2062,64 @@ def run_full_cascade(
         second_pass_adopted = bool(second_pass_signals.get("adopted"))
 
     # ------------------------------------------------------------------
+    # Stage 9b — reasoning-QC pass (SEMANTIK_REASONING_QC, default OFF).
+    #
+    # VLM-adjudicated reading-order + structure QC over the CONVERGED
+    # post-cap/verify ``capped`` region list, applied ONLY as block-ID
+    # reconcile ops through the EXISTING reviewer / resegment op layer (never a
+    # free-text rewrite). Runs BEFORE the OCR-repair pass (region-index-keyed)
+    # and BEFORE ``_build_region_provenance``, so a re-typed / reordered region
+    # is reflected in both ``assembled.html`` (re-assembled on an applied op)
+    # and ``region_provenance``. OFF -> the ``run_reasoning_qc`` entrypoint /
+    # VLM path is never reached: no VLM call, no extra assemble round, no
+    # ``reasoning_qc`` result key (byte-identical). (The ``resolve_reasoning_qc_mode``
+    # import below is unconditional but side-effect-free — reasoning_qc.py imports
+    # only stdlib at module scope.) ``capped`` + ``review_verdicts`` are rebound
+    # to the returned values (in shadow they are the input objects, unchanged).
+    # ------------------------------------------------------------------
+    reasoning_qc_audit: dict[str, Any] | None = None
+    from .reasoning_qc import resolve_reasoning_qc_mode
+
+    _reasoning_qc_mode = resolve_reasoning_qc_mode()
+    if _reasoning_qc_mode != "off":
+        from .reasoning_qc import run_reasoning_qc
+
+        log("[cascade] running Stage 9b reasoning-QC pass")
+        t = time.perf_counter()
+        # Thread the REAL Stage-5d reviewer runtime so the re-type channel's
+        # run_structure_review actually applies (a None runtime no-ops the
+        # phantom/apparatus re-typing → applied=0). ``review_runtime`` is the
+        # exact endpoint seat the Stage-5d reviewer + the Stage-9 second-pass
+        # loop rode (assigned above when SEMANTIK_STRUCTURE_REVIEW ran). When
+        # Stage-5d did NOT run (review_runtime is None) the re-type channel has
+        # no seat, so for the ON (apply) path construct the SAME endpoint seat
+        # the reviewer / OCR-repair pass ride (make_runtime('endpoint', reviewer
+        # model pin)) — identical to how OCR-repair builds its runtime — so
+        # reasoning-QC ON re-typing applies even without Stage-5d. In shadow the
+        # runtime is never used (nothing is applied), so no seat is built.
+        qc_review_runtime = review_runtime
+        if qc_review_runtime is None and _reasoning_qc_mode == "on":
+            from .qwen_specialists.runtime import (
+                make_runtime,
+                resolve_structure_review_model,
+            )
+
+            qc_review_runtime = make_runtime(
+                "endpoint", model=resolve_structure_review_model()
+            )
+        capped, review_verdicts, reasoning_qc_audit = run_reasoning_qc(
+            capped,
+            feature_blocks,
+            lane_outputs["fast"]["assembled"],
+            review_runtime=qc_review_runtime,
+            review_verdicts=review_verdicts,
+            run_inner=_run_inner,
+            pdf_path=pdf_path,
+            log=log,
+        )
+        stages["stage9b_reasoning_qc"] = time.perf_counter() - t
+
+    # ------------------------------------------------------------------
     # OCR-confusable micro-repair (plan Phase 5 channels 2+3;
     # SEMANTIK_OCR_CONFUSABLE_REPAIR). Runs on the CONVERGED post-cap/verify
     # ``capped`` regions (text is FB-derived, so this covers both fast/offline
@@ -2327,6 +2391,14 @@ def run_full_cascade(
     # block_resegment / second_pass_verify; the bridge reads it for the capture.
     if ocr_repair_result is not None and ocr_repair_result.stats:
         result["ocr_repair"] = ocr_repair_result.stats
+    # Stage 9b reasoning-QC audit arm — emitted ONLY when the pass ran
+    # (SEMANTIK_REASONING_QC != off). Default OFF → the key is absent, so the
+    # result dict is byte-stable to a no-reasoning-QC run. Parallel to the
+    # structure_review / block_resegment / second_pass_verify / ocr_repair audit
+    # sections; the bridge forwards it and the MCP seam emits one
+    # ``structure_detection`` DecisionCapture off it.
+    if reasoning_qc_audit is not None:
+        result["reasoning_qc"] = reasoning_qc_audit
     if return_html:
         result["html"] = assembled.html
     return result
