@@ -5866,18 +5866,40 @@ async def _run_stage2_window_synthesis(
         # Reassemble candidates in ORIGINAL window order (byte-equivalent to an
         # uninterrupted run; the dispatch loop above already checkpointed each
         # freshly-dispatched window).
+        # REAL-GROUNDING fix (opt-in): stamp each candidate with the REAL chunk
+        # ids of the window it was synthesized from — the pool the model
+        # actually SAW (Pass-B provenance) — so the later citation re-selection
+        # can ground a candidate whose model-emitted citations are wholly
+        # fabricated (topic-labels that resolve against nothing). Gated by
+        # ``ED4ALL_OBJECTIVE_CITATION_RESELECT`` so it is byte-identical when
+        # the reselect gate is off (nothing is stamped). Stamped AFTER the
+        # window checkpoint append above, so the resume sidecar stays clean.
+        from lib.objectives.citation_reselect import (
+            resolve_citation_reselect as _resolve_reselect_gate,
+        )
+        _stamp_window_pool = _resolve_reselect_gate()
+
         _reused_per_chapter: Dict[str, int] = {}
         _total_per_chapter: Dict[str, int] = {}
         for _wd in _windows:
             _key = _window_key(_wd)
             _cid = _key[0]
             _label = f"{_cid}#w{_key[1]}"
+            _wd_pool = (
+                [str(c) for c in (_wd.get("chunk_ids") or [])]
+                if _stamp_window_pool else None
+            )
             _total_per_chapter[_cid] = _total_per_chapter.get(_cid, 0) + 1
             if _key in _reused:
                 candidates_synthesized += 1
                 _windows_reused += 1
                 _reused_per_chapter[_cid] = _reused_per_chapter.get(_cid, 0) + 1
-                _flat_candidates.extend(_reused[_key])
+                _reused_cands = _reused[_key]
+                if _wd_pool is not None:
+                    for _c in _reused_cands:
+                        if isinstance(_c, dict):
+                            _c["_reselect_window_pool"] = list(_wd_pool)
+                _flat_candidates.extend(_reused_cands)
                 continue
             _res = _dispatched.get(_key)
             if _res is None:
@@ -5889,6 +5911,9 @@ async def _run_stage2_window_synthesis(
                 for _c in (_res.get("candidate_objectives") or [])
                 if isinstance(_c, dict)
             ]
+            if _wd_pool is not None:
+                for _c in _cands:
+                    _c["_reselect_window_pool"] = list(_wd_pool)
             _flat_candidates.extend(_cands)
 
         for _cid, _tot in _total_per_chapter.items():
@@ -6215,14 +6240,31 @@ async def _run_stage2_window_synthesis(
                 _ch = str(_rec.get("chapter_id") or "")
                 if _ch:
                     _chunks_by_chapter.setdefault(_ch, []).append(str(_cid))
-        # Widened per-CO pool = window ∪ chapter ∪ cited (stable order: window
-        # chunks first, then the CO's chapter bucket, deduped). The chapter
-        # bucket is unioned UNCONDITIONALLY — not just as a window fallback —
-        # so a dedup-merged CO whose right-window citation was stripped by the
-        # Fix 1A prune (locking window resolution to the WRONG window) can still
-        # reach its true same-chapter supporter. reselect_citations then unions
-        # the currently-cited ids and applies the anti-fabrication
-        # resolve-in-chunks_by_id filter + pool_misses counting.
+        # Per-CO REAL candidate pool, built INDEPENDENTLY of what the model
+        # cited so a wholly-fabricated (or empty) citation still resolves to a
+        # real, cosine-relevant chunk (the "0 real grounding" fix). Sources, in
+        # stable order:
+        #   1. the CO's STAMPED synthesis-window chunk ids (Pass-B provenance —
+        #      the real pool the model SAW, present even when every cited id is
+        #      fabricated);
+        #   2. windows reachable from any REAL cited id (legacy widening so a
+        #      dedup-merged CO whose right-window citation was stripped by the
+        #      Fix 1A prune can still reach its true same-chapter supporter);
+        #   3. the CO's OWN chapter bucket (via its ``chapter_id`` — robust even
+        #      when 100% of cited ids are fabricated), plus the chapter bucket
+        #      of any real cited id.
+        # reselect_citations then unions the currently-cited ids and applies the
+        # anti-fabrication resolve-in-chunks_by_id filter (dropping fabricated
+        # ids as pool_misses) + top-K cosine re-cite.
+        def _extend_pool(
+            pool: List[str], seen: set, ids: Any
+        ) -> None:
+            for _pid in ids or []:
+                _p = str(_pid).strip()
+                if _p and _p not in seen:
+                    seen.add(_p)
+                    pool.append(_p)
+
         _win_pool_by_co: Dict[int, List[str]] = {}
         for _i, _co_r in enumerate(chapter_cos):
             _cited_r = [
@@ -6230,25 +6272,28 @@ async def _run_stage2_window_synthesis(
                 for c in (_co_r.get("source_chunk_ids") or [])
                 if str(c).strip()
             ]
-            if not _cited_r:
-                continue
             _seen: set = set()
             _pool: List[str] = []
+            # 1. stamped window provenance (real ids the model SAW).
+            _extend_pool(_pool, _seen, _co_r.get("_reselect_window_pool"))
+            # 2. windows reachable from real cited ids.
             for _cid in _cited_r:
-                for _pid in _window_ids_by_chunk.get(_cid, []):
-                    if _pid not in _seen:
-                        _seen.add(_pid)
-                        _pool.append(_pid)
+                _extend_pool(_pool, _seen, _window_ids_by_chunk.get(_cid, []))
+            # 3a. the CO's own chapter bucket (robust to fabricated citations).
+            _extend_pool(
+                _pool, _seen,
+                _chunks_by_chapter.get(str(_co_r.get("chapter_id") or ""), []),
+            )
+            # 3b. chapter buckets of real cited ids.
             for _cid in _cited_r:
                 _rec = chunks_by_id.get(_cid)
-                _ch = (
-                    str(_rec.get("chapter_id") or "")
-                    if isinstance(_rec, dict) else ""
-                )
-                for _pid in _chunks_by_chapter.get(_ch, []):
-                    if _pid not in _seen:
-                        _seen.add(_pid)
-                        _pool.append(_pid)
+                if isinstance(_rec, dict):
+                    _extend_pool(
+                        _pool, _seen,
+                        _chunks_by_chapter.get(
+                            str(_rec.get("chapter_id") or ""), []
+                        ),
+                    )
             if _pool:
                 _win_pool_by_co[_i] = _pool
         _reselect = reselect_citations(
@@ -6258,6 +6303,10 @@ async def _run_stage2_window_synthesis(
             window_chunk_ids_by_co=_win_pool_by_co,
             capture=capture,
         )
+        # Strip the transient Pass-B provenance stamp so it never lands in the
+        # serialized objectives (present only while reselect is enabled).
+        for _co_r in chapter_cos:
+            _co_r.pop("_reselect_window_pool", None)
         if _reselect.available:
             logger.info(
                 "plan_course_structure: citation re-selection re-cited "

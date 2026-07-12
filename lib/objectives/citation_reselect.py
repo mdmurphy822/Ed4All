@@ -38,8 +38,17 @@ Contracts:
   cosine top-K only ADDS better supporters, it can never DROP a synthesis
   citation). Exercise-like / below-floor originals stay droppable (the pass's
   neighbor-fix + exercise-demote purpose). See ``keep_original`` below.
-- **Zero-citation COs are skipped** (re-SELECTION, not initial citation — the
-  chapter_fallback grounding mode emits citation-less COs by design).
+- **Wholly-fabricated / zero-citation COs are RE-GROUNDED from the real pool.**
+  A CO whose every cited id is a model-invented topic-label (none resolves in
+  ``chunks_by_id``) or that carries no citation at all has no usable cited-id
+  pool. When the caller supplies a REAL window / chapter pool for that CO, this
+  pass grounds it from THOSE chunks by cosine (the "0 real grounding" fix) —
+  the fabricated ids are dropped by the resolve filter (``pool_misses``), never
+  re-cited. A CO with neither a citation NOR a provided real pool is still
+  skipped (``skipped_no_citation`` — preserves the chapter_fallback
+  citation-less-by-design contract). The keep-original guard can never retain a
+  fabricated id: an id that does not resolve never enters the scored pool, so it
+  is never in the protected set.
 - **Graceful degrade:** embed client absent → logged no-op.
 
 Floor / cap reuse the Fix 1A knobs (`ED4ALL_OBJECTIVE_CHUNK_RELEVANCE_FLOOR` /
@@ -490,13 +499,24 @@ def reselect_citations(
             str(c).strip() for c in (co.get("source_chunk_ids") or [])
             if str(c).strip()
         ]
-        if not cited:
-            result.skipped_no_citation += 1
-            continue
         raw_pool: List[str] = list(window_map.get(i) or [])
         if not raw_pool:
             raw_pool = list(chapter_map.get(i) or [])
-        # Union with cited (dedup, stable order: pool first, then cited).
+        # REAL-GROUNDING fix: a CO whose citations are WHOLLY FABRICATED (every
+        # cited id is a descriptive topic-label the model invented, so none
+        # resolves in ``chunks_by_id``) OR empty has no usable cited-id pool —
+        # the legacy bootstrap-from-cited-ids path silently skipped it, leaving
+        # ~0 real grounding. When the caller supplies a REAL window / chapter
+        # pool (``raw_pool``) we ground it from THOSE chunks regardless of what
+        # the model cited: the fabricated cited ids are dropped by the
+        # resolve-in-``chunks_by_id`` filter below (counted as ``pool_misses``),
+        # so a fully-fabricated CO's pool is exactly the provided REAL chunks.
+        # Skip ONLY when there is neither a citation NOR a provided real pool
+        # (preserves the chapter_fallback "citation-less by design" contract).
+        if not cited and not raw_pool:
+            result.skipped_no_citation += 1
+            continue
+        # Union with cited (dedup, stable order: real pool first, then cited).
         seen: set = set()
         pool: List[str] = []
         for cid in [*raw_pool, *cited]:

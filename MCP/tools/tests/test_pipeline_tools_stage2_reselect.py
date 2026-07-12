@@ -134,6 +134,61 @@ class _CrossWindowProvider:
         ]}
 
 
+class _FabricatedCiterProvider:
+    """Cites a WHOLLY FABRICATED id (a descriptive topic-label that resolves
+    against NOTHING in the real chunkset) — the measured nano-omni failure that
+    leaves objectives with ~0 real grounding. The authored statement matches the
+    window's SECOND real chunk's vocabulary."""
+
+    _model = "test-model-v1"
+    _max_tokens = 0
+
+    def batch_chapters(self, items, batch_size: int = 10):
+        return [
+            items[i:i + batch_size] for i in range(0, len(items), batch_size)
+        ]
+
+    def synthesize_window_objectives(
+        self, window, *, course_name, draft_terminal_objectives
+    ):
+        cid = str(window.get("chapter_id"))
+        stmt, label = {
+            "ch1": (
+                "Solve linear equations using the substitution method.",
+                "Solve Linear Equations",
+            ),
+            "ch2": (
+                "Explain photosynthesis and the role of the chloroplast.",
+                "Explain Photosynthesis",
+            ),
+        }.get(cid, (f"Objective for {cid}.", "Fabricated Topic"))
+        return {
+            "candidate_objectives": [{
+                "statement": stmt,
+                # Fabricated: a topic-label, NOT any real window chunk id.
+                "source_chunk_ids": [label],
+                "source_refs": [{"ref": cid, "chunk_ids": [label]}],
+            }]
+        }
+
+    def author_terminal_for_cluster(
+        self, cluster_cos, *, course_name, cluster_index
+    ):
+        rep = max(
+            cluster_cos, key=lambda c: len(str(c.get("statement") or ""))
+        )
+        return {
+            "statement": f"TO summarising: {rep.get('statement')}",
+            "bloom_level": "understand",
+            "source_refs": [],
+        }
+
+    def reconcile_terminal_objectives(self, *a, **kw):
+        return {"terminal_objectives": [
+            {"id": "TO-01", "statement": "Legacy TO."}
+        ]}
+
+
 class _PassthroughGrounding:
     def __init__(self, grounded: List[Dict[str, Any]]) -> None:
         self.grounded = grounded
@@ -207,6 +262,87 @@ def _run(monkeypatch, *, reselect: bool):
         checkpoint_path=None,
     ))
     return out
+
+
+def _run_fabricated(monkeypatch, *, reselect: bool):
+    """Same harness as ``_run`` but with the fabricated-citer provider."""
+    import lib.embedding.providers as _providers
+    import lib.objectives.objective_grounding as _og
+
+    monkeypatch.setattr(
+        _providers, "build_embedding_client", lambda **_k: FakeEmbed(),
+    )
+    monkeypatch.setattr(
+        _og,
+        "ground_candidates",
+        lambda cands, chunks_by_id, require=False: _PassthroughGrounding(
+            list(cands)
+        ),
+    )
+    monkeypatch.setenv("TEXTBOOK_SYNTHESIS_NUM_CTX", "100000")
+    if reselect:
+        monkeypatch.setenv("ED4ALL_OBJECTIVE_CITATION_RESELECT", "1")
+    else:
+        monkeypatch.delenv("ED4ALL_OBJECTIVE_CITATION_RESELECT", raising=False)
+
+    all_chunks = _chunks()
+    chunks_by_id = {c["id"]: c for c in all_chunks}
+    chapters = [
+        {"id": "ch1", "chapter_text": "x" * 10},
+        {"id": "ch2", "chapter_text": "y" * 10},
+    ]
+    out = asyncio.run(pt._run_stage2_window_synthesis(
+        provider=_FabricatedCiterProvider(),
+        provider_error=_ProviderError,
+        chapters=chapters,
+        draft_tos=[{"statement": "Draft course objective."}],
+        chunks_by_id=chunks_by_id,
+        all_chunks=all_chunks,
+        grounding_mode="chunk_window",
+        course_name="MATH_101",
+        provider_env="local",
+        chapter_synthesis_failures=[],
+        mint_lo_id=_mint,
+        kwargs={},
+        capture=None,
+        checkpoint_path=None,
+    ))
+    return out
+
+
+def test_reselect_grounds_wholly_fabricated_citations(monkeypatch):
+    """REAL-grounding fix: a CO whose ONLY cited id is a fabricated topic-label
+    is re-grounded to the cosine-best REAL chunk from its window pool — not left
+    at ~0 real grounding."""
+    chapter_cos, terminal, _mm, signals = _run_fabricated(
+        monkeypatch, reselect=True
+    )
+    assert len(chapter_cos) == 2
+    solve_co = _co_by_statement(chapter_cos, "substitution")
+    photo_co = _co_by_statement(chapter_cos, "photosynthesis")
+    # The fabricated label is gone; a REAL cosine-relevant chunk is cited.
+    assert solve_co["source_chunk_ids"] == ["c2"]
+    assert photo_co["source_chunk_ids"] == ["c4"]
+    assert "Solve Linear Equations" not in solve_co["source_chunk_ids"]
+    assert solve_co["source_refs"][0]["chunk_ids"] == ["c2"]
+    # Grounding is now > 0 and the fabricated ids counted as pool misses.
+    assert signals["citations_reselected"] == 2
+    assert signals["citation_density_after"] >= 2
+    assert signals["reselect_pool_misses"] >= 2  # both fabricated labels dropped
+    # The transient Pass-B provenance stamp never leaks onto the objectives.
+    assert all("_reselect_window_pool" not in co for co in chapter_cos)
+
+
+def test_reselect_off_keeps_fabricated_and_leaks_no_stamp(monkeypatch):
+    """Flag OFF → byte-identical: fabricated citations survive verbatim and no
+    ``_reselect_window_pool`` provenance stamp is ever added."""
+    chapter_cos, _t, _mm, signals = _run_fabricated(monkeypatch, reselect=False)
+    solve_co = _co_by_statement(chapter_cos, "substitution")
+    photo_co = _co_by_statement(chapter_cos, "photosynthesis")
+    assert solve_co["source_chunk_ids"] == ["Solve Linear Equations"]
+    assert photo_co["source_chunk_ids"] == ["Explain Photosynthesis"]
+    assert signals["citations_reselected"] == 0
+    assert all("_reselect_window_pool" not in co for co in chapter_cos)
 
 
 def _run_cross_window(monkeypatch):
