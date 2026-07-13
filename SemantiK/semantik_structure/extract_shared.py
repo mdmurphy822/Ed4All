@@ -60,6 +60,8 @@ from . import vlm_extract as _vlm_extract
 from .vlm_fusion import (
     resolve_collapse_repetition_mode as _resolve_collapse_repetition_mode,
     resolve_drop_garbage_tails_mode as _resolve_drop_garbage_tails_mode,
+    resolve_fusion_line_units_mode as _resolve_fusion_line_units_mode,
+    resolve_keep_ordered_markers_mode as _resolve_keep_ordered_markers_mode,
     resolve_vlm_fusion_mode,
 )
 from .vlm_furniture import (
@@ -232,9 +234,22 @@ def extract_shared(pdf_path: Path) -> dict:
         for page_num in range(1, meta["page_count"] + 1):
             pages.append(
                 _extract_page(
-                    pdf_path, page_num, meta, defer_finalize=defer_finalize
+                    pdf_path,
+                    page_num,
+                    meta,
+                    defer_finalize=defer_finalize,
+                    defer_vlm_post=vlm_on,
                 )
             )
+        # VLM POST fan-out (concurrency seam): every page's render + cache-check
+        # already ran SEQUENTIALLY in the loop above (pdfium is not thread-safe);
+        # now fan the cache-MISS per-page POSTs out through a bounded pool and
+        # consume the results in ORIGINAL page order. Runs INSIDE the try, before
+        # the ``finally`` unload, so the live-POST accounting (which gates the
+        # end-of-document card unload) is registered first, and a permanent
+        # (fail-loud) page still frees the card via the finally.
+        if vlm_on:
+            _dispatch_vlm_pages(pages)
     finally:
         # Lifecycle unload — hand the card back to the 7B text seat. Gated on
         # provider==local (a hosted seat has no ollama /api root) AND >=1 live
@@ -263,6 +278,63 @@ def extract_shared(pdf_path: Path) -> dict:
         "metadata": meta,
         "pages": pages,
     }
+
+
+def _dispatch_vlm_pages(pages: list[dict]) -> None:
+    """Fan the deferred per-page VLM POSTs out, then finalize in page order.
+
+    ``_extract_page`` (called with ``defer_vlm_post=True``) rendered + cache-
+    checked each scanned page SEQUENTIALLY and stashed a cache-MISS
+    ``PreparedVlmPage`` on ``page['_vlm_prepared']`` (a cache HIT was already
+    finalized inline). Here the POSTs are fanned out concurrently
+    (:func:`vlm_extract.dispatch_prepared_pages`, width
+    ``SEMANTIK_VLM_CONCURRENCY``) and the results consumed in ORIGINAL page order
+    so ``finalize`` (the thread-local live-POST note + the per-document
+    ``DecisionCapture`` + the disk-cache write) runs single-threaded on this
+    (dispatching) thread. The per-page contract is preserved EXACTLY: a transient
+    ``VlmExtractError`` degrades that page alone (``vlm`` stub, ``vlm`` NOT added
+    to ``sources_used`` — matching the serial ``_extract_page`` except-arm), a
+    permanent ``VlmExtractError`` (or any non-``VlmExtractError`` raise)
+    re-raises here, in page order (fail-loud, exactly as the serial path).
+    """
+    items = [
+        (idx, page["_vlm_prepared"])
+        for idx, page in enumerate(pages)
+        if page.get("_vlm_prepared") is not None
+    ]
+    if not items:
+        return
+
+    seat = resolve_vlm_seat()
+    results = _vlm_extract.dispatch_prepared_pages(
+        items,
+        seat=seat,
+        timeout=resolve_vlm_timeout(),
+        concurrency=_vlm_extract.resolve_vlm_concurrency(),
+    )
+    # Build the per-document capture once on THIS thread (never in a worker).
+    capture = _vlm_extract._document_capture()
+
+    for idx, page in enumerate(pages):
+        prepared = page.pop("_vlm_prepared", None)
+        if prepared is None:
+            continue
+        outcome = results.get(idx)
+        if isinstance(outcome, _vlm_extract.VlmExtractError):
+            # TRANSIENT → degrade this page alone (tesseract stays
+            # authoritative); PERMANENT → fail-loud, in page order.
+            if not outcome.transient:
+                raise outcome
+            page["vlm"] = {"markdown": "", "text_blocks": [], "error": str(outcome)}
+        elif isinstance(outcome, BaseException):
+            # A non-VlmExtractError raise propagates (fail-loud) — matching the
+            # serial path, where only VlmExtractError was caught in _extract_page.
+            raise outcome
+        else:
+            page["vlm"] = _vlm_extract.finalize_prepared_request(
+                prepared, outcome, capture=capture
+            )
+            page["sources_used"].append("vlm")
 
 
 def _tesseract_lines_reading_order(page: dict) -> list[str]:
@@ -466,6 +538,22 @@ def _compute_extract_cache_key(pdf_path: Path) -> str:
       sentence-granularity blind spot) so a warm ``colrep1`` cache carrying an
       un-collapsed looped-sentence blob must re-fuse once; a ``=0`` run stays
       byte-identical to the plain ``fuse_key`` (no salt) as before.
+    * ``ordmark_key`` — SEMANTIK_FUSION_KEEP_ORDERED_MARKERS (asymmetric,
+      append-only-when-fusion-on-AND-mode-on): the default-ON keep-ordered-markers
+      mode (Fix A for the silent exercise/answer-number drop) KEEPS a single-marker
+      line-leading ``N.`` as content, so the fused block text — and which FBs /
+      sourceIds exist — differs from a warm non-``ordmark`` cache. Same posture as
+      ``gtail_key`` / ``colrep_key``: a ``=0`` run keys back to the plain ``fuse_key``
+      (its warm cache stays valid) while the default (keep-on) run re-extracts once;
+      the no-fusion key stays byte-identical (no ``fuse_key`` → no ``ordmark_key``).
+    * ``fgran_key`` — SEMANTIK_FUSION_LINE_UNITS (asymmetric,
+      append-only-when-fusion-on-AND-mode-on): the default-ON per-VLM-line block
+      granularity (Fix B for the mega-block unit-boundary destruction) emits a
+      SPLIT unit / gap-rescue run / no-tesseract page as one fused block per VLM
+      line, so the merged block list — which FBs / sourceIds exist — differs from a
+      warm non-``fgran`` cache. Same posture as ``ordmark_key``: a ``=0`` run keys
+      back to the plain ``fuse_key``, the default (granular) run re-extracts once,
+      the no-fusion key stays byte-identical (no ``fuse_key`` → no ``fgran_key``).
     * ``hints_key`` — SEMANTIK_VLM_STRUCT_HINTS (asymmetric, append-only-when-on):
       the P2 hint mint (`_attach_vlm_struct_hints`) runs INSIDE `_merge_page`, so
       the `vlm_hint` payload is baked into the cached merged blocks. Without this
@@ -521,6 +609,33 @@ def _compute_extract_cache_key(pdf_path: Path) -> str:
         if resolve_vlm_fusion_mode() and _resolve_collapse_repetition_mode()
         else ""
     )
+    # ordmark_key: Fix A (SEMANTIK_FUSION_KEEP_ORDERED_MARKERS, default-ON within
+    # fusion) KEEPS a single-marker line-leading "N." exercise/answer number as
+    # content instead of stripping it, so the fused block text — and thus which
+    # FBs / sourceIds exist — differs from a warm non-``ordmark`` cache. Same
+    # append-only-when-fusion-on-AND-mode-on posture as ``gtail_key`` / ``colrep_key``:
+    # a ``=0`` run is byte-identical to the plain-``fuse_key`` behavior and keys
+    # back to the warm ``fuse_key`` cache, while a default (keep-on) run
+    # re-extracts once; the no-fusion key stays byte-identical (no ``fuse_key``
+    # → no ``ordmark_key``).
+    ordmark_key = (
+        "|ordmark1"
+        if resolve_vlm_fusion_mode() and _resolve_keep_ordered_markers_mode()
+        else ""
+    )
+    # fgran_key: Fix B (SEMANTIK_FUSION_LINE_UNITS, default-ON within fusion)
+    # emits a SPLIT unit / gap-rescue run / no-tesseract page as one fused block
+    # PER VLM line instead of one space-joined mega-block, so the merged block
+    # list — which FBs / sourceIds exist — differs from a warm non-``fgran``
+    # cache. Same append-only-when-fusion-on-AND-mode-on posture: a ``=0`` run is
+    # byte-identical to the plain-``fuse_key`` behavior (keys back to its warm
+    # cache), a default (granular) run re-extracts once, the no-fusion key stays
+    # byte-identical.
+    fgran_key = (
+        "|fgran1"
+        if resolve_vlm_fusion_mode() and _resolve_fusion_line_units_mode()
+        else ""
+    )
     hints_key = "|vlmhints1" if resolve_vlm_struct_hints_mode() else ""
     col_key = "|col2" if resolve_column_extract_mode() else ""
     # ord_key closes the pre-existing hole where SEMANTIK_COLUMN_ORDER (the
@@ -534,7 +649,8 @@ def _compute_extract_cache_key(pdf_path: Path) -> str:
         else ""
     )
     key_raw = (
-        f"v{EXTRACT_CACHE_VERSION}|{fig_key}{vlm_key}{fuse_key}{gtail_key}{colrep_key}{hints_key}{col_key}{ord_key}|"
+        f"v{EXTRACT_CACHE_VERSION}|{fig_key}{vlm_key}{fuse_key}{gtail_key}{colrep_key}"
+        f"{ordmark_key}{fgran_key}{hints_key}{col_key}{ord_key}|"
         f"{pdf_path.resolve()}|{st.st_size}|{int(st.st_mtime)}"
     )
     return hashlib.sha256(key_raw.encode()).hexdigest()[:24]
@@ -1512,7 +1628,12 @@ def _tesseract_page_blocks(pdf_path: Path, page_num: int) -> dict:
 
 
 def _extract_page(
-    pdf_path: Path, page_num: int, meta: dict, *, defer_finalize: bool = False
+    pdf_path: Path,
+    page_num: int,
+    meta: dict,
+    *,
+    defer_finalize: bool = False,
+    defer_vlm_post: bool = False,
 ) -> dict:
     page: dict[str, Any] = {"page_num": page_num, "sources_used": []}
 
@@ -1564,26 +1685,48 @@ def _extract_page(
     # byte-identical and the structural anti-hallucination tripwire is never
     # bypassed. Flag-off → no ``vlm`` key anywhere (byte-identical).
     if resolve_vlm_extract_mode() and not is_text_ok:
-        try:
-            # ``extract_page_markdown`` calls ``seat.require_ready()`` first, so
-            # a misconfigured hosted seat fails loud (VLMSeatError) before any
-            # render or POST.
-            page["vlm"] = _vlm_extract.extract_page_markdown(
+        if defer_vlm_post:
+            # Document-loop concurrency path: RENDER + cache-check now
+            # (SEQUENTIAL — pdfium is not thread-safe), then stash the pending
+            # request so ``extract_shared`` can fan the per-page POST out across
+            # pages. ``prepare_page_request`` calls ``seat.require_ready()``
+            # first, so a misconfigured hosted seat fails loud (VLMSeatError)
+            # here, before any render/POST — same page-1 fail-loud as the serial
+            # path. A cache HIT makes no POST, so it is finalized inline (no
+            # live-post note, no dispatch); a MISS is deferred to the fan-out.
+            prepared = _vlm_extract.prepare_page_request(
                 pdf_path,
                 page_num,
                 seat=resolve_vlm_seat(),
                 render_scale=resolve_ocr_render_scale(),
-                timeout=resolve_vlm_timeout(),
             )
-            page["sources_used"].append("vlm")
-        except _vlm_extract.VlmExtractError as exc:
-            # TRANSIENT endpoint failure (timeout / conn / 5xx / 429, after
-            # bounded retries) → degrade THIS page's vlm source alone; tesseract
-            # stays authoritative (the additive contract). PERMANENT failures
-            # (400/401/403 / malformed response) propagate (fail-loud).
-            if not exc.transient:
-                raise
-            page["vlm"] = {"markdown": "", "text_blocks": [], "error": str(exc)}
+            if prepared.is_cache_hit:
+                page["vlm"] = prepared.cached_source()
+                page["sources_used"].append("vlm")
+            else:
+                page["_vlm_prepared"] = prepared
+        else:
+            try:
+                # ``extract_page_markdown`` calls ``seat.require_ready()``
+                # first, so a misconfigured hosted seat fails loud (VLMSeatError)
+                # before any render or POST.
+                page["vlm"] = _vlm_extract.extract_page_markdown(
+                    pdf_path,
+                    page_num,
+                    seat=resolve_vlm_seat(),
+                    render_scale=resolve_ocr_render_scale(),
+                    timeout=resolve_vlm_timeout(),
+                )
+                page["sources_used"].append("vlm")
+            except _vlm_extract.VlmExtractError as exc:
+                # TRANSIENT endpoint failure (timeout / conn / 5xx / 429, after
+                # bounded retries) → degrade THIS page's vlm source alone;
+                # tesseract stays authoritative (the additive contract).
+                # PERMANENT failures (400/401/403 / malformed response) propagate
+                # (fail-loud).
+                if not exc.transient:
+                    raise
+                page["vlm"] = {"markdown": "", "text_blocks": [], "error": str(exc)}
 
     # Image page-objects (Part F) — only when SEMANTIK_DETECT_FIGURES is on.
     # Fail-soft: a per-page extraction failure leaves an empty list so a

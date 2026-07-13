@@ -45,6 +45,7 @@ Fail-loud / fail-soft posture
 from __future__ import annotations
 
 import base64
+import dataclasses
 import datetime
 import functools
 import hashlib
@@ -264,6 +265,37 @@ _VLM_DISABLE_THINKING_ENV = "SEMANTIK_VLM_DISABLE_THINKING"
 _VLM_MAX_TOKENS_ENV = "SEMANTIK_VLM_MAX_TOKENS"
 _VLM_THINKING_TRUTHY = frozenset({"1", "true", "yes", "on"})
 
+_VLM_CONCURRENCY_ENV = "SEMANTIK_VLM_CONCURRENCY"
+_VLM_DEFAULT_CONCURRENCY = 8
+
+
+def resolve_vlm_concurrency() -> int:
+    """Parse-with-fallback ``SEMANTIK_VLM_CONCURRENCY`` (default 8, min 1).
+
+    Bounds the :class:`~concurrent.futures.ThreadPoolExecutor` that fans the
+    per-page VLM transcription POSTs out (see :func:`dispatch_prepared_pages`),
+    mirroring :func:`reasoning_qc.resolve_reasoning_qc_concurrency` /
+    :func:`endpoint_runtime.resolve_specialist_concurrency`. The per-page
+    transcription POST is ~24 s warm on a thinking-off reasoning seat, so a
+    serial page loop leaves the vLLM continuous-batching window (``--max-num-seqs``)
+    at 1; a fan-out saturates it (a 450-page scan → ~3 h serial vs ~15-25 min at
+    width 8-16). ONLY the HTTP POST parallelizes — the page RENDER (pypdfium2,
+    not thread-safe on one document handle) runs sequentially in ``prepare``, and
+    the ``DecisionCapture`` / live-post accounting / cache write run on the
+    dispatching thread in ``finalize``. Garbage / blank / non-positive → the
+    default 8; a valid positive int → that value. Read at CALL time (never
+    cached at import)."""
+    raw = os.environ.get(_VLM_CONCURRENCY_ENV)
+    if not raw:
+        return _VLM_DEFAULT_CONCURRENCY
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return _VLM_DEFAULT_CONCURRENCY
+    if val < 1:
+        return _VLM_DEFAULT_CONCURRENCY
+    return val
+
 
 def resolve_vlm_disable_thinking() -> bool:
     """Parse-with-fallback ``SEMANTIK_VLM_DISABLE_THINKING`` (default off).
@@ -380,6 +412,23 @@ def _post_chat_completion(
     if text is None:
         raise VlmExtractError(
             "VLM endpoint returned a null message content", transient=False
+        )
+    # Observability (step 6): a ``finish_reason == "length"`` means the
+    # transcription was TRUNCATED at the completion-token ceiling — a real
+    # silent content-loss channel (this audit did not hit it, but a dense page
+    # can). Warn loudly; do NOT change the return signature (additive log only).
+    try:
+        finish_reason = data["choices"][0].get("finish_reason")
+    except (KeyError, IndexError, TypeError, AttributeError):
+        finish_reason = None
+    if finish_reason == "length":
+        logger.warning(
+            "VLM transcription TRUNCATED (finish_reason=length, model=%s, "
+            "max_tokens=%s, chars=%d) — page content may be silently lost; "
+            "raise SEMANTIK_VLM_MAX_TOKENS or split the page.",
+            model,
+            body.get("max_tokens", "unset"),
+            len(str(text)),
         )
     return str(text)
 
@@ -577,38 +626,90 @@ def _log_page_transcription_decision(
         )
 
 
-def extract_page_markdown(
+# --- Prepare / dispatch / finalize split (concurrency seam) ----------------
+#
+# ``extract_page_markdown`` is factored into three phases so the per-page POST
+# can be fanned OUT across pages while the pdfium render stays sequential:
+#
+#   * ``prepare_page_request`` — ``require_ready()`` + RENDER (pypdfium2, NOT
+#     thread-safe on one document handle) + cache lookup. Runs on the
+#     dispatching thread, sequentially. Returns a ``PreparedVlmPage`` that is a
+#     cache HIT (finalize inline, no POST) or a MISS (carries the encoded JPEG).
+#   * ``dispatch_prepared_request`` — the one HTTP POST + parse. PURE (no
+#     thread-local, no DecisionCapture, no cache write) → safe to run in a
+#     worker thread. :func:`dispatch_prepared_pages` fans a batch of these out.
+#   * ``finalize_prepared_request`` — ``_note_live_post`` (the thread-local
+#     live-POST accounting) + one ``DecisionCapture`` + the disk-cache write +
+#     ``_build_source``. Runs on the DISPATCHING thread in the caller's ordered
+#     consumption loop (never in a worker) so the thread-local session
+#     (``begin_document_session`` / ``document_had_live_post``) and the capture
+#     helper are only ever touched single-threaded.
+#
+# ``extract_page_markdown`` itself is the byte-identical SERIAL composition of
+# the three (used by the single-page direct-call path + every existing test).
+
+
+@dataclasses.dataclass
+class PreparedVlmPage:
+    """A rendered, cache-resolved per-page VLM request awaiting its POST.
+
+    A cache HIT carries ``cached_markdown`` (``b64_jpeg is None`` → no POST); a
+    MISS carries ``b64_jpeg`` (``cached_markdown is None`` → dispatch fires the
+    POST). ``model`` / ``provider`` / ``render_px`` / ``cache_path`` are the
+    render-time resolve, threaded through to ``finalize`` so the fanned-out POST
+    result is built + cached identically to the serial path.
+    """
+
+    pdf_sha: str
+    page_num: int
+    model: str
+    provider: str
+    render_px: list[int]
+    cache_path: Path
+    b64_jpeg: str | None
+    cached_markdown: str | None
+    cached_model: str | None
+
+    @property
+    def is_cache_hit(self) -> bool:
+        return self.cached_markdown is not None
+
+    def cached_source(self) -> dict:
+        """The ``vlm`` source dict for a cache HIT (no POST, no live-post note).
+
+        The cached model id is authoritative for the transcription;
+        provider/render_px come from the current resolve (they are part of the
+        cache key, so they match by construction) — byte-identical to the
+        historic cache-hit return of ``extract_page_markdown``.
+        """
+        return _build_source(
+            self.cached_markdown, self.cached_model or self.model, self.provider,
+            self.render_px,
+        )
+
+
+def prepare_page_request(
     pdf_path: Path,
     page_num: int,
     *,
     seat,
     render_scale: float,
-    timeout: float,
     cache_dir: Path | str | None = None,
     render_fn=None,
-    requests_module=None,
     pdf_sha_override: str | None = None,
-) -> dict:
-    """Transcribe one page image to a ``vlm`` source dict (cache-first).
+) -> PreparedVlmPage:
+    """Render + cache-resolve one page (SEQUENTIAL — pdfium is not thread-safe).
 
-    ``seat`` is a resolved ``extract_shared.VLMSeat`` (provider / base_url /
-    api_key / model + ``require_ready()``). This calls ``seat.require_ready()``
-    FIRST so a misconfigured hosted seat fails loud (``VLMSeatError``) before
-    any render or POST.
-
-    Renders the page (at ``render_scale``, then PIL-downscaled to
-    ``_VLM_MAX_PX`` width), keys the per-page cache on
-    ``sha256(pdf_sha | page | model | prompt_version | render_px)``, and on a
-    MISS fires one OpenAI-compatible image-chat POST + writes the Markdown to
-    disk. On a HIT no POST is made (re-runs are free) and the live-POST counter
-    is NOT incremented. A transient endpoint failure (after bounded retries)
-    raises ``VlmExtractError(transient=True)`` so the caller degrades that page
-    alone.
-
-    ``render_fn`` / ``requests_module`` / ``pdf_sha_override`` are injection
-    seams for tests (mock the render + endpoint boundary; no live model calls).
+    Calls ``seat.require_ready()`` FIRST (a misconfigured hosted seat fails loud
+    with ``VLMSeatError`` before any render), renders the page (at
+    ``render_scale``, PIL-downscaled to ``_VLM_MAX_PX`` width), keys the per-page
+    cache on ``sha256(pdf_sha | page | model | prompt_version | render_px)``, and
+    returns a :class:`PreparedVlmPage`. A cache HIT carries the cached markdown
+    (dispatch is skipped); a MISS carries the encoded JPEG for the POST. MUST run
+    on the dispatching thread — it performs the pypdfium2 render, which is not
+    safe under concurrent access to one document handle.
     """
-    # Fail-loud on a misconfigured hosted seat BEFORE we spend a render/POST.
+    # Fail-loud on a misconfigured hosted seat BEFORE we spend a render.
     seat.require_ready()
     model = seat.model
     provider = seat.provider
@@ -624,47 +725,186 @@ def extract_page_markdown(
 
     cached = _cache_get(path)
     if cached is not None and "markdown" in cached:
-        # Cache hit — no POST, no live-post note. The cached model id is
-        # authoritative for the transcription; provider/render_px come from the
-        # current resolve (they are part of the key, so they match by
-        # construction).
-        return _build_source(
-            cached["markdown"], cached.get("model", model), provider, render_px
+        return PreparedVlmPage(
+            pdf_sha=pdf_sha, page_num=page_num, model=model, provider=provider,
+            render_px=render_px, cache_path=path, b64_jpeg=None,
+            cached_markdown=cached["markdown"], cached_model=cached.get("model", model),
         )
 
     b64_jpeg = _encode_jpeg_b64(image, render_px)
+    return PreparedVlmPage(
+        pdf_sha=pdf_sha, page_num=page_num, model=model, provider=provider,
+        render_px=render_px, cache_path=path, b64_jpeg=b64_jpeg,
+        cached_markdown=None, cached_model=None,
+    )
+
+
+def dispatch_prepared_request(
+    prepared: PreparedVlmPage,
+    *,
+    seat,
+    timeout: float,
+    requests_module=None,
+) -> str:
+    """Fire the one image-chat POST for a cache-MISS prepared request → Markdown.
+
+    PURE with respect to process state — no thread-local mutation, no
+    DecisionCapture, no cache write — so it is safe to run in a worker thread
+    (that is what :func:`dispatch_prepared_pages` fans out). A transient endpoint
+    failure (after bounded retries) raises ``VlmExtractError(transient=True)``; a
+    permanent one raises ``VlmExtractError(transient=False)`` — the caller applies
+    the per-page degrade/fail-loud contract. A cache HIT short-circuits to the
+    cached markdown (defensive; the caller normally skips dispatch on a hit).
+    """
+    if prepared.is_cache_hit:
+        return prepared.cached_markdown  # type: ignore[return-value]
     req = requests_module or _lazy_requests()
-    markdown = _post_with_retry(
+    return _post_with_retry(
         base_url=seat.base_url,
         api_key=seat.api_key,
-        model=model,
-        b64_jpeg=b64_jpeg,
+        model=prepared.model,
+        b64_jpeg=prepared.b64_jpeg,
         timeout=timeout,
         requests_module=req,
     )
+
+
+def finalize_prepared_request(
+    prepared: PreparedVlmPage,
+    markdown: str,
+    *,
+    capture=None,
+) -> dict:
+    """Record the LIVE POST result: live-post note + capture + cache + source.
+
+    Runs on the DISPATCHING thread (the caller's ordered consumption loop) — it
+    touches the thread-local live-POST counter (``_note_live_post``) and the
+    per-document ``DecisionCapture``, neither of which is safe to fire from a
+    worker thread concurrently. ``capture`` is the per-document capture (built
+    once on the dispatching thread via :func:`_document_capture`); one decision
+    per LIVE page transcription is emitted (best-effort, non-fatal). Byte-
+    identical to the miss tail of the historic ``extract_page_markdown``.
+    """
     _note_live_post()
-    # One DecisionCapture per LIVE page transcription (cache hits made no POST,
-    # so nothing to log). Best-effort + non-fatal — never breaks extraction.
     _log_page_transcription_decision(
-        _document_capture(),
-        pdf_sha=pdf_sha,
-        page_num=page_num,
-        model=model,
-        provider=provider,
-        render_px=render_px,
+        capture,
+        pdf_sha=prepared.pdf_sha,
+        page_num=prepared.page_num,
+        model=prepared.model,
+        provider=prepared.provider,
+        render_px=prepared.render_px,
         markdown=markdown,
         disable_thinking=resolve_vlm_disable_thinking(),
         max_tokens=resolve_vlm_max_tokens(),
     )
     _cache_put(
-        path,
+        prepared.cache_path,
         {
             "markdown": markdown,
-            "model": model,
+            "model": prepared.model,
             "created": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         },
     )
-    return _build_source(markdown, model, provider, render_px)
+    return _build_source(markdown, prepared.model, prepared.provider, prepared.render_px)
+
+
+def dispatch_prepared_pages(
+    items,
+    *,
+    seat,
+    timeout: float,
+    requests_module=None,
+    concurrency: int | None = None,
+) -> dict:
+    """Fan the POST for a batch of cache-MISS prepared pages out concurrently.
+
+    ``items`` is a sequence of ``(key, PreparedVlmPage)`` — the caller's opaque
+    ``key`` (e.g. page index) identifies each slot. Returns ``{key: outcome}``
+    where ``outcome`` is the Markdown string on success OR the raised exception
+    object (``VlmExtractError`` transient/permanent, or any other) — the caller
+    consumes the slots in its own ORIGINAL order and applies the per-page
+    degrade/fail-loud contract + ``finalize`` on the dispatching thread.
+
+    Mirrors :meth:`endpoint_runtime.OpenAICompatibleRuntime.generate_batch` /
+    :func:`reasoning_qc._fan_out_page_verifies`: a pre-sized result map keyed by
+    the caller's key, each future writing its own slot, so completion order can
+    never scramble downstream ordering. Width is
+    :func:`resolve_vlm_concurrency` (``SEMANTIK_VLM_CONCURRENCY``, default 8)
+    unless overridden, floored at 1 and capped at ``len(items)``. ONLY the POST
+    parallelizes — render/cache already ran sequentially (``prepare``) and the
+    caller finalizes (live-post note + capture + cache write) single-threaded.
+    """
+    items = list(items)
+    results: dict = {}
+    if not items:
+        return results
+
+    width = concurrency if concurrency is not None else resolve_vlm_concurrency()
+    max_workers = max(1, min(int(width), len(items)))
+
+    def _work(prep: PreparedVlmPage) -> str:
+        return dispatch_prepared_request(
+            prep, seat=seat, timeout=timeout, requests_module=requests_module
+        )
+
+    from concurrent.futures import ThreadPoolExecutor  # noqa: WPS433
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        future_to_key = {pool.submit(_work, prep): key for key, prep in items}
+        for future in future_to_key:
+            key = future_to_key[future]
+            try:
+                results[key] = future.result()
+            except BaseException as exc:  # noqa: BLE001 — capture per-slot; the
+                # caller re-applies the transient/permanent + fail-loud contract
+                # in ORIGINAL order (a permanent / non-VlmExtractError re-raises
+                # there, exactly as the serial path would).
+                results[key] = exc
+    return results
+
+
+def extract_page_markdown(
+    pdf_path: Path,
+    page_num: int,
+    *,
+    seat,
+    render_scale: float,
+    timeout: float,
+    cache_dir: Path | str | None = None,
+    render_fn=None,
+    requests_module=None,
+    pdf_sha_override: str | None = None,
+) -> dict:
+    """Transcribe one page image to a ``vlm`` source dict (cache-first, SERIAL).
+
+    The byte-identical serial composition of :func:`prepare_page_request` →
+    :func:`dispatch_prepared_request` → :func:`finalize_prepared_request` (used
+    by the single-page direct-call path; the document loop uses the three
+    primitives directly to fan the POST out). ``seat.require_ready()`` fires
+    FIRST (misconfigured hosted seat → ``VLMSeatError`` before any render/POST);
+    a cache HIT makes no POST + no live-post note; a MISS fires one POST and
+    writes the Markdown to disk. A transient endpoint failure (after bounded
+    retries) raises ``VlmExtractError(transient=True)`` so the caller degrades
+    that page alone.
+
+    ``render_fn`` / ``requests_module`` / ``pdf_sha_override`` are injection
+    seams for tests (mock the render + endpoint boundary; no live model calls).
+    """
+    prepared = prepare_page_request(
+        pdf_path,
+        page_num,
+        seat=seat,
+        render_scale=render_scale,
+        cache_dir=cache_dir,
+        render_fn=render_fn,
+        pdf_sha_override=pdf_sha_override,
+    )
+    if prepared.is_cache_hit:
+        return prepared.cached_source()
+    markdown = dispatch_prepared_request(
+        prepared, seat=seat, timeout=timeout, requests_module=requests_module
+    )
+    return finalize_prepared_request(prepared, markdown, capture=_document_capture())
 
 
 # --- Local-model unload (VRAM hand-off) ------------------------------------
@@ -727,9 +967,15 @@ def unload_vlm_model(
 
 __all__ = [
     "PROMPT_VERSION",
+    "PreparedVlmPage",
     "VlmExtractError",
     "begin_document_session",
+    "dispatch_prepared_pages",
+    "dispatch_prepared_request",
     "document_had_live_post",
     "extract_page_markdown",
+    "finalize_prepared_request",
+    "prepare_page_request",
+    "resolve_vlm_concurrency",
     "unload_vlm_model",
 ]

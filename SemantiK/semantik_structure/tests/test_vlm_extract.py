@@ -204,6 +204,61 @@ def test_request_shape(monkeypatch, tmp_path):
     assert "Authorization" not in call["headers"]
 
 
+def test_finish_reason_length_warns_truncation(monkeypatch, caplog):
+    """A ``finish_reason=length`` transcription (truncated at the token ceiling —
+    a real silent content-loss channel) logs a LOUD warning; the text is still
+    returned (additive observability, no signature change)."""
+    import logging
+
+    resp = _FakeResp(
+        payload={
+            "choices": [
+                {"message": {"content": "partial page text"}, "finish_reason": "length"}
+            ]
+        }
+    )
+    fake = _FakeRequests(response=resp)
+    with caplog.at_level(logging.WARNING):
+        text = vlm_extract._post_chat_completion(
+            base_url="http://localhost:11434",
+            api_key=None,
+            model="qwen2.5vl:7b",
+            b64_jpeg="Zg==",
+            timeout=10.0,
+            requests_module=fake,
+        )
+    assert text == "partial page text"
+    assert any(
+        "TRUNCATED" in r.getMessage() and "finish_reason=length" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_finish_reason_stop_does_not_warn(caplog):
+    """A normal ``finish_reason=stop`` transcription logs NO truncation warning."""
+    import logging
+
+    resp = _FakeResp(
+        payload={
+            "choices": [
+                {"message": {"content": "full page text"}, "finish_reason": "stop"}
+            ]
+        }
+    )
+    fake = _FakeRequests(response=resp)
+    with caplog.at_level(logging.WARNING):
+        text = vlm_extract._post_chat_completion(
+            base_url="http://localhost:11434",
+            api_key=None,
+            model="qwen2.5vl:7b",
+            b64_jpeg="Zg==",
+            timeout=10.0,
+            requests_module=fake,
+        )
+    assert text == "full page text"
+    assert not any("TRUNCATED" in r.getMessage() for r in caplog.records)
+
+
 # ---- per-page cache -------------------------------------------------------
 
 
@@ -546,3 +601,189 @@ def test_lifecycle_no_unload_for_nonlocal_provider(monkeypatch, tmp_path):
     _run_extract_shared(monkeypatch, td, requests_obj=combined)
     assert combined.chat == 2  # regions still transcribed on the hosted seat
     assert combined.unload == 0  # hosted seat has no ollama /api root
+
+
+# ---- concurrency resolver (parse-with-fallback) ---------------------------
+
+
+def test_vlm_concurrency_default(monkeypatch):
+    monkeypatch.delenv("SEMANTIK_VLM_CONCURRENCY", raising=False)
+    assert vlm_extract.resolve_vlm_concurrency() == 8
+
+
+@pytest.mark.parametrize("bad", ["", "  ", "abc", "0", "-4", "1.5", "nan"])
+def test_vlm_concurrency_fallback_to_default(monkeypatch, bad):
+    monkeypatch.setenv("SEMANTIK_VLM_CONCURRENCY", bad)
+    assert vlm_extract.resolve_vlm_concurrency() == 8
+
+
+@pytest.mark.parametrize("val,want", [("1", 1), ("2", 2), ("16", 16)])
+def test_vlm_concurrency_valid_override(monkeypatch, val, want):
+    monkeypatch.setenv("SEMANTIK_VLM_CONCURRENCY", val)
+    assert vlm_extract.resolve_vlm_concurrency() == want
+
+
+# ---- fan-out: results keyed by ORIGINAL index under inverted completion ----
+
+
+def _miss_prep(marker: int, cache_path: Path) -> "vlm_extract.PreparedVlmPage":
+    """A cache-MISS PreparedVlmPage whose b64 carries a page marker."""
+    return vlm_extract.PreparedVlmPage(
+        pdf_sha="sha",
+        page_num=marker + 1,
+        model="m",
+        provider="local",
+        render_px=[10, 10],
+        cache_path=cache_path,
+        b64_jpeg=f"mark-{marker}",
+        cached_markdown=None,
+        cached_model=None,
+    )
+
+
+def test_dispatch_prepared_pages_inverted_completion_keyed_by_index(monkeypatch):
+    """The pool completes pages in INVERTED order; the result map stays keyed by
+    the caller's original key (never scrambled by completion order)."""
+    import time
+
+    n = 4
+
+    class _InvertedFake:
+        def post(self, url, json=None, headers=None, timeout=None):
+            content = json["messages"][-1]["content"]
+            img = next(p for p in content if p.get("type") == "image_url")
+            b64 = img["image_url"]["url"].split("base64,", 1)[1]
+            marker = int(b64.split("-")[1])
+            # Earlier page → longer sleep → completes LAST (inverted order).
+            time.sleep(0.02 * (n - marker))
+            return _FakeResp(payload={"choices": [{"message": {"content": f"md-{marker}"}}]})
+
+    items = [(i, _miss_prep(i, Path("/unused"))) for i in range(n)]
+    results = vlm_extract.dispatch_prepared_pages(
+        items,
+        seat=_local_seat(),
+        timeout=5.0,
+        requests_module=_InvertedFake(),
+        concurrency=4,
+    )
+    assert results == {0: "md-0", 1: "md-1", 2: "md-2", 3: "md-3"}
+
+
+def test_dispatch_prepared_pages_captures_exceptions_per_slot(monkeypatch):
+    """A raised VlmExtractError is RETURNED in its slot (never propagated from
+    the pool) so the caller re-applies transient/permanent in original order."""
+    monkeypatch.setattr(vlm_extract, "_VLM_RETRY_BACKOFF_BASE_SECONDS", 0.0)
+
+    class _MixedFake:
+        def post(self, url, json=None, headers=None, timeout=None):
+            content = json["messages"][-1]["content"]
+            img = next(p for p in content if p.get("type") == "image_url")
+            marker = int(img["image_url"]["url"].split("mark-", 1)[1])
+            if marker == 0:
+                return _FakeResp(status_code=401, text="unauthorized")  # permanent
+            return _FakeResp(payload={"choices": [{"message": {"content": "ok"}}]})
+
+    items = [(0, _miss_prep(0, Path("/unused"))), (1, _miss_prep(1, Path("/unused")))]
+    results = vlm_extract.dispatch_prepared_pages(
+        items, seat=_local_seat(), timeout=1.0, requests_module=_MixedFake(), concurrency=2
+    )
+    assert isinstance(results[0], vlm_extract.VlmExtractError)
+    assert results[0].transient is False
+    assert results[1] == "ok"
+
+
+# ---- thread-local live-POST accounting: finalize-only, never in workers -----
+
+
+def test_live_post_note_fires_in_finalize_not_workers(monkeypatch, tmp_path):
+    """dispatch (workers) must NOT touch the thread-local live-POST counter; only
+    finalize (dispatching thread) records it — preserving the per-document
+    ``begin_document_session`` / ``document_had_live_post`` semantics."""
+    vlm_extract.begin_document_session()
+    assert vlm_extract.document_had_live_post() is False
+
+    fake = _FakeRequests(response=_ok_response("# ok"))
+    prep = _miss_prep(0, tmp_path / "c.json")
+    results = vlm_extract.dispatch_prepared_pages(
+        [(0, prep)], seat=_local_seat(), timeout=1.0, requests_module=fake, concurrency=4
+    )
+    # The POST fired in a worker, but the thread-local counter is untouched.
+    assert vlm_extract.document_had_live_post() is False
+
+    # finalize (dispatching thread) is what records the live post + writes cache.
+    src = vlm_extract.finalize_prepared_request(prep, results[0], capture=None)
+    assert vlm_extract.document_had_live_post() is True
+    assert src["markdown"] == "# ok"
+
+
+# ---- extract_shared glue: consume fan-out results in PAGE order + fail-soft --
+
+
+def _prep_multipage_extract(monkeypatch, tmp_path, *, page_count):
+    monkeypatch.setenv("SEMANTIK_VLM_EXTRACT", "1")
+    monkeypatch.setattr(
+        extract_shared, "_pikepdf_inspect",
+        lambda p: {"is_encrypted": False, "is_tagged": False, "page_count": page_count},
+    )
+    _prep_scanned_page(monkeypatch)
+    monkeypatch.setattr(
+        vlm_extract, "_default_render_fn", lambda p, n, s: Image.new("RGB", (1600, 2000))
+    )
+    monkeypatch.setattr(vlm_extract, "_document_sha", lambda p: "shaGLUE")
+    monkeypatch.setattr(
+        vlm_extract._semantik_paths, "resolve_cache", lambda name: tmp_path
+    )
+    # Keep the end-of-document unload hermetic (no localhost network attempt).
+    monkeypatch.setattr(vlm_extract, "unload_vlm_model", lambda *a, **k: True)
+
+
+def test_extract_shared_consumes_fanout_in_page_order(monkeypatch, tmp_path):
+    """Even when the fan-out reports results in an inverted dict order, each page
+    receives ITS OWN result (consumed by original page index)."""
+    _prep_multipage_extract(monkeypatch, tmp_path, page_count=3)
+
+    def _fake_fanout(items, *, seat, timeout, requests_module=None, concurrency=None):
+        # Correctly keyed by index, but iterated in REVERSE insertion order.
+        return {idx: f"# page {idx}" for idx, _ in reversed(list(items))}
+
+    monkeypatch.setattr(vlm_extract, "dispatch_prepared_pages", _fake_fanout)
+    out = extract_shared.extract_shared(Path("x.pdf"))
+    md = [pg["vlm"]["markdown"] for pg in out["pages"]]
+    assert md == ["# page 0", "# page 1", "# page 2"]
+    assert all("vlm" in pg["sources_used"] for pg in out["pages"])
+
+
+def test_extract_shared_fanout_transient_degrades_one_page(monkeypatch, tmp_path):
+    """A transient failure on ONE page degrades that page alone (vlm stub, NOT in
+    sources_used); the other page transcribes — the serial per-page contract."""
+    _prep_multipage_extract(monkeypatch, tmp_path, page_count=2)
+
+    def _fake_fanout(items, *, seat, timeout, requests_module=None, concurrency=None):
+        return {
+            0: vlm_extract.VlmExtractError("timeout", transient=True),
+            1: "# page one ok",
+        }
+
+    monkeypatch.setattr(vlm_extract, "dispatch_prepared_pages", _fake_fanout)
+    out = extract_shared.extract_shared(Path("x.pdf"))
+    p0, p1 = out["pages"]
+    assert p0["vlm"]["markdown"] == "" and "error" in p0["vlm"]
+    assert "vlm" not in p0["sources_used"]  # degraded → not a used source
+    assert p1["vlm"]["markdown"] == "# page one ok"
+    assert "vlm" in p1["sources_used"]
+
+
+def test_extract_shared_fanout_permanent_raises(monkeypatch, tmp_path):
+    """A permanent failure re-raises (fail-loud) from the ordered consumption —
+    exactly as the serial ``_extract_page`` permanent arm."""
+    _prep_multipage_extract(monkeypatch, tmp_path, page_count=2)
+
+    def _fake_fanout(items, *, seat, timeout, requests_module=None, concurrency=None):
+        return {
+            0: vlm_extract.VlmExtractError("bad request", transient=False),
+            1: "# ok",
+        }
+
+    monkeypatch.setattr(vlm_extract, "dispatch_prepared_pages", _fake_fanout)
+    with pytest.raises(vlm_extract.VlmExtractError):
+        extract_shared.extract_shared(Path("x.pdf"))

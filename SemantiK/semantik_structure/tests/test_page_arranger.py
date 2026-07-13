@@ -1,0 +1,810 @@
+"""Module tests for the page-arranger I/O half (page_arranger). ALL HTTP mocked.
+
+Covers: flag-off byte-identical route probe (ZERO extraction), the 3-rung ladder
+(temps / max_tokens / thinking-off / json response_format), the coverage
+invariant, furniture -> metadata_drop listed-but-empty, the resume sidecar
+(hit skips POST, a failed page is not cached), stop mid-fan-out
+(persist + propagate), the deterministic hints + hints_provider stub, the
+schema_version-2 label factory, and the DecisionCapture emit.
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from semantik_structure import page_arranger as pa
+from semantik_structure.types import FeatureBlock, RawBlock
+
+
+# ---------------------------------------------------------------------------
+# Synthetic builders (NO course/corpus text).
+# ---------------------------------------------------------------------------
+def _fb(text, *, page=1, y0=0.0, is_image=False, source="tesseract"):
+    raw = RawBlock(
+        text=text, page=page, bbox=(0.0, y0, 100.0, y0 + 10.0),
+        page_width=612.0, page_height=792.0, source=source,
+    )
+    return FeatureBlock(
+        raw=raw, size_bucket="md", gap_above=None, is_top_of_page=False,
+        is_centered=False, caps=None, indent_bucket=0, relative_font_ratio=1.0,
+        provenance=source, is_image=is_image,
+    )
+
+
+class _Seat:
+    def __init__(self, model="arranger-omni", base_url="http://localhost:8000", api_key=None):
+        self.model = model
+        self.base_url = base_url
+        self.api_key = api_key
+        self.provider = "local"
+
+    @property
+    def is_local(self):
+        return True
+
+    def require_ready(self):
+        return self
+
+
+class _Resp:
+    def __init__(self, content):
+        self._content = content
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return {"choices": [{"message": {"content": self._content}}], "usage": {}}
+
+
+class _FakeRequests:
+    """Records every POST body; replays a queue of content strings."""
+
+    def __init__(self, contents):
+        self._contents = list(contents)
+        self.posts = []
+
+    def post(self, url, json=None, headers=None, timeout=None):  # noqa: A002
+        self.posts.append({"url": url, "body": json, "headers": headers, "timeout": timeout})
+        content = self._contents.pop(0) if self._contents else '{"blocks":[]}'
+        return _Resp(content)
+
+
+def _arr(blocks, confidence=0.9):
+    return json.dumps({"blocks": blocks, "confidence": confidence})
+
+
+# ---------------------------------------------------------------------------
+# (a) flag-off byte-identical route probe — ZERO extraction.
+# ---------------------------------------------------------------------------
+def test_route_probe_off_does_zero_extraction(monkeypatch):
+    monkeypatch.delenv("SEMANTIK_PAGE_ARRANGER", raising=False)
+
+    def _boom(*_a, **_k):
+        raise AssertionError("extraction must NOT run when the flag is off")
+
+    monkeypatch.setattr("semantik_structure.extract_shared.extract_shared_cached", _boom)
+    assert pa.resolve_page_arranger_route("/nonexistent.pdf") is None
+
+
+# ---------------------------------------------------------------------------
+# (b) 3-rung ladder — temps / max_tokens / thinking-off / json mode.
+# ---------------------------------------------------------------------------
+def test_ladder_three_rungs_body_shape(monkeypatch):
+    units = [{"id": "p1_b00", "text": "Hello"}, {"id": "p1_b01", "text": "World"}]
+    # rung1 drops an id (invalid) -> rung2 still invalid -> rung3 valid.
+    bad = _arr([{"ids": ["p1_b00"], "type": "paragraph"}])  # missing p1_b01
+    good = _arr([{"ids": ["p1_b00", "p1_b01"], "type": "paragraph"}])
+    fake = _FakeRequests([bad, bad, good])
+    res = pa.arrange_page(_Seat(), "IMGB64", units, 1, requests_module=fake)
+    assert res["status"] == "ok"
+    assert res["attempts"] == 3
+    assert len(fake.posts) == 3
+    temps = [p["body"]["temperature"] for p in fake.posts]
+    assert temps == [0.0, 0.0, 0.3]
+    for p in fake.posts:
+        b = p["body"]
+        assert b["max_tokens"] == 6144
+        assert b["chat_template_kwargs"] == {"thinking": False, "enable_thinking": False}
+        assert b["response_format"] == {"type": "json_object"}
+    # rung 3 restated the full legal id set
+    last_user = fake.posts[-1]["body"]["messages"][-1]["content"]
+    text = last_user if isinstance(last_user, str) else last_user[0]["text"]
+    assert "p1_b00" in text and "p1_b01" in text
+
+
+def test_ladder_rung1_success_single_post():
+    units = [{"id": "p1_b00", "text": "Hello"}]
+    good = _arr([{"ids": ["p1_b00"], "type": "paragraph"}])
+    fake = _FakeRequests([good])
+    res = pa.arrange_page(_Seat(), "IMG", units, 1, requests_module=fake)
+    assert res["status"] == "ok" and res["attempts"] == 1
+    assert len(fake.posts) == 1
+
+
+# ---------------------------------------------------------------------------
+# Helpers to drive arrange_regions with a mocked seat + render + HTTP.
+# ---------------------------------------------------------------------------
+def _drive_arrange_regions(monkeypatch, feature_blocks, contents, *, seat=None):
+    seat = seat or _Seat()
+    monkeypatch.setattr(pa, "resolve_arranger_seat", lambda: seat)
+    monkeypatch.setattr(pa, "_render_page_image_b64", lambda _pdf, _pg: "IMGB64")
+    fake = _FakeRequests(contents)
+    route = pa.ArrangerRoute(pdf_path=Path("/x.pdf"), shared={}, feature_set=_FS(feature_blocks))
+    regions, audit = route.arrange_regions(feature_blocks, requests_module=fake)
+    return regions, audit, fake
+
+
+class _FS:
+    def __init__(self, fbs):
+        self.feature_blocks = fbs
+
+
+# ---------------------------------------------------------------------------
+# (c) coverage invariant + (d) furniture -> metadata_drop listed.
+# ---------------------------------------------------------------------------
+def test_coverage_invariant_and_furniture_listed(monkeypatch):
+    monkeypatch.delenv("SEMANTIK_PAGE_ARRANGER_CHECKPOINT", raising=False)
+    monkeypatch.setenv("SEMANTIK_PAGE_ARRANGER_CHECKPOINT", "0")
+    fbs = [_fb("Chapter 1 Foundations 5"), _fb("Real body prose here.", y0=20.0)]
+    content = _arr([
+        {"ids": ["p1_b00"], "type": "furniture"},
+        {"ids": ["p1_b01"], "type": "paragraph"},
+    ])
+    regions, audit, _fake = _drive_arrange_regions(monkeypatch, fbs, [content])
+    assert audit["pages_valid"] == 1
+    # every non-image FB claimed exactly once (arrange_regions asserts internally)
+    claimed = sorted(i for r in regions for i in r.feature_block_indices)
+    assert claimed == [0, 1]
+    # furniture region is present (listed) but its rendered body is empty; the
+    # raw furniture text is preserved in the payload.
+    drop = [r for r in regions if r.kind == "metadata_drop"]
+    assert len(drop) == 1
+    assert drop[0].payload["text"] == ""
+    assert "Chapter 1 Foundations" in drop[0].payload["furniture_text"]
+    para = [r for r in regions if r.kind == "paragraph"]
+    assert para[0].payload["typing_authority"] == "vlm-arranger"
+
+
+def test_failed_page_emits_per_unit_paragraph_fallback(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_PAGE_ARRANGER_CHECKPOINT", "0")
+    fbs = [_fb("A"), _fb("B", y0=20.0)]
+    # every rung drops an id -> arrangement_failed
+    bad = _arr([{"ids": ["p1_b00"], "type": "paragraph"}])
+    regions, audit, _f = _drive_arrange_regions(monkeypatch, fbs, [bad, bad, bad])
+    assert audit["pages_failed"] == 1
+    # content preserved: one paragraph region per unit, loud flag on each
+    assert len(regions) == 2
+    assert all(r.kind == "paragraph" for r in regions)
+    assert all(r.payload.get("arrangement_failed") for r in regions)
+    assert sorted(i for r in regions for i in r.feature_block_indices) == [0, 1]
+
+
+# ---------------------------------------------------------------------------
+# (e) resume sidecar — hit skips POST; a failed page is NOT cached.
+# ---------------------------------------------------------------------------
+def test_sidecar_hit_skips_post(monkeypatch, tmp_path):
+    monkeypatch.setenv("SEMANTIK_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.delenv("SEMANTIK_PAGE_ARRANGER_CHECKPOINT", raising=False)
+    monkeypatch.delenv("ED4ALL_GENERATION_CHECKPOINT", raising=False)
+    fbs = [_fb("Body one.", y0=20.0)]
+    good = _arr([{"ids": ["p1_b00"], "type": "paragraph"}])
+
+    _r1, _a1, fake1 = _drive_arrange_regions(monkeypatch, fbs, [good])
+    assert len(fake1.posts) == 1  # cold: one POST
+    _r2, _a2, fake2 = _drive_arrange_regions(monkeypatch, fbs, [good])
+    assert len(fake2.posts) == 0  # warm: served from sidecar, ZERO POSTs
+
+
+def test_failed_page_not_cached(monkeypatch, tmp_path):
+    monkeypatch.setenv("SEMANTIK_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.delenv("SEMANTIK_PAGE_ARRANGER_CHECKPOINT", raising=False)
+    fbs = [_fb("A"), _fb("B", y0=20.0)]
+    bad = _arr([{"ids": ["p1_b00"], "type": "paragraph"}])  # perpetually invalid
+    _r1, _a1, fake1 = _drive_arrange_regions(monkeypatch, fbs, [bad, bad, bad])
+    assert fake1.posts  # ran
+    _r2, _a2, fake2 = _drive_arrange_regions(monkeypatch, fbs, [bad, bad, bad])
+    assert len(fake2.posts) == 3  # NOT cached — re-ran the whole ladder
+
+
+# ---------------------------------------------------------------------------
+# (f) stop mid-fan-out — completed unit persists + CascadeStopRequested.
+# ---------------------------------------------------------------------------
+def test_stop_mid_fanout_persists_and_propagates(monkeypatch, tmp_path):
+    from semantik_structure.stop_seam import CascadeStopRequested
+
+    sentinel = tmp_path / "STOP"
+    monkeypatch.setenv("SEMANTIK_STOP_SENTINEL", str(sentinel))
+    monkeypatch.setenv("SEMANTIK_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.delenv("SEMANTIK_PAGE_ARRANGER_CHECKPOINT", raising=False)
+    monkeypatch.setenv("SEMANTIK_PAGE_ARRANGER_CONCURRENCY", "1")
+    # two pages; the stop fires after the first page completes.
+    fbs = [_fb("Page one body.", page=1, y0=20.0), _fb("Page two body.", page=2, y0=20.0)]
+    seat = _Seat()
+    monkeypatch.setattr(pa, "resolve_arranger_seat", lambda: seat)
+    monkeypatch.setattr(pa, "_render_page_image_b64", lambda _pdf, _pg: "IMG")
+
+    good1 = _arr([{"ids": ["p1_b00"], "type": "paragraph"}])
+    good2 = _arr([{"ids": ["p2_b00"], "type": "paragraph"}])
+    fake = _FakeRequests([good1, good2])
+
+    calls = {"n": 0}
+
+    def _stop_after_first():
+        # allow the first submission; trip the stop before the second. When the
+        # stop trips, materialize the REAL sentinel file so the pass-boundary
+        # _check_stop (which re-probes the filesystem) raises for real.
+        calls["n"] += 1
+        if calls["n"] > 1:
+            sentinel.write_text("stop")
+            return True
+        return False
+
+    monkeypatch.setattr(pa, "_stop_requested", _stop_after_first)
+
+    route = pa.ArrangerRoute(pdf_path=Path("/x.pdf"), shared={}, feature_set=_FS(fbs))
+    with pytest.raises(CascadeStopRequested):
+        route.arrange_regions(fbs, requests_module=fake)
+    # page 1 completed + persisted to its sidecar (so a resume serves it).
+    cache_root = pa._cache_root()
+    persisted = list(cache_root.rglob("*.json"))
+    assert persisted, "the completed page-1 unit must be checkpointed before the stop propagates"
+
+
+# ---------------------------------------------------------------------------
+# (g) deterministic hints in prompt + hints_provider stub plumbed.
+# ---------------------------------------------------------------------------
+def test_deterministic_hints_in_prompt_and_provider_merged():
+    units = [
+        {"id": "p1_b00", "text": "EXAMPLE 1.2"},
+        {"id": "p1_b01", "text": "Some ordinary paragraph text goes here."},
+    ]
+    hints = pa.build_page_hints(units, running_header_ids=set())
+    assert hints.get("p1_b00", "").startswith("pedagogical_label:")
+
+    good = _arr([{"ids": ["p1_b00"], "type": "heading", "level": 2},
+                 {"ids": ["p1_b01"], "type": "paragraph"}])
+    fake = _FakeRequests([good])
+    seen = {"calls": 0}
+
+    def _provider(units_in):
+        seen["calls"] += 1
+        return {"p1_b01": "bertv2_hint:body"}
+
+    res = pa.arrange_page(_Seat(), "IMG", units, 1, hints=hints,
+                          hints_provider=_provider, requests_module=fake)
+    assert res["status"] == "ok"
+    assert seen["calls"] == 1  # provider called once for the page (rung 1)
+    user = fake.posts[0]["body"]["messages"][-1]["content"]
+    text = user if isinstance(user, str) else user[0]["text"]
+    assert "Deterministic hints" in text
+    assert "pedagogical_label" in text
+    assert "bertv2_hint:body" in text  # provider label merged into rung 1
+
+
+def test_running_header_detection_over_pages():
+    ubp = {
+        1: [{"id": "p1_b00", "text": "Chapter 9 Roots 803"}, {"id": "p1_b01", "text": "body a"}],
+        2: [{"id": "p2_b00", "text": "Chapter 9 Roots 815"}, {"id": "p2_b01", "text": "body b"}],
+        3: [{"id": "p3_b00", "text": "Chapter 9 Roots 827"}, {"id": "p3_b01", "text": "body c"}],
+    }
+    hdr = pa._detect_running_header_ids(ubp)
+    # the number-masked "chapter # roots #" signature recurs at page-top on all pages
+    assert "p1_b00" in hdr and "p2_b00" in hdr and "p3_b00" in hdr
+    assert "p1_b01" not in hdr
+
+
+# ---------------------------------------------------------------------------
+# (h) label factory — dir set writes v2 records + schema; unset writes nothing.
+# ---------------------------------------------------------------------------
+def test_train_records_written_when_dir_set(monkeypatch, tmp_path):
+    monkeypatch.setenv("SEMANTIK_PAGE_ARRANGER_CHECKPOINT", "0")
+    train_dir = tmp_path / "train"
+    monkeypatch.setenv("SEMANTIK_ARRANGER_TRAIN_RECORDS_DIR", str(train_dir))
+    fbs = [_fb("Body prose.", y0=20.0)]
+    good = _arr([{"ids": ["p1_b00"], "type": "paragraph"}])
+    _drive_arrange_regions(monkeypatch, fbs, [good])
+    recs = list(train_dir.glob("train_p*.json"))
+    assert len(recs) == 1
+    doc = json.loads(recs[0].read_text())
+    assert doc["schema_version"] == 2
+    assert doc["units"][0]["id"] == "p1_b00"
+    assert (train_dir / "relations_schema.json").exists()
+
+
+def test_train_records_unset_writes_nothing(monkeypatch, tmp_path):
+    monkeypatch.setenv("SEMANTIK_PAGE_ARRANGER_CHECKPOINT", "0")
+    monkeypatch.delenv("SEMANTIK_ARRANGER_TRAIN_RECORDS_DIR", raising=False)
+    fbs = [_fb("Body prose.", y0=20.0)]
+    good = _arr([{"ids": ["p1_b00"], "type": "paragraph"}])
+    _drive_arrange_regions(monkeypatch, fbs, [good])
+    # no train dir was created anywhere under tmp_path
+    assert not list(tmp_path.rglob("train_p*.json"))
+
+
+# ---------------------------------------------------------------------------
+# (i) DecisionCapture fires with dynamic rationale.
+# ---------------------------------------------------------------------------
+def test_decision_capture_fires_dynamic(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_PAGE_ARRANGER_CHECKPOINT", "0")
+    logged = []
+
+    class _Cap:
+        def __init__(self, **_k):
+            pass
+
+        def log_decision(self, decision_type, decision, rationale, **_k):
+            logged.append((decision_type, decision, rationale))
+
+    import lib.decision_capture as dc
+    monkeypatch.setattr(dc, "DecisionCapture", _Cap)
+
+    fbs = [_fb("Body prose.", y0=20.0)]
+    good = _arr([{"ids": ["p1_b00"], "type": "paragraph"}])
+    _drive_arrange_regions(monkeypatch, fbs, [good])
+    assert logged, "one structure_detection decision should fire per document"
+    dtype, _dec, rationale = logged[0]
+    assert dtype == "structure_detection"
+    assert "pages=1" in rationale and "valid=1" in rationale
+    assert len(rationale) >= 20
+
+
+# ---------------------------------------------------------------------------
+# (j) heading-sanity post-pass: glued mega-heading -> demote + tail title.
+# ---------------------------------------------------------------------------
+# The glued-mega-heading pattern the gate-1 live run produced: extraction fused a
+# page-top band (running header + two TRY-IT apparatus openers) with the real
+# section title trapped at the tail, and the arrange model typed the WHOLE fused
+# unit as one heading.
+_GLUED_MEGA = (
+    "Chapter 1 Foundations 83\n"
+    "TRY IT :: 1.93 Simplify the expression by combining like terms.\n"
+    "TRY IT :: 1.94 Evaluate the following for the given value.\n"
+    "Divide Integers"
+)
+
+
+def test_heading_sanity_glued_unit_demoted_and_tail_extracted():
+    units = [{"id": "p1_b00", "text": _GLUED_MEGA}]
+    good = _arr([{"ids": ["p1_b00"], "type": "heading", "level": 1}])
+    fake = _FakeRequests([good])
+    res = pa.arrange_page(_Seat(), "IMG", units, 1, requests_module=fake)
+    assert res["status"] == "ok"
+    blocks = res["arrangement"]["blocks"]
+    # original mega-heading block DEMOTED to paragraph (keeps full text via ids)
+    assert blocks[0]["type"] == "paragraph"
+    assert blocks[0]["ids"] == ["p1_b00"]
+    assert blocks[0]["heading_sanity"]["reason"] == "too_long"
+    # a SYNTHETIC tail-title heading is inserted AFTER it
+    synth = blocks[1]
+    assert synth["synthetic_heading"] is True
+    assert synth["type"] == "heading"
+    assert synth["ids"] == []
+    assert synth["text"] == "Divide Integers"
+    assert synth["duplicate_of_tail"] is True
+    assert synth["synthesized_from"] == "p1_b00"
+    # offsets point at the VERBATIM tail slice of the source unit text
+    start, end = synth["tail_offsets"]
+    assert _GLUED_MEGA[start:end] == "Divide Integers"
+    # recorded in the heading_sanity ledger (label factory learns from it)
+    recs = res["heading_sanity"]
+    assert len(recs) == 1
+    assert recs[0]["op"] == "heading_demote"
+    assert recs[0]["tail_title"] == "Divide Integers"
+    assert recs[0]["tail_offsets"] == [start, end]
+
+
+def test_heading_sanity_glued_unit_region_coverage(monkeypatch):
+    # end-to-end through arrange_regions: coverage invariant holds and the
+    # synthetic heading Region claims ZERO FeatureBlocks (no double-count).
+    monkeypatch.setenv("SEMANTIK_PAGE_ARRANGER_CHECKPOINT", "0")
+    fbs = [_fb(_GLUED_MEGA), _fb("Ordinary following paragraph body.", y0=40.0)]
+    content = _arr([
+        {"ids": ["p1_b00"], "type": "heading", "level": 1},
+        {"ids": ["p1_b01"], "type": "paragraph"},
+    ])
+    regions, audit, _f = _drive_arrange_regions(monkeypatch, fbs, [content])
+    assert audit["pages_valid"] == 1
+    # coverage invariant asserted internally; both real FBs claimed exactly once
+    claimed = sorted(i for r in regions for i in r.feature_block_indices)
+    assert claimed == [0, 1]
+    # the demoted mega-heading is now a paragraph Region owning FB 0
+    demoted = [r for r in regions if r.kind == "paragraph"
+               and 0 in r.feature_block_indices]
+    assert demoted and demoted[0].payload["arrange_type"] == "paragraph"
+    # the synthetic tail-title heading: verbatim title, NO FBs, provenance stamped
+    synth = [r for r in regions if r.kind == "heading"
+             and r.payload.get("duplicate_of_tail")]
+    assert len(synth) == 1
+    assert synth[0].feature_block_indices == ()
+    assert synth[0].payload["text"] == "Divide Integers"
+    assert synth[0].provenance["pass"] == "heading_sanity_tail_title"
+    assert synth[0].provenance["synthesized_from"] == "p1_b00"
+    # audit tallies the demotion + tail title
+    row = audit["page_rows"][0]
+    assert row["heading_sanity"] == 1
+    assert row["heading_sanity_tail_titles"] == 1
+
+
+def test_heading_sanity_clean_short_heading_untouched():
+    units = [{"id": "p1_b00", "text": "Divide Integers"},
+             {"id": "p1_b01", "text": "Body prose that follows the section title."}]
+    good = _arr([{"ids": ["p1_b00"], "type": "heading", "level": 2},
+                 {"ids": ["p1_b01"], "type": "paragraph"}])
+    fake = _FakeRequests([good])
+    res = pa.arrange_page(_Seat(), "IMG", units, 1, requests_module=fake)
+    assert res["status"] == "ok"
+    blocks = res["arrangement"]["blocks"]
+    assert len(blocks) == 2  # no synthetic block inserted
+    assert blocks[0]["type"] == "heading"  # clean short heading untouched
+    assert "heading_sanity" not in blocks[0]
+    assert res["heading_sanity"] == []
+
+
+def test_heading_sanity_furniture_only_glued_heading_demoted_to_furniture():
+    # a heading whose ENTIRE text is furniture (running header + page number) ->
+    # demoted to furniture, and NO synthetic tail title is emitted.
+    units = [{"id": "p1_b00", "text": "Chapter 1 Foundations 83"}]
+    good = _arr([{"ids": ["p1_b00"], "type": "heading", "level": 1}])
+    fake = _FakeRequests([good])
+    res = pa.arrange_page(_Seat(), "IMG", units, 1, requests_module=fake)
+    assert res["status"] == "ok"
+    blocks = res["arrangement"]["blocks"]
+    assert len(blocks) == 1  # no synthetic heading
+    assert blocks[0]["type"] == "furniture"
+    assert blocks[0]["heading_sanity"]["reason"] == "running_header"
+    recs = res["heading_sanity"]
+    assert len(recs) == 1 and recs[0]["to"] == "furniture"
+    assert "tail_title" not in recs[0]
+
+
+def test_heading_sanity_flag_off_byte_identical():
+    import os
+    units = [{"id": "p1_b00", "text": _GLUED_MEGA}]
+    good = _arr([{"ids": ["p1_b00"], "type": "heading", "level": 1}])
+
+    def _run():
+        fake = _FakeRequests([good])
+        return pa.arrange_page(_Seat(), "IMG", units, 1, requests_module=fake)
+
+    # flag ON (default): demotes + inserts synthetic
+    on = _run()
+    assert len(on["arrangement"]["blocks"]) == 2
+    # flag OFF: byte-identical to the raw arrangement (single untouched heading)
+    prev = os.environ.get("SEMANTIK_ARRANGER_HEADING_SANITY")
+    os.environ["SEMANTIK_ARRANGER_HEADING_SANITY"] = "0"
+    try:
+        off = _run()
+    finally:
+        if prev is None:
+            os.environ.pop("SEMANTIK_ARRANGER_HEADING_SANITY", None)
+        else:
+            os.environ["SEMANTIK_ARRANGER_HEADING_SANITY"] = prev
+    assert off["heading_sanity"] == []
+    assert len(off["arrangement"]["blocks"]) == 1
+    assert off["arrangement"]["blocks"][0]["type"] == "heading"
+    assert "heading_sanity" not in off["arrangement"]["blocks"][0]
+
+
+def test_heading_sanity_max_chars_override():
+    import os
+    # a heading UNDER 120 but OVER a lowered ceiling -> demoted; the tail title is
+    # the final sentence-less segment.
+    text = "This is a moderately long heading that exceeds a tight ceiling Widget"
+    units = [{"id": "p1_b00", "text": text}]
+    good = _arr([{"ids": ["p1_b00"], "type": "heading", "level": 2}])
+    prev = os.environ.get("SEMANTIK_ARRANGER_HEADING_MAX_CHARS")
+    os.environ["SEMANTIK_ARRANGER_HEADING_MAX_CHARS"] = "20"
+    try:
+        fake = _FakeRequests([good])
+        res = pa.arrange_page(_Seat(), "IMG", units, 1, requests_module=fake)
+    finally:
+        if prev is None:
+            os.environ.pop("SEMANTIK_ARRANGER_HEADING_MAX_CHARS", None)
+        else:
+            os.environ["SEMANTIK_ARRANGER_HEADING_MAX_CHARS"] = prev
+    assert res["heading_sanity"][0]["reason"] == "too_long"
+    assert res["arrangement"]["blocks"][0]["type"] == "paragraph"
+
+
+def test_resolve_heading_sanity_defaults(monkeypatch):
+    monkeypatch.delenv("SEMANTIK_ARRANGER_HEADING_SANITY", raising=False)
+    monkeypatch.delenv("SEMANTIK_ARRANGER_HEADING_MAX_CHARS", raising=False)
+    assert pa.resolve_arranger_heading_sanity() is True
+    assert pa.resolve_arranger_heading_max_chars() == 120
+    monkeypatch.setenv("SEMANTIK_ARRANGER_HEADING_SANITY", "off")
+    assert pa.resolve_arranger_heading_sanity() is False
+    monkeypatch.setenv("SEMANTIK_ARRANGER_HEADING_SANITY", "garbage")
+    assert pa.resolve_arranger_heading_sanity() is True  # parse-with-fallback -> on
+    monkeypatch.setenv("SEMANTIK_ARRANGER_HEADING_MAX_CHARS", "-5")
+    assert pa.resolve_arranger_heading_max_chars() == 120
+    monkeypatch.setenv("SEMANTIK_ARRANGER_HEADING_MAX_CHARS", "40")
+    assert pa.resolve_arranger_heading_max_chars() == 40
+
+
+# ---------------------------------------------------------------------------
+# (k) LEADING-TITLE split (outline-anchored) — the second glue variant: the
+# section title fused at the HEAD of the following paragraph unit.
+# ---------------------------------------------------------------------------
+_OUTLINE_UNIT = (
+    "Chapter Outline\n"
+    "1.4 Multiply Integers\n"
+    "1.5 Divide Integers"
+)
+_GLUED_PARAGRAPH = (
+    "Divide Integers What about division? Division is the inverse of "
+    "multiplication, so we can use multiplication facts."
+)
+
+
+def _drive_two_pages(monkeypatch, fbs, contents):
+    """Drive arrange_regions over a multi-page doc with concurrency 1 (so the
+    _FakeRequests reply queue maps to sorted page order deterministically)."""
+    monkeypatch.setenv("SEMANTIK_PAGE_ARRANGER_CHECKPOINT", "0")
+    monkeypatch.setenv("SEMANTIK_PAGE_ARRANGER_CONCURRENCY", "1")
+    return _drive_arrange_regions(monkeypatch, fbs, contents)
+
+
+def test_leading_title_split_outline_anchored(monkeypatch):
+    # page 1: the chapter-outline unit (typed paragraph); page 2: the glued
+    # paragraph whose HEAD carries the outline title "Divide Integers".
+    fbs = [_fb(_OUTLINE_UNIT, page=1), _fb(_GLUED_PARAGRAPH, page=2, y0=20.0)]
+    c1 = _arr([{"ids": ["p1_b00"], "type": "paragraph"}])
+    c2 = _arr([{"ids": ["p2_b00"], "type": "paragraph"}])
+    regions, audit, _f = _drive_two_pages(monkeypatch, fbs, [c1, c2])
+    assert audit["pages_valid"] == 2
+    # coverage invariant: both real FBs claimed exactly once
+    claimed = sorted(i for r in regions for i in r.feature_block_indices)
+    assert claimed == [0, 1]
+    # a synthetic LEADING-title heading exists: verbatim head text, zero FBs,
+    # provenance pass heading_sanity_leading_title, duplicate_of_head marked
+    synth = [r for r in regions if r.kind == "heading"
+             and r.payload.get("duplicate_of_head")]
+    assert len(synth) == 1
+    s = synth[0]
+    assert s.feature_block_indices == ()
+    assert s.payload["text"] == "Divide Integers"
+    assert s.payload["synthesized_from"] == "p2_b00"
+    assert s.provenance["pass"] == "heading_sanity_leading_title"
+    assert s.provenance["synthesized_from"] == "p2_b00"
+    # offsets index the VERBATIM head slice of the page-2 unit text
+    start, end = s.payload["head_offsets"]
+    assert _GLUED_PARAGRAPH[start:end] == "Divide Integers"
+    # the synthetic heading renders BEFORE the paragraph it was carved from
+    idx_synth = regions.index(s)
+    para2 = [r for r in regions if r.kind == "paragraph"
+             and 1 in r.feature_block_indices]
+    assert para2 and regions.index(para2[0]) == idx_synth + 1
+    # the paragraph keeps its FULL text (token conservation)
+    assert para2[0].payload["text"].startswith("Divide Integers What about")
+    # audit tallies the split on page 2
+    row2 = [r for r in audit["page_rows"] if r["page"] == 2][0]
+    assert row2["heading_sanity"] == 1
+    assert row2["heading_sanity_leading_titles"] == 1
+
+
+def test_leading_title_lookalike_not_in_lexicon_untouched(monkeypatch):
+    # FALSE-POSITIVE GUARD: first words LOOK title-ish ("Division Basics Are
+    # Fun" — capitalized, short, no terminal period) but are NOT in the outline
+    # lexicon -> the paragraph is untouched.
+    lookalike = ("Division Basics Are Fun The prose continues here with more "
+                 "explanation of the concept.")
+    fbs = [_fb(_OUTLINE_UNIT, page=1), _fb(lookalike, page=2, y0=20.0)]
+    c1 = _arr([{"ids": ["p1_b00"], "type": "paragraph"}])
+    c2 = _arr([{"ids": ["p2_b00"], "type": "paragraph"}])
+    regions, audit, _f = _drive_two_pages(monkeypatch, fbs, [c1, c2])
+    assert audit["pages_valid"] == 2
+    assert not [r for r in regions if r.payload.get("duplicate_of_head")]
+    row2 = [r for r in audit["page_rows"] if r["page"] == 2][0]
+    assert row2["heading_sanity"] == 0
+    assert row2["heading_sanity_leading_titles"] == 0
+
+
+def test_leading_title_no_outline_heading_typed_units_feed_lexicon(monkeypatch):
+    # NO outline unit anywhere: the lexicon is fed ONLY by heading-typed units.
+    # Page 1 has a clean heading "Divide Integers"; page 2's paragraph head
+    # matches it -> split still fires (source (b)).
+    fbs = [
+        _fb("Divide Integers", page=1),
+        _fb("Body prose on the first page follows here.", page=1, y0=20.0),
+        _fb(_GLUED_PARAGRAPH, page=2),
+    ]
+    c1 = _arr([{"ids": ["p1_b00"], "type": "heading", "level": 2},
+               {"ids": ["p1_b01"], "type": "paragraph"}])
+    c2 = _arr([{"ids": ["p2_b00"], "type": "paragraph"}])
+    regions, audit, _f = _drive_two_pages(monkeypatch, fbs, [c1, c2])
+    assert audit["pages_valid"] == 2
+    synth = [r for r in regions if r.payload.get("duplicate_of_head")]
+    assert len(synth) == 1
+    assert synth[0].payload["text"] == "Divide Integers"
+    assert synth[0].payload["synthesized_from"] == "p2_b00"
+
+
+def test_leading_title_flag_off_byte_identical(monkeypatch):
+    # flag off -> no lexicon built, no split, no synthetic regions; the page-2
+    # paragraph block list is byte-identical to the raw arrangement.
+    monkeypatch.setenv("SEMANTIK_ARRANGER_HEADING_SANITY", "0")
+    fbs = [_fb(_OUTLINE_UNIT, page=1), _fb(_GLUED_PARAGRAPH, page=2, y0=20.0)]
+    c1 = _arr([{"ids": ["p1_b00"], "type": "paragraph"}])
+    c2 = _arr([{"ids": ["p2_b00"], "type": "paragraph"}])
+    regions, audit, _f = _drive_two_pages(monkeypatch, fbs, [c1, c2])
+    assert audit["pages_valid"] == 2
+    assert not [r for r in regions if r.kind == "heading"]  # no synthetics at all
+    assert all(r.kind == "paragraph" for r in regions)
+    assert all(not r.payload.get("duplicate_of_head") for r in regions)
+    assert sorted(i for r in regions for i in r.feature_block_indices) == [0, 1]
+    rows = audit["page_rows"]
+    assert all(r["heading_sanity"] == 0 for r in rows)
+
+
+def test_build_title_lexicon_sources():
+    ubp = {
+        1: [{"id": "p1_b00", "text": _OUTLINE_UNIT, "fb_index": 0}],
+        2: [{"id": "p2_b00", "text": "Some prose.", "fb_index": 1}],
+    }
+    results = {
+        2: {"status": "ok", "arrangement": {"blocks": [
+            {"ids": ["p2_b00"], "type": "heading", "level": 2},
+        ]}},
+    }
+    lex = pa.build_title_lexicon(ubp, results)
+    # outline entries parsed + numbering-stripped + casefolded
+    assert "divide integers" in lex
+    assert "multiply integers" in lex
+    # heading-typed unit text fed in too ("Some prose." carries a terminal
+    # period -> NOT plausible -> excluded)
+    assert "some prose" not in lex
+
+    # a heading-typed unit WITHOUT terminal period is included
+    results2 = {
+        2: {"status": "ok", "arrangement": {"blocks": [
+            {"ids": ["p2_b00"], "type": "heading", "level": 2},
+        ]}},
+    }
+    ubp2 = {2: [{"id": "p2_b00", "text": "Real Numbers", "fb_index": 1}]}
+    lex2 = pa.build_title_lexicon(ubp2, results2)
+    assert lex2 == {"real numbers"}
+
+
+def test_apply_leading_title_split_pure():
+    unit_by_id = {"p2_b00": {"id": "p2_b00", "text": _GLUED_PARAGRAPH, "fb_index": 1}}
+    arr = {"blocks": [{"ids": ["p2_b00"], "type": "paragraph"}]}
+    recs = pa.apply_leading_title_split(
+        arr, unit_by_id, {"divide integers"}, enabled=True
+    )
+    assert len(recs) == 1
+    assert recs[0]["op"] == "leading_title_split"
+    assert recs[0]["leading_title"] == "Divide Integers"
+    start, end = recs[0]["head_offsets"]
+    assert _GLUED_PARAGRAPH[start:end] == "Divide Integers"
+    blocks = arr["blocks"]
+    assert len(blocks) == 2
+    assert blocks[0]["synthetic_heading"] is True
+    assert blocks[0]["sanity_pass"] == "heading_sanity_leading_title"
+    assert blocks[0]["duplicate_of_head"] is True
+    assert blocks[0]["ids"] == []
+    assert blocks[1]["type"] == "paragraph"  # paragraph untouched, full text kept
+
+    # disabled -> byte-identical no-op
+    arr2 = {"blocks": [{"ids": ["p2_b00"], "type": "paragraph"}]}
+    assert pa.apply_leading_title_split(arr2, unit_by_id, {"divide integers"}, enabled=False) == []
+    assert arr2 == {"blocks": [{"ids": ["p2_b00"], "type": "paragraph"}]}
+
+    # idempotent: re-applying over the already-split arrangement adds nothing
+    recs3 = pa.apply_leading_title_split(arr, unit_by_id, {"divide integers"}, enabled=True)
+    assert recs3 == []
+    assert len(arr["blocks"]) == 2  # no second synthetic for the same block
+
+
+# ---------------------------------------------------------------------------
+# (l) VLM-marker heading PROMOTION — the de-poisoned-lane heading-recall fix:
+# the VLM marks a page's section title '##', but the arrange model leaves the
+# standalone unit typed paragraph. The promote arm re-types it to heading,
+# guarded by the SAME anti-furniture SoT the demotion arm uses.
+# ---------------------------------------------------------------------------
+def _u(uid, text, *, level=None):
+    u = {"id": uid, "text": text, "fb_index": 0}
+    if level is not None:
+        u["vlm_heading_level"] = level
+    return u
+
+
+def test_md_promote_standalone_section_title_promoted():
+    units = [_u("p1_b00", "Divide Integers", level=2)]
+    unit_by_id = {u["id"]: u for u in units}
+    arr = json.loads(_arr([{"ids": ["p1_b00"], "type": "paragraph"}]))
+    recs = pa.apply_md_heading_promote(arr, unit_by_id, max_chars=120, enabled=True)
+    blk = arr["blocks"][0]
+    assert blk["type"] == "heading"
+    assert blk["level"] == 2
+    assert blk["ids"] == ["p1_b00"]  # RE-TYPE: keeps its unit ids (coverage-safe)
+    assert blk["heading_sanity"]["promoted_from"] == "paragraph"
+    assert len(recs) == 1 and recs[0]["op"] == "heading_promote"
+    assert recs[0]["reason"] == "vlm_marker"
+
+
+def test_md_promote_level_clamped_2_to_4():
+    for src, want in ((1, 2), (3, 3), (6, 4)):
+        units = [_u("p1_b00", "Multiply Integers", level=src)]
+        arr = json.loads(_arr([{"ids": ["p1_b00"], "type": "paragraph"}]))
+        pa.apply_md_heading_promote(arr, {u["id"]: u for u in units}, max_chars=120, enabled=True)
+        assert arr["blocks"][0]["level"] == want
+
+
+def test_md_promote_rejects_pedagogical_and_apparatus_markers():
+    # The VLM also '##'-marks EXAMPLE / apparatus labels; the SoT guard must
+    # NOT let those become headings (precision preservation).
+    for text in ("EXAMPLE 1.1", "TRY IT :: 1.5", "Solution"):
+        units = [_u("p1_b00", text, level=2)]
+        arr = json.loads(_arr([{"ids": ["p1_b00"], "type": "paragraph"}]))
+        recs = pa.apply_md_heading_promote(arr, {u["id"]: u for u in units}, max_chars=120, enabled=True)
+        assert arr["blocks"][0]["type"] == "paragraph", text
+        assert recs == []
+
+
+def test_md_promote_rejects_prose_paragraph():
+    # A real prose paragraph (terminal period) is never a section title.
+    units = [_u("p1_b00", "What about division? Just as multiplication is repeated addition.", level=2)]
+    arr = json.loads(_arr([{"ids": ["p1_b00"], "type": "paragraph"}]))
+    recs = pa.apply_md_heading_promote(arr, {u["id"]: u for u in units}, max_chars=120, enabled=True)
+    assert arr["blocks"][0]["type"] == "paragraph"
+    assert recs == []
+
+
+def test_md_promote_no_hint_is_noop():
+    # No vlm_heading_level on the unit -> nothing to promote (byte-identical).
+    units = [_u("p1_b00", "Divide Integers")]  # no level
+    arr = json.loads(_arr([{"ids": ["p1_b00"], "type": "paragraph"}]))
+    recs = pa.apply_md_heading_promote(arr, {u["id"]: u for u in units}, max_chars=120, enabled=True)
+    assert arr["blocks"][0]["type"] == "paragraph"
+    assert recs == []
+
+
+def test_md_promote_flag_off_byte_identical():
+    units = [_u("p1_b00", "Divide Integers", level=2)]
+    arr = json.loads(_arr([{"ids": ["p1_b00"], "type": "paragraph"}]))
+    before = json.dumps(arr, sort_keys=True)
+    recs = pa.apply_md_heading_promote(arr, {u["id"]: u for u in units}, max_chars=120, enabled=False)
+    assert recs == []
+    assert json.dumps(arr, sort_keys=True) == before
+
+
+def test_md_promote_end_to_end_via_arrange_page():
+    # The arrange model types the standalone title paragraph; promotion (default
+    # ON within the arranger) re-types it to heading. Runs AFTER heading-sanity.
+    units = [_u("p1_b00", "Multiply Integers", level=3)]
+    good = _arr([{"ids": ["p1_b00"], "type": "paragraph"}])
+    res = pa.arrange_page(_Seat(), "IMG", units, 1, requests_module=_FakeRequests([good]))
+    assert res["status"] == "ok"
+    blk = res["arrangement"]["blocks"][0]
+    assert blk["type"] == "heading" and blk["level"] == 3
+    assert any(r["op"] == "heading_promote" for r in res["heading_sanity"])
+
+
+def test_mint_units_stamps_vlm_heading_level_whole_block_only():
+    fb_head = _fb("Divide Integers")
+    fb_head.vlm_hint = {"kind": "heading", "level": 2, "marker": None, "coverage": "whole_block"}
+    fb_prefix = _fb("Some prose", y0=20.0)  # prefix heading hint -> NOT a standalone heading
+    fb_prefix.vlm_hint = {"kind": "heading", "level": 2, "marker": None, "coverage": "prefix"}
+    fb_list = _fb("An item", y0=40.0)
+    fb_list.vlm_hint = {"kind": "list_item", "level": None, "marker": "1.", "coverage": "whole_block"}
+    fb_plain = _fb("Plain body", y0=60.0)  # no hint
+    by_page = pa.mint_units_by_page([fb_head, fb_prefix, fb_list, fb_plain])
+    units = by_page[1]
+    assert units[0]["vlm_heading_level"] == 2         # whole_block heading -> stamped
+    assert "vlm_heading_level" not in units[1]        # prefix coverage -> not stamped
+    assert "vlm_heading_level" not in units[2]         # list_item hint -> not stamped
+    assert "vlm_heading_level" not in units[3]         # no hint -> absent
+    # unit text is VERBATIM (no marker leakage) and the listing is unchanged
+    assert units[0]["text"] == "Divide Integers"
+
+
+def test_resolve_md_heading_promote_defaults(monkeypatch):
+    monkeypatch.delenv("SEMANTIK_ARRANGER_MD_HEADING_PROMOTE", raising=False)
+    assert pa.resolve_arranger_md_heading_promote() is True
+    monkeypatch.setenv("SEMANTIK_ARRANGER_MD_HEADING_PROMOTE", "off")
+    assert pa.resolve_arranger_md_heading_promote() is False
+    monkeypatch.setenv("SEMANTIK_ARRANGER_MD_HEADING_PROMOTE", "garbage")
+    assert pa.resolve_arranger_md_heading_promote() is True  # parse-with-fallback -> on
