@@ -744,3 +744,140 @@ def test_live_70b_math_smoke():
     assert "<math" in low or "<m" in low or "mathml" in low, (
         f"live response did not look like MathML (head): {text[:200]!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# #40 — generate_batch: on_item_done persist hook + mid-batch graceful stop
+# ---------------------------------------------------------------------------
+
+
+import threading  # noqa: E402
+
+from semantik_structure import stop_seam  # noqa: E402
+from semantik_structure.stop_seam import (  # noqa: E402
+    STOP_SENTINEL_ENV,
+    CascadeStopRequested,
+    StopPoller,
+)
+
+
+def _resp(content: str) -> _FakeResponse:
+    return _FakeResponse(200, _ok_body(content))
+
+
+def test_generate_batch_on_item_done_fires_per_success():
+    """on_item_done(index, text) is invoked once per successful slot."""
+    rt = OpenAICompatibleRuntime(
+        base_url="https://e/v1", api_key="K", model="m", timeout=5.0
+    )
+    seen: dict[int, str] = {}
+    lock = threading.Lock()
+
+    def _cb(i, t):
+        with lock:
+            seen[i] = t
+
+    def _fake_post(url, *, json, headers, timeout):
+        user = json["messages"][1]["content"]
+        return _resp(f"<p>{user}</p>")
+
+    prompts = [f"SYSTEM: r\nUSER: item-{i}" for i in range(3)]
+    with mock.patch("requests.post", side_effect=_fake_post):
+        out = rt.generate_batch(prompts, max_tokens=16, on_item_done=_cb)
+    assert out == [f"<p>item-{i}</p>" for i in range(3)]
+    assert seen == {i: f"<p>item-{i}</p>" for i in range(3)}
+
+
+def test_generate_batch_raising_on_item_done_never_fails_batch():
+    """A callback that raises is swallowed — the batch still returns cleanly."""
+    rt = OpenAICompatibleRuntime(
+        base_url="https://e/v1", api_key="K", model="m", timeout=5.0
+    )
+
+    def _boom(i, t):
+        raise RuntimeError("callback blew up")
+
+    def _fake_post(url, *, json, headers, timeout):
+        user = json["messages"][1]["content"]
+        return _resp(f"<p>{user}</p>")
+
+    prompts = [f"SYSTEM: r\nUSER: item-{i}" for i in range(2)]
+    with mock.patch("requests.post", side_effect=_fake_post):
+        out = rt.generate_batch(prompts, max_tokens=16, on_item_done=_boom)
+    assert out == ["<p>item-0</p>", "<p>item-1</p>"]
+
+
+def test_generate_batch_stop_mid_batch_drains_and_pauses(monkeypatch, tmp_path):
+    """A sentinel written mid-batch stops SUBMITTING new items, drains the
+    in-flight one (reported via on_item_done), then raises CascadeStopRequested.
+    The unsubmitted prompts are NEVER POSTed."""
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_CONCURRENCY", "1")  # strict 1-in-flight
+    sentinel = tmp_path / "STOP_REQUESTED"
+    monkeypatch.setenv(STOP_SENTINEL_ENV, str(sentinel))
+    # Force a 0s poll interval so the arm is seen at the very next probe.
+    monkeypatch.setattr(
+        stop_seam, "StopPoller", lambda min_interval_s=2.0: StopPoller(min_interval_s=0.0)
+    )
+
+    rt = OpenAICompatibleRuntime(
+        base_url="https://e/v1", api_key="K", model="m", timeout=5.0
+    )
+    posts: list[str] = []
+    done: list[int] = []
+
+    def _fake_post(url, *, json, headers, timeout):
+        user = json["messages"][1]["content"]
+        posts.append(user)
+        sentinel.write_text("{}")  # arm the stop AFTER item-0 is POSTed
+        return _resp(f"<p>{user}</p>")
+
+    prompts = [f"SYSTEM: r\nUSER: item-{i}" for i in range(4)]
+    with mock.patch("requests.post", side_effect=_fake_post):
+        with pytest.raises(CascadeStopRequested) as ei:
+            rt.generate_batch(
+                prompts, max_tokens=16, on_item_done=lambda i, t: done.append(i)
+            )
+    assert ei.value.site_id == "stage6:endpoint-generate-batch"
+    assert posts == ["item-0"]  # only item-0 POSTed; the rest never submitted
+    assert done == [0]  # item-0 drained + reported before the pause
+
+
+def test_generate_batch_no_sentinel_byte_stable(monkeypatch):
+    """SEMANTIK_STOP_SENTINEL unset → the stop probe is always False; results
+    + order are byte-identical to the pre-stop submit-all path."""
+    monkeypatch.delenv(STOP_SENTINEL_ENV, raising=False)
+    rt = OpenAICompatibleRuntime(
+        base_url="https://e/v1", api_key="K", model="m", timeout=5.0
+    )
+
+    def _fake_post(url, *, json, headers, timeout):
+        user = json["messages"][1]["content"]
+        return _resp(f"<p>{user}</p>")
+
+    prompts = [f"SYSTEM: r\nUSER: item-{i}" for i in range(5)]
+    with mock.patch("requests.post", side_effect=_fake_post):
+        out = rt.generate_batch(prompts, max_tokens=16)
+    assert out == [f"<p>item-{i}</p>" for i in range(5)]
+
+
+def test_generate_multi_all_none_parse_logs_response_head(caplog):
+    """A 200 POST whose body parses to ZERO DART_REGION blocks logs a LOUD
+    warning carrying the response head (#41 diagnosability)."""
+    import logging
+
+    rt = OpenAICompatibleRuntime(
+        base_url="https://e/v1", api_key="K", model="m", timeout=5.0
+    )
+
+    def _fake_post(url, *, json, headers, timeout):
+        # Non-empty body with NO <<<DART_REGION>>> envelope → all regions None.
+        return _resp("I could not follow the envelope. Here is some prose.")
+
+    items = [("r10", "payload-a"), ("r11", "payload-b")]
+    with caplog.at_level(logging.WARNING):
+        with mock.patch("requests.post", side_effect=_fake_post):
+            out = rt.generate_multi(items, max_tokens=64)
+    assert out == {"r10": None, "r11": None}
+    joined = " ".join(r.message for r in caplog.records)
+    assert "recovered 0/2 regions" in joined
+    assert "could not follow the envelope" in joined  # response head surfaced

@@ -180,3 +180,59 @@ def test_flag_off_byte_stable(monkeypatch, tmp_path):
     assert all(v.review_note == "non-heading; not reviewed" for v in verdicts)
     assert _cache_files(tmp_path) == []  # ZERO cache activity
     assert not (tmp_path / "block_review_ops").exists()
+
+
+# ---------------------------------------------------------------------------
+# #40 — graceful stop mid-dispatch: completed windows persist incrementally,
+# and CascadeStopRequested propagates OUT of run_structure_review (never
+# swallowed into degrade-to-unreviewed).
+# ---------------------------------------------------------------------------
+import pytest  # noqa: E402
+
+from semantik_structure.stop_seam import CascadeStopRequested  # noqa: E402
+from semantik_structure.qwen_specialists.tests.test_reviewer import _oplist  # noqa: E402,F811
+
+
+class _StopMidReviewRuntime:
+    """Reviewer runtime that persists window 0 (via on_item_done) then raises
+    CascadeStopRequested on window 1 — mirrors the endpoint runtime draining
+    in-flight units before the stop propagates."""
+
+    def __init__(self, completions):
+        self._completions = completions
+        self.batch_calls: list[list[str]] = []
+
+    def generate_batch(self, prompts, *, max_tokens, temperature=0.6, top_p=0.95,
+                        seed=None, repeat_penalty=1.0, fail_soft=False,
+                        on_item_done=None):
+        self.batch_calls.append(list(prompts))
+        out = []
+        for i, _p in enumerate(prompts):
+            if i >= 1:
+                # Stop observed AFTER window 0 was drained + reported.
+                raise CascadeStopRequested("stage6:endpoint-generate-batch")
+            raw = self._completions[i] if i < len(self._completions) else ""
+            out.append(raw)
+            if on_item_done is not None:
+                on_item_done(i, raw)
+        return out
+
+
+def test_stop_mid_dispatch_persists_window0_and_propagates(monkeypatch, tmp_path):
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "1")
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW_WINDOW", "2")  # 3 blocks -> 2 windows
+    monkeypatch.setenv("SEMANTIK_CACHE_DIR", str(tmp_path))
+    monkeypatch.delenv("SEMANTIK_BLOCK_REVIEW_CACHE", raising=False)  # on (default)
+
+    fbs, regions = _code_regions(3)
+    state = _low_conf_state(3)
+    # window 0 = [0,1] -> a real op-list; window 1 = [1,2] never completes.
+    rt = _StopMidReviewRuntime([_oplist([0, 1])])
+
+    # The stop is a control signal, NOT an endpoint failure — it must escape.
+    with pytest.raises(CascadeStopRequested):
+        run_structure_review(regions, fbs, rt, council_state=state)
+
+    # Window 0's ops were persisted incrementally BEFORE the pause, so a
+    # resume serves it from cache (worst-case loss = the in-flight windows only).
+    assert len(_cache_files(tmp_path)) >= 1

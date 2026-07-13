@@ -304,6 +304,7 @@ class QwenRuntime(Protocol):
         seed: int | None = None,
         repeat_penalty: float = 1.0,
         fail_soft: bool = False,
+        on_item_done: "Callable[[int, str], None] | None" = None,
     ) -> list[str] | list[str | None]:
         """Return one completion per prompt, IN INPUT ORDER.
 
@@ -317,7 +318,11 @@ class QwenRuntime(Protocol):
         ``fail_soft`` (endpoint runtime only): when ``True``, a per-item
         failure returns the ``None`` sentinel in that slot instead of
         raising, so the caller degrades only that region. Local runtimes
-        ignore it (a broken local model is a fail-loud condition)."""
+        ignore it (a broken local model is a fail-loud condition).
+
+        ``on_item_done`` (optional): invoked ``on_item_done(index, text)`` per
+        SUCCESSFUL slot (the Stage-6 resume-sidecar persist hook). Callback
+        errors are swallowed — a persist failure never fails the batch."""
 
 
 # ---------------------------------------------------------------------------
@@ -503,6 +508,7 @@ class MockRuntime:
         seed: int | None = None,
         repeat_penalty: float = 1.0,
         fail_soft: bool = False,
+        on_item_done: "Callable[[int, str], None] | None" = None,
     ) -> list[str]:
         """One completion per prompt, in order — maps over :meth:`generate`.
 
@@ -511,9 +517,12 @@ class MockRuntime:
         well-formed output. The single completion (index 0) is returned per
         prompt, preserving input order. ``fail_soft`` is accepted for
         signature parity with the endpoint runtime and ignored (the mock
-        never fails an item)."""
+        never fails an item). ``on_item_done`` is accepted for signature
+        parity (so the runner can pass it without the TypeError-tolerant
+        ladder firing) and invoked per item — the mock never fails, so it
+        simply mirrors the endpoint runtime's success callback."""
         out: list[str] = []
-        for prompt in prompts:
+        for i, prompt in enumerate(prompts):
             res = self.generate(
                 prompt,
                 n=1,
@@ -523,7 +532,13 @@ class MockRuntime:
                 seed=seed,
                 repeat_penalty=repeat_penalty,
             )
-            out.append(res[0])
+            text = res[0]
+            out.append(text)
+            if on_item_done is not None:
+                try:
+                    on_item_done(i, text)
+                except Exception:  # noqa: BLE001 — callback never fails the batch
+                    pass
         return out
 
 
@@ -702,6 +717,7 @@ class LlamaCppRuntime:
         seed: int | None = None,
         repeat_penalty: float = 1.0,
         fail_soft: bool = False,
+        on_item_done: "Callable[[int, str], None] | None" = None,
     ) -> list[str]:
         """One completion per prompt, sequentially, over the LOADED adapter.
 
@@ -712,14 +728,48 @@ class LlamaCppRuntime:
         input order; the 8 GB card cannot run a true parallel batch under
         llama-cpp-python, so sequential-over-resident-adapter is the win
         (one load amortized across the whole group) without a parallel
-        decode the hardware can't support."""
+        decode the hardware can't support.
+
+        ``on_item_done`` (keyword-only, optional): invoked ``on_item_done(j,
+        text)`` per COMPLETED prompt — the Stage-6 per-unit resume-sidecar
+        persist hook, so worst-case loss on an ``ed4all stop`` is ONE in-flight
+        GGUF completion (each ~minutes) instead of the whole adapter group. A
+        callback error is swallowed (never fails the batch).
+
+        Graceful-stop: a throttled, NON-raising stop-sentinel probe runs BEFORE
+        each prompt; once observed, the loop finishes reporting the completed
+        prompts and raises :class:`~..stop_seam.CascadeStopRequested`
+        (``stage6:phase1:gguf-batch``). No-op when ``SEMANTIK_STOP_SENTINEL`` is
+        unset → byte-identical."""
         if self._handle is None:
             raise RuntimeError(
                 "LlamaCppRuntime.generate_batch(): no GGUF loaded; call "
                 "load(gguf_path) first"
             )
+        # Non-raising stop probe (lazy import via the module so a test can
+        # monkeypatch stop_seam.StopPoller). No-op when unset → byte-identical.
+        _poller = None
+        _CascadeStopRequested = None
+        try:
+            from .. import stop_seam as _stop_seam  # noqa: WPS433
+
+            _poller = _stop_seam.StopPoller(min_interval_s=2.0)
+            _CascadeStopRequested = _stop_seam.CascadeStopRequested
+        except Exception:  # noqa: BLE001 — no stop wiring → never stop
+            _poller = None
+
+        def _stop_now() -> bool:
+            try:
+                return bool(_poller is not None and _poller.should_stop())
+            except Exception:  # noqa: BLE001 — a probe error is never a stop
+                return False
+
         outputs: list[str] = []
+        stop_observed = False
         for j, prompt in enumerate(prompts):
+            if _stop_now():
+                stop_observed = True
+                break
             # Per-prompt seed offset keeps drafts reproducible without
             # collapsing distinct regions onto identical text.
             this_seed = None if seed is None else int(seed + j)
@@ -732,7 +782,19 @@ class LlamaCppRuntime:
                 seed=this_seed,
                 repeat_penalty=repeat_penalty,
             )
-            outputs.append(res[0])
+            text = res[0]
+            outputs.append(text)
+            if on_item_done is not None:
+                try:
+                    on_item_done(j, text)
+                except Exception:  # noqa: BLE001 — callback never fails the batch
+                    pass
+        if stop_observed and _CascadeStopRequested is not None:
+            logger.warning(
+                "Stage6 GGUF generate_batch: stop sentinel observed — completed "
+                "prompts reported + checkpointed; pausing."
+            )
+            raise _CascadeStopRequested("stage6:phase1:gguf-batch")
         return outputs
 
 

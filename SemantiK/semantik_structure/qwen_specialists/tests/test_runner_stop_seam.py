@@ -118,3 +118,64 @@ def test_env_set_but_absent_file_is_noop(monkeypatch, tmp_path):
     out = run_qwen_specialists(regions, [], k=2, runtime=rt)
     assert len(rt.batch_calls) == 4
     assert set(out.keys()) == {0, 1}
+
+
+# --------------------------------------------------------------------------- #
+# #40 — WITHIN-group pause + resume (per-prompt sidecar).
+#
+# A runtime whose generate_batch persists each completed prompt via
+# on_item_done then raises CascadeStopRequested mid-group (mirrors
+# LlamaCppRuntime's per-prompt stop probe). With the resume sidecar ON, the
+# resume run regenerates ONLY the un-persisted prompts.
+# --------------------------------------------------------------------------- #
+
+
+class _StopAfterNSpy(MockRuntime):
+    """Persists each completed prompt (on_item_done) then raises
+    CascadeStopRequested once ``stop_after`` prompts have completed."""
+
+    def __init__(self, stop_after=10**9) -> None:
+        super().__init__()
+        self.stop_after = stop_after
+        self.generated: list[str] = []
+
+    def generate_batch(self, prompts, *, max_tokens, on_item_done=None, **kw):  # type: ignore[override]
+        out: list[str] = []
+        for i, p in enumerate(prompts):
+            if i >= self.stop_after:
+                raise CascadeStopRequested("stage6:phase1:gguf-batch")
+            res = self.generate(p, n=1, temperature=0.6, top_p=0.95, max_tokens=max_tokens)
+            text = res[0]
+            out.append(text)
+            self.generated.append(p)
+            if on_item_done is not None:
+                on_item_done(i, text)
+        return out
+
+
+def test_within_group_pause_and_resume_regenerates_only_unpersisted(
+    monkeypatch, tmp_path
+):
+    monkeypatch.delenv("SEMANTIK_SPECIALIST_PROVIDER", raising=False)
+    monkeypatch.delenv("SEMANTIK_SPECIALIST_REFINE", raising=False)
+    monkeypatch.delenv("ED4ALL_GENERATION_CHECKPOINT", raising=False)
+    monkeypatch.setenv("SEMANTIK_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("SEMANTIK_STAGE6_CHECKPOINT", "1")
+
+    # 3 prose regions -> one PROSE adapter group of 3 prompts, k=1.
+    regions = [_region("paragraph", c) for c in ("a", "b", "c")]
+
+    # Run 1 — stop AFTER prompt 0 completes (persisted), raise on prompt 1.
+    rt1 = _StopAfterNSpy(stop_after=1)
+    with pytest.raises(CascadeStopRequested):
+        run_qwen_specialists(regions, [], k=1, runtime=rt1, runtime_mode="real")
+    # Exactly ONE prompt completed + persisted before the pause.
+    assert len(rt1.generated) == 1
+    cache_root = tmp_path / "stage6_candidate_cache"
+    assert len(list(cache_root.rglob("*.json"))) == 1
+
+    # Run 2 — resume, no stop: prompt 0 HITS the sidecar, only 2 regenerate.
+    rt2 = _StopAfterNSpy(stop_after=10**9)
+    out = run_qwen_specialists(regions, [], k=1, runtime=rt2, runtime_mode="real")
+    assert len(rt2.generated) == 2  # only the two un-persisted prompts
+    assert set(out.keys()) == {0, 1, 2}  # full document assembled on resume

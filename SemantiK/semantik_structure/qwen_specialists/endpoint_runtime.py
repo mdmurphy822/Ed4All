@@ -534,6 +534,7 @@ class OpenAICompatibleRuntime:
         seed: int | None = None,
         repeat_penalty: float = 1.0,
         fail_soft: bool = False,
+        on_item_done: "Callable[[int, str], None] | None" = None,
     ) -> list[str] | list[str | None]:
         """Return one completion per prompt, IN INPUT ORDER, CONCURRENTLY.
 
@@ -545,14 +546,28 @@ class OpenAICompatibleRuntime:
         region set lands in roughly one call's wall-clock instead of N
         serial calls.
 
+        The pool is driven **submit-one-consume-one** (bounded to
+        ``max_workers`` in flight; mirrors ``reasoning_qc._fan_out_page_verifies``)
+        rather than submit-all-up-front, so the graceful-stop sentinel can be
+        probed (non-raising) BEFORE each new submission — a stop mid-batch stops
+        SUBMITTING, drains the in-flight items (reporting each via
+        ``on_item_done``), then raises :class:`~..stop_seam.CascadeStopRequested`.
+        With ``SEMANTIK_STOP_SENTINEL`` unset the probe is always ``False`` →
+        results + ordering are BYTE-IDENTICAL to the submit-all path.
+
         Each item is attempted with a bounded retry on TRANSIENT errors
         (ReadTimeout / ConnectionError / 5xx / 429) — see
         :meth:`_one_completion_with_retry` /
         :func:`resolve_specialist_max_retries`. Permanent errors (missing
         key, 400/401/403, malformed request) are NOT retried.
 
+        ``on_item_done`` (keyword-only, optional): invoked on the CONSUMING
+        thread as ``on_item_done(index, text)`` per SUCCESSFUL slot — the
+        Stage-6 per-unit resume-sidecar persist hook. Wrapped in a try/except so
+        a callback error is logged and NEVER fails the batch.
+
         Failure mode is governed by ``fail_soft`` (default ``False`` keeps
-        the BYTE-IDENTICAL legacy behaviour):
+        the BYTE-IDENTICAL legacy per-slot behaviour):
 
         * ``fail_soft=False`` (default): a slot whose POST fails (after
           retries) raises :class:`EndpointBatchItemError` carrying that
@@ -566,6 +581,10 @@ class OpenAICompatibleRuntime:
           the local draft / emit a skip candidate). This is the per-region
           fail-soft path: one region's endpoint timeout degrades only THAT
           region, never the whole document.
+
+        A stop is a control SIGNAL, not an error: :class:`CascadeStopRequested`
+        propagates in BOTH ``fail_soft`` modes (the documented reasoning_qc
+        precedent — the cascade bridge boundary maps it to a pause).
 
         Pre-flight key/url checks mirror :meth:`generate` so a
         misconfiguration fails before any POST is fired."""
@@ -585,9 +604,33 @@ class OpenAICompatibleRuntime:
         if not prompts:
             return []
 
-        from concurrent.futures import ThreadPoolExecutor  # noqa: WPS433
+        from concurrent.futures import (  # noqa: WPS433
+            FIRST_COMPLETED,
+            ThreadPoolExecutor,
+            wait,
+        )
 
         max_workers = min(resolve_specialist_concurrency(), len(prompts))
+
+        # Non-raising stop probe (lazy import via the module so a test can
+        # monkeypatch stop_seam.StopPoller). One throttled poller per call. When
+        # SEMANTIK_STOP_SENTINEL is unset the poller has zero paths → always
+        # False → byte-identical to the pre-stop submit-all path.
+        _poller = None
+        _CascadeStopRequested = None
+        try:
+            from .. import stop_seam as _stop_seam  # noqa: WPS433
+
+            _poller = _stop_seam.StopPoller(min_interval_s=2.0)
+            _CascadeStopRequested = _stop_seam.CascadeStopRequested
+        except Exception:  # noqa: BLE001 — no stop wiring → never stop
+            _poller = None
+
+        def _stop_now() -> bool:
+            try:
+                return bool(_poller is not None and _poller.should_stop())
+            except Exception:  # noqa: BLE001 — a probe error is never a stop
+                return False
 
         def _work(index: int, prompt: str) -> str:
             system, user = split_specialist_prompt(prompt)
@@ -613,17 +656,64 @@ class OpenAICompatibleRuntime:
         # each future writes into its own input slot (order preserved).
         results: list[str | None] = [None] * len(prompts)
         errors: dict[int, BaseException] = {}
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            future_to_index = {
-                pool.submit(_work, i, prompt): i
-                for i, prompt in enumerate(prompts)
-            }
-            for future in future_to_index:
-                idx = future_to_index[future]
+
+        def _consume(future: Any, idx: int) -> None:
+            try:
+                text = future.result()
+            except BaseException as exc:  # noqa: BLE001
+                errors[idx] = exc
+                return
+            results[idx] = text
+            if on_item_done is not None:
                 try:
-                    results[idx] = future.result()
-                except BaseException as exc:  # noqa: BLE001
-                    errors[idx] = exc
+                    on_item_done(idx, text)
+                except Exception as cb_exc:  # noqa: BLE001 — callback never fails the batch
+                    logger.debug(
+                        "Stage6 endpoint generate_batch on_item_done raised "
+                        "(non-fatal): %s",
+                        cb_exc,
+                    )
+
+        stop_observed = False
+        next_idx = 0
+        n = len(prompts)
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            in_flight: dict[Any, int] = {}
+            # Prime up to max_workers — probing the stop sentinel before each submit.
+            while next_idx < n and len(in_flight) < max_workers:
+                if _stop_now():
+                    stop_observed = True
+                    break
+                in_flight[pool.submit(_work, next_idx, prompts[next_idx])] = next_idx
+                next_idx += 1
+            # Submit-one-consume-one: top the pool back up (bounded) as each
+            # item finishes, unless a stop has been requested.
+            while in_flight:
+                done, _pending = wait(set(in_flight), return_when=FIRST_COMPLETED)
+                for future in done:
+                    idx = in_flight.pop(future)
+                    _consume(future, idx)
+                while (
+                    not stop_observed
+                    and next_idx < n
+                    and len(in_flight) < max_workers
+                ):
+                    if _stop_now():
+                        stop_observed = True
+                        break
+                    in_flight[pool.submit(_work, next_idx, prompts[next_idx])] = next_idx
+                    next_idx += 1
+
+        # A stop was observed: every in-flight item drained + reported above.
+        # Propagate the stop in BOTH fail_soft modes (a control signal, not an
+        # error) so the cascade bridge boundary maps it to a pause.
+        if stop_observed and _CascadeStopRequested is not None:
+            logger.warning(
+                "Stage6 endpoint generate_batch: stop sentinel observed mid-batch "
+                "— in-flight items drained + reported; pausing."
+            )
+            raise _CascadeStopRequested("stage6:endpoint-generate-batch")
+
         if errors:
             if fail_soft:
                 # Per-region fail-soft: a failed slot stays the None sentinel
@@ -755,7 +845,27 @@ class OpenAICompatibleRuntime:
             )
             return {rid: None for rid in region_ids}
 
-        return parse_batch_envelope(response, region_ids)
+        mapping = parse_batch_envelope(response, region_ids)
+        # #41 diagnosability: the POST SUCCEEDED (200, non-empty body) yet EVERY
+        # requested region parsed to None — the batched delimiter envelope was
+        # non-compliant / truncated (the nemotron-seat failure mode). Surface the
+        # response head LOUDLY so the next envelope miss is not misdiagnosed as an
+        # endpoint/draft problem; the runner's per-region GENERATE fallback then
+        # recovers these regions (no envelope, no draft).
+        if (
+            region_ids
+            and all(v is None for v in mapping.values())
+            and (response or "").strip()
+        ):
+            logger.warning(
+                "Stage6 batched envelope parse recovered 0/%d regions "
+                "(ids=%s) — the POST succeeded but no <<<DART_REGION>>> blocks "
+                "were parseable; response head: %r",
+                len(region_ids),
+                region_ids[:8],
+                (response or "").strip()[:500],
+            )
+        return mapping
 
     # -- internals ---------------------------------------------------------
 

@@ -638,6 +638,7 @@ class _BatchedEndpointSpy(MockRuntime):
         self.fail_ids = set(fail_ids or [])
         self.raise_batch_with = raise_batch_with
         self.multi_calls: list[list[str]] = []
+        self.batch_fallback_calls = 0
 
     def generate_multi(self, items, *, max_tokens, drafts=None, **kw):  # type: ignore[override]
         ids = [rid for rid, _ in items]
@@ -648,6 +649,16 @@ class _BatchedEndpointSpy(MockRuntime):
         for rid, _payload in items:
             out[rid] = None if rid in self.fail_ids else f"<p>endpoint {rid}</p>"
         return out
+
+    def generate_batch(self, prompts, *, max_tokens, fail_soft=False, **kw):  # type: ignore[override]
+        # The #41 envelope-miss FALLBACK lane. The fallback only ever hands this
+        # the regions that already FAILED the batched (generate_multi) lane, so
+        # this spy models a seat whose per-region lane ALSO fails for them —
+        # BOTH lanes fail, so a degraded region STAYS degraded (the fallback
+        # rescues only when the per-region GENERATE succeeds; that case is the
+        # dedicated envelope-miss regression fixture below).
+        self.batch_fallback_calls += 1
+        return [None if fail_soft else "" for _ in prompts]
 
 
 def test_phase2_batched_one_post_per_batch_default_on(monkeypatch):
@@ -962,3 +973,111 @@ def test_runner_builds_separate_runtimes_per_phase_local_refine(monkeypatch):
     assert any("DRAFT_FRAGMENT" in p for p in built["phase2"].batch_prompts)
     # Output is the refined candidate, phase tagged "refine".
     assert out[0][0].raw_metadata["stage6_phase"] == "refine"
+
+
+# ---------------------------------------------------------------------------
+# #41 — pure-endpoint DISPLACE: batched envelope MISS (all-None) is recovered
+# by the per-region GENERATE fallback (no draft precondition, no llama_cpp).
+# ---------------------------------------------------------------------------
+
+
+class _EnvelopeMissSpy(MockRuntime):
+    """Endpoint-shaped runtime whose generate_multi ALWAYS returns all-None
+    (the nemotron-seat envelope non-compliance) but whose per-region
+    generate_batch SUCCEEDS — so the #41 fallback recovers every region."""
+
+    def __init__(self):
+        super().__init__()
+        self.multi_calls = 0
+        self.fallback_batch_calls = 0
+
+    def generate_multi(self, items, *, max_tokens, drafts=None, **kw):  # type: ignore[override]
+        self.multi_calls += 1
+        # Envelope parse recovered ZERO regions on a "200" — all None.
+        return {rid: None for rid, _ in items}
+
+    def generate_batch(self, prompts, *, max_tokens, fail_soft=False, **kw):  # type: ignore[override]
+        self.fallback_batch_calls += 1
+        # The per-region GENERATE lane works (no envelope, no draft needed).
+        return [f"<p>recovered {i}</p>" for i in range(len(prompts))]
+
+
+def test_phase2_displace_envelope_miss_recovered_by_per_region_fallback(
+    monkeypatch, tmp_path, caplog
+):
+    import logging
+    import sys
+
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_PROVIDER", "nvidia")
+    monkeypatch.delenv("SEMANTIK_SPECIALIST_REFINE", raising=False)
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_ENDPOINT_DISPLACE", "1")
+    monkeypatch.delenv("SEMANTIK_SPECIALIST_BATCH", raising=False)  # batched ON
+    # Drain prose so the table/math jobs carry SPARSE (gap-bearing) region ids.
+    monkeypatch.setenv("SEMANTIK_STAGE6_PROSE_PASSTHROUGH", "1")
+
+    # Detonate if the local GGUF backend is ever imported on the endpoint path.
+    class _NoLlamaCpp:
+        def find_spec(self, name, path=None, target=None):
+            if name == "llama_cpp" or name.startswith("llama_cpp."):
+                raise AssertionError("llama_cpp must NOT import on the endpoint path")
+            return None
+
+    guard = _NoLlamaCpp()
+    sys.meta_path.insert(0, guard)
+    try:
+        # prose at 0,2,4 (drained → passthrough); table at 1,3; math at 5.
+        regions = [
+            _region("paragraph", "p0"),
+            _region("table", "t1"),
+            _region("paragraph", "p2"),
+            _region("table", "t3"),
+            _region("paragraph", "p4"),
+            _region("math", "m5"),
+        ]
+        rt = _EnvelopeMissSpy()
+        with caplog.at_level(logging.WARNING):
+            out = run_qwen_specialists(regions, [], k=2, runtime=rt)
+    finally:
+        sys.meta_path.remove(guard)
+
+    # generate_multi fired (batched lane) AND the fallback fired (envelope miss).
+    assert rt.multi_calls >= 1
+    assert rt.fallback_batch_calls >= 1
+
+    # Every region produced a REAL candidate — the table/math regions were
+    # recovered by the per-region fallback (NOT degraded), the prose regions
+    # passthrough'd.
+    assert set(out.keys()) == {0, 1, 2, 3, 4, 5}
+    for idx in (1, 3, 5):  # table + math recovered
+        cands = out[idx]
+        assert cands and all("recovered" in c.text for c in cands)
+        assert all(not c.raw_metadata.get("endpoint_degraded") for c in cands)
+    # No degraded-skip anywhere, and the misleading '(no local draft)' text is gone.
+    joined = " ".join(r.message for r in caplog.records)
+    assert "no local draft" not in joined
+    assert "endpoint_failed_all_slots" not in joined
+
+
+def test_phase2_displace_both_lanes_fail_still_fail_loud(monkeypatch):
+    """Total endpoint failure — BOTH the batched envelope AND the per-region
+    fallback fail → the fail-loud total-failure guard is preserved (#41 must
+    not weaken it)."""
+    from semantik_structure.qwen_specialists.endpoint_runtime import EndpointRuntimeError
+
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_PROVIDER", "nvidia")
+    monkeypatch.delenv("SEMANTIK_SPECIALIST_REFINE", raising=False)
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_ENDPOINT_DISPLACE", "1")
+    monkeypatch.delenv("SEMANTIK_SPECIALIST_BATCH", raising=False)
+
+    class _DeadBothLanes(MockRuntime):
+        def generate_multi(self, items, *, max_tokens, drafts=None, **kw):  # type: ignore[override]
+            return {rid: None for rid, _ in items}
+
+        def generate_batch(self, prompts, *, max_tokens, fail_soft=False, **kw):  # type: ignore[override]
+            return [None for _ in prompts]  # per-region lane dead too
+
+    regions = [_region("table", "a"), _region("math", "b")]
+    rt = _DeadBothLanes()
+    with pytest.raises(EndpointRuntimeError) as exc:
+        run_qwen_specialists(regions, [], k=2, runtime=rt)
+    assert "ALL" in str(exc.value) and "empty document" in str(exc.value)

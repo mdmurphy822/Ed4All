@@ -2681,29 +2681,63 @@ def _run_windowed_block_review(
     # contract as the heading path.
     if miss_positions:
         miss_prompts = [window_prompts[i] for i in miss_positions]
+
+        def _persist_window(pos: int, raw: Any) -> None:
+            """Incremental op-cache persist (#40) — invoked per COMPLETED window
+            on the runtime's consuming thread, so an ``ed4all stop`` mid-dispatch
+            (the endpoint runtime raises ``CascadeStopRequested`` AFTER draining
+            in-flight windows) loses only the un-persisted windows. Idempotent
+            with the post-loop ``block_review_cache.put`` below (same key, same
+            ops). No-op when the cache is off."""
+            if not (cache_on and cdir is not None):
+                return
+            if pos >= len(miss_positions):
+                return
+            key = window_keys[miss_positions[pos]]
+            if key is None:
+                return
+            try:
+                ops = _extract_op_list(raw if isinstance(raw, str) else "")
+            except Exception:  # noqa: BLE001 — a persist parse error never fails review
+                return
+            if ops is not None:
+                block_review_cache.put(key, ops, cdir)
+
         try:
             miss_completions = runtime.generate_batch(
                 miss_prompts,
                 max_tokens=win_max_tokens,
                 temperature=review_temperature,
                 fail_soft=True,
+                on_item_done=_persist_window,
             )
         except TypeError:
+            # Runtime lacks on_item_done — retry with fail_soft only (no
+            # incremental persistence; the post-loop put still runs).
             try:
                 miss_completions = runtime.generate_batch(
-                    miss_prompts, max_tokens=win_max_tokens, temperature=review_temperature
+                    miss_prompts,
+                    max_tokens=win_max_tokens,
+                    temperature=review_temperature,
+                    fail_soft=True,
                 )
-            except EndpointRuntimeError as exc:
-                logger.warning(
-                    "block-review runtime lacks fail_soft and the fail-loud call "
-                    "failed (%s) -> degrading WHOLE review to unreviewed",
-                    exc,
-                )
-                return _degrade_whole_review_unreviewed(
-                    regions,
-                    "endpoint failure without fail_soft; whole-review degraded to "
-                    "unreviewed",
-                )
+            except TypeError:
+                # Runtime lacks fail_soft too — the fail-loud plain call.
+                try:
+                    miss_completions = runtime.generate_batch(
+                        miss_prompts, max_tokens=win_max_tokens, temperature=review_temperature
+                    )
+                except EndpointRuntimeError as exc:
+                    logger.warning(
+                        "block-review runtime lacks fail_soft and the fail-loud "
+                        "call failed (%s) -> degrading WHOLE review to unreviewed",
+                        exc,
+                    )
+                    return _degrade_whole_review_unreviewed(
+                        regions,
+                        "endpoint failure without fail_soft; whole-review degraded "
+                        "to unreviewed",
+                    )
         miss_completions = list(miss_completions)
         if len(miss_completions) < len(miss_positions):
             miss_completions = miss_completions + [""] * (

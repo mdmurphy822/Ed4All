@@ -78,7 +78,8 @@ from .endpoint_runtime import (
 )
 from .prompts import build_math_request, build_prose_request, build_table_request
 from .routing import adapter_for
-from ..stop_seam import StopPoller
+from . import stage6_checkpoint
+from ..stop_seam import CascadeStopRequested, StopPoller
 from .runtime import (
     QwenRuntime,
     make_phase_runtime,
@@ -612,6 +613,42 @@ def _phase2_slot_texts_per_region(
     return list(texts)
 
 
+def _runtime_model_tag(rt: Any) -> str:
+    """Stable per-runtime model tag for the Stage-6 candidate fingerprint.
+
+    The endpoint runtime carries ``_model``; the local GGUF / mock runtimes do
+    not, so a constant fallback keeps the fingerprint deterministic per runtime
+    (consistency across a run is what a cache key needs, not the real model id)."""
+    return str(getattr(rt, "_model", None) or "local")
+
+
+def _phase2_batched_fingerprint(
+    job: "_RegionJob",
+    *,
+    k_idx: int,
+    slot_seed: int | None,
+    refine: bool,
+    model: str,
+) -> str:
+    """Content-address one Phase-2 batched slot candidate (sidecar key)."""
+    draft = (
+        job.drafts[k_idx]
+        if (refine and job.drafts and k_idx < len(job.drafts))
+        else None
+    )
+    return stage6_checkpoint.candidate_fingerprint(
+        job.prompt,
+        model=model,
+        temperature=job.defaults["temperature"],
+        top_p=job.defaults["top_p"],
+        max_tokens=job.defaults["max_new_tokens"],
+        seed=slot_seed,
+        repeat_penalty=job.defaults.get("repetition_penalty", 1.0),
+        slot_tag=f"phase2:{job.adapter}:slot{k_idx}",
+        draft=draft,
+    )
+
+
 def _phase2_slot_texts_batched(
     rt: Any,
     active: list["_RegionJob"],
@@ -619,6 +656,9 @@ def _phase2_slot_texts_batched(
     k_idx: int,
     slot_seed: int | None,
     refine: bool,
+    stop_poller: "StopPoller | None" = None,
+    use_cache: bool = False,
+    model: str = "endpoint",
 ) -> list[str | None]:
     """Produce one slot's completions for the BATCHED endpoint path.
 
@@ -629,8 +669,31 @@ def _phase2_slot_texts_batched(
     to its job by id; a region missing from its batch (or whose whole batch
     POST failed) stays the None sentinel. Returns a ``list[str | None]``
     aligned to ``active`` order so the downstream degradation mapping is
-    IDENTICAL to the per-region path."""
-    from concurrent.futures import ThreadPoolExecutor  # noqa: WPS433
+    IDENTICAL to the per-region path.
+
+    **Resume sidecar (#40, ``use_cache``).** Each active job is content-
+    addressed (``stage6_checkpoint``); a HIT pre-fills its slot with NO POST and
+    only the MISSES are packed. Each parsed non-None fragment is persisted as its
+    batch is consumed, so an ``ed4all stop`` / crash loses only the in-flight
+    batches. Off → no reads/writes (byte-identical).
+
+    **Stop-on-command (#40).** Batches are NOT all submitted up front — the pool
+    is kept ≤``max_workers`` in flight (submit-one-consume-one) and the stop
+    sentinel is probed (non-raising) before each new submission. On a stop the
+    fan-out drains + checkpoints in-flight batches, then raises
+    :class:`CascadeStopRequested` (``stage6:phase2:batched``).
+
+    **Envelope-miss fallback (#41).** A region STILL None after the batched pass
+    (the nemotron-seat delimiter-envelope non-compliance — a 200 POST that parses
+    to zero ``<<<DART_REGION>>>`` blocks) is recovered by ONE per-region GENERATE
+    pass over just that subset (no envelope, no draft precondition; refine keeps
+    ``_refine_prompt``). A genuinely-dead endpoint fails that fallback too,
+    preserving the runner's degraded-skip + total-failure fail-loud."""
+    from concurrent.futures import (  # noqa: WPS433
+        FIRST_COMPLETED,
+        ThreadPoolExecutor,
+        wait,
+    )
 
     # Capability fallback: a runtime that does NOT expose generate_multi
     # (an older mock, or a non-endpoint runtime that somehow reaches Phase 2)
@@ -641,15 +704,43 @@ def _phase2_slot_texts_batched(
             rt, active, k_idx=k_idx, slot_seed=slot_seed, refine=refine
         )
 
-    max_regions = resolve_specialist_batch_regions()
-    batches = _pack_batches(
-        active,
-        max_regions=max_regions,
-        output_token_cap=_DEFAULT_OUTPUT_TOKEN_CAP,
-    )
     # Map each region id -> its index in ``active`` so results land in order.
     id_to_pos = {f"r{job.idx}": a_pos for a_pos, job in enumerate(active)}
     texts: list[str | None] = [None] * len(active)
+
+    # --- Resume-sidecar pre-pass: fill HITS, pack only MISSES ---------------
+    cache_root = stage6_checkpoint.cache_root() if use_cache else None
+    cache_path_by_pos: dict[int, Any] = {}
+    miss_jobs: list[_RegionJob]
+    if use_cache:
+        miss_jobs = []
+        for a_pos, job in enumerate(active):
+            try:
+                key = _phase2_batched_fingerprint(
+                    job, k_idx=k_idx, slot_seed=slot_seed, refine=refine, model=model
+                )
+                p = stage6_checkpoint.cache_path(key, cache_root)
+                cache_path_by_pos[a_pos] = p
+                hit = stage6_checkpoint.get(p)
+            except Exception as exc:  # noqa: BLE001 — cache infra never breaks Stage 6
+                logger.debug("stage6 phase2 cache lookup failed (non-fatal): %s", exc)
+                hit = None
+            if hit is not None:
+                texts[a_pos] = hit
+            else:
+                miss_jobs.append(job)
+    else:
+        miss_jobs = list(active)
+
+    def _persist(a_pos: int, fragment: str | None) -> None:
+        if (
+            use_cache
+            and fragment is not None
+            and stage6_checkpoint.cacheable(fragment)
+        ):
+            p = cache_path_by_pos.get(a_pos)
+            if p is not None:
+                stage6_checkpoint.put(p, fragment)
 
     def _run_batch(batch: list["_RegionJob"]) -> dict[str, str | None]:
         items: list[tuple[str, str]] = [(f"r{j.idx}", j.prompt) for j in batch]
@@ -677,31 +768,208 @@ def _phase2_slot_texts_batched(
             drafts=drafts,
         )
 
-    if not batches:
-        return texts
-    max_workers = max(1, min(resolve_batched_concurrency(), len(batches)))
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(_run_batch, b): b for b in batches}
-        for future in futures:
-            batch = futures[future]
-            try:
-                mapping = future.result()
-            except Exception as exc:  # noqa: BLE001
-                # A batch dispatch that raises (generate_multi already fails
-                # soft internally, so this is defensive) degrades every region
-                # in that batch to the None sentinel — never aborts the slot.
-                logger.warning(
-                    "Stage6 phase2 batched POST raised (%d regions): %s "
-                    "— degrading those regions to None",
-                    len(batch),
-                    exc,
-                )
-                mapping = {f"r{j.idx}": None for j in batch}
-            for rid, fragment in mapping.items():
-                pos = id_to_pos.get(rid)
-                if pos is not None:
-                    texts[pos] = fragment
+    def _consume(mapping: dict[str, str | None]) -> None:
+        for rid, fragment in mapping.items():
+            pos = id_to_pos.get(rid)
+            if pos is None:
+                continue
+            texts[pos] = fragment
+            _persist(pos, fragment)
+
+    def _stop_now() -> bool:
+        try:
+            return bool(stop_poller is not None and stop_poller.should_stop())
+        except Exception:  # noqa: BLE001 — a probe error is never a stop
+            return False
+
+    max_regions = resolve_specialist_batch_regions()
+    batches = _pack_batches(
+        miss_jobs,
+        max_regions=max_regions,
+        output_token_cap=_DEFAULT_OUTPUT_TOKEN_CAP,
+    )
+    stop_observed = False
+    if batches:
+        max_workers = max(1, min(resolve_batched_concurrency(), len(batches)))
+        next_idx = 0
+        nb = len(batches)
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            in_flight: dict[Any, list[_RegionJob]] = {}
+            while next_idx < nb and len(in_flight) < max_workers:
+                if _stop_now():
+                    stop_observed = True
+                    break
+                in_flight[pool.submit(_run_batch, batches[next_idx])] = batches[next_idx]
+                next_idx += 1
+            while in_flight:
+                done, _pending = wait(set(in_flight), return_when=FIRST_COMPLETED)
+                for future in done:
+                    batch = in_flight.pop(future)
+                    try:
+                        mapping = future.result()
+                    except Exception as exc:  # noqa: BLE001
+                        # A batch dispatch that raises (generate_multi already
+                        # fails soft internally, so this is defensive) degrades
+                        # every region in that batch to the None sentinel.
+                        logger.warning(
+                            "Stage6 phase2 batched POST raised (%d regions): %s "
+                            "— degrading those regions to None",
+                            len(batch),
+                            exc,
+                        )
+                        mapping = {f"r{j.idx}": None for j in batch}
+                    _consume(mapping)
+                while (
+                    not stop_observed
+                    and next_idx < nb
+                    and len(in_flight) < max_workers
+                ):
+                    if _stop_now():
+                        stop_observed = True
+                        break
+                    in_flight[pool.submit(_run_batch, batches[next_idx])] = (
+                        batches[next_idx]
+                    )
+                    next_idx += 1
+
+    if stop_observed:
+        logger.warning(
+            "Stage6 phase2 batched: stop sentinel observed mid-fan-out — "
+            "in-flight batches drained + checkpointed; pausing."
+        )
+        raise CascadeStopRequested("stage6:phase2:batched")
+
+    # --- #41 envelope-miss per-region GENERATE fallback --------------------
+    still_none = [
+        job for a_pos, job in enumerate(active) if texts[a_pos] is None
+    ]
+    if still_none and callable(getattr(rt, "generate_batch", None)):
+        logger.warning(
+            "Stage6 phase2 batched: %d region(s) unrecovered from the batched "
+            "envelope (200 POST parsed to zero DART_REGION blocks) — running a "
+            "single-pass per-region GENERATE fallback over just those regions",
+            len(still_none),
+        )
+        fb_texts = _phase2_slot_texts_per_region(
+            rt, still_none, k_idx=k_idx, slot_seed=slot_seed, refine=refine
+        )
+        for local_idx, job in enumerate(still_none):
+            frag = fb_texts[local_idx] if local_idx < len(fb_texts) else None
+            a_pos = id_to_pos[f"r{job.idx}"]
+            texts[a_pos] = frag
+            _persist(a_pos, frag)
+
     return texts
+
+
+def _generate_batch_persist(
+    rt: Any,
+    prompts: list[str],
+    *,
+    defaults: dict[str, Any],
+    slot_seed: int | None,
+    persist: "Any",
+) -> list[str | None]:
+    """``generate_batch`` with the ``on_item_done`` persist hook, TypeError-
+    tolerant so a third-party fake runtime that does not accept the kwarg falls
+    back to the plain fail-soft call (mirrors ``reviewer.py`` L2691). The
+    MockRuntime / real runtimes accept the kwarg, so the ladder only fires for
+    an older injected fake — which then simply skips persistence."""
+    try:
+        return rt.generate_batch(
+            prompts,
+            max_tokens=defaults["max_new_tokens"],
+            temperature=defaults["temperature"],
+            top_p=defaults["top_p"],
+            seed=slot_seed,
+            repeat_penalty=defaults.get("repetition_penalty", 1.0),
+            fail_soft=True,
+            on_item_done=persist,
+        )
+    except TypeError:
+        return rt.generate_batch(
+            prompts,
+            max_tokens=defaults["max_new_tokens"],
+            temperature=defaults["temperature"],
+            top_p=defaults["top_p"],
+            seed=slot_seed,
+            repeat_penalty=defaults.get("repetition_penalty", 1.0),
+            fail_soft=True,
+        )
+
+
+def _phase1_cached_slot(
+    rt: Any,
+    active: list["_RegionJob"],
+    defaults: dict[str, Any],
+    *,
+    k_idx: int,
+    slot_seed: int | None,
+    adapter: Any,
+    model: str,
+) -> list[str]:
+    """One Phase-1 draft slot with the resume sidecar (#40).
+
+    Content-addresses every active prompt; HITS pre-fill their slot with NO
+    generation and only the MISSES are batch-generated, each persisted as it
+    completes (``on_item_done``). A cache-COLD run has ``miss_pos == range(n)``
+    → the miss-prompt list equals the full prompt list → byte-identical to the
+    non-cache path (including the per-prompt seed offset). A resumed run
+    subsets the miss list, so the local per-position seed offsets shift for the
+    regenerated positions (documented drift — the reasoning_qc re-run
+    precedent; first runs are byte-identical)."""
+    n = len(active)
+    slot_texts: list[str] = [""] * n
+    slot_tag = f"phase1:{adapter}:slot{k_idx}"
+    root = stage6_checkpoint.cache_root()
+    cache_path_by_pos: dict[int, Any] = {}
+    miss_pos: list[int] = []
+    for i, job in enumerate(active):
+        try:
+            key = stage6_checkpoint.candidate_fingerprint(
+                job.prompt,
+                model=model,
+                temperature=defaults["temperature"],
+                top_p=defaults["top_p"],
+                max_tokens=defaults["max_new_tokens"],
+                seed=slot_seed,
+                repeat_penalty=defaults.get("repetition_penalty", 1.0),
+                slot_tag=slot_tag,
+            )
+            p = stage6_checkpoint.cache_path(key, root)
+            cache_path_by_pos[i] = p
+            hit = stage6_checkpoint.get(p)
+        except Exception as exc:  # noqa: BLE001 — cache infra never breaks Stage 6
+            logger.debug("stage6 phase1 cache lookup failed (non-fatal): %s", exc)
+            hit = None
+        if hit is not None:
+            slot_texts[i] = hit
+        else:
+            miss_pos.append(i)
+    if not miss_pos:
+        return slot_texts
+    miss_prompts = [active[i].prompt for i in miss_pos]
+
+    def _persist(local_idx: int, text: str) -> None:
+        if local_idx >= len(miss_pos):
+            return
+        i = miss_pos[local_idx]
+        if stage6_checkpoint.cacheable(text):
+            p = cache_path_by_pos.get(i)
+            if p is not None:
+                stage6_checkpoint.put(p, text)
+
+    texts = _generate_batch_persist(
+        rt, miss_prompts, defaults=defaults, slot_seed=slot_seed, persist=_persist
+    )
+    if len(texts) != len(miss_prompts):
+        raise RuntimeError(
+            f"Stage6 phase1 {adapter}: generate_batch returned "
+            f"{len(texts)} != {len(miss_prompts)} prompts"
+        )
+    for local_idx, t in enumerate(texts):
+        slot_texts[miss_pos[local_idx]] = t if t is not None else ""
+    return slot_texts
 
 
 def run_qwen_specialists(
@@ -826,6 +1094,16 @@ def run_qwen_specialists(
     # LlamaCppRuntime; the relevant runtime is Phase 1's when it runs (Phase 2
     # endpoint runtimes have no _ensure_tokenizer so the check no-ops).
     guard_rt = rt_phase1 if rt_phase1 is not None else rt_phase2
+
+    # Per-unit resume sidecar (#40): gated on SEMANTIK_STAGE6_CHECKPOINT (default
+    # ON, ED4ALL_GENERATION_CHECKPOINT family fallback) AND a REAL runtime_mode —
+    # every existing mock-mode test keeps runtime_mode="mock" so use_cache is
+    # False and the whole cache path is skipped (byte-identical). Endpoint + GGUF
+    # production runs are runtime_mode="real". The seat model id feeds the
+    # candidate fingerprint (stable per runtime).
+    use_cache = stage6_checkpoint.resolve_stage6_checkpoint() and runtime_mode == "real"
+    phase1_model = _runtime_model_tag(rt_phase1) if rt_phase1 is not None else "local"
+    phase2_model = _runtime_model_tag(rt_phase2) if rt_phase2 is not None else "endpoint"
 
     def _defaults_for(adapter: AdapterID) -> dict[str, Any]:
         return sampling.get(
@@ -978,6 +1256,21 @@ def run_qwen_specialists(
                     prompts = [j.prompt for j in active]
                     for k_idx in range(k):
                         slot_seed = None if seed is None else int(seed + k_idx)
+                        if use_cache:
+                            # Resume sidecar (#40): HITS pre-fill, only MISSES
+                            # regenerate + persist. Cache-cold == byte-identical.
+                            per_slot.append(
+                                _phase1_cached_slot(
+                                    rt_phase1,
+                                    active,
+                                    defaults,
+                                    k_idx=k_idx,
+                                    slot_seed=slot_seed,
+                                    adapter=adapter,
+                                    model=phase1_model,
+                                )
+                            )
+                            continue
                         # fail_soft: a per-item failure returns the None
                         # sentinel rather than aborting the whole Phase-1
                         # batch (closes the residual 429 gap on the local-
@@ -1093,7 +1386,14 @@ def run_qwen_specialists(
                 # identical regardless of batching.
                 if batched:
                     texts = _phase2_slot_texts_batched(
-                        rt_phase2, active, k_idx=k_idx, slot_seed=slot_seed, refine=refine
+                        rt_phase2,
+                        active,
+                        k_idx=k_idx,
+                        slot_seed=slot_seed,
+                        refine=refine,
+                        stop_poller=stop_poller,
+                        use_cache=use_cache,
+                        model=phase2_model,
                     )
                 else:
                     texts = _phase2_slot_texts_per_region(
@@ -1135,7 +1435,8 @@ def run_qwen_specialists(
                             # emit it if EVERY slot failed for this region.
                             logger.warning(
                                 "Stage6 phase2 r%d slot %d: endpoint generate "
-                                "failed (no local draft)",
+                                "returned no fragment (batched envelope miss or "
+                                "endpoint failure)",
                                 job.idx,
                                 k_idx,
                             )
