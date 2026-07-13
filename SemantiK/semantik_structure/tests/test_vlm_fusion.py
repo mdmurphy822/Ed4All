@@ -108,9 +108,11 @@ def test_k_tesseract_to_one_vlm_merge():
     assert aligned[0]["vlm_coverage"] == "whole_block"
 
 
-def test_one_tesseract_to_k_vlm_split():
-    # One OCR line unfolded into two VLM lines (a fused title + body). SPLIT →
-    # the VLM head hint covers only a PREFIX of the block.
+def test_one_tesseract_to_k_vlm_split_flag_off_joins(monkeypatch):
+    # LEGACY (SEMANTIK_FUSION_LINE_UNITS=0): one OCR line unfolded into two VLM
+    # lines (a fused title + body) joins into ONE block; the VLM head hint covers
+    # only a PREFIX. This is the byte-identical revert leg of Fix B.
+    monkeypatch.setenv("SEMANTIK_FUSION_LINE_UNITS", "0")
     tess = [_tb(10, 10, 200, 20, "Introduction Suppose a stone falls down")]
     vlm = ["# Introduction", "Suppose a stone falls down"]
     fused, stats = fuse_page(tess, vlm, (300.0, 300.0))
@@ -122,6 +124,43 @@ def test_one_tesseract_to_k_vlm_split():
     assert aligned[0]["vlm_coverage"] == "prefix"
     # RAW markdown (markers preserved) rides vlm_md for the P2 hint channel.
     assert aligned[0]["vlm_md"].splitlines()[0] == "# Introduction"
+
+
+def test_split_unit_emits_one_block_per_vlm_line(monkeypatch):
+    # Fix B DEFAULT (SEMANTIK_FUSION_LINE_UNITS on): one tesseract mega-line
+    # aligning to 4 synthetic VLM lines (label / stem / table row / note) emits
+    # 4 fused blocks IN ORDER, each whole_block coverage, over monotone union
+    # y-bands — instead of one space-joined mega-block that destroys the unit
+    # boundaries (the p127 EXAMPLE-glued-to-Solution defect).
+    monkeypatch.delenv("SEMANTIK_FUSION_LINE_UNITS", raising=False)
+    tess = [_tb(10, 10, 200, 50, "LABEL stem row note")]
+    vlm = ["## LABEL", "the stem sentence here", "row one two three", "a closing note"]
+    fused, stats = fuse_page(tess, vlm, (300.0, 300.0))
+    assert stats["split"] == 1  # ONE aligned unit (count is per-unit, not block)
+    aligned = [b for b in fused if b["fusion"] == "vlm+tesseract"]
+    assert len(aligned) == 4
+    # In VLM order, markdown structure stripped, each one whole VLM line.
+    assert [b["text"] for b in aligned] == [
+        "LABEL",
+        "the stem sentence here",
+        "row one two three",
+        "a closing note",
+    ]
+    assert all(b["vlm_coverage"] == "whole_block" for b in aligned)
+    # Monotone, non-overlapping y-bands inside the tesseract union [10, 50].
+    y0s = [b["bbox"][1] for b in aligned]
+    y1s = [b["bbox"][3] for b in aligned]
+    assert y0s == sorted(y0s)
+    assert all(10.0 <= y0 < y1 <= 50.0 for y0, y1 in zip(y0s, y1s))
+    for i in range(len(aligned) - 1):
+        assert y1s[i] == pytest.approx(y0s[i + 1])
+
+    # Flag OFF → exactly ONE joined block (byte-identical legacy).
+    monkeypatch.setenv("SEMANTIK_FUSION_LINE_UNITS", "0")
+    fused_off, _ = fuse_page(tess, vlm, (300.0, 300.0))
+    aligned_off = [b for b in fused_off if b["fusion"] == "vlm+tesseract"]
+    assert len(aligned_off) == 1
+    assert aligned_off[0]["text"] == "LABEL the stem sentence here row one two three a closing note"
 
 
 def test_lossless_accounting_every_line_once():
@@ -178,6 +217,115 @@ def test_gap_pair_positional_rescue_between_anchors():
     assert rescued[0]["bbox"] == [10.0, 30.0, 100.0, 40.0]
     # No verbatim garble survives — it was replaced, not duplicated.
     assert not any("garbled soup" in b["text"] for b in fused)
+
+
+def _fake_align_result(*, rows, pdf_gap, gold_gap):
+    """A minimal aligner-result stand-in for :func:`_reconstruct`.
+
+    Deterministically controls which tess/vlm indices are aligned units vs.
+    gaps, decoupling the rescue-emission test from the opaque DP cost model
+    (which force-aligns short disjoint runs rather than leaving them as gaps)."""
+    import types
+
+    ledger = types.SimpleNamespace(
+        pdf_bucket_indices={"pdf_gap": list(pdf_gap)},
+        gold_bucket_indices={"gold_gap": list(gold_gap)},
+    )
+    row_objs = [
+        types.SimpleNamespace(
+            provenance={"pdf_block_indices": list(pdf)},
+            align={"gold_indices": list(gold), "kind": kind, "confidence": conf},
+        )
+        for pdf, gold, kind, conf in rows
+    ]
+    return types.SimpleNamespace(ledger=ledger, rows=row_objs)
+
+
+def test_rescue_run_emits_per_line_blocks(monkeypatch):
+    """Fix B: an anchored (tess-run, vlm-run) gap pair with a 3-line VLM run
+    emits 3 per-line blocks by default (the p127 unbounded-rescue mega-block
+    source), and exactly 1 joined block on the ``=0`` revert leg.
+
+    Driven through :func:`_reconstruct` with a hand-built aligner result so the
+    3-line gap is deterministic (the DP aligner will not leave a multi-line gap
+    on its own — it force-aligns short disjoint runs)."""
+    from semantik_structure.vlm_fusion import _reconstruct
+
+    # tess/vlm indices 0..4; 0 and 4 are MATCH anchors, 1..3 are gaps.
+    tess = [
+        _tb(10, 10, 100, 20, "header line here"),
+        _tb(10, 30, 100, 40, "qq ww ee garble", conf=0.5),
+        _tb(10, 42, 100, 52, "rr tt yy garble", conf=0.5),
+        _tb(10, 54, 100, 64, "uu ii oo garble", conf=0.5),
+        _tb(10, 80, 100, 90, "footer line here"),
+    ]
+    vlm = [
+        "header line here",
+        r"$a + b = 1$",
+        r"$c + d = 2$",
+        r"$e + f = 3$",
+        "footer line here",
+    ]
+    result = _fake_align_result(
+        rows=[([0], [0], "matched", 0.9), ([4], [4], "matched", 0.9)],
+        pdf_gap=[1, 2, 3],
+        gold_gap=[1, 2, 3],
+    )
+
+    # DEFAULT (line-units on): 3 rescued per-line blocks.
+    monkeypatch.delenv("SEMANTIK_FUSION_LINE_UNITS", raising=False)
+    fused, stats = _reconstruct(result, tess, vlm, 200.0, 300.0, 5, 5)
+    assert stats["rescued"] == 1  # ONE rescue region (per-region count)
+    rescued = [
+        b for b in fused if b["fusion"] == "vlm+tesseract" and "=" in b["text"]
+    ]
+    assert len(rescued) == 3
+    assert [b["text"] for b in rescued] == [
+        r"$a + b = 1$",
+        r"$c + d = 2$",
+        r"$e + f = 3$",
+    ]
+    assert all(b["vlm_coverage"] == "whole_block" for b in rescued)
+    # No verbatim garble survives — each garbled tess line was replaced.
+    assert not any("garble" in b["text"] for b in fused)
+
+    # Flag OFF → exactly 1 joined rescue block (byte-identical legacy).
+    monkeypatch.setenv("SEMANTIK_FUSION_LINE_UNITS", "0")
+    fused_off, stats_off = _reconstruct(result, tess, vlm, 200.0, 300.0, 5, 5)
+    assert stats_off["rescued"] == 1
+    rescued_off = [
+        b for b in fused_off if b["fusion"] == "vlm+tesseract" and "=" in b["text"]
+    ]
+    assert len(rescued_off) == 1
+    assert rescued_off[0]["text"] == r"$a + b = 1$ $c + d = 2$ $e + f = 3$"
+
+
+def test_fuse_page_no_tesseract_emits_vlm_lines(monkeypatch):
+    """Fix B (c): a page with VLM lines but NO tesseract blocks emits one
+    vlm-only-flagged block per line by default (instead of silently dropping the
+    whole page), and drops them all on the ``=0`` revert leg (legacy)."""
+    vlm = ["first vlm line", "## second vlm line", "third vlm line"]
+    # DEFAULT (line-units on): 3 vlm-only-flagged blocks.
+    monkeypatch.delenv("SEMANTIK_FUSION_LINE_UNITS", raising=False)
+    fused, stats = fuse_page([], vlm, (200.0, 300.0))
+    inserts = [b for b in fused if b["fusion"] == "vlm-only-flagged"]
+    assert len(inserts) == 3
+    assert [b["text"] for b in inserts] == [
+        "first vlm line",
+        "second vlm line",  # '##' stripped
+        "third vlm line",
+    ]
+    assert stats["vlm_only"] == 3 and stats.get("vlm_only_page") is True
+    assert all(b["confidence"] == 0.30 for b in inserts)
+    # Monotone y-bands over the synthetic page span.
+    y0s = [b["bbox"][1] for b in inserts]
+    assert y0s == sorted(y0s)
+
+    # Flag OFF → legacy silent drop (empty tesseract list, no fused blocks).
+    monkeypatch.setenv("SEMANTIK_FUSION_LINE_UNITS", "0")
+    fused_off, stats_off = fuse_page([], vlm, (200.0, 300.0))
+    assert fused_off == []
+    assert stats_off["vlm_only"] == 3 and "vlm_only_page" not in stats_off
 
 
 # --------------------------------------------------------------------------
@@ -379,22 +527,71 @@ def test_markdown_structure_stripped_latex_preserved():
     assert by_y[2]["text"] == r"the value is $\sqrt{ab}$"  # LaTeX kept verbatim
 
 
-def test_answer_grid_row_preserves_exercise_numbers():
+def test_answer_grid_row_preserves_exercise_numbers(monkeypatch):
     """A VLM line with MULTIPLE 'N.' markers is an answer-grid / exercise row —
     each number is a CONTENT exercise label, not a list marker, so the leading
-    number must be PRESERVED (regression: '37. 84' was stripped to '84')."""
+    number must be PRESERVED (regression: '37. 84' was stripped to '84').
+
+    Multi-marker preservation holds in BOTH modes. The SINGLE-marker strip only
+    applies on the legacy ``SEMANTIK_FUSION_KEEP_ORDERED_MARKERS=0`` leg (Fix A
+    flips the default so a single-marker textbook exercise number survives)."""
     from SemantiK.semantik_structure.vlm_fusion import _strip_markdown_structure
 
-    # Multi-marker grid rows: leading exercise number kept verbatim.
+    # Multi-marker grid rows: leading exercise number kept verbatim (both modes).
+    monkeypatch.delenv("SEMANTIK_FUSION_KEEP_ORDERED_MARKERS", raising=False)
     assert _strip_markdown_structure("37. 84 38. 9,696 39. 75") == "37. 84 38. 9,696 39. 75"
     assert _strip_markdown_structure("46. 550 47. 22,335 48. 39,075") == (
         "46. 550 47. 22,335 48. 39,075"
     )
-    # Genuine SINGLE-item ordered-list line: leading marker still stripped.
+
+    # Legacy leg (=0): a genuine SINGLE-item ordered-list line still strips.
+    monkeypatch.setenv("SEMANTIK_FUSION_KEEP_ORDERED_MARKERS", "0")
     assert _strip_markdown_structure("1. First point of the argument") == (
         "First point of the argument"
     )
     assert _strip_markdown_structure("3. See the theorem") == "See the theorem"
+    # Multi-marker rows still preserved on the legacy leg.
+    assert _strip_markdown_structure("37. 84 38. 9,696 39. 75") == "37. 84 38. 9,696 39. 75"
+
+
+def test_single_marker_exercise_number_preserved(monkeypatch):
+    """Fix A DEFAULT (SEMANTIK_FUSION_KEEP_ORDERED_MARKERS on): a single-marker
+    line-leading 'N.' in a textbook is a CONTENT exercise/answer NUMBER, so it
+    survives instead of being stripped as a markdown list marker (the p103
+    '38 exercise numbers dropped' defect). '=0' restores the legacy strip."""
+    from SemantiK.semantik_structure.vlm_fusion import _strip_markdown_structure
+
+    # Synthetic per-line exercise lines (fabricated numbers/expressions).
+    lines = [
+        ("301. $\\frac{1}{2}+\\frac{1}{3}$", "301. $\\frac{1}{2}+\\frac{1}{3}$"),
+        ("302. $-\\sqrt{49}$", "302. $-\\sqrt{49}$"),
+        ("317) $x^2 - 4$", "317) $x^2 - 4$"),
+    ]
+    # DEFAULT (mode on): the leading number is KEPT.
+    monkeypatch.delenv("SEMANTIK_FUSION_KEEP_ORDERED_MARKERS", raising=False)
+    for src, want in lines:
+        assert _strip_markdown_structure(src) == want
+
+    # Legacy (=0): the single leading marker is stripped (exercise number lost).
+    monkeypatch.setenv("SEMANTIK_FUSION_KEEP_ORDERED_MARKERS", "0")
+    assert _strip_markdown_structure("301. $\\frac{1}{2}+\\frac{1}{3}$") == (
+        "$\\frac{1}{2}+\\frac{1}{3}$"
+    )
+    assert _strip_markdown_structure("317) $x^2 - 4$") == "$x^2 - 4$"
+
+
+def test_fuse_page_exercise_numbers_survive_in_fused_units(monkeypatch):
+    """End-to-end (default flags): a per-line VLM exercise bank aligning to
+    garbled tesseract keeps every exercise NUMBER in the fused block text —
+    the p103 silent-loss regression, at the fuse_page level."""
+    monkeypatch.delenv("SEMANTIK_FUSION_KEEP_ORDERED_MARKERS", raising=False)
+    monkeypatch.delenv("SEMANTIK_FUSION_LINE_UNITS", raising=False)
+    tess = [_tb(10, 10 + 12 * i, 200, 20 + 12 * i, f"{n} garbld") for i, n in enumerate((301, 302, 303))]
+    vlm = ["301. first exercise body", "302. second exercise body", "303. third exercise body"]
+    fused, _ = fuse_page(tess, vlm, (300.0, 300.0))
+    joined = " ".join(b.get("text", "") for b in fused)
+    for n in ("301.", "302.", "303."):
+        assert n in joined
 
 
 # --------------------------------------------------------------------------
@@ -870,6 +1067,47 @@ def test_cache_key_salt_flips_and_off_is_byte_identical(monkeypatch, tmp_path):
     all_files = set(p.name for p in cache.glob("*.json"))
     assert len(all_files) == 2
     assert calls["n"] == 2  # both were misses (distinct keys)
+
+
+def test_cache_key_ordmark_fgran_salts_append_only_and_off_byte_identical(
+    monkeypatch, tmp_path
+):
+    """Fix A/B cache salts (``|ordmark1`` / ``|fgran1``): fusion-on default
+    salts the key; each mode's ``=0`` drops its salt; and NEITHER salt appears
+    when fusion is OFF (append-only-when-fusion-on-AND-mode-on)."""
+    pdf = tmp_path / "doc.pdf"
+    pdf.write_bytes(b"%PDF-1.4 fake bytes")
+
+    def key():
+        return extract_shared._compute_extract_cache_key(pdf)
+
+    # Fusion OFF → neither salt present regardless of the mode flags (byte-
+    # identical historic no-fusion key).
+    monkeypatch.delenv(SEMANTIK_VLM_FUSION_ENV, raising=False)
+    monkeypatch.setenv("SEMANTIK_FUSION_KEEP_ORDERED_MARKERS", "1")
+    monkeypatch.setenv("SEMANTIK_FUSION_LINE_UNITS", "1")
+    off_key = key()
+    monkeypatch.setenv("SEMANTIK_FUSION_KEEP_ORDERED_MARKERS", "0")
+    monkeypatch.setenv("SEMANTIK_FUSION_LINE_UNITS", "0")
+    assert key() == off_key  # fusion-off key is byte-identical either way
+
+    # Fusion ON, both modes default (on) → both salts present.
+    monkeypatch.setenv(SEMANTIK_VLM_FUSION_ENV, "1")
+    monkeypatch.delenv("SEMANTIK_FUSION_KEEP_ORDERED_MARKERS", raising=False)
+    monkeypatch.delenv("SEMANTIK_FUSION_LINE_UNITS", raising=False)
+    default_key = key()
+
+    # ordmark=0 → a DIFFERENT key (salt dropped).
+    monkeypatch.setenv("SEMANTIK_FUSION_KEEP_ORDERED_MARKERS", "0")
+    ordmark_off_key = key()
+    assert ordmark_off_key != default_key
+    monkeypatch.delenv("SEMANTIK_FUSION_KEEP_ORDERED_MARKERS", raising=False)
+
+    # fgran=0 → a DIFFERENT key (salt dropped).
+    monkeypatch.setenv("SEMANTIK_FUSION_LINE_UNITS", "0")
+    fgran_off_key = key()
+    assert fgran_off_key != default_key
+    assert fgran_off_key != ordmark_off_key
 
 
 # --------------------------------------------------------------------------

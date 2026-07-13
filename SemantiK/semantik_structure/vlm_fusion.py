@@ -78,11 +78,15 @@ __all__ = [
     "SEMANTIK_VLM_ORDER_DIVERGENCE_ENV",
     "SEMANTIK_VLM_DROP_GARBAGE_TAILS_ENV",
     "SEMANTIK_VLM_COLLAPSE_REPETITION_ENV",
+    "SEMANTIK_FUSION_KEEP_ORDERED_MARKERS_ENV",
+    "SEMANTIK_FUSION_LINE_UNITS_ENV",
     "resolve_vlm_fusion_mode",
     "resolve_vlm_order_authoritative_mode",
     "resolve_vlm_order_divergence_floor",
     "resolve_drop_garbage_tails_mode",
     "resolve_collapse_repetition_mode",
+    "resolve_keep_ordered_markers_mode",
+    "resolve_fusion_line_units_mode",
     "fuse_page",
     "PAGE_VLM_CONTRACT",
 ]
@@ -125,6 +129,14 @@ SEMANTIK_VLM_DROP_GARBAGE_TAILS_ENV = "SEMANTIK_VLM_DROP_GARBAGE_TAILS"
 # Default-ON-within-fusion degenerate-repetition collapse (see
 # resolve_collapse_repetition_mode).
 SEMANTIK_VLM_COLLAPSE_REPETITION_ENV = "SEMANTIK_VLM_COLLAPSE_REPETITION"
+# Default-ON-within-fusion exercise/answer ORDERED-MARKER preservation (Fix A —
+# a line-leading "N."/"N)" in a textbook is a CONTENT exercise/answer number,
+# not a markdown list marker; see resolve_keep_ordered_markers_mode).
+SEMANTIK_FUSION_KEEP_ORDERED_MARKERS_ENV = "SEMANTIK_FUSION_KEEP_ORDERED_MARKERS"
+# Default-ON-within-fusion per-VLM-line block granularity (Fix B — a SPLIT
+# unit / gap-rescue run / no-tesseract page emits ONE fused block PER VLM line
+# instead of one space-joined mega-block; see resolve_fusion_line_units_mode).
+SEMANTIK_FUSION_LINE_UNITS_ENV = "SEMANTIK_FUSION_LINE_UNITS"
 # Divergence at/above which Tesseract order is treated as unreliable and the
 # VLM linear order is made authoritative. A clean single-column page aligns
 # almost every line (divergence well under 0.1); a fractured multi-column grid
@@ -227,6 +239,58 @@ def resolve_collapse_repetition_mode() -> bool:
     tests / Docker can flip it without a re-import.
     """
     raw = os.environ.get(SEMANTIK_VLM_COLLAPSE_REPETITION_ENV)
+    if raw is None:
+        return True
+    return str(raw).strip().lower() not in _FALSEY
+
+
+def resolve_keep_ordered_markers_mode() -> bool:
+    """Whether a line-leading ordered marker ("N." / "N)") is KEPT as content (default ON).
+
+    Fix A for the silent extraction-drop of textbook exercise/answer numbers.
+    Reads ``SEMANTIK_FUSION_KEEP_ORDERED_MARKERS`` with the **default-ON** parse
+    posture of :func:`resolve_drop_garbage_tails_mode`: only an explicit falsey
+    value (``0`` / ``false`` / ``no`` / ``off``, case-insensitive) disables it;
+    unset / truthy / garbage keeps it on.
+
+    In a textbook exercise/answer bank the VLM emits one exercise per line
+    ("425. $\\frac{6}{13}+\\frac{5}{13}$"), and the legacy single-marker strip
+    branch in :func:`_strip_markdown_structure` deleted the leading "425." as a
+    markdown list marker — silently losing the exercise IDENTIFIER (38 numbers
+    lost on the audited OpenStax ch01 p103). When this mode is ON the
+    single-marker strip is SKIPPED, so the number survives as content; genuine
+    markdown-list semantics still reach P2 via the untouched raw ``vlm_md`` hint
+    channel. **NO-OP without VLM fusion** (:func:`_strip_markdown_structure` is
+    only reached from :func:`fuse_page`), so the flag-off pipeline is
+    byte-identical; ``=0`` restores the legacy strip exactly. Read at CALL time.
+    """
+    raw = os.environ.get(SEMANTIK_FUSION_KEEP_ORDERED_MARKERS_ENV)
+    if raw is None:
+        return True
+    return str(raw).strip().lower() not in _FALSEY
+
+
+def resolve_fusion_line_units_mode() -> bool:
+    """Whether a multi-VLM-line fused unit emits ONE block PER line (default ON).
+
+    Fix B for the unit-boundary destruction that glued a worked example's label,
+    stem, "Solution", table, and TRY IT lines into single mega-blocks (audited
+    OpenStax ch01 p127 u09/u10; p103 run-on exercise blobs). Reads
+    ``SEMANTIK_FUSION_LINE_UNITS`` with the **default-ON** parse posture of
+    :func:`resolve_collapse_repetition_mode`: only an explicit falsey value
+    (``0`` / ``false`` / ``no`` / ``off``) disables it; unset / truthy / garbage
+    keeps it on.
+
+    When ON: a SPLIT aligned unit (``len(vlm) > 1``), an unbounded gap-pairing
+    rescue run, and a no-tesseract page each emit one fused block PER VLM line
+    over even y-bands of the tesseract union (instead of one ``_join_vlm``
+    mega-block), with ``vlm_coverage='whole_block'`` (now genuinely correct —
+    each block IS one whole VLM line). **NO-OP without VLM fusion** (the callers
+    are all inside :func:`_reconstruct` / :func:`fuse_page`), so the flag-off /
+    no-fusion pipeline is byte-identical; ``=0`` restores the legacy join/drop
+    exactly. Read at CALL time.
+    """
+    raw = os.environ.get(SEMANTIK_FUSION_LINE_UNITS_ENV)
     if raw is None:
         return True
     return str(raw).strip().lower() not in _FALSEY
@@ -760,7 +824,14 @@ def _strip_markdown_structure(line: str) -> str:
     # Strip the leading ordered-list marker ONLY for a genuine single-item list
     # line. A line carrying MULTIPLE "N." markers is an answer-grid / exercise
     # row where each number is a CONTENT exercise label — preserve it verbatim.
-    if len(_MD_ORDERED_GLOBAL_RE.findall(s)) <= 1:
+    # Fix A (SEMANTIK_FUSION_KEEP_ORDERED_MARKERS, default ON within fusion):
+    # even a SINGLE-marker "N." line is a CONTENT exercise/answer number in a
+    # textbook (one exercise per line), so the strip is SKIPPED entirely; the
+    # number survives. ``=0`` restores the legacy single-marker strip exactly.
+    if (
+        not resolve_keep_ordered_markers_mode()
+        and len(_MD_ORDERED_GLOBAL_RE.findall(s)) <= 1
+    ):
         s = _MD_ORDERED_RE.sub("", s)
     # Bold wrappers only (single * / _ can be multiplication / subscript).
     s = s.replace("**", "").replace("__", "")
@@ -811,6 +882,29 @@ def _union_bbox(bboxes: list[list[float]]) -> list[float]:
     xs1 = [float(b[2]) for b in bboxes]
     ys1 = [float(b[3]) for b in bboxes]
     return [min(xs0), min(ys0), max(xs1), max(ys1)]
+
+
+def _even_y_bands(bbox: list[float], n: int) -> list[list[float]]:
+    """Subdivide ``bbox`` into ``n`` even, monotone, non-overlapping y-bands.
+
+    Fix B geometry: when a multi-VLM-line unit is emitted one-block-per-line the
+    per-line bboxes are synthetic even y-bands of the tesseract union (x extent
+    preserved), so the ``(y0, x0)`` reading-order merge and the region-level
+    ``min(feature_block_indices)`` sort keep the VLM line order. Every band stays
+    inside the union → no inverted / out-of-page box is possible (the caller
+    still passes each band through :func:`_sanitize_bbox`). ``n <= 1`` returns
+    the whole box.
+    """
+    x0, y0, x1, y1 = (float(v) for v in list(bbox)[:4])
+    if n <= 1:
+        return [[x0, y0, x1, y1]]
+    h = (y1 - y0) / float(n)
+    bands: list[list[float]] = []
+    for i in range(n):
+        by0 = y0 + i * h
+        by1 = y1 if i == n - 1 else y0 + (i + 1) * h
+        bands.append([x0, by0, x1, by1])
+    return bands
 
 
 def _median(xs: list[float]) -> float:
@@ -923,6 +1017,27 @@ def fuse_page(
     vlm = [_strip_vlm_special_tokens(ln) for ln in (vlm_lines or [])]
     n_tess, n_vlm = len(tess), len(vlm)
 
+    # Fix B (c): a page with VLM lines but NO tesseract blocks (image-only /
+    # OCR-empty page) SILENTLY DISCARDED every VLM line in the legacy path
+    # (the early return below emits only the — empty — tesseract list). Under
+    # SEMANTIK_FUSION_LINE_UNITS (default ON within fusion) emit each VLM line
+    # as a flagged vlm-only insert over synthetic even bands instead of losing
+    # the whole page. Flag-off → the legacy silent-drop is byte-identical.
+    if n_tess == 0 and n_vlm > 0 and resolve_fusion_line_units_mode():
+        fused_blocks = _emit_vlm_only_page(vlm, page_w, page_h)
+        stats = {
+            "matched": 0,
+            "split": 0,
+            "merge": 0,
+            "tesseract_only": 0,
+            "vlm_only": n_vlm,
+            "rescued": 0,
+            "divergence": 1.0,
+            "vlm_only_page": True,
+        }
+        _apply_collapse(fused_blocks, stats)
+        return fused_blocks, stats
+
     if n_tess == 0 or n_vlm == 0:
         # Nothing to fuse — keep tesseract verbatim (byte-identical input),
         # zero-divergence stats.
@@ -1000,19 +1115,70 @@ def fuse_page(
     # Conservative (only an unambiguous degenerate run is touched) →
     # byte-identical on non-pathological input; the per-block collapse count is
     # tallied additively in ``stats``.
-    if resolve_collapse_repetition_mode():
-        collapsed = 0
-        for b in fused_blocks:
-            txt = b.get("text")
-            if not isinstance(txt, str):
-                continue
-            new = _collapse_degenerate_repetition(txt)
-            if new is not txt:
-                b["text"] = new
-                collapsed += 1
-        stats["repetition_collapsed"] = collapsed
+    _apply_collapse(fused_blocks, stats)
 
     return fused_blocks, stats
+
+
+def _emit_vlm_only_page(
+    vlm: list[str], page_w: float, page_h: float
+) -> list[dict]:
+    """Emit each VLM line of a no-tesseract page as a flagged vlm-only insert.
+
+    Fix B (c): a page with VLM lines but zero tesseract blocks previously lost
+    every VLM line at fusion (the legacy early return emits only the empty
+    tesseract list). Each surviving line (empty-after-strip fences skipped) is a
+    ``vlm-only-flagged`` block over a synthetic even y-band spanning the page, so
+    the page's content reaches the council/assembler instead of vanishing. Pure;
+    no tesseract geometry to key off, so the bands are synthetic (mirrors the
+    ``_interp_vlm_only`` fallback posture)."""
+    n = len(vlm)
+    span_h = page_h if page_h and page_h > 0 else float(max(n, 1)) * _SYNTH_LINE_H
+    span_w = page_w if page_w and page_w > 0 else 1.0
+    bands = _even_y_bands([0.0, 0.0, span_w, span_h], n)
+    out: list[dict] = []
+    for band, ln in zip(bands, vlm):
+        text = _strip_markdown_structure(ln)
+        if not text:
+            continue
+        out.append(
+            {
+                "bbox": _sanitize_bbox(band, span_w, span_h),
+                "text": text,
+                "font_size": None,
+                "font_name": None,
+                "is_bold": None,
+                "is_italic": None,
+                "confidence": _VLM_ONLY_CONFIDENCE,
+                "fusion": "vlm-only-flagged",
+                "fusion_sim": 0.0,
+                "vlm_md": ln,
+                "vlm_coverage": "whole_block",
+            }
+        )
+    return out
+
+
+def _apply_collapse(fused_blocks: list[dict], stats: dict) -> None:
+    """Degenerate-repetition tripwire pass (SEMANTIK_VLM_COLLAPSE_REPETITION).
+
+    Collapses each fused block's degenerate repeated-token / looped-sentence run
+    to a bounded representative + count marker; conservative → byte-identical on
+    non-pathological input. The per-block collapse count is tallied additively
+    in ``stats['repetition_collapsed']``. No-op when the mode is off (no key
+    written), so a flag-off run's stats are byte-identical."""
+    if not resolve_collapse_repetition_mode():
+        return
+    collapsed = 0
+    for b in fused_blocks:
+        txt = b.get("text")
+        if not isinstance(txt, str):
+            continue
+        new = _collapse_degenerate_repetition(txt)
+        if new is not txt:
+            b["text"] = new
+            collapsed += 1
+    stats["repetition_collapsed"] = collapsed
 
 
 def _reconstruct(
@@ -1079,33 +1245,20 @@ def _reconstruct(
     # insert positions. Populated as we build aligned + rescue blocks.
     anchors: list[dict] = []
 
+    line_units = resolve_fusion_line_units_mode()
+
     def _emit_aligned(u: dict) -> None:
         bbox = _sanitize_bbox(
             _union_bbox([tess[t]["bbox"] for t in u["tess"]]), page_w, page_h
         )
         anchor = tess[min(u["tess"])]
-        text = _join_vlm(vlm, u["vlm"])
-        vlm_md, coverage = _vlm_md_and_coverage(vlm, u["vlm"])
-        fused.append(
-            {
-                "bbox": bbox,
-                "text": text,
-                "font_size": anchor.get("font_size"),
-                "font_name": anchor.get("font_name"),
-                "is_bold": anchor.get("is_bold"),
-                "is_italic": anchor.get("is_italic"),
-                "confidence": float(anchor.get("confidence", 1.0)),
-                "fusion": "vlm+tesseract",
-                "fusion_sim": round(float(u["conf"]), 6),
-                "vlm_md": vlm_md,
-                "vlm_coverage": coverage,
-            }
-        )
-        sort_keys.append(min(u["vlm"]))
+        vlm_idxs = sorted(u["vlm"])
+        # Anchor (for VLM-only interpolation) + kind tally stay ONE per unit,
+        # independent of how many fused blocks the unit emits.
         anchors.append(
             {
-                "vlm_lo": min(u["vlm"]),
-                "vlm_hi": max(u["vlm"]),
+                "vlm_lo": vlm_idxs[0],
+                "vlm_hi": vlm_idxs[-1],
                 "bbox": bbox,
                 "font_size": anchor.get("font_size"),
             }
@@ -1117,6 +1270,48 @@ def _reconstruct(
             counts["split"] += 1
         elif kind == "merge":
             counts["merge"] += 1
+
+        def _base(text: str, vlm_md: str, coverage: str) -> dict:
+            return {
+                "text": text,
+                "font_size": anchor.get("font_size"),
+                "font_name": anchor.get("font_name"),
+                "is_bold": anchor.get("is_bold"),
+                "is_italic": anchor.get("is_italic"),
+                "confidence": float(anchor.get("confidence", 1.0)),
+                "fusion": "vlm+tesseract",
+                "fusion_sim": round(float(u["conf"]), 6),
+                "vlm_md": vlm_md,
+                "vlm_coverage": coverage,
+            }
+
+        # Fix B: a SPLIT unit (>1 VLM line) emits ONE block PER VLM line over
+        # even y-bands of the tesseract union, so the worked-example label /
+        # stem / table / TRY-IT lines survive as DISTINCT units instead of one
+        # space-joined mega-block. Flag-off / single-line unit → legacy join.
+        if line_units and len(vlm_idxs) > 1:
+            bands = _even_y_bands(bbox, len(vlm_idxs))
+            emitted = 0
+            for band, g in zip(bands, vlm_idxs):
+                text = _strip_markdown_structure(vlm[g])
+                if not text:  # skip an empty-after-strip line (a code fence)
+                    continue
+                blk = _base(text, vlm[g], "whole_block")
+                blk["bbox"] = _sanitize_bbox(band, page_w, page_h)
+                fused.append(blk)
+                sort_keys.append(g)
+                emitted += 1
+            if emitted:
+                return
+            # Every line stripped to empty (all fences) → fall through to the
+            # legacy single-block emit so the unit is never silently vanished.
+
+        text = _join_vlm(vlm, vlm_idxs)
+        vlm_md, coverage = _vlm_md_and_coverage(vlm, vlm_idxs)
+        blk = _base(text, vlm_md, coverage)
+        blk["bbox"] = bbox
+        fused.append(blk)
+        sort_keys.append(vlm_idxs[0])
 
     for u in units:
         _emit_aligned(u)
@@ -1140,14 +1335,13 @@ def _reconstruct(
             _union_bbox([tess[t]["bbox"] for t in region_tess]), page_w, page_h
         )
         anchor = tess[min(region_tess)]
-        text = _join_vlm(vlm, region_vlm)
-        vlm_md, coverage = _vlm_md_and_coverage(vlm, region_vlm)
+        region_vlm_sorted = sorted(region_vlm)
         # Recorded sim is low by construction — a positional guess, not a
         # token match (surfaces in the divergence tripwire).
         fusion_sim = _rescue_sim(tess, vlm, region_tess, region_vlm)
-        fused.append(
-            {
-                "bbox": bbox,
+
+        def _rescue_base(text: str, vlm_md: str, coverage: str) -> dict:
+            return {
                 "text": text,
                 "font_size": anchor.get("font_size"),
                 "font_name": anchor.get("font_name"),
@@ -1159,12 +1353,33 @@ def _reconstruct(
                 "vlm_md": vlm_md,
                 "vlm_coverage": coverage,
             }
-        )
-        sort_keys.append(min(region_vlm))
+
+        # Fix B: an unbounded rescued VLM run (the p127 mega-block source) emits
+        # ONE block PER VLM line over even y-bands of the rescued tesseract
+        # union. Flag-off / single-line run → legacy space-joined block.
+        emitted_rescue = 0
+        if line_units and len(region_vlm_sorted) > 1:
+            bands = _even_y_bands(bbox, len(region_vlm_sorted))
+            for band, g in zip(bands, region_vlm_sorted):
+                text = _strip_markdown_structure(vlm[g])
+                if not text:
+                    continue
+                blk = _rescue_base(text, vlm[g], "whole_block")
+                blk["bbox"] = _sanitize_bbox(band, page_w, page_h)
+                fused.append(blk)
+                sort_keys.append(g)
+                emitted_rescue += 1
+        if not emitted_rescue:
+            text = _join_vlm(vlm, region_vlm)
+            vlm_md, coverage = _vlm_md_and_coverage(vlm, region_vlm)
+            blk = _rescue_base(text, vlm_md, coverage)
+            blk["bbox"] = bbox
+            fused.append(blk)
+            sort_keys.append(region_vlm_sorted[0])
         anchors.append(
             {
-                "vlm_lo": min(region_vlm),
-                "vlm_hi": max(region_vlm),
+                "vlm_lo": region_vlm_sorted[0],
+                "vlm_hi": region_vlm_sorted[-1],
                 "bbox": bbox,
                 "font_size": anchor.get("font_size"),
             }
