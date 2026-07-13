@@ -67,6 +67,16 @@ from semantik_structure.structure_graph import Region  # noqa: E402
 from semantik_structure.types import FeatureBlock, RawBlock  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _isolate_qc_cache(tmp_path, monkeypatch):
+    """Isolate the default-ON per-unit reasoning-QC resume cache into a per-test
+    tmp dir so the mocked (cacheable) judgment never writes to the shared repo
+    cache dir / cross-contaminates across cascade runs."""
+    monkeypatch.setenv("SEMANTIK_CACHE_DIR", str(tmp_path / "qc_cache_root"))
+    monkeypatch.delenv("SEMANTIK_REASONING_QC_CHECKPOINT", raising=False)
+    monkeypatch.delenv("ED4ALL_GENERATION_CHECKPOINT", raising=False)
+
+
 # ---------------------------------------------------------------------------
 # Synthetic document (2 FBs on one physical page → one QC window).
 # ---------------------------------------------------------------------------

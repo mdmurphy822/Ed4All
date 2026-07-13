@@ -1,14 +1,16 @@
-"""DecisionCapture regression for the reasoning-QC VLM call site.
+"""DecisionCapture regression for the reasoning-QC call site.
 
 Mirrors ``tests/test_figure_captioner_capture.py``: a ``_SpyCapture`` stub
 monkeypatched over ``reasoning_qc._build_reasoning_qc_capture`` asserts the QC
-pass emits ONE ``structure_detection`` decision per QC unit (window) with a
-dynamic, replayable rationale carrying the page number, model id, region-index
-set, and order divergence. The VLM boundary is mocked (no torch/ollama/weights).
+pass emits ONE ``structure_detection`` decision for the DOCUMENT-level judgment
+(2026-07-12 text-only, document-level pivot — one QC window over the whole
+document) with a dynamic, replayable rationale carrying the page span, model id,
+a bounded region-index sample, and order divergence. The reasoning boundary is
+mocked (no torch/ollama/weights).
 
 Invariants pinned here:
-  (a) one decision per QC WINDOW, decision_type ``structure_detection``;
-  (b) rationale >= 20 chars, carries page number + model id + region set +
+  (a) one decision for the DOCUMENT judgment, decision_type ``structure_detection``;
+  (b) rationale >= 20 chars, carries page span + model id + region set +
       divergence/confidence;
   (c) the QC output (qc_audit) is still produced when capture is None;
   (d) a build-failure (lib not importable) is non-fatal;
@@ -22,6 +24,15 @@ from typing import Any
 import pytest
 
 from semantik_structure import reasoning_qc
+
+
+@pytest.fixture(autouse=True)
+def _isolate_qc_cache(tmp_path, monkeypatch):
+    """Isolate the default-ON per-unit reasoning-QC resume cache into a per-test
+    tmp dir so the mocked judgment never writes to the shared repo cache dir."""
+    monkeypatch.setenv("SEMANTIK_CACHE_DIR", str(tmp_path / "qc_cache_root"))
+    monkeypatch.delenv("SEMANTIK_REASONING_QC_CHECKPOINT", raising=False)
+    monkeypatch.delenv("ED4ALL_GENERATION_CHECKPOINT", raising=False)
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +70,7 @@ class _Assembled:
 
 
 def _two_page_doc():
-    """Two regions on page 1, one on page 2 → two QC windows."""
+    """Three regions spanning pages 1-2 → ONE document QC window (doc-level)."""
     feature_blocks = [
         _FB(_Raw("1.1 Real Section Heading", 1)),
         _FB(_Raw("Body prose for the section.", 1)),
@@ -76,24 +87,27 @@ def _two_page_doc():
 
 @pytest.fixture
 def _mock_vlm(monkeypatch):
-    """Mock the seat + per-window judgment so no model loads."""
+    """Mock the seat + document judgment so no model loads."""
     monkeypatch.setattr(reasoning_qc, "_resolve_qc_seat", lambda: object())
     monkeypatch.setattr(reasoning_qc, "_unload_seat", lambda seat: None)
 
-    def _judge(seat, pdf_path, page_num, block_texts):
-        if page_num == 2:
-            # Flag the running-header block on page 2 as a phantom heading.
-            return {"reading_order": [], "phantom_headings": [{"index": 0, "reason": "running header"}], "confidence": 0.9}
-        return {"reading_order": [1, 0], "phantom_headings": [], "confidence": 0.8}
+    def _judge(seat, pdf_path, page_num, blocks):
+        # One document window over all 3 blocks: flag the running-header (block 2)
+        # phantom + a divergent reading_order (swap the first two blocks).
+        return {
+            "reading_order": [1, 0, 2],
+            "phantom_headings": [{"index": 2, "reason": "running header"}],
+            "confidence": 0.9,
+        }
 
     monkeypatch.setattr(reasoning_qc, "_run_qc_judgment", _judge)
     monkeypatch.setattr(reasoning_qc, "resolve_reasoning_qc_model", lambda default_model=None: "qc-model:test")
 
 
 # ---------------------------------------------------------------------------
-# (a)+(b) capture fires per window with a dynamic rationale.
+# (a)+(b) capture fires once for the document judgment with a dynamic rationale.
 # ---------------------------------------------------------------------------
-def test_capture_fires_per_window(monkeypatch, _mock_vlm):
+def test_capture_fires_for_document(monkeypatch, _mock_vlm):
     monkeypatch.setenv("SEMANTIK_REASONING_QC", "shadow")
     spy = _SpyCapture()
     monkeypatch.setattr(reasoning_qc, "_build_reasoning_qc_capture", lambda: spy)
@@ -105,20 +119,20 @@ def test_capture_fires_per_window(monkeypatch, _mock_vlm):
 
     # Shadow → capped byte-identical (same object list).
     assert new_capped is capped
-    # (a) one decision per WINDOW (two pages → two decisions).
-    assert len(spy.calls) == 2
-    for call in spy.calls:
-        assert call["decision_type"] == "structure_detection"
-        rationale = call["rationale"]
-        # (b) dynamic + replayable.
-        assert len(rationale) >= 20
-        assert "page " in rationale
-        assert "model=qc-model:test" in rationale
-        assert "regions=" in rationale
-        assert "divergence" in rationale
-    # The audit records both windows + the phantom flag.
+    # (a) one decision for the DOCUMENT judgment (one QC window).
+    assert len(spy.calls) == 1
+    call = spy.calls[0]
+    assert call["decision_type"] == "structure_detection"
+    rationale = call["rationale"]
+    # (b) dynamic + replayable.
+    assert len(rationale) >= 20
+    assert "pages 1-2" in rationale  # page span, not a single page
+    assert "model=qc-model:test" in rationale
+    assert "regions=" in rationale
+    assert "divergence" in rationale
+    # The audit records the document window + the phantom flag.
     assert audit["ran"] is True and audit["mode"] == "shadow"
-    assert audit["capture_fired"] == 2
+    assert audit["capture_fired"] == 1
     assert any(f["failure_mode"] == "example_as_heading" for f in audit["flagged"])
 
 

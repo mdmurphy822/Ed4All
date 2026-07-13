@@ -1,6 +1,17 @@
-"""Stage-9b reasoning-QC pass (``SEMANTIK_REASONING_QC``) — VLM-adjudicated
+"""Stage-9b reasoning-QC pass (``SEMANTIK_REASONING_QC``) — reasoning-model
 reading-order + structure quality control over the converged ``capped`` region
 list, applied ONLY as block-ID reconcile ops (never a free-text rewrite).
+
+**Text-only, document-level (2026-07-12 pivot).** The QC pass reasons over the
+ASSEMBLED accessible-HTML-side block sequence (the capped/assembled region text —
+type, role, heading level, page annotation) of the WHOLE converted document, NOT
+over per-page image rasters. A reasoning TEXT model (own seat, decoupled from the
+VLM family — see :func:`reasoning_qc_vlm.resolve_reasoning_qc_seat`) judges the
+combined output. The full document's ordered block list is partitioned into
+``SEMANTIK_REASONING_QC_WINDOW_BLOCKS``-block windows with junction SEAM strips
+between adjacent windows — so seams now cover PAGE BOUNDARIES too (cross-page
+reading-order scrambles a per-page design could never see). Each block's page (if
+known) rides as an informational per-block annotation.
 
 Posture (three-valued, default byte-identical)
 ----------------------------------------------
@@ -36,20 +47,103 @@ drop real content.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 import re
+from pathlib import Path
 from typing import Any, Callable, Sequence
 
 logger = logging.getLogger(__name__)
 
 QC_AUDIT_SCHEMA = "reasoning-qc/1.0"
 
+# Default per-page VLM fan-out width — mirrors the endpoint runtime's
+# _DEFAULT_CONCURRENCY (8) so a QC pass saturates the reasoning seat's
+# continuous-batching window instead of judging pages one at a time.
+_DEFAULT_QC_CONCURRENCY = 8
+
 
 # ---------------------------------------------------------------------------
 # Flag resolver — three-valued, default OFF (byte-identical).
 # ---------------------------------------------------------------------------
 _QC_OFF_TOKENS = frozenset({"0", "false", "no", "off"})
+
+
+def resolve_reasoning_qc_concurrency() -> int:
+    """Parse-with-fallback ``SEMANTIK_REASONING_QC_CONCURRENCY`` (default 8, min 1).
+
+    Bounds the :class:`~concurrent.futures.ThreadPoolExecutor` that fans the
+    per-UNIT QC judgment VLM calls out (see :func:`_fan_out_page_verifies`) —
+    window sub-slices AND junction seam strips ride the same pool. Mirrors
+    :func:`endpoint_runtime.resolve_specialist_concurrency`. Garbage / blank /
+    non-positive → the default 8; a valid positive int → that value. Read at CALL
+    time (never cached at import).
+    """
+    raw = os.environ.get("SEMANTIK_REASONING_QC_CONCURRENCY")
+    if not raw:
+        return _DEFAULT_QC_CONCURRENCY
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_QC_CONCURRENCY
+    if val < 1:
+        return _DEFAULT_QC_CONCURRENCY
+    return val
+
+
+# ---------------------------------------------------------------------------
+# Primary-window PARTITION + junction SEAM knobs (root-cause prevention: a
+# dense page's ordered block list is partitioned into non-overlapping windows,
+# each judged thinking-on; a seam strip re-judges each junction where scan
+# scrambles hide).
+# ---------------------------------------------------------------------------
+_QC_WINDOW_BLOCKS_ENV = "SEMANTIK_REASONING_QC_WINDOW_BLOCKS"
+_QC_SEAM_BLOCKS_ENV = "SEMANTIK_REASONING_QC_SEAM_BLOCKS"
+_DEFAULT_QC_WINDOW_BLOCKS = 30
+_MIN_QC_WINDOW_BLOCKS = 4
+_DEFAULT_QC_SEAM_BLOCKS = 5
+_MIN_QC_SEAM_BLOCKS = 2
+
+
+def resolve_reasoning_qc_window_blocks() -> int:
+    """Parse-with-fallback ``SEMANTIK_REASONING_QC_WINDOW_BLOCKS`` (default 30, min 4).
+
+    The maximum blocks in ONE primary QC judgment window: a page whose block
+    list exceeds this is PARTITIONED into consecutive, NON-overlapping windows of
+    at most this size (root-cause prevention — an unbounded dense page drives the
+    reasoning seat to exhaust its completion window). Blank / non-int / garbage →
+    the default 30; any value below the floor clamps up to 4 (a window must be
+    large enough to judge local order). Read at CALL time."""
+    raw = os.environ.get(_QC_WINDOW_BLOCKS_ENV)
+    if not raw:
+        return _DEFAULT_QC_WINDOW_BLOCKS
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_QC_WINDOW_BLOCKS
+    return max(_MIN_QC_WINDOW_BLOCKS, val)
+
+
+def resolve_reasoning_qc_seam_blocks() -> int:
+    """Parse-with-fallback ``SEMANTIK_REASONING_QC_SEAM_BLOCKS`` (default 5, min 2).
+
+    Half-width ``S`` of the junction SEAM strip: for each adjacent primary-window
+    pair the seam pass issues one extra thinking-on judgment over the last ``S``
+    blocks of window K + the first ``S`` blocks of window K+1 (a contiguous strip
+    straddling the junction), so cross-boundary scrambles that no single
+    partition window can see are judged on their own evidence. Blank / non-int /
+    garbage → the default 5; any value below the floor clamps up to 2. Read at
+    CALL time."""
+    raw = os.environ.get(_QC_SEAM_BLOCKS_ENV)
+    if not raw:
+        return _DEFAULT_QC_SEAM_BLOCKS
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_QC_SEAM_BLOCKS
+    return max(_MIN_QC_SEAM_BLOCKS, val)
 
 
 def resolve_reasoning_qc_mode() -> str:
@@ -118,6 +212,29 @@ def _region_pages(region: Any, feature_blocks: Sequence[Any]) -> list[int]:
 def _region_raw_text(region: Any, feature_blocks: Sequence[Any]) -> str:
     fb_idx = sorted(getattr(region, "feature_block_indices", ()) or ())
     return " ".join(t for fb in fb_idx if (t := _fb_text(feature_blocks, fb).strip()))
+
+
+def _block_record(region: Any, feature_blocks: Sequence[Any]) -> dict[str, Any]:
+    """One text-only QC block record from an assembled/capped region.
+
+    Carries the structural signals the text-only judgment reads: ``type`` (the
+    region ``kind``), ``role`` (the ``doc_role`` payload label, else kind),
+    ``level`` (heading ``level_hint``), the primary physical ``page`` (or
+    ``None``), and the region's verbatim ``text``. No image, no raster — the
+    reasoning model judges order + structure from THIS."""
+    kind = str(getattr(region, "kind", "") or "")
+    payload = getattr(region, "payload", {}) or {}
+    role = payload.get("doc_role") or kind
+    level = payload.get("level_hint")
+    pages = _region_pages(region, feature_blocks)
+    page = pages[0] if pages else None
+    return {
+        "type": kind,
+        "role": role,
+        "level": level,
+        "page": page,
+        "text": _region_raw_text(region, feature_blocks),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -194,29 +311,33 @@ def harvest_declared_toc_spine(
 
 
 # ---------------------------------------------------------------------------
-# Page-window derivation — one window per physical page, keyed by
-# region_provenance pages (re-render ONLY the pages a window covers).
+# Document-sequence QC unit (2026-07-12 pivot — document-level, not per-page).
+# The WHOLE document's ordered block list is one sequence; _plan_page_units
+# partitions THAT into windows + junction seams (seams now span page boundaries).
 # ---------------------------------------------------------------------------
 class QCWindow:
-    """One per-page QC unit: the emitted regions on a physical page, in order.
+    """The document's ordered QC block sequence (one per converted document).
 
-    ``block_texts[k]`` is the raw text of the region at capped index
-    ``region_indices[k]`` — so a VLM judgment keyed by block index ``k`` maps
-    back to a ``capped`` region index for the reconcile op.
+    ``block_records[k]`` is the text-only record (``{type, role, level, page,
+    text}``) of the region at capped index ``region_indices[k]`` — so a judgment
+    keyed by LOCAL block index ``k`` (within a partition window/seam) maps back to
+    a ``capped`` region index for the reconcile op. ``page`` is a nominal
+    representative (the first block's page) kept for logging/audit only — it no
+    longer gates anything (there is no raster to render after the pivot).
     """
 
-    __slots__ = ("page", "region_indices", "block_texts", "emit_positions")
+    __slots__ = ("page", "region_indices", "block_records", "emit_positions")
 
     def __init__(
         self,
         page: int,
         region_indices: list[int],
-        block_texts: list[str],
+        block_records: list[dict[str, Any]],
         emit_positions: list[int],
     ) -> None:
         self.page = page
         self.region_indices = region_indices
-        self.block_texts = block_texts
+        self.block_records = block_records
         self.emit_positions = emit_positions
 
 
@@ -225,30 +346,36 @@ def build_qc_windows(
     feature_blocks: Sequence[Any],
     region_order: Sequence[int],
 ) -> list[QCWindow]:
-    """Group emitted regions into per-physical-page windows.
+    """Build the SINGLE document-level QC sequence (emission/reading order).
 
-    ``region_order`` is the assembler's ``region_provenance`` — capped indices
-    in emission (reading) order. Each region is assigned to its PRIMARY (min)
-    physical page so the pass re-renders exactly one raster per window and never
-    the whole book. Regions with no resolvable page are grouped under page 0
-    (their text is still judged for order, just without a raster page number to
-    render — the VLM call is skipped for a page-0 window).
-    """
-    by_page: dict[int, QCWindow] = {}
+    ``region_order`` is the assembler's ``region_provenance`` — capped indices in
+    emission (reading) order. The WHOLE document is one ordered block sequence
+    (document-level pivot); each region contributes one text-only
+    :func:`_block_record`. Returns a one-element list (the document sequence) so
+    the downstream fan-out / stitch machinery — which partitions a window's block
+    list into sub-windows + junction seams — operates over the whole document.
+    Returns ``[]`` when no region resolves (nothing to judge)."""
+    region_indices: list[int] = []
+    block_records: list[dict[str, Any]] = []
+    emit_positions: list[int] = []
     for emit_pos, ridx in enumerate(region_order):
         if not (0 <= ridx < len(capped)):
             continue
-        region = capped[ridx]
-        pages = _region_pages(region, feature_blocks)
-        page = pages[0] if pages else 0
-        win = by_page.get(page)
-        if win is None:
-            win = QCWindow(page=page, region_indices=[], block_texts=[], emit_positions=[])
-            by_page[page] = win
-        win.region_indices.append(ridx)
-        win.block_texts.append(_region_raw_text(region, feature_blocks))
-        win.emit_positions.append(emit_pos)
-    return [by_page[p] for p in sorted(by_page)]
+        region_indices.append(ridx)
+        block_records.append(_block_record(capped[ridx], feature_blocks))
+        emit_positions.append(emit_pos)
+    if not region_indices:
+        return []
+    pages = [r["page"] for r in block_records if r["page"] is not None]
+    page = pages[0] if pages else 0
+    return [
+        QCWindow(
+            page=page,
+            region_indices=region_indices,
+            block_records=block_records,
+            emit_positions=emit_positions,
+        )
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -554,50 +681,305 @@ def _synthesize_misorder_flag(verdict: dict[str, Any], window: QCWindow) -> Any 
     )
 
 
-def page_order_verify(
+# ---------------------------------------------------------------------------
+# Primary-window PARTITION + junction SEAM plan + verdict STITCH.
+#
+# A page whose block list exceeds SEMANTIK_REASONING_QC_WINDOW_BLOCKS is
+# partitioned into consecutive, NON-overlapping windows; each adjacent pair adds
+# ONE seam strip (last S of window K + first S of window K+1). Every window and
+# seam is a VLM UNIT over a contiguous block slice; single-window pages emit
+# ZERO seams. Stitch precedence (owner amendment): window verdicts own INTRA
+# findings (re-type + intra order), seam verdicts are AUTHORITATIVE for
+# cross-boundary order; assembly order is all windows (in window order) then all
+# seams (in seam order); any window/seam flag ⇒ page flagged.
+# ---------------------------------------------------------------------------
+def _plan_page_units(n_blocks: int) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+    """Return ``(windows, seams)`` — each a list of ``[start, end)`` block ranges.
+
+    ``windows`` PARTITION ``[0, n_blocks)`` exactly (consecutive, non-overlapping,
+    ≤ ``SEMANTIK_REASONING_QC_WINDOW_BLOCKS``). ``seams`` has one contiguous strip
+    per junction — ``[junction - S, junction + S)`` clamped to the two adjacent
+    windows — so ``len(seams) == max(0, len(windows) - 1)``. A page that fits one
+    window (``n_blocks <= WINDOW_BLOCKS``) → one window, ZERO seams."""
+    win_size = resolve_reasoning_qc_window_blocks()
+    if n_blocks <= win_size:
+        return [(0, n_blocks)], []
+    windows: list[tuple[int, int]] = []
+    s = 0
+    while s < n_blocks:
+        e = min(s + win_size, n_blocks)
+        windows.append((s, e))
+        s = e
+    seam_half = resolve_reasoning_qc_seam_blocks()
+    seams: list[tuple[int, int]] = []
+    for k in range(len(windows) - 1):
+        junction = windows[k][1]  # == windows[k + 1][0]
+        seam_start = max(windows[k][0], junction - seam_half)
+        seam_end = min(windows[k + 1][1], junction + seam_half)
+        seams.append((seam_start, seam_end))
+    return windows, seams
+
+
+def _qc_item_index(item: Any) -> int | None:
+    raw = item.get("index") if isinstance(item, dict) else item
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _qc_item_reason(item: Any, default: str) -> str:
+    if isinstance(item, dict):
+        return str(item.get("reason") or default)
+    return default
+
+
+def _qc_run_indices(r: Any) -> list[int] | None:
+    raw = r.get("run") if isinstance(r, dict) else r
+    if not isinstance(raw, (list, tuple)):
+        return None
+    out: list[int] = []
+    for x in raw:
+        try:
+            out.append(int(x))
+        except (TypeError, ValueError):
+            return None
+    return out
+
+
+def _qc_as_conf(value: Any) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _qc_int_list(value: Any) -> list[int]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    out: list[int] = []
+    for x in value:
+        try:
+            out.append(int(x))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _qc_reading_order_run(v: dict[str, Any], unit_len: int) -> list[int] | None:
+    """A unit's ``reading_order`` as a divergent permutation of its local range.
+
+    Returns the proposed local order (list) when it is a valid permutation of
+    ``range(unit_len)`` diverging by ≥ :data:`_MISORDER_MIN_POSITIONS`; else
+    ``None`` (fail-soft on a malformed / non-divergent / non-permutation order).
+    """
+    proposed = v.get("reading_order")
+    if not isinstance(proposed, (list, tuple)) or not proposed:
+        return None
+    try:
+        seq = [int(x) for x in proposed]
+    except (TypeError, ValueError):
+        return None
+    if unit_len < 2 or sorted(seq) != list(range(unit_len)):
+        return None
+    if sum(1 for i in range(unit_len) if seq[i] != i) < _MISORDER_MIN_POSITIONS:
+        return None
+    return seq
+
+
+def _qc_local_divergence(v: dict[str, Any], unit_len: int) -> int:
+    """The unit's reading_order position-move count vs its local baseline order."""
+    proposed = v.get("reading_order")
+    if not isinstance(proposed, (list, tuple)) or not proposed:
+        return 0
+    try:
+        seq = [int(x) for x in proposed]
+    except (TypeError, ValueError):
+        return 0
+    m = min(len(seq), unit_len)
+    return sum(1 for i in range(m) if seq[i] != i)
+
+
+def _absorb_window_findings(
+    v: dict[str, Any], start: int, end: int, merged: dict[str, list]
+) -> None:
+    """Fold a WINDOW unit's verdict (INTRA findings) into the page-merged verdict.
+
+    Window verdicts own the per-block re-type (phantom / apparatus) findings AND
+    intra-window order. Indices are remapped from unit-local (0-based) to page
+    positions (``+start``)."""
+    unit_len = end - start
+    for key in ("phantom_headings", "apparatus_retype"):
+        for item in v.get(key) or ():
+            idx = _qc_item_index(item)
+            if idx is None or not (0 <= idx < unit_len):
+                continue
+            merged[key].append({"index": start + idx, "reason": _qc_item_reason(item, "")})
+    explicit = False
+    for r in v.get("misordered") or ():
+        run = _qc_run_indices(r)
+        if run is None:
+            continue
+        remapped = [start + i for i in run if 0 <= i < unit_len]
+        if len(remapped) >= 2:
+            merged["misordered"].append(
+                {"run": remapped, "reason": _qc_item_reason(r, "order divergence")}
+            )
+            explicit = True
+    if not explicit:
+        seq = _qc_reading_order_run(v, unit_len)
+        if seq is not None:
+            merged["misordered"].append(
+                {
+                    "run": [start + k for k in seq],
+                    "reason": "reasoning-QC window: reading_order divergence",
+                }
+            )
+
+
+def _absorb_seam_findings(
+    v: dict[str, Any], start: int, end: int, merged: dict[str, list]
+) -> None:
+    """Fold a SEAM unit's verdict (CROSS-boundary ORDER only) into the merge.
+
+    Seam verdicts are authoritative for cross-boundary order (reading-order
+    across the junction) — the thing no single partition window can see. A seam's
+    per-block NON-order finding (phantom / apparatus) is DISCARDED: the window
+    that fully contains the block saw more surrounding context and wins."""
+    unit_len = end - start
+    explicit = False
+    for r in v.get("misordered") or ():
+        run = _qc_run_indices(r)
+        if run is None:
+            continue
+        remapped = [start + i for i in run if 0 <= i < unit_len]
+        if len(remapped) >= 2:
+            merged["misordered"].append(
+                {"run": remapped, "reason": _qc_item_reason(r, "cross-boundary order divergence")}
+            )
+            explicit = True
+    if not explicit:
+        seq = _qc_reading_order_run(v, unit_len)
+        if seq is not None:
+            merged["misordered"].append(
+                {
+                    "run": [start + k for k in seq],
+                    "reason": "reasoning-QC seam: cross-boundary reading_order divergence",
+                }
+            )
+
+
+def _stitch_from_raw(
+    raw_by_unit: dict[tuple, dict[str, Any]],
+    w_idx: int,
+    window: QCWindow,
+    subwins: list[tuple[int, int]],
+    seams: list[tuple[int, int]],
+) -> tuple[dict[str, Any], int]:
+    """Stitch a page's window + seam unit verdicts into ONE page verdict.
+
+    Single-window pages return the raw window verdict UNCHANGED (byte-identical
+    to the legacy single-call path, so ``reading_order`` synthesis + divergence
+    downstream are preserved). Multi-window pages assemble window findings first
+    (window order) then seam findings (seam order); ``reading_order`` is dropped
+    (no global permutation across the partition) and the synthesized per-unit
+    misordered runs carry order divergence instead. ``confidence`` is the min
+    across units; ``_qc_incomplete`` is the union (remapped to page positions).
+    Returns ``(merged_verdict, aggregate_divergence)``."""
+    if len(subwins) == 1 and not seams:
+        v = raw_by_unit.get((w_idx, "window", subwins[0][0], subwins[0][1])) or {}
+        return v, _window_divergence(v, window)
+    merged: dict[str, Any] = {"phantom_headings": [], "apparatus_retype": [], "misordered": []}
+    confs: list[float] = []
+    incomplete: list[int] = []
+    total_div = 0
+    for (s, e) in subwins:
+        v = raw_by_unit.get((w_idx, "window", s, e)) or {}
+        _absorb_window_findings(v, s, e, merged)
+        c = _qc_as_conf(v.get("confidence"))
+        if c is not None:
+            confs.append(c)
+        incomplete.extend(s + i for i in _qc_int_list(v.get("_qc_incomplete")))
+        total_div += _qc_local_divergence(v, e - s)
+    for (s, e) in seams:
+        v = raw_by_unit.get((w_idx, "seam", s, e)) or {}
+        _absorb_seam_findings(v, s, e, merged)
+        c = _qc_as_conf(v.get("confidence"))
+        if c is not None:
+            confs.append(c)
+        incomplete.extend(s + i for i in _qc_int_list(v.get("_qc_incomplete")))
+        total_div += _qc_local_divergence(v, e - s)
+    if confs:
+        merged["confidence"] = min(confs)
+    if incomplete:
+        merged["_qc_incomplete"] = sorted(set(incomplete))
+    merged = {k: val for k, val in merged.items() if not (isinstance(val, list) and not val)}
+    return merged, total_div
+
+
+def _stitch_and_flag(
+    raw_by_unit: dict[tuple, dict[str, Any]],
+    w_idx: int,
+    window: QCWindow,
+    subwins: list[tuple[int, int]],
+    seams: list[tuple[int, int]],
+) -> tuple[dict[str, Any], list[Any], int]:
+    """Stitch the page's units, then convert to ``(verdict, flagged, divergence)``."""
+    merged, divergence = _stitch_from_raw(raw_by_unit, w_idx, window, subwins, seams)
+    if not merged:
+        return {}, [], 0
+    flagged = judgments_to_flagged_blocks(merged, window)
+    # Synthesize a reorder candidate from a WHOLE-PAGE reading_order ONLY when the
+    # verdict did not already carry a misordered run (single-window pages keep the
+    # legacy synth; multi-window pages already carry per-unit synthesized runs).
+    if not (merged.get("misordered") or ()):
+        synth = _synthesize_misorder_flag(merged, window)
+        if synth is not None:
+            flagged.append(synth)
+    return merged, flagged, divergence
+
+
+def order_verify(
     seat: Any,
     pdf_path: Any,
     window: QCWindow,
     *,
     log: Callable[[str], None] | None = None,
 ) -> tuple[dict[str, Any], list[Any], int]:
-    """CHECK (B): judge one page-window's reading order + structure via the VLM.
+    """CHECK (B): judge the document sequence's reading order + structure (text).
 
-    Renders the window's physical page + POSTs (page raster + ordered block
-    texts) to the multimodal reasoning client (thinking-on unless
-    ``SEMANTIK_VLM_DISABLE_THINKING`` is set) and returns
-    ``(verdict, flagged, divergence)``:
+    PARTITIONS the document's ordered block list into ≤``SEMANTIK_REASONING_QC_WINDOW_BLOCKS``
+    non-overlapping windows + junction seam strips (seams now straddle page
+    boundaries too), judges each unit thinking-on via :func:`_run_qc_judgment`
+    (SEQUENTIALLY here — the concurrent fan-out is :func:`_fan_out_page_verifies`),
+    and STITCHES the unit verdicts into ``(verdict, flagged, divergence)``:
 
-      * ``verdict`` — the parsed VLM judgment dict (``{}`` on a fail-soft miss);
+      * ``verdict`` — the merged judgment dict (``{}`` on a fail-soft miss);
       * ``flagged`` — :class:`FlaggedBlock` records (phantom / apparatus re-type
         + explicit-``misordered`` reorder + a reading_order-derived reorder);
       * ``divergence`` — the reading_order position-move count (audit signal).
 
-    Degrades gracefully: a non-renderable page (``window.page <= 0``) is skipped
-    with a logged reason and returns ``({}, [], 0)``; a render/transport/parse
-    failure inside :func:`_run_qc_judgment` degrades to an empty verdict (the
-    VLM client is fail-soft) — this NEVER raises into the cascade.
+    Degrades gracefully: a transport/parse failure inside :func:`_run_qc_judgment`
+    degrades to an empty verdict (the reasoning client is fail-soft) — this NEVER
+    raises into the cascade. ``pdf_path`` is retained for provenance/logging only
+    (no page render after the 2026-07-12 text-only pivot).
     """
     _log = log or (lambda msg: logger.debug(msg))
-    if window.page <= 0:
-        _log(
-            f"[cascade] reasoning-QC page_order_verify: window has no renderable "
-            f"page (regions={list(window.region_indices)}) → skip"
+    subwins, seams = _plan_page_units(len(window.block_records))
+    raw_by_unit: dict[tuple, dict[str, Any]] = {}
+    for (s, e) in subwins:
+        raw_by_unit[(0, "window", s, e)] = _run_qc_judgment(
+            seat, pdf_path, window.page, list(window.block_records[s:e])
         )
-        return {}, [], 0
-    verdict = _run_qc_judgment(seat, pdf_path, window.page, window.block_texts)
-    if not verdict:
-        # Fail-soft empty verdict (render miss / transport error / parse miss).
-        return {}, [], 0
-    flagged = judgments_to_flagged_blocks(verdict, window)
-    divergence = _window_divergence(verdict, window)
-    # Synthesize a reorder candidate from reading_order ONLY when the verdict did
-    # not already carry an explicit misordered run (avoid double-flagging).
-    if not (verdict.get("misordered") or ()):
-        synth = _synthesize_misorder_flag(verdict, window)
-        if synth is not None:
-            flagged.append(synth)
-    return verdict, flagged, divergence
+    for (s, e) in seams:
+        raw_by_unit[(0, "seam", s, e)] = _run_qc_judgment(
+            seat, pdf_path, window.page, list(window.block_records[s:e])
+        )
+    return _stitch_and_flag(raw_by_unit, 0, window, subwins, seams)
+
+
+# Back-compat alias — the historic per-page name.
+page_order_verify = order_verify
 
 
 # ---------------------------------------------------------------------------
@@ -649,10 +1031,10 @@ def _log_qc_decision(
     flagged: Sequence[Any],
     divergence: int,
 ) -> None:
-    """Emit ONE ``structure_detection`` decision for a QC window.
+    """Emit ONE ``structure_detection`` decision for the document QC judgment.
 
-    Rationale is dynamic + replayable (page number, model id, the window's
-    region-index set, divergence, model confidence, per-mode flag counts) so a
+    Rationale is dynamic + replayable (page span, model id, a BOUNDED region-index
+    sample, block count, divergence, model confidence, per-mode flag counts) so a
     post-hoc replay can attribute the judgment to its exact input. Best-effort:
     never raises into the QC path.
     """
@@ -666,10 +1048,33 @@ def _log_qc_decision(
             conf = None
         modes = sorted({str(getattr(f, "failure_mode", "?")) for f in flagged})
         region_set = list(window.region_indices)
+        n = len(region_set)
+        # Bound the region dump — the document sequence can carry thousands of
+        # regions; a replayable rationale keeps head + tail + a count.
+        if n <= 20:
+            region_repr = str(region_set)
+        else:
+            region_repr = (
+                f"[{', '.join(str(x) for x in region_set[:10])}, "
+                f"…(+{n - 20} more)…, "
+                f"{', '.join(str(x) for x in region_set[-10:])}]"
+            )
+        pages = [b.get("page") for b in window.block_records if b.get("page") is not None]
+        page_span = f"{min(pages)}-{max(pages)}" if pages else "n/a"
+        # Honestly record any blocks the split ladder could not judge thinking-on
+        # (qc_incomplete) — post-hoc analysis must never mistake a skipped block
+        # for a clean pass. There is NO thinking-off fallback discriminator: the
+        # QC judgment is thinking-on by construction (OWNER DIRECTIVE).
+        incomplete = _qc_int_list(verdict.get("_qc_incomplete"))
+        incomplete_tag = (
+            f" qc_incomplete after split ladder exhausted (block_positions={incomplete})"
+            if incomplete
+            else ""
+        )
         rationale = (
-            f"reasoning-QC judgment on page {window.page} "
-            f"(regions={region_set}, n_blocks={len(region_set)}): "
-            f"model={model} confidence={conf} order_divergence={divergence}; "
+            f"reasoning-QC document judgment over pages {page_span} "
+            f"(n_blocks={n}, regions={region_repr}): "
+            f"model={model} confidence={conf} order_divergence={divergence}{incomplete_tag}; "
             f"flagged {len(flagged)} block(s) modes={modes}; "
             f"phantom={len(verdict.get('phantom_headings') or ())} "
             f"apparatus={len(verdict.get('apparatus_retype') or ())} "
@@ -678,7 +1083,7 @@ def _log_qc_decision(
         capture.log_decision(
             decision_type="structure_detection",
             decision=(
-                f"reasoning-QC page {window.page}: {len(flagged)} flag(s), "
+                f"reasoning-QC document (pages {page_span}): {len(flagged)} flag(s), "
                 f"divergence={divergence}"
             ),
             rationale=rationale,
@@ -700,11 +1105,15 @@ def _resolve_qc_seat():
     return resolve_reasoning_qc_seat()
 
 
-def _run_qc_judgment(seat, pdf_path, page_num, block_texts) -> dict[str, Any]:
-    """Render + POST one window's judgment (delegates to the VLM module)."""
+def _run_qc_judgment(seat, pdf_path, page_num, blocks) -> dict[str, Any]:
+    """POST one unit's TEXT judgment (delegates to the reasoning-QC client).
+
+    ``blocks`` is the list of text-only block RECORDS for the unit; ``pdf_path``
+    /``page_num`` are provenance/logging only (no render after the 2026-07-12
+    text-only pivot)."""
     from .reasoning_qc_vlm import run_qc_judgment
 
-    return run_qc_judgment(seat, pdf_path, page_num, block_texts)
+    return run_qc_judgment(seat, pdf_path, page_num, blocks)
 
 
 # ---------------------------------------------------------------------------
@@ -921,6 +1330,289 @@ def _apply_merge_move_ops(
 
 
 # ---------------------------------------------------------------------------
+# Per-UNIT resume cache/sidecar (stop-on-command checkpointing contract).
+#
+# Every QC judgment UNIT (window sub-slice OR junction seam) is a content-
+# addressed sidecar: the fingerprint keys the EXACT reasoning input (the rendered
+# user text that would be POSTed + the model id + the prompt-contract version +
+# the thinking-disabled bool + the unit kind). A completed unit persists its
+# verdict, so worst-case loss on an `ed4all stop` / crash is only the in-flight
+# calls — a resume re-fans-out and every already-judged unit is a cache HIT (no
+# re-POST). Mirrors the vlm_extract per-page disk cache (single-writer,
+# atomic-ish temp+rename, sharded by key[:2]).
+# ---------------------------------------------------------------------------
+_REASONING_QC_CACHE_BASENAME = "reasoning_qc_cache"
+
+# Site checkpoint flag (default ON) → falls back to the ED4ALL_GENERATION_CHECKPOINT
+# family. Mirrors lib.generation.llm_checkpoint.checkpoint_enabled's semantics,
+# re-implemented locally (SemantiK's self-containment boundary forbids a lib/
+# import — the cross-venv conversion subprocess has no Ed4All lib on its path).
+_QC_CHECKPOINT_ENV = "SEMANTIK_REASONING_QC_CHECKPOINT"
+_QC_CHECKPOINT_FAMILY_ENV = "ED4ALL_GENERATION_CHECKPOINT"
+_QC_CHECKPOINT_FALSEY = frozenset({"0", "false", "no", "off"})
+
+
+def resolve_reasoning_qc_checkpoint() -> bool:
+    """Resolve the per-unit resume-cache gate (default ON). Read at CALL time.
+
+    Precedence: the site env ``SEMANTIK_REASONING_QC_CHECKPOINT``, WHEN SET
+    (non-blank), wins (falsey token → off, anything else → on); otherwise the
+    family ``ED4ALL_GENERATION_CHECKPOINT`` decides (falsey token → off, unset /
+    garbage → on). Off → byte-identical: the fan-out neither reads nor writes the
+    sidecar (no cache dir is ever created)."""
+    site = os.environ.get(_QC_CHECKPOINT_ENV, "")
+    if site.strip():
+        return site.strip().lower() not in _QC_CHECKPOINT_FALSEY
+    return os.environ.get(_QC_CHECKPOINT_FAMILY_ENV, "").strip().lower() not in _QC_CHECKPOINT_FALSEY
+
+
+def _qc_cache_root() -> Path:
+    """The content-addressed reasoning-QC sidecar root (CWD-independent).
+
+    Mirrors :func:`vlm_extract._cache_root` — resolves via
+    ``semantik_structure.paths.resolve_cache`` so it honours ``SEMANTIK_HOME`` /
+    ``SEMANTIK_CACHE_DIR`` and is stable regardless of the subprocess CWD."""
+    from . import paths as _semantik_paths
+
+    return _semantik_paths.resolve_cache(_REASONING_QC_CACHE_BASENAME)
+
+
+def _qc_unit_fingerprint(
+    blocks: Sequence[Any], *, model: str, kind: str
+) -> str:
+    """Content-address one QC unit → a sha256 hex key.
+
+    The fingerprint hashes the unit's SEMANTIC identity: the sha256 of the SAME
+    rendered user text ``reasoning_qc_vlm._build_qc_user_text`` would POST, the
+    model id, the ``QC_PROMPT_VERSION`` prompt-contract int, the
+    thinking-disabled bool, the EFFECTIVE sampling params (temperature / top_p /
+    max_tokens / reasoning_budget — sampling changes the verdict, so a cache HIT
+    across different sampling would be wrong), and the unit ``kind``
+    (``"window"``/``"seam"``).
+    Any change to the block texts, model, prompt, thinking mode, sampling, or
+    unit kind moves the key, so a stale sidecar is never served for a changed
+    input."""
+    from .reasoning_qc_vlm import (
+        QC_PROMPT_VERSION,
+        _build_qc_user_text,
+        resolve_reasoning_qc_disable_thinking,
+        resolve_reasoning_qc_sampling,
+    )
+
+    user_text = _build_qc_user_text(blocks)
+    text_sha = hashlib.sha256(user_text.encode("utf-8")).hexdigest()
+    thinking_off = int(bool(resolve_reasoning_qc_disable_thinking()))
+    s = resolve_reasoning_qc_sampling()
+    sampling_tag = (
+        f"{s['temperature']}|{s['top_p']}|{s['max_tokens']}|{s.get('reasoning_budget')}"
+    )
+    raw = f"{text_sha}|{model}|{QC_PROMPT_VERSION}|{thinking_off}|{sampling_tag}|{kind}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _qc_cache_path(key: str, root: Path) -> Path:
+    return root / key[:2] / f"{key}.json"
+
+
+def _qc_cache_get(path: Path) -> dict | None:
+    """Read a cached verdict (``None`` on miss / corrupt / IO error — fail-soft)."""
+    try:
+        if not path.exists():
+            return None
+        obj = json.loads(path.read_text())
+        return obj if isinstance(obj, dict) else None
+    except Exception as exc:  # noqa: BLE001 — a corrupt/unreadable sidecar → miss
+        logger.debug("reasoning-QC cache read failed (non-fatal) %s: %s", path, exc)
+        return None
+
+
+def _qc_cache_put(path: Path, verdict: dict[str, Any]) -> None:
+    """Persist a verdict atomically (temp+rename). Best-effort — never raises."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(verdict, ensure_ascii=False))
+        tmp.replace(path)
+    except Exception as exc:  # noqa: BLE001 — a cache write must never break QC
+        logger.debug("reasoning-QC cache write failed (non-fatal) %s: %s", path, exc)
+
+
+def _qc_verdict_cacheable(verdict: dict[str, Any]) -> bool:
+    """Only a genuine judgment is persisted.
+
+    An empty ``{}`` verdict is the fail-soft sentinel (transport/parse miss) — it
+    must re-run next time, never be cached as "nothing flagged". A verdict that
+    carries ``_qc_incomplete`` is a split-ladder EXHAUSTION (the unit could not
+    be judged thinking-on) — also a failure to re-run. Everything else (including
+    a clean split-ladder RECOVERY, which carries real findings and no
+    ``_qc_incomplete``) is cacheable."""
+    return bool(verdict) and "_qc_incomplete" not in verdict
+
+
+def _qc_stop_requested() -> bool:
+    """Non-raising probe of the handed-in stop sentinel (fail-soft → False).
+
+    The complement of :func:`_check_stop` (which RAISES): used inside the fan-out
+    to decide whether to stop SUBMITTING new units without aborting the in-flight
+    ones. No wiring (``SEMANTIK_STOP_SENTINEL`` unset) → always False (byte-
+    identical)."""
+    try:
+        from .stop_seam import stop_sentinel_present
+
+        return bool(stop_sentinel_present())
+    except Exception:  # noqa: BLE001 — a probe error is never a stop
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Per-UNIT fan-out (bounded ThreadPoolExecutor — mirrors
+# endpoint_runtime.generate_batch). ONLY the reasoning judgment calls
+# parallelize; the caller processes/applies the collected verdicts in ORIGINAL
+# window order.
+# ---------------------------------------------------------------------------
+def _fan_out_page_verifies(
+    seat: Any,
+    pdf_path: Any,
+    windows: Sequence[QCWindow],
+    *,
+    log: Callable[[str], None],
+    stop_site_id: str = "cascade:reasoning-qc-unit",
+) -> dict[int, tuple[dict[str, Any], list[Any], int]]:
+    """Fan the per-UNIT QC TEXT judgment calls out concurrently, then stitch.
+
+    The document sequence (:func:`build_qc_windows` returns one) is PLANNED into
+    partition sub-windows + junction seam strips (:func:`_plan_page_units`); every
+    sub-window AND seam is an independent judgment unit that rides the SAME bounded
+    thread pool. Returns ``{window_index: (verdict, flagged, divergence)}`` — the
+    units are STITCHED (window findings then seam findings) into a single verdict
+    in ORIGINAL window order, so completion order can never scramble downstream
+    ordering. Width is :func:`resolve_reasoning_qc_concurrency`
+    (``SEMANTIK_REASONING_QC_CONCURRENCY``, default 8), floored at 1 and capped at
+    the number of units.
+
+    **Resume cache (``SEMANTIK_REASONING_QC_CHECKPOINT``, default ON).** Each unit
+    is a content-addressed sidecar: a cache HIT returns the persisted verdict with
+    NO POST; a genuine judgment is persisted (:func:`_qc_verdict_cacheable`). Off
+    → no reads, no writes (byte-identical).
+
+    **Stop-on-command.** Units are NOT all submitted up front — the pool is kept
+    to ``max_workers`` in flight (submit-one-consume-one), and the stop sentinel is
+    probed (non-raising) before EACH new submission. On a stop request the fan-out
+    stops SUBMITTING, lets the in-flight units finish (each persists to its
+    sidecar), then RAISES via :func:`_check_stop` so the runner's pause path
+    engages — worst-case loss is the in-flight units, not the whole stage.
+
+    Fail-soft per UNIT: a worker that RAISES degrades to the empty verdict ``{}``
+    for THAT unit (the other units still contribute); it never propagates into
+    the cascade (EXCEPT a stop, which propagates by design). A document that fits
+    one window emits exactly one unit → byte-identical to the single-call path.
+    """
+    unit_specs: list[tuple[int, str, int, int]] = []
+    plans: dict[int, tuple[list[tuple[int, int]], list[tuple[int, int]]]] = {}
+    for w_idx, w in enumerate(windows):
+        subwins, seams = _plan_page_units(len(w.block_records))
+        plans[w_idx] = (subwins, seams)
+        for (s, e) in subwins:
+            unit_specs.append((w_idx, "window", s, e))
+        for (s, e) in seams:
+            unit_specs.append((w_idx, "seam", s, e))
+
+    results: dict[int, tuple[dict[str, Any], list[Any], int]] = {}
+    if not unit_specs:
+        return results
+
+    max_workers = max(1, min(resolve_reasoning_qc_concurrency(), len(unit_specs)))
+    use_cache = resolve_reasoning_qc_checkpoint()
+    unit_model = getattr(seat, "model", None) or resolve_reasoning_qc_model()
+
+    def _work(spec: tuple[int, str, int, int]) -> dict[str, Any]:
+        w_idx, kind, s, e = spec
+        window = windows[w_idx]
+        blocks = list(window.block_records[s:e])
+        cache_path: Path | None = None
+        if use_cache:
+            try:
+                key = _qc_unit_fingerprint(blocks, model=str(unit_model), kind=kind)
+                root = _qc_cache_root()
+                cache_path = _qc_cache_path(key, root)
+                cached = _qc_cache_get(cache_path)
+                if cached is not None:
+                    return cached
+            except Exception as exc:  # noqa: BLE001 — cache infra never breaks QC
+                logger.debug("reasoning-QC cache lookup failed (non-fatal): %s", exc)
+                cache_path = None
+        try:
+            verdict = _run_qc_judgment(seat, pdf_path, window.page, blocks)
+        except Exception as exc:  # noqa: BLE001 — per-unit fail-soft
+            log(
+                f"[cascade] reasoning-QC unit verify raised fail-soft "
+                f"({kind} [{s}:{e}]): {exc}"
+            )
+            return {}
+        if use_cache and cache_path is not None and _qc_verdict_cacheable(verdict):
+            _qc_cache_put(cache_path, verdict)
+        return verdict
+
+    from concurrent.futures import (  # noqa: WPS433
+        FIRST_COMPLETED,
+        ThreadPoolExecutor,
+        wait,
+    )
+
+    raw_by_unit: dict[tuple, dict[str, Any]] = {}
+    stop_requested = False
+    next_idx = 0
+    n_specs = len(unit_specs)
+
+    def _collect(future, spec) -> None:
+        try:
+            raw_by_unit[spec] = future.result()
+        except BaseException as exc:  # noqa: BLE001 — belt: never propagate
+            log(f"[cascade] reasoning-QC unit future raised fail-soft ({spec}): {exc}")
+            raw_by_unit[spec] = {}
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        in_flight: dict[Any, tuple[int, str, int, int]] = {}
+        # Prime up to max_workers — probing the stop sentinel before each submit.
+        while next_idx < n_specs and len(in_flight) < max_workers:
+            if _qc_stop_requested():
+                stop_requested = True
+                break
+            spec = unit_specs[next_idx]
+            next_idx += 1
+            in_flight[pool.submit(_work, spec)] = spec
+        # Submit-one-consume-one: as each unit finishes, top the pool back up
+        # (bounded) unless a stop has been requested.
+        while in_flight:
+            done, _pending = wait(set(in_flight), return_when=FIRST_COMPLETED)
+            for future in done:
+                spec = in_flight.pop(future)
+                _collect(future, spec)
+            while not stop_requested and next_idx < n_specs and len(in_flight) < max_workers:
+                if _qc_stop_requested():
+                    stop_requested = True
+                    break
+                spec = unit_specs[next_idx]
+                next_idx += 1
+                in_flight[pool.submit(_work, spec)] = spec
+
+    # A stop was observed: every completed unit is persisted; propagate the stop
+    # exactly as the pass-boundary probe would (the runner maps it to a pause).
+    if stop_requested:
+        log(
+            "[cascade] reasoning-QC: stop sentinel observed mid-fan-out — "
+            "in-flight units drained + checkpointed; pausing."
+        )
+        _check_stop(stop_site_id)
+
+    # Stitch the document's units (window order then seam order) into its verdict.
+    for w_idx, w in enumerate(windows):
+        subwins, seams = plans[w_idx]
+        results[w_idx] = _stitch_and_flag(raw_by_unit, w_idx, w, subwins, seams)
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Orchestrator entrypoint.
 # ---------------------------------------------------------------------------
 def run_reasoning_qc(
@@ -1040,20 +1732,24 @@ def run_reasoning_qc(
         logger.debug("reasoning-QC capture build raised (non-fatal): %s", exc)
         _document_capture = None
     try:
-        for window in windows:
-            # Stop-on-command: worst-case loss is one window's judgment.
-            _check_stop("cascade:reasoning-qc-unit")
-            if window.page <= 0:
-                # No renderable page — record the window but skip the VLM call.
-                qc_audit["windows"].append(
-                    {"page": window.page, "regions": list(window.region_indices), "skipped": True}
-                )
-                continue
-            # CHECK (B) — page reading-order verify (VLM, thinking-on). Fail-soft:
-            # an empty verdict / render miss returns ([], 0) and flags nothing.
-            verdict, flagged, divergence = page_order_verify(
-                seat, pdf_path, window, log=_log
-            )
+        # Stop-on-command: probe once at the pass boundary (cheap early-out).
+        # The fan-out ALSO probes the sentinel before each unit submission and
+        # persists every completed unit to its resume sidecar, so worst-case loss
+        # on a stop mid-fan-out is only the in-flight UNIT judgments (≤ CONCURRENCY
+        # window sub-slices + junction seams) — a resume re-fans-out and the
+        # already-judged units are cache HITS (no re-POST).
+        _check_stop("cascade:reasoning-qc-unit")
+        # CHECK (B) — page reading-order verify (VLM, thinking-on) fanned out
+        # concurrently per UNIT (SEMANTIK_REASONING_QC_CONCURRENCY, default 8).
+        # ONLY the VLM calls parallelize; a page's window + seam units are
+        # STITCHED and processed in ORIGINAL window order below so downstream
+        # ordering stays deterministic.
+        verdicts_by_index = _fan_out_page_verifies(seat, pdf_path, windows, log=_log)
+
+        for w_idx, window in enumerate(windows):
+            # Fail-soft: an empty verdict returns ([], 0) and flags nothing (the
+            # per-unit fail-soft contract is preserved inside the fan-out).
+            verdict, flagged, divergence = verdicts_by_index[w_idx]
             _log_qc_decision(
                 _document_capture,
                 window=window,
@@ -1065,15 +1761,26 @@ def run_reasoning_qc(
             if _document_capture is not None:
                 qc_audit["capture_fired"] += 1
             all_flagged.extend(flagged)
-            qc_audit["windows"].append(
-                {
-                    "page": window.page,
-                    "regions": list(window.region_indices),
-                    "confidence": verdict.get("confidence"),
-                    "order_divergence": divergence,
-                    "n_flagged": len(flagged),
-                }
-            )
+            _pages = [b.get("page") for b in window.block_records if b.get("page") is not None]
+            win_entry: dict[str, Any] = {
+                "page": window.page,
+                "pages": [min(_pages), max(_pages)] if _pages else None,
+                "n_regions": len(window.region_indices),
+                "confidence": verdict.get("confidence"),
+                "order_divergence": divergence,
+                "n_flagged": len(flagged),
+            }
+            # Honest record of any junction/window the split ladder left
+            # unverified — mapped back to the capped region indices.
+            incomplete_positions = _qc_int_list(verdict.get("_qc_incomplete"))
+            incomplete_regions = [
+                window.region_indices[p]
+                for p in incomplete_positions
+                if 0 <= p < len(window.region_indices)
+            ]
+            if incomplete_regions:
+                win_entry["qc_incomplete"] = incomplete_regions
+            qc_audit["windows"].append(win_entry)
             for f in flagged:
                 qc_audit["flagged"].append(
                     {
