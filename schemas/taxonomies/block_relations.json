@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/taxonomies/v1/relations.schema.json",
+  "title": "Universal block relations",
+  "description": "Two relation FAMILIES over blocks. STRUCTURAL relations are layer-agnostic (derivable from any document with no genre profile — same_unit, continues, caption_of, adjacent, same_section, footnote_of). PROFILE relations require a Layer-2 role on at least one endpoint (solution_of, practice_of, answers, cites, defines, references). All are DETERMINISTICALLY derived from a validated arrangement + block roles — no model call beyond the arrangement itself.",
+  "$comment": "Field shapes for same_unit/caption_of/solution_of/continues lifted from SemantiK/semantik_structure/page_arranger_contract.py RELATIONS_SCHEMA (schema_version 2). adjacent/same_section/practice_of lifted from the BERT-v2 co-occurrence deriver (derive_cooccurrence: adjacency, section_comembership, practice_of). The BERT-v2 relation head trains on the structural family (none|same_unit|caption_of|solution_of|continues); the co-occurrence classes (adjacent, same_section, practice_of) are additional training signal. Consistency: every profile relation names >=1 Layer-2 role endpoint. See docs/architecture/block-ontology.md.",
+  "version": "0.1.0-draft",
+  "$defs": {
+    "StructuralRelation": {
+      "type": "string",
+      "enum": ["same_unit", "continues", "caption_of", "adjacent", "same_section", "footnote_of"]
+    },
+    "ProfileRelation": {
+      "type": "string",
+      "enum": ["solution_of", "practice_of", "answers", "cites", "defines", "references"]
+    }
+  },
+  "x-relations": [
+    {
+      "relation": "same_unit",
+      "family": "structural",
+      "directed": false,
+      "endpoints": "block <-> block (n-ary via unit_ids)",
+      "field_shape": { "block_idx": "int", "unit_ids": "list[str]" },
+      "meaning": "the listed units form ONE logical block (the merge signal).",
+      "derivation": "arranger: >1 id in a block. cooccurrence: n/a.",
+      "bert_v2_class": "same_unit",
+      "source": "page_arranger_contract.RELATIONS_SCHEMA"
+    },
+    {
+      "relation": "continues",
+      "family": "structural",
+      "directed": true,
+      "endpoints": "block(page N-1 last non-furniture) -> block(page N first, continues_prev_page)",
+      "field_shape": { "from": "str|null", "to": "str" },
+      "meaning": "cross-page text continuation of one logical block across a page break.",
+      "derivation": "arranger: continues_prev_page flag on the first block of a page, materialized cross-page by the driver.",
+      "bert_v2_class": "continues",
+      "source": "page_arranger_contract.RELATIONS_SCHEMA + align_gold driver"
+    },
+    {
+      "relation": "caption_of",
+      "family": "structural",
+      "directed": true,
+      "endpoints": "caption -> nearest non-furniture neighbor (figure/table preferred)",
+      "field_shape": { "caption_block_idx": "int", "target_block_idx": "int" },
+      "meaning": "a caption block binds to the figure/table it describes.",
+      "derivation": "arranger: a figure_caption/caption block bound to its nearest non-furniture neighbor.",
+      "bert_v2_class": "caption_of",
+      "source": "page_arranger_contract.derive_relations_v2"
+    },
+    {
+      "relation": "adjacent",
+      "family": "structural",
+      "directed": true,
+      "endpoints": "block(i) -> block(i+1), consecutive non-furniture in reading order",
+      "field_shape": { "from_block_idx": "int", "to_block_idx": "int" },
+      "meaning": "ordered reading sequence over content blocks (furniture excluded — it is page dressing, not reading sequence).",
+      "derivation": "cooccurrence: consecutive content indices.",
+      "bert_v2_class": "adjacent",
+      "source": "cooccurrence.derive_cooccurrence[adjacency]"
+    },
+    {
+      "relation": "same_section",
+      "family": "structural",
+      "directed": false,
+      "endpoints": "block <-> block under the same nearest-preceding heading",
+      "field_shape": { "block_idx_a": "int", "block_idx_b": "int", "section_anchor_idx": "int" },
+      "meaning": "two blocks co-member the same section (anchored by the nearest preceding heading). Capped to avoid O(n^2): each member paired to its heading + consecutive member pairs.",
+      "derivation": "cooccurrence: section_comembership.",
+      "bert_v2_class": "same_section",
+      "source": "cooccurrence.derive_cooccurrence[section_comembership]"
+    },
+    {
+      "relation": "footnote_of",
+      "family": "structural",
+      "directed": true,
+      "endpoints": "footnote -> referencing block",
+      "field_shape": { "footnote_block_idx": "int", "target_block_idx": "int" },
+      "meaning": "a footnote binds to the block carrying its reference marker.",
+      "derivation": "deterministic marker-match (footnote kind -> block with the matching reference marker). NOT yet emitted by the arranger contract (proposed).",
+      "bert_v2_class": null,
+      "source": "proposed (block_kinds footnote + marker attribute)"
+    },
+    {
+      "relation": "solution_of",
+      "family": "profile",
+      "directed": true,
+      "endpoints": "block[role=solution] -> block[role=worked_example|exercise_item]",
+      "field_shape": { "solution_block_idx": "int", "target_block_idx": "int" },
+      "meaning": "a solution block immediately follows the worked_example / exercise_item it solves.",
+      "derivation": "arranger: solution block immediately after an example block (fires where markup distinguishes them).",
+      "role_endpoints": ["solution", "worked_example", "exercise_item"],
+      "bert_v2_class": "solution_of",
+      "source": "page_arranger_contract.derive_relations_v2"
+    },
+    {
+      "relation": "practice_of",
+      "family": "profile",
+      "directed": true,
+      "endpoints": "block[role=guided_practice] -> nearest preceding block[role=worked_example]",
+      "field_shape": { "practice_block_idx": "int", "target_block_idx": "int" },
+      "meaning": "a guided-practice prompt binds to the worked example it follows (the de-publishered try_it_of).",
+      "derivation": "cooccurrence: fine_type guided_practice -> nearest preceding example (needs per-block fine role from source markup / lexicon).",
+      "role_endpoints": ["guided_practice", "worked_example"],
+      "bert_v2_class": "practice_of",
+      "source": "cooccurrence.derive_cooccurrence[practice_of]"
+    },
+    {
+      "relation": "answers",
+      "family": "profile",
+      "directed": true,
+      "endpoints": "block[role=answer_item] -> block[role=exercise_item]  (and field_value -> field_label)",
+      "field_shape": { "answer_block_idx": "int", "target_block_idx": "int" },
+      "meaning": "an answer_item keys to its exercise_item (answer-key linkage); reused for forms field_value -> field_label.",
+      "derivation": "deterministic number/label match between answer-key entry and exercise item. Proposed.",
+      "role_endpoints": ["answer_item", "exercise_item", "field_value", "field_label"],
+      "bert_v2_class": null,
+      "source": "proposed (instructional + forms profiles)"
+    },
+    {
+      "relation": "cites",
+      "family": "profile",
+      "directed": true,
+      "endpoints": "block[role=citation] -> referenced authority/section",
+      "field_shape": { "citation_block_idx": "int", "target_ref": "str" },
+      "meaning": "a legal citation points at the authority it cites.",
+      "derivation": "deterministic citation-string resolution. Proposed.",
+      "role_endpoints": ["citation"],
+      "bert_v2_class": null,
+      "source": "proposed (legal_regulatory profile)"
+    },
+    {
+      "relation": "defines",
+      "family": "profile",
+      "directed": true,
+      "endpoints": "block[role=definition_box|key_terms] -> the term it introduces",
+      "field_shape": { "definition_block_idx": "int", "term": "str" },
+      "meaning": "a definition/key-terms block defines a term (feeds the concept graph / KeyTerm extraction).",
+      "derivation": "deterministic term extraction from the definition block. Proposed.",
+      "role_endpoints": ["definition_box", "key_terms"],
+      "bert_v2_class": null,
+      "source": "proposed (instructional profile)"
+    },
+    {
+      "relation": "references",
+      "family": "profile",
+      "directed": true,
+      "endpoints": "block[role=theorem|proof|reference_entry|hatnote|see_also_entry] -> referenced target",
+      "field_shape": { "ref_block_idx": "int", "target_ref": "str" },
+      "meaning": "a scholarly/encyclopedic cross-reference (proof references a lemma; see-also references an article).",
+      "derivation": "deterministic reference resolution. Proposed.",
+      "role_endpoints": ["theorem", "proof", "lemma", "reference_entry", "hatnote", "see_also_entry"],
+      "bert_v2_class": null,
+      "source": "proposed (scholarly + encyclopedic profiles)"
+    }
+  ]
+}

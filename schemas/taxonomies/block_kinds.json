@@ -1,0 +1,187 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/taxonomies/v1/block_kinds.schema.json",
+  "title": "Universal Block Kinds (Layer 1 — structural core)",
+  "description": "Closed, document-agnostic set of structural block kinds emitted by SemantiK for EVERY document genre. Layer 1 of the universal block-label ontology (block_kinds -> genre_profiles -> lexicons). A block ALWAYS carries exactly one layer-1 kind; a functional role (layer 2) is an OPTIONAL second label attached only when a genre profile resolves. DocLayNet-compatible: each kind declares its 1:1 (or n:1) mapping onto the 11 DocLayNet v1 classes so the public dataset can be reused for pre-training / eval.",
+  "$comment": "Closed vocabulary — adding a kind is a schema change requiring owner sign-off (see docs/architecture/block-ontology.md governance). The 9-kind SemantiK page-arranger TYPE_ENUM (SemantiK/semantik_structure/page_arranger_contract.py) is a SUBSET/projection of this set (see docs/architecture/block-ontology.md migration section): arranger `heading`->heading, `paragraph`->paragraph, `table`->table, `figure_caption`->caption, `example`/`solution`/`exercise_list`/`definition_box` are (kind, role) tuples whose kind is paragraph|list_item, `furniture`->furniture. DocLayNet 11 classes: caption, footnote, formula, list-item, page-footer, page-header, picture, section-header, table, text, title.",
+  "version": "0.1.0-draft",
+  "layer": 1,
+  "closed": true,
+  "$defs": {
+    "BlockKind": {
+      "type": "string",
+      "description": "The closed layer-1 structural kind enum.",
+      "enum": [
+        "heading",
+        "paragraph",
+        "list_item",
+        "table",
+        "figure",
+        "caption",
+        "math_block",
+        "code_block",
+        "blockquote",
+        "footnote",
+        "form_field",
+        "title_block",
+        "separator",
+        "furniture"
+      ]
+    },
+    "FurnitureSubkind": {
+      "type": "string",
+      "description": "Discardable page-dressing subkinds carried on a `furniture` block via the `subkind` attribute. Furniture is LISTED (never silently dropped) so no unit goes missing, then dropped at render.",
+      "enum": [
+        "running_header",
+        "page_number",
+        "footer_notice",
+        "watermark"
+      ]
+    }
+  },
+  "x-block-kinds": [
+    {
+      "kind": "heading",
+      "label": "Section heading",
+      "description": "A section / subsection heading. Carries a `level` attribute (int 1..6) resolved deterministically from font/geometry/outline, not from the model.",
+      "attributes": ["level"],
+      "doclaynet": "section-header",
+      "doclaynet_note": "DocLayNet's `title` maps to our `title_block` (document title); every lower heading is `section-header`.",
+      "subkinds": []
+    },
+    {
+      "kind": "paragraph",
+      "label": "Body paragraph",
+      "description": "Running prose. The default fallback kind — any block that clears no more specific structural predicate lands here (never dropped).",
+      "attributes": [],
+      "doclaynet": "text",
+      "doclaynet_note": "DocLayNet has no separate prose vs. code vs. quote class — all three fold into `text`.",
+      "subkinds": []
+    },
+    {
+      "kind": "list_item",
+      "label": "List item",
+      "description": "One item of an ordered / unordered / definition list. Carries optional `marker` (bullet/number/letter glyph) + `nesting` depth.",
+      "attributes": ["marker", "nesting"],
+      "doclaynet": "list-item",
+      "doclaynet_note": "DocLayNet labels each item, not the enclosing list — matches this per-item granularity.",
+      "subkinds": []
+    },
+    {
+      "kind": "table",
+      "label": "Table",
+      "description": "A tabular grid (>=2 rows AND >=2 cols, or a bordered/ruled 2-row grid). The whole table is ONE block; cells are its children.",
+      "attributes": ["rows", "cols"],
+      "doclaynet": "table",
+      "doclaynet_note": "1:1.",
+      "subkinds": []
+    },
+    {
+      "kind": "figure",
+      "label": "Figure / image",
+      "description": "A raster or vector illustration, chart, diagram, or photograph. Carries an `alt` + `src` attribute; a captioner may fill alt text.",
+      "attributes": ["src", "alt"],
+      "doclaynet": "picture",
+      "doclaynet_note": "1:1 (DocLayNet calls it `picture`).",
+      "subkinds": []
+    },
+    {
+      "kind": "caption",
+      "label": "Caption",
+      "description": "A figure or table caption. Bound to its target by the `caption_of` structural relation.",
+      "attributes": [],
+      "doclaynet": "caption",
+      "doclaynet_note": "1:1.",
+      "subkinds": []
+    },
+    {
+      "kind": "math_block",
+      "label": "Display math",
+      "description": "A display (block-level) mathematical expression or numbered equation. Rendered to presentation-MathML with alttext.",
+      "attributes": ["numbered"],
+      "doclaynet": "formula",
+      "doclaynet_note": "1:1 (DocLayNet calls it `formula`). Inline math stays inside its host paragraph and is NOT a separate block.",
+      "subkinds": []
+    },
+    {
+      "kind": "code_block",
+      "label": "Code / preformatted",
+      "description": "A preformatted source-code or verbatim block (whitespace-significant).",
+      "attributes": ["language"],
+      "doclaynet": "text",
+      "doclaynet_note": "NO native DocLayNet class — DocLayNet folds code into `text`. This is a lossy DocLayNet mapping (documented gap): our kind is finer than DocLayNet here.",
+      "subkinds": []
+    },
+    {
+      "kind": "blockquote",
+      "label": "Block quotation",
+      "description": "An extended quotation set off from body prose.",
+      "attributes": [],
+      "doclaynet": "text",
+      "doclaynet_note": "NO native DocLayNet class — folds into `text` (lossy, documented gap).",
+      "subkinds": []
+    },
+    {
+      "kind": "footnote",
+      "label": "Footnote / endnote",
+      "description": "A foot-of-page or end-of-document note. Bound to its reference by the `footnote_of` structural relation.",
+      "attributes": ["marker"],
+      "doclaynet": "footnote",
+      "doclaynet_note": "1:1.",
+      "subkinds": []
+    },
+    {
+      "kind": "form_field",
+      "label": "Form field",
+      "description": "An interactive / fillable form region: a label-value pair, a text entry, or a checkbox. The `forms` genre profile refines it (field_label / field_value / checkbox_item roles).",
+      "attributes": ["field_type"],
+      "doclaynet": null,
+      "doclaynet_note": "NO DocLayNet class — DocLayNet has no form vocabulary. Ours-only kind (documented gap); a form doc is DocLayNet-blind.",
+      "subkinds": []
+    },
+    {
+      "kind": "title_block",
+      "label": "Document title",
+      "description": "The document-level title (masthead / cover title), distinct from a section heading.",
+      "attributes": [],
+      "doclaynet": "title",
+      "doclaynet_note": "1:1 with DocLayNet `title` (document-scope title). Lower headings are `section-header`.",
+      "subkinds": []
+    },
+    {
+      "kind": "separator",
+      "label": "Separator / rule",
+      "description": "A horizontal rule, thematic break, or column/section divider carrying no text.",
+      "attributes": [],
+      "doclaynet": null,
+      "doclaynet_note": "NO DocLayNet class (DocLayNet drops rules). Ours-only kind (documented gap).",
+      "subkinds": []
+    },
+    {
+      "kind": "furniture",
+      "label": "Page furniture",
+      "description": "Discardable page dressing — running headers, page numbers, footer notices, watermarks. LISTED so no unit is lost, then dropped at render. Carries a `subkind` attribute from FurnitureSubkind.",
+      "attributes": ["subkind"],
+      "doclaynet": "page-header | page-footer",
+      "doclaynet_note": "Subkind-dependent: running_header -> page-header; page_number / footer_notice -> page-footer; watermark -> no DocLayNet class (documented gap).",
+      "subkinds": ["running_header", "page_number", "footer_notice", "watermark"]
+    }
+  ],
+  "x-doclaynet-coverage": {
+    "description": "Inverse map: every one of DocLayNet's 11 classes has >=1 layer-1 home, so a DocLayNet-labelled page can be ingested as weak supervision.",
+    "map": {
+      "caption": "caption",
+      "footnote": "footnote",
+      "formula": "math_block",
+      "list-item": "list_item",
+      "page-footer": "furniture[subkind in {page_number, footer_notice}]",
+      "page-header": "furniture[subkind=running_header]",
+      "picture": "figure",
+      "section-header": "heading",
+      "table": "table",
+      "text": "paragraph (also code_block, blockquote — many-to-one)",
+      "title": "title_block"
+    },
+    "ours_without_doclaynet_parent": ["code_block", "blockquote", "form_field", "separator", "furniture[subkind=watermark]"]
+  }
+}

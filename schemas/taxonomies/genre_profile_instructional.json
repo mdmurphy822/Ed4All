@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/taxonomies/v1/genre_profiles/instructional.schema.json",
+  "title": "Instructional genre profile (Layer 2 — functional roles)",
+  "description": "Functional-role vocabulary for INSTRUCTIONAL documents (textbooks, courseware, open educational resources, tutorial docs-sites). A role is an OPTIONAL second label on a layer-1 block; each role declares the layer-1 kind(s) it may attach to. Roles ground in lib/ontology/teaching_roles.py (the 6-value teaching_role enum) and the canonical-15 instruction-block framework (lib/ontology/framework_blocks.py, B01..B15). Publisher-specific marker strings that TRIGGER these roles live ONLY in Layer-3 lexicons (openstax_lexicon.json, generic_instructional_lexicon.json) — never here.",
+  "$comment": "Roles map to lib/ontology/teaching_roles.py TEACHING_ROLES (introduce, elaborate, reinforce, assess, transfer, synthesize) via `maps_to_teaching_role` and to canonical framework blocks (lib/ontology/framework_blocks.py B01..B15) via `framework_block`. guided_practice is the de-publishered canonical name for the immediate-practice prompt (the co-occurrence practice_of derivation; the publisher-specific marker strings that trigger it live in the Layer-3 lexicons, not here). Consistency: every role.attaches_to is non-empty (>=1 layer-1 kind).",
+  "version": "0.1.0-draft",
+  "layer": 2,
+  "closed": false,
+  "profile": {
+    "id": "instructional",
+    "label": "Instructional / pedagogical",
+    "grounds_in": ["lib/ontology/teaching_roles.py", "lib/ontology/framework_blocks.py", "schemas/ONTOLOGY.md"]
+  },
+  "$defs": {
+    "InstructionalRole": {
+      "type": "string",
+      "enum": [
+        "worked_example",
+        "solution",
+        "guided_practice",
+        "exercise_item",
+        "answer_item",
+        "learning_objectives",
+        "definition_box",
+        "summary",
+        "review",
+        "key_terms"
+      ]
+    }
+  },
+  "x-roles": [
+    {
+      "role": "worked_example",
+      "label": "Worked example",
+      "description": "A fully-solved demonstration problem (label + stem + steps). The example's LABEL region anchors the unit; its body regions coagulate via the SemantiK unit-regroup.",
+      "attaches_to": ["paragraph", "list_item", "math_block", "table"],
+      "maps_to_teaching_role": "elaborate",
+      "framework_block": "B05",
+      "profile_edges": ["solution_of (from a following solution)", "practice_of (to a following guided_practice)"]
+    },
+    {
+      "role": "solution",
+      "label": "Solution",
+      "description": "The worked-out answer/steps immediately following a worked_example or exercise_item.",
+      "attaches_to": ["paragraph", "list_item", "math_block", "table"],
+      "maps_to_teaching_role": "elaborate",
+      "framework_block": "B05",
+      "profile_edges": ["solution_of (to the preceding worked_example / exercise_item)"]
+    },
+    {
+      "role": "guided_practice",
+      "label": "Guided practice",
+      "description": "An immediate-practice prompt following a worked example (the de-publishered practice-prompt role). Canonical framework B08. Triggered by publisher/generic markers held in Layer-3 lexicons.",
+      "attaches_to": ["paragraph", "list_item"],
+      "maps_to_teaching_role": "transfer",
+      "framework_block": "B08",
+      "profile_edges": ["practice_of (to the nearest preceding worked_example)"]
+    },
+    {
+      "role": "exercise_item",
+      "label": "Exercise item",
+      "description": "One end-of-section / end-of-chapter practice problem (numbered/lettered).",
+      "attaches_to": ["list_item", "paragraph", "math_block"],
+      "maps_to_teaching_role": "assess",
+      "framework_block": "B14",
+      "profile_edges": ["answers (to a matching answer_item)"]
+    },
+    {
+      "role": "answer_item",
+      "label": "Answer / answer-key item",
+      "description": "An answer-key entry keyed to an exercise_item (odd-answers, solutions appendix).",
+      "attaches_to": ["list_item", "paragraph", "math_block"],
+      "maps_to_teaching_role": "assess",
+      "framework_block": "B14",
+      "profile_edges": ["answers (from the matching exercise_item)"]
+    },
+    {
+      "role": "learning_objectives",
+      "label": "Learning objectives",
+      "description": "An objectives block (a chapter/section's stated outcomes).",
+      "attaches_to": ["list_item", "paragraph", "heading"],
+      "maps_to_teaching_role": "introduce",
+      "framework_block": "B01",
+      "profile_edges": []
+    },
+    {
+      "role": "definition_box",
+      "label": "Definition / callout box",
+      "description": "A set-off definition, note, or callout box (term-definition or an emphasized note).",
+      "attaches_to": ["paragraph", "blockquote", "list_item"],
+      "maps_to_teaching_role": "introduce",
+      "framework_block": "B12",
+      "profile_edges": ["defines (to the term it introduces)"]
+    },
+    {
+      "role": "summary",
+      "label": "Summary",
+      "description": "A chapter/section summary that consolidates the preceding content.",
+      "attaches_to": ["paragraph", "list_item"],
+      "maps_to_teaching_role": "synthesize",
+      "framework_block": "B13",
+      "profile_edges": []
+    },
+    {
+      "role": "review",
+      "label": "Review",
+      "description": "A review section (chapter review / review exercises heading + body) that reinforces prior material.",
+      "attaches_to": ["heading", "paragraph", "list_item"],
+      "maps_to_teaching_role": "reinforce",
+      "framework_block": "B13",
+      "profile_edges": []
+    },
+    {
+      "role": "key_terms",
+      "label": "Key terms / glossary",
+      "description": "A key-terms or glossary block (term + short definition list).",
+      "attaches_to": ["list_item", "table", "paragraph"],
+      "maps_to_teaching_role": "introduce",
+      "framework_block": "B12",
+      "profile_edges": ["defines (each term to its gloss)"]
+    }
+  ]
+}

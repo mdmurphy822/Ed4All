@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/taxonomies/v1/genre_profiles/scholarly.schema.json",
+  "title": "Scholarly genre profile (Layer 2 — functional roles)",
+  "description": "Functional-role vocabulary for SCHOLARLY documents (arXiv preprints, PMC open-access articles). A role is an OPTIONAL second label on a layer-1 block; each role declares the layer-1 kind(s) it may attach to. This profile also aligns with the SemantiK `scholarly` lexicon overlay (schemas/taxonomies/semantik_lexicon.json) which coagulates theorem/proof/lemma composite units.",
+  "$comment": "Grounds the align_gold arxiv LaTeXML (ltx_*) map + the PMC generic-tag fallback into named functional roles. ltx_theorem/ltx_theorem_definition -> theorem; ltx_proof -> proof. Consistency: every role.attaches_to is non-empty.",
+  "version": "0.1.0-draft",
+  "layer": 2,
+  "closed": false,
+  "profile": {
+    "id": "scholarly",
+    "label": "Scholarly / scientific article"
+  },
+  "$defs": {
+    "ScholarlyRole": {
+      "type": "string",
+      "enum": [
+        "abstract",
+        "theorem",
+        "proof",
+        "lemma",
+        "reference_entry",
+        "author_block",
+        "affiliation"
+      ]
+    }
+  },
+  "x-roles": [
+    {
+      "role": "abstract",
+      "label": "Abstract",
+      "description": "The article abstract.",
+      "attaches_to": ["paragraph"],
+      "profile_edges": []
+    },
+    {
+      "role": "theorem",
+      "label": "Theorem / proposition / corollary",
+      "description": "A formal theorem-family statement (theorem, proposition, corollary, definition-as-theorem).",
+      "attaches_to": ["paragraph", "math_block", "blockquote"],
+      "profile_edges": ["references (to a lemma / prior theorem it invokes)"]
+    },
+    {
+      "role": "proof",
+      "label": "Proof",
+      "description": "A proof body attached to a theorem/lemma.",
+      "attaches_to": ["paragraph", "math_block"],
+      "profile_edges": ["references (to the theorem/lemma being proved)"]
+    },
+    {
+      "role": "lemma",
+      "label": "Lemma",
+      "description": "A supporting lemma statement.",
+      "attaches_to": ["paragraph", "math_block", "blockquote"],
+      "profile_edges": []
+    },
+    {
+      "role": "reference_entry",
+      "label": "Reference / bibliography entry",
+      "description": "One bibliography / works-cited entry.",
+      "attaches_to": ["list_item", "paragraph"],
+      "profile_edges": ["references (to the cited work)"]
+    },
+    {
+      "role": "author_block",
+      "label": "Author block",
+      "description": "The author byline block.",
+      "attaches_to": ["paragraph", "title_block"],
+      "profile_edges": []
+    },
+    {
+      "role": "affiliation",
+      "label": "Affiliation",
+      "description": "Author affiliation / institution line.",
+      "attaches_to": ["paragraph", "footnote"],
+      "profile_edges": []
+    }
+  ]
+}

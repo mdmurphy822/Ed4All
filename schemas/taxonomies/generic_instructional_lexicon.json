@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/taxonomies/v1/lexicons/generic_instructional.lexicon.json",
+  "title": "Generic instructional lexicon (Layer 3)",
+  "description": "Publisher-agnostic instructional marker strings -> Layer-2 instructional-profile roles. The fallback lexicon consulted AFTER a source-specific lexicon (e.g. openstax) so a non-OpenStax textbook still resolves its practice prompts. Matching is case-insensitive PREFIX on the block's leading text.",
+  "$comment": "Marker set lifted from align_gold.py PRACTICE_MARKER_LEXICON['generic']. These are cross-publisher guided-practice openers; a new publisher is onboarded by adding a row here (or a new source lexicon), never a code edit. Roles reference genre_profile_instructional.json.",
+  "version": "0.1.0-draft",
+  "layer": 3,
+  "lexicon": {
+    "id": "generic_instructional",
+    "profile": "instructional",
+    "applies_to_sources": ["*"],
+    "match": "prefix_casefold",
+    "precedence": "consulted after any source-specific instructional lexicon"
+  },
+  "x-markers": [
+    { "marker": "check your understanding", "role": "guided_practice" },
+    { "marker": "your turn", "role": "guided_practice" },
+    { "marker": "checkpoint", "role": "guided_practice" },
+    { "marker": "self check", "role": "guided_practice" },
+    { "marker": "self-check", "role": "guided_practice" },
+    { "marker": "quick check", "role": "guided_practice" },
+    { "marker": "practice problem", "role": "exercise_item" },
+    { "marker": "now work", "role": "guided_practice" },
+    { "marker": "now try", "role": "guided_practice" },
+    { "marker": "guided practice", "role": "guided_practice" }
+  ]
+}

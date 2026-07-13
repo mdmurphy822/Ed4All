@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/taxonomies/v1/lexicons/openstax.lexicon.json",
+  "title": "OpenStax publisher lexicon (Layer 3)",
+  "description": "Publisher-specific marker strings -> Layer-2 instructional-profile roles for OpenStax-shaped open textbooks. Layer 3 of the universal block-label ontology: this is the ONLY layer where publisher-specific marker vocabulary is allowed to live (wide-net rule: publisher vocabulary is DATA, never code). Matching is case-insensitive PREFIX on the block's leading text.",
+  "$comment": "Marker set lifted from align_gold.py PRACTICE_MARKER_LEXICON['openstax'] + the SemantiK open-textbook overlay (schemas/taxonomies/semantik_lexicon.json). 'try it is something that only really appears in openstax texts' (owner 2026-07-13) — so it is confined here, not in the generic lexicon. Roles reference genre_profile_instructional.json.",
+  "version": "0.1.0-draft",
+  "layer": 3,
+  "lexicon": {
+    "id": "openstax",
+    "profile": "instructional",
+    "applies_to_sources": ["openstax"],
+    "match": "prefix_casefold"
+  },
+  "x-markers": [
+    { "marker": "Try It", "role": "guided_practice", "notes": "immediate-practice prompt after a worked example; e.g. 'TRY IT :: 1.173'" },
+    { "marker": "Be Prepared", "role": "guided_practice", "notes": "readiness / pre-check practice prompt" },
+    { "marker": "How To", "role": "worked_example", "notes": "step-by-step procedure demonstration" },
+    { "marker": "Everyday Math", "role": "exercise_item", "notes": "applied real-world practice problem set" },
+    { "marker": "Self Check", "role": "guided_practice", "notes": "formative self-assessment prompt" },
+    { "marker": "Writing Exercises", "role": "exercise_item", "notes": "end-of-section writing practice items" }
+  ]
+}

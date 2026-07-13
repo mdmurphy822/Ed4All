@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/taxonomies/v1/genre_profiles/encyclopedic.schema.json",
+  "title": "Encyclopedic genre profile (Layer 2 — functional roles)",
+  "description": "Functional-role vocabulary for ENCYCLOPEDIC documents (Wikipedia / Parsoid articles). A role is an OPTIONAL second label on a layer-1 block; each role declares the layer-1 kind(s) it may attach to.",
+  "$comment": "Grounds the align_gold wikipedia Parsoid map (infobox/wikitable -> table; thumbcaption/gallerytext -> caption) into named functional roles for the article-furniture rows the class map does not name. Consistency: every role.attaches_to is non-empty.",
+  "version": "0.1.0-draft",
+  "layer": 2,
+  "closed": false,
+  "profile": {
+    "id": "encyclopedic",
+    "label": "Encyclopedic / reference"
+  },
+  "$defs": {
+    "EncyclopedicRole": {
+      "type": "string",
+      "enum": [
+        "infobox_row",
+        "hatnote",
+        "see_also_entry"
+      ]
+    }
+  },
+  "x-roles": [
+    {
+      "role": "infobox_row",
+      "label": "Infobox row",
+      "description": "One key/value row of an article infobox (the infobox itself is a layer-1 `table`).",
+      "attaches_to": ["table", "list_item"],
+      "profile_edges": []
+    },
+    {
+      "role": "hatnote",
+      "label": "Hatnote / disambiguation note",
+      "description": "A leading hatnote / disambiguation / for-other-uses note.",
+      "attaches_to": ["paragraph", "blockquote"],
+      "profile_edges": ["references (to the other article it points at)"]
+    },
+    {
+      "role": "see_also_entry",
+      "label": "See-also entry",
+      "description": "One entry of a See-also / related-links list.",
+      "attaches_to": ["list_item", "paragraph"],
+      "profile_edges": ["references (to the linked article)"]
+    }
+  ]
+}

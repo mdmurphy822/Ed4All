@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/taxonomies/v1/genre_profiles/forms.schema.json",
+  "title": "Forms genre profile (Layer 2 — functional roles)",
+  "description": "Functional-role vocabulary for FORM documents (IRS tax forms, government applications). A role is an OPTIONAL second label on a layer-1 block; each role declares the layer-1 kind(s) it may attach to. The natural layer-1 host is `form_field` (a kind DocLayNet does not cover — see block_kinds gap).",
+  "$comment": "Grounds the align_gold generic-tag fallback for the `forms` source. Consistency: every role.attaches_to is non-empty.",
+  "version": "0.1.0-draft",
+  "layer": 2,
+  "closed": false,
+  "profile": {
+    "id": "forms",
+    "label": "Form / application"
+  },
+  "$defs": {
+    "FormRole": {
+      "type": "string",
+      "enum": [
+        "field_label",
+        "field_value",
+        "instruction",
+        "checkbox_item"
+      ]
+    }
+  },
+  "x-roles": [
+    {
+      "role": "field_label",
+      "label": "Field label",
+      "description": "The prompt / caption naming a form field.",
+      "attaches_to": ["form_field", "paragraph"],
+      "profile_edges": ["answers (to the paired field_value)"]
+    },
+    {
+      "role": "field_value",
+      "label": "Field value",
+      "description": "The entered / to-be-entered value for a field.",
+      "attaches_to": ["form_field", "paragraph"],
+      "profile_edges": ["answers (from the paired field_label)"]
+    },
+    {
+      "role": "instruction",
+      "label": "Instruction",
+      "description": "Filing / completion instruction text on the form.",
+      "attaches_to": ["paragraph", "list_item"],
+      "profile_edges": []
+    },
+    {
+      "role": "checkbox_item",
+      "label": "Checkbox item",
+      "description": "A single checkbox option (label + box).",
+      "attaches_to": ["form_field", "list_item"],
+      "profile_edges": []
+    }
+  ]
+}

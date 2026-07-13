@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/taxonomies/v1/genre_profiles/legal_regulatory.schema.json",
+  "title": "Legal / regulatory genre profile (Layer 2 — functional roles)",
+  "description": "Functional-role vocabulary for LEGAL and REGULATORY documents (Code of Federal Regulations, Federal Register notices, court opinions). A role is an OPTIONAL second label on a layer-1 block; each role declares the layer-1 kind(s) it may attach to. Publisher/agency-specific marker strings (e.g. Federal Register field labels) that TRIGGER these roles live ONLY in Layer-3 lexicons (federal_register_lexicon.json) — never here.",
+  "$comment": "Grounds the align_gold generic-tag fallback for cfr / federal_register / courtlistener into named functional roles. Consistency: every role.attaches_to is non-empty.",
+  "version": "0.1.0-draft",
+  "layer": 2,
+  "closed": false,
+  "profile": {
+    "id": "legal_regulatory",
+    "label": "Legal / regulatory"
+  },
+  "$defs": {
+    "LegalRole": {
+      "type": "string",
+      "enum": [
+        "section_number",
+        "citation",
+        "enacting_clause",
+        "agency_header",
+        "docket_line",
+        "holding",
+        "syllabus"
+      ]
+    }
+  },
+  "x-roles": [
+    {
+      "role": "section_number",
+      "label": "Section number",
+      "description": "A regulatory / statutory section designator (e.g. a CFR section number) heading a provision.",
+      "attaches_to": ["heading", "paragraph"],
+      "profile_edges": []
+    },
+    {
+      "role": "citation",
+      "label": "Citation",
+      "description": "A legal citation / cross-reference to another authority, section, or docket.",
+      "attaches_to": ["paragraph", "footnote", "list_item"],
+      "profile_edges": ["cites (to the referenced authority)"]
+    },
+    {
+      "role": "enacting_clause",
+      "label": "Enacting / summary clause",
+      "description": "The enacting language or a rule summary (the operative regulatory statement of a provision or notice).",
+      "attaches_to": ["paragraph"],
+      "profile_edges": []
+    },
+    {
+      "role": "agency_header",
+      "label": "Agency header",
+      "description": "The issuing-agency masthead / header line of a Federal Register document.",
+      "attaches_to": ["heading", "title_block", "paragraph"],
+      "profile_edges": []
+    },
+    {
+      "role": "docket_line",
+      "label": "Docket / metadata line",
+      "description": "A structured metadata line (action, dates, docket number, contact) in a regulatory notice.",
+      "attaches_to": ["paragraph", "form_field", "list_item"],
+      "profile_edges": []
+    },
+    {
+      "role": "holding",
+      "label": "Holding",
+      "description": "The court's holding / disposition in an opinion.",
+      "attaches_to": ["paragraph"],
+      "profile_edges": []
+    },
+    {
+      "role": "syllabus",
+      "label": "Syllabus / headnote",
+      "description": "The reporter's syllabus / headnote summarizing a court opinion.",
+      "attaches_to": ["paragraph", "blockquote"],
+      "profile_edges": []
+    }
+  ]
+}

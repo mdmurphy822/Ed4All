@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/taxonomies/v1/lexicons/federal_register.lexicon.json",
+  "title": "Federal Register lexicon (Layer 3)",
+  "description": "Agency-document marker strings -> Layer-2 legal_regulatory-profile roles for U.S. Federal Register notices. Layer 3 of the universal block-label ontology: the ONLY layer allowed to carry these agency-specific field labels. Matching is case-insensitive PREFIX on the block's leading text (the Federal Register renders these as leading field labels on their own line).",
+  "$comment": "Field-label set is the canonical Federal Register front-matter label block. Roles reference genre_profile_legal_regulatory.json. A new agency-document shape is onboarded by adding a lexicon, never a code edit.",
+  "version": "0.1.0-draft",
+  "layer": 3,
+  "lexicon": {
+    "id": "federal_register",
+    "profile": "legal_regulatory",
+    "applies_to_sources": ["federal_register"],
+    "match": "prefix_casefold"
+  },
+  "x-markers": [
+    { "marker": "AGENCY:", "role": "agency_header", "notes": "issuing agency line" },
+    { "marker": "ACTION:", "role": "docket_line", "notes": "rule/notice action type" },
+    { "marker": "SUMMARY:", "role": "enacting_clause", "notes": "the notice's operative summary" },
+    { "marker": "DATES:", "role": "docket_line", "notes": "effective / comment dates" }
+  ]
+}
