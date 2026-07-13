@@ -827,6 +827,22 @@ def run_qc_judgment(
 # block window. Terminal on exhaustion = qc_incomplete, never a thinking-off
 # retry (OWNER DIRECTIVE: reasoning is the point of the QC pass).
 # ---------------------------------------------------------------------------
+def _blocks_page_span(blocks: Sequence[Mapping[str, Any]], fallback: Any) -> str:
+    """A human page span (``"N"`` / ``"N-M"``) of the actual blocks in this rung.
+
+    The whole document is ONE ``QCWindow`` whose representative page is the FIRST
+    region's page, so passing that page into every unit's log made ~all failures
+    read ``page 1`` — masking that distinct sub-slices (different pages) were each
+    failing once. This derives the real page span from the rung's own blocks, so
+    the split-ladder log is honest about which unit / page actually failed
+    (``fallback`` is used only when no block carries a page)."""
+    pages = [b.get("page") for b in blocks if b.get("page") is not None]
+    if not pages:
+        return str(fallback)
+    lo, hi = min(pages), max(pages)
+    return str(lo) if lo == hi else f"{lo}-{hi}"
+
+
 def _judge_window_ladder(
     *,
     seat: VLMSeat,
@@ -883,6 +899,7 @@ def _split_ladder(
     ≥ :data:`_QC_MIN_WINDOW_BLOCKS` halves): record ``_qc_incomplete`` for these
     blocks — a HONEST fail-soft skip, NEVER a thinking-off retry."""
     n = len(blocks)
+    page_span = _blocks_page_span(blocks, page_num)
     max_depth = resolve_reasoning_qc_max_split_depth()
     if depth >= max_depth or n < 2 * _QC_MIN_WINDOW_BLOCKS:
         logger.warning(
@@ -890,14 +907,14 @@ def _split_ladder(
             "(%s: %s) — split ladder exhausted; recording qc_incomplete for these "
             "block(s). NOT retrying thinking-off (reasoning is the point of the "
             "QC pass).",
-            n, depth, page_num, type(cause).__name__, cause,
+            n, depth, page_span, type(cause).__name__, cause,
         )
         return {"_qc_incomplete": list(range(n))}
     mid = n // 2
     logger.info(
         "reasoning-QC window (%d blocks, page %s) %s — splitting to halves "
         "[0:%d]+[%d:%d], re-judging thinking-on (depth %d/%d).",
-        n, page_num, type(cause).__name__, mid, mid, n, depth + 1, max_depth,
+        n, page_span, type(cause).__name__, mid, mid, n, depth + 1, max_depth,
     )
     left = _judge_window_ladder(
         seat=seat,

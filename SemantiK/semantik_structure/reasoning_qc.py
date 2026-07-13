@@ -52,6 +52,8 @@ import json
 import logging
 import os
 import re
+import time
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -1640,6 +1642,104 @@ def _qc_verdict_cacheable(verdict: dict[str, Any]) -> bool:
     return bool(verdict) and "_qc_incomplete" not in verdict
 
 
+# ---------------------------------------------------------------------------
+# Terminal-failure LEDGER (run-scoped negative-result sidecar).
+#
+# A split-ladder EXHAUSTION (a verdict carrying ``_qc_incomplete``) is a TERMINAL
+# failure for that unit THIS run. Historically such verdicts were NOT cached
+# (``_qc_verdict_cacheable`` → False), so on every scheduling round that re-drives
+# the pass — a killed run's ``--resume``, an offline-retry re-entry — each of the
+# (often hundreds of) terminally-failed units RE-POSTs its full, expensive split
+# ladder against the SAME still-broken endpoint. Against a persistently-null seat
+# that is an unbounded re-attempt of the same window family across rounds (the
+# 4h/170-qc_incomplete pathology).
+#
+# The ledger persists the terminal verdict as a NEGATIVE record tagged with the
+# RUN SCOPE + a timestamp, and honours it ONLY within the same run scope and TTL.
+# So a ``--resume`` of the SAME run (same ``ED4ALL_RUN_ID``) skips the re-POST
+# (fast, bounded), while a genuinely NEW run — new run id, presumably a healthy
+# endpoint — recomputes the same fingerprint, sees a cross-scope negative, treats
+# it as a MISS, and RETRIES. Never a permanent "this unit is unjudgeable" record.
+# ---------------------------------------------------------------------------
+_QC_NEGATIVE_KEY = "_qc_terminal_negative"
+# TTL belt so an ancient run-scoped negative (e.g. a same-run-id resume days later
+# after the operator repaired the seat) is not honoured forever.
+_QC_NEGATIVE_TTL_SECONDS = 7 * 24 * 3600.0
+# Per-PROCESS run token — the fallback run scope when no orchestrator run id is in
+# the environment. A fresh process (a real ``--resume`` without a stable run id)
+# gets a new token, so its cross-process negatives are NOT honoured → it re-tries
+# (errs toward re-attempt with a possibly-healthy endpoint, never a silent skip).
+_PROCESS_RUN_TOKEN = uuid.uuid4().hex
+
+
+def _qc_run_scope() -> str:
+    """Resolve the current run scope for the terminal-failure ledger.
+
+    Prefers a stable orchestrator run id (``ED4ALL_RUN_ID`` — reused verbatim by
+    ``ed4all run --resume``, so a resumed run honours its own negatives) then a
+    SemantiK-native override, falling back to a per-process token. Read at CALL
+    time so tests / a resumed subprocess pick up the ambient run id."""
+    for env in ("ED4ALL_RUN_ID", "SEMANTIK_RUN_ID"):
+        val = (os.environ.get(env) or "").strip()
+        if val:
+            return val
+    return _PROCESS_RUN_TOKEN
+
+
+def _qc_is_terminal_incomplete(verdict: Any) -> bool:
+    """True iff ``verdict`` is a split-ladder EXHAUSTION (carries ``_qc_incomplete``)."""
+    return isinstance(verdict, dict) and bool(verdict.get("_qc_incomplete"))
+
+
+def _qc_cache_put_negative(path: Path, verdict: dict[str, Any]) -> None:
+    """Persist a run-scoped NEGATIVE (terminal-failure) record. Best-effort.
+
+    The record wraps the terminal verdict alongside the run scope + timestamp so
+    :func:`_qc_negative_honored` can gate re-use to the same run within the TTL.
+    The wrapped ``verdict`` is returned verbatim on an honoured hit, so a partial
+    verdict's real findings are preserved."""
+    record = {
+        _QC_NEGATIVE_KEY: {"run_scope": _qc_run_scope(), "ts": time.time()},
+        "verdict": verdict,
+    }
+    _qc_cache_put(path, record)
+
+
+def _qc_negative_honored(neg: Any) -> bool:
+    """Honour a negative record only within the SAME run scope AND the TTL.
+
+    A cross-scope (new run) or stale (past-TTL) negative returns False → the
+    caller treats the sidecar as a MISS and re-attempts the unit, so a later run
+    with a healthy endpoint is never permanently starved by a stale failure."""
+    if not isinstance(neg, dict):
+        return False
+    if neg.get("run_scope") != _qc_run_scope():
+        return False
+    try:
+        age = time.time() - float(neg.get("ts", 0.0))
+    except (TypeError, ValueError):
+        return False
+    return 0.0 <= age <= _QC_NEGATIVE_TTL_SECONDS
+
+
+def _qc_cache_lookup(path: Path) -> dict | None:
+    """Read the sidecar and resolve positive / negative / miss semantics.
+
+    Returns the cached verdict on a HONOURED hit (a positive finding record, or a
+    run-scoped-and-fresh negative terminal record — unwrapped to its verdict), and
+    ``None`` on a miss OR a cross-run / stale negative (re-attempt). Fail-soft."""
+    cached = _qc_cache_get(path)
+    if cached is None:
+        return None
+    neg = cached.get(_QC_NEGATIVE_KEY) if isinstance(cached, dict) else None
+    if neg is not None:
+        if _qc_negative_honored(neg):
+            v = cached.get("verdict")
+            return v if isinstance(v, dict) else {}
+        return None  # cross-run / stale terminal failure → MISS, re-attempt.
+    return cached  # positive finding hit.
+
+
 def _qc_stop_requested() -> bool:
     """Non-raising probe of the handed-in stop sentinel (fail-soft → False).
 
@@ -1778,22 +1878,37 @@ def _fan_out_page_verifies(
                 key = _qc_unit_fingerprint(blocks, model=str(unit_model), kind=kind)
                 root = _qc_cache_root()
                 cache_path = _qc_cache_path(key, root)
-                cached = _qc_cache_get(cache_path)
+                # A run-scoped-fresh terminal-failure negative counts as a HIT
+                # (skip the re-POST); a cross-run / stale negative is a MISS.
+                cached = _qc_cache_lookup(cache_path)
                 if cached is not None:
                     return cached
             except Exception as exc:  # noqa: BLE001 — cache infra never breaks QC
                 logger.debug("reasoning-QC cache lookup failed (non-fatal): %s", exc)
                 cache_path = None
+        # Log/judge under the unit's OWN representative page (its first block's
+        # page), NOT the document window's page (always page 1) — so a failing
+        # sub-slice's split-ladder log names the real page and the advancing
+        # iterator is visible in the log stream (see build_qc_windows / _work).
+        unit_page = next(
+            (b.get("page") for b in blocks if b.get("page") is not None),
+            window.page,
+        )
         try:
-            verdict = _run_qc_judgment(seat, pdf_path, window.page, blocks)
+            verdict = _run_qc_judgment(seat, pdf_path, unit_page, blocks)
         except Exception as exc:  # noqa: BLE001 — per-unit fail-soft
             log(
                 f"[cascade] reasoning-QC unit verify raised fail-soft "
-                f"({kind} [{s}:{e}]): {exc}"
+                f"({kind} [{s}:{e}] page {unit_page}): {exc}"
             )
             return {}
-        if use_cache and cache_path is not None and _qc_verdict_cacheable(verdict):
-            _qc_cache_put(cache_path, verdict)
+        if use_cache and cache_path is not None:
+            if _qc_verdict_cacheable(verdict):
+                _qc_cache_put(cache_path, verdict)
+            elif _qc_is_terminal_incomplete(verdict):
+                # Durable, run-scoped negative so a resume does not re-POST this
+                # terminal failure (a new run re-tries — see _qc_negative_honored).
+                _qc_cache_put_negative(cache_path, verdict)
         return verdict
 
     from concurrent.futures import (  # noqa: WPS433

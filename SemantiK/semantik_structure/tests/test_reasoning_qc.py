@@ -1020,12 +1020,9 @@ def test_fingerprint_varies_by_sampling(monkeypatch):
     assert reasoning_qc._qc_unit_fingerprint(blocks, model="m1", kind="window") != base
 
 
-def test_empty_and_incomplete_verdicts_not_cached(monkeypatch, _stub_seat):
-    """Fail-soft {} and split-ladder _qc_incomplete verdicts are NOT persisted —
-    they must re-run next time."""
+def test_empty_verdict_not_cached(monkeypatch, _stub_seat):
+    """A fail-soft {} verdict is NEVER persisted — a transport blip must re-run."""
     monkeypatch.setenv("SEMANTIK_REASONING_QC", "shadow")
-
-    # (1) empty {} → not cached → re-run.
     empty_calls = {"n": 0}
 
     def _empty(seat, pdf, page, blocks):
@@ -1039,7 +1036,19 @@ def test_empty_and_incomplete_verdicts_not_cached(monkeypatch, _stub_seat):
     assert empty_calls["n"] == 2  # no cache hit
     assert not _cache_files()  # nothing written
 
-    # (2) _qc_incomplete → not cached → re-run.
+    # The cacheability predicate is unchanged — neither an empty nor an incomplete
+    # verdict is a POSITIVE finding (an incomplete verdict rides the run-scoped
+    # NEGATIVE ledger instead — see test_incomplete_verdict_run_scoped_ledger).
+    assert reasoning_qc._qc_verdict_cacheable({}) is False
+    assert reasoning_qc._qc_verdict_cacheable({"_qc_incomplete": [0]}) is False
+    assert reasoning_qc._qc_verdict_cacheable({"phantom_headings": [{"index": 0}]}) is True
+
+
+def test_incomplete_verdict_run_scoped_ledger(monkeypatch, _stub_seat):
+    """A split-ladder _qc_incomplete TERMINAL failure is persisted as a run-scoped
+    NEGATIVE: a same-run resume re-POSTs NOTHING (the 4h re-attempt bug), but a NEW
+    run re-attempts (never permanently starved)."""
+    monkeypatch.setenv("SEMANTIK_REASONING_QC", "shadow")
     inc_calls = {"n": 0}
 
     def _incomplete(seat, pdf, page, blocks):
@@ -1047,15 +1056,22 @@ def test_empty_and_incomplete_verdicts_not_cached(monkeypatch, _stub_seat):
         return {"_qc_incomplete": list(range(len(blocks)))}
 
     monkeypatch.setattr(reasoning_qc, "_run_qc_judgment", _incomplete)
-    reasoning_qc.run_reasoning_qc(capped, fbs, assembled, order, pdf_path="/tmp/x.pdf")
-    reasoning_qc.run_reasoning_qc(capped, fbs, assembled, order, pdf_path="/tmp/x.pdf")
-    assert inc_calls["n"] == 2
-    assert not _cache_files()
+    capped, fbs, assembled, order = _simple_doc()
 
-    # The predicate is the single source of truth.
-    assert reasoning_qc._qc_verdict_cacheable({}) is False
-    assert reasoning_qc._qc_verdict_cacheable({"_qc_incomplete": [0]}) is False
-    assert reasoning_qc._qc_verdict_cacheable({"phantom_headings": [{"index": 0}]}) is True
+    # Same run scope across both passes → the terminal failure is a negative HIT.
+    monkeypatch.setenv("ED4ALL_RUN_ID", "run-x")
+    reasoning_qc.run_reasoning_qc(capped, fbs, assembled, order, pdf_path="/tmp/x.pdf")
+    first = inc_calls["n"]
+    assert first >= 1
+    assert _cache_files()  # the negative record IS written (unlike the empty {}).
+    reasoning_qc.run_reasoning_qc(capped, fbs, assembled, order, pdf_path="/tmp/x.pdf")
+    assert inc_calls["n"] == first  # resume of the SAME run → zero re-POST.
+
+    # A genuinely NEW run recomputes the same fingerprint, sees a CROSS-scope
+    # negative → miss → re-attempts (a later run with a healthy endpoint retries).
+    monkeypatch.setenv("ED4ALL_RUN_ID", "run-y")
+    reasoning_qc.run_reasoning_qc(capped, fbs, assembled, order, pdf_path="/tmp/x.pdf")
+    assert inc_calls["n"] == 2 * first
 
 
 def test_checkpoint_off_no_cache_dir_all_units_posted(monkeypatch, _stub_seat):
