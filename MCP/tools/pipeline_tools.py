@@ -8012,6 +8012,17 @@ class _SemantikBridgeResult:
         # to emit ONE ``structure_detection`` DecisionCapture per converted doc.
         rqc = bridge.get("reasoning_qc")
         self.reasoning_qc = rqc if isinstance(rqc, dict) else None
+        # task #43 — the SEMANTIK_UNIT_COVERAGE_GATE content-loss report DICT the
+        # cascade surfaces at top level (``None`` when the gate was off). Threaded
+        # into the emitted cascade_ir.json + the quality-sidecar issues; the
+        # bridge previously DROPPED it so the operator artifacts never saw it.
+        uc = bridge.get("unit_coverage")
+        self.unit_coverage = uc if isinstance(uc, dict) else None
+        # task #43 — the SEMANTIK_PAGE_ARRANGER scan-lane audit DICT the cascade
+        # surfaces at top level (``None`` when the arranger did not own
+        # structure). Threaded into the emitted cascade_ir.json.
+        pa = bridge.get("page_arranger")
+        self.page_arranger = pa if isinstance(pa, dict) else None
 
 
 def _semantik_stop_sentinel_env_value() -> Optional[str]:
@@ -9192,6 +9203,153 @@ def _semantik_resolve_reasoning_qc(result: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _semantik_resolve_unit_coverage(result: Any) -> Optional[Dict[str, Any]]:
+    """Pull the SEMANTIK_UNIT_COVERAGE_GATE content-loss report DICT off a
+    cascade result, from EITHER seam arm (task #43; mirrors
+    ``_semantik_resolve_reasoning_qc``).
+
+    Resolution order: ``result.unit_coverage`` (the bridge arm, surfaced as a
+    top-level attribute by ``_SemantikBridgeResult``) →
+    ``result.cascade["conformance_audit"]["unit_coverage"]`` (in-process nested,
+    defensive) → ``result.cascade["unit_coverage"]`` (the in-process top-level
+    arm the real cascade emits). Returns ``None`` when the gate did NOT run
+    (SEMANTIK_UNIT_COVERAGE_GATE off / no report key) so the caller skips.
+    """
+    uc = getattr(result, "unit_coverage", None)
+    if uc is not None:
+        return uc if isinstance(uc, dict) else None
+    cascade = getattr(result, "cascade", None)
+    if isinstance(cascade, dict):
+        conformance = cascade.get("conformance_audit")
+        if isinstance(conformance, dict):
+            arm = conformance.get("unit_coverage")
+            if isinstance(arm, dict):
+                return arm
+        arm = cascade.get("unit_coverage")
+        if isinstance(arm, dict):
+            return arm
+    return None
+
+
+def _semantik_resolve_page_arranger(result: Any) -> Optional[Dict[str, Any]]:
+    """Pull the SEMANTIK_PAGE_ARRANGER scan-lane audit DICT off a cascade
+    result, from EITHER seam arm (task #43; mirrors
+    ``_semantik_resolve_unit_coverage``).
+
+    Resolution order: ``result.page_arranger`` (the bridge arm) →
+    ``result.cascade["conformance_audit"]["page_arranger"]`` (in-process nested,
+    defensive) → ``result.cascade["page_arranger"]`` (the in-process top-level
+    arm the real cascade emits). Returns ``None`` when the arranger did NOT own
+    structure (SEMANTIK_PAGE_ARRANGER off / born-digital lane).
+    """
+    pa = getattr(result, "page_arranger", None)
+    if pa is not None:
+        return pa if isinstance(pa, dict) else None
+    cascade = getattr(result, "cascade", None)
+    if isinstance(cascade, dict):
+        conformance = cascade.get("conformance_audit")
+        if isinstance(conformance, dict):
+            arm = conformance.get("page_arranger")
+            if isinstance(arm, dict):
+                return arm
+        arm = cascade.get("page_arranger")
+        if isinstance(arm, dict):
+            return arm
+    return None
+
+
+def _apply_unit_coverage_to_quality(
+    quality: Dict[str, Any], report: Dict[str, Any]
+) -> None:
+    """Fold the SEMANTIK_UNIT_COVERAGE_GATE report into a ``{stem}.quality.json``
+    sidecar IN PLACE (task #43).
+
+    The deterministic content-loss gate is the fidelity guardrail that
+    supersedes stub-collapsed theta, but its verdict was previously dropped
+    before the operator sidecar. This surfaces it as first-class quality signal:
+
+      * an additive ``unit_coverage`` summary block (per-page coverage scores,
+        floors, warned/failed page lists);
+      * one CRITICAL ``issues`` entry per below-hard-floor page (which also flips
+        ``compliant`` False, bumps ``critical_count`` + ``quality_score`` → 0.0,
+        and appends the ``UNIT_COVERAGE_FAILED`` flag);
+      * one WARNING ``issues`` entry per below-min page (bumps ``high_count``).
+
+    No-op-safe: a non-dict quality/report is ignored; a healthy report (no
+    warned/failed pages) adds only the passthrough summary block.
+    """
+    if not isinstance(quality, dict) or not isinstance(report, dict):
+        return
+    pages = report.get("pages") or []
+    page_cov: Dict[Any, Any] = {}
+    for pr in pages:
+        if isinstance(pr, dict) and "page" in pr:
+            page_cov[pr["page"]] = pr.get("coverage")
+    failed = [p for p in (report.get("failed_pages") or [])]
+    warned = [p for p in (report.get("warned_pages") or [])]
+    document_passed = bool(report.get("document_passed", True))
+
+    quality["unit_coverage"] = {
+        "enabled": bool(report.get("enabled", True)),
+        "document_passed": document_passed,
+        "min_coverage": report.get("min_coverage"),
+        "page_floor": report.get("page_floor"),
+        "n_pages": report.get("n_pages"),
+        "warned_pages": warned,
+        "failed_pages": failed,
+        "page_coverage": page_cov,
+    }
+
+    issues = quality.setdefault("issues", [])
+    if not isinstance(issues, list):
+        issues = []
+        quality["issues"] = issues
+    flags = quality.setdefault("flags", [])
+    if not isinstance(flags, list):
+        flags = []
+        quality["flags"] = flags
+
+    for page in failed:
+        issues.append(
+            {
+                "code": "UNIT_COVERAGE_BELOW_FLOOR",
+                "severity": "critical",
+                "page": page,
+                "coverage": page_cov.get(page),
+                "message": (
+                    f"page {page} content coverage {page_cov.get(page)!r} below "
+                    f"hard floor {report.get('page_floor')!r} — extraction text "
+                    f"missing from emitted HTML (content loss)"
+                ),
+            }
+        )
+    for page in warned:
+        issues.append(
+            {
+                "code": "UNIT_COVERAGE_BELOW_MIN",
+                "severity": "warning",
+                "page": page,
+                "coverage": page_cov.get(page),
+                "message": (
+                    f"page {page} content coverage {page_cov.get(page)!r} below "
+                    f"min {report.get('min_coverage')!r}"
+                ),
+            }
+        )
+
+    if failed:
+        if "UNIT_COVERAGE_FAILED" not in flags:
+            flags.append("UNIT_COVERAGE_FAILED")
+        quality["critical_count"] = int(quality.get("critical_count", 0) or 0) + len(
+            failed
+        )
+        quality["compliant"] = False
+        quality["quality_score"] = 0.0
+    if warned:
+        quality["high_count"] = int(quality.get("high_count", 0) or 0) + len(warned)
+    quality["total_issues"] = len(issues)
+
+
 def _emit_reasoning_qc_capture(
     audit: Optional[Dict[str, Any]],
     *,
@@ -9755,6 +9913,25 @@ def _run_semantik_v2_conversion(
     base = html_path.with_suffix("")
     synth_path = base.parent / f"{base.name}_synthesized.json"
     quality_path = html_path.with_suffix(".quality.json")
+
+    # 4a. task #43 — thread the SEMANTIK_UNIT_COVERAGE_GATE + SEMANTIK_PAGE_ARRANGER
+    # audits (previously DROPPED before the operator artifacts) end-to-end. Both
+    # resolve off EITHER seam arm (bridge attribute / in-process cascade dict).
+    # The content-loss gate is folded into the quality sidecar so a below-floor
+    # page is a first-class quality issue; both ride into the cascade_ir.json
+    # below. Best-effort — never break conversion on a fold error.
+    _unit_coverage_report = _semantik_resolve_unit_coverage(result)
+    _page_arranger_audit = _semantik_resolve_page_arranger(result)
+    if isinstance(_unit_coverage_report, dict):
+        try:
+            _apply_unit_coverage_to_quality(
+                adapter_out["quality_sidecar"], _unit_coverage_report
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort; never break conversion
+            logger.warning(
+                "unit_coverage quality-fold failed (non-fatal): %s", exc
+            )
+
     try:
         synth_path.write_text(
             json.dumps(
@@ -9802,6 +9979,20 @@ def _run_semantik_v2_conversion(
             "lane_used": adapter_out.get("lane_used"),
             "lang": getattr(result, "lang", None) or "en",
             "runtime_mode": runtime_mode,
+            # task #43 — the deterministic content-loss gate + scan-lane arranger
+            # audits, threaded end-to-end (cascade result → bridge/in-process →
+            # here). Present only when the owning flag ran (else absent, keeping
+            # the IR byte-stable to a no-gate run).
+            **(
+                {"unit_coverage": _unit_coverage_report}
+                if isinstance(_unit_coverage_report, dict)
+                else {}
+            ),
+            **(
+                {"page_arranger": _page_arranger_audit}
+                if isinstance(_page_arranger_audit, dict)
+                else {}
+            ),
         }
         cascade_ir_path.write_text(
             json.dumps(cascade_ir_doc, ensure_ascii=False, default=str),

@@ -51,6 +51,14 @@ On SUCCESS — all JSON-serializable fields the P3a/P3b seam consumes::
                                bboxless_regions, warnings } | null
                                           # ITEM5 Stage-5 SEMANTIK_REGION_ORDER
                                           # divergence audit; null when off
+      "unit_coverage":      { gate, enabled, min_coverage, page_floor,
+                               document_passed, warned_pages, failed_pages,
+                               pages:[...] } | null
+                                          # task #43 SEMANTIK_UNIT_COVERAGE_GATE
+                                          # content-loss report; null when off
+      "page_arranger":      { ...audit } | null
+                                          # task #43 SEMANTIK_PAGE_ARRANGER
+                                          # scan-lane audit; null when off
     }
 
 On FAILURE — a clear error object (the seam fails closed on this, NEVER a
@@ -317,6 +325,57 @@ def _resolve_reasoning_qc(result: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _resolve_unit_coverage(result: Any) -> Optional[Dict[str, Any]]:
+    """Pull the SEMANTIK_UNIT_COVERAGE_GATE fidelity report DICT off the cascade
+    result and promote it to a top-level bridge key (task #43).
+
+    Like ``second_pass_verify`` / ``geom_order`` / ``reasoning_qc`` this is a
+    DICT (``{gate, enabled, min_coverage, page_floor, document_passed,
+    warned_pages, failed_pages, pages:[...]}``); ``run_full_cascade`` emits it at
+    the result-dict top level (``result.cascade["unit_coverage"]``) and the key
+    is ABSENT when SEMANTIK_UNIT_COVERAGE_GATE resolved off (the gate never ran).
+    A conformance-nested runtime is also accepted (checked first). Deterministic
+    content-loss gate — operator/tooling-facing only (no DecisionCapture).
+    """
+    cascade = getattr(result, "cascade", None)
+    if isinstance(cascade, dict):
+        conformance = cascade.get("conformance_audit")
+        if isinstance(conformance, dict):
+            arm = conformance.get("unit_coverage")
+            if isinstance(arm, dict):
+                return dict(arm)
+        arm = cascade.get("unit_coverage")
+        if isinstance(arm, dict):
+            return dict(arm)
+    return None
+
+
+def _resolve_page_arranger(result: Any) -> Optional[Dict[str, Any]]:
+    """Pull the SEMANTIK_PAGE_ARRANGER audit DICT off the cascade result and
+    promote it to a top-level bridge key (task #43).
+
+    Like ``unit_coverage`` this is a DICT (arranger per-page/typing audit);
+    ``run_full_cascade`` emits it at the result-dict top level
+    (``result.cascade["page_arranger"]``) and the key is ABSENT when the
+    page-arranger did not own structure (SEMANTIK_PAGE_ARRANGER off /
+    born-digital lane). A conformance-nested runtime is also accepted (checked
+    first). Operator/tooling-facing audit — the scan-lane structure-authority
+    DecisionCapture rides the in-process arm; this forwards the audit dict so the
+    cross-venv IR emit surfaces it too.
+    """
+    cascade = getattr(result, "cascade", None)
+    if isinstance(cascade, dict):
+        conformance = cascade.get("conformance_audit")
+        if isinstance(conformance, dict):
+            arm = conformance.get("page_arranger")
+            if isinstance(arm, dict):
+                return dict(arm)
+        arm = cascade.get("page_arranger")
+        if isinstance(arm, dict):
+            return dict(arm)
+    return None
+
+
 def _build_bridge_dict(result: Any, pdf: str) -> Dict[str, Any]:
     """Assemble the JSON-serializable bridge dict from a cascade result."""
     theta = getattr(result, "theta_score", None)
@@ -357,6 +416,15 @@ def _build_bridge_dict(result: Any, pdf: str) -> Dict[str, Any]:
         # DecisionCapture per doc off this arm; the per-region re-type/reorder
         # effects already ride through ``region_provenance`` verbatim.
         "reasoning_qc": _resolve_reasoning_qc(result),
+        # task #43 — the SEMANTIK_UNIT_COVERAGE_GATE deterministic content-loss
+        # fidelity report DICT (None when the gate was off). The Ed4All seam
+        # threads it into the emitted cascade_ir.json + surfaces below-floor
+        # pages as quality-sidecar issues (previously dropped on the bridge).
+        "unit_coverage": _resolve_unit_coverage(result),
+        # task #43 — the SEMANTIK_PAGE_ARRANGER scan-lane structure-authority
+        # audit DICT (None when the arranger did not own structure). Forwarded so
+        # the emitted cascade_ir.json carries it on the cross-venv path too.
+        "page_arranger": _resolve_page_arranger(result),
     }
 
 
