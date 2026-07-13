@@ -594,6 +594,7 @@ def _build_region_provenance(
     review_regions: list[Region] | None = None,
     ocr_repair_edits: dict[int, dict[str, Any]] | None = None,
     containment_tree: Any | None = None,
+    typing_authority_active: bool = False,
 ) -> list[dict[str, Any]]:
     """Distill one provenance dict per region in DOCUMENT (emission) order.
 
@@ -705,6 +706,25 @@ def _build_region_provenance(
         # ``confidence`` above rides the existing key — no new confidence field.
         if payload.get("vlm_corroborated"):
             entry["vlm_corroborated"] = True
+        # OPTIONAL ``typing_authority`` key (task #43, additive). Stamped ONLY
+        # when SEMANTIK_SCAN_LANE_DEBERT is ACTIVE for this document (flag on AND
+        # the OCR/scan lane) — then every region's kind derives from the
+        # deterministic/geometric arm (``"deterministic"``) or a VLM/router
+        # heading promotion (``"vlm"``), never the masked BERT. Absent (the key
+        # omitted, byte-stable to baseline) when the gate is off / born-digital
+        # lane; absence = the legacy council-authoritative (``"bert"``) default.
+        if typing_authority_active:
+            from .scan_lane import typing_authority_for_payload
+
+            # Payload-first (task #43): the page-arranger route stamps
+            # ``payload['typing_authority']='vlm-arranger'`` on every Region it
+            # builds, so honour that when present; otherwise fall back to the
+            # scan-lane de-BERT deterministic/vlm classifier. Agent (a)'s
+            # scan-lane path never sets the payload key → its behaviour is
+            # byte-identical (the ``or`` degrades to the historic call).
+            entry["typing_authority"] = payload.get(
+                "typing_authority"
+            ) or typing_authority_for_payload(payload)
         # OPTIONAL ``role_top_k`` key (additive, ITEM6). Present only when the
         # Stage-5 stamp ran (a real council state); byte-stable to baseline
         # (key simply absent) for mock/legacy runs. Deliberately NOT lifting
@@ -1386,19 +1406,78 @@ def run_full_cascade(
     stages: dict[str, float] = {}
     t_total = time.perf_counter()
 
+    # ------------------------------------------------------------------
+    # SEMANTIK_PAGE_ARRANGER (task #43) — scan-lane page-arranger structure path.
+    #
+    # When the flag is on AND the document is on the OCR/scan lane,
+    # ``resolve_page_arranger_route`` returns a route that OWNS structure: the
+    # council BERTs (Stage 3), the cross-reranker (Stage 4), structure_graph
+    # (Stage 5), and the Stage-5d-det / 5d-reviewer / 5e-resegment / 5d-router
+    # passes are ALL bypassed, and a per-page multimodal ARRANGE call builds the
+    # typed Region list instead (the textbook-tuned council COLLAPSES off-domain,
+    # task-#25 oracle). Default OFF / born-digital → ``None`` (byte-identical
+    # council path — ZERO extraction happens in the probe when the flag is off).
+    # RETAINED unchanged on the arranger route: Stage 5b/5c, 6/6b, 7-13 (gates,
+    # assembler, reasoning-QC 9b, theta, exit) + the whole region_provenance /
+    # adapter contract. See ``page_arranger.resolve_page_arranger_route``.
+    # ------------------------------------------------------------------
+    from .page_arranger import resolve_page_arranger_route
+
+    _arranger = resolve_page_arranger_route(pdf_path)
     log(f"[cascade] running council on {pdf_path}")
     t = time.perf_counter()
-    state, council_regions, feature_blocks = run_council(pdf_path)
-    decisions = arbitrate(state, council_regions)
+    if _arranger is not None:
+        log(
+            "[cascade] SEMANTIK_PAGE_ARRANGER active — scan-lane page-arranger "
+            "owns structure (council heads / cross-reranker / structure_graph / "
+            "5d-det / 5d / 5e / 5d-router bypassed)"
+        )
+        state, council_regions, feature_blocks = _arranger.council_substitute()
+    else:
+        state, council_regions, feature_blocks = run_council(pdf_path)
+
+    # ------------------------------------------------------------------
+    # SEMANTIK_SCAN_LANE_DEBERT (task #43) — OCR/scan-lane BERT de-poisoning.
+    #
+    # On the OCR/scan lane (feature blocks predominantly tesseract-provenance)
+    # the textbook-tuned council heads COLLAPSE, so — when the gate is truthy —
+    # the enumerated STRUCTURAL head signals are masked OUT of the CouncilState
+    # the cross-reranker (Stage 4) + structure graph (Stage 5) read, and every
+    # typing decision falls to its deterministic/geometric/default arm. Default
+    # OFF / born-digital lane → ``_typing_state is state`` (byte-identical). The
+    # original ``state`` is kept for Stage-6 authoring + signal_coverage.
+    # ------------------------------------------------------------------
+    from .scan_lane import mask_council_state, scan_lane_debert_active
+
+    scan_lane_debert = _arranger is None and scan_lane_debert_active(feature_blocks)
+    if scan_lane_debert:
+        log(
+            "[cascade] SEMANTIK_SCAN_LANE_DEBERT active — masking council BERT "
+            "structural bindings (deterministic typing authority) on the scan lane"
+        )
+    _typing_state = mask_council_state(state) if scan_lane_debert else state
+
     order_audit: dict = {}
-    structure_regions = build_structure_graph(
-        state,
-        feature_blocks,
-        council_regions,
-        decisions,
-        pdf_path=pdf_path,
-        order_audit=order_audit,
-    )
+    arranger_audit: dict | None = None
+    if _arranger is not None:
+        # The per-page multimodal ARRANGE fan-out runs HERE and produces the
+        # typed Region list directly — arbitrate (Stage 4) + build_structure_graph
+        # (Stage 5) are bypassed (council heads never loaded). ``decisions`` is an
+        # empty list so any downstream consumer that iterates it no-ops.
+        decisions = []
+        structure_regions, arranger_audit = _arranger.arrange_regions(
+            feature_blocks, log=log
+        )
+    else:
+        decisions = arbitrate(_typing_state, council_regions)
+        structure_regions = build_structure_graph(
+            _typing_state,
+            feature_blocks,
+            council_regions,
+            decisions,
+            pdf_path=pdf_path,
+            order_audit=order_audit,
+        )
     stages["stage1_5"] = time.perf_counter() - t
 
     # ------------------------------------------------------------------
@@ -1442,7 +1521,7 @@ def run_full_cascade(
         resolve_structure_clean_mode,
     )
 
-    if resolve_structure_clean_mode():
+    if _arranger is None and resolve_structure_clean_mode():
         t = time.perf_counter()
         structure_regions, structure_clean_diag = clean_structure(
             structure_regions,
@@ -1483,7 +1562,7 @@ def run_full_cascade(
 
     _release_council_pre_review()
 
-    if resolve_structure_review_mode():
+    if _arranger is None and resolve_structure_review_mode():
         from .qwen_specialists.reviewer import run_structure_review
         from .qwen_specialists.runtime import (
             make_runtime,
@@ -1572,7 +1651,7 @@ def run_full_cascade(
     # MOVE arm is still on (audit-only shadow rows — document output bytes
     # unchanged, since shadow never mutates the region list). All-flags-off
     # (including SEMANTIK_MOVE_OP=0) stays byte-identical to the legacy gate.
-    if (
+    if _arranger is None and (
         resolve_block_resegment_mode()
         or resolve_unit_regroup_mode()
         or resolve_split_fused_section_titles_mode()
@@ -1649,7 +1728,8 @@ def run_full_cascade(
     # token-conservation (mirrors clean_structure).
     # ------------------------------------------------------------------
     if (
-        resolve_split_fused_section_titles_mode()
+        _arranger is None
+        and resolve_split_fused_section_titles_mode()
         and resolve_promote_section_headings_mode()
     ):
         from .qwen_specialists.deterministic_structure import (
@@ -1688,7 +1768,7 @@ def run_full_cascade(
     # ------------------------------------------------------------------
     from .structure_router import resolve_structure_router_mode
 
-    if resolve_structure_router_mode():
+    if _arranger is None and resolve_structure_router_mode():
         from .structure_router import apply_structure_router
 
         structure_regions, router_diag = apply_structure_router(
@@ -2247,6 +2327,11 @@ def run_full_cascade(
         ocr_repair_edits=(
             ocr_repair_result.edits_by_region if ocr_repair_result else None
         ),
+        # task #43 — stamp per-region ``typing_authority`` when the scan-lane
+        # BERT de-poisoning gate masked the council OR the page-arranger owns
+        # structure (its Regions carry payload['typing_authority']='vlm-arranger',
+        # honoured payload-first in _build_region_provenance). Byte-stable off.
+        typing_authority_active=scan_lane_debert or (_arranger is not None),
     )
 
     elapsed_total = time.perf_counter() - t_total
@@ -2370,6 +2455,12 @@ def run_full_cascade(
     # to a no-Stage-5e run). Parallel to the structure_review audit.
     if resegment_ops_audit is not None:
         result["block_resegment"] = resegment_ops_audit
+    # task #43 — SEMANTIK_PAGE_ARRANGER audit arm. Additive, present ONLY when
+    # the scan-lane page-arranger owned structure (default OFF / born-digital ->
+    # key absent, byte-stable). Parallel to block_resegment; the run_cascade_json
+    # bridge forwarding of this arm is a documented follow-up (out of territory).
+    if arranger_audit is not None:
+        result["page_arranger"] = arranger_audit
     # ITEM5 — Stage-5 geometric region-order divergence audit. Populated
     # whenever SEMANTIK_REGION_ORDER != off (default fb -> the SHADOW
     # measurement; the order is NOT changed in fb mode). Additive
@@ -2399,6 +2490,26 @@ def run_full_cascade(
     # ``structure_detection`` DecisionCapture off it.
     if reasoning_qc_audit is not None:
         result["reasoning_qc"] = reasoning_qc_audit
+
+    # SEMANTIK_UNIT_COVERAGE_GATE (task #43) — deterministic content-loss gate,
+    # the fidelity guardrail that supersedes stub-collapsed theta. Default OFF →
+    # the key is absent (byte-stable). When on, it compares the extraction-side
+    # per-page text universe (the fused FB texts that entered structure
+    # detection) against the emitted HTML and fail-closes any page below the hard
+    # floor. Parallel to the block_resegment / ocr_repair / reasoning_qc arms.
+    from .unit_coverage import resolve_unit_coverage_gate_mode, run_unit_coverage_gate
+
+    if resolve_unit_coverage_gate_mode():
+        extraction_units = [
+            (int(fb.raw.page), fb.raw.text)
+            for fb in feature_blocks
+            if not getattr(fb, "is_image", False)
+            and getattr(getattr(fb, "raw", None), "text", None)
+        ]
+        result["unit_coverage"] = run_unit_coverage_gate(
+            extraction_units, assembled.html, log=log
+        )
+
     if return_html:
         result["html"] = assembled.html
     return result
