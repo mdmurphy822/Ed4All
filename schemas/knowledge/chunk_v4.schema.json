@@ -298,6 +298,12 @@
       "type": "string",
       "format": "date-time",
       "description": "ISO 8601 UTC timestamp when the chunk was emitted (REC-PRV-01, Worker P Wave 4.1). Produced by datetime.now(timezone.utc).isoformat(). Always populated on new runs; legacy chunks without this field still validate."
+    },
+    "source_pages": {
+      "type": "array",
+      "items": { "type": "integer", "minimum": 1 },
+      "minItems": 1,
+      "description": "Task #26: sorted, deduped union of source page numbers (data-semantik-pages / data-dart-pages block attrs) across the DART/SemantiK blocks composing this chunk. Emitted top-level (NOT inside source, whose $defs.Source is additionalProperties:false) by MCP/tools/pipeline_tools.py::_run_dart_chunking via Trainforge.chunker.union_source_pages. Omitted when no composing block carries a page attr (legacy corpora → byte-identical). For retrieval-citation display; the per-block pages remain on source.source_references[].pages. Derived from the RAW harvested source refs, not the minted source_references[] — so a chunk whose block_id failed sourceId minting can carry source_pages while source.source_references is absent."
     }
   },
   "$defs": {

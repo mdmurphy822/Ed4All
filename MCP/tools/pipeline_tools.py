@@ -30,6 +30,7 @@ from Trainforge.chunker import EXTRACTION_TEXT_CONTRACT_VERSION  # noqa: E402
 from Trainforge.chunker import (  # noqa: E402
     apply_chunk_overlap as _apply_chunk_overlap,
     resolve_chunk_overlap_words as _resolve_chunk_overlap_words,
+    union_source_pages as _union_source_pages,
 )
 
 logger = logging.getLogger(__name__)
@@ -26588,6 +26589,18 @@ def _build_tool_registry() -> dict:
             # provenance tag on low-confidence sources (verbs / default).
             if bloom_source in ("verbs", "default"):
                 chunk["bloom_level_source"] = bloom_source
+
+            # Task #26: source page-number provenance. Union the page numbers
+            # the composing DART/SemantiK blocks carried (``data-semantik-pages``
+            # / ``data-dart-pages``, harvested into each ref's ``pages``) into
+            # the additive top-level ``source_pages`` field for retrieval-citation
+            # display. Derived from the RAW ``dart_source_refs`` harvest (NOT the
+            # minted ``source_references[]``), so page provenance survives even a
+            # chunk whose block_id fails sourceId minting. Omitted when the union
+            # is empty → legacy / attr-less corpora stay byte-identical.
+            _src_pages = _union_source_pages(dart_source_refs)
+            if _src_pages:
+                chunk["source_pages"] = _src_pages
 
             # IRT difficulty-calibration scaffold: stamp provenance (+ optional
             # IRT block from real responses). No-op + byte-identical when off.

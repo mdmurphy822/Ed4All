@@ -45,6 +45,7 @@ __all__ = [
     "strip_assessment_feedback",
     "strip_feedback_from_text",
     "type_from_resource",
+    "union_source_pages",
 ]
 
 
@@ -245,6 +246,54 @@ def parse_dart_pages_attr(value: Optional[str]) -> List[int]:
             try:
                 p = int(token)
             except ValueError:
+                continue
+            if p > 0:
+                pages.add(p)
+    return sorted(pages)
+
+
+def union_source_pages(
+    refs: Optional[List[Dict[str, Any]]],
+) -> List[int]:
+    """Sorted, deduped union of the ``pages`` across a source-ref list.
+
+    ``refs`` is a chunker source-ref list — the ``{block_id, pages, ...}``
+    dicts :func:`harvest_dart_source_refs` / :func:`resolve_dart_refs_for_chunk`
+    produce off ``data-dart-pages`` / ``data-semantik-pages`` block attrs. This
+    folds every ref's positive-int ``pages`` entries into one ascending,
+    deduped list — the page-number union for a chunk composed of one or more
+    such blocks, suitable for the additive top-level ``source_pages`` chunk
+    field (retrieval-citation display).
+
+    Defensive by construction so a malformed ref list never aborts chunk emit:
+    non-dict entries are skipped, a missing / ``None`` / non-iterable ``pages``
+    is treated as empty, and each page token is coerced through ``int()`` with
+    non-positive / non-integer tokens dropped (mirrors
+    :func:`parse_dart_pages_attr`, whose output is ``minimum: 1``).
+
+    Returns ``[]`` for ``None`` / empty input or when no ref carries a usable
+    page — the caller then OMITS ``source_pages`` (legacy corpora byte-stable).
+    """
+    if not refs:
+        return []
+    pages: set = set()
+    for ref in refs:
+        if not isinstance(ref, dict):
+            continue
+        raw_pages = ref.get("pages")
+        if not raw_pages:
+            continue
+        try:
+            iterator = iter(raw_pages)
+        except TypeError:
+            continue
+        for token in iterator:
+            if isinstance(token, bool):
+                # bool is an int subclass — never a real page number.
+                continue
+            try:
+                p = int(token)
+            except (TypeError, ValueError):
                 continue
             if p > 0:
                 pages.add(p)

@@ -101,6 +101,7 @@ from Trainforge.chunker.helpers import (
     strip_assessment_feedback,
     strip_feedback_from_text,
     type_from_resource,
+    union_source_pages,
 )
 
 __all__ = [
@@ -137,4 +138,5 @@ __all__ = [
     "strip_feedback_from_text",
     "type_from_heading",
     "type_from_resource",
+    "union_source_pages",
 ]

@@ -485,6 +485,7 @@ Trainforge extracts structured metadata from Courseforge HTML output using a pri
 | `run_id` | Active `DecisionCapture` | Provenance — emitted unconditionally on all chunks |
 | `created_at` | Active `DecisionCapture` | Provenance timestamp — emitted unconditionally |
 | `source.source_references[]` | Courseforge JSON-LD `sourceReferences` + `data-cf-source-ids` | Optional array of DART/Courseforge source references per the canonical `source_reference.schema.json` shape. JSON-LD refs carry authoritative roles (primary / contributing / corroborating); HTML-attr-only refs auto-role as `contributing`. Merged chunks (via `_merge_small_sections`) union refs across all merged sections with role-precedence preserved (first-seen wins, primary > contributing > corroborating). Absence = legacy corpus ("unknown") — never an error. |
+| `source_pages` (top-level) | `data-semantik-pages` / `data-dart-pages` block attrs (union across the chunk's composing blocks) | Task #26: sorted, deduped page-number union for retrieval-citation display, stamped by `_run_dart_chunking` via `Trainforge.chunker.union_source_pages`. Emitted at the chunk TOP LEVEL (not inside `source`, whose `$defs.Source` is `additionalProperties:false`); derived from the RAW harvested source refs, so it survives even a chunk whose block_id failed sourceId minting. Omitted when no composing block carries a page attr (legacy corpora → byte-identical). Per-block pages remain on `source.source_references[].pages`. |
 
 ### Schemas and concept graph
 
