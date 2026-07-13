@@ -173,6 +173,65 @@ def test_llm_usage_tally(tmp_path: Path):
     assert llm["by_model"]["qwen"]["completion_tokens"] == 30
 
 
+def test_llm_usage_ttft_percentiles(tmp_path: Path):
+    """Task #10 — rows carrying ttft_ms surface p50/p95 + sample count."""
+    run_dir = tmp_path / "run"
+    _write_checkpoint(
+        run_dir, "staging", 1,
+        "2026-07-07T10:00:00", "2026-07-07T10:00:05",
+    )
+    _write_jsonl(
+        run_dir / "llm_usage.jsonl",
+        [
+            {
+                "provider": "local", "model": "qwen",
+                "prompt_tokens": 10, "completion_tokens": 2,
+                "duration_ms": 100.0, "ttft_ms": 200.0,
+            },
+            {
+                "provider": "local", "model": "qwen",
+                "prompt_tokens": 10, "completion_tokens": 2,
+                "duration_ms": 100.0, "ttft_ms": 400.0,
+            },
+            {
+                "provider": "local", "model": "qwen",
+                "prompt_tokens": 10, "completion_tokens": 2,
+                "duration_ms": 100.0, "ttft_ms": 600.0,
+            },
+        ],
+    )
+    llm = BuildCostAggregator(run_dir=run_dir, run_id="R").build()["llm_usage"]
+    assert llm["ttft_sample_count"] == 3
+    # p50 of [200,400,600]: rank (3-1)*0.5=1 → 400.
+    # p95: rank (3-1)*0.95=1.9 → 400 + (600-400)*0.9 = 580.
+    assert llm["ttft_ms_p50"] == 400.0
+    assert llm["ttft_ms_p95"] == 580.0
+
+
+def test_llm_usage_no_ttft_omits_percentiles(tmp_path: Path):
+    """Rows without ttft_ms → the TTFT block is omitted (byte-identical legacy
+    llm_usage section)."""
+    run_dir = tmp_path / "run"
+    _write_checkpoint(
+        run_dir, "staging", 1,
+        "2026-07-07T10:00:00", "2026-07-07T10:00:05",
+    )
+    _write_jsonl(
+        run_dir / "llm_usage.jsonl",
+        [
+            {
+                "provider": "local", "model": "qwen",
+                "prompt_tokens": 10, "completion_tokens": 2,
+                "duration_ms": 100.0,
+            },
+        ],
+    )
+    llm = BuildCostAggregator(run_dir=run_dir, run_id="R").build()["llm_usage"]
+    assert "ttft_sample_count" not in llm
+    assert "ttft_ms_p50" not in llm
+    assert "ttft_ms_p95" not in llm
+
+
 def test_malformed_jsonl_lines_skipped(tmp_path: Path):
     run_dir = tmp_path / "run"
     _write_checkpoint(

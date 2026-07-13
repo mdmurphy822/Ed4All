@@ -119,6 +119,21 @@ ENV_REASONING_THINKING_OFF: str = "ED4ALL_REASONING_THINKING_OFF"
 # literal.
 _REASONING_THINKING_OFF_DIRECTIVE: str = "detailed thinking off"
 
+# Task #10 — TTFT (time-to-first-token) metering. When this env is truthy the
+# chat-completion call switches from the non-streaming JSON POST to a streaming
+# (``stream: true`` + ``stream_options.include_usage``) POST so the client can
+# measure wall-clock from request-send to the FIRST content / reasoning delta
+# (``ttft_ms``), then RECONSTRUCTS a response object byte-shape-identical to the
+# non-streaming return (``message.content`` + ``finish_reason`` + ``usage``) so
+# no downstream caller sees a behavioral difference. On ANY streaming-specific
+# failure (server rejects stream, malformed SSE, transport error) the client
+# falls back to the proven non-streaming ``_post_with_retry`` path with NO ttft
+# recorded — metering never fails a real call. Default OFF → byte-identical to
+# the legacy non-streaming path (no ``stream`` key on the wire, no new usage-row
+# field). Parse-with-fallback truthy semantics mirror the other ``ED4ALL_*``
+# boolean knobs (``1`` / ``true`` / ``yes`` / ``on``).
+ENV_TTFT_METER: str = "ED4ALL_LLM_TTFT_METER"
+
 
 def resolve_default_timeout() -> float:
     """Return the default per-request timeout when no explicit value.
@@ -158,6 +173,30 @@ def resolve_reasoning_thinking_off() -> bool:
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def resolve_ttft_meter() -> bool:
+    """Return whether TTFT (time-to-first-token) metering is on.
+
+    Reads :data:`ENV_TTFT_METER` and parses it as a boolean. Truthy values are
+    ``1`` / ``true`` / ``yes`` / ``on`` (case-insensitive, whitespace-trimmed);
+    anything else — including an unset / empty / garbage value — resolves to
+    ``False``. Read at call time (not construction) so a test can monkeypatch
+    the env per call and a live run can flip the behavior without rebuilding
+    client instances. Mirrors :func:`resolve_reasoning_thinking_off`.
+    """
+    raw = os.environ.get(ENV_TTFT_METER)
+    if not raw or not str(raw).strip():
+        return False
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+class _StreamingUnsupported(Exception):
+    """Internal sentinel — the streaming attempt failed in a stream-specific
+    way (server rejected the stream, malformed SSE, transport error). The
+    caller catches this and falls back to the proven non-streaming
+    ``_post_with_retry`` path (no ttft recorded), so metering never fails a
+    real LLM call."""
+
+
 # ---------------------------------------------------------------------------
 # Client
 # ---------------------------------------------------------------------------
@@ -194,6 +233,7 @@ class OpenAICompatibleClient:
         provider_label: str = DEFAULT_PROVIDER_LABEL,
         client: Optional[httpx.Client] = None,
         sleep_fn: Optional[Callable[[float], None]] = None,
+        monotonic_fn: Optional[Callable[[], float]] = None,
         json_mode: bool = False,
         vision_capable: bool = False,
     ) -> None:
@@ -281,12 +321,22 @@ class OpenAICompatibleClient:
         # ``Trainforge.generators._together_provider.time.sleep`` keep
         # working post-refactor. Default is the stdlib ``time.sleep``.
         self._sleep_fn = sleep_fn or time.sleep
+        # ``monotonic_fn`` lets a test inject a deterministic clock so the TTFT
+        # measurement is assertable without real time passing. Default is the
+        # stdlib ``time.monotonic``; used for BOTH the per-call wall-clock and
+        # the time-to-first-token span so they share one clock source.
+        self._monotonic = monotonic_fn or time.monotonic
         self._json_mode = bool(json_mode)
         self._vision_capable = bool(vision_capable)
         # Server-reported token usage of the most recent chat_completion
         # call (``{}`` until the first call). Read by the grounded-answer
         # truncation tripwire; harmless for every other caller.
         self.last_usage: Dict[str, int] = {}
+        # Time-to-first-token (ms) of the most recent chat_completion call:
+        # a float when TTFT metering was on AND the call streamed successfully,
+        # otherwise ``None`` (metering off, or streaming fell back to the
+        # non-streaming path). Task #10 observability surface.
+        self.last_ttft_ms: Optional[float] = None
 
     # ------------------------------------------------------------------
     # Properties
@@ -461,15 +511,45 @@ class OpenAICompatibleClient:
                 "chat_template_kwargs", {"enable_thinking": False}
             )
 
-        _call_start = time.monotonic()
-        body, retry_count = self._post_with_retry(payload)
-        _duration_ms = (time.monotonic() - _call_start) * 1000.0
+        _call_start = self._monotonic()
+        # Task #10 — TTFT metering. When on, stream the completion and measure
+        # time-to-first-token; reconstruct a body identical in shape to the
+        # non-streaming return. ANY streaming-specific failure falls back to the
+        # proven non-streaming path with NO ttft (metering never fails a call).
+        # Default off → byte-identical legacy non-streaming behavior.
+        ttft_ms: Optional[float] = None
+        stream_usage_present: Optional[bool] = None
+        if resolve_ttft_meter():
+            try:
+                body, retry_count, ttft_ms, stream_usage_present = (
+                    self._post_streaming(payload)
+                )
+            except _StreamingUnsupported as exc:
+                logger.debug(
+                    "TTFT streaming attempt failed (%s); falling back to "
+                    "non-streaming (no ttft recorded)",
+                    exc,
+                )
+                body, retry_count = self._post_with_retry(payload)
+                ttft_ms = None
+                stream_usage_present = None
+        else:
+            body, retry_count = self._post_with_retry(payload)
+        _duration_ms = (self._monotonic() - _call_start) * 1000.0
         text = self._extract_text(body)
         usage = self._extract_usage(body)
         # OP2 usage tap — best-effort per-call metering row (no-op when
         # ``ED4ALL_RUN_ID`` is unset). Placed after ``_extract_usage`` so the
-        # row carries real server-reported token counts.
-        self._maybe_append_usage_row(usage=usage, duration_ms=_duration_ms)
+        # row carries real server-reported token counts. ``ttft_ms`` is threaded
+        # in (Task #10); it (and the stream-usage-present note) are OMITTED from
+        # the row when None so the flag-off path stays byte-identical.
+        self._maybe_append_usage_row(
+            usage=usage,
+            duration_ms=_duration_ms,
+            ttft_ms=ttft_ms,
+            stream_usage_present=stream_usage_present,
+        )
+        self.last_ttft_ms = ttft_ms
         # Expose the server-reported token usage of the LAST call so a
         # caller can run a post-call check (e.g. the grounded-answer
         # truncation tripwire compares reported prompt_tokens against a
@@ -492,16 +572,31 @@ class OpenAICompatibleClient:
     # ------------------------------------------------------------------
 
     def _maybe_append_usage_row(
-        self, *, usage: Dict[str, int], duration_ms: float
+        self,
+        *,
+        usage: Dict[str, int],
+        duration_ms: float,
+        ttft_ms: Optional[float] = None,
+        stream_usage_present: Optional[bool] = None,
     ) -> None:
         """Append one metering row to ``state/runs/<run_id>/llm_usage.jsonl``.
 
-        Roadmap OP2. Fires only when ``ED4ALL_RUN_ID`` identifies a run;
-        otherwise a strict no-op so bare library callers stay byte-identical.
-        Row shape: ``{ts, provider, model, prompt_tokens, completion_tokens,
-        duration_ms}``. Fully best-effort — ANY failure (unresolvable run dir,
-        unwritable path, serialization error) is swallowed so metering never
-        perturbs a real LLM call.
+        Roadmap OP2 + Task #10. Fires only when ``ED4ALL_RUN_ID`` identifies a
+        run; otherwise a strict no-op so bare library callers stay
+        byte-identical. Base row shape: ``{ts, provider, model, prompt_tokens,
+        completion_tokens, duration_ms}``.
+
+        Task #10 additive fields (present ONLY when TTFT metering measured a
+        streaming call, so the flag-off row is byte-identical to the legacy
+        OP2 row): ``ttft_ms`` (float, time-to-first-token) and — when the
+        streaming server omitted the ``usage`` block despite
+        ``stream_options.include_usage`` — ``stream_usage_present: false`` so an
+        auditor knows the token counts on that row are absent-defaulted to 0
+        rather than server-reported.
+
+        Fully best-effort — ANY failure (unresolvable run dir, unwritable path,
+        serialization error) is swallowed so metering never perturbs a real LLM
+        call.
         """
         run_id = os.environ.get(ENV_RUN_ID)
         if not run_id or not str(run_id).strip():
@@ -521,12 +616,195 @@ class OpenAICompatibleClient:
                 "completion_tokens": int(usage.get("completion_tokens", 0) or 0),
                 "duration_ms": round(float(duration_ms), 3),
             }
+            # Additive TTFT fields — omitted when None so a flag-off / non-
+            # streaming row stays byte-identical to the legacy OP2 shape.
+            if ttft_ms is not None:
+                row["ttft_ms"] = round(float(ttft_ms), 3)
+            if stream_usage_present is False:
+                row["stream_usage_present"] = False
             with open(
                 run_dir / "llm_usage.jsonl", "a", encoding="utf-8"
             ) as fh:
                 fh.write(_json.dumps(row) + "\n")
         except Exception as exc:  # noqa: BLE001 — metering must never crash a call
             logger.debug("llm_usage tap failed (ignoring): %s", exc)
+
+    # ------------------------------------------------------------------
+    # Internals — TTFT streaming (Task #10)
+    # ------------------------------------------------------------------
+
+    def _post_streaming(
+        self, payload: Dict[str, Any]
+    ) -> Tuple[Dict[str, Any], int, Optional[float], bool]:
+        """Stream one chat-completion and measure time-to-first-token.
+
+        Returns ``(body, retry_count, ttft_ms, stream_usage_present)`` where
+        ``body`` is reconstructed to be shape-identical to the non-streaming
+        return (``choices[0].message.content`` + ``finish_reason`` + ``usage``)
+        so ``_extract_text`` / ``_extract_usage`` and the truncation guard all
+        behave identically. ``retry_count`` is always 0 (the streaming attempt
+        is single-shot; retry lives in the non-streaming fallback).
+
+        Raises :class:`_StreamingUnsupported` on ANY streaming-specific failure
+        (non-200 status, malformed SSE, transport error) so the caller falls
+        back to the proven non-streaming ``_post_with_retry`` path. Wrapped by
+        the same admission gate as the non-streaming path so a hosted
+        rate-limited seat is still governed.
+        """
+        from lib.llm.rate_limiter import get_admission_gate
+
+        _admission = get_admission_gate()
+        _est_tokens = self._estimate_payload_tokens(payload)
+        _reservation = _admission.acquire(_est_tokens)
+        try:
+            return self._post_streaming_inner(payload, _reservation)
+        finally:
+            _reservation.release()
+
+    def _post_streaming_inner(
+        self, payload: Dict[str, Any], reservation: Any
+    ) -> Tuple[Dict[str, Any], int, Optional[float], bool]:
+        """Single streaming POST + SSE reconstruction (admission-gated body)."""
+        headers: Dict[str, str] = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        # Build a COPY carrying the streaming knobs — the caller's ``payload``
+        # is left clean so the non-streaming fallback never sends ``stream``.
+        stream_payload: Dict[str, Any] = dict(payload)
+        stream_payload["stream"] = True
+        # ``include_usage`` asks the server to emit a trailing usage-only chunk;
+        # servers that don't honor it just omit usage (handled downstream).
+        stream_payload["stream_options"] = {"include_usage": True}
+        if self._json_mode:
+            stream_payload.setdefault("format", "json")
+            stream_payload.setdefault(
+                "response_format", {"type": "json_object"}
+            )
+        url = self.api_url
+        req_start = self._monotonic()
+        try:
+            with self.client.stream(
+                "POST", url, json=stream_payload, headers=headers
+            ) as response:
+                status = response.status_code
+                if status != 200:
+                    # Server rejected the streaming request — fall back to the
+                    # proven non-streaming path (which will succeed if the
+                    # rejection was stream-specific, or raise properly if the
+                    # request is genuinely bad).
+                    try:
+                        response.read()
+                    except Exception:  # noqa: BLE001 — best-effort drain
+                        pass
+                    raise _StreamingUnsupported(
+                        f"stream returned HTTP {status}"
+                    )
+                body, ttft_ms, usage_present = self._consume_stream(
+                    response, req_start
+                )
+        except _StreamingUnsupported:
+            raise
+        except httpx.HTTPError as exc:
+            raise _StreamingUnsupported(
+                f"stream transport error: {exc}"
+            ) from exc
+
+        # Reconcile the TPM bucket against server-reported usage when present
+        # (no-op when rate-limiting is off) — mirrors the non-streaming inner.
+        usage = body.get("usage") if isinstance(body, dict) else None
+        if isinstance(usage, dict) and usage:
+            actual = usage.get("total_tokens")
+            if actual is None:
+                actual = (usage.get("prompt_tokens", 0) or 0) + (
+                    usage.get("completion_tokens", 0) or 0
+                )
+            try:
+                reservation.reconcile(float(actual))
+            except (TypeError, ValueError):
+                pass
+        return body, 0, ttft_ms, usage_present
+
+    def _consume_stream(
+        self, response: "httpx.Response", req_start: float
+    ) -> Tuple[Dict[str, Any], Optional[float], bool]:
+        """Parse an OpenAI SSE stream into a non-streaming-shaped body.
+
+        Accumulates ``delta.content`` into ``message.content`` and
+        ``delta.reasoning_content`` (or ``delta.reasoning``) into
+        ``message.reasoning_content``; records ``ttft_ms`` off the shared clock
+        at the FIRST content-or-reasoning delta; captures the last non-null
+        ``finish_reason`` and any trailing ``usage`` block. Returns
+        ``(body, ttft_ms, usage_present)``. Raises :class:`_StreamingUnsupported`
+        on malformed SSE JSON so the caller falls back to non-streaming.
+        """
+        content_parts: List[str] = []
+        reasoning_parts: List[str] = []
+        finish_reason: Optional[str] = None
+        usage: Dict[str, Any] = {}
+        usage_present = False
+        ttft_ms: Optional[float] = None
+
+        for raw_line in response.iter_lines():
+            if not raw_line:
+                continue
+            line = raw_line.strip()
+            if not line or not line.startswith("data:"):
+                continue
+            data = line[len("data:"):].strip()
+            if data == "[DONE]":
+                break
+            try:
+                chunk = _json.loads(data)
+            except ValueError as exc:
+                raise _StreamingUnsupported(
+                    f"malformed SSE JSON: {exc}"
+                ) from exc
+            if not isinstance(chunk, dict):
+                continue
+            choices = chunk.get("choices") or []
+            if choices and isinstance(choices[0], dict):
+                first = choices[0]
+                delta = first.get("delta") or {}
+                if isinstance(delta, dict):
+                    piece = delta.get("content")
+                    rpiece = delta.get("reasoning_content")
+                    if rpiece is None:
+                        rpiece = delta.get("reasoning")
+                    if piece:
+                        if ttft_ms is None:
+                            ttft_ms = (self._monotonic() - req_start) * 1000.0
+                        content_parts.append(str(piece))
+                    if rpiece:
+                        if ttft_ms is None:
+                            ttft_ms = (self._monotonic() - req_start) * 1000.0
+                        reasoning_parts.append(str(rpiece))
+                fr = first.get("finish_reason")
+                if fr is not None:
+                    finish_reason = fr
+            chunk_usage = chunk.get("usage")
+            if isinstance(chunk_usage, dict) and chunk_usage:
+                usage = chunk_usage
+                usage_present = True
+
+        message: Dict[str, Any] = {
+            "role": "assistant",
+            "content": "".join(content_parts),
+        }
+        if reasoning_parts:
+            message["reasoning_content"] = "".join(reasoning_parts)
+        body: Dict[str, Any] = {
+            "choices": [
+                {
+                    "index": 0,
+                    "message": message,
+                    "finish_reason": finish_reason,
+                }
+            ],
+            "usage": usage,
+        }
+        if ttft_ms is not None:
+            ttft_ms = round(ttft_ms, 3)
+        return body, ttft_ms, usage_present
 
     # ------------------------------------------------------------------
     # Internals — vision content-block translation (Wave W-D13)
@@ -1234,8 +1512,10 @@ __all__ = [
     "ENV_REQUEST_TIMEOUT",
     "ENV_RUN_ID",
     "ENV_REASONING_THINKING_OFF",
+    "ENV_TTFT_METER",
     "resolve_default_timeout",
     "resolve_reasoning_thinking_off",
+    "resolve_ttft_meter",
     "apply_reasoning_thinking_off_payload",
     "DEFAULT_MAX_RETRIES",
     "DEFAULT_RETRY_STATUS_CODES",

@@ -39,6 +39,15 @@ The choice of development tool has zero effect on the trained SLM's licensing �
 
 The single line to internalize: **the dev tool you use to write Ed4All code has no bearing on what's in the trained SLM's training corpus.** The two surfaces are isolated by design.
 
+### Pending-decision notes (internal tooling — NOT the shippable course-SLM corpus)
+
+Two provenance surfaces are **internal-tooling only** and are recorded here as OPEN decisions, not yet cleared postures. Neither feeds the distributed course-pinned SLM training corpus (that stays the license-clean synthesis stack in the table below); both are surfaced now so a future distribution decision doesn't inherit an unexamined liability.
+
+| Surface | What it is | License exposure | Posture (PENDING) |
+|---------|------------|------------------|-------------------|
+| **Nemotron-teacher-labeled internal tooling models (BERT-v2)** — task #42 | The SemantiK council structure heads retrained as in-distribution ontology annotators on labels produced by a **Nemotron VLM teacher** (`nemotron-3-nano-omni` / Super-120B). The trained BERT-v2 classifier is therefore a derivative work of Nemotron outputs. It is a STRUCTURE-DETECTION tool inside the conversion cascade — it emits no distributed prose and never lands in `instruction_pairs.jsonl`. | NVIDIA Open Model License on the teacher outputs (permissive — training-on-outputs explicitly permitted, sole restriction is the competing-foundation-model-training-service bar, which a document-structure classifier does not touch). The self-hosted Spark Nemotron seats are already treated training-clean in the Synthesis-providers table below. | **PENDING (task #42, in progress).** Under the NVIDIA Open Model License the teacher-labeled classifier reads clean, but BERT-v2 is not yet trained/shipped and the distribution decision (is the trained head redistributed, or purely internal to a self-hosted build?) is unmade. Treat as internal-tooling-only until task #42 closes with an explicit posture row. Not in the license-restricted synthesis set (`{"anthropic", "nvidia"}` — the HOSTED `nvidia` API seat), because the labels come from the self-hosted `local`-provenance Nemotron weights, not the hosted API. |
+| **Vendor-HTML evaluation corpora** | Publisher / vendor HTML ingested purely to MEASURE conversion + retrieval quality (structure-authority A/B, gold-compare). Eval-only: never republished, never re-ingested as training chunks, gitignored. | Vendor terms are typically **non-commercial (NC)** and/or no-redistribution. | **Eval-only, NC posture — do NOT distribute.** Acceptable strictly as an internal measurement fixture (analysis, never a shipped artifact); the moment any vendor-HTML-derived text would enter a distributed corpus or product, it requires its own cleared license. Mirrors the standing internal-tool-validation posture for licensed source material (e.g. OpenStax content is not distributed without permission). |
+
 ---
 
 ## Synthesis providers (training-data exposure)

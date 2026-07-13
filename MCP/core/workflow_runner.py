@@ -2481,6 +2481,29 @@ class WorkflowRunner:
             phase_outputs=phase_outputs,
         )
 
+        # Task #10: per-model vLLM CONTAINER lifecycle. Workflow end is the one
+        # unambiguous "done serving" boundary — stop every registered vLLM
+        # container so no seat holds VRAM after the run. A no-op unless
+        # ED4ALL_VLLM_CONTAINER_LIFECYCLE is on (default OFF → byte-identical).
+        # Off-loop via asyncio.to_thread (docker stop is a blocking CLI call),
+        # wrapped best-effort so a lifecycle failure can NEVER perturb
+        # final_status or the return payload — mirrors _gpu_lifecycle_sweep.
+        # Follow-up: per-PHASE ensure/release seams (a phase→seat need-map).
+        try:
+            from lib.vllm_container_lifecycle import (
+                release_all as _vllm_release_all,
+                resolve_vllm_container_lifecycle_mode as _vllm_lifecycle_on,
+            )
+
+            if _vllm_lifecycle_on():
+                await asyncio.to_thread(_vllm_release_all)
+        except Exception as exc:  # noqa: BLE001 — container release must never crash the run
+            logger.debug(
+                "vllm_container_lifecycle: workflow-end release_all failed "
+                "(ignoring): %s",
+                exc,
+            )
+
         return {
             "workflow_id": workflow_id,
             "status": final_status,

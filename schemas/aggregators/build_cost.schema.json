@@ -136,6 +136,21 @@
         "by_model": {
           "type": "object",
           "additionalProperties": { "$ref": "#/$defs/UsageTally" }
+        },
+        "ttft_sample_count": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Task #10 — count of llm_usage rows carrying a ttft_ms sample (rows written under ED4ALL_LLM_TTFT_METER). Present only when >=1 sample exists; absent for non-TTFT runs (byte-identical legacy emit)."
+        },
+        "ttft_ms_p50": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Task #10 — median time-to-first-token (ms) across ttft-metered rows. Present only with ttft_sample_count."
+        },
+        "ttft_ms_p95": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Task #10 — 95th-percentile time-to-first-token (ms) across ttft-metered rows. Present only with ttft_sample_count."
         }
       }
     },

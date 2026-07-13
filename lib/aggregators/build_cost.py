@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
@@ -72,6 +73,28 @@ def _iter_jsonl(path: Path) -> List[Dict[str, Any]]:
         if isinstance(parsed, dict):
             rows.append(parsed)
     return rows
+
+
+def _percentile(values: List[float], pct: float) -> Optional[float]:
+    """Linear-interpolation percentile over ``values`` (Task #10 TTFT).
+
+    Deterministic; sorts a copy. Returns None on an empty list, the single
+    value for a one-element list, else the ``pct``-th percentile via the
+    standard ``(n-1)*p`` fractional-rank interpolation. Rounded to 3 dp for a
+    stable emit.
+    """
+    if not values:
+        return None
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return round(ordered[0], 3)
+    rank = (len(ordered) - 1) * (pct / 100.0)
+    low = math.floor(rank)
+    high = math.ceil(rank)
+    if low == high:
+        return round(ordered[int(rank)], 3)
+    interpolated = ordered[low] + (ordered[high] - ordered[low]) * (rank - low)
+    return round(interpolated, 3)
 
 
 def _parse_ts(value: Any) -> Optional[datetime]:
@@ -381,6 +404,11 @@ class BuildCostAggregator:
         total_prompt = 0
         total_completion = 0
         total_duration_ms = 0.0
+        # Task #10 — TTFT (time-to-first-token) samples, present only on rows
+        # written under ``ED4ALL_LLM_TTFT_METER``. Collected here so the report
+        # can surface p50/p95 latency-to-first-token WITHOUT changing output
+        # for a run whose rows carry no ``ttft_ms`` (additive, no version bump).
+        ttft_samples: List[float] = []
         by_provider: Dict[str, Dict[str, Any]] = {}
         by_model: Dict[str, Dict[str, Any]] = {}
 
@@ -417,13 +445,19 @@ class BuildCostAggregator:
             total_duration_ms += duration_ms
             _accrue(by_provider, provider, prompt, completion, duration_ms)
             _accrue(by_model, model, prompt, completion, duration_ms)
+            # TTFT is present only on streaming-metered rows; skip non-finite /
+            # missing values so a legacy corpus never fabricates a sample.
+            if "ttft_ms" in row:
+                ttft = _float(row.get("ttft_ms"))
+                if math.isfinite(ttft) and ttft >= 0:
+                    ttft_samples.append(ttft)
 
         # Round the accumulated float durations for a stable emit.
         for bucket in (by_provider, by_model):
             for entry in bucket.values():
                 entry["duration_ms"] = round(entry["duration_ms"], 3)
 
-        return {
+        result: Dict[str, Any] = {
             "total_calls": total_calls,
             "total_prompt_tokens": total_prompt,
             "total_completion_tokens": total_completion,
@@ -432,6 +466,14 @@ class BuildCostAggregator:
             "by_provider": by_provider,
             "by_model": by_model,
         }
+        # Additive TTFT block — emitted ONLY when at least one row carried a
+        # ``ttft_ms`` sample, so a run without TTFT metering produces a
+        # byte-identical ``llm_usage`` section (no schema version bump).
+        if ttft_samples:
+            result["ttft_sample_count"] = len(ttft_samples)
+            result["ttft_ms_p50"] = _percentile(ttft_samples, 50.0)
+            result["ttft_ms_p95"] = _percentile(ttft_samples, 95.0)
+        return result
 
 
 __all__ = [

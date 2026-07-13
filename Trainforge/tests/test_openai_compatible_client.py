@@ -861,3 +861,355 @@ def test_compute_backoff_upper_bound_matches_legacy_schedule():
         for _ in range(200):
             val = client._compute_backoff(attempt)
             assert 0.0 <= val <= ceiling
+
+
+# ---------------------------------------------------------------------------
+# Task #10 — TTFT (time-to-first-token) metering (ED4ALL_LLM_TTFT_METER)
+# ---------------------------------------------------------------------------
+
+
+import json as _json_ttft  # noqa: E402
+
+
+class _FakeClock:
+    """Deterministic monotonic clock: pops successive values, then latches
+    on the last so an unexpected extra call never raises."""
+
+    def __init__(self, values: List[float]) -> None:
+        self._values = list(values)
+        self._i = 0
+
+    def __call__(self) -> float:
+        v = self._values[self._i]
+        if self._i < len(self._values) - 1:
+            self._i += 1
+        return v
+
+
+def _sse_bytes(
+    *chunks: Dict[str, Any],
+    usage: Dict[str, Any] | None = None,
+    done: bool = True,
+) -> bytes:
+    """Serialise OpenAI-style SSE ``data:`` lines from chunk dicts."""
+    lines: List[str] = []
+    for c in chunks:
+        lines.append("data: " + _json_ttft.dumps(c))
+        lines.append("")
+    if usage is not None:
+        lines.append(
+            "data: " + _json_ttft.dumps({"choices": [], "usage": usage})
+        )
+        lines.append("")
+    if done:
+        lines.append("data: [DONE]")
+        lines.append("")
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def _delta(content: str | None = None, finish: str | None = None) -> Dict[str, Any]:
+    return {
+        "choices": [
+            {"index": 0, "delta": ({"content": content} if content is not None else {}),
+             "finish_reason": finish}
+        ]
+    }
+
+
+def _build_streaming(
+    handler: Callable[[httpx.Request], httpx.Response],
+    *,
+    monotonic_fn: Callable[[], float] | None = None,
+    api_key: str | None = "test-key",
+) -> OpenAICompatibleClient:
+    return OpenAICompatibleClient(
+        base_url="https://api.example.com/v1",
+        model="test-model",
+        api_key=api_key,
+        provider_label="test_provider",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep_fn=lambda _s: None,
+        monotonic_fn=monotonic_fn,
+    )
+
+
+def test_ttft_flag_off_no_stream_field_in_body(monkeypatch):
+    """Regression: flag OFF → request body carries NO ``stream`` key and the
+    legacy non-streaming JSON path is used verbatim."""
+    monkeypatch.delenv("ED4ALL_LLM_TTFT_METER", raising=False)
+    seen: List[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=_success_body("legacy"))
+
+    client = _build(transport_handler=handler)
+    out = client.chat_completion([{"role": "user", "content": "hi"}])
+    assert out == "legacy"
+    body = _json_ttft.loads(seen[0].content.decode("utf-8"))
+    assert "stream" not in body
+    assert "stream_options" not in body
+    assert client.last_ttft_ms is None
+
+
+def test_ttft_flag_on_sets_stream_and_stream_options(monkeypatch):
+    """Flag ON → request body carries ``stream: true`` + ``stream_options``."""
+    monkeypatch.setenv("ED4ALL_LLM_TTFT_METER", "1")
+    seen: List[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            200,
+            content=_sse_bytes(
+                _delta("hi", None),
+                _delta(None, "stop"),
+                usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            ),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    client = _build_streaming(handler)
+    client.chat_completion([{"role": "user", "content": "hi"}])
+    body = _json_ttft.loads(seen[0].content.decode("utf-8"))
+    assert body["stream"] is True
+    assert body["stream_options"] == {"include_usage": True}
+
+
+def test_ttft_sse_reconstruction_matches_non_streaming(monkeypatch):
+    """SSE accumulation reconstructs content + finish_reason + usage so the
+    call is behaviorally identical to the non-streaming fixture."""
+    monkeypatch.setenv("ED4ALL_LLM_TTFT_METER", "on")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=_sse_bytes(
+                _delta("hello", None),
+                _delta(" world", None),
+                _delta(None, "stop"),
+                usage={
+                    "prompt_tokens": 120,
+                    "completion_tokens": 35,
+                    "total_tokens": 155,
+                },
+            ),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    client = _build_streaming(handler)
+    out = client.chat_completion([{"role": "user", "content": "hi"}])
+    # Content reconstructed identical to the non-streaming _success_body path.
+    assert out == "hello world"
+    # Usage reconstructed identically → last_usage carries server counts.
+    assert client.last_usage == {
+        "prompt_tokens": 120,
+        "completion_tokens": 35,
+        "total_tokens": 155,
+    }
+
+
+def test_ttft_finish_reason_length_triggers_truncation_guard(monkeypatch):
+    """finish_reason reconstruction is faithful: a streamed
+    ``finish_reason='length'`` fires the same ``output_truncated`` guard as the
+    non-streaming path (no behavioral divergence for downstream callers)."""
+    monkeypatch.setenv("ED4ALL_LLM_TTFT_METER", "true")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=_sse_bytes(
+                _delta("partial", None),
+                _delta(None, "length"),
+            ),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    client = _build_streaming(handler)
+    with pytest.raises(SynthesisProviderError) as excinfo:
+        client.chat_completion([{"role": "user", "content": "hi"}])
+    assert excinfo.value.code == "output_truncated"
+
+
+def test_ttft_measured_with_monkeypatched_clock(monkeypatch, tmp_path):
+    """TTFT is measured off the injected clock and written to the usage row.
+
+    Clock call order: (1) _call_start, (2) stream req_start, (3) first delta
+    → ttft, (4) _duration_ms. ttft = (call3 - call2) * 1000.
+    """
+    monkeypatch.setenv("ED4ALL_LLM_TTFT_METER", "yes")
+    monkeypatch.setenv("ED4ALL_STATE_RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setenv("ED4ALL_RUN_ID", "RUN-TTFT")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=_sse_bytes(
+                _delta("a", None),
+                _delta(None, "stop"),
+                usage={"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
+            ),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    clock = _FakeClock([1000.0, 1000.0, 1000.5, 1002.0])
+    client = _build_streaming(handler, monotonic_fn=clock)
+    client.chat_completion([{"role": "user", "content": "hi"}])
+    assert client.last_ttft_ms == 500.0
+
+    usage_path = tmp_path / "runs" / "RUN-TTFT" / "llm_usage.jsonl"
+    rows = [
+        _json_ttft.loads(line)
+        for line in usage_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["ttft_ms"] == 500.0
+    assert row["duration_ms"] == 2000.0
+    assert row["prompt_tokens"] == 5
+    assert row["completion_tokens"] == 3
+    # Usage present → no stream_usage_present note.
+    assert "stream_usage_present" not in row
+
+
+def test_ttft_off_row_has_no_ttft_field(monkeypatch, tmp_path):
+    """Flag OFF → the OP2 usage row is byte-identical to the legacy shape
+    (no ttft_ms / stream_usage_present keys)."""
+    monkeypatch.delenv("ED4ALL_LLM_TTFT_METER", raising=False)
+    monkeypatch.setenv("ED4ALL_STATE_RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setenv("ED4ALL_RUN_ID", "RUN-NOTTFT")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_success_body("ok"))
+
+    client = _build(transport_handler=handler)
+    client.chat_completion([{"role": "user", "content": "hi"}])
+    usage_path = tmp_path / "runs" / "RUN-NOTTFT" / "llm_usage.jsonl"
+    row = _json_ttft.loads(usage_path.read_text(encoding="utf-8").splitlines()[0])
+    assert "ttft_ms" not in row
+    assert "stream_usage_present" not in row
+    assert set(row.keys()) == {
+        "ts", "provider", "model", "prompt_tokens", "completion_tokens",
+        "duration_ms",
+    }
+
+
+def test_ttft_missing_stream_usage_noted(monkeypatch, tmp_path):
+    """When the streaming server omits usage despite include_usage, the row
+    notes ``stream_usage_present: false`` and token counts default to 0."""
+    monkeypatch.setenv("ED4ALL_LLM_TTFT_METER", "1")
+    monkeypatch.setenv("ED4ALL_STATE_RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setenv("ED4ALL_RUN_ID", "RUN-NOUSAGE")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # No usage chunk at all.
+        return httpx.Response(
+            200,
+            content=_sse_bytes(_delta("x", None), _delta(None, "stop")),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    client = _build_streaming(handler)
+    out = client.chat_completion([{"role": "user", "content": "hi"}])
+    assert out == "x"
+    row = _json_ttft.loads(
+        (tmp_path / "runs" / "RUN-NOUSAGE" / "llm_usage.jsonl")
+        .read_text(encoding="utf-8").splitlines()[0]
+    )
+    assert row["stream_usage_present"] is False
+    assert row["prompt_tokens"] == 0
+    assert row["completion_tokens"] == 0
+    assert "ttft_ms" in row  # ttft was still measured off the content delta
+
+
+def test_ttft_streaming_rejected_falls_back_to_non_streaming(monkeypatch, tmp_path):
+    """Server rejects the streaming request (non-200) → the client falls back
+    to a non-streaming call that succeeds, with NO ttft recorded."""
+    monkeypatch.setenv("ED4ALL_LLM_TTFT_METER", "1")
+    monkeypatch.setenv("ED4ALL_STATE_RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setenv("ED4ALL_RUN_ID", "RUN-FALLBACK")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = _json_ttft.loads(request.content.decode("utf-8"))
+        if body.get("stream"):
+            return httpx.Response(400, json={"error": "streaming not supported"})
+        return httpx.Response(200, json=_success_body("fallback ok"))
+
+    client = _build_streaming(handler)
+    out = client.chat_completion([{"role": "user", "content": "hi"}])
+    assert out == "fallback ok"
+    assert client.last_ttft_ms is None
+    row = _json_ttft.loads(
+        (tmp_path / "runs" / "RUN-FALLBACK" / "llm_usage.jsonl")
+        .read_text(encoding="utf-8").splitlines()[0]
+    )
+    assert "ttft_ms" not in row
+
+
+def test_ttft_malformed_sse_falls_back_to_non_streaming(monkeypatch):
+    """Malformed SSE JSON → fall back to non-streaming (never fail the call)."""
+    monkeypatch.setenv("ED4ALL_LLM_TTFT_METER", "1")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = _json_ttft.loads(request.content.decode("utf-8"))
+        if body.get("stream"):
+            return httpx.Response(
+                200,
+                content=b"data: {not valid json\n\n",
+                headers={"content-type": "text/event-stream"},
+            )
+        return httpx.Response(200, json=_success_body("recovered"))
+
+    client = _build_streaming(handler)
+    out = client.chat_completion([{"role": "user", "content": "hi"}])
+    assert out == "recovered"
+    assert client.last_ttft_ms is None
+
+
+def test_ttft_reasoning_delta_counts_for_first_token(monkeypatch):
+    """A reasoning-only first delta (nemotron/deepseek reasoning_content) still
+    marks TTFT; reasoning is reconstructed into message.reasoning_content and
+    kept OUT of the returned content (parity with non-streaming _extract_text)."""
+    monkeypatch.setenv("ED4ALL_LLM_TTFT_METER", "1")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        reasoning_chunk = {
+            "choices": [
+                {"index": 0, "delta": {"reasoning_content": "thinking..."},
+                 "finish_reason": None}
+            ]
+        }
+        return httpx.Response(
+            200,
+            content=_sse_bytes(
+                reasoning_chunk,
+                _delta("answer", None),
+                _delta(None, "stop"),
+            ),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    clock = _FakeClock([0.0, 0.0, 0.25, 1.0])
+    client = _build_streaming(handler, monotonic_fn=clock)
+    out = client.chat_completion([{"role": "user", "content": "hi"}])
+    # Only the content delta reaches the caller; reasoning is isolated.
+    assert out == "answer"
+    # TTFT measured off the FIRST (reasoning) delta = 0.25s → 250ms.
+    assert client.last_ttft_ms == 250.0
+
+
+def test_resolve_ttft_meter_parse_with_fallback(monkeypatch):
+    """Truthy parse: ``1/true/yes/on`` (case-insensitive) → True; else False."""
+    from Trainforge.generators._openai_compatible_client import (
+        resolve_ttft_meter,
+    )
+
+    for truthy in ("1", "true", "TRUE", "Yes", "on", "  on  "):
+        monkeypatch.setenv("ED4ALL_LLM_TTFT_METER", truthy)
+        assert resolve_ttft_meter() is True
+    for falsey in ("0", "false", "no", "off", "garbage", ""):
+        monkeypatch.setenv("ED4ALL_LLM_TTFT_METER", falsey)
+        assert resolve_ttft_meter() is False
+    monkeypatch.delenv("ED4ALL_LLM_TTFT_METER", raising=False)
+    assert resolve_ttft_meter() is False

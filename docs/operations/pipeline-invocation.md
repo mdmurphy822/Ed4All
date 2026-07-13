@@ -496,6 +496,185 @@ and the Activity bridge is a tracked follow-up.
 
 ---
 
+## 8. Scan-corpus build recipe — SemantiK vision extraction + reasoning-QC (vLLM-first)
+
+A scanned / image-only PDF (no text layer) needs a different seat layout than the
+born-digital pure-local recipe in §5: the textbook-tuned council BERTs collapse
+off-domain, so structure + fidelity lean on a **vision-language model (VLM)** for
+extraction and a **reasoning model** for a final structure / reading-order QC pass.
+This section is the validated flag stack for that build. Genericize `<CORPUS>.pdf`
+and `<COURSE_NAME>` to your own corpus — no corpus-specific paths belong in a run.
+
+> **Superseded scripts (doc-only note):** the older per-corpus launcher scripts
+> under your gitignored `inputs/<corpus>/` dir are **superseded by
+> this recipe** and should not be used — they hard-code a stale
+> `.venv` interpreter and an Ollama Qwen seat (both traps below). The scripts are
+> left in the tree for reference only; drive new scan builds from the env stack
+> here plus `ed4all run textbook-to-course` (or the SemantiK standalone convert
+> path).
+
+### 8.1 vLLM-first seat layout (single endpoint, continuous batching)
+
+Serve ONE vLLM endpoint with a reasoning-capable multimodal model (validated:
+`nemotron-3-nano-omni`) and route every SemantiK seat at it. vLLM's continuous
+batcher (`--max-num-seqs N`) keeps the card saturated across the fan-out pools;
+an Ollama seat serializes (batch = 1) and strands the batcher, so **do not** route
+the reviewer / extraction / QC pools at Ollama even if one is running.
+
+| Seat | Endpoint | Task | Thinking |
+|---|---|---|---|
+| TEXT reviewer (structure / block review) | vLLM `:8000` | structural-edit review, batched N-wide | OFF |
+| Multimodal VLM extraction | vLLM `:8000` | per-page image → markdown transcription (a copy task) | OFF (~10× faster) |
+| Stage-9b reasoning-QC | vLLM `:8000` | document-level structure + reading-order judgment | **ON** (reasoning is the point) |
+
+One endpoint serves all three; the thinking-on/off split is per-request, so
+extraction (thinking-off) and QC (thinking-on) coexist in the same process.
+
+### 8.2 The env stack
+
+```bash
+# --- license-clean, pure-local (no cloud anywhere) ---
+unset ANTHROPIC_API_KEY NVIDIA_API_KEY
+export LLM_MODE=local
+export LLM_PROVIDER=local
+
+# --- Stage-6 / gap-fill specialist seat -> the vLLM endpoint (NOT a local GGUF) ---
+# TRAP: SEMANTIK_SPECIALIST_PROVIDER unset = the local GGUF arm for the Stage-6
+# Phase-1 draft AND the assembler pass-9b gap-fill -> a llama-cpp ImportError on a
+# non-contiguous slice (contiguous chapters never hit the gap path, so it stays a
+# silent no-op until a gap appears). Set the provider AND model explicitly — the
+# endpoint arm's literal model default would 404 on a local vLLM.
+export SEMANTIK_SPECIALIST_PROVIDER=endpoint
+export SEMANTIK_SPECIALIST_PHASE1_PROVIDER=endpoint
+export SEMANTIK_SPECIALIST_MODEL=<vllm-model-id>
+# Second gate (the "dereliction fix"): provider=endpoint alone does NOT displace
+# the local GGUF authoring tier — gap-fill / Stage-6 force_local unless this
+# explicit opt-in is set. Safe when the endpoint is a loopback, license-clean
+# on-device seat (displacement then changes no licensing).
+export SEMANTIK_SPECIALIST_ENDPOINT_DISPLACE=1
+
+# --- text reviewer seat -> the vLLM endpoint, batched N-wide ---
+export SEMANTIK_STRUCTURE_REVIEW=on
+export SEMANTIK_BLOCK_REVIEW=on
+export SEMANTIK_STRUCTURE_REVIEW_TEMPERATURE=0
+export SEMANTIK_SPECIALIST_BASE_URL=http://localhost:8000/v1
+export SEMANTIK_SPECIALIST_API_KEY=local
+export SEMANTIK_STRUCTURE_REVIEW_MODEL=<vllm-model-id>
+export SEMANTIK_SPECIALIST_CONCURRENCY=16        # leave headroom for the QC + extraction pools
+export SEMANTIK_SPECIALIST_DISABLE_THINKING=1    # a reasoning model without this overruns
+                                                 # max_tokens on <think> -> null content -> the
+                                                 # whole review degrades unreviewed
+export SEMANTIK_SPECIALIST_TIMEOUT_SECONDS=600   # default 120 is too low under a wide batch
+                                                 # (Stage-6 ReadTimeout -> GGUF-fallback crash)
+
+# --- VLM extraction seat (hybrid VLM + Tesseract fusion) ---
+export SEMANTIK_VLM_EXTRACT=1
+export SEMANTIK_VLM_FUSION=1
+export SEMANTIK_VLM_STRUCT_HINTS=1
+export SEMANTIK_VLM_PROVIDER=nvidia              # provider-agnostic registry key; base URL below
+export SEMANTIK_VLM_BASE_URL=http://localhost:8000/v1
+export SEMANTIK_VLM_API_KEY=local
+export SEMANTIK_VLM_MODEL=<vllm-model-id>
+export SEMANTIK_VLM_TIMEOUT_SECONDS=600
+export SEMANTIK_VLM_DISABLE_THINKING=1           # extraction is a copy task -> thinking OFF
+export SEMANTIK_VLM_CONCURRENCY=16               # per-page transcription-POST fan-out width
+
+# --- Stage-9b reasoning-QC pass (reasoning model over the COMBINED HTML, thinking ON) ---
+# A reasoning model QCs the assembled accessible-HTML block sequence (document-level
+# TEXT windows + cross-page junction seams), NOT page images. Seat resolution: with
+# SEMANTIK_REASONING_QC_BASE_URL unset the chain falls to the specialist text seat.
+export SEMANTIK_REASONING_QC=on
+export SEMANTIK_REASONING_QC_MODEL=<vllm-model-id>
+# QC thinking stays ON: leave SEMANTIK_REASONING_QC_DISABLE_THINKING unset (that
+# env is the ONLY path to a non-thinking QC request — the automatic thinking-off
+# fallback was removed; a dense-window null/timeout rides the reasoning-preserving
+# split ladder instead).
+export SEMANTIK_REASONING_QC_CONCURRENCY=32      # the QC phase runs alone -> take all vLLM seqs
+export SEMANTIK_REASONING_QC_WINDOW_BLOCKS=10    # small windows bound the deliberation (see trap)
+
+# --- structure-fidelity fixes (default-off — enable for scans) ---
+export ED4ALL_STRUCTURE_EXTRACT_GUARDS=1
+export ED4ALL_STRUCTURE_OUTLINE_ANCHOR=1
+export SEMANTIK_TITLE_SANITIZE=true
+
+# --- cascade expansion stack (validated on a textbook scan) ---
+export SEMANTIK_SEMANTIC_CLASS=1
+export SEMANTIK_GOLD_SHELL=1
+export SEMANTIK_UNIT_REGROUP=1
+export SEMANTIK_UNIT_REGROUP_TABLE=1
+export SEMANTIK_SECOND_PASS=1
+export SEMANTIK_OCR_RENDER_SCALE=3.0
+export SEMANTIK_PROMOTE_SECTION_HEADINGS=1
+export SEMANTIK_SPLIT_FUSED_SECTION_TITLES=1
+export SEMANTIK_OCR_CONFUSABLE_REPAIR=1
+export SEMANTIK_STAGE6_PROSE_PASSTHROUGH=1
+export DART_ALLOW_THETA_STUB=1
+
+# --- chunk-input fixes (apply at chunking; harmless for convert-only) ---
+export TRAINFORGE_DROP_FRONTMATTER=true
+export TRAINFORGE_DROP_APPARATUS_DUMPS=true
+export TRAINFORGE_CHUNK_TYPE_CONTENT_AWARE=true
+export ED4ALL_CHUNK_MERGE_FRAGMENT_FLOOR=20
+
+# --- GPU-for-all-inference (every GPU-capable stage on the card) ---
+export ED4ALL_NLI_DEVICE=cuda
+export SEMANTIK_THETA_DEVICE=cuda
+export ED4ALL_EMBEDDING_DEVICE=cuda
+# ED4ALL_GPU_LIFECYCLE default ON (load -> work -> unload at seams)
+
+# --- observability + checkpoints ---
+export ED4ALL_GENERATION_CHECKPOINT=on
+export ED4ALL_VRAM_DOCTOR=1
+
+# --- timeouts (multimodal reasoning-QC is slow; be generous) ---
+export ED4ALL_TASK_TIMEOUT_MINUTES=600
+export ED4ALL_BATCH_TIMEOUT_MINUTES=3000
+export ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS=600
+```
+
+### 8.3 Traps this recipe documents
+
+- **Stale `.venv` trap.** Invoke `ed4all` from the interpreter that carries the
+  current pinned deps (on the reference box a `--user` system-python install), **not**
+  the repo `.venv` — an old-box `.venv` can carry a `transformers` too old for the
+  council backbone's `dtype=` kwarg, silently degrading structure detection
+  (`[council] skipping semantic`). A silent capability drop, not a crash — verify
+  the interpreter before a full-book run.
+- **Specialist provider + displace double-gate.** `SEMANTIK_SPECIALIST_PROVIDER`
+  unset routes the Stage-6 Phase-1 draft and pass-9b gap-fill at a local GGUF
+  (llama-cpp `ImportError` on the first non-contiguous slice); and even with
+  `provider=endpoint`, the authoring tier is NOT displaced off the local GGUF unless
+  `SEMANTIK_SPECIALIST_ENDPOINT_DISPLACE=1` is ALSO set. Pin the provider, the model
+  id, AND the displace flag together (§8.2). Only safe to displace when the endpoint
+  is a loopback, license-clean on-device seat.
+- **Specialist timeout.** The default `SEMANTIK_SPECIALIST_TIMEOUT_SECONDS=120` is
+  too low under a wide continuous batch — a Stage-6 ReadTimeout falls back to the
+  local GGUF and crashes. Raise it (600) with the batch width.
+- **QC sampling / budget (thinking-on over-deliberation).** A reasoning model in
+  thinking mode at greedy `temperature 0` loops its `<think>` block on a content-
+  dependent tail of windows, exhausting the completion window (`content=null` /
+  `finish_reason=length`). Baked-in defaults handle this — thinking-on QC uses
+  `SEMANTIK_REASONING_QC_TEMPERATURE=0.6` / `_TOP_P=0.95`, a hard
+  `_MAX_TOKENS=16384` fail-fast backstop, and the native Nemotron
+  `_REASONING_BUDGET=4096` trained thinking-budget — but the **window size is the
+  bound that actually holds**: 30-block windows balloon past any soft budget, so
+  drop `SEMANTIK_REASONING_QC_WINDOW_BLOCKS` to ~10 (a small window finishes in
+  seconds with a clean stop). Shrink the problem, don't disable the intent — a
+  null/timeout rides the reasoning-preserving split ladder, never a thinking-off
+  retry.
+- **Resume granularity.** `SEMANTIK_REASONING_QC_CHECKPOINT` (default ON) writes a
+  per-UNIT content-addressed sidecar and the fan-out polls the stop sentinel before
+  each submission, so `ed4all stop` mid-QC loses only the in-flight units (≤
+  concurrency) and `--resume` serves every judged unit from cache. The Stage-6
+  authoring twin is `SEMANTIK_STAGE6_CHECKPOINT`.
+
+Full per-flag detail: `SemantiK/CLAUDE.md § Opt-In Behavior Flags`. The container-
+level vLLM seat lease (`ED4ALL_VLLM_CONTAINER_LIFECYCLE` / `ED4ALL_VLLM_CONTAINERS`)
+and time-to-first-token metering (`ED4ALL_LLM_TTFT_METER`) are in the root
+`CLAUDE.md` index + `docs/operations/behavior-flags.md`.
+
+---
+
 ## See also
 
 - `docs/operations/license-clean-run.md` — licensing / ToS-clean seat recipe.
