@@ -159,7 +159,11 @@ def _run_cascade_to_html(*, stamp_image_src: bool) -> tuple[str, dict]:
 
 
 def _block_roles(html: str) -> set[str]:
-    return set(re.findall(r'data-dart-block-role="([^"]+)"', html))
+    # Post-Stage-3 (commit 544a518f, task #19 semantik-purge) the adapter emit
+    # flipped data-dart-block-role -> data-semantik-block-role; the emit is
+    # semantik-only (legacy data-dart-* is dual-READ-only), so assert strictly
+    # on the new spelling.
+    return set(re.findall(r'data-semantik-block-role="([^"]+)"', html))
 
 
 # ---------------------------------------------------------------------------
