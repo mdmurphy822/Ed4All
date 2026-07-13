@@ -2193,6 +2193,10 @@ def run_full_cascade(
             lane_outputs["fast"]["assembled"],
             review_runtime=qc_review_runtime,
             review_verdicts=review_verdicts,
+            # Threadable upstream signal for SEMANTIK_REASONING_QC_SCOPE=targeted:
+            # the page-arranger's per-page interventions (heading-sanity / retries /
+            # failed-page fallbacks). unit_coverage runs AFTER QC → not threadable.
+            arranger_audit=arranger_audit,
             run_inner=_run_inner,
             pdf_path=pdf_path,
             log=log,

@@ -146,6 +146,49 @@ def resolve_reasoning_qc_seam_blocks() -> int:
     return max(_MIN_QC_SEAM_BLOCKS, val)
 
 
+# ---------------------------------------------------------------------------
+# Unit-planning SCOPE knobs (owner-delegated: QC is an OUTPUT PROOFREADER, not a
+# structural re-validator — the arranger lane's deterministic gates already carry
+# structural validation, so QC judges a TARGETED slice instead of every window).
+# ---------------------------------------------------------------------------
+_QC_SCOPE_ENV = "SEMANTIK_REASONING_QC_SCOPE"
+_QC_SAMPLE_PCT_ENV = "SEMANTIK_REASONING_QC_SAMPLE_PCT"
+_DEFAULT_QC_SAMPLE_PCT = 15
+
+
+def resolve_reasoning_qc_scope() -> str:
+    """Return the QC unit-planning scope: ``"full"`` (DEFAULT) / ``"targeted"``.
+
+    Reads ``SEMANTIK_REASONING_QC_SCOPE``. ``full`` (DEFAULT, incl. unset / blank /
+    garbage / any non-``targeted`` value) → the historic behaviour: EVERY partition
+    window + junction seam is judged (byte-identical). ``targeted`` → the unit plan
+    KEEPS all seam strips + windows overlapping upstream-FLAGGED pages + a
+    deterministic pseudo-random :func:`resolve_reasoning_qc_sample_pct` sample of the
+    remaining windows; everything else is skipped with an honest per-window audit
+    entry (no silent truncation). Read at CALL time (never cached at import)."""
+    raw = (os.environ.get(_QC_SCOPE_ENV) or "").strip().lower()
+    return "targeted" if raw == "targeted" else "full"
+
+
+def resolve_reasoning_qc_sample_pct() -> int:
+    """Parse-with-fallback ``SEMANTIK_REASONING_QC_SAMPLE_PCT`` (default 15, 0..100).
+
+    The percentage of the NON-flagged, NON-seam windows the ``targeted`` scope
+    keeps as a deterministic sample (seeded from the doc sha — stable across
+    resumes, never wall-clock). Blank / non-int / garbage → the default 15; a value
+    outside ``[0, 100]`` clamps into range (``0`` = seams + flagged pages only;
+    ``100`` = keep every window, i.e. same coverage as ``full``). Read at CALL
+    time. No-op unless the scope is ``targeted``."""
+    raw = os.environ.get(_QC_SAMPLE_PCT_ENV)
+    if not raw:
+        return _DEFAULT_QC_SAMPLE_PCT
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_QC_SAMPLE_PCT
+    return max(0, min(100, val))
+
+
 def resolve_reasoning_qc_mode() -> str:
     """Return the reasoning-QC mode: ``"off"`` / ``"shadow"`` / ``"on"``.
 
@@ -718,6 +761,154 @@ def _plan_page_units(n_blocks: int) -> tuple[list[tuple[int, int]], list[tuple[i
         seam_end = min(windows[k + 1][1], junction + seam_half)
         seams.append((seam_start, seam_end))
     return windows, seams
+
+
+# ---------------------------------------------------------------------------
+# TARGETED-scope planning (SEMANTIK_REASONING_QC_SCOPE == 'targeted').
+#
+# QC is an OUTPUT PROOFREADER. In targeted mode the unit plan KEEPS: (a) ALL
+# junction seam strips (cross-boundary reading order is QC's unique value the
+# deterministic gates can't carry); (b) windows overlapping pages FLAGGED by
+# upstream signals available AT QC TIME (arranger interventions + structure-review
+# block changes — see derive_flagged_pages); (c) a deterministic pseudo-random
+# doc-sha-seeded sample of the remaining windows. Everything else is skipped with
+# an explicit per-window audit entry (no silent truncation).
+# ---------------------------------------------------------------------------
+def _qc_document_sha(window: QCWindow) -> str:
+    """A stable, content-addressed document sha for the deterministic sample seed.
+
+    Hashes the whole document sequence's block texts in reading order, so the
+    per-window sample draw is STABLE across resumes + re-runs of the same input
+    (never wall-clock). Independent of scope / sample_pct — those salt the
+    DOCUMENT-level audit only, never a unit fingerprint, so cached unit verdicts
+    stay valid across a scope change."""
+    h = hashlib.sha256()
+    for rec in window.block_records:
+        h.update((rec.get("text") or "").encode("utf-8"))
+        h.update(b"\x1f")
+    return h.hexdigest()
+
+
+def _page_of_region(capped: Sequence[Any], feature_blocks: Sequence[Any], ridx: int) -> int | None:
+    """The representative (first) physical page of ``capped[ridx]`` (or ``None``)."""
+    if not (0 <= ridx < len(capped)):
+        return None
+    pages = _region_pages(capped[ridx], feature_blocks)
+    return pages[0] if pages else None
+
+
+def derive_flagged_pages(
+    capped: Sequence[Any],
+    feature_blocks: Sequence[Any],
+    *,
+    arranger_audit: dict[str, Any] | None = None,
+    review_verdicts: Any = None,
+) -> set[int]:
+    """Collect the physical pages upstream signals FLAGGED as worth full QC.
+
+    Threadable signals available AT QC TIME (Stage-9b) — documented honestly
+    because the obvious one is NOT reachable here:
+
+    * **unit_coverage is NOT threadable.** The ``SEMANTIK_UNIT_COVERAGE_GATE``
+      report is produced at the cascade EXIT — strictly AFTER Stage-9b QC in
+      cascade order — so its warn/floor pages do not yet exist when QC plans its
+      units. It is therefore intentionally NOT consulted here.
+    * **Page-arranger audit** (``arranger_audit['page_rows']``, in cascade scope
+      at the QC seam). A page is flagged when the arranger STRUGGLED there — a
+      failed-page fallback (``status != 'ok'``), a heading-sanity intervention
+      (``heading_sanity > 0``), an arrangement retry (``attempts > 1``), or a
+      coercion / repair (``coercions`` / ``repairs`` > 0). These are exactly the
+      "pages with heading-sanity interventions / arrangement retries / failed-page
+      fallbacks" the owner named.
+    * **Structure-review verdicts** (``review_verdicts``) — the closest threadable
+      "blocks changed" signal. The literal Stage-6 authoring diff is NOT surfaced
+      per-page at QC time (the QC input is FB-derived verbatim text; Stage-6 HTML
+      candidates feed only internal gate/theta signals, never a per-page ledger),
+      so the block-change signal used is the reviewer / Stage-9 second-pass region
+      RE-TYPE set: a region whose ``kind_before != kind_after`` and was not
+      reverted has its page flagged.
+
+    Coarse by design — a page-level union that ADMITS a window to the full QC
+    slice; over-flagging is safe (more proofreading), under-flagging is covered by
+    the deterministic sample. Returns a set of int page numbers (empty when no
+    signal is threaded)."""
+    flagged: set[int] = set()
+    for row in (arranger_audit or {}).get("page_rows") or ():
+        if not isinstance(row, dict):
+            continue
+        struggled = (
+            row.get("status") not in (None, "ok")
+            or _as_int(row.get("heading_sanity")) > 0
+            or _as_int(row.get("attempts")) > 1
+            or _as_int(row.get("coercions")) > 0
+            or _as_int(row.get("repairs")) > 0
+        )
+        if not struggled:
+            continue
+        try:
+            flagged.add(int(row.get("page")))
+        except (TypeError, ValueError):
+            continue
+    for v in review_verdicts or ():
+        try:
+            if bool(getattr(v, "reverted_for_invariant", False)) or bool(
+                getattr(v, "reverted_for_endpoint_failure", False)
+            ):
+                continue
+            before = getattr(v, "kind_before", None)
+            after = getattr(v, "kind_after", None)
+            if before is None or after is None or before == after:
+                continue
+            ridx = int(getattr(v, "region_index"))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        p = _page_of_region(capped, feature_blocks, ridx)
+        if p is not None:
+            flagged.add(p)
+    return flagged
+
+
+def _as_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _targeted_window_pages(window: QCWindow, s: int, e: int) -> list[int]:
+    """The sorted distinct pages a ``[s, e)`` sub-window's block records cover."""
+    pages: set[int] = set()
+    for rec in window.block_records[s:e]:
+        p = rec.get("page")
+        if p is not None:
+            pages.add(p)
+    return sorted(pages)
+
+
+def _targeted_keep_window(
+    window: QCWindow,
+    s: int,
+    e: int,
+    *,
+    flagged_pages: frozenset[int] | set[int],
+    sample_pct: int,
+    doc_sha: str,
+) -> tuple[bool, str, list[int]]:
+    """Decide whether a ``[s, e)`` sub-window survives ``targeted`` scope.
+
+    Returns ``(keep, reason, pages)`` — ``reason`` ∈ ``{"flagged", "sample",
+    "targeted_scope"}`` (the last = SKIP). A window overlapping any flagged page is
+    kept (``"flagged"``); otherwise a deterministic pseudo-random draw seeded from
+    ``doc_sha`` + the window's ``[s, e)`` identity keeps ``sample_pct``% of the rest
+    (``"sample"``); else skip (``"targeted_scope"``). The draw is content-addressed
+    (never wall-clock) so it is identical across resumes."""
+    pages = _targeted_window_pages(window, s, e)
+    if flagged_pages and (set(pages) & set(flagged_pages)):
+        return True, "flagged", pages
+    draw = int(hashlib.sha256(f"{doc_sha}|{s}|{e}".encode("utf-8")).hexdigest()[:8], 16) % 100
+    if draw < sample_pct:
+        return True, "sample", pages
+    return False, "targeted_scope", pages
 
 
 def _qc_item_index(item: Any) -> int | None:
@@ -1477,6 +1668,11 @@ def _fan_out_page_verifies(
     *,
     log: Callable[[str], None],
     stop_site_id: str = "cascade:reasoning-qc-unit",
+    scope: str = "full",
+    flagged_pages: frozenset[int] | set[int] | None = None,
+    sample_pct: int = 0,
+    doc_sha: str = "",
+    scope_audit_sink: dict[str, Any] | None = None,
 ) -> dict[int, tuple[dict[str, Any], list[Any], int]]:
     """Fan the per-UNIT QC TEXT judgment calls out concurrently, then stitch.
 
@@ -1509,16 +1705,63 @@ def _fan_out_page_verifies(
     """
     unit_specs: list[tuple[int, str, int, int]] = []
     plans: dict[int, tuple[list[tuple[int, int]], list[tuple[int, int]]]] = {}
+    targeted = scope == "targeted"
+    _flagged = frozenset(flagged_pages or ())
+    skipped_entries: list[dict[str, Any]] = []
+    kept_windows = total_windows = total_seams = 0
     for w_idx, w in enumerate(windows):
         subwins, seams = _plan_page_units(len(w.block_records))
         plans[w_idx] = (subwins, seams)
+        total_seams += len(seams)
         for (s, e) in subwins:
+            total_windows += 1
+            if targeted:
+                keep, reason, pages = _targeted_keep_window(
+                    w, s, e, flagged_pages=_flagged, sample_pct=sample_pct, doc_sha=doc_sha
+                )
+                if not keep:
+                    # Skipped windows are simply NOT judged — the stitch treats a
+                    # missing unit as an empty verdict (fail-soft), so no findings
+                    # are fabricated. The audit records the honest non-coverage.
+                    skipped_entries.append(
+                        {"window": w_idx, "range": [s, e], "pages": pages, "skipped": reason}
+                    )
+                    continue
+            kept_windows += 1
             unit_specs.append((w_idx, "window", s, e))
+        # ALL seams are ALWAYS judged (cross-boundary order is QC's unique value).
         for (s, e) in seams:
             unit_specs.append((w_idx, "seam", s, e))
 
+    if scope_audit_sink is not None:
+        scope_audit_sink.update(
+            {
+                "scope": scope,
+                "sample_pct": sample_pct,
+                "total_windows": total_windows,
+                "kept_windows": kept_windows,
+                "skipped_windows": len(skipped_entries),
+                "seams": total_seams,
+                "flagged_pages": sorted(_flagged),
+                "skipped": skipped_entries,
+            }
+        )
+    if targeted and skipped_entries:
+        # Loud (info-level) — the QC report must never silently under-cover.
+        log(
+            f"[cascade] reasoning-QC (targeted scope): kept {kept_windows}/{total_windows} "
+            f"window(s) + ALL {total_seams} seam(s); SKIPPED {len(skipped_entries)} "
+            f"window(s) [targeted_scope] (sample_pct={sample_pct}, "
+            f"flagged_pages={sorted(_flagged)[:12]})"
+        )
+
     results: dict[int, tuple[dict[str, Any], list[Any], int]] = {}
     if not unit_specs:
+        # Everything skipped (targeted, no flag/sample hit, no seams) — still stitch
+        # so each document window returns its empty verdict.
+        for w_idx, w in enumerate(windows):
+            subwins, seams = plans[w_idx]
+            results[w_idx] = _stitch_and_flag({}, w_idx, w, subwins, seams)
         return results
 
     max_workers = max(1, min(resolve_reasoning_qc_concurrency(), len(unit_specs)))
@@ -1624,6 +1867,7 @@ def run_reasoning_qc(
     pdf_path: Any,
     review_runtime: Any = None,
     review_verdicts: Any = None,
+    arranger_audit: dict[str, Any] | None = None,
     run_inner: Callable[..., Any] | None = None,
     log: Callable[[str], None] | None = None,
 ) -> tuple[list[Any], Any, dict[str, Any]]:
@@ -1646,6 +1890,11 @@ def run_reasoning_qc(
         each window covers (no persistence, no extract-time coupling).
     review_runtime / review_verdicts / run_inner:
         Threaded to the STEP-2 apply channels + the re-assemble adopt gate.
+    arranger_audit:
+        Optional page-arranger audit dict (``result['page_arranger']`` shape). Read
+        ONLY under ``SEMANTIK_REASONING_QC_SCOPE=targeted`` to flag pages the
+        arranger struggled on (see :func:`derive_flagged_pages`); ignored in the
+        default ``full`` scope.
     log:
         Diagnostic sink (defaults to the module logger).
 
@@ -1671,6 +1920,22 @@ def run_reasoning_qc(
     windows = build_qc_windows(capped, feature_blocks, region_order)
     toc = harvest_declared_toc_spine(capped, feature_blocks)
 
+    # SCOPE (owner-delegated): 'full' (default, every window) vs 'targeted' (seams
+    # + upstream-flagged pages + a deterministic doc-sha sample). Resolved once.
+    scope = resolve_reasoning_qc_scope()
+    sample_pct = resolve_reasoning_qc_sample_pct()
+    flagged_pages: set[int] = set()
+    doc_sha = ""
+    scope_audit_sink: dict[str, Any] = {}
+    if scope == "targeted" and windows:
+        flagged_pages = derive_flagged_pages(
+            capped,
+            feature_blocks,
+            arranger_audit=arranger_audit,
+            review_verdicts=review_verdicts,
+        )
+        doc_sha = _qc_document_sha(windows[0])
+
     # Declared-but-absent ordinals — warn-only (never invented).
     missing_declared = [
         o for o in toc["declared_ordinals"] if o not in set(toc["heading_ordinals"])
@@ -1681,6 +1946,7 @@ def run_reasoning_qc(
         "mode": mode,
         "ran": True,
         "model": model,
+        "scope": scope,
         "n_windows": len(windows),
         "toc": {
             "declared_ordinals": toc["declared_ordinals"],
@@ -1744,7 +2010,27 @@ def run_reasoning_qc(
         # ONLY the VLM calls parallelize; a page's window + seam units are
         # STITCHED and processed in ORIGINAL window order below so downstream
         # ordering stays deterministic.
-        verdicts_by_index = _fan_out_page_verifies(seat, pdf_path, windows, log=_log)
+        verdicts_by_index = _fan_out_page_verifies(
+            seat,
+            pdf_path,
+            windows,
+            log=_log,
+            scope=scope,
+            flagged_pages=flagged_pages,
+            sample_pct=sample_pct,
+            doc_sha=doc_sha,
+            scope_audit_sink=(scope_audit_sink if scope == "targeted" else None),
+        )
+        if scope == "targeted":
+            qc_audit["scope_plan"] = scope_audit_sink
+            _log(
+                f"[cascade] reasoning-QC scope=targeted: "
+                f"{scope_audit_sink.get('kept_windows', 0)}/"
+                f"{scope_audit_sink.get('total_windows', 0)} window(s) judged, "
+                f"{scope_audit_sink.get('seams', 0)} seam(s), "
+                f"{scope_audit_sink.get('skipped_windows', 0)} skipped "
+                f"[targeted_scope] (sample_pct={sample_pct})"
+            )
 
         for w_idx, window in enumerate(windows):
             # Fail-soft: an empty verdict returns ([], 0) and flags nothing (the
