@@ -169,6 +169,13 @@ class HeadingParser:
         # Find headings by tag name
         for level in range(self.min_heading_level, self.max_heading_level + 1):
             for heading in soup.find_all(f'h{level}'):
+                # SEMANTIK_BOX_TITLE_HEADINGS — a heading marked
+                # ``data-semantik-box-title`` is a PRESENTATIONAL callout box
+                # title (worked-example / solution / definition label), NOT a
+                # document section. Skip it UNCONDITIONALLY so it never enters the
+                # chapter/section hierarchy (anti-re-poisoning contract).
+                if heading.has_attr('data-semantik-box-title'):
+                    continue
                 # Find the parent section if it exists
                 section = self._find_parent_section(heading)
                 headings.append((heading, level, section))

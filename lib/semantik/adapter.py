@@ -106,6 +106,7 @@ from lib.semantik.opener_classifier import (
     OPENER_ASSOCIATION_ROLE,
     OPENER_ROLES,
     ROLE_OBJECTIVES,
+    ROLE_SOLUTION,
     classify_opener_label,
     split_interior_openers,
     split_label_only_openers,
@@ -289,6 +290,21 @@ class _AdapterBlock:
     # on the section wrapper); never changes text or structure. ``None`` -> no
     # attribute (byte-stable to a pre-annotation block).
     flow: Optional[str] = None
+    # Arranger-lane callout css class carried off the region provenance
+    # (``pedagogy_class`` — SemantiK ``page_arranger._TYPE_TO_KIND`` stamps
+    # ``pedagogy-example`` / ``pedagogy-solution`` / ``definition-box`` onto the
+    # typed Region's payload css_class, which ``cascade._build_region_provenance``
+    # exports as ``pedagogy_class``). Read by the SEMANTIK_BOX_TITLE_HEADINGS
+    # pass; ``None`` on a non-callout region. Additive → byte-stable when unset.
+    pedagogy_class: Optional[str] = None
+    # SEMANTIK_BOX_TITLE_HEADINGS — a presentational box-title carved from a
+    # callout region's leading marker/term (``box_title_text`` at level
+    # ``box_title_level``, default <h4>; a Solution renders <h5>). When set,
+    # ``_render_section`` emits an ``<hN data-semantik-box-title="1">`` inside the
+    # callout ``<section>`` and wires ``aria-labelledby`` to it (vendor accessible
+    # -HTML parity). ``None`` (the default / flag-off) → byte-identical.
+    box_title_text: Optional[str] = None
+    box_title_level: int = 4
 
 
 @dataclass
@@ -663,6 +679,25 @@ def _render_section(
         # section is not a generic "Paragraph block" region landmark.
         attrs.insert(1, f'id="{_esc_attr(sid)}"')
         label_html = ""
+        # SEMANTIK_BOX_TITLE_HEADINGS — a callout region carries a carved
+        # presentational box-title. Emit an <hN data-semantik-box-title="1">
+        # INSIDE the section (vendor accessible-HTML parity) and name the section
+        # via aria-labelledby -> the box-title id. The heading carries the
+        # data-semantik-box-title marker so structure derivation (chapter/section
+        # hierarchy + the chunker's section boundaries) UNCONDITIONALLY skips it —
+        # a presentational box title is never a section. The carved label was
+        # already trimmed from the body by ``_carve_box_titles_in_blocks``, so it
+        # is not duplicated.
+        box_title = getattr(block, "box_title_text", None)
+        if box_title:
+            hid = _box_title_id(box_title, sid)
+            bt_level = int(getattr(block, "box_title_level", 4) or 4)
+            bt_level = bt_level if 2 <= bt_level <= 6 else 4
+            attrs.append(f'aria-labelledby="{_esc_attr(hid)}"')
+            label_html = (
+                f'<h{bt_level} data-semantik-box-title="1" id="{_esc_attr(hid)}">'
+                f"{_esc_text(_sanitize_heading_text(box_title))}</h{bt_level}>"
+            )
         if demote_heading and not inner:
             # Preserve the demoted heading's sanitized text as a paragraph body
             # so content isn't dropped (a genuinely-empty demote emits nothing).
@@ -1444,6 +1479,182 @@ def _promote_paragraph_block_to_heading(block: _AdapterBlock) -> None:
 
 
 # ---------------------------------------------------------------------------
+# SEMANTIK_BOX_TITLE_HEADINGS — assembly-time presentational callout box titles.
+#
+# On the SemantiK page-arranger scan lane (SEMANTIK_PAGE_ARRANGER) the arranger
+# deliberately DEMOTES a worked example's / solution's / definition box's leading
+# label out of heading typing (anti-poisoning: those box titles must never become
+# real chapter/section headings that scramble TO/CO synthesis). It types them as
+# ``paragraph`` Regions carrying a ``pedagogy-example`` / ``pedagogy-solution`` /
+# ``definition-box`` css class (``page_arranger._TYPE_TO_KIND``), exported to the
+# region provenance as ``pedagogy_class``. The vendor's accessible HTML, by
+# contrast, renders every callout title as a real <h4>/<h5> (correct for
+# screen-reader navigation). This opt-in re-emits those labels at ASSEMBLY as
+# PRESENTATION-layer headings marked ``data-semantik-box-title`` that structure
+# derivation (chapter/section extraction + the chunker's section boundaries)
+# UNCONDITIONALLY skips — so a presentational box title is never re-poisoned into
+# a section. Default OFF → byte-identical (no carve, no marker, no aria wiring).
+# Marker vocabulary stays lexicon-driven (the opener/apparatus SoT the arranger
+# demote arm reuses — ``opener_classifier`` / ``heading_classifier``); never a
+# corpus-specific literal.
+# ---------------------------------------------------------------------------
+#: The arranger callout css classes whose leading marker/term is re-emitted as a
+#: box-title heading (``page_arranger._TYPE_TO_KIND``).
+_BOX_TITLE_CALLOUT_CLASSES = frozenset(
+    {"pedagogy-example", "pedagogy-solution", "definition-box"}
+)
+#: Fixed vendor-parity levels: example / definition / how-to / try-it openers
+#: render <h4>; a Solution renders <h5> (one deeper). See § WCAG decision.
+_BOX_TITLE_LEVEL_DEFAULT = 4
+_BOX_TITLE_LEVEL_SOLUTION = 5
+#: A definition-box leading term line is carved only when it is a SHORT
+#: (<= this many words) Title-Case term followed by real definition prose.
+_DEF_TERM_MAX_WORDS = 4
+
+
+def _resolve_box_title_headings() -> bool:
+    """Whether ``SEMANTIK_BOX_TITLE_HEADINGS`` is on (default OFF). Call-time.
+
+    Truthy-set parse-with-fallback (mirrors the house opt-in resolvers): only
+    ``1``/``true``/``yes``/``on`` (case-insensitive) enable; unset / blank /
+    falsey / garbage → off (byte-identical assembly — no box-title carve).
+    """
+    import os
+
+    return (os.environ.get("SEMANTIK_BOX_TITLE_HEADINGS") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _has_box_title(block: _AdapterBlock) -> bool:
+    """Whether ``block`` already carries a carved SEMANTIK_BOX_TITLE_HEADINGS
+    box title — the apparatus / opener promotion passes leave such a block
+    untouched (its label is owned by the presentational box-title emit)."""
+    return bool(getattr(block, "box_title_text", None))
+
+
+def _box_title_id(title: str, sid: str) -> str:
+    """Mint a deterministic, doc-unique id for a carved box-title heading.
+
+    Follows the cascade-lane opener id style (``heading_slug`` → e.g.
+    ``example-1-47``) but SUFFIXES the block's already-unique ``sid`` so many
+    identical labels ("Solution") never collide. Deterministic per (PDF, flags).
+    """
+    slug = heading_slug(title) if title else ""
+    return f"{slug}-{sid}" if slug else f"boxtitle-{sid}"
+
+
+def _box_title_level(pedagogy_class: str, role: Optional[str]) -> int:
+    """<h5> for a Solution (vendor parity), <h4> for every other callout title."""
+    if pedagogy_class == "pedagogy-solution" or role == ROLE_SOLUTION:
+        return _BOX_TITLE_LEVEL_SOLUTION
+    return _BOX_TITLE_LEVEL_DEFAULT
+
+
+def _carve_definition_term(raw: str) -> "Optional[tuple]":
+    """Carve a leading short Title-Case term from a definition-box body.
+
+    Returns ``(term, level, remainder)`` when the block's leading line is a
+    SHORT (``<= _DEF_TERM_MAX_WORDS``) capital-initial term with no terminal
+    punctuation AND real definition prose follows; else ``None`` (never invent a
+    title). Conservative — matches the audit's single-word terms ("Variable",
+    "Factors") without splitting a running definition sentence.
+    """
+    parts = raw.split("\n", 1)
+    head = parts[0].strip()
+    rest = parts[1].strip() if len(parts) > 1 else ""
+    if not head or not rest:
+        return None
+    words = head.split()
+    if not words or len(words) > _DEF_TERM_MAX_WORDS:
+        return None
+    if head[-1] in ".!?:;":
+        return None
+    if not head[0].isalpha() or not head[0].isupper():
+        return None
+    if not all(any(c.isalpha() for c in w) for w in words):
+        return None
+    return head, _BOX_TITLE_LEVEL_DEFAULT, rest
+
+
+def _carve_box_title(block: _AdapterBlock) -> "Optional[tuple]":
+    """Carve ``(title, level, body_remainder)`` from a callout region's leading
+    marker/term, reusing the lexicon opener/apparatus SoT.
+
+    Returns ``None`` when nothing matches (never invents a title). ``body_remainder``
+    is the verbatim text that should REMAIN in the body after the label is lifted.
+    """
+    pc = block.pedagogy_class or ""
+    raw = (block.raw_text or "").strip()
+    if not raw:
+        return None
+    # (1) opener-labelled callouts (example / solution / how-to / try-it) — the
+    # opener SoT: a leading label + trailing prose, or a whole-line label.
+    if pc in {"pedagogy-example", "pedagogy-solution"}:
+        split = split_leading_opener(raw)
+        if split is not None:
+            display, role, remainder = split
+            return display, _box_title_level(pc, role), remainder
+        standalone = classify_opener_label(raw)
+        if standalone is not None:
+            display, role = standalone
+            return display, _box_title_level(pc, role), ""
+        return None
+    # (2) definition boxes — a short leading Title-Case term line.
+    if pc == "definition-box":
+        return _carve_definition_term(raw)
+    # (3) exercise-list / apparatus banners ("1.1 EXERCISES") — the apparatus SoT.
+    ap = split_leading_apparatus_heading(raw)
+    if ap is not None:
+        name, remainder = ap
+        return name, _BOX_TITLE_LEVEL_DEFAULT, remainder
+    return None
+
+
+def _carve_box_titles_in_blocks(chapters: Sequence["_AdapterChapter"]) -> None:
+    """SEMANTIK_BOX_TITLE_HEADINGS pass — carve presentational box titles.
+
+    Runs AFTER opener / apparatus promotion so it only fires on the callout
+    PARAGRAPHS those passes left as body prose (the arranger-lane box-title
+    MISSES). For each such block it sets ``box_title_text`` / ``box_title_level``
+    and TRIMS the carved label from the rendered ``<p>`` body (``raw_text`` stays
+    verbatim — the sourceId basis). ``_render_section`` then emits the
+    ``data-semantik-box-title`` heading + aria-labelledby. No-op / byte-identical
+    when the flag is off (early return) or nothing carves.
+    """
+    if not _resolve_box_title_headings():
+        return
+    for ch in chapters:
+        for block in ch.blocks:
+            # Only genuine content paragraphs the promotion passes did NOT lift.
+            if block.region_kind == "heading" or _is_heading_block(block):
+                continue
+            if _is_opener_promoted(block) or _is_apparatus_promoted(block):
+                continue
+            if _is_furniture_block(block):
+                continue
+            if (block.pedagogy_class or "") not in _BOX_TITLE_CALLOUT_CLASSES:
+                continue
+            html = block.html or ""
+            # Body-trim is safe only on a paragraph body (or an empty body); a
+            # delivered <ul>/<table>/<dl> callout keeps NO box title so the label
+            # can never duplicate inside a rendered list/table.
+            if html and not html.startswith("<p>"):
+                continue
+            carved = _carve_box_title(block)
+            if carved is None:
+                continue
+            title, level, remainder = carved
+            block.box_title_text = title
+            block.box_title_level = level
+            remainder = (remainder or "").strip()
+            block.html = f"<p>{_esc_text(remainder)}</p>" if remainder else ""
+
+
+# ---------------------------------------------------------------------------
 # Literal HTML-entity artifact scrub (ch02 audit, 2026-07-04).
 #
 # The VLM transcribes blank table spacing as LITERAL ``&nbsp;`` entity text in
@@ -1861,6 +2072,10 @@ def _split_leading_apparatus_blocks(
     """
     out: List[_AdapterBlock] = []
     for block in blocks:
+        if _has_box_title(block):
+            # A carved box-title callout owns its leading label already.
+            out.append(block)
+            continue
         if block.region_kind == "heading":
             # HEADING arm — the fused blob lives in heading_text (raw_text as
             # the fallback the promotion paths also use).
@@ -2033,6 +2248,7 @@ def _split_interior_openers_in_blocks(
             or not flat_text
             or _is_furniture_block(block)
             or _is_apparatus_promoted(block)
+            or _has_box_title(block)
         ):
             out.append(block)
             continue
@@ -2123,7 +2339,11 @@ def _promote_openers_in_blocks(
             and classify_opener_label(text) is None
         ):
             section_level = int(getattr(block, "heading_level", 3) or 3)
-        if _is_furniture_block(block) or _is_apparatus_promoted(block):
+        if (
+            _is_furniture_block(block)
+            or _is_apparatus_promoted(block)
+            or _has_box_title(block)
+        ):
             out.append(block)
             continue
         flat_text = not block.html or block.html.lstrip().startswith("<p")
@@ -2378,6 +2598,11 @@ def _emit_structured_bodies(chapters: Sequence[_AdapterChapter]) -> None:
     for ch in chapters:
         for block in ch.blocks:
             if _is_heading_block(block) or _is_furniture_block(block):
+                continue
+            if _has_box_title(block):
+                # The carved box-title trimmed the label out of the body; never
+                # re-derive a structure from the VERBATIM raw_text (which still
+                # carries the lifted label) — that would restore the duplicate.
                 continue
             html = block.html or ""
             stripped = html.lstrip()
@@ -2821,6 +3046,16 @@ def _normalize_ocr_headings(
     # name stays buried in a demoted paragraph — the ch09 re-render defect);
     # the loop then keeps the clean apparatus heading via `is_apparatus_heading`
     # and leaves the remainder paragraph alone. Rebuilds block lists in place.
+    # SEMANTIK_BOX_TITLE_HEADINGS — carve PRESENTATIONAL box titles from the
+    # arranger-lane callout regions (pedagogy-example / pedagogy-solution /
+    # definition-box) FIRST, so a claimed callout becomes a structure-invisible
+    # ``data-semantik-box-title`` heading (vendor parity) instead of being
+    # re-promoted to a structure-VISIBLE ``data-semantik-opener`` heading by the
+    # apparatus / opener passes below (which are guarded to skip a box-titled
+    # block). A callout whose marker does NOT carve keeps its normal opener
+    # handling. Default OFF → early return → byte-identical.
+    _carve_box_titles_in_blocks(chapters)
+
     for ch in chapters:
         ch.blocks = _split_leading_apparatus_blocks(ch.blocks)
 
@@ -2847,6 +3082,9 @@ def _normalize_ocr_headings(
             # to a heading. Runs on NON-heading blocks (a paragraph whose whole
             # text is a standalone apparatus name); a real heading is untouched.
             if block.region_kind != "heading":
+                if _has_box_title(block):
+                    # A carved box-title callout is not re-promoted to a heading.
+                    continue
                 para_text = (block.raw_text or "").strip()
                 # RULE B — the standalone-exact-match predicate additionally
                 # accepts a bare "Introduction" paragraph (ch04's page-1

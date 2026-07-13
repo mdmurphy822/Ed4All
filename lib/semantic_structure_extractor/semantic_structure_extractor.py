@@ -1432,6 +1432,10 @@ class SemanticStructureExtractor:
         all_headings: List[Tag] = []
         dropped_noncontent = 0
         for tag in container.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+            # SEMANTIK_BOX_TITLE_HEADINGS — a presentational callout box title is
+            # never a section (anti-re-poisoning); skip it unconditionally.
+            if tag.has_attr('data-semantik-box-title'):
+                continue
             text = tag.get_text(strip=True)
             if not text:
                 continue
@@ -2178,6 +2182,10 @@ class SemanticStructureExtractor:
         # (d) numbered headings document-wide — the ordinal must OPEN the
         # heading. Opening a heading element IS the structural evidence.
         for heading in soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6"]):
+            # SEMANTIK_BOX_TITLE_HEADINGS — presentational callout titles never
+            # supply a section ordinal (anti-re-poisoning); skip unconditionally.
+            if heading.has_attr('data-semantik-box-title'):
+                continue
             text = re.sub(r"\s+", " ", heading.get_text(" ", strip=True))
             m = _NM_HEADING_RE.match(text)
             if not m:
@@ -2722,6 +2730,8 @@ class SemanticStructureExtractor:
         if not objectives_section:
             # Look for heading with "objectives" or "learning objectives"
             for heading in section_elem.find_all(['h2', 'h3', 'h4']):
+                if heading.has_attr('data-semantik-box-title'):
+                    continue
                 if 'objective' in heading.get_text().lower():
                     objectives_section = heading.find_parent('section') or heading.parent
                     break

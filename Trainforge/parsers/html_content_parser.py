@@ -1057,6 +1057,20 @@ class HTMLContentParser:
         heading_pattern = r'<h([1-6])([^>]*)>([^<]+)</h\1>'
         headings = list(re.finditer(heading_pattern, html, re.IGNORECASE))
 
+        # SEMANTIK_BOX_TITLE_HEADINGS — a heading carrying data-semantik-box-title
+        # is a PRESENTATIONAL callout box title (worked-example / solution /
+        # definition label), never a document section. Drop it from the sectioning
+        # boundary set UNCONDITIONALLY so an h4/h5 box title never opens a new
+        # ContentSection (and never drives a chunk/section boundary — incl. the
+        # ED4ALL_CHUNK_SECTION_HARD_BREAK path, which consumes these sections). Its
+        # verbatim text still folds into the enclosing section's body (the heading
+        # element stays in the HTML slice the surrounding section's text extractor
+        # walks), so no content is lost — only the false boundary is removed.
+        headings = [
+            m for m in headings
+            if 'data-semantik-box-title' not in (m.group(2) or '').lower()
+        ]
+
         # Wave 81: pre-compute every <section ...> open-tag position so we can
         # walk back from each heading to its nearest enclosing section root and
         # read the data-cf-template-type attribute. Courseforge emits exactly

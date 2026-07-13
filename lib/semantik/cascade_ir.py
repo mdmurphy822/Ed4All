@@ -559,6 +559,11 @@ def _block_from_provenance(prov: Mapping[str, Any]) -> _AdapterBlock:
 
     role = prov.get("role")
     role = str(role) if role else None
+    # Arranger-lane callout css class (``pedagogy_class`` —
+    # ``cascade._build_region_provenance`` exports ``payload['css_class']`` here).
+    # Read by the SEMANTIK_BOX_TITLE_HEADINGS adapter pass; additive / byte-stable.
+    pedagogy_class = prov.get("pedagogy_class")
+    pedagogy_class = str(pedagogy_class) if pedagogy_class else None
     wcag_status = prov.get("wcag_status")
     wcag_status = str(wcag_status) if wcag_status else None
     figure_alt = prov.get("figure_alt")
@@ -621,6 +626,7 @@ def _block_from_provenance(prov: Mapping[str, Any]) -> _AdapterBlock:
         image_src=image_src,
         repaired_text=repaired_text,
         ocr_repair_count=ocr_repair_count,
+        pedagogy_class=pedagogy_class,
     )
 
 
