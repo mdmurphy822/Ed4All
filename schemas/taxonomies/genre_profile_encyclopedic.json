@@ -33,7 +33,7 @@
       "role": "hatnote",
       "label": "Hatnote / disambiguation note",
       "description": "A leading hatnote / disambiguation / for-other-uses note.",
-      "attaches_to": ["paragraph", "blockquote"],
+      "attaches_to": ["paragraph", "blockquote", "aside"],
       "profile_edges": ["references (to the other article it points at)"]
     },
     {

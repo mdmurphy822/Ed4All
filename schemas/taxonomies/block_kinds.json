@@ -3,8 +3,8 @@
   "$id": "https://ed4all.dev/ns/taxonomies/v1/block_kinds.schema.json",
   "title": "Universal Block Kinds (Layer 1 — structural core)",
   "description": "Closed, document-agnostic set of structural block kinds emitted by SemantiK for EVERY document genre. Layer 1 of the universal block-label ontology (block_kinds -> genre_profiles -> lexicons). A block ALWAYS carries exactly one layer-1 kind; a functional role (layer 2) is an OPTIONAL second label attached only when a genre profile resolves. DocLayNet-compatible: each kind declares its 1:1 (or n:1) mapping onto the 11 DocLayNet v1 classes so the public dataset can be reused for pre-training / eval.",
-  "$comment": "Closed vocabulary — adding a kind is a schema change requiring owner sign-off (see docs/architecture/block-ontology.md governance). The 9-kind SemantiK page-arranger TYPE_ENUM (SemantiK/semantik_structure/page_arranger_contract.py) is a SUBSET/projection of this set (see docs/architecture/block-ontology.md migration section): arranger `heading`->heading, `paragraph`->paragraph, `table`->table, `figure_caption`->caption, `example`/`solution`/`exercise_list`/`definition_box` are (kind, role) tuples whose kind is paragraph|list_item, `furniture`->furniture. DocLayNet 11 classes: caption, footnote, formula, list-item, page-footer, page-header, picture, section-header, table, text, title.",
-  "version": "0.1.0-draft",
+  "$comment": "Closed vocabulary — adding a kind is a schema change requiring owner sign-off (see docs/architecture/block-ontology.md governance). The 9-kind SemantiK page-arranger TYPE_ENUM (SemantiK/semantik_structure/page_arranger_contract.py) is a SUBSET/projection of this set (see docs/architecture/block-ontology.md migration section): arranger `heading`->heading, `paragraph`->paragraph, `table`->table, `figure_caption`->caption, `example`/`solution`/`exercise_list`/`definition_box` are (kind, role) tuples whose kind is paragraph|list_item, `furniture`->furniture. DocLayNet 11 classes: caption, footnote, formula, list-item, page-footer, page-header, picture, section-header, table, text, title. 2026-07-13 owner-gated addition of `aside` + `chart` to close cross-genre accessibility gaps brings the set to 16 kinds.",
+  "version": "0.2.0-draft",
   "layer": 1,
   "closed": true,
   "$defs": {
@@ -17,10 +17,12 @@
         "list_item",
         "table",
         "figure",
+        "chart",
         "caption",
         "math_block",
         "code_block",
         "blockquote",
+        "aside",
         "footnote",
         "form_field",
         "title_block",
@@ -86,6 +88,15 @@
       "subkinds": []
     },
     {
+      "kind": "chart",
+      "label": "Chart / graph",
+      "description": "A data visualization (bar/line/pie chart, plot, graph) — distinct from figure because ACCESSIBILITY requires a data description (a prose summary or data table of the encoded values), not just alt text.",
+      "attributes": ["src", "alt", "data_description", "chart_type"],
+      "doclaynet": "picture",
+      "doclaynet_note": "No DocLayNet chart class — folds into picture (lossy, documented gap); DocLayNet ingest lands on figure, chart requires SemantiK's own signal (caption/axis-text/geometry).",
+      "subkinds": []
+    },
+    {
       "kind": "caption",
       "label": "Caption",
       "description": "A figure or table caption. Bound to its target by the `caption_of` structural relation.",
@@ -119,6 +130,15 @@
       "attributes": [],
       "doclaynet": "text",
       "doclaynet_note": "NO native DocLayNet class — folds into `text` (lossy, documented gap).",
+      "subkinds": []
+    },
+    {
+      "kind": "aside",
+      "label": "Aside / sidebar",
+      "description": "An out-of-flow complementary block — sidebar, margin note, boxed digression, pull-out panel — set apart from the main reading flow; renders as <aside> (a11y role=complementary) and is EXCLUDED from the main reading sequence; genre profiles refine it (instructional definition_box, technical_manual safety_notice, statistical data_highlight).",
+      "attributes": ["placement"],
+      "doclaynet": "text",
+      "doclaynet_note": "No DocLayNet aside class — folds into text (lossy, documented gap).",
       "subkinds": []
     },
     {
@@ -176,12 +196,12 @@
       "list-item": "list_item",
       "page-footer": "furniture[subkind in {page_number, footer_notice}]",
       "page-header": "furniture[subkind=running_header]",
-      "picture": "figure",
+      "picture": "figure (also chart — many-to-one)",
       "section-header": "heading",
       "table": "table",
-      "text": "paragraph (also code_block, blockquote — many-to-one)",
+      "text": "paragraph (also code_block, blockquote, aside — many-to-one)",
       "title": "title_block"
     },
-    "ours_without_doclaynet_parent": ["code_block", "blockquote", "form_field", "separator", "furniture[subkind=watermark]"]
+    "ours_without_doclaynet_parent": ["code_block", "blockquote", "form_field", "separator", "furniture[subkind=watermark]", "aside", "chart"]
   }
 }

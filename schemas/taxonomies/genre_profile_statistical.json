@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/taxonomies/v1/genre_profiles/statistical.schema.json",
+  "title": "Statistical genre profile (Layer 2 — functional roles)",
+  "description": "Functional-role vocabulary for STATISTICAL/data-report documents (NCES digests, statistical abstracts, indicator reports). A role is an OPTIONAL second label on a layer-1 block; each role declares the layer-1 kind(s) it may attach to.",
+  "$comment": "Grounds the nces_digest gold source (docs/architecture/block-ontology.md § B 8), which previously degraded to Layer-1-only; pairs with the NEW L1 \"chart\" kind (data visualizations distinct from figure). Consistency: every role.attaches_to is non-empty.",
+  "version": "0.1.0-draft",
+  "layer": 2,
+  "closed": false,
+  "profile": {
+    "id": "statistical",
+    "label": "Statistical digest / data report"
+  },
+  "$defs": {
+    "StatisticalRole": {
+      "type": "string",
+      "enum": [
+        "table_title",
+        "source_note",
+        "methodology_note",
+        "data_highlight",
+        "data_description"
+      ]
+    }
+  },
+  "x-roles": [
+    {
+      "role": "table_title",
+      "label": "Table title",
+      "description": "The numbered title line of a statistical table (\"Table 203.10. ...\").",
+      "attaches_to": ["caption", "heading"],
+      "profile_edges": ["caption_of (to the table it titles)"]
+    },
+    {
+      "role": "source_note",
+      "label": "Source note",
+      "description": "A SOURCE line crediting the data origin.",
+      "attaches_to": ["paragraph", "footnote", "caption"],
+      "profile_edges": []
+    },
+    {
+      "role": "methodology_note",
+      "label": "Methodology note",
+      "description": "A NOTE line on methodology, definitions, or data caveats.",
+      "attaches_to": ["paragraph", "footnote"],
+      "profile_edges": []
+    },
+    {
+      "role": "data_highlight",
+      "label": "Data highlight",
+      "description": "A narrative prose summary of a key statistic or trend.",
+      "attaches_to": ["paragraph", "aside"],
+      "profile_edges": []
+    },
+    {
+      "role": "data_description",
+      "label": "Data description",
+      "description": "The accessibility data description of a chart — the prose/tabular rendering of the encoded values.",
+      "attaches_to": ["caption", "paragraph"],
+      "profile_edges": ["caption_of (to the chart it describes)"]
+    }
+  ]
+}

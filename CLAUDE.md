@@ -977,7 +977,7 @@ Validators (`lib/validators/`) — wiring in `docs/validation/gates.md`. Load-be
 - **LibV2**: `LibV2/CLAUDE.md`
 - **Chunker**: `Trainforge/chunker/` — canonical chunker shared by the conversion (SemantiK), IMSCC, and Trainforge synthesis paths. See `Trainforge/CLAUDE.md` § "Chunking" for the surface contract.
 - **Ontology map + v0.2.0 changes**: `schemas/ONTOLOGY.md`
-- **Universal block-label ontology** (SemantiK structure labels — 14 DocLayNet-mapped structural kinds + genre-role profiles + publisher lexicons, all data under `schemas/taxonomies/block_kinds.json` / `block_relations.json` / `genre_profile_*.json` / `*_lexicon.json`): `docs/architecture/block-ontology.md`
+- **Universal block-label ontology** (SemantiK structure labels — 16 DocLayNet-mapped structural kinds + genre-role profiles + publisher lexicons, all data under `schemas/taxonomies/block_kinds.json` / `block_relations.json` / `genre_profile_*.json` / `*_lexicon.json`): `docs/architecture/block-ontology.md`
 
 ---
 

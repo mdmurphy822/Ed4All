@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/taxonomies/v1/lexicons/ansi_z535.lexicon.json",
+  "title": "ANSI Z535.6 lexicon (Layer 3)",
+  "description": "Signal-word marker strings -> Layer-2 technical_manual-profile roles for technical manuals. Layer 3 of the universal block-label ontology: the ONLY layer allowed to carry these standards-specific field labels. Matching is case-insensitive PREFIX on the block's leading text (manuals render signal words as leading labels).",
+  "$comment": "ANSI Z535.6 signal words are standards vocabulary, not publisher vocabulary, but live at L3 per the wide-net rule (marker strings never outside lexicons). Roles reference genre_profile_technical_manual.json.",
+  "version": "0.1.0-draft",
+  "layer": 3,
+  "lexicon": {
+    "id": "ansi_z535",
+    "profile": "technical_manual",
+    "applies_to_sources": ["technical_manual"],
+    "match": "prefix_casefold"
+  },
+  "x-markers": [
+    { "marker": "DANGER", "role": "safety_notice", "notes": "ANSI Z535.6 highest severity — imminent hazard, will result in death/serious injury" },
+    { "marker": "WARNING", "role": "safety_notice", "notes": "could result in death/serious injury" },
+    { "marker": "CAUTION", "role": "safety_notice", "notes": "could result in minor/moderate injury" },
+    { "marker": "NOTICE", "role": "safety_notice", "notes": "property-damage / non-injury advisory" },
+    { "marker": "IMPORTANT", "role": "safety_notice", "notes": "common non-ANSI variant of NOTICE" },
+    { "marker": "Step", "role": "procedure_step", "notes": "leading \"Step N\" ordinal marker" },
+    { "marker": "Prerequisites", "role": "prerequisite", "notes": "section marker" },
+    { "marker": "Tools required", "role": "materials_list", "notes": "section marker; also \"Materials required\"" },
+    { "marker": "Troubleshooting", "role": "troubleshooting_entry", "notes": "section marker anchoring symptom/cause/remedy entries" }
+  ]
+}

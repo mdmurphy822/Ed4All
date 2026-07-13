@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/taxonomies/v1/genre_profiles/technical_manual.schema.json",
+  "title": "Technical manual genre profile (Layer 2 — functional roles)",
+  "description": "Functional-role vocabulary for TECHNICAL MANUALS (product manuals, SOPs, installation/repair guides). A role is an OPTIONAL second label on a layer-1 block; each role declares the layer-1 kind(s) it may attach to.",
+  "$comment": "Safety severity (danger/warning/caution/notice, ANSI Z535.6) is NOT a set of separate roles — it is marker vocabulary carried by the L3 ansi_z535_lexicon.json onto the single safety_notice role. Consistency: every role.attaches_to is non-empty.",
+  "version": "0.1.0-draft",
+  "layer": 2,
+  "closed": false,
+  "profile": {
+    "id": "technical_manual",
+    "label": "Technical / instruction manual"
+  },
+  "$defs": {
+    "TechnicalManualRole": {
+      "type": "string",
+      "enum": [
+        "procedure_step",
+        "safety_notice",
+        "prerequisite",
+        "materials_list",
+        "troubleshooting_entry"
+      ]
+    }
+  },
+  "x-roles": [
+    {
+      "role": "procedure_step",
+      "label": "Procedure step",
+      "description": "One numbered/ordered step of a procedure.",
+      "attaches_to": ["list_item", "paragraph"],
+      "profile_edges": []
+    },
+    {
+      "role": "safety_notice",
+      "label": "Safety notice",
+      "description": "A safety admonition (danger/warning/caution/notice ladder per ANSI Z535.6; severity from the marker text via the L3 lexicon).",
+      "attaches_to": ["paragraph", "blockquote", "aside"],
+      "profile_edges": []
+    },
+    {
+      "role": "prerequisite",
+      "label": "Prerequisite",
+      "description": "A prerequisite/before-you-begin statement.",
+      "attaches_to": ["paragraph", "list_item"],
+      "profile_edges": []
+    },
+    {
+      "role": "materials_list",
+      "label": "Materials list",
+      "description": "A required tools/materials/parts list item.",
+      "attaches_to": ["list_item"],
+      "profile_edges": []
+    },
+    {
+      "role": "troubleshooting_entry",
+      "label": "Troubleshooting entry",
+      "description": "One symptom->cause->remedy troubleshooting entry.",
+      "attaches_to": ["list_item", "table", "paragraph"],
+      "profile_edges": []
+    }
+  ]
+}

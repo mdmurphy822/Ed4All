@@ -1176,10 +1176,10 @@ Every version counter currently in use:
 | `schemas/taxonomies/cognitive_domain.json` | (taxonomy) | factual / conceptual / procedural / metacognitive |
 | `schemas/taxonomies/teaching_role.json` | (taxonomy) | (component, purpose) → role mapping |
 | `schemas/taxonomies/module_type.json` | (taxonomy) | 6-value moduleType enum |
-| `schemas/taxonomies/block_kinds.json` | (universal block-ontology L1; not a schema) | 14 closed, DocLayNet-mapped structural block kinds — see `docs/architecture/block-ontology.md` |
-| `schemas/taxonomies/block_relations.json` | (block-ontology data) | Structural + profile block relations (`same_unit`, `caption_of`, `solution_of`, `practice_of`, …) |
-| `schemas/taxonomies/genre_profile_*.json` | (block-ontology L2 data; 5 files) | Per-genre functional roles (`instructional` / `scholarly` / `encyclopedic` / `legal_regulatory` / `forms`); roles attach to L1 kinds |
-| `schemas/taxonomies/{openstax,generic_instructional,federal_register}_lexicon.json` | (block-ontology L3 data; 3 files) | Publisher/agency marker→role lexicons — the only layer carrying publisher-specific vocab |
+| `schemas/taxonomies/block_kinds.json` | (universal block-ontology L1; not a schema) | 16 closed, DocLayNet-mapped structural block kinds — see `docs/architecture/block-ontology.md` |
+| `schemas/taxonomies/block_relations.json` | (block-ontology data) | Structural + profile block relations (`same_unit`, `caption_of`, `solution_of`, `practice_of`, `refers_to`, `same_story`, …) |
+| `schemas/taxonomies/genre_profile_*.json` | (block-ontology L2 data; 8 files) | Per-genre functional roles (`instructional` / `scholarly` / `encyclopedic` / `legal_regulatory` / `forms` / `statistical` / `literary` / `technical_manual`); roles attach to L1 kinds |
+| `schemas/taxonomies/{openstax,generic_instructional,federal_register,ansi_z535}_lexicon.json` | (block-ontology L3 data; 4 files) | Publisher/agency marker→role lexicons — the only layer carrying publisher-specific vocab |
 | `schemas/training/family_map.rdf_shacl.yaml` | (family map fixture) | Per-family CURIE clusters consumed by `FamilyCompletenessValidator` |
 | `schemas/training/family_map.schema.json` | FamilyMap | Schema for `family_map.<family>.yaml` fixture files |
 | `schemas/training/property_manifest.rdf_shacl.yaml` | (property manifest fixture) | Per-corpus property manifest fixture |

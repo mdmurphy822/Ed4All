@@ -88,7 +88,7 @@
       "role": "definition_box",
       "label": "Definition / callout box",
       "description": "A set-off definition, note, or callout box (term-definition or an emphasized note).",
-      "attaches_to": ["paragraph", "blockquote", "list_item"],
+      "attaches_to": ["paragraph", "blockquote", "list_item", "aside"],
       "maps_to_teaching_role": "introduce",
       "framework_block": "B12",
       "profile_edges": ["defines (to the term it introduces)"]

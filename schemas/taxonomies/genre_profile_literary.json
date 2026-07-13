@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/taxonomies/v1/genre_profiles/literary.schema.json",
+  "title": "Literary genre profile (Layer 2 — functional roles)",
+  "description": "Functional-role vocabulary for LITERARY documents (Project Gutenberg novels, drama, poetry, epistolary fiction). A role is an OPTIONAL second label on a layer-1 block; each role declares the layer-1 kind(s) it may attach to.",
+  "$comment": "Grounds the gutenberg gold source (docs/architecture/block-ontology.md § B 9), which previously degraded to Layer-1-only. Consistency: every role.attaches_to is non-empty.",
+  "version": "0.1.0-draft",
+  "layer": 2,
+  "closed": false,
+  "profile": {
+    "id": "literary",
+    "label": "Literary prose / drama / verse"
+  },
+  "$defs": {
+    "LiteraryRole": {
+      "type": "string",
+      "enum": [
+        "epigraph",
+        "verse",
+        "dialogue_line",
+        "speaker_label",
+        "stage_direction",
+        "scene_break",
+        "letter_block"
+      ]
+    }
+  },
+  "x-roles": [
+    {
+      "role": "epigraph",
+      "label": "Epigraph",
+      "description": "Opening quotation set before a chapter/section.",
+      "attaches_to": ["blockquote", "paragraph"],
+      "profile_edges": []
+    },
+    {
+      "role": "verse",
+      "label": "Verse",
+      "description": "A stanza or run of verse lines set as a block (poetry, songs embedded in prose).",
+      "attaches_to": ["paragraph", "blockquote"],
+      "profile_edges": []
+    },
+    {
+      "role": "dialogue_line",
+      "label": "Dialogue line",
+      "description": "A line of quoted character speech.",
+      "attaches_to": ["paragraph"],
+      "profile_edges": []
+    },
+    {
+      "role": "speaker_label",
+      "label": "Speaker label",
+      "description": "A drama speaker tag naming who speaks the following line(s).",
+      "attaches_to": ["paragraph", "heading"],
+      "profile_edges": []
+    },
+    {
+      "role": "stage_direction",
+      "label": "Stage direction",
+      "description": "A drama stage/scene direction.",
+      "attaches_to": ["paragraph"],
+      "profile_edges": []
+    },
+    {
+      "role": "scene_break",
+      "label": "Scene break",
+      "description": "A thematic scene break within a chapter.",
+      "attaches_to": ["separator"],
+      "profile_edges": []
+    },
+    {
+      "role": "letter_block",
+      "label": "Letter block",
+      "description": "An embedded letter/telegram/document in epistolary or quoted form.",
+      "attaches_to": ["blockquote", "paragraph", "aside"],
+      "profile_edges": []
+    }
+  ]
+}

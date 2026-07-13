@@ -36,12 +36,38 @@ PROFILE_FILES = {
     "forms": "genre_profile_forms",
     "legal_regulatory": "genre_profile_legal_regulatory",
     "scholarly": "genre_profile_scholarly",
+    "literary": "genre_profile_literary",
+    "statistical": "genre_profile_statistical",
+    "technical_manual": "genre_profile_technical_manual",
 }
 LEXICON_FILES = [
     "openstax_lexicon",
     "generic_instructional_lexicon",
     "federal_register_lexicon",
+    "ansi_z535_lexicon",
 ]
+
+# --- L1 snapshot guard: the closed 16-kind vocabulary (owner-gated) ---------
+# Any accidental addition/removal of an L1 kind must fail loudly — L1 is a
+# closed, owner-sign-off vocabulary (block_kinds.json $comment governance).
+EXPECTED_L1_KINDS = frozenset({
+    "heading",
+    "paragraph",
+    "list_item",
+    "table",
+    "figure",
+    "chart",
+    "caption",
+    "math_block",
+    "code_block",
+    "blockquote",
+    "aside",
+    "footnote",
+    "form_field",
+    "title_block",
+    "separator",
+    "furniture",
+})
 
 ALL_FILES = [L1_FILE, RELATIONS_FILE, *PROFILE_FILES.values(), *LEXICON_FILES]
 
@@ -79,6 +105,20 @@ def test_block_kinds_declare_doclaynet_key():
         # key MUST be present; value may be null (an ours-only kind with no
         # DocLayNet parent) — the honest-gap contract.
         assert "doclaynet" in entry, f"{entry['kind']} missing doclaynet key"
+
+
+# --- L1 snapshot guard: the closed 16-kind vocabulary is owner-gated --------
+
+
+def test_l1_kind_enum_matches_expected_snapshot():
+    # Pin the exact closed set so an accidental kind add/remove fails loudly.
+    enum = frozenset(load_taxonomy(L1_FILE)["$defs"]["BlockKind"]["enum"])
+    assert enum == EXPECTED_L1_KINDS, (
+        "block_kinds.json BlockKind enum drifted from the owner-gated "
+        f"snapshot; added={sorted(enum - EXPECTED_L1_KINDS)} "
+        f"removed={sorted(EXPECTED_L1_KINDS - enum)}"
+    )
+    assert len(EXPECTED_L1_KINDS) == 16
 
 
 # --- invariant 2: every L2 role attaches_to >=1 valid L1 kind ---------------
@@ -143,3 +183,31 @@ def test_profile_relations_name_real_roles():
             f"profile relation {rel['relation']} endpoints {endpoints} "
             "match no declared L2 role"
         )
+
+
+# --- relation enum <-> x-relations parity (mirror of the L1 kind check) ------
+
+
+def test_relation_enums_match_entries_by_family():
+    doc = load_taxonomy(RELATIONS_FILE)
+    relations = doc["x-relations"]
+    assert relations, "block_relations.json has no x-relations entries"
+    by_family = {
+        "structural": {"StructuralRelation"},
+        "profile": {"ProfileRelation"},
+    }
+    for family, def_names in (
+        ("structural", "StructuralRelation"),
+        ("profile", "ProfileRelation"),
+    ):
+        enum = set(doc["$defs"][def_names]["enum"])
+        entry_relations = {
+            r["relation"] for r in relations if r["family"] == family
+        }
+        assert entry_relations == enum, (
+            f"{def_names} enum drifted from family=={family!r} x-relations "
+            f"entries; enum_only={sorted(enum - entry_relations)} "
+            f"entries_only={sorted(entry_relations - enum)}"
+        )
+    # every relation belongs to exactly one of the two enum families
+    assert {r["family"] for r in relations} == set(by_family)

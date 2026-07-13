@@ -3,7 +3,7 @@
 **Status:** landed (2026-07-13) — data promoted to `schemas/taxonomies/`
 **Owner directive:** "universal label ontology for a wide range of documents" (2026-07-13)
 **Data files:** `schemas/taxonomies/block_kinds.json`, `schemas/taxonomies/block_relations.json`,
-`schemas/taxonomies/genre_profile_*.json` (5), `schemas/taxonomies/*_lexicon.json` (the three block-ontology lexicons: `openstax_lexicon.json`, `generic_instructional_lexicon.json`, `federal_register_lexicon.json`)
+`schemas/taxonomies/genre_profile_*.json` (8), `schemas/taxonomies/*_lexicon.json` (the four block-ontology lexicons: `openstax_lexicon.json`, `generic_instructional_lexicon.json`, `federal_register_lexicon.json`, `ansi_z535_lexicon.json`)
 **Loader:** `lib/ontology/taxonomy.py::load_taxonomy(name)` (generic `schemas/taxonomies/<name>.json` read)
 **Relates to:** `SemantiK/semantik_structure/page_arranger_contract.py`, `schemas/ONTOLOGY.md`,
 `lib/ontology/teaching_roles.py`, `lib/ontology/framework_blocks.py`
@@ -25,7 +25,7 @@ the ontology), and **§ C Migration** (how the current SemantiK page-arranger
 ## The three layers
 
 ```
-  L1  block_kinds       CLOSED    ~14 structural kinds     DocLayNet-compatible
+  L1  block_kinds       CLOSED    ~16 structural kinds     DocLayNet-compatible
        │  (a block ALWAYS has exactly one kind)
   L2  genre_profiles    OPEN(data) functional roles         attach to L1 kinds
        │  (a block has AT MOST ONE role; only when a profile resolves)
@@ -44,7 +44,7 @@ the ontology), and **§ C Migration** (how the current SemantiK page-arranger
 ### Why closed L1 + open L2/L3 (the closed-vs-open cadence)
 
 The structural vocabulary of documents is **small and stable** — DocLayNet
-covers the world with 11 classes; we extend to 14 for code/forms/quotes. Closing
+covers the world with 11 classes; we extend to 16 (code/forms/quotes/asides/charts). Closing
 L1 buys: a fixed classifier head, DocLayNet weak-supervision, cross-eval
 numbers, and a hard conservation contract (every unit gets exactly one kind).
 Adding an L1 kind is a real schema change (new head class, new DocLayNet gap) —
@@ -67,9 +67,11 @@ vocabulary to the whole functional layer.
 ## Graceful degradation (no profile → Layer-1 only)
 
 A document with **no matching genre profile still gets a complete labeling** —
-every block resolves an L1 kind, the roles are simply absent. `nces_digest`
-(statistical tables), `gutenberg` (literary prose), and `infographics`
-(figure-dominant) all degrade to clean L1-only output (§ B §§ 8, 9, +). This is
+every block resolves an L1 kind, the roles are simply absent. `infographics`
+(figure-dominant) degrades to clean L1-only output; `nces_digest` (statistical
+tables) and `gutenberg` (literary prose) now have profiles (`statistical` /
+`literary`) but no class map yet, so in practice they too resolve L1-complete
+output with roles filled in only heuristically (§ B §§ 8, 9, +). This is
 a feature: the wide net catches the structural skeleton of *any* document;
 profiles enrich the ones we understand. A brand-new genre ships useful (L1)
 output on day one and gets richer when someone writes its profile.
@@ -98,6 +100,16 @@ genuinely n-ary structure: a `worked_example` block does not *contain* its
 solution as a second label — it is `solution_of`-linked to a separate `solution`
 block. Structure that is not a single block's identity is an EDGE, not a second
 label.
+
+Two edges carry cross-block structure that no single block's identity could
+represent. **Multi-story pages** (newspapers, magazines) are handled by the
+`same_story` STRUCTURAL relation plus a `story_id` grouping — an EDGE, per the
+"structure that is not a block's identity is an edge" doctrine — that ties the
+blocks of one content thread together even when they interleave with other
+stories on the page; it composes with `continues` for a story that jumps across
+pages. And **in-text numbered cross-references** ("see Figure 3", "Table 2")
+get a first-class edge via `refers_to`, binding the citing block to its cited
+figure/chart/table/heading/math_block target.
 
 ## The wide-net rule (profiles/lexicons = data, never code)
 
@@ -136,6 +148,17 @@ Enforced mechanically:
    note).
 5. Every profile relation names ≥1 real L2 role.
 
+**Owner-gated L1 additions (2026-07-13).** Two kinds landed under the owner
+sign-off gate (owner directive: close cross-genre accessibility gaps), growing
+the closed set from 14 to 16: `aside` (aside/sidebar — renders as
+role=complementary, excluded from the main reading sequence) and `chart`
+(chart/graph). `chart` is deliberately distinct from `figure`: its
+accessibility contract is a structured **data description** (`data_description`,
+`chart_type`), not merely alt text, so a graph's underlying data survives for a
+screen-reader user rather than collapsing to a one-line label. Both fold lossily
+onto DocLayNet (`aside`→`text`, `chart`→`picture`) since DocLayNet has no native
+parent for either.
+
 ## Authority ladder (labels earn trust)
 
 Consistent with the BERT-v2 deployment ladder and the house `shadow → on` flag
@@ -166,7 +189,7 @@ current onboarding-aligner `SOURCE_TYPE_MAPS` / lexicons do NOT yet resolve).
 
 Ontology layers referenced:
 
-- **L1** = `schemas/taxonomies/block_kinds.json` (14 closed structural kinds).
+- **L1** = `schemas/taxonomies/block_kinds.json` (16 closed structural kinds).
 - **L2** = `schemas/taxonomies/genre_profile_*.json` (functional roles).
 - **L3** = `schemas/taxonomies/*_lexicon.json` (marker → role tables).
 
@@ -182,11 +205,12 @@ Ontology layers referenced:
 | 5 | cfr | legal_regulatory | eCFR HTML tags | generic-tag fallback only |
 | 6 | federal_register | legal_regulatory | field-label lines | generic + **L3 lexicon** (new) |
 | 7 | courtlistener | legal_regulatory | opinion HTML tags | generic-tag fallback only |
-| 8 | nces_digest | *(none → L1)* | statistical tables | generic-tag fallback only |
-| 9 | gutenberg | *(none → L1)* | literary prose | generic-tag fallback only |
+| 8 | nces_digest | statistical | statistical tables | generic-tag fallback only |
+| 9 | gutenberg | literary | literary prose | generic-tag fallback only |
 | 10 | forms | forms | field/label layout | generic-tag fallback only |
 | + | mkdocs-site | instructional | clean mkdocs HTML | (import-docs path) |
 | + | infographics | *(none → L1)* | figure-dominant | (figure path) |
+| + | manuals | technical_manual | ANSI Z535 signal words + step numbering | profile + L3 `ansi_z535_lexicon` (new); no gold source inventoried yet |
 
 ---
 
@@ -289,31 +313,43 @@ mostly undifferentiated `<p>`. `holding`/`syllabus`/`citation` need a
 structural/positional heuristic or an L3 lexicon (e.g. a leading `Syllabus`
 / `Held:` marker), the same pattern as the Federal Register lexicon.
 
-## 8. nces_digest — profile: **none → Layer-1 only** (graceful degradation)
+## 8. nces_digest — profile: `statistical`
 
 **L1 mapping:** table-dominant statistical digest — `table` (the load-bearing
-kind), `heading`, `paragraph`, `caption`, `furniture` (running page furniture).
+kind), `chart` (the new L1 kind for the digest's data graphs), `heading`,
+`paragraph`, `caption`, `furniture` (running page furniture).
 
-**L2 roles:** none. No genre profile fits a statistical digest, so it degrades
-cleanly to Layer-1 (the whole point of the graceful-degradation rule — a
-document with no profile still gets a complete, DocLayNet-compatible structural
-labeling).
+**L2 roles:** the `statistical` profile
+(`genre_profile_statistical.json`) models the statistical-digest semantics:
+`table_title` (a `caption`/`heading`, `caption_of` a table), `source_note`,
+`methodology_note`, `data_highlight` (on the new `aside` kind), and
+`data_description` (`caption_of` the new `chart` kind — the structured data
+description that makes a graph accessible).
 
-**Gaps:** if statistical-table semantics (table title vs. source-note vs.
-footnote) become worth modeling, that is a *new* profile (`statistical`), not a
-change to L1. Until then, `table` + `caption` + `footnote` carry it.
+**Gaps:** the profile now names the roles, but there is **no class/tag map yet**
+— an NCES digest still arrives via the generic-tag fallback, so the roles resolve
+only when a heading/marker heuristic (table-title text, a leading `SOURCE:` /
+`NOTE:` label line) names them. A future L3 statistical lexicon or an NCES class
+map would bind them from markup.
 
-## 9. gutenberg — profile: **none → Layer-1 only** (graceful degradation)
+## 9. gutenberg — profile: `literary`
 
 **L1 mapping:** literary prose — `title_block`, `heading` (chapter headings),
-`paragraph`, `blockquote` (verse / quoted passages), `separator` (thematic
-breaks), `furniture` (Project Gutenberg boilerplate header/footer).
+`paragraph`, `blockquote` (verse / quoted passages), `aside` (letter blocks /
+sidebars), `separator` (thematic breaks), `furniture` (Project Gutenberg
+boilerplate header/footer).
 
-**L2 roles:** none — no pedagogical/legal/scholarly structure.
+**L2 roles:** the `literary` profile (`genre_profile_literary.json`) models the
+prose/drama/verse structure — `epigraph`, `verse`, `dialogue_line`,
+`speaker_label`, `stage_direction`, `scene_break`, and `letter_block` (on the
+new `aside` kind).
 
-**Gaps:** Gutenberg's license boilerplate is best caught as `furniture`
-(candidate for a cross-course boilerplate-dedup pass). A future `literary`
-profile (chapter / verse / stage-direction roles) is possible but out of scope.
+**Gaps:** the profile names the roles, but there is **no class/tag map yet** —
+Gutenberg's plaintext-derived HTML has no markup signal for verse vs. prose or
+speaker vs. dialogue, so the roles resolve only via marker/positional heuristics
+(indentation, all-caps speaker labels, `* * *` scene breaks). The license
+boilerplate is still caught as `furniture` (candidate for the cross-course
+boilerplate-dedup pass).
 
 ## 10. forms — profile: `forms`
 
@@ -483,8 +519,9 @@ Changes from v2 (`CONTRACT_VERSION = 2`):
 3. **`figure_caption` splits** into L1 `figure` (the image) + `caption` (its
    text), bound by `caption_of` — v2 collapsed both into one value.
 4. **`math_block` / `code_block` / `blockquote` / `footnote` / `form_field` /
-   `title_block` / `separator`** become expressible (v2's 9 values could not
-   name display math, code, or form fields — they all fell to `paragraph`).
+   `title_block` / `separator` / `aside` / `chart`** become expressible (v2's 9
+   values could not name display math, code, form fields, asides, or charts —
+   they all fell to `paragraph` or `figure`).
 5. **`CONTRACT_VERSION` bump 2 → 3.** The v2 alias table (`TYPE_ALIASES`) is
    preserved as the read-compat shim: `text→paragraph`, `worked_example→
    (paragraph, worked_example)`, `section→heading`, etc.
@@ -501,10 +538,11 @@ Layer-1 is DocLayNet-v1-compatible **by construction**
 - **Cross-eval.** A SemantiK L1 labeling can be scored against DocLayNet ground
   truth by collapsing to the 11-class projection (`x-doclaynet` map), giving a
   public benchmark number.
-- **Honest gaps.** 5 L1 kinds have **no DocLayNet parent**: `code_block`,
-  `blockquote` (both fold to DocLayNet `text` — lossy but ingestible),
+- **Honest gaps.** 7 L1 kinds have **no DocLayNet parent**: `code_block`,
+  `blockquote`, `aside` (all fold to DocLayNet `text` — lossy but ingestible),
+  `chart` (folds to DocLayNet `picture` — lossy, no native chart class),
   `form_field`, `separator`, and `furniture[watermark]` (no DocLayNet class at
-  all). DocLayNet supervision therefore bootstraps 9 of 14 kinds; the other 5
+  all). DocLayNet supervision therefore bootstraps 9 of 16 kinds; the other 7
   need SemantiK's own labels (or geometry, for `form_field`). This is the
   documented limit of the public-dataset leverage — it is a head start, not a
   complete teacher.
