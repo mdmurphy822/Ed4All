@@ -1489,3 +1489,270 @@ def test_title_rescue_flag_salts_the_page_sidecar_fingerprint(monkeypatch):
     monkeypatch.setenv("SEMANTIK_ARRANGER_TITLE_RESCUE", "0")
     off = pa._unit_fingerprint(units, "", model="m", include_image=True)
     assert on != off
+
+
+# ---------------------------------------------------------------------------
+# (o) ARRANGER-OVERLAP figure VETO (SEMANTIK_ARRANGER_FIGURE_VETO) — task #58.
+#
+# The last blocker on flipping SEMANTIK_VLM_FIGURE_DETECT on. The detect lane's
+# residual defect is a badly-LOCALIZED proposal that slices text out of a ruled
+# table WITHOUT enclosing any of its rules, so it carries NO grid evidence inside
+# the box and no crop-local signal can see it. The one signal the crop cannot see
+# is the ARRANGER's own typing: if that rectangle is a `table`, a "figure" inside
+# it is a crop of the table (images-of-text, WCAG 1.4.5).
+#
+# THE TRAP these tests pin: a veto that is too aggressive kills NUMBER LINES,
+# which are the most valuable figure class in this corpus and sit directly
+# above/below tables of values. Killing one is a FAILURE regardless of precision.
+# ---------------------------------------------------------------------------
+def _region(kind, fb_idxs, page_bboxes, *, arrange_type=None):
+    from semantik_structure.structure_graph import Region
+
+    payload = {}
+    if arrange_type:
+        payload["arrange_type"] = arrange_type
+    return Region(
+        kind=kind,
+        feature_block_indices=tuple(fb_idxs),
+        payload=payload,
+        provenance={"pass": "test"},
+        page_bboxes=tuple(page_bboxes),
+    )
+
+
+# An OCR/scan-lane `shared`: page dims are PDF POINTS (612x792) while the OCR text
+# bboxes are IMAGE PIXELS (1224x1584). This mixed-space page is the whole point.
+_SCAN_SHARED = {
+    "pages": [{
+        "page_num": 1, "width": 612.0, "height": 792.0,
+        "tesseract_width": 1224.0, "tesseract_height": 1584.0,
+    }]
+}
+
+
+def _fig_region(fb_idx, bbox_pt):
+    """A figure Region — its bbox is PDF-POINT space (the image FB's own space)."""
+    return _region("figure", [fb_idx], [(1, bbox_pt)])
+
+
+def _table_region(fb_idx, bbox_px):
+    """An arranger `table` Region — bbox is IMAGE-PIXEL space (OCR text FBs)."""
+    return _region("table", [fb_idx], [(1, bbox_px)], arrange_type="table")
+
+
+def test_veto_kills_the_strip_sliced_through_a_table():
+    """The p115 defect: a sloppy strip lying INSIDE the table's rectangle."""
+    # table covers the middle of the page, in PIXEL space (1224x1584)
+    table = _table_region(10, (120.0, 400.0, 1100.0, 1000.0))
+    # a strip fully inside it, in POINT space (612x792) -> normalized ~same place
+    strip = _fig_region(1, (100.0, 250.0, 500.0, 320.0))
+    kept, vetoed, stats = pa.apply_figure_overlap_veto(
+        [strip], [table], _SCAN_SHARED, enabled=True
+    )
+    assert kept == [] and len(vetoed) == 1
+    assert stats["vetoed"] == 1
+    assert stats["rows"][0]["reason"] == "arranger_table_overlap"
+    assert stats["rows"][0]["covered_by_table"] == 1.0
+
+
+def test_veto_SPARES_a_number_line_sitting_directly_ABOVE_a_table():
+    """THE TRAP. A number line hugging a table of values must SURVIVE.
+
+    This is the failure mode every previous rejector attempt fell into: scoring
+    better on precision by destroying the number lines. Fraction-of-FIGURE-covered
+    is what makes this safe -- the number line has ~none of ITSELF inside the
+    table, no matter how big that table is.
+    """
+    table = _table_region(10, (120.0, 800.0, 1100.0, 1500.0))   # lower half, pixels
+    numline = _fig_region(1, (60.0, 150.0, 550.0, 220.0))       # upper, points
+    kept, vetoed, _ = pa.apply_figure_overlap_veto(
+        [numline], [table], _SCAN_SHARED, enabled=True
+    )
+    assert vetoed == [] and kept == [numline]
+
+
+def test_veto_SPARES_a_figure_sitting_BESIDE_a_large_table():
+    """A big table must not swallow its neighbour. The metric is asymmetric."""
+    table = _table_region(10, (20.0, 100.0, 600.0, 1500.0))     # tall left column
+    fig = _fig_region(1, (350.0, 300.0, 590.0, 500.0))          # right of it (points)
+    kept, vetoed, _ = pa.apply_figure_overlap_veto(
+        [fig], [table], _SCAN_SHARED, enabled=True
+    )
+    assert vetoed == [] and kept == [fig]
+
+
+def test_veto_uses_fraction_covered_NOT_iou():
+    """IoU structurally cannot see this defect -- pin that we do not use it.
+
+    A small strip inside a LARGE table has a tiny IoU (the union is dominated by
+    the table) but fraction-of-figure-covered ~1.0. If this veto were IoU-based the
+    strip would survive.
+    """
+    table_px = (0.0, 0.0, 1224.0, 1584.0)      # the whole page, in pixels
+    strip_pt = (100.0, 300.0, 500.0, 330.0)    # a thin strip, in points
+    table = _table_region(10, table_px)
+    strip = _fig_region(1, strip_pt)
+    # normalized: strip is ~0.65 x 0.038 of the page; table is the whole page.
+    fnorm = (100/612, 300/792, 500/612, 330/792)
+    tnorm = (0.0, 0.0, 1.0, 1.0)
+    assert pa._fraction_covered(fnorm, tnorm) == pytest.approx(1.0)
+    inter = (fnorm[2]-fnorm[0]) * (fnorm[3]-fnorm[1])
+    iou = inter / (inter + 1.0 - inter)        # union == the full page
+    assert iou < 0.05                          # IoU would NOT reject it
+    kept, vetoed, _ = pa.apply_figure_overlap_veto(
+        [strip], [table], _SCAN_SHARED, enabled=True
+    )
+    assert kept == [] and len(vetoed) == 1     # fraction-covered DOES
+
+
+def test_veto_handles_the_mixed_pixel_vs_point_coordinate_spaces():
+    """The load-bearing coordinate contract -- a real bug lived in this exact spot.
+
+    Figure bboxes are POINT space; OCR text/table bboxes are PIXEL space. If the two
+    were compared raw (no normalization), a figure at points (100,250)-(500,320)
+    would appear in the TOP-LEFT QUADRANT of the table's pixel frame and the overlap
+    would be measured against the wrong part of the page entirely.
+    """
+    # A table occupying the page's BOTTOM half in PIXELS: y 800..1500 of 1584.
+    table = _table_region(10, (120.0, 800.0, 1100.0, 1500.0))
+    # A figure occupying the page's BOTTOM half in POINTS: y 500..700 of 792.
+    # Raw (unnormalized) these DO NOT overlap (fig y<=700 vs table y>=800) --
+    # so a naive comparison would MISS a genuine in-table crop.
+    fig = _fig_region(1, (200.0, 500.0, 560.0, 700.0))
+    kept, vetoed, stats = pa.apply_figure_overlap_veto(
+        [fig], [table], _SCAN_SHARED, enabled=True
+    )
+    # Correctly normalized, both are in the bottom half -> the crop IS vetoed.
+    assert kept == [] and len(vetoed) == 1
+    assert stats["rows"][0]["covered_by_table"] > 0.9
+
+
+def test_veto_ignores_exercise_list_and_paragraph_regions():
+    """exercise_list is DELIBERATELY not a veto kind -- it is where number lines live.
+
+    Vetoing on it would destroy the figure class the lane exists to recover.
+    """
+    from semantik_structure.structure_graph import Region
+
+    elist = Region(
+        kind="list", feature_block_indices=(10,),
+        payload={"arrange_type": "exercise_list"}, provenance={},
+        page_bboxes=((1, (0.0, 0.0, 1224.0, 1584.0)),),
+    )
+    para = _region("paragraph", [11], [(1, (0.0, 0.0, 1224.0, 1584.0))],
+                   arrange_type="paragraph")
+    numline = _fig_region(1, (60.0, 150.0, 550.0, 220.0))
+    kept, vetoed, _ = pa.apply_figure_overlap_veto(
+        [numline], [elist, para], _SCAN_SHARED, enabled=True
+    )
+    assert vetoed == [] and kept == [numline]   # page-covering, but NOT a table
+
+
+def test_veto_flag_off_is_byte_identical():
+    table = _table_region(10, (0.0, 0.0, 1224.0, 1584.0))
+    strip = _fig_region(1, (100.0, 300.0, 500.0, 330.0))
+    kept, vetoed, stats = pa.apply_figure_overlap_veto(
+        [strip], [table], _SCAN_SHARED, enabled=False
+    )
+    assert kept == [strip] and vetoed == [] and stats["vetoed"] == 0
+
+
+def test_veto_is_a_natural_noop_with_no_figures():
+    """SEMANTIK_DETECT_FIGURES off -> no ImageCandidates -> nothing to veto."""
+    table = _table_region(10, (0.0, 0.0, 1224.0, 1584.0))
+    kept, vetoed, stats = pa.apply_figure_overlap_veto(
+        [], [table], _SCAN_SHARED, enabled=True
+    )
+    assert kept == [] and vetoed == [] and stats["vetoed"] == 0
+
+
+def test_veto_born_digital_lane_normalizes_by_point_dims():
+    """No tesseract dims -> text bboxes are themselves POINT space."""
+    shared = {"pages": [{"page_num": 1, "width": 612.0, "height": 792.0}]}
+    table = _table_region(10, (100.0, 240.0, 520.0, 340.0))   # points here
+    strip = _fig_region(1, (110.0, 250.0, 500.0, 330.0))      # points
+    kept, vetoed, _ = pa.apply_figure_overlap_veto(
+        [strip], [table], shared, enabled=True
+    )
+    assert kept == [] and len(vetoed) == 1
+
+
+def test_veto_tolerates_missing_and_garbage_geometry():
+    """Fail-OPEN: a figure we cannot measure is KEPT (never silently dropped)."""
+    table = _table_region(10, (0.0, 0.0, 1224.0, 1584.0))
+    bboxless = _region("figure", [1], [])                  # no page_bboxes
+    unknown_page = _region("figure", [2], [(99, (0.0, 0.0, 10.0, 10.0))])
+    kept, vetoed, _ = pa.apply_figure_overlap_veto(
+        [bboxless, unknown_page], [table], _SCAN_SHARED, enabled=True
+    )
+    assert vetoed == [] and kept == [bboxless, unknown_page]
+
+
+def test_resolve_figure_veto_defaults(monkeypatch):
+    monkeypatch.delenv("SEMANTIK_ARRANGER_FIGURE_VETO", raising=False)
+    assert pa.resolve_arranger_figure_veto() is True        # default ON
+    for tok in ("0", "false", "no", "off", "OFF"):
+        monkeypatch.setenv("SEMANTIK_ARRANGER_FIGURE_VETO", tok)
+        assert pa.resolve_arranger_figure_veto() is False   # revert lever
+    monkeypatch.setenv("SEMANTIK_ARRANGER_FIGURE_VETO", "garbage")
+    assert pa.resolve_arranger_figure_veto() is True        # parse-with-fallback
+
+
+def test_resolve_figure_veto_min_covered_parse_with_fallback(monkeypatch):
+    monkeypatch.delenv("SEMANTIK_ARRANGER_FIGURE_VETO_MIN_COVERED", raising=False)
+    assert pa.resolve_arranger_figure_veto_min_covered() == pa._FIGURE_VETO_MIN_COVERED
+    monkeypatch.setenv("SEMANTIK_ARRANGER_FIGURE_VETO_MIN_COVERED", "0.75")
+    assert pa.resolve_arranger_figure_veto_min_covered() == 0.75
+    for bad in ("", "abc", "nan", "inf", "-0.5", "1.5"):
+        monkeypatch.setenv("SEMANTIK_ARRANGER_FIGURE_VETO_MIN_COVERED", bad)
+        assert pa.resolve_arranger_figure_veto_min_covered() == pa._FIGURE_VETO_MIN_COVERED
+
+
+# --- WIRING: the veto must actually fire THROUGH arrange_regions -------------
+def test_veto_is_wired_into_arrange_regions_and_surfaces_in_the_audit(monkeypatch):
+    """End-to-end: a figure inside an arranger-typed `table` is dropped by the lane.
+
+    Guards the WIRING (not just the predicate): the veto runs between
+    build_figure_regions and the reading-order splice, the vetoed image FB is then
+    neither expected nor claimed by the coverage invariant (same posture as a
+    page-raster skip -- if it were still 'expected', _assert_coverage would raise),
+    and the tally reaches the audit.
+    """
+    monkeypatch.setenv("SEMANTIK_PAGE_ARRANGER_CHECKPOINT", "0")
+    monkeypatch.setenv("SEMANTIK_ARRANGER_FIGURE_VETO", "1")
+    # A born-digital page (no tesseract dims) so text FBs are POINT space too.
+    fbs = [_fb("Row one cell"), _img_fb(bbox=(120.0, 250.0, 300.0, 330.0))]
+    # The arranger types the text unit a TABLE spanning the region the figure is in.
+    # _fb() gives bbox (0, y0, 100, y0+10) -> widen via a table block over it.
+    content = _arr([{"ids": ["p1_b00"], "type": "table"}])
+    shared = {"pages": [{"page_num": 1, "width": 612.0, "height": 792.0}]}
+    # Make the table region's bbox actually enclose the figure by placing the text
+    # FB's bbox over it.
+    fbs[0].raw.bbox = (100.0, 240.0, 500.0, 400.0)
+    regions, audit, _f = _drive_arrange_regions(
+        monkeypatch, fbs, [content],
+        image_candidates=[_cand(1, (120.0, 250.0, 300.0, 330.0))],
+        shared=shared,
+    )
+    assert [r for r in regions if r.kind == "figure"] == []   # vetoed
+    assert audit["figures"] == 0
+    assert audit["arranger_veto"] == 1
+    assert audit["figure_veto_rows"][0]["reason"] == "arranger_table_overlap"
+
+
+def test_veto_off_keeps_the_same_figure_through_arrange_regions(monkeypatch):
+    """The revert lever, end-to-end: flag off -> the figure survives the lane."""
+    monkeypatch.setenv("SEMANTIK_PAGE_ARRANGER_CHECKPOINT", "0")
+    monkeypatch.setenv("SEMANTIK_ARRANGER_FIGURE_VETO", "0")
+    fbs = [_fb("Row one cell"), _img_fb(bbox=(120.0, 250.0, 300.0, 330.0))]
+    fbs[0].raw.bbox = (100.0, 240.0, 500.0, 400.0)
+    content = _arr([{"ids": ["p1_b00"], "type": "table"}])
+    shared = {"pages": [{"page_num": 1, "width": 612.0, "height": 792.0}]}
+    regions, audit, _f = _drive_arrange_regions(
+        monkeypatch, fbs, [content],
+        image_candidates=[_cand(1, (120.0, 250.0, 300.0, 330.0))],
+        shared=shared,
+    )
+    assert len([r for r in regions if r.kind == "figure"]) == 1
+    assert audit["figures"] == 1
+    assert audit["arranger_veto"] == 0

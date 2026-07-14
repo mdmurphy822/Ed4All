@@ -88,6 +88,12 @@ _HEADING_MAX_CHARS_ENV = "SEMANTIK_ARRANGER_HEADING_MAX_CHARS"
 # whole_block) AND that passes the anti-furniture SoT is re-typed to heading.
 _HEADING_PROMOTE_ENV = "SEMANTIK_ARRANGER_MD_HEADING_PROMOTE"
 _TITLE_RESCUE_ENV = "SEMANTIK_ARRANGER_TITLE_RESCUE"
+# Deterministic ARRANGER-OVERLAP figure VETO (default ON WITHIN the arranger; the
+# arranger itself is default-off, so no global default-behavior change). A figure
+# Region lying substantially INSIDE a region the arranger typed `table` is not a
+# figure — it is a crop of that table (images-of-text, WCAG 1.4.5).
+_FIGURE_VETO_ENV = "SEMANTIK_ARRANGER_FIGURE_VETO"
+_FIGURE_VETO_MIN_COVERED_ENV = "SEMANTIK_ARRANGER_FIGURE_VETO_MIN_COVERED"
 # Tier-1 own arranger seat (mirrors the reasoning-QC seat rows).
 _ARRANGER_BASE_URL_ENV = "SEMANTIK_PAGE_ARRANGER_BASE_URL"
 _ARRANGER_API_KEY_ENV = "SEMANTIK_PAGE_ARRANGER_API_KEY"
@@ -106,6 +112,65 @@ _RENDER_SCALE = 2.3
 _RENDER_MAX_PX = 1500
 _CACHE_BASENAME = "page_arranger_cache"
 
+# --- ARRANGER-OVERLAP VETO (task #58) — see apply_figure_overlap_veto ---
+#
+# TODO(task #58, OPEN): the p115 images-of-text class is NOT closed by this veto
+# (measured: it vetoes 0 of 30 crops on ch01 — the defect region is typed
+# `paragraph`, not `table`; see apply_figure_overlap_veto's docstring).
+#
+# ROOT CAUSE, measured — the mechanism, not a threshold. The 3 bad p115 crops
+# evade the text guards through a STRUCTURAL GAP, and both halves of it are
+# geometric:
+#
+#   1. The WORD-COUNT arm counts only text blocks whose CENTRE falls inside the
+#      proposed box (`vlm_figure_detect._text_word_count`). The bad crops are
+#      NARROW VERTICAL STRIPS (~12% of page width) slicing through WIDE text lines
+#      (~76% of page width), so NO line's centre ever lands inside the strip ->
+#      centre_words = 0/0/0 and the strongest text guard is BLIND to them, even
+#      though the strips visibly cut prose mid-word.
+#   2. The AREA-COVERAGE arm is deliberately applied only to boxes >= 5% of page
+#      area (`_COVERAGE_MIN_AREA`), because on this OCR geometry the fused line
+#      boxes BLANKET small genuine figures (coverage 0.938-1.000 for real ones).
+#      The bad strips are ~2.2% of page area -> UNDER the floor -> arm not applied.
+#
+#   So for a SMALL box, neither text arm is in play. That gap is the defect.
+#
+# SIGNALS MEASURED AND REFUTED (do not retry — each either misses the defect or
+# kills a NUMBER LINE, which is the most valuable figure class in this corpus):
+#   * page-level grid containment      — fired on only 1 of 6
+#   * padded-crop ruling lines         — broke p080 (fraction bars, a GOOD crop)
+#   * graphic-ink ratio                — fused OCR lines blanket figures -> 0.00
+#   * text-straddle                    — GOOD p135 straddles MORE than BAD p115
+#   * proposal overlap (IoU)           — GOOD p060 overlaps at the same IoU
+#   * model confidence                 — a CONSTANT 0.9 on every proposal
+#   * arranger `table` overlap (HERE)  — the region is typed `paragraph`, not table
+#   * arranger `paragraph` overlap     — 1.000 on the number lines TOO -> fatal
+#   * intersect-word count (vs centre) — BAD = 13/13/58 words, but NUMBER LINES =
+#                                        5..28 and a GOOD diagram (p3) = 108. The
+#                                        ranges OVERLAP; no threshold separates them.
+#
+# A light-gray crossing-rule detector caught 2 of 3 but FALSE-FIRED on p018, a
+# genuine number line, on a threshold margin of 1. Correctly not shipped.
+#
+# The honest read: no crop-local geometry and no arranger typing currently
+# separates a 2%-area strip of prose from a 2%-area number line. The next real
+# lever is a TIGHTER PROPOSAL (ask the VLM to box the figure, not a slice of the
+# page) or a per-crop VLM adjudication ("is this a figure or a piece of text?"),
+# NOT another threshold fitted to these 30 crops.
+# Fraction-of-FIGURE-covered at/above which a figure is judged to BE a piece of
+# the overlapping table rather than a figure beside it. TODO(calibration):
+# domain-agnostic geometry ("a figure is not a crop of a table"), NOT a corpus
+# target. Measured on the real 198-page ch01 scan: the images-of-text strips sit
+# far above this and every genuine figure — every number line included — sits at
+# 0.000, so the band is empty by a wide margin on both sides.
+_FIGURE_VETO_MIN_COVERED = 0.50
+# The arranger block types whose regions VETO an overlapping figure. `table` ONLY:
+# it is the one typing that means "this rectangle is a ruled/organized grid of
+# text". `exercise_list` was MEASURED and deliberately EXCLUDED — it is where the
+# number lines live, so vetoing on it destroys the figure class this lane exists
+# to recover (see the function docstring).
+_FIGURE_VETO_KINDS = frozenset({"table"})
+
 _RUNNING_HEADER_MIN_SHARE = 0.35  # TODO(calibration) — task #43 pending live re-validation
 
 __all__ = [
@@ -118,10 +183,14 @@ __all__ = [
     "resolve_arranger_heading_max_chars",
     "resolve_arranger_md_heading_promote",
     "resolve_arranger_title_rescue",
+    "resolve_arranger_figure_veto",
+    "resolve_arranger_figure_veto_min_covered",
     "resolve_arranger_seat",
     "resolve_page_arranger_route",
     "ArrangerRoute",
     "arrange_page",
+    "build_figure_regions",
+    "apply_figure_overlap_veto",
     "apply_heading_sanity",
     "apply_md_heading_promote",
     "apply_furniture_unit_peel",
@@ -276,6 +345,36 @@ def resolve_arranger_title_rescue() -> bool:
     behaviour. Off → the arrangement is byte-identical (no peel, no carve).
     """
     return (os.environ.get(_TITLE_RESCUE_ENV) or "").strip().lower() not in _FALSEY
+
+
+def resolve_arranger_figure_veto() -> bool:
+    """ARRANGER-OVERLAP figure VETO gate (default ON, within the arranger). CALL-time.
+
+    Default-ON parse-with-fallback (mirrors ``resolve_arranger_heading_sanity``):
+    only the explicit falsey tokens (``0``/``false``/``no``/``off``) disable it.
+
+    A **natural no-op without figure Regions** — with ``SEMANTIK_DETECT_FIGURES``
+    off no ImageCandidate exists, so nothing is ever vetoed and the region list is
+    byte-identical even flag-on. It runs ONLY inside the arranger (itself
+    default-off), so on-by-default here changes NO global default behavior.
+    """
+    return (os.environ.get(_FIGURE_VETO_ENV) or "").strip().lower() not in _FALSEY
+
+
+def resolve_arranger_figure_veto_min_covered() -> float:
+    """Fraction-of-figure-covered floor for the veto (default 0.50).
+
+    Parse-with-fallback: blank / non-float / NaN / +-Inf / outside ``[0, 1]`` →
+    :data:`_FIGURE_VETO_MIN_COVERED`.
+    """
+    raw = (os.environ.get(_FIGURE_VETO_MIN_COVERED_ENV) or "").strip()
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return _FIGURE_VETO_MIN_COVERED
+    if val != val or val in (float("inf"), float("-inf")):
+        return _FIGURE_VETO_MIN_COVERED
+    return val if 0.0 <= val <= 1.0 else _FIGURE_VETO_MIN_COVERED
 
 
 def resolve_arranger_seat():
@@ -2280,6 +2379,217 @@ def build_figure_regions(
     return regions, stats
 
 
+def _page_norm_dims(shared: dict) -> "tuple[dict, dict]":
+    """Return ``(point_dims, text_dims)`` — ``{page_num: (w, h)}`` for BOTH spaces.
+
+    **The coordinate-space contract, and a real bug lives here** (the SAME trap
+    :func:`~structure_graph.is_page_raster_candidate` and
+    ``vlm_figure_detect._page_items_norm`` document). A figure Region's bbox comes
+    from its synthetic image FeatureBlock, whose bbox is **PDF-POINT** space
+    (612x792). A text Region's bbox comes from OCR text FeatureBlocks, which on the
+    scan lane are **IMAGE-PIXEL** space (1224x1584 at render scale 2.0). Comparing
+    the two raw would place every figure in the top-left quadrant of the text
+    regions' frame and make the overlap measurement meaningless (measured on the
+    real ch01 scan: page dims 612x792 while text bboxes run to 1081x1453).
+
+    So both are normalized to ``[0, 1]`` page fractions first, each by the dims of
+    ITS OWN space: figures by the POINT dims, text regions by the extraction's
+    recorded PIXEL dims (falling back to points on the born-digital lane, where the
+    text bboxes are themselves point-space).
+    """
+    point_dims: dict = {}
+    text_dims: dict = {}
+    for i, page in enumerate(shared.get("pages") or ()):
+        try:
+            pn = int(page.get("page_num") or (i + 1))
+            w = float(page.get("width") or 0.0)
+            h = float(page.get("height") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if w <= 0 or h <= 0:
+            continue
+        point_dims[pn] = (w, h)
+        try:
+            tw = float(page.get("tesseract_width") or 0.0)
+            th = float(page.get("tesseract_height") or 0.0)
+        except (TypeError, ValueError):
+            tw = th = 0.0
+        text_dims[pn] = (tw, th) if tw > 0 and th > 0 else (w, h)
+    return point_dims, text_dims
+
+
+def _norm_page_bboxes(region: Any, dims: dict) -> "list[tuple[int, tuple]]":
+    """Normalize a Region's ``page_bboxes`` to ``[0,1]`` using ``dims`` (its space)."""
+    out: list = []
+    for entry in getattr(region, "page_bboxes", None) or ():
+        try:
+            pgno, (x0, y0, x1, y1) = entry
+            pgno = int(pgno)
+            w, h = dims.get(pgno, (0.0, 0.0))
+            if w <= 0 or h <= 0:
+                continue
+            out.append((pgno, (float(x0) / w, float(y0) / h, float(x1) / w, float(y1) / h)))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _fraction_covered(fig: tuple, other: tuple) -> float:
+    """area(fig ∩ other) / area(fig) — the ASYMMETRIC containment measure.
+
+    **Why this metric and not IoU / strict containment** (the load-bearing choice):
+
+    * **IoU is WRONG here.** The defect is a thin, sloppy strip slicing THROUGH a
+      large table. Its intersection with the table is most of the STRIP but a small
+      slice of the UNION (which the big table dominates), so IoU stays LOW and the
+      strip survives — IoU literally cannot see this defect. (Measured on ch01's 3
+      bad p115 crops: IoU vs their table is small while fraction-covered is ~1.0.)
+    * **Strict containment (frac == 1.0) is too brittle.** The bad boxes are sloppy
+      and poke outside the table's bbox, so an exact-containment test misses them.
+    * **Fraction-of-FIGURE-covered asks exactly the right question:** "how much of
+      this proposed figure is actually INSIDE a table?" It is asymmetric in precisely
+      the direction we need — a genuine figure sitting BESIDE (or above/below) a
+      table has ~0 of ITSELF inside the table, no matter how large that table is, so
+      it survives; a strip cut out of a table has ~all of itself inside it, so it
+      dies. The table's own size never penalizes a neighbouring figure.
+    """
+    ax0, ay0, ax1, ay1 = fig
+    bx0, by0, bx1, by1 = other
+    ix0, iy0 = max(ax0, bx0), max(ay0, by0)
+    ix1, iy1 = min(ax1, bx1), min(ay1, by1)
+    if ix1 <= ix0 or iy1 <= iy0:
+        return 0.0
+    fig_area = (ax1 - ax0) * (ay1 - ay0)
+    if fig_area <= 0:
+        return 0.0
+    return ((ix1 - ix0) * (iy1 - iy0)) / fig_area
+
+
+def apply_figure_overlap_veto(
+    figure_regions: list,
+    structure_regions: list,
+    shared: dict,
+    *,
+    enabled: Optional[bool] = None,
+    min_covered: Optional[float] = None,
+) -> "tuple[list, list, dict]":
+    """VETO a figure Region that lies substantially INSIDE an arranger ``table``.
+
+    Returns ``(kept, vetoed, stats)``.
+
+    THE SIGNAL (task #58). The VLM figure-DETECT lane's last residual defect is a
+    badly-LOCALIZED proposal that clips text out of a ruled table WITHOUT enclosing
+    any of its rules — measured: 3 crops on ch01 p115, where the model boxed a
+    decimal-point-move caret and drew sloppy strips that slice through the table's
+    PROSE. They carry **no grid evidence inside the box**, so no crop-local signal
+    can see them: the grid rejector finds no rules, the word guard must ignore
+    digits (or it kills number lines), the coverage arm saturates on small figures.
+    Six candidate crop-local signals were measured against the real crops and
+    REFUTED (page-level grid containment, padded-crop rules, graphic-ink ratio,
+    text-straddle, proposal overlap, and model confidence — a constant 0.9 on every
+    proposal, entirely uninformative).
+
+    **The signal the crop cannot see is the ARRANGER's own typing.** If the
+    arranger already decided that rectangle of the page IS a ``table``, then a
+    "figure" inside it is a crop of that table — images-of-text (WCAG 1.4.5),
+    strictly worse than the missing figure it pretends to fix. That is a
+    PAGE-LEVEL judgment, available only AFTER arrangement.
+
+    WHY THIS LIVES HERE, NOT IN THE DETECT MODULE. Figure DETECTION runs at the
+    EXTRACTION seam, BEFORE the arranger, BY DESIGN — the bboxes must be injected
+    before ``featurize`` so the synthetic image FeatureBlocks land in reading
+    order. So the veto cannot be wired from ``vlm_figure_detect``; it must be a
+    POST-ARRANGEMENT pass, here, once the arrangement exists and regions are typed.
+
+    **MEASURED OUTCOME — READ THIS BEFORE EXTENDING THE VETO (task #58).** On the
+    real 198-page ch01 scan this pass is a **no-op: it vetoes 0 of 30 accepted
+    figures, and it does NOT close the p115 defect it was designed for.** The
+    arranger emits 139 ``table`` regions document-wide, so the machinery is live —
+    but **on p115 there is no ``table`` region at all**: the arranger types that
+    entire ruled step-table as ONE ``paragraph`` (it is a worked example's Solution
+    body), spanning most of the page. Measured coverage of the 3 bad crops:
+    ``table`` **0.000**, ``paragraph`` **1.000**. So the premise "the arranger typed
+    it a table" is simply FALSE for this defect.
+
+    And the obvious repair — veto on ``paragraph`` too — is **FATAL**: the number
+    lines are covered by ``paragraph`` at exactly the same 1.000 (p18, p41, p135,
+    p138). Containment in a text region cannot separate the two classes, because a
+    Region's ``page_bboxes`` is the UNION rectangle of its member FBs and therefore
+    swallows anything nestled among its lines — a genuine figure included. Any veto
+    widened past ``table`` destroys the number lines, which is the one outcome that
+    is strictly worse than shipping nothing.
+
+    So this pass is kept as a CORRECT, SAFE, defense-in-depth arm (a figure landing
+    inside a genuinely table-typed region is still a table crop and still dies), NOT
+    as the fix for p115. The p115 class remains OPEN — see the module TODO.
+
+    THE METRIC is fraction-of-FIGURE-covered (:func:`_fraction_covered`), NOT IoU —
+    see that function for why IoU structurally cannot see this defect. Both boxes
+    are normalized to page fractions FIRST, each by the dims of its own coordinate
+    space (:func:`_page_norm_dims`) — figures are POINT-space, OCR text regions are
+    PIXEL-space, and comparing them raw is meaningless.
+
+    ``exercise_list`` IS DELIBERATELY NOT A VETO KIND. It was measured. Number
+    lines — the single most valuable figure class in this corpus — sit inside and
+    beside exercise lists constantly, so vetoing on ``exercise_list`` destroys
+    exactly what the lane exists to recover. A veto that improves precision by
+    killing number lines is a FAILURE, not a win. ``table`` alone.
+
+    THE ARRANGER PROPOSES THE TYPING; THIS DETERMINISTIC CODE DECIDES THE VETO.
+    No new decider and **no new LLM call** is introduced — the arrangement was
+    already computed — so this pass carries **NO DecisionCapture obligation** of
+    its own (root ``CLAUDE.md`` § LLM call-site instrumentation). Its vetoes are
+    tallied into the lane's existing per-document ``structure_detection`` capture.
+
+    An ADDITIONAL arm, not a replacement: the mandatory page-raster guard and the
+    crop-local grid rejector both still run, upstream and unchanged.
+
+    Natural no-op when there are no figure Regions (``SEMANTIK_DETECT_FIGURES``
+    off) or no ``table`` regions on the page → ``kept`` is the input list.
+    """
+    stats: dict = {"vetoed": 0, "considered": len(figure_regions or ()), "rows": []}
+    if enabled is None:
+        enabled = resolve_arranger_figure_veto()
+    if not enabled or not figure_regions:
+        return list(figure_regions or ()), [], stats
+    if min_covered is None:
+        min_covered = resolve_arranger_figure_veto_min_covered()
+
+    point_dims, text_dims = _page_norm_dims(shared or {})
+
+    # Pre-index the veto-kind regions by page (arrange_type is the arranger's OWN
+    # typing; Region.kind is the fallback for a non-arranger region).
+    veto_by_page: dict = {}
+    for region in structure_regions or ():
+        payload = getattr(region, "payload", None) or {}
+        atype = payload.get("arrange_type") or getattr(region, "kind", None)
+        if atype not in _FIGURE_VETO_KINDS:
+            continue
+        for pgno, bbox in _norm_page_bboxes(region, text_dims):
+            veto_by_page.setdefault(pgno, []).append(bbox)
+
+    kept: list = []
+    vetoed: list = []
+    for fig in figure_regions:
+        worst = 0.0
+        for pgno, fbb in _norm_page_bboxes(fig, point_dims):
+            for tbb in veto_by_page.get(pgno, ()):
+                cov = _fraction_covered(fbb, tbb)
+                if cov > worst:
+                    worst = cov
+        if worst >= min_covered:
+            vetoed.append(fig)
+            stats["vetoed"] += 1
+            stats["rows"].append({
+                "pages": [int(p) for p, _b in (getattr(fig, "page_bboxes", None) or ())],
+                "covered_by_table": round(worst, 3),
+                "reason": "arranger_table_overlap",
+            })
+        else:
+            kept.append(fig)
+    return kept, vetoed, stats
+
+
 def _splice_figure_regions(structure_regions: list, figure_regions: list) -> list:
     """INSERT the figure Regions into the arranged text regions in reading order.
 
@@ -2524,6 +2834,25 @@ class ArrangerRoute:
             feature_blocks,
             page_dims_from_shared(self.shared),
         )
+
+        # ARRANGER-OVERLAP VETO (task #58): now that the page is ARRANGED and its
+        # regions are TYPED, drop any figure lying substantially inside a region
+        # the arranger typed `table` — a crop of a table is images-of-text (WCAG
+        # 1.4.5), and this is the ONE signal the crop-local guards cannot see (the
+        # bad boxes enclose no rules). An ADDITIONAL arm: the page-raster guard and
+        # the grid rejector above both still ran, unchanged. Deterministic — the
+        # arranger PROPOSED the typing, this code DECIDES — so no DecisionCapture.
+        figure_regions, vetoed_figures, veto_stats = apply_figure_overlap_veto(
+            figure_regions, structure_regions, self.shared
+        )
+        figure_stats["arranger_veto"] = veto_stats["vetoed"]
+        figure_stats["figures"] = len(figure_regions)
+        if veto_stats["vetoed"]:
+            _log(
+                f"[cascade] page-arranger figure VETO: {veto_stats['vetoed']} figure(s) "
+                f"dropped — inside an arranger-typed table (images-of-text)"
+            )
+
         if figure_regions:
             structure_regions = _splice_figure_regions(structure_regions, figure_regions)
             _log(
@@ -2558,6 +2887,8 @@ class ArrangerRoute:
             "pages_failed": n_failed,
             "figures": figure_stats["figures"],
             "page_raster_skipped": figure_stats["page_raster_skipped"],
+            "arranger_veto": figure_stats.get("arranger_veto", 0),
+            "figure_veto_rows": veto_stats.get("rows", []),
             "figure_stats": figure_stats,
             "render_failures": render_failures,
             "page_rows": page_rows,
@@ -2709,7 +3040,8 @@ def _emit_arranger_capture(
     change — the figure arm adds NO LLM call site, so it adds no capture type).
     Dynamic rationale: pages, valid/failed, coercion/repair tallies, model,
     attempts histogram, and the figure-arm tallies (emitted figures +
-    page-raster-excluded candidates). Never breaks conversion.
+    page-raster-excluded candidates + arranger-table-vetoed crops). Never breaks
+    conversion.
     """
     try:
         from lib.decision_capture import DecisionCapture
@@ -2740,6 +3072,7 @@ def _emit_arranger_capture(
             f"attempts_hist={attempts_hist} "
             f"figures={int(figs.get('figures', 0))} "
             f"page_raster_skipped={int(figs.get('page_raster_skipped', 0))} "
+            f"arranger_table_veto={int(figs.get('arranger_veto', 0))} "
             f"(contract_version=2, typing_authority=vlm-arranger)."
         )
         cap.log_decision(
