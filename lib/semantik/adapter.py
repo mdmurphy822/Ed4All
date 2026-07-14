@@ -93,6 +93,10 @@ from lib.semantik.math_fold import (
     wrap_bare_math,
 )
 from lib.semantik.tikz_draw import render_tikz_figures
+from lib.textbook_title_sanitize import (
+    sanitize_running_header_title as _sanitize_running_header_title,
+    title_sanitize_enabled as _title_sanitize_enabled,
+)
 from lib.semantik.structure_emit import (
     STRUCTURAL_ROLES,
     emit_structure,
@@ -543,6 +547,32 @@ def _sanitize_heading_text(raw: Optional[str]) -> str:
     if not raw:
         return ""
     return " ".join(strip_latex_commands(raw).split())
+
+
+def _sanitize_document_title(raw: Optional[str]) -> str:
+    r"""Sanitize a CHAPTER/DOCUMENT title for ``<title>`` / ``<h1>`` / ``<h2>``.
+
+    ``_sanitize_heading_text`` only strips LaTeX. On a SCANNED textbook the OCR
+    also fuses the running header + page number + the first content glyph into
+    the chapter title — ``"Chapter 1 Foundations 55 ✓ Solution"`` — which then
+    ships as the document ``<title>``/``<h1>`` AND becomes the course name
+    downstream.
+
+    ``SEMANTIK_TITLE_SANITIZE`` already gates exactly this repair, but it was
+    only wired into ``textbook_structure.json`` (the extractor) — never into the
+    accessible-HTML title path, so the flag was ON and the fused title still
+    shipped. Compose the two: LaTeX-strip, then the running-header/page-number
+    strip (a no-op when the flag is off, and on a clean title).
+    """
+    text = _sanitize_heading_text(raw)
+    if not text:
+        return ""
+    try:
+        if _title_sanitize_enabled():
+            return _sanitize_running_header_title(text) or text
+    except Exception:  # pragma: no cover - sanitisation must never break render
+        logger.warning("title sanitize failed for %r — keeping unsanitized", text[:60])
+    return text
 
 
 def _is_table_row_heading(raw: Optional[str]) -> bool:
@@ -1061,7 +1091,7 @@ def _build_toc_html(
         if getattr(chapter, "continuation", False):
             continue
         raw_title = chapter.title or f"Chapter {ch_idx}"
-        ch_title = _sanitize_heading_text(raw_title) or raw_title
+        ch_title = _sanitize_document_title(raw_title) or raw_title
         sections: List[tuple[str, str]] = []
         for block in chapter.blocks:
             if _is_furniture_block(block) or not _is_heading_block(block):
@@ -1154,7 +1184,7 @@ def _render_html(
     # FIX 2 — the document title feeds both the visible <h1> and <head><title>;
     # strip any LaTeX markup so neither carries raw markup (kept in lockstep so
     # the two stay same-source). No-op on a clean title.
-    display_title = _sanitize_heading_text(title) or title
+    display_title = _sanitize_document_title(title) or title
     h1_html = f"<h1>{_esc_text(display_title)}</h1>"
     # §4 — a Contents nav after the <h1> (SEMANTIK_EMIT_TOC, default ON). Pure
     # addition: anchors reference EXISTING chapter/section ids (mints no new id,
