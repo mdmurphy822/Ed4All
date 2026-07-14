@@ -63,15 +63,78 @@ author output). Specifically:
   trust the model not to do this.
 * **Degenerate boxes are rejected**: zero/negative area, out-of-page, absurd
   aspect ratios.
-* **Text is rejected — by TWO independent arms.** Cropping text ships a
+* **Text is rejected — by THREE independent arms.** Cropping text ships a
   photograph of body text: a WCAG 1.4.5 images-of-text regression, strictly
   *worse* than the missing figure it pretends to fix. Arm 1 (AREA coverage)
   catches a prose COLUMN. Arm 2 (WORD COUNT) catches a procedure TABLE — which
   arm 1 provably cannot, because a table's coverage measures *below* a genuine
-  figure's (see :data:`_MAX_TEXT_WORDS` for the measured numbers).
+  figure's (see :data:`_MAX_TEXT_WORDS` for the measured numbers). Arm 3 (GRID)
+  catches a **numeric** table, which arm 2 provably cannot — see below.
+
+THE GRID REJECTOR (arm 3) — AND THE TRAP IT AVOIDS
+--------------------------------------------------
+Arm 2 (word count) **deliberately ignores DIGITS**, because a NUMBER LINE — the
+single most valuable figure class in a math corpus — is all digits and must not
+be penalised for its axis labels. The direct consequence is that a purely
+NUMERIC table (a "squares of 1..15" grid) reads as ~0 words and sails through.
+
+**The fix is NOT to count digits.** A digit-count threshold provably cannot
+separate "number line" from "numeric table" — both are dense in digits and
+sparse in words — and reaching for one would kill the number lines, i.e. destroy
+the very thing this lane exists to recover.
+
+The separating signal is **GRID STRUCTURE**, which is orthogonal to word count:
+
+* a **table** is a lattice — it has ruled COLUMN separators;
+* a **number line** is a single horizontal axis — it has none.
+
+Measured on the real ch01 crops (198-page scan), counting *thin* ruling lines
+inside the proposed box (a solid fill / photograph is excluded by the thinness
+test, so a dark photo cannot masquerade as a grid):
+
+===================================  ==========  ==========
+crop                                 h-rules     v-rules
+===================================  ==========  ==========
+ruled "Step 3" worked-example table          1           2
+"Place Value" chart                          4          13
+"squares of 1..15" numeric table             3          16
+-----------------------------------  ----------  ----------
+number line (p039 / p041 / p135 …)           1       **0**
+fraction bars / counters / photo …         0-3       **<=1**
+===================================  ==========  ==========
+
+So ``v_rules >= 2 and h_rules >= 1`` rejects every ruled table with a wide margin
+while **every** genuine figure — most importantly every number line — is
+untouched. Two independent grid arms are used (either one rejects):
+
+* :func:`crop_has_ruled_grid` — the RULED-LATTICE arm above (raster geometry).
+* :func:`crop_declares_markdown_grid` — the VLM's OWN markdown for the text
+  inside the box declares a pipe grid. This **REUSES**
+  ``lib.semantik.table_structure.has_separator_row`` (the separator row is the
+  topology DECLARATION the ``<th>`` lane already reads) rather than cloning a
+  second table detector, and it generalises to a BORDERLESS table, which has no
+  ruling lines for the first arm to find.
+
+**Known residual (honest).** A badly-LOCALIZED proposal that clips text out of a
+ruled table without enclosing any of its rules (measured: 3 crops on ch01 p115,
+where the model boxed a decimal-point-move caret and sliced through the table's
+prose) carries **no grid evidence inside the box** and is NOT caught here. The
+right fix is an arranger-overlap veto — a figure Region whose bbox lies inside a
+region the arranger already typed ``table`` is not a figure — which cannot be
+wired from this module because detection runs BEFORE the arranger (see the module
+header). Five other candidate signals (page-level grid containment, padded-crop
+rules, graphic-ink ratio, text-straddle, proposal overlap, model confidence) were
+measured against the real crops and REFUTED: each either missed the defect or
+false-rejected a genuine number line. None are used.
 
 Default OFF (``SEMANTIK_VLM_FIGURE_DETECT``) -> this module is never imported by
 the cascade, no POST fires, ``shared`` is untouched -> byte-identical.
+
+DECISION CAPTURE: the grid rejector is a **pure deterministic pass** (raster
+geometry + a reused markdown predicate; no LLM call, no new call site), so per
+the house convention (root ``CLAUDE.md`` § LLM call-site instrumentation) it
+carries **NO DecisionCapture obligation** of its own. Its rejections are tallied
+into the lane's existing per-document ``structure_detection`` capture.
 """
 
 from __future__ import annotations
@@ -82,7 +145,7 @@ import logging
 import os
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -170,6 +233,56 @@ _MAX_TEXT_WORDS = 20
 _WORD_RE = re.compile(r"[^\W\d_]{2,}", re.UNICODE)
 # Two proposals overlapping this much are the same figure (keep the first).
 _DEDUP_IOU = 0.55
+
+# --- GRID REJECTOR (arm 3) — see the module docstring for the measured table ---
+# A crop is a TABLE when it encloses a ruled LATTICE: at least this many COLUMN
+# separators plus at least one row rule. The column count is the load-bearing
+# half — a number line has a horizontal axis (h=1) but NEVER a column rule (v=0),
+# while the three ruled tables on the real ch01 scan measured v = 2 / 13 / 16 and
+# EVERY genuine figure measured v <= 1. Two is therefore the smallest threshold
+# with a real margin on both sides.
+# TODO(calibration) — domain-agnostic geometry ("a table has columns, an axis does
+# not"), NOT a corpus target.
+_MIN_GRID_V_RULES = 2
+_MIN_GRID_H_RULES = 1
+# A ruling line must span this fraction of the crop to be a rule at all (a tick
+# mark on a ruler / number line spans a few percent and is correctly ignored;
+# measured: dropping this to 0.40 starts counting ruler ticks as column rules).
+_RULE_SPAN_FRACTION = 0.60
+# ... and it must be THIN. This is what stops a SOLID FILL from being read as a
+# lattice: a photograph or a shaded diagram has dark scanlines adjacent to dark
+# scanlines, so it never presents an isolated thin rule. Without this test the
+# bathroom-scale photo measured 286 "vertical rules" and the shaded nested-set
+# diagram 253; with it, both measure 0.
+_RULE_MAX_THICKNESS_PX = 4
+# The quiet band that must sit either side of a thin rule (the isolation test).
+_RULE_QUIET_FRACTION = 0.25
+# Ink threshold on the 8-bit grayscale page raster.
+_RULE_DARK_LEVEL = 160
+# A crop smaller than this (px, either side) carries no measurable rule geometry.
+_RULE_MIN_CROP_PX = 12
+# Markdown arm: a pipe grid needs a separator row AND at least this many rows
+# that actually carry cells (one stray '|' in prose is not a table).
+_MIN_GRID_PIPE_ROWS = 2
+
+_GRID_REJECT_ENV = "SEMANTIK_VLM_FIGURE_DETECT_GRID_REJECT"
+
+
+def resolve_grid_reject() -> bool:
+    """``SEMANTIK_VLM_FIGURE_DETECT_GRID_REJECT`` — default ON.
+
+    The escape hatch / calibration lever for the grid rejector (arm 3). Default
+    ON because it is a CORRECTNESS fix, not a feature: without it the lane ships
+    images of numeric tables (a WCAG 1.4.5 regression). It is a no-op unless
+    ``SEMANTIK_VLM_FIGURE_DETECT`` is on — which is itself default OFF — so
+    default-ON here changes no global default behaviour.
+
+    Explicit falsey (``0``/``false``/``no``/``off``) → the pre-rejector accept
+    gate, byte-identical. Unset / blank / truthy / garbage → on
+    (parse-with-fallback, the house default-ON posture).
+    """
+    raw = (os.environ.get(_GRID_REJECT_ENV) or "").strip().lower()
+    return raw not in _FALSEY
 
 
 def _page_raster_min_coverage() -> float:
@@ -541,6 +654,149 @@ def _text_word_count(
     return n
 
 
+def _count_thin_rules(frac: "list[float]", n: int) -> int:
+    """Count THIN, ISOLATED ruling lines along one axis of a crop.
+
+    ``frac[i]`` is the dark-pixel fraction of scanline ``i``. A rule is a run of
+    scanlines that (a) each span at least :data:`_RULE_SPAN_FRACTION` of the
+    crop, (b) is at most :data:`_RULE_MAX_THICKNESS_PX` thick, and (c) has a
+    QUIET band either side.
+
+    (b) and (c) together are what make this a LINE detector rather than an INK
+    detector: a solid fill (a photograph, a shaded box) is dark for far more than
+    ``_RULE_MAX_THICKNESS_PX`` consecutive scanlines and has no quiet margin, so
+    it contributes ZERO rules. That is load-bearing — a naive dark-run count read
+    the bathroom-scale photo as 286 vertical "rules".
+    """
+    out = 0
+    i = 0
+    while i < n:
+        if frac[i] < _RULE_SPAN_FRACTION:
+            i += 1
+            continue
+        j = i
+        while j + 1 < n and frac[j + 1] >= _RULE_SPAN_FRACTION:
+            j += 1
+        thickness = j - i + 1
+        if thickness <= _RULE_MAX_THICKNESS_PX:
+            before = frac[max(0, i - _RULE_MAX_THICKNESS_PX - 1) : max(0, i - 1)]
+            after = frac[min(n, j + 2) : min(n, j + _RULE_MAX_THICKNESS_PX + 2)]
+            quiet_before = not before or min(before) < _RULE_QUIET_FRACTION
+            quiet_after = not after or min(after) < _RULE_QUIET_FRACTION
+            if quiet_before and quiet_after:
+                out += 1
+        i = j + 1
+    return out
+
+
+def crop_has_ruled_grid(
+    page_gray, box: "tuple[float, float, float, float]"
+) -> "tuple[int, int]":
+    """``(h_rules, v_rules)`` — thin ruling lines inside ``box`` of ``page_gray``.
+
+    ``page_gray`` is the page raster as a 2-D uint8 numpy array (0 = black);
+    ``box`` is normalized ``[0,1]``. Returns ``(0, 0)`` on anything unusable
+    (no raster, degenerate box, numpy missing) so the arm degrades to a NO-OP
+    rather than false-rejecting a figure it could not measure.
+    """
+    if page_gray is None:
+        return 0, 0
+    try:
+        import numpy as np  # noqa: PLC0415 — lazy: the gate must not hard-require numpy
+
+        h_px, w_px = page_gray.shape[:2]
+        x0 = max(0, int(box[0] * w_px))
+        y0 = max(0, int(box[1] * h_px))
+        x1 = min(w_px, int(box[2] * w_px))
+        y1 = min(h_px, int(box[3] * h_px))
+        if (x1 - x0) < _RULE_MIN_CROP_PX or (y1 - y0) < _RULE_MIN_CROP_PX:
+            return 0, 0
+        dark = page_gray[y0:y1, x0:x1] < _RULE_DARK_LEVEL
+        rows, cols = dark.shape
+        h_frac = (dark.sum(axis=1) / float(cols)).tolist()
+        v_frac = (dark.sum(axis=0) / float(rows)).tolist()
+        return (
+            _count_thin_rules(h_frac, rows),
+            _count_thin_rules(v_frac, cols),
+        )
+    except Exception as exc:  # noqa: BLE001 — an unmeasurable crop is never a rejection
+        logger.debug("vlm-figure-detect: ruled-grid probe failed (non-fatal): %s", exc)
+        return 0, 0
+
+
+def crop_declares_markdown_grid(
+    box: "tuple[float, float, float, float]",
+    md_items: "list[tuple[tuple[float, float, float, float], str]]",
+) -> bool:
+    """Whether the VLM's OWN markdown for the text inside ``box`` declares a table.
+
+    **Reuses** ``lib.semantik.table_structure.has_separator_row`` — the SAME
+    predicate the ``<th>`` reconstruction lane reads the topology off — so the
+    "what counts as a table declaration" contract cannot drift between the two.
+    A second table detector is never written here (house rule: reuse, never
+    clone).
+
+    This arm is INDEPENDENT of the raster arm and catches what it cannot: a
+    BORDERLESS table has no ruling lines at all, but the VLM still transcribes it
+    as a pipe grid.
+
+    Fails soft to ``False`` when ``lib`` is not importable — the cross-venv
+    bridge runs the cascade in a venv that does not carry Ed4All's ``lib/`` (the
+    same reason :func:`_emit_detect_capture` guards its import). The raster arm
+    stays live there, so the rejector never depends on this one.
+    """
+    if not md_items:
+        return False
+    try:
+        from lib.semantik.table_structure import has_separator_row  # noqa: PLC0415
+    except Exception as exc:  # noqa: BLE001 — no lib/ in the bridge venv
+        logger.debug(
+            "vlm-figure-detect: table_structure unavailable, markdown grid arm "
+            "skipped (raster arm unaffected): %s",
+            exc,
+        )
+        return False
+    bx0, by0, bx1, by1 = box
+    lines: list[str] = []
+    for (tx0, ty0, tx1, ty1), md in md_items:
+        cx, cy = (tx0 + tx1) / 2.0, (ty0 + ty1) / 2.0
+        if bx0 <= cx <= bx1 and by0 <= cy <= by1 and md:
+            lines.append(md)
+    if not lines:
+        return False
+    if not has_separator_row("\n".join(lines)):
+        return False
+    # A separator plus at least two cell-bearing rows — one stray '|' in prose
+    # (or a lone separator with no grid under it) is not a table.
+    return sum(1 for ln in lines if ln.count("|") >= 2) >= _MIN_GRID_PIPE_ROWS
+
+
+def is_grid_region(
+    box: "tuple[float, float, float, float]",
+    *,
+    page_gray=None,
+    md_items: "Optional[list[tuple[tuple[float, float, float, float], str]]]" = None,
+) -> bool:
+    """THE GRID REJECTOR. ``True`` ⇒ ``box`` encloses a table, not a figure.
+
+    Either arm rejects (they are independent evidence, and each covers a case the
+    other structurally cannot):
+
+    * RULED LATTICE — ``v_rules >= 2 and h_rules >= 1``. A table has column
+      separators; a number line has a horizontal axis and no columns.
+    * MARKDOWN GRID — the VLM transcribed the enclosed text as a pipe grid
+      (reuses ``table_structure``); catches a borderless table with no rules.
+
+    Deterministic and domain-agnostic: shape only, no subject-matter vocabulary,
+    no LLM. Degrades to ``False`` (accept) whenever the evidence cannot be
+    measured — a rejector must never fire on a crop it could not look at.
+    """
+    h_rules, v_rules = crop_has_ruled_grid(page_gray, box)
+    if v_rules >= _MIN_GRID_V_RULES and h_rules >= _MIN_GRID_H_RULES:
+        return True
+    return crop_declares_markdown_grid(box, list(md_items or ()))
+
+
 def accept_figure_boxes(
     proposals: "list[dict]",
     *,
@@ -548,6 +804,8 @@ def accept_figure_boxes(
     page_h: float,
     text_boxes_norm: "Optional[list[tuple[float, float, float, float]]]" = None,
     text_items_norm: "Optional[list[tuple[tuple[float, float, float, float], str]]]" = None,
+    md_items_norm: "Optional[list[tuple[tuple[float, float, float, float], str]]]" = None,
+    page_gray=None,
     max_per_page: Optional[int] = None,
     max_words: Optional[int] = None,
 ) -> "tuple[list[dict], dict]":
@@ -576,12 +834,22 @@ def accept_figure_boxes(
     ``bad_aspect``   absurd aspect ratio (a rule / margin strip)
     ``text_column``  mostly covered by extracted text — prose, not a figure.
                      Cropping it would be a WCAG 1.4.5 images-of-text REGRESSION.
+    ``table_grid``   encloses a GRID (ruled column lattice, or a VLM-declared
+                     markdown pipe grid) — a table, not a figure. THE ARM THAT
+                     CATCHES A NUMERIC TABLE, which ``text_dense`` structurally
+                     cannot: word count ignores digits so number lines survive,
+                     which means an all-digit table reads as ~0 words. Grid
+                     structure is orthogonal to word count, so it separates the
+                     two without ever touching a number line. See the module
+                     docstring for the measured numbers.
     ``duplicate``    same figure as an already-accepted box (IoU >= threshold)
     ``over_cap``     beyond ``max_per_page``
     """
     max_per_page = resolve_detect_max_per_page() if max_per_page is None else max_per_page
     max_words = resolve_detect_max_words() if max_words is None else max_words
+    grid_reject = resolve_grid_reject()
     raster_ceiling = _page_raster_min_coverage()
+    md_items = list(md_items_norm or ())
     text_items = list(text_items_norm or ())
     # The coverage arm needs only the boxes; derive them from the items when the
     # caller supplied the richer shape, so the two arms can never disagree.
@@ -599,6 +867,7 @@ def accept_figure_boxes(
         "page_raster": 0,
         "text_column": 0,
         "text_dense": 0,
+        "table_grid": 0,
         "duplicate": 0,
         "over_cap": 0,
     }
@@ -679,6 +948,12 @@ def accept_figure_boxes(
                 stats["text_dense"] += 1
                 continue
         box = (x0, y0, x1, y1)
+        # THE GRID REJECTOR (arm 3) — a table has a column lattice; a number line
+        # does not. This is the ONLY arm that can catch a purely NUMERIC table,
+        # because arm 2 must ignore digits to keep the number lines alive.
+        if grid_reject and is_grid_region(box, page_gray=page_gray, md_items=md_items):
+            stats["table_grid"] += 1
+            continue
         if any(_iou(box, prev) >= _DEDUP_IOU for prev, _ in kept):
             stats["duplicate"] += 1
             continue
@@ -715,10 +990,15 @@ def accept_figure_boxes(
 # ---------------------------------------------------------------------------
 # Per-page text boxes (input to the text-column guard).
 # ---------------------------------------------------------------------------
-def page_text_items_norm(
-    page: dict,
+def _page_items_norm(
+    page: dict, field: str
 ) -> "list[tuple[tuple[float, float, float, float], str]]":
-    """Normalized [0,1] (bbox, text) items for a page's extracted TEXT blocks.
+    """Normalized [0,1] ``(bbox, blk[field])`` items for a page's TEXT blocks.
+
+    The one place the pixel-vs-point coordinate contract lives. Both
+    :func:`page_text_items_norm` (``field='text'``) and
+    :func:`page_markdown_items_norm` (``field='vlm_md'``) route through it, so
+    the two guards can never disagree about where a block is.
 
     Coordinate-space contract (the SAME trap ``is_page_raster_candidate``
     documents): on the OCR/scan lane the merged text blocks carry IMAGE-PIXEL
@@ -792,15 +1072,40 @@ def page_text_items_norm(
                     max(0.0, min(1.0, x1 / norm_w)),
                     max(0.0, min(1.0, y1 / norm_h)),
                 ),
-                str((blk or {}).get("text") or ""),
+                str((blk or {}).get(field) or ""),
             )
         )
     return out
 
 
+def page_text_items_norm(
+    page: dict,
+) -> "list[tuple[tuple[float, float, float, float], str]]":
+    """Normalized [0,1] ``(bbox, text)`` items — the TEXT guards' signal."""
+    return _page_items_norm(page, "text")
+
+
 def page_text_boxes_norm(page: dict) -> "list[tuple[float, float, float, float]]":
     """Just the normalized text BOXES (the coverage arm's signal)."""
     return [bb for bb, _t in page_text_items_norm(page)]
+
+
+def page_markdown_items_norm(
+    page: dict,
+) -> "list[tuple[tuple[float, float, float, float], str]]":
+    """Normalized ``(bbox, vlm_md)`` items — the MARKDOWN grid arm's signal.
+
+    ``vlm_md`` is the block's RAW VLM markdown with its structural markers still
+    INTACT (the ``SEMANTIK_VLM_FUSION`` hint channel stamps it). The block's
+    ``text``, by contrast, has those markers stripped — which is exactly why the
+    grid arm must read ``vlm_md``: a table's ``| --- |`` separator row, the
+    topology DECLARATION, survives ONLY here.
+
+    Returns ``[]`` when the fusion lane did not run (no ``vlm_md`` anywhere), so
+    the markdown arm is a natural no-op on a non-VLM corpus and the raster arm
+    carries the rejector alone.
+    """
+    return [(bb, md) for bb, md in _page_items_norm(page, "vlm_md") if md]
 
 
 # ---------------------------------------------------------------------------
@@ -884,6 +1189,40 @@ class _DetectPage:
     page_h: float
     text_items: "list[tuple[tuple[float, float, float, float], str]]"
     page_ref: dict
+    # Optional evidence for the GRID rejector's markdown arm — absent on a
+    # non-VLM corpus (and in the fan-out tests, which only exercise the POST /
+    # sidecar path), so it defaults to empty rather than becoming required.
+    md_items: "list[tuple[tuple[float, float, float, float], str]]" = field(
+        default_factory=list
+    )
+
+
+def _page_gray(image_b64: str):
+    """The page raster as a 2-D uint8 grayscale array — the grid arm's input.
+
+    Decodes the SAME JPEG the DETECT call was given, so the grid rejector costs
+    ZERO extra renders. Verified against a clean 144-DPI re-render of the real
+    ch01 pages: the thin-rule counts are identical on every crop that decides a
+    verdict (the ruled tables still measure v=2/13/11 vs a <=1 ceiling on every
+    genuine figure), so JPEG q88 does not blur a ruling line away.
+
+    Returns ``None`` (⇒ the raster arm no-ops, never false-rejects) when numpy /
+    PIL are unavailable or the payload will not decode.
+    """
+    if not image_b64:
+        return None
+    try:
+        import base64 as _b64  # noqa: PLC0415
+        import io as _io  # noqa: PLC0415
+
+        import numpy as np  # noqa: PLC0415
+        from PIL import Image  # noqa: PLC0415
+
+        img = Image.open(_io.BytesIO(_b64.b64decode(image_b64))).convert("L")
+        return np.asarray(img, dtype=np.uint8)
+    except Exception as exc:  # noqa: BLE001 — an unreadable raster is never a rejection
+        logger.debug("vlm-figure-detect: page raster decode failed (non-fatal): %s", exc)
+        return None
 
 
 def _fan_out_detect(
@@ -1025,8 +1364,9 @@ def _emit_detect_capture(page_rows: "list[dict]", totals: dict, model: str) -> N
         rejected = sum(
             int(totals.get(k, 0))
             for k in (
-                "page_raster", "text_column", "text_dense", "degenerate", "too_small",
-                "bad_aspect", "out_of_page", "malformed", "duplicate", "over_cap",
+                "page_raster", "text_column", "text_dense", "table_grid", "degenerate",
+                "too_small", "bad_aspect", "out_of_page", "malformed", "duplicate",
+                "over_cap",
             )
         )
         cap = DecisionCapture(
@@ -1054,7 +1394,10 @@ def _emit_detect_capture(page_rows: "list[dict]", totals: dict, model: str) -> N
                 f"backstop), text_column={totals.get('text_column', 0)} (prose crops that would be "
                 f"a WCAG 1.4.5 images-of-text regression), text_dense={totals.get('text_dense', 0)} "
                 f"(crops carrying a paragraph of readable words — a procedure table, not a "
-                f"figure), too_small={totals.get('too_small', 0)}, "
+                f"figure), table_grid={totals.get('table_grid', 0)} (crops enclosing a ruled "
+                f"column lattice or a VLM-declared markdown pipe grid — a TABLE; the only arm "
+                f"that can catch an all-NUMERIC table, since the word-count arm must ignore "
+                f"digits to keep number lines alive), too_small={totals.get('too_small', 0)}, "
                 f"bad_aspect={totals.get('bad_aspect', 0)}, degenerate={totals.get('degenerate', 0)}, "
                 f"out_of_page={totals.get('out_of_page', 0)}, malformed={totals.get('malformed', 0)}, "
                 f"duplicate={totals.get('duplicate', 0)}, over_cap={totals.get('over_cap', 0)}. "
@@ -1135,6 +1478,7 @@ def inject_figure_candidates(
                 page_w=page_w,
                 page_h=page_h,
                 text_items=page_text_items_norm(page),
+                md_items=page_markdown_items_norm(page),
                 page_ref=page,
             )
         )
@@ -1148,17 +1492,22 @@ def inject_figure_candidates(
         for k in (
             "proposed", "accepted", "malformed", "degenerate", "out_of_page",
             "too_small", "bad_aspect", "page_raster", "text_column", "text_dense",
-            "duplicate", "over_cap",
+            "table_grid", "duplicate", "over_cap",
         )
     }
     page_rows: list[dict] = []
     for dp in detect_pages:
         proposals = raw_by_page.get(dp.page_label) or []
+        # The page raster is decoded ONLY when a proposal actually needs deciding
+        # — a page the model returned nothing for costs nothing.
+        page_gray = _page_gray(dp.image_b64) if proposals else None
         accepted, stats = accept_figure_boxes(
             proposals,
             page_w=dp.page_w,
             page_h=dp.page_h,
             text_items_norm=dp.text_items,
+            md_items_norm=dp.md_items,
+            page_gray=page_gray,
         )
         for key in totals:
             totals[key] += int(stats.get(key, 0))
@@ -1196,7 +1545,7 @@ def inject_figure_candidates(
         f"from {totals['proposed']} proposed over {len(detect_pages)} page(s) "
         f"(rejected: page_raster={totals['page_raster']} "
         f"text_column={totals['text_column']} text_dense={totals['text_dense']} "
-        f"too_small={totals['too_small']} "
+        f"table_grid={totals['table_grid']} too_small={totals['too_small']} "
         f"bad_aspect={totals['bad_aspect']})"
     )
     return {

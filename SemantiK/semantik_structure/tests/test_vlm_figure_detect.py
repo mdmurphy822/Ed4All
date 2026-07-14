@@ -703,3 +703,173 @@ def test_resume_sidecar_fingerprint_is_content_addressed():
     assert a != vfd._page_fingerprint("IMGB", model="m1", page_label=1)  # image
     assert a != vfd._page_fingerprint("IMGA", model="m2", page_label=1)  # model
     assert a != vfd._page_fingerprint("IMGA", model="m1", page_label=2)  # page
+
+
+# ---------------------------------------------------------------------------
+# (g) THE GRID REJECTOR (arm 3) — and THE TRAP: it must never kill a number line.
+#
+# Rasters are synthesized rather than fixture PNGs (no corpus bytes in git):
+#   * a TABLE       = a ruled lattice (row rules + COLUMN rules)
+#   * a NUMBER LINE = one horizontal axis + short ticks, NO column rules
+#   * a PHOTO       = a solid dark fill (the thinness test must exclude it)
+# The real-crop numbers these thresholds were calibrated against live in the
+# module docstring; these tests pin the SEPARATION, not the corpus.
+# ---------------------------------------------------------------------------
+def _np():
+    return pytest.importorskip("numpy")
+
+
+def _blank(np, w=400, h=200):
+    return np.full((h, w), 255, dtype=np.uint8)
+
+
+def _table_raster(np):
+    """A ruled grid: 3 row rules + 4 COLUMN rules."""
+    a = _blank(np)
+    for y in (20, 100, 180):
+        a[y : y + 2, 10:390] = 0          # row rules
+    for x in (10, 140, 270, 388):
+        a[20:180, x : x + 2] = 0          # COLUMN rules — the table's signature
+    return a
+
+
+def _number_line_raster(np):
+    """One horizontal axis + tick marks. NO column rules (the trap)."""
+    a = _blank(np)
+    a[100:102, 10:390] = 0                # the axis
+    for x in range(20, 390, 30):
+        a[94:108, x : x + 2] = 0          # ticks: short, never span the crop
+    return a
+
+
+def _photo_raster(np):
+    """A solid dark fill — a photograph. Must NOT read as a lattice."""
+    a = _blank(np)
+    a[10:190, 10:390] = 40
+    return a
+
+
+def _box():
+    return (0.0, 0.0, 1.0, 1.0)
+
+
+def test_grid_rejector_rejects_a_ruled_table():
+    np = _np()
+    h, v = vfd.crop_has_ruled_grid(_table_raster(np), _box())
+    assert v >= vfd._MIN_GRID_V_RULES and h >= vfd._MIN_GRID_H_RULES
+    assert vfd.is_grid_region(_box(), page_gray=_table_raster(np)) is True
+
+
+def test_grid_rejector_NEVER_rejects_a_number_line():
+    """THE regression that matters. A number line is the highest-value figure
+    class in this corpus and it is ALL DIGITS — the word-count arm must ignore
+    digits, so the grid arm is the one that could kill it. It must not."""
+    np = _np()
+    h, v = vfd.crop_has_ruled_grid(_number_line_raster(np), _box())
+    assert v == 0, "a number line has NO column rules — ticks must not count"
+    assert h >= 1, "it does have its axis"
+    assert vfd.is_grid_region(_box(), page_gray=_number_line_raster(np)) is False
+
+
+def test_grid_rejector_is_not_fooled_by_a_solid_fill():
+    """A photograph / shaded diagram is dark everywhere. Without the THINNESS
+    test, a naive dark-run count read the real bathroom-scale photo as 286
+    vertical 'rules' and the shaded nested-set diagram as 253."""
+    np = _np()
+    assert vfd.crop_has_ruled_grid(_photo_raster(np), _box()) == (0, 0)
+    assert vfd.is_grid_region(_box(), page_gray=_photo_raster(np)) is False
+
+
+def test_grid_rejector_degrades_to_accept_without_a_raster():
+    """A rejector must NEVER fire on a crop it could not look at."""
+    assert vfd.crop_has_ruled_grid(None, _box()) == (0, 0)
+    assert vfd.is_grid_region(_box(), page_gray=None) is False
+
+
+def test_numeric_table_passes_the_word_guard_but_the_grid_arm_catches_it():
+    """The exact residual defect this arm exists for: an all-NUMERIC table reads
+    as ~0 WORDS (the word arm ignores digits precisely so number lines survive),
+    so ONLY grid structure can reject it."""
+    np = _np()
+    digits = [((0.1, 0.1, 0.2, 0.2), "1 2 3 4 5 15 64 121")]
+    assert vfd._text_word_count((0.0, 0.0, 1.0, 1.0), digits) == 0  # no words at all
+    props = [{"bbox": [0.1, 0.1, 0.9, 0.6], "kind": "chart", "confidence": 0.9}]
+    accepted, stats = vfd.accept_figure_boxes(
+        props, page_w=612.0, page_h=792.0,
+        text_items_norm=digits, page_gray=_table_raster(np),
+    )
+    assert accepted == []
+    assert stats["table_grid"] == 1
+    assert stats["text_dense"] == 0, "the word arm structurally could not see it"
+
+
+def test_number_line_survives_the_full_accept_gate():
+    np = _np()
+    props = [{"bbox": [0.1, 0.1, 0.9, 0.6], "kind": "number_line", "confidence": 0.9}]
+    accepted, stats = vfd.accept_figure_boxes(
+        props, page_w=612.0, page_h=792.0,
+        text_items_norm=[((0.1, 0.1, 0.2, 0.2), "-4 -3 -2 -1 0 1 2 3 4")],
+        page_gray=_number_line_raster(np),
+    )
+    assert len(accepted) == 1, "the number line MUST survive the whole gate"
+    assert stats["table_grid"] == 0
+
+
+def test_markdown_arm_reuses_table_structure_and_rejects_a_pipe_grid():
+    """Arm B catches a BORDERLESS table (no ruling lines for arm A to find). It
+    REUSES lib.semantik.table_structure.has_separator_row — never a second table
+    detector. Skips cleanly where lib/ is absent (the cross-venv bridge)."""
+    pytest.importorskip("lib.semantik.table_structure")
+    md = [
+        ((0.2, 0.20, 0.8, 0.25), "| Number | 1 | 2 |"),
+        ((0.2, 0.30, 0.8, 0.35), "| --- | --- | --- |"),
+        ((0.2, 0.40, 0.8, 0.45), "| Square | 1 | 4 |"),
+    ]
+    assert vfd.crop_declares_markdown_grid((0.0, 0.0, 1.0, 1.0), md) is True
+    # prose that merely CONTAINS a pipe is not a grid
+    prose = [((0.2, 0.2, 0.8, 0.25), "the absolute value |x| is never negative")]
+    assert vfd.crop_declares_markdown_grid((0.0, 0.0, 1.0, 1.0), prose) is False
+    # ... and a box enclosing none of the grid's rows sees nothing
+    assert vfd.crop_declares_markdown_grid((0.9, 0.9, 1.0, 1.0), md) is False
+
+
+def test_markdown_items_read_vlm_md_not_text():
+    """The separator row survives ONLY in vlm_md — `text` has its markers stripped."""
+    page = {
+        "width": 612.0, "height": 792.0,
+        "tesseract_width": 1224.0, "tesseract_height": 1584.0,
+        "tesseract": {"text_blocks": [
+            {"bbox": [100, 100, 500, 130], "text": "Number 1 2",
+             "vlm_md": "| Number | 1 | 2 |"},
+            {"bbox": [100, 140, 500, 170], "text": "", "vlm_md": "| --- | --- | --- |"},
+        ]},
+    }
+    items = vfd.page_markdown_items_norm(page)
+    assert [md for _bb, md in items] == ["| Number | 1 | 2 |", "| --- | --- | --- |"]
+    # normalized by the PIXEL dims (the OCR-lane coordinate contract)
+    assert items[0][0][0] == pytest.approx(100 / 1224.0)
+    # a page with no VLM fusion carries no markdown -> the arm is a natural no-op
+    assert vfd.page_markdown_items_norm(
+        {"width": 612.0, "height": 792.0,
+         "tesseract": {"text_blocks": [{"bbox": [1, 1, 2, 2], "text": "hi"}]}}
+    ) == []
+
+
+def test_grid_reject_flag_defaults_on_and_explicit_falsey_reverts(monkeypatch):
+    monkeypatch.delenv("SEMANTIK_VLM_FIGURE_DETECT_GRID_REJECT", raising=False)
+    assert vfd.resolve_grid_reject() is True
+    for tok in ("0", "false", "no", "off", "OFF"):
+        monkeypatch.setenv("SEMANTIK_VLM_FIGURE_DETECT_GRID_REJECT", tok)
+        assert vfd.resolve_grid_reject() is False
+    monkeypatch.setenv("SEMANTIK_VLM_FIGURE_DETECT_GRID_REJECT", "garbage")
+    assert vfd.resolve_grid_reject() is True  # parse-with-fallback
+
+
+def test_grid_reject_off_is_byte_identical_to_the_pre_rejector_gate(monkeypatch):
+    np = _np()
+    props = [{"bbox": [0.1, 0.1, 0.9, 0.6], "kind": "chart", "confidence": 0.9}]
+    monkeypatch.setenv("SEMANTIK_VLM_FIGURE_DETECT_GRID_REJECT", "0")
+    accepted, stats = vfd.accept_figure_boxes(
+        props, page_w=612.0, page_h=792.0, page_gray=_table_raster(np)
+    )
+    assert len(accepted) == 1 and stats["table_grid"] == 0  # the table is admitted again
