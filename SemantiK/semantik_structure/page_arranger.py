@@ -331,15 +331,57 @@ def resolve_page_arranger_route(pdf_path: Any) -> "Optional[ArrangerRoute]":
     a born-digital PDF (not the OCR/scan lane) → ``None`` (the council path owns
     it). Fail-soft: any extraction/lane error logs a warning and returns ``None``
     (the cascade falls back to the council path — never a crash).
+
+    **VLM figure-DETECT seam (task #56).** When ``SEMANTIK_VLM_FIGURE_DETECT`` is
+    on, the detector runs HERE — after ``extract_shared_cached``, BEFORE
+    ``featurize_with_regions`` — injecting its accepted sub-page figure bboxes
+    into ``shared['pages'][i]['images']``. That is the ONLY correct seam: the
+    figure FeatureBlocks must be INTERLEAVED into the FB stream in reading order
+    (``features._interleave_image_feature_blocks``), and the FB stream is frozen
+    by ``featurize_with_regions``. Injecting one line earlier lets the ENTIRE
+    existing figure chain (ImageCandidate -> synthetic image FB -> the shared
+    ``build_figure_region_from_candidate`` -> the mandatory page-raster guard ->
+    Stage 5c PNG -> Stage 6b caption) run completely unchanged. Default OFF ->
+    ``inject_figure_candidates`` returns ``None`` immediately and ``shared`` is
+    untouched (byte-identical). Fail-soft: a detector error degrades to zero
+    injected figures, never a failed conversion.
     """
     if not resolve_page_arranger_mode():
         return None
+    figure_detect_audit = None
+    # A STOP is a control SIGNAL, not an error (the house contract — see
+    # endpoint_runtime). CascadeStopRequested subclasses RuntimeError, so the
+    # fail-soft `except Exception` handlers below would otherwise SWALLOW an
+    # `ed4all stop` landing mid-figure-detect: the run would log a benign
+    # "non-fatal" warning and then plough on into featurize -> arrange -> Stage 6
+    # (hours of further work) instead of pausing, dead-ending the whole per-page
+    # stop/checkpoint machinery. It must propagate to the bridge boundary.
+    from .stop_seam import CascadeStopRequested
+
     try:
         from .extract_shared import extract_shared_cached
         from .features import featurize_with_regions
+        from .vlm_figure_detect import (
+            inject_figure_candidates,
+            resolve_vlm_figure_detect_mode,
+        )
 
         shared = extract_shared_cached(Path(pdf_path))
+        if resolve_vlm_figure_detect_mode():
+            try:
+                figure_detect_audit = inject_figure_candidates(
+                    shared, pdf_path, log=lambda m: logger.info("%s", m)
+                )
+            except CascadeStopRequested:
+                raise  # a stop is a SIGNAL — never degraded into "detect failed"
+            except Exception as exc:  # noqa: BLE001 — detection never breaks conversion
+                logger.warning(
+                    "page-arranger route: VLM figure-detect failed (non-fatal, "
+                    "continuing with zero detected figures): %s", exc
+                )
         feature_set = featurize_with_regions(shared)
+    except CascadeStopRequested:
+        raise  # propagate to the bridge boundary -> GracefulStopRequested
     except Exception as exc:  # noqa: BLE001 — never crash the cascade on the probe
         logger.warning(
             "page-arranger route: extraction failed (non-fatal, falling back to "
@@ -350,7 +392,12 @@ def resolve_page_arranger_route(pdf_path: Any) -> "Optional[ArrangerRoute]":
     feature_blocks = feature_set.feature_blocks
     if not _is_ocr_scan_lane(feature_blocks):
         return None
-    return ArrangerRoute(pdf_path=Path(pdf_path), shared=shared, feature_set=feature_set)
+    return ArrangerRoute(
+        pdf_path=Path(pdf_path),
+        shared=shared,
+        feature_set=feature_set,
+        figure_detect=figure_detect_audit,
+    )
 
 
 def _is_ocr_scan_lane(feature_blocks: Any) -> bool:
@@ -1793,6 +1840,10 @@ class ArrangerRoute:
     pdf_path: Path
     shared: dict
     feature_set: Any
+    # Task #56 — the VLM figure-DETECT audit (None when the flag is off), carried
+    # from resolve_page_arranger_route (where the detector runs, pre-featurize) so
+    # arrange_regions can surface it on the arranger audit.
+    figure_detect: "Optional[dict]" = None
 
     @property
     def feature_blocks(self) -> list:
@@ -1983,6 +2034,10 @@ class ArrangerRoute:
             "render_failures": render_failures,
             "page_rows": page_rows,
         }
+        # Task #56 — the VLM figure-DETECT audit rides the arranger audit as an
+        # ADDITIVE key (absent when SEMANTIK_VLM_FIGURE_DETECT is off).
+        if self.figure_detect is not None:
+            audit["vlm_figure_detect"] = self.figure_detect
         return structure_regions, audit
 
 
