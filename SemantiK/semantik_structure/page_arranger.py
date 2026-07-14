@@ -87,6 +87,7 @@ _HEADING_MAX_CHARS_ENV = "SEMANTIK_ARRANGER_HEADING_MAX_CHARS"
 # non-heading unit the VLM marked '#'/'##' (surfaced as fb.vlm_hint kind=heading,
 # whole_block) AND that passes the anti-furniture SoT is re-typed to heading.
 _HEADING_PROMOTE_ENV = "SEMANTIK_ARRANGER_MD_HEADING_PROMOTE"
+_TITLE_RESCUE_ENV = "SEMANTIK_ARRANGER_TITLE_RESCUE"
 # Tier-1 own arranger seat (mirrors the reasoning-QC seat rows).
 _ARRANGER_BASE_URL_ENV = "SEMANTIK_PAGE_ARRANGER_BASE_URL"
 _ARRANGER_API_KEY_ENV = "SEMANTIK_PAGE_ARRANGER_API_KEY"
@@ -116,12 +117,17 @@ __all__ = [
     "resolve_arranger_heading_sanity",
     "resolve_arranger_heading_max_chars",
     "resolve_arranger_md_heading_promote",
+    "resolve_arranger_title_rescue",
     "resolve_arranger_seat",
     "resolve_page_arranger_route",
     "ArrangerRoute",
     "arrange_page",
     "apply_heading_sanity",
     "apply_md_heading_promote",
+    "apply_furniture_unit_peel",
+    "harvest_outline_titles",
+    "apply_outline_title_carve",
+    "apply_section_title_levels",
     "build_title_lexicon",
     "apply_leading_title_split",
     "mint_units_by_page",
@@ -240,6 +246,36 @@ def resolve_arranger_md_heading_promote() -> bool:
     to promote), so a non-VLM run is byte-identical even flag-on.
     """
     return (os.environ.get(_HEADING_PROMOTE_ENV) or "").strip().lower() not in _FALSEY
+
+
+def resolve_arranger_title_rescue() -> bool:
+    """SECTION-TITLE RESCUE arm gate (default ON, within the arranger). CALL-time.
+
+    Fixes the measured section-heading recall gap on the scan lane: the arrange
+    model FUSES a page's running-header / folio unit into the SAME block as the
+    section-title unit that follows it (extraction had them cleanly SEPARATE),
+    after which every downstream mechanism damages the title —
+    :func:`_is_wholly_furniture` prefix-matches the running header and demotes
+    the WHOLE block to ``furniture`` (title destroyed), or the block survives as
+    a heading carrying the furniture text glued on (WRONG heading text).
+
+    Two deterministic, text-preserving arms, both re-partitioning units among
+    blocks (never adding/dropping a unit → the coverage invariant is untouched):
+
+    * :func:`apply_furniture_unit_peel` (per-page) — peel a LEADING run of
+      wholly-page-furniture units (bare folio / running header) off a multi-unit
+      block into its own ``furniture`` block, so the surviving block is the clean
+      title.
+    * :func:`apply_outline_title_carve` (document-level) — carve a unit whose
+      WHOLE text is a section title the document's OWN chapter outline declares
+      out of an over-merged block into its own ``heading`` block.
+
+    Default-ON parse-with-fallback (mirrors ``resolve_arranger_heading_sanity``):
+    only the explicit falsey tokens disable it. Runs ONLY inside the arranger
+    (itself default-off), so on-by-default here changes NO global default
+    behaviour. Off → the arrangement is byte-identical (no peel, no carve).
+    """
+    return (os.environ.get(_TITLE_RESCUE_ENV) or "").strip().lower() not in _FALSEY
 
 
 def resolve_arranger_seat():
@@ -669,6 +705,48 @@ def _is_wholly_furniture(text: str, rx) -> bool:
     return False
 
 
+def _is_page_furniture_unit(text: str, rx) -> bool:
+    """Whether ONE extraction unit is WHOLLY page furniture (folio / running header).
+
+    NARROWER than :func:`_is_wholly_furniture` **by design**: the apparatus-opener
+    arm is deliberately EXCLUDED. The title-rescue peel drops what it peels into a
+    ``furniture`` (→ ``metadata_drop``) block, and an apparatus opener
+    ("Introduction", "Summary", "Key Terms") is REAL content that leads a
+    section — peeling it would DELETE it. Only the two shapes that are provably
+    page furniture qualify: a bare page number, or a whole running header
+    ("Chapter 1 Foundations 41" / "64 Chapter 1 Foundations").
+    """
+    s = (text or "").strip()
+    if not s:
+        return False
+    if _PAGE_NUMBER_RE.match(s):
+        return True
+    if rx is None:
+        return False
+    return bool(rx["running_text"].match(s) or rx["running_lead"].match(s))
+
+
+def _standalone_section_re():
+    """Lazy-load the co-homed ``N.M Title-Case`` section-title SoT regex (or None)."""
+    try:
+        from .qwen_specialists.deterministic_structure import _STANDALONE_SECTION_RE
+    except Exception as exc:  # noqa: BLE001 — advisory; the carve degrades to no-op
+        logger.debug("page-arranger title-rescue: section-shape SoT import failed: %s", exc)
+        return None
+    return _STANDALONE_SECTION_RE
+
+
+def _is_section_title_shape(text: str) -> bool:
+    """Whether a unit's WHOLE text is a ``N.M Title-Case`` section title.
+
+    Reuses the deterministic ``_STANDALONE_SECTION_RE`` SoT (never re-derived).
+    """
+    rx = _standalone_section_re()
+    if rx is None:
+        return False
+    return bool(rx.match((text or "").strip()))
+
+
 def _is_plausible_tail_title(text: str, rx, *, max_chars: int) -> bool:
     """Whether a unit-tail segment is a plausible SECTION TITLE.
 
@@ -896,6 +974,159 @@ def apply_md_heading_promote(
 
 
 # ---------------------------------------------------------------------------
+# Part C4: SECTION-TITLE RESCUE (SEMANTIK_ARRANGER_TITLE_RESCUE).
+#
+# Measured root cause of the scan lane's section-heading recall gap (ch01 vendor
+# A/B: 6/10 section titles, and 2 of the 6 "hits" were only recovered from the
+# end-of-chapter summary, not the section start):
+#
+#   EXTRACTION is CLEAN — the running header / folio and the section title arrive
+#   as SEPARATE units ("Chapter 1 Foundations 41" then "1.3 Add and Subtract
+#   Integers"; "111" then "1.7 Decimals"). The ARRANGE MODEL then groups them
+#   into ONE block. From there every existing mechanism damages the title:
+#     * `_is_wholly_furniture` PREFIX-matches the running header on the JOINED
+#       text → the whole block (title included) is demoted to `furniture` and
+#       DROPPED (this killed §1.4 and §1.8);
+#     * or the block survives typed `heading` and ships the furniture glued on
+#       ("95 1.6 Add and Subtract Fractions" — a WRONG heading, worse than a
+#       missing one: it poisons downstream TO/CO synthesis);
+#     * or the model over-merges the folio + title + the whole page body into one
+#       block that heading-sanity demotes `too_long`, burying the title (§1.7).
+#   `_extract_tail_title` cannot recover any of these: it splits on a newline /
+#   sentence boundary INSIDE one unit's text, and here the title IS its own unit.
+#
+# The fix is UNIT-LEVEL and deterministic (the arrange model PROPOSES the
+# grouping; this code DECIDES it is wrong and re-partitions at unit boundaries).
+# Both arms only MOVE units between blocks — never add, drop, duplicate or
+# rewrite one — so the coverage invariant and text conservation hold trivially.
+# ---------------------------------------------------------------------------
+def apply_furniture_unit_peel(
+    arr: dict, unit_by_id: "dict[str, dict]", *, enabled: bool
+) -> list:
+    """Peel LEADING page-furniture units out of a multi-unit block (per-page).
+
+    Fires ONLY on a ``heading``-typed block with ≥2 member units whose LEADING run
+    of units is wholly page furniture (:func:`_is_page_furniture_unit` — a bare
+    folio or a whole running header; apparatus openers are deliberately NOT peeled,
+    see that docstring) **and whose SURVIVING text is a plausible title**
+    (:func:`_is_plausible_tail_title` — the same anti-furniture SoT guard the
+    demote/promote arms use). The furniture prefix moves into its OWN ``furniture``
+    block inserted BEFORE the source block; the source block keeps the rest.
+
+    Both narrowings are load-bearing, not conservatism for its own sake:
+
+    * **heading-only** — a peel on a paragraph block would change which unit is the
+      LEAD unit, which is the input :func:`apply_md_heading_promote` keys off; a
+      folio in a paragraph body is cosmetic, and the outline CARVE already recovers
+      the title trapped in an over-merged paragraph.
+    * **remainder-must-be-a-title** — otherwise the peel would SHRINK an over-long
+      prose block back under ``SEMANTIK_ARRANGER_HEADING_MAX_CHARS``, so
+      :func:`apply_heading_sanity` would no longer demote it ``too_long`` and PROSE
+      would ship as a heading (measured: 8 junk headings on the real ch01 replay
+      before this guard). A block whose remainder is not a title is left ENTIRELY
+      alone → heading-sanity demotes it exactly as today (byte-identical).
+    * **DEMOTE-VERDICT PRESERVATION** — the peel must never RESCUE a block that
+      heading-sanity would have demoted (too_long / furniture-marker) just by
+      making it shorter. So when the PRE-peel text would have been demoted, the
+      peel fires ONLY if the remainder is a genuine ``N.M Title-Case`` section
+      title — which is the exact case worth rescuing (a running header fused onto
+      a real section heading, e.g. "64 Chapter 1 Foundations" + "1.4 Multiply and
+      Divide Integers", which today demotes to furniture and DESTROYS the title).
+      Every other would-be-demoted block is left byte-identical.
+
+    This arm owns TEXT only — it never sets a level. Heading LEVEL for a section
+    title is owned solely by :func:`apply_section_title_levels`, the one pass that
+    can see the document's outline and so can tell a DECLARED section title
+    ("1.3 Add and Subtract Integers") from a merely section-SHAPED apparatus header
+    ("1.3 EXERCISES Practice Makes Perfect") that must not be promoted into nav.
+
+    Coverage-safe: units are RE-PARTITIONED, never added or dropped, so every
+    FeatureBlock is still claimed exactly once. Mutates ``arr['blocks']`` in
+    place; returns the peel records. ``enabled=False`` → no-op (byte-identical).
+    """
+    records: list = []
+    if not enabled:
+        return records
+    blocks = (arr or {}).get("blocks")
+    if not isinstance(blocks, list):
+        return records
+    rx = _sanity_regexes()
+    if rx is None:  # no furniture SoT → nothing is provably furniture
+        return records
+    max_chars = resolve_arranger_heading_max_chars()
+    new_blocks: list = []
+    changed = False
+    for bi, blk in enumerate(blocks):
+        if (
+            not isinstance(blk, dict)
+            or blk.get("synthetic_heading")
+            or blk.get("type") != "heading"
+        ):
+            new_blocks.append(blk)
+            continue
+        ids = [u for u in (blk.get("ids") or []) if u in unit_by_id]
+        if len(ids) < 2:
+            new_blocks.append(blk)
+            continue
+        # Longest LEADING run of wholly-furniture units, never the whole block.
+        cut = 0
+        while cut < len(ids) - 1 and _is_page_furniture_unit(
+            unit_by_id[ids[cut]]["text"], rx
+        ):
+            cut += 1
+        if cut == 0:
+            new_blocks.append(blk)
+            continue
+        peeled, kept = ids[:cut], ids[cut:]
+
+        def _join(uids):
+            return " ".join(
+                unit_by_id[u]["text"].replace("\n", " ").strip() for u in uids
+            ).strip()
+
+        joined = _join(kept)
+        # The remainder must ACTUALLY be a title — else leave the block whole so
+        # heading-sanity still demotes it (see the docstring's second narrowing).
+        if not _is_plausible_tail_title(joined, rx, max_chars=max_chars):
+            new_blocks.append(blk)
+            continue
+        # DEMOTE-VERDICT PRESERVATION (third narrowing): if heading-sanity would
+        # have demoted the PRE-peel block, only a genuine `N.M Title` section
+        # title may survive the peel — never a shorter-but-still-not-a-title
+        # block that the peel would have silently rescued from the demote.
+        pre = _join(ids)
+        would_demote = (
+            len(pre) > max_chars or _heading_furniture_marker(pre, rx) is not None
+        )
+        if would_demote and not _is_section_title_shape(joined):
+            new_blocks.append(blk)
+            continue
+        new_blocks.append({
+            "type": "furniture",
+            "level": None,
+            "ids": peeled,
+            "heading_sanity": {
+                "demoted_from": "heading",
+                "reason": "furniture_unit_peel",
+                "length": sum(len(unit_by_id[u]["text"]) for u in peeled),
+            },
+        })
+        blk["ids"] = kept
+        new_blocks.append(blk)
+        records.append({
+            "op": "furniture_unit_peel",
+            "block_idx": bi,
+            "reason": "leading_page_furniture",
+            "peeled_ids": list(peeled),
+            "kept_title": joined,
+        })
+        changed = True
+    if changed:
+        arr["blocks"] = new_blocks
+    return records
+
+
+# ---------------------------------------------------------------------------
 # Part C3: symmetric LEADING-TITLE split (outline-anchored — gate-1 follow-up).
 #
 # The second glue variant: the real section title fuses at the HEAD of the
@@ -947,17 +1178,265 @@ def _parse_outline_titles(text: str) -> list:
     return titles
 
 
+def harvest_outline_titles(
+    units_by_page: "dict[int, list[dict]]",
+) -> "tuple[set, set]":
+    """Harvest the document's OWN chapter-outline section titles → ``(titles, unit_ids)``.
+
+    Returns the normalized title set AND the set of unit ids that ARE outline
+    entries (so the carve never promotes the outline listing itself into ten
+    spurious headings — the anti-re-poisoning guard).
+
+    TWO shapes are harvested (the second is the FIX):
+
+    * **Fused** — the marker and its ``N.N Title`` entries share ONE unit
+      ("Chapter Outline 1.1 … 1.2 …"). This is what the committed
+      :func:`_parse_outline_titles` handled, and it is the ONLY shape it handled.
+    * **Per-line** — the marker is its own unit ("Chapter Outline") and each entry
+      is a SEPARATE following unit ("1.1 Introduction to Whole Numbers", …).
+      Extraction emits this shape on a real scanned chapter opener, so the
+      committed harvest found **zero** outline titles there and the lexicon was
+      fed by heading-typed units alone — i.e. it could never supply a title the
+      arranger had already MISSED, which is exactly the set that needs rescuing.
+      The run of units immediately FOLLOWING a marker unit is consumed while each
+      is a ``N.M Title`` section shape; the first non-matching unit ends the run.
+
+    Page-unit adjacency (not block membership) is used deliberately: a page whose
+    arrangement FAILED has no blocks, but its units are still in reading order.
+    """
+    rx = _sanity_regexes()
+    titles: set = set()
+    entry_ids: set = set()
+
+    def _add(raw: str) -> bool:
+        t = (raw or "").strip()
+        if not t or len(t) > _TAIL_TITLE_MAX_CHARS or _is_wholly_furniture(t, rx):
+            return False
+        norm = _normalize_title(t)
+        if not norm:
+            return False
+        titles.add(norm)
+        return True
+
+    for units in (units_by_page or {}).values():
+        for idx, u in enumerate(units):
+            text = u.get("text") or ""
+            if not _OUTLINE_MARKER_RE.search(text):
+                continue
+            # (a) fused marker+entries in ONE unit (committed behaviour).
+            for t in _parse_outline_titles(text):
+                _add(t)
+            # (b) per-line entries in the FOLLOWING units (the fix).
+            for nxt in units[idx + 1 :]:
+                ntext = (nxt.get("text") or "").strip()
+                if not _is_section_title_shape(ntext):
+                    break
+                if _add(ntext):
+                    entry_ids.add(nxt["id"])
+    return titles, entry_ids
+
+
+def apply_outline_title_carve(
+    arr: dict,
+    unit_by_id: "dict[str, dict]",
+    outline_titles: set,
+    outline_unit_ids: set,
+    *,
+    enabled: bool,
+) -> list:
+    """Carve an OUTLINE-DECLARED section title out of an over-merged block.
+
+    A unit is carved into its own ``heading`` block (level 2 — the level the
+    arranger's already-correct standalone section titles carry, rendering h3) iff
+    ALL of:
+
+    * its block is NOT already a heading, carries ≥2 units, and is not synthetic
+      (a standalone single-unit block is whatever the model typed — left alone, so
+      the blast radius stays provable);
+    * the unit is not itself an OUTLINE ENTRY (else the chapter-outline listing
+      would become ten spurious headings — the re-poisoning trap);
+    * the unit's WHOLE text is a ``N.M Title-Case`` section shape **and** its
+      normalization is a title the document's OWN chapter outline DECLARES.
+
+    Both conditions together mean the carve can only fire on text the document
+    itself published as a section title — it cannot invent a heading, and it
+    cannot fire on apparatus (an outline never lists "Solution"). The unit's own
+    VERBATIM text is what ships; the outline is used to DECIDE, never to rewrite.
+
+    Coverage-safe: the block's units are RE-PARTITIONED into
+    ``[before] + heading(unit) + [after]`` — never added, dropped or duplicated.
+    Mutates ``arr['blocks']`` in place; returns the carve records.
+    ``enabled=False`` / empty outline → no-op (byte-identical).
+    """
+    records: list = []
+    if not enabled or not outline_titles:
+        return records
+    blocks = (arr or {}).get("blocks")
+    if not isinstance(blocks, list):
+        return records
+    new_blocks: list = []
+    changed = False
+    for bi, blk in enumerate(blocks):
+        if (
+            not isinstance(blk, dict)
+            or blk.get("synthetic_heading")
+            or blk.get("type") == "heading"
+        ):
+            new_blocks.append(blk)
+            continue
+        ids = [u for u in (blk.get("ids") or []) if u in unit_by_id]
+        if len(ids) < 2:
+            new_blocks.append(blk)
+            continue
+        hits = [
+            i
+            for i, uid in enumerate(ids)
+            if uid not in outline_unit_ids
+            and _is_section_title_shape(unit_by_id[uid]["text"])
+            and _normalize_title(unit_by_id[uid]["text"]) in outline_titles
+        ]
+        if not hits:
+            new_blocks.append(blk)
+            continue
+        btype = blk.get("type", "paragraph")
+        cursor = 0
+        for i in hits:
+            if i > cursor:
+                new_blocks.append({"type": btype, "level": blk.get("level"),
+                                   "ids": ids[cursor:i]})
+            uid = ids[i]
+            new_blocks.append({
+                "type": "heading",
+                "level": 2,
+                "ids": [uid],
+                "heading_sanity": {
+                    "promoted_from": btype,
+                    "reason": "outline_title",
+                    "length": len(unit_by_id[uid]["text"]),
+                },
+            })
+            records.append({
+                "op": "outline_title_carve",
+                "block_idx": bi,
+                "reason": "outline_declared_title",
+                "outline_title": unit_by_id[uid]["text"].strip(),
+                "carved_from": btype,
+                "unit_id": uid,
+            })
+            cursor = i + 1
+        if cursor < len(ids):
+            new_blocks.append({"type": btype, "level": blk.get("level"),
+                               "ids": ids[cursor:]})
+        changed = True
+    if changed:
+        arr["blocks"] = new_blocks
+    return records
+
+
+#: Nav-band level for the FIRST (section-start) statement of a declared section
+#: title. Arranger level N renders ``h(N+1)``, so 2 → ``<h3>`` — the level the
+#: vendor's own accessible HTML uses for every section title, and the level the
+#: arranger already assigns to the section titles it gets right unaided.
+_SECTION_TITLE_LEVEL = 2
+#: Level a REPEATED section title (a chapter-summary / review restatement) takes.
+#: 4 → ``<h5>`` — again exactly what the vendor does (measured on the ch01 gold:
+#: each section title appears ONCE at ``<h3>`` at its section start and again at
+#: ``<h5>`` under "Key Concepts", deliberately BELOW the h1-h3 nav band).
+_REPEAT_SECTION_TITLE_LEVEL = 4
+
+
+def apply_section_title_levels(
+    ordered_pages: list,
+    results: "dict[int, dict]",
+    units_by_page: "dict[int, list[dict]]",
+    outline_titles: set,
+    *,
+    enabled: bool,
+) -> list:
+    """Own the heading LEVEL of every DECLARED section title (document-level).
+
+    This is the ONLY pass that may set a section title's level, because it is the
+    only one that can see the document's chapter outline — and the outline is what
+    separates a real section title ("1.3 Add and Subtract Integers") from a merely
+    section-SHAPED apparatus header ("1.3 EXERCISES Practice Makes Perfect", which
+    the outline does NOT declare and which therefore must keep whatever level the
+    arrange model gave it — promoting it into nav would invent a section).
+
+    Walking pages in document order, a heading whose text is an outline-DECLARED
+    ``N.M Title`` section title gets:
+
+    * :data:`_SECTION_TITLE_LEVEL` (nav) on its FIRST occurrence — the section
+      start. This also repairs the level the arrange model assigns to a
+      running-header-fused title: it types "Chapter 1 Foundations 41 1.3 Add and
+      Subtract Integers" as level **1** precisely because the furniture makes it
+      *look* chapter-level, so after the peel strips the furniture the level is
+      wrong and would mint a phantom CHAPTER.
+    * :data:`_REPEAT_SECTION_TITLE_LEVEL` on every LATER occurrence — the
+      end-of-chapter "Key Concepts" / "Review Exercises" restatements. They are
+      genuinely that section's title (so they stay headings), but they are not NAV;
+      without this they would put ~16 extra section-title headings into the h1-h3
+      band on a real chapter (measured), inflating the section set the downstream
+      structure extractor derives — the exact over-segmentation class the
+      de-poisoning work exists to prevent.
+
+    LEVEL-ONLY: text is never touched, no block moves, nothing is dropped. Returns
+    the level records; ``enabled=False`` / empty outline → no-op.
+    """
+    records: list = []
+    if not enabled or not outline_titles:
+        return records
+    seen: set = set()
+    for page_label in ordered_pages:
+        res = results.get(page_label)
+        if not isinstance(res, dict) or res.get("status") != "ok":
+            continue
+        unit_by_id = {u["id"]: u for u in (units_by_page.get(page_label) or [])}
+        for bi, blk in enumerate(((res.get("arrangement") or {}).get("blocks") or [])):
+            if not isinstance(blk, dict) or blk.get("type") != "heading":
+                continue
+            if blk.get("synthetic_heading"):
+                text = (blk.get("text") or "").strip()
+            else:
+                text = " ".join(
+                    unit_by_id[u]["text"].replace("\n", " ").strip()
+                    for u in (blk.get("ids") or [])
+                    if u in unit_by_id
+                ).strip()
+            if not text or not _is_section_title_shape(text):
+                continue
+            norm = _normalize_title(text)
+            if not norm or norm not in outline_titles:
+                continue  # section-SHAPED but not DECLARED → level untouched.
+            first = norm not in seen
+            seen.add(norm)
+            want = _SECTION_TITLE_LEVEL if first else _REPEAT_SECTION_TITLE_LEVEL
+            if blk.get("level") == want:
+                continue
+            records.append({
+                "op": "section_title_level",
+                "page": page_label,
+                "block_idx": bi,
+                "reason": "section_start" if first else "repeat_of_section_title",
+                "title": text,
+                "level_before": blk.get("level"),
+                "level_after": want,
+            })
+            blk["level"] = want
+    return records
+
+
 def build_title_lexicon(
     units_by_page: "dict[int, list[dict]]", results: "dict[int, dict]"
 ) -> set:
     """Build the page-independent, document-level TITLE lexicon (normalized).
 
-    Two sources: (a) any unit matching a chapter-outline/ToC marker — its
-    ``N.N Title`` entries are parsed out; (b) blocks already TYPED heading in a
-    valid arrangement (short, clean ones only — plausible-title shape, ≤60
-    chars; includes prior heading-sanity synthetics). With no outline present,
-    (b) alone feeds the lexicon. Entries are normalized via
-    :func:`_normalize_title` (casefold, numbering stripped).
+    Two sources: (a) the document's chapter-outline/ToC ``N.N Title`` entries —
+    both the fused-in-one-unit and the per-line shapes, via
+    :func:`harvest_outline_titles`; (b) blocks already TYPED heading in a valid
+    arrangement (short, clean ones only — plausible-title shape, ≤60 chars;
+    includes prior heading-sanity synthetics). With no outline present, (b) alone
+    feeds the lexicon. Entries are normalized via :func:`_normalize_title`
+    (casefold, numbering stripped).
     """
     rx = _sanity_regexes()
     lexicon: set = set()
@@ -965,13 +1444,8 @@ def build_title_lexicon(
     for units in (units_by_page or {}).values():
         for u in units:
             unit_text[u["id"]] = u.get("text") or ""
-            text = u.get("text") or ""
-            if _OUTLINE_MARKER_RE.search(text):
-                for t in _parse_outline_titles(text):
-                    if len(t) <= _TAIL_TITLE_MAX_CHARS and not _is_wholly_furniture(t, rx):
-                        norm = _normalize_title(t)
-                        if norm:
-                            lexicon.add(norm)
+    outline_titles, _ = harvest_outline_titles(units_by_page)
+    lexicon |= outline_titles
     for res in (results or {}).values():
         if not isinstance(res, dict) or res.get("status") != "ok":
             continue
@@ -1233,8 +1707,16 @@ def arrange_page(
     sanity_on = resolve_arranger_heading_sanity()
     sanity_max = resolve_arranger_heading_max_chars()
     promote_on = resolve_arranger_md_heading_promote()
+    rescue_on = resolve_arranger_title_rescue()
 
     def _finish_ok(arr, attempts):
+        # Title-rescue PEEL runs FIRST: it strips the running-header / folio unit
+        # the arrange model fused into a section-title block, so heading-sanity
+        # then judges the CLEAN title text instead of demoting the whole band to
+        # furniture (which destroyed the title) — see Part C4.
+        heading_sanity.extend(
+            apply_furniture_unit_peel(arr, unit_by_id, enabled=rescue_on)
+        )
         # Deterministic heading-sanity post-pass runs AFTER validation succeeds,
         # on the final valid arrangement (byte-identical when the flag is off).
         heading_sanity.extend(
@@ -1349,10 +1831,15 @@ def _unit_fingerprint(units: list[dict], hints_text: str, *, model: str, include
     # sidecar. The vlm_heading_level signal itself is unit-derived + deterministic
     # for a given PDF+flags, so the flag bit is a sufficient salt.
     hp = int(resolve_arranger_md_heading_promote())
+    # The title-rescue PEEL runs inside `_finish_ok`, so it is BAKED into the
+    # cached arrangement — its flag must salt the key or a flip would serve a
+    # stale (pre-peel) sidecar. (The outline CARVE runs post-fan-out, in memory,
+    # like the leading-title split, so it re-applies deterministically on a hit.)
+    tr = int(resolve_arranger_title_rescue())
     raw = (
         f"{listing}␟{hints_text}␟{contract.CONTRACT_VERSION}␟{sys_sha}"
         f"␟{model}␟{int(bool(include_image))}␟{_ARRANGE_MAX_TOKENS}"
-        f"␟ladder:0.0/0.0/0.3␟hs:{hs}/{hs_max}␟hp:{hp}"
+        f"␟ladder:0.0/0.0/0.3␟hs:{hs}/{hs_max}␟hp:{hp}␟tr:{tr}"
     )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
@@ -1922,6 +2409,41 @@ class ArrangerRoute:
         # after the fan-out, before assembly. In-memory only: per-page sidecars
         # were persisted pre-split, and the split re-applies deterministically
         # on cached results (idempotent — synthetics are skipped on re-entry).
+        # Document-level OUTLINE-TITLE carve (Part C4): a section title the
+        # chapter outline DECLARES, buried inside an over-merged block, is carved
+        # into its own heading. Needs the whole-document outline harvest, so it
+        # runs here (same in-memory, re-appliable-on-resume posture as the split).
+        if resolve_arranger_title_rescue():
+            outline_titles, outline_unit_ids = harvest_outline_titles(units_by_page)
+            if outline_titles:
+                for pin in page_inputs:
+                    res = results.get(pin.page_label)
+                    if not isinstance(res, dict) or res.get("status") != "ok":
+                        continue
+                    recs = apply_outline_title_carve(
+                        res.get("arrangement") or {},
+                        {u["id"]: u for u in pin.units},
+                        outline_titles,
+                        outline_unit_ids,
+                        enabled=True,
+                    )
+                    if recs:
+                        res.setdefault("heading_sanity", []).extend(recs)
+            if outline_titles:
+                # Vendor-parity nav-band hygiene + the ONLY owner of a declared
+                # section title's LEVEL: section start stays nav (h3); the
+                # chapter-summary restatements drop to h5.
+                for rec in apply_section_title_levels(
+                    [p.page_label for p in page_inputs],
+                    results,
+                    units_by_page,
+                    outline_titles,
+                    enabled=True,
+                ):
+                    res_pg = results.get(rec["page"])
+                    if isinstance(res_pg, dict):
+                        res_pg.setdefault("heading_sanity", []).append(rec)
+
         if resolve_arranger_heading_sanity():
             lexicon = build_title_lexicon(units_by_page, results)
             if lexicon:
@@ -1968,6 +2490,12 @@ class ArrangerRoute:
                 "heading_sanity": len(hs_rows),
                 "heading_sanity_tail_titles": sum(1 for r in hs_rows if r.get("tail_title")),
                 "heading_sanity_leading_titles": sum(1 for r in hs_rows if r.get("leading_title")),
+                "heading_sanity_furniture_peels": sum(
+                    1 for r in hs_rows if r.get("op") == "furniture_unit_peel"
+                ),
+                "heading_sanity_outline_titles": sum(
+                    1 for r in hs_rows if r.get("op") == "outline_title_carve"
+                ),
                 "problems": result.get("problems", []) or [],
             })
             if valid and train_dir is not None:
@@ -2196,6 +2724,8 @@ def _emit_arranger_capture(
         total_hsanity = sum(r.get("heading_sanity", 0) for r in page_rows)
         total_tail = sum(r.get("heading_sanity_tail_titles", 0) for r in page_rows)
         total_lead = sum(r.get("heading_sanity_leading_titles", 0) for r in page_rows)
+        total_peel = sum(r.get("heading_sanity_furniture_peels", 0) for r in page_rows)
+        total_outline = sum(r.get("heading_sanity_outline_titles", 0) for r in page_rows)
         attempts_hist: dict[int, int] = {}
         for r in page_rows:
             a = int(r.get("attempts", 0) or 0)
@@ -2206,6 +2736,7 @@ def _emit_arranger_capture(
             f"valid={n_valid} failed={n_failed} coercions={total_coerce} "
             f"repairs={total_repair} heading_sanity_ops={total_hsanity} "
             f"tail_titles={total_tail} leading_titles={total_lead} "
+            f"furniture_peels={total_peel} outline_titles={total_outline} "
             f"attempts_hist={attempts_hist} "
             f"figures={int(figs.get('figures', 0))} "
             f"page_raster_skipped={int(figs.get('page_raster_skipped', 0))} "

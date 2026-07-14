@@ -1192,3 +1192,300 @@ def test_build_figure_region_from_candidate_shape():
 
     empty = ImageCandidate(kind="figure", bbox=(0, 0, 1, 1), pages=[1], member_block_indices=[])
     assert build_figure_region_from_candidate(empty, fbs) is None
+
+
+# ---------------------------------------------------------------------------
+# (n) SECTION-TITLE RESCUE (SEMANTIK_ARRANGER_TITLE_RESCUE) — the measured
+# scan-lane section-heading recall gap.
+#
+# ROOT CAUSE (traced on a real 198-page scan): extraction is CLEAN — the running
+# header / folio and the section title arrive as SEPARATE units — but the ARRANGE
+# MODEL groups them into ONE block, after which every existing mechanism damages
+# the title. The four shapes below are the four REAL broken titles, pinned:
+#
+#   §1.3  "Chapter 1 Foundations 41" + "1.3 Add and Subtract Integers"
+#           -> shipped as ONE heading with the running header glued on (WRONG TEXT)
+#   §1.4  "64 Chapter 1 Foundations" + "1.4 Multiply and Divide Integers"
+#           -> `_is_wholly_furniture` PREFIX-matches the header on the JOINED text
+#              and demotes the WHOLE block to furniture: the title is DESTROYED
+#   §1.6  "95" + "1.6 Add and Subtract Fractions"
+#           -> shipped as the heading "95 1.6 Add and Subtract Fractions" (WRONG TEXT)
+#   §1.7  "111" + "1.7 Decimals" + <the whole page body>
+#           -> one over-merged block, demoted `too_long`: the title is BURIED
+# ---------------------------------------------------------------------------
+def _units(*texts, page=1):
+    return [
+        {"id": f"p{page}_b{i:02d}", "text": t, "fb_index": i, "bbox": None}
+        for i, t in enumerate(texts)
+    ]
+
+
+def _by_id(units):
+    return {u["id"]: u for u in units}
+
+
+def _heads(arr, unit_by_id):
+    """[(level, joined_text)] for every heading block."""
+    out = []
+    for b in arr["blocks"]:
+        if b.get("type") != "heading":
+            continue
+        if b.get("synthetic_heading"):
+            t = (b.get("text") or "").strip()
+        else:
+            t = " ".join(
+                unit_by_id[i]["text"].replace("\n", " ").strip()
+                for i in b["ids"] if i in unit_by_id
+            ).strip()
+        out.append((b.get("level"), t))
+    return out
+
+
+def _all_ids(arr):
+    ids = []
+    for b in arr["blocks"]:
+        ids.extend(b.get("ids") or [])
+    return ids
+
+
+# --- the PEEL arm -----------------------------------------------------------
+def test_peel_rescues_running_header_fused_section_title_1_3():
+    """§1.3: header + title fused into ONE heading -> furniture + CLEAN title."""
+    units = _units("Chapter 1 Foundations 41", "1.3 Add and Subtract Integers")
+    arr = {"blocks": [{"type": "heading", "level": 1, "ids": ["p1_b00", "p1_b01"]}]}
+    recs = pa.apply_furniture_unit_peel(arr, _by_id(units), enabled=True)
+    assert [r["op"] for r in recs] == ["furniture_unit_peel"]
+    assert arr["blocks"][0]["type"] == "furniture"
+    assert arr["blocks"][0]["ids"] == ["p1_b00"]
+    assert _heads(arr, _by_id(units)) == [(1, "1.3 Add and Subtract Integers")]
+
+
+def test_peel_saves_title_the_furniture_demote_would_have_destroyed_1_4():
+    """§1.4 — the DESTRUCTIVE case.
+
+    Without the peel, `_is_wholly_furniture` prefix-matches the leading-folio
+    running header on the JOINED text, so heading-sanity demotes the WHOLE block
+    to `furniture` and the section title is DROPPED. Regression-pin BOTH halves.
+    """
+    units = _units("64 Chapter 1 Foundations", "1.4 Multiply and Divide Integers")
+    ub = _by_id(units)
+
+    # (a) today's behaviour WITHOUT the peel: the whole block becomes furniture.
+    legacy = {"blocks": [{"type": "heading", "level": 1, "ids": ["p1_b00", "p1_b01"]}]}
+    pa.apply_heading_sanity(legacy, ub, max_chars=120, enabled=True)
+    assert legacy["blocks"][0]["type"] == "furniture"
+    assert _heads(legacy, ub) == []  # the title is GONE
+
+    # (b) with the peel first, the title survives heading-sanity intact.
+    fixed = {"blocks": [{"type": "heading", "level": 1, "ids": ["p1_b00", "p1_b01"]}]}
+    pa.apply_furniture_unit_peel(fixed, ub, enabled=True)
+    pa.apply_heading_sanity(fixed, ub, max_chars=120, enabled=True)
+    assert _heads(fixed, ub) == [(1, "1.4 Multiply and Divide Integers")]
+
+
+def test_peel_strips_bare_folio_from_heading_text_1_6():
+    """§1.6: the heading shipped as '95 1.6 Add and Subtract Fractions' (WRONG TEXT)."""
+    units = _units("95", "1.6 Add and Subtract Fractions")
+    arr = {"blocks": [{"type": "heading", "level": 2, "ids": ["p1_b00", "p1_b01"]}]}
+    pa.apply_furniture_unit_peel(arr, _by_id(units), enabled=True)
+    assert _heads(arr, _by_id(units)) == [(2, "1.6 Add and Subtract Fractions")]
+
+
+def test_peel_preserves_the_demote_verdict_never_rescues_prose():
+    """ANTI-REGRESSION: peeling must not shrink an over-long PROSE heading back
+    under the ceiling, which would cancel heading-sanity's `too_long` demote and
+    ship prose as a heading (8 junk headings on the real corpus before this guard).
+    """
+    prose = "Ndula, an elephant at the San Diego Safari Park, weighs almost 3.2 tons"
+    units = _units("Chapter 1 Foundations 167", prose + " " + prose)
+    arr = {"blocks": [{"type": "heading", "level": None, "ids": ["p1_b00", "p1_b01"]}]}
+    recs = pa.apply_furniture_unit_peel(arr, _by_id(units), enabled=True)
+    assert recs == []                                    # refused
+    assert arr["blocks"][0]["ids"] == ["p1_b00", "p1_b01"]  # untouched
+    pa.apply_heading_sanity(arr, _by_id(units), max_chars=120, enabled=True)
+    assert _heads(arr, _by_id(units)) == []              # still demoted, as today
+
+
+def test_peel_never_peels_an_apparatus_opener():
+    """An apparatus opener ('Introduction') is CONTENT, not page furniture — peeling
+    it would route real text into a metadata_drop region and DELETE it."""
+    units = _units("Introduction", "1.1 Introduction to Whole Numbers")
+    arr = {"blocks": [{"type": "heading", "level": 2, "ids": ["p1_b00", "p1_b01"]}]}
+    assert pa.apply_furniture_unit_peel(arr, _by_id(units), enabled=True) == []
+
+
+def test_peel_only_touches_heading_blocks_and_conserves_units():
+    units = _units("95", "Some running prose body of the page.")
+    arr = {"blocks": [{"type": "paragraph", "level": None, "ids": ["p1_b00", "p1_b01"]}]}
+    assert pa.apply_furniture_unit_peel(arr, _by_id(units), enabled=True) == []
+    assert _all_ids(arr) == ["p1_b00", "p1_b01"]
+
+
+def test_peel_flag_off_byte_identical():
+    units = _units("Chapter 1 Foundations 41", "1.3 Add and Subtract Integers")
+    arr = {"blocks": [{"type": "heading", "level": 1, "ids": ["p1_b00", "p1_b01"]}]}
+    snap = json.dumps(arr, sort_keys=True)
+    assert pa.apply_furniture_unit_peel(arr, _by_id(units), enabled=False) == []
+    assert json.dumps(arr, sort_keys=True) == snap
+
+
+# --- the OUTLINE harvest ----------------------------------------------------
+def test_outline_harvest_reads_per_line_entry_units():
+    """THE LEXICON BUG: on a real scanned chapter opener the marker is its OWN unit
+    and each entry is a SEPARATE following unit, so the committed same-unit-only
+    parse harvested ZERO titles — the lexicon could never supply a title the
+    arranger had already missed, i.e. exactly the set that needs rescuing."""
+    units = _units(
+        "Chapter Outline",
+        "1.1 Introduction to Whole Numbers",
+        "1.2 Use the Language of Algebra",
+        "1.7 Decimals",
+        "Introduction",  # ends the run
+        "Just like a building needs a firm foundation to support it, ...",
+    )
+    titles, entry_ids = pa.harvest_outline_titles({1: units})
+    assert titles == {
+        "introduction to whole numbers",
+        "use the language of algebra",
+        "decimals",
+    }
+    assert entry_ids == {"p1_b01", "p1_b02", "p1_b03"}
+
+
+def test_outline_harvest_still_reads_the_fused_single_unit_shape():
+    units = _units("Chapter Outline 1.1 Introduction to Whole Numbers 1.7 Decimals")
+    titles, entry_ids = pa.harvest_outline_titles({1: units})
+    assert titles == {"introduction to whole numbers", "decimals"}
+    assert entry_ids == set()
+
+
+# --- the CARVE arm ----------------------------------------------------------
+def test_carve_recovers_title_buried_in_an_over_merged_block_1_7():
+    """§1.7: '111' + '1.7 Decimals' + the whole page body merged into ONE block."""
+    units = _units("111", "1.7 Decimals", "Learning Objectives",
+                   "Decimals are another way of writing fractions.")
+    arr = {"blocks": [{"type": "paragraph", "level": None,
+                       "ids": ["p1_b00", "p1_b01", "p1_b02", "p1_b03"]}]}
+    recs = pa.apply_outline_title_carve(
+        arr, _by_id(units), {"decimals"}, set(), enabled=True
+    )
+    assert [r["op"] for r in recs] == ["outline_title_carve"]
+    assert _heads(arr, _by_id(units)) == [(2, "1.7 Decimals")]
+    assert _all_ids(arr) == ["p1_b00", "p1_b01", "p1_b02", "p1_b03"]  # conserved
+
+
+def test_carve_recovers_title_buried_mid_block_1_1():
+    """§1.1: the title sits in the MIDDLE of the chapter-opener block."""
+    units = _units("Introduction", "Just like a building needs a firm foundation.",
+                   "1.1 Introduction to Whole Numbers", "Learning Objectives")
+    arr = {"blocks": [{"type": "paragraph", "level": None,
+                       "ids": ["p1_b00", "p1_b01", "p1_b02", "p1_b03"]}]}
+    pa.apply_outline_title_carve(
+        arr, _by_id(units), {"introduction to whole numbers"}, set(), enabled=True
+    )
+    assert _heads(arr, _by_id(units)) == [(2, "1.1 Introduction to Whole Numbers")]
+    assert [b["ids"] for b in arr["blocks"]] == [
+        ["p1_b00", "p1_b01"], ["p1_b02"], ["p1_b03"],
+    ]
+
+
+def test_carve_never_promotes_the_outline_listing_itself():
+    """RE-POISONING TRAP: the chapter-outline block's own entries match the lexicon
+    exactly — carving them would mint ten spurious section headings on page 1."""
+    units = _units("Chapter Outline", "1.1 Introduction to Whole Numbers",
+                   "1.7 Decimals")
+    titles, entry_ids = pa.harvest_outline_titles({1: units})
+    arr = {"blocks": [{"type": "paragraph", "level": None,
+                       "ids": ["p1_b00", "p1_b01", "p1_b02"]}]}
+    assert pa.apply_outline_title_carve(
+        arr, _by_id(units), titles, entry_ids, enabled=True
+    ) == []
+    assert _heads(arr, _by_id(units)) == []
+
+
+def test_carve_requires_BOTH_section_shape_and_an_outline_declaration():
+    """A bare word that merely normalizes onto an outline title is NOT carved — the
+    unit must literally be the declared 'N.M Title' section title."""
+    units = _units("Some intro prose.", "Decimals", "More prose.")
+    arr = {"blocks": [{"type": "paragraph", "level": None,
+                       "ids": ["p1_b00", "p1_b01", "p1_b02"]}]}
+    assert pa.apply_outline_title_carve(
+        arr, _by_id(units), {"decimals"}, set(), enabled=True
+    ) == []
+
+
+def test_carve_flag_off_byte_identical():
+    units = _units("111", "1.7 Decimals", "body")
+    arr = {"blocks": [{"type": "paragraph", "level": None,
+                       "ids": ["p1_b00", "p1_b01", "p1_b02"]}]}
+    snap = json.dumps(arr, sort_keys=True)
+    assert pa.apply_outline_title_carve(
+        arr, _by_id(units), {"decimals"}, set(), enabled=False
+    ) == []
+    assert json.dumps(arr, sort_keys=True) == snap
+
+
+# --- section-title LEVELS ---------------------------------------------------
+def test_section_title_levels_nav_for_first_h5_for_summary_repeat():
+    """Vendor parity: each section title is <h3> at its section start and <h5> in the
+    end-of-chapter summary. Arranger level N renders h(N+1), so 2 then 4."""
+    u_start = _units("1.3 Add and Subtract Integers", page=37)
+    u_sum = _units("1.3 Add and Subtract Integers", page=181)
+    results = {
+        37: {"status": "ok", "arrangement": {"blocks": [
+            {"type": "heading", "level": 1, "ids": ["p37_b00"]}]}},
+        181: {"status": "ok", "arrangement": {"blocks": [
+            {"type": "heading", "level": 1, "ids": ["p181_b00"]}]}},
+    }
+    recs = pa.apply_section_title_levels(
+        [37, 181], results, {37: u_start, 181: u_sum},
+        {"add and subtract integers"}, enabled=True,
+    )
+    assert [r["reason"] for r in recs] == ["section_start", "repeat_of_section_title"]
+    assert results[37]["arrangement"]["blocks"][0]["level"] == 2   # -> <h3>, nav
+    assert results[181]["arrangement"]["blocks"][0]["level"] == 4  # -> <h5>, not nav
+
+
+def test_section_title_levels_leave_undeclared_section_shaped_headers_alone():
+    """'1.3 EXERCISES Practice Makes Perfect' is section-SHAPED but the outline does
+    NOT declare it — promoting it into nav would invent a section."""
+    units = _units("1.3 EXERCISES Practice Makes Perfect", page=56)
+    results = {56: {"status": "ok", "arrangement": {"blocks": [
+        {"type": "heading", "level": 1, "ids": ["p56_b00"]}]}}}
+    assert pa.apply_section_title_levels(
+        [56], results, {56: units}, {"add and subtract integers"}, enabled=True
+    ) == []
+    assert results[56]["arrangement"]["blocks"][0]["level"] == 1  # untouched
+
+
+def test_section_title_levels_flag_off_byte_identical():
+    units = _units("1.3 Add and Subtract Integers", page=37)
+    results = {37: {"status": "ok", "arrangement": {"blocks": [
+        {"type": "heading", "level": 1, "ids": ["p37_b00"]}]}}}
+    snap = json.dumps(results, sort_keys=True)
+    assert pa.apply_section_title_levels(
+        [37], results, {37: units}, {"add and subtract integers"}, enabled=False
+    ) == []
+    assert json.dumps(results, sort_keys=True) == snap
+
+
+# --- resolver + cache-salt --------------------------------------------------
+def test_resolve_title_rescue_defaults(monkeypatch):
+    monkeypatch.delenv("SEMANTIK_ARRANGER_TITLE_RESCUE", raising=False)
+    assert pa.resolve_arranger_title_rescue() is True       # default ON
+    for tok in ("0", "false", "no", "off", "OFF"):
+        monkeypatch.setenv("SEMANTIK_ARRANGER_TITLE_RESCUE", tok)
+        assert pa.resolve_arranger_title_rescue() is False  # explicit revert lever
+    monkeypatch.setenv("SEMANTIK_ARRANGER_TITLE_RESCUE", "garbage")
+    assert pa.resolve_arranger_title_rescue() is True       # parse-with-fallback
+
+
+def test_title_rescue_flag_salts_the_page_sidecar_fingerprint(monkeypatch):
+    """The peel is BAKED into the cached arrangement, so a flag flip MUST move the
+    key — else a stale pre-peel sidecar is served and the fix silently no-ops."""
+    units = _units("Chapter 1 Foundations 41", "1.3 Add and Subtract Integers")
+    monkeypatch.setenv("SEMANTIK_ARRANGER_TITLE_RESCUE", "1")
+    on = pa._unit_fingerprint(units, "", model="m", include_image=True)
+    monkeypatch.setenv("SEMANTIK_ARRANGER_TITLE_RESCUE", "0")
+    off = pa._unit_fingerprint(units, "", model="m", include_image=True)
+    assert on != off
