@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from lib.semantik.affordance_conservation import (
+    _math_evidence,
     audit_affordances,
     resolve_affordance_gate_mode,
     resolve_section_recall_min,
@@ -423,6 +424,79 @@ def test_math_conserved_pair_is_silent_no_over_emit_false_positive():
     )["checks"]["math"]
     assert check["verdict"] == "pass"
     assert check["severity"] is None
+
+
+# ---------------------------------------------------------------------------
+# #59 — the EVIDENCE side must REUSE the render's segmentation, never race it.
+#
+# The count arm FALSE-FIRED "FABRICATED" on a clean chapter (3,884 "convertible"
+# vs 3,906 emitted <math>) because the evidence side re-segmented the RAW IR text
+# with its own _MATH_SPAN_ANGLE_RE loop, while the render converts the ASSEMBLED
+# BLOCK HTML (post sanitize_body_latex + wrap_bare_math + sanitize_math_spans)
+# and adjudicates with the document prose_vocab. A second segmenter, drifting.
+#
+# These are RELATIONAL invariants on the MECHANISM (no corpus, no magic number).
+# ---------------------------------------------------------------------------
+def test_bare_math_the_render_wraps_is_counted_as_evidence():
+    """THE #59 REGRESSION. ``wrap_bare_math`` wraps BARE (un-delimited) math into
+    ``$…$`` at render time, so the render emits a <math> for it. The old raw-text
+    rescan saw ZERO spans there (no ``$`` to find) → emitted(1) > convertible(0)
+    → a phantom "1 FABRICATED". Nothing was fabricated."""
+    from lib.semantik.math_fold import _MATH_SPAN_ANGLE_RE
+
+    bare = r"The result is \sqrt{5} \approx 2.236 for this case."
+    # Precondition: the OLD raw rescan is blind to this span -- that IS the bug.
+    assert len(_MATH_SPAN_ANGLE_RE.findall(bare)) == 0
+
+    spans, convertible = _math_evidence([bare])
+    assert convertible == 1, "the render WRAPS this bare run; evidence must see it"
+    assert spans == 1
+    # End to end: one <math> against that evidence is CONSERVED, not fabricated.
+    check = audit_affordances(_ir(bare), _page("<math><mi>x</mi></math>"))["checks"]["math"]
+    assert check["verdict"] == "pass"
+    assert check["severity"] is None
+
+
+def test_variable_product_letter_run_is_not_a_fabrication():
+    """``<mi>a</mi><mi>b</mi>`` is the CORRECT MathML for the product ``ab``. A
+    pure letter-run span is a legitimate variable product, not prose mis-wrapped
+    as math, and must land in the denominator (else it reads as an over-emit)."""
+    spans, convertible = _math_evidence([r"Simplify the product $ab$ and $cd$ here."])
+    assert (spans, convertible) == (2, 2)
+
+
+def test_declared_drop_region_math_is_not_conservable_evidence():
+    """A ``metadata_drop`` region (running header / folio) is destroyed BY DESIGN
+    and can NEVER reach the learner page, so its spans were never conservable.
+    Counting them manufactures a phantom shortfall (the mirror of the D2 sin).
+
+    This NARROWS the denominator, so it can never LAUNDER an over-emit."""
+    ir = {
+        "region_provenance": [
+            {"region_index": 0, "region_kind": "paragraph", "raw_text": r"$\frac{3}{4}$"},
+            {"region_index": 1, "region_kind": "metadata_drop", "raw_text": r"$\frac{9}{8}$"},
+        ]
+    }
+    check = audit_affordances(ir, _page("<math><mi>x</mi></math>"))["checks"]["math"]
+    # ONLY the paragraph region is conservable -> 1 evidence, 1 emitted -> silent.
+    assert check["evidence_convertible"] == 1
+    assert check["verdict"] == "pass"
+
+
+def test_over_emit_still_fires_after_the_segmentation_fix():
+    """THE OTHER HALF OF THE FIX. Silencing the false positive must NOT disable
+    the check — that would be a regression dressed as a fix. A genuinely
+    fabricating render (501 <math> against ONE evidence span, the D2 case) must
+    still be caught."""
+    check = audit_affordances(
+        _ir(r"The value is $x+1$ exactly."),
+        _page("<math><mi>a</mi></math>" * 501),
+    )["checks"]["math"]
+    assert check["verdict"] == "over_emit"
+    assert check["severity"] == "warning"
+    assert check["emitted_math_elements"] == 501
+    assert check["evidence_convertible"] == 1
+    assert "FABRICATED" in check["message"]
 
 
 # ---------------------------------------------------------------------------

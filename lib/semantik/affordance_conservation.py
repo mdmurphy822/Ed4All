@@ -47,12 +47,23 @@ independent heuristic racing it.** Then ``evidence`` == "convertible",
 false positive from a parallel estimator. So this module REUSES, never
 reimplements:
 
-* **math** — :func:`lib.semantik.latex_mathml.latex_to_mathml` (the emitter) run
-  over the spans :data:`lib.semantik.math_fold._MATH_SPAN_ANGLE_RE` finds (the
-  same iterator every math pass uses). The ``(?<!\\)`` escaped-dollar lookbehind
-  + :func:`~lib.semantik.math_fold._is_math_content` are what keep ``"costs $5
-  and $10"`` from counting as math (a naive ``\\$[^$]+\\$`` counter false-fires;
-  these guards do not).
+* **math** — :func:`lib.semantik.latex_mathml.convert_latex_spans`, which IS the
+  render's span-SELECTION seam, replayed over the render's own normalization
+  chain (``_esc_text`` → ``sanitize_body_latex`` → ``wrap_bare_math`` →
+  ``sanitize_math_spans``) with the document-wide ``prose_vocab``. Segmentation
+  AND accept predicate are the emitter's BY CONSTRUCTION. The ``(?<!\\)``
+  escaped-dollar lookbehind + :func:`~lib.semantik.math_fold._is_math_content`
+  are what keep ``"costs $5 and $10"`` from counting as math (a naive
+  ``\\$[^$]+\\$`` counter false-fires; these guards do not).
+
+  This is the one predicate that got the design rule WRONG on the first landing
+  and had to be repaired (task #59): it re-segmented the RAW IR text with a bare
+  ``_MATH_SPAN_ANGLE_RE`` loop — a second segmenter racing the render — and so
+  UNDERCOUNTED the denominator and false-fired ``over_emit`` ("+22 FABRICATED")
+  on a document with ZERO fabrications. See :func:`_math_evidence`. The lesson is
+  the module's own thesis: a metric computed from a parse nobody checked against
+  the real thing is exactly the failure this gate exists to catch, and writing it
+  a second time is how you reintroduce it.
 * **table_headers** — :func:`lib.semantik.table_structure.parse_table_topology`
   (the emitter's own accept, INCLUDING its header-label admissibility gate) run
   on the PRE-destruction text, i.e. ``sanitize_body_latex(..., keep_md_sep=True)``.
@@ -198,6 +209,19 @@ _IMAGE_DECLARED_DROPS = (
     "is INVISIBLE to this check",
 )
 
+# Region kinds the pipeline DESTROYS BY DESIGN — their text can NEVER reach the
+# learner page, so their spans were never conservable evidence. Excluding them is
+# the same principle :data:`_IMAGE_DECLARED_DROPS` already encodes for images: a
+# DECLARED intentional drop is not attrition, and counting it as evidence
+# manufactures a phantom shortfall.
+#
+# This NARROWS the denominator, so it can never LAUNDER an over-emit — it makes
+# the fabrication arm STRICTLY HARDER to satisfy, never easier. (Measured on a
+# real chapter: ``metadata_drop`` regions carry exactly 40 convertible spans, and
+# the emitter's own self-report converts 3,946 while only 3,906 <math> ship —
+# a difference of EXACTLY those 40. The arithmetic closes.)
+_RENDER_DROPPED_REGION_KINDS = frozenset({"metadata_drop"})
+
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 _MATH_ELEMENT_RE = re.compile(r"<math\b.*?</math\s*>", re.DOTALL | re.IGNORECASE)
 _MATH_OPEN_RE = re.compile(r"<math\b", re.IGNORECASE)
@@ -246,7 +270,7 @@ def _norm(text: str) -> str:
 
 
 def _iter_region_texts(cascade_ir_doc: Any) -> Iterator[Tuple[Any, str]]:
-    """Yield ``(region_index, text)`` for every region in the IR.
+    """Yield ``(region_kind, text)`` for every region in the IR.
 
     Prefers ``repaired_text`` over ``raw_text`` — the SAME precedence the render
     seam (``cascade_ir._resolve_repaired``) uses, so the evidence is computed on
@@ -261,7 +285,7 @@ def _iter_region_texts(cascade_ir_doc: Any) -> Iterator[Tuple[Any, str]]:
         if not isinstance(entry, dict):
             continue
         text = entry.get("repaired_text") or entry.get("raw_text") or ""
-        yield entry.get("region_index"), str(text)
+        yield entry.get("region_kind"), str(text)
 
 
 def _strip_math_elements(html: str) -> str:
@@ -287,27 +311,84 @@ def _plain_text(html: str) -> str:
 # Check: math (CLASS-B detector).
 # ---------------------------------------------------------------------------
 def _math_evidence(texts: List[str]) -> Tuple[int, int]:
-    """``(spans, convertible)`` over the IR text universe.
+    """``(spans, convertible)`` over the RENDER'S OWN span universe.
 
-    ``convertible`` is the EMITTER'S OWN ACCEPT: a span counts iff
-    :func:`~lib.semantik.latex_mathml.latex_to_mathml` — the exact function the
-    render pass calls — returns markup for it. So ``convertible`` and the emitted
-    ``<math>`` count are the same predicate on the same spans, and a gap is
-    attrition by definition.
+    **This function must not segment spans itself.** The original implementation
+    did — it ran :data:`~lib.semantik.math_fold._MATH_SPAN_ANGLE_RE` straight over
+    the RAW IR region text and adjudicated each hit with a bare
+    ``latex_to_mathml(body)``. That is a SECOND SEGMENTER racing the render, and
+    it FALSE-FIRED the ``over_emit`` (fabrication) arm on a clean document:
+
+    * The render never converts raw text. It converts the ASSEMBLED BLOCK HTML,
+      after ``sanitize_body_latex`` + ``wrap_bare_math`` (which WRAPS bare,
+      un-delimited math runs into ``$…$`` — spans the raw scan cannot see at all)
+      and ``sanitize_math_spans`` (which REPAIRS span content, turning a span the
+      grammar would decline into one it accepts). So the raw-text denominator
+      systematically UNDERCOUNTED.
+    * The raw scan also dropped the ``prose_vocab`` argument, so it adjudicated
+      with a DIFFERENT accept predicate than the render's (task #57 rejects a
+      prose fragment like ``$ and $`` only when the document vocabulary is
+      supplied).
+
+    Measured on a real 1,161-region chapter: raw scan 3,884 "convertible" vs
+    3,906 emitted ``<math>`` → a phantom "+22 FABRICATED" warning over a document
+    whose only pure letter-run spans were the LEGITIMATE variable products ``ab``
+    and ``cd`` (``<mi>a</mi><mi>b</mi>`` is the CORRECT MathML for the product
+    ``ab``). Nothing was fabricated. The gate was computing a metric from a parse
+    it had never checked against what the renderer actually does — the SAME sin,
+    mirrored, that this whole module exists to kill.
+
+    So the evidence side now REPLAYS THE RENDER'S OWN CHAIN, reusing every
+    function verbatim (never re-deriving a boundary):
+
+    ``_esc_text`` → ``sanitize_body_latex(html=True)`` → ``wrap_bare_math(html=True)``
+    → ``sanitize_math_spans`` → :func:`~lib.semantik.latex_mathml.convert_latex_spans`
+
+    — the last of which IS the render's span-SELECTION seam (``adapter.
+    _latex_to_mathml`` calls exactly it, with exactly this document-wide
+    ``prose_vocab``). Segmentation and accept predicate are therefore IDENTICAL to
+    the emitter's BY CONSTRUCTION rather than by agreement, which is the module's
+    founding design rule applied to itself. Corroboration that the parity is real:
+    on that same chapter the replay's DECLINED count is 4 — the emitter's own
+    self-report is also exactly 4.
+
+    ``convertible`` is what that seam CONVERTS; ``spans`` is what it SEES
+    (converted + declined).
     """
-    from lib.semantik.latex_mathml import _split_span, latex_to_mathml  # noqa: PLC0415
-    from lib.semantik.math_fold import _MATH_SPAN_ANGLE_RE  # noqa: PLC0415
+    from lib.semantik.adapter import _esc_text  # noqa: PLC0415
+    from lib.semantik.latex_mathml import convert_latex_spans  # noqa: PLC0415
+    from lib.semantik.math_fold import (  # noqa: PLC0415
+        build_prose_vocabulary,
+        sanitize_body_latex,
+        sanitize_math_spans,
+        wrap_bare_math,
+    )
+
+    # The DOCUMENT's ordinary-prose vocabulary — harvested exactly as
+    # ``adapter._latex_to_mathml`` harvests it: from the post-fold PLAIN-text
+    # (``block.raw_text``) lane, with every math span removed. Without it the
+    # accept predicate is not the render's (see the docstring).
+    plain = [
+        wrap_bare_math(sanitize_body_latex(t, html=False), html=False) for t in texts
+    ]
+    prose_vocab = build_prose_vocabulary(plain)
 
     spans = 0
     convertible = 0
     for text in texts:
-        if not text or ("$" not in text and "\\(" not in text and "\\[" not in text):
+        if not text:
             continue
-        for match in _MATH_SPAN_ANGLE_RE.finditer(text):
-            spans += 1
-            body, display = _split_span(match.group(0))
-            if latex_to_mathml(body, display=display) is not None:
-                convertible += 1
+        # Reconstruct the block HTML the render converts (adapter's own text-block
+        # build), then the span-content repair pass, then the SELECTION seam.
+        block_html = wrap_bare_math(
+            sanitize_body_latex(f"<p>{_esc_text(text)}</p>", html=True), html=True
+        )
+        block_html = sanitize_math_spans(block_html)
+        _out, converted, declined = convert_latex_spans(
+            block_html, prose_vocab=prose_vocab
+        )
+        convertible += converted
+        spans += converted + declined
     return spans, convertible
 
 
@@ -938,7 +1019,16 @@ def audit_affordances(
     Pure + deterministic. No LLM. No DecisionCapture. No mutation of any input.
     """
     emitter = emitter_report if isinstance(emitter_report, dict) else {}
-    texts = [text for _idx, text in _iter_region_texts(cascade_ir_doc) if text]
+    regions = [(kind, text) for kind, text in _iter_region_texts(cascade_ir_doc) if text]
+    texts = [text for _kind, text in regions]
+    # The math evidence is scoped to the text that can actually REACH the render:
+    # a declared-drop region (running header / folio) is destroyed by design, so
+    # its spans are not conservable (see _RENDER_DROPPED_REGION_KINDS).
+    math_texts = [
+        text
+        for kind, text in regions
+        if kind not in _RENDER_DROPPED_REGION_KINDS
+    ]
     recall_min = resolve_section_recall_min()
 
     # An EMPTY region universe is "no measurement", NOT "verified safe" — the
@@ -947,7 +1037,7 @@ def audit_affordances(
     # explicitly instead of silently passing (or, worse, reporting every emitted
     # <thead> as an over-emit against a zero denominator).
     if texts:
-        math_check = _check_math(texts, html, emitter)
+        math_check = _check_math(math_texts, html, emitter)
         table_check = _check_table_headers(texts, html, emitter)
     else:
         no_ir = {
