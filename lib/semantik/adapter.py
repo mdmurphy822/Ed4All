@@ -2938,6 +2938,55 @@ def _separate_adjacent_math_spans(chapters: Sequence[_AdapterChapter]) -> None:
                 block.html = separate_adjacent_math_spans(block.html)
 
 
+def _resolve_latex_mathml() -> bool:
+    """Whether the ``SEMANTIK_LATEX_MATHML`` pass is on (default OFF)."""
+    import os
+
+    val = (os.environ.get("SEMANTIK_LATEX_MATHML") or "").strip().lower()
+    return val in {"1", "true", "yes", "on"}
+
+
+def _latex_to_mathml(chapters: Sequence[_AdapterChapter]) -> None:
+    r"""Convert delimited LaTeX math spans to presentation MathML (opt-in).
+
+    ``SEMANTIK_VLM_FUSION`` transcribes scanned math as inline LaTeX and keeps it
+    VERBATIM as text (its documented contract), so a scanned chapter ships
+    thousands of literal ``$\frac{1}{2}$`` runs inside ``<p>`` bodies — which a
+    screen reader pronounces "dollar backslash frac one two dollar" (WCAG 1.3.1,
+    and the single largest a11y gap versus the vendor's ~2.9k real ``<math>``
+    elements). The math is already CORRECT; only its representation is wrong.
+
+    When ``SEMANTIK_LATEX_MATHML`` is set,
+    :func:`~lib.semantik.latex_mathml.convert_latex_spans` rewrites each span the
+    deterministic arithmetic/algebra grammar can parse into a ``<math>`` carrying
+    the original LaTeX twice (``alttext`` + an ``<annotation encoding=
+    "application/x-tex">``), validated by the cascade's OWN
+    ``gates/mathml_check.py::validate_mathml``. A span outside the grammar (an
+    ``array`` environment, an unknown control sequence, a mis-wrapped prose blob)
+    or one whose markup fails the gate is DECLINED and left EXACTLY as it is
+    today — never a mangled half-conversion.
+
+    HTML-ONLY (mirrors ``_separate_adjacent_math_spans``): ``raw_text`` /
+    ``repaired_text`` keep the verbatim LaTeX, so the content-hash sourceId basis
+    — and every chunk ref / citation deep-link derived from it — is byte-stable
+    (the documented OCR-repair posture). Runs ABSOLUTELY LAST, after every
+    span-content sanitizer and the inter-span separator pass, so the delimiters
+    it reads are final. Default OFF → byte-identical (the module is not even
+    imported). Idempotent: the emitted markup carries no ``$`` delimiter.
+
+    NO LLM call site → NO DecisionCapture obligation (a pure deterministic
+    string → markup transform).
+    """
+    if not _resolve_latex_mathml():
+        return
+    from lib.semantik.latex_mathml import convert_latex_spans  # noqa: PLC0415
+
+    for ch in chapters:
+        for block in ch.blocks:
+            if block.html:
+                block.html, _converted, _declined = convert_latex_spans(block.html)
+
+
 def _strip_body_folios(chapters: Sequence[_AdapterChapter]) -> None:
     """Drop / strip leaked printed folios (page numbers) from BODY blocks (Defect 2).
 
@@ -3268,6 +3317,15 @@ def _normalize_ocr_headings(
     # ABSOLUTELY LAST so every prior span-content edit is settled before the
     # inter-span separators are stamped.
     _separate_adjacent_math_spans(chapters)
+
+    # LaTeX → presentation-MathML (opt-in, SEMANTIK_LATEX_MATHML). The final
+    # representation step: the VLM's verbatim inline LaTeX ($\frac{1}{2}$) is a
+    # WCAG 1.3.1 failure as prose ("dollar backslash frac"), so each span the
+    # deterministic grammar can parse becomes a gate-validated <math> carrying
+    # the original LaTeX in alttext + an x-tex annotation. An unparseable span
+    # stays verbatim. HTML-only; runs after EVERY math pass so the delimiters it
+    # reads are final. Default OFF → byte-identical.
+    _latex_to_mathml(chapters)
 
     return releveled
 
