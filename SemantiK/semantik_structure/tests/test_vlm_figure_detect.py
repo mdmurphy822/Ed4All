@@ -153,16 +153,43 @@ def test_page_raster_ceiling_is_the_shared_constant():
     assert _accept(just_over)[1]["page_raster"] == 1
 
 
-def test_text_column_guard_rejects_a_body_text_crop():
-    """A crop of body text is a WCAG 1.4.5 images-of-text REGRESSION, not a win."""
-    # A left column densely covered by text lines.
+def test_text_column_guard_rejects_a_LARGE_body_text_crop():
+    """A crop of a prose COLUMN is a WCAG 1.4.5 images-of-text REGRESSION.
+
+    The box must be LARGE (>= _COVERAGE_MIN_AREA) for this arm to apply: on a
+    scanned page the OCR line boxes blanket a SMALL figure, so coverage saturates
+    and gating small boxes on it rejects genuine figures (measured 0.94-1.00 on
+    real pizza/counters figures). Small boxes are guarded by the word-count arm.
+    """
     text = [(0.10, 0.10 + i * 0.03, 0.48, 0.12 + i * 0.03) for i in range(25)]
+    box = (0.09, 0.09, 0.49, 0.85)
+    assert (box[2] - box[0]) * (box[3] - box[1]) >= vfd._COVERAGE_MIN_AREA
     accepted, stats = _accept(
-        [{"bbox": [0.09, 0.09, 0.49, 0.85], "kind": "diagram"}],
-        text_boxes_norm=text,
+        [{"bbox": list(box), "kind": "diagram"}], text_boxes_norm=text
     )
     assert accepted == []
     assert stats["text_column"] == 1
+
+
+def test_coverage_arm_does_NOT_fire_on_a_SMALL_genuine_figure():
+    """THE REGRESSION THIS PINS (live production defect).
+
+    OCR line boxes blanket a small figure sitting between two text lines, so its
+    measured coverage saturates (0.938 / 1.000 on REAL pizza-fraction and counters
+    figures). Gating small boxes on coverage rejected 5 of 6 GENUINE figures and
+    emitted ZERO <img>. The arm must not apply below _COVERAGE_MIN_AREA.
+    """
+    blanket = [(0.0, 0.60, 1.0, 0.80)]  # one wide OCR line box over the figure
+    box = (0.23, 0.65, 0.34, 0.72)      # a real pizza figure: area ~0.008
+    area = (box[2] - box[0]) * (box[3] - box[1])
+    assert area < vfd._COVERAGE_MIN_AREA
+    assert vfd._text_coverage(box, blanket) == 1.0  # coverage SATURATES
+    accepted, stats = _accept(
+        [{"bbox": list(box), "kind": "illustration"}],
+        text_items_norm=[(blanket[0], "")],  # blanketing box carries no words
+    )
+    assert stats["accepted"] == 1, "a small genuine figure must survive"
+    assert stats["text_column"] == 0
 
 
 def test_text_column_guard_keeps_a_figure_sitting_in_whitespace():
@@ -274,13 +301,13 @@ def test_rejects_degenerate_and_out_of_page_boxes():
     assert stats["malformed"] == 3
 
 
-def test_ambiguous_out_of_range_box_is_rejected_somehow_never_accepted():
-    """A box in the ambiguous 1..100 band is rescaled as a percentage; whatever
-    reason it lands under, it must never be ACCEPTED. (Anything the gate cannot
-    confidently read is not a figure.)"""
+def test_a_box_in_the_1_to_100_band_is_read_as_a_PERCENTAGE():
+    """Documented convention rescue: 1..100 => percent, 100..1000 => the Qwen-VL
+    0..1000 grid, beyond => out_of_page. A box in the percent band is rescaled and
+    then judged on its merits like any other (here: a small but legal box)."""
     accepted, stats = _accept([{"bbox": [0.5, 0.5, 9.9, 9.9]}])
-    assert accepted == []
-    assert stats["accepted"] == 0
+    assert stats["out_of_page"] == 0
+    assert accepted[0]["bbox"] == pytest.approx([3.06, 3.96, 60.588, 78.408])
 
 
 def test_rejects_absurd_aspect_and_tiny_boxes():

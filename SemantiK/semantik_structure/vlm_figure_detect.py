@@ -115,21 +115,35 @@ DETECT_PROMPT_VERSION = 2
 
 # --- Deterministic accept-gate constants (calibration, NOT corpus targets) ---
 # A box must cover at least this fraction of the page to be a figure worth
-# cropping (below it is a glyph, a bullet, a rule, or noise).
-# TODO(calibration) — domain-agnostic geometry, tuned on scanned-textbook pages.
-_MIN_AREA_FRACTION = 0.010
+# cropping (below it is a glyph, a bullet, a rule, or noise). 0.006 of a US-Letter
+# page is ~0.8in x 0.8in — a small but genuine inline figure. MEASURED: a real
+# pizza-fraction illustration came in at 0.0083, so the earlier 0.010 floor was
+# cutting genuine figures.
+# TODO(calibration) — domain-agnostic geometry, NOT a corpus target.
+_MIN_AREA_FRACTION = 0.006
 # Absurd aspect ratios are not figures (a hairline rule, a margin strip).
 _MIN_ASPECT = 0.06
 _MAX_ASPECT = 16.0
 # A box must be at least this fraction of the page in BOTH dimensions — a
 # 1-pixel-tall full-width strip has a fine area but is a rule, not a figure.
 _MIN_SIDE_FRACTION = 0.03
-# TEXT-COLUMN GUARD (arm 1 — AREA coverage): a box whose area is this covered by
-# extracted text blocks is a column of prose, not a figure. Cropping it = WCAG
-# 1.4.5 images-of-text.
-# TODO(calibration) — measured on a real scanned-textbook chapter: a dense prose
-# column the model proposed measured 0.59 and was correctly rejected here.
+# TEXT-COLUMN GUARD (arm 1 — AREA coverage): a LARGE box mostly blanketed by text
+# blocks is a column of prose, not a figure. Cropping it = WCAG 1.4.5
+# images-of-text.
+#
+# ONLY MEANINGFUL FOR LARGE BOXES — and that restriction is load-bearing. The OCR
+# text blocks are LINE-level, and a scanned page's OCR line boxes are wide and
+# tall enough to BLANKET a small figure sitting between two lines. Measured on the
+# live production geometry: a genuine counters figure scored coverage 0.938 and
+# three genuine pizza-fraction illustrations scored 0.938 / 1.000 / 1.000 — i.e.
+# coverage SATURATES on pure-figure regions once the box is small, and gating on
+# it rejected 5 of 6 GENUINE figures. So the arm is applied only when the box is
+# at least _COVERAGE_MIN_AREA of the page, where "blanketed by text" actually
+# discriminates. Below that, the WORD-COUNT arm (arm 2) is the guard — it counts
+# actual words and is immune to box coarseness (a figure yields zero).
+# TODO(calibration) — domain-agnostic, NOT a corpus target.
 _MAX_TEXT_COVERAGE = 0.35
+_COVERAGE_MIN_AREA = 0.05
 # TEXT-DENSITY GUARD (arm 2 — WORD COUNT). Load-bearing, and the coverage arm
 # provably CANNOT replace it. A procedure TABLE ("Step 1..4", all prose — an
 # unambiguous images-of-text crop) has thin word boxes separated by cell
@@ -649,10 +663,13 @@ def accept_figure_boxes(
             stats["bad_aspect"] += 1
             continue
         # THE TEXT-COLUMN GUARD (arm 1) — a crop of a prose COLUMN is a 1.4.5
-        # regression.
-        if _text_coverage((x0, y0, x1, y1), text_boxes_norm) >= _MAX_TEXT_COVERAGE:
-            stats["text_column"] += 1
-            continue
+        # regression. LARGE boxes only: on a scanned page the OCR line boxes
+        # blanket a small figure, so coverage saturates (measured 0.94-1.00 on
+        # GENUINE figures) and gating small boxes on it rejects real content.
+        if area >= _COVERAGE_MIN_AREA:
+            if _text_coverage((x0, y0, x1, y1), text_boxes_norm) >= _MAX_TEXT_COVERAGE:
+                stats["text_column"] += 1
+                continue
         # THE TEXT-DENSITY GUARD (arm 2) — a crop carrying a PARAGRAPH of readable
         # words is text rendered as pixels, whatever its area coverage. This is the
         # arm that catches a procedure TABLE, which the coverage arm provably
@@ -719,21 +736,44 @@ def page_text_items_norm(
     pt_h = float(page.get("height") or 0.0)
     if pt_w <= 0 or pt_h <= 0:
         return []
-    tess_w = page.get("tesseract_width")
+
+    # SOURCE OF TRUTH: the raw TESSERACT word/line boxes, NOT the ``merged``
+    # stream. Load-bearing, and a real bug lived here. ``merged`` is the
+    # VLM-FUSED block list, and a fused block's bbox is interpolated/coarse — on a
+    # live scan the digit "5" (a page number) carried a 235x307px box. Feeding
+    # those inflated boxes to a GEOMETRIC guard makes them swallow the figures
+    # sitting beside them, so the text-column arm false-rejects EVERY genuine
+    # figure on the page (measured: 0 of 6 real proposals survived). OCR word boxes
+    # are tight and are the ground truth for "where is ink on this scanned page".
+    # Falls back to ``merged`` only when no OCR blocks exist (born-digital lane).
+    blocks = ((page.get("tesseract") or {}).get("text_blocks")) or []
+    ocr_space = bool(blocks)
+    if not blocks:
+        blocks = ((page.get("merged") or {}).get("text_blocks")) or []
+
+    # Both the tesseract blocks and (on the scan lane) the merged blocks live in
+    # IMAGE-PIXEL space; page width/height are PDF POINTS. Normalizing by the wrong
+    # dims would put every text box at ~1/scale of the page and silently DEFEAT
+    # both guards. Prefer the extraction's own recorded pixel dims; derive the
+    # height from the uniform render scale only if it did not record one.
     norm_w, norm_h = pt_w, pt_h
+    tess_w = page.get("tesseract_width")
+    tess_h = page.get("tesseract_height")
     if tess_w:
         try:
             cand_w = float(tess_w)
             if cand_w > 0:
                 norm_w = cand_w
-                norm_h = pt_h * (cand_w / pt_w)  # uniform render scale
+                cand_h = float(tess_h) if tess_h else 0.0
+                norm_h = cand_h if cand_h > 0 else pt_h * (cand_w / pt_w)
         except (TypeError, ValueError, ZeroDivisionError):
             norm_w, norm_h = pt_w, pt_h
+    elif not ocr_space:
+        norm_w, norm_h = pt_w, pt_h
     if norm_w <= 0 or norm_h <= 0:
         return []
 
     out: list[tuple[tuple[float, float, float, float], str]] = []
-    blocks = ((page.get("merged") or {}).get("text_blocks")) or []
     for blk in blocks:
         bbox = (blk or {}).get("bbox")
         if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
