@@ -2637,7 +2637,7 @@ def _resolve_table_structure() -> bool:
     return val in {"1", "true", "yes", "on"}
 
 
-def _emit_structured_bodies(chapters: Sequence[_AdapterChapter]) -> None:
+def _emit_structured_bodies(chapters: Sequence[_AdapterChapter]) -> Dict[str, int]:
     """Deliver <ul>/<ol>/<table>/<dl> bodies for high-confidence shapes (A1/A4/A5).
 
     Runs AFTER the opener / apparatus split (so a split-out glossary remainder
@@ -2653,7 +2653,19 @@ def _emit_structured_bodies(chapters: Sequence[_AdapterChapter]) -> None:
     cells instead of shredding the row split on them. It is self-verifying and
     fails closed (arithmetic fit + text conservation + the cascade's own H43 gate),
     so a refusal falls straight through to today's ``emit_structure`` path.
+
+    Returns the table lane's OWN accept/refuse self-report
+    (``tables_attempted`` / ``tables_accepted`` / ``tables_refused``; all zero
+    when the flag is off). An emitter reporting its own conserved + declined
+    counts is the cheapest and strongest form of the affordance-conservation
+    invariant — it needs no evidence re-derivation at all — and it is what lets
+    ``lib.semantik.affordance_conservation`` tell a lane that REFUSED a table
+    (a documented, self-verifying decline) apart from a lane that never ran
+    (the CLASS-A destruction defect). Pure metering: the counters are returned,
+    never serialized on the default path, so the flag-off render stays
+    byte-identical.
     """
+    stats = {"tables_attempted": 0, "tables_accepted": 0, "tables_refused": 0}
     table_structure = _resolve_table_structure()
     if table_structure:
         from lib.semantik.table_structure import emit_structured_table
@@ -2673,8 +2685,12 @@ def _emit_structured_bodies(chapters: Sequence[_AdapterChapter]) -> None:
             if any(tag in html for tag in _STRUCTURAL_HTML_TAGS):
                 continue  # a <p>-led body that already embeds a structure
             if table_structure and block.table_src:
+                stats["tables_attempted"] += 1
                 table_html = emit_structured_table(block.table_src)
-                if table_html is not None:
+                if table_html is None:
+                    stats["tables_refused"] += 1
+                else:
+                    stats["tables_accepted"] += 1
                     # Same re-balance as the emit_structure path below: splitting
                     # the block into <p>/<table>/<p> can cut a $$…$$ span across
                     # the new element boundary.
@@ -2709,6 +2725,7 @@ def _emit_structured_bodies(chapters: Sequence[_AdapterChapter]) -> None:
                 block.demoted_role = declared
                 block.block_role = "paragraph"
                 block.region_kind = "paragraph"
+    return stats
 
 
 def _sanitize_block_body_latex(chapters: Sequence[_AdapterChapter]) -> None:
@@ -3016,7 +3033,7 @@ def _resolve_latex_mathml() -> bool:
     return val in {"1", "true", "yes", "on"}
 
 
-def _latex_to_mathml(chapters: Sequence[_AdapterChapter]) -> None:
+def _latex_to_mathml(chapters: Sequence[_AdapterChapter]) -> Dict[str, int]:
     r"""Convert delimited LaTeX math spans to presentation MathML (opt-in).
 
     ``SEMANTIK_VLM_FUSION`` transcribes scanned math as inline LaTeX and keeps it
@@ -3046,15 +3063,31 @@ def _latex_to_mathml(chapters: Sequence[_AdapterChapter]) -> None:
 
     NO LLM call site → NO DecisionCapture obligation (a pure deterministic
     string → markup transform).
+
+    Returns the pass's OWN conserved/declined self-report
+    (``math_spans_converted`` / ``math_spans_declined``; both zero when the flag
+    is off). ``convert_latex_spans`` has always computed these counts — they were
+    simply thrown away at the call site, so a run could convert nothing and no
+    artifact would say so. An emitter reporting its own conserved + declined
+    counts is the cheapest and strongest form of the affordance-conservation
+    invariant (``lib.semantik.affordance_conservation``): it needs no evidence
+    re-derivation, and it is what distinguishes "the pass RAN and declined this
+    span" (a documented refusal) from "the pass never ran" (the CLASS-B missing-
+    transform defect). Pure metering: returned, never serialized on the default
+    path, so the flag-off render stays byte-identical.
     """
+    stats = {"math_spans_converted": 0, "math_spans_declined": 0}
     if not _resolve_latex_mathml():
-        return
+        return stats
     from lib.semantik.latex_mathml import convert_latex_spans  # noqa: PLC0415
 
     for ch in chapters:
         for block in ch.blocks:
             if block.html:
-                block.html, _converted, _declined = convert_latex_spans(block.html)
+                block.html, converted, declined = convert_latex_spans(block.html)
+                stats["math_spans_converted"] += converted
+                stats["math_spans_declined"] += declined
+    return stats
 
 
 def _strip_body_folios(chapters: Sequence[_AdapterChapter]) -> None:
@@ -3102,12 +3135,22 @@ def _strip_body_folios(chapters: Sequence[_AdapterChapter]) -> None:
 def _normalize_ocr_headings(
     chapters: Sequence[_AdapterChapter],
     doc_title: Optional[str] = None,
+    emitter_report: Optional[Dict[str, int]] = None,
 ) -> int:
     """Demote OCR heading furniture / garbage across the adapter IR in place.
 
     Returns the count of Wave #22 unit-skeleton heading re-derivations (the
     mis-typed headings demoted because they severed a worked example) so the
     caller can report it.
+
+    ``emitter_report`` (optional, mutated in place) collects the affordance
+    self-report of the two structural emitters this pass drives —
+    :func:`_emit_structured_bodies` (table accept/refuse) and
+    :func:`_latex_to_mathml` (math converted/declined). Both already computed
+    these counts and threw them away; surfacing them lets
+    ``lib.semantik.affordance_conservation`` distinguish a documented refusal
+    from a pass that never ran. Pure metering — nothing is serialized on the
+    default path, so passing ``None`` (every existing caller) is byte-identical.
 
     See the module-section banner above for the per-case mapping. Chapter TITLE
     furniture is neutralized via the continuation presentation-<div> (the first
@@ -3315,7 +3358,9 @@ def _normalize_ocr_headings(
     # paragraph. Runs LAST so it sees the post-split / post-demotion block set
     # (a glossary remainder split out of a "Key Terms" heading can become a <dl>)
     # and the SANITIZED body text (bare math already wrapped in $…$).
-    _emit_structured_bodies(chapters)
+    _table_stats = _emit_structured_bodies(chapters)
+    if emitter_report is not None:
+        emitter_report.update(_table_stats)
 
     # B3+ final self-balance sweep — the apparatus / opener splits above rebuild
     # <p> bodies from cut text, which can slice a $$…$$ / \[…\] display span
@@ -3395,7 +3440,9 @@ def _normalize_ocr_headings(
     # the original LaTeX in alttext + an x-tex annotation. An unparseable span
     # stays verbatim. HTML-only; runs after EVERY math pass so the delimiters it
     # reads are final. Default OFF → byte-identical.
-    _latex_to_mathml(chapters)
+    _math_stats = _latex_to_mathml(chapters)
+    if emitter_report is not None:
+        emitter_report.update(_math_stats)
 
     return releveled
 
@@ -3532,8 +3579,14 @@ def normalize_cascade_to_ed4all(
     # The title override (--title / --title-map) doubles as the Rule C
     # chapter-title knowledge for the conservative running-header arms.
     override = (title_override or "").strip()
+    # T0 free win — collect the structural emitters' OWN conserved/declined
+    # counts (math converted/declined, tables accepted/refused) instead of
+    # throwing them away at the call site. In-memory only: the counters ride the
+    # returned dict, and ONLY the SEMANTIK_AFFORDANCE_GATE seam serializes them,
+    # so the default render (HTML + both sidecars) stays byte-identical.
+    emitter_report: Dict[str, int] = {}
     heading_releveling_count = _normalize_ocr_headings(
-        chapters, doc_title=override or None
+        chapters, doc_title=override or None, emitter_report=emitter_report
     )
     title = override or _select_document_title(chapters, pdf_stem)
     lang = getattr(cascade_result, "lang", None) or "en"
@@ -3612,6 +3665,12 @@ def normalize_cascade_to_ed4all(
         # Build #23 Tier-3 — composite-unit subclass report (None unless the
         # opt-in pass ran; carries assignments + distribution + fold/new/skip).
         "subclass_report": subclass_report,
+        # T0 — the structural emitters' OWN conserved/declined self-report
+        # (math_spans_converted/_declined, tables_attempted/_accepted/_refused).
+        # Consumed by lib.semantik.affordance_conservation to tell a documented
+        # REFUSAL apart from a pass that never ran. In-memory only unless
+        # SEMANTIK_AFFORDANCE_GATE is on.
+        "affordance_emitter_report": emitter_report,
     }
 
 
