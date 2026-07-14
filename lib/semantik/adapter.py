@@ -3080,11 +3080,31 @@ def _latex_to_mathml(chapters: Sequence[_AdapterChapter]) -> Dict[str, int]:
     if not _resolve_latex_mathml():
         return stats
     from lib.semantik.latex_mathml import convert_latex_spans  # noqa: PLC0415
+    from lib.semantik.math_fold import build_prose_vocabulary  # noqa: PLC0415
+
+    # SPAN SELECTION needs DOCUMENT context (task #57). OCR fuses the delimiters
+    # of two adjacent math spans around the words between them
+    # (``$\text{①}$ ten $\text{②}$``), offering ``ten`` as a candidate math span;
+    # converted, it becomes one <mi> per letter and a screen reader SPELLS IT OUT.
+    # A prose fragment and a genuine variable product (``$ab$``) are SHAPE-
+    # IDENTICAL, so the only thing that separates them is whether the token also
+    # behaves as an ordinary WORD in this document's prose. Harvested from the
+    # VERBATIM ``raw_text`` (never the HTML — tag names are not prose) with every
+    # math span removed, so a variable that only ever appears inside ``$…$`` never
+    # enters the vocabulary. A corpus-relative statistic, not a word list: no
+    # subject-matter assumption, and it generalizes past English.
+    prose_vocab = build_prose_vocabulary(
+        block.raw_text or ""
+        for ch in chapters
+        for block in ch.blocks
+    )
 
     for ch in chapters:
         for block in ch.blocks:
             if block.html:
-                block.html, converted, declined = convert_latex_spans(block.html)
+                block.html, converted, declined = convert_latex_spans(
+                    block.html, prose_vocab=prose_vocab
+                )
                 stats["math_spans_converted"] += converted
                 stats["math_spans_declined"] += declined
     return stats

@@ -246,6 +246,153 @@ def test_prose_blob_wrapped_in_dollars_is_declined() -> None:
     assert latex_to_mathml(latex) is None
 
 
+# ---------------------------------------------------------------------------
+# Short prose FRAGMENTS — task #57, decided at the SELECTION layer.
+#
+# `_is_prose_math_span` needs SENTENCE-scale evidence (>= 2 tokens, majority
+# prose), so a 1-3 word fragment slipped under it: OCR fuses the delimiters of
+# two ADJACENT math spans around the words between them
+# (`$\text{①}$ ten $\text{②}$`), offering `ten` as a candidate math span. That
+# used to convert to <mi>t</mi><mi>e</mi><mi>n</mi> — a screen reader SPELLS IT
+# OUT.
+#
+# The rule is NOT a shape rule. `$ab$` (a real variable product) parses to bare
+# <mi> exactly like `$and$`, and <mi>a</mi><mi>b</mi> is the CORRECT MathML for
+# it. Only the document's own prose vocabulary separates the two, so these tests
+# pin BOTH sides: the fragments are rejected AND the products still convert.
+# ---------------------------------------------------------------------------
+
+# A document whose prose uses these words but never "ab" / "cd" / "xy".
+_DOC_TEXT = [
+    r"Round the price to the nearest $\text{①}$ ten $\text{②}$ hundred "
+    r"$\text{③}$ thousand and $\text{④}$ ten-thousand.",
+    "Translate the English phrase into an algebraic expression: "
+    "the quotient of the difference of $a$ and $b$, and $cd$.",
+]
+
+
+@pytest.fixture()
+def prose_vocab():
+    from lib.semantik.math_fold import build_prose_vocabulary
+
+    return build_prose_vocabulary(_DOC_TEXT)
+
+
+def test_prose_vocabulary_excludes_words_only_seen_inside_math(prose_vocab) -> None:
+    """The vocabulary is harvested with math spans REMOVED — that is the point."""
+    assert "ten" in prose_vocab and "hundred" in prose_vocab
+    assert "thousand" in prose_vocab and "and" in prose_vocab
+    # `cd` appears ONLY inside `$cd$`, so it is not prose. Ditto a bare variable.
+    assert "cd" not in prose_vocab
+    assert "ab" not in prose_vocab
+
+
+@pytest.mark.parametrize(
+    "latex",
+    [
+        " and ",          # THE defect: a one-token fragment between two `$`
+        "and",
+        "ten",            # real ch01 OCR fragments (`$\text{①}$ ten $\text{②}$`)
+        "hundred",
+        "thousand and",
+    ],
+)
+def test_prose_fragment_span_is_declined(latex: str, prose_vocab) -> None:
+    """A fragment whose tokens are ordinary WORDS in this document is not math."""
+    assert latex_to_mathml(latex, prose_vocab=prose_vocab) is None
+
+
+@pytest.mark.parametrize(
+    "latex",
+    [
+        "ab",             # a REAL variable product — <mi>a</mi><mi>b</mi> is CORRECT
+        "cd",
+        "abc",
+        "xy",
+        "x",              # a lone variable
+        "x + 1",
+        r"\frac{1}{2}",
+        r"\alpha\beta",
+        r"a \cdot b",     # the explicit-product spelling
+    ],
+)
+def test_legitimate_math_still_converts(latex: str, prose_vocab) -> None:
+    """The fragment rule must not cost a SINGLE legitimate span (the acceptance
+    bar): a variable product is math, and declining it would ship LaTeX residue."""
+    assert latex_to_mathml(latex, prose_vocab=prose_vocab) is not None
+
+
+def test_shape_alone_never_decides() -> None:
+    """`$ab$` and `$and$` are shape-identical; with NO corpus context the check
+    goes INERT rather than guessing (and rejecting real math)."""
+    assert latex_to_mathml("ab", prose_vocab=None) is not None
+    assert latex_to_mathml("ab", prose_vocab=frozenset()) is not None
+
+
+def test_a_backslash_or_digit_proves_it_is_math(prose_vocab) -> None:
+    """Positive math evidence beats the prose vocabulary — `\\text{and}` is a
+    DECLARED word inside math (an <mtext>, read aloud as a word, not spelled)."""
+    assert latex_to_mathml(r"\text{and}", prose_vocab=prose_vocab) is not None
+    assert latex_to_mathml("2x", prose_vocab=prose_vocab) is not None
+
+
+def test_fragment_decline_is_byte_for_byte_verbatim(prose_vocab) -> None:
+    """A DECLINE leaves the span exactly as it arrived — never half-converted."""
+    html = r"<p>the nearest $\text{①}$ ten $\text{②}$ hundred.</p>"
+    out, converted, declined = convert_latex_spans(html, prose_vocab=prose_vocab)
+    assert "<mtext>①</mtext>" in out            # the real math still converts
+    assert "<mi>t</mi><mi>e</mi><mi>n</mi>" not in out  # the WORD does not
+    assert " ten " in out and " hundred." in out       # verbatim prose
+    assert converted == 2 and declined == 0     # `ten`/`hundred` were never spans
+
+
+def test_convert_latex_spans_falls_back_to_block_local_vocabulary() -> None:
+    """With no document vocabulary supplied, the guard still fires off the
+    block's OWN prose — a caller without context must not silently fabricate."""
+    html = "<p>Round to the nearest ten thousand: $ten$ and $x + 1$.</p>"
+    out, converted, declined = convert_latex_spans(html)
+    assert "$ten$" in out                        # declined, verbatim
+    assert "<mi>t</mi><mi>e</mi><mi>n</mi>" not in out
+    assert "<mn>1</mn>" in out                   # the real math still converted
+    assert converted == 1 and declined == 1
+
+
+def test_prose_fragment_never_reaches_the_html(monkeypatch: pytest.MonkeyPatch) -> None:
+    """End-to-end at the adapter seam, with the DOCUMENT vocabulary in play."""
+    monkeypatch.setenv("SEMANTIK_LATEX_MATHML", "1")
+    raw = _DOC_TEXT[0]
+    block = _AdapterBlock(
+        html=r"<p>Round to the nearest $\text{①}$ ten $\text{②}$ hundred.</p>",
+        region_kind="paragraph",
+        raw_block_index=0,
+        raw_text=raw,
+    )
+    chapters = [_AdapterChapter(title="Ch 1", blocks=[block])]
+    _latex_to_mathml(chapters)
+    html = chapters[0].blocks[0].html
+    assert "<mtext>①</mtext>" in html                    # real math converts
+    assert "<mi>t</mi><mi>e</mi><mi>n</mi>" not in html  # the word does NOT
+    assert " ten " in html                               # ships as verbatim prose
+
+
+def test_variable_product_survives_the_adapter_seam(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The acceptance bar: `$ab$` MUST still become <math>, or we ship residue."""
+    monkeypatch.setenv("SEMANTIK_LATEX_MATHML", "1")
+    block = _AdapterBlock(
+        html=r"<p>the product $ab$ and the quotient $cd$.</p>",
+        region_kind="paragraph",
+        raw_block_index=0,
+        raw_text="the product $ab$ and the quotient $cd$.",
+    )
+    chapters = [_AdapterChapter(title="Ch 1", blocks=[block])]
+    _latex_to_mathml(chapters)
+    html = chapters[0].blocks[0].html
+    assert html.count("<math ") == 2       # BOTH products converted
+    assert "$ab$" not in html and "$cd$" not in html  # no LaTeX residue shipped
+
+
 def test_mixed_block_converts_only_the_convertible_span() -> None:
     html = r"<p>$\frac{1}{2}$ and $\begin{array}{l} x \end{array}$</p>"
     out, converted, declined = convert_latex_spans(html)

@@ -57,6 +57,7 @@ from __future__ import annotations
 import re
 from html import escape as _html_escape
 from html import unescape as _html_unescape
+from typing import Iterable
 
 __all__ = [
     "fold_math",
@@ -460,6 +461,78 @@ def _is_prose_math_span(content: str) -> bool:
         ):
             prose += 1
     return prose * 2 >= len(tokens)
+
+
+# ---------------------------------------------------------------------------
+# Short prose FRAGMENTS — the sibling of ``_is_prose_math_span`` (task #57).
+# ---------------------------------------------------------------------------
+# ``_is_prose_math_span`` needs SENTENCE-scale evidence: >= 2 whitespace tokens,
+# majority of them prose words. A 1-3 word fragment slips straight under it, so
+# OCR text like ``$\text{①}$ ten $\text{②}$ hundred`` — where the delimiters of
+# two ADJACENT real math spans glue around the words between them — yielded
+# candidate spans of ``ten`` / ``hundred`` / ``thousand and``. Converted, those
+# become one <mi> per letter and a screen reader SPELLS THE WORD OUT.
+#
+# The signal is NOT length, and NOT "does it parse to bare <mi>" — `$ab$` (the
+# product of variables a and b) parses to bare <mi> too and is perfectly good
+# math whose correct MathML *is* <mi>a</mi><mi>b</mi>. The question is never
+# "what shape does this parse to" but "IS THIS SPAN MATH AT ALL", and only the
+# SELECTION layer has the context to answer it.
+#
+# That context is the DOCUMENT ITSELF: a run of letters that also occurs as an
+# ordinary WORD in the document's prose is a word; a genuine variable product
+# does not. This is a corpus-relative STATISTIC, not a vocabulary list — so it
+# carries no subject-matter assumptions and generalizes past English (it keys on
+# "this token behaves as a word *in this document*", whatever the language).
+#
+# Measured on the ch01 scan corpus: `ab` / `cd` / `abc` / `xy` occur ZERO times
+# as prose words; `ten` (43x), `hundred` (65x), `thousand` (37x), `and` (904x)
+# occur constantly. The classes separate with an enormous margin.
+_PROSE_WORD_RE = re.compile(r"[A-Za-z]+")
+_LETTERS_ONLY_RE = re.compile(r"^[A-Za-z\s]+$")
+
+
+def build_prose_vocabulary(texts: Iterable[str]) -> frozenset:
+    """Words that occur as ordinary PROSE — i.e. OUTSIDE any math span.
+
+    Harvested with every delimited math span REMOVED, so a variable that only
+    ever appears inside ``$…$`` never enters the vocabulary (that is the whole
+    point: it is what separates ``ab`` the product from ``ten`` the word).
+    Single characters are excluded — a lone letter is a variable, and ``a`` /
+    ``I`` are also English words, so they carry no signal either way.
+    """
+    vocab: set = set()
+    for text in texts:
+        if not text:
+            continue
+        outside = _MATH_SPAN_ANGLE_RE.sub(" ", text)
+        for word in _PROSE_WORD_RE.findall(outside):
+            if len(word) >= 2:
+                vocab.add(word.lower())
+    return frozenset(vocab)
+
+
+def is_prose_fragment_span(content: str, prose_vocab: "frozenset | None") -> bool:
+    """Whether a SHORT candidate math span is really a prose fragment.
+
+    True iff the span is a pure run of letters (NO backslash, NO digit, NO
+    operator — anything else is positive evidence of math) and at least one of
+    its multi-letter tokens occurs as an ordinary word in the document's prose.
+
+    Deliberately NOT triggered by shape alone: ``$ab$`` and ``$and$`` have the
+    IDENTICAL shape, and only the corpus statistic tells them apart. A span of
+    single letters (``$x$``, ``$a b c$``) is never a fragment — those are
+    variables. With no vocabulary (``None`` / empty) this is always False, so
+    the check is inert rather than guessing.
+    """
+    if not prose_vocab or not content or not content.strip():
+        return False
+    if not _LETTERS_ONLY_RE.match(content):
+        return False  # a backslash / digit / operator proves it is math
+    multi = [t for t in _PROSE_WORD_RE.findall(content) if len(t) >= 2]
+    if not multi:
+        return False  # only single letters => variables, not words
+    return any(tok.lower() in prose_vocab for tok in multi)
 
 
 def _find_display_close(text: str, start: int) -> int:
