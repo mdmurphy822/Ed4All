@@ -389,6 +389,52 @@ def test_percent_matrix_emits_both_scope_col_and_scope_row():
     assert passed is True, message
 
 
+def test_l1_catches_unicode_math_not_just_latex():
+    # The scan lane emits math in BOTH representations. A LaTeX-only L1 let this
+    # REAL step table through and shipped a false <th> on its problem statement:
+    # the header row's math is unicode (·, /), not $…$.
+    assert (
+        header_row_is_label_shaped(
+            ["9 weeks", "9 wk · 7 days · 24 hr · 60 min"], corner_exempt=False
+        )
+        is False
+    )
+    # …and the other unicode math symbols the map covers.
+    for cell in ["a × b", "a ÷ b", "√2", "a ≠ b", "x ≥ 1", "±5", "∑ x", "2π", "x²"]:
+        assert header_row_is_label_shaped(["Label", cell], corner_exempt=False) is False, cell
+
+
+def test_unicode_math_l1_does_not_bite_the_real_true_headers():
+    # The measured-correct col-arm headers carry no unicode math — an em dash,
+    # a curly apostrophe and a percent sign are NOT math symbols.
+    for cells in (
+        ["I can...", "Confidently", "With some help", "No—I don't get it!"],
+        ["Greg’s age", "Alex’s age"],
+        ["Operation", "Notation", "Say:", "The result is..."],
+        ["Expression", "Words", "English Phrase"],
+        ["Length", "Mass", "Capacity"],
+        ["Equation", "English Sentence"],
+        ["Operation", "Phrase", "Expression"],
+    ):
+        assert header_row_is_label_shaped(cells, corner_exempt=False) is True, cells
+
+
+def test_real_unicode_math_step_table_falls_back_end_to_end():
+    # The exact production source text (a unit-conversion worked example whose
+    # separator landed after the PROBLEM row). Must fall back, not ship a <th>.
+    src = (
+        "| 9 weeks | 9 wk · 7 days · 24 hr · 60 min | "
+        "| --- | --- | "
+        "| Write 1 as 7 days / 1 week, 24 hours / 1 day, and 60 minutes / 1 hour. "
+        "| 9 wk · 7 days · 24 hr · 60 min / 1 · 1 wk · 1 day · 1 hr | "
+        "| Divide out the common units. | 9 wk · 7 days · 24 hr / 1 · 1 wk · 1 day | "
+        "| Multiply. | 90,720 min |"
+    )
+
+    assert parse_table_topology(src) is None
+    assert emit_structured_table(src) is None
+
+
 def test_step_table_without_an_empty_corner_stays_rejected():
     # The false-positive class must stay DEAD: no empty corner => no structural
     # evidence => the weak separator tic must be corroborated by label shape, and
