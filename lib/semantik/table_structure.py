@@ -93,7 +93,7 @@ from typing import Any, List, Optional, Sequence, Tuple
 # The separator-row regex is the SAME object the sanitizer uses to strip it —
 # reused, never re-derived, so the "what counts as a separator" contract cannot
 # drift between the stripper and this reconstructor.
-from lib.semantik.math_fold import _MD_SEP_ROW_RE
+from lib.semantik.math_fold import _MD_SEP_ROW_RE, _UNICODE_RE
 
 # Masking / escaping / region-finding primitives are the cascade's own
 # (structure_emit) — reused verbatim so a mid-math pipe (``$a|b$``) is masked out
@@ -330,10 +330,20 @@ def header_row_is_label_shaped(
 
     Rejects the row (returns ``False``) if ANY cell trips one of four shape rules:
 
-    * **L1 math** — the cell contains a delimited math span (``$…$`` / ``\\(…\\)``
-      / ``\\[…\\]`` / ``$$…$$``, found with ``structure_emit._MATH_SPAN_RE``, the
-      same iterator the masker uses). A column label is never an equation, so
+    * **L1 math** — the cell carries math in EITHER representation: a delimited
+      LaTeX span (``$…$`` / ``\\(…\\)`` / ``\\[…\\]`` / ``$$…$$``, via
+      ``structure_emit._MATH_SPAN_RE``) **or** a unicode math symbol (``·`` ``×``
+      ``÷`` ``√`` ``≠`` ``≥`` ``±`` ``∑`` ``π``, super/subscript digits …, via
+      ``math_fold._UNICODE_RE`` — the codebase's canonical unicode-math map,
+      REUSED, never re-derived). A column label is never an equation, so
       ``"Substitute $-8$ for $x$" | "$-x$"`` is a step row, not a header.
+
+      Both representations are required because the scan lane emits BOTH: the
+      measured ``"9 weeks" | "9 wk · 7 days · 24 hr · 60 min"`` step table
+      (body: "Write 1 as…", "Divide out the common units.", "Multiply.") slipped
+      through a LaTeX-only L1 and shipped a false ``<th>`` on its PROBLEM
+      STATEMENT. A step table is a step table whether its math is ``$…$`` or
+      ``·`` — the representation is not the point, the math is.
     * **L2 sentence** — the cell ends with a SINGLE terminal period. A label is a
       noun phrase; ``"Simplify inside the parentheses."`` / ``"Translate."`` /
       ``"Step 1. Read the problem."`` are instructions. An ellipsis (``"I
@@ -358,7 +368,7 @@ def header_row_is_label_shaped(
             if idx == 0 and corner_exempt:
                 continue  # the stub/matrix corner cell — its own evidence
             return False  # L3
-        if _MATH_SPAN_RE.search(cell):
+        if _MATH_SPAN_RE.search(cell) or _UNICODE_RE.search(cell):
             return False  # L1
         if _TERMINAL_PERIOD_RE.search(cell):
             return False  # L2
