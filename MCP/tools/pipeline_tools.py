@@ -9350,6 +9350,124 @@ def _apply_unit_coverage_to_quality(
     quality["total_issues"] = len(issues)
 
 
+def _apply_affordance_to_quality(
+    quality: Dict[str, Any], report: Dict[str, Any]
+) -> None:
+    """Fold the SEMANTIK_AFFORDANCE_GATE report into a ``{stem}.quality.json``
+    sidecar IN PLACE (T0).
+
+    THE POINT OF THE WHOLE GATE. The pre-T0 sidecar self-certified
+    ``quality_score 1.0`` / ``wcag_status: passed`` / ``certified`` over a
+    document carrying 0 ``<math>`` against 3,884 convertible LaTeX spans and 0
+    ``<th>`` against 28 reconstructible table topologies. Nothing looked, so
+    nothing objected. This makes an affordance defect a FIRST-CLASS quality
+    signal, exactly as ``_apply_unit_coverage_to_quality`` does for content loss:
+
+      * an additive ``affordance_conservation`` summary block (per-check verdicts
+        + evidence-vs-emitted counts);
+      * one CRITICAL ``issues`` entry per critical check (which also flips
+        ``compliant`` False, bumps ``critical_count`` + drives ``quality_score``
+        → 0.0, and appends the ``AFFORDANCE_CONSERVATION_FAILED`` flag);
+      * one WARNING ``issues`` entry per warning check (bumps ``high_count``).
+
+    **A GATE THAT CANNOT EVALUATE MUST NEVER CONTRIBUTE A GREEN (D4).** The whole
+    campaign exists because ``quality.json`` certified 1.0 over a document nothing
+    had looked at. Reproducing that here — folding a ``not_evaluated`` report into
+    a green sidecar — would be the same sin one layer up. So when the gate could
+    not look at any check, this:
+
+      * carries ``document_passed: null`` through (TRI-STATE — not a pass);
+      * appends the ``AFFORDANCE_NOT_EVALUATED`` flag + one ``not_evaluated``
+        ``issues`` entry per unlooked check;
+      * **DE-CERTIFIES** — ``certification_status`` → ``not_certified``.
+
+    It deliberately does NOT touch ``quality_score`` / ``compliant`` /
+    ``wcag_status`` in that case. Those are WCAG claims about which an unlooked
+    gate has NO evidence, and inventing a red is the mirror image of inventing a
+    green (the D1 sin). Removing the VOUCH is exactly as much as the gate knows:
+    it cannot certify what it did not measure. A measured CRITICAL does drive
+    them to 0.0 / False — that is evidence-based.
+
+    No-op-safe: a non-dict quality/report is ignored; a healthy report adds only
+    the passthrough summary block.
+    """
+    if not isinstance(quality, dict) or not isinstance(report, dict):
+        return
+    report_issues = report.get("issues") or []
+    checks = report.get("checks") or {}
+    # Tri-state: True (measured pass) / False (measured critical) / None (could
+    # not look). NEVER coerce None to a bool here — that is the green.
+    document_passed = report.get("document_passed", True)
+    not_evaluated = list(report.get("not_evaluated_checks") or [])
+
+    quality["affordance_conservation"] = {
+        "enabled": bool(report.get("enabled", True)),
+        "document_passed": document_passed,
+        "not_evaluated_checks": not_evaluated,
+        "critical_count": report.get("critical_count"),
+        "warning_count": report.get("warning_count"),
+        "verdicts": {
+            name: check.get("verdict")
+            for name, check in checks.items()
+            if isinstance(check, dict)
+        },
+        "checks": checks,
+        "limits": report.get("limits") or [],
+    }
+
+    issues = quality.setdefault("issues", [])
+    if not isinstance(issues, list):
+        issues = []
+        quality["issues"] = issues
+    flags = quality.setdefault("flags", [])
+    if not isinstance(flags, list):
+        flags = []
+        quality["flags"] = flags
+
+    n_critical = 0
+    n_warning = 0
+    n_not_evaluated = 0
+    for issue in report_issues:
+        if not isinstance(issue, dict):
+            continue
+        severity = issue.get("severity")
+        issues.append(
+            {
+                "code": issue.get("code", "AFFORDANCE_UNKNOWN"),
+                "severity": severity,
+                "check": issue.get("check"),
+                "message": issue.get("message", ""),
+            }
+        )
+        if severity == "critical":
+            n_critical += 1
+        elif severity == "warning":
+            n_warning += 1
+        elif severity == "not_evaluated":
+            n_not_evaluated += 1
+
+    if n_critical:
+        if "AFFORDANCE_CONSERVATION_FAILED" not in flags:
+            flags.append("AFFORDANCE_CONSERVATION_FAILED")
+        quality["critical_count"] = int(quality.get("critical_count", 0) or 0) + n_critical
+        quality["compliant"] = False
+        quality["quality_score"] = 0.0
+    if n_warning:
+        quality["high_count"] = int(quality.get("high_count", 0) or 0) + n_warning
+    if n_not_evaluated:
+        # NO MEASUREMENT is not a pass. Loud flag + no vouch. (quality_score /
+        # compliant / wcag_status are deliberately untouched — see the docstring:
+        # an unlooked gate has no evidence for a red either.)
+        if "AFFORDANCE_NOT_EVALUATED" not in flags:
+            flags.append("AFFORDANCE_NOT_EVALUATED")
+    if n_critical or n_not_evaluated:
+        # A gate that measured a critical defect, or that could not look at all,
+        # does not get to CERTIFY. This is the single field that says "we vouch
+        # for this document" — the exact green the campaign was started over.
+        quality["certification_status"] = "not_certified"
+    quality["total_issues"] = len(issues)
+
+
 def _emit_reasoning_qc_capture(
     audit: Optional[Dict[str, Any]],
     *,
@@ -9932,6 +10050,60 @@ def _run_semantik_v2_conversion(
                 "unit_coverage quality-fold failed (non-fatal): %s", exc
             )
 
+    # 4a-bis. T0 — SEMANTIK_AFFORDANCE_GATE: the deterministic affordance-
+    # conservation audit (adapter-seam conservation + residue + agreement). The
+    # ORTHOGONAL axis to unit_coverage: that gate proves no TEXT was lost; this
+    # one proves the text's AFFORDANCE (math -> <math>, table topology -> <th>,
+    # a clean <title>) was not destroyed / never built / left unwired. Default
+    # OFF -> the report key is simply ABSENT from BOTH the quality sidecar and
+    # cascade_ir.json (byte-identical; the unit_coverage conditional-key
+    # precedent). Deterministic, no LLM, no DecisionCapture. Best-effort — never
+    # break conversion on an audit error.
+    #
+    # The region_provenance is coerced ONCE here and reused by the cascade-IR
+    # write below (4b), so the gate audits EXACTLY the IR that gets persisted.
+    #
+    # FAIL-CLOSED on a coercion error (D5). Pre-T0 this coercion lived INSIDE the
+    # cascade_ir write try-block, so an exception skipped the cascade_ir.json
+    # write entirely. Swallowing it into `[]` here would instead PERSIST a
+    # silently-empty region_provenance — a broken re-render source for
+    # `scripts/semantik_rerender.py --ir`, and an evidence-free (therefore
+    # not_evaluated) affordance verdict. So the exception is CAPTURED and
+    # re-raised at the write seam below, preserving the original skip-the-write
+    # behavior exactly.
+    _semantik_region_provenance: List[Any] = []
+    _semantik_provenance_exc: Optional[BaseException] = None
+    try:
+        from lib.semantik.cascade_ir import (
+            _coerce_provenance as _semantik_coerce_provenance,
+        )
+
+        _semantik_region_provenance = list(_semantik_coerce_provenance(result))
+    except (ImportError, TypeError, ValueError) as exc:
+        logger.warning("SemantiK region-provenance coercion failed: %s", exc)
+        _semantik_provenance_exc = exc
+
+    _affordance_report: Optional[Dict[str, Any]] = None
+    try:
+        from lib.semantik.affordance_conservation import (
+            resolve_affordance_gate_mode,
+            run_affordance_gate,
+        )
+
+        if resolve_affordance_gate_mode():
+            _affordance_report = run_affordance_gate(
+                {"region_provenance": _semantik_region_provenance},
+                html,
+                emitter_report=adapter_out.get("affordance_emitter_report"),
+                log=logger.warning,
+            )
+            _apply_affordance_to_quality(
+                adapter_out["quality_sidecar"], _affordance_report
+            )
+    except Exception as exc:  # noqa: BLE001 — best-effort; never break conversion
+        logger.warning("affordance gate failed (non-fatal): %s", exc)
+        _affordance_report = None
+
     try:
         synth_path.write_text(
             json.dumps(
@@ -9960,14 +10132,18 @@ def _run_semantik_v2_conversion(
     try:
         from lib.semantik.cascade_ir import (
             _coerce_heading_tree as _semantik_coerce_heading_tree,
-            _coerce_provenance as _semantik_coerce_provenance,
         )
+
+        # D5 — re-raise the captured coercion failure so this write is SKIPPED,
+        # exactly as it was pre-T0. Never persist an empty region_provenance.
+        if _semantik_provenance_exc is not None:
+            raise _semantik_provenance_exc
 
         cascade_ir_path = base.parent / f"{base.name}.cascade_ir.json"
         cascade_ir_doc = {
             "schema": "semantik_cascade_ir/v1",
             "pdf": pdf_stem,
-            "region_provenance": list(_semantik_coerce_provenance(result)),
+            "region_provenance": _semantik_region_provenance,
             "heading_tree": [
                 list(e) for e in _semantik_coerce_heading_tree(result)
             ],
@@ -9991,6 +10167,14 @@ def _run_semantik_v2_conversion(
             **(
                 {"page_arranger": _page_arranger_audit}
                 if isinstance(_page_arranger_audit, dict)
+                else {}
+            ),
+            # T0 — the deterministic affordance-conservation audit. Present ONLY
+            # when SEMANTIK_AFFORDANCE_GATE ran (else absent, keeping the IR
+            # byte-stable to a no-gate run).
+            **(
+                {"affordance_conservation": _affordance_report}
+                if isinstance(_affordance_report, dict)
                 else {}
             ),
         }
