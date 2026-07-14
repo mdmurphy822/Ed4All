@@ -309,6 +309,18 @@ class _AdapterBlock:
     # -HTML parity). ``None`` (the default / flag-off) → byte-identical.
     box_title_text: Optional[str] = None
     box_title_level: int = 4
+    # SEMANTIK_TABLE_STRUCTURE — the separator-PRESERVING sanitized pipe source
+    # of a markdown table block (``sanitize_body_latex(..., keep_md_sep=True)``),
+    # stashed ONLY when the flag is on and the block's raw text carries a
+    # ``| --- | --- |`` row. The ``| --- |`` row is the grid's TOPOLOGY
+    # DECLARATION (dash-cell count = n_cols; its presence = row 0 is a header),
+    # and the normal sanitizer DROPS it — so ``raw_text`` alone can never
+    # reconstruct a ``<thead>``. This field carries that evidence forward to
+    # ``_emit_structured_bodies`` while ``raw_text`` / ``repaired_text`` keep
+    # today's EXACT (separator-stripped) treatment, so chunk / sidecar text — and
+    # every content-hash sourceId derived from it — stays byte-identical.
+    # ``None`` (the default / flag-off) → byte-identical.
+    table_src: Optional[str] = None
 
 
 @dataclass
@@ -2617,6 +2629,14 @@ def _rederive_unit_headings(chapters: Sequence[_AdapterChapter]) -> int:
 _STRUCTURAL_HTML_TAGS = ("<ul", "<ol", "<table", "<dl")
 
 
+def _resolve_table_structure() -> bool:
+    """Whether the ``SEMANTIK_TABLE_STRUCTURE`` cell-topology lane is on (default OFF)."""
+    import os
+
+    val = (os.environ.get("SEMANTIK_TABLE_STRUCTURE") or "").strip().lower()
+    return val in {"1", "true", "yes", "on"}
+
+
 def _emit_structured_bodies(chapters: Sequence[_AdapterChapter]) -> None:
     """Deliver <ul>/<ol>/<table>/<dl> bodies for high-confidence shapes (A1/A4/A5).
 
@@ -2624,7 +2644,19 @@ def _emit_structured_bodies(chapters: Sequence[_AdapterChapter]) -> None:
     can become a <dl>) and reads the SANITIZED ``raw_text`` (math already wrapped
     in ``$…$``). Skips headings, furniture, and blocks whose html is already a
     real structural element (never flattens a delivered <ul>/<table>/<dl>).
+
+    SEMANTIK_TABLE_STRUCTURE (default OFF → byte-identical): when the flag is on
+    and the block stashed a separator-PRESERVING ``table_src``, the cell-topology
+    lane (``lib.semantik.table_structure``) gets FIRST refusal on it — it can read
+    the ``| --- | --- |`` topology declaration ``raw_text`` no longer carries, so
+    it emits a real ``<thead>`` of ``<th scope="col">`` cells and preserves empty
+    cells instead of shredding the row split on them. It is self-verifying and
+    fails closed (arithmetic fit + text conservation + the cascade's own H43 gate),
+    so a refusal falls straight through to today's ``emit_structure`` path.
     """
+    table_structure = _resolve_table_structure()
+    if table_structure:
+        from lib.semantik.table_structure import emit_structured_table
     for ch in chapters:
         for block in ch.blocks:
             if _is_heading_block(block) or _is_furniture_block(block):
@@ -2640,6 +2672,16 @@ def _emit_structured_bodies(chapters: Sequence[_AdapterChapter]) -> None:
                 continue  # a non-<p> body is already structured
             if any(tag in html for tag in _STRUCTURAL_HTML_TAGS):
                 continue  # a <p>-led body that already embeds a structure
+            if table_structure and block.table_src:
+                table_html = emit_structured_table(block.table_src)
+                if table_html is not None:
+                    # Same re-balance as the emit_structure path below: splitting
+                    # the block into <p>/<table>/<p> can cut a $$…$$ span across
+                    # the new element boundary.
+                    block.html = wrap_bare_math(table_html, html=True)
+                    block.block_role = "table"
+                    block.region_kind = "table"
+                    continue
             result = emit_structure(block.raw_text or "")
             if result is not None:
                 kind, structured_html = result
@@ -2686,7 +2728,24 @@ def _sanitize_block_body_latex(chapters: Sequence[_AdapterChapter]) -> None:
     garbage) and orphaned tabular/array scaffolding (``\hline`` / ``\begin{array}``
     left by a page-split table) is dropped — on the SAME fields so render and
     sidecar stay in parity.
+
+    SEMANTIK_TABLE_STRUCTURE (default OFF → byte-identical): the sanitizer DROPS
+    the ``| --- | --- |`` markdown separator row as garbage — but that row is the
+    pipe grid's TOPOLOGY DECLARATION (dash-cell count = ``n_cols``; its presence =
+    row 0 is a header), and dropping it here is exactly why
+    ``structure_emit.parse_table``'s ``<thead>`` branch is dead code on the live
+    path. When the flag is on, a separator-bearing block stashes a
+    separator-PRESERVING copy on ``table_src`` BEFORE ``raw_text`` is overwritten,
+    so ``_emit_structured_bodies`` can still read the topology. ``raw_text`` /
+    ``repaired_text`` / ``html`` keep today's EXACT treatment (the stash is a pure
+    addition), so chunk + sidecar text — and the content-hash sourceIds derived
+    from it — stay byte-identical. This function runs TWICE (the pre-opener fold
+    and the post-structure self-balance sweep); the ``table_src is None`` guard
+    keeps the SECOND call from clobbering the stash with post-split text.
     """
+    table_structure = _resolve_table_structure()
+    if table_structure:
+        from lib.semantik.table_structure import has_separator_row
     for ch in chapters:
         for block in ch.blocks:
             if block.html:
@@ -2694,6 +2753,17 @@ def _sanitize_block_body_latex(chapters: Sequence[_AdapterChapter]) -> None:
                     sanitize_body_latex(block.html, html=True), html=True
                 )
             if block.raw_text:
+                if (
+                    table_structure
+                    and block.table_src is None
+                    and has_separator_row(block.raw_text)
+                ):
+                    block.table_src = wrap_bare_math(
+                        sanitize_body_latex(
+                            block.raw_text, html=False, keep_md_sep=True
+                        ),
+                        html=False,
+                    )
                 block.raw_text = wrap_bare_math(
                     sanitize_body_latex(block.raw_text, html=False), html=False
                 )
