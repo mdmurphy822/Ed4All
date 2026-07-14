@@ -201,6 +201,45 @@ def test_figure_region_no_caption_when_none_below():
     assert sorted(seen) == list(range(len(merged)))
 
 
+def test_pass3a_region_matches_shared_helper_shape():
+    """Task #49: Pass-3a's figure Region is built by the SHARED
+    ``build_figure_region_from_candidate`` (also used by the page-arranger lane),
+    so the two lanes cannot drift. Pass-3a's output shape is UNCHANGED — every
+    field (bar the exit-stamped ``page_bboxes``) equals the helper's."""
+    from semantik_structure.structure_graph import build_figure_region_from_candidate
+
+    fbs = [
+        _text_fb("intro", page=1, y0=10.0),
+        _text_fb("Figure 1: a widget", page=1, y0=500.0),
+    ]
+    cand = ImageCandidate(
+        kind="figure",
+        bbox=(50.0, 200.0, 250.0, 400.0),
+        pages=[1],
+        px_size=(400, 400),
+        image_index=0,
+    )
+    merged = _interleave_image_feature_blocks(fbs, [cand])
+    state = CouncilState(outputs={})
+    decisions = arbitrate(state, [cand])
+    out = build_structure_graph(state, merged, [cand], decisions)
+    fig = [r for r in out if r.kind == "figure"][0]
+
+    expected = build_figure_region_from_candidate(
+        cand,
+        merged,
+        source_region_id=0,
+        decision_flags=tuple(getattr(decisions[0], "flags", ()) or ()),
+    )
+    assert fig.kind == expected.kind
+    assert fig.feature_block_indices == expected.feature_block_indices
+    assert fig.payload == expected.payload
+    assert fig.provenance == expected.provenance
+    assert fig.source_region_id == expected.source_region_id
+    # build_structure_graph re-stamps page_bboxes at its exit (the helper does not).
+    assert fig.page_bboxes is not None and expected.page_bboxes is None
+
+
 # ---------------------------------------------------------------------------
 # Flag-OFF byte-stability — no images key, no figure regions.
 # ---------------------------------------------------------------------------

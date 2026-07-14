@@ -36,7 +36,11 @@ Design invariants (mirroring the reasoning-QC pass and the scan-lane de-BERT gat
   stop-sentinel probe before each submission, worst-case loss ≤ concurrency).
 * **Coverage invariant.** Every non-image FeatureBlock lands in exactly one
   emitted Region (asserted) — the anti-content-loss contract (the class of defect
-  the whole task targets).
+  the whole task targets). Since the FIGURE ARM (task #49) every synthetic image
+  FeatureBlock that SURVIVES the page-raster guard is likewise claimed by exactly
+  one figure Region; a page-raster image FB (the image IS the scanned page) is
+  DELIBERATELY excluded — neither expected nor claimed (see
+  ``build_figure_regions`` / ``structure_graph.is_page_raster_candidate``).
 * **BERT-hint seam is a STUB.** ``arrange_page`` takes an optional
   ``hints_provider`` callable (default ``None``); it is the rung-1 integration
   point for the future BERT-v2 heads — no real heads are wired here.
@@ -46,6 +50,11 @@ Bypassed on the arranger route (documented in the cascade seam): council heads
 clean_structure / Stage-5d reviewer / Stage-5e resegment / Stage-5d-router
 passes. Retained unchanged: Stage 5b/5c/6/6b/7-13 (gates, assembler,
 reasoning-QC, theta, exit) + the whole ``region_provenance`` / adapter contract.
+Stage 5c/6b are now REACHABLE on this lane (task #49): the figure arm forms
+figure Regions DETERMINISTICALLY from the synthetic image FeatureBlocks
+``SEMANTIK_DETECT_FIGURES`` interleaves, so the downstream bbox→PNG render +
+captioner see them (they were previously a natural no-op — the lane emitted zero
+figure Regions and every image was silently dropped).
 """
 from __future__ import annotations
 
@@ -56,7 +65,7 @@ import json
 import logging
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -364,10 +373,16 @@ def mint_units_by_page(feature_blocks: list) -> "dict[int, list[dict]]":
 
     Units come from the FeatureBlocks (NOT raw merged blocks) so each unit's
     ``fb_index`` is the EXACT position in ``feature_blocks`` — the coverage
-    invariant + the Region ``feature_block_indices`` are then exact. Non-image
-    FBs only (synthetic image FBs are region-less on the arranger route, v1). id
+    invariant + the Region ``feature_block_indices`` are then exact. id
     = ``p{page}_b{ordinal:02d}``, ordinal = per-page 0-based stream position of
     the kept units. Text is VERBATIM.
+
+    **Non-image FBs only** — and that is deliberate, not a gap: a synthetic image
+    FB carries no text, so it must never become an arrange TEXT unit (the arrange
+    model types UNITS; it must not be able to type one as a figure). Image FBs are
+    claimed OUT-OF-BAND by the deterministic figure arm (``build_figure_regions``),
+    which forms a figure Region per surviving ImageCandidate; the coverage
+    invariant expects exactly those image FBs (see ``_assert_coverage``).
     """
     by_page: dict[int, list[dict]] = {}
     ordinal: dict[int, int] = {}
@@ -1455,6 +1470,13 @@ def _fan_out_arrange(
 # Map an arrange block type -> (Region.kind, optional css_class, optional
 # semantic_class). Downstream renders from region_provenance raw_text, so
 # emitting Regions IS the accessible-HTML block contract.
+#
+# "figure" is DELIBERATELY ABSENT and must stay absent: the arrange model must
+# NOT be able to type a unit as a figure. Figure Regions are formed
+# DETERMINISTICALLY from the synthetic image FeatureBlocks (one per surviving
+# ImageCandidate) by ``build_figure_regions`` — never from a model's typing of a
+# TEXT unit. Adding a "figure" row here would let the model relabel prose as an
+# image and silently drop its text.
 _TYPE_TO_KIND: "dict[str, tuple[str, Optional[str], Optional[str]]]" = {
     "heading": ("heading", None, None),
     "paragraph": ("paragraph", None, None),
@@ -1626,6 +1648,135 @@ def _split_list_items(texts: list[str]) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Part F2: the FIGURE arm (task #49) — deterministic, model-free.
+#
+# The council lane forms figure Regions in structure_graph Pass-3a, which this
+# lane BYPASSES, so before this arm every image was silently DROPPED here. The
+# arm re-uses the SAME shared Region builder as Pass-3a
+# (``structure_graph.build_figure_region_from_candidate``) so the two lanes
+# cannot drift, and adds ONE lane-specific guard.
+#
+# THE PAGE-RASTER GUARD IS MANDATORY, not optional. The arranger lane fires on
+# the OCR/scan lane, i.e. a page-raster scan: measured on a real 198-page scanned
+# chapter, ALL 198 image page-objects covered >=90% of their page and ZERO were
+# genuine sub-page figures. A naive "one figure Region per image FB" would emit
+# 198 <img>, each a photograph of an ENTIRE textbook page — a WCAG 1.4.5
+# images-of-text regression duplicating every body paragraph as pixels. The guard
+# (``structure_graph.is_page_raster_candidate``) excludes them; a genuine sub-page
+# figure on the same page is still emitted.
+#
+# Honest limitation: on such a corpus there are NO embedded sub-page figure
+# objects at all, so this arm correctly yields ZERO figures there. Recovering
+# those figures needs a VLM figure-CROP lane (not built).
+# ---------------------------------------------------------------------------
+def build_figure_regions(
+    image_candidates: "Optional[list]",
+    feature_blocks: list,
+    page_dims: "Optional[dict[int, tuple[float, float]]]" = None,
+) -> "tuple[list, dict]":
+    """Form the arranger lane's figure ``Region`` list. Returns ``(regions, stats)``.
+
+    One figure Region per :class:`ImageCandidate` that (a) is NOT a full-page
+    raster and (b) has a claimable synthetic image FeatureBlock. Each Region is
+    built by the SHARED ``build_figure_region_from_candidate`` (identical shape to
+    the council lane's Pass-3a), then stamped with the lane's
+    ``payload['typing_authority']='vlm-arranger'`` + its own ``page_bboxes``
+    (the arranger stamps its own geometry — see ``_mk``), and its provenance
+    ``pass`` is overridden to ``page_arranger_figure`` so the lane is attributable.
+
+    ``page_dims`` is ``{page_num: (width, height)}`` in PDF-POINT space
+    (``structure_graph.page_dims_from_shared`` over the extraction) — the ONLY
+    space an ImageCandidate bbox shares, and therefore the only one the page-raster
+    guard may measure against. **Omitting it disables the guard** (fail-open), so
+    the caller MUST pass it; see :func:`~structure_graph.is_page_raster_candidate`
+    for the coordinate-space bug this contract exists to prevent.
+
+    Deterministic + model-free: NO new LLM call site, so no new DecisionCapture
+    type (the counts ride the existing per-doc ``structure_detection`` capture).
+    Fail-soft per candidate — a bad candidate is skipped, never aborting the doc.
+
+    With ``SEMANTIK_DETECT_FIGURES`` off there are no ImageCandidates at all, so
+    this is a natural no-op returning ``([], stats-with-zeros)``.
+    """
+    from .structure_graph import (
+        build_figure_region_from_candidate,
+        compute_region_page_bboxes,
+        is_page_raster_candidate,
+    )
+
+    regions: list = []
+    stats: dict = {
+        "figures": 0,
+        "page_raster_skipped": 0,
+        "no_member_fb_skipped": 0,
+        "errors": 0,
+    }
+    for cand in image_candidates or ():
+        try:
+            if is_page_raster_candidate(cand, page_dims or {}):
+                stats["page_raster_skipped"] += 1
+                continue
+            region = build_figure_region_from_candidate(
+                cand, feature_blocks, source_region_id=None, decision_flags=()
+            )
+            if region is None:
+                stats["no_member_fb_skipped"] += 1
+                continue
+            payload = dict(region.payload)
+            payload["typing_authority"] = "vlm-arranger"
+            provenance = dict(region.provenance)
+            provenance["pass"] = "page_arranger_figure"
+            region = replace(
+                region,
+                payload=payload,
+                provenance=provenance,
+                page_bboxes=compute_region_page_bboxes(
+                    region.feature_block_indices, feature_blocks
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 — a bad candidate never aborts the doc
+            logger.warning(
+                "page-arranger figure arm: skipping malformed image candidate "
+                "(non-fatal): %s", exc
+            )
+            stats["errors"] += 1
+            continue
+        regions.append(region)
+        stats["figures"] += 1
+    return regions, stats
+
+
+def _splice_figure_regions(structure_regions: list, figure_regions: list) -> list:
+    """INSERT the figure Regions into the arranged text regions in reading order.
+
+    The text regions' order is the arranger's AUTHORED reading order (per-page
+    model output) and may NOT be min-FB monotonic, so a global re-sort would
+    silently rewrite it. Instead each figure (processed in ascending image-FB
+    order) is INSERTED at the position of the first text region whose
+    ``min(feature_block_indices)`` exceeds the figure's image-FB index (appended
+    at the end if none) — a pure insertion, so the relative order of the existing
+    regions is preserved EXACTLY.
+    """
+    if not figure_regions:
+        return structure_regions
+    out = list(structure_regions)
+    for fig in sorted(figure_regions, key=lambda r: min(r.feature_block_indices)):
+        image_fb = min(fig.feature_block_indices)
+        pos = len(out)
+        for i, region in enumerate(out):
+            idxs = getattr(region, "feature_block_indices", ()) or ()
+            if not idxs:
+                # A synthetic heading-sanity Region claims ZERO FBs — it has no
+                # reading-order key, so it can never be an insertion anchor.
+                continue
+            if min(idxs) > image_fb:
+                pos = i
+                break
+        out.insert(pos, fig)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # ArrangerRoute — the cascade-facing façade.
 # ---------------------------------------------------------------------------
 @dataclass
@@ -1780,10 +1931,44 @@ class ArrangerRoute:
             except Exception as exc:  # noqa: BLE001
                 _log(f"[cascade] page-arranger continues finalize failed: {exc}")
 
-        # Coverage invariant: every non-image FB in exactly one region.
-        _assert_coverage(feature_blocks, structure_regions)
+        # FIGURE arm (task #49): deterministic figure Regions from the synthetic
+        # image FBs, page-raster-guarded, spliced into READING ORDER among the
+        # arranged text regions. Natural no-op when SEMANTIK_DETECT_FIGURES is
+        # off (no image candidates exist) → byte-identical region list.
+        # page_dims MUST come from the PDF extraction (PDF-POINT space — the
+        # ImageCandidate bbox's own space). Deriving them from the image FB would
+        # read the OCR lane's PIXEL-space dims and silently defeat the guard.
+        from .structure_graph import page_dims_from_shared
 
-        _emit_arranger_capture(page_rows, n_valid, n_failed, str(getattr(seat, "model", "")))
+        figure_regions, figure_stats = build_figure_regions(
+            getattr(self.feature_set, "image_candidates", None),
+            feature_blocks,
+            page_dims_from_shared(self.shared),
+        )
+        if figure_regions:
+            structure_regions = _splice_figure_regions(structure_regions, figure_regions)
+            _log(
+                f"[cascade] page-arranger figures: {figure_stats['figures']} emitted, "
+                f"{figure_stats['page_raster_skipped']} full-page rasters excluded"
+            )
+
+        # Coverage invariant: every non-image FB — AND every image FB a figure
+        # Region claims — in exactly one region. Page-raster image FBs are
+        # deliberately neither expected nor claimed.
+        eligible_image_fbs = {
+            int(i) for r in figure_regions for i in r.feature_block_indices
+        }
+        _assert_coverage(
+            feature_blocks, structure_regions, eligible_image_fbs=eligible_image_fbs
+        )
+
+        _emit_arranger_capture(
+            page_rows,
+            n_valid,
+            n_failed,
+            str(getattr(seat, "model", "")),
+            figure_stats=figure_stats,
+        )
 
         audit = {
             "pass": "page_arranger",
@@ -1792,18 +1977,38 @@ class ArrangerRoute:
             "pages": len(page_inputs),
             "pages_valid": n_valid,
             "pages_failed": n_failed,
+            "figures": figure_stats["figures"],
+            "page_raster_skipped": figure_stats["page_raster_skipped"],
+            "figure_stats": figure_stats,
             "render_failures": render_failures,
             "page_rows": page_rows,
         }
         return structure_regions, audit
 
 
-def _assert_coverage(feature_blocks: list, regions: list) -> None:
-    """Assert every non-image FB index is claimed by exactly one Region."""
+def _assert_coverage(
+    feature_blocks: list,
+    regions: list,
+    *,
+    eligible_image_fbs: "Optional[set[int]]" = None,
+) -> None:
+    """Assert the arranger lane's FB-coverage contract.
+
+    Expected = every non-image FB carrying text (each lands in exactly one
+    arranged text Region) PLUS ``eligible_image_fbs`` — the synthetic image FBs
+    that SURVIVED the page-raster guard and were turned into figure Regions (each
+    claimed by exactly one figure Region).
+
+    Image FBs EXCLUDED by the page-raster guard (the image IS the scanned page)
+    are deliberately neither expected nor claimed — dropping a page raster is the
+    correct behavior, not content loss (its text is the page's text layer, which
+    the text FBs already carry).
+    """
     expected = {
         i for i, fb in enumerate(feature_blocks) if not getattr(fb, "is_image", False)
         and (getattr(getattr(fb, "raw", None), "text", "") or "").strip()
     }
+    expected |= {int(i) for i in (eligible_image_fbs or ())}
     claimed: dict[int, int] = {}
     for r in regions:
         for idx in getattr(r, "feature_block_indices", ()) or ():
@@ -1907,12 +2112,21 @@ def finalize_continues_over_dir(results_dir: Path) -> dict:
     return {"records": len(recs), "continues_edges": n_edges, "continues_resolved_from": n_resolved}
 
 
-def _emit_arranger_capture(page_rows: list, n_valid: int, n_failed: int, model: str) -> None:
+def _emit_arranger_capture(
+    page_rows: list,
+    n_valid: int,
+    n_failed: int,
+    model: str,
+    *,
+    figure_stats: "Optional[dict]" = None,
+) -> None:
     """Best-effort per-document DecisionCapture (mirrors vlm_extract's posture).
 
     Rides the EXISTING ``structure_detection`` decision_type enum (no schema
-    change). Dynamic rationale: pages, valid/failed, coercion/repair tallies,
-    model, attempts histogram. Never breaks conversion.
+    change — the figure arm adds NO LLM call site, so it adds no capture type).
+    Dynamic rationale: pages, valid/failed, coercion/repair tallies, model,
+    attempts histogram, and the figure-arm tallies (emitted figures +
+    page-raster-excluded candidates). Never breaks conversion.
     """
     try:
         from lib.decision_capture import DecisionCapture
@@ -1931,12 +2145,15 @@ def _emit_arranger_capture(page_rows: list, n_valid: int, n_failed: int, model: 
         for r in page_rows:
             a = int(r.get("attempts", 0) or 0)
             attempts_hist[a] = attempts_hist.get(a, 0) + 1
+        figs = figure_stats or {}
         rationale = (
             f"page-arranger structure: model={model} pages={len(page_rows)} "
             f"valid={n_valid} failed={n_failed} coercions={total_coerce} "
             f"repairs={total_repair} heading_sanity_ops={total_hsanity} "
             f"tail_titles={total_tail} leading_titles={total_lead} "
             f"attempts_hist={attempts_hist} "
+            f"figures={int(figs.get('figures', 0))} "
+            f"page_raster_skipped={int(figs.get('page_raster_skipped', 0))} "
             f"(contract_version=2, typing_authority=vlm-arranger)."
         )
         cap.log_decision(

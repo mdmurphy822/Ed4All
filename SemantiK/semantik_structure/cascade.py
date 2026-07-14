@@ -1419,7 +1419,11 @@ def run_full_cascade(
     # council path — ZERO extraction happens in the probe when the flag is off).
     # RETAINED unchanged on the arranger route: Stage 5b/5c, 6/6b, 7-13 (gates,
     # assembler, reasoning-QC 9b, theta, exit) + the whole region_provenance /
-    # adapter contract. See ``page_arranger.resolve_page_arranger_route``.
+    # adapter contract. Stage 5c/6b are genuinely REACHABLE here as of the task-#49
+    # figure arm: ``arrange_regions`` now forms figure Regions deterministically
+    # from the synthetic image FBs (page-raster-guarded), and Stage 5c keys off the
+    # figure-Region COUNT (not the lane), so the PNG render + captioner see them.
+    # See ``page_arranger.resolve_page_arranger_route`` / ``build_figure_regions``.
     # ------------------------------------------------------------------
     from .page_arranger import resolve_page_arranger_route
 

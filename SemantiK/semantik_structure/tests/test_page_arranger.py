@@ -5,7 +5,8 @@ Covers: flag-off byte-identical route probe (ZERO extraction), the 3-rung ladder
 invariant, furniture -> metadata_drop listed-but-empty, the resume sidecar
 (hit skips POST, a failed page is not cached), stop mid-fan-out
 (persist + propagate), the deterministic hints + hints_provider stub, the
-schema_version-2 label factory, and the DecisionCapture emit.
+schema_version-2 label factory, the DecisionCapture emit, and the FIGURE arm
+(task #49 — deterministic figure Regions + the mandatory page-raster guard).
 """
 from __future__ import annotations
 
@@ -127,19 +128,43 @@ def test_ladder_rung1_success_single_post():
 # ---------------------------------------------------------------------------
 # Helpers to drive arrange_regions with a mocked seat + render + HTTP.
 # ---------------------------------------------------------------------------
-def _drive_arrange_regions(monkeypatch, feature_blocks, contents, *, seat=None):
+def _shared_pages(n_pages=1, width=612.0, height=792.0):
+    """The extraction's page list — PDF-POINT dims (the ImageCandidate bbox space).
+
+    Load-bearing for the page-raster guard: it reads its page dims from HERE, never
+    off a FeatureBlock (on the OCR lane those are IMAGE-PIXEL space). See
+    ``structure_graph.is_page_raster_candidate``.
+    """
+    return {
+        "pages": [
+            {"page_num": i + 1, "width": width, "height": height}
+            for i in range(n_pages)
+        ]
+    }
+
+
+def _drive_arrange_regions(
+    monkeypatch, feature_blocks, contents, *, seat=None, image_candidates=None,
+    shared=None,
+):
     seat = seat or _Seat()
     monkeypatch.setattr(pa, "resolve_arranger_seat", lambda: seat)
     monkeypatch.setattr(pa, "_render_page_image_b64", lambda _pdf, _pg: "IMGB64")
     fake = _FakeRequests(contents)
-    route = pa.ArrangerRoute(pdf_path=Path("/x.pdf"), shared={}, feature_set=_FS(feature_blocks))
+    route = pa.ArrangerRoute(
+        pdf_path=Path("/x.pdf"),
+        shared=_shared_pages(4) if shared is None else shared,
+        feature_set=_FS(feature_blocks, image_candidates=image_candidates),
+    )
     regions, audit = route.arrange_regions(feature_blocks, requests_module=fake)
     return regions, audit, fake
 
 
 class _FS:
-    def __init__(self, fbs):
+    def __init__(self, fbs, image_candidates=None):
         self.feature_blocks = fbs
+        # Mirrors features.FeatureSet: `[]` when SEMANTIK_DETECT_FIGURES is off.
+        self.image_candidates = image_candidates if image_candidates is not None else []
 
 
 # ---------------------------------------------------------------------------
@@ -808,3 +833,362 @@ def test_resolve_md_heading_promote_defaults(monkeypatch):
     assert pa.resolve_arranger_md_heading_promote() is False
     monkeypatch.setenv("SEMANTIK_ARRANGER_MD_HEADING_PROMOTE", "garbage")
     assert pa.resolve_arranger_md_heading_promote() is True  # parse-with-fallback -> on
+
+
+# ---------------------------------------------------------------------------
+# (m) FIGURE arm (task #49) — deterministic figure Regions on the arranger lane,
+#     page-raster-guarded, spliced into reading order.
+# ---------------------------------------------------------------------------
+def _img_fb(*, page=1, bbox=(50.0, 100.0, 250.0, 300.0)):
+    """A SYNTHETIC image FeatureBlock (what SEMANTIK_DETECT_FIGURES interleaves)."""
+    raw = RawBlock(
+        text="", page=page, bbox=bbox,
+        page_width=612.0, page_height=792.0, source="pypdfium2:image",
+    )
+    return FeatureBlock(
+        raw=raw, size_bucket="md", gap_above=None, is_top_of_page=False,
+        is_centered=False, caps=None, indent_bucket=0, relative_font_ratio=1.0,
+        provenance="pypdfium2:image", is_image=True,
+    )
+
+
+def _cand(fb_index, bbox, *, page=1, px_size=(400, 400)):
+    from semantik_structure.region_detection import ImageCandidate
+
+    return ImageCandidate(
+        kind="figure", bbox=bbox, pages=[page],
+        member_block_indices=[fb_index], px_size=px_size,
+    )
+
+
+# A 612x792 page: a sub-page figure covers ~8% (kept); a full-page raster ~100%.
+_SUBPAGE_BBOX = (50.0, 100.0, 250.0, 300.0)
+_FULLPAGE_BBOX = (0.0, 0.0, 612.0, 792.0)
+
+
+def test_figure_region_claims_image_fb_exactly_once(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_PAGE_ARRANGER_CHECKPOINT", "0")
+    # FB stream: text(0), IMAGE(1), text(2) — the reading-order interleave.
+    fbs = [_fb("Intro prose."), _img_fb(bbox=_SUBPAGE_BBOX), _fb("Body prose.", y0=400.0)]
+    content = _arr([
+        {"ids": ["p1_b00"], "type": "paragraph"},
+        {"ids": ["p1_b01"], "type": "paragraph"},
+    ])
+    regions, audit, _f = _drive_arrange_regions(
+        monkeypatch, fbs, [content], image_candidates=[_cand(1, _SUBPAGE_BBOX)]
+    )
+    figs = [r for r in regions if r.kind == "figure"]
+    assert len(figs) == 1
+    fig = figs[0]
+    assert fig.feature_block_indices == (1,)
+    assert fig.payload["typing_authority"] == "vlm-arranger"
+    assert fig.provenance["pass"] == "page_arranger_figure"
+    assert fig.payload["px_size"] == (400, 400)
+    # the arranger stamps its own page geometry
+    assert fig.page_bboxes == ((1, _SUBPAGE_BBOX),)
+    # COVERAGE: the image FB is claimed exactly once (arrange_regions asserts
+    # internally; this pins the expectation explicitly).
+    claimed = sorted(i for r in regions for i in r.feature_block_indices)
+    assert claimed == [0, 1, 2]
+    assert audit["figures"] == 1
+    assert audit["page_raster_skipped"] == 0
+
+
+def test_figure_region_spliced_in_reading_order(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_PAGE_ARRANGER_CHECKPOINT", "0")
+    fbs = [_fb("Intro prose."), _img_fb(bbox=_SUBPAGE_BBOX), _fb("Body prose.", y0=400.0)]
+    content = _arr([
+        {"ids": ["p1_b00"], "type": "paragraph"},
+        {"ids": ["p1_b01"], "type": "paragraph"},
+    ])
+    regions, _a, _f = _drive_arrange_regions(
+        monkeypatch, fbs, [content], image_candidates=[_cand(1, _SUBPAGE_BBOX)]
+    )
+    # The figure lands BETWEEN the two paragraphs (its image FB index is 1).
+    assert [r.kind for r in regions] == ["paragraph", "figure", "paragraph"]
+    assert [min(r.feature_block_indices) for r in regions] == [0, 1, 2]
+
+
+def test_figure_splice_preserves_authored_text_region_order(monkeypatch):
+    """The arranger's AUTHORED order (which may be non-monotonic in min-FB) is
+    preserved EXACTLY — the splice inserts, it never re-sorts."""
+    monkeypatch.setenv("SEMANTIK_PAGE_ARRANGER_CHECKPOINT", "0")
+    fbs = [_fb("A"), _fb("B", y0=40.0), _img_fb(bbox=_SUBPAGE_BBOX), _fb("C", y0=500.0)]
+    # Arrange model authors the units OUT of min-FB order (b01 before b00).
+    content = _arr([
+        {"ids": ["p1_b01"], "type": "paragraph"},
+        {"ids": ["p1_b00"], "type": "paragraph"},
+        {"ids": ["p1_b02"], "type": "paragraph"},
+    ])
+    regions, _a, _f = _drive_arrange_regions(
+        monkeypatch, fbs, [content], image_candidates=[_cand(2, _SUBPAGE_BBOX)]
+    )
+    text_order = [
+        min(r.feature_block_indices) for r in regions if r.kind == "paragraph"
+    ]
+    assert text_order == [1, 0, 3]  # authored order intact, NOT re-sorted
+    # the figure (image FB 2) is inserted before the first text region whose
+    # min-FB exceeds 2 (the FB-3 paragraph).
+    assert [r.kind for r in regions] == [
+        "paragraph", "paragraph", "figure", "paragraph",
+    ]
+
+
+def test_page_raster_candidate_excluded_subpage_figure_kept(monkeypatch):
+    """THE PAGE-RASTER GUARD — the regression test for the full-page-image
+    catastrophe (a page-raster scan yields one full-page image per page; emitting
+    them would ship a photograph of every page as an <img>: WCAG 1.4.5)."""
+    monkeypatch.setenv("SEMANTIK_PAGE_ARRANGER_CHECKPOINT", "0")
+    # FB stream: RASTER(0), text(1), FIGURE(2)
+    fbs = [
+        _img_fb(bbox=_FULLPAGE_BBOX),
+        _fb("Body prose.", y0=50.0),
+        _img_fb(bbox=_SUBPAGE_BBOX),
+    ]
+    cands = [_cand(0, _FULLPAGE_BBOX), _cand(2, _SUBPAGE_BBOX)]
+    content = _arr([{"ids": ["p1_b00"], "type": "paragraph"}])
+    regions, audit, _f = _drive_arrange_regions(
+        monkeypatch, fbs, [content], image_candidates=cands
+    )
+    figs = [r for r in regions if r.kind == "figure"]
+    assert len(figs) == 1                       # ONLY the genuine sub-page figure
+    assert figs[0].feature_block_indices == (2,)
+    assert audit["figures"] == 1
+    assert audit["page_raster_skipped"] == 1
+    # The page-raster FB is neither expected nor claimed (coverage holds).
+    claimed = sorted(i for r in regions for i in r.feature_block_indices)
+    assert claimed == [1, 2]
+
+
+def test_figure_arm_noop_without_image_candidates(monkeypatch):
+    """Flag-off (SEMANTIK_DETECT_FIGURES unset) → no image FBs, no candidates →
+    the arm is a natural no-op and the region list is byte-identical."""
+    monkeypatch.setenv("SEMANTIK_PAGE_ARRANGER_CHECKPOINT", "0")
+    fbs = [_fb("Alpha."), _fb("Beta.", y0=40.0)]
+    content = _arr([
+        {"ids": ["p1_b00"], "type": "paragraph"},
+        {"ids": ["p1_b01"], "type": "paragraph"},
+    ])
+    regions, audit, _f = _drive_arrange_regions(monkeypatch, fbs, [content])
+    assert not any(r.kind == "figure" for r in regions)
+    assert [(r.kind, r.feature_block_indices) for r in regions] == [
+        ("paragraph", (0,)), ("paragraph", (1,)),
+    ]
+    assert not any("px_size" in r.payload for r in regions)
+    assert audit["figures"] == 0 and audit["page_raster_skipped"] == 0
+    # The splice is the identity no-op with no figures.
+    assert pa._splice_figure_regions(regions, []) is regions
+
+
+def test_figures_and_text_arranged_on_the_same_page(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_PAGE_ARRANGER_CHECKPOINT", "0")
+    # heading(0), IMAGE(1), caption text(2), IMAGE(3), body(4)
+    fbs = [
+        _fb("Section Title"),
+        _img_fb(bbox=(50.0, 100.0, 250.0, 300.0)),
+        _fb("Figure 1: a widget", y0=320.0),
+        _img_fb(bbox=(50.0, 400.0, 250.0, 600.0)),
+        _fb("Closing body prose.", y0=650.0),
+    ]
+    cands = [
+        _cand(1, (50.0, 100.0, 250.0, 300.0)),
+        _cand(3, (50.0, 400.0, 250.0, 600.0)),
+    ]
+    content = _arr([
+        {"ids": ["p1_b00"], "type": "heading", "level": 2},
+        {"ids": ["p1_b01"], "type": "figure_caption"},
+        {"ids": ["p1_b02"], "type": "paragraph"},
+    ])
+    regions, audit, _f = _drive_arrange_regions(
+        monkeypatch, fbs, [content], image_candidates=cands
+    )
+    assert audit["figures"] == 2
+    assert [r.kind for r in regions] == [
+        "heading", "figure", "paragraph", "figure", "paragraph",
+    ]
+    # both image FBs claimed exactly once; every text FB still claimed once
+    claimed = sorted(i for r in regions for i in r.feature_block_indices)
+    assert claimed == [0, 1, 2, 3, 4]
+    # the nearest "Figure N" caption below the first image is recorded
+    figs = [r for r in regions if r.kind == "figure"]
+    assert figs[0].payload["caption_fb_index"] == 2
+    assert figs[1].payload["caption_fb_index"] is None
+
+
+def test_figure_arm_fail_soft_on_bad_candidate(monkeypatch):
+    """A malformed candidate is skipped, never aborting the document."""
+    monkeypatch.setenv("SEMANTIK_PAGE_ARRANGER_CHECKPOINT", "0")
+    fbs = [_fb("Body."), _img_fb(bbox=_SUBPAGE_BBOX)]
+
+    class _Bad:
+        member_block_indices = "not-a-list-of-ints"
+
+    content = _arr([{"ids": ["p1_b00"], "type": "paragraph"}])
+    regions, audit, _f = _drive_arrange_regions(
+        monkeypatch, fbs, [content],
+        image_candidates=[_Bad(), _cand(1, _SUBPAGE_BBOX)],
+    )
+    # the good candidate still becomes a figure; the bad one is counted + skipped
+    assert audit["figures"] == 1
+    assert audit["figure_stats"]["errors"] >= 1
+    assert [r.kind for r in regions] == ["paragraph", "figure"]
+
+
+def test_arrange_model_cannot_type_a_unit_as_a_figure():
+    """`figure` is deliberately ABSENT from _TYPE_TO_KIND — a model that types a
+    TEXT unit `figure` falls back to paragraph (its text is never dropped)."""
+    assert "figure" not in pa._TYPE_TO_KIND
+    fbs = [_fb("Real prose the model mislabeled.")]
+    units = pa.mint_units_by_page(fbs)[1]
+    result = {
+        "status": "ok",
+        "arrangement": {"blocks": [{"ids": ["p1_b00"], "type": "figure"}]},
+        "attempts": 1,
+    }
+    regions = pa.build_regions_for_page(1, units, result, fbs)
+    assert [r.kind for r in regions] == ["paragraph"]
+    assert regions[0].payload["text"] == "Real prose the model mislabeled."
+
+
+def test_figure_capture_rationale_carries_figure_tallies(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_PAGE_ARRANGER_CHECKPOINT", "0")
+    logged = []
+
+    class _Cap:
+        def __init__(self, **_k):
+            pass
+
+        def log_decision(self, **kw):
+            logged.append(kw)
+
+    import lib.decision_capture as dc
+
+    monkeypatch.setattr(dc, "DecisionCapture", _Cap)
+    fbs = [_img_fb(bbox=_FULLPAGE_BBOX), _fb("Body.", y0=50.0), _img_fb(bbox=_SUBPAGE_BBOX)]
+    content = _arr([{"ids": ["p1_b00"], "type": "paragraph"}])
+    _drive_arrange_regions(
+        monkeypatch, fbs, [content],
+        image_candidates=[_cand(0, _FULLPAGE_BBOX), _cand(2, _SUBPAGE_BBOX)],
+    )
+    assert logged, "the per-doc structure_detection capture must still fire"
+    rationale = logged[0]["rationale"]
+    assert "figures=1" in rationale
+    assert "page_raster_skipped=1" in rationale
+    assert logged[0]["decision_type"] == "structure_detection"
+
+
+# --- the shared structure_graph helpers (page-raster guard + Region builder) ---
+_POINT_DIMS = {1: (612.0, 792.0)}
+
+
+def test_is_page_raster_candidate_predicate():
+    from semantik_structure.structure_graph import is_page_raster_candidate
+
+    assert is_page_raster_candidate(_cand(0, _FULLPAGE_BBOX), _POINT_DIMS) is True
+    assert is_page_raster_candidate(_cand(1, _SUBPAGE_BBOX), _POINT_DIMS) is False
+
+
+def test_page_raster_guard_survives_ocr_lane_mixed_coordinate_spaces():
+    """REGRESSION (real-data bug, task #49): on the OCR/scan lane — the ONLY lane
+    this guard runs on — TEXT FeatureBlocks carry IMAGE-PIXEL-space bboxes and page
+    dims (1224x1584 at OCR render scale 2.0) while an ImageCandidate bbox is
+    PDF-POINT space (612x792). ``features._interleave_image_feature_blocks`` copies
+    the page dims onto the synthetic image FB from a neighbouring TEXT FB, so the
+    image FB ends up with PIXEL dims + a POINT bbox.
+
+    An earlier guard read its dims off that FB and measured a FULL-PAGE raster as
+    (612*792)/(1224*1584) = 25% coverage -> under threshold -> KEEP. On the real
+    198-page scanned chapter all 198/198 page rasters slipped through and would
+    have shipped as <img> (a photograph of every page: WCAG 1.4.5 images-of-text).
+
+    The guard must therefore take its dims from the PDF extraction (POINT space,
+    the candidate bbox's own space). This test pins that: the image FB carries the
+    poisoned pixel-space dims, and the guard STILL fires.
+    """
+    from semantik_structure.structure_graph import (
+        is_page_raster_candidate,
+        page_dims_from_shared,
+    )
+
+    # The synthetic image FB as features.py really builds it on the OCR lane:
+    # PIXEL-space page dims inherited from a text FB, POINT-space bbox.
+    poisoned_fb = FeatureBlock(
+        raw=RawBlock(text="", page=1, bbox=_FULLPAGE_BBOX,
+                     page_width=1224.0, page_height=1584.0,   # <- PIXEL space
+                     source="pypdfium2:image"),
+        size_bucket="md", gap_above=None, is_top_of_page=False, is_centered=False,
+        caps=None, indent_bucket=0, relative_font_ratio=1.0,
+        provenance="pypdfium2:image", is_image=True,
+    )
+    raster = _cand(0, _FULLPAGE_BBOX)                          # <- POINT space
+    # Dims from the EXTRACTION (point space) — the contract.
+    dims = page_dims_from_shared(_shared_pages(1))
+    assert dims == {1: (612.0, 792.0)}
+    assert is_page_raster_candidate(raster, dims) is True
+
+    # And end-to-end through the arm: the raster is excluded despite the poisoned FB.
+    regions, stats = pa.build_figure_regions([raster], [poisoned_fb], dims)
+    assert regions == [] and stats["page_raster_skipped"] == 1 and stats["figures"] == 0
+
+
+def test_build_figure_regions_without_page_dims_fails_open():
+    """No page dims -> the guard cannot measure -> fail-OPEN (keep the candidate).
+    Documents why ``arrange_regions`` MUST pass ``page_dims_from_shared``."""
+    regions, stats = pa.build_figure_regions(
+        [_cand(0, _FULLPAGE_BBOX)], [_img_fb(bbox=_FULLPAGE_BBOX)], {}
+    )
+    assert stats["figures"] == 1 and stats["page_raster_skipped"] == 0
+    assert regions[0].kind == "figure"
+
+
+def test_is_page_raster_candidate_fails_open_on_bad_geometry():
+    """Fail-OPEN: unusable dims -> False (KEEP the candidate; never silently drop
+    a real figure)."""
+    from semantik_structure.region_detection import ImageCandidate
+    from semantik_structure.structure_graph import is_page_raster_candidate
+
+    # Degenerate page dims.
+    assert is_page_raster_candidate(_cand(0, _FULLPAGE_BBOX), {1: (0.0, 0.0)}) is False
+    # Page not present in the dims map (unknown page) -> keep.
+    assert is_page_raster_candidate(_cand(0, _FULLPAGE_BBOX), {7: (612.0, 792.0)}) is False
+    # Degenerate candidate bbox -> keep.
+    assert is_page_raster_candidate(_cand(0, (5.0, 5.0, 5.0, 5.0)), _POINT_DIMS) is False
+    # No page at all -> keep.
+    empty = ImageCandidate(kind="figure", bbox=(0, 0, 1, 1), pages=[], member_block_indices=[0])
+    assert is_page_raster_candidate(empty, _POINT_DIMS) is False
+
+
+def test_page_dims_from_shared_tolerates_garbage():
+    from semantik_structure.structure_graph import page_dims_from_shared
+
+    assert page_dims_from_shared({}) == {}
+    assert page_dims_from_shared({"pages": [{"page_num": 0, "width": 1, "height": 1}]}) == {}
+    assert page_dims_from_shared(
+        {"pages": [{"page_num": 1, "width": "x", "height": 792.0},
+                   {"page_num": 2, "width": 612.0, "height": 792.0}]}
+    ) == {2: (612.0, 792.0)}
+
+
+def test_build_figure_region_from_candidate_shape():
+    from semantik_structure.structure_graph import build_figure_region_from_candidate
+
+    fbs = [_fb("intro"), _img_fb(bbox=_SUBPAGE_BBOX), _fb("Figure 1: a widget", y0=400.0)]
+    region = build_figure_region_from_candidate(
+        _cand(1, _SUBPAGE_BBOX), fbs, source_region_id=7, decision_flags=("f1",),
+    )
+    assert region.kind == "figure"
+    assert region.feature_block_indices == (1,)
+    assert region.payload == {
+        "alt_hint": None, "caption_fb_index": 2, "px_size": (400, 400),
+    }
+    assert region.provenance == {
+        "pass": "figure_image_candidate", "decision_flags": ("f1",),
+    }
+    assert region.source_region_id == 7
+    # page_bboxes is NOT set here (build_structure_graph re-stamps at its exit)
+    assert region.page_bboxes is None
+    # no claimable member FB -> None (never a figure with no FB)
+    from semantik_structure.region_detection import ImageCandidate
+
+    empty = ImageCandidate(kind="figure", bbox=(0, 0, 1, 1), pages=[1], member_block_indices=[])
+    assert build_figure_region_from_candidate(empty, fbs) is None

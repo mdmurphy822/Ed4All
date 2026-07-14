@@ -80,7 +80,7 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
@@ -1305,6 +1305,132 @@ def _find_figure_caption_below(
     return None
 
 
+# ---------------------------------------------------------------------------
+# Figure-Region construction — SHARED by Pass-3a (council lane) and the
+# page-arranger lane (``page_arranger.build_figure_regions``).
+# ---------------------------------------------------------------------------
+# TODO(calibration) — an image whose bbox covers at least this share of its page
+# IS the page (a page-raster scan of a whole textbook page), not a figure ON the
+# page. NOT a corpus target: it encodes the geometry of "the image is the entire
+# page", which is domain-agnostic. Emitting such a candidate as a <figure> would
+# ship a photograph of the whole page (every body paragraph as pixels) — a WCAG
+# 1.4.5 images-of-text regression that duplicates the text layer.
+_PAGE_RASTER_MIN_COVERAGE = 0.90
+
+
+def build_figure_region_from_candidate(
+    cand: Any,
+    feature_blocks: list[FeatureBlock],
+    *,
+    source_region_id: int | None = None,
+    decision_flags: Iterable[str] = (),
+) -> "Region | None":
+    """Build the ONE figure ``Region`` an :class:`ImageCandidate` maps to.
+
+    The single source of truth for the figure-Region shape (Part F): the region
+    claims the candidate's synthetic image FeatureBlock (the FIRST of its
+    ``member_block_indices``), records the nearest ``"Figure N:"`` caption FB
+    below for the assembler, and carries the source image's pixel size.
+
+    Returns ``None`` when the candidate has no claimable member FB (a degenerate
+    bbox never got a synthetic FB) — emitting a figure with no FB would break the
+    Stage-5 coverage invariant.
+
+    ``page_bboxes`` is deliberately NOT set here: ``build_structure_graph``
+    re-stamps it on every region at its exit (``stamp_region_page_bboxes``). The
+    arranger lane, which owns its own geometry stamping, sets it at its call site.
+    """
+    members = [int(i) for i in (getattr(cand, "member_block_indices", None) or [])]
+    if not members:
+        return None
+    image_fb = members[0]
+    return Region(
+        kind="figure",
+        feature_block_indices=(image_fb,),
+        payload={
+            "alt_hint": None,
+            "caption_fb_index": _find_figure_caption_below(image_fb, feature_blocks),
+            "px_size": tuple(getattr(cand, "px_size", (0, 0))),
+        },
+        provenance={
+            "pass": "figure_image_candidate",
+            "decision_flags": tuple(decision_flags or ()),
+        },
+        source_region_id=source_region_id,
+    )
+
+
+def page_dims_from_shared(shared: Any) -> "dict[int, tuple[float, float]]":
+    """``{page_num: (width, height)}`` in PDF-POINT space, from the extraction.
+
+    The ONLY coordinate space an :class:`ImageCandidate` bbox is expressed in
+    (both come from the same pypdfium2 page objects), so it is the only space the
+    page-raster guard may compare against. See :func:`is_page_raster_candidate`
+    for why reading the dims off the synthetic image FeatureBlock is WRONG.
+    """
+    dims: dict[int, tuple[float, float]] = {}
+    for page in (getattr(shared, "get", None) and shared.get("pages") or []) or []:
+        try:
+            num = int(page.get("page_num") or 0)
+            width = float(page.get("width") or 0.0)
+            height = float(page.get("height") or 0.0)
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if num and width > 0.0 and height > 0.0:
+            dims[num] = (width, height)
+    return dims
+
+
+def is_page_raster_candidate(
+    cand: Any, page_dims: "Mapping[int, tuple[float, float]]"
+) -> bool:
+    """True when the image candidate IS the scanned page, not a figure on it.
+
+    On a page-raster scan (the usual page-arranger input — no usable text layer)
+    the ONLY image page-object per page is the full-page raster itself. Turning
+    those into figure Regions would emit one ``<img>`` per page, each a
+    photograph of an entire textbook page (WCAG 1.4.5 images-of-text, duplicating
+    all body text as pixels). This predicate is the guard.
+
+    Deterministic + CPU-only: coverage = image-bbox area / PDF-page area, both in
+    PDF-POINT space.
+
+    **Coordinate-space contract (load-bearing — a real bug lived here).** The page
+    dims MUST come from the PDF extraction (:func:`page_dims_from_shared`), NEVER
+    off the candidate's synthetic image FeatureBlock. On the OCR/scan lane — i.e.
+    exactly the lane this guard exists for — text FeatureBlocks carry
+    IMAGE-PIXEL-space bboxes and page dims (e.g. 1224x1584 at OCR render scale
+    2.0), while an ImageCandidate bbox is PDF-POINT space (e.g. 612x792). Reading
+    ``raw.page_width``/``raw.page_height`` off the image FB (which
+    ``features._interleave_image_feature_blocks`` copies from a neighbouring TEXT
+    FB, so it inherits the pixel-space dims while the bbox stays point-space) makes
+    a FULL-PAGE raster measure as (612*792)/(1224*1584) = 25% coverage — under any
+    sane threshold — so every page raster silently passes the guard and ships as a
+    figure. Measured on a real 198-page scanned chapter: 198/198 page rasters
+    slipped through that way.
+
+    **Fail-open** — unknown page / missing or degenerate dims return ``False``
+    (KEEP the candidate; never silently drop a real figure).
+    """
+    pages = list(getattr(cand, "pages", None) or ())
+    if not pages:
+        return False
+    try:
+        page_num = int(pages[0])
+        x0, y0, x1, y1 = (float(v) for v in (getattr(cand, "bbox", None) or ()))
+    except (TypeError, ValueError):
+        return False
+    dims = (page_dims or {}).get(page_num)
+    if not dims:
+        return False
+    page_w, page_h = float(dims[0]), float(dims[1])
+    page_area = page_w * page_h
+    img_area = (x1 - x0) * (y1 - y0)
+    if page_area <= 0.0 or img_area <= 0.0:
+        return False
+    return (img_area / page_area) >= _PAGE_RASTER_MIN_COVERAGE
+
+
 def _iter_runs(
     predicate: Callable[[int], bool],
     feature_blocks: list[FeatureBlock],
@@ -1947,6 +2073,12 @@ def build_structure_graph(
     # never leaks into a paragraph. The legacy Pass-3b stays as the
     # secondary path (the ``claimed`` set prevents double-emit). Records
     # the nearest "Figure N:" caption FB below for the assembler.
+    #
+    # The Region SHAPE is built by the shared ``build_figure_region_from_candidate``
+    # helper (also called by the page-arranger lane, which bypasses this pass);
+    # the ``claimed`` bookkeeping stays here in the caller. NOTE: the page-raster
+    # guard (``is_page_raster_candidate``) is DELIBERATELY not applied on this
+    # lane — the council lane's behavior stays byte-identical.
     # ------------------------------------------------------------------
     for region_idx, decision in enumerate(decisions):
         route = getattr(decision, "route", None)
@@ -1963,25 +2095,15 @@ def build_structure_graph(
         image_fb = members[0]
         if image_fb in claimed:
             continue
-        caption_idx = _find_figure_caption_below(image_fb, feature_blocks)
-        regions_out.append(
-            Region(
-                kind="figure",
-                feature_block_indices=(image_fb,),
-                payload={
-                    "alt_hint": None,
-                    "caption_fb_index": caption_idx,
-                    "px_size": tuple(getattr(cand, "px_size", (0, 0))),
-                },
-                provenance={
-                    "pass": "figure_image_candidate",
-                    "decision_flags": tuple(
-                        getattr(decision, "flags", ()) or ()
-                    ),
-                },
-                source_region_id=region_idx,
-            )
+        figure_region = build_figure_region_from_candidate(
+            cand,
+            feature_blocks,
+            source_region_id=region_idx,
+            decision_flags=tuple(getattr(decision, "flags", ()) or ()),
         )
+        if figure_region is None:
+            continue
+        regions_out.append(figure_region)
         claimed.add(image_fb)
 
     # ------------------------------------------------------------------
