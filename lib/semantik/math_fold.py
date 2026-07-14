@@ -256,7 +256,9 @@ _CHECKMARK_RE = re.compile(r"\\checkmark\b")
 _STASH_RE = re.compile("\x00(\\d+)\x00")
 
 
-def sanitize_body_latex(text: str, *, html: bool = True) -> str:
+def sanitize_body_latex(
+    text: str, *, html: bool = True, keep_md_sep: bool = False
+) -> str:
     r"""Fold visible text-mode LaTeX / markdown garbage out of BODY text (B3).
 
     ``html=True`` (rendered body): ``\textbf{X}`` -> ``<strong>X</strong>``,
@@ -266,6 +268,18 @@ def sanitize_body_latex(text: str, *, html: bool = True) -> str:
     Math runs (``$…$`` etc.) are protected verbatim. A fast guard keeps the
     common no-markup path allocation-free (a string with no ``\`` and no ``|``
     is returned unchanged).
+
+    ``keep_md_sep=True`` (``SEMANTIK_TABLE_STRUCTURE``, additive — default
+    ``False`` → byte-identical to today) PRESERVES the ``| --- | --- |`` row.
+    That row is not garbage: it is the pipe grid's TOPOLOGY DECLARATION (its
+    dash-cell count is the table's ``n_cols``, and its mere presence is the only
+    evidence that row 0 is a header). Dropping it here is precisely what made
+    ``structure_emit.parse_table``'s ``<thead>`` branch dead code on the live
+    path. The table-structure lane calls this with ``keep_md_sep=True`` to stash
+    a separator-PRESERVING copy for
+    :func:`lib.semantik.table_structure.parse_table_topology`, while the block's
+    ``raw_text`` / rendered ``html`` keep today's exact (separator-stripped)
+    treatment so chunk / sidecar text stays byte-identical.
     """
     if not text or ("\\" not in text and "|" not in text):
         return text or ""
@@ -277,7 +291,8 @@ def sanitize_body_latex(text: str, *, html: bool = True) -> str:
 
     s = _BODY_MATH_RUN_RE.sub(_protect, text)
     s = _TABULAR_RE.sub(" ", s)
-    s = _MD_SEP_ROW_RE.sub(" ", s)
+    if not keep_md_sep:
+        s = _MD_SEP_ROW_RE.sub(" ", s)
     if html:
         s = _TEXTBF_RE.sub(r"<strong>\1</strong>", s)
         s = _TEXTIT_RE.sub(r"<em>\1</em>", s)
