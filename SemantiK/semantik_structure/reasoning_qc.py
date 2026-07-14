@@ -482,7 +482,7 @@ def judgments_to_flagged_blocks(
 
     flagged: list[Any] = []
 
-    for item in verdict.get("phantom_headings") or ():
+    for item in _qc_findings(verdict, "phantom_headings"):
         idx = _capped_of(item.get("index") if isinstance(item, dict) else item)
         if idx is None:
             continue
@@ -496,7 +496,7 @@ def judgments_to_flagged_blocks(
             )
         )
 
-    for item in verdict.get("apparatus_retype") or ():
+    for item in _qc_findings(verdict, "apparatus_retype"):
         idx = _capped_of(item.get("index") if isinstance(item, dict) else item)
         if idx is None:
             continue
@@ -510,7 +510,7 @@ def judgments_to_flagged_blocks(
             )
         )
 
-    for item in verdict.get("misordered") or ():
+    for item in _qc_findings(verdict, "misordered"):
         run_raw = item.get("run") if isinstance(item, dict) else item
         if not isinstance(run_raw, (list, tuple)):
             continue
@@ -913,6 +913,33 @@ def _targeted_keep_window(
     return False, "targeted_scope", pages
 
 
+def _qc_findings(v: Any, key: str) -> tuple:
+    """Read a FINDINGS-LIST key off a model-produced QC verdict, defensively.
+
+    The verdict is raw model JSON: a key the contract says is a list of findings
+    can come back as a scalar (a bare float / str / int), which an unguarded
+    ``for item in v.get(key) or ()`` turns into a TypeError that kills the whole
+    cascade at the stitch — after every QC unit has already been paid for. A
+    malformed FIELD is a model-shape error, not a pipeline failure: drop it,
+    say so loudly (once per key), and keep the other findings."""
+    if not isinstance(v, dict):
+        return ()
+    raw = v.get(key)
+    if raw is None:
+        return ()
+    if isinstance(raw, (list, tuple)):
+        return tuple(raw)
+    logger.warning(
+        "reasoning-QC verdict key %r came back as %s (%r), not a list — dropping "
+        "that key's findings for this unit (the rest of the verdict is kept). "
+        "Model returned an off-contract shape.",
+        key,
+        type(raw).__name__,
+        raw if not isinstance(raw, (bytes, str)) else raw[:80],
+    )
+    return ()
+
+
 def _qc_item_index(item: Any) -> int | None:
     raw = item.get("index") if isinstance(item, dict) else item
     try:
@@ -1003,13 +1030,13 @@ def _absorb_window_findings(
     positions (``+start``)."""
     unit_len = end - start
     for key in ("phantom_headings", "apparatus_retype"):
-        for item in v.get(key) or ():
+        for item in _qc_findings(v, key):
             idx = _qc_item_index(item)
             if idx is None or not (0 <= idx < unit_len):
                 continue
             merged[key].append({"index": start + idx, "reason": _qc_item_reason(item, "")})
     explicit = False
-    for r in v.get("misordered") or ():
+    for r in _qc_findings(v, "misordered"):
         run = _qc_run_indices(r)
         if run is None:
             continue
@@ -1041,7 +1068,7 @@ def _absorb_seam_findings(
     that fully contains the block saw more surrounding context and wins."""
     unit_len = end - start
     explicit = False
-    for r in v.get("misordered") or ():
+    for r in _qc_findings(v, "misordered"):
         run = _qc_run_indices(r)
         if run is None:
             continue

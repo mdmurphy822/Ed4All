@@ -225,6 +225,58 @@ def test_judgments_drop_out_of_range_indices():
 
 
 # ---------------------------------------------------------------------------
+# Off-contract verdict shapes must NOT kill the cascade.
+#
+# Live regression (2026-07-13, ch01-reval): a QC unit returned a FLOAT where the
+# contract says findings-list, and the unguarded ``for item in v.get(key) or ()``
+# raised TypeError("'float' object is not iterable") out of _absorb_window_findings
+# — killing a ~2h cascade at the final stitch, after every QC unit was paid for.
+# A malformed FIELD is a model-shape error: drop that key, keep the rest.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("bad", [0.87, 1, "none", {"index": 0}, True])
+def test_qc_findings_drops_non_list_verdict_key(bad):
+    assert reasoning_qc._qc_findings({"phantom_headings": bad}, "phantom_headings") == ()
+
+
+def test_qc_findings_passes_through_real_lists_and_missing_keys():
+    v = {"phantom_headings": [{"index": 0}], "apparatus_retype": None}
+    assert reasoning_qc._qc_findings(v, "phantom_headings") == ({"index": 0},)
+    assert reasoning_qc._qc_findings(v, "apparatus_retype") == ()
+    assert reasoning_qc._qc_findings(v, "absent") == ()
+    assert reasoning_qc._qc_findings("not-a-dict", "phantom_headings") == ()
+
+
+def test_absorb_window_findings_survives_float_where_list_expected():
+    """The exact crash: a float on a findings key must not raise."""
+    merged = {"phantom_headings": [], "apparatus_retype": [], "misordered": []}
+    verdict = {
+        "phantom_headings": 0.87,  # <-- the live off-contract value
+        "apparatus_retype": [{"index": 1, "reason": "answer key"}],
+        "misordered": 0.5,
+    }
+    reasoning_qc._absorb_window_findings(verdict, 10, 13, merged)
+    # The malformed keys are dropped; the WELL-FORMED sibling still lands.
+    assert merged["phantom_headings"] == []
+    assert merged["apparatus_retype"] == [{"index": 11, "reason": "answer key"}]
+
+
+def test_judgments_to_flagged_blocks_survives_float_verdict_keys():
+    window = reasoning_qc.QCWindow(
+        page=1,
+        region_indices=[10, 11],
+        block_records=[_record("a"), _record("b")],
+        emit_positions=[0, 1],
+    )
+    verdict = {
+        "phantom_headings": 0.9,
+        "apparatus_retype": [{"index": 1, "reason": "answer key"}],
+        "misordered": 3.14,
+    }
+    flagged = reasoning_qc.judgments_to_flagged_blocks(verdict, window)
+    assert [f.region_index for f in flagged] == [11]
+
+
+# ---------------------------------------------------------------------------
 # MOVE-op default shadow — a misorder flag is proposed, not applied.
 # ---------------------------------------------------------------------------
 def test_misorder_audited_not_applied(monkeypatch, _stub_seat):
