@@ -295,10 +295,30 @@ _TEXT_ARG_RE = re.compile(
 )
 
 
-def _reads_as_prose(source: str) -> bool:
-    from lib.semantik.math_fold import _is_prose_math_span  # noqa: PLC0415
+def _reads_as_prose(source: str, prose_vocab=None) -> bool:
+    """Whether this span is PROSE, not math — the span-SELECTION question.
 
-    return _is_prose_math_span(_TEXT_ARG_RE.sub(" ", source))
+    Two complementary predicates, both owned by ``math_fold`` (the selection
+    layer), run on the residue AFTER declared ``\\text{…}`` args are removed:
+
+    * ``_is_prose_math_span`` — SENTENCE-scale: a multi-token, majority-prose run.
+    * ``is_prose_fragment_span`` — a short FRAGMENT (1-3 words), decided against
+      the DOCUMENT's own prose vocabulary. This is the task-#57 arm: the
+      sentence test needs >= 2 tokens, so a bare ``" and "`` slipped under it.
+
+    The emitter deliberately does NOT try to answer this by SHAPE: ``$ab$`` (a
+    real product) and ``$and$`` (prose) parse identically, so only the corpus
+    context separates them. See ``math_fold.is_prose_fragment_span``.
+    """
+    from lib.semantik.math_fold import (  # noqa: PLC0415
+        _is_prose_math_span,
+        is_prose_fragment_span,
+    )
+
+    residue = _TEXT_ARG_RE.sub(" ", source)
+    if _is_prose_math_span(residue):
+        return True
+    return is_prose_fragment_span(residue, prose_vocab)
 
 
 # ---------------------------------------------------------------------------
@@ -569,7 +589,9 @@ def _is_safe_op_char(ch: str) -> bool:
 # ---------------------------------------------------------------------------
 # Public: one LaTeX body → one <math> fragment (or None to decline).
 # ---------------------------------------------------------------------------
-def latex_to_mathml(latex: str, *, display: bool = False) -> Optional[str]:
+def latex_to_mathml(
+    latex: str, *, display: bool = False, prose_vocab=None
+) -> Optional[str]:
     r"""Convert ONE LaTeX body to a gate-valid ``<math>`` fragment.
 
     ``latex`` is the span CONTENT (delimiters already stripped), as it appears in
@@ -577,9 +599,16 @@ def latex_to_mathml(latex: str, *, display: bool = False) -> Optional[str]:
     the upstream ``_escape_math_angle_brackets`` pass; they are decoded here and
     re-escaped on emit.
 
-    Returns ``None`` (a DECLINE) when the LaTeX falls outside the supported
-    grammar or the emitted markup fails the MathML gate. A decline means the
-    caller must leave the span EXACTLY as it found it.
+    ``prose_vocab`` is the document's ordinary-prose word set
+    (``math_fold.build_prose_vocabulary``). It is the CONTEXT that lets the
+    selection layer reject a short prose fragment (``$ and $``, ``$ten$``) while
+    still converting a genuine variable product (``$ab$``) — the two are
+    shape-identical, so without it they cannot be told apart and NEITHER is
+    rejected (the check goes inert rather than guessing).
+
+    Returns ``None`` (a DECLINE) when the span is prose, when the LaTeX falls
+    outside the supported grammar, or when the emitted markup fails the MathML
+    gate. A decline means the caller must leave the span EXACTLY as it found it.
     """
     source = _html.unescape(latex or "").strip()
     if not source:
@@ -590,7 +619,7 @@ def latex_to_mathml(latex: str, *, display: bool = False) -> Optional[str]:
         return None
     if _DECLINE_RE.search(source):
         return None
-    if _reads_as_prose(source):
+    if _reads_as_prose(source, prose_vocab):
         return None
 
     try:
@@ -662,8 +691,23 @@ def _split_span(span: str) -> Tuple[str, bool]:
     return span, False  # pragma: no cover - the regex cannot produce this
 
 
-def convert_latex_spans(text: str) -> Tuple[str, int, int]:
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def convert_latex_spans(text: str, *, prose_vocab=None) -> Tuple[str, int, int]:
     r"""Convert every convertible ``$…$`` / ``\(…\)`` span in ``text`` to MathML.
+
+    This is the span-SELECTION seam: it decides which delimited spans are math at
+    all, then hands each one to the emitter. ``prose_vocab`` is the DOCUMENT's
+    ordinary-prose vocabulary (``math_fold.build_prose_vocabulary``) — the
+    context that distinguishes a prose fragment (``$ and $``) from a genuine
+    variable product (``$ab$``), which are shape-identical.
+
+    When no vocabulary is supplied it falls back to a BLOCK-LOCAL one harvested
+    from this text's own tag-stripped prose, so a caller that cannot supply
+    document context still gets the guard rather than silently fabricating. The
+    document-wide vocabulary is strictly better (a word used elsewhere in the
+    document but not in this block still counts), so the adapter passes it.
 
     Returns ``(html, converted, declined)``. A declined span is emitted BYTE-FOR-
     BYTE as it arrived — this function never produces a partially-converted span.
@@ -673,12 +717,20 @@ def convert_latex_spans(text: str) -> Tuple[str, int, int]:
     if not text or ("$" not in text and "\\(" not in text and "\\[" not in text):
         return text or "", 0, 0
 
+    if prose_vocab is None:
+        from lib.semantik.math_fold import build_prose_vocabulary  # noqa: PLC0415
+
+        # Strip tags first: HTML element/attribute names ("td", "em", "span")
+        # are not the document's PROSE, and letting them in would reject a
+        # variable product that happened to collide with a tag name.
+        prose_vocab = build_prose_vocabulary([_TAG_RE.sub(" ", text)])
+
     stats = [0, 0]  # converted, declined
 
     def _sub(match: "re.Match[str]") -> str:
         span = match.group(0)
         body, display = _split_span(span)
-        mathml = latex_to_mathml(body, display=display)
+        mathml = latex_to_mathml(body, display=display, prose_vocab=prose_vocab)
         if mathml is None:
             stats[1] += 1
             return span
