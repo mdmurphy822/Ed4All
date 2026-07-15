@@ -12,7 +12,7 @@ This module pins the frontmatter contract:
 
 1. Each of the 12 ``AGENT_SUBAGENT_SET`` agents has a corresponding
    ``.md`` file at one of the registered ``AGENT_SPEC_DIRS`` locations
-   (Courseforge/agents/, Trainforge/agents/, DART/agents/).
+   (Courseforge/agents/, Trainforge/agents/).
 2. Every such ``.md`` file starts with a YAML frontmatter block.
 3. The frontmatter carries ``model: sonnet``.
 4. The frontmatter's ``name:`` field matches the filename stem.
@@ -39,7 +39,6 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 _AGENT_SPEC_DIRS = (
     Path("Courseforge") / "agents",
     Path("Trainforge") / "agents",
-    Path("DART") / "agents",
 )
 
 # Pinned membership of AGENT_SUBAGENT_SET. Mirrored here so a future

@@ -74,14 +74,12 @@ Courseforge/runtime/*
 # Courseforge generated data files in scripts/
 Courseforge/scripts/*.json
 
-# DART inputs/outputs
-DART/batch_output/*
-!DART/batch_output/.gitkeep
-DART/output/*
-!DART/output/.gitkeep
-DART/output_*/
-DART/inputs/*
-!DART/inputs/.gitkeep
+# SemantiK conversion batch output + dated scratch rounds (DART->semantik
+# purge task #19; SemantiK/output/* + SemantiK/inputs/* are handled in the
+# SemantiK section below).
+SemantiK/batch_output/*
+!SemantiK/batch_output/.gitkeep
+SemantiK/output_*/
 
 # Trainforge outputs
 Trainforge/output/*
@@ -120,6 +118,8 @@ extracted/
 # Training captures (generated data)
 training-captures/dart/*
 !training-captures/dart/.gitkeep
+training-captures/semantik/*
+!training-captures/semantik/.gitkeep
 training-captures/courseforge/*
 !training-captures/courseforge/.gitkeep
 training-captures/trainforge/*

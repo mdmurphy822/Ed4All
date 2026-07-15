@@ -335,9 +335,9 @@ def test_dart_provenance_content_survives_fallback():
 
 
 _LIVE_DART_SAMPLES = [
-    "DART/output/rdf11_primer_accessible.html",
-    "DART/output/shacl_advanced_features_accessible.html",
-    "DART/output/rdf_schema_accessible.html",
+    "SemantiK/output/rdf11_primer_accessible.html",
+    "SemantiK/output/shacl_advanced_features_accessible.html",
+    "SemantiK/output/rdf_schema_accessible.html",
 ]
 
 

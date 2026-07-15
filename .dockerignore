@@ -25,9 +25,9 @@ Courseforge/inputs/exam-objectives/*.json
 Courseforge/inputs/textbooks/
 Courseforge/inputs/existing-packages/
 Courseforge/inputs/course-data/*.json
-DART/output/
-DART/batch_output/
-DART/inputs/
+SemantiK/output/
+SemantiK/batch_output/
+SemantiK/inputs/
 LibV2/courses/
 LibV2/catalog/
 

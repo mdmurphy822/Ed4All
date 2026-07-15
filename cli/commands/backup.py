@@ -5,7 +5,7 @@ COMPLETE, restore-able snapshot of every mutable data directory. It is meant to
 restore a working system, so:
 
 * It captures the full ``_DATA_DIR_KEYS`` set resolved through ``lib.paths``
-  (``state`` / ``libv2`` / ``exports`` / ``training-captures`` / ``dart-output``),
+  (``state`` / ``libv2`` / ``exports`` / ``training-captures`` / ``semantik-output``),
   honoring ``ED4ALL_HOME`` and every per-dir override (``ED4ALL_LIBV2_ROOT`` …).
   When ``ED4ALL_STATE_RUNS_DIR`` scatters the runs subtree OUTSIDE the state
   root it is captured too (as ``state-runs/``).
@@ -39,12 +39,12 @@ import click
 from lib.paths import (
     PROJECT_ROOT,
     courseforge_exports_dir,
-    dart_output_dir,
     ed4all_home,
     get_state_runs_dir,
     get_training_captures_dir,
     is_path_within,
     libv2_path,
+    semantik_output_dir,
 )
 
 #: Name of the embedded manifest (recomputed against on ``--verify``).
@@ -69,7 +69,7 @@ def resolve_backup_dirs() -> Dict[str, Path]:
         "libv2": libv2_path(),
         "exports": courseforge_exports_dir(),
         "training-captures": get_training_captures_dir(),
-        "dart-output": dart_output_dir(),
+        "semantik-output": semantik_output_dir(),
     }
 
     # Per-dir override may scatter the runs subtree out of the state root.

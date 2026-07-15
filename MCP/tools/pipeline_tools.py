@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 _FALLBACK_BLOOM_LEVEL = "apply"
 
 # Derived paths
-DART_OUTPUT_DIR = PROJECT_ROOT / "DART" / "batch_output"
+SEMANTIK_BATCH_OUTPUT_DIR = PROJECT_ROOT / "SemantiK" / "batch_output"
 COURSEFORGE_INPUTS = PROJECT_ROOT / "Courseforge" / "inputs" / "textbooks"
 TRAINING_CAPTURES = PROJECT_ROOT / "training-captures"
 
@@ -6916,8 +6916,8 @@ async def create_textbook_pipeline(
             "run_id": run_id
         }
         # Wave 74 Session 3: forward --skip-dart so the workflow runner
-        # can synthesize the dart_conversion phase_output from an
-        # existing DART/output/ directory instead of re-running the
+        # can synthesize the semantik_conversion phase_output from an
+        # existing SemantiK/output/ directory instead of re-running the
         # PDF->HTML conversion.
         if skip_dart:
             params["skip_dart"] = True
@@ -8415,11 +8415,12 @@ def _emit_structure_review_capture(
             if isinstance(v, dict) and v.get("reverted_for_invariant")
         )
         model = _semantik_structure_review_model()
-        # The SemantiK cascade is the DART-conversion replacement, so the
-        # capture lands under the canonical ``dart`` tool / ``dart-conversion``
-        # phase (the schema enum restricts ``tool`` to dart/courseforge/
-        # trainforge/orchestrator; ``semantik`` is not a member). Course code
-        # falls back to the PDF stem via the shared normalizer.
+        # DART->semantik naming purge (task #19): conversion captures land
+        # under the ratified ``semantik`` tool / ``semantik_conversion`` phase
+        # (the decision_event schema's ``tool`` enum was widened to include
+        # ``semantik``; the legacy ``dart`` member stays for pre-purge capture
+        # trees). Course code falls back to the PDF stem via the shared
+        # normalizer.
         course_code = (
             (canonical_course_code or "").strip()
             or normalize_course_code(pdf_stem or "unknown")
@@ -8427,8 +8428,8 @@ def _emit_structure_review_capture(
 
         capture = DecisionCapture(
             course_code=course_code,
-            phase="dart-conversion",
-            tool="dart",
+            phase="semantik_conversion",
+            tool="semantik",
         )
         # DYNAMIC rationale (>=20 chars) — interpolates the per-doc verdict
         # tallies + the reviewer model so the capture is replayable.
@@ -8528,8 +8529,8 @@ def _emit_block_review_window_captures(
         )
         capture = DecisionCapture(
             course_code=course_code,
-            phase="dart-conversion",
-            tool="dart",
+            phase="semantik_conversion",
+            tool="semantik",
         )
         for group in window_groups:
             meta = group.get("meta") if isinstance(group, dict) else None
@@ -8806,10 +8807,9 @@ def _emit_block_resegment_capture(
             if len(sample_ids) >= 8:
                 break
         sample_ids = sample_ids[:8]
-        # The SemantiK cascade is the DART-conversion replacement, so the
-        # capture lands under the canonical ``dart`` tool / ``dart-conversion``
-        # phase. Course code falls back to the PDF stem via the shared
-        # normalizer.
+        # DART->semantik naming purge (task #19): conversion captures land
+        # under the ratified ``semantik`` tool / ``semantik_conversion`` phase.
+        # Course code falls back to the PDF stem via the shared normalizer.
         course_code = (
             (canonical_course_code or "").strip()
             or normalize_course_code(pdf_stem or "unknown")
@@ -8817,8 +8817,8 @@ def _emit_block_resegment_capture(
 
         capture = DecisionCapture(
             course_code=course_code,
-            phase="dart-conversion",
-            tool="dart",
+            phase="semantik_conversion",
+            tool="semantik",
         )
         # DYNAMIC rationale (>=20 chars) — interpolates the per-doc op tallies
         # so the capture is replayable.
@@ -8948,8 +8948,8 @@ def _emit_second_pass_verify_captures(
 
         capture = DecisionCapture(
             course_code=course_code,
-            phase="dart-conversion",
-            tool="dart",
+            phase="semantik_conversion",
+            tool="semantik",
         )
         for row in rounds:
             if not isinstance(row, dict):
@@ -9128,8 +9128,8 @@ def _emit_ocr_repair_capture(
 
         capture = DecisionCapture(
             course_code=course_code,
-            phase="dart-conversion",
-            tool="dart",
+            phase="semantik_conversion",
+            tool="semantik",
         )
         rationale = (
             f"OCR-confusable micro-repair ({model}, max_tokens="
@@ -9525,8 +9525,8 @@ def _emit_reasoning_qc_capture(
 
         capture = DecisionCapture(
             course_code=course_code,
-            phase="dart-conversion",
-            tool="dart",
+            phase="semantik_conversion",
+            tool="semantik",
         )
         rationale = (
             f"reasoning-QC ({mode}, model={model}) on {pdf_stem}: "
@@ -19143,7 +19143,7 @@ def _build_tool_registry() -> dict:
         import asyncio as _asyncio
         import functools as _functools
 
-        from lib.paths import DART_PATH
+        from lib.paths import SEMANTIK_PATH
 
         # C3-1 keystone fix: the SemantiK v2 cascade (and the mirroring
         # vendor-ingest seam) is a SYNC code path that drives sync Playwright
@@ -19166,7 +19166,7 @@ def _build_tool_registry() -> dict:
         output_dir_str = kwargs.get("output_dir")
 
         pdf = Path(pdf_path)
-        out_dir = Path(output_dir_str) if output_dir_str else DART_PATH / "output"
+        out_dir = Path(output_dir_str) if output_dir_str else SEMANTIK_PATH / "output"
         out_dir.mkdir(parents=True, exist_ok=True)
 
         # SemantiK migration — the LIVE textbook/course PDF→HTML conversion
@@ -26492,8 +26492,8 @@ def _build_tool_registry() -> dict:
                 "carried forward via phase_outputs."
             )
 
-        # Compute aggregated source SHA-256 over the DART HTML inputs.
-        # Per the schema's ``source_dart_html_sha256`` description, we
+        # Compute aggregated source SHA-256 over the staged SemantiK HTML inputs.
+        # Per the schema's ``source_semantik_html_sha256`` description, we
         # emit a deterministic merkle-ish digest: sort by filename,
         # concatenate per-file SHA-256 bytes, then SHA-256 the
         # concatenation. Stable across re-runs as long as the input
@@ -26515,12 +26515,12 @@ def _build_tool_registry() -> dict:
             agg = _hashlib.sha256()
             for f in html_files:
                 agg.update(_file_sha256(f))
-            source_dart_html_sha256 = agg.hexdigest()
+            source_semantik_html_sha256 = agg.hexdigest()
         else:
             # Empty-input shell: SHA of empty bytes. Schema-valid
             # (64-char lowercase hex) and deterministic. Lets a
             # pre-staging dry-run still emit a manifest.
-            source_dart_html_sha256 = _hashlib.sha256(b"").hexdigest()
+            source_semantik_html_sha256 = _hashlib.sha256(b"").hexdigest()
 
         # SemantiK migration §4 — doc-level conversion signals threaded into
         # the inline chunk emit. Mirrors the P2b
@@ -26874,8 +26874,8 @@ def _build_tool_registry() -> dict:
             # join key from chunk → upstream-source without a sidecar
             # lookup. See schemas/knowledge/chunk_v4.schema.json::
             # $defs.Source.source_document_sha256.
-            if source_dart_html_sha256:
-                source["source_document_sha256"] = source_dart_html_sha256
+            if source_semantik_html_sha256:
+                source["source_document_sha256"] = source_semantik_html_sha256
             # B1+B2: mint canonical source_references[] from the
             # ``{block_id, pages}`` pairs the chunker harvested off
             # ``data-dart-block-id`` / ``data-dart-pages`` on the source
@@ -27415,8 +27415,13 @@ def _build_tool_registry() -> dict:
         # Sibling manifest.json — must validate against
         # ``schemas/library/chunkset_manifest.schema.json`` per ST 12.
         # Required: chunks_sha256, chunker_version, chunkset_kind,
-        # source_dart_html_sha256 (conditional on chunkset_kind=dart).
+        # source_semantik_html_sha256 (conditional on chunkset_kind=semantik).
         # Optional: chunks_count, generated_at, source_coverage (W3.H H1).
+        # DART->semantik naming purge (task #19): this emitter now writes the
+        # ratified ``chunkset_kind="semantik"`` + ``source_semantik_html_sha256``
+        # (the schema ratified both at Stage 1; the read side — validators,
+        # lib/libv2_storage.py, chunkset_manifest gate, S2 migrator — is
+        # dual-read and still accepts the legacy ``dart`` shape).
         manifest = {
             "chunks_sha256": chunks_sha256,
             "chunker_version": chunker_version,
@@ -27426,8 +27431,8 @@ def _build_tool_registry() -> dict:
             # contract even for chunk-only --stop-after slices that never get
             # a course_manifest.json.
             "extraction_contract": _resolve_extraction_contract(),
-            "chunkset_kind": "dart",
-            "source_dart_html_sha256": source_dart_html_sha256,
+            "chunkset_kind": "semantik",
+            "source_semantik_html_sha256": source_semantik_html_sha256,
             "chunks_count": len(chunks),
             "generated_at": datetime.utcnow().isoformat() + "Z",
             "source_coverage": source_coverage_block,
@@ -28104,7 +28109,7 @@ def _build_tool_registry() -> dict:
     #   resolved from ``phase_outputs.packaging.package_path``) rather
     #   than a staging directory of loose HTML files.
     # - ``source_imscc_sha256`` (SHA-256 of the .imscc archive bytes)
-    #   replaces ``source_dart_html_sha256`` in the manifest emit.
+    #   replaces ``source_semantik_html_sha256`` in the manifest emit.
     # - ``chunkset_kind="imscc"`` discriminates downstream consumers
     #   (the schema's conditional source-SHA branch fires accordingly).
     # - HTML files are read from inside the zip in-memory via

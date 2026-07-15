@@ -237,17 +237,17 @@ def _build_caption_capture():
     """Construct a best-effort DecisionCapture for the VLM caption call site.
 
     Returns ``None`` (captioning proceeds unaffected) when ``lib.decision_capture``
-    is unavailable or construction fails. Lands under the canonical ``dart`` tool
-    / ``dart-conversion`` phase, matching the Stage-5d ``structure_review``
-    capture in ``MCP/tools/pipeline_tools.py``.
+    is unavailable or construction fails. Lands under the ratified ``semantik``
+    tool / ``semantik_conversion`` phase (task #19), matching the Stage-5d
+    ``structure_review`` capture in ``MCP/tools/pipeline_tools.py``.
     """
     try:
         from lib.decision_capture import DecisionCapture
 
         return DecisionCapture(
             course_code=_figure_caption_course_code(),
-            phase="dart-conversion",
-            tool="dart",
+            phase="semantik_conversion",
+            tool="semantik",
         )
     except Exception as exc:  # noqa: BLE001 — capture is best-effort
         logger.debug("figure-caption DecisionCapture unavailable (non-fatal): %s", exc)

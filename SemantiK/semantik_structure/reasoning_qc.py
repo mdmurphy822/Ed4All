@@ -1221,16 +1221,16 @@ def _build_reasoning_qc_capture():
     Returns ``None`` (QC proceeds unaffected) when ``lib.decision_capture`` is
     unavailable or construction fails — mirroring the ``structure_review``
     DecisionCapture best-effort posture in ``MCP/tools/pipeline_tools.py`` and
-    the figure-captioner capture. Lands under the canonical ``dart`` tool /
-    ``dart-conversion`` phase.
+    the figure-captioner capture. Lands under the ratified ``semantik`` tool /
+    ``semantik_conversion`` phase (task #19).
     """
     try:
         from lib.decision_capture import DecisionCapture
 
         return DecisionCapture(
             course_code=_qc_course_code(),
-            phase="dart-conversion",
-            tool="dart",
+            phase="semantik_conversion",
+            tool="semantik",
         )
     except Exception as exc:  # noqa: BLE001 — capture is best-effort
         logger.debug("reasoning-QC DecisionCapture unavailable (non-fatal): %s", exc)

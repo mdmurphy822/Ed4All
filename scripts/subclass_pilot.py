@@ -31,12 +31,12 @@ Chapter selection (mirrors ``semantik_rerender`` conventions)
 Example
 -------
     # dry-run pilot on two chapters (report only, mocked, CPU)
-    python scripts/subclass_pilot.py --input-dir DART/output \
+    python scripts/subclass_pilot.py --input-dir SemantiK/output \
         --chapters ch06,ch09 --title-map titles.json \
         --dry-run --json-out /tmp/subclass_pilot.json
 
     # corpus-wide apply of all 10 chapters (LIVE local 7B seat)
-    python scripts/subclass_pilot.py --input-dir DART/output \
+    python scripts/subclass_pilot.py --input-dir SemantiK/output \
         --apply --output-dir /tmp/subclass_apply \
         --title-map titles.json --json-out /tmp/subclass_apply.json
 """

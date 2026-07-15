@@ -3179,7 +3179,7 @@ def _emit_arranger_capture(
     try:
         from lib.decision_capture import DecisionCapture
 
-        cap = DecisionCapture(course_code="_semantik", phase="dart-conversion", tool="dart")
+        cap = DecisionCapture(course_code="_semantik", phase="semantik_conversion", tool="semantik")
     except Exception as exc:  # noqa: BLE001 — capture best-effort (bridge venv may lack lib/)
         logger.debug("page-arranger DecisionCapture unavailable (non-fatal): %s", exc)
         return

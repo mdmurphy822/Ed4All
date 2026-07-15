@@ -24,13 +24,15 @@ from .constants import (
     validate_project_paths,
 )
 from .decision_capture import (
-    DARTDecisionCapture,
+    DARTDecisionCapture,  # deprecated alias of SemantiKDecisionCapture (task #19, S4-removal)
     DecisionCapture,
     InputRef,
     MLFeatures,
     OutcomeSignals,
+    SemantiKDecisionCapture,
     create_capture,
-    create_dart_capture,
+    create_dart_capture,  # deprecated alias of create_semantik_capture (task #19, S4-removal)
+    create_semantik_capture,
 )
 from .libv2_storage import (
     LibV2Storage,
@@ -71,12 +73,14 @@ from .validation import (
 __all__ = [
     # Core capture
     'DecisionCapture',
-    'DARTDecisionCapture',
+    'SemantiKDecisionCapture',
+    'DARTDecisionCapture',  # deprecated alias (task #19, S4-removal)
     'MLFeatures',
     'InputRef',
     'OutcomeSignals',
     'create_capture',
-    'create_dart_capture',
+    'create_semantik_capture',
+    'create_dart_capture',  # deprecated alias (task #19, S4-removal)
     # Streaming
     'StreamingDecisionCapture',
     'CaptureValidator',

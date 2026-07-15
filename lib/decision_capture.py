@@ -1052,16 +1052,22 @@ class DecisionCapture:
         return False
 
 
-class DARTDecisionCapture(DecisionCapture):
-    """Specialized decision capture for DART conversions."""
+class SemantiKDecisionCapture(DecisionCapture):
+    """Specialized decision capture for SemantiK PDF->HTML conversions.
+
+    DART->semantik naming purge (task #19): renamed from
+    ``DARTDecisionCapture`` and now labels captures with the ratified
+    ``semantik`` tool / ``semantik_conversion`` phase. The old class name
+    survives as a module-level alias (see ``DARTDecisionCapture`` below).
+    """
 
     def __init__(self, course_code: str, pdf_name: str):
-        super().__init__(course_code, "dart-conversion", "dart")
+        super().__init__(course_code, "semantik_conversion", "semantik")
         self.pdf_name = pdf_name
         self.conversion_details: Dict[str, Any] = {}
 
     def log_conversion_start(self, pdf_path: str, options: Dict[str, Any]):
-        """Log the start of a DART conversion."""
+        """Log the start of a SemantiK conversion."""
         self.conversion_details = {
             "pdf_path": pdf_path,
             "pdf_name": self.pdf_name,
@@ -1076,7 +1082,7 @@ class DARTDecisionCapture(DecisionCapture):
         wcag_compliant: bool,
         processing_time_seconds: float
     ):
-        """Log completion of a DART conversion."""
+        """Log completion of a SemantiK conversion."""
         self.conversion_details.update({
             "completed": datetime.now().isoformat(),
             "output_path": output_path,
@@ -1128,11 +1134,11 @@ class DARTDecisionCapture(DecisionCapture):
         )
 
     def save(self, filename: Optional[str] = None) -> Path:
-        """Save with DART-specific details using atomic write."""
+        """Save with conversion-specific details using atomic write."""
         self.close()
 
         if filename is None:
-            filename = f"dart_conversion_{self.pdf_name}_{self.session_id}.json"
+            filename = f"semantik_conversion_{self.pdf_name}_{self.session_id}.json"
 
         output_path = self.output_dir / filename
         legacy_output_path = self.legacy_output_dir / filename
@@ -1162,7 +1168,7 @@ class DARTDecisionCapture(DecisionCapture):
             try:
                 os.fsync(f.fileno())
             except OSError as e:
-                logger.warning("fsync failed on DART primary save: %s", e)
+                logger.warning("fsync failed on SemantiK-capture primary save: %s", e)
         os.rename(temp_path, output_path)
 
         # Also save to legacy location
@@ -1174,9 +1180,16 @@ class DARTDecisionCapture(DecisionCapture):
                 os.fsync(f.fileno())
             os.rename(legacy_temp_path, legacy_output_path)
         except OSError as e:
-            logger.warning("Failed to save DART capture to legacy location: %s", e)
+            logger.warning("Failed to save SemantiK capture to legacy location: %s", e)
 
         return output_path
+
+
+# DART->semantik naming purge (task #19): deprecated alias kept for the S4
+# tighten. Same dual-read-shim pattern as ``lib.paths.dart_output_dir``;
+# callers migrate to ``SemantiKDecisionCapture`` and this alias is removed
+# in S4.
+DARTDecisionCapture = SemantiKDecisionCapture
 
 
 def create_capture(course_code: str, phase: str, tool: str = "courseforge") -> DecisionCapture:
@@ -1184,6 +1197,11 @@ def create_capture(course_code: str, phase: str, tool: str = "courseforge") -> D
     return DecisionCapture(course_code, phase, tool)
 
 
-def create_dart_capture(course_code: str, pdf_name: str) -> DARTDecisionCapture:
-    """Factory function to create a DART decision capture instance."""
-    return DARTDecisionCapture(course_code, pdf_name)
+def create_semantik_capture(course_code: str, pdf_name: str) -> SemantiKDecisionCapture:
+    """Factory function to create a SemantiK conversion decision capture."""
+    return SemantiKDecisionCapture(course_code, pdf_name)
+
+
+# DART->semantik naming purge (task #19): deprecated factory alias (S4-removal;
+# see the ``DARTDecisionCapture`` alias note above).
+create_dart_capture = create_semantik_capture

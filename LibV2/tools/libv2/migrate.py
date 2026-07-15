@@ -918,9 +918,12 @@ def build_dart_purge_registry() -> MigrationRegistry:
 
     Kept SEPARATE from :data:`DEFAULT_REGISTRY` on purpose: the DEFAULT
     terminus is drift-guarded against the emitter's still-``1.0``
-    ``LIBRARY_FORMAT_VERSION`` (the pipeline still writes ``dart_chunks/``), so
-    the DEFAULT bump lands with the emitter flip in a later gated stage. This
-    registry drives the corpus-migration tooling + dry-run in the meantime."""
+    ``LIBRARY_FORMAT_VERSION``, so the DEFAULT bump lands with the on-disk
+    dir-rename migration in a later gated stage. The chunkset SIDECAR emit has
+    already flipped (task #19): new conversions write ``semantik_chunks/`` with
+    ``chunkset_kind="semantik"`` + ``source_semantik_html_sha256``, so this
+    registry's corpus_transform only upgrades pre-flip ``dart_chunks/`` archives.
+    This registry drives the corpus-migration tooling + dry-run in the meantime."""
     registry = MigrationRegistry()
     registry.register(
         MigrationStep(

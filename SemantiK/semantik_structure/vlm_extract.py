@@ -539,18 +539,18 @@ def _build_vlm_extract_capture():
 
     Returns ``None`` (extraction proceeds unaffected) when
     ``lib.decision_capture`` is unavailable (the cross-venv bridge venv may not
-    carry Ed4All's ``lib/``) or construction fails. Lands under the canonical
-    ``dart`` tool / ``dart-conversion`` phase, matching the Stage-6b
-    ``alt_text_generation`` capture and the Stage-5d ``structure_review``
-    capture at the MCP seam.
+    carry Ed4All's ``lib/``) or construction fails. Lands under the ratified
+    ``semantik`` tool / ``semantik_conversion`` phase (task #19), matching the
+    Stage-6b ``alt_text_generation`` capture and the Stage-5d
+    ``structure_review`` capture at the MCP seam.
     """
     try:
         from lib.decision_capture import DecisionCapture
 
         return DecisionCapture(
             course_code=_vlm_extract_course_code(),
-            phase="dart-conversion",
-            tool="dart",
+            phase="semantik_conversion",
+            tool="semantik",
         )
     except Exception as exc:  # noqa: BLE001 — capture is best-effort
         logger.debug("vlm-extract DecisionCapture unavailable (non-fatal): %s", exc)

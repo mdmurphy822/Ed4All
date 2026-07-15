@@ -24,7 +24,7 @@
     "chunkset_kind": {
       "type": "string",
       "enum": ["dart", "semantik", "imscc"],
-      "description": "Which chunkset this manifest describes. 'dart' is the Phase 7b chunkset emitted from staged DART HTML during the `chunking` workflow phase (sibling files at `LibV2/courses/<slug>/dart_chunks/`). 'imscc' is the Phase 7c chunkset emitted from a packaged IMSCC at `LibV2/courses/<slug>/imscc_chunks/` (renamed from the legacy `corpus/` directory per ST 15). 'semantik' is the ratified DART->semantik naming-purge successor of 'dart' (Stage 1 dual-READ, ratified 2026-07-11): validators accept it, but NO emitter writes it yet (Stage 2 migrates the on-disk chunkset dir + emit, gated on owner approval); it requires source_semantik_html_sha256. The discriminator drives the conditional source-SHA requirement below."
+      "description": "Which chunkset this manifest describes. 'dart' is the Phase 7b chunkset emitted from staged DART HTML during the `chunking` workflow phase (sibling files at `LibV2/courses/<slug>/dart_chunks/`). 'imscc' is the Phase 7c chunkset emitted from a packaged IMSCC at `LibV2/courses/<slug>/imscc_chunks/` (renamed from the legacy `corpus/` directory per ST 15). 'semantik' is the ratified DART->semantik naming-purge successor of 'dart' (task #19): as of the chunker sidecar emit flip, the `chunking` workflow phase (`_run_dart_chunking`) WRITES 'semantik' + source_semantik_html_sha256 to `semantik_chunks/`; the legacy 'dart' shape stays accepted (dual-READ) for pre-flip archives until the S2 corpus migration (`libv2 migrate`) upgrades them. It requires source_semantik_html_sha256. The discriminator drives the conditional source-SHA requirement below."
     },
     "source_dart_html_sha256": {
       "type": "string",
@@ -34,7 +34,7 @@
     "source_semantik_html_sha256": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$",
-      "description": "DART->semantik purge Stage 1: ratified successor field name of source_dart_html_sha256. SHA-256 (hex, lowercase) of the staged SemantiK HTML inputs that produced this chunkset. Required when chunkset_kind == 'semantik'. NO emitter writes it yet (dual-READ shim)."
+      "description": "DART->semantik purge (task #19): ratified successor field name of source_dart_html_sha256. SHA-256 (hex, lowercase) of the staged SemantiK HTML inputs that produced this chunkset. Required when chunkset_kind == 'semantik'. As of the chunker sidecar emit flip, `_run_dart_chunking` WRITES this field (paired with chunkset_kind='semantik'); the legacy source_dart_html_sha256 stays accepted (dual-READ) for pre-flip archives."
     },
     "source_imscc_sha256": {
       "type": "string",

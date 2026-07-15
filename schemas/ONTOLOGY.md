@@ -798,13 +798,15 @@ against the live schema; the enum has grown ~5×+ since the v0.2.0 baseline's 40
 `DECISION_VALIDATION_STRICT=true` fails closed on any `decision_type` not in this enum, the schema —
 never a doc copy — is authoritative; consult it directly when adding a new `decision_type`.
 
-### `decision_event.schema.json` — phase enum (35)
+### `decision_event.schema.json` — phase enum (39)
 
 Source: `schemas/events/decision_event.schema.json` — the `properties.phase.enum` array. As of this
-layer the enum carries **35** non-null values (plus `null` allowed):
+layer the enum carries **39** non-null values (plus `null` allowed). `semantik_conversion` is the
+DART->semantik naming-purge (task #19) live conversion phase; `dart-conversion` / `dart-validation`
+stay for pre-purge capture trees (dual-read):
 ```
 input-research, exam-research, course-outliner, textbook-ingestor, content-generator,
-brightspace-packager, dart-conversion, dart-validation, trainforge-assessment, trainforge-training,
+brightspace-packager, semantik_conversion, dart-conversion, dart-validation, trainforge-assessment, trainforge-training,
 synthesize-training, validation, content-analysis, question-generation, assessment-assembly,
 courseforge-input-research, courseforge-exam-research, courseforge-course-outliner,
 courseforge-content-generator, courseforge-content-generator-outline,
@@ -812,7 +814,7 @@ courseforge-content-generator-rewrite, courseforge-brightspace-packager,
 courseforge-statistical-validation, courseforge-bert-ensemble, trainforge-content-analysis,
 trainforge-question-generation, trainforge-assessment-assembly, trainforge-validation,
 curriculum-alignment, inter_tier_validation, post_rewrite_validation, libv2-retrieval,
-libv2-indexing, libv2-fusion, libv2-answer
+libv2-indexing, libv2-fusion, libv2-answer, course_planning, libv2_archival, vector_indexing
 ```
 The live schema remains the source of truth (the count grows over time); re-derive from
 `properties.phase.enum` rather than trusting this list verbatim.

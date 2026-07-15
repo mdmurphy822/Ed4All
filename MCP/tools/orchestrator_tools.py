@@ -381,7 +381,7 @@ def register_orchestrator_tools(mcp):
         Acquire exclusive lock on a resource for batch processing.
 
         Args:
-            resource: Resource identifier (e.g., "courseforge/exports", "dart/output")
+            resource: Resource identifier (e.g., "courseforge/exports", "semantik/output")
             owner: Lock owner identifier (e.g., workflow ID)
             ttl_seconds: Lock time-to-live in seconds (default: 3600)
 

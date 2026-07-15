@@ -71,7 +71,7 @@ COURSEFORGE_STAGE_SUBCOMMANDS = (
     "courseforge_rewrite",
 )
 
-DEFAULT_DART_OUTPUT_DIR = "DART/output"
+DEFAULT_DART_OUTPUT_DIR = "SemantiK/output"
 
 # Keep handles on the background asyncio tasks so they aren't garbage-collected
 # mid-flight (asyncio holds only a weak reference to scheduled tasks) AND so

@@ -92,7 +92,7 @@ def _normalize_workflow(name: str) -> str:
     return name.replace("-", "_").strip().lower()
 
 
-DEFAULT_DART_OUTPUT_DIR = "DART/output"
+DEFAULT_DART_OUTPUT_DIR = "SemantiK/output"
 
 # Phase 5 ST 1 — canonical 21-value Block-type enum from
 # ``Courseforge/scripts/blocks.py:77``. Held here as a flat tuple so
@@ -710,7 +710,7 @@ def _build_orchestrator(
         "output. "
         "Useful when re-running textbook-to-course after tweaking downstream "
         "phases. Requires --semantik-output-dir to contain "
-        "``*_accessible.html`` files (defaults to DART/output/)."
+        "``*_accessible.html`` files (defaults to SemantiK/output/)."
     ),
 )
 @click.option(
@@ -720,7 +720,7 @@ def _build_orchestrator(
     default=None,
     help=(
         "Directory containing ``*_accessible.html`` files. Only consulted "
-        "when --skip-dart is set. Defaults to DART/output/."
+        "when --skip-dart is set. Defaults to SemantiK/output/."
     ),
 )
 @click.option(

@@ -49,8 +49,8 @@ _PROVENANCE_SOURCE = "nvidia-course-material"
 _EXTRA_LEAK_MARKERS = ("nvidia-logo.png",)
 
 # The source corpus directory is machine-specific and must be passed via
-# --src; output defaults into the repo's DART output tree.
-_DEFAULT_OUT = Path(__file__).resolve().parents[1] / "DART" / "output" / "nvidia"
+# --src; output defaults into the repo's SemantiK output tree.
+_DEFAULT_OUT = Path(__file__).resolve().parents[1] / "SemantiK" / "output" / "nvidia"
 
 # (relative source path, human title). Order = reading order.
 #
@@ -149,7 +149,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--out", type=Path, default=_DEFAULT_OUT,
-        help="Output directory for the DART-style pages (default: DART/output/nvidia)",
+        help="Output directory for the converted pages (default: SemantiK/output/nvidia)",
     )
     args = parser.parse_args()
     src: Path = args.src

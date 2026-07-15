@@ -35,12 +35,12 @@ default.
 Example
 -------
     python scripts/semantik_rerender.py \
-        --from-html DART/output/foo-ch09_accessible.html \
-        --synthesized DART/output/foo-ch09_accessible_synthesized.json \
+        --from-html SemantiK/output/foo-ch09_accessible.html \
+        --synthesized SemantiK/output/foo-ch09_accessible_synthesized.json \
         --output /tmp/rerender/foo-ch09_accessible.html --diff
 
     python scripts/semantik_rerender.py \
-        --ir DART/output/foo-ch09_accessible.cascade_ir.json \
+        --ir SemantiK/output/foo-ch09_accessible.cascade_ir.json \
         --output /tmp/rerender/foo-ch09_accessible.html --diff
 """
 

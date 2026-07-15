@@ -577,12 +577,12 @@ def _vote_rationale_note(outcome: _VoteOutcome) -> str:
 
 
 def _make_capture(course_code: str, capture: Optional[Any]) -> Any:
-    """Return the injected capture, else construct the canonical dart-conversion one."""
+    """Return the injected capture, else construct the canonical semantik_conversion one."""
     if capture is not None:
         return capture
     from lib.decision_capture import DecisionCapture
 
-    return DecisionCapture(course_code, phase="dart-conversion", tool="dart")
+    return DecisionCapture(course_code, phase="semantik_conversion", tool="semantik")
 
 
 def annotate_html_subclasses(

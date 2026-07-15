@@ -21,7 +21,6 @@ if str(_PROJECT_ROOT) not in sys.path:
 from lib.paths import (  # noqa: E402
     CONFIG_PATH,
     COURSEFORGE_PATH,
-    DART_PATH,
     PROJECT_ROOT,
     STATE_PATH,
     TRAINFORGE_PATH,
@@ -96,7 +95,6 @@ class OrchestratorConfig:
     project_dir: Path = field(default_factory=lambda: PROJECT_ROOT)
     state_dir: Path = field(default_factory=lambda: STATE_PATH)
     config_dir: Path = field(default_factory=lambda: CONFIG_PATH)
-    dart_dir: Path = field(default_factory=lambda: DART_PATH)
     courseforge_dir: Path = field(default_factory=lambda: COURSEFORGE_PATH)
     trainforge_dir: Path = field(default_factory=lambda: TRAINFORGE_PATH)
 

@@ -654,8 +654,11 @@ class TestRunDartChunkingEmitsChunksJsonl:
 
         # Required schema fields.
         assert manifest["chunks_sha256"] == payload["semantik_chunks_sha256"]
-        assert manifest["chunkset_kind"] == "dart"
-        assert _SHA256_RE.match(manifest["source_dart_html_sha256"])
+        # DART->semantik naming purge (task #19): the chunker sidecar now emits
+        # the ratified chunkset_kind + source-sha field names.
+        assert manifest["chunkset_kind"] == "semantik"
+        assert _SHA256_RE.match(manifest["source_semantik_html_sha256"])
+        assert "source_dart_html_sha256" not in manifest
         assert isinstance(manifest["chunker_version"], str)
         assert manifest["chunks_count"] == payload["chunks_count"]
         # additionalProperties: false — only the canonical keys.
@@ -670,7 +673,8 @@ class TestRunDartChunkingEmitsChunksJsonl:
             # chunker_version's emit shape). Stamped unconditionally.
             "extraction_contract",
             "chunkset_kind",
-            "source_dart_html_sha256",
+            "source_semantik_html_sha256",
+            "source_dart_html_sha256",  # legacy (dual-read) — not emitted by the current path
             "source_imscc_sha256",
             "chunks_count",
             "generated_at",
@@ -912,7 +916,8 @@ class TestRunImsccChunkingEmitsChunksJsonl:
             # chunker_version's emit shape). Stamped unconditionally.
             "extraction_contract",
             "chunkset_kind",
-            "source_dart_html_sha256",
+            "source_semantik_html_sha256",
+            "source_dart_html_sha256",  # legacy (dual-read) — not emitted by the current path
             "source_imscc_sha256",
             "chunks_count",
             "generated_at",

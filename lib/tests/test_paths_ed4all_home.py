@@ -5,7 +5,7 @@ every data-dir resolver, plus directory bootstrap. All synthetic via tmp_path +
 monkeypatch; no course slugs/paths.
 
 The resolver functions (``libv2_path``, ``get_training_captures_dir``,
-``get_state_runs_dir``, ``courseforge_exports_dir``, ``dart_output_dir``) read
+``get_state_runs_dir``, ``courseforge_exports_dir``, ``semantik_output_dir``) read
 the env at CALL time, so they reflect a monkeypatched ``ED4ALL_HOME`` without a
 module re-import.
 """
@@ -54,7 +54,7 @@ _MATRIX = [
         "TRAINING_DIR",
     ),
     ("courseforge_exports_dir", "exports", None, None),
-    ("dart_output_dir", "dart-output", None, None),
+    ("semantik_output_dir", "semantik-output", None, None),
 ]
 
 
@@ -64,8 +64,8 @@ def _default_path(default_attr, basename):
         return getattr(paths, default_attr)
     if basename == "exports":
         return paths.COURSEFORGE_PATH / "exports"
-    if basename == "dart-output":
-        return paths.DART_PATH / "output"
+    if basename == "semantik-output":
+        return paths.SEMANTIK_PATH / "output"
     raise AssertionError(basename)
 
 
@@ -163,6 +163,41 @@ def test_ensure_data_dir_noop_when_present(tmp_path):
     assert (target / "keep.txt").read_text() == "x"
 
 
+# ------------------ DART->semantik purge: legacy dart-output dual-READ (task #19)
+
+
+def test_semantik_output_prefers_canonical_basename_under_home(monkeypatch, tmp_path):
+    """home set, neither basename on disk -> canonical <home>/semantik-output."""
+    monkeypatch.setenv("ED4ALL_HOME", str(tmp_path))
+    assert paths.semantik_output_dir() == tmp_path / "semantik-output"
+
+
+def test_semantik_output_falls_back_to_legacy_dart_output_dir(monkeypatch, tmp_path):
+    """A pre-rename ED4ALL_HOME box carrying only dart-output/ resolves to it
+    (with a DeprecationWarning) instead of a non-existent semantik-output/.
+
+    Load-bearing: the deployed DGX Spark box has an existing dart-output/ under
+    ED4ALL_HOME (provisioned before the task #19 rename)."""
+    monkeypatch.setenv("ED4ALL_HOME", str(tmp_path))
+    (tmp_path / "dart-output").mkdir()  # legacy dir present, canonical absent
+    with pytest.warns(DeprecationWarning):
+        resolved = paths.semantik_output_dir()
+    assert resolved == tmp_path / "dart-output"
+
+
+def test_semantik_output_prefers_canonical_when_both_exist(monkeypatch, tmp_path):
+    """Canonical semantik-output/ wins over a leftover legacy dart-output/."""
+    monkeypatch.setenv("ED4ALL_HOME", str(tmp_path))
+    (tmp_path / "dart-output").mkdir()
+    (tmp_path / "semantik-output").mkdir()
+    assert paths.semantik_output_dir() == tmp_path / "semantik-output"
+
+
+def test_dart_output_dir_alias_points_at_semantik_output(monkeypatch):
+    """The deprecated dart_output_dir alias is the same callable (S4-removal)."""
+    assert paths.dart_output_dir is paths.semantik_output_dir
+
+
 def test_relocated_dirs_are_distinct_under_home(monkeypatch, tmp_path):
     """Every relocated data dir lands at a distinct path under one home root."""
     monkeypatch.setenv("ED4ALL_HOME", str(tmp_path))
@@ -176,7 +211,7 @@ def test_relocated_dirs_are_distinct_under_home(monkeypatch, tmp_path):
         paths.libv2_path(),
         paths.get_training_captures_dir(),
         paths.courseforge_exports_dir(),
-        paths.dart_output_dir(),
+        paths.semantik_output_dir(),
         paths.get_state_runs_dir(),
     }
     # 5 distinct paths, all under the home root.

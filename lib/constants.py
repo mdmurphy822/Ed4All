@@ -32,7 +32,12 @@ LIBV2_ROOT = LIBV2_PATH
 
 # Minimum decisions required per phase for quality assurance
 MIN_DECISIONS_PER_PHASE: Dict[str, int] = {
-    # DART phases
+    # Conversion phases. DART->semantik naming purge (task #19):
+    # ``semantik_conversion`` is the ratified live emit phase; the legacy
+    # ``dart-conversion`` key stays (dual-key) so pre-purge capture trees
+    # still audit against the same floor. ``dart-validation`` has NO live
+    # emitter (constants-only residue) — kept untouched pending S4.
+    "semantik_conversion": 3,
     "dart-conversion": 3,
     "dart-validation": 2,
     # Courseforge phases

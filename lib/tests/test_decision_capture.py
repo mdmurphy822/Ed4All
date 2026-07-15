@@ -635,3 +635,82 @@ class TestDecisionTypeReconciliation:
         assert len(capture.decisions) == 1
         # Clean record: no validation_issues key pollution on metadata.
         assert "validation_issues" not in capture.decisions[0]["metadata"]
+
+
+# =============================================================================
+# DART->SEMANTIK NAMING PURGE (task #19) — capture-label flip + aliases
+# =============================================================================
+
+class TestSemantiKCaptureRename:
+    """The conversion capture surface emits the ratified semantik labels.
+
+    DART->semantik naming purge (task #19): ``SemantiKDecisionCapture``
+    replaces ``DARTDecisionCapture`` (kept as a deprecated S4-removal alias)
+    and labels captures ``tool="semantik"`` / ``phase="semantik_conversion"``.
+    """
+
+    @pytest.mark.unit
+    def test_dart_class_is_alias_of_semantik_class(self):
+        from lib.decision_capture import (
+            DARTDecisionCapture,
+            SemantiKDecisionCapture,
+        )
+
+        assert DARTDecisionCapture is SemantiKDecisionCapture
+
+    @pytest.mark.unit
+    def test_factory_alias(self):
+        from lib.decision_capture import (
+            create_dart_capture,
+            create_semantik_capture,
+        )
+
+        assert create_dart_capture is create_semantik_capture
+
+    @pytest.mark.unit
+    def test_lib_package_exports_both_names(self):
+        import lib
+
+        assert lib.DARTDecisionCapture is lib.SemantiKDecisionCapture
+        assert lib.create_dart_capture is lib.create_semantik_capture
+
+    @pytest.mark.unit
+    def test_instance_emits_semantik_labels(
+        self, mock_libv2_storage, mock_legacy_dir
+    ):
+        from lib.decision_capture import SemantiKDecisionCapture
+
+        cap = SemantiKDecisionCapture("TEST_101", pdf_name="slice")
+        assert cap.tool == "semantik"
+        assert cap.phase == "semantik_conversion"
+
+        cap.log_decision(
+            decision_type="structure_detection",
+            decision="Detected 3 headings on synthetic page 1",
+            rationale=(
+                "Synthetic regression probe: the semantik tool label must "
+                "validate clean against the decision_event schema enum."
+            ),
+        )
+        assert len(cap.decisions) == 1
+        record = cap.decisions[0]
+        assert record["tool"] == "semantik"
+        assert record["phase"] == "semantik_conversion"
+        # The decision_event schema's tool enum now includes "semantik" —
+        # a clean record must NOT carry validation_issues annotations.
+        assert "validation_issues" not in record.get("metadata", {})
+
+    @pytest.mark.unit
+    def test_min_decisions_dual_key(self):
+        from lib.constants import MIN_DECISIONS_PER_PHASE
+
+        # Dual-key: ratified live phase AND the legacy key (pre-purge trees).
+        assert MIN_DECISIONS_PER_PHASE["semantik_conversion"] == 3
+        assert MIN_DECISIONS_PER_PHASE["dart-conversion"] == 3
+
+    @pytest.mark.unit
+    def test_phase_timeouts_dual_key(self):
+        from MCP.ipc.status_tracker import PHASE_TIMEOUTS
+
+        assert PHASE_TIMEOUTS["semantik_conversion"] == 90
+        assert PHASE_TIMEOUTS["dart-conversion"] == 90

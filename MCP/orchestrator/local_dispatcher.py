@@ -138,7 +138,6 @@ def _mailbox_grace_seconds(timeout_seconds: float) -> float:
 AGENT_SPEC_DIRS = (
     Path("Courseforge") / "agents",
     Path("Trainforge") / "agents",
-    Path("DART") / "agents",  # may not exist; dispatcher degrades gracefully
 )
 
 

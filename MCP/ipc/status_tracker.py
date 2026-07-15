@@ -33,6 +33,10 @@ DEFAULT_TASK_TIMEOUT_MINUTES = 60
 # Phase-specific timeouts
 PHASE_TIMEOUTS: Dict[str, int] = {
     "content-generator": 120,
+    # DART->semantik naming purge (task #19): ``semantik_conversion`` is the
+    # ratified live phase name; the legacy ``dart-conversion`` key stays
+    # (dual-key) for pre-purge status streams pending S4.
+    "semantik_conversion": 90,
     "dart-conversion": 90,
     "validation": 30,
     "packaging": 45,

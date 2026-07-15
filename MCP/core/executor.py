@@ -313,8 +313,8 @@ _PHASE_TOOL_MAPPING: Dict[str, str] = {
 #     their LLM sub-calls; that's orthogonal to this classification.
 #
 # Classification derives from whether the agent spec
-# (``Courseforge/agents/*.md``, ``Trainforge/agents/*.md``,
-# ``DART/agents/*.md``) is authored around reasoning-style directives
+# (``Courseforge/agents/*.md``, ``Trainforge/agents/*.md``)
+# is authored around reasoning-style directives
 # ("design a", "evaluate", "generate questions covering", etc.) or
 # deterministic-tool directives ("parse the XML", "stage files", "hash
 # the manifest"). The list is explicit rather than derived because a

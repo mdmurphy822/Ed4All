@@ -57,7 +57,7 @@ from lib.generation.stop_control import (
     clear_stop,
     stop_requested,
 )
-from lib.paths import DART_PATH, get_state_runs_dir
+from lib.paths import SEMANTIK_PATH, get_state_runs_dir, semantik_output_dir
 
 
 class AuthoringProviderRouteError(RuntimeError):
@@ -4145,7 +4145,7 @@ class WorkflowRunner:
 
         COMPLETENESS SIGNAL = BOTH ``{stem}_accessible.html`` AND
         ``{stem}_accessible.quality.json`` in the conversion output dir (the
-        ``DART_PATH/output`` the ``extract_and_convert_pdf`` seam writes to).
+        ``SEMANTIK_PATH/output`` the ``extract_and_convert_pdf`` seam writes to).
         The HTML is written first and the quality sidecar best-effort after
         (``_run_semantik_v2_conversion``), so requiring BOTH rejects a torn
         write (HTML present, sidecar missing) → that PDF is re-converted. The
@@ -4162,7 +4162,7 @@ class WorkflowRunner:
         )
         if not isinstance(entry, dict) or entry.get("_completed"):
             return set()
-        conv_dir = DART_PATH / "output"
+        conv_dir = SEMANTIK_PATH / "output"
         reusable: set = set()
         for pdf_path in pdf_paths:
             stem = Path(str(pdf_path)).stem
@@ -4683,9 +4683,11 @@ class WorkflowRunner:
             if not dart_dir.is_absolute():
                 dart_dir = (PROJECT_ROOT / dart_dir_str).resolve()
         else:
-            # No explicit override: use the (ED4ALL_HOME-aware) default DART
-            # output dir so a relocated deployment finds its staged HTML.
-            dart_dir = dart_output_dir()
+            # No explicit override: use the (ED4ALL_HOME-aware) default
+            # SemantiK conversion output dir so a relocated deployment finds
+            # its staged HTML. (Was a latent NameError: dart_output_dir was
+            # never imported here — task #19 fixes it with the ratified name.)
+            dart_dir = semantik_output_dir()
         if not dart_dir.is_dir():
             logger.error(
                 "skip_dart set but dart_output_dir is not a directory: %s",

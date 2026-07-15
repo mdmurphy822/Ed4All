@@ -81,11 +81,11 @@ def test_dart_chunks_carry_source_document_sha256(dart_chunking_tool, tmp_path):
 
     manifest_path = Path(result["manifest_path"])
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    expected_sha = manifest["source_dart_html_sha256"]
+    expected_sha = manifest["source_semantik_html_sha256"]
     assert len(expected_sha) == 64
 
     # Every emitted chunk should carry source.source_document_sha256 ==
-    # source_dart_html_sha256 (the aggregate of the staged HTML inputs).
+    # source_semantik_html_sha256 (the aggregate of the staged HTML inputs).
     with chunks_path.open("r", encoding="utf-8") as fh:
         chunks = [json.loads(line) for line in fh if line.strip()]
     assert chunks, "expected at least one chunk emitted"
@@ -93,5 +93,5 @@ def test_dart_chunks_carry_source_document_sha256(dart_chunking_tool, tmp_path):
         sha = chunk.get("source", {}).get("source_document_sha256")
         assert sha == expected_sha, (
             f"chunk {chunk.get('id')!r} has source_document_sha256={sha!r}; "
-            f"expected manifest's source_dart_html_sha256={expected_sha!r}"
+            f"expected manifest's source_semantik_html_sha256={expected_sha!r}"
         )

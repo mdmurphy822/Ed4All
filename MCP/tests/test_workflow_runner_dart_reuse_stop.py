@@ -18,8 +18,8 @@ Pins ``WorkflowRunner._create_phase_tasks`` / ``_resume_reusable_conversion_stem
   * a ``_completed`` dart_conversion phase_output → no reuse (defensive; the
     phase would be skipped anyway).
 
-CPU-only, stdlib-only, no models, synthetic tmp artifacts (``DART_PATH``
-monkeypatched to a tmp dir — never the repo ``DART/output``).
+CPU-only, stdlib-only, no models, synthetic tmp artifacts (``SEMANTIK_PATH``
+monkeypatched to a tmp dir — never the repo ``SemantiK/output``).
 """
 
 from __future__ import annotations
@@ -62,8 +62,8 @@ def _reuse_flags(tasks):
 
 
 def test_fresh_run_no_reuse_even_with_stale_artifact(monkeypatch, tmp_path):
-    conv_dir = tmp_path / "DART" / "output"
-    monkeypatch.setattr(wr_mod, "DART_PATH", tmp_path / "DART")
+    conv_dir = tmp_path / "SemantiK" / "output"
+    monkeypatch.setattr(wr_mod, "SEMANTIK_PATH", tmp_path / "SemantiK")
     # A stale complete artifact from an unrelated prior run.
     _write_complete_conversion(conv_dir, "ch01")
 
@@ -78,8 +78,8 @@ def test_fresh_run_no_reuse_even_with_stale_artifact(monkeypatch, tmp_path):
 
 
 def test_paused_resume_reuses_complete_reconverts_incomplete(monkeypatch, tmp_path):
-    conv_dir = tmp_path / "DART" / "output"
-    monkeypatch.setattr(wr_mod, "DART_PATH", tmp_path / "DART")
+    conv_dir = tmp_path / "SemantiK" / "output"
+    monkeypatch.setattr(wr_mod, "SEMANTIK_PATH", tmp_path / "SemantiK")
     _write_complete_conversion(conv_dir, "ch01")                 # complete → reuse
     _write_complete_conversion(conv_dir, "ch02", quality=False)  # torn → reconvert
     # ch03 has no artifacts at all → reconvert
@@ -101,8 +101,8 @@ def test_paused_resume_reuses_complete_reconverts_incomplete(monkeypatch, tmp_pa
 
 
 def test_completed_phase_output_no_reuse(monkeypatch, tmp_path):
-    conv_dir = tmp_path / "DART" / "output"
-    monkeypatch.setattr(wr_mod, "DART_PATH", tmp_path / "DART")
+    conv_dir = tmp_path / "SemantiK" / "output"
+    monkeypatch.setattr(wr_mod, "SEMANTIK_PATH", tmp_path / "SemantiK")
     _write_complete_conversion(conv_dir, "ch01")
 
     tasks = _runner()._create_phase_tasks(
@@ -118,7 +118,7 @@ def test_completed_phase_output_no_reuse(monkeypatch, tmp_path):
 def test_global_reuse_flag_still_wins_on_fresh_run(monkeypatch, tmp_path):
     """The explicit --reuse-conversion path is untouched: every PDF gets the
     flag regardless of the resume gate."""
-    monkeypatch.setattr(wr_mod, "DART_PATH", tmp_path / "DART")
+    monkeypatch.setattr(wr_mod, "SEMANTIK_PATH", tmp_path / "SemantiK")
 
     tasks = _runner()._create_phase_tasks(
         "WF-1",
@@ -134,8 +134,8 @@ def test_global_reuse_flag_still_wins_on_fresh_run(monkeypatch, tmp_path):
 
 
 def test_resume_reusable_stems_helper_direct(monkeypatch, tmp_path):
-    conv_dir = tmp_path / "DART" / "output"
-    monkeypatch.setattr(wr_mod, "DART_PATH", tmp_path / "DART")
+    conv_dir = tmp_path / "SemantiK" / "output"
+    monkeypatch.setattr(wr_mod, "SEMANTIK_PATH", tmp_path / "SemantiK")
     _write_complete_conversion(conv_dir, "ch01")
 
     r = _runner()

@@ -8,14 +8,14 @@ The project root can be configured via the ED4ALL_ROOT environment variable.
 If not set, it defaults to the parent directory of this module.
 
 Usage:
-    from lib.paths import PROJECT_ROOT, LIBV2_PATH, DART_PATH
+    from lib.paths import PROJECT_ROOT, LIBV2_PATH, SEMANTIK_PATH
 
 Environment:
     ED4ALL_ROOT: Override the project root path (e.g., /opt/ed4all). This is
-        the *code* root (where DART/, Courseforge/, lib/, schemas/ live).
+        the *code* root (where SemantiK/, Courseforge/, lib/, schemas/ live).
     ED4ALL_HOME: Relocatable *data* root. When set, every mutable data
         directory (state, libv2, exports, training-captures, uploads,
-        dart-output) defaults to ``<ED4ALL_HOME>/<dirname>`` instead of being
+        semantik-output) defaults to ``<ED4ALL_HOME>/<dirname>`` instead of being
         repo-relative. This unblocks non-editable (site-packages) installs and
         keeps Docker volumes tidy — the read-only code ships under ED4ALL_ROOT
         and the writable state lives under a single mounted ED4ALL_HOME.
@@ -31,6 +31,7 @@ Environment:
 """
 
 import os
+import warnings
 from pathlib import Path
 
 # ============================================================================
@@ -52,10 +53,13 @@ PROJECT_ROOT = Path(os.environ.get(
 # The DATA-DIR basenames that relocate under ED4ALL_HOME. The basename is what
 # the dir is called underneath the data root; for the repo-relative default it
 # matches the in-tree layout exactly (state/, LibV2/, Courseforge/exports/,
-# training-captures/, DART/output/). ``exports`` and ``dart-output`` are nested
-# under their parent component dirs in-repo but flatten to a single level under
-# ED4ALL_HOME (an ED4ALL_HOME deployment ships no code, only data).
-_DATA_DIR_KEYS = ("state", "libv2", "exports", "training-captures", "dart-output")
+# training-captures/, SemantiK/output/). ``exports`` and ``semantik-output`` are
+# nested under their parent component dirs in-repo but flatten to a single level
+# under ED4ALL_HOME (an ED4ALL_HOME deployment ships no code, only data).
+# DART->semantik naming purge (task #19): the ``semantik-output`` basename
+# replaces the legacy ``dart-output``; ``semantik_output_dir`` dual-READs the
+# legacy basename on a pre-rename ED4ALL_HOME box (removal-scheduled for S4).
+_DATA_DIR_KEYS = ("state", "libv2", "exports", "training-captures", "semantik-output")
 
 
 def ed4all_home() -> Path | None:
@@ -104,14 +108,14 @@ def ensure_data_dir(path: Path) -> Path:
 # TOP-LEVEL COMPONENT PATHS
 # ============================================================================
 
-# Core pipeline components (Ed4All: DART + Courseforge + Trainforge + LibV2).
-# DART / Courseforge / Trainforge are CODE roots (agents/, scripts/) and stay
+# Core pipeline components (Ed4All: SemantiK + Courseforge + Trainforge + LibV2).
+# SemantiK / Courseforge / Trainforge are CODE roots (agents/, scripts/) and stay
 # under PROJECT_ROOT regardless of ED4ALL_HOME — only their mutable *data*
-# subdirs (DART/output/, Courseforge/exports/) relocate (see dart_output_dir /
-# courseforge_exports_dir). LibV2 is a pure DATA root, so it relocates wholesale
-# under ED4ALL_HOME (the per-dir ED4ALL_LIBV2_ROOT override still wins; see
-# ``libv2_path``).
-DART_PATH = PROJECT_ROOT / "DART"
+# subdirs (SemantiK/output/, Courseforge/exports/) relocate (see
+# semantik_output_dir / courseforge_exports_dir). LibV2 is a pure DATA root, so
+# it relocates wholesale under ED4ALL_HOME (the per-dir ED4ALL_LIBV2_ROOT
+# override still wins; see ``libv2_path``).
+SEMANTIK_PATH = PROJECT_ROOT / "SemantiK"
 COURSEFORGE_PATH = PROJECT_ROOT / "Courseforge"
 TRAINFORGE_PATH = PROJECT_ROOT / "Trainforge"
 LIBV2_PATH = _data_dir("libv2", PROJECT_ROOT / "LibV2")
@@ -241,16 +245,46 @@ def courseforge_exports_dir() -> Path:
     return _data_dir("exports", COURSEFORGE_PATH / "exports")
 
 
-def dart_output_dir() -> Path:
-    """Resolve the DART ``output/`` data dir.
+def semantik_output_dir() -> Path:
+    """Resolve the SemantiK ``output/`` conversion data dir.
 
     Precedence:
-    1. ``ED4ALL_HOME/dart-output`` when ``ED4ALL_HOME`` is set.
-    2. ``DART_PATH / "output"`` — the in-tree default.
+    1. ``ED4ALL_HOME/semantik-output`` when ``ED4ALL_HOME`` is set AND the
+       canonical basename exists (or neither basename exists yet — the name a
+       fresh relocated deploy should create).
+    2. ``ED4ALL_HOME/dart-output`` (legacy, DeprecationWarning) when it exists
+       and the canonical ``semantik-output`` does NOT. The DART->semantik
+       naming purge (task #19) renamed the basename; a box provisioned before
+       the rename (e.g. the deployed DGX Spark) still carries ``dart-output/``,
+       so this dual-READ fallback is load-bearing. Mirrors the
+       ``lib/libv2_storage.py::resolve_imscc_chunks_dir`` precedent; the
+       fallback is removal-scheduled for the S4 tighten.
+    3. ``SEMANTIK_PATH / "output"`` — the in-tree default (ED4ALL_HOME unset).
 
     Byte-stable to the in-tree path when ``ED4ALL_HOME`` is unset.
     """
-    return _data_dir("dart-output", DART_PATH / "output")
+    home = ed4all_home()
+    if home is not None:
+        canonical = home / "semantik-output"
+        legacy = home / "dart-output"
+        if not canonical.exists() and legacy.exists():
+            warnings.warn(
+                "DART->semantik purge (task #19): ED4ALL_HOME still carries the "
+                "legacy 'dart-output/' data dir; rename it to 'semantik-output/' "
+                "(the 'dart-output' read-fallback is removal-scheduled for S4).",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            return legacy
+        return canonical
+    return SEMANTIK_PATH / "output"
+
+
+# DART->semantik naming purge (task #19): deprecated alias kept for the S4
+# tighten. This repo's blessed pattern is a dual-read shim (see
+# ``lib/libv2_storage.py::resolve_imscc_chunks_dir``); callers migrate to
+# ``semantik_output_dir()`` and this alias is removed in S4.
+dart_output_dir = semantik_output_dir
 
 
 def get_endpoints_path() -> Path:
@@ -511,7 +545,7 @@ def validate_paths() -> dict[str, bool]:
     """
     return {
         "PROJECT_ROOT": PROJECT_ROOT.exists(),
-        "DART_PATH": DART_PATH.exists(),
+        "SEMANTIK_PATH": SEMANTIK_PATH.exists(),
         "COURSEFORGE_PATH": COURSEFORGE_PATH.exists(),
         "TRAINFORGE_PATH": TRAINFORGE_PATH.exists(),
         "LIBV2_PATH": LIBV2_PATH.exists(),
@@ -532,14 +566,13 @@ def get_agent_prompt_path(component: str, agent_name: str) -> Path:
     Get the path to an agent prompt file.
 
     Args:
-        component: Component name (DART, Courseforge, Trainforge)
+        component: Component name (Courseforge, Trainforge)
         agent_name: Agent name (e.g., content-generator)
 
     Returns:
         Path to the agent markdown file
     """
     component_map = {
-        "dart": DART_PATH,
         "courseforge": COURSEFORGE_PATH,
         "trainforge": TRAINFORGE_PATH,
     }
@@ -560,7 +593,7 @@ __all__ = [
     "PROJECT_ROOT",
 
     # Component paths
-    "DART_PATH",
+    "SEMANTIK_PATH",
     "COURSEFORGE_PATH",
     "TRAINFORGE_PATH",
     "LIBV2_PATH",
@@ -596,7 +629,8 @@ __all__ = [
     "ed4all_home",
     "ensure_data_dir",
     "courseforge_exports_dir",
-    "dart_output_dir",
+    "semantik_output_dir",
+    "dart_output_dir",  # DART->semantik purge (task #19): S4-removal alias
     "get_endpoints_path",
     "get_state_runs_dir",
 

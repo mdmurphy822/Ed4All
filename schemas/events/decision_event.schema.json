@@ -50,13 +50,13 @@
     },
     "phase": {
       "type": ["string", "null"],
-      "enum": ["input-research", "exam-research", "course-outliner", "textbook-ingestor", "content-generator", "brightspace-packager", "dart-conversion", "dart-validation", "trainforge-assessment", "trainforge-training", "synthesize-training", "validation", "content-analysis", "question-generation", "assessment-assembly", "courseforge-input-research", "courseforge-exam-research", "courseforge-course-outliner", "courseforge-content-generator", "courseforge-content-generator-outline", "courseforge-content-generator-rewrite", "courseforge-brightspace-packager", "courseforge-statistical-validation", "courseforge-bert-ensemble", "trainforge-content-analysis", "trainforge-question-generation", "trainforge-assessment-assembly", "trainforge-validation", "curriculum-alignment", "inter_tier_validation", "post_rewrite_validation", "libv2-retrieval", "libv2-indexing", "libv2-fusion", "libv2-answer", "course_planning", "libv2_archival", "vector_indexing", null],
+      "enum": ["input-research", "exam-research", "course-outliner", "textbook-ingestor", "content-generator", "brightspace-packager", "semantik_conversion", "dart-conversion", "dart-validation", "trainforge-assessment", "trainforge-training", "synthesize-training", "validation", "content-analysis", "question-generation", "assessment-assembly", "courseforge-input-research", "courseforge-exam-research", "courseforge-course-outliner", "courseforge-content-generator", "courseforge-content-generator-outline", "courseforge-content-generator-rewrite", "courseforge-brightspace-packager", "courseforge-statistical-validation", "courseforge-bert-ensemble", "trainforge-content-analysis", "trainforge-question-generation", "trainforge-assessment-assembly", "trainforge-validation", "curriculum-alignment", "inter_tier_validation", "post_rewrite_validation", "libv2-retrieval", "libv2-indexing", "libv2-fusion", "libv2-answer", "course_planning", "libv2_archival", "vector_indexing", null],
       "description": "Processing phase within the tool pipeline"
     },
     "tool": {
       "type": "string",
-      "enum": ["dart", "courseforge", "trainforge", "orchestrator", "libv2", "pipeline"],
-      "description": "Which tool generated this decision"
+      "enum": ["semantik", "dart", "courseforge", "trainforge", "orchestrator", "libv2", "pipeline"],
+      "description": "Which tool generated this decision. 'semantik' is the DART->semantik naming-purge (task #19) successor of 'dart' — live conversion captures emit it; 'dart' stays accepted for pre-purge capture trees (dual-read, S4-removal candidate)."
     },
     "decision_type": {
       "type": "string",
