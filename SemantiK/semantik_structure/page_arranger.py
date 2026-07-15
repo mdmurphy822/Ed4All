@@ -2131,6 +2131,90 @@ def _clamp_level(level: Any) -> int:
     return max(1, min(6, lvl))
 
 
+# Map a super_resegment element type -> (Region.kind, css_class, semantic_class)
+# for the Stage-5e SUPER paragraph-split arm (SEMANTIK_SUPER_RESEGMENT). Mirrors
+# _TYPE_TO_KIND's pedagogy conventions. Super emits headings WITHOUT levels, so a
+# heading descriptor takes the default level_hint at the call site. Only reached
+# when SEMANTIK_SUPER_RESEGMENT != "off" (byte-identical when off).
+_SUPER_TYPE_TO_KIND: "dict[str, tuple[str, Optional[str], Optional[str]]]" = {
+    "heading": ("heading", None, None),
+    "para": ("paragraph", None, None),
+    "callout": ("paragraph", "pedagogy-try-it", None),
+    "example": ("paragraph", "pedagogy-example", "worked_example"),
+    "list": ("list", None, None),
+    "item": ("list", None, None),
+}
+
+
+def _emit_super_subregions(
+    member_units: list,
+    joined: str,
+    fb_idxs: list,
+    parent_btype: str,
+    mk: "Callable",
+    resegment_fn: "Callable",
+    mode: str,
+    seat: Any,
+    shadow_audit: "Optional[list]",
+) -> "Optional[list]":
+    """Attempt a SUPER paragraph split of one fused paragraph block.
+
+    Returns a list of snapped sub-``Region`` objects (built via the page's
+    closure ``mk`` == ``_mk``) or ``None`` (caller keeps the single fused
+    region). Fail-closed at every rung: shadow / table / snap failure / any
+    error → None, and a coverage mismatch (the emitted sub-Regions do not claim
+    EXACTLY the parent's fb_idxs) → None. The shadow conservation result is
+    appended to ``shadow_audit`` (no region mutation) via the entry point's
+    audit hook.
+    """
+    audit_cb = shadow_audit.append if shadow_audit is not None else None
+    descs = resegment_fn(
+        member_units, joined, mode=mode, seat=seat, audit=audit_cb,
+    )
+    if not descs:
+        return None
+
+    parent_set = {int(i) for i in fb_idxs}
+    emitted: list = []
+    for desc in descs:
+        d_kind, d_css, d_sem = _SUPER_TYPE_TO_KIND.get(
+            desc.get("type"), ("paragraph", None, None)
+        )
+        d_payload: dict[str, Any] = {
+            "arrange_type": parent_btype,
+            "super_element_type": desc.get("type"),
+            "text": desc.get("text", ""),
+            "super_resegment": True,
+        }
+        if d_kind == "heading":
+            d_payload["level_hint"] = _clamp_level(None)
+        elif d_kind == "list":
+            items = desc.get("items")
+            d_payload["items"] = items or _split_list_items([desc.get("text", "")])
+        emitted.append(
+            mk(
+                d_kind,
+                desc.get("fb_idxs") or [],
+                d_payload,
+                d_css,
+                d_sem,
+                provenance_extra={
+                    "pass": "super_resegment",
+                    "parent_arrange_type": parent_btype,
+                },
+            )
+        )
+
+    # Coverage invariant: the emitted sub-Regions must claim EXACTLY the parent
+    # fb_idxs (the snap guarantees this or returns None; re-assert fail-closed).
+    union: set = set()
+    for r in emitted:
+        union |= set(r.feature_block_indices)
+    if union != parent_set:
+        return None
+    return emitted or None
+
+
 def build_regions_for_page(
     page_label: int,
     units: list[dict],
@@ -2149,6 +2233,28 @@ def build_regions_for_page(
     """
     from . import page_arranger_contract as contract
     from .structure_graph import Region, compute_region_page_bboxes
+
+    # Stage-5e SUPER re-segmentation gate (SEMANTIK_SUPER_RESEGMENT, default off).
+    # Mirrors the SEMANTIK_REASONING_QC discipline EXACTLY: the resolve_*_mode
+    # import is the only unconditional thing and is side-effect-free (the module
+    # imports only stdlib at scope), and the entry point + seat are lazy-imported
+    # ONLY when the mode != "off". OFF -> zero resegment code runs and the emitted
+    # Region list is byte-identical to today. Resolved ONCE per page-build (not
+    # per region) so env is not re-read for every paragraph.
+    from .super_resegment import resolve_super_resegment_mode
+
+    _super_mode = resolve_super_resegment_mode()
+    _super_seat = None
+    _resegment_arranger_paragraph = None
+    _super_shadow_audit: "Optional[list]" = None
+    if _super_mode != "off":
+        from .super_resegment import (
+            resegment_arranger_paragraph as _resegment_arranger_paragraph,
+            resolve_super_seat,
+        )
+
+        _super_seat = resolve_super_seat()
+        _super_shadow_audit = []
 
     unit_by_id = {u["id"]: u for u in units}
     status = result.get("status")
@@ -2244,6 +2350,33 @@ def build_regions_for_page(
                 payload["furniture_text"] = joined
             else:
                 payload["text"] = joined
+            # Stage-5e SUPER paragraph re-segmentation (SEMANTIK_SUPER_RESEGMENT).
+            # Only PARAGRAPH-kind fused blocks with >=2 member units are eligible
+            # (heading/list/table/metadata_drop are untouched). On a conserved,
+            # cleanly-snapped split we emit one Region PER sub-element instead of
+            # the single fused Region; every fail-closed path keeps the single
+            # Region below (byte-identical when the flag is off — this branch is
+            # never entered).
+            if (
+                _super_mode != "off"
+                and kind == "paragraph"
+                and len(member_units) >= 2
+                and _resegment_arranger_paragraph is not None
+            ):
+                sub_regions = _emit_super_subregions(
+                    member_units,
+                    joined,
+                    fb_idxs,
+                    btype,
+                    _mk,
+                    _resegment_arranger_paragraph,
+                    _super_mode,
+                    _super_seat,
+                    _super_shadow_audit,
+                )
+                if sub_regions is not None:
+                    regions.extend(sub_regions)
+                    continue
             regions.append(_mk(kind, fb_idxs, payload, css_class, semantic_class))
     else:
         # FAILED page (or empty arrangement): one paragraph Region per unit,

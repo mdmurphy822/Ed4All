@@ -44,7 +44,7 @@ import os
 import re
 import urllib.error
 import urllib.request
-from typing import Any, Dict, List, NamedTuple, Optional
+from typing import Any, Callable, Dict, List, NamedTuple, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -432,3 +432,134 @@ def resegment_page(
         "finish": finish,
         "shadow": shadow,
     }
+
+
+# ---------------------------------------------------------------------------
+# Cascade-facing snap + entry (Step 2 of the refactor — the split-and-snap
+# arranger seam). ``resegment_page`` splits the JOINED page text into typed
+# elements; ``snap_elements_to_units`` re-anchors those splits to the parent's
+# member-unit boundaries so the resulting sub-regions partition the parent's
+# ``fb_idxs`` EXACTLY (the arranger's coverage invariant holds by construction).
+# Both are PURE (no network); the network lives only in ``resegment_page``.
+# ---------------------------------------------------------------------------
+def snap_elements_to_units(
+    elements: Optional[List[Dict[str, Any]]],
+    member_units: List[Dict[str, Any]],
+) -> Optional[List[Dict[str, Any]]]:
+    """Snap Super's split ``elements`` onto the parent's ``member_units``.
+
+    ``member_units`` is an ordered list of ``{"fb_index": int, "text": str}``.
+    Because the fused page text IS ``" ".join(member unit texts)``, snapping ==
+    walking the member units in order, greedily assigning consecutive units to
+    the current element until the whitespace-normalized concatenation of the
+    assigned units equals that element's normalized text, then advancing.
+
+    Returns one descriptor per element —
+    ``{"type": <element type>, "fb_idxs": [int...], "text": <joined member
+    texts>, "items": [...]?}`` — such that the ``fb_idxs`` across all descriptors
+    are EXACTLY the parent's member fb_idxs, in order, partitioned with no
+    overlap and none dropped.
+
+    Returns **None** (fail-closed → the caller keeps the single fused region)
+    when the snap cannot cover the units exactly: a Super boundary that does not
+    align to any unit boundary (an assigned concatenation OVERSHOOTS the element
+    text), an element that consumes zero units, or leftover units after the last
+    element. Pure, no network.
+    """
+    units_norm = [_norm(u.get("text") or "") for u in member_units]
+    n = len(member_units)
+    out: List[Dict[str, Any]] = []
+    ui = 0
+    for el in elements or []:
+        target = _norm(" ".join(texts_of([el])))
+        if not target:
+            # A degenerate (empty) element can own no unit boundary.
+            return None
+        acc = ""
+        start = ui
+        while ui < n and len(acc) < len(target):
+            acc += units_norm[ui]
+            ui += 1
+        if ui == start or acc != target:
+            # No unit consumed, or the unit boundary overshoots / misaligns.
+            return None
+        assigned = member_units[start:ui]
+        fb_idxs = [int(u["fb_index"]) for u in assigned]
+        text = " ".join(
+            (u.get("text") or "").replace("\n", " ").strip() for u in assigned
+        ).strip()
+        entry: Dict[str, Any] = {
+            "type": el.get("type"),
+            "fb_idxs": fb_idxs,
+            "text": text,
+        }
+        items = el.get("items")
+        if items:
+            entry["items"] = list(items)
+        out.append(entry)
+    if ui != n:
+        # Leftover unclaimed member units — cannot partition exactly.
+        return None
+    return out or None
+
+
+def resegment_arranger_paragraph(
+    member_units: List[Dict[str, Any]],
+    joined_text: str,
+    *,
+    mode: str,
+    seat: Optional[SuperSeat] = None,
+    timeout: float = 1400,
+    audit: Optional[Callable[[Dict[str, Any]], None]] = None,
+) -> Optional[List[Dict[str, Any]]]:
+    """Combine :func:`resegment_page` + :func:`snap_elements_to_units`.
+
+    Returns the snapped sub-region descriptors when Super produced a conserved
+    ``split`` that snaps cleanly to the member units AND ``mode == "on"``;
+    returns **None** in every other case (the caller keeps the single fused
+    region):
+
+    * ``action == "table"`` → None (tables are handled by the deterministic
+      table lane elsewhere; leave the fused region for now);
+    * ``keep_fused`` / snap failure / ``mode == "shadow"`` / any error → None.
+
+    In ``shadow`` mode everything is computed (the snap is attempted for
+    calibration evidence) but **None is always returned** (apply nothing). The
+    optional ``audit`` callback is invoked with a summary dict in EVERY mode
+    (including shadow) so a caller can record the conservation / snap result
+    without mutating regions. ``audit`` failures are swallowed (best-effort).
+    """
+    if mode == "off":
+        return None
+    try:
+        result = resegment_page(joined_text, seat=seat, mode=mode, timeout=timeout)
+    except Exception as exc:  # noqa: BLE001 — never break the arranger
+        logger.debug("super_resegment: resegment_page raised: %s", exc)
+        return None
+
+    action = result.get("action")
+    snapped: Optional[List[Dict[str, Any]]] = None
+    if action == "split" and result.get("conserved"):
+        snapped = snap_elements_to_units(result.get("elements") or [], member_units)
+
+    if audit is not None:
+        try:
+            audit(
+                {
+                    "action": action,
+                    "conserved": bool(result.get("conserved")),
+                    "shadow": bool(result.get("shadow")),
+                    "n_elements": len(result.get("elements") or []),
+                    "snapped": snapped is not None,
+                    "n_regions": len(snapped) if snapped else 0,
+                    "why": result.get("why"),
+                }
+            )
+        except Exception:  # noqa: BLE001 — audit is best-effort, never fatal
+            logger.debug("super_resegment: audit callback raised", exc_info=True)
+
+    if mode == "shadow":
+        return None
+    if action == "table":
+        return None
+    return snapped
