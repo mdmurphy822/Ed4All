@@ -340,6 +340,33 @@ def _collapse_to_touch_provider(provider: str) -> str:
 # ``COURSEFORGE_BEST_OF_N_SELECT_BY=entailment_argmax`` (projected by the C5
 # technique mode). An un-projected env runs the legacy first-passing selector
 # unchanged.
+#
+# LAZY best-of-N / first-passing-candidate early exit
+# ---------------------------------------------------------------------------
+# Under ``entailment_argmax`` the rewrite loop today ALWAYS samples all N
+# candidates and picks the argmax post-loop — even when candidate 1 already
+# clears the entailment floors, we still pay for N-1 more LLM dispatches. The
+# ``COURSEFORGE_REWRITE_EARLY_EXIT`` gate (default OFF → byte-identical) flips
+# the REWRITE loop to STOP at the first validator-PASSING candidate whose NLI
+# verdict also clears the floors — turning N from a spend into a cap. Only on
+# a floor MISS do we sample the next candidate; if no candidate ever clears the
+# floors, the post-loop ``_select_best_of_n_winner`` argmax runs byte-for-byte
+# as legacy (the same passing candidates were still collected into
+# ``best_of_n_scored``). Scoped to the rewrite tier only — the outline loop is
+# untouched.
+_REWRITE_EARLY_EXIT_ENV = "COURSEFORGE_REWRITE_EARLY_EXIT"
+_REWRITE_EARLY_EXIT_TRUTHY = frozenset({"1", "true", "yes", "on"})
+# "Passes" floor for the early-exit verdict. There is no entailment_rate floor
+# baked into the entailment_argmax selector itself (``_select_best_of_n_winner``
+# only ranks — argmax — among candidates that cover their objective and carry no
+# contradiction). So per the documented mapping we adopt the ``block_prose_
+# entailment`` PRODUCTION critical-gate floors (config/workflows.yaml:
+# ``min_block_entailment_rate: 0.60``, contradiction disqualifies): a candidate
+# "passes" when it covers its objective AND is not contradicted AND its
+# entailment_rate >= this floor. Keeping the floor equal to the post-hoc gate's
+# floor means an early-exit winner is a candidate the post_rewrite_validation +
+# block_prose_entailment backstop would also have accepted.
+_REWRITE_EARLY_EXIT_ENTAILMENT_FLOOR = 0.60
 
 
 @dataclass(frozen=True)
@@ -395,7 +422,14 @@ def score_candidate(
     ``contradicted=False`` (the caller's argmax then degenerates to the first
     objective-covering candidate — never fabricates a grounded verdict).
     """
-    from lib.retrieval.groundedness import score_groundedness  # noqa: PLC0415
+    from lib.retrieval.groundedness import (  # noqa: PLC0415
+        _resolve_nli,
+        score_groundedness,
+    )
+    from lib.classifiers.nli_microbatch import (  # noqa: PLC0415
+        get_dispatcher as get_nli_dispatcher,
+        resolve_microbatch_enabled,
+    )
 
     # Resolve the candidate's prose text + cited chunk passages.
     text = _candidate_prose_text(candidate)
@@ -404,11 +438,32 @@ def score_candidate(
     entailment_rate = 0.0
     contradicted = False
     if text and passages:
-        # Serialize the shared-singleton NLI/embedding forward pass — concurrent
-        # rewrite-tier workers must not run overlapping forward passes on the
-        # same torch model (see _NLI_SCORE_LOCK). Uncontended single-threaded.
-        with _NLI_SCORE_LOCK:
-            report = score_groundedness(text, passages, nli=nli)
+        # ED4ALL_NLI_MICROBATCH (opt-in): route the shared-singleton NLI forward
+        # pass through the micro-batching dispatcher instead of queueing on
+        # _NLI_SCORE_LOCK. The dispatcher's single scorer thread IS the
+        # serialization point for the model, so concurrent best-of-N workers get
+        # their (premise, hypothesis) pairs COALESCED into batched forward passes
+        # rather than each worker holding a global mutex for the whole scoring
+        # call. The mutex caps effective in-flight LLM requests (~28 at 64
+        # rewrite threads); the dispatcher removes that ceiling. When the flag is
+        # off (default) OR no NLI model is available, we take the exact legacy
+        # locked path (byte-identical). NB: this bypass is scoped to
+        # score_candidate — the inter-tier/post-rewrite validator-chain
+        # _NLI_SCORE_LOCK sites are intentionally NOT bypassed because that lock
+        # ALSO serializes the sentence-transformer embedder + Bloom BERT ensemble
+        # singletons, which the NLI-only dispatcher does not own.
+        dispatcher = None
+        if resolve_microbatch_enabled():
+            dispatcher = get_nli_dispatcher(nli if nli is not None else _resolve_nli(nli))
+        if dispatcher is not None:
+            report = score_groundedness(text, passages, nli=dispatcher)
+        else:
+            # Serialize the shared-singleton NLI/embedding forward pass —
+            # concurrent rewrite-tier workers must not run overlapping forward
+            # passes on the same torch model (see _NLI_SCORE_LOCK). Uncontended
+            # single-threaded.
+            with _NLI_SCORE_LOCK:
+                report = score_groundedness(text, passages, nli=nli)
         if report.available:
             entailment_rate = float(report.groundedness_rate)
             contradicted = report.contradicted_count > 0
@@ -769,6 +824,15 @@ class CourseforgeRouter:
         self._capture = capture
         self._deterministic_gates: List[Any] = list(deterministic_gates or [])
         self._statistical_filter = statistical_filter
+        # COURSEFORGE_CURIE_DETERMINISTIC: per-course minted-CURIE map threaded
+        # into every constructed RewriteProvider via ``_get_rewrite_provider``
+        # so the deterministic-stamp path only ever stamps vocabulary-resolvable
+        # CURIEs (anti-fabrication). Set post-construction by the rewrite phase
+        # handler (``set_rewrite_minted_map``) once it has loaded the course's
+        # ``domain_concept_vocabulary.json``; None ⇒ RDF / legacy corpus ⇒
+        # nothing is deterministically stampable (byte-identical when the flag
+        # is off, and a no-op stamp when on without a vocabulary).
+        self._rewrite_minted_map: Optional[Dict[str, Any]] = None
         self._n_candidates_override: Optional[int] = n_candidates
         self._regen_budget_override: Optional[int] = regen_budget
 
@@ -1069,6 +1133,10 @@ class CourseforgeRouter:
             capture=self._capture,
             max_tokens=spec.max_tokens,
             temperature=spec.temperature,
+            # COURSEFORGE_CURIE_DETERMINISTIC anti-fabrication universe (None
+            # for RDF / legacy corpora). Ignored by the provider when the flag
+            # is off; used to bound the deterministic CURIE stamp when on.
+            minted_curie_map=self._rewrite_minted_map,
             # Wave6: thread the dispatcher + run_id ONLY when needed.
             # ``provider="claude_session"`` raises at construction time
             # without a dispatcher; threading both unconditionally so
@@ -1079,6 +1147,28 @@ class CourseforgeRouter:
         )
         self._provider_cache[cache_key] = instance
         return instance
+
+    def set_rewrite_minted_map(
+        self, minted_curie_map: Optional[Dict[str, Any]]
+    ) -> None:
+        """Register the per-course minted-CURIE map for the rewrite tier.
+
+        Called by the rewrite phase handler once it has loaded the course's
+        ``domain_concept_vocabulary.json`` (which happens after router
+        construction), BEFORE any rewrite dispatch. The map's KEYS are the
+        vocabulary-resolvable CURIE universe the
+        ``COURSEFORGE_CURIE_DETERMINISTIC`` deterministic-stamp path is
+        allowed to stamp (anti-fabrication). Any RewriteProvider already
+        cached is dropped so the next ``_get_rewrite_provider`` reconstructs
+        it with the map threaded in (the map is per-course-constant, so this
+        fires at most once per run). No-op-safe with ``None``.
+        """
+        self._rewrite_minted_map = minted_curie_map
+        # Evict any rewrite providers constructed before the map was known so
+        # the map is threaded on reconstruction (outline providers untouched).
+        self._provider_cache = {
+            k: v for k, v in self._provider_cache.items() if k[0] != "rewrite"
+        }
 
     # ------------------------------------------------------------------
     # Per-block dispatch
@@ -1740,16 +1830,33 @@ class CourseforgeRouter:
             # Thread the per-block source-chunk universe + minted-CURIE
             # map so the in-loop curie-anchoring validator anchors the
             # same way the standalone inter_tier_validation phase does.
-            all_passed, gate_results, candidate = self._run_validator_chain(
-                candidate, validator_list, fast_fail=fast_fail,
-                validator_tier="outline_val",
-                objectives=objectives,
-                source_chunks_by_block_id=(
-                    {candidate.block_id: source_chunks}
-                    if source_chunks else None
-                ),
-                minted_curie_map=minted_curie_map,
-            )
+            # Serialize the whole per-candidate validator chain on the
+            # module-level NLI lock: the inter-tier chain includes
+            # embedding/NLI-backed validators (the statistical-tier
+            # similarity gates + the Bloom classifier) that run forward
+            # passes on the shared process-wide torch singletons, which are
+            # NOT thread-safe under the opt-in concurrent outline fan-out
+            # (COURSEFORGE_OUTLINE_CONCURRENCY > 1). The slow part — the
+            # provider's LLM HTTP dispatch in ``route()`` above — still
+            # overlaps fully across worker threads; only the brief
+            # validation serializes. Single-threaded callers acquire an
+            # uncontended lock (byte-identical behavior). No nesting hazard:
+            # nothing inside ``_run_validator_chain`` acquires
+            # ``_NLI_SCORE_LOCK`` (``score_candidate`` runs outside the
+            # chain, below).
+            with _NLI_SCORE_LOCK:
+                all_passed, gate_results, candidate = (
+                    self._run_validator_chain(
+                        candidate, validator_list, fast_fail=fast_fail,
+                        validator_tier="outline_val",
+                        objectives=objectives,
+                        source_chunks_by_block_id=(
+                            {candidate.block_id: source_chunks}
+                            if source_chunks else None
+                        ),
+                        minted_curie_map=minted_curie_map,
+                    )
+                )
             last_candidate = candidate
             if all_passed and best_of_n_mode:
                 # W5 best-of-N: score the PASSING candidate with the NLI verifier
@@ -2242,6 +2349,10 @@ class CourseforgeRouter:
         select_by = self._best_of_n_select_by()
         best_of_n_mode = select_by == "entailment_argmax"
         best_of_n_scored: List[Tuple[int, Block, _CandidateVerdict]] = []
+        # Lazy best-of-N: only meaningful under the entailment_argmax selector
+        # (the gate_pass path already first-exits). Default OFF → the loop
+        # samples all N and picks the post-loop argmax (byte-identical legacy).
+        rewrite_early_exit = best_of_n_mode and self._resolve_rewrite_early_exit()
 
         # 2. Resolve the spec for the rewrite tier (no escalate-immediately
         # short-circuit — that's an outline-tier-only flag).
@@ -2355,6 +2466,50 @@ class CourseforgeRouter:
                     nli=self._resolve_best_of_n_nli(),
                 )
                 best_of_n_scored.append((i, candidate, verdict))
+                # Lazy best-of-N early exit (COURSEFORGE_REWRITE_EARLY_EXIT):
+                # when this first validator-PASSING candidate ALSO clears the
+                # entailment floors, STOP — never sample candidates i+1..N. The
+                # collected candidate is already in best_of_n_scored, so a
+                # would-be argmax over {this candidate} is exactly this
+                # candidate. On a floor MISS we fall through to ``continue`` and
+                # sample the next candidate; if none ever clears the floors the
+                # loop exhausts and the post-loop argmax runs byte-for-byte as
+                # legacy. Decision-capture: emit the SAME
+                # ``block_best_of_n_selection`` event with the collected
+                # verdict(s) so the early-exit choice is auditable (rationale
+                # carries the entailment/contradiction numbers).
+                if rewrite_early_exit and self._verdict_passes_early_exit_floors(
+                    verdict
+                ):
+                    timestamp = (
+                        _dt.datetime.now(_dt.timezone.utc)
+                        .replace(microsecond=0)
+                        .isoformat()
+                        .replace("+00:00", "Z")
+                    )
+                    touch = Touch(
+                        model=spec.model,
+                        provider=_collapse_to_touch_provider(spec.provider),
+                        tier="rewrite",
+                        timestamp=timestamp,
+                        decision_capture_id=self._build_router_capture_id(
+                            candidate, f"best_of_n_rewrite_early_exit_{i}"
+                        ),
+                        purpose="self_consistency_winner",
+                    )
+                    winner = candidate.with_touch(touch)
+                    winning_index = i
+                    self._emit_best_of_n_decision(
+                        block=block,
+                        tier="rewrite",
+                        n=resolved_n,
+                        winning_index=i,
+                        verdicts=[v for (_i, _c, v) in best_of_n_scored],
+                        no_clean=False,
+                        spec=spec,
+                        select_by=select_by,
+                    )
+                    break
                 continue
             if all_passed:
                 timestamp = (
@@ -3009,6 +3164,41 @@ class CourseforgeRouter:
             return resolve_select_by(os.environ)
         except Exception:  # noqa: BLE001 — never break dispatch on a helper import
             return "gate_pass"
+
+    def _resolve_rewrite_early_exit(self) -> bool:
+        """Resolve the ``COURSEFORGE_REWRITE_EARLY_EXIT`` lazy-best-of-N gate.
+
+        Default OFF (unset / falsey / garbage → ``False``) so the rewrite loop
+        keeps sampling all N candidates and picking the post-loop argmax
+        byte-for-byte. Truthy (``1``/``true``/``yes``/``on``, case-insensitive)
+        → the rewrite loop stops at the first validator-PASSING candidate whose
+        verdict clears :meth:`_verdict_passes_early_exit_floors`. Read per call
+        so tests can ``setenv``-toggle. Only consulted under the
+        ``entailment_argmax`` selector (``best_of_n_mode``); the legacy
+        ``gate_pass`` path already first-exits.
+        """
+        return (
+            os.environ.get(_REWRITE_EARLY_EXIT_ENV, "").strip().lower()
+            in _REWRITE_EARLY_EXIT_TRUTHY
+        )
+
+    @staticmethod
+    def _verdict_passes_early_exit_floors(verdict: "_CandidateVerdict") -> bool:
+        """True when a scored candidate clears the early-exit "passes" floors.
+
+        Mapping (documented in the module header): the entailment_argmax
+        selector itself carries no entailment_rate floor, so we adopt the
+        ``block_prose_entailment`` production critical-gate floors —
+        ``covers_objective`` required, contradiction disqualifies, and
+        ``entailment_rate >= _REWRITE_EARLY_EXIT_ENTAILMENT_FLOOR`` (0.60).
+        Same clean-candidate predicate ``_select_best_of_n_winner`` prefers,
+        plus the numeric entailment floor the post-hoc NLI gate enforces.
+        """
+        return (
+            verdict.covers_objective
+            and not verdict.contradicted
+            and verdict.entailment_rate >= _REWRITE_EARLY_EXIT_ENTAILMENT_FLOOR
+        )
 
     def _resolve_chunk_scoped(self) -> bool:
         """Resolve the C1 chunk-scoping lever (``COURSEFORGE_CHUNK_SCOPED``).
