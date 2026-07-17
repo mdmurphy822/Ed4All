@@ -350,3 +350,26 @@ def test_mid_document_doc_title_not_level_1():
     assert gammas[0]["heading_text"] == "4.3 Gamma Topic"
     # the synthesized chapter opener is NOT suppressed
     assert tr.heading_tree[0] == (1, "Chapter 4")
+
+
+def test_toc_harvested_from_single_blob_region():
+    """A ToC OCR'd as ONE multi-line text region (ch06 live failure) must
+    still qualify as a declaration run."""
+    toc_blob = "7. 1 Alpha Topic\n\n7. 2 Beta Topic\n\n7. 3 Gamma Topic"
+    pages = [
+        GlmPage(page_no=1, regions=[
+            _region(0, "paragraph_title", "## Chapter Outline"),
+            _region(1, "text", toc_blob),
+        ]),
+        GlmPage(page_no=2, regions=[
+            _region(0, "image", ""),
+            _region(1, "paragraph_title", "## Beta Topic"),
+            _region(2, "text", "Beta body prose long enough to be a paragraph."),
+        ]),
+    ]
+    tr = transform_document(pages)
+    assert tr.heading_tree[0] == (1, "Chapter 7")
+    heads = [p for p in tr.region_provenance if p["region_kind"] == "heading"]
+    beta = [h for h in heads if "Beta Topic" in str(h.get("heading_text"))]
+    assert beta[0]["heading_text"] == "7.2 Beta Topic"
+    assert beta[0]["level"] == 2

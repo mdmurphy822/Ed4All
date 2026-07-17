@@ -536,10 +536,23 @@ def _anchor_declared_sections(
     for p in prov:
         if (p.get("region_kind") == "paragraph" and not p.get("role")
                 and not p.get("pedagogy_class")):
-            m = _TOC_DECL_RE.match((p.get("raw_text") or "").strip())
-            if m:
-                run.append((int(m.group(1)), int(m.group(2)),
-                            m.group(3).strip()))
+            # Match LINE-wise: per-region OCR sometimes emits the whole ToC
+            # as ONE multi-line text region (seen live: ch06 — all 7 entries
+            # in a single blob, which starved the harvest and left the
+            # chapter titled "Chapter Outline"). A line that matches extends
+            # the run; a non-matching line flushes it.
+            lines = [ln.strip() for ln in (p.get("raw_text") or "").splitlines()
+                     if ln.strip()]
+            matched_any = False
+            for ln in lines:
+                m = _TOC_DECL_RE.match(ln)
+                if m:
+                    title = m.group(3).splitlines()[0].strip()
+                    run.append((int(m.group(1)), int(m.group(2)), title))
+                    matched_any = True
+                else:
+                    _flush()
+            if matched_any:
                 continue
         _flush()
     _flush()
