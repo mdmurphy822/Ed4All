@@ -83,7 +83,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from MCP.hardening.validation_gates import GateIssue, GateResult
 from lib.classifiers.nli_classifier import NliClassifier
 from lib.embedding.sentence_embedder import is_strict_mode
-from lib.retrieval.groundedness import score_groundedness
+from lib.retrieval.groundedness import GroundednessReport, score_groundedness
 from lib.utils import strip_html_to_text as _strip_html_to_text  # W-D6 canonical
 from lib.validators.claim_support import _SKIPPED_BLOCK_TYPES
 
@@ -139,6 +139,61 @@ _TRUTHY = frozenset({"1", "true", "yes", "on"})
 def _provenance_resolve_enabled() -> bool:
     """Parse-with-fallback truthy check for ``ED4ALL_PROSE_GATE_PROVENANCE_RESOLVE``."""
     return os.environ.get(_ENV_PROVENANCE_RESOLVE, "").strip().lower() in _TRUTHY
+
+
+#: Env flag — route THIS gate's per-block NLI entailment scoring through the
+#: shared coalescing micro-batch dispatcher (`lib/classifiers/nli_microbatch.py`)
+#: instead of the historical serial per-block loop. Default OFF → the per-block
+#: ``score_groundedness`` calls run sequentially on the raw NLI singleton
+#: (byte-identical to the legacy path). When truthy, the SCORABLE blocks'
+#: ``score_groundedness`` forward passes are fanned across a bounded thread pool,
+#: each worker submitting its (premise, hypothesis) pairs to the ONE background
+#: scorer thread that owns the model; the scorer COALESCES concurrent submissions
+#: into shared batched forward passes. This is a DELIBERATELY separate opt-in from
+#: ``ED4ALL_NLI_MICROBATCH`` (the ``score_candidate`` best-of-N path): this gate
+#: is a load-bearing quality gate AND this change introduces NEW cross-block
+#: parallelism (not just a lock swap), so it earns independent, default-OFF
+#: control — an operator running ``ED4ALL_NLI_MICROBATCH=1`` for the rewrite tier
+#: does NOT silently get gate-path parallelism.
+#:
+#: Correctness: the dispatcher's per-pair scores are independent of their
+#: batch-mates (``padding=True`` + per-pair ``attention_mask`` + ``truncation``),
+#: so a block's ``GroundednessReport`` is identical to the serial computation to
+#: within low-order floating-point bits — well under the 0.70/0.50 verdict
+#: thresholds. Issue-list assembly, the 50-issue cap, the audited/passed
+#: counters, and decision-capture all still run SERIALLY in original block order
+#: (only the NLI forward passes are parallelized), so the emitted GateResult is
+#: verdict-identical and order-stable vs the serial path.
+_ENV_MICROBATCH_VALIDATORS: str = "ED4ALL_NLI_MICROBATCH_VALIDATORS"
+
+#: Satellite of ``ED4ALL_NLI_MICROBATCH_VALIDATORS`` — the per-block scoring
+#: fan-out width (thread-pool size feeding the single background scorer). Larger
+#: values give the dispatcher more concurrent submissions to coalesce; the pool
+#: is always capped at the number of scorable blocks. Garbage / non-positive →
+#: the default. No-op when the master flag is off.
+_ENV_MICROBATCH_VALIDATORS_CONCURRENCY: str = (
+    "ED4ALL_NLI_MICROBATCH_VALIDATORS_CONCURRENCY"
+)
+_DEFAULT_MICROBATCH_VALIDATORS_CONCURRENCY: int = 16
+
+
+def _microbatch_validators_enabled() -> bool:
+    """Parse-with-fallback truthy check for ``ED4ALL_NLI_MICROBATCH_VALIDATORS``."""
+    return (
+        os.environ.get(_ENV_MICROBATCH_VALIDATORS, "").strip().lower() in _TRUTHY
+    )
+
+
+def _resolve_microbatch_validators_concurrency() -> int:
+    """Resolve the fan-out width. Garbage / non-positive → the default."""
+    raw = os.environ.get(_ENV_MICROBATCH_VALIDATORS_CONCURRENCY)
+    if raw is None or not str(raw).strip():
+        return _DEFAULT_MICROBATCH_VALIDATORS_CONCURRENCY
+    try:
+        iv = int(str(raw).strip())
+        return iv if iv > 0 else _DEFAULT_MICROBATCH_VALIDATORS_CONCURRENCY
+    except (TypeError, ValueError):
+        return _DEFAULT_MICROBATCH_VALIDATORS_CONCURRENCY
 
 
 def load_chunk_provenance_index(chunks_jsonl_path: str) -> Dict[str, List[str]]:
@@ -316,6 +371,41 @@ def _resolve_block_cited_passages(
     return passages
 
 
+def _block_score_args(
+    block: Block,
+    source_chunks: Dict[str, str],
+    provenance_index: Optional[Dict[str, List[str]]] = None,
+) -> Optional[Tuple[str, List[Dict[str, str]]]]:
+    """Return ``(prose_text, cited_passages)`` iff ``block`` reaches the
+    ``score_groundedness`` call in :meth:`BlockProseEntailmentValidator.validate`,
+    else ``None``.
+
+    This is the SINGLE-SOURCE gate for "is this block scored?" — it replays the
+    EXACT sequence of skip decisions the main validate loop makes before it
+    scores a block (string content, not in the skip set, non-empty stripped
+    prose, ≥1 resolvable cited passage). It exists so the opt-in micro-batch
+    pre-pass can pre-compute reports for precisely the blocks the serial loop
+    would score, guaranteeing the parallelized path is verdict-identical. All
+    the branchy no-score handling (skip-silent / empty-prose / no-grounding
+    warning) stays in the main loop; this helper only answers the yes/no + hands
+    back the deterministic scoring inputs.
+    """
+    content = block.content
+    if not isinstance(content, str):
+        return None
+    if _block_should_skip(block):
+        return None
+    prose_text = _strip_html_to_text(content)
+    if not prose_text.strip():
+        return None
+    cited_passages = _resolve_block_cited_passages(
+        block, source_chunks, provenance_index
+    )
+    if not cited_passages:
+        return None
+    return prose_text, cited_passages
+
+
 def _emit_decision(
     capture: Any,
     block: Block,
@@ -469,6 +559,78 @@ class BlockProseEntailmentValidator:
             ),
         )
 
+    def _precompute_reports_microbatch(
+        self,
+        blocks: List[Any],
+        nli: Any,
+        source_chunks: Dict[str, str],
+        provenance_index: Optional[Dict[str, List[str]]],
+        entailment_floor: float,
+        contradiction_floor: float,
+    ) -> Optional[Dict[int, GroundednessReport]]:
+        """Opt-in (``ED4ALL_NLI_MICROBATCH_VALIDATORS``) concurrent pre-scoring.
+
+        Fans the SCORABLE blocks' ``score_groundedness`` forward passes across a
+        bounded thread pool, each worker routing its (premise, hypothesis) pairs
+        through the SHARED micro-batch dispatcher (`get_dispatcher(nli)`) — the
+        single background scorer thread coalesces the concurrent submissions into
+        batched forward passes instead of the historical one-block-at-a-time
+        serial loop. Returns ``{block_index: report}`` for exactly the blocks the
+        serial loop would score (same skip logic via :func:`_block_score_args`),
+        so the caller's loop reads a pre-computed report that is verdict-identical
+        to an inline call.
+
+        Returns ``None`` (→ caller falls back to the serial inline path) when the
+        flag is off or no dispatcher is available (missing NLI model). A
+        worker-side exception propagates out (mirrors the serial path, where a
+        ``score_groundedness`` raise surfaces from ``validate``).
+        """
+        if not _microbatch_validators_enabled():
+            return None
+        # Lazy import — the dispatcher module is only touched on the opt-in path.
+        from lib.classifiers.nli_microbatch import get_dispatcher
+
+        dispatcher = get_dispatcher(nli)
+        if dispatcher is None:
+            return None
+
+        scorable: List[Tuple[int, str, List[Dict[str, str]]]] = []
+        for idx, block in enumerate(blocks):
+            args = _block_score_args(block, source_chunks, provenance_index)
+            if args is not None:
+                scorable.append((idx, args[0], args[1]))
+        if not scorable:
+            return {}
+
+        from concurrent.futures import ThreadPoolExecutor
+
+        n_workers = min(
+            _resolve_microbatch_validators_concurrency(), len(scorable)
+        )
+
+        def _score(
+            item: Tuple[int, str, List[Dict[str, str]]]
+        ) -> Tuple[int, GroundednessReport]:
+            idx, prose_text, cited_passages = item
+            return idx, score_groundedness(
+                prose_text,
+                cited_passages,
+                nli=dispatcher,
+                entailment_floor=entailment_floor,
+                contradiction_floor=contradiction_floor,
+            )
+
+        reports: Dict[int, GroundednessReport] = {}
+        with ThreadPoolExecutor(
+            max_workers=max(1, n_workers),
+            thread_name_prefix="nli-mb-val",
+        ) as pool:
+            # ``map`` preserves order and re-raises the first worker exception on
+            # iteration (serial-parity: a strict-mode raise surfaces identically).
+            for idx, report in pool.map(_score, scorable):
+                reports[idx] = report
+        return reports
+
     def validate(self, inputs: Dict[str, Any]) -> GateResult:
         gate_id = inputs.get("gate_id", self.name)
         capture = inputs.get("decision_capture")
@@ -564,12 +726,24 @@ class BlockProseEntailmentValidator:
         # mirroring rewrite_source_grounding's ``passed = len(critical) == 0``).
         fail_severity = "warning" if shadow else "critical"
 
+        # Opt-in (ED4ALL_NLI_MICROBATCH_VALIDATORS): pre-score the SCORABLE blocks
+        # concurrently through the shared coalescing micro-batch dispatcher. None
+        # (flag off / no dispatcher) → the loop keeps the serial inline path
+        # (byte-identical). When present, the loop reads a pre-computed report
+        # (verdict-identical to an inline call) instead of scoring inline, but
+        # ALL issue/counter/capture assembly below still runs SERIALLY in
+        # original block order so the emitted GateResult is order-stable.
+        precomputed_reports = self._precompute_reports_microbatch(
+            blocks, nli, source_chunks, provenance_index,
+            entailment_floor, contradiction_floor,
+        )
+
         issues: List[GateIssue] = []
         any_regenerate = False
         audited_blocks = 0
         passed_blocks = 0
 
-        for block in blocks:
+        for idx, block in enumerate(blocks):
             content = block.content
             if not isinstance(content, str):
                 # Outline-tier dict content — skip silently (rewrite-tier seam
@@ -629,13 +803,18 @@ class BlockProseEntailmentValidator:
                 continue
 
             audited_blocks += 1
-            report = score_groundedness(
-                prose_text,
-                cited_passages,
-                nli=nli,
-                entailment_floor=entailment_floor,
-                contradiction_floor=contradiction_floor,
-            )
+            if precomputed_reports is not None and idx in precomputed_reports:
+                # Micro-batch path: reuse the report scored concurrently through
+                # the shared dispatcher (verdict-identical to the inline call).
+                report = precomputed_reports[idx]
+            else:
+                report = score_groundedness(
+                    prose_text,
+                    cited_passages,
+                    nli=nli,
+                    entailment_floor=entailment_floor,
+                    contradiction_floor=contradiction_floor,
+                )
 
             if not report.available:
                 # Defensive: the pre-check above already handled the missing
@@ -805,6 +984,10 @@ class BlockProseEntailmentValidator:
 __all__ = [
     "BlockProseEntailmentValidator",
     "load_chunk_provenance_index",
+    "_ENV_MICROBATCH_VALIDATORS",
+    "_ENV_MICROBATCH_VALIDATORS_CONCURRENCY",
+    "_microbatch_validators_enabled",
+    "_resolve_microbatch_validators_concurrency",
     "_DEFAULT_MIN_BLOCK_ENTAILMENT_RATE",
     "_DEFAULT_ENTAILMENT_FLOOR",
     "_DEFAULT_CONTRADICTION_FLOOR",

@@ -145,6 +145,48 @@ def test_batched_scores_match_sequential() -> None:
         dispatcher.shutdown()
 
 
+def test_batched_scores_match_sequential_mixed_lengths() -> None:
+    """Padding-stress: pairs of WILDLY different premise/hypothesis lengths in
+    ONE drain must each still get exactly their own single-pair score.
+
+    The deterministic stub is batch-position-independent, so this asserts the
+    dispatcher ROUTES each caller's slice correctly regardless of where a pair
+    lands in a mixed-length coalesced batch (the routing half of the batched-vs-
+    single contract). The numerical half — that real attention masking makes a
+    short pair's score independent of a long batch-mate to within low-order bits
+    — is proven on the actual DeBERTa forward pass by
+    ``test_real_model_batched_matches_sequential`` (slow).
+    """
+    nli = _StubNLI()
+    dispatcher = NliMicrobatchDispatcher(nli, max_pairs=64, window_ms=5)
+    try:
+        pairs = [
+            ("short.", "tiny hypothesis"),
+            (
+                "A considerably longer premise sentence that carries many more "
+                "tokens than its neighbors so the tokenized batch must pad the "
+                "shorter members up to this length.",
+                "long hypothesis with a matching sprawl of additional tokens to "
+                "stress the padded attention mask across the coalesced batch",
+            ),
+            ("mid length premise here", "mid"),
+            ("x", "y"),
+            (
+                "Another lengthy premise, distinct wording, distinct length, so "
+                "the drain holds a genuinely heterogeneous length distribution.",
+                "z hypothesis",
+            ),
+        ]
+        expected = [nli.score_batch(pairs=[p])[0] for p in pairs]
+        got = dispatcher.score_batch(pairs=pairs)
+        assert len(got) == len(pairs)
+        for g, e in zip(got, expected):
+            assert abs(g.entailment - e.entailment) < 1e-3
+            assert abs(g.contradiction - e.contradiction) < 1e-3
+    finally:
+        dispatcher.shutdown()
+
+
 def test_empty_pairs_is_noop() -> None:
     nli = _StubNLI()
     dispatcher = NliMicrobatchDispatcher(nli)
