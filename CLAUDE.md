@@ -731,9 +731,9 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 |--------|-------|-----------:|
 | `TRAINFORGE_*` / `LOCAL_SYNTHESIS_*` / `TOGETHER_*` / `ANTHROPIC_SYNTHESIS_*` / `CURRICULUM_ALIGNMENT_*` / `WAVE18_*` | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 56 |
 | `NVIDIA_*` (vendor endpoint-registry row for the hosted large-model seat — `NVIDIA_API_KEY` / `NVIDIA_BASE_URL` / `NVIDIA_LARGE_MODEL`) | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 3 |
-| `SEMANTIK_*` (DART replacement — SemantiK semantic-cascade converter; also honors the legacy `DART_THETA_DEVICE` compat env) | [`SemantiK/CLAUDE.md § Opt-In Behavior Flags`](SemantiK/CLAUDE.md) | 142 |
-| `COURSEFORGE_*` / `COURSEPLANNER_*` / `TEXTBOOK_SYNTHESIS_*` | [`Courseforge/CLAUDE.md § Opt-In Behavior Flags`](Courseforge/CLAUDE.md) | 37 |
-| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root index (below) + [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 186 |
+| `SEMANTIK_*` (DART replacement — SemantiK semantic-cascade converter; also honors the legacy `DART_THETA_DEVICE` compat env) | [`SemantiK/CLAUDE.md § Opt-In Behavior Flags`](SemantiK/CLAUDE.md) | 156 |
+| `COURSEFORGE_*` / `COURSEPLANNER_*` / `TEXTBOOK_SYNTHESIS_*` | [`Courseforge/CLAUDE.md § Opt-In Behavior Flags`](Courseforge/CLAUDE.md) | 40 |
+| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root index (below) + [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 192 |
 
 ### Cross-cutting flags (root-owned)
 
@@ -788,6 +788,7 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `ED4ALL_CONTENT_PAGE_PER_CO` | unset (off) | Page-per-CO content-emit gate |
 | `ED4ALL_CONTENT_PAGE_NUM_CTX` | `4096` (→ `ED4ALL_ANSWER_NUM_CTX` → 4096) | Authoring serving-window token budget for the page-per-CO per-page chunk cap |
 | `ED4ALL_CONTENT_PAGE_MAX_CHUNKS` | `5` | Hard top-K ceiling on chunks kept per CO page for the page-per-CO cap |
+| `ED4ALL_CONTENT_PAGE_PER_CO_UNCAPPED` | unset (off) | TRUE one-page-per-CO opt-in: lifts the page-per-CO NEVER-INCREASE topic cap so a CO-rich week emits one content page per CO (1:1 binding; O(Σ COs) authoring cost) |
 | `ED4ALL_CHUNK_ROLE_DIVERSIFY` | unset (off) | Gap #11 — deterministic per-block-role rotation of a page's ranked chunk order so co-located blocks don't all lead with the same anchor example (chunk-universe remap; default off → byte-identical). |
 | `ED4ALL_COURSE_IDENTITY_DEDUP` | unset (off) | W0.5 course-identity SPLIT-BRAIN guard |
 | `ED4ALL_EMBEDDING_PROVIDER` | `st` | Selects the retrieval-index embedding backend (`st` / `local-openai` / `fake`). |
@@ -814,6 +815,7 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `ED4ALL_TRIANGLE_FLOOR` | unset (off) | GAP D (IB3 alignment triangle) per-CO activity + assessment floor for the block planner. |
 | `ED4ALL_RETRIEVAL_INTERLEAVE` | unset (off) | GAP C (IB7.5b interleaved retrieval) per-content-page retrieval-block floor. |
 | `ED4ALL_HOME` | unset (repo-relative) | Relocatable data root — sets every mutable data dir under it instead of repo-relative. |
+| `ED4ALL_IMSCC_MODULE_TITLES` | unset (legacy) | IMSCC packager module-title mode: exact token `to` titles org groups "Module N: <TO topic>" from `terminal_objectives[N-1]` (anchor_module_title → truncated statement → legacy fallback); anything else → legacy "Week N" titles. Operator-set alongside `ED4ALL_WEEK_TO_GROUPS`. |
 | `ED4ALL_KEY_TERMS_PAGE` | unset (off) | Feature I5 — per-terminal-objective deterministic **"Key Terms" page** gate |
 | `ED4ALL_NEW_BLOCK_TYPES` | unset (off) | IB5 gate for four framework block types: hook, multimedia, worked_example, diagram. |
 | `ED4ALL_REFLECTION_CALIBRATION` | unset (off) | FR-INT-03 gate for the B11 reflection predict-then-reveal calibration contract. |
@@ -837,6 +839,9 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `ED4ALL_NLI_DEVICE` | `cpu` (code) / `cuda` (project default) | Torch device for the in-process NLI classifier that scores groundedness/eval entailment |
 | `ED4ALL_NLI_MIN_FREE_VRAM_MIB` | `1024` | Free-VRAM floor gating the in-process NLI model onto CUDA |
 | `ED4ALL_NLI_EVICT_FOR_CUDA` | `true` (on) | VRAM-contention strategy: evict the resident ollama model to free the card for NLI on CUDA. The `ED4ALL_GPU_LIFECYCLE` phase-boundary sweep makes this largely moot (it hands the card over before NLI loads); kept as the in-phase fallback (generation + NLI in one phase, or lifecycle opted off). |
+| `ED4ALL_NLI_MICROBATCH` | unset (off) | Opt-in NLI micro-batching dispatcher: concurrent Courseforge best-of-N workers (`score_candidate`) bypass the `_NLI_SCORE_LOCK` mutex and route (premise, hypothesis) pairs through one background scorer thread that coalesces batched forward passes (defeats the ~28-in-flight lock ceiling at 64 rewrite threads). Scoped to `score_candidate`; validator-chain lock retained (it guards non-NLI singletons). Batched vs single-pair scores differ only in low-order bits (proper attention masking → semantically identical). |
+| `ED4ALL_NLI_MICROBATCH_MAX_PAIRS` | `64` | Satellite of `ED4ALL_NLI_MICROBATCH` — max pairs coalesced into one drain / batched forward pass. |
+| `ED4ALL_NLI_MICROBATCH_WINDOW_MS` | `10` | Satellite of `ED4ALL_NLI_MICROBATCH` — collection window (ms) the scorer waits for more concurrent requests before scoring. |
 | `ED4ALL_OBJECTIVE_REVIEW_PROVIDER` | unset (off) | Grounding-safe **objective-review** pass gate |
 | `ED4ALL_OBJECTIVE_REVIEW_MODEL` | per-provider | Model-ID override for the objective-review pass |
 | `ED4ALL_OBJECTIVE_CHUNK_RELEVANCE_FLOOR` | `0.30` | Fix 1A relevance floor for the objective-dedup union prune |
@@ -865,6 +870,7 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `ED4ALL_OBJECTIVE_SYNTHESIS_CHECKPOINT` | `on` | Site override for the stage-2 window + cluster resume sidecars (beats `ED4ALL_GENERATION_CHECKPOINT`). |
 | `ED4ALL_REQUIRE_ARCHIVED_OBJECTIVES` | unset (off) | W2.3 fail-closed for the archive_to_libv2 objectives→objectives.json plumbing. |
 | `ED4ALL_PRODUCTION` | `0` | When `1`, enables production-mode FastMCP server settings. |
+| `ED4ALL_PROSE_GATE_PROVENANCE_RESOLVE` | unset (off) | Gate-side provenance resolution for `block_prose_entailment` — when a rewrite block's cited `semantik:{slug}#anchor` refs resolve to nothing in `source_chunks`, map them through a `{ref -> [chunk_id]}` index (section-level ref → ALL section chunks) to recover the premise set. ADD-only, anti-fabrication (existing refs → existing chunks); default off → byte-identical NO_GROUNDING path. |
 | `ED4ALL_RESEGMENT_COLLAPSED` | `1` | WS6b collapse re-segmentation gate |
 | `ED4ALL_RESEGMENT_SECTIONS_PER_CHAPTER` | `13` | WS6b target sections-per-pseudo-chapter |
 | `ED4ALL_ROOT` | auto-detect | Absolute path to the Ed4All project root. |
