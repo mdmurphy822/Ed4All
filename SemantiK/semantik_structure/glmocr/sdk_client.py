@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 import shutil
 import subprocess
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Protocol, Sequence
@@ -40,6 +41,13 @@ logger = logging.getLogger(__name__)
 # (owner directive: aside_text + reference are content, footnote is a genuine
 # note — only running header/folio/decoration are furniture).
 _KEEP_AS_TEXT = ("aside_text", "reference", "footnote")
+
+# transformers/accelerate model loading is NOT thread-safe: init_empty_weights
+# patches nn.Module registration process-wide, so two threads constructing a
+# GlmOcr parser concurrently race one another onto meta tensors
+# ("Cannot copy out of meta tensor"). Construction is serialized; only the
+# per-chunk parse() fan-out runs concurrently.
+_PARSER_CONSTRUCT_LOCK = threading.Lock()
 
 
 def render_pdf_to_pngs(
@@ -144,13 +152,14 @@ class SdkGlmOcrClient:
     def _make_parser(self):
         from glmocr.api import GlmOcr  # heavy import, deferred to call time
 
-        parser = GlmOcr(
-            mode="selfhosted",
-            ocr_api_host=self._host,
-            ocr_api_port=self._port,
-            model=self.model,
-            layout_device=self.layout_device,
-        )
+        with _PARSER_CONSTRUCT_LOCK:
+            parser = GlmOcr(
+                mode="selfhosted",
+                ocr_api_host=self._host,
+                ocr_api_port=self._port,
+                model=self.model,
+                layout_device=self.layout_device,
+            )
         self._apply_label_override(parser)
         return parser
 

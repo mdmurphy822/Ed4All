@@ -164,3 +164,53 @@ def test_render_accessible_html_emits_provenance_contract(monkeypatch, tmp_path)
     assert "data-semantik-source" in html
     # figure surfaced
     assert "<figure" in html
+
+
+def test_parser_construction_serialized(monkeypatch):
+    """Concurrent SDK parser construction must serialize on the module lock.
+
+    transformers/accelerate model loading is not thread-safe (meta-tensor
+    race seen live on the 4-worker fan-out, 2026-07-16); _make_parser must
+    hold _PARSER_CONSTRUCT_LOCK around GlmOcr() so two workers never
+    construct simultaneously.
+    """
+    import sys
+    import threading
+    import time
+    import types
+    from concurrent.futures import ThreadPoolExecutor
+
+    from semantik_structure.glmocr import sdk_client
+
+    in_flight = 0
+    overlap = []
+    guard = threading.Lock()
+
+    class _FakeGlmOcr:
+        def __init__(self, **kwargs):
+            nonlocal in_flight
+            with guard:
+                in_flight += 1
+                if in_flight > 1:
+                    overlap.append(in_flight)
+            time.sleep(0.05)
+            with guard:
+                in_flight -= 1
+
+        def close(self):
+            pass
+
+    fake_api = types.ModuleType("glmocr.api")
+    fake_api.GlmOcr = _FakeGlmOcr
+    fake_pkg = types.ModuleType("glmocr")
+    fake_pkg.api = fake_api
+    monkeypatch.setitem(sys.modules, "glmocr", fake_pkg)
+    monkeypatch.setitem(sys.modules, "glmocr.api", fake_api)
+
+    client = sdk_client.SdkGlmOcrClient(
+        base_url="http://127.0.0.1:8002/v1", model="glm-ocr",
+        workers=4, layout_device="cpu",
+    )
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        list(ex.map(lambda _: client._make_parser(), range(4)))
+    assert not overlap, f"concurrent constructions observed: {overlap}"
