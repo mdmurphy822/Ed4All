@@ -227,9 +227,14 @@ def _emit_structural(
         if rm.is_table_caption(text):
             return _prov(idx=idx, region_kind="paragraph", raw_text=text,
                          page=page, role="caption", native_label=nl, bbox=bbox)
-        if nl == "doc_title":
+        if nl == "doc_title" and page <= 1:
             return _prov(idx=idx, region_kind="heading", heading_text=text,
                          level=1, page=page, native_label=nl, bbox=bbox)
+        # A mid-document ``doc_title`` is a page-banner section opener the
+        # layout model over-promoted (seen live: a badge-lost section banner
+        # on an interior page), NOT the document title — level-1 here would
+        # both corrupt the outline and suppress the chapter-opener synthesis.
+        # Fall through to the normal numbered/ambiguous title rules.
         level, ambiguous = rm.heading_level_for_title(text)
         if ambiguous:
             escalations.append({
@@ -500,17 +505,32 @@ def _anchor_declared_sections(
     LOUD ``declared_section_unanchored`` escalation. heading_tree is rebuilt
     from the (possibly rewritten) headings.
     """
-    # 1. harvest ToC declarations (order-preserving, first declaration wins)
+    # 1. harvest ToC declarations (order-preserving, first declaration wins).
+    # A run only counts as a ToC when it has TRUE outline shape: ≥3
+    # consecutive entries sharing ONE chapter major with minors ascending in
+    # steps of exactly 1 ("4.1, 4.2, 4.3…"). Without the shape guard the
+    # pattern also matches numbered answer-key lines ("15. 30 students"),
+    # which on an answer-dense chapter harvested hundreds of fake
+    # declarations and turned the matching pass quadratic (seen live: ch03
+    # wedged transform_document at 100% CPU for 36+ min).
     decls: List[Tuple[str, str]] = []
     seen: set = set()
-    run: List[Tuple[str, str]] = []
+    run: List[Tuple[int, int, str]] = []  # (major, minor, title)
+    _MAX_DECLS = 60
 
     def _flush() -> None:
         if len(run) >= 3:
-            for num, title in run:
-                if num not in seen:
-                    seen.add(num)
-                    decls.append((num, title))
+            majors = {mj for mj, _, _ in run}
+            minors = [mn for _, mn, _ in run]
+            consecutive = all(
+                minors[i + 1] == minors[i] + 1 for i in range(len(minors) - 1)
+            )
+            if len(majors) == 1 and consecutive:
+                for mj, mn, title in run:
+                    num = f"{mj}.{mn}"
+                    if num not in seen and len(decls) < _MAX_DECLS:
+                        seen.add(num)
+                        decls.append((num, title))
         run.clear()
 
     for p in prov:
@@ -518,12 +538,25 @@ def _anchor_declared_sections(
                 and not p.get("pedagogy_class")):
             m = _TOC_DECL_RE.match((p.get("raw_text") or "").strip())
             if m:
-                run.append((f"{m.group(1)}.{m.group(2)}", m.group(3).strip()))
+                run.append((int(m.group(1)), int(m.group(2)),
+                            m.group(3).strip()))
                 continue
         _flush()
     _flush()
     if not decls:
         return
+    # One document = one chapter file: only the DOMINANT chapter's
+    # declarations anchor sections. A scan slice can carry spillover pages
+    # from the next chapter (its ToC included — seen live: ch01 carries the
+    # ch2 opener); promoting foreign-major sections re-segments the article
+    # tree and breaks body-zone anchoring for the chapter that owns the file.
+    _major_counts: Dict[str, int] = {}
+    for num, _ in decls:
+        mj = num.split(".", 1)[0]
+        _major_counts[mj] = _major_counts.get(mj, 0) + 1
+    _modal_major = max(_major_counts, key=lambda k: _major_counts[k])
+    decls = [(num, t) for num, t in decls
+             if num.split(".", 1)[0] == _modal_major]
 
     # Chapter-opener synthesis: this corpus family renders the chapter title
     # inside the cover banner IMAGE and the page-header furniture is never
@@ -563,20 +596,24 @@ def _anchor_declared_sections(
                        f"'Chapter {major}' from ToC major ordinal"),
         })
 
+    # Pre-normalize every heading ONCE (linear), then per-declaration work is
+    # two dict lookups — never a per-(decl × heading) regex pass.
     headings = [p for p in prov if p.get("region_kind") == "heading"]
+    first_numbered_by_title: Dict[str, int] = {}
+    first_unnumbered_by_title: Dict[str, int] = {}
+    for hi, h in enumerate(headings):
+        ht = str(h.get("heading_text") or "")
+        bare = _norm_title(re.sub(r"^\d{1,3}\.\s?\d{1,3}\s+", "", ht))
+        if not bare:
+            continue
+        if _TOC_DECL_RE.match(ht.strip()):
+            first_numbered_by_title.setdefault(bare, hi)
+        else:
+            first_unnumbered_by_title.setdefault(bare, hi)
     for num, title in decls:
         want = _norm_title(title)
-        first_numbered = None
-        first_unnumbered = None
-        for hi, h in enumerate(headings):
-            ht = str(h.get("heading_text") or "")
-            if _norm_title(re.sub(r"^\d{1,3}\.\s?\d{1,3}\s+", "", ht)) != want:
-                continue
-            if _TOC_DECL_RE.match(ht.strip()):
-                if first_numbered is None:
-                    first_numbered = hi
-            elif first_unnumbered is None:
-                first_unnumbered = hi
+        first_numbered = first_numbered_by_title.get(want)
+        first_unnumbered = first_unnumbered_by_title.get(want)
         if first_unnumbered is not None and (
                 first_numbered is None or first_unnumbered < first_numbered):
             h = headings[first_unnumbered]

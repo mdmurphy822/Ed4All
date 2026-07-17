@@ -65,7 +65,17 @@ def render_pdf_to_pngs(
             "pdftoppm (poppler-utils) is required for the GLM-OCR lane render "
             "step; install poppler-utils"
         )
+    # Render into a PER-DOCUMENT subdir and clear any prior page renders
+    # first. The post-render glob collects EVERY page-*.png in the dir, so a
+    # shared render dir poisons the page list with leftovers from previously
+    # rendered documents — pdftoppm pads page ordinals to the document's own
+    # digit count, so a shorter document's stale "page-9.png" survives a
+    # longer document's fresh "page-009.png" render and interleaves into the
+    # numeric sort (seen live: ch2-opener pages inside the ch01 conversion).
+    out_dir = out_dir / pdf_path.stem
     out_dir.mkdir(parents=True, exist_ok=True)
+    for stale in out_dir.glob("page*.png"):
+        stale.unlink()
     prefix = out_dir / "page"
     subprocess.run(
         ["pdftoppm", "-r", str(dpi), "-png", str(pdf_path), str(prefix)],

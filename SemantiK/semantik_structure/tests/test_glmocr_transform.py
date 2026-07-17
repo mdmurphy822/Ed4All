@@ -333,3 +333,20 @@ def test_chapter_opener_not_synthesized_when_doc_title_present():
     synth = [p for p in tr.region_provenance
              if p.get("chapter_title_synthesized")]
     assert not synth
+
+
+def test_mid_document_doc_title_not_level_1():
+    """A ``doc_title`` on an interior page is a page-banner section opener,
+    not the document title — it must not become level 1 (level-1 suppresses
+    the chapter-opener synthesis; seen live on the ch01 canary, page 105)."""
+    pages = _toc_body_pages()
+    pages[1].regions.insert(1, _region(9, "doc_title", "# Gamma Topic"))
+    tr = transform_document(pages)
+    heads = [p for p in tr.region_provenance if p["region_kind"] == "heading"]
+    gammas = [h for h in heads if "Gamma Topic" in str(h.get("heading_text"))]
+    assert gammas, "mid-doc doc_title should still emit a heading"
+    # the ToC declares 4.3 Gamma Topic → the recovery pass renumbers it
+    assert gammas[0]["level"] == 2
+    assert gammas[0]["heading_text"] == "4.3 Gamma Topic"
+    # the synthesized chapter opener is NOT suppressed
+    assert tr.heading_tree[0] == (1, "Chapter 4")

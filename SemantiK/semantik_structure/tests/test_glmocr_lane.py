@@ -214,3 +214,34 @@ def test_parser_construction_serialized(monkeypatch):
     with ThreadPoolExecutor(max_workers=4) as ex:
         list(ex.map(lambda _: client._make_parser(), range(4)))
     assert not overlap, f"concurrent constructions observed: {overlap}"
+
+
+def test_render_dir_isolated_per_document(monkeypatch, tmp_path):
+    """A prior document's leftover page renders must never leak into a later
+    document's page list (shared-dir glob poisoning, seen live on ch01)."""
+    import subprocess as sp
+
+    from semantik_structure.glmocr import sdk_client as sc
+
+    monkeypatch.setattr(sc.shutil, "which", lambda _: "/usr/bin/pdftoppm")
+
+    def fake_run(cmd, **kw):
+        # emulate pdftoppm: render 3 pages for docA, 2 for docB
+        prefix = Path(cmd[-1])
+        n = 3 if "docA" in cmd[-2] else 2
+        for i in range(1, n + 1):
+            (prefix.parent / f"page-{i}.png").write_bytes(b"png")
+        return sp.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(sc.subprocess, "run", fake_run)
+    (tmp_path / "docA.pdf").write_bytes(b"%PDF")
+    (tmp_path / "docB.pdf").write_bytes(b"%PDF")
+    render = tmp_path / "_render"
+    a = sc.render_pdf_to_pngs(tmp_path / "docA.pdf", render)
+    b = sc.render_pdf_to_pngs(tmp_path / "docB.pdf", render)
+    assert len(a) == 3
+    assert len(b) == 2, f"docB page list poisoned: {[p.name for p in b]}"
+    assert all("docB" in str(p) for p in b)
+    # re-render of docA is idempotent (pre-clean)
+    a2 = sc.render_pdf_to_pngs(tmp_path / "docA.pdf", render)
+    assert len(a2) == 3
