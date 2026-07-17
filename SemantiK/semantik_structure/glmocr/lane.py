@@ -111,6 +111,14 @@ def run_glmocr_lane(
     # 2. GLM-OCR SDK
     client = sdk_client if sdk_client is not None else SdkGlmOcrClient()
     pages = client.parse_pages(page_pngs)
+    # Loud no-silent-degrade guard: a document where EVERY page errored (seat
+    # down / dropping every request) must never flow into the transform as an
+    # "empty but real" conversion — fail the lane so the caller fails closed.
+    if pages and all(p.error for p in pages):
+        raise RuntimeError(
+            f"GLM-OCR SDK failed on every page ({len(pages)} pages) of "
+            f"{pdf_path.name}; first error: {pages[0].error!r}"
+        )
     # attach render dims/paths to pages for the alt-text crop step
     page_images: Dict[int, str] = {}
     for i, p in enumerate(pages):
@@ -172,6 +180,12 @@ def build_cascade_result_dict(
         "region_provenance": result.region_provenance,
         "heading_tree": [list(t) for t in result.heading_tree],
         "wcag_status_under_mock": "not_evaluated",
+        # R4 mock-trap input: the lane is a REAL conversion (live GLM-OCR seat
+        # + deterministic transform — there is no mock arm on this path, and a
+        # dead seat raises long before this dict is built). Without the stamp
+        # the Ed4All seam's runtime_mode gate fails the lane closed as if it
+        # had shipped mock HTML.
+        "runtime_mode": "real",
         "lane_used": "glmocr",
         "theta": {"action": "ship_with_flag", "theta_score": None, "flags": []},
         "glmocr_escalations": result.escalations,
