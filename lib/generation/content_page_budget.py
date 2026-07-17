@@ -43,6 +43,13 @@ ENV_CONTENT_PAGE_PER_CO = "ED4ALL_CONTENT_PAGE_PER_CO"
 ENV_CONTENT_PAGE_NUM_CTX = "ED4ALL_CONTENT_PAGE_NUM_CTX"
 ENV_CONTENT_PAGE_MAX_CHUNKS = "ED4ALL_CONTENT_PAGE_MAX_CHUNKS"
 
+#: Opt-in satellite of ``ED4ALL_CONTENT_PAGE_PER_CO``: when truthy, the
+#: per-week content-page count is EXACTLY the week's CO count — the
+#: NEVER-INCREASE topic-count cap is lifted (true one-HTML-page-per-CO).
+#: Default unset → the guard stays intact (byte-identical). See
+#: :func:`content_page_per_co_uncapped`.
+ENV_CONTENT_PAGE_PER_CO_UNCAPPED = "ED4ALL_CONTENT_PAGE_PER_CO_UNCAPPED"
+
 #: Gap #11 — per-block-role chunk-order diversification. Default OFF →
 #: byte-identical (every co-located block keeps the identical page-ranked
 #: chunk head, so one anchor example recurs across a whole page's blocks). See
@@ -86,6 +93,26 @@ def content_page_per_co_enabled() -> bool:
     additionally no-ops this unless ``COURSEFORGE_TWO_PASS`` is on.
     """
     return os.environ.get(ENV_CONTENT_PAGE_PER_CO, "").strip().lower() in _TRUTHY
+
+
+def content_page_per_co_uncapped() -> bool:
+    """Read ``ED4ALL_CONTENT_PAGE_PER_CO_UNCAPPED`` each call (tests toggle
+    inline).
+
+    Opt-in satellite of the page-per-CO gate: when truthy AND page-per-CO is
+    on, the per-week content-page count is ``max(co_count, 1)`` with NO
+    topic-count cap — the operator explicitly chose ONE HTML page per CO, so
+    the NEVER-INCREASE guard must not fold a CO-rich week onto shared slice
+    pages. Default unset → the guard stays intact (byte-identical). Only the
+    canonical truthy tokens (``1``/``true``/``yes``/``on``) enable; falsey /
+    garbage → off (parse-with-fallback). Inert when
+    ``ED4ALL_CONTENT_PAGE_PER_CO`` is off (the call site only consults it on
+    the page-per-CO path).
+    """
+    return (
+        os.environ.get(ENV_CONTENT_PAGE_PER_CO_UNCAPPED, "").strip().lower()
+        in _TRUTHY
+    )
 
 
 def resolve_content_page_num_ctx(value: Optional[int] = None) -> int:

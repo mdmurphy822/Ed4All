@@ -30,6 +30,7 @@ Usage:
 
 import argparse
 import json
+import os
 import re
 import sys
 import xml.etree.ElementTree as ET
@@ -196,6 +197,96 @@ def _extract_week_title(week_dir: Path, week_num: int) -> str:
     if not title or _BARE_OVERVIEW_RE.match(title):
         return f"Week {week_num}"
     return f"Week {week_num}: {title}"
+
+
+# ---------------------------------------------------------------------------
+# ED4ALL_IMSCC_MODULE_TITLES — opt-in terminal-objective module titles.
+#
+# With ED4ALL_WEEK_TO_GROUPS=1 and duration_weeks == num_tos, group N's COs
+# are exactly TO-N's children (book order, chapter-anchored), so the org tree
+# can present "Module N: <topic>" instead of the calendar-flavored "Week N".
+# The mapping assumption (group ordinal N ↔ terminal_objectives[N-1]) is only
+# valid under TO-membership grouping; the flag is operator-set alongside
+# ED4ALL_WEEK_TO_GROUPS and is NOT verified here.
+#
+# Parse-with-fallback: only the exact token "to" (case-insensitive,
+# whitespace-stripped) activates the mode; unset / anything else → the legacy
+# "Week N" titles, byte-identical. Every failure on the objectives side
+# (missing file, unparseable JSON, wrong shape, terminal_objectives not
+# covering group N, empty statement) falls back SILENTLY to the legacy title
+# for that group — packaging never fails over a title.
+# ---------------------------------------------------------------------------
+_MODULE_TITLES_ENV = "ED4ALL_IMSCC_MODULE_TITLES"
+# Word-boundary truncation ceiling for the .statement fallback topic.
+_MODULE_TITLE_STATEMENT_MAX = 80
+
+
+def _module_titles_to_mode() -> bool:
+    """True iff ED4ALL_IMSCC_MODULE_TITLES resolves to the exact token 'to'."""
+    return os.environ.get(_MODULE_TITLES_ENV, "").strip().lower() == "to"
+
+
+def _load_terminal_objectives_for_titles(content_dir: Path) -> List[Dict]:
+    """Best-effort load of ``terminal_objectives`` for module-title mapping.
+
+    Reads ``<export_root>/01_learning_objectives/synthesized_objectives.json``
+    where ``export_root`` is the parent of ``content_dir``
+    (``03_content_development``) — the same export-root convention as
+    ``_resolve_objectives_source``. Accepts both the Courseforge shape
+    (``terminal_objectives``) and the LibV2 archive shape
+    (``terminal_outcomes``). Returns ``[]`` on ANY failure (missing file,
+    I/O error, bad JSON, wrong shape) — never raises.
+    """
+    objectives_path = (
+        content_dir.parent
+        / "01_learning_objectives"
+        / "synthesized_objectives.json"
+    )
+    try:
+        if not objectives_path.exists():
+            return []
+        doc = json.loads(objectives_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(doc, dict):
+        return []
+    terminals = (
+        doc.get("terminal_objectives")
+        or doc.get("terminal_outcomes")
+        or []
+    )
+    if not isinstance(terminals, list):
+        return []
+    return [t for t in terminals if isinstance(t, dict)]
+
+
+def _module_title_from_to(
+    terminals: List[Dict], week_num: int
+) -> Optional[str]:
+    """``"Module {N}: {topic}"`` from ``terminals[N-1]``, or ``None``.
+
+    Topic preference: ``anchor_module_title`` (the chapter-anchored module
+    title stamped by the W3 Defect-A TO derivation), falling back to a
+    word-boundary-truncated ``statement``. ``None`` (→ caller uses the
+    legacy "Week N" title) when the ordinal isn't covered or no usable
+    topic text exists.
+    """
+    if week_num < 1 or week_num > len(terminals):
+        return None
+    to = terminals[week_num - 1]
+    topic = str(to.get("anchor_module_title") or "").strip()
+    if not topic:
+        statement = re.sub(r"\s+", " ", str(to.get("statement") or "")).strip()
+        if not statement:
+            return None
+        if len(statement) > _MODULE_TITLE_STATEMENT_MAX:
+            head = statement[:_MODULE_TITLE_STATEMENT_MAX]
+            # Cut at the last word boundary so the label reads cleanly.
+            if " " in head:
+                head = head.rsplit(" ", 1)[0]
+            statement = head.rstrip(" ,;:.") + "…"
+        topic = statement
+    return f"Module {week_num}: {topic}"
 
 
 # Course-overview front-matter module (Learning Objectives Map). The
@@ -795,6 +886,15 @@ def build_manifest(
     # item when no week mapping resolves).
     week_items_by_num: Dict[int, ET.Element] = {}
 
+    # ED4ALL_IMSCC_MODULE_TITLES=to — load the terminal objectives ONCE for
+    # the whole walk; [] (flag off / any load failure) keeps every group on
+    # the legacy "Week N" title path, byte-identical.
+    to_title_terminals: List[Dict] = (
+        _load_terminal_objectives_for_titles(content_dir)
+        if _module_titles_to_mode()
+        else []
+    )
+
     for week_name, week_num_int, title_dir, html_files in _iter_week_groups(
         content_dir
     ):
@@ -806,10 +906,16 @@ def build_manifest(
         # Prefer the real chapter title captured by generate_week in the
         # overview H1 (e.g. "Week 1: Introduction to Core Concepts")
         # over the bare "Week N" label that earlier revisions emitted and
-        # that produced an uninformative LMS week list.
-        ET.SubElement(week_item, cc("title")).text = _extract_week_title(
-            title_dir, week_num_int
-        )
+        # that produced an uninformative LMS week list. Under
+        # ED4ALL_IMSCC_MODULE_TITLES=to the group is instead titled from
+        # its terminal objective ("Module N: <topic>", no calendar concept);
+        # any per-group miss falls back to the legacy title.
+        week_title: Optional[str] = None
+        if to_title_terminals:
+            week_title = _module_title_from_to(to_title_terminals, week_num_int)
+        if week_title is None:
+            week_title = _extract_week_title(title_dir, week_num_int)
+        ET.SubElement(week_item, cc("title")).text = week_title
 
         # Phase 2 (Subtask 29): in outline-only mode, drop every page
         # except the overview + summary deliverables (the outline-tier

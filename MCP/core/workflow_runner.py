@@ -4892,6 +4892,56 @@ class WorkflowRunner:
             "duration_weeks",
         )
 
+        # WEEK_TO_GROUPS re-derivation (coverage-gap fix): the reused doc's
+        # ``chapter_objectives`` grouping is the week slicing of the RUN THAT
+        # MINTED IT (e.g. an old ceil-stride "Week N" slicing from a flag-off
+        # run). When the CURRENT env asks for TO-membership week groups
+        # (``ED4ALL_WEEK_TO_GROUPS``), re-derive the persisted groups from the
+        # doc's flat COs + terminal objectives via the SAME single-source
+        # helper the fresh-synthesis persist path uses
+        # (``pipeline_tools._week_co_groups``), so a stale grouping never
+        # silently wins over the operator's flags. Default (flag off) → the
+        # reused grouping is persisted verbatim (byte-identical). Best-effort:
+        # any failure logs a warning and keeps the verbatim grouping.
+        try:
+            from MCP.tools.pipeline_tools import (
+                _week_co_groups as _pt_week_co_groups,
+                resolve_week_to_groups as _pt_resolve_week_to_groups,
+            )
+
+            if chapter_flat and _pt_resolve_week_to_groups():
+                try:
+                    _weeks_int = int(duration_weeks or 0)
+                except (TypeError, ValueError):
+                    _weeks_int = 0
+                if _weeks_int >= 1:
+                    _live_groups = _pt_week_co_groups(
+                        chapter_flat, terminal, _weeks_int,
+                    )
+                    chapter_groups = [
+                        {
+                            "chapter": f"Week {_wn}",
+                            "objectives": [
+                                dict(_c) for _c in _live_groups.get(_wn, [])
+                            ],
+                        }
+                        for _wn in range(1, _weeks_int + 1)
+                    ]
+                    logger.info(
+                        "reuse_objectives: ED4ALL_WEEK_TO_GROUPS on — "
+                        "re-derived the per-week CO groups (%d CO(s) across "
+                        "%d week(s)) from the reused doc's terminal "
+                        "objectives; the doc's persisted chapter_objectives "
+                        "grouping is not trusted for week membership.",
+                        len(chapter_flat), _weeks_int,
+                    )
+        except Exception as _wg_exc:  # noqa: BLE001 — never fail the reuse path
+            logger.warning(
+                "reuse_objectives: week-group re-derivation failed (%s); "
+                "persisting the reused doc's grouping verbatim.",
+                _wg_exc,
+            )
+
         lo_entries: List[Dict[str, Any]] = []
         for to in terminal:
             entry = dict(to)

@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -13926,7 +13927,8 @@ def _clamp_week(week: int, duration_weeks: Optional[int]) -> int:
 
 
 def _resolve_content_page_count(
-    *, topic_count: int, co_count: int, page_per_co: bool
+    *, topic_count: int, co_count: int, page_per_co: bool,
+    uncapped: Optional[bool] = None,
 ) -> int:
     """Resolve a week's content-page count (page-per-CO review fix 3).
 
@@ -13936,13 +13938,56 @@ def _resolve_content_page_count(
     CO-rich / topic-thin week can never emit MORE pages than today. A
     topic-less week (``topic_count == 0``) is NOT capped to zero — it falls
     through to ``max(co_count, 1)`` (the week always emits ≥1 content page).
+
+    ``uncapped`` (``ED4ALL_CONTENT_PAGE_PER_CO_UNCAPPED``, explicit arg > env):
+    when truthy AND ``page_per_co`` is on, return ``max(co_count, 1)`` with NO
+    topic cap — the operator explicitly chose ONE HTML page per CO, so a
+    CO-rich / topic-thin week emits a page for EVERY CO (the slice binding
+    then degenerates to exactly the 1:1 page↔CO map). Default unset → the
+    guard stays intact (byte-identical). Inert when ``page_per_co`` is off.
     """
     if not page_per_co:
         return max(topic_count, 1)
     co_driven = max(co_count, 1)
+    if uncapped is None:
+        from lib.generation.content_page_budget import (  # noqa: PLC0415
+            content_page_per_co_uncapped,
+        )
+
+        uncapped = content_page_per_co_uncapped()
+    if uncapped:
+        return co_driven
     if topic_count:
         return min(co_driven, max(topic_count, 1))
     return co_driven
+
+
+def _page_co_slice_bounds(
+    *, page_idx: int, n_pages: int, co_count: int
+) -> Tuple[int, int]:
+    """Contiguous book-order CO slice ``[lo, hi)`` for content page ``page_idx``.
+
+    Coverage-gap fix: the page-per-CO NEVER-INCREASE guard
+    (:func:`_resolve_content_page_count`) can resolve FEWER content pages than
+    the week has COs (a CO-rich / topic-thin week). The historical 1:1
+    positional binding (page ``i`` ↔ CO ``i``) then silently stranded every CO
+    past index ``n_pages - 1`` — the measured 193/604 COVERAGE-GAP defect. This
+    helper partitions the week's CO list across the week's content pages
+    instead: the ``n_pages`` slices exactly tile ``range(co_count)`` (page
+    ``i`` gets COs ``floor(i*m/n) .. floor((i+1)*m/n) - 1``), so every CO is
+    bound to EXACTLY ONE page (zero-stranded by construction, still book
+    order, still deterministic).
+
+    When ``co_count == n_pages`` (the calibrated common case) every page gets
+    exactly one CO — byte-identical to the historical 1:1 binding. Returns
+    ``(0, 0)`` for an out-of-range page / empty CO list (no binding — the
+    caller's legacy topic path handles it).
+    """
+    if n_pages < 1 or co_count < 1 or not (0 <= page_idx < n_pages):
+        return (0, 0)
+    lo = (page_idx * co_count) // n_pages
+    hi = ((page_idx + 1) * co_count) // n_pages
+    return (lo, hi)
 
 
 def _content_page_heading_slug(
@@ -14642,6 +14687,44 @@ async def _run_content_generation_outline(**kwargs) -> str:
                 objectives_path, exc,
             )
             chapter_objective_groups = []
+    # WEEK_TO_GROUPS re-derivation (coverage-gap fix): the persisted
+    # ``chapter_objectives`` grouping carries the week slicing of the RUN THAT
+    # MINTED THE DOC — a ``--reuse-objectives`` pin (or a stale export re-run
+    # via the ``courseforge-outline`` stage subcommand) can carry an OLD
+    # ceil-stride "Week N" slicing even though the CURRENT env asks for
+    # TO-membership weeks. Never let the on-disk grouping silently win: when
+    # ED4ALL_WEEK_TO_GROUPS is on, rebuild the groups live from the SAME
+    # single-source helper the persist + emit paths use (``_week_co_groups``
+    # over the doc's flat COs + terminal objectives; deterministic, so a
+    # fresh flag-on doc re-derives to its own identical groups). Default off →
+    # the on-disk grouping is consumed verbatim (byte-identical legacy path).
+    if chapter_objective_groups and resolve_week_to_groups():
+        _flat_group_cos: List[Dict[str, Any]] = []
+        for _grp in chapter_objective_groups:
+            if not isinstance(_grp, dict):
+                continue
+            for _obj in _grp.get("objectives") or []:
+                if isinstance(_obj, dict):
+                    _flat_group_cos.append(_obj)
+        if _flat_group_cos and duration_weeks >= 1:
+            _live_week_groups = _week_co_groups(
+                _flat_group_cos, terminal_objectives, duration_weeks,
+            )
+            chapter_objective_groups = [
+                {
+                    "chapter": f"Week {_wn}",
+                    "objectives": list(_live_week_groups.get(_wn, [])),
+                }
+                for _wn in range(1, duration_weeks + 1)
+            ]
+            logger.info(
+                "outline phase: ED4ALL_WEEK_TO_GROUPS on — re-derived the "
+                "per-week CO groups live (%d CO(s) across %d week(s)) from "
+                "the doc's terminal objectives; the persisted "
+                "chapter_objectives grouping is not trusted for week "
+                "membership.",
+                len(_flat_group_cos), duration_weeks,
+            )
     week_chunk_id_index = _build_week_chunk_id_index(
         chapter_objective_groups,
         week_terminal_chunk_ids=week_terminal_chunk_ids,
@@ -15014,6 +15097,9 @@ async def _run_content_generation_outline(**kwargs) -> str:
         # one content page per child CO, with a NEVER-INCREASE guard so a
         # CO-rich / topic-thin week can never emit MORE pages than today.
         _week_co_count = len(week_co_chunk_index.get(week_num, []))
+        # Coverage-gap fix: the week's resolved content-page count, kept for
+        # the slice-based page↔CO binding below (``_page_co_slice_bounds``).
+        _week_n_content = 0
         page_descriptors: List[Tuple[str, int, Optional[Dict[str, Any]]]] = []
         for _ptype in _WEEK_PAGE_TYPES:
             if _ptype == "content":
@@ -15024,6 +15110,7 @@ async def _run_content_generation_outline(**kwargs) -> str:
                     co_count=_week_co_count,
                     page_per_co=_page_per_co,
                 )
+                _week_n_content = _n_content
                 for _ci in range(_n_content):
                     _topic = week_topics[_ci] if _ci < topic_count else None
                     page_descriptors.append(("content", _ci + 1, _topic))
@@ -15038,23 +15125,43 @@ async def _run_content_generation_outline(**kwargs) -> str:
             # four singleton page types use the week-wide union (i = -1 keeps
             # them out of the per-CO slice path).
             i = (content_idx - 1) if page_type == "content" else -1
-            # Page-per-CO: the content page at position ``i`` is bound 1:1 to the
-            # week's ``i``-th CO (the index builders are predicate-identical, so
-            # ``week_co_objectives_index[i]`` is exactly the CO whose chunk slice
-            # ``week_co_chunk_index[i]`` grounds this page). Stamp that CO id on
-            # every block of the page (instead of falling back to the week TO),
-            # which is what makes the positional CO→page map zero-stranded.
+            # Page-per-CO: the content page at position ``i`` is bound to a
+            # CONTIGUOUS book-order SLICE of the week's COs
+            # (``_page_co_slice_bounds`` — the index builders are
+            # predicate-identical, so ``week_co_objectives_index[lo:hi]`` is
+            # exactly the CO run whose chunk slices ground this page). When the
+            # week's page count equals its CO count the slice is a single CO —
+            # byte-identical to the historical 1:1 binding. When the
+            # NEVER-INCREASE page cap resolved FEWER pages than COs, the
+            # trailing COs are distributed across the pages instead of
+            # silently stranded (the 193/604 coverage-gap defect). Every
+            # block of the page stamps the slice's CO ids (instead of falling
+            # back to the week TO), which is what makes the CO→page map
+            # zero-stranded: every CO lands on exactly one page.
             _page_bound_co_id: Optional[str] = None
             _page_bound_co_statement: str = ""
+            _page_bound_co_ids: Tuple[str, ...] = ()
+            _page_co_lo = _page_co_hi = 0
             if _page_per_co and page_type == "content":
                 _wk_objs_bind = week_co_objectives_index.get(week_num, [])
-                if 0 <= i < len(_wk_objs_bind):
-                    _cid_bind = str(_wk_objs_bind[i].get("id") or "")
-                    if _cid_bind in _valid_co_ids:
-                        _page_bound_co_id = _cid_bind
-                        _page_bound_co_statement = str(
-                            _wk_objs_bind[i].get("statement") or ""
-                        ).strip()
+                _page_co_lo, _page_co_hi = _page_co_slice_bounds(
+                    page_idx=i,
+                    n_pages=_week_n_content,
+                    co_count=len(_wk_objs_bind),
+                )
+                _page_bound_co_ids = tuple(
+                    _cid_bind
+                    for _o in _wk_objs_bind[_page_co_lo:_page_co_hi]
+                    if (_cid_bind := str(_o.get("id") or "")) in _valid_co_ids
+                )
+                if _page_bound_co_ids:
+                    _page_bound_co_id = _page_bound_co_ids[0]
+                    for _o in _wk_objs_bind[_page_co_lo:_page_co_hi]:
+                        if str(_o.get("id") or "") == _page_bound_co_id:
+                            _page_bound_co_statement = str(
+                                _o.get("statement") or ""
+                            ).strip()
+                            break
             # Under page-per-CO a content page is bound 1:1 to a CO, so derive
             # its heading + slug from the BOUND CO's statement rather than the
             # positional ``topic.heading`` (which routinely belongs to an
@@ -15099,10 +15206,24 @@ async def _run_content_generation_outline(**kwargs) -> str:
             _co_slices = week_co_chunk_index.get(week_num, [])
             # Only ``content`` pages (i >= 0) map positionally to a CO; the
             # four singleton page types (overview/application/self_check/
-            # summary, i == -1) always use the week-wide union.
-            _page_scoped_cids = (
-                _co_slices[i] if 0 <= i < len(_co_slices) else []
-            )
+            # summary, i == -1) always use the week-wide union. Page-per-CO
+            # slice binding (coverage-gap fix): a page bound to a multi-CO
+            # slice grounds on the ordered dedup UNION of its slice's per-CO
+            # chunk lists (still a strict subset of the week union — no id
+            # invented). A single-CO slice reduces to exactly the legacy
+            # ``_co_slices[i]`` (the inner lists are already deduped).
+            if _page_per_co and page_type == "content" and _page_bound_co_ids:
+                _page_scoped_cids = []
+                _scoped_seen: Set[str] = set()
+                for _sl in _co_slices[_page_co_lo:_page_co_hi]:
+                    for _sc_cid in _sl:
+                        if _sc_cid not in _scoped_seen:
+                            _scoped_seen.add(_sc_cid)
+                            _page_scoped_cids.append(_sc_cid)
+            else:
+                _page_scoped_cids = (
+                    _co_slices[i] if 0 <= i < len(_co_slices) else []
+                )
             _page_objective_scoped = (
                 len(_page_scoped_cids) >= _OBJ_SCOPE_MIN_CHUNKS
             )
@@ -15139,9 +15260,12 @@ async def _run_content_generation_outline(**kwargs) -> str:
                 )
 
                 _week_objs = week_co_objectives_index.get(week_num, [])
+                # Slice binding: rank by the page's PRIMARY bound CO (the
+                # slice head) — identical to ``i`` on the 1:1 path.
+                _stmt_idx = _page_co_lo if _page_bound_co_ids else i
                 _co_stmt = ""
-                if 0 <= i < len(_week_objs):
-                    _co_stmt = str(_week_objs[i].get("statement") or "")
+                if 0 <= _stmt_idx < len(_week_objs):
+                    _co_stmt = str(_week_objs[_stmt_idx].get("statement") or "")
                 _capped_cids, _dropped_cited, _cap_stats = cap_page_chunks(
                     union_ids=page_chunk_cids,
                     cited_ids=page_chunk_cids,  # outline-tier: all cited
@@ -15266,15 +15390,17 @@ async def _run_content_generation_outline(**kwargs) -> str:
                 # back to the week-TO ``objective_ids`` when the planner gave no
                 # (valid) CO target.
                 #
-                # Page-per-CO: when this content page is bound 1:1 to a CO and
-                # the planner gave no (valid) per-block CO target, prefer the
-                # page's BOUND CO id over the week-TO fallback — so a CO-page's
-                # blocks always carry their CO id (zero stranded COs, by
-                # construction). The planner's explicit target still wins when
-                # present (a planner that names a different valid CO is honored).
+                # Page-per-CO: when this content page is bound to a CO slice
+                # and the planner gave no (valid) per-block CO target, prefer
+                # the page's BOUND CO id(s) over the week-TO fallback — so a
+                # CO-page's blocks always carry their slice's CO ids (zero
+                # stranded COs, by construction; a single-CO slice stamps
+                # exactly the historical one id). The planner's explicit
+                # target still wins when present (a planner that names a
+                # different valid CO is honored).
                 _block_co_fallback = objective_ids
-                if _page_bound_co_id and not spec_co_ids:
-                    _block_co_fallback = (_page_bound_co_id,)
+                if _page_bound_co_ids and not spec_co_ids:
+                    _block_co_fallback = _page_bound_co_ids
                 block_objective_ids = _resolve_block_objective_ids(
                     spec_co_ids, _block_co_fallback, _valid_co_ids
                 )
@@ -15725,15 +15851,62 @@ async def _run_content_generation_outline(**kwargs) -> str:
     _outline_dispatch_breaker = _resolve_outline_dispatch_breaker()
     _consecutive_dispatch_failures = 0
 
+    # Opt-in concurrent outline dispatch (COURSEFORGE_OUTLINE_CONCURRENCY).
+    # Default 1 = the EXACT sequential path below (no thread pool
+    # constructed; byte-identical to the legacy behavior). > 1 fans the
+    # per-block ``route_with_self_consistency`` dispatch (the expensive
+    # local-7B/cloud call; its ~3 self-consistency candidates stay
+    # SEQUENTIAL within a block) out across a bounded thread pool — only
+    # ACROSS blocks. The shared GPU singletons (NLI/embedder, reached via
+    # the inter-tier validator chain + best-of-N scoring) serialize on the
+    # module-level ``Courseforge/router/router.py::_NLI_SCORE_LOCK``;
+    # ``DecisionCapture`` appends serialize on the capture's in-process
+    # RLock. Results are RE-ORDERED to the original block order so the
+    # emitted outline is identical regardless of completion order. Read
+    # ONCE at phase start; garbage / < 1 → 1 (parse-with-fallback,
+    # mirroring COURSEFORGE_REWRITE_CONCURRENCY).
+    _outline_concurrency = 1
+    try:
+        _oc_raw = int(os.environ.get("COURSEFORGE_OUTLINE_CONCURRENCY", "1"))
+        if _oc_raw >= 1:
+            _outline_concurrency = _oc_raw
+    except (TypeError, ValueError):
+        _outline_concurrency = 1
+
+    # Shared mutable per-block worker state. The lock keeps the resume/fresh
+    # tallies + the consecutive-dispatch-failure breaker counter coherent
+    # under the concurrent fan-out (uncontended — byte-identical — on the
+    # sequential path). ``_outline_breaker_trip`` records the first trip
+    # (count + last exception class/message) so the CALLER halts the phase
+    # LOUDLY (the worker cannot return the phase envelope itself).
+    _outline_state_lock = threading.Lock()
+    _outline_breaker_trip: Dict[str, Any] = {}
+
     outline_blocks: List[Any] = []
-    for blk in all_blocks:
-        # Graceful stop (checkpoint on command): raise at the unit boundary
-        # once a stop sentinel is armed. Every prior block has already been
-        # appended to ``.blocks_outline_checkpoint.jsonl`` (fresh) or
-        # rehydrated from it (resume), so ``len(outline_blocks)`` == the
-        # number of checkpointed/served units. Sequential loop → a plain
-        # ``check_stop`` raise is correct (no gathered coroutine to lose).
-        check_stop("outline_tier", len(outline_blocks))
+
+    def _process_one_outline_block(blk):  # type: ignore[no-untyped-def]
+        """Author a single outline block (resume rehydrate OR fresh dispatch).
+
+        Pure w.r.t. output ordering — returns ``STOP_MARKER`` (stop armed
+        pre-dispatch; the P3.0 marker discipline shared with the rewrite
+        tier: under the thread-pool path every future is pre-submitted, so
+        a worker must RETURN the marker rather than raise — a raise would
+        surface through ``future.result()`` and skip already-resolved
+        siblings) or a ``(block_or_None, kind)`` tuple with ``kind`` in
+        ``{"resumed", "fresh", "dispatch_error"}``; the caller places the
+        block at the input index so output order is deterministic
+        regardless of completion order. FAIL-SOFT per block: a dispatch
+        exception yields an ``outline_dispatch_error``-marked block
+        (exactly the sequential contract), never aborting siblings. Fresh
+        blocks are appended to the resume sidecar HERE (flush per block;
+        ``_append_block_checkpoint`` opens+closes per call and appends
+        whole JSONL lines, and resume dedupes by block_id) so a mid-fanout
+        kill is resumable.
+        """
+        nonlocal _consecutive_dispatch_failures
+        nonlocal _n_outline_resumed, _n_outline_authored_fresh
+        if stop_requested():
+            return STOP_MARKER
         _blk_fp = (
             _outline_block_fp(blk) if _outline_checkpoint_on else ""
         )
@@ -15750,9 +15923,9 @@ async def _run_content_generation_outline(**kwargs) -> str:
             ) == _blk_fp:
                 _cached_blk = _block_from_checkpoint_entry(_cached)
                 if _cached_blk is not None:
-                    outline_blocks.append(_cached_blk)
-                    _n_outline_resumed += 1
-                    continue
+                    with _outline_state_lock:
+                        _n_outline_resumed += 1
+                    return (_cached_blk, "resumed")
         block_chunks = chunks_lookup.get(blk.block_id, [])
         # outline-overflow-fix-2026-07: pass only the objectives relevant to
         # this block (its TO(s) + rolled-up COs), falling back to the full
@@ -15806,9 +15979,9 @@ async def _run_content_generation_outline(**kwargs) -> str:
             # Dispatch succeeded (a returned block — even a semantically-
             # escalated one — means the endpoint is alive): reset the
             # consecutive-failure breaker counter.
-            _consecutive_dispatch_failures = 0
-            outline_blocks.append(outlined)
-            _n_outline_authored_fresh += 1
+            with _outline_state_lock:
+                _consecutive_dispatch_failures = 0
+                _n_outline_authored_fresh += 1
             # Checkpoint the freshly-authored block (NOT marker-bearing —
             # those are re-attempted on resume). Append + flush per block,
             # stamped with the INPUT fingerprint for resume validation.
@@ -15822,10 +15995,12 @@ async def _run_content_generation_outline(**kwargs) -> str:
                     _outline_checkpoint_path,
                     _outline_entry,
                 )
-            continue
+            return (outlined, "fresh")
 
         # --- give-up path: dispatch raised and was not recoverable ---
-        _consecutive_dispatch_failures += 1
+        with _outline_state_lock:
+            _consecutive_dispatch_failures += 1
+            _cdf = _consecutive_dispatch_failures
         _exc_cls = (
             type(_dispatch_exc).__name__ if _dispatch_exc else "Unknown"
         )
@@ -15836,7 +16011,7 @@ async def _run_content_generation_outline(**kwargs) -> str:
             "for block_id=%s after %d attempt(s) [%s]: %s (consecutive "
             "dispatch failures=%d)",
             blk.block_id, _dispatch_attempts, _exc_cls, _exc_msg,
-            _consecutive_dispatch_failures,
+            _cdf,
         )
         # Decision capture: dynamic rationale carries the exception class +
         # message + attempt count so a postmortem is replayable.
@@ -15864,7 +16039,7 @@ async def _run_content_generation_outline(**kwargs) -> str:
                         f"semantic regen-budget exhaustion) so postmortems "
                         f"separate endpoint/transport failures from budget "
                         f"exhaustion. Consecutive dispatch failures now "
-                        f"{_consecutive_dispatch_failures} (breaker="
+                        f"{_cdf} (breaker="
                         f"{_outline_dispatch_breaker})."
                     ),
                     ml_features={
@@ -15873,75 +16048,228 @@ async def _run_content_generation_outline(**kwargs) -> str:
                         "exception_class": _exc_cls,
                         "dispatch_attempts": _dispatch_attempts,
                         "transient": _was_transient,
-                        "consecutive_dispatch_failures": (
-                            _consecutive_dispatch_failures
-                        ),
+                        "consecutive_dispatch_failures": _cdf,
                     },
                 )
             except Exception:  # noqa: BLE001
                 pass
+        # Circuit breaker: a persistent outage would stamp the entire
+        # remaining course. Record the FIRST trip for the caller (the worker
+        # cannot return the phase envelope itself); the caller halts LOUDLY.
+        # Already-authored blocks stay checkpointed (the sidecar is only
+        # deleted on a successful final write below), so a plain --resume
+        # re-attempts the marker blocks + the never-reached blocks.
+        if (
+            _outline_dispatch_breaker > 0
+            and _cdf >= _outline_dispatch_breaker
+        ):
+            with _outline_state_lock:
+                if not _outline_breaker_trip:
+                    _outline_breaker_trip.update(
+                        consecutive=_cdf,
+                        exc_cls=_exc_cls,
+                        exc_msg=_exc_msg,
+                    )
+
         # Persist a stub-with-marker so downstream sees the failure. Use the
         # canonical ``outline_dispatch_error`` marker (a ``_ESCALATION_MARKERS``
         # member) — NOT ``outline_budget_exhausted``. NOT checkpointed
         # (marker blocks re-attempt on resume).
         try:
             import dataclasses as _dc
-            outline_blocks.append(_dc.replace(
+            return (_dc.replace(
                 blk, escalation_marker="outline_dispatch_error",
-            ))
+            ), "dispatch_error")
         except (TypeError, ValueError):
-            pass
+            return (None, "dispatch_error")
 
-        # Circuit breaker: a persistent outage would stamp the entire
-        # remaining course. Trip LOUDLY at the threshold instead. Already-
-        # authored blocks stay checkpointed (the sidecar is only deleted on a
-        # successful final write below), so a plain --resume re-attempts the
-        # marker blocks + the never-reached blocks.
-        if (
-            _outline_dispatch_breaker > 0
-            and _consecutive_dispatch_failures >= _outline_dispatch_breaker
-        ):
-            _breaker_msg = (
-                f"outline dispatch circuit breaker tripped after "
-                f"{_consecutive_dispatch_failures} consecutive failures — "
-                f"endpoint likely down (last error {_exc_cls}: "
-                f"{_exc_msg[:200]})"
-            )
-            logger.error("outline phase: %s", _breaker_msg)
-            if capture is not None:
+    def _outline_breaker_response() -> str:
+        """Emit the loud circuit-breaker phase-failure envelope.
+
+        Caller-side twin of the worker's trip record: reads the FIRST trip
+        captured in ``_outline_breaker_trip`` (count + last exception) so
+        the sequential path halts at exactly the legacy threshold block and
+        the concurrent path halts after the drain (all futures were
+        pre-submitted) with the identical envelope.
+        """
+        _cdf = int(_outline_breaker_trip.get("consecutive", 0))
+        _exc_cls = str(_outline_breaker_trip.get("exc_cls", ""))
+        _exc_msg = str(_outline_breaker_trip.get("exc_msg", ""))
+        _breaker_msg = (
+            f"outline dispatch circuit breaker tripped after "
+            f"{_cdf} consecutive failures — "
+            f"endpoint likely down (last error {_exc_cls}: "
+            f"{_exc_msg[:200]})"
+        )
+        logger.error("outline phase: %s", _breaker_msg)
+        if capture is not None:
+            try:
+                capture.log_decision(
+                    decision_type="content_selection",
+                    decision=(
+                        "Outline dispatch circuit breaker tripped; "
+                        "halting phase."
+                    ),
+                    rationale=(
+                        f"{_cdf} consecutive "
+                        f"outline dispatch failures reached the "
+                        f"COURSEFORGE_OUTLINE_DISPATCH_BREAKER threshold "
+                        f"({_outline_dispatch_breaker}); halting rather "
+                        f"than stamping the remaining "
+                        f"{len(all_blocks) - len(outline_blocks)} block(s) "
+                        f"so the already-authored/checkpointed blocks stay "
+                        f"resumable on the next run. Last error "
+                        f"{_exc_cls}."
+                    ),
+                    ml_features={
+                        "gate_id": "_run_content_generation_outline",
+                        "consecutive_dispatch_failures": _cdf,
+                        "breaker_threshold": _outline_dispatch_breaker,
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        return json.dumps({
+            "success": False,
+            "error_code": "OUTLINE_DISPATCH_CIRCUIT_BREAKER",
+            "error": _breaker_msg,
+        })
+
+    if _outline_concurrency <= 1:
+        # Sequential path — EXACT legacy behavior. No pool constructed.
+        for blk in all_blocks:
+            # Graceful stop (checkpoint on command): raise at the unit
+            # boundary once a stop sentinel is armed. Every prior block has
+            # already been appended to ``.blocks_outline_checkpoint.jsonl``
+            # (fresh) or rehydrated from it (resume), so
+            # ``len(outline_blocks)`` == the number of checkpointed/served
+            # units.
+            check_stop("outline_tier", len(outline_blocks))
+            _outcome = _process_one_outline_block(blk)
+            # Belt-and-suspenders for the tiny arm-race window: a stop armed
+            # between the loop-top check and the worker's entry returns
+            # STOP_MARKER — treat it as not-attempted (never a block), do
+            # NOT checkpoint it, and raise before any final artifact write.
+            if _outcome is STOP_MARKER:
+                raise GracefulStopRequested(
+                    "outline_tier", len(outline_blocks)
+                )
+            _result, _kind = _outcome
+            if _result is not None:
+                outline_blocks.append(_result)
+            # Circuit breaker: trip LOUDLY at the legacy threshold block
+            # instead of stamping the entire remaining course.
+            if _kind == "dispatch_error" and _outline_breaker_trip:
+                return _outline_breaker_response()
+    else:
+        # Bounded thread-pool fanout (COURSEFORGE_OUTLINE_CONCURRENCY > 1).
+        # Collect into an index-keyed dict so the final list is reassembled
+        # in ORIGINAL block order (deterministic output regardless of which
+        # block finishes first). Per-block failure stays isolated to that
+        # block (the worker returns the marked block).
+        from concurrent.futures import ThreadPoolExecutor
+
+        _pool_size = min(_outline_concurrency, len(all_blocks)) or 1
+        _results_by_idx: Dict[int, Any] = {}
+        if capture is not None:
+            try:
+                capture.log_decision(
+                    decision_type="content_selection",
+                    decision=(
+                        f"Outline-tier concurrency enabled: dispatching "
+                        f"{len(all_blocks)} block(s) across a "
+                        f"{_pool_size}-thread pool."
+                    ),
+                    rationale=(
+                        f"COURSEFORGE_OUTLINE_CONCURRENCY="
+                        f"{_outline_concurrency} (pool sized to "
+                        f"min(knob, n_blocks)={_pool_size}) fans the "
+                        f"I/O-bound per-block outline LLM dispatch "
+                        f"(route_with_self_consistency; self-consistency "
+                        f"candidates stay SEQUENTIAL within a block) out "
+                        f"across threads; shared GPU NLI/embedder + "
+                        f"DecisionCapture writes serialize on internal "
+                        f"locks. Output is re-ordered to the original "
+                        f"block sequence so the emitted outline is "
+                        f"byte-identical to the sequential path."
+                    ),
+                    ml_features={
+                        "gate_id": "_run_content_generation_outline",
+                        "outline_concurrency": _outline_concurrency,
+                        "pool_size": _pool_size,
+                        "block_count": len(all_blocks),
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        # Graceful stop (checkpoint on command): a pre-armed sentinel
+        # refuses the whole fan-out before any future is submitted (zero
+        # dispatches).
+        check_stop("outline_tier", len(outline_blocks))
+        # P3.0 drain discipline (mirrors the rewrite pool): futures are
+        # pre-submitted, so an in-flight worker that observes a mid-fanout
+        # stop RETURNS ``STOP_MARKER`` (never raises). The drain loop keeps
+        # collecting every NON-marker resolved future (each fresh block was
+        # already checkpointed INSIDE the worker), records that a stop was
+        # seen, and only AFTER draining raises ``GracefulStopRequested`` —
+        # so a mid-fanout kill loses nothing already computed.
+        _outline_stop_seen = False
+        with ThreadPoolExecutor(max_workers=_pool_size) as _pool:
+            _futs = {
+                _pool.submit(_process_one_outline_block, _blk): _idx
+                for _idx, _blk in enumerate(all_blocks)
+            }
+            for _fut in _futs:
+                _idx = _futs[_fut]
                 try:
-                    capture.log_decision(
-                        decision_type="content_selection",
-                        decision=(
-                            "Outline dispatch circuit breaker tripped; "
-                            "halting phase."
-                        ),
-                        rationale=(
-                            f"{_consecutive_dispatch_failures} consecutive "
-                            f"outline dispatch failures reached the "
-                            f"COURSEFORGE_OUTLINE_DISPATCH_BREAKER threshold "
-                            f"({_outline_dispatch_breaker}); halting rather "
-                            f"than stamping the remaining "
-                            f"{len(all_blocks) - len(outline_blocks)} block(s) "
-                            f"so the already-authored/checkpointed blocks stay "
-                            f"resumable on the next run. Last error "
-                            f"{_exc_cls}."
-                        ),
-                        ml_features={
-                            "gate_id": "_run_content_generation_outline",
-                            "consecutive_dispatch_failures": (
-                                _consecutive_dispatch_failures
-                            ),
-                            "breaker_threshold": _outline_dispatch_breaker,
-                        },
+                    _fut_result = _fut.result()
+                    if _fut_result is STOP_MARKER:
+                        # Refused pre-dispatch — not-attempted; resume
+                        # re-runs it (it is not a Block, so it never enters
+                        # the reorder map).
+                        _outline_stop_seen = True
+                        continue
+                    _results_by_idx[_idx] = _fut_result
+                except Exception as exc:  # noqa: BLE001
+                    # Defensive: the worker already fail-softs, but a truly
+                    # unexpected raise must not drop the block silently —
+                    # stamp the canonical dispatch-error marker at its
+                    # original index.
+                    logger.warning(
+                        "outline phase: concurrent worker raised for "
+                        "block idx=%s: %s",
+                        _idx, exc,
                     )
-                except Exception:  # noqa: BLE001
-                    pass
-            return json.dumps({
-                "success": False,
-                "error_code": "OUTLINE_DISPATCH_CIRCUIT_BREAKER",
-                "error": _breaker_msg,
-            })
+                    try:
+                        import dataclasses as _dc
+                        _results_by_idx[_idx] = (_dc.replace(
+                            all_blocks[_idx],
+                            escalation_marker="outline_dispatch_error",
+                        ), "dispatch_error")
+                    except (TypeError, ValueError):
+                        _results_by_idx[_idx] = (None, "dispatch_error")
+        # Raise AFTER the drain loop: every resolved worker already appended
+        # its own per-block checkpoint (inside the worker), so nothing
+        # already computed is lost. ``len(_results_by_idx)`` == the resolved
+        # units.
+        if _outline_stop_seen:
+            raise GracefulStopRequested(
+                "outline_tier", len(_results_by_idx)
+            )
+        for _idx in range(len(all_blocks)):
+            _outcome = _results_by_idx.get(_idx)
+            if _outcome is None:
+                continue
+            _result, _kind = _outcome
+            if _result is not None:
+                outline_blocks.append(_result)
+        # Circuit breaker under the fan-out: completion-order consecutive
+        # failures (all futures were pre-submitted), evaluated after the
+        # drain + deterministic re-order — the halt envelope is identical
+        # to the sequential path and every authored block stayed
+        # checkpointed.
+        if _outline_breaker_trip:
+            return _outline_breaker_response()
 
     # Resume decision capture (dynamic rationale: units resumed / authored
     # fresh / sidecar path). Mirrors the phase_start capture in this function.
@@ -17340,6 +17668,22 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
         _rewrite_minted_map = {}
         _rewrite_minted_by_canonical = {}
         _rewrite_domain_seeds = []
+
+    # COURSEFORGE_CURIE_DETERMINISTIC: register the per-course minted-CURIE
+    # map on the router so every RewriteProvider it constructs bounds its
+    # deterministic CURIE stamp to the vocabulary-resolvable universe (the
+    # keys of this map). No-op when the flag is off; a no-op stamp when on
+    # without a vocabulary (empty map ⇒ nothing stampable). Set BEFORE any
+    # rewrite dispatch so the first ``_get_rewrite_provider`` sees it.
+    try:
+        router.set_rewrite_minted_map(_rewrite_minted_map or None)
+    except Exception as _smm_exc:  # noqa: BLE001 — best-effort; never break dispatch
+        logger.warning(
+            "rewrite phase: set_rewrite_minted_map failed (%s); "
+            "COURSEFORGE_CURIE_DETERMINISTIC stamp will find no minted "
+            "tokens (falls back to the retry-ladder path when the flag is off).",
+            _smm_exc,
+        )
 
     def _mint_curie_for_str_block(block_chunks: Any) -> List[str]:
         """Mint real domain CURIEs for a rewrite STR block from its chunks.
