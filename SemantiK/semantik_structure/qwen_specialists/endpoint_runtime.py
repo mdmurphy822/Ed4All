@@ -988,6 +988,9 @@ class OpenAICompatibleRuntime:
             "Accept": "application/json",
         }
         url = f"{self._base_url}/chat/completions"
+        import time as _time
+
+        _t0 = _time.monotonic()
         try:
             resp = requests.post(
                 url, json=body, headers=headers, timeout=self._timeout
@@ -1024,6 +1027,21 @@ class OpenAICompatibleRuntime:
             raise EndpointRuntimeError(
                 "OpenAICompatibleRuntime: endpoint returned non-JSON body"
             ) from exc
+
+        # P3 usage tap — best-effort per-call metering (swallowed on any
+        # failure). Does NOT import Trainforge — rides the SemantiK-local meter
+        # (respects the no-cross-venv-import invariant at the module top).
+        try:
+            from .. import llm_usage_meter
+
+            llm_usage_meter.record_llm_usage(
+                site="endpoint_specialist",
+                model=self._model,
+                data=data,
+                duration_ms=(_time.monotonic() - _t0) * 1000.0,
+            )
+        except Exception:  # noqa: BLE001 — metering must never crash a call
+            pass
 
         try:
             text = data["choices"][0]["message"]["content"]

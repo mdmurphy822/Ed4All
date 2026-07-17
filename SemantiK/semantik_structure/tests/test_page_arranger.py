@@ -1756,3 +1756,89 @@ def test_veto_off_keeps_the_same_figure_through_arrange_regions(monkeypatch):
     assert len([r for r in regions if r.kind == "figure"]) == 1
     assert audit["figures"] == 1
     assert audit["arranger_veto"] == 0
+
+
+# ---------------------------------------------------------------------------
+# (p) DETERMINISTIC id-repair before re-roll (SEMANTIK_ARRANGER_ID_REPAIR) — P2.
+# Repairs the three MECHANICAL id failure classes on the current response before
+# spending the next ladder rung, so a fixable page finishes with ZERO extra POSTs
+# instead of re-POSTing the whole page. Default OFF -> byte-identical ladder.
+# ---------------------------------------------------------------------------
+_UNITS_2 = [{"id": "p1_b00", "text": "Hello"}, {"id": "p1_b01", "text": "World"}]
+
+
+def _isolate_side_effects(monkeypatch, tmp_path):
+    """Keep the always-on P3 usage tap + the best-effort capture out of the repo."""
+    monkeypatch.setenv("SEMANTIK_DATA_DIR", str(tmp_path / "sdata"))
+    monkeypatch.setenv("ED4ALL_TRAINING_CAPTURES_DIR", str(tmp_path / "caps"))
+    monkeypatch.delenv("ED4ALL_RUN_ID", raising=False)
+
+
+def test_id_repair_off_is_byte_identical_ladder(monkeypatch, tmp_path):
+    """(p.a) Flag OFF -> a missing-id page still spends all three rungs (unchanged)."""
+    _isolate_side_effects(monkeypatch, tmp_path)
+    monkeypatch.delenv("SEMANTIK_ARRANGER_ID_REPAIR", raising=False)
+    bad = _arr([{"ids": ["p1_b00"], "type": "paragraph"}])  # missing p1_b01
+    good = _arr([{"ids": ["p1_b00", "p1_b01"], "type": "paragraph"}])
+    fake = _FakeRequests([bad, bad, good])
+    res = pa.arrange_page(_Seat(), "IMG", list(_UNITS_2), 1, requests_module=fake)
+    assert res["status"] == "ok"
+    assert res["attempts"] == 3 and len(fake.posts) == 3  # ladder unchanged
+
+
+def test_id_repair_missing_id_fixed_zero_extra_posts(monkeypatch, tmp_path):
+    """(p.c) Flag ON -> a missing id is inserted at its source-order neighbor,
+    the page validates, and the ladder STOPS at rung 1 (no re-roll POST)."""
+    _isolate_side_effects(monkeypatch, tmp_path)
+    monkeypatch.setenv("SEMANTIK_ARRANGER_ID_REPAIR", "1")
+    bad = _arr([{"ids": ["p1_b00"], "type": "paragraph"}])  # missing p1_b01
+    fake = _FakeRequests([bad])  # only ONE response queued: no re-roll may fire
+    res = pa.arrange_page(_Seat(), "IMG", list(_UNITS_2), 1, requests_module=fake)
+    assert res["status"] == "ok" and res["attempts"] == 1
+    assert len(fake.posts) == 1  # zero extra POSTs
+    ids = [uid for blk in res["arrangement"]["blocks"] for uid in blk["ids"]]
+    assert sorted(ids) == ["p1_b00", "p1_b01"]  # missing id recovered
+    # inserted adjacent to its source-order neighbor (right after p1_b00)
+    assert ids.index("p1_b01") == ids.index("p1_b00") + 1
+    assert any(r.get("op") == "missing_insert" for r in res["repairs"])
+
+
+def test_id_repair_dup_only_zero_extra_posts(monkeypatch, tmp_path):
+    """(p.b) Flag ON -> a dup-only page needs no re-roll (single POST)."""
+    _isolate_side_effects(monkeypatch, tmp_path)
+    monkeypatch.setenv("SEMANTIK_ARRANGER_ID_REPAIR", "1")
+    dup = _arr([{"ids": ["p1_b00", "p1_b00", "p1_b01"], "type": "paragraph"}])
+    fake = _FakeRequests([dup])
+    res = pa.arrange_page(_Seat(), "IMG", list(_UNITS_2), 1, requests_module=fake)
+    assert res["status"] == "ok" and res["attempts"] == 1
+    assert len(fake.posts) == 1
+    ids = [uid for blk in res["arrangement"]["blocks"] for uid in blk["ids"]]
+    assert sorted(ids) == ["p1_b00", "p1_b01"]
+
+
+def test_id_repair_hallucinated_id_dropped(monkeypatch, tmp_path):
+    """(p.e) Flag ON -> an unknown/hallucinated id is dropped, page validates."""
+    _isolate_side_effects(monkeypatch, tmp_path)
+    monkeypatch.setenv("SEMANTIK_ARRANGER_ID_REPAIR", "1")
+    hall = _arr([{"ids": ["p1_b00", "p1_b01", "zz"], "type": "paragraph"}])
+    fake = _FakeRequests([hall])
+    res = pa.arrange_page(_Seat(), "IMG", list(_UNITS_2), 1, requests_module=fake)
+    assert res["status"] == "ok" and len(fake.posts) == 1
+    ids = [uid for blk in res["arrangement"]["blocks"] for uid in blk["ids"]]
+    assert "zz" not in ids and sorted(ids) == ["p1_b00", "p1_b01"]
+    assert any(r.get("op") == "unknown_drop" for r in res["repairs"])
+
+
+def test_id_repair_genuine_structural_failure_ladder_unchanged(monkeypatch, tmp_path):
+    """(p.d) Flag ON but a NON-mechanical problem (invalid type) is present ->
+    repair is NOT attempted and the ladder proceeds exactly as flag-off (3 POSTs)."""
+    _isolate_side_effects(monkeypatch, tmp_path)
+    monkeypatch.setenv("SEMANTIK_ARRANGER_ID_REPAIR", "1")
+    # invalid, non-coercible type AND a missing id -> problems are not all mechanical
+    bad = _arr([{"ids": ["p1_b00"], "type": "banana"}])
+    good = _arr([{"ids": ["p1_b00", "p1_b01"], "type": "paragraph"}])
+    fake = _FakeRequests([bad, bad, good])
+    res = pa.arrange_page(_Seat(), "IMG", list(_UNITS_2), 1, requests_module=fake)
+    assert res["status"] == "ok"
+    assert res["attempts"] == 3 and len(fake.posts) == 3  # ladder unchanged
+    assert not any(r.get("op") in ("missing_insert", "unknown_drop") for r in res["repairs"])

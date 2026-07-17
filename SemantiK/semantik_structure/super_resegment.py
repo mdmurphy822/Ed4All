@@ -312,8 +312,25 @@ def _super_completion(
         headers["Authorization"] = f"Bearer {seat.api_key}"
     url = seat.base_url.rstrip("/") + "/chat/completions"
     req = urllib.request.Request(url, data=body, headers=headers)
+    import time as _time
+
+    _t0 = _time.monotonic()
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         payload = json.load(resp)
+    _duration_ms = (_time.monotonic() - _t0) * 1000.0
+    # P3 usage tap — best-effort per-call metering (no-op / swallowed on any
+    # failure; never perturbs the call). Mirrors the Trainforge OP2 tap.
+    try:
+        from . import llm_usage_meter
+
+        llm_usage_meter.record_llm_usage(
+            site="super_resegment",
+            model=seat.model,
+            data=payload,
+            duration_ms=_duration_ms,
+        )
+    except Exception:  # noqa: BLE001 — metering must never crash a call
+        pass
     choice = payload["choices"][0]
     message = choice.get("message") or {}
     return {

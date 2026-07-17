@@ -46,6 +46,7 @@ __all__ = [
     "validate_arrangement",
     "normalize_block_types",
     "repair_duplicate_ids",
+    "repair_mechanical_ids",
     "build_violation_msg",
     "extract_json",
     "RELATIONS_SCHEMA",
@@ -310,6 +311,106 @@ def repair_duplicate_ids(arr: dict) -> list[dict]:
         b for b in blocks if not (isinstance(b, dict) and b.get("ids") == [])
     ]
     return repairs
+
+
+def repair_mechanical_ids(arr: dict, units: list[dict]) -> list[dict]:
+    """Deterministic repair of the three MECHANICAL id-assignment failure classes
+    on a returned arrangement (CONTRACT V2 item — ``SEMANTIK_ARRANGER_ID_REPAIR``).
+
+    The arrange model's block set can fail the coverage invariant in exactly
+    three id-bookkeeping ways; each is repairable WITHOUT re-asking the model and
+    WITHOUT ever altering a correctly-assigned id (repairs are additive/subtractive
+    bookkeeping only, never a structural re-typing of the model's real choices):
+
+    * **(a) duplicated ids** → :func:`repair_duplicate_ids` (keep the first
+      reading-order occurrence, drop the rest).
+    * **(c) unknown / hallucinated ids** → DROPPED (they reference no unit, so they
+      are pure noise — never content).
+    * **(b) missing ids** → APPENDED, each as its OWN ``paragraph`` block (the
+      honest content-preserving default the whole-page failure fallback uses —
+      NOT ``furniture``, which is dropped at render), inserted ADJACENT to its
+      source-order neighbor: right AFTER the block holding its nearest assigned
+      predecessor, else right BEFORE its nearest assigned successor, else at the
+      tail. Missing ids are processed in source order so a run of consecutive
+      missing ids chains adjacently.
+
+    Mutates ``arr['blocks']`` in place. Returns the repair log — a flat list of
+    ``{op, id, ...}`` records (``op`` ∈ ``dup_drop`` / ``unknown_drop`` /
+    ``missing_insert``) — so the caller can re-validate and decision-capture the
+    repaired id lists. Text is NEVER touched (ids only).
+    """
+    log: list[dict] = []
+    blocks = (arr or {}).get("blocks")
+    if not isinstance(blocks, list):
+        return log
+    unit_ids = {u["id"] for u in units}
+    unit_order = {u["id"]: i for i, u in enumerate(units)}
+
+    # (a) duplicated ids — reuse the keep-first repair, tag its records.
+    for rec in repair_duplicate_ids(arr):
+        log.append({"op": "dup_drop", **rec})
+    blocks = arr["blocks"]  # repair_duplicate_ids may have rebuilt the list
+
+    # (c) unknown / hallucinated ids — drop ids referencing no unit.
+    for bi, blk in enumerate(blocks):
+        if not isinstance(blk, dict):
+            continue
+        ids = blk.get("ids")
+        if not isinstance(ids, list):
+            continue
+        kept: list = []
+        for uid in ids:
+            if uid in unit_ids:
+                kept.append(uid)
+            else:
+                log.append({"op": "unknown_drop", "id": uid, "block_idx": bi})
+        blk["ids"] = kept
+    arr["blocks"] = [
+        b for b in blocks if not (isinstance(b, dict) and b.get("ids") == [])
+    ]
+    blocks = arr["blocks"]
+
+    # (b) missing ids — insert adjacent to the nearest assigned source-order
+    # neighbor, one at a time (in source order) so consecutive misses chain.
+    def _assigned_ids() -> set:
+        return {
+            uid
+            for blk in blocks
+            if isinstance(blk, dict)
+            for uid in (blk.get("ids") or [])
+        }
+
+    def _block_index_of(uid) -> int | None:
+        for bi, blk in enumerate(blocks):
+            if isinstance(blk, dict) and uid in (blk.get("ids") or []):
+                return bi
+        return None
+
+    seen = _assigned_ids()
+    missing = sorted(unit_ids - seen, key=lambda u: unit_order.get(u, len(units)))
+    for uid in missing:
+        assigned = _assigned_ids()
+        p = unit_order.get(uid, len(units))
+        pred = max(
+            (u for u in assigned if unit_order.get(u, -1) < p),
+            key=lambda u: unit_order.get(u, -1),
+            default=None,
+        )
+        new_block = {"type": "paragraph", "ids": [uid]}
+        if pred is not None:
+            at = (_block_index_of(pred) or 0) + 1
+        else:
+            succ = min(
+                (u for u in assigned if unit_order.get(u, len(units)) > p),
+                key=lambda u: unit_order.get(u, len(units)),
+                default=None,
+            )
+            at = _block_index_of(succ) if succ is not None else len(blocks)
+            if at is None:
+                at = len(blocks)
+        blocks.insert(at, new_block)
+        log.append({"op": "missing_insert", "id": uid, "at_block_idx": at, "type": "paragraph"})
+    return log
 
 
 def build_violation_msg(problems: list[str], legal_ids: list[str] | None) -> str:

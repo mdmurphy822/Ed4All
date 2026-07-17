@@ -92,6 +92,7 @@ _TITLE_RESCUE_ENV = "SEMANTIK_ARRANGER_TITLE_RESCUE"
 # arranger itself is default-off, so no global default-behavior change). A figure
 # Region lying substantially INSIDE a region the arranger typed `table` is not a
 # figure — it is a crop of that table (images-of-text, WCAG 1.4.5).
+_ID_REPAIR_ENV = "SEMANTIK_ARRANGER_ID_REPAIR"
 _FIGURE_VETO_ENV = "SEMANTIK_ARRANGER_FIGURE_VETO"
 _FIGURE_VETO_MIN_COVERED_ENV = "SEMANTIK_ARRANGER_FIGURE_VETO_MIN_COVERED"
 # Tier-1 own arranger seat (mirrors the reasoning-QC seat rows).
@@ -345,6 +346,19 @@ def resolve_arranger_title_rescue() -> bool:
     behaviour. Off → the arrangement is byte-identical (no peel, no carve).
     """
     return (os.environ.get(_TITLE_RESCUE_ENV) or "").strip().lower() not in _FALSEY
+
+
+def resolve_arranger_id_repair() -> bool:
+    """Deterministic MECHANICAL id-repair-before-re-roll gate (default OFF). CALL-time.
+
+    Truthy-set parse-with-fallback (``1``/``true``/``yes``/``on``,
+    case-insensitive); unset / blank / falsey / garbage → off → **byte-identical**
+    3-rung ladder. When on, before spending the NEXT rung the ladder attempts a
+    deterministic repair of the current response's mechanical id failures (dup /
+    missing / unknown ids) on a COPY, adopting it only if it re-validates clean
+    (zero extra POSTs) — never altering a correctly-assigned id.
+    """
+    return (os.environ.get(_ID_REPAIR_ENV) or "").strip().lower() in _TRUTHY
 
 
 def resolve_arranger_figure_veto() -> bool:
@@ -1745,6 +1759,18 @@ def _arrange_call(
     resp.raise_for_status()
     data = resp.json()
     usage = data.get("usage", {}) or {}
+    # P3 usage tap — best-effort per-call metering (swallowed on any failure).
+    try:
+        from . import llm_usage_meter
+
+        llm_usage_meter.record_llm_usage(
+            site="page_arranger",
+            model=seat.model,
+            data=data,
+            duration_ms=wall * 1000.0,
+        )
+    except Exception:  # noqa: BLE001 — metering must never crash a call
+        pass
     content = data["choices"][0]["message"]["content"]
     try:
         return contract.extract_json(content), None, usage, wall
@@ -1852,22 +1878,57 @@ def arrange_page(
         coercions.extend(contract.normalize_block_types(parsed, unit_by_id))
         return parsed, contract.validate_arrangement(parsed, units)
 
+    id_repair_on = resolve_arranger_id_repair()
+
+    def _try_id_repair(arr, problems, rung):
+        """SEMANTIK_ARRANGER_ID_REPAIR — deterministically repair the current
+        response's MECHANICAL id failures on a COPY before spending the next rung.
+
+        Adopts (and FINISHES at ``rung``, zero extra POSTs) ONLY when the problems
+        are purely mechanical (dup / missing / unknown ids) AND the repaired copy
+        re-validates clean — otherwise returns ``None`` and the ladder proceeds
+        byte-identically (a genuine structural failure is never masked). Never
+        alters a correctly-assigned id. Returns a finished result dict or ``None``.
+        """
+        if not (id_repair_on and _problems_all_mechanical(problems)):
+            return None
+        import copy as _copy
+
+        cand = _copy.deepcopy(arr)
+        mech = contract.repair_mechanical_ids(cand, units)
+        if not mech or contract.validate_arrangement(cand, units):
+            return None  # nothing repaired, or still broken → ladder proceeds
+        repairs.extend(mech)
+        _emit_id_repair_capture(
+            page_label, rung, mech, model=getattr(seat, "model", "?")
+        )
+        return _finish_ok(cand, rung)
+
     # rung 1
     arr, problems = _attempt(rung1_hints_text, "", 0.0)
     if not problems:
         return _finish_ok(arr, 1)
+    _fixed = _try_id_repair(arr, problems, 1)
+    if _fixed is not None:
+        return _fixed
     # rung 2 — violations named + furniture directive
     arr, problems = _attempt(
         det_hints_text, contract.build_violation_msg(problems, legal_ids=None), 0.0
     )
     if not problems:
         return _finish_ok(arr, 2)
+    _fixed = _try_id_repair(arr, problems, 2)
+    if _fixed is not None:
+        return _fixed
     # rung 3 — full legal id list + slight diversification
     arr, problems = _attempt(
         det_hints_text, contract.build_violation_msg(problems, legal_ids=legal_ids), 0.3
     )
     if not problems:
         return _finish_ok(arr, 3)
+    _fixed = _try_id_repair(arr, problems, 3)
+    if _fixed is not None:
+        return _fixed
     return {
         "status": "arrangement_failed",
         "arrangement": arr,
@@ -1935,10 +1996,14 @@ def _unit_fingerprint(units: list[dict], hints_text: str, *, model: str, include
     # stale (pre-peel) sidecar. (The outline CARVE runs post-fan-out, in memory,
     # like the leading-title split, so it re-applies deterministically on a hit.)
     tr = int(resolve_arranger_title_rescue())
+    # The id-repair flag can adopt a deterministically-repaired arrangement that
+    # the flag-off ladder would have failed, so it BAKES into the cached ok
+    # verdict — salt the key or a flip would serve a stale sidecar.
+    ir = int(resolve_arranger_id_repair())
     raw = (
         f"{listing}␟{hints_text}␟{contract.CONTRACT_VERSION}␟{sys_sha}"
         f"␟{model}␟{int(bool(include_image))}␟{_ARRANGE_MAX_TOKENS}"
-        f"␟ladder:0.0/0.0/0.3␟hs:{hs}/{hs_max}␟hp:{hp}␟tr:{tr}"
+        f"␟ladder:0.0/0.0/0.3␟hs:{hs}/{hs_max}␟hp:{hp}␟tr:{tr}␟ir:{ir}"
     )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
@@ -3157,6 +3222,61 @@ def finalize_continues_over_dir(results_dir: Path) -> dict:
         json.dumps(contract.RELATIONS_SCHEMA, indent=2)
     )
     return {"records": len(recs), "continues_edges": n_edges, "continues_resolved_from": n_resolved}
+
+
+def _problem_is_mechanical(p: str) -> bool:
+    """True iff a validation problem is one of the three MECHANICAL id classes
+    (missing / duplicated / unknown id) that ``repair_mechanical_ids`` can fix
+    without re-asking the model. Structural problems (invalid JSON, bad type, no
+    ids, non-object block) are NOT mechanical → never trigger a repair."""
+    return (
+        p.startswith("ids missing from output:")
+        or p.startswith("ids appearing more than once:")
+        or "references unknown id" in p
+    )
+
+
+def _problems_all_mechanical(problems: list) -> bool:
+    """True iff EVERY problem is mechanical (so a deterministic repair can plausibly
+    clear them all). Empty → False (nothing to repair)."""
+    return bool(problems) and all(_problem_is_mechanical(p) for p in problems)
+
+
+def _emit_id_repair_capture(page_label, rung: int, repair_log: list, *, model: str) -> None:
+    """Best-effort per-REPAIR DecisionCapture (``SEMANTIK_ARRANGER_ID_REPAIR``).
+
+    One event per adopted mechanical id-repair, riding the EXISTING
+    ``structure_detection`` enum (no schema change — a deterministic repair adds no
+    LLM call site). Dynamic, replayable rationale: the page, the ladder rung it
+    saved a re-roll at, and the repaired id lists per class. Never breaks arrange.
+    """
+    try:
+        from lib.decision_capture import DecisionCapture
+
+        cap = DecisionCapture(course_code="_semantik", phase="semantik_conversion", tool="semantik")
+    except Exception as exc:  # noqa: BLE001 — bridge venv may lack lib/
+        logger.debug("arranger id-repair DecisionCapture unavailable (non-fatal): %s", exc)
+        return
+    try:
+        missing = [r["id"] for r in repair_log if r.get("op") == "missing_insert"]
+        unknown = [r["id"] for r in repair_log if r.get("op") == "unknown_drop"]
+        dup = [r["id"] for r in repair_log if r.get("op") == "dup_drop"]
+        rationale = (
+            f"arranger id-repair: page={page_label} model={model} rung={rung} "
+            f"saved a re-roll by deterministically repairing mechanical id failures "
+            f"— missing_inserted={missing} unknown_dropped={unknown} "
+            f"dup_dropped={dup} (ids only, no text altered; re-validated clean)."
+        )
+        cap.log_decision(
+            decision_type="structure_detection",
+            decision=(
+                f"repair {len(missing)} missing + {len(unknown)} unknown + "
+                f"{len(dup)} dup ids on page {page_label} (rung {rung})"
+            ),
+            rationale=rationale,
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        logger.debug("arranger id-repair DecisionCapture log failed (non-fatal): %s", exc)
 
 
 def _emit_arranger_capture(

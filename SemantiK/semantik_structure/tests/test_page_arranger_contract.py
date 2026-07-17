@@ -135,3 +135,48 @@ def test_last_content_unit_id_skips_furniture():
 def test_extract_json_strips_fence_and_grabs_outermost_braces():
     assert c.extract_json('```json\n{"blocks":[]}\n```') == {"blocks": []}
     assert c.extract_json('noise {"a":1} trailing') == {"a": 1}
+
+
+# --- repair_mechanical_ids (SEMANTIK_ARRANGER_ID_REPAIR, P2) ----------------
+def test_repair_mechanical_ids_all_three_classes_at_once():
+    units = _units(("u0", "a"), ("u1", "b"), ("u2", "c"), ("u3", "d"))
+    arr = {
+        "blocks": [
+            {"type": "paragraph", "ids": ["u0", "u0"]},   # dup u0
+            {"type": "heading", "ids": ["u1", "zz"]},     # unknown zz; u2 missing
+            {"type": "paragraph", "ids": ["u3"]},
+        ]
+    }
+    log = c.repair_mechanical_ids(arr, units)
+    ops = {r["op"] for r in log}
+    assert ops == {"dup_drop", "unknown_drop", "missing_insert"}
+    assert c.validate_arrangement(arr, units) == []  # coverage restored
+    ids = [uid for blk in arr["blocks"] for uid in blk["ids"]]
+    assert ids.count("u0") == 1 and "zz" not in ids
+    # missing u2 inserted adjacent to its source-order neighbor (after u1)
+    assert ids.index("u2") == ids.index("u1") + 1
+
+
+def test_repair_mechanical_ids_missing_chains_in_source_order():
+    units = _units(("u0", "a"), ("u1", "b"), ("u2", "c"))
+    arr = {"blocks": [{"type": "paragraph", "ids": ["u0"]}]}  # u1, u2 both missing
+    c.repair_mechanical_ids(arr, units)
+    ids = [uid for blk in arr["blocks"] for uid in blk["ids"]]
+    assert ids == ["u0", "u1", "u2"]  # inserted contiguously in source order
+    assert c.validate_arrangement(arr, units) == []
+
+
+def test_repair_mechanical_ids_missing_before_successor_when_no_predecessor():
+    units = _units(("u0", "a"), ("u1", "b"))
+    arr = {"blocks": [{"type": "paragraph", "ids": ["u1"]}]}  # u0 missing, no pred
+    c.repair_mechanical_ids(arr, units)
+    ids = [uid for blk in arr["blocks"] for uid in blk["ids"]]
+    assert ids == ["u0", "u1"]  # u0 inserted BEFORE its successor u1
+
+
+def test_repair_mechanical_ids_inserts_as_paragraph_never_furniture():
+    units = _units(("u0", "a"), ("u1", "b"))
+    arr = {"blocks": [{"type": "heading", "ids": ["u0"]}]}
+    c.repair_mechanical_ids(arr, units)
+    inserted = [b for b in arr["blocks"] if b["ids"] == ["u1"]][0]
+    assert inserted["type"] == "paragraph"  # content-preserving default

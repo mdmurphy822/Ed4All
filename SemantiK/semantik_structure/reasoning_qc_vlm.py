@@ -616,6 +616,9 @@ def _post_qc_completion(
         headers["Authorization"] = f"Bearer {api_key}"
     url = vlm_extract._chat_completions_url(base_url)
 
+    import time as _time
+
+    _qc_t0 = _time.monotonic()
     try:
         resp = requests_module.post(url, json=body, headers=headers, timeout=timeout)
     except Exception as exc:  # noqa: BLE001 — timeout / conn → transient
@@ -644,6 +647,18 @@ def _post_qc_completion(
         raise VlmExtractError(
             "reasoning-QC endpoint returned a non-JSON body", transient=False
         ) from exc
+    # P3 usage tap — best-effort per-call metering (swallowed on any failure).
+    try:
+        from . import llm_usage_meter
+
+        llm_usage_meter.record_llm_usage(
+            site="reasoning_qc",
+            model=model,
+            data=data,
+            duration_ms=(_time.monotonic() - _qc_t0) * 1000.0,
+        )
+    except Exception:  # noqa: BLE001 — metering must never crash a call
+        pass
     try:
         text = data["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:
