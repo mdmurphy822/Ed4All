@@ -257,3 +257,79 @@ def test_sdk_error_page_escalated():
     tr = transform_document(pages)
     assert tr.region_provenance == []
     assert any(e["reason"] == "sdk_error" for e in tr.escalations)
+
+
+# ── declared-section anchoring + chapter-opener synthesis ───────────────────
+
+
+def _toc_body_pages():
+    """ToC page declaring 3 sections + body pages where 4.2's opener lost its
+    number to a badge image (the live ch01 failure mode) + a review reprint."""
+    toc = GlmPage(page_no=1, regions=[
+        _region(0, "paragraph_title", "## Chapter Outline"),
+        _region(1, "text", "4. 1 Alpha Topic"),
+        _region(2, "text", "4. 2 Beta Topic"),
+        _region(3, "text", "4. 3 Gamma Topic"),
+        _region(4, "paragraph_title", "## 4.1 Alpha Topic"),
+        _region(5, "text", "Alpha body prose long enough to be a paragraph."),
+    ])
+    body = GlmPage(page_no=2, regions=[
+        _region(0, "image", ""),  # the number badge
+        _region(1, "paragraph_title", "## Beta Topic"),  # number lost
+        _region(2, "text", "Beta body prose long enough to be a paragraph."),
+    ])
+    review = GlmPage(page_no=3, regions=[
+        _region(0, "paragraph_title", "## 4.2 Beta Topic"),  # review reprint
+        _region(1, "text", "Beta review recap prose."),
+    ])
+    return [toc, body, review]
+
+
+def test_declared_section_number_recovery():
+    tr = transform_document(_toc_body_pages())
+    heads = [p for p in tr.region_provenance if p["region_kind"] == "heading"]
+    beta = [h for h in heads if "Beta Topic" in str(h.get("heading_text"))]
+    # the body opener (page 2) is renumbered + promoted; the review reprint
+    # (page 3) keeps its native numbered form and is NOT double-rewritten
+    assert beta[0]["heading_text"] == "4.2 Beta Topic"
+    assert beta[0]["level"] == 2
+    assert beta[0].get("section_number_recovered") is True
+    assert not beta[0].get("heading_level_pending")
+    reasons = [e["reason"] for e in tr.escalations]
+    assert "section_number_recovered" in reasons
+    # 4.3 Gamma Topic is declared but matches nothing → loud escalation
+    assert "declared_section_unanchored" in reasons
+    # the stale pending escalation for the promoted heading is dropped
+    pend = [e for e in tr.escalations if e["reason"] == "heading_level_pending"
+            and "Beta" in str(e.get("text"))]
+    assert not pend
+
+
+def test_natively_numbered_opener_untouched():
+    tr = transform_document(_toc_body_pages())
+    heads = [p for p in tr.region_provenance if p["region_kind"] == "heading"]
+    alpha = [h for h in heads if "Alpha Topic" in str(h.get("heading_text"))]
+    assert alpha[0]["heading_text"] == "4.1 Alpha Topic"
+    assert alpha[0]["level"] == 2
+    assert not alpha[0].get("section_number_recovered")
+
+
+def test_chapter_opener_synthesized_from_toc_major():
+    tr = transform_document(_toc_body_pages())
+    first_head = next(p for p in tr.region_provenance
+                      if p["region_kind"] == "heading")
+    assert first_head["heading_text"] == "Chapter 4"
+    assert first_head["level"] == 1
+    assert first_head.get("chapter_title_synthesized") is True
+    assert tr.heading_tree[0] == (1, "Chapter 4")
+    assert any(e["reason"] == "chapter_title_synthesized"
+               for e in tr.escalations)
+
+
+def test_chapter_opener_not_synthesized_when_doc_title_present():
+    pages = _toc_body_pages()
+    pages[0].regions.insert(0, _region(9, "doc_title", "Chapter 4 Placeholder"))
+    tr = transform_document(pages)
+    synth = [p for p in tr.region_provenance
+             if p.get("chapter_title_synthesized")]
+    assert not synth

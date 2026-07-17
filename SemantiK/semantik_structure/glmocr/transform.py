@@ -463,10 +463,152 @@ def transform_document(pages: Sequence[GlmPage]) -> TransformResult:
                 p["_escalated_caption"] = True
 
     _stitch_cross_page(prov, escalations)
+    _anchor_declared_sections(prov, heading_tree, escalations)
     # strip internal bookkeeping keys before returning the wire contract
     for p in prov:
         p.pop("_escalated_caption", None)
     return TransformResult(prov, heading_tree, escalations)
+
+
+# ToC declaration: "1.1 Title" / "1. 1 Title" (per-region OCR often splits the
+# section number around the dot). Groups: chapter, section, title.
+_TOC_DECL_RE = re.compile(r"^(\d{1,3})\.\s?(\d{1,3})\s+(\S.*)$", re.S)
+
+
+def _norm_title(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip().rstrip(".:;")).casefold()
+
+
+def _anchor_declared_sections(
+    prov: List[Dict[str, Any]],
+    heading_tree: List[Tuple[int, str]],
+    escalations: List[Dict[str, Any]],
+) -> None:
+    """Recover section numbers the layout model lost to a badge image.
+
+    Print textbooks render the section opener as [number badge][title text];
+    when the badge is detected as a separate image region the body opener
+    heading comes through UNNUMBERED ("Multiply and Divide Integers"), falls
+    to level-3 pending, and downstream structure extraction anchors the
+    section to its answer-key reprint instead (seen live on the ch01 canary:
+    7 of 10 sections). Deterministic, document-driven repair: harvest the
+    document's own ToC declarations (runs of ≥3 consecutive plain-paragraph
+    ``N.M Title`` entries), and for each declared section whose FIRST
+    title-matching heading in document order is unnumbered and precedes any
+    numbered occurrence, glue the declared number on, promote to level 2, and
+    clear the pending flag. A declared section that matches nothing stays a
+    LOUD ``declared_section_unanchored`` escalation. heading_tree is rebuilt
+    from the (possibly rewritten) headings.
+    """
+    # 1. harvest ToC declarations (order-preserving, first declaration wins)
+    decls: List[Tuple[str, str]] = []
+    seen: set = set()
+    run: List[Tuple[str, str]] = []
+
+    def _flush() -> None:
+        if len(run) >= 3:
+            for num, title in run:
+                if num not in seen:
+                    seen.add(num)
+                    decls.append((num, title))
+        run.clear()
+
+    for p in prov:
+        if (p.get("region_kind") == "paragraph" and not p.get("role")
+                and not p.get("pedagogy_class")):
+            m = _TOC_DECL_RE.match((p.get("raw_text") or "").strip())
+            if m:
+                run.append((f"{m.group(1)}.{m.group(2)}", m.group(3).strip()))
+                continue
+        _flush()
+    _flush()
+    if not decls:
+        return
+
+    # Chapter-opener synthesis: this corpus family renders the chapter title
+    # inside the cover banner IMAGE and the page-header furniture is never
+    # emitted by the layout model, so no chapter heading exists in text at
+    # all. Downstream the adapter then minted its doc-chapter from the first
+    # h2 ("Chapter Outline") and filed the whole body under the phantom
+    # "CHAPTER N REVIEW" article (interrogator finding C1). When the ToC
+    # declares sections but NO level-1 heading and no "Chapter N" heading
+    # exists, emit a synthetic level-1 "Chapter N" opener (N = the modal
+    # major ordinal of the declared sections) at document start.
+    has_chapter_heading = any(
+        p.get("region_kind") == "heading" and (
+            int(p.get("level", 3)) == 1
+            or (int(p.get("level", 3)) <= 2 and re.match(
+                r"(?i)^chapter\s+\d+\b",
+                str(p.get("heading_text") or "").strip()))
+        )
+        for p in prov
+    )
+    if not has_chapter_heading:
+        majors: Dict[str, int] = {}
+        for num, _ in decls:
+            mj = num.split(".", 1)[0]
+            majors[mj] = majors.get(mj, 0) + 1
+        major = max(majors, key=lambda k: majors[k])
+        first_page = int(prov[0].get("source_page") or 1) if prov else 1
+        opener = _prov(idx=0, region_kind="heading",
+                       heading_text=f"Chapter {major}", level=1,
+                       page=first_page, native_label="synthetic")
+        opener["chapter_title_synthesized"] = True
+        prov.insert(0, opener)
+        escalations.append({
+            "region_index": None, "source_page": first_page,
+            "native_label": "synthetic",
+            "reason": "chapter_title_synthesized",
+            "detail": (f"no chapter heading in extractable text; synthesized "
+                       f"'Chapter {major}' from ToC major ordinal"),
+        })
+
+    headings = [p for p in prov if p.get("region_kind") == "heading"]
+    for num, title in decls:
+        want = _norm_title(title)
+        first_numbered = None
+        first_unnumbered = None
+        for hi, h in enumerate(headings):
+            ht = str(h.get("heading_text") or "")
+            if _norm_title(re.sub(r"^\d{1,3}\.\s?\d{1,3}\s+", "", ht)) != want:
+                continue
+            if _TOC_DECL_RE.match(ht.strip()):
+                if first_numbered is None:
+                    first_numbered = hi
+            elif first_unnumbered is None:
+                first_unnumbered = hi
+        if first_unnumbered is not None and (
+                first_numbered is None or first_unnumbered < first_numbered):
+            h = headings[first_unnumbered]
+            h["heading_text"] = f"{num} {str(h.get('heading_text') or '').strip()}"
+            h["level"] = 2
+            recovered_idx = h.get("first_raw_block_index")
+            if h.pop("heading_level_pending", None):
+                escalations[:] = [
+                    e for e in escalations
+                    if not (e.get("reason") == "heading_level_pending"
+                            and e.get("region_index") == recovered_idx)
+                ]
+            h["section_number_recovered"] = True
+            escalations.append({
+                "region_index": recovered_idx,
+                "source_page": h.get("source_page"),
+                "native_label": h.get("native_label", ""),
+                "reason": "section_number_recovered",
+                "detail": f"unnumbered body opener matched ToC declaration {num}",
+                "text": str(h.get("heading_text") or "")[:120],
+            })
+        elif first_numbered is None:
+            escalations.append({
+                "region_index": None, "source_page": None, "native_label": "",
+                "reason": "declared_section_unanchored",
+                "detail": f"ToC declares {num} {title!r} but no body heading matches",
+            })
+
+    heading_tree[:] = [
+        (int(p.get("level", 3)), str(p.get("heading_text", "")))
+        for p in prov if p.get("region_kind") == "heading"
+    ]
 
 
 def _stitch_cross_page(
