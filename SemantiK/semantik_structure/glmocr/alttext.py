@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -191,8 +192,19 @@ def apply_alt_text(
     ]
     generated = 0
 
+    # Dead-seat circuit breaker: a WEDGED seat (accepts connections, never
+    # answers — seen live 2026-07-17) makes every figure eat the full HTTP
+    # timeout; at 250 figures that is ~an hour per document of pure timeouts.
+    # After _BREAKER_THRESHOLD consecutive describe() failures the remaining
+    # figures short-circuit to an escalation without touching the socket. A
+    # success resets the strike count.
+    _BREAKER_THRESHOLD = 5
+    _breaker_lock = threading.Lock()
+    _strikes = 0
+    _breaker_open = False
+
     def _one(p: Dict[str, Any]) -> None:
-        nonlocal generated
+        nonlocal generated, _strikes, _breaker_open
         page = int(p.get("source_page") or (p.get("pages") or [0])[0] or 0)
         image_path = page_images.get(page)
         bbox = p.get("bbox")
@@ -212,15 +224,37 @@ def apply_alt_text(
                 "reason": "alt_text_no_crop", "detail": "crop failed",
             })
             return
+        with _breaker_lock:
+            if _breaker_open:
+                escalations.append({
+                    "region_index": p.get("first_raw_block_index"),
+                    "source_page": page,
+                    "native_label": p.get("native_label", "image"),
+                    "reason": "alt_text_generation_failed",
+                    "detail": "seat breaker open (consecutive failures)",
+                })
+                return
         try:
             result = client.describe(b64, p.get("caption_text"))
         except Exception as exc:  # noqa: BLE001 — never fail the conversion
+            with _breaker_lock:
+                _strikes += 1
+                if _strikes >= _BREAKER_THRESHOLD and not _breaker_open:
+                    _breaker_open = True
+                    logger.error(
+                        "alt-text seat breaker OPEN after %d consecutive "
+                        "failures — remaining figures escalate without a "
+                        "seat call (last error: %s)",
+                        _strikes, str(exc)[:120],
+                    )
             escalations.append({
                 "region_index": p.get("first_raw_block_index"),
                 "source_page": page, "native_label": p.get("native_label", "image"),
                 "reason": "alt_text_generation_failed", "detail": str(exc)[:200],
             })
             return
+        with _breaker_lock:
+            _strikes = 0
         alt = result.get("alt") or ""
         if alt:
             p["figure_alt"] = alt

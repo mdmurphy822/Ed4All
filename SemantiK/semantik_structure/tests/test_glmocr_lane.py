@@ -245,3 +245,35 @@ def test_render_dir_isolated_per_document(monkeypatch, tmp_path):
     # re-render of docA is idempotent (pre-clean)
     a2 = sc.render_pdf_to_pngs(tmp_path / "docA.pdf", render)
     assert len(a2) == 3
+
+
+def test_alt_text_breaker_short_circuits_dead_seat(monkeypatch):
+    """After N consecutive seat failures the remaining figures must not touch
+    the client (a wedged seat otherwise costs one full HTTP timeout per
+    figure — ~an hour per document; seen live 2026-07-17)."""
+    from semantik_structure.glmocr import alttext as at
+
+    monkeypatch.setenv("SEMANTIK_ALTTEXT_PROVIDER", "qwen30")
+    monkeypatch.setattr(at, "_crop_b64", lambda *a, **k: "Zm9v")
+
+    calls = {"n": 0}
+
+    class _DeadSeat:
+        def describe(self, b64, caption):
+            calls["n"] += 1
+            raise TimeoutError("read timed out")
+
+    figures = [
+        {"region_kind": "figure", "figure_alt": None, "caption_text": None,
+         "source_page": 1, "pages": [1], "bbox": [0, 0, 10, 10],
+         "first_raw_block_index": i, "native_label": "image"}
+        for i in range(40)
+    ]
+    esc = []
+    monkeypatch.setenv("SEMANTIK_ALTTEXT_CONCURRENCY", "1")  # deterministic order
+    n = at.apply_alt_text(figures, {1: "/tmp/fake.png"}, client=_DeadSeat(),
+                          escalations=esc)
+    assert n == 0
+    assert calls["n"] == 5, f"breaker did not trip at 5 (calls={calls['n']})"
+    assert len(esc) == 40  # every figure escalated
+    assert sum(1 for e in esc if "breaker open" in str(e.get("detail"))) == 35
