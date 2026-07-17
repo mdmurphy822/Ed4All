@@ -75,6 +75,7 @@ strict-mode flag (``is_strict_mode``), skip set
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -118,6 +119,91 @@ _DEFAULT_MAX_CONTRADICTED_RATE: float = 0.05
 
 #: Cap per-block issue list (mirrors sibling validators).
 _ISSUE_LIST_CAP: int = 50
+
+#: Env flag — gate-side provenance resolution. Default OFF → byte-identical
+#: legacy behavior (a block's cited ``semantik:{slug}#{anchor}`` refs are
+#: resolved ONLY through the ``source_chunks`` map; unresolved → NO_GROUNDING
+#: warning). When truthy AND ``inputs["chunk_provenance_index"]`` is present,
+#: a block whose directly-cited ids resolve to nothing (rewrite-tier blocks
+#: carry provenance as ``semantik:...#anchor`` refs, not ``{course}_chunk_NNNNN``
+#: chunk ids) is re-resolved by mapping each cited provenance ref → the chunk
+#: ids that carry it (a section-level ref maps to ALL chunk ids from that
+#: section) and looking those chunk ids up in ``source_chunks``. Anti-fabrication:
+#: only EXISTING refs are mapped to EXISTING chunks; unmappable refs still emit
+#: the NO_GROUNDING warning. Resolution only ADDs — directly-resolvable ids are
+#: never removed.
+_ENV_PROVENANCE_RESOLVE: str = "ED4ALL_PROSE_GATE_PROVENANCE_RESOLVE"
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def _provenance_resolve_enabled() -> bool:
+    """Parse-with-fallback truthy check for ``ED4ALL_PROSE_GATE_PROVENANCE_RESOLVE``."""
+    return os.environ.get(_ENV_PROVENANCE_RESOLVE, "").strip().lower() in _TRUTHY
+
+
+def load_chunk_provenance_index(chunks_jsonl_path: str) -> Dict[str, List[str]]:
+    """Build a ``{provenance_ref -> [chunk_id, ...]}`` reverse index from a
+    ``chunks.jsonl`` file.
+
+    Each chunk record carries its source anchors on
+    ``source.source_references[].sourceId`` (the ``semantik:{slug}#{anchor}``
+    / legacy ``dart:{slug}#{block_id}`` Source-Provenance contract) and its own
+    canonical chunk id on the top-level ``id`` field
+    (``{course}_chunk_NNNNN``). This inverts that: for every ``sourceId`` a
+    chunk declares, the chunk's id is appended to that ref's list. Because a
+    section-level ref (e.g. ``semantik:slug#1-1-introduction-to-whole-numbers``)
+    is shared by every chunk emitted from that section, the ref naturally maps
+    to ALL of the section's chunk ids — the section-ref tolerance the gate needs
+    for the ``data-cf-source-ids`` anchor form.
+
+    Best-effort: an absent / unreadable path returns an empty index so the
+    gate's graceful NO_GROUNDING path stays intact. Order-preserving,
+    per-ref de-duplicated.
+    """
+    index: Dict[str, List[str]] = {}
+    path = Path(chunks_jsonl_path)
+    if not path.exists():
+        return index
+    try:
+        import json as _json
+
+        with path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    chunk = _json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(chunk, dict):
+                    continue
+                chunk_id = chunk.get("id") or chunk.get("chunk_id")
+                if not isinstance(chunk_id, str) or not chunk_id.strip():
+                    continue
+                chunk_id = chunk_id.strip()
+                source = chunk.get("source")
+                if not isinstance(source, dict):
+                    continue
+                src_refs = source.get("source_references") or []
+                if not isinstance(src_refs, list):
+                    continue
+                for ref in src_refs:
+                    if not isinstance(ref, dict):
+                        continue
+                    sid = ref.get("sourceId")
+                    if not isinstance(sid, str) or not sid.strip():
+                        continue
+                    bucket = index.setdefault(sid.strip(), [])
+                    if chunk_id not in bucket:
+                        bucket.append(chunk_id)
+    except OSError as exc:
+        logger.debug(
+            "load_chunk_provenance_index: read of %s failed: %s",
+            chunks_jsonl_path, exc,
+        )
+        return {}
+    return index
 
 
 # --------------------------------------------------------------------- #
@@ -176,6 +262,7 @@ def _block_should_skip(block: Block) -> bool:
 def _resolve_block_cited_passages(
     block: Block,
     source_chunks: Dict[str, str],
+    provenance_index: Optional[Dict[str, List[str]]] = None,
 ) -> List[Dict[str, str]]:
     """Resolve the block's cited chunks into ``score_groundedness`` passages.
 
@@ -184,6 +271,16 @@ def _resolve_block_cited_passages(
     in ``source_chunks``, and returns ``[{"chunk_id": sid, "text": text}, ...]``
     preserving the chunk_id so the report's ``best_chunk_id`` is meaningful.
     Duplicate ids are de-duplicated (first occurrence wins).
+
+    When ``provenance_index`` is supplied (opt-in
+    ``ED4ALL_PROSE_GATE_PROVENANCE_RESOLVE``), an ADD pass runs after direct
+    resolution: rewrite-tier blocks carry provenance as ``semantik:{slug}#anchor``
+    refs, not ``{course}_chunk_NNNNN`` chunk ids, so a block that resolves to
+    NOTHING directly is re-resolved by mapping each cited ref through the index
+    (``ref -> [chunk_id, ...]``, a section-level ref covering ALL of the
+    section's chunk ids) and looking those chunk ids up in ``source_chunks``.
+    Anti-fabrication: only EXISTING refs map to EXISTING chunks; directly
+    resolved ids are never removed — the index can only ADD supporters.
     """
     seen: set = set()
     passages: List[Dict[str, str]] = []
@@ -203,6 +300,19 @@ def _resolve_block_cited_passages(
         text = source_chunks.get(sid)
         if isinstance(text, str) and text.strip():
             passages.append({"chunk_id": sid, "text": text})
+
+    # Opt-in provenance resolution ADD pass. Fires when a block's directly-cited
+    # ids resolved to nothing (the rewrite-tier semantik-ref → chunk-id gap);
+    # never removes an already-resolved passage (ADD-only).
+    if provenance_index and not passages:
+        for sid in candidate_ids:
+            for chunk_id in provenance_index.get(sid, ()):  # section-level fan-out
+                if chunk_id in seen:
+                    continue
+                seen.add(chunk_id)
+                text = source_chunks.get(chunk_id)
+                if isinstance(text, str) and text.strip():
+                    passages.append({"chunk_id": chunk_id, "text": text})
     return passages
 
 
@@ -433,6 +543,21 @@ class BlockProseEntailmentValidator:
             if isinstance(v, str)
         }
 
+        # Opt-in gate-side provenance resolution (default OFF → byte-identical).
+        # When enabled AND the runner threaded a chunk_provenance_index (a
+        # {provenance_ref -> [chunk_id, ...]} reverse index), a block whose
+        # directly-cited semantik refs resolve to nothing is re-resolved through
+        # the index. Off / absent → provenance_index stays None → legacy path.
+        provenance_index: Optional[Dict[str, List[str]]] = None
+        if _provenance_resolve_enabled():
+            raw_index = inputs.get("chunk_provenance_index")
+            if isinstance(raw_index, dict):
+                provenance_index = {
+                    str(k): [str(c) for c in v]
+                    for k, v in raw_index.items()
+                    if isinstance(v, (list, tuple))
+                }
+
         # Severity of the BLOCK_PROSE_* failures honors the shadow knob:
         # warning during shadow (compute + capture only), critical after the
         # flip (so the validator's own ``passed`` flips on a real failure,
@@ -458,7 +583,9 @@ class BlockProseEntailmentValidator:
             if not prose_text.strip():
                 continue
 
-            cited_passages = _resolve_block_cited_passages(block, source_chunks)
+            cited_passages = _resolve_block_cited_passages(
+                block, source_chunks, provenance_index
+            )
 
             if not cited_passages:
                 # No grounding surface. The resolution gate (rewrite_source_refs)
@@ -677,6 +804,7 @@ class BlockProseEntailmentValidator:
 
 __all__ = [
     "BlockProseEntailmentValidator",
+    "load_chunk_provenance_index",
     "_DEFAULT_MIN_BLOCK_ENTAILMENT_RATE",
     "_DEFAULT_ENTAILMENT_FLOOR",
     "_DEFAULT_CONTRADICTION_FLOOR",

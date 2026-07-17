@@ -47,6 +47,8 @@ from lib.validators.block_prose_entailment import (  # noqa: E402
     _CODE_BLOCK_PROSE_UNGROUNDED,
     _CODE_NLI_DEPS_MISSING,
     _DECISION_TYPE,
+    _ENV_PROVENANCE_RESOLVE,
+    load_chunk_provenance_index,
 )
 
 
@@ -500,3 +502,215 @@ def test_calibration_shadow_measures_without_mutating() -> None:
     # the calibration signal is present and separable.
     assert min(rates) < 0.60
     assert max(rates) >= 0.60
+
+
+# --------------------------------------------------------------------- #
+# Gate-side provenance resolution (ED4ALL_PROSE_GATE_PROVENANCE_RESOLVE)
+# --------------------------------------------------------------------- #
+
+
+def _semantik_block(content: Any) -> Block:
+    """A rewrite-tier block citing a section-level ``semantik:...#anchor`` ref
+    (NOT a ``{course}_chunk_NNNNN`` chunk id) — the exact provenance shape the
+    gate cannot resolve through a chunk-id-keyed ``source_chunks`` map."""
+    ref = "semantik:elementary-algebra-2e-ch01_accessible#1-1-whole-numbers"
+    return _make_block(
+        block_id="week_01_content_01#concept_intro_0",
+        content=content,
+        source_ids=(ref,),
+    )
+
+
+def _entailed_prose() -> str:
+    return (
+        "<p>The mitochondrion is the cell's powerhouse and generates ATP "
+        "through oxidative phosphorylation across its inner membrane "
+        "[ENTAIL]. This energy production sustains the metabolic activity of "
+        "the entire cell continuously [ENTAIL].</p>"
+    )
+
+
+def test_provenance_flag_off_byte_identical_no_grounding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(a) Flag OFF → the semantik-ref block that resolves to nothing takes the
+    unchanged NO_GROUNDING warning path, even when an index IS supplied."""
+    monkeypatch.delenv(_ENV_PROVENANCE_RESOLVE, raising=False)
+    nli = _FakeNli()
+    validator = BlockProseEntailmentValidator(nli=nli)
+
+    block = _semantik_block(_entailed_prose())
+    # source_chunks keyed ONLY by chunk id (the 116-block harness shape) — the
+    # block's semantik ref does not resolve directly.
+    source_chunks = {"alg_chunk_00002": _CHUNK}
+    index = {
+        "semantik:elementary-algebra-2e-ch01_accessible#1-1-whole-numbers": [
+            "alg_chunk_00002",
+        ]
+    }
+
+    result = validator.validate(
+        {
+            "blocks": [block],
+            "source_chunks": source_chunks,
+            "chunk_provenance_index": index,  # present but ignored (flag off)
+        }
+    )
+
+    no_src = [
+        i for i in result.issues
+        if i.code == _CODE_BLOCK_PROSE_NO_GROUNDING_SOURCE
+    ]
+    assert len(no_src) == 1
+    assert result.passed is True
+    assert result.action is None
+
+
+def test_provenance_flag_on_scores_previously_ungrounded_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(b) Flag ON + index → a previously-ungrounded block gets SCORED, and a
+    section-level ref fans out to MULTIPLE chunk ids."""
+    monkeypatch.setenv(_ENV_PROVENANCE_RESOLVE, "1")
+    nli = _FakeNli()
+    validator = BlockProseEntailmentValidator(nli=nli)
+
+    block = _semantik_block(_entailed_prose())
+    # The section ref maps to THREE chunk ids; source_chunks carries their text.
+    source_chunks = {
+        "alg_chunk_00002": _CHUNK,
+        "alg_chunk_00003": _CHUNK,
+        "alg_chunk_00004": _CHUNK,
+    }
+    index = {
+        "semantik:elementary-algebra-2e-ch01_accessible#1-1-whole-numbers": [
+            "alg_chunk_00002",
+            "alg_chunk_00003",
+            "alg_chunk_00004",
+        ]
+    }
+
+    result = validator.validate(
+        {
+            "blocks": [block],
+            "source_chunks": source_chunks,
+            "chunk_provenance_index": index,
+        }
+    )
+
+    # The block was SCORED (entailed prose passes), NOT NO_GROUNDING.
+    assert not any(
+        i.code == _CODE_BLOCK_PROSE_NO_GROUNDING_SOURCE for i in result.issues
+    )
+    assert result.passed is True
+    assert result.score == 1.0
+
+
+def test_provenance_flag_on_unresolvable_ref_still_warns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(c) Flag ON but the cited ref is not in the index (or its chunk ids have
+    no text) → NO_GROUNDING warning still fires (no fabrication)."""
+    monkeypatch.setenv(_ENV_PROVENANCE_RESOLVE, "1")
+    nli = _FakeNli()
+    validator = BlockProseEntailmentValidator(nli=nli)
+
+    block = _semantik_block(_entailed_prose())
+    source_chunks = {"alg_chunk_00002": _CHUNK}
+    # Index maps a DIFFERENT ref — the block's ref is unresolvable.
+    index = {"semantik:some-other-book#9-9-other": ["alg_chunk_00002"]}
+
+    result = validator.validate(
+        {
+            "blocks": [block],
+            "source_chunks": source_chunks,
+            "chunk_provenance_index": index,
+        }
+    )
+
+    no_src = [
+        i for i in result.issues
+        if i.code == _CODE_BLOCK_PROSE_NO_GROUNDING_SOURCE
+    ]
+    assert len(no_src) == 1
+    assert result.passed is True
+
+
+def test_provenance_flag_on_never_drops_direct_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(d) A directly-resolvable id is NEVER dropped by the provenance pass —
+    the fabricated-on-topic block whose ref resolves directly still FAILS NLI
+    exactly as it would with the flag off (resolution only ADDs)."""
+    monkeypatch.setenv(_ENV_PROVENANCE_RESOLVE, "1")
+    nli = _FakeNli()
+    validator = BlockProseEntailmentValidator(nli=nli)
+
+    fabricated = (
+        "<p>The mitochondrion secretly manufactures cellular gold deep within "
+        "its folded cristae structures every passing moment. It also quietly "
+        "encodes ancient memories into the surrounding cytoplasm of the cell "
+        "for safekeeping.</p>"
+    )
+    # Directly resolvable via source_chunks — provenance pass must not run/strip.
+    block = _make_block(content=fabricated, source_ids=("dart:slug#blk_0",))
+    source_chunks = {"dart:slug#blk_0": _CHUNK}
+    index = {"dart:slug#blk_0": ["some_other_chunk"]}
+
+    result = validator.validate(
+        {
+            "blocks": [block],
+            "source_chunks": source_chunks,
+            "chunk_provenance_index": index,
+        }
+    )
+
+    ungrounded = [
+        i for i in result.issues if i.code == _CODE_BLOCK_PROSE_UNGROUNDED
+    ]
+    assert len(ungrounded) == 1
+    assert result.passed is False
+    assert result.action == "regenerate"
+
+
+def test_load_chunk_provenance_index_from_jsonl(tmp_path: Path) -> None:
+    """The loader inverts source.source_references[].sourceId → [chunk_id],
+    aggregating all chunks that share a section-level ref."""
+    import json
+
+    records = [
+        {
+            "id": "c_00001",
+            "source": {
+                "source_references": [
+                    {"sourceId": "semantik:book#1-1-intro"},
+                ]
+            },
+        },
+        {
+            "id": "c_00002",
+            "source": {
+                "source_references": [
+                    {"sourceId": "semantik:book#1-1-intro"},
+                ]
+            },
+        },
+        {
+            "id": "c_00003",
+            "source": {
+                "source_references": [
+                    {"sourceId": "semantik:book#1-2-next"},
+                ]
+            },
+        },
+    ]
+    p = tmp_path / "chunks.jsonl"
+    p.write_text(
+        "\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8"
+    )
+
+    index = load_chunk_provenance_index(str(p))
+    assert index["semantik:book#1-1-intro"] == ["c_00001", "c_00002"]
+    assert index["semantik:book#1-2-next"] == ["c_00003"]
+    # Absent path → empty (best-effort).
+    assert load_chunk_provenance_index(str(tmp_path / "nope.jsonl")) == {}

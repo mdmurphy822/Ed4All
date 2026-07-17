@@ -1503,6 +1503,44 @@ def _build_source_chunks_from_dart_jsonl(
     return text_map
 
 
+def _build_chunk_provenance_index_from_dart_jsonl(
+    phase_outputs: Dict[str, Any],
+) -> Dict[str, List[str]]:
+    """Build the ``{provenance_ref -> [chunk_id, ...]}`` reverse index for the
+    opt-in ``ED4ALL_PROSE_GATE_PROVENANCE_RESOLVE`` gate-side resolution.
+
+    Resolves the SAME chunkset ``chunks.jsonl`` path as
+    :func:`_build_source_chunks_from_dart_jsonl` and delegates to
+    ``block_prose_entailment.load_chunk_provenance_index``. Rewrite-tier blocks
+    cite ``semantik:{slug}#anchor`` provenance refs, not
+    ``{course}_chunk_NNNNN`` chunk ids; this index lets
+    ``BlockProseEntailmentValidator`` map an unresolved ref → the chunk ids that
+    carry it (a section-level ref → ALL of the section's chunks). Threaded
+    UNCONDITIONALLY (cheap, same JSONL) — inert unless the validator's env flag
+    is on. Best-effort: absent / unreadable path → empty index.
+    """
+    chunking = phase_outputs.get("chunking") or {}
+    dart_chunks_path = _chunking_chunks_path(chunking)
+    if not isinstance(dart_chunks_path, str) or not dart_chunks_path:
+        dart_chunks_path = _locate(
+            phase_outputs, "semantik_chunks_path", "dart_chunks_path"
+        )
+    if not isinstance(dart_chunks_path, str) or not dart_chunks_path:
+        return {}
+    try:
+        from lib.validators.block_prose_entailment import (
+            load_chunk_provenance_index,
+        )
+
+        return load_chunk_provenance_index(dart_chunks_path)
+    except Exception as exc:  # noqa: BLE001 — best-effort, never break the build
+        logger.debug(
+            "chunk_provenance_index build from %s failed: %s",
+            dart_chunks_path, exc,
+        )
+        return {}
+
+
 def _build_rewrite_block_input(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
@@ -1566,6 +1604,13 @@ def _build_rewrite_block_input(
             )
     if chunks_lookup:
         inputs["source_chunks"] = chunks_lookup
+
+    # Opt-in gate-side provenance resolution (ED4ALL_PROSE_GATE_PROVENANCE_RESOLVE)
+    # — thread the {provenance_ref -> [chunk_id]} reverse index UNCONDITIONALLY;
+    # BlockProseEntailmentValidator consults it only when its env flag is on.
+    provenance_index = _build_chunk_provenance_index_from_dart_jsonl(phase_outputs)
+    if provenance_index:
+        inputs["chunk_provenance_index"] = provenance_index
     return inputs, []
 
 
