@@ -83,6 +83,7 @@ from Courseforge.generators._base import (
 from Courseforge.generators._rewrite_fit_window import (  # noqa: E402
     RESERVE_TOKENS,
     cited_chunk_ids_from_content,
+    resolve_curie_deterministic,
     resolve_fit_window,
     resolve_rewrite_num_ctx,
     resolve_truncation_tripwire,
@@ -2419,6 +2420,57 @@ _WHITESPACE_RE = re.compile(r"\s+")
 # load-bearing carrier.
 _CURIE_FORCED_ATTR = "data-cf-curie-forced"
 _TOUCH_PURPOSE_CURIE_FORCED = "curie_force_injected"
+#: Touch.purpose stamped by the ``COURSEFORGE_CURIE_DETERMINISTIC`` path so
+#: the audit chain records that the block's CURIEs were placed entirely
+#: deterministically (the model was never asked to recite them). Distinct
+#: from ``curie_force_injected`` (the legacy exhaustion-path force-inject)
+#: so a postmortem separates "model dropped after the retry budget" from
+#: "flag on — deterministic stamp, no CURIE-driven retry ever ran".
+_TOUCH_PURPOSE_CURIE_DETERMINISTIC = "curie_deterministic_stamp"
+
+#: The exact model-facing CURIE directive sentence embedded in
+#: ``_REWRITE_SYSTEM_PROMPT``. Removed verbatim (a ``str.replace`` no-op
+#: when absent, e.g. under a future fit-window trim) when
+#: ``COURSEFORGE_CURIE_DETERMINISTIC`` is on so the model prompt carries no
+#: CURIE instruction. Kept as an exact-substring constant (not a regex) so
+#: the strip is surgical and byte-precise.
+_CURIE_SYSTEM_DIRECTIVE = (
+    "DISCUSS each supplied concept by its NATURAL NAME in the prose — do "
+    "NOT echo synthetic ``prefix:localname`` CURIE tokens into the visible "
+    "text (they are machine anchoring ids, never learner-facing). "
+)
+
+
+def _strip_curie_directive_from_system_prompt(system_prompt: str) -> str:
+    """Remove the model-facing CURIE directive from the system prompt.
+
+    Used by the ``COURSEFORGE_CURIE_DETERMINISTIC`` path: with CURIEs
+    handled entirely deterministically, the model must never be asked to
+    include / preserve / avoid CURIE tokens. Removes the exact
+    :data:`_CURIE_SYSTEM_DIRECTIVE` sentence (a no-op when absent). Idempotent.
+    """
+    if not system_prompt:
+        return system_prompt
+    return system_prompt.replace(_CURIE_SYSTEM_DIRECTIVE, "")
+
+
+def _strip_curies_from_content(content: Any) -> Any:
+    """Return ``content`` with any ``curies`` key removed (dict only).
+
+    Used by the ``COURSEFORGE_CURIE_DETERMINISTIC`` render paths so the
+    serialised outline payload the model sees carries no CURIE tokens
+    (they are stamped deterministically post-emit instead). A non-dict
+    content (rewrite-tier str / legacy payload) is returned unchanged;
+    a dict without a ``curies`` key is returned unchanged (identity) so
+    the common case allocates nothing.
+    """
+    if not isinstance(content, dict) or "curies" not in content:
+        return content
+    stripped = dict(content)
+    stripped.pop("curies", None)
+    return stripped
+
+
 _CURIE_FORCED_MARKER_RE = re.compile(
     r"data-cf-curie-forced\s*=\s*[\"']?true", re.IGNORECASE
 )
@@ -2875,6 +2927,15 @@ class RewriteProvider(_BaseLLMProvider):
         # ``ClaudeSessionProvider`` constructor contract.
         dispatcher: Optional[Any] = None,
         run_id: Optional[str] = None,
+        # COURSEFORGE_CURIE_DETERMINISTIC: the per-course minted-CURIE map
+        # (``lib.ontology.curie_discovery.build_minted_curie_map`` output).
+        # Its KEYS are the valid minted-CURIE token universe — the SAME
+        # universe ``BlockCurieAnchoringValidator`` treats as minted — so the
+        # deterministic-stamp path stamps ONLY vocabulary-resolvable CURIEs
+        # (anti-fabrication). None / empty ⇒ no token resolves ⇒ nothing is
+        # stamped (RDF / legacy corpus). Threaded by the router's
+        # ``_get_rewrite_provider`` from ``CourseforgeRouter._rewrite_minted_map``.
+        minted_curie_map: Optional[Dict[str, Any]] = None,
     ) -> None:
         # Tier-specific model resolution: ``COURSEFORGE_REWRITE_MODEL``
         # wins over the synthesis-pipeline ``ANTHROPIC_SYNTHESIS_MODEL``
@@ -2935,6 +2996,26 @@ class RewriteProvider(_BaseLLMProvider):
         self._rewrite_num_ctx = resolve_rewrite_num_ctx()
         self._truncation_tripwire = resolve_truncation_tripwire()
         resolved_system_prompt = _resolve_system_prompt(self._fit_window)
+
+        # COURSEFORGE_CURIE_DETERMINISTIC (default OFF → byte-identical).
+        # Resolved ONCE so the whole call uses a consistent state. When ON:
+        # (1) the model-facing CURIE directive is stripped from the system
+        #     prompt (below) and the serialised outline payload (render path)
+        #     so the model is never asked to recite CURIE tokens;
+        # (2) ``generate_rewrite`` REMOVES the CURIE-preservation retry
+        #     ladder and instead stamps every vocabulary-resolvable outline
+        #     CURIE onto the emit deterministically post-generation.
+        # ``_minted_curie_tokens`` is the anti-fabrication universe — a CURIE
+        # is stamped only when it is a key here (the same universe the
+        # ``BlockCurieAnchoringValidator`` treats as minted).
+        self._curie_deterministic = resolve_curie_deterministic()
+        self._minted_curie_tokens: frozenset = frozenset(
+            k for k in (minted_curie_map or {}) if isinstance(k, str)
+        )
+        if self._curie_deterministic:
+            resolved_system_prompt = _strip_curie_directive_from_system_prompt(
+                resolved_system_prompt
+            )
 
         if resolved_provider == "claude_session":
             if dispatcher is None:
@@ -3336,6 +3417,11 @@ class RewriteProvider(_BaseLLMProvider):
         # blocks with no schema vocabulary).
         curies = _extract_outline_curies(block.content)
         curies_block = ", ".join(curies) if curies else "(none)"
+        # COURSEFORGE_CURIE_DETERMINISTIC: the model is never asked to recite
+        # CURIEs — drop the "preserve these CURIEs verbatim" directive and
+        # strip the tokens from the serialised outline. Default OFF → the
+        # legacy verbatim-preservation directive + full payload (byte-identical).
+        _curie_deterministic = getattr(self, "_curie_deterministic", False)
 
         # Validation-attempt count surfaces in the prompt so the
         # rewrite tier knows how many outline turns burned before
@@ -3343,7 +3429,11 @@ class RewriteProvider(_BaseLLMProvider):
         # whether to re-use any outline draft text.
         attempts = block.validation_attempts
 
-        outline_payload = _safe_json_dumps(block.content)
+        outline_payload = _safe_json_dumps(
+            _strip_curies_from_content(block.content)
+            if _curie_deterministic
+            else block.content
+        )
         per_claim_block = _format_per_claim_citations(block.content)
         source_block = _format_source_chunks(source_chunks or [])
         objectives_block = _format_objectives(
@@ -3361,6 +3451,20 @@ class RewriteProvider(_BaseLLMProvider):
             getattr(block, "interaction_type", None)
         )
 
+        if _curie_deterministic:
+            synthesize_line = (
+                "Synthesize from scratch using the supplied source chunks "
+                "and objective refs. Do not introduce facts outside the "
+                "supplied source chunks.\n"
+            )
+        else:
+            synthesize_line = (
+                "Synthesize from scratch using the supplied source chunks "
+                "and objective refs, preserving the following CURIEs "
+                f"verbatim: {curies_block}. Do not introduce facts outside "
+                "the supplied source chunks.\n"
+            )
+
         return (
             f"ESCALATED REWRITE — marker={marker}\n"
             "\n"
@@ -3368,10 +3472,7 @@ class RewriteProvider(_BaseLLMProvider):
             f"{block.block_type} after {attempts} attempts "
             f"(marker={marker}). {marker_context}\n"
             "\n"
-            "Synthesize from scratch using the supplied source chunks "
-            "and objective refs, preserving the following CURIEs "
-            f"verbatim: {curies_block}. Do not introduce facts outside "
-            "the supplied source chunks.\n"
+            f"{synthesize_line}"
             "\n"
             f"Block type: {block.block_type}\n"
             f"Block id: {block.block_id}\n"
@@ -3442,7 +3543,16 @@ class RewriteProvider(_BaseLLMProvider):
         - **Final instruction**: emit ONLY rendered HTML, no markdown
           fences / commentary.
         """
-        outline_payload = _safe_json_dumps(block.content)
+        # COURSEFORGE_CURIE_DETERMINISTIC: strip the CURIE tokens from the
+        # serialised outline the model sees (they are stamped deterministically
+        # post-emit; the model is never asked to recite them). Default OFF →
+        # ``block.content`` verbatim (byte-identical prompt).
+        _content_for_prompt = (
+            _strip_curies_from_content(block.content)
+            if getattr(self, "_curie_deterministic", False)
+            else block.content
+        )
+        outline_payload = _safe_json_dumps(_content_for_prompt)
         per_claim_block = _format_per_claim_citations(block.content)
         source_block = _format_source_chunks(source_chunks or [])
         objectives_block = _format_objectives(
@@ -3781,6 +3891,57 @@ class RewriteProvider(_BaseLLMProvider):
             html_response = _inject_ib5_a11y_skeleton(html_response, block)
             total_retries += retry_count
             last_text = html_response
+
+            # COURSEFORGE_CURIE_DETERMINISTIC: CURIEs are handled ENTIRELY
+            # deterministically — the model was never asked to recite them and
+            # the CURIE-preservation retry ladder is REMOVED. Reaching here
+            # means every STRUCTURAL check passed (the dispatch succeeded and
+            # the input-truncation tripwires cleared), so there is nothing left
+            # to retry: stamp every vocabulary-resolvable outline CURIE onto the
+            # emit via the SAME idempotent ``_force_inject_curies`` the
+            # exhaustion path uses (mirrors the outline tier's post-loop
+            # ``_mint_outline_curies``), then return — ZERO CURIE-driven
+            # re-rolls, ever. ANTI-FABRICATION: ``_minted_curie_tokens`` is the
+            # course's ``domain_concept_vocabulary`` minted-CURIE universe (the
+            # SAME universe ``BlockCurieAnchoringValidator`` treats as minted),
+            # so a stamped token is always a real course concept; a token that
+            # does NOT resolve is silently skipped (never fabricated). Because
+            # every stamped token is a minted-map key AND lands in the str-path
+            # text as force-injected content, the ``rewrite_curie_anchoring``
+            # gate's minted-literal arm anchors it honestly.
+            if getattr(self, "_curie_deterministic", False):
+                stampable = [
+                    c for c in outline_curies
+                    if c in self._minted_curie_tokens
+                ]
+                injected_html = _force_inject_curies(html_response, stampable)
+                self._emit_curie_deterministic_decision(
+                    block=block,
+                    stamped_curies=stampable,
+                    outline_curie_count=len(outline_curies),
+                    attempt=attempt,
+                )
+                self._emit_per_call_decision(
+                    raw_text=injected_html,
+                    retry_count=total_retries,
+                    block_id=block.block_id,
+                    block_type=block.block_type,
+                    page_id=block.page_id,
+                    escalation_marker=block.escalation_marker,
+                    outline_curie_count=len(outline_curies),
+                    remediation_attempts=attempt,
+                    curie_deterministic=True,
+                    minted_curies=stampable,
+                    dropped_cited_chunk_ids=dropped_cited_chunk_ids,
+                )
+                return _apply_rewrite_touch(
+                    block=block,
+                    html_response=injected_html,
+                    provider=_touch_provenance(self._provider),
+                    model=self._model,
+                    decision_capture_id=self._last_capture_id(),
+                    purpose=_TOUCH_PURPOSE_CURIE_DETERMINISTIC,
+                )
 
             # M3 tolerance: only ENFORCE the CURIEs whose underlying term
             # the rewrite tier actually used in the prose (plus a ≥1
@@ -4170,6 +4331,49 @@ class RewriteProvider(_BaseLLMProvider):
     # Per-call decision capture (Subtask 26)
     # ------------------------------------------------------------------
 
+    def _emit_curie_deterministic_decision(
+        self,
+        *,
+        block: Block,
+        stamped_curies: Sequence[str],
+        outline_curie_count: int,
+        attempt: int,
+    ) -> None:
+        """Emit one ``curie_minting`` decision per deterministic CURIE stamp.
+
+        Fired by the ``COURSEFORGE_CURIE_DETERMINISTIC`` path with the exact
+        minted token list so a postmortem can replay which CURIEs were placed
+        deterministically (never recited by the model). ``curie_minting`` is
+        the nearest canonical ``decision_type`` (the outline tier's minter
+        uses it too — ``schemas/events/decision_event.schema.json``). The
+        rationale interpolates per-call dynamic signals (block id/type/page,
+        the stamped token list, the outline CURIE count, provider/model) per
+        the LLM-call-site instrumentation contract — no static boilerplate.
+        """
+        dropped = max(0, int(outline_curie_count) - len(stamped_curies))
+        self._emit_decision(
+            decision_type="curie_minting",
+            decision=(
+                f"deterministically stamped {len(stamped_curies)} CURIE(s) "
+                f"for block_id={block.block_id}"
+            ),
+            rationale=(
+                f"COURSEFORGE_CURIE_DETERMINISTIC on: block_id={block.block_id} "
+                f"(type={block.block_type}, page={block.page_id}) authored via "
+                f"provider={self._provider}, model={self._model} with NO "
+                f"CURIE-preservation retry ladder — the model was never asked "
+                f"to recite CURIE tokens. Post-generation, stamped "
+                f"{len(stamped_curies)} vocabulary-resolvable outline CURIE(s) "
+                f"{list(stamped_curies)} onto the emit (idempotent "
+                f"force-inject); {dropped} of the {outline_curie_count} outline "
+                f"CURIE(s) did not resolve against the course "
+                f"domain_concept_vocabulary ({len(self._minted_curie_tokens)} "
+                f"minted CURIEs) and were skipped (anti-fabrication — never a "
+                f"fabricated token). Single dispatch this attempt "
+                f"(attempt={attempt + 1})."
+            ),
+        )
+
     def _emit_per_call_decision(
         self,
         *,
@@ -4197,6 +4401,10 @@ class RewriteProvider(_BaseLLMProvider):
         curie_force_injected = bool(
             call_context.get("curie_force_injected", False)
         )
+        curie_deterministic = bool(
+            call_context.get("curie_deterministic", False)
+        )
+        deterministic_minted = call_context.get("minted_curies") or []
         missing_curies = call_context.get("missing_curies") or []
         enforced_curie_count = call_context.get("enforced_curie_count")
         pruned_curie_count = call_context.get("pruned_curie_count")
@@ -4213,6 +4421,8 @@ class RewriteProvider(_BaseLLMProvider):
             outcome = "scaffold_overflow"
         elif input_truncated:
             outcome = "input_truncated"
+        elif curie_deterministic:
+            outcome = "curie_deterministic_stamp"
         elif curie_force_injected:
             outcome = "curie_force_injected"
         elif curie_drop:
@@ -4274,6 +4484,18 @@ class RewriteProvider(_BaseLLMProvider):
                 f"(drop-trailing-whole, never head-truncated): "
                 f"{dropped_cited_chunk_ids}."
             )
+        if curie_deterministic:
+            rationale_parts.append(
+                f"COURSEFORGE_CURIE_DETERMINISTIC: CURIEs handled entirely "
+                f"deterministically — the model was never asked to recite "
+                f"them and the CURIE-preservation retry ladder was REMOVED "
+                f"(zero CURIE-driven re-rolls). Stamped "
+                f"{len(deterministic_minted)} vocabulary-resolvable outline "
+                f"CURIE(s) {deterministic_minted} onto the emit post-generation "
+                f"(idempotent force-inject); every token is a key in the "
+                f"course domain_concept_vocabulary minted-CURIE map, so "
+                f"BlockCurieAnchoringValidator's minted-literal arm anchors it."
+            )
         if escalation_marker:
             rationale_parts.append(
                 f"Escalation marker: {escalation_marker}."
@@ -4312,5 +4534,6 @@ __all__ = [
     "_CURIE_FORCED_ATTR",
     "_REWRITE_SYSTEM_PROMPT",
     "_TOUCH_PURPOSE_CURIE_FORCED",
+    "_TOUCH_PURPOSE_CURIE_DETERMINISTIC",
     "html_has_forced_curie_marker",
 ]

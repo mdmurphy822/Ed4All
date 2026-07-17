@@ -39,6 +39,7 @@ from lib.retrieval._prompts import estimate_tokens
 ENV_FIT_WINDOW = "ED4ALL_REWRITE_FIT_WINDOW"
 ENV_REWRITE_NUM_CTX = "ED4ALL_REWRITE_NUM_CTX"
 ENV_TRUNCATION_TRIPWIRE = "ED4ALL_REWRITE_TRUNCATION_TRIPWIRE"
+ENV_CURIE_DETERMINISTIC = "COURSEFORGE_CURIE_DETERMINISTIC"
 
 #: Default served window assumed for the rewrite tier when
 #: ``ED4ALL_REWRITE_NUM_CTX`` is unset. 8192 matches the qwen2.5-7b-8k
@@ -115,6 +116,33 @@ def resolve_truncation_tripwire(env: Optional[Dict[str, str]] = None) -> bool:
     if raw is None:
         return True
     return str(raw).strip().lower() not in _FALSEY
+
+
+def resolve_curie_deterministic(env: Optional[Dict[str, str]] = None) -> bool:
+    """Resolve ``COURSEFORGE_CURIE_DETERMINISTIC`` (default OFF).
+
+    When ON, CURIEs are handled ENTIRELY deterministically at the rewrite
+    tier: the model is never asked to recite / preserve CURIE tokens (the
+    model-facing CURIE directive is stripped from both the system prompt
+    and the serialised outline payload), the CURIE-preservation retry
+    ladder is REMOVED (structural dispatch / truncation checks stay), and
+    every vocabulary-resolvable outline CURIE is stamped onto the emitted
+    HTML deterministically post-emit (the same force-inject the exhaustion
+    path uses), so the ``rewrite_curie_anchoring`` gate passes with ZERO
+    CURIE-driven LLM re-rolls.
+
+    Truthy ``1/true/yes/on`` (case-insensitive) → on; everything else
+    (unset / garbage / explicit falsey) → off, so OFF is byte-identical to
+    the legacy CURIE-preservation retry ladder. Anti-fabrication: only
+    CURIEs resolvable against the course ``domain_concept_vocabulary``
+    (the minted-CURIE token universe the checker itself uses) are stamped
+    — a prose corpus with a vocabulary is the design target; an RDF /
+    legacy corpus (no vocabulary) should keep this flag OFF.
+    """
+    raw = (env or os.environ).get(ENV_CURIE_DETERMINISTIC)
+    if not raw:
+        return False
+    return str(raw).strip().lower() in _TRUTHY
 
 
 # ---------------------------------------------------------------------------
@@ -313,12 +341,14 @@ __all__ = [
     "ENV_FIT_WINDOW",
     "ENV_REWRITE_NUM_CTX",
     "ENV_TRUNCATION_TRIPWIRE",
+    "ENV_CURIE_DETERMINISTIC",
     "DEFAULT_REWRITE_NUM_CTX",
     "MAX_CHUNK_BODY_CHARS",
     "RESERVE_TOKENS",
     "resolve_fit_window",
     "resolve_rewrite_num_ctx",
     "resolve_truncation_tripwire",
+    "resolve_curie_deterministic",
     "cited_chunk_ids_from_content",
     "select_chunks_under_budget",
 ]
