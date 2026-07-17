@@ -4563,7 +4563,7 @@ def _derive_terminals_bottom_up(
         check_stop("stage2_clusters", c_idx - 1)
         cluster_cos = [chapter_cos[i] for i in member_idxs]
         _cl_unit = f"cluster{c_idx:02d}"
-        _cl_fp = _llm_compute_fingerprint({
+        _cl_fp_inputs: Dict[str, Any] = {
             "site": "stage2_clusters",
             "member_statements": sorted(
                 str(c.get("statement") or c.get("text") or "")
@@ -4571,7 +4571,15 @@ def _derive_terminals_bottom_up(
             ),
             "model": str(getattr(provider, "_model", "") or ""),
             "course_name": course_name,
-        })
+        }
+        # Gate-retry re-roll salt: key present ONLY when the runner's
+        # course_planning gate-retry loop set it, so legacy fingerprints
+        # stay byte-identical and a salted retry attempt never reuses a
+        # prior attempt's cached TO.
+        _reroll_salt = _planning_reroll_salt()
+        if _reroll_salt:
+            _cl_fp_inputs["reroll_salt"] = _reroll_salt
+        _cl_fp = _llm_compute_fingerprint(_cl_fp_inputs)
         authored: Optional[Dict[str, Any]] = None
         if _cluster_store.enabled:
             _cl_cached = _cluster_store.reuse(
@@ -4978,7 +4986,7 @@ def _derive_terminals_chapter_anchored(
         _cl_unit = f"cluster{m_idx:02d}"
         # Fingerprint EXTENDED with the anchor module id so a stale assignment
         # never reuses another module's TO (mirrors the bottom-up fingerprint).
-        _cl_fp = _llm_compute_fingerprint({
+        _cl_fp_inputs: Dict[str, Any] = {
             "site": "stage2_clusters",
             "anchor_module_id": module_id,
             "member_statements": sorted(
@@ -4987,7 +4995,14 @@ def _derive_terminals_chapter_anchored(
             ),
             "model": str(getattr(provider, "_model", "") or ""),
             "course_name": course_name,
-        })
+        }
+        # Gate-retry re-roll salt (mirrors the bottom-up site): present only
+        # when the runner's course_planning gate-retry loop set it — legacy
+        # fingerprints stay byte-identical.
+        _reroll_salt = _planning_reroll_salt()
+        if _reroll_salt:
+            _cl_fp_inputs["reroll_salt"] = _reroll_salt
+        _cl_fp = _llm_compute_fingerprint(_cl_fp_inputs)
         authored: Optional[Dict[str, Any]] = None
         if _cluster_store.enabled:
             _cl_cached = _cluster_store.reuse(
@@ -5186,6 +5201,21 @@ def _stage2_cluster_store(path: Optional[Path]) -> _LlmCheckpointStore:
 def _objective_synthesis_checkpoint_enabled() -> bool:
     """Stage-2 site gate: site flag (when set) > family flag; default ON."""
     return _llm_checkpoint_enabled(_OBJECTIVE_SYNTHESIS_CHECKPOINT_ENV)
+
+
+def _planning_reroll_salt() -> str:
+    """Per-attempt course_planning gate-retry re-roll salt.
+
+    Set to ``attempt-N`` by ``WorkflowRunner._retry_course_planning_gates``
+    (owner directive 2026-07-17) before each gate-failure re-dispatch of the
+    ``course_planning`` phase; empty on every normal run. Folded into the
+    cluster-stage sidecar FINGERPRINT (both TO-derivation call sites) — and,
+    independently, into the ``TextbookSynthesisProvider`` system prompt — so
+    a retry attempt genuinely differs from the cached/previous attempt
+    instead of reproducing byte-identical output. Empty → the fingerprint
+    dicts carry no salt key (byte-identical to legacy).
+    """
+    return os.environ.get("ED4ALL_PLANNING_REROLL_SALT", "").strip()
 
 
 def _stage2_window_key(chapter_id: str, window_index: int) -> str:

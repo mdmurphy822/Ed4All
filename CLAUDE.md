@@ -733,7 +733,7 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `NVIDIA_*` (vendor endpoint-registry row for the hosted large-model seat — `NVIDIA_API_KEY` / `NVIDIA_BASE_URL` / `NVIDIA_LARGE_MODEL`) | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 3 |
 | `SEMANTIK_*` (DART replacement — SemantiK semantic-cascade converter; also honors the legacy `DART_THETA_DEVICE` compat env) | [`SemantiK/CLAUDE.md § Opt-In Behavior Flags`](SemantiK/CLAUDE.md) | 156 |
 | `COURSEFORGE_*` / `COURSEPLANNER_*` / `TEXTBOOK_SYNTHESIS_*` | [`Courseforge/CLAUDE.md § Opt-In Behavior Flags`](Courseforge/CLAUDE.md) | 40 |
-| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root index (below) + [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 192 |
+| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root index (below) + [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 194 |
 
 ### Cross-cutting flags (root-owned)
 
@@ -868,6 +868,8 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `ED4ALL_OBJECTIVE_LIBRARY_EXEMPLAR_MIN_OVERLAP` | `0.05` | W4.3 Jaccard floor for an exemplar to be surfaced |
 | `ED4ALL_OBJECTIVE_MAX_CHUNKS_PER_OBJECTIVE` | `5` | Fix 1A top-K cap on cited chunks per MERGED objective |
 | `ED4ALL_OBJECTIVE_SYNTHESIS_CHECKPOINT` | `on` | Site override for the stage-2 window + cluster resume sidecars (beats `ED4ALL_GENERATION_CHECKPOINT`). |
+| `ED4ALL_PLANNING_GATE_RETRIES` | `0` (off) | Owner directive 2026-07-17 — graceful course_planning gate-failure retry budget (per attempt: evict the cluster sidecar, keep the window/CO cache, salted TO re-roll); after exhaustion the phase FAIL-OPENS complete-with-warning (`PLANNING_GATE_RETRIES_EXHAUSTED`) and the workflow continues. |
+| `ED4ALL_PLANNING_REROLL_SALT` | unset (runner-managed) | Per-attempt `attempt-N` re-roll salt the gate-retry loop sets (not operator-set); folded into the synthesis system prompt + the cluster sidecar fingerprint so each retry attempt genuinely differs. |
 | `ED4ALL_REQUIRE_ARCHIVED_OBJECTIVES` | unset (off) | W2.3 fail-closed for the archive_to_libv2 objectives→objectives.json plumbing. |
 | `ED4ALL_PRODUCTION` | `0` | When `1`, enables production-mode FastMCP server settings. |
 | `ED4ALL_PROSE_GATE_PROVENANCE_RESOLVE` | unset (off) | Gate-side provenance resolution for `block_prose_entailment` — when a rewrite block's cited `semantik:{slug}#anchor` refs resolve to nothing in `source_chunks`, map them through a `{ref -> [chunk_id]}` index (section-level ref → ALL section chunks) to recover the premise set. ADD-only, anti-fabrication (existing refs → existing chunks); default off → byte-identical NO_GROUNDING path. |

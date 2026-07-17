@@ -96,6 +96,19 @@ ENV_MAX_TOKENS = "TEXTBOOK_SYNTHESIS_MAX_TOKENS"
 # 14B + 4096-token output runs ~120-300s. 300s is the default; override
 # via ``TEXTBOOK_SYNTHESIS_TIMEOUT_SECONDS`` or the ``timeout`` kwarg.
 ENV_TIMEOUT = "TEXTBOOK_SYNTHESIS_TIMEOUT_SECONDS"
+# Per-attempt course_planning gate-retry re-roll salt (owner directive
+# 2026-07-17). Set to ``attempt-N`` by
+# ``MCP/core/workflow_runner.py::WorkflowRunner._retry_course_planning_gates``
+# before each gate-failure re-dispatch of the ``course_planning`` phase;
+# empty on every normal run. Read at CONSTRUCTION (the phase handler builds
+# a fresh provider per attempt) and folded into the SYSTEM prompt so every
+# dispatched synthesis call genuinely differs per retry attempt. NOTE: the
+# Stage-2 per-window sidecar fingerprint in ``MCP/tools/pipeline_tools.py``
+# hashes the UNSALTED module constant ``_TEXTBOOK_SYNTHESIS_SYSTEM_PROMPT``,
+# so the window/CO resume cache deliberately SURVIVES a salted retry — only
+# the cluster (TO-derivation) stage re-rolls (its sidecar is evicted and its
+# fingerprint carries the salt).
+ENV_PLANNING_REROLL_SALT = "ED4ALL_PLANNING_REROLL_SALT"
 
 # DEFAULT_PROVIDER preserves legacy class-body behavior (parity with
 # OutlinerProvider). The WORKFLOW default is "no in-process provider
@@ -498,6 +511,21 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
         else:
             base_provider_arg = resolved_provider
 
+        # Gate-retry re-roll salt (see the ENV_PLANNING_REROLL_SALT comment
+        # above): when the workflow runner set it, fold it into the system
+        # prompt so a course_planning gate-failure retry attempt genuinely
+        # re-rolls instead of reproducing the prior attempt's output.
+        reroll_salt = os.environ.get(ENV_PLANNING_REROLL_SALT, "").strip()
+        resolved_system_prompt = _TEXTBOOK_SYNTHESIS_SYSTEM_PROMPT
+        if reroll_salt:
+            resolved_system_prompt = (
+                f"{_TEXTBOOK_SYNTHESIS_SYSTEM_PROMPT}\n\n"
+                f"[Re-roll {reroll_salt}: a prior synthesis attempt failed "
+                "validation. Author afresh — ground every statement strictly "
+                "in the supplied source material and do not repeat the prior "
+                "attempt's phrasing verbatim.]"
+            )
+
         super().__init__(
             provider=base_provider_arg,
             model=resolved_model,
@@ -512,7 +540,7 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
             env_provider_var=ENV_PROVIDER,
             default_provider=DEFAULT_PROVIDER,
             supported_providers=("anthropic", "together", "local", "nvidia"),
-            system_prompt=_TEXTBOOK_SYNTHESIS_SYSTEM_PROMPT,
+            system_prompt=resolved_system_prompt,
         )
         # Restore the runtime provider label so decision-capture and
         # logging surface the registry name (e.g. "groq").

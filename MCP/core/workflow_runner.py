@@ -826,6 +826,132 @@ def _summarize_gate_failure(gate_results: Any) -> str:
     return "failed validation gate(s): " + ", ".join(parts) + suffix
 
 
+# =============================================================================
+# course_planning GATE-FAILURE RETRY (owner directive 2026-07-17)
+# =============================================================================
+#
+# "a failed entailment should not kill the whole run; it should gracefully
+# retry (max 10 retries, if 10 fails then log and loudly warn)."
+#
+# Scope: the ``course_planning`` phase ONLY. A critical gate failure there
+# (e.g. ``objective_entailment`` blocking on one unentailed terminal
+# objective) historically stopped the whole workflow via the permanent-class
+# gate-failure break in ``run_workflow`` — gate failures never enter the 3x
+# transient retry ladder. With ``ED4ALL_PLANNING_GATE_RETRIES`` > 0 the
+# runner instead, per attempt:
+#
+#   1. logs the failing critical gate ids + issue codes,
+#   2. evicts ONLY the cluster-stage resume sidecar
+#      (``.stage2_clusters_checkpoint.jsonl`` — the TO-derivation stage; the
+#      per-window CO cache ``.stage2_windows_checkpoint.jsonl`` is
+#      deliberately KEPT so a retry re-rolls the cheap TO authoring, not the
+#      whole window synthesis),
+#   3. sets the per-attempt re-roll salt ``ED4ALL_PLANNING_REROLL_SALT=
+#      attempt-N`` (read by ``TextbookSynthesisProvider`` into its system
+#      prompt AND folded into the cluster sidecar fingerprint by
+#      ``MCP/tools/pipeline_tools.py``) so even a cached-prompt path
+#      genuinely differs per attempt — a naive re-run would otherwise reuse
+#      the sidecars and reproduce byte-identical output,
+#   4. re-dispatches the phase.
+#
+# After the configured attempts all fail the phase is marked
+# complete-WITH-WARNING (fail-open, never blocked): a LOUD ``logger.error``
+# line plus a GateIssue-style ``PLANNING_GATE_RETRIES_EXHAUSTED`` warning
+# entry appended to the phase's ``_gate_results`` chain, and the workflow
+# CONTINUES — the owner's explicit fail-open-after-retries directive for
+# this phase. Default 0 → byte-identical legacy block behavior.
+
+_PLANNING_GATE_RETRIES_ENV = "ED4ALL_PLANNING_GATE_RETRIES"
+_PLANNING_REROLL_SALT_ENV = "ED4ALL_PLANNING_REROLL_SALT"
+_PLANNING_GATE_RETRY_PHASE = "course_planning"
+_PLANNING_CLUSTER_SIDECAR_NAME = ".stage2_clusters_checkpoint.jsonl"
+
+
+def resolve_planning_gate_retries() -> int:
+    """Resolve the course_planning gate-failure retry budget.
+
+    Parse-with-fallback: unset / blank / garbage / negative → 0 (off —
+    byte-identical legacy behavior: a critical gate failure stops the
+    workflow). Read at call time (not import) so tests can toggle per-run.
+    """
+    raw = os.environ.get(_PLANNING_GATE_RETRIES_ENV, "").strip()
+    if not raw:
+        return 0
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "%s=%r is not an integer; falling back to 0 (gate retries off)",
+            _PLANNING_GATE_RETRIES_ENV, raw,
+        )
+        return 0
+    return max(0, value)
+
+
+def _planning_failing_gate_summary(
+    gate_results: Any,
+) -> Tuple[List[str], List[str]]:
+    """Extract (failing critical gate ids, critical issue codes) from a
+    phase's gate_results chain (dicts, or GateResult-shaped objects).
+
+    Only critical-severity failed gates count — they are what flipped
+    ``gates_passed`` False (warning gates never block). Order-preserving,
+    de-duplicated.
+    """
+    gate_ids: List[str] = []
+    issue_codes: List[str] = []
+    for gr in gate_results or []:
+        if isinstance(gr, dict):
+            passed = gr.get("passed", True)
+            gate_id = gr.get("gate_id", "") or ""
+            severity = gr.get("severity", "warning") or "warning"
+            issues = gr.get("issues") or []
+        elif hasattr(gr, "gate_id"):
+            passed = getattr(gr, "passed", True)
+            gate_id = getattr(gr, "gate_id", "") or ""
+            severity = getattr(gr, "severity", "warning") or "warning"
+            issues = getattr(gr, "issues", None) or []
+        else:
+            continue
+        if passed or severity != "critical":
+            continue
+        if gate_id and gate_id not in gate_ids:
+            gate_ids.append(gate_id)
+        for issue in issues:
+            if isinstance(issue, dict):
+                code = issue.get("code", "") or ""
+                sev = issue.get("severity", "") or ""
+            else:
+                code = getattr(issue, "code", "") or ""
+                sev = getattr(issue, "severity", "") or ""
+            if sev == "critical" and code and code not in issue_codes:
+                issue_codes.append(code)
+    return gate_ids, issue_codes
+
+
+def _planning_cluster_sidecar_path(
+    extracted: Dict[str, Any],
+) -> Optional[Path]:
+    """Locate the course_planning cluster-stage resume sidecar.
+
+    Prefers the phase's own ``synthesized_objectives_path`` output (the
+    sidecar is its sibling under ``01_learning_objectives/``); falls back
+    to ``project_path/01_learning_objectives/``. Returns None when neither
+    output key resolves (nothing to evict — the attempt never wrote one).
+    """
+    obj_path = extracted.get("synthesized_objectives_path")
+    if obj_path:
+        return Path(str(obj_path)).parent / _PLANNING_CLUSTER_SIDECAR_NAME
+    project_path = extracted.get("project_path")
+    if project_path:
+        return (
+            Path(str(project_path))
+            / "01_learning_objectives"
+            / _PLANNING_CLUSTER_SIDECAR_NAME
+        )
+    return None
+
+
 def _reset_workflows_cache() -> None:
     """Clear the cached workflows config and fallback-log tracker.
 
@@ -2264,11 +2390,72 @@ class WorkflowRunner:
                 break
 
             if not gates_passed and not getattr(phase, "optional", False):
-                logger.error(f"Phase {phase_name} failed validation gates, stopping workflow")
-                final_status = "FAILED"
-                failed_phase = phase_name
-                failure_reason = _summarize_gate_failure(gate_results)
-                break
+                # Owner directive 2026-07-17: a course_planning gate failure
+                # (e.g. one unentailed terminal objective) retries gracefully
+                # instead of killing the whole run. Default 0 keeps the legacy
+                # block below byte-identical; see the module-level
+                # ``resolve_planning_gate_retries`` block for the contract.
+                _planning_budget = (
+                    resolve_planning_gate_retries()
+                    if phase_name == _PLANNING_GATE_RETRY_PHASE
+                    else 0
+                )
+                if _planning_budget > 0:
+                    (
+                        results,
+                        gates_passed,
+                        gate_results,
+                        extracted,
+                        _retry_info,
+                    ) = await self._retry_course_planning_gates(
+                        workflow_id=workflow_id,
+                        phase=phase,
+                        phase_idx=phase_idx,
+                        phase_name=phase_name,
+                        routed_params=routed_params,
+                        workflow_params=workflow_params,
+                        workflow_state=workflow_state,
+                        workflow_path=workflow_path,
+                        phase_outputs=phase_outputs,
+                        gate_configs=gate_configs,
+                        gate_results=gate_results,
+                        extracted=extracted,
+                        results=results,
+                        retry_budget=_planning_budget,
+                    )
+                    # Re-stamp + persist the FINAL attempt (the stamp above
+                    # persisted attempt 1's outputs + gate verdict). An
+                    # aborted retry (a retry attempt's TASKS failed/paused —
+                    # not a gate verdict) stays ``_completed=False`` so a
+                    # later --resume re-runs the phase.
+                    extracted["_completed"] = not _retry_info.get("aborted")
+                    extracted["_gates_passed"] = gates_passed
+                    extracted["_gate_results"] = list(gate_results or [])
+                    if _retry_info.get("exhausted"):
+                        extracted["_planning_gate_retries_exhausted"] = True
+                    phase_outputs[phase_name] = extracted
+                    workflow_state["phase_outputs"] = phase_outputs
+                    self._save_workflow_state(workflow_path, workflow_state)
+                    all_results[phase_name] = {
+                        "task_count": len(results or {}),
+                        "completed": sum(
+                            1 for r in (results or {}).values()
+                            if getattr(r, "status", None) == "COMPLETE"
+                        ),
+                        "failed": sum(
+                            1 for r in (results or {}).values()
+                            if getattr(r, "status", None)
+                            in ("ERROR", "TIMEOUT", "FAILED")
+                        ),
+                        "gates_passed": gates_passed,
+                        "planning_gate_retries": _retry_info,
+                    }
+                if not gates_passed:
+                    logger.error(f"Phase {phase_name} failed validation gates, stopping workflow")
+                    final_status = "FAILED"
+                    failed_phase = phase_name
+                    failure_reason = _summarize_gate_failure(gate_results)
+                    break
 
             # Deterministic GPU lease hand-off. The phase has now completed
             # SUCCESSFULLY (task results in, gates passed, outputs persisted), so
@@ -4739,6 +4926,275 @@ class WorkflowRunner:
             "_gates_passed": True,
             "_skip_reason": "skip_dart=True; reused existing DART HTMLs",
         }
+
+    async def _retry_course_planning_gates(
+        self,
+        *,
+        workflow_id: str,
+        phase: Any,
+        phase_idx: int,
+        phase_name: str,
+        routed_params: Dict[str, Any],
+        workflow_params: Dict[str, Any],
+        workflow_state: Dict[str, Any],
+        workflow_path: Path,
+        phase_outputs: Dict[str, Dict],
+        gate_configs: Any,
+        gate_results: Any,
+        extracted: Dict[str, Any],
+        results: Dict[str, Any],
+        retry_budget: int,
+    ) -> Tuple[Dict[str, Any], bool, Any, Dict[str, Any], Dict[str, Any]]:
+        """Gracefully retry a gate-failed ``course_planning`` phase.
+
+        Owner directive 2026-07-17 — see the module-level
+        ``resolve_planning_gate_retries`` block for the full contract.
+        Called ONLY when the phase's gates failed and the budget is > 0.
+
+        Per attempt: log the failing critical gate ids + issue codes, evict
+        ONLY the cluster-stage sidecar (keep the window/CO cache), set the
+        per-attempt ``ED4ALL_PLANNING_REROLL_SALT`` (folded into the
+        synthesis system prompt + cluster fingerprint downstream), emit a
+        decision-capture event, then re-dispatch the phase. Stops early on
+        the first gate PASS; a retry attempt whose TASKS fail/pause (not a
+        gate verdict) aborts the loop and falls back to the legacy failure
+        path. When every attempt fails, the phase is FAIL-OPENED: a LOUD
+        error line + a ``PLANNING_GATE_RETRIES_EXHAUSTED`` warning entry
+        appended to the gate chain, and ``gates_passed`` returned True so
+        the workflow continues.
+
+        Returns ``(results, gates_passed, gate_results, extracted,
+        retry_info)`` for the caller to re-stamp + persist.
+        """
+        # Best-effort decision capture — must never block the retry.
+        capture = None
+        try:
+            from lib.decision_capture import DecisionCapture
+            capture = DecisionCapture(
+                course_code=str(
+                    workflow_params.get("course_name")
+                    or extracted.get("project_id")
+                    or workflow_id
+                ),
+                phase="course_planning",
+                tool="orchestrator",
+            )
+        except Exception as exc:  # noqa: BLE001 — capture never blocks retry
+            logger.warning(
+                "planning gate retry: DecisionCapture init failed (%s)", exc
+            )
+
+        attempt_summaries: List[Dict[str, Any]] = []
+        gates_passed = False
+        aborted = False
+        attempts_used = 0
+        try:
+            for attempt in range(1, retry_budget + 1):
+                failing_ids, issue_codes = _planning_failing_gate_summary(
+                    gate_results
+                )
+                attempt_summaries.append({
+                    "attempt": attempt,
+                    "failing_gates": failing_ids,
+                    "critical_issue_codes": issue_codes,
+                })
+                # Evict ONLY the cluster (TO-derivation) sidecar; the
+                # per-window CO cache stays so the retry re-rolls the cheap
+                # TO authoring, not the whole window synthesis.
+                sidecar = _planning_cluster_sidecar_path(extracted)
+                evicted = False
+                if sidecar is not None and sidecar.exists():
+                    try:
+                        sidecar.unlink()
+                        evicted = True
+                    except OSError as exc:
+                        logger.warning(
+                            "planning gate retry: failed to evict cluster "
+                            "sidecar %s (%s); the salted fingerprint still "
+                            "forces a TO re-roll", sidecar, exc,
+                        )
+                salt = f"attempt-{attempt}"
+                os.environ[_PLANNING_REROLL_SALT_ENV] = salt
+                logger.warning(
+                    "course_planning gate failure — retry %d/%d: failing "
+                    "critical gate(s)=%s, issue code(s)=%s; evicted cluster "
+                    "sidecar=%s (%s), window/CO cache kept, re-roll salt=%r",
+                    attempt, retry_budget,
+                    failing_ids or ["<none>"], issue_codes or ["<none>"],
+                    evicted, sidecar, salt,
+                )
+                if capture is not None:
+                    try:
+                        capture.log_decision(
+                            decision_type="validation_result",
+                            decision=(
+                                f"course_planning gate retry {salt} of "
+                                f"{retry_budget}"
+                            ),
+                            rationale=(
+                                f"course_planning validation gates failed "
+                                f"(attempt {attempt} of a {retry_budget}-"
+                                f"retry budget): failing critical gates="
+                                f"{', '.join(failing_ids) or 'none'}; "
+                                f"critical issue codes="
+                                f"{', '.join(issue_codes) or 'none'}. "
+                                f"Evicted cluster sidecar={evicted} "
+                                f"({sidecar}), kept the window/CO cache, "
+                                f"re-dispatching TO derivation with re-roll "
+                                f"salt {salt} per the owner's 2026-07-17 "
+                                f"graceful-retry directive."
+                            ),
+                            alternatives_considered=[
+                                "stop the workflow on the first critical "
+                                "gate failure (legacy permanent-class "
+                                "behavior; ED4ALL_PLANNING_GATE_RETRIES=0)",
+                                "evict the window sidecar too (re-rolls the "
+                                "expensive per-window CO synthesis; rejected "
+                                "— the retry is TO-stage scoped)",
+                            ],
+                        )
+                    except Exception:  # noqa: BLE001 — capture never blocks
+                        pass
+
+                attempts_used = attempt
+                tasks = self._create_phase_tasks(
+                    workflow_id, phase, routed_params, workflow_params,
+                    phase_outputs,
+                )
+                workflow_state.setdefault("tasks", []).extend(tasks)
+                self._save_workflow_state(workflow_path, workflow_state)
+                results, gates_passed, gate_results = (
+                    await self.executor.execute_phase(
+                        workflow_id=workflow_id,
+                        phase_name=phase_name,
+                        phase_index=phase_idx,
+                        tasks=tasks,
+                        gate_configs=gate_configs,
+                        max_concurrent=getattr(phase, "max_concurrent", 5),
+                        phase_outputs=phase_outputs,
+                        workflow_params=workflow_params,
+                        extract_phase_outputs_fn=self._extract_phase_outputs,
+                        phase_batch_timeout_minutes=getattr(
+                            phase, "batch_timeout_minutes", None
+                        ),
+                    )
+                )
+                extracted = self._extract_phase_outputs(phase_name, results)
+                # A retry attempt whose TASKS did not all COMPLETE (dispatch
+                # error / timeout / graceful pause) is NOT a gate verdict —
+                # abort the retry loop and let the caller's legacy failure
+                # path own it (``_completed=False`` → --resume re-runs).
+                if any(
+                    getattr(r, "status", None) != "COMPLETE"
+                    for r in (results or {}).values()
+                ):
+                    logger.error(
+                        "planning gate retry: attempt %d task(s) did not "
+                        "complete; aborting the gate-retry loop (legacy "
+                        "failure path owns this).", attempt,
+                    )
+                    aborted = True
+                    gates_passed = False
+                    break
+                if gates_passed:
+                    logger.info(
+                        "course_planning gates PASSED on retry attempt "
+                        "%d/%d (salt %r).", attempt, retry_budget, salt,
+                    )
+                    break
+        finally:
+            os.environ.pop(_PLANNING_REROLL_SALT_ENV, None)
+
+        exhausted = (not gates_passed) and (not aborted)
+        if exhausted:
+            failing_ids, issue_codes = _planning_failing_gate_summary(
+                gate_results
+            )
+            attempt_summaries.append({
+                "attempt": attempts_used + 1,
+                "failing_gates": failing_ids,
+                "critical_issue_codes": issue_codes,
+            })
+            per_attempt = "; ".join(
+                f"attempt {s['attempt']}: "
+                f"gates={','.join(s['failing_gates']) or 'none'} "
+                f"codes={','.join(s['critical_issue_codes']) or 'none'}"
+                for s in attempt_summaries
+            )
+            # LOUD, operator-facing — the owner's explicit
+            # fail-open-after-retries directive for this phase.
+            logger.error(
+                "PLANNING_GATE_RETRIES_EXHAUSTED: course_planning validation "
+                "gates still failing after %d retry attempt(s) (%s). "
+                "Proceeding FAIL-OPEN per the owner's 2026-07-17 directive — "
+                "phase marked complete-with-warning; downstream phases run "
+                "against the un-gated objectives. Review "
+                "synthesized_objectives.json before promoting this course.",
+                attempts_used, per_attempt,
+            )
+            gate_results = list(gate_results or []) + [{
+                "gate_id": "planning_gate_retry",
+                "validator_name": (
+                    "MCP.core.workflow_runner._retry_course_planning_gates"
+                ),
+                "validator_version": "1.0",
+                "passed": True,
+                "severity": "warning",
+                "score": None,
+                "issues": [{
+                    "severity": "warning",
+                    "code": "PLANNING_GATE_RETRIES_EXHAUSTED",
+                    "message": (
+                        f"course_planning validation gates still failing "
+                        f"after {attempts_used} retry attempt(s); "
+                        f"fail-open per owner directive (2026-07-17). "
+                        f"Per-attempt failing-gate summary: {per_attempt}."
+                    ),
+                    "location": None,
+                    "suggestion": (
+                        "Inspect the failing gates' issues in this phase's "
+                        "_gate_results chain and review "
+                        "01_learning_objectives/synthesized_objectives.json "
+                        "(e.g. via `ed4all objectives restructure`) before "
+                        "promoting the course."
+                    ),
+                }],
+                "metadata": {"attempt_summaries": attempt_summaries},
+            }]
+            gates_passed = True  # fail-open: complete-with-warning
+            if capture is not None:
+                try:
+                    capture.log_decision(
+                        decision_type="validation_result",
+                        decision=(
+                            "course_planning gate retries exhausted — "
+                            "fail-open (complete-with-warning)"
+                        ),
+                        rationale=(
+                            f"All {attempts_used} course_planning gate "
+                            f"retry attempt(s) failed ({per_attempt}); "
+                            f"marking the phase complete-with-warning "
+                            f"(PLANNING_GATE_RETRIES_EXHAUSTED) and letting "
+                            f"the workflow continue per the owner's "
+                            f"2026-07-17 fail-open-after-retries directive."
+                        ),
+                        alternatives_considered=[
+                            "block the workflow after budget exhaustion "
+                            "(legacy behavior; contradicts the owner "
+                            "directive for this phase)",
+                        ],
+                    )
+                except Exception:  # noqa: BLE001 — capture never blocks
+                    pass
+
+        retry_info: Dict[str, Any] = {
+            "budget": retry_budget,
+            "attempts_used": attempts_used,
+            "exhausted": exhausted,
+            "aborted": aborted,
+            "attempt_summaries": attempt_summaries,
+        }
+        return results, gates_passed, gate_results, extracted, retry_info
 
     def _synthesize_course_planning_reuse_output(
         self,
