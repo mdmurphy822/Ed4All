@@ -2560,6 +2560,45 @@ def _enum_value(obj: Any) -> Any:
     return obj.value if hasattr(obj, "value") else obj
 
 
+def _run_glmocr_lane_v2(
+    pdf_path: Path, *, log: Callable[[str], None]
+) -> "PipelineV2Result":
+    """Drive the GLM-OCR lane and wrap it in a ``PipelineV2Result``.
+
+    The lane writes its sidecars (layout + escalations) into
+    ``SEMANTIK_GLMOCR_OUTPUT_DIR`` (default: the PDF's parent) and returns the
+    ``region_provenance`` wire contract; the Ed4All seam renders the HTML.
+    """
+    import os
+
+    from .glmocr.lane import build_cascade_result_dict, run_glmocr_lane
+
+    out_dir = Path(os.environ.get("SEMANTIK_GLMOCR_OUTPUT_DIR") or pdf_path.parent)
+    log(f"[glmocr] GLM-OCR extraction lane active: {pdf_path.name}")
+    lane_result = run_glmocr_lane(pdf_path, out_dir, render_html=False)
+    log(
+        f"[glmocr] {len(lane_result.region_provenance)} regions, "
+        f"{len(lane_result.escalations)} escalation(s)"
+    )
+    cascade = build_cascade_result_dict(
+        lane_result, pdf_path=str(pdf_path), return_html=True
+    )
+    theta = cascade["theta"]
+    return PipelineV2Result(
+        pdf=str(pdf_path),
+        html=cascade.get("html", ""),
+        wcag_status=cascade["wcag_status_under_mock"],
+        exit_action=theta.get("action"),
+        theta_score=theta.get("theta_score"),
+        flags=list(theta.get("flags") or []),
+        lane_used=cascade["lane_used"],
+        theta_report=theta,
+        cascade=cascade,
+        region_provenance=list(cascade.get("region_provenance") or []),
+        heading_tree=[tuple(t) for t in (cascade.get("heading_tree") or [])],
+    )
+
+
 def run_pipeline_v2(
     pdf_path: Path | str,
     *,
@@ -2613,6 +2652,20 @@ def run_pipeline_v2(
         ``feedback_no_silent_fallbacks``).
     """
     pdf_path = Path(pdf_path)
+
+    # SEMANTIK_GLMOCR_LANE (owner-adopted GLM-OCR extraction lane) — a guarded,
+    # default-OFF whole-document converter that OWNS structure via the GLM-OCR
+    # SDK + deterministic transform, bypassing the omni Stage 1..13 cascade
+    # entirely (HtmlValidator/Chromium is never constructed on this path). OFF →
+    # byte-identical omni path (the branch never imports the lane). The lane
+    # produces the region_provenance wire contract; the Ed4All conversion seam
+    # renders the accessible HTML + data-semantik-* provenance from it exactly as
+    # it does for the omni cascade.
+    from .glmocr import resolve_glmocr_lane_mode
+
+    if resolve_glmocr_lane_mode():
+        return _run_glmocr_lane_v2(pdf_path, log=log)
+
     if runtime_mode is None:
         # A hosted endpoint on EITHER Stage-6 phase seat IS real generation,
         # so it forces "real" even when no LOCAL GGUF adapter is configured —
