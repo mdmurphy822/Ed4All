@@ -68,6 +68,23 @@ logger = logging.getLogger(__name__)
 #: at Phase 8 ST 4 land time via
 #: ``huggingface_hub.HfApi().model_info(repo_id).sha``). Override the
 #: registry by passing ``members=`` to :class:`BloomBertEnsemble.__init__`.
+#:
+#: .. deprecated::
+#:    **The first two members are RETIRED under ``ED4ALL_BLOOM_TRIVOTE``**
+#:    (owner-approved 2026-07-18). ``cip29/bert-blooms-taxonomy-classifier``
+#:    (member 0) carries no stated license — see ``docs/LICENSING.md`` — and
+#:    ``distilbert-base-uncased-finetuned-sst-2-english`` (member 1) is a
+#:    sentiment model mapped onto Bloom by a low-resolution heuristic. When
+#:    the trivote flag is ON these two are **NEVER loaded**: the
+#:    ``bloom_classifier_disagreement`` gate re-founds on three interpretable
+#:    voters (the generator's OWN asserted level, a zero-shot pass over the
+#:    ALREADY-LICENSED DeBERTa NLI member below, and the deterministic
+#:    verb-ontology level) — see :mod:`lib.classifiers.bloom_zero_shot`. This
+#:    list is retained UNCHANGED only to keep the legacy (flag-OFF) path
+#:    byte-identical AND because :meth:`lib.classifiers.nli_classifier.
+#:    NliClassifier.get_or_load` pulls the DeBERTa name+revision by INDEX
+#:    (``_DEFAULT_ENSEMBLE_MEMBERS[2]``) — do NOT reorder or shorten this
+#:    list without updating that pull, or every NLI-backed gate breaks.
 _DEFAULT_ENSEMBLE_MEMBERS: List[Dict[str, str]] = [
     {
         "name": "cip29/bert-blooms-taxonomy-classifier",

@@ -159,6 +159,36 @@ jina / mxbai rerankers are deliberately EXCLUDED (CC-BY-NC / non-clean).
 | benchmark candidate | `BAAI/bge-reranker-large` | MIT | N/A (local in-process) | larger bge cross-encoder |
 | benchmark candidate | `BAAI/bge-reranker-v2-m3` | Apache-2.0 | N/A (local in-process) | multilingual headroom |
 
+## Validation models (inference-only quality gates — no training-data exposure)
+
+The validation-gate suite (`lib/validators/`, `lib/retrieval/groundedness.py`,
+`lib/classifiers/`) scores pipeline artifacts with small local models. **None
+of these models author content**: they emit pass/fail verdicts, entailment
+probabilities, cosine similarities, and Bloom-level votes over content that
+already exists. No validator output is distributed as course content and none
+lands in `instruction_pairs.jsonl`, so this surface has zero training-data
+exposure regardless of model license. Recorded here explicitly (rather than
+implied) per the 2026-07-18 owner request.
+
+| Model | License | Role |
+|-------|---------|------|
+| `MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli` | MIT (Microsoft DeBERTa-v3 base + MIT fine-tune) | NLI entailment scorer — `block_prose_entailment`, `claim_support`, `objective_entailment`, `block_objective_delivery`, grounded-answer groundedness, eval gates; also the Bloom ensemble's zero-shot member AND the zero-shot voter of the re-founded `bloom_classifier_disagreement` gate under `ED4ALL_BLOOM_TRIVOTE` (same process-singleton — no second load) |
+| `sentence-transformers/all-MiniLM-L6-v2` | Apache 2.0 | Validator cosine embedder — `rewrite_source_grounding`, statistical-tier validators, `BlockFeatureCache.embed`, NLI candidate ordering |
+| `BAAI/bge-large-en-v1.5` | MIT | Retrieval-index embedder (see the Embedding-providers table above — listed here for completeness because retrieval eval gates read the same index) |
+| `cip29/bert-blooms-taxonomy-classifier` | **Not stated on the model card — unverified** | **RETIRED under `ED4ALL_BLOOM_TRIVOTE` (default OFF; owner-approved 2026-07-18).** Legacy `bloom_classifier_disagreement` ensemble member; NEVER loaded on the trivote path (re-founded on the generator's own asserted level + the already-licensed DeBERTa zero-shot voter + the deterministic verb ontology). Still referenced by the flag-OFF legacy path (inference-only, no live inference — the ensemble degrades to `unknown`). Verify or drop before any redistribution that bundles weights |
+| `distilbert-base-uncased-finetuned-sst-2-english` | Apache 2.0 | **RETIRED under `ED4ALL_BLOOM_TRIVOTE` (default OFF).** Legacy Bloom ensemble sentiment member (mapped onto Bloom by a low-resolution heuristic); NEVER loaded on the trivote path. Retained only for flag-OFF legacy byte-identity |
+
+**Inference runtimes (optional accelerators, system-provided):** `torch` CUDA
+wheels, `onnxruntime` (MIT), and NVIDIA TensorRT (proprietary NVIDIA SLA;
+free production use on NVIDIA GPUs, runtime redistribution permitted only per
+its redistributable-files clauses) are DEPLOYMENT dependencies, not part of
+Ed4All's code license. Posture: never vendor NVIDIA proprietary binaries into
+the repo or Ed4All-built images — document them as prerequisites installed
+from NVIDIA's own channels (identical to the existing CUDA/NGC posture in
+`docs/operations/docker.md`), so an institution's use is governed by the
+NVIDIA license they already accept for their GPU stack. Optional backends must
+degrade gracefully (or fail loudly) when the runtime is absent.
+
 ## Grounded-answer provider (runtime inference — not training data)
 
 The `ED4ALL_ANSWER_*` family ([`docs/operations/behavior-flags.md`](operations/behavior-flags.md)) selects

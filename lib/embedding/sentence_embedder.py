@@ -28,6 +28,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import threading
 from collections import OrderedDict
 from pathlib import Path
@@ -41,7 +42,38 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MODEL_NAME = "all-MiniLM-L6-v2"
 _DEFAULT_CACHE_PATH = Path("state/embedding_cache.jsonl")
+#: Directory the model-folded persistent batch cache (:meth:`encode_batch_cached`)
+#: writes under. A NEW filename family (``embedding_cache.batch.<slug>.jsonl``,
+#: distinct from ``_DEFAULT_CACHE_PATH``) because the batch cache folds the model
+#: name into its key — reusing the model-agnostic ``encode()`` cache file would
+#: silently cross model vocabularies.
+_DEFAULT_BATCH_CACHE_DIR = Path("state")
 _MAX_CACHE_ENTRIES = 100_000
+
+# ------------------------------------------------------------------------- #
+# Builder-C incremental-embedding opt-in flags. All default OFF → the encode
+# paths are byte-identical to the legacy calls (parse-with-fallback: only the
+# explicit truthy tokens enable a flag). Rows live in the root-owned
+# docs/operations/behavior-flags.md ED4ALL_* table.
+#
+# * ED4ALL_EMBED_BATCH_TUNE — when truthy the feature-cache + groundedness _S1
+#   embed callers pass ``batch_size=256, length_sort=True`` into encode_batch /
+#   encode_batch_cached (larger GPU batches + longest-first packing to cut
+#   padding waste). Off → today's exact ``encode_batch(texts)`` calls.
+# * ED4ALL_EMBED_PERSIST_CACHE — when truthy those same callers route through
+#   :meth:`SentenceEmbedder.encode_batch_cached` (disk-persisted, content +
+#   model addressed) instead of the in-memory-only :meth:`encode_batch`. Off →
+#   in-memory only, exactly as today.
+# * ED4ALL_EMBED_FP16 — when truthy a freshly-loaded model that landed on CUDA is
+#   cast to fp16 (``model.half()``). CPU models are left untouched. Cosine
+#   similarities shift only in low-order bits (~1e-3 abs) — well under every
+#   verdict/rank threshold that consumes these vectors.
+ENV_EMBED_BATCH_TUNE = "ED4ALL_EMBED_BATCH_TUNE"
+ENV_EMBED_PERSIST_CACHE = "ED4ALL_EMBED_PERSIST_CACHE"
+ENV_EMBED_FP16 = "ED4ALL_EMBED_FP16"
+
+#: Batch size + packing knobs the ``ED4ALL_EMBED_BATCH_TUNE`` callers apply.
+_TUNE_BATCH_SIZE = 256
 
 # Subtask 8: strict-mode opt-in flag. When truthy,
 # ``try_load_embedder()`` raises :class:`EmbeddingDepsMissing` on
@@ -91,6 +123,24 @@ def is_strict_mode() -> bool:
     return raw in _TRUTHY_VALUES
 
 
+def resolve_embed_batch_tune(env: Optional[Dict[str, str]] = None) -> bool:
+    """True when ``ED4ALL_EMBED_BATCH_TUNE`` is a truthy token (default OFF)."""
+    src = env if env is not None else os.environ
+    return str(src.get(ENV_EMBED_BATCH_TUNE, "")).strip().lower() in _TRUTHY_VALUES
+
+
+def resolve_embed_persist_cache(env: Optional[Dict[str, str]] = None) -> bool:
+    """True when ``ED4ALL_EMBED_PERSIST_CACHE`` is a truthy token (default OFF)."""
+    src = env if env is not None else os.environ
+    return str(src.get(ENV_EMBED_PERSIST_CACHE, "")).strip().lower() in _TRUTHY_VALUES
+
+
+def resolve_embed_fp16(env: Optional[Dict[str, str]] = None) -> bool:
+    """True when ``ED4ALL_EMBED_FP16`` is a truthy token (default OFF)."""
+    src = env if env is not None else os.environ
+    return str(src.get(ENV_EMBED_FP16, "")).strip().lower() in _TRUTHY_VALUES
+
+
 class EmbeddingDepsMissing(RuntimeError):
     """Raised in strict mode when ``sentence-transformers`` is unavailable.
 
@@ -113,17 +163,40 @@ class SentenceEmbedder:
         self,
         model_name: str = _DEFAULT_MODEL_NAME,
         cache: Optional["EmbeddingCache"] = None,
+        batch_cache: Optional["EmbeddingCache"] = None,
     ) -> None:
         self.model_name = model_name
         self._model: Optional[Any] = None
         self._cache = cache
+        # Disk-persisted, model-folded batch cache for :meth:`encode_batch_cached`
+        # (constructed lazily on first use; injectable for tests).
+        self._batch_cache = batch_cache
 
     def _ensure_model(self) -> Any:
         if self._model is None:
             from sentence_transformers import SentenceTransformer  # type: ignore
 
             self._model = SentenceTransformer(self.model_name)
+            self._maybe_half(self._model)
         return self._model
+
+    @staticmethod
+    def _maybe_half(model: Any) -> None:
+        """Cast a CUDA-resident model to fp16 when ``ED4ALL_EMBED_FP16`` is on.
+
+        CPU models can't run half reliably, so this gates on a cuda device and is
+        a no-op otherwise. Best-effort — any failure leaves fp32 intact, so a real
+        encode never fails because of the flag. Cosine similarities shift only in
+        low-order bits (~1e-3 abs), well under every downstream threshold.
+        """
+        if not resolve_embed_fp16():
+            return
+        try:
+            dev = getattr(model, "device", None)
+            if dev is not None and getattr(dev, "type", "") == "cuda":
+                model.half()
+        except Exception as exc:  # noqa: BLE001 — never fail a real load
+            logger.debug("ED4ALL_EMBED_FP16 half() skipped: %s", exc)
 
     def encode(self, text: str, normalize: bool = True) -> "np.ndarray":
         """Encode ``text`` to a unit-length embedding vector.
@@ -150,15 +223,114 @@ class SentenceEmbedder:
         return vector
 
     def encode_batch(
-        self, texts: List[str], normalize: bool = True
+        self,
+        texts: List[str],
+        normalize: bool = True,
+        batch_size: Optional[int] = None,
+        length_sort: bool = False,
     ) -> "np.ndarray":
         """Batch-encode a list of texts; mirrors :meth:`encode`.
 
-        Bypasses the cache to keep the batch path tight; callers that
-        want cache-hits-on-batch should iterate :meth:`encode`.
+        Bypasses the in-memory ``encode()`` cache to keep the batch path tight;
+        callers that want disk-persisted hits use :meth:`encode_batch_cached`.
+
+        ``batch_size`` (default ``None`` → the library default) is forwarded to
+        ``SentenceTransformer.encode``. ``length_sort`` (default ``False``, so
+        the legacy call is byte-identical) sorts the texts longest-first before
+        encoding and restores the caller's input order on return: longest-first
+        packing minimises intra-batch padding when the caller batches large,
+        length-heterogeneous pools. Both are opt-in knobs the
+        ``ED4ALL_EMBED_BATCH_TUNE`` callers set.
         """
         model = self._ensure_model()
-        return model.encode(texts, normalize_embeddings=normalize)
+        kwargs: Dict[str, Any] = {"normalize_embeddings": normalize}
+        if batch_size is not None:
+            kwargs["batch_size"] = batch_size
+        if not length_sort or len(texts) < 2:
+            return model.encode(texts, **kwargs)
+
+        # Longest-first, then invert the permutation to restore input order.
+        order = sorted(range(len(texts)), key=lambda i: len(texts[i]), reverse=True)
+        reordered = [texts[i] for i in order]
+        encoded = model.encode(reordered, **kwargs)
+        restored: List[Any] = [None] * len(texts)
+        for pos, orig_i in enumerate(order):
+            restored[orig_i] = encoded[pos]
+        try:
+            import numpy as _np
+
+            return _np.stack(restored)
+        except Exception:  # noqa: BLE001 — numpy absent → list of vectors
+            return restored  # type: ignore[return-value]
+
+    def encode_batch_cached(
+        self,
+        texts: List[str],
+        normalize: bool = True,
+        batch_size: Optional[int] = None,
+        length_sort: bool = False,
+    ) -> List[Any]:
+        """Batch-encode ``texts`` through a disk-persisted, model-folded cache.
+
+        Consults the content-addressed :class:`EmbeddingCache` per text (key folds
+        the model name so two models never collide), batch-encodes only the misses
+        (honouring ``batch_size`` / ``length_sort``), appends the misses to the
+        cache JSONL (the class appends incrementally so a crash keeps what was
+        computed), and returns the vectors in the caller's input order.
+
+        Only reached when ``ED4ALL_EMBED_PERSIST_CACHE`` is truthy; the default
+        path stays on the in-memory-only :meth:`encode_batch`.
+        """
+        if not texts:
+            return []
+        cache = self._ensure_batch_cache()
+        out: List[Any] = [None] * len(texts)
+        miss_texts: List[str] = []
+        miss_positions: List[int] = []
+        first_seen: Dict[str, int] = {}  # keyed_text → index into miss_texts
+        for i, text in enumerate(texts):
+            keyed = self._batch_cache_key(text)
+            cached = cache.get(keyed)
+            if cached is not None:
+                out[i] = cached
+                continue
+            if keyed in first_seen:
+                # Duplicate miss within this call — encode once, fan out below.
+                out[i] = None
+                miss_positions.append(i)
+                continue
+            first_seen[keyed] = len(miss_texts)
+            miss_texts.append(text)
+            miss_positions.append(i)
+        if miss_texts:
+            vectors = self.encode_batch(
+                miss_texts,
+                normalize=normalize,
+                batch_size=batch_size,
+                length_sort=length_sort,
+            )
+            for uniq_idx, text in enumerate(miss_texts):
+                cache.put(self._batch_cache_key(text), vectors[uniq_idx])
+            for i in miss_positions:
+                keyed = self._batch_cache_key(texts[i])
+                out[i] = cache.get(keyed)
+        return out
+
+    def _ensure_batch_cache(self) -> "EmbeddingCache":
+        if self._batch_cache is None:
+            slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", self.model_name).strip("_") or "model"
+            path = _DEFAULT_BATCH_CACHE_DIR / f"embedding_cache.batch.{slug}.jsonl"
+            self._batch_cache = EmbeddingCache(cache_path=path)
+        return self._batch_cache
+
+    def _batch_cache_key(self, text: str) -> str:
+        """Model-folded cache key text (``EmbeddingCache`` hashes it to sha256).
+
+        Folding ``model_name`` in means the batch cache file can never serve a
+        vector from a different model even though the on-disk row is just
+        ``{"hash", "vector"}``.
+        """
+        return f"{self.model_name}\x00{text}"
 
 
 class EmbeddingCache:

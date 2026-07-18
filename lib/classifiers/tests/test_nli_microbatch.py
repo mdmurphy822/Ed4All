@@ -29,6 +29,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from lib.classifiers import nli_microbatch as mb  # noqa: E402
+from lib.classifiers.nli_classifier import estimate_pair_tokens  # noqa: E402
 from lib.classifiers.nli_microbatch import (  # noqa: E402
     NliMicrobatchDispatcher,
     get_dispatcher,
@@ -124,6 +125,18 @@ def test_resolve_window_ms_parse_with_fallback() -> None:
     assert resolve_microbatch_window_ms({"ED4ALL_NLI_MICROBATCH_WINDOW_MS": "junk"}) == 10.0
 
 
+def test_resolve_crossblock_parse_with_fallback() -> None:
+    assert mb.resolve_crossblock_enabled({}) is False
+    for truthy in ("1", "true", "YES", "On"):
+        assert mb.resolve_crossblock_enabled({"ED4ALL_NLI_CROSSBLOCK": truthy}) is True
+    for off in ("0", "false", "no", "off", "garbage", ""):
+        assert mb.resolve_crossblock_enabled({"ED4ALL_NLI_CROSSBLOCK": off}) is False
+    assert mb.resolve_crossblock_threads({}) == 16
+    assert mb.resolve_crossblock_threads({"ED4ALL_NLI_CROSSBLOCK_THREADS": "8"}) == 8
+    assert mb.resolve_crossblock_threads({"ED4ALL_NLI_CROSSBLOCK_THREADS": "0"}) == 16
+    assert mb.resolve_crossblock_threads({"ED4ALL_NLI_CROSSBLOCK_THREADS": "x"}) == 16
+
+
 # --------------------------------------------------------------------------- #
 # (a) batched == sequential within 1e-3
 # --------------------------------------------------------------------------- #
@@ -141,6 +154,27 @@ def test_batched_scores_match_sequential() -> None:
         for g, e in zip(got, expected):
             assert abs(g.entailment - e.entailment) < 1e-3
             assert abs(g.contradiction - e.contradiction) < 1e-3
+    finally:
+        dispatcher.shutdown()
+
+
+def test_drain_accumulates_token_estimate_stat() -> None:
+    """The drain accumulates a tokenizer-free token-length estimate so the 30s
+    stats line can report tok/s, not just pairs/s."""
+    nli = _StubNLI()
+    dispatcher = NliMicrobatchDispatcher(nli, max_pairs=64, window_ms=5)
+    try:
+        pairs = [
+            ("short", "h"),
+            ("a considerably longer premise " * 5, "hypothesis body " * 3),
+            ("mid length premise here", "another hypothesis"),
+        ]
+        # score_batch blocks until the drain has set stats + result, so by the
+        # time it returns _stats_tokens reflects this drain.
+        dispatcher.score_batch(pairs=pairs)
+        expected_tokens = sum(estimate_pair_tokens(p, h) for p, h in pairs)
+        assert dispatcher._stats_tokens == expected_tokens
+        assert dispatcher._stats_tokens > dispatcher._stats_pairs  # tokens >> pairs
     finally:
         dispatcher.shutdown()
 

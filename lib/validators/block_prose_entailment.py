@@ -242,6 +242,23 @@ def _microbatch_validators_enabled() -> bool:
 _pool_scoring_enabled = _microbatch_validators_enabled
 
 
+def _crossblock_enabled() -> bool:
+    """Truthy check for ``ED4ALL_NLI_CROSSBLOCK`` (single-process thread fan-out).
+
+    The SUPERSEDING path for cross-block gate NLI: instead of the retired
+    ``ED4ALL_NLI_MICROBATCH_VALIDATORS`` spawn-ProcessPool (which livelocked 4
+    CUDA contexts on one card), the SCORABLE cache-miss blocks are fanned across
+    a ``ThreadPoolExecutor`` whose workers submit their pair-batches to the
+    single-process coalescing dispatcher (one scorer thread owns the GPU model).
+    Default OFF → serial scoring, byte-identical. Independent of
+    ``_pool_scoring_enabled`` — if both are set, the (dormant) process pool wins
+    for back-compat and the thread path is only tried when the pool degrades.
+    """
+    from lib.classifiers.nli_microbatch import resolve_crossblock_enabled
+
+    return resolve_crossblock_enabled()
+
+
 def _resolve_validators_procs() -> int:
     """Resolve the worker-process count. Garbage / non-positive → the default."""
     raw = os.environ.get(_ENV_VALIDATORS_PROCS)
@@ -374,6 +391,27 @@ def _block_fingerprint(
         "nli_revision": getattr(nli, "_revision", None),
         "device_class": dev_class,
     }
+    # Fold the opt-in top-K windowed stage-1 mode into the key ONLY when it is
+    # active: a top-K-scored report must never be served to a legacy-grid run
+    # (or vice versa), while legacy fingerprints stay byte-identical to every
+    # sidecar written before the flag existed.
+    from lib.retrieval.groundedness import (
+        resolve_groundedness_frontier,
+        resolve_groundedness_frontier_width,
+        resolve_groundedness_s1_topk,
+    )
+
+    # FRONTIER supersedes top-K (mutually exclusive) — mirror that precedence in
+    # the key so a frontier-scored report never crosses modes with a top-K /
+    # legacy sidecar. Each mode folds its own key ONLY when active, so the
+    # legacy fingerprint stays byte-identical to every pre-flag sidecar.
+    if resolve_groundedness_frontier():
+        payload["frontier"] = 1
+        payload["frontier_width"] = resolve_groundedness_frontier_width()
+    else:
+        _s1k = resolve_groundedness_s1_topk()
+        if _s1k > 0:
+            payload["s1_topk"] = _s1k
     return compute_fingerprint(payload)
 
 
@@ -626,6 +664,7 @@ def _block_score_args(
     block: Block,
     source_chunks: Dict[str, str],
     provenance_index: Optional[Dict[str, List[str]]] = None,
+    cache: Any = None,
 ) -> Optional[Tuple[str, List[Dict[str, str]]]]:
     """Return ``(prose_text, cited_passages)`` iff ``block`` reaches the
     ``score_groundedness`` call in :meth:`BlockProseEntailmentValidator.validate`,
@@ -646,11 +685,17 @@ def _block_score_args(
         return None
     if _block_should_skip(block):
         return None
-    prose_text = _strip_html_to_text(content)
+    prose_text = (
+        cache.stripped_text(block)
+        if cache is not None
+        else _strip_html_to_text(content)
+    )
     if not prose_text.strip():
         return None
-    cited_passages = _resolve_block_cited_passages(
-        block, source_chunks, provenance_index
+    cited_passages = (
+        cache.resolved_passages(block, source_chunks, provenance_index)
+        if cache is not None
+        else _resolve_block_cited_passages(block, source_chunks, provenance_index)
     )
     if not cited_passages:
         return None
@@ -879,6 +924,124 @@ class BlockProseEntailmentValidator:
             pool.shutdown(wait=True)
         return reports, stop_pending
 
+    def _crossblock_score_misses(
+        self,
+        misses: List[Tuple[int, Any, str, List[Dict[str, str]]]],
+        nli: Any,
+        entailment_floor: float,
+        contradiction_floor: float,
+        run_id: Optional[str],
+        *,
+        store: Optional[CheckpointStore] = None,
+        fps: Optional[Dict[int, str]] = None,
+    ) -> Tuple[Optional[Dict[int, GroundednessReport]], bool, set]:
+        """Score the cache-MISS blocks with cross-block NLI thread fan-out.
+
+        Single-process, threads + the existing coalescing dispatcher
+        (``ED4ALL_NLI_CROSSBLOCK``): each worker thread runs the UNCHANGED
+        ``score_groundedness(prose, passages, nli=dispatcher, ...)`` — its Python
+        work is trivial pair-list assembly then a GIL-released ``event.wait``;
+        tokenize + forward run on the dispatcher's single scorer thread, which
+        coalesces pairs ACROSS blocks into full batches. Verdict-identical to
+        serial (batched-vs-serial scores differ only in low-order softmax bits,
+        the documented tolerance vs the 0.70/0.50 floors).
+
+        Each block's report is PERSISTED to ``store`` as soon as its future
+        completes (when ``store``/``fps`` are given) — a killed / stopped gate
+        keeps every finished block, matching the serial path's incremental
+        sidecar contract — and progress is logged every 10 completions so the
+        gate is diagnosable live. The stop sentinel is polled both before each
+        submit AND on every completion; a mid-gate stop cancels all queued
+        futures (running ones finish and persist), so ``ed4all stop`` pauses
+        within ~one block's scoring time instead of after the whole fan-out.
+
+        Returns ``(reports_by_idx, stop_pending, persisted_idx_set)``; ``None``
+        reports ⇒ graceful degrade to serial (no dispatcher, or any thread-path
+        failure); the caller persists + merges everything not already in
+        ``persisted_idx_set``.
+        """
+        from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
+
+        from lib.classifiers.nli_microbatch import (
+            get_dispatcher,
+            resolve_crossblock_threads,
+        )
+
+        dispatcher = get_dispatcher(nli)
+        if dispatcher is None:
+            return None, False, set()
+        n_threads = min(resolve_crossblock_threads(), len(misses))
+
+        def _score_one(
+            task: Tuple[int, Any, str, List[Dict[str, str]]],
+        ) -> Tuple[int, GroundednessReport]:
+            idx, _block, prose, passages = task
+            rep = score_groundedness(
+                prose,
+                passages,
+                nli=dispatcher,
+                entailment_floor=entailment_floor,
+                contradiction_floor=contradiction_floor,
+            )
+            return idx, rep
+
+        block_by_idx = {task[0]: task[1] for task in misses}
+        reports: Dict[int, GroundednessReport] = {}
+        persisted: set = set()
+        stop_pending = False
+        done_count = 0
+        ex = ThreadPoolExecutor(max_workers=max(1, n_threads))
+        try:
+            futures = []
+            for task in misses:
+                # STOP-SENTINEL POLL before submitting each block.
+                if _stop_requested(run_id):
+                    stop_pending = True
+                    break
+                futures.append(ex.submit(_score_one, task))
+            for fut in as_completed(futures):
+                try:
+                    idx, rep = fut.result()
+                except CancelledError:
+                    continue
+                reports[idx] = rep
+                done_count += 1
+                # Incremental persist: a killed gate keeps every finished block.
+                if store is not None and fps is not None and rep.available:
+                    try:
+                        store.append(
+                            block_by_idx[idx].block_id, fps[idx], rep.to_dict()
+                        )
+                        persisted.add(idx)
+                    except Exception as p_exc:  # noqa: BLE001 — persist is best-effort
+                        logger.warning(
+                            "block_prose_entailment: incremental sidecar persist "
+                            "failed for block %s (%s); caller will retry.",
+                            getattr(block_by_idx[idx], "block_id", idx), p_exc,
+                        )
+                if done_count % 10 == 0 or done_count == len(futures):
+                    logger.info(
+                        "block_prose_entailment: crossblock %d/%d blocks scored",
+                        done_count, len(futures),
+                    )
+                # STOP-SENTINEL POLL on completion: cancel queued futures so the
+                # gate pauses within ~one block, not after the whole fan-out.
+                if not stop_pending and _stop_requested(run_id):
+                    stop_pending = True
+                    for pending_fut in futures:
+                        pending_fut.cancel()
+        except GracefulStopRequested:
+            raise
+        except Exception as exc:  # noqa: BLE001 — any thread-path error → serial
+            logger.warning(
+                "block_prose_entailment: cross-block thread scoring failed (%s); "
+                "falling back to serial scoring.", exc,
+            )
+            return None, False, persisted
+        finally:
+            ex.shutdown(wait=True)
+        return reports, stop_pending, persisted
+
     def _score_scorable(
         self,
         blocks: List[Any],
@@ -890,6 +1053,7 @@ class BlockProseEntailmentValidator:
         store: Optional[CheckpointStore],
         cache: Dict[str, Dict[str, Any]],
         run_id: Optional[str],
+        feature_cache: Any = None,
     ) -> Dict[int, GroundednessReport]:
         """Produce ``{block_index: GroundednessReport}`` for every SCORABLE block.
 
@@ -911,7 +1075,9 @@ class BlockProseEntailmentValidator:
         """
         scorable: List[Tuple[int, Any, str, List[Dict[str, str]]]] = []
         for idx, block in enumerate(blocks):
-            args = _block_score_args(block, source_chunks, provenance_index)
+            args = _block_score_args(
+                block, source_chunks, provenance_index, feature_cache
+            )
             if args is not None:
                 scorable.append((idx, block, args[0], args[1]))
         reports: Dict[int, GroundednessReport] = {}
@@ -938,12 +1104,23 @@ class BlockProseEntailmentValidator:
         if not misses:
             return reports
 
-        # Phase 2 — score the MISSes (pool or serial), persist + merge.
+        # Phase 2 — score the MISSes (pool / cross-block threads / serial),
+        # persist + merge. The dormant spawn pool wins for back-compat when its
+        # flag is on; the cross-block thread path is tried when the pool is off
+        # OR degraded (returns None). Both feed the SAME merge/persist block.
         pool_reports: Optional[Dict[int, GroundednessReport]] = None
         stop_pending = False
+        already_persisted: set = set()
         if _pool_scoring_enabled():
             pool_reports, stop_pending = self._pool_score_misses(
                 misses, entailment_floor, contradiction_floor, run_id
+            )
+        if pool_reports is None and _crossblock_enabled():
+            pool_reports, stop_pending, already_persisted = (
+                self._crossblock_score_misses(
+                    misses, nli, entailment_floor, contradiction_floor, run_id,
+                    store=store, fps=fps,
+                )
             )
 
         if pool_reports is not None:
@@ -954,7 +1131,7 @@ class BlockProseEntailmentValidator:
                     # validate-loop defensive inline fallback on a cleared stop.
                     continue
                 reports[idx] = rep
-                if store is not None and rep.available:
+                if store is not None and rep.available and idx not in already_persisted:
                     store.append(block.block_id, fps[idx], rep.to_dict())
             if stop_pending:
                 # Persisted completed reports above; now raise the cooperative
@@ -1095,9 +1272,18 @@ class BlockProseEntailmentValidator:
         # GateResult is verdict-identical + order-stable. A cooperative stop
         # (GracefulStopRequested) propagates from here after persisting the
         # completed blocks (executor maps it to ``paused``).
+        # Opt-in shared per-block feature cache (ED4ALL_VALIDATION_FEATURE_CACHE).
+        # Absent → None → every per-block strip/passage self-computes exactly as
+        # before (byte-identical). The cache's stripped_text / resolved_passages
+        # delegate to the SAME strip_html_to_text / _resolve_block_cited_passages,
+        # so results are verdict-identical — it only removes recomputation shared
+        # across the 52-gate suite.
+        feature_cache = inputs.get("feature_cache")
+
         precomputed_reports = self._score_scorable(
             blocks, nli, source_chunks, provenance_index,
             entailment_floor, contradiction_floor, store, cache, run_id,
+            feature_cache,
         )
 
         issues: List[GateIssue] = []
@@ -1115,12 +1301,22 @@ class BlockProseEntailmentValidator:
                 # Skip silently — no event, no issue (matches claim_support).
                 continue
 
-            prose_text = _strip_html_to_text(content)
+            prose_text = (
+                feature_cache.stripped_text(block)
+                if feature_cache is not None
+                else _strip_html_to_text(content)
+            )
             if not prose_text.strip():
                 continue
 
-            cited_passages = _resolve_block_cited_passages(
-                block, source_chunks, provenance_index
+            cited_passages = (
+                feature_cache.resolved_passages(
+                    block, source_chunks, provenance_index
+                )
+                if feature_cache is not None
+                else _resolve_block_cited_passages(
+                    block, source_chunks, provenance_index
+                )
             )
 
             if not cited_passages:

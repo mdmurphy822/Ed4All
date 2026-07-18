@@ -28,10 +28,13 @@ naming the extras.
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+logger = logging.getLogger(__name__)
 
 from lib.validators.pair._claim_support_thresholds import (
     _CONTENT_TOKEN_RE,
@@ -93,6 +96,138 @@ def resolve_groundedness_computational(env: Optional[Dict[str, str]] = None) -> 
         "yes",
         "on",
     }
+
+
+#: Opt-in stage-1 redesign (``ED4ALL_GROUNDEDNESS_S1_TOPK=<K>``): instead of
+#: the whole-passage grid (every ~700-word chunk premise is silently TRUNCATED
+#: at the NLI's 512-token window AND costs an O(L²) max-length forward —
+#: measured 28-45 pairs/s on uniform-long drains), score each claim against
+#: its top-K sentence-WINDOWS selected by embedding cosine (windows via the
+#: same ``_sentence_windows`` stage-2 rescue uses; MiniLM embeddings, one
+#: batched encode per call). Short premises ≈15× cheaper per pair; K bounds
+#: the per-claim pair count. Claims still below the floor take a WIDENED
+#: preselected rescue (next ``_S1_TOPK_RESCUE_MULT``×K windows by the SAME
+#: cached cosine scores) as the safety net for cosine misses. NOT
+#: verdict-bitwise-identical to the legacy grid: windows can see text the
+#: 512-token truncation dropped (recovering real support) and premise
+#: composition changes low-order scores — adopt only after an A/B against a
+#: serial-baseline sidecar quantifies the verdict diffs. ``0`` / unset /
+#: garbage → legacy grid, byte-identical.
+ENV_GROUNDEDNESS_S1_TOPK = "ED4ALL_GROUNDEDNESS_S1_TOPK"
+
+#: Per-passage cap on stage-1 windows (a pathological mega-chunk cannot
+#: explode the window pool; 32 windows ≈ 96 sentences at stride 2).
+_S1_TOPK_MAX_WINDOWS_PER_PASSAGE = 32
+
+#: Rescue widening multiplier: below-floor claims re-score against the next
+#: ``mult × K`` cosine-ranked windows beyond the stage-1 top-K.
+_S1_TOPK_RESCUE_MULT = 4
+
+
+#: Serializes the top-K preselect's ``encode_batch`` calls: SentenceTransformer
+#: is not concurrency-certified, and the cross-block gate path
+#: (``ED4ALL_NLI_CROSSBLOCK``) calls ``score_groundedness`` from 16 worker
+#: threads. NLI forwards dominate the gate's wall-clock, so serializing the
+#: ~100ms embed step costs little.
+_S1_EMBED_LOCK = __import__("threading").Lock()
+
+#: Process-lifetime window-vector memo for the top-K preselect, keyed by
+#: sha256(window_text) → UNIT-NORMALIZED float32 vector. The provenance
+#: resolver expands section-level refs to ALL section chunks, so co-located
+#: blocks share (nearly) the same ~10k-window premise pool — without this
+#: memo every block re-embeds that pool from scratch (``encode_batch``
+#: deliberately bypasses the disk EmbeddingCache; measured as a recurring
+#: 416-batch MiniLM encode per block = the dominant per-block cost). Unique
+#: windows are bounded by the corpus (~chunks × windows-per-chunk ≈ 10-20k
+#: rows ≈ tens of MB). Guarded by ``_S1_EMBED_LOCK``.
+_S1_WIN_VEC_CACHE: Dict[str, Any] = {}
+
+
+def resolve_groundedness_s1_topk(env: Optional[Dict[str, str]] = None) -> int:
+    """Resolved K for the top-K windowed stage-1 (0 = off, the default).
+
+    Parse-with-fallback: unset / empty / garbage / non-positive → ``0`` (legacy
+    whole-passage grid, byte-identical).
+    """
+    src = env if env is not None else os.environ
+    raw = str(src.get(ENV_GROUNDEDNESS_S1_TOPK, "")).strip()
+    if not raw:
+        return 0
+    try:
+        iv = int(raw)
+    except (TypeError, ValueError):
+        return 0
+    return iv if iv > 0 else 0
+
+
+#: Opt-in FRONTIER stage-1 (``ED4ALL_GROUNDEDNESS_FRONTIER``): instead of the
+#: whole-passage grid (every claim × every ~700-word passage in one ~2.3M-pair
+#: forward-pass storm — the ~12-hour block-prose-entailment monster), score each
+#: claim against its passage pool in a deterministic PRIORITY ORDER (direct
+#: citations → lexical anchor → cosine, see :mod:`lib.retrieval.candidate_order`)
+#: and RETIRE a claim the instant a premise entails it. Premises are the SAME
+#: whole-passage texts as the legacy grid (not windows), so the verdict rule is
+#: unchanged and parity is exact:
+#:   * an entailed claim retires early — legacy fires iff max-ent ≥ floor, the
+#:     frontier retires iff *some* ent ≥ floor: identical verdict (only the
+#:     recorded best-passage metadata may differ — first-clearing vs argmax);
+#:   * a non-entailed claim exhausts its WHOLE pool, so its argmax (ent, con)
+#:     (with the legacy passage-index tiebreak) is bitwise-identical to the grid
+#:     ⇒ identical contradicted / unsupported verdict + identical stage-2 rescue.
+#: Value: only the entailing prefix of each claim's pool is scored (early-exit),
+#: while the dispatcher still coalesces every round's contributions across
+#: claims / blocks / threads into one batched forward pass. Unset / falsey /
+#: garbage → legacy grid, byte-identical. When BOTH this and
+#: ``ED4ALL_GROUNDEDNESS_S1_TOPK`` are set, FRONTIER wins and top-K is ignored
+#: (one-time warning) — the two are mutually-exclusive stage-1 redesigns.
+ENV_GROUNDEDNESS_FRONTIER = "ED4ALL_GROUNDEDNESS_FRONTIER"
+
+#: Per-round frontier width: each still-active claim contributes its next
+#: ``W`` candidate passages, and ALL active claims' contributions are combined
+#: into ONE ``score_batch`` call so the dispatcher coalesces across claims. A
+#: wider ``W`` means fewer rounds (less scheduling overhead) but scores more
+#: past a claim's first entailing premise before it can retire; ``4`` balances
+#: the two. Env ``ED4ALL_GROUNDEDNESS_FRONTIER_WIDTH``.
+ENV_GROUNDEDNESS_FRONTIER_WIDTH = "ED4ALL_GROUNDEDNESS_FRONTIER_WIDTH"
+
+#: Default per-round frontier width (see :data:`ENV_GROUNDEDNESS_FRONTIER_WIDTH`).
+_FRONTIER_WIDTH_DEFAULT = 4
+
+#: One-time guard so the FRONTIER-supersedes-top-K warning logs once per process.
+_FRONTIER_TOPK_WARNED = [False]
+
+
+def resolve_groundedness_frontier(env: Optional[Dict[str, str]] = None) -> bool:
+    """True when ``ED4ALL_GROUNDEDNESS_FRONTIER`` is set to a truthy value.
+
+    Parse-with-fallback: only the explicit truthy tokens enable the frontier
+    stage-1; anything else (unset / falsey / garbage) leaves it OFF so the
+    legacy whole-passage grid is byte-identical.
+    """
+    src = env if env is not None else os.environ
+    return str(src.get(ENV_GROUNDEDNESS_FRONTIER, "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def resolve_groundedness_frontier_width(env: Optional[Dict[str, str]] = None) -> int:
+    """Resolved per-round frontier width (default :data:`_FRONTIER_WIDTH_DEFAULT`).
+
+    Parse-with-fallback: unset / empty / garbage / non-positive → the module
+    default so the frontier always makes forward progress.
+    """
+    src = env if env is not None else os.environ
+    raw = str(src.get(ENV_GROUNDEDNESS_FRONTIER_WIDTH, "")).strip()
+    if not raw:
+        return _FRONTIER_WIDTH_DEFAULT
+    try:
+        iv = int(raw)
+    except (TypeError, ValueError):
+        return _FRONTIER_WIDTH_DEFAULT
+    return iv if iv > 0 else _FRONTIER_WIDTH_DEFAULT
 
 
 @dataclass(frozen=True)
@@ -544,6 +679,141 @@ def _model_device(nli: Any) -> Optional[str]:
 _MAX_STAGE2_WINDOWS = 512
 
 
+def _frontier_embed(
+    passage_texts: List[str], claim_texts: List[str]
+) -> Tuple[Optional[List[Any]], Optional[List[Any]]]:
+    """Best-effort MiniLM vectors for the frontier's cosine tiebreaker.
+
+    Returns ``(claim_vecs, passage_vecs)`` (unit-normalized float32), or
+    ``(None, None)`` when the embedder / numpy is unavailable — the frontier
+    ordering then degrades to lexical-only, which is correct (cosine is only a
+    tiebreaker and NEVER excludes a candidate, so verdicts are unaffected).
+    Passage vectors are memoized in the shared ``_S1_WIN_VEC_CACHE`` (keyed by
+    ``sha256(text)`` — a generic text→vec memo) so co-located blocks that share
+    the provenance-expanded pool re-use the encode; ``encode_batch`` runs under
+    ``_S1_EMBED_LOCK`` (SentenceTransformer is not concurrency-certified).
+    """
+    try:
+        import hashlib as _hl
+
+        import numpy as _np
+
+        from lib.embedding.sentence_embedder import try_load_embedder as _tle
+
+        emb = _tle()
+        if emb is None or not hasattr(emb, "encode_batch"):
+            return None, None
+        shas = [_hl.sha256(t.encode("utf-8")).hexdigest() for t in passage_texts]
+        with _S1_EMBED_LOCK:
+            miss = [i for i, h in enumerate(shas) if h not in _S1_WIN_VEC_CACHE]
+            if miss:
+                uniq: Dict[str, int] = {}
+                uniq_texts: List[str] = []
+                for i in miss:
+                    if shas[i] not in uniq:
+                        uniq[shas[i]] = len(uniq_texts)
+                        uniq_texts.append(passage_texts[i])
+                mv = _np.asarray(emb.encode_batch(uniq_texts), dtype=_np.float32)
+                mv = mv / (_np.linalg.norm(mv, axis=1, keepdims=True) + 1e-8)
+                for h, row in zip(uniq.keys(), mv):
+                    _S1_WIN_VEC_CACHE[h] = row
+            pvecs = [_S1_WIN_VEC_CACHE[h] for h in shas]
+            cv = _np.asarray(emb.encode_batch(claim_texts), dtype=_np.float32)
+        cv = cv / (_np.linalg.norm(cv, axis=1, keepdims=True) + 1e-8)
+        return [row for row in cv], pvecs
+    except Exception as exc:  # noqa: BLE001 — cosine order is optional
+        logger.debug("frontier embed unavailable (%s); lexical-only order.", exc)
+        return None, None
+
+
+def _frontier_stage1_best(
+    scorable: List[str],
+    passages: Sequence[Any],
+    resolved: Any,
+    entailment_floor: float,
+    *,
+    direct_cited_ids: Optional[set],
+    width: int,
+    stop_check: Optional[Any] = None,
+) -> Dict[int, Tuple[float, float, int, bool]]:
+    """Frontier stage-1 → the per-claim ``best`` fold (drop-in for the grid fold).
+
+    Each round every still-active claim contributes its next ``width`` candidate
+    passages (in :func:`candidate_order.order_passages_for_claim` priority), ALL
+    rounds' contributions batch into one ``score_batch`` (the dispatcher
+    coalesces across claims / blocks / threads), and a claim RETIRES the instant
+    a scored premise reaches ``entailment_floor``. The recorded ``best[ci]`` uses
+    the SAME (max-entailment, then min-passage-index) tiebreak as the legacy grid
+    fold, so a non-retiring claim — which scores its WHOLE pool — yields a
+    ``best`` bitwise-identical to the grid. Retired claims stop early (their
+    metadata may pick a different but still-entailing premise; verdict is
+    identical). ``best[ci]`` = ``(entailment, contradiction, passage_index,
+    windowed=False)``.
+    """
+    from lib.retrieval.candidate_order import order_passages_for_claim
+
+    passage_texts = [_passage_text(p) for p in passages]
+    passage_chunk_ids = [_passage_chunk_id(p) for p in passages]
+
+    claim_vecs, passage_vecs = _frontier_embed(passage_texts, scorable)
+
+    orders: List[List[int]] = []
+    for ci, claim in enumerate(scorable):
+        cvec = claim_vecs[ci] if claim_vecs is not None else None
+        orders.append(
+            order_passages_for_claim(
+                claim,
+                passage_texts,
+                passage_chunk_ids,
+                direct_cited_ids=direct_cited_ids,
+                claim_vec=cvec,
+                passage_vecs=passage_vecs,
+            )
+        )
+
+    cursors = [0] * len(scorable)
+    retired: set = set()
+    best: Dict[int, Tuple[float, float, int, bool]] = {}
+    active = [ci for ci in range(len(scorable)) if orders[ci]]
+
+    while active:
+        if stop_check is not None:
+            stop_check()
+        batch_pairs: List[Tuple[str, str]] = []
+        batch_map: List[Tuple[int, int]] = []
+        for ci in active:
+            order = orders[ci]
+            start = cursors[ci]
+            contributed = order[start : start + width]
+            cursors[ci] = start + len(contributed)
+            for pi in contributed:
+                batch_pairs.append((passage_texts[pi], scorable[ci]))
+                batch_map.append((ci, pi))
+        if not batch_pairs:
+            break
+        scores = resolved.score_batch(pairs=batch_pairs)
+        for (ci, pi), score in zip(batch_map, scores):
+            ent = float(getattr(score, "entailment", 0.0))
+            con = float(getattr(score, "contradiction", 0.0))
+            cur = best.get(ci)
+            # Legacy grid tiebreak: keep the max-entailment premise, and on an
+            # exact entailment tie keep the LOWER passage index (the grid folds
+            # passages in ascending index with a strict ``>``). This makes a
+            # fully-scored (non-retiring) claim's (ent, con, pi) identical to
+            # the grid regardless of the frontier's visit order.
+            if cur is None or ent > cur[0] or (ent == cur[0] and pi < cur[2]):
+                best[ci] = (ent, con, pi, False)
+            if ent >= entailment_floor:
+                retired.add(ci)
+        active = [
+            ci
+            for ci in active
+            if ci not in retired and cursors[ci] < len(orders[ci])
+        ]
+
+    return best
+
+
 def score_groundedness(
     answer_text: str,
     cited_passages: Sequence[Any],
@@ -734,35 +1004,204 @@ def score_groundedness(
             computational_numeric_check=comp_check,
         )
 
-    # Stage 1: full (premise, hypothesis) grid — every pool passage × every
-    # scorable claim. Track (claim_index, passage_index) so we can fold
-    # max-entailment back per claim after one batched forward pass.
-    pairs: List[Tuple[str, str]] = []
-    index_map: List[Tuple[int, int]] = []
-    for ci, claim in enumerate(scorable):
-        for pi, passage in enumerate(passages):
-            pairs.append((_passage_text(passage), claim))
-            index_map.append((ci, pi))
+    # Stage 1. Two shapes:
+    #
+    # * LEGACY (default): full (premise, hypothesis) grid — every pool passage
+    #   × every scorable claim, whole-chunk premises (truncated at the NLI's
+    #   512-token window).
+    # * TOP-K WINDOWED (``ED4ALL_GROUNDEDNESS_S1_TOPK=<K>``): each claim vs its
+    #   top-K cosine-ranked sentence windows — see ``ENV_GROUNDEDNESS_S1_TOPK``.
+    #   Degrades to LEGACY when the embedder / numpy is unavailable (loud via
+    #   the debug log, never a silent verdict fabrication).
+    # FRONTIER (``ED4ALL_GROUNDEDNESS_FRONTIER``) is a mutually-exclusive
+    # stage-1 redesign that supersedes top-K when both are set. It forces
+    # ``s1_topk = 0`` (legacy stage-2 rescue path) and computes ``best`` via
+    # the priority-ordered early-retiring frontier below.
+    frontier = resolve_groundedness_frontier()
+    if (
+        frontier
+        and resolve_groundedness_s1_topk() > 0
+        and not _FRONTIER_TOPK_WARNED[0]
+    ):
+        _FRONTIER_TOPK_WARNED[0] = True
+        logger.warning(
+            "ED4ALL_GROUNDEDNESS_FRONTIER supersedes ED4ALL_GROUNDEDNESS_S1_TOPK; "
+            "top-K ignored this run."
+        )
+    s1_topk = 0 if frontier else resolve_groundedness_s1_topk()
+    s1_sims = None  # (claims × windows) cosine matrix when top-K is active
+    s1_win_texts: List[str] = []
+    s1_win_passage_idx: List[int] = []
+    if s1_topk > 0:
+        try:
+            import numpy as _np
 
-    scores = resolved.score_batch(pairs=pairs)
+            from lib.embedding.sentence_embedder import (
+                _TUNE_BATCH_SIZE as _s1_tune_bs,
+            )
+            from lib.embedding.sentence_embedder import (
+                resolve_embed_batch_tune as _s1_res_tune,
+            )
+            from lib.embedding.sentence_embedder import (
+                resolve_embed_persist_cache as _s1_res_persist,
+            )
+            from lib.embedding.sentence_embedder import (
+                try_load_embedder as _s1_tle,
+            )
 
-    # Fold per-claim: argmax entailment over the claim's passage scores.
+            # Builder-C incremental-embed knobs (default off → legacy call):
+            # ED4ALL_EMBED_BATCH_TUNE adds batch_size/length_sort;
+            # ED4ALL_EMBED_PERSIST_CACHE routes through the disk-persisted
+            # encode_batch_cached when the embedder exposes it.
+            _s1_kw = (
+                {"batch_size": _s1_tune_bs, "length_sort": True}
+                if _s1_res_tune()
+                else {}
+            )
+            _s1_persist = _s1_res_persist()
+
+            def _s1_encode(_txts: List[str]) -> Any:
+                if _s1_persist:
+                    _cached = getattr(_s1_emb, "encode_batch_cached", None)
+                    if callable(_cached):
+                        return _cached(_txts, **_s1_kw)
+                return _s1_emb.encode_batch(_txts, **_s1_kw)
+
+            _s1_emb = _s1_tle()
+            if _s1_emb is not None and hasattr(_s1_emb, "encode_batch"):
+                for pi, passage in enumerate(passages):
+                    p_text = _passage_text(passage)
+                    wins = _sentence_windows(p_text)
+                    if not wins and p_text.strip():
+                        wins = [p_text.strip()]
+                    for win in wins[:_S1_TOPK_MAX_WINDOWS_PER_PASSAGE]:
+                        s1_win_texts.append(win)
+                        s1_win_passage_idx.append(pi)
+                if s1_win_texts:
+                    import hashlib as _hl
+
+                    shas = [
+                        _hl.sha256(t.encode("utf-8")).hexdigest()
+                        for t in s1_win_texts
+                    ]
+                    with _S1_EMBED_LOCK:
+                        miss = [
+                            i for i, h in enumerate(shas)
+                            if h not in _S1_WIN_VEC_CACHE
+                        ]
+                        if miss:
+                            # Dedup within the call (duplicate window texts
+                            # from overlapping passages encode once).
+                            uniq: Dict[str, int] = {}
+                            uniq_texts: List[str] = []
+                            for i in miss:
+                                if shas[i] not in uniq:
+                                    uniq[shas[i]] = len(uniq_texts)
+                                    uniq_texts.append(s1_win_texts[i])
+                            mv = _np.asarray(
+                                _s1_encode(uniq_texts),
+                                dtype=_np.float32,
+                            )
+                            mv = mv / (
+                                _np.linalg.norm(mv, axis=1, keepdims=True) + 1e-8
+                            )
+                            for h, row in zip(uniq.keys(), mv):
+                                _S1_WIN_VEC_CACHE[h] = row
+                        wv = _np.stack([_S1_WIN_VEC_CACHE[h] for h in shas])
+                        cv = _np.asarray(
+                            _s1_encode(scorable), dtype=_np.float32
+                        )
+                    cv = cv / (_np.linalg.norm(cv, axis=1, keepdims=True) + 1e-8)
+                    s1_sims = cv @ wv.T
+        except Exception as exc:  # noqa: BLE001 — degrade to the legacy grid
+            logger.debug("S1 top-K preselect unavailable (%s); legacy grid.", exc)
+            s1_sims = None
+
     # best[ci] = (entailment, contradiction, passage_index, windowed_bool)
     best: Dict[int, Tuple[float, float, int, bool]] = {}
-    for (ci, pi), score in zip(index_map, scores):
-        ent = float(getattr(score, "entailment", 0.0))
-        con = float(getattr(score, "contradiction", 0.0))
-        cur = best.get(ci)
-        if cur is None or ent > cur[0]:
-            best[ci] = (ent, con, pi, False)
+    if frontier:
+        # FRONTIER stage-1: priority-ordered, early-retiring scoring. The fold
+        # is identical to the grid for every non-retiring claim (whole pool
+        # scored, legacy passage-index tiebreak), so contradicted / unsupported
+        # verdicts + the stage-2 rescue set are bitwise-identical; entailed
+        # claims retire early. See ``_frontier_stage1_best`` /
+        # ``ENV_GROUNDEDNESS_FRONTIER``.
+        best = _frontier_stage1_best(
+            scorable,
+            passages,
+            resolved,
+            entailment_floor,
+            direct_cited_ids=cited_chunk_ids,
+            width=resolve_groundedness_frontier_width(),
+        )
+    else:
+        pairs: List[Tuple[str, str]] = []
+        index_map: List[Tuple[int, int]] = []
+        if s1_sims is not None:
+            # Top-K windowed stage 1: claim × its K best windows by cosine.
+            import numpy as _np
 
-    # Stage 2: windowed rescue for claims still below the entailment floor. For
-    # each such claim, re-score against 3-sentence windows (stride 2) of each
-    # passage; the winning window's entailment/contradiction + its passage's
-    # chunk_id replace the stage-1 result when it clears the floor. Capped at
-    # ``_MAX_STAGE2_WINDOWS`` premises (first-N per passage) to bound runtime.
+            k = min(s1_topk, len(s1_win_texts))
+            s1_rank = _np.argsort(-s1_sims, axis=1)
+            for ci, claim in enumerate(scorable):
+                for wi in s1_rank[ci, :k]:
+                    pairs.append((s1_win_texts[int(wi)], claim))
+                    index_map.append((ci, s1_win_passage_idx[int(wi)]))
+        else:
+            for ci, claim in enumerate(scorable):
+                for pi, passage in enumerate(passages):
+                    pairs.append((_passage_text(passage), claim))
+                    index_map.append((ci, pi))
+
+        scores = resolved.score_batch(pairs=pairs)
+
+        # Fold per-claim: argmax entailment over the claim's passage scores.
+        for (ci, pi), score in zip(index_map, scores):
+            ent = float(getattr(score, "entailment", 0.0))
+            con = float(getattr(score, "contradiction", 0.0))
+            cur = best.get(ci)
+            if cur is None or ent > cur[0]:
+                best[ci] = (ent, con, pi, False)
+
+    # Stage 2: windowed rescue for claims still below the entailment floor.
     unrescued = [ci for ci in range(len(scorable)) if best.get(ci, (0.0,))[0] < entailment_floor]
-    if unrescued:
+    if unrescued and s1_sims is not None:
+        # Top-K variant rescue: widen to the next ``_S1_TOPK_RESCUE_MULT × K``
+        # cosine-ranked windows per claim (same cached similarity matrix — no
+        # extra embeds). Catches stage-1 cosine misses without a full window
+        # scan; a window that entails replaces the stage-1 result exactly like
+        # the legacy rescue (``windowed=True``).
+        import numpy as _np
+
+        k = min(s1_topk, len(s1_win_texts))
+        k_hi = min(k + _S1_TOPK_RESCUE_MULT * s1_topk, len(s1_win_texts))
+        if k_hi > k:
+            s1_rank = _np.argsort(-s1_sims, axis=1)
+            s2_pairs: List[Tuple[str, str]] = []
+            s2_map: List[Tuple[int, int]] = []  # (claim_index, window_index)
+            for ci in unrescued:
+                claim = scorable[ci]
+                for wi in s1_rank[ci, k:k_hi]:
+                    s2_pairs.append((s1_win_texts[int(wi)], claim))
+                    s2_map.append((ci, int(wi)))
+            if s2_pairs:
+                s2_scores = resolved.score_batch(pairs=s2_pairs)
+                s2_best: Dict[int, Tuple[float, float, int]] = {}
+                for (ci, wi), score in zip(s2_map, s2_scores):
+                    ent = float(getattr(score, "entailment", 0.0))
+                    con = float(getattr(score, "contradiction", 0.0))
+                    cur = s2_best.get(ci)
+                    if cur is None or ent > cur[0]:
+                        s2_best[ci] = (ent, con, wi)
+                for ci, (ent, con, wi) in s2_best.items():
+                    if ent >= entailment_floor:
+                        best[ci] = (ent, con, s1_win_passage_idx[wi], True)
+    elif unrescued:
+        # LEGACY rescue: re-score against 3-sentence windows (stride 2) of each
+        # passage; the winning window's entailment/contradiction + its
+        # passage's chunk_id replace the stage-1 result when it clears the
+        # floor. Capped at ``_MAX_STAGE2_WINDOWS`` premises (first-N per
+        # passage) to bound runtime.
         window_premises: List[str] = []
         window_passage_idx: List[int] = []
         for pi, passage in enumerate(passages):
@@ -774,8 +1213,8 @@ def score_groundedness(
             if len(window_premises) >= _MAX_STAGE2_WINDOWS:
                 break
         if window_premises:
-            s2_pairs: List[Tuple[str, str]] = []
-            s2_map: List[Tuple[int, int]] = []  # (claim_index, window_index)
+            s2_pairs = []
+            s2_map = []  # (claim_index, window_index)
             for ci in unrescued:
                 claim = scorable[ci]
                 for wi, premise in enumerate(window_premises):
@@ -783,7 +1222,7 @@ def score_groundedness(
                     s2_map.append((ci, wi))
             s2_scores = resolved.score_batch(pairs=s2_pairs)
             # Argmax windowed entailment per rescued claim.
-            s2_best: Dict[int, Tuple[float, float, int]] = {}
+            s2_best = {}
             for (ci, wi), score in zip(s2_map, s2_scores):
                 ent = float(getattr(score, "entailment", 0.0))
                 con = float(getattr(score, "contradiction", 0.0))
@@ -882,4 +1321,10 @@ __all__ = [
     "ENV_REQUIRE_EMBEDDINGS",
     "ENV_GROUNDEDNESS_COMPUTATIONAL",
     "resolve_groundedness_computational",
+    "ENV_GROUNDEDNESS_S1_TOPK",
+    "resolve_groundedness_s1_topk",
+    "ENV_GROUNDEDNESS_FRONTIER",
+    "ENV_GROUNDEDNESS_FRONTIER_WIDTH",
+    "resolve_groundedness_frontier",
+    "resolve_groundedness_frontier_width",
 ]

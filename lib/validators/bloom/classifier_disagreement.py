@@ -53,6 +53,13 @@ from MCP.hardening.validation_gates import GateIssue, GateResult
 from lib.classifiers.bloom_bert_ensemble import (
     BertEnsembleDepsMissing,
     BloomBertEnsemble,
+    is_strict_mode,
+)
+from lib.classifiers.bloom_zero_shot import (
+    resolve_trivote_mode,
+    trivote_disagreement,
+    verb_vote,
+    zero_shot_bloom,
 )
 
 logger = logging.getLogger(__name__)
@@ -86,6 +93,13 @@ _DISAGREEMENT_CONFIDENCE_FLOOR: float = 0.4
 #: outline batch doesn't drown the gate report. Mirrors
 #: ``Courseforge/router/inter_tier_gates.py::_ISSUE_LIST_CAP``.
 _ISSUE_LIST_CAP: int = 50
+
+
+#: Trivote structured-skip GateIssue code (``ED4ALL_BLOOM_TRIVOTE``). Emitted
+#: warning-severity when 2+ of the three voters abstain for a unit — the
+#: gate records the skip rather than fabricating a pass/fail metric from a
+#: lone voter. Skipped units are excluded from the pass-rate denominator.
+_TRIVOTE_INSUFFICIENT_VOTERS_CODE: str = "BLOOM_TRIVOTE_INSUFFICIENT_VOTERS"
 
 
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
@@ -294,10 +308,15 @@ class BloomClassifierDisagreementValidator:
         ensemble: Optional[BloomBertEnsemble] = None,
         dispersion_threshold: float = _DISPERSION_THRESHOLD,
         confidence_floor: float = _DISAGREEMENT_CONFIDENCE_FLOOR,
+        nli: Optional[Any] = None,
     ) -> None:
-        self._ensemble = ensemble  # lazy-instantiated when None
+        self._ensemble = ensemble  # lazy-instantiated when None (legacy path)
         self._dispersion_threshold = float(dispersion_threshold)
         self._confidence_floor = float(confidence_floor)
+        # ED4ALL_BLOOM_TRIVOTE zero-shot NLI voter. Injectable for tests
+        # (any object exposing ``score_batch(*, pairs)``); None => the
+        # trivote path lazily pulls the process-singleton at validate time.
+        self._nli = nli
 
     def _get_ensemble(self) -> BloomBertEnsemble:
         if self._ensemble is None:
@@ -329,6 +348,12 @@ class BloomClassifierDisagreementValidator:
                 score=1.0,
                 issues=[],
             )
+
+        # ED4ALL_BLOOM_TRIVOTE — re-founded three-voter path. Default OFF
+        # => fall through to the legacy BERT-ensemble path below, which
+        # stays byte-identical.
+        if resolve_trivote_mode():
+            return self._validate_trivote(blocks, gate_id, capture)
 
         # Lazy ensemble construction — strict-mode missing-deps raises
         # propagate as a critical GateIssue (action=block).
@@ -583,9 +608,305 @@ class BloomClassifierDisagreementValidator:
             action=action,
         )
 
+    # ------------------------------------------------------------------ #
+    # ED4ALL_BLOOM_TRIVOTE — re-founded three-voter path.
+    # ------------------------------------------------------------------ #
+
+    def _resolve_nli(self) -> Any:
+        """Return the injected NLI, else lazily pull the process-singleton.
+
+        Tests inject ``nli=`` on the constructor so this never reaches the
+        real loader; production passes ``None`` and this pulls the SAME
+        DeBERTa singleton already resident for the entailment gates (no
+        second model load). Any load failure resolves to ``None`` (=> the
+        zero-shot voter abstains).
+        """
+        if self._nli is not None:
+            return self._nli
+        try:
+            from lib.classifiers.nli_classifier import NliClassifier
+
+            return NliClassifier.get_or_load()
+        except Exception as exc:  # noqa: BLE001 — graceful-degrade => abstain
+            logger.debug("trivote: NLI singleton load failed: %s", exc)
+            return None
+
+    def _validate_trivote(
+        self,
+        blocks: List[Any],
+        gate_id: str,
+        capture: Any,
+    ) -> GateResult:
+        """Three-voter re-founding of the disagreement gate.
+
+        Per audited unit the three voters are the generator's OWN asserted
+        ``bloom_level`` (voter 1, read from the block metadata), the
+        zero-shot DeBERTa level (voter 2), and the deterministic verb level
+        (voter 3). The gate asks *"does the generator's own Bloom claim
+        survive independent checks"*:
+
+        - ``BERT_ENSEMBLE_DISAGREEMENT`` — the asserted level is backed by
+          NO independent voter (verb disagreement fires on its own —
+          deterministic; a zero-shot-only disagreement must clear the
+          confidence floor).
+        - ``BERT_ENSEMBLE_DISPERSION_HIGH`` — the pairwise mismatch fraction
+          across present voters exceeds the dispersion threshold.
+        - ``BLOOM_TRIVOTE_INSUFFICIENT_VOTERS`` — 2+ voters abstained;
+          structured skip (excluded from the pass-rate denominator, never a
+          fabricated pass).
+        """
+        nli = self._resolve_nli()
+
+        # Strict mode: the zero-shot NLI voter is mandatory. Fail closed
+        # (mirrors the legacy strict raise) when it is unavailable.
+        if is_strict_mode() and nli is None:
+            for block in blocks:
+                if _block_attr(block, "block_type") not in _AUDITED_BLOCK_TYPES:
+                    continue
+                _emit_decision(
+                    capture,
+                    block_id=_block_attr(block, "block_id"),
+                    passed=False,
+                    code="BERT_ENSEMBLE_DEPS_MISSING",
+                    declared_level=_block_attr(block, "bloom_level"),
+                    winner_level=None, winner_score=None,
+                    dispersion=None,
+                    dispersion_threshold=self._dispersion_threshold,
+                    confidence_floor=self._confidence_floor,
+                    member_votes=None, members_loaded=0,
+                )
+            return GateResult(
+                gate_id=gate_id,
+                validator_name=self.name,
+                validator_version=self.version,
+                passed=False,
+                issues=[
+                    GateIssue(
+                        severity="critical",
+                        code="BERT_ENSEMBLE_DEPS_MISSING",
+                        message=(
+                            "ED4ALL_BLOOM_TRIVOTE zero-shot voter is "
+                            "unavailable (NLI model failed to load) but "
+                            "TRAINFORGE_REQUIRE_BERT_ENSEMBLE is set."
+                        ),
+                        suggestion=(
+                            "Install the NLI extras / pre-seed the DeBERTa "
+                            "weights, or unset TRAINFORGE_REQUIRE_BERT_ENSEMBLE."
+                        ),
+                    )
+                ],
+                action="block",
+            )
+
+        issues: List[GateIssue] = []
+        audited = 0
+        passed_count = 0
+        regen_issue_count = 0
+
+        for block in blocks:
+            if _block_attr(block, "block_type") not in _AUDITED_BLOCK_TYPES:
+                continue
+
+            text = _extract_text_for_classification(block)
+            if not text:
+                continue
+
+            declared = _block_attr(block, "bloom_level")
+            block_id = _block_attr(block, "block_id")
+
+            # Voter 2 (zero-shot) + voter 3 (verb). Voter 1 is ``declared``.
+            zs = zero_shot_bloom(text, nli=nli)
+            zs_level = zs[0] if zs else None
+            zs_conf = zs[1] if zs else None
+            verb_level, verb_evidence = verb_vote(text)
+
+            # The confidence floor governs voter-2 participation: a zero-shot
+            # winner below the floor is too weak to count, so the voter
+            # abstains (suppresses low-confidence noise) rather than casting
+            # a shaky vote. ``zs_conf`` is still recorded for the capture.
+            if zs_level is not None and (
+                zs_conf is None or zs_conf < self._confidence_floor
+            ):
+                zs_level = None
+
+            td = trivote_disagreement(declared, zs_level, verb_level)
+            asserted_level = td["votes"]["asserted"]
+
+            # Structured skip: 2+ abstentions. NEVER counted as a pass.
+            if td["skipped"]:
+                if len(issues) < _ISSUE_LIST_CAP:
+                    issues.append(
+                        GateIssue(
+                            severity="warning",
+                            code=_TRIVOTE_INSUFFICIENT_VOTERS_CODE,
+                            message=(
+                                f"Block {block_id!r} trivote skipped: only "
+                                f"{td['n_present']} of 3 voters present "
+                                f"(abstentions={td['abstentions']}). "
+                                f"asserted={asserted_level or 'n/a'}, "
+                                f"zero_shot={zs_level or 'n/a'}, "
+                                f"verb={verb_level or 'n/a'}."
+                            ),
+                            location=block_id,
+                            suggestion=(
+                                "Ensure the block declares a canonical "
+                                "bloom_level and the zero-shot NLI voter is "
+                                "available (both abstained)."
+                            ),
+                        )
+                    )
+                self._emit_trivote_decision(
+                    capture, block_id=block_id, passed=True, code=None,
+                    skipped=True, td=td, zs_conf=zs_conf,
+                    verb_evidence=verb_evidence,
+                )
+                continue
+
+            audited += 1
+            block_passed = True
+
+            # 1. Disagreement — the asserted claim survives NO independent
+            #    check (every present independent voter disagrees; the
+            #    zero-shot voter already abstained above if it was below the
+            #    confidence floor, so anything left is a credible signal).
+            if td["asserted_unsupported"]:
+                if len(issues) < _ISSUE_LIST_CAP:
+                    issues.append(
+                        GateIssue(
+                            severity="warning",
+                            code="BERT_ENSEMBLE_DISAGREEMENT",
+                            message=(
+                                f"Block {block_id!r} declares "
+                                f"bloom_level={asserted_level!r} but no "
+                                f"independent voter agrees "
+                                f"(zero_shot={td['votes']['zero_shot'] or 'n/a'}, "
+                                f"verb={verb_level or 'n/a'}, "
+                                f"disagreement={td['disagreement_score']:.3f})."
+                            ),
+                            location=block_id,
+                            suggestion=(
+                                "Re-roll the outline-tier provider toward "
+                                f"{td['majority_level']!r} OR confirm the "
+                                f"declared {asserted_level!r} is intentional."
+                            ),
+                        )
+                    )
+                regen_issue_count += 1
+                block_passed = False
+
+            # 2. Dispersion — voters scattered above the threshold.
+            if td["disagreement_score"] > self._dispersion_threshold:
+                if len(issues) < _ISSUE_LIST_CAP:
+                    issues.append(
+                        GateIssue(
+                            severity="warning",
+                            code="BERT_ENSEMBLE_DISPERSION_HIGH",
+                            message=(
+                                f"Block {block_id!r} trivote "
+                                f"disagreement={td['disagreement_score']:.3f} "
+                                f"exceeds threshold "
+                                f"{self._dispersion_threshold:.3f} "
+                                f"(asserted={asserted_level!r}, "
+                                f"zero_shot={zs_level or 'n/a'}, "
+                                f"verb={verb_level or 'n/a'})."
+                            ),
+                            location=block_id,
+                            suggestion=(
+                                "The three Bloom voters disagree. Re-roll the "
+                                "block with clearer Bloom-verb anchoring in the "
+                                "statement surface."
+                            ),
+                        )
+                    )
+                regen_issue_count += 1
+                block_passed = False
+
+            if block_passed:
+                fail_code = None
+            elif td["asserted_unsupported"]:
+                fail_code = "BERT_ENSEMBLE_DISAGREEMENT"
+            else:
+                fail_code = "BERT_ENSEMBLE_DISPERSION_HIGH"
+            self._emit_trivote_decision(
+                capture, block_id=block_id, passed=block_passed,
+                code=fail_code, skipped=False, td=td, zs_conf=zs_conf,
+                verb_evidence=verb_evidence,
+            )
+
+            if block_passed:
+                passed_count += 1
+
+        # Pass rate over EVALUATED units (skips excluded — no fabricated
+        # pass). ``passed`` stays True (warning-severity only); ``action``
+        # is regenerate iff a real disagreement / dispersion issue fired
+        # (a structured skip alone does NOT force a re-roll).
+        score = 1.0 if audited == 0 else round(passed_count / audited, 4)
+        action: Optional[str] = "regenerate" if regen_issue_count else None
+        return GateResult(
+            gate_id=gate_id,
+            validator_name=self.name,
+            validator_version=self.version,
+            passed=True,
+            score=score,
+            issues=issues,
+            action=action,
+        )
+
+    def _emit_trivote_decision(
+        self,
+        capture: Any,
+        *,
+        block_id: Optional[str],
+        passed: bool,
+        code: Optional[str],
+        skipped: bool,
+        td: Dict[str, Any],
+        zs_conf: Optional[float],
+        verb_evidence: Optional[str],
+    ) -> None:
+        """Emit one ``bloom_classifier_disagreement_check`` capture (trivote).
+
+        Rationale cites all three votes, the zero-shot confidence, the verb
+        evidence, and the pairwise disagreement score so a replay can see
+        exactly why the generator's claim did or did not survive.
+        """
+        if capture is None:
+            return
+        votes = td.get("votes", {})
+        decision = (
+            "skipped:insufficient_voters"
+            if skipped
+            else ("passed" if passed else f"failed:{code or 'unknown'}")
+        )
+        zs_conf_str = f"{zs_conf:.3f}" if isinstance(zs_conf, (int, float)) else "n/a"
+        rationale = (
+            f"Bloom trivote check on Block {block_id or 'n/a'!r}: "
+            f"asserted={votes.get('asserted') or 'n/a'}, "
+            f"zero_shot={votes.get('zero_shot') or 'n/a'}(conf={zs_conf_str}), "
+            f"verb={votes.get('verb') or 'n/a'}(evidence={verb_evidence or 'n/a'}), "
+            f"n_present={td.get('n_present')}, "
+            f"disagreement_score={td.get('disagreement_score')}, "
+            f"dispersion_threshold={self._dispersion_threshold:.3f}, "
+            f"confidence_floor={self._confidence_floor:.3f}, "
+            f"asserted_supported={td.get('asserted_supported')}, "
+            f"skipped={skipped}, failure_code={code or 'none'}."
+        )
+        try:
+            capture.log_decision(
+                decision_type="bloom_classifier_disagreement_check",
+                decision=decision,
+                rationale=rationale,
+            )
+        except Exception as exc:  # noqa: BLE001 — capture must never fail the gate
+            logger.debug(
+                "DecisionCapture.log_decision raised on trivote check: %s",
+                exc,
+            )
+
 
 __all__ = [
     "BloomClassifierDisagreementValidator",
     "_DISAGREEMENT_CONFIDENCE_FLOOR",
     "_DISPERSION_THRESHOLD",
+    "_TRIVOTE_INSUFFICIENT_VOTERS_CODE",
 ]

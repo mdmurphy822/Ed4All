@@ -45,6 +45,11 @@ __all__ = [
     "resolve_alttext_api_key",
     "resolve_alttext_concurrency",
     "resolve_alttext_timeout",
+    "resolve_heading_judge_mode",
+    "resolve_heading_judge_base_url",
+    "resolve_heading_judge_model",
+    "resolve_heading_judge_timeout",
+    "resolve_heading_judge_checkpoint",
 ]
 
 _TRUTHY = {"1", "true", "yes", "on"}
@@ -149,3 +154,48 @@ def resolve_alttext_concurrency() -> int:
 def resolve_alttext_timeout() -> float:
     """Alt-text per-request HTTP timeout in seconds (default 120)."""
     return _env_float("SEMANTIK_ALTTEXT_TIMEOUT_SECONDS", 120.0)
+
+
+# ── Super heading-level JUDGE pass (SEMANTIK_HEADING_JUDGE). ─────────────────
+_CHECKPOINT_FAMILY_ENV = "ED4ALL_GENERATION_CHECKPOINT"
+_CHECKPOINT_FALSEY = {"0", "false", "no", "off"}
+
+
+def resolve_heading_judge_mode() -> bool:
+    """Master gate: run the Super heading-level judge pass? Default OFF.
+
+    When off the ``heading_judge`` module is never imported by the lane, so
+    ``region_provenance`` / ``heading_tree`` / escalations are byte-identical.
+    """
+    return _truthy(os.environ.get("SEMANTIK_HEADING_JUDGE"))
+
+
+def resolve_heading_judge_base_url() -> str:
+    """Heading-judge seat base URL (default the Super seat localhost:8001/v1)."""
+    return _env_str("SEMANTIK_HEADING_JUDGE_BASE_URL", "http://localhost:8001/v1")
+
+
+def resolve_heading_judge_model() -> str:
+    """Heading-judge seat model id (default ``nemotron-3-super``)."""
+    return _env_str("SEMANTIK_HEADING_JUDGE_MODEL", "nemotron-3-super")
+
+
+def resolve_heading_judge_timeout() -> float:
+    """Heading-judge per-request HTTP timeout in seconds (default 1200 —
+    a thinking-on judgment runs long; reasoning-QC precedent)."""
+    return _env_float("SEMANTIK_HEADING_JUDGE_TIMEOUT", 1200.0)
+
+
+def resolve_heading_judge_checkpoint() -> bool:
+    """Per-window resume-cache / stop-checkpoint gate (default ON).
+
+    Site env ``SEMANTIK_HEADING_JUDGE_CHECKPOINT`` beats the
+    ``ED4ALL_GENERATION_CHECKPOINT`` family; explicit falsey → off.
+    """
+    site = os.environ.get("SEMANTIK_HEADING_JUDGE_CHECKPOINT")
+    if site is not None and str(site).strip():
+        return str(site).strip().lower() not in _CHECKPOINT_FALSEY
+    fam = os.environ.get(_CHECKPOINT_FAMILY_ENV)
+    if fam is not None and str(fam).strip():
+        return str(fam).strip().lower() not in _CHECKPOINT_FALSEY
+    return True

@@ -675,6 +675,66 @@ and time-to-first-token metering (`ED4ALL_LLM_TTFT_METER`) are in the root
 
 ---
 
+## 9. Declarative seat schedule (`ED4ALL_SEAT_SCHEDULE`)
+
+On a single-GPU box the Super-120B seat cannot coexist with the conversion
+(GLM-OCR / Qwen3-VL) seats or with the NLI/embedding validation chain — they
+contend for the same VRAM. Historically the operator swapped the Super container
+in and out by hand, and a **mis-scheduled swap starved validation 4-7x**
+(observed live: a resident Super seat drops post-rewrite validation to ~3
+blocks/min). `ED4ALL_SEAT_SCHEDULE` (default **OFF**) encodes the swap plan
+declaratively so the orchestrator drives it.
+
+**How it works.** Each phase in `config/workflows.yaml` carries an optional
+`seats:` annotation (validated by `schemas/config/workflows_meta.schema.json`):
+
+- `seats: [spark-super]` — the phase needs this logical seat served.
+- `seats: []` — the phase explicitly needs **no** vLLM seat (the GPU belongs to
+  NLI/embedding).
+- *absent* — no opinion; the seat state carries over from the prior phase
+  unchanged (used for the deterministic staging/chunking phases).
+
+With the flag on, at each phase **start** boundary the runner reconciles the
+resident seats to the phase's declared set — `docker stop` the no-longer-needed
+seats, then `docker start` + **wait** + **coherence-probe** the newly-needed ones
+(via `lib/vllm_container_lifecycle.py`). A newly-needed seat that fails to come up
+in time, or that comes up but returns empty/degenerate content on the coherence
+probe (**mode-collapse doctrine** — a restarted seat can pass `/v1/models` yet
+emit soup), **fails the phase loudly** rather than running seat-starved. Every
+other seat op is best-effort. At workflow start the full phase→seat plan is
+logged once (a dry-run report of the "logical order").
+
+**Seat ranges** for `textbook_to_course` (two-pass):
+
+| Phase range | Seats | Why |
+|---|---|---|
+| `semantik_conversion` | `[spark-glm, spark-qwen]` | GLM-OCR extract + Qwe3-VL describe (the Super judge, ~5-10% of pages, is cascade-internal). |
+| `staging` → `source_mapping` | *absent (no opinion)* | Deterministic phases; conversion seats stay resident until course_planning swaps them out in ONE transition. |
+| `course_planning` → `assessment_synthesis` | `[spark-super]` | The whole synthesis range runs on ONE warm Super seat — planning, concept extraction, outline, inter-tier validation (kept warm), rewrite, and assessments back-to-back. |
+| `post_rewrite_validation` → `finalization` | `[]` | Super retires exactly once; the NLI/embedding validation chain + packaging + archival + indexing get the whole GPU seat-free. |
+
+The `assessment_synthesis`-before-`post_rewrite_validation` ordering (assessment
+consumes only objectives + chunks, never the rewritten blocks) is what lets Super
+retire in a **single** transition instead of a stop-for-validation /
+cold-start-for-assessment double swap — the two-pass `depends_on_when_env_value`
+edges on both phases enforce it.
+
+**Configuration.** Two registries bridge the logical names to docker:
+
+```bash
+export ED4ALL_SEAT_SCHEDULE=1
+# logical seat name -> vLLM base URL
+export ED4ALL_SEAT_BASE_URLS='spark-super=http://localhost:8001,spark-glm=http://localhost:8002,spark-qwen=http://localhost:8003'
+# base URL -> docker container (the existing container registry, unchanged)
+export ED4ALL_VLLM_CONTAINERS='http://localhost:8001=vllm-super,http://localhost:8002=vllm-glm,http://localhost:8003=vllm-qwen'
+```
+
+A seat name declared in YAML but missing from `ED4ALL_SEAT_BASE_URLS` is a config
+gap → warn + skip (never a run-failing error), so a partial map soft-degrades to
+no-op on the unmapped seats. Full flag detail: `docs/operations/behavior-flags.md`.
+
+---
+
 ## See also
 
 - `docs/operations/license-clean-run.md` — licensing / ToS-clean seat recipe.

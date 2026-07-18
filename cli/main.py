@@ -33,6 +33,29 @@ def cli(ctx, verbose):
     """Ed4All integrity checking and run management tools."""
     ctx.ensure_object(dict)
     ctx.obj['verbose'] = verbose
+    # Operator log-level control: without a basicConfig the root logger drops
+    # everything below WARNING (lastResort handler), which silences the
+    # per-gate wall-clock / NLI-throughput / crossblock-progress INFO
+    # instrumentation. `--verbose` or ED4ALL_LOG_LEVEL (name or number, e.g.
+    # INFO / DEBUG / 20) attaches a stderr handler at the requested level.
+    # Unset → legacy behavior (WARNING+ only), byte-identical logs.
+    import logging as _logging
+    import os as _os
+    _lvl_raw = _os.environ.get("ED4ALL_LOG_LEVEL", "").strip()
+    if verbose and not _lvl_raw:
+        _lvl_raw = "INFO"
+    if _lvl_raw:
+        _lvl = _logging.getLevelName(_lvl_raw.upper())
+        if not isinstance(_lvl, int):
+            try:
+                _lvl = int(_lvl_raw)
+            except (TypeError, ValueError):
+                _lvl = None
+        if isinstance(_lvl, int):
+            _logging.basicConfig(
+                level=_lvl,
+                format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+            )
 
 
 # Register Wave 7 canonical 'ed4all run' command. Imported lazily to keep
@@ -188,6 +211,23 @@ except ImportError as _import_docs_err:  # pragma: no cover
     _logging.getLogger(__name__).warning(
         "cli.commands.import_docs unavailable: %s",
         _import_docs_err,
+    )
+
+
+# Register 'ed4all harvest-bloom-labels' command — deterministic (no-LLM)
+# harvester that walks a project/export (+ optional LibV2 course) and collects
+# every artifact-asserted Bloom label into state/bloom_labels/labels.jsonl (the
+# corpus behind the re-founded bloom_classifier_disagreement voter 1). Lazy
+# try/except so the CLI still loads if the harvester seams fail to import.
+try:
+    from cli.commands import register_harvest_bloom_labels_command
+
+    register_harvest_bloom_labels_command(cli)
+except ImportError as _harvest_bloom_err:  # pragma: no cover
+    import logging as _logging
+    _logging.getLogger(__name__).warning(
+        "cli.commands.harvest_bloom_labels unavailable: %s",
+        _harvest_bloom_err,
     )
 
 

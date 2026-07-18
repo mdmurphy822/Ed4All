@@ -108,6 +108,47 @@ def test_meta_schema_rejects_invalid_phase_name(meta_schema, workflows_yaml_data
         jsonschema.validate(mutated, meta_schema)
 
 
+def test_meta_schema_accepts_seat_annotations(meta_schema, workflows_yaml_data):
+    """Seat-schedule ``seats:`` annotations (list / empty list) validate clean."""
+    jsonschema = pytest.importorskip("jsonschema")
+    mutated = copy.deepcopy(workflows_yaml_data)
+    first_wf = next(iter(mutated["workflows"].values()))
+    first_wf["phases"][0]["seats"] = ["spark-super"]
+    first_wf["phases"][1]["seats"] = []          # explicit "no seat"
+    if len(first_wf["phases"]) > 2:
+        first_wf["phases"][2]["seats"] = ["spark-glm", "spark-qwen"]
+    jsonschema.validate(mutated, meta_schema)
+
+
+def test_meta_schema_rejects_seats_non_array(meta_schema, workflows_yaml_data):
+    """``seats:`` must be an array, not a bare string."""
+    jsonschema = pytest.importorskip("jsonschema")
+    mutated = copy.deepcopy(workflows_yaml_data)
+    next(iter(mutated["workflows"].values()))["phases"][0]["seats"] = "spark-super"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(mutated, meta_schema)
+
+
+def test_meta_schema_rejects_bad_seat_name(meta_schema, workflows_yaml_data):
+    """Seat names must match the kebab/lowercase pattern (no uppercase)."""
+    jsonschema = pytest.importorskip("jsonschema")
+    mutated = copy.deepcopy(workflows_yaml_data)
+    next(iter(mutated["workflows"].values()))["phases"][0]["seats"] = ["Spark_Super"]
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(mutated, meta_schema)
+
+
+def test_meta_schema_rejects_duplicate_seats(meta_schema, workflows_yaml_data):
+    """Seat lists must be unique (a phase can't declare the same seat twice)."""
+    jsonschema = pytest.importorskip("jsonschema")
+    mutated = copy.deepcopy(workflows_yaml_data)
+    next(iter(mutated["workflows"].values()))["phases"][0]["seats"] = [
+        "spark-super", "spark-super",
+    ]
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(mutated, meta_schema)
+
+
 def test_meta_schema_rejects_bad_inputs_from_source(meta_schema, workflows_yaml_data):
     """`source:` must be one of workflow_params, phase_outputs, literal."""
     jsonschema = pytest.importorskip("jsonschema")

@@ -18,6 +18,7 @@ from .backup import register_backup_command
 from .convert import register_convert_command
 from .doctor import register_doctor_command
 from .gui_cmd import register_gui_command
+from .harvest_bloom_labels import register_harvest_bloom_labels_command
 from .import_docs import register_import_docs_command
 from .libv2_ask import register_libv2_ask_command
 from .libv2_generate_study_pack import register_generate_study_pack_command
@@ -62,6 +63,7 @@ __all__ = [
     "register_gui_command",
     "register_doctor_command",
     "register_import_docs_command",
+    "register_harvest_bloom_labels_command",
     "register_convert_command",
     "register_support_bundle_command",
     "register_backup_command",

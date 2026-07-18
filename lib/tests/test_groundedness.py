@@ -807,3 +807,383 @@ def test_real_deberta_verdict_ordering():
     assert supported.available is True
     assert supported.claims[0].entailment > contradicted.claims[0].entailment
     assert supported.claims[0].verdict == VERDICT_ENTAILED
+
+
+# --------------------------------------------------------------------------- #
+# ED4ALL_GROUNDEDNESS_S1_TOPK — top-K windowed stage 1 (opt-in)
+# --------------------------------------------------------------------------- #
+
+class _FakeS1Embedder:
+    """Deterministic embedder: vector = [len(text) % 7, 1.0] (normalized later)."""
+
+    def encode_batch(self, texts, normalize=True):
+        return [[(len(t) % 7) + 1.0, 1.0] for t in texts]
+
+
+def test_s1_topk_resolver_parse_with_fallback(monkeypatch):
+    from lib.retrieval.groundedness import resolve_groundedness_s1_topk
+
+    assert resolve_groundedness_s1_topk({}) == 0
+    assert resolve_groundedness_s1_topk({"ED4ALL_GROUNDEDNESS_S1_TOPK": ""}) == 0
+    assert resolve_groundedness_s1_topk({"ED4ALL_GROUNDEDNESS_S1_TOPK": "garbage"}) == 0
+    assert resolve_groundedness_s1_topk({"ED4ALL_GROUNDEDNESS_S1_TOPK": "-3"}) == 0
+    assert resolve_groundedness_s1_topk({"ED4ALL_GROUNDEDNESS_S1_TOPK": "16"}) == 16
+
+
+def test_s1_topk_off_is_legacy_grid(monkeypatch):
+    """Flag unset → pair volume equals the full claims × passages grid."""
+    monkeypatch.delenv("ED4ALL_GROUNDEDNESS_S1_TOPK", raising=False)
+    nli = FakeNli()
+    from lib.retrieval.groundedness import score_groundedness
+
+    passages = [
+        {"chunk_id": "c1", "text": "The sky is blue. Water is wet. Grass is green."},
+        {"chunk_id": "c2", "text": "Cats purr. Dogs bark. Fish swim."},
+    ]
+    report = score_groundedness("The sky is blue.", passages, nli=nli)
+    assert report.available is True
+    # 1 scorable claim × 2 whole-chunk passages (+ any stage-2 rescue pairs).
+    assert len([pr for b in nli.batches for pr in b]) >= 2
+    assert any(p[0].startswith("The sky is blue.") for p in [pr for b in nli.batches for pr in b])
+
+
+def test_s1_topk_on_scores_windows_and_caps_pairs(monkeypatch):
+    """Flag on + injected embedder → stage-1 premises are WINDOWS, ≤K per claim."""
+    monkeypatch.setenv("ED4ALL_GROUNDEDNESS_S1_TOPK", "2")
+    import lib.retrieval.groundedness as g
+
+    monkeypatch.setattr(
+        "lib.embedding.sentence_embedder.try_load_embedder",
+        lambda *a, **k: _FakeS1Embedder(),
+    )
+    nli = FakeNli()
+    long_a = " ".join(f"The sky is blue on day {i}." for i in range(12))
+    long_b = " ".join(f"Cats purr at hour {i}." for i in range(12))
+    passages = [
+        {"chunk_id": "c1", "text": long_a},
+        {"chunk_id": "c2", "text": long_b},
+    ]
+    report = g.score_groundedness("The sky is blue on day 3.", passages, nli=nli)
+    assert report.available is True
+    # Stage-1 pairs capped at K=2 per claim; premises are windows (short),
+    # never the full 12-sentence passage. Rescue may add widened pairs.
+    s1_premises = [p[0] for p in [pr for b in nli.batches for pr in b]]
+    assert all(len(prem) < len(long_a) for prem in s1_premises)
+    # Verdict still folds to a real chunk id.
+    scored = [c for c in report.claims if c.verdict != "computational_unverified"]
+    assert scored and scored[0].best_chunk_id in {"c1", "c2"}
+
+
+def test_s1_topk_degrades_to_legacy_without_embedder(monkeypatch):
+    """Embedder unavailable → silently falls back to the legacy whole-chunk grid."""
+    monkeypatch.setenv("ED4ALL_GROUNDEDNESS_S1_TOPK", "4")
+    import lib.retrieval.groundedness as g
+
+    monkeypatch.setattr(
+        "lib.embedding.sentence_embedder.try_load_embedder",
+        lambda *a, **k: None,
+    )
+    nli = FakeNli()
+    passages = [{"chunk_id": "c1", "text": "The sky is blue. Water is wet."}]
+    report = g.score_groundedness("The sky is blue.", passages, nli=nli)
+    assert report.available is True
+    # Legacy grid premise = whole passage text.
+    assert any(p[0] == "The sky is blue. Water is wet." for p in [pr for b in nli.batches for pr in b])
+
+
+def test_s1_topk_changes_prose_entailment_fingerprint(monkeypatch):
+    """Sidecar fingerprints must differ between legacy and top-K scoring."""
+    from lib.validators.block_prose_entailment import _block_fingerprint
+
+    class _NliStub:
+        device = "cpu"
+        _revision = "rev1"
+
+    passages = [{"chunk_id": "c1", "text": "alpha"}]
+    monkeypatch.delenv("ED4ALL_GROUNDEDNESS_S1_TOPK", raising=False)
+    fp_legacy = _block_fingerprint("prose", passages, 0.7, 0.5, _NliStub())
+    monkeypatch.setenv("ED4ALL_GROUNDEDNESS_S1_TOPK", "16")
+    fp_topk = _block_fingerprint("prose", passages, 0.7, 0.5, _NliStub())
+    assert fp_legacy != fp_topk
+    monkeypatch.delenv("ED4ALL_GROUNDEDNESS_S1_TOPK", raising=False)
+    assert _block_fingerprint("prose", passages, 0.7, 0.5, _NliStub()) == fp_legacy
+
+
+# ===========================================================================
+# FRONTIER stage-1 (ED4ALL_GROUNDEDNESS_FRONTIER) — parity + early-stop
+# ===========================================================================
+#
+# The frontier scores each claim against its passage pool in a priority order
+# and retires it the instant a premise entails it. Parity argument (enforced by
+# the tests below): entailed claims produce an identical VERDICT (best-passage
+# metadata may differ); non-entailed claims exhaust the WHOLE pool so their
+# (entailment, contradiction, best_chunk_id) — under the legacy passage-index
+# tiebreak — are bitwise-identical to the grid, and the stage-2 rescue set is
+# unchanged. All tests inject a deterministic fake NLI and force the cosine
+# tiebreaker off (``_frontier_embed -> (None, None)``) so no embedding model
+# loads (lexical-only ordering; cosine never affects a verdict).
+
+
+import hashlib as _hashlib
+
+
+class _CountingBatchesNli(FakeNli):
+    """FakeNli recording every score_batch pair count (across rounds)."""
+
+    def __init__(self):
+        super().__init__()
+        self.total_pairs = 0
+
+    def score_batch(self, *, pairs, batch_size=8):
+        p = list(pairs)
+        self.total_pairs += len(p)
+        return super().score_batch(pairs=p, batch_size=batch_size)
+
+
+class _VaryingNli:
+    """Deterministic NLI whose entailment/contradiction vary per (premise, claim).
+
+    Entailment is capped BELOW the 0.7 floor so every claim is non-entailed —
+    the case where the frontier must reproduce the grid's argmax (ent, con,
+    best_chunk_id) exactly. Pseudo-scores are hash-derived, so exact ties are
+    effectively impossible and the argmax is unique.
+    """
+
+    _revision = "fake-varying-nli-0"
+    device = "cpu"
+
+    def __init__(self):
+        self.total_pairs = 0
+
+    def score_batch(self, *, pairs, batch_size=8):
+        out = []
+        for premise, hyp in pairs:
+            self.total_pairs += 1
+            d = _hashlib.sha256((premise[:64] + "|" + hyp[:64]).encode()).digest()
+            ent = (d[0] / 255.0) * 0.6  # in [0, 0.6) — never reaches the floor
+            con = d[1] / 255.0
+            out.append(_FakeNliScore(ent, max(0.0, 1.0 - ent - con), con))
+        return out
+
+
+def _no_embed(monkeypatch):
+    """Force the frontier's cosine tiebreaker off (no model load)."""
+    monkeypatch.setattr(
+        "lib.retrieval.groundedness._frontier_embed",
+        lambda passage_texts, claim_texts: (None, None),
+    )
+
+
+def _verdict_tuples(report):
+    return [
+        (c.claim_text, c.verdict, round(c.entailment, 6), round(c.contradiction, 6),
+         c.best_chunk_id, c.windowed)
+        for c in report.claims
+    ]
+
+
+# --------------------------------------------------------------------------- #
+# (f) resolver parse-with-fallback
+# --------------------------------------------------------------------------- #
+
+def test_frontier_resolver_parse_with_fallback():
+    from lib.retrieval.groundedness import (
+        resolve_groundedness_frontier,
+        resolve_groundedness_frontier_width,
+    )
+
+    assert resolve_groundedness_frontier({}) is False
+    assert resolve_groundedness_frontier({"ED4ALL_GROUNDEDNESS_FRONTIER": ""}) is False
+    assert resolve_groundedness_frontier({"ED4ALL_GROUNDEDNESS_FRONTIER": "garbage"}) is False
+    for tok in ("1", "true", "yes", "on", "ON", "Yes"):
+        assert resolve_groundedness_frontier({"ED4ALL_GROUNDEDNESS_FRONTIER": tok}) is True
+
+    assert resolve_groundedness_frontier_width({}) == 4
+    assert resolve_groundedness_frontier_width({"ED4ALL_GROUNDEDNESS_FRONTIER_WIDTH": "8"}) == 8
+    assert resolve_groundedness_frontier_width({"ED4ALL_GROUNDEDNESS_FRONTIER_WIDTH": "0"}) == 4
+    assert resolve_groundedness_frontier_width({"ED4ALL_GROUNDEDNESS_FRONTIER_WIDTH": "-2"}) == 4
+    assert resolve_groundedness_frontier_width({"ED4ALL_GROUNDEDNESS_FRONTIER_WIDTH": "nope"}) == 4
+
+
+# --------------------------------------------------------------------------- #
+# (a) frontier off => legacy grid byte-identical
+# --------------------------------------------------------------------------- #
+
+def test_frontier_off_builds_full_legacy_grid(monkeypatch):
+    monkeypatch.delenv("ED4ALL_GROUNDEDNESS_FRONTIER", raising=False)
+    monkeypatch.delenv("ED4ALL_GROUNDEDNESS_S1_TOPK", raising=False)
+    passages = [
+        _passage("c0", "Alpha content sentence one here today."),
+        _passage("c1", "Beta content sentence two here today."),
+        _passage("c2", "Gamma content sentence three here today."),
+    ]
+    answer = (
+        "The first scorable claim mentions something here. "
+        "The second scorable claim mentions another thing."
+    )
+    nli = FakeNli()
+    score_groundedness(answer, passages, nli=nli)
+    # Legacy stage-1 builds the FULL claim-major grid in the first batch.
+    assert len(nli.batches) >= 1
+    grid = nli.batches[0]
+    # 2 claims x 3 passages = 6 pairs, claim-major, passage order.
+    expected = [
+        (p.text, claim)
+        for claim in [
+            "The first scorable claim mentions something here.",
+            "The second scorable claim mentions another thing.",
+        ]
+        for p in passages
+    ]
+    assert grid == expected
+
+
+# --------------------------------------------------------------------------- #
+# (c) early-stop actually stops (pairs < full grid)
+# --------------------------------------------------------------------------- #
+
+def test_frontier_early_stop_scores_fewer_pairs(monkeypatch):
+    _no_embed(monkeypatch)
+    monkeypatch.setenv("ED4ALL_GROUNDEDNESS_FRONTIER", "1")
+    monkeypatch.setenv("ED4ALL_GROUNDEDNESS_FRONTIER_WIDTH", "4")
+    # 10 passages; exactly one entails the claim AND shares the most tokens
+    # (so candidate-ordering floats it into the first round), the rest are
+    # unrelated filler. Frontier retires in round 1 (<= 4 pairs) vs 10 grid.
+    claim = "vector store indexes embedding vectors similarity search here"
+    passages = [_passage(f"f{i}", f"unrelated filler passage number {i} words") for i in range(9)]
+    passages.append(_passage("hit", "vector store indexes embedding vectors similarity search here. More tail text."))
+    nli = _CountingBatchesNli()
+    report = score_groundedness(claim + ".", passages, nli=nli)
+    assert report.claims[0].verdict == VERDICT_ENTAILED
+    assert nli.total_pairs <= 4
+    assert nli.total_pairs < len(passages)  # strictly fewer than the full grid
+
+
+# --------------------------------------------------------------------------- #
+# (b) verdict parity vs legacy on a synthetic corpus
+# --------------------------------------------------------------------------- #
+
+def _run_both(monkeypatch, answer, passages, nli_factory, **kw):
+    """Score once legacy, once frontier (same fake), return (legacy, frontier)."""
+    _no_embed(monkeypatch)
+    monkeypatch.delenv("ED4ALL_GROUNDEDNESS_FRONTIER", raising=False)
+    monkeypatch.delenv("ED4ALL_GROUNDEDNESS_S1_TOPK", raising=False)
+    legacy = score_groundedness(answer, passages, nli=nli_factory(), **kw)
+    monkeypatch.setenv("ED4ALL_GROUNDEDNESS_FRONTIER", "1")
+    frontier = score_groundedness(answer, passages, nli=nli_factory(), **kw)
+    return legacy, frontier
+
+
+def _assert_verdict_parity(legacy, frontier):
+    lc, fc = legacy.claims, frontier.claims
+    assert [c.claim_text for c in lc] == [c.claim_text for c in fc]
+    for lcl, fcl in zip(lc, fc):
+        # Verdict is identical for EVERY claim.
+        assert lcl.verdict == fcl.verdict, (lcl.claim_text, lcl.verdict, fcl.verdict)
+        if fcl.verdict != VERDICT_ENTAILED:
+            # Non-entailed claims exhaust the whole pool => (ent, con, best_chunk_id)
+            # bitwise-identical to the grid (legacy passage-index tiebreak).
+            assert round(lcl.entailment, 6) == round(fcl.entailment, 6)
+            assert round(lcl.contradiction, 6) == round(fcl.contradiction, 6)
+            assert lcl.best_chunk_id == fcl.best_chunk_id
+            assert lcl.windowed == fcl.windowed
+    assert legacy.groundedness_rate == frontier.groundedness_rate
+    assert legacy.scored_count == frontier.scored_count
+    assert legacy.contradicted_count == frontier.contradicted_count
+    assert legacy.unsupported_count == frontier.unsupported_count
+
+
+def test_frontier_verdict_parity_mixed_corpus(monkeypatch):
+    passages = [
+        _passage("c0", "Alpha beta gamma delta unrelated content one here."),
+        _passage("c1", "A vector store indexes embedding vectors for similarity search here."),
+        _passage("c2", "Recall measures retrieval completeness across ranking systems today."),
+        _passage("c3", "Some entirely different unrelated material lives here now."),
+    ]
+    answer = (
+        "A vector store indexes embedding vectors for similarity search here. "
+        "Quantum entanglement links distant particles instantly across the void forever. "
+        "This statement CONTRADICTS the cited source material entirely today here."
+    )
+    legacy, frontier = _run_both(monkeypatch, answer, passages, FakeNli)
+    # Sanity: the three claims cover entailed / unsupported / contradicted.
+    verdicts = [c.verdict for c in legacy.claims]
+    assert VERDICT_ENTAILED in verdicts
+    assert VERDICT_UNSUPPORTED in verdicts
+    assert VERDICT_CONTRADICTED in verdicts
+    _assert_verdict_parity(legacy, frontier)
+
+
+def test_frontier_verdict_parity_rescue_path(monkeypatch):
+    # Whole-chunk premise scores low; stage-2 windowed rescue entails. The
+    # frontier exhausts the pool (no stage-1 entail) then runs the UNCHANGED
+    # legacy rescue, so the rescued verdict is identical.
+    glossary = (
+        "Embeddings are dense numerical vectors. "
+        "A vector store indexes them for search. "
+        "Recall at k measures retrieval completeness. "
+        "Precision at k measures retrieval correctness. "
+        "Latency is the time to answer a query."
+    )
+    passages = [_passage("c1", glossary)]
+    answer = "Recall at k measures retrieval completeness."
+    legacy, frontier = _run_both(monkeypatch, answer, passages, _WindowRescueNli)
+    assert legacy.claims[0].verdict == VERDICT_ENTAILED
+    assert legacy.claims[0].windowed is True
+    _assert_verdict_parity(legacy, frontier)
+    assert frontier.claims[0].windowed is True
+
+
+# --------------------------------------------------------------------------- #
+# (d) exhausted claim's (ent, con) equals the legacy argmax
+# --------------------------------------------------------------------------- #
+
+def test_frontier_exhausted_claim_matches_legacy_argmax(monkeypatch):
+    # Varying scores, all below the entailment floor => every claim exhausts its
+    # pool. The frontier's fold must reproduce the grid's unique argmax exactly.
+    passages = [_passage(f"c{i}", f"passage body number {i} distinct tokens {i*7}") for i in range(12)]
+    answer = (
+        "First non entailing claim with several content tokens present here. "
+        "Second non entailing claim carrying other distinct content tokens now."
+    )
+    legacy, frontier = _run_both(monkeypatch, answer, passages, _VaryingNli)
+    # No claim is entailed (fake caps entailment under the floor).
+    assert all(c.verdict != VERDICT_ENTAILED for c in legacy.claims)
+    assert _verdict_tuples(legacy) == _verdict_tuples(frontier)
+
+
+# --------------------------------------------------------------------------- #
+# (e) fingerprint changes only when the flag is on
+# --------------------------------------------------------------------------- #
+
+def test_frontier_changes_prose_entailment_fingerprint(monkeypatch):
+    from lib.validators.block_prose_entailment import _block_fingerprint
+
+    class _NliStub:
+        device = "cpu"
+        _revision = "rev1"
+
+    passages = [{"chunk_id": "c1", "text": "alpha"}]
+    monkeypatch.delenv("ED4ALL_GROUNDEDNESS_FRONTIER", raising=False)
+    monkeypatch.delenv("ED4ALL_GROUNDEDNESS_S1_TOPK", raising=False)
+    fp_legacy = _block_fingerprint("prose", passages, 0.7, 0.5, _NliStub())
+
+    monkeypatch.setenv("ED4ALL_GROUNDEDNESS_FRONTIER", "1")
+    fp_frontier = _block_fingerprint("prose", passages, 0.7, 0.5, _NliStub())
+    assert fp_frontier != fp_legacy
+
+    # Width folds into the key too.
+    monkeypatch.setenv("ED4ALL_GROUNDEDNESS_FRONTIER_WIDTH", "8")
+    fp_frontier_w8 = _block_fingerprint("prose", passages, 0.7, 0.5, _NliStub())
+    assert fp_frontier_w8 != fp_frontier
+
+    # Frontier supersedes top-K: with frontier on, the top-K key never appears,
+    # so adding S1_TOPK does not change the frontier fingerprint.
+    monkeypatch.delenv("ED4ALL_GROUNDEDNESS_FRONTIER_WIDTH", raising=False)
+    monkeypatch.setenv("ED4ALL_GROUNDEDNESS_S1_TOPK", "16")
+    assert _block_fingerprint("prose", passages, 0.7, 0.5, _NliStub()) == fp_frontier
+
+    # Flag off again => byte-identical to the pre-flag legacy fingerprint.
+    monkeypatch.delenv("ED4ALL_GROUNDEDNESS_FRONTIER", raising=False)
+    monkeypatch.delenv("ED4ALL_GROUNDEDNESS_S1_TOPK", raising=False)
+    assert _block_fingerprint("prose", passages, 0.7, 0.5, _NliStub()) == fp_legacy

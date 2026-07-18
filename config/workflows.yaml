@@ -1408,6 +1408,15 @@ workflows:
       - name: semantik_conversion
         agents: [semantik-converter]
         parallel: true
+        # SEAT SCHEDULE (ED4ALL_SEAT_SCHEDULE): the conversion cascade extracts
+        # on the GLM-OCR seat and describes on the Qwe3-VL seat, so the seat
+        # schedule brings both up before conversion (the Super judge, ~5-10% of
+        # pages, is cascade-managed internally, not scheduled here). The
+        # deterministic staging/chunking/objective_extraction/source_mapping
+        # phases that follow carry NO seat annotation (absent = no opinion), so
+        # these seats stay resident until course_planning declares Super and the
+        # schedule swaps them out in ONE transition.
+        seats: [spark-glm, spark-qwen]
         # One 8GB card: a full-cascade conversion holds council BERTs + the
         # ollama reviewer seat; concurrent cascades OOM the GPU. Serialized
         # also gives per-chapter artifact landing for mid-flight inspection.
@@ -1664,6 +1673,10 @@ workflows:
 
       - name: course_planning
         agents: [course-outliner]
+        # SEAT SCHEDULE: first phase in the Super-seat range. The schedule swaps
+        # the conversion seats (glm/qwen) OUT and brings Super UP here, holding
+        # it warm through assessment_synthesis.
+        seats: [spark-super]
         parallel: false
         max_concurrent: 1
         # Phase-ordering fix (Option A1): course_planning now runs BEFORE
@@ -1983,6 +1996,7 @@ workflows:
       # order, so the inputs_from reference still resolves).
       - name: concept_extraction
         agents: [pedagogy-graph-builder]
+        seats: [spark-super]  # SEAT SCHEDULE: Super-seat range (kept warm).
         parallel: false
         max_concurrent: 1
         depends_on: [course_planning, chunking]
@@ -2091,6 +2105,9 @@ workflows:
 
       - name: content_generation
         agents: [content-generator]
+        # SEAT SCHEDULE: Super-seat range (single-pass authoring seat).
+        # Skipped in two-pass mode, where outline/rewrite author instead.
+        seats: [spark-super]
         parallel: true
         max_concurrent: 10
         batch_by: week
@@ -2235,6 +2252,7 @@ workflows:
       # the final HTML pages.
       - name: content_generation_outline
         agents: [content-generator]
+        seats: [spark-super]  # SEAT SCHEDULE: Super-seat range (two-pass outline tier).
         # NOTE: parallel/batch_by intentionally disabled. The handler
         # ``MCP/tools/pipeline_tools.py::_run_content_generation_outline``
         # iterates ``for week_num in range(1, duration_weeks + 1)``
@@ -2287,6 +2305,7 @@ workflows:
           - outline_objectives_path
 
       - name: inter_tier_validation
+        seats: [spark-super]  # SEAT SCHEDULE: Super-seat range (kept warm between outline+rewrite).
         # No agent — runs Python validators only. Phase 4 Subtask 1:
         # the workflow runner synthesizes a single virtual task for
         # ``agents: []`` phases registered in
@@ -2777,6 +2796,7 @@ workflows:
 
       - name: content_generation_rewrite
         agents: [content-generator]
+        seats: [spark-super]  # SEAT SCHEDULE: Super-seat range (two-pass rewrite tier).
         # NOTE: parallel/batch_by intentionally disabled. The handler
         # ``MCP/tools/pipeline_tools.py::_run_content_generation_rewrite``
         # iterates ``for week_num in range(1, duration_weeks + 1)``
@@ -2908,13 +2928,24 @@ workflows:
         agents: []
         parallel: false
         max_concurrent: 1
+        # SEAT SCHEDULE (ED4ALL_SEAT_SCHEDULE): last phase in the Super-seat
+        # range. Runs back-to-back with content_generation_rewrite on the warm
+        # Super seat (it consumes objectives + chunks only — never the rewritten
+        # blocks or validation results), after which Super retires for the run
+        # and post_rewrite_validation..finalization get the GPU seat-free.
+        seats: [spark-super]
         depends_on: [content_generation, chunking]
-        # Mirror the packaging two-pass dep flip: when COURSEFORGE_TWO_PASS is
-        # on, single-pass content_generation is disabled, so depend on the
-        # rewrite-tier completion gate instead. ``chunking`` (DART chunkset)
-        # is the grounding source for synthesis and runs in both modes.
+        # Two-pass ordering (owner seat-schedule design): assessment_synthesis
+        # runs AFTER the rewrite tier (warm Super seat) and BEFORE
+        # post_rewrite_validation — synthesis never reads the rewritten blocks
+        # or validation results, so validation can follow it with the quality
+        # contract intact (packaging, which consumes validated blocks, stays
+        # downstream of validation). Depending on ``content_generation_rewrite``
+        # (NOT post_rewrite_validation) is what keeps assessment inside the
+        # Super range; post_rewrite_validation carries the reciprocal ordering
+        # edge below. ``chunking`` (DART chunkset) is the grounding source.
         depends_on_when_env: "COURSEFORGE_TWO_PASS=true"
-        depends_on_when_env_value: [post_rewrite_validation, chunking]
+        depends_on_when_env_value: [content_generation_rewrite, chunking]
         timeout_minutes: 60
         description: >
           W10 — synthesize + emit grounded quizzes/assignments/discussions as
@@ -3062,7 +3093,23 @@ workflows:
         agents: []
         parallel: false
         max_concurrent: 1
+        # SEAT SCHEDULE (ED4ALL_SEAT_SCHEDULE): first phase in the seat-free
+        # range. The NLI/embedding validation chain wants the whole GPU, so the
+        # Super seat is stopped at this boundary and stays down through
+        # finalization. Empty list = "explicitly needs NO vLLM seat" (distinct
+        # from absent = no opinion).
+        seats: []
         depends_on: [content_generation_rewrite]
+        # Two-pass ordering (owner seat-schedule design): reciprocal of the
+        # assessment_synthesis edge above — post_rewrite_validation runs AFTER
+        # assessment_synthesis so the Super seat retires exactly once (after
+        # assessment) rather than being stopped for validation and cold-started
+        # again for assessment (the observed 4-7x validation starvation). The
+        # phase is enabled ONLY in two-pass, and assessment_synthesis is
+        # optional but stamps ``_completed`` even when skipped
+        # (generate_assessments=false), so this dependency is always satisfiable.
+        depends_on_when_env: "COURSEFORGE_TWO_PASS=true"
+        depends_on_when_env_value: [content_generation_rewrite, assessment_synthesis]
         timeout_minutes: 5
         description: Phase 3.5 — re-run inter-tier validators on rewrite-tier blocks
         enabled_when_env: "COURSEFORGE_TWO_PASS=true"
@@ -4063,6 +4110,7 @@ workflows:
       # dep waits on ``post_rewrite_validation`` like ``packaging`` does.
       - name: packaging
         agents: [brightspace-packager]
+        seats: []  # SEAT SCHEDULE: seat-free range — GPU belongs to NLI/embedding, Super retired.
         parallel: false
         max_concurrent: 1
         # W10: depend on assessment_synthesis (in addition to
@@ -4181,6 +4229,7 @@ workflows:
       # downstream synthesis / training phase reads it.
       - name: imscc_chunking
         agents: [semantik-chunker]
+        seats: []  # SEAT SCHEDULE: seat-free range — GPU belongs to NLI/embedding, Super retired.
         parallel: false
         max_concurrent: 1
         depends_on: [packaging]
@@ -4241,6 +4290,7 @@ workflows:
 
       - name: trainforge_assessment
         agents: [assessment-generator]
+        seats: []  # SEAT SCHEDULE: seat-free range — GPU belongs to NLI/embedding, Super retired.
         parallel: true
         max_concurrent: 5
         # Phase 8 ST 2: depend on ``imscc_chunking`` in addition to
@@ -4420,6 +4470,7 @@ workflows:
       # that skips ``trainforge_assessment``).
       - name: training_synthesis
         agents: [training-synthesizer]
+        seats: []  # SEAT SCHEDULE: seat-free range — GPU belongs to NLI/embedding, Super retired.
         parallel: false
         max_concurrent: 1
         # Phase 7c ST 16: training_synthesis now depends on the
@@ -4661,6 +4712,7 @@ workflows:
 
       - name: libv2_archival
         agents: [libv2-archivist]
+        seats: []  # SEAT SCHEDULE: seat-free range — GPU belongs to NLI/embedding, Super retired.
         parallel: false
         max_concurrent: 1
         depends_on: [packaging, trainforge_assessment, training_synthesis]
@@ -4948,6 +5000,7 @@ workflows:
       # on a broken/unavailable backend (no file-count masquerade).
       - name: vector_indexing
         agents: [rag-indexer]
+        seats: []  # SEAT SCHEDULE: seat-free range — GPU belongs to NLI/embedding, Super retired.
         parallel: false
         max_concurrent: 1
         depends_on: [libv2_archival]
@@ -4981,6 +5034,7 @@ workflows:
 
       - name: finalization
         agents: [brightspace-packager]
+        seats: []  # SEAT SCHEDULE: seat-free range — GPU belongs to NLI/embedding, Super retired.
         parallel: false
         max_concurrent: 1
         depends_on: [vector_indexing]

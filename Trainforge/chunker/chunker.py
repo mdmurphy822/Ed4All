@@ -138,6 +138,11 @@ __all__ = [
     "fold_fragment_texts",
     "resolve_chunk_section_hard_break",
     "CHUNK_SECTION_HARD_BREAK_ENV",
+    "resolve_chunk_subsection_break",
+    "resolve_chunk_subsection_min_words",
+    "CHUNK_SUBSECTION_BREAK_ENV",
+    "CHUNK_SUBSECTION_MIN_WORDS_ENV",
+    "SUBSECTION_MIN_WORDS_DEFAULT",
     "is_section_boundary_heading",
     "aggregate_composite_unit",
     "aggregate_unit_subclass",
@@ -619,6 +624,144 @@ def resolve_chunk_section_hard_break(env: Optional[Dict[str, str]] = None) -> bo
     return src.get(CHUNK_SECTION_HARD_BREAK_ENV, "").strip().lower() in {
         "1", "true", "yes", "on",
     }
+
+
+# ---------------------------------------------------------------------------
+# Fix 1b — SIZE-GUARDED sub-section break (opt-in, default off)
+#
+# The size-guarded successor to ``ED4ALL_CHUNK_SECTION_HARD_BREAK``. The hard
+# break flushes at EVERY matching boundary with no size guard — which on a
+# heading-dense corpus (many small heading-led sub-sections) produced a runt
+# cascade (measured: 498 chunks / p50 42 words / 208 runts). This flag instead
+# treats a genuine content SUB-SECTION heading — one that
+# ``is_section_boundary_heading`` misses because it is NOT ``N.M``-numbered and
+# NOT a lexicon opener (e.g. a level-3/4 "Use Place Value with Whole Numbers")
+# — as a break CANDIDATE, but only FLUSHES the accumulating buffer once it has
+# reached ``subsection_min_words`` (default 250). So a break lands on a real
+# pedagogical boundary once enough content has accumulated, never on the first
+# heading after a flush → no runt cascade. Apparatus/pedagogy-label headings
+# (exercise / review reprints, LO-intro boilerplate, promoted openers, bare
+# pedagogy labels) are excluded so a worked example is never split from its
+# solution and an "N.M Exercises" reprint never becomes a topic break. Default
+# off → byte-identical legacy merge.
+# ---------------------------------------------------------------------------
+
+#: Env var gating the size-guarded sub-section break. Default OFF → byte-identical.
+CHUNK_SUBSECTION_BREAK_ENV: str = "ED4ALL_CHUNK_SUBSECTION_BREAK"
+
+#: Env var setting the accumulation floor (words) a buffer must reach before a
+#: sub-section heading is allowed to flush it. Default 250 — well above the
+#: MIN_CHUNK_SIZE (100) merge floor so the break lands on real content, not a runt.
+CHUNK_SUBSECTION_MIN_WORDS_ENV: str = "ED4ALL_CHUNK_SUBSECTION_MIN_WORDS"
+
+#: Default sub-section accumulation floor in words.
+SUBSECTION_MIN_WORDS_DEFAULT: int = 250
+
+#: Bare pedagogy-label headings ("Try It", "Solution", "Example") are at most
+#: this many words; a longer heading carrying an opener token (e.g. "Solutions
+#: of Linear Equations") is real content and stays a break candidate.
+_PEDAGOGY_LABEL_MAX_WORDS: int = 3
+
+
+def resolve_chunk_subsection_break(env: Optional[Dict[str, str]] = None) -> bool:
+    """Resolve ``ED4ALL_CHUNK_SUBSECTION_BREAK`` (parse-with-fallback, OFF)."""
+    import os
+
+    src = env if env is not None else os.environ
+    return src.get(CHUNK_SUBSECTION_BREAK_ENV, "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def resolve_chunk_subsection_min_words(env: Optional[Dict[str, str]] = None) -> int:
+    """Resolve ``ED4ALL_CHUNK_SUBSECTION_MIN_WORDS`` (parse-with-fallback).
+
+    Positive int wins; garbage / non-positive / unset falls back to
+    :data:`SUBSECTION_MIN_WORDS_DEFAULT` (250).
+    """
+    import os
+
+    src = env if env is not None else os.environ
+    raw = src.get(CHUNK_SUBSECTION_MIN_WORDS_ENV, "")
+    try:
+        val = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return SUBSECTION_MIN_WORDS_DEFAULT
+    return val if val > 0 else SUBSECTION_MIN_WORDS_DEFAULT
+
+
+@lru_cache(maxsize=1)
+def _all_opener_substrings() -> Tuple[str, ...]:
+    """Resolve EVERY lexicon opener label reduced to a plain lowercase substring.
+
+    Unlike :func:`_section_opener_substrings` (objectives + readiness only, for
+    the SECTION-boundary text arm), this harvests all opener roles — try_it,
+    worked_example, how_to, solution — so a bare pedagogy-label heading is
+    recognised and excluded from the sub-section break candidate set. Falls back
+    to a static tuple when the taxonomy can't be loaded, so exclusion is never
+    silently lost. Cached — the lexicon is static per process.
+    """
+    fallback = (
+        "learning objective", "be prepared", "try it", "example",
+        "how to", "solution",
+    )
+    try:
+        from lib.ontology.taxonomy import get_lexicon_openers
+
+        derived: List[str] = []
+        for opener in get_lexicon_openers():
+            sub = _pattern_to_substring(str(opener.get("pattern", "")))
+            if sub and sub not in derived:
+                derived.append(sub)
+        if derived:
+            return tuple(derived)
+    except Exception:  # pragma: no cover - defensive: never lose exclusion
+        pass
+    return fallback
+
+
+def _heading_is_bare_pedagogy_label(heading: str) -> bool:
+    """Whether ``heading`` is a SHORT bare pedagogy-opener label.
+
+    A short heading (``<= _PEDAGOGY_LABEL_MAX_WORDS`` words) carrying a lexicon
+    opener token — "Try It", "Solution", "Example", "Learning Objectives" — is
+    an interior apparatus label, not a content sub-section. A longer heading that
+    merely CONTAINS an opener token ("Solutions of Linear Equations") is real
+    content and is NOT excluded.
+    """
+    h = heading.strip().lower()
+    if not h or len(h.split()) > _PEDAGOGY_LABEL_MAX_WORDS:
+        return False
+    return any(sub in h for sub in _all_opener_substrings())
+
+
+def _is_subsection_break_candidate(section: Any) -> bool:
+    """Whether ``section`` starts a genuine content SUB-SECTION (a size-guarded
+    break point under ``ED4ALL_CHUNK_SUBSECTION_BREAK``).
+
+    A candidate is a HEADING-LED section (non-empty heading) whose heading reads
+    as genuine content. Excluded (reusing the existing apparatus / lexicon
+    classification): an exercise / practice / review banner incl. the numbered
+    "N.M Exercises" reprint (:func:`leads_with_exercise_banner`), LO-intro
+    boilerplate (:func:`leads_with_lo_boilerplate`), a promoted pedagogical
+    opener (``data_dart_opener`` attribute), and a bare pedagogy label
+    (:func:`_heading_is_bare_pedagogy_label`). The non-numbered content
+    sub-section headings (h3/h4, e.g. "Use Place Value with Whole Numbers") that
+    :func:`is_section_boundary_heading` misses are the intended target; numbered
+    ``N.M`` section headings also qualify (they are content, not apparatus).
+    """
+    heading = (getattr(section, "heading", "") or "").strip()
+    if not heading:
+        return False  # continuation body, not a heading-led boundary
+    if leads_with_exercise_banner(heading):
+        return False
+    if leads_with_lo_boilerplate(heading):
+        return False
+    if getattr(section, "data_dart_opener", None):
+        return False
+    if _heading_is_bare_pedagogy_label(heading):
+        return False
+    return True
 
 
 def is_section_boundary_heading(heading: str) -> bool:
@@ -1316,6 +1459,8 @@ def merge_small_sections(
     type_from_heading_fn: Optional[Callable[[str], str]] = None,
     fragment_floor: int = 0,
     section_hard_break: bool = False,
+    subsection_break: bool = False,
+    subsection_min_words: int = SUBSECTION_MIN_WORDS_DEFAULT,
 ) -> List[MergedSectionResult]:
     """Merge adjacent sections under MIN_CHUNK_SIZE into combined blocks.
 
@@ -1407,6 +1552,17 @@ def merge_small_sections(
             section_hard_break
             and buffer_started
             and _section_is_boundary(section)
+        )
+        # Fix 1b: the SIZE-GUARDED sub-section break. A genuine content
+        # sub-section heading forces a flush ONLY once the buffer has reached
+        # the ``subsection_min_words`` floor — so a break lands on a real
+        # pedagogical boundary after enough content accumulated, never a runt
+        # cascade. No-op when the flag is off → byte-identical legacy merge.
+        force_break = force_break or (
+            subsection_break
+            and buffer_started
+            and buffer_wc >= subsection_min_words
+            and _is_subsection_break_candidate(section)
         )
         section_src = list(getattr(section, "source_references", []) or [])
         section_template = getattr(section, "template_type", None)
@@ -2044,6 +2200,10 @@ def chunk_content(
     # Fix 1: resolve the section-boundary hard-break gate once. Off (default) →
     # byte-identical legacy merge.
     _section_hard_break = resolve_chunk_section_hard_break()
+    # Fix 1b: resolve the size-guarded sub-section break + its floor once. Off
+    # (default) → byte-identical legacy merge.
+    _subsection_break = resolve_chunk_subsection_break()
+    _subsection_min_words = resolve_chunk_subsection_min_words()
 
     chunks: List[Dict[str, Any]] = []
     chunk_counter = 1
@@ -2121,6 +2281,8 @@ def chunk_content(
             type_from_heading_fn=ctx.type_from_heading_fn if ctx else None,
             fragment_floor=_fragment_floor,
             section_hard_break=_section_hard_break,
+            subsection_break=_subsection_break,
+            subsection_min_words=_subsection_min_words,
         )
 
         # THRESHOLD-FREE per-section DART-provenance scope: each merged group's

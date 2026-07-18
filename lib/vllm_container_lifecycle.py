@@ -73,6 +73,24 @@ ENV_VLLM_CONTAINER_LIFECYCLE = "ED4ALL_VLLM_CONTAINER_LIFECYCLE"
 #: entry, never a subclass.
 ENV_VLLM_CONTAINERS = "ED4ALL_VLLM_CONTAINERS"
 
+#: Declarative per-phase SEAT SCHEDULE master switch — **default OFF**. When on,
+#: ``MCP.core.workflow_runner`` enforces each phase's YAML-declared ``seats:``
+#: annotation at the phase boundary (stop no-longer-needed seats, start + WAIT +
+#: COHERENCE-PROBE newly-needed ones). Off → no seat enforcement at all (the
+#: seat-schedule code path is a pure no-op, byte-identical). Truthy tokens only.
+ENV_SEAT_SCHEDULE = "ED4ALL_SEAT_SCHEDULE"
+
+#: Comma-separated ``seat_name=base_url`` registry mapping the LOGICAL seat names
+#: used in the ``config/workflows.yaml`` ``seats:`` phase annotations (e.g.
+#: ``spark-super``, ``spark-glm``, ``spark-qwen``) to the vLLM seat base URLs,
+#: e.g. ``spark-super=http://localhost:8001,spark-glm=http://localhost:8002``.
+#: The base_url then resolves to a docker container via
+#: :data:`ENV_VLLM_CONTAINERS` (which stays the single container registry). A
+#: seat name that does not resolve here is a CONFIG gap → warn + skip (never a
+#: run-failing error), so ``ED4ALL_SEAT_SCHEDULE`` on with an empty/partial map
+#: degrades softly to no-op on the unmapped seats.
+ENV_SEAT_BASE_URLS = "ED4ALL_SEAT_BASE_URLS"
+
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 
 #: Per-request timeout (seconds) for the ``/v1/models`` readiness probe. A probe
@@ -90,6 +108,23 @@ _DOCKER_CLI_TIMEOUT_SECONDS = 60.0
 #: Only warn once per process about a garbage / unset registry so a flag-on run
 #: with a typo'd registry doesn't spam the log every ``ensure_serving`` call.
 _REGISTRY_WARNED = False
+
+#: Sibling of :data:`_REGISTRY_WARNED` for the ``seat_name=base_url`` registry.
+_SEAT_REGISTRY_WARNED = False
+
+#: Per-request HTTP timeout (seconds) for the content-level COHERENCE PROBE
+#: (``POST /v1/chat/completions``). Longer than the ``/v1/models`` liveness
+#: probe: a just-warmed seat's first token can be slow, but a wedged / mode-
+#: collapsed seat still resolves within this bound.
+_COHERENCE_TIMEOUT_SECONDS = 45.0
+
+#: The fixed prompt the coherence probe POSTs. Deliberately trivial: any coherent
+#: seat can echo it; a mode-collapsed seat emits degenerate soup / null content.
+_COHERENCE_PROMPT = "Reply with exactly this word and nothing else: SEATOK"
+
+#: Max completion tokens for the coherence probe (small — we only need enough to
+#: tell coherent text from degenerate output).
+_COHERENCE_MAX_TOKENS = 24
 
 
 def resolve_vllm_container_lifecycle_mode(value: Optional[str] = None) -> bool:
@@ -391,13 +426,314 @@ def record_load_event(
         )
 
 
+# ==========================================================================
+# Declarative per-phase SEAT SCHEDULE primitives (ED4ALL_SEAT_SCHEDULE).
+#
+# These operate by LOGICAL SEAT NAME (the token used in the workflows.yaml
+# ``seats:`` annotation) instead of raw base_url, and are gated by the caller's
+# ``ED4ALL_SEAT_SCHEDULE`` decision rather than the container-lifecycle flag —
+# the workflow_runner owns the on/off decision so the schedule can drive docker
+# even when the standalone workflow-end ``ED4ALL_VLLM_CONTAINER_LIFECYCLE`` lease
+# is off. Every primitive here is best-effort / NEVER-raises (mirrors the rest
+# of this module); the ONE loud-failure signal — a seat that comes up but emits
+# incoherent content (mode-collapse doctrine) — is surfaced by
+# :func:`coherence_probe` returning ``False``, which the ORCHESTRATOR turns into
+# a loud phase failure. This module never raises for it.
+# ==========================================================================
+
+
+def resolve_seat_schedule_mode(value: Optional[str] = None) -> bool:
+    """Resolve whether the declarative per-phase seat schedule is enabled.
+
+    Resolution chain: explicit ``value`` → ``ED4ALL_SEAT_SCHEDULE`` env →
+    **default OFF**. Parse-with-fallback: only the truthy tokens
+    (``1`` / ``true`` / ``yes`` / ``on``, case-insensitive) enable; anything
+    else is off (the house default-off convention).
+    """
+    raw = value if value is not None else os.environ.get(ENV_SEAT_SCHEDULE)
+    if raw is None or not str(raw).strip():
+        return False
+    return str(raw).strip().lower() in _TRUTHY
+
+
+def parse_seat_registry(value: Optional[str] = None) -> Dict[str, str]:
+    """Parse the ``seat_name=base_url`` registry into ``{seat_name: base_url}``.
+
+    Reads ``ED4ALL_SEAT_BASE_URLS`` (or the explicit ``value``). Each
+    comma-separated token is ``seat_name=base_url``; the ``base_url`` is
+    normalized by stripping a trailing ``/`` so it matches the
+    :data:`ENV_VLLM_CONTAINERS` keys. Fail-soft: unset / blank returns ``{}``; a
+    token without exactly one ``=`` (or an empty side) is SKIPPED with a
+    one-time warning — a partly-garbage registry still yields its valid pairs.
+    """
+    global _SEAT_REGISTRY_WARNED
+    raw = value if value is not None else os.environ.get(ENV_SEAT_BASE_URLS)
+    if raw is None or not str(raw).strip():
+        return {}
+
+    registry: Dict[str, str] = {}
+    bad_tokens = []
+    for token in str(raw).split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if token.count("=") != 1:
+            bad_tokens.append(token)
+            continue
+        seat, base_url = token.split("=", 1)
+        seat = seat.strip()
+        base_url = base_url.strip().rstrip("/")
+        if not seat or not base_url:
+            bad_tokens.append(token)
+            continue
+        registry[seat] = base_url
+
+    if bad_tokens and not _SEAT_REGISTRY_WARNED:
+        logger.warning(
+            "vllm_container_lifecycle: ignored %d malformed %s token(s) %r "
+            "(expected 'seat_name=base_url'); using %d valid pair(s).",
+            len(bad_tokens), ENV_SEAT_BASE_URLS, bad_tokens, len(registry),
+        )
+        _SEAT_REGISTRY_WARNED = True
+    return registry
+
+
+def resolve_seat_base_url(
+    seat_name: str, *, value: Optional[str] = None
+) -> Optional[str]:
+    """Return the base_url mapped to ``seat_name``, or None if unmapped."""
+    registry = parse_seat_registry(value)
+    if not registry:
+        return None
+    return registry.get(str(seat_name).strip())
+
+
+def all_registered_seat_names(value: Optional[str] = None) -> set:
+    """Return every LOGICAL seat name declared in the seat registry."""
+    return set(parse_seat_registry(value).keys())
+
+
+def start_seat(
+    seat_name: str,
+    *,
+    timeout_seconds: float = 600,
+    run_dir: Optional[Union[str, Path]] = None,
+) -> Optional[float]:
+    """Bring the logical ``seat_name`` up and WAIT until it answers ``/v1/models``.
+
+    NOT gated by :func:`resolve_vllm_container_lifecycle_mode` — the seat-
+    schedule caller owns the on/off decision. Resolves ``seat_name`` →
+    base_url (:data:`ENV_SEAT_BASE_URLS`) → container (:data:`ENV_VLLM_CONTAINERS`).
+
+    Returns:
+      * ``0.0``  — the seat was already serving (no ``docker start``).
+      * ``float`` — measured load seconds after a cold ``docker start`` + poll.
+      * ``None`` — the seat is UNRESOLVABLE (no base_url / no container mapping:
+        a CONFIG gap) OR could not be brought up in time / ``docker start``
+        failed (a runtime failure). The caller distinguishes the two by
+        pre-resolving :func:`resolve_seat_base_url`.
+
+    Best-effort — never raises.
+    """
+    base_url = resolve_seat_base_url(seat_name)
+    if not base_url:
+        return None
+    container = _lookup_container(base_url)
+    if not container:
+        logger.warning(
+            "vllm_container_lifecycle: seat %r resolves to base_url %s but that "
+            "URL is not in %s; cannot start.",
+            seat_name, base_url, ENV_VLLM_CONTAINERS,
+        )
+        return None
+
+    if _probe_ready(base_url):
+        logger.debug(
+            "vllm_container_lifecycle: seat %r (%s / %s) already serving.",
+            seat_name, base_url, container,
+        )
+        return 0.0
+
+    start = time.monotonic()
+    logger.info(
+        "vllm_container_lifecycle: seat-schedule starting container %r for "
+        "seat %r (%s).",
+        container, seat_name, base_url,
+    )
+    if not _run_docker(["start", container]):
+        logger.warning(
+            "vllm_container_lifecycle: docker start %r failed for seat %r.",
+            container, seat_name,
+        )
+        return None
+
+    deadline = start + float(timeout_seconds)
+    while time.monotonic() < deadline:
+        if _probe_ready(base_url):
+            load_seconds = time.monotonic() - start
+            logger.info(
+                "vllm_container_lifecycle: seat %r (%s) ready after %.1fs.",
+                seat_name, base_url, load_seconds,
+            )
+            if run_dir is not None:
+                record_load_event(run_dir, base_url, load_seconds)
+            return load_seconds
+        time.sleep(_POLL_INTERVAL_SECONDS)
+
+    logger.warning(
+        "vllm_container_lifecycle: seat %r (%s / %s) not ready within %ss.",
+        seat_name, base_url, container, timeout_seconds,
+    )
+    return None
+
+
+def stop_seat(seat_name: str) -> bool:
+    """``docker stop`` the container backing logical ``seat_name``; return success.
+
+    NOT gated by the container-lifecycle flag (the seat-schedule caller owns the
+    gate). Unresolvable seat / container → ``False`` (no-op). Best-effort via
+    :func:`_run_docker`.
+    """
+    base_url = resolve_seat_base_url(seat_name)
+    if not base_url:
+        return False
+    container = _lookup_container(base_url)
+    if not container:
+        return False
+    logger.info(
+        "vllm_container_lifecycle: seat-schedule stopping container %r for "
+        "seat %r (%s).",
+        container, seat_name, base_url,
+    )
+    return _run_docker(["stop", container])
+
+
+def _first_model_id(base_url: str, *, timeout: float = _PROBE_TIMEOUT_SECONDS) -> Optional[str]:
+    """GET ``{base_url}/v1/models`` and return the first served model id, or None."""
+    url = f"{str(base_url).rstrip('/')}/v1/models"
+    try:
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if isinstance(data, list) and data:
+            first = data[0]
+            if isinstance(first, dict):
+                mid = first.get("id")
+                return str(mid) if mid else None
+    except Exception as exc:  # noqa: BLE001 — server down / bad JSON / no models
+        logger.debug("vllm_container_lifecycle: model-id fetch %s failed (%s).", url, exc)
+    return None
+
+
+def _looks_coherent(text: Optional[str]) -> bool:
+    """Heuristic: is ``text`` sane content vs mode-collapsed degenerate output?
+
+    Rejects: ``None`` / empty / whitespace-only content, content with no
+    alphanumeric character, and single-character-repeat soup (e.g. ``"!!!!!!"``
+    or one glyph repeated). Deliberately permissive on WHAT the model said — we
+    only need to tell coherent text from the null/soup a restarted-then-collapsed
+    seat emits (memory: a seat can pass ``/v1/models`` yet return null content).
+    """
+    if not text:
+        return False
+    stripped = str(text).strip()
+    if not stripped:
+        return False
+    if not any(ch.isalnum() for ch in stripped):
+        return False
+    # Degenerate single-glyph repetition (mode collapse) → not coherent.
+    if len(set(stripped.replace(" ", ""))) <= 1:
+        return False
+    return True
+
+
+def coherence_probe(
+    base_url: str,
+    *,
+    prompt: Optional[str] = None,
+    timeout: float = _COHERENCE_TIMEOUT_SECONDS,
+    max_tokens: int = _COHERENCE_MAX_TOKENS,
+) -> bool:
+    """CONTENT-level coherence probe: POST a fixed prompt, require sane content.
+
+    A seat can pass the ``/v1/models`` liveness probe yet emit degenerate soup /
+    null content after a ``docker start`` (mode-collapse doctrine). This probe
+    POSTs :data:`_COHERENCE_PROMPT` to ``{base_url}/v1/chat/completions`` (model
+    id auto-resolved from ``/v1/models``) and returns ``True`` only when the
+    response carries non-empty, non-degenerate assistant content
+    (:func:`_looks_coherent`).
+
+    NEVER raises — any failure (no model id, HTTP error, malformed JSON, empty /
+    soup content) returns ``False``. The ORCHESTRATOR turns a ``False`` on a
+    newly-started seat into a LOUD phase failure; this function itself is silent.
+    """
+    base = str(base_url).rstrip("/")
+    model = _first_model_id(base, timeout=min(timeout, _PROBE_TIMEOUT_SECONDS * 2))
+    if not model:
+        logger.warning(
+            "vllm_container_lifecycle: coherence probe could not resolve a model "
+            "id at %s.", base,
+        )
+        return False
+    body = json.dumps(
+        {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt or _COHERENCE_PROMPT}],
+            "max_tokens": int(max_tokens),
+            "temperature": 0,
+            "stream": False,
+        }
+    ).encode("utf-8")
+    url = f"{base}/v1/chat/completions"
+    try:
+        req = urllib.request.Request(
+            url, data=body, method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        choices = payload.get("choices") if isinstance(payload, dict) else None
+        if not isinstance(choices, list) or not choices:
+            logger.warning(
+                "vllm_container_lifecycle: coherence probe at %s returned no "
+                "choices.", base,
+            )
+            return False
+        message = choices[0].get("message") if isinstance(choices[0], dict) else None
+        content = message.get("content") if isinstance(message, dict) else None
+        ok = _looks_coherent(content)
+        if not ok:
+            logger.warning(
+                "vllm_container_lifecycle: coherence probe at %s returned "
+                "incoherent/empty content %r (possible mode collapse).",
+                base, (content or "")[:80],
+            )
+        return ok
+    except Exception as exc:  # noqa: BLE001 — HTTP down / timeout / bad JSON
+        logger.warning(
+            "vllm_container_lifecycle: coherence probe POST %s failed (%s).",
+            url, exc,
+        )
+        return False
+
+
 __all__ = [
     "ENV_VLLM_CONTAINER_LIFECYCLE",
     "ENV_VLLM_CONTAINERS",
+    "ENV_SEAT_SCHEDULE",
+    "ENV_SEAT_BASE_URLS",
     "resolve_vllm_container_lifecycle_mode",
     "parse_container_registry",
     "ensure_serving",
     "release",
     "release_all",
     "record_load_event",
+    "resolve_seat_schedule_mode",
+    "parse_seat_registry",
+    "resolve_seat_base_url",
+    "all_registered_seat_names",
+    "start_seat",
+    "stop_seat",
+    "coherence_probe",
 ]

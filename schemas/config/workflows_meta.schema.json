@@ -63,6 +63,15 @@
           "type": "array",
           "items": {"type": "string"}
         },
+        "seats": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$"
+          },
+          "uniqueItems": true,
+          "description": "Declarative per-phase SEAT SCHEDULE annotation (enforced by MCP/core/workflow_runner when ED4ALL_SEAT_SCHEDULE is on). The logical vLLM seat name(s) this phase needs served (e.g. [spark-super]). An EMPTY list means the phase explicitly needs NO seat (the GPU belongs to NLI/embedding); ABSENT (no key) means no opinion — seat state carries over from the prior phase unchanged. Seat names resolve to base URLs via ED4ALL_SEAT_BASE_URLS and to containers via ED4ALL_VLLM_CONTAINERS."
+        },
         "parallel": {"type": "boolean"},
         "max_concurrent": {"type": "integer", "minimum": 1},
         "batch_by": {"type": ["string", "null"]},

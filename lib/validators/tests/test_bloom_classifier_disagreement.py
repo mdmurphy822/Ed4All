@@ -580,3 +580,236 @@ def test_per_block_classify_failure_is_silently_skipped(
     # declared level; the failing block was skipped before any issue
     # could be emitted against it.
     assert result.issues == []
+
+
+# --------------------------------------------------------------------- #
+# ED4ALL_BLOOM_TRIVOTE — re-founded three-voter path.
+#
+# Voter 1 (asserted) = block bloom_level; voter 2 (zero_shot) = injected
+# NLI stub; voter 3 (verb) = real detect_bloom_level over the statement
+# text. Statements are chosen so the verb voter is controllable:
+#   - "The weather is nice today with clouds overhead."  -> verb abstains
+#   - "Calculate ..."   -> apply
+#   - "Design ..." / "Compose ..." -> create
+#   - "Recall ..."      -> remember
+# --------------------------------------------------------------------- #
+
+
+from lib.classifiers.bloom_zero_shot import (  # noqa: E402
+    _BLOOM_HYPOTHESIS_TEMPLATES,
+)
+from lib.validators.bloom_classifier_disagreement import (  # noqa: E402
+    _TRIVOTE_INSUFFICIENT_VOTERS_CODE,
+)
+
+
+class _FakeNliScore:
+    def __init__(self, entailment: float) -> None:
+        self.entailment = entailment
+        self.neutral = 0.0
+        self.contradiction = 0.0
+
+
+class _TargetNli:
+    """High entailment for ``target_level``'s hypothesis; low otherwise."""
+
+    def __init__(self, target_level: str, high: float = 0.9) -> None:
+        self.target_level = target_level
+        self.high = high
+        self.calls: List[List[Tuple[str, str]]] = []
+
+    def score_batch(self, *, pairs, batch_size=None):  # noqa: ANN001
+        self.calls.append(list(pairs))
+        target_hyp = _BLOOM_HYPOTHESIS_TEMPLATES[self.target_level]
+        return [
+            _FakeNliScore(self.high if hyp == target_hyp else 0.1)
+            for _p, hyp in pairs
+        ]
+
+
+class _AbstainNli:
+    """Returns an empty list => zero_shot_bloom abstains (voter 2 off)."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def score_batch(self, *, pairs, batch_size=None):  # noqa: ANN001
+        self.calls += 1
+        return []
+
+
+_NOVERB = "The weather is nice today with clouds overhead."
+
+
+@pytest.fixture
+def _trivote_on(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("ED4ALL_BLOOM_TRIVOTE", "1")
+    monkeypatch.delenv("TRAINFORGE_REQUIRE_BERT_ENSEMBLE", raising=False)
+    yield
+
+
+def test_trivote_agreement_passes(_trivote_on) -> None:
+    """asserted=apply, zero_shot=apply, verb abstains -> pass, no issues."""
+    nli = _TargetNli("apply")
+    validator = BloomClassifierDisagreementValidator(nli=nli)
+    block = _make_assessment_block(statement=_NOVERB, bloom_level="apply")
+    result = validator.validate({"blocks": [block]})
+
+    assert result.passed
+    assert result.action is None
+    assert result.issues == []
+    # The zero-shot voter was actually consulted (6 pairs).
+    assert len(nli.calls) == 1
+    assert len(nli.calls[0]) == 6
+
+
+def test_trivote_disagreement_emits_regenerate(_trivote_on) -> None:
+    """asserted=remember but zero_shot+verb both say apply -> DISAGREEMENT
+    without DISPERSION (2/3 disagreement < 0.7 default threshold)."""
+    nli = _TargetNli("apply")
+    validator = BloomClassifierDisagreementValidator(nli=nli)
+    # "Calculate ..." => verb voter = apply; asserted declared = remember.
+    block = _make_assessment_block(
+        statement="Calculate the resulting velocity of the object.",
+        bloom_level="remember",
+    )
+    result = validator.validate({"blocks": [block]})
+
+    assert result.passed
+    assert result.action == "regenerate"
+    codes = {i.code for i in result.issues}
+    assert "BERT_ENSEMBLE_DISAGREEMENT" in codes
+    assert "BERT_ENSEMBLE_DISPERSION_HIGH" not in codes
+
+
+def test_trivote_low_confidence_zero_shot_abstains(_trivote_on) -> None:
+    """A below-floor zero-shot winner does not vote (voter-2 participation
+    is confidence-gated). With verb also abstaining, only the asserted
+    voter remains -> structured skip, never a fabricated DISAGREEMENT."""
+    # high=0.2 keeps the winner's normalised entailment share (0.2/0.7 ~=
+    # 0.286) below the 0.4 confidence floor.
+    nli = _TargetNli("create", high=0.2)
+    validator = BloomClassifierDisagreementValidator(nli=nli)
+    block = _make_assessment_block(statement=_NOVERB, bloom_level="remember")
+    result = validator.validate({"blocks": [block]})
+
+    assert result.passed
+    assert result.action is None
+    assert not any(
+        i.code == "BERT_ENSEMBLE_DISAGREEMENT" for i in result.issues
+    )
+    # Zero-shot abstained (below floor) + verb abstained => structured skip.
+    assert any(
+        i.code == _TRIVOTE_INSUFFICIENT_VOTERS_CODE for i in result.issues
+    )
+
+
+def test_trivote_dispersion_high_isolated(_trivote_on) -> None:
+    """asserted supported by zero_shot but verb differs, with a loosened
+    threshold -> DISPERSION_HIGH fires alone (asserted IS supported)."""
+    nli = _TargetNli("apply")
+    validator = BloomClassifierDisagreementValidator(
+        nli=nli, dispersion_threshold=0.5,
+    )
+    # verb = create ("Design ..."); asserted=apply; zero_shot=apply.
+    block = _make_assessment_block(
+        statement="Design a completely new experimental protocol.",
+        bloom_level="apply",
+    )
+    result = validator.validate({"blocks": [block]})
+
+    assert result.action == "regenerate"
+    codes = {i.code for i in result.issues}
+    assert "BERT_ENSEMBLE_DISPERSION_HIGH" in codes
+    assert "BERT_ENSEMBLE_DISAGREEMENT" not in codes
+
+
+def test_trivote_structured_skip_two_abstentions(_trivote_on) -> None:
+    """zero_shot abstains (empty NLI) + verb abstains (no verb) -> only the
+    asserted voter present -> structured skip, NOT a fabricated pass."""
+    nli = _AbstainNli()
+    validator = BloomClassifierDisagreementValidator(nli=nli)
+    block = _make_assessment_block(statement=_NOVERB, bloom_level="apply")
+    result = validator.validate({"blocks": [block]})
+
+    assert result.passed
+    # A skip does not force a regenerate.
+    assert result.action is None
+    assert len(result.issues) == 1
+    assert result.issues[0].code == _TRIVOTE_INSUFFICIENT_VOTERS_CODE
+    assert result.issues[0].severity == "warning"
+    # Excluded from the pass-rate denominator (score stays 1.0, no
+    # fabricated pass increment).
+    assert result.score == 1.0
+
+
+def test_trivote_strict_mode_missing_nli_is_critical(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Trivote + strict mode + NLI unavailable -> critical block."""
+    monkeypatch.setenv("ED4ALL_BLOOM_TRIVOTE", "1")
+    monkeypatch.setenv("TRAINFORGE_REQUIRE_BERT_ENSEMBLE", "true")
+    # nli=None injected + singleton patched to None so no model loads.
+    from lib.classifiers import nli_classifier
+
+    monkeypatch.setattr(
+        nli_classifier.NliClassifier,
+        "get_or_load",
+        classmethod(lambda cls: None),
+    )
+    validator = BloomClassifierDisagreementValidator(nli=None)
+    block = _make_assessment_block(statement=_NOVERB, bloom_level="apply")
+    result = validator.validate({"blocks": [block]})
+
+    assert not result.passed
+    assert result.action == "block"
+    assert result.issues[0].code == "BERT_ENSEMBLE_DEPS_MISSING"
+    assert result.issues[0].severity == "critical"
+
+
+def test_trivote_decision_capture_fires(_trivote_on) -> None:
+    """One capture per evaluated block, rationale citing the three votes."""
+    nli = _TargetNli("apply")
+    capture = _StubCapture()
+    validator = BloomClassifierDisagreementValidator(nli=nli)
+    block = _make_assessment_block(statement=_NOVERB, bloom_level="apply")
+    validator.validate({"blocks": [block], "decision_capture": capture})
+
+    assert len(capture.calls) == 1
+    decision_type, decision, rationale = capture.calls[0]
+    assert decision_type == "bloom_classifier_disagreement_check"
+    assert decision == "passed"
+    assert len(rationale) >= 20
+    assert "asserted=apply" in rationale
+    assert "zero_shot=apply" in rationale
+    assert "verb=" in rationale
+    assert "disagreement_score=" in rationale
+
+
+def test_trivote_flag_off_uses_legacy_ensemble_not_nli(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Flag OFF -> the legacy BERT-ensemble path runs; the injected NLI
+    voter is NEVER consulted (byte-identical legacy behavior)."""
+    monkeypatch.delenv("ED4ALL_BLOOM_TRIVOTE", raising=False)
+    text = "Recall the definition of single sign-on."
+    ensemble = _StubEnsemble(
+        response_map={
+            text: {
+                "winner_level": "remember",
+                "winner_score": 0.9,
+                "dispersion": 0.1,
+                "per_member": [("remember", 0.9)],
+            }
+        }
+    )
+    nli = _TargetNli("create")  # would flip the verdict if consulted
+    validator = BloomClassifierDisagreementValidator(ensemble=ensemble, nli=nli)
+    block = _make_assessment_block(statement=text, bloom_level="remember")
+    result = validator.validate({"blocks": [block]})
+
+    assert result.passed
+    assert result.action is None
+    # Legacy ensemble consulted; trivote NLI voter untouched.
+    assert ensemble.classify_calls == [text]
+    assert nli.calls == []

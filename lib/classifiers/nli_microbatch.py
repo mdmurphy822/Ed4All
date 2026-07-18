@@ -53,6 +53,8 @@ import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from lib.classifiers.nli_classifier import estimate_pair_tokens
+
 logger = logging.getLogger(__name__)
 
 #: Master gate. Default OFF → the dispatcher is never constructed and the router
@@ -68,6 +70,22 @@ _DEFAULT_MAX_PAIRS = 64
 #: waits up to this long for more requests before scoring what it has.
 ENV_MICROBATCH_WINDOW_MS = "ED4ALL_NLI_MICROBATCH_WINDOW_MS"
 _DEFAULT_WINDOW_MS = 10.0
+
+#: Cross-block gate NLI concurrency master flag. Default OFF → the
+#: block_prose_entailment / claim_support / block_objective_delivery gates score
+#: SERIALLY on the raw NLI singleton exactly as before (byte-identical). When
+#: truthy, the SCORABLE blocks are fanned across a ``ThreadPoolExecutor`` whose
+#: workers submit their pair-batches to THIS module's coalescing dispatcher (one
+#: scorer thread owns the single GPU model — no extra CUDA contexts, unlike the
+#: retired ``ED4ALL_NLI_MICROBATCH_VALIDATORS`` spawn-ProcessPool path that
+#: livelocked 4 CUDA contexts on one card).
+ENV_CROSSBLOCK = "ED4ALL_NLI_CROSSBLOCK"
+
+#: Satellite of ``ED4ALL_NLI_CROSSBLOCK`` — the ThreadPoolExecutor worker count
+#: fanning cache-miss blocks at the dispatcher. Default 16. Garbage / non-positive
+#: → the default. No-op when the master flag is off.
+ENV_CROSSBLOCK_THREADS = "ED4ALL_NLI_CROSSBLOCK_THREADS"
+_DEFAULT_CROSSBLOCK_THREADS = 16
 
 _TRUTHY = {"1", "true", "yes", "on"}
 
@@ -114,6 +132,30 @@ def resolve_microbatch_window_ms(env: Optional[Dict[str, str]] = None) -> float:
         return _DEFAULT_WINDOW_MS
 
 
+def resolve_crossblock_enabled(env: Optional[Dict[str, str]] = None) -> bool:
+    """True when ``ED4ALL_NLI_CROSSBLOCK`` is set to a truthy token.
+
+    Parse-with-fallback: only the explicit truthy tokens enable it; anything else
+    (unset / falsey / garbage) leaves it OFF so the gate NLI path is byte-identical
+    serial scoring.
+    """
+    src = env if env is not None else os.environ
+    return str(src.get(ENV_CROSSBLOCK, "")).strip().lower() in _TRUTHY
+
+
+def resolve_crossblock_threads(env: Optional[Dict[str, str]] = None) -> int:
+    """Resolve the cross-block fan-out thread count. Garbage / ≤0 → the default."""
+    src = env if env is not None else os.environ
+    raw = src.get(ENV_CROSSBLOCK_THREADS)
+    if raw is None or not str(raw).strip():
+        return _DEFAULT_CROSSBLOCK_THREADS
+    try:
+        iv = int(str(raw).strip())
+        return iv if iv > 0 else _DEFAULT_CROSSBLOCK_THREADS
+    except (TypeError, ValueError):
+        return _DEFAULT_CROSSBLOCK_THREADS
+
+
 def _accepts_batch_size(fn: Any) -> bool:
     """True when ``fn`` accepts a ``batch_size`` keyword (or ``**kwargs``).
 
@@ -131,6 +173,31 @@ def _accepts_batch_size(fn: Any) -> bool:
         if param.kind == inspect.Parameter.VAR_KEYWORD:
             return True
     return False
+
+
+def _is_cuda_oom(exc: BaseException) -> bool:
+    """True when ``exc`` looks like a CUDA out-of-memory error.
+
+    Matches by type name / message so we don't hard-import torch (the dispatcher
+    stays usable with stub scorers). ``torch.cuda.OutOfMemoryError`` and the
+    generic ``RuntimeError('CUDA out of memory')`` both match.
+    """
+    name = type(exc).__name__
+    if "OutOfMemory" in name:
+        return True
+    msg = str(exc).lower()
+    return "out of memory" in msg or "cuda oom" in msg
+
+
+def _empty_cuda_cache() -> None:
+    """Best-effort ``torch.cuda.empty_cache()`` before an OOM retry (never raises)."""
+    try:
+        import torch  # type: ignore
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:  # noqa: BLE001 — best-effort only
+        pass
 
 
 class _Request:
@@ -187,6 +254,12 @@ class NliMicrobatchDispatcher:
         #: append from the single scorer thread; read after join in tests).
         self.drain_request_counts: List[int] = []
         self.drain_pair_counts: List[int] = []
+        #: Periodic throughput stats (INFO log every ~30s from the scorer
+        #: thread) so a long silent NLI region is diagnosable live.
+        self._stats_last_ts = time.monotonic()
+        self._stats_drains = 0
+        self._stats_pairs = 0
+        self._stats_tokens = 0
         self._thread = threading.Thread(
             target=self._run,
             name="nli-microbatch-scorer",
@@ -263,6 +336,52 @@ class NliMicrobatchDispatcher:
                 total += len(nxt.pairs)
             self._drain_batch(batch)
 
+    def _score_combined(self, combined: List[Tuple[str, str]]) -> List[Any]:
+        """Score ``combined`` in ONE forward pass, halving the slice on CUDA OOM.
+
+        Risk #3 (VRAM OOM at a large ``MAX_PAIRS``): the W2.1 in-gate OOM handler
+        would otherwise convert a validator OOM into a warning auto-pass (silent
+        degrade). The dispatcher instead catches the CUDA OOM here, halves the
+        forward-pass slice size, and re-scores in sub-slices so the gate keeps
+        REAL scores. Only re-raises when even a single-pair slice OOMs (a genuine
+        hardware limit the caller must see, not a vacuous pass).
+        """
+        if not combined:
+            return []
+        # First attempt: the original single-call shape (byte-identical to the
+        # pre-OOM-guard path — one score_batch per drain). Only a CUDA OOM drops
+        # into the halving sub-slice loop.
+        try:
+            if self._supports_batch_size:
+                return self._nli.score_batch(pairs=combined, batch_size=self._max_pairs)
+            return self._nli.score_batch(pairs=combined)
+        except BaseException as exc:  # noqa: BLE001
+            if not (_is_cuda_oom(exc) and len(combined) > 1):
+                raise
+            _empty_cuda_cache()
+        slice_size = max(1, (self._max_pairs if self._max_pairs > 0 else len(combined)) // 2)
+        while True:
+            try:
+                scores: List[Any] = []
+                for start in range(0, len(combined), slice_size):
+                    sub = combined[start : start + slice_size]
+                    if self._supports_batch_size:
+                        part = self._nli.score_batch(pairs=sub, batch_size=slice_size)
+                    else:
+                        part = self._nli.score_batch(pairs=sub)
+                    scores.extend(part)
+                return scores
+            except BaseException as exc:  # noqa: BLE001
+                if _is_cuda_oom(exc) and slice_size > 1:
+                    _empty_cuda_cache()
+                    slice_size = max(1, slice_size // 2)
+                    logger.warning(
+                        "NLI micro-batch drain hit CUDA OOM; halving forward-pass "
+                        "slice to %d pairs and retrying.", slice_size,
+                    )
+                    continue
+                raise
+
     def _drain_batch(self, batch: List[_Request]) -> None:
         """Run ONE combined forward pass over ``batch`` and route each slice."""
         combined: List[Tuple[str, str]] = []
@@ -270,13 +389,35 @@ class NliMicrobatchDispatcher:
             combined.extend(req.pairs)
         self.drain_request_counts.append(len(batch))
         self.drain_pair_counts.append(len(combined))
+        self._stats_drains += 1
+        self._stats_pairs += len(combined)
+        # Token-length estimate (tokenizer-free, capped at the 512 truncation)
+        # so throughput is reported in tokens as well as pairs — a drain of long
+        # ~512-token pairs moves far fewer pairs/s than a short-pair drain, and
+        # tok/s is the length-invariant signal for spotting the slow long-pair
+        # regions the bucketing knob targets.
+        self._stats_tokens += sum(
+            estimate_pair_tokens(p, h) for p, h in combined
+        )
+        _now = time.monotonic()
+        _elapsed = _now - self._stats_last_ts
+        if _elapsed >= 30.0:
+            logger.info(
+                "NLI microbatch: %d drains / %d pairs / %d tok~ in %.0fs "
+                "(%.0f pairs/s, %.0f tok/s, mean fill %.1f pairs/drain, cap %d)",
+                self._stats_drains, self._stats_pairs, self._stats_tokens,
+                _elapsed,
+                self._stats_pairs / _elapsed,
+                self._stats_tokens / _elapsed,
+                self._stats_pairs / max(1, self._stats_drains),
+                self._max_pairs,
+            )
+            self._stats_last_ts = _now
+            self._stats_drains = 0
+            self._stats_pairs = 0
+            self._stats_tokens = 0
         try:
-            if self._supports_batch_size:
-                scores = self._nli.score_batch(
-                    pairs=combined, batch_size=self._max_pairs
-                )
-            else:
-                scores = self._nli.score_batch(pairs=combined)
+            scores = self._score_combined(combined)
             if len(scores) != len(combined):
                 raise RuntimeError(
                     "NLI micro-batch scorer returned "
@@ -347,9 +488,13 @@ __all__ = [
     "ENV_MICROBATCH",
     "ENV_MICROBATCH_MAX_PAIRS",
     "ENV_MICROBATCH_WINDOW_MS",
+    "ENV_CROSSBLOCK",
+    "ENV_CROSSBLOCK_THREADS",
     "NliMicrobatchDispatcher",
     "get_dispatcher",
     "resolve_microbatch_enabled",
     "resolve_microbatch_max_pairs",
     "resolve_microbatch_window_ms",
+    "resolve_crossblock_enabled",
+    "resolve_crossblock_threads",
 ]

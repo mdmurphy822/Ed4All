@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from . import resolve_alttext_provider
+from . import resolve_alttext_provider, resolve_heading_judge_mode
 from .alttext import AltTextClient, apply_alt_text
 from .escalation import write_escalations_sidecar
 from .sdk_client import GlmOcrClient, SdkGlmOcrClient, render_pdf_to_pngs
@@ -129,6 +129,21 @@ def run_glmocr_lane(
 
     # 3. deterministic transform → wire contract + escalations
     tr: TransformResult = transform_document(pages)
+
+    # 3b. optional Super heading-level JUDGE pass (SEMANTIK_HEADING_JUDGE) —
+    # resolves the transform's PENDING (level-defaulted) headings into a
+    # hierarchy-consistent tree BEFORE sidecars are written, so the escalations
+    # sidecar carries heading_level_judged rows instead of resolved pending
+    # rows. Flag off → the module is never imported → byte-identical.
+    if resolve_heading_judge_mode():
+        from .heading_judge import run_heading_judge
+
+        try:
+            run_heading_judge(tr.region_provenance, tr.heading_tree, tr.escalations)
+        except Exception as exc:  # noqa: BLE001 — judge failure must fail OPEN
+            logger.warning(
+                "GLM-OCR heading-judge pass failed (non-fatal, keeping pending "
+                "levels) on %s: %s", pdf_path.name, exc)
 
     # 4. optional alt-text/caption generation
     generated = 0

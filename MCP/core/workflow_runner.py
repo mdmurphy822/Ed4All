@@ -1112,6 +1112,48 @@ def _phase_yaml_block(phase_name: str) -> Optional[Dict[str, Any]]:
     return fallback
 
 
+class SeatScheduleProbeError(RuntimeError):
+    """A newly-scheduled vLLM seat failed its start + coherence gate.
+
+    Raised by the declarative seat-schedule enforcer
+    (:meth:`WorkflowRunner._apply_seat_schedule`) when a phase's newly-needed
+    seat either could not be brought up in time OR came up but returned
+    incoherent/empty content on the content-level coherence probe (the
+    mode-collapse doctrine: a restarted seat can pass ``/v1/models`` yet emit
+    degenerate soup). The enforcer converts this into a LOUD phase failure —
+    never a silent degrade. Only fires under ``ED4ALL_SEAT_SCHEDULE``.
+    """
+
+
+def _phase_seats(workflow_type: str, phase_name: str) -> Optional[List[str]]:
+    """Return the ``seats:`` annotation for a specific ``(workflow, phase)``.
+
+    Workflow-scoped — unlike :func:`_phase_yaml_block`, which returns the first
+    phase matching a name across ALL workflows and therefore collides on names
+    shared between ``course_generation`` and ``textbook_to_course`` (e.g.
+    ``assessment_synthesis``). Returns:
+
+      * ``None``  — the phase declares NO ``seats`` key (no opinion; the seat
+        state carries over from the prior phase unchanged).
+      * ``list`` — the declared logical seat names (an EMPTY list means the
+        phase explicitly needs no seat).
+    """
+    try:
+        data = _load_workflows_config()
+    except ValueError:
+        return None
+    wf = (data.get("workflows") or {}).get(workflow_type)
+    if not isinstance(wf, dict):
+        return None
+    for phase in wf.get("phases", []) or []:
+        if isinstance(phase, dict) and phase.get("name") == phase_name:
+            seats = phase.get("seats")
+            if isinstance(seats, list):
+                return [str(s) for s in seats]
+            return None
+    return None
+
+
 def _get_phase_param_routing(phase_name: str) -> Dict[str, Tuple]:
     """Return {param: (source_type, *path)} routing for a phase.
 
@@ -1635,6 +1677,188 @@ class WorkflowRunner:
                 phase_name, exc,
             )
 
+    # ------------------------------------------------------------------
+    # Declarative per-phase SEAT SCHEDULE (ED4ALL_SEAT_SCHEDULE, default OFF).
+    #
+    # Each phase may declare a ``seats:`` annotation in config/workflows.yaml
+    # (validated by schemas/config/workflows_meta.schema.json). At each phase
+    # START boundary the runner compares the phase's declared seats to the
+    # last-known seat state and, via lib/vllm_container_lifecycle.py, STOPs the
+    # seats no longer needed and STARTs + WAITs + COHERENCE-PROBEs the newly-
+    # needed ones. This replaces the manual, error-prone Super-seat swaps that
+    # mis-scheduled validation (observed 4-7x starvation). A no-op + byte-
+    # identical control flow unless the flag is on.
+    # ------------------------------------------------------------------
+    def _maybe_report_seat_schedule(
+        self, workflow_type: str, sorted_phases: List[WorkflowPhase]
+    ) -> None:
+        """Log the full phase→seat plan once at workflow start (dry-run report).
+
+        This is the "logical order" the seat schedule will enforce: for each
+        phase, in dispatch order, its declared seats (``[…]`` / ``[]`` /
+        ``(no opinion)``). Pure observability — no docker, no network. A no-op
+        unless ``ED4ALL_SEAT_SCHEDULE`` is on.
+        """
+        try:
+            from lib.vllm_container_lifecycle import (
+                resolve_seat_schedule_mode,
+                parse_seat_registry,
+            )
+
+            if not resolve_seat_schedule_mode():
+                return
+            seat_urls = parse_seat_registry()
+            lines = [
+                "seat_schedule: phase→seat plan for workflow %r "
+                "(ED4ALL_SEAT_SCHEDULE on):" % workflow_type
+            ]
+            carried: List[str] = []
+            for phase in sorted_phases:
+                declared = _phase_seats(workflow_type, phase.name)
+                if declared is None:
+                    shown = "(no opinion → %s)" % (
+                        ", ".join(carried) if carried else "no seat"
+                    )
+                else:
+                    carried = list(declared)
+                    shown = ("[]  (NO seat — GPU free)" if not declared
+                             else "[" + ", ".join(declared) + "]")
+                lines.append("  %-30s %s" % (phase.name, shown))
+            # Surface unresolved seat names so a config gap is visible up front.
+            all_declared = set()
+            for phase in sorted_phases:
+                for s in (_phase_seats(workflow_type, phase.name) or []):
+                    all_declared.add(s)
+            unresolved = sorted(s for s in all_declared if s not in seat_urls)
+            if unresolved:
+                lines.append(
+                    "  NOTE: %d declared seat(s) unmapped in %s → will be "
+                    "SKIPPED (config gap): %s"
+                    % (len(unresolved), "ED4ALL_SEAT_BASE_URLS",
+                       ", ".join(unresolved))
+                )
+            logger.info("\n".join(lines))
+        except Exception as exc:  # noqa: BLE001 — a report must never crash the run
+            logger.debug("seat_schedule: dry-run report failed (ignoring): %s", exc)
+
+    async def _apply_seat_schedule(
+        self,
+        workflow_type: str,
+        phase_name: str,
+        current_seats: Optional[set],
+    ) -> Optional[set]:
+        """Enforce ``phase_name``'s declared seats at its start boundary.
+
+        Returns the new seat-state set (the seats now expected to be serving);
+        the caller threads it into the next phase. Semantics:
+
+          * Flag OFF → returns ``current_seats`` unchanged (pure no-op).
+          * Phase declares NO ``seats`` key → returns ``current_seats`` unchanged
+            (no opinion; carry state forward).
+          * Otherwise: STOP every seat in ``current_seats`` not in the desired
+            set, then START + WAIT + COHERENCE-PROBE every desired seat not
+            already known-serving. On the FIRST scheduled phase
+            (``current_seats`` is ``None`` = unknown), stop every REGISTERED seat
+            not desired first, so the run starts from a clean seat state.
+
+        Raises :class:`SeatScheduleProbeError` when a newly-needed seat cannot be
+        brought up coherently (LOUD failure). All stops + config-gap skips are
+        best-effort. Blocking docker/HTTP work runs off the event loop.
+        """
+        from lib.vllm_container_lifecycle import resolve_seat_schedule_mode
+
+        if not resolve_seat_schedule_mode():
+            return current_seats
+        declared = _phase_seats(workflow_type, phase_name)
+        if declared is None:
+            return current_seats  # no opinion — carry seat state forward
+        run_id = getattr(self.executor, "run_id", None) or "unknown"
+        try:
+            run_dir = get_state_runs_dir() / str(run_id)
+        except Exception:  # noqa: BLE001
+            run_dir = None
+        return await asyncio.to_thread(
+            self._apply_seat_schedule_blocking,
+            phase_name, set(declared), current_seats, run_dir,
+        )
+
+    @staticmethod
+    def _apply_seat_schedule_blocking(
+        phase_name: str,
+        desired: set,
+        current_seats: Optional[set],
+        run_dir: Optional[Path],
+    ) -> set:
+        """Synchronous seat-transition body (docker + probe), run off the loop.
+
+        See :meth:`_apply_seat_schedule`. Raises :class:`SeatScheduleProbeError`
+        on a newly-needed seat's start/coherence failure.
+        """
+        from lib.vllm_container_lifecycle import (
+            all_registered_seat_names,
+            coherence_probe,
+            resolve_seat_base_url,
+            start_seat,
+            stop_seat,
+        )
+
+        # First scheduled phase: seat state unknown → treat every REGISTERED
+        # seat not in ``desired`` as a candidate to stop, so the run begins from
+        # a clean, known state rather than trusting whatever was left resident.
+        if current_seats is None:
+            known = all_registered_seat_names()
+        else:
+            known = set(current_seats)
+
+        to_stop = sorted(known - desired)
+        to_start = sorted(desired - (set(current_seats) if current_seats else set()))
+
+        for seat in to_stop:
+            # Best-effort — a stop failure must not fail the phase (the worst
+            # case is a seat holding VRAM it should have freed).
+            stopped = stop_seat(seat)
+            logger.info(
+                "seat_schedule[%s]: stop seat %r → %s",
+                phase_name, seat, "ok" if stopped else "noop/failed",
+            )
+
+        for seat in to_start:
+            base_url = resolve_seat_base_url(seat)
+            if not base_url:
+                # CONFIG gap (seat name not in ED4ALL_SEAT_BASE_URLS): warn +
+                # skip, never a run-failing error — the pipeline's own provider
+                # call will surface a hard error later if the seat is truly
+                # required and truly absent.
+                logger.warning(
+                    "seat_schedule[%s]: seat %r not mapped in ED4ALL_SEAT_BASE_URLS "
+                    "→ skipping (config gap).",
+                    phase_name, seat,
+                )
+                continue
+            load = start_seat(seat, run_dir=run_dir)
+            if load is None:
+                raise SeatScheduleProbeError(
+                    f"seat_schedule[{phase_name}]: required seat {seat!r} "
+                    f"({base_url}) could not be brought up (docker start failed "
+                    f"or readiness timed out). Failing the phase LOUDLY rather "
+                    f"than running it seat-starved."
+                )
+            # Content-level coherence probe — the mode-collapse guard. A seat can
+            # pass /v1/models yet emit degenerate/null content after a restart.
+            if not coherence_probe(base_url):
+                raise SeatScheduleProbeError(
+                    f"seat_schedule[{phase_name}]: seat {seat!r} ({base_url}) "
+                    f"started but FAILED the coherence probe (empty/degenerate "
+                    f"content — possible mode collapse). Failing the phase "
+                    f"LOUDLY (mode-collapse doctrine); cold-restart the seat."
+                )
+            logger.info(
+                "seat_schedule[%s]: seat %r ready + coherent (load=%.1fs).",
+                phase_name, seat, load,
+            )
+
+        return set(desired)
+
     async def run_workflow(self, workflow_id: str) -> Dict[str, Any]:
         """
         Execute all phases of a workflow in dependency order.
@@ -1874,6 +2098,13 @@ class WorkflowRunner:
         # failure; the phase is persisted resumable (``_completed=False``).
         paused_phase: Optional[str] = None
 
+        # Declarative SEAT SCHEDULE (ED4ALL_SEAT_SCHEDULE, default OFF): the
+        # last-known seat state, threaded across the phase loop. ``None`` = seat
+        # state unknown (fresh run / resume); the first scheduled phase treats
+        # every registered-but-undesired seat as a stop candidate. A no-op path
+        # entirely when the flag is off.
+        seat_state: Optional[set] = None
+
         # Wave1-I8 (Finding 7 of plans/dispatch-7-execution-inspection-2026-05.md):
         # emit one banner line per agent in ``AGENT_PROVIDER_ENV_MAP`` so
         # operators can see at workflow start whether each agent will
@@ -1881,6 +2112,11 @@ class WorkflowRunner:
         # subagent, or (c) the in-process stub fallback. Pure
         # observability — no behaviour change.
         self._emit_provider_banner()
+
+        # SEAT SCHEDULE dry-run report: log the full phase→seat plan (the
+        # "logical order" the owner asked to see) once at workflow start. No-op
+        # unless ED4ALL_SEAT_SCHEDULE is on.
+        self._maybe_report_seat_schedule(workflow_type, sorted_phases)
 
         # Marketable-v1 A3 fail-fast guardrail: before running any phase,
         # verify every LLM-needing agent in the phases that will actually
@@ -2104,6 +2340,26 @@ class WorkflowRunner:
             # so gate builders never saw the current phase's keys and
             # six gates silently skipped with "missing inputs: *".
             #
+            # SEAT SCHEDULE enforcement (ED4ALL_SEAT_SCHEDULE): at this phase
+            # START boundary, reconcile the resident vLLM seats to the phase's
+            # declared ``seats:`` annotation — stop no-longer-needed seats,
+            # start + WAIT + COHERENCE-PROBE newly-needed ones. Runs AFTER the
+            # skip / optional / dependency guards (so a skipped phase never spins
+            # a seat up) and BEFORE the phase dispatches. A coherence-probe /
+            # start failure raises SeatScheduleProbeError → the phase fails
+            # LOUDLY (mode-collapse doctrine), never a silent seat-starved run.
+            # No-op + byte-identical control flow unless the flag is on.
+            try:
+                seat_state = await self._apply_seat_schedule(
+                    workflow_type, phase_name, seat_state
+                )
+            except SeatScheduleProbeError as exc:
+                logger.error("%s", exc)
+                final_status = "FAILED"
+                failed_phase = phase_name
+                failure_reason = str(exc)
+                break
+
             # VRAM doctor: capture free-VRAM BEFORE the phase runs so a
             # crash / OOM mid-phase still leaves a forensic timeline. No-op
             # + zero-overhead unless ED4ALL_VRAM_DOCTOR is on.
@@ -2625,6 +2881,19 @@ class WorkflowRunner:
             phase_outputs=phase_outputs,
         )
 
+        # Bloom-label harvester (no-LLM post-build hook). Walks the resolved
+        # project export (+ LibV2 course dir) and appends every de-duplicated
+        # artifact-asserted Bloom claim to state/bloom_labels/labels.jsonl (the
+        # corpus behind the re-founded bloom_classifier_disagreement voter 1).
+        # Gated OFF by default (ED4ALL_HARVEST_BLOOM_LABELS) so a default run is
+        # byte-identical (nothing written). Best-effort — failure does NOT
+        # alter ``final_status``.
+        bloom_labels_store_path = self._maybe_harvest_bloom_labels(
+            workflow_id=workflow_id,
+            workflow_params=workflow_params,
+            phase_outputs=phase_outputs,
+        )
+
         # Roadmap T3: post-loop accessibility-conformance (ACR) aggregator.
         # Inverts the gate-level WCAG issue stream into a per-success-criterion
         # conformance table (supports / partially_supports / does_not_support /
@@ -2732,6 +3001,11 @@ class WorkflowRunner:
             "intelligence_level_report_path": (
                 str(intelligence_level_path)
                 if intelligence_level_path
+                else None
+            ),
+            "bloom_labels_store_path": (
+                str(bloom_labels_store_path)
+                if bloom_labels_store_path
                 else None
             ),
             "accessibility_conformance_report_path": (
@@ -3597,6 +3871,68 @@ class WorkflowRunner:
             logger.warning(
                 "concept_coverage aggregator failed (non-fatal, "
                 "run_id=%s): %s",
+                workflow_id, exc,
+            )
+            return None
+
+    def _maybe_harvest_bloom_labels(
+        self,
+        *,
+        workflow_id: str,
+        workflow_params: Dict[str, Any],
+        phase_outputs: Dict[str, Dict],
+    ) -> Optional[Path]:
+        """Post-build helper — harvest artifact-asserted Bloom labels (no LLM).
+
+        Gated OFF by default via ``ED4ALL_HARVEST_BLOOM_LABELS``: when the flag
+        is falsey the helper short-circuits BEFORE resolving any path, so a
+        default run is byte-identical (nothing written). When on, it walks the
+        resolved Courseforge project export (+ the LibV2 course dir when
+        archival ran) and appends every de-duplicated Bloom claim to the shared
+        ``state/bloom_labels/labels.jsonl`` store — the corpus behind the
+        re-founded ``bloom_classifier_disagreement`` voter 1.
+
+        Best-effort: any failure logs a warning and never alters
+        ``final_status``. Returns the store path when rows were harvested, else
+        ``None``.
+        """
+        try:
+            raw = os.environ.get("ED4ALL_HARVEST_BLOOM_LABELS", "")
+            if raw.strip().lower() not in {"1", "true", "yes", "on"}:
+                return None
+
+            project_path = self._resolve_courseforge_project_path(phase_outputs)
+            if project_path is None:
+                logger.debug(
+                    "harvest_bloom_labels: no project_path resolvable; "
+                    "skipping (run_id=%s)",
+                    workflow_id,
+                )
+                return None
+
+            archival = phase_outputs.get("libv2_archival") or {}
+            course_dir_str = archival.get("course_dir")
+            course_path = Path(course_dir_str) if course_dir_str else None
+
+            from lib.bloom_labels import harvest_bloom_labels
+
+            result = harvest_bloom_labels(
+                project_path,
+                course_path=course_path,
+                run_id=workflow_id,
+            )
+            logger.info(
+                "harvest_bloom_labels: +%d label(s), %d dup(s) skipped "
+                "(run_id=%s, per_kind=%s)",
+                result.rows_added,
+                result.duplicates_skipped,
+                workflow_id,
+                result.per_artifact_counts,
+            )
+            return Path(result.store_path) if result.rows_added else None
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            logger.warning(
+                "harvest_bloom_labels failed (non-fatal, run_id=%s): %s",
                 workflow_id, exc,
             )
             return None

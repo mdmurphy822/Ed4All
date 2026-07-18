@@ -101,6 +101,7 @@ Mirrors the embedding provider's ``ED4ALL_EMBEDDING_DEVICE`` knob
 from __future__ import annotations
 
 import logging
+import math
 import os
 import threading
 from typing import Any, List, Optional, Tuple
@@ -373,6 +374,95 @@ _DEFAULT_BATCH_SIZE: int = 8
 #: 512-token sequences; longer (premise, hypothesis) pairs get
 #: truncated.
 _MAX_SEQUENCE_LENGTH: int = 512
+
+
+#: Chars-per-token divisor for the cheap pre-tokenization length estimate.
+#: DeBERTa's SentencePiece tokenizer averages ~3.5 chars/token on English
+#: prose; the estimate only routes a pair into a length bucket + drives the
+#: throughput meter, so a coarse constant is fine (we never run the real
+#: tokenizer twice just to size a batch).
+_CHARS_PER_TOKEN: float = 3.5
+
+#: Env: master gate for token-length bucketed batching in
+#: :meth:`NliClassifier._run_forward`. Default OFF → exactly the historical
+#: single-global-batch-size path (char-length sort, one ``size`` for every
+#: forward). When truthy, sorted pairs are partitioned into the
+#: :data:`_BUCKET_TOKEN_BOUNDS` buckets and each bucket's forwards use its own
+#: batch size from :data:`ED4ALL_NLI_BUCKET_BATCH`. Scores are verdict-identical
+#: (per-pair logits are independent of batch composition — only low-order float
+#: bits move, same guarantee the char-length sort already relies on). Documented
+#: in docs/operations/behavior-flags.md (root-owned ED4ALL_* prefix).
+ENV_BUCKET_BATCHING = "ED4ALL_NLI_BUCKET_BATCHING"
+
+#: Env: per-bucket batch sizes as a comma list aligned to
+#: :data:`_BUCKET_TOKEN_BOUNDS` (shortest bucket first). Parse-with-fallback:
+#: anything that is not exactly ``len(_BUCKET_TOKEN_BOUNDS)`` positive ints →
+#: :data:`_DEFAULT_BUCKET_BATCH`. No-op unless :data:`ENV_BUCKET_BATCHING` is on.
+ENV_BUCKET_BATCH = "ED4ALL_NLI_BUCKET_BATCH"
+
+#: Upper token bound (inclusive) of each length bucket, shortest first. A pair
+#: with estimated token length ``t`` lands in the first bucket whose bound is
+#: ``>= t``; the estimate is capped at :data:`_MAX_SEQUENCE_LENGTH` so the final
+#: 512 bucket always catches everything (nothing falls through).
+_BUCKET_TOKEN_BOUNDS: Tuple[int, ...] = (128, 256, 384, 512)
+
+#: Default per-bucket batch sizes (shortest bucket first): short pairs pad
+#: cheaply so a big batch amortizes launch overhead; long (~512-token) pairs pay
+#: O(L²) attention so their batch stays small to bound activation memory.
+_DEFAULT_BUCKET_BATCH: List[int] = [256, 128, 64, 32]
+
+
+def resolve_bucket_batching_enabled(value: Optional[bool] = None) -> bool:
+    """True when token-length bucketed batching is enabled.
+
+    Resolution chain: explicit ``value`` arg → :data:`ENV_BUCKET_BATCHING` env
+    → default ``False``. Parse-with-fallback: only the explicit truthy tokens
+    (``1``/``true``/``yes``/``on``, case-insensitive) enable it; unset / falsey
+    / garbage leaves it OFF so the single-batch-size forward path is
+    byte-identical to the historical behavior.
+    """
+    if value is not None:
+        return bool(value)
+    raw = os.environ.get(ENV_BUCKET_BATCHING)
+    if raw is None or not raw.strip():
+        return False
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def resolve_bucket_batch_sizes(value: Optional[str] = None) -> List[int]:
+    """Resolve the per-bucket batch sizes list (aligned to the bucket bounds).
+
+    Resolution chain: explicit ``value`` arg → :data:`ENV_BUCKET_BATCH` env →
+    :data:`_DEFAULT_BUCKET_BATCH`. Parse-with-fallback: the value must parse to
+    exactly ``len(_BUCKET_TOKEN_BOUNDS)`` positive ints or the whole default
+    list is used (a partly-garbage override never yields a half-sized plan).
+    """
+    raw = value if value is not None else os.environ.get(ENV_BUCKET_BATCH)
+    if raw is None or not str(raw).strip():
+        return list(_DEFAULT_BUCKET_BATCH)
+    parts = [p.strip() for p in str(raw).split(",") if p.strip()]
+    if len(parts) != len(_BUCKET_TOKEN_BOUNDS):
+        return list(_DEFAULT_BUCKET_BATCH)
+    try:
+        sizes = [int(p) for p in parts]
+    except (TypeError, ValueError):
+        return list(_DEFAULT_BUCKET_BATCH)
+    if any(s <= 0 for s in sizes):
+        return list(_DEFAULT_BUCKET_BATCH)
+    return sizes
+
+
+def estimate_pair_tokens(premise: str, hypothesis: str) -> int:
+    """Cheap tokenizer-free token-length estimate for a ``(premise, hypothesis)``.
+
+    ``ceil((len(premise) + len(hypothesis)) / _CHARS_PER_TOKEN)`` capped at
+    :data:`_MAX_SEQUENCE_LENGTH` (the model truncates beyond it, so a longer
+    estimate would misprice a bucket / throughput row). Used to route pairs into
+    length buckets and to meter tokens/second — never to alter scoring.
+    """
+    chars = len(premise) + len(hypothesis)
+    est = math.ceil(chars / _CHARS_PER_TOKEN)
+    return min(est, _MAX_SEQUENCE_LENGTH)
 
 
 class NliScore:
@@ -941,57 +1031,136 @@ class NliClassifier:
         forward → softmax loop. Reads ``self._device`` on every call, so a
         retry after :meth:`_downgrade_to_cpu` transparently runs on CPU.
         """
-        results: List[NliScore] = []
         torch = self._torch
 
+        # Length-bucketed batching: process pairs in ascending combined-length
+        # order so each forward's padding matches its content. ``padding=True``
+        # pads every pair in a batch to the batch max; arrival-order batches
+        # mix short and long premises, so short pairs pay long-pair O(L²)
+        # attention cost (measured 28-206 pairs/s swings on the same gate).
+        # Per-pair logits are independent of batch composition, so regrouping
+        # is verdict-identical (low-order float bits only); results are
+        # restored to input order before returning.
+        order = sorted(
+            range(len(pairs)),
+            key=lambda i: len(pairs[i][0]) + len(pairs[i][1]),
+        )
+        sorted_pairs = [pairs[i] for i in order]
+
+        # Batch plan = list of (positions-in-sorted-order, batch_size). The
+        # legacy path is one segment covering everything at the single ``size``;
+        # bucketing partitions the (already length-sorted) pairs into
+        # token-length buckets, each with its own batch size, so short pairs
+        # batch big (cheap padding) and long pairs batch small (bounded O(L²)
+        # activation memory). Both plans score every pair exactly once and
+        # restore input order, so the only difference is batch composition
+        # (low-order float bits) — verdict-identical.
+        plan = self._build_batch_plan(sorted_pairs, size)
+
+        # Positional result slots (filled by sorted position, then permuted back
+        # to input order). Preallocated so bucket segments can write out of
+        # contiguous order without an append race.
+        sorted_results: List[Optional[NliScore]] = [None] * len(sorted_pairs)
+
         with torch.no_grad():
-            for batch_start in range(0, len(pairs), size):
-                batch = pairs[batch_start : batch_start + size]
-                premises = [str(p) for p, _ in batch]
-                hypotheses = [str(h) for _, h in batch]
-                # ``return_tensors="pt"`` returns torch tensors; the
-                # tokenizer handles padding + truncation automatically.
-                encoded = self._tokenizer(
-                    premises,
-                    hypotheses,
-                    padding=True,
-                    truncation=True,
-                    max_length=_MAX_SEQUENCE_LENGTH,
-                    return_tensors="pt",
-                )
-                # Move the tokenized tensors onto the model's device. On the
-                # default CPU path this is a no-op (tensors are already CPU
-                # tensors and ``.to("cpu")`` returns the same tensor), so the
-                # byte-stable CPU behavior is preserved; on CUDA it ships the
-                # batch to the GPU before the forward pass.
-                if self._device != "cpu":
-                    encoded = {
-                        k: v.to(self._device) for k, v in encoded.items()
-                    }
-                outputs = self._model(**encoded)
-                logits = outputs.logits  # shape: (batch, 3)
-                # Softmax along the label axis -> per-class probabilities.
-                probs = torch.softmax(logits, dim=-1)
-                # Pull the probabilities back to CPU before reading floats so
-                # ``.item()`` works regardless of where the forward pass ran.
-                # No-op on CPU; required on CUDA.
-                if self._device != "cpu":
-                    probs = probs.cpu()
-                # ``probs`` shape: (batch, 3); each row is one pair.
-                for i in range(probs.shape[0]):
-                    row = probs[i]
-                    ent = float(row[self._idx_entailment].item())
-                    neu = float(row[self._idx_neutral].item())
-                    con = float(row[self._idx_contradiction].item())
-                    results.append(
-                        NliScore(
+            for positions, bsize in plan:
+                for seg_start in range(0, len(positions), bsize):
+                    batch_positions = positions[seg_start : seg_start + bsize]
+                    batch = [sorted_pairs[p] for p in batch_positions]
+                    premises = [str(p) for p, _ in batch]
+                    hypotheses = [str(h) for _, h in batch]
+                    # ``return_tensors="pt"`` returns torch tensors; the
+                    # tokenizer handles padding + truncation automatically.
+                    encoded = self._tokenizer(
+                        premises,
+                        hypotheses,
+                        padding=True,
+                        truncation=True,
+                        max_length=_MAX_SEQUENCE_LENGTH,
+                        return_tensors="pt",
+                    )
+                    # Move the tokenized tensors onto the model's device. On the
+                    # default CPU path this is a no-op (tensors are already CPU
+                    # tensors and ``.to("cpu")`` returns the same tensor), so the
+                    # byte-stable CPU behavior is preserved; on CUDA it ships the
+                    # batch to the GPU before the forward pass.
+                    if self._device != "cpu":
+                        encoded = {
+                            k: v.to(self._device) for k, v in encoded.items()
+                        }
+                    outputs = self._model(**encoded)
+                    logits = outputs.logits  # shape: (batch, 3)
+                    # Softmax along the label axis -> per-class probabilities.
+                    probs = torch.softmax(logits, dim=-1)
+                    # Pull the probabilities back to CPU before reading floats so
+                    # ``.item()`` works regardless of where the forward pass ran.
+                    # No-op on CPU; required on CUDA.
+                    if self._device != "cpu":
+                        probs = probs.cpu()
+                    # ``probs`` shape: (batch, 3); each row is one pair. Write to
+                    # the sorted-order slot for this row's pair so bucket
+                    # segments (which cover non-adjacent sorted ranges only when
+                    # the estimate is non-monotonic) still land in the right slot.
+                    for i in range(probs.shape[0]):
+                        row = probs[i]
+                        ent = float(row[self._idx_entailment].item())
+                        neu = float(row[self._idx_neutral].item())
+                        con = float(row[self._idx_contradiction].item())
+                        sorted_results[batch_positions[i]] = NliScore(
                             entailment=ent,
                             neutral=neu,
                             contradiction=con,
                         )
-                    )
 
-        return results
+        # Restore input order (inverse of the length-sort permutation).
+        results: List[Optional[NliScore]] = [None] * len(pairs)
+        for pos, original_idx in enumerate(order):
+            results[original_idx] = sorted_results[pos]
+        return results  # type: ignore[return-value]
+
+    def _build_batch_plan(
+        self,
+        sorted_pairs: List[Tuple[str, str]],
+        size: int,
+    ) -> List[Tuple[List[int], int]]:
+        """Return ``[(sorted-positions, batch_size), ...]`` for the forward loop.
+
+        ``sorted_pairs`` is already in ascending combined-char-length order.
+
+        * Bucketing OFF (default): one segment over every position at the single
+          global ``size`` — byte-identical batch composition to the historical
+          ``range(0, n, size)`` loop.
+        * Bucketing ON: partition into the :data:`_BUCKET_TOKEN_BOUNDS` buckets
+          by :func:`estimate_pair_tokens`, each carrying its own batch size from
+          :func:`resolve_bucket_batch_sizes`. Empty buckets are dropped. Because
+          the estimate is monotonic in char length and the input is char-length
+          sorted, each bucket is a contiguous ascending run of positions.
+        """
+        n = len(sorted_pairs)
+        if not resolve_bucket_batching_enabled():
+            return [(list(range(n)), size)]
+        bucket_sizes = resolve_bucket_batch_sizes()
+        buckets: List[List[int]] = [[] for _ in _BUCKET_TOKEN_BOUNDS]
+        for pos in range(n):
+            premise, hypothesis = sorted_pairs[pos]
+            est = estimate_pair_tokens(premise, hypothesis)
+            for bi, bound in enumerate(_BUCKET_TOKEN_BOUNDS):
+                if est <= bound:
+                    buckets[bi].append(pos)
+                    break
+        plan: List[Tuple[List[int], int]] = []
+        for bi, positions in enumerate(buckets):
+            if positions:
+                plan.append((positions, bucket_sizes[bi]))
+        return plan
 
 
-__all__ = ["NliClassifier", "NliScore"]
+__all__ = [
+    "NliClassifier",
+    "NliScore",
+    "ENV_BUCKET_BATCHING",
+    "ENV_BUCKET_BATCH",
+    "resolve_bucket_batching_enabled",
+    "resolve_bucket_batch_sizes",
+    "estimate_pair_tokens",
+]

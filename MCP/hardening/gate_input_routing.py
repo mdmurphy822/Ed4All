@@ -35,6 +35,7 @@ path so the caller can log structured skip reasons.
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import os
@@ -43,6 +44,30 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+# Memoized introspection: does a builder declare a ``cache`` parameter? Only the
+# heavy block/rewrite/statistical builders do; the router threads the opt-in
+# BlockFeatureCache into exactly those. Byte-identical when cache is None.
+_BUILDER_CACHE_PARAM: Dict[int, bool] = {}
+
+
+def _builder_accepts_cache(fn: Any) -> bool:
+    """True when builder ``fn`` declares a ``cache`` parameter (memoized)."""
+    key = id(fn)
+    hit = _BUILDER_CACHE_PARAM.get(key)
+    if hit is not None:
+        return hit
+    accepts = False
+    try:
+        sig = inspect.signature(fn)
+        for param in sig.parameters.values():
+            if param.name == "cache" or param.kind == inspect.Parameter.VAR_KEYWORD:
+                accepts = True
+                break
+    except (TypeError, ValueError):
+        accepts = False
+    _BUILDER_CACHE_PARAM[key] = accepts
+    return accepts
 
 # Repo root: this file is ``<repo>/MCP/hardening/gate_input_routing.py``,
 # so ``parents[2]`` is the Ed4All root. Used by the on-disk
@@ -1117,6 +1142,7 @@ def _build_block_input(
     workflow_params: Dict[str, Any],
     *,
     gate_id: str = "",
+    cache: Any = None,
 ) -> BuilderResult:
     """Group A — Block-input builder for the four ``Block*Validator``s.
 
@@ -1157,7 +1183,11 @@ def _build_block_input(
     if not blocks_path.exists():
         return {}, [f"blocks_path:{blocks_path}"]
 
-    blocks = _hydrate_blocks_from_path(blocks_path)
+    blocks = (
+        cache.blocks(blocks_path)
+        if cache is not None
+        else _hydrate_blocks_from_path(blocks_path)
+    )
     if not blocks:
         return {}, ["blocks (hydration produced 0 entries)"]
 
@@ -1268,20 +1298,22 @@ def _build_block_input(
 def _build_block_input_outline(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
+    cache: Any = None,
 ) -> BuilderResult:
     """Outline-tier registration shim — pins gate_id prefix to outline."""
     return _build_block_input(
-        phase_outputs, workflow_params, gate_id="outline_",
+        phase_outputs, workflow_params, gate_id="outline_", cache=cache,
     )
 
 
 def _build_block_input_rewrite(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
+    cache: Any = None,
 ) -> BuilderResult:
     """Rewrite-tier registration shim — pins gate_id prefix to rewrite."""
     return _build_block_input(
-        phase_outputs, workflow_params, gate_id="rewrite_",
+        phase_outputs, workflow_params, gate_id="rewrite_", cache=cache,
     )
 
 
@@ -1551,6 +1583,7 @@ def _build_chunk_provenance_index_from_dart_jsonl(
 def _build_rewrite_block_input(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
+    cache: Any = None,
 ) -> BuilderResult:
     """Group B — Rewrite-emit shape / sentence-grounding + NLI builder.
 
@@ -1577,13 +1610,17 @@ def _build_rewrite_block_input(
     When neither surface is available the validators' no-grounding-source path
     emits a warning per block (passed=True), so the absence is non-fatal.
     """
-    inputs, missing = _build_block_input_rewrite(phase_outputs, workflow_params)
+    inputs, missing = _build_block_input_rewrite(
+        phase_outputs, workflow_params, cache=cache
+    )
     if missing:
         return inputs, missing
 
     # W4 §3.5 — authoritative chunk bodies from the DART chunkset first.
-    chunks_lookup: Dict[str, str] = _build_source_chunks_from_dart_jsonl(
-        phase_outputs
+    chunks_lookup: Dict[str, str] = (
+        cache.source_chunks(phase_outputs)
+        if cache is not None
+        else _build_source_chunks_from_dart_jsonl(phase_outputs)
     )
 
     # Legacy best-effort: layer the staging manifest's per-source bodies on
@@ -1615,7 +1652,11 @@ def _build_rewrite_block_input(
     # Opt-in gate-side provenance resolution (ED4ALL_PROSE_GATE_PROVENANCE_RESOLVE)
     # — thread the {provenance_ref -> [chunk_id]} reverse index UNCONDITIONALLY;
     # BlockProseEntailmentValidator consults it only when its env flag is on.
-    provenance_index = _build_chunk_provenance_index_from_dart_jsonl(phase_outputs)
+    provenance_index = (
+        cache.chunk_provenance_index(phase_outputs)
+        if cache is not None
+        else _build_chunk_provenance_index_from_dart_jsonl(phase_outputs)
+    )
     if provenance_index:
         inputs["chunk_provenance_index"] = provenance_index
     return inputs, []
@@ -1624,6 +1665,7 @@ def _build_rewrite_block_input(
 def _build_block_only_input(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
+    cache: Any = None,
 ) -> BuilderResult:
     """Group C — block-only input for ``CourseforgeOutlineShaclValidator``.
 
@@ -1637,12 +1679,12 @@ def _build_block_only_input(
     # Prefer rewrite-tier blocks (post_rewrite_validation::rewrite_shacl)
     # when present, else outline-tier (inter_tier_validation::outline_shacl).
     inputs, missing = _build_block_input(
-        phase_outputs, workflow_params, gate_id="rewrite_shacl",
+        phase_outputs, workflow_params, gate_id="rewrite_shacl", cache=cache,
     )
     if missing:
         # Try outline path explicitly.
         inputs, missing = _build_block_input(
-            phase_outputs, workflow_params, gate_id="outline_shacl",
+            phase_outputs, workflow_params, gate_id="outline_shacl", cache=cache,
         )
         if missing:
             return {}, missing
@@ -1655,6 +1697,7 @@ def _build_block_only_input(
 def _build_block_statistical_input(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
+    cache: Any = None,
 ) -> BuilderResult:
     """Group D — Phase-4 statistical-tier builder.
 
@@ -1690,11 +1733,11 @@ def _build_block_statistical_input(
     the gate path stays alive even on a malformed objectives surface.
     """
     inputs, missing = _build_block_input(
-        phase_outputs, workflow_params, gate_id="rewrite_",
+        phase_outputs, workflow_params, gate_id="rewrite_", cache=cache,
     )
     if missing:
         inputs, missing = _build_block_input(
-            phase_outputs, workflow_params, gate_id="outline_",
+            phase_outputs, workflow_params, gate_id="outline_", cache=cache,
         )
         if missing:
             return {}, missing
@@ -1709,41 +1752,50 @@ def _build_block_statistical_input(
         # Wave 1.7 W1.7.C — Drift B fix. Load + flatten + surface the
         # objective_statements + objectives maps so every statistical-
         # tier validator (and the new BlockObjectiveDeliveryValidator)
-        # sees populated inputs.
-        try:
-            import json as _json
-            from lib.validators.abcd_objective import (
-                _flatten_objectives,
-            )
-
-            objectives_path = Path(objectives_path_raw)
-            if objectives_path.exists():
-                payload = _json.loads(
-                    objectives_path.read_text(encoding="utf-8")
+        # sees populated inputs. When the feature cache is present the flatten
+        # is memoized once per phase (identical maps) instead of re-loaded +
+        # re-flattened per statistical gate.
+        if cache is not None:
+            statements, full_dicts = cache.objectives(objectives_path_raw)
+            if statements:
+                pruned["objective_statements"] = statements
+            if full_dicts:
+                pruned["objectives"] = full_dicts
+        else:
+            try:
+                import json as _json
+                from lib.validators.abcd_objective import (
+                    _flatten_objectives,
                 )
-                flat = _flatten_objectives(payload)
-                statements: Dict[str, str] = {}
-                full_dicts: Dict[str, Dict[str, Any]] = {}
-                for lo in flat:
-                    if not isinstance(lo, dict):
-                        continue
-                    lo_id_raw = lo.get("id") or lo.get("objective_id")
-                    if not isinstance(lo_id_raw, str) or not lo_id_raw:
-                        continue
-                    statement_raw = lo.get("statement") or lo.get("text")
-                    if isinstance(statement_raw, str) and statement_raw.strip():
-                        statements[lo_id_raw] = statement_raw.strip()
-                    full_dicts[lo_id_raw] = dict(lo)
-                if statements:
-                    pruned["objective_statements"] = statements
-                if full_dicts:
-                    pruned["objectives"] = full_dicts
-        except (OSError, ValueError, TypeError, ImportError) as exc:
-            logger.debug(
-                "block_statistical_input: failed to populate "
-                "objective_statements/objectives from %s: %s",
-                objectives_path_raw, exc,
-            )
+
+                objectives_path = Path(objectives_path_raw)
+                if objectives_path.exists():
+                    payload = _json.loads(
+                        objectives_path.read_text(encoding="utf-8")
+                    )
+                    flat = _flatten_objectives(payload)
+                    statements = {}
+                    full_dicts = {}
+                    for lo in flat:
+                        if not isinstance(lo, dict):
+                            continue
+                        lo_id_raw = lo.get("id") or lo.get("objective_id")
+                        if not isinstance(lo_id_raw, str) or not lo_id_raw:
+                            continue
+                        statement_raw = lo.get("statement") or lo.get("text")
+                        if isinstance(statement_raw, str) and statement_raw.strip():
+                            statements[lo_id_raw] = statement_raw.strip()
+                        full_dicts[lo_id_raw] = dict(lo)
+                    if statements:
+                        pruned["objective_statements"] = statements
+                    if full_dicts:
+                        pruned["objectives"] = full_dicts
+            except (OSError, ValueError, TypeError, ImportError) as exc:
+                logger.debug(
+                    "block_statistical_input: failed to populate "
+                    "objective_statements/objectives from %s: %s",
+                    objectives_path_raw, exc,
+                )
     return pruned, []
 
 
@@ -2692,6 +2744,7 @@ class GateInputRouter:
         validator_path: str,
         phase_outputs: Dict[str, Any],
         workflow_params: Dict[str, Any],
+        cache: Any = None,
     ) -> BuilderResult:
         """Look up + run the builder; return ({}, []) fallthrough on miss.
 
@@ -2700,6 +2753,13 @@ class GateInputRouter:
         degradation when someone wires a new validator in YAML before
         registering a builder. The executor logs a warning when this
         happens so the drift is observable.
+
+        ``cache`` (opt-in ``ED4ALL_VALIDATION_FEATURE_CACHE``) is threaded ONLY
+        into builders that declare a ``cache`` parameter — the heavy
+        block/rewrite/statistical builders memoize the ~424-block hydration +
+        chunks.jsonl parse + objectives flatten through it. Builders without the
+        param (the vast majority) are called with the exact legacy signature, so
+        ``cache=None`` (default / flag-off) is byte-identical.
         """
         fn = self.builders.get(validator_path)
         if fn is None:
@@ -2710,6 +2770,8 @@ class GateInputRouter:
             )
             return {}, ["__no_builder_registered__"]
         try:
+            if cache is not None and _builder_accepts_cache(fn):
+                return fn(phase_outputs, workflow_params, cache=cache)
             return fn(phase_outputs, workflow_params)
         except Exception as exc:  # noqa: BLE001 - builders never raise by contract
             logger.warning(

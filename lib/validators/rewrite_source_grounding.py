@@ -60,6 +60,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from MCP.hardening.validation_gates import GateIssue, GateResult
 from lib.utils import strip_html_to_text
 from lib.embedding._math import cosine_similarity
+from lib.validators.feature_cache import _sha as _fc_sha
 from lib.embedding.sentence_embedder import (
     EmbeddingDepsMissing,
     SentenceEmbedder,
@@ -325,6 +326,10 @@ class RewriteSourceGroundingValidator:
     def validate(self, inputs: Dict[str, Any]) -> GateResult:
         gate_id = inputs.get("gate_id", self.name)
         capture = inputs.get("decision_capture")
+        # Shared per-phase feature cache (ED4ALL_VALIDATION_FEATURE_CACHE):
+        # when present, per-block embeds route through its batched, cross-gate
+        # memoized embed() instead of one model call per surface/sentence.
+        feature_cache = inputs.get("feature_cache")
         threshold = float(inputs.get("threshold", self._threshold))
         min_cosine = float(
             inputs.get("min_grounding_cosine", self._min_cosine)
@@ -480,16 +485,48 @@ class RewriteSourceGroundingValidator:
                 )
                 continue
 
-            # Encode the grounding surfaces once per block (saves
-            # redundant model calls when multiple sentences map to
-            # the same source set).
+            # Encode surfaces + sentences in ONE batched call per block
+            # (was: one model call per surface and per sentence — thousands
+            # of batch-1 GPU round trips per gate run, measured 10+ min on a
+            # 424-block corpus). Routed through the shared feature cache when
+            # present (cross-gate memoized batch encode) else encode_batch.
+            # Same model, same normalize=True → scores identical to the
+            # per-call path up to float noise, far below min_cosine margins.
+            all_texts = grounding_surfaces + non_trivial
             try:
-                surface_vectors = [
-                    embedder.encode(surf) for surf in grounding_surfaces
-                ]
+                if feature_cache is not None:
+                    vec_map = feature_cache.embed(all_texts)
+                    surface_vectors = [
+                        v
+                        for v in (
+                            vec_map.get(_fc_sha(surf))
+                            for surf in grounding_surfaces
+                        )
+                        if v is not None
+                    ]
+                    sent_vectors = {
+                        s: vec_map.get(_fc_sha(s)) for s in non_trivial
+                    }
+                else:
+                    encode_batch = getattr(embedder, "encode_batch", None)
+                    if callable(encode_batch):
+                        batch = list(encode_batch(all_texts))
+                    else:
+                        # Injected/test embedders may only implement encode();
+                        # keep the legacy per-text path for them.
+                        batch = [embedder.encode(t) for t in all_texts]
+                    surface_vectors = batch[: len(grounding_surfaces)]
+                    sent_vectors = dict(
+                        zip(non_trivial, batch[len(grounding_surfaces):])
+                    )
+                if not surface_vectors:
+                    raise RuntimeError(
+                        "no grounding-surface vectors produced (embedder "
+                        "unavailable to the feature cache?)"
+                    )
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
-                    "embedder.encode raised on grounding surfaces for %s: %s",
+                    "batched embed failed on grounding surfaces for %s: %s",
                     block.block_id, exc,
                 )
                 if len(issues) < _ISSUE_LIST_CAP:
@@ -515,13 +552,8 @@ class RewriteSourceGroundingValidator:
 
             grounded = 0
             for sentence in non_trivial:
-                try:
-                    sent_vec = embedder.encode(sentence)
-                except Exception as exc:  # noqa: BLE001
-                    logger.debug(
-                        "embedder.encode raised on sentence: %s",
-                        exc,
-                    )
+                sent_vec = sent_vectors.get(sentence)
+                if sent_vec is None:
                     continue
                 # Per-sentence max cosine across all grounding surfaces.
                 max_cos = max(

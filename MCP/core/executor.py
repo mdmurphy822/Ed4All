@@ -24,6 +24,7 @@ import logging
 import os
 import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -2243,14 +2244,51 @@ class TaskExecutor:
                 except Exception as e:
                     logger.warning(f"[{self.run_id}] Invalid gate config: {e}")
 
+            # Opt-in shared per-block feature cache
+            # (ED4ALL_VALIDATION_FEATURE_CACHE, default OFF). ONE instance per
+            # gate-chain invocation, threaded into every builder (cache=) and
+            # every validator (merged_inputs["feature_cache"]) so the ~424-block
+            # hydration, chunks.jsonl parse, HTML strip, sentence split, and
+            # embed work is computed once and shared across the whole gate suite
+            # instead of re-run per gate. Default OFF → never constructed →
+            # every seam sees cache=None → byte-identical. Never let a cache
+            # construction failure block the phase.
+            feature_cache = None
+            try:
+                from lib.validators.feature_cache import (
+                    BlockFeatureCache,
+                    resolve_feature_cache_enabled,
+                )
+
+                if resolve_feature_cache_enabled():
+                    feature_cache = BlockFeatureCache(
+                        _phase_outputs, _workflow_params,
+                    )
+            except Exception as exc:  # noqa: BLE001 — cache is best-effort
+                logger.warning(
+                    f"[{self.run_id}] BlockFeatureCache construction failed "
+                    f"({exc}); gates fall back to self-compute."
+                )
+                feature_cache = None
+
             for gate in parsed_gates:
                 # Per-gate input build.
                 inputs: Dict[str, Any]
                 missing: List[str] = []
                 if self.gate_input_router is not None and gate.validator_path:
-                    inputs, missing = self.gate_input_router.build(
-                        gate.validator_path, _phase_outputs, _workflow_params,
-                    )
+                    if feature_cache is not None:
+                        # Opt-in path only: pass the cache kwarg exclusively when
+                        # a cache was constructed, so a custom router whose build()
+                        # predates the kwarg keeps the exact legacy signature when
+                        # the flag is off (byte-identical).
+                        inputs, missing = self.gate_input_router.build(
+                            gate.validator_path, _phase_outputs, _workflow_params,
+                            cache=feature_cache,
+                        )
+                    else:
+                        inputs, missing = self.gate_input_router.build(
+                            gate.validator_path, _phase_outputs, _workflow_params,
+                        )
                 else:
                     inputs = dict(fallback_inputs)
 
@@ -2310,8 +2348,19 @@ class TaskExecutor:
                     merged_inputs.setdefault("decision_capture", self.capture)
                     merged_inputs.setdefault("capture", self.capture)
 
+                # Inject the shared feature cache (opt-in;
+                # ED4ALL_VALIDATION_FEATURE_CACHE). ``setdefault`` so an explicit
+                # per-builder override still wins; absent → validators self-compute.
+                if feature_cache is not None:
+                    merged_inputs.setdefault("feature_cache", feature_cache)
+
                 # Run the gate via the manager (handles waivers + errors)
+                _gate_t0 = time.monotonic()
                 result = self.gate_manager.run_gate(gate, merged_inputs)
+                logger.info(
+                    f"[{self.run_id}] gate {gate.gate_id} finished in "
+                    f"{time.monotonic() - _gate_t0:.1f}s (passed={result.passed})"
+                )
                 gate_results_list.append(result)
 
                 # Honour severity / behavior-on-fail for gate ordering.
