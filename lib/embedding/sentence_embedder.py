@@ -28,9 +28,10 @@ import hashlib
 import json
 import logging
 import os
+import threading
 from collections import OrderedDict
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 if TYPE_CHECKING:
     import numpy as np  # noqa: F401
@@ -49,6 +50,34 @@ _MAX_CACHE_ENTRIES = 100_000
 # (``true`` / ``1`` / ``yes`` / ``on``, case-insensitive).
 _STRICT_MODE_ENV_VAR = "TRAINFORGE_REQUIRE_EMBEDDINGS"
 _TRUTHY_VALUES = frozenset({"true", "1", "yes", "on"})
+
+# ------------------------------------------------------------------------- #
+# Process-level SentenceEmbedder singleton cache (NLI-reload fix rec #1).
+#
+# ``try_load_embedder`` historically constructed a BRAND-NEW SentenceEmbedder
+# on every call. Every embedding-tier validator's ``validate()`` calls it
+# (rewrite_source_grounding, objective_assessment_similarity,
+# concept_example_similarity, objective_roundtrip_similarity,
+# distractor_misconception_alignment, ...), so across one
+# ``post_rewrite_validation`` / eval phase the ~103-tensor MiniLM reloaded
+# several times per process — a genuine in-process reload bug independent of
+# the resume-loop process churn. This module-level cache (keyed on
+# ``model_name``, guarded by a lock — mirroring
+# ``NliClassifier.get_or_load``'s pattern) holds each model loaded exactly
+# ONCE per process: the first ``try_load_embedder(model_name)`` constructs the
+# wrapper, every subsequent call returns the same instance. The validators
+# already share the returned object safely (each only reads;
+# ``SentenceTransformer.encode`` is thread-safe for these callers). The actual
+# heavy ``SentenceTransformer`` load is still deferred to the first
+# ``encode()`` inside the wrapper, so the cache adds no eager cost.
+_EMBEDDER_CACHE: Dict[str, "SentenceEmbedder"] = {}
+_EMBEDDER_CACHE_LOCK = threading.Lock()
+
+
+def _reset_embedder_cache_for_tests() -> None:
+    """Test-only seam — clear the process-level embedder singleton cache."""
+    with _EMBEDDER_CACHE_LOCK:
+        _EMBEDDER_CACHE.clear()
 
 
 def is_strict_mode() -> bool:
@@ -272,7 +301,17 @@ def try_load_embedder(
     fail-closed on missing extras rather than silently degrade to
     warning-severity GateIssues. Mirrors the strict-mode pattern in
     ``lib/validators/shacl_runner.py:557-576``.
+
+    Process-singleton (NLI-reload fix rec #1): the returned
+    :class:`SentenceEmbedder` for a given ``model_name`` is cached at module
+    level and reused, so the model loads exactly once per process no matter
+    how many embedding-tier validators call this within a phase. Only a
+    successfully-probed wrapper is cached — a strict-mode raise or a ``None``
+    degrade is never cached (a later call re-probes).
     """
+    cached = _EMBEDDER_CACHE.get(model_name)
+    if cached is not None:
+        return cached
     try:
         # Probe-import; the actual model load is deferred to encode().
         import sentence_transformers  # type: ignore  # noqa: F401
@@ -302,4 +341,12 @@ def try_load_embedder(
         )
         return None
 
-    return SentenceEmbedder(model_name=model_name)
+    with _EMBEDDER_CACHE_LOCK:
+        # Re-check inside the lock — another thread may have finished the
+        # construction while we probed (mirrors NliClassifier.get_or_load).
+        existing = _EMBEDDER_CACHE.get(model_name)
+        if existing is not None:
+            return existing
+        embedder = SentenceEmbedder(model_name=model_name)
+        _EMBEDDER_CACHE[model_name] = embedder
+        return embedder

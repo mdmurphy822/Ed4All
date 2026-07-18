@@ -74,6 +74,8 @@ strict-mode flag (``is_strict_mode``), skip set
 """
 from __future__ import annotations
 
+import hashlib
+import importlib
 import logging
 import os
 import sys
@@ -83,7 +85,19 @@ from typing import Any, Dict, List, Optional, Tuple
 from MCP.hardening.validation_gates import GateIssue, GateResult
 from lib.classifiers.nli_classifier import NliClassifier
 from lib.embedding.sentence_embedder import is_strict_mode
-from lib.retrieval.groundedness import GroundednessReport, score_groundedness
+from lib.generation.llm_checkpoint import CheckpointStore, compute_fingerprint
+from lib.generation.stop_control import (
+    GracefulStopRequested,
+    check_stop as _check_stop,
+    stop_requested as _stop_requested,
+)
+from lib.retrieval.groundedness import (
+    SCORER_VERSION,
+    THRESHOLDS_PROVENANCE_DEFAULTS,
+    ClaimVerdict,
+    GroundednessReport,
+    score_groundedness,
+)
 from lib.utils import strip_html_to_text as _strip_html_to_text  # W-D6 canonical
 from lib.validators.claim_support import _SKIPPED_BLOCK_TYPES
 
@@ -141,59 +155,296 @@ def _provenance_resolve_enabled() -> bool:
     return os.environ.get(_ENV_PROVENANCE_RESOLVE, "").strip().lower() in _TRUTHY
 
 
-#: Env flag — route THIS gate's per-block NLI entailment scoring through the
-#: shared coalescing micro-batch dispatcher (`lib/classifiers/nli_microbatch.py`)
-#: instead of the historical serial per-block loop. Default OFF → the per-block
-#: ``score_groundedness`` calls run sequentially on the raw NLI singleton
-#: (byte-identical to the legacy path). When truthy, the SCORABLE blocks'
-#: ``score_groundedness`` forward passes are fanned across a bounded thread pool,
-#: each worker submitting its (premise, hypothesis) pairs to the ONE background
-#: scorer thread that owns the model; the scorer COALESCES concurrent submissions
-#: into shared batched forward passes. This is a DELIBERATELY separate opt-in from
-#: ``ED4ALL_NLI_MICROBATCH`` (the ``score_candidate`` best-of-N path): this gate
-#: is a load-bearing quality gate AND this change introduces NEW cross-block
-#: parallelism (not just a lock swap), so it earns independent, default-OFF
-#: control — an operator running ``ED4ALL_NLI_MICROBATCH=1`` for the rewrite tier
-#: does NOT silently get gate-path parallelism.
+#: Env flag (REPURPOSED) — shard THIS gate's per-block NLI entailment scoring
+#: across a spawn ``ProcessPoolExecutor`` instead of the historical serial
+#: per-block loop. Default OFF → the per-block ``score_groundedness`` calls run
+#: sequentially on the raw NLI singleton (byte-identical to the legacy path).
+#: When truthy, the SCORABLE blocks (exactly the ones the serial loop would
+#: score, via :func:`_block_score_args`) are partitioned across a set of
+#: persistent worker processes. Each worker loads its OWN NLI ONCE at init (a
+#: picklable module-level factory — the MODEL is never pickled, only a dotted
+#: factory string crosses the process boundary) and runs the UNCHANGED
+#: ``score_groundedness`` per block end-to-end. Results are keyed by block index
+#: and merged SERIALLY in the parent in original block order; the model reload
+#: churn that dominated the resume-loop wall-clock is eliminated because each
+#: worker holds one resident NLI for its whole shard.
 #:
-#: Correctness: the dispatcher's per-pair scores are independent of their
-#: batch-mates (``padding=True`` + per-pair ``attention_mask`` + ``truncation``),
-#: so a block's ``GroundednessReport`` is identical to the serial computation to
-#: within low-order floating-point bits — well under the 0.70/0.50 verdict
-#: thresholds. Issue-list assembly, the 50-issue cap, the audited/passed
-#: counters, and decision-capture all still run SERIALLY in original block order
-#: (only the NLI forward passes are parallelized), so the emitted GateResult is
-#: verdict-identical and order-stable vs the serial path.
+#: This REPLACES the earlier in-process coalescing thread-dispatcher design (the
+#: thread pool could not defeat the single-GPU forward-pass serialization; a
+#: process pool gives genuine parallel forward passes on distinct CUDA
+#: contexts). It stays a DELIBERATELY separate opt-in from ``ED4ALL_NLI_MICROBATCH``
+#: (the ``score_candidate`` best-of-N path): this gate is a load-bearing quality
+#: gate AND this change introduces NEW cross-block parallelism, so it earns
+#: independent, default-OFF control.
+#:
+#: Correctness: each worker computes an INDEPENDENT ``GroundednessReport`` per
+#: block via the identical ``score_groundedness`` call the serial path makes, so
+#: the report is verdict-identical (the only cross-process difference is the
+#: low-order-bit GPU/CPU softmax non-associativity already documented on the NLI
+#: device knob — well under the 0.70/0.50 verdict thresholds). Issue-list
+#: assembly, the 50-issue cap, the audited/passed counters, and decision-capture
+#: all still run SERIALLY in original block order in the parent, so the emitted
+#: GateResult is verdict-identical and order-stable vs the serial path. Any
+#: pool-start / worker failure degrades gracefully to the serial path.
 _ENV_MICROBATCH_VALIDATORS: str = "ED4ALL_NLI_MICROBATCH_VALIDATORS"
 
-#: Satellite of ``ED4ALL_NLI_MICROBATCH_VALIDATORS`` — the per-block scoring
-#: fan-out width (thread-pool size feeding the single background scorer). Larger
-#: values give the dispatcher more concurrent submissions to coalesce; the pool
-#: is always capped at the number of scorable blocks. Garbage / non-positive →
-#: the default. No-op when the master flag is off.
-_ENV_MICROBATCH_VALIDATORS_CONCURRENCY: str = (
-    "ED4ALL_NLI_MICROBATCH_VALIDATORS_CONCURRENCY"
-)
-_DEFAULT_MICROBATCH_VALIDATORS_CONCURRENCY: int = 16
+#: Satellite of ``ED4ALL_NLI_MICROBATCH_VALIDATORS`` — the number of persistent
+#: scoring worker processes (spawn ``ProcessPoolExecutor`` size). Default 4
+#: (the investigation's memory-budget recommendation: 4 workers ≤ ~6 GB
+#: worst-case at batch-8×512 DeBERTa activations, leaving ample reserve beside a
+#: resident vLLM seat; a hard ceiling of 12-14 is the box's safe max). Garbage /
+#: non-positive → the default. Always capped at the number of scorable blocks.
+#: No-op when the master flag is off.
+_ENV_VALIDATORS_PROCS: str = "ED4ALL_NLI_VALIDATORS_PROCS"
+_DEFAULT_VALIDATORS_PROCS: int = 4
+
+#: PLUMBING / test seam (NOT an operator flag) — a ``module:function`` dotted
+#: path naming the picklable factory each pool worker calls ONCE at init to
+#: build its resident NLI. Unset → :func:`default_nli_factory`
+#: (``NliClassifier.get_or_load``, the production singleton loader). A test
+#: points it at a deterministic-stub factory so the real spawn-pool path can be
+#: exercised without a GPU. The dotted STRING (never the model) is what crosses
+#: the process boundary.
+_ENV_NLI_VALIDATORS_FACTORY: str = "ED4ALL_NLI_VALIDATORS_FACTORY"
+
+#: Site flag (under the ``ED4ALL_GENERATION_CHECKPOINT`` family) — per-block
+#: resume sidecar for this slow NLI gate. Default ON. Each scored block's
+#: ``GroundednessReport`` is content-addressed (see :func:`_block_fingerprint`)
+#: and persisted to a fingerprinted JSONL sidecar next to the rewrite export, so
+#: a killed / ``ed4all stop``-ed / timed-out validation RESUMES nearly free
+#: (already-scored blocks are cache HITS, skipping the DeBERTa forward pass). A
+#: degraded / unavailable report is NEVER cached (it must re-run). Byte-identical
+#: to the legacy path when no cache dir is resolvable OR the family/site flag is
+#: falsey (``0``/``false``/``no``/``off``).
+_ENV_VALIDATION_CHECKPOINT: str = "ED4ALL_VALIDATION_CHECKPOINT"
+
+#: Site id for the resume sidecar records.
+_CHECKPOINT_SITE_ID: str = "post_rewrite_prose_entailment"
+
+#: Basename of the resume sidecar file inside the cache dir.
+_CHECKPOINT_BASENAME: str = "prose_entailment.checkpoint.jsonl"
+
+#: Cooperative-stop site id (surfaced on GracefulStopRequested).
+_STOP_SITE_ID: str = "post_rewrite_prose_entailment"
 
 
 def _microbatch_validators_enabled() -> bool:
-    """Parse-with-fallback truthy check for ``ED4ALL_NLI_MICROBATCH_VALIDATORS``."""
+    """Parse-with-fallback truthy check for ``ED4ALL_NLI_MICROBATCH_VALIDATORS``.
+
+    (Kept name for back-compat imports; now gates the process-pool path.)
+    """
     return (
         os.environ.get(_ENV_MICROBATCH_VALIDATORS, "").strip().lower() in _TRUTHY
     )
 
 
-def _resolve_microbatch_validators_concurrency() -> int:
-    """Resolve the fan-out width. Garbage / non-positive → the default."""
-    raw = os.environ.get(_ENV_MICROBATCH_VALIDATORS_CONCURRENCY)
+#: Alias with the intent-revealing name for the repurposed flag.
+_pool_scoring_enabled = _microbatch_validators_enabled
+
+
+def _resolve_validators_procs() -> int:
+    """Resolve the worker-process count. Garbage / non-positive → the default."""
+    raw = os.environ.get(_ENV_VALIDATORS_PROCS)
     if raw is None or not str(raw).strip():
-        return _DEFAULT_MICROBATCH_VALIDATORS_CONCURRENCY
+        return _DEFAULT_VALIDATORS_PROCS
     try:
         iv = int(str(raw).strip())
-        return iv if iv > 0 else _DEFAULT_MICROBATCH_VALIDATORS_CONCURRENCY
+        return iv if iv > 0 else _DEFAULT_VALIDATORS_PROCS
     except (TypeError, ValueError):
-        return _DEFAULT_MICROBATCH_VALIDATORS_CONCURRENCY
+        return _DEFAULT_VALIDATORS_PROCS
+
+
+# --------------------------------------------------------------------- #
+# Process-pool machinery (module-level so the initializer + task fn are
+# picklable by the spawn ProcessPoolExecutor; the MODEL is NEVER pickled).
+# --------------------------------------------------------------------- #
+
+#: Per-WORKER resident NLI, loaded once by :func:`_pool_worker_init`.
+_WORKER_NLI: Any = None
+
+
+def default_nli_factory() -> Any:
+    """Picklable module-level factory → the production NLI singleton loader."""
+    return NliClassifier.get_or_load()
+
+
+def _resolve_factory_dotted() -> str:
+    """The ``module:function`` dotted path each worker calls at init.
+
+    Unset / blank → the sentinel empty string (worker uses
+    :func:`default_nli_factory`). A test seam points it at a stub factory.
+    """
+    return os.environ.get(_ENV_NLI_VALIDATORS_FACTORY, "").strip()
+
+
+def _import_factory(dotted: str) -> Any:
+    """Import + return the ``module:function`` factory (empty → default)."""
+    if not dotted:
+        return default_nli_factory
+    mod_name, _, fn_name = dotted.partition(":")
+    module = importlib.import_module(mod_name)
+    return getattr(module, fn_name)
+
+
+def _pool_worker_init(factory_dotted: str) -> None:
+    """Pool initializer — load this worker's OWN NLI exactly once.
+
+    Runs once per worker process. Stores the resident model on the module
+    global so every task the worker handles reuses it (no per-task reload).
+    """
+    global _WORKER_NLI
+    _WORKER_NLI = _import_factory(factory_dotted)()
+
+
+def _pool_score_task(
+    task: Tuple[int, str, List[Dict[str, str]], float, float],
+) -> Tuple[int, GroundednessReport]:
+    """Worker task — score ONE block end-to-end via the UNCHANGED scorer.
+
+    ``task`` = ``(idx, prose_text, cited_passages, entailment_floor,
+    contradiction_floor)``. Returns ``(idx, GroundednessReport)`` (both
+    picklable); ``idx`` keys the result back to the block in the parent.
+    """
+    idx, prose_text, cited_passages, ent_floor, con_floor = task
+    report = score_groundedness(
+        prose_text,
+        cited_passages,
+        nli=_WORKER_NLI,
+        entailment_floor=ent_floor,
+        contradiction_floor=con_floor,
+    )
+    return idx, report
+
+
+def _make_scoring_pool(n_procs: int, factory_dotted: str) -> Any:
+    """Build the spawn ``ProcessPoolExecutor`` (isolated as a test seam).
+
+    Uses the ``spawn`` start method (a fresh interpreter per worker → no
+    inherited CUDA context / fork-unsafe torch state) with the module-level
+    initializer that pins one NLI per worker. Isolated so tests can inject a
+    synchronous / in-process executor without spawning real subprocesses.
+    """
+    import multiprocessing as _mp
+    from concurrent.futures import ProcessPoolExecutor
+
+    ctx = _mp.get_context("spawn")
+    return ProcessPoolExecutor(
+        max_workers=max(1, n_procs),
+        mp_context=ctx,
+        initializer=_pool_worker_init,
+        initargs=(factory_dotted,),
+    )
+
+
+# --------------------------------------------------------------------- #
+# Per-block resume sidecar (content-addressed GroundednessReport cache).
+# --------------------------------------------------------------------- #
+
+
+def _block_fingerprint(
+    prose_text: str,
+    cited_passages: List[Dict[str, str]],
+    entailment_floor: float,
+    contradiction_floor: float,
+    nli: Any,
+) -> str:
+    """Content-address one block's SCORING inputs → a sha256 hex key.
+
+    Hashes exactly what determines the cached ``GroundednessReport``: the
+    prose text, the SORTED cited (chunk_id, text) pairs, the entailment /
+    contradiction floors, the scorer surface version, the NLI model revision,
+    and the NLI DEVICE-CLASS (``cuda`` vs ``cpu`` — not the exact index, since
+    a cuda:0 vs cuda:1 pin scores identically to within the documented
+    softmax-non-associativity tolerance). Any change to any axis moves the key
+    so a stale report is never served for a changed input.
+    """
+    dev = getattr(nli, "device", None)
+    dev_class = "cuda" if isinstance(dev, str) and dev.startswith("cuda") else "cpu"
+    payload = {
+        "prose": hashlib.sha256(prose_text.encode("utf-8")).hexdigest(),
+        "passages": [
+            [p.get("chunk_id", ""), p.get("text", "")]
+            for p in sorted(
+                cited_passages, key=lambda p: (p.get("chunk_id", ""), p.get("text", ""))
+            )
+        ],
+        "entailment_floor": entailment_floor,
+        "contradiction_floor": contradiction_floor,
+        "scorer_version": SCORER_VERSION,
+        "nli_revision": getattr(nli, "_revision", None),
+        "device_class": dev_class,
+    }
+    return compute_fingerprint(payload)
+
+
+def _report_from_cache_dict(d: Dict[str, Any]) -> GroundednessReport:
+    """Reconstruct a ``GroundednessReport`` from a cached :meth:`to_dict` blob.
+
+    A true drop-in for a freshly-scored report — the validate loop reads
+    ``scored_count`` / ``unsupported_count`` / ``contradicted_count`` /
+    ``groundedness_rate`` / ``computational_count`` / ``filtered_count`` /
+    ``nli_model_revision`` / ``nli_device`` and the per-claim ``windowed``
+    flags, all restored here.
+    """
+    claims = [
+        ClaimVerdict(
+            claim_text=c.get("claim_text", ""),
+            verdict=c.get("verdict", ""),
+            entailment=float(c.get("entailment", 0.0)),
+            contradiction=float(c.get("contradiction", 0.0)),
+            best_chunk_id=c.get("best_chunk_id"),
+            windowed=bool(c.get("windowed", False)),
+            best_chunk_cited=c.get("best_chunk_cited"),
+        )
+        for c in d.get("claims", [])
+        if isinstance(c, dict)
+    ]
+    return GroundednessReport(
+        available=bool(d.get("available", False)),
+        claims=claims,
+        groundedness_rate=float(d.get("groundedness_rate", 0.0)),
+        unsupported_count=int(d.get("unsupported_count", 0)),
+        contradicted_count=int(d.get("contradicted_count", 0)),
+        scored_count=int(d.get("scored_count", 0)),
+        thresholds=dict(d.get("thresholds", {})),
+        thresholds_provenance=d.get(
+            "thresholds_provenance", THRESHOLDS_PROVENANCE_DEFAULTS
+        ),
+        nli_model_revision=d.get("nli_model_revision"),
+        nli_device=d.get("nli_device"),
+        reason=d.get("reason"),
+        computational_count=int(d.get("computational_count", 0)),
+        filtered_count=int(d.get("filtered_count", 0)),
+        scorer_version=d.get("scorer_version", SCORER_VERSION),
+    )
+
+
+def _resolve_cache_store(inputs: Dict[str, Any]) -> Optional[CheckpointStore]:
+    """Resolve the per-block resume sidecar store, or ``None`` (disabled).
+
+    Cache dir precedence: an explicit ``inputs["prose_entailment_cache_dir"]``
+    (tests / operator override) → the rewrite export dir inferred from
+    ``inputs["blocks_final_path"]`` (``<export>/.prose_entailment_cache``,
+    following the reasoning_qc_cache "next to the export" precedent). No
+    resolvable dir → ``None`` (byte-identical, no cache activity). The
+    returned store self-gates on ``ED4ALL_VALIDATION_CHECKPOINT`` (site) /
+    ``ED4ALL_GENERATION_CHECKPOINT`` (family); a falsey flag → ``None`` here.
+    """
+    cache_dir = inputs.get("prose_entailment_cache_dir")
+    if not (isinstance(cache_dir, (str, Path)) and str(cache_dir)):
+        bfp = inputs.get("blocks_final_path")
+        if isinstance(bfp, str) and bfp:
+            cache_dir = Path(bfp).resolve().parent / ".prose_entailment_cache"
+        else:
+            cache_dir = None
+    if not cache_dir:
+        return None
+    store = CheckpointStore(
+        Path(cache_dir) / _CHECKPOINT_BASENAME,
+        site_id=_CHECKPOINT_SITE_ID,
+        site_env=_ENV_VALIDATION_CHECKPOINT,
+    )
+    return store if store.enabled else None
 
 
 def load_chunk_provenance_index(chunks_jsonl_path: str) -> Dict[str, List[str]]:
@@ -559,7 +810,76 @@ class BlockProseEntailmentValidator:
             ),
         )
 
-    def _precompute_reports_microbatch(
+    def _pool_score_misses(
+        self,
+        misses: List[Tuple[int, Any, str, List[Dict[str, str]]]],
+        entailment_floor: float,
+        contradiction_floor: float,
+        run_id: Optional[str],
+    ) -> Tuple[Optional[Dict[int, GroundednessReport]], bool]:
+        """Score the cache-MISS blocks across the spawn process pool.
+
+        Returns ``(reports_by_idx, stop_pending)``. ``reports_by_idx is None``
+        signals a graceful degrade to the serial path (pool start / worker
+        failure) — the caller re-scores every miss serially (idempotent, no
+        double-append since nothing is persisted on the ``None`` path). A
+        partial dict + ``stop_pending=True`` means an ``ed4all stop`` sentinel
+        tripped BEFORE some tasks were submitted: the already-submitted tasks
+        were drained (finish in-flight) and the caller persists them, then
+        raises the cooperative stop.
+        """
+        from concurrent.futures import as_completed
+        from concurrent.futures.process import BrokenProcessPool
+
+        tasks = [
+            (idx, prose, passages, entailment_floor, contradiction_floor)
+            for (idx, _block, prose, passages) in misses
+        ]
+        n_procs = min(_resolve_validators_procs(), len(tasks))
+        factory_dotted = _resolve_factory_dotted()
+        try:
+            pool = _make_scoring_pool(n_procs, factory_dotted)
+        except Exception as exc:  # noqa: BLE001 — any pool-start failure → serial
+            logger.warning(
+                "block_prose_entailment: process pool start failed (%s); "
+                "falling back to serial scoring.", exc,
+            )
+            return None, False
+
+        reports: Dict[int, GroundednessReport] = {}
+        stop_pending = False
+        try:
+            futures = {}
+            for task in tasks:
+                # STOP-SENTINEL POLL before submitting each shard task.
+                if _stop_requested(run_id):
+                    stop_pending = True
+                    break
+                futures[pool.submit(_pool_score_task, task)] = task
+            for fut in as_completed(futures):
+                idx, report = fut.result()
+                reports[idx] = report
+        except BrokenProcessPool as exc:
+            logger.warning(
+                "block_prose_entailment: process pool broke mid-scoring (%s); "
+                "falling back to serial scoring.", exc,
+            )
+            pool.shutdown(wait=False)
+            return None, False
+        except GracefulStopRequested:
+            raise
+        except Exception as exc:  # noqa: BLE001 — any pool error → serial
+            logger.warning(
+                "block_prose_entailment: process pool error (%s); falling back "
+                "to serial scoring.", exc,
+            )
+            pool.shutdown(wait=False)
+            return None, False
+        finally:
+            pool.shutdown(wait=True)
+        return reports, stop_pending
+
+    def _score_scorable(
         self,
         blocks: List[Any],
         nli: Any,
@@ -567,68 +887,97 @@ class BlockProseEntailmentValidator:
         provenance_index: Optional[Dict[str, List[str]]],
         entailment_floor: float,
         contradiction_floor: float,
-    ) -> Optional[Dict[int, GroundednessReport]]:
-        """Opt-in (``ED4ALL_NLI_MICROBATCH_VALIDATORS``) concurrent pre-scoring.
+        store: Optional[CheckpointStore],
+        cache: Dict[str, Dict[str, Any]],
+        run_id: Optional[str],
+    ) -> Dict[int, GroundednessReport]:
+        """Produce ``{block_index: GroundednessReport}`` for every SCORABLE block.
 
-        Fans the SCORABLE blocks' ``score_groundedness`` forward passes across a
-        bounded thread pool, each worker routing its (premise, hypothesis) pairs
-        through the SHARED micro-batch dispatcher (`get_dispatcher(nli)`) — the
-        single background scorer thread coalesces the concurrent submissions into
-        batched forward passes instead of the historical one-block-at-a-time
-        serial loop. Returns ``{block_index: report}`` for exactly the blocks the
-        serial loop would score (same skip logic via :func:`_block_score_args`),
-        so the caller's loop reads a pre-computed report that is verdict-identical
-        to an inline call.
+        Combines the three overhaul features (all default-off byte-identical):
 
-        Returns ``None`` (→ caller falls back to the serial inline path) when the
-        flag is off or no dispatcher is available (missing NLI model). A
-        worker-side exception propagates out (mirrors the serial path, where a
-        ``score_groundedness`` raise surfaces from ``validate``).
+        * **Resume sidecar** — a per-block content-addressed cache HIT restores
+          the report with NO scoring; a MISS is scored then persisted (only when
+          ``available``). A killed / stopped validation resumes nearly free.
+        * **Process-pool scoring** — MISS blocks are sharded across the spawn
+          pool when the flag is on (serial fallback otherwise).
+        * **Stop-sentinel** — the serial miss loop probes the run-scoped stop
+          sentinel before each block, and the pool loop before each submit; on a
+          stop the completed reports are persisted and ``GracefulStopRequested``
+          is raised (the executor maps it to ``paused``).
+
+        The "scorable" set is exactly the blocks the ``validate`` loop reaches
+        the scoring branch for (via :func:`_block_score_args`), so every returned
+        idx is consumed and no report is fabricated for a skipped block.
         """
-        if not _microbatch_validators_enabled():
-            return None
-        # Lazy import — the dispatcher module is only touched on the opt-in path.
-        from lib.classifiers.nli_microbatch import get_dispatcher
-
-        dispatcher = get_dispatcher(nli)
-        if dispatcher is None:
-            return None
-
-        scorable: List[Tuple[int, str, List[Dict[str, str]]]] = []
+        scorable: List[Tuple[int, Any, str, List[Dict[str, str]]]] = []
         for idx, block in enumerate(blocks):
             args = _block_score_args(block, source_chunks, provenance_index)
             if args is not None:
-                scorable.append((idx, args[0], args[1]))
+                scorable.append((idx, block, args[0], args[1]))
+        reports: Dict[int, GroundednessReport] = {}
         if not scorable:
-            return {}
+            return reports
 
-        from concurrent.futures import ThreadPoolExecutor
+        # Phase 1 — resolve cache HITs; collect MISSes with their fingerprints.
+        fps: Dict[int, str] = {}
+        misses: List[Tuple[int, Any, str, List[Dict[str, str]]]] = []
+        for idx, block, prose, passages in scorable:
+            fp = _block_fingerprint(
+                prose, passages, entailment_floor, contradiction_floor, nli
+            )
+            fps[idx] = fp
+            hit = (
+                store.reuse(block.block_id, fp, cache=cache)
+                if store is not None
+                else None
+            )
+            if hit is not None:
+                reports[idx] = _report_from_cache_dict(hit)
+            else:
+                misses.append((idx, block, prose, passages))
+        if not misses:
+            return reports
 
-        n_workers = min(
-            _resolve_microbatch_validators_concurrency(), len(scorable)
-        )
+        # Phase 2 — score the MISSes (pool or serial), persist + merge.
+        pool_reports: Optional[Dict[int, GroundednessReport]] = None
+        stop_pending = False
+        if _pool_scoring_enabled():
+            pool_reports, stop_pending = self._pool_score_misses(
+                misses, entailment_floor, contradiction_floor, run_id
+            )
 
-        def _score(
-            item: Tuple[int, str, List[Dict[str, str]]]
-        ) -> Tuple[int, GroundednessReport]:
-            idx, prose_text, cited_passages = item
-            return idx, score_groundedness(
-                prose_text,
-                cited_passages,
-                nli=dispatcher,
+        if pool_reports is not None:
+            for idx, block, _prose, _passages in misses:
+                rep = pool_reports.get(idx)
+                if rep is None:
+                    # Not scored (stop tripped before its submit); left for the
+                    # validate-loop defensive inline fallback on a cleared stop.
+                    continue
+                reports[idx] = rep
+                if store is not None and rep.available:
+                    store.append(block.block_id, fps[idx], rep.to_dict())
+            if stop_pending:
+                # Persisted completed reports above; now raise the cooperative
+                # stop (a no-op if the sentinel was cleared meanwhile — the
+                # remaining misses then take the validate-loop inline fallback).
+                _check_stop(_STOP_SITE_ID, len(reports), run_id)
+            return reports
+
+        # Serial fallback (pool disabled or degraded).
+        for idx, block, prose, passages in misses:
+            # STOP-SENTINEL POLL before scoring each block (completed blocks are
+            # already persisted below, so worst-case loss is one in-flight call).
+            _check_stop(_STOP_SITE_ID, len(reports), run_id)
+            rep = score_groundedness(
+                prose,
+                passages,
+                nli=nli,
                 entailment_floor=entailment_floor,
                 contradiction_floor=contradiction_floor,
             )
-
-        reports: Dict[int, GroundednessReport] = {}
-        with ThreadPoolExecutor(
-            max_workers=max(1, n_workers),
-            thread_name_prefix="nli-mb-val",
-        ) as pool:
-            # ``map`` preserves order and re-raises the first worker exception on
-            # iteration (serial-parity: a strict-mode raise surfaces identically).
-            for idx, report in pool.map(_score, scorable):
-                reports[idx] = report
+            reports[idx] = rep
+            if store is not None and rep.available:
+                store.append(block.block_id, fps[idx], rep.to_dict())
         return reports
 
     def validate(self, inputs: Dict[str, Any]) -> GateResult:
@@ -726,16 +1075,29 @@ class BlockProseEntailmentValidator:
         # mirroring rewrite_source_grounding's ``passed = len(critical) == 0``).
         fail_severity = "warning" if shadow else "critical"
 
-        # Opt-in (ED4ALL_NLI_MICROBATCH_VALIDATORS): pre-score the SCORABLE blocks
-        # concurrently through the shared coalescing micro-batch dispatcher. None
-        # (flag off / no dispatcher) → the loop keeps the serial inline path
-        # (byte-identical). When present, the loop reads a pre-computed report
-        # (verdict-identical to an inline call) instead of scoring inline, but
-        # ALL issue/counter/capture assembly below still runs SERIALLY in
-        # original block order so the emitted GateResult is order-stable.
-        precomputed_reports = self._precompute_reports_microbatch(
+        # Run-scoped id for the cooperative-stop sentinel (explicit input wins;
+        # else stop_control reads ED4ALL_RUN_ID; a global STOP_ALL works without
+        # either).
+        run_id = inputs.get("run_id")
+        if not (isinstance(run_id, str) and run_id):
+            run_id = None
+
+        # Per-block resume sidecar (ED4ALL_VALIDATION_CHECKPOINT, default ON;
+        # disabled → None → byte-identical). Loaded ONCE per validate.
+        store = _resolve_cache_store(inputs)
+        cache = store.load() if store is not None else {}
+
+        # Pre-score every SCORABLE block through the three overhaul features
+        # (resume-cache HIT / spawn process-pool / serial fallback), all keyed by
+        # block index. Feature-off → this is the serial inline scoring the loop
+        # historically did, just hoisted here; ALL issue/counter/capture assembly
+        # below still runs SERIALLY in original block order so the emitted
+        # GateResult is verdict-identical + order-stable. A cooperative stop
+        # (GracefulStopRequested) propagates from here after persisting the
+        # completed blocks (executor maps it to ``paused``).
+        precomputed_reports = self._score_scorable(
             blocks, nli, source_chunks, provenance_index,
-            entailment_floor, contradiction_floor,
+            entailment_floor, contradiction_floor, store, cache, run_id,
         )
 
         issues: List[GateIssue] = []
@@ -803,11 +1165,12 @@ class BlockProseEntailmentValidator:
                 continue
 
             audited_blocks += 1
-            if precomputed_reports is not None and idx in precomputed_reports:
-                # Micro-batch path: reuse the report scored concurrently through
-                # the shared dispatcher (verdict-identical to the inline call).
-                report = precomputed_reports[idx]
-            else:
+            report = precomputed_reports.get(idx)
+            if report is None:
+                # Defensive inline fallback — every scorable idx is pre-computed
+                # by ``_score_scorable`` (cache HIT / pool / serial), so this is
+                # only reached in the rare "pool stop tripped then the sentinel
+                # was cleared" window, where the un-submitted misses land here.
                 report = score_groundedness(
                     prose_text,
                     cited_passages,
@@ -984,10 +1347,17 @@ class BlockProseEntailmentValidator:
 __all__ = [
     "BlockProseEntailmentValidator",
     "load_chunk_provenance_index",
+    "default_nli_factory",
     "_ENV_MICROBATCH_VALIDATORS",
-    "_ENV_MICROBATCH_VALIDATORS_CONCURRENCY",
+    "_ENV_VALIDATORS_PROCS",
+    "_ENV_NLI_VALIDATORS_FACTORY",
+    "_ENV_VALIDATION_CHECKPOINT",
     "_microbatch_validators_enabled",
-    "_resolve_microbatch_validators_concurrency",
+    "_pool_scoring_enabled",
+    "_resolve_validators_procs",
+    "_block_fingerprint",
+    "_report_from_cache_dict",
+    "_resolve_cache_store",
     "_DEFAULT_MIN_BLOCK_ENTAILMENT_RATE",
     "_DEFAULT_ENTAILMENT_FLOOR",
     "_DEFAULT_CONTRADICTION_FLOOR",

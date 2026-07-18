@@ -536,19 +536,29 @@ class OpenAICompatibleClient:
         else:
             body, retry_count = self._post_with_retry(payload)
         _duration_ms = (self._monotonic() - _call_start) * 1000.0
-        text = self._extract_text(body)
         usage = self._extract_usage(body)
+        # perf-doc P4: capture the first choice's ``finish_reason`` (``stop`` /
+        # ``length`` / ``tool_calls`` / …) for the usage tap. Extracted from
+        # the RAW body BEFORE ``_extract_text`` — which RAISES
+        # ``output_truncated`` on ``finish_reason == "length"`` — so the
+        # truncated call still records a metering row that names the truncation
+        # (truncation diagnosis is exactly what this field exists for).
+        finish_reason = self._extract_finish_reason(body)
         # OP2 usage tap — best-effort per-call metering row (no-op when
-        # ``ED4ALL_RUN_ID`` is unset). Placed after ``_extract_usage`` so the
-        # row carries real server-reported token counts. ``ttft_ms`` is threaded
-        # in (Task #10); it (and the stream-usage-present note) are OMITTED from
-        # the row when None so the flag-off path stays byte-identical.
+        # ``ED4ALL_RUN_ID`` is unset). Written BEFORE ``_extract_text`` so a
+        # ``finish_reason == "length"`` response still records its row. The row
+        # carries real server-reported token counts. ``ttft_ms`` (Task #10),
+        # the stream-usage-present note, and ``finish_reason`` (perf-doc P4) are
+        # OMITTED from the row when None so the flag-off / no-signal path stays
+        # byte-identical to the legacy shape.
         self._maybe_append_usage_row(
             usage=usage,
             duration_ms=_duration_ms,
             ttft_ms=ttft_ms,
             stream_usage_present=stream_usage_present,
+            finish_reason=finish_reason,
         )
+        text = self._extract_text(body)
         self.last_ttft_ms = ttft_ms
         # Expose the server-reported token usage of the LAST call so a
         # caller can run a post-call check (e.g. the grounded-answer
@@ -578,11 +588,12 @@ class OpenAICompatibleClient:
         duration_ms: float,
         ttft_ms: Optional[float] = None,
         stream_usage_present: Optional[bool] = None,
+        finish_reason: Optional[str] = None,
     ) -> None:
         """Append one metering row to ``state/runs/<run_id>/llm_usage.jsonl``.
 
-        Roadmap OP2 + Task #10. Fires only when ``ED4ALL_RUN_ID`` identifies a
-        run; otherwise a strict no-op so bare library callers stay
+        Roadmap OP2 + Task #10 + perf-doc P4. Fires only when ``ED4ALL_RUN_ID``
+        identifies a run; otherwise a strict no-op so bare library callers stay
         byte-identical. Base row shape: ``{ts, provider, model, prompt_tokens,
         completion_tokens, duration_ms}``.
 
@@ -593,6 +604,18 @@ class OpenAICompatibleClient:
         ``stream_options.include_usage`` — ``stream_usage_present: false`` so an
         auditor knows the token counts on that row are absent-defaulted to 0
         rather than server-reported.
+
+        perf-doc P4 additive field: ``finish_reason`` (the first choice's
+        server-reported terminator — ``"stop"`` / ``"length"`` /
+        ``"tool_calls"`` / …). Present only when the server reported it; OMITTED
+        when None so a body without the field keeps the legacy row shape. This
+        is the signal that turns silent-truncation diagnosis (``finish_reason ==
+        "length"``) from guesswork into a fact ``BuildCostAggregator`` consumers
+        can read straight off the row. NB: the tap contract carries no per-call
+        *call-site label* field (the tap sees only ``provider`` / ``model`` /
+        ``usage`` — not the caller's ``decision_metadata``), so none is added;
+        ``BuildCostAggregator`` reads only the fields it knows and ignores the
+        rest, so this addition is additive and never breaks a reader.
 
         Fully best-effort — ANY failure (unresolvable run dir, unwritable path,
         serialization error) is swallowed so metering never perturbs a real LLM
@@ -616,6 +639,10 @@ class OpenAICompatibleClient:
                 "completion_tokens": int(usage.get("completion_tokens", 0) or 0),
                 "duration_ms": round(float(duration_ms), 3),
             }
+            # perf-doc P4 — additive finish_reason, omitted when None so a body
+            # without the field keeps the legacy row shape byte-identical.
+            if finish_reason is not None:
+                row["finish_reason"] = str(finish_reason)
             # Additive TTFT fields — omitted when None so a flag-off / non-
             # streaming row stays byte-identical to the legacy OP2 shape.
             if ttft_ms is not None:
@@ -1345,6 +1372,26 @@ class OpenAICompatibleClient:
                         return None
                     return parsed if isinstance(parsed, dict) else None
         return None
+
+    @staticmethod
+    def _extract_finish_reason(body: Dict[str, Any]) -> Optional[str]:
+        """Pull the first choice's ``finish_reason`` from an OpenAI body.
+
+        Returns the string (``"stop"`` / ``"length"`` / ``"tool_calls"`` / …)
+        or ``None`` when the field is absent / empty / not a string. Never
+        raises — a malformed / choice-less body just yields ``None`` so the
+        usage tap degrades to the legacy (no ``finish_reason``) row shape.
+        Read from the RAW body so the value is available even when
+        ``_extract_text`` would raise ``output_truncated`` on
+        ``finish_reason == "length"``.
+        """
+        if not isinstance(body, dict):
+            return None
+        choices = body.get("choices") or []
+        if not choices or not isinstance(choices[0], dict):
+            return None
+        fr = choices[0].get("finish_reason")
+        return fr if isinstance(fr, str) and fr else None
 
     @staticmethod
     def _extract_usage(body: Dict[str, Any]) -> Dict[str, int]:

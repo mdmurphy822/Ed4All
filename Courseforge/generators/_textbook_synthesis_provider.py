@@ -192,6 +192,31 @@ ENV_GRAMMAR_MODE = "TEXTBOOK_SYNTHESIS_GRAMMAR_MODE"
 # ``_RETRY_DIRECTIVE_PATTERNS`` table is outline-specific and NOT reused).
 _MAX_SYNTHESIS_PARSE_RETRIES = 3
 
+# Structure-aware synthesis — inject a compact HEADING SKELETON of the window's
+# chapter into the per-window Stage-2 prompt so TO/CO derivation is
+# structure-aware. Gated by ``ED4ALL_SYNTHESIS_SKELETON`` (default OFF →
+# byte-identical prompt). The skeleton is CONTEXT ONLY; the prompt instructions
+# still require every objective to cite chunk ids (never headings), and the
+# citation-extraction path is unchanged. Budget: cap the rendered skeleton at
+# ``_SKELETON_HEADING_TOKEN_BUDGET`` tokens per window, dropping the DEEPEST
+# heading levels first when over. Token estimate reuses the repo-wide 2.5
+# chars/token convention (``lib/retrieval/_prompts.py``).
+ENV_SYNTHESIS_SKELETON = "ED4ALL_SYNTHESIS_SKELETON"
+_SKELETON_HEADING_TOKEN_BUDGET = 1500
+_SKELETON_HEADING_CHARS_PER_TOKEN = 2.5
+_SYNTHESIS_SKELETON_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def _resolve_synthesis_skeleton() -> bool:
+    """Resolve the ``ED4ALL_SYNTHESIS_SKELETON`` gate (parse-with-fallback).
+
+    Truthy (``1`` / ``true`` / ``yes`` / ``on``, case-insensitive) → on; unset /
+    falsey / garbage → off (byte-identical prompt). Read once at construction so
+    a test can ``monkeypatch.setenv`` before building the provider.
+    """
+    raw = os.environ.get(ENV_SYNTHESIS_SKELETON, "")
+    return str(raw).strip().lower() in _SYNTHESIS_SKELETON_TRUTHY
+
 
 _BLOOM_LEVEL_ENUM: Tuple[str, ...] = (
     "remember",
@@ -392,6 +417,20 @@ def _resolve_synthesis_max_tokens(explicit: Optional[int]) -> int:
     return parsed
 
 
+def _coerce_heading_level(raw: Any, default: int) -> int:
+    """Coerce a textbook_structure ``headingLevel`` to a positive int.
+
+    Non-numeric / non-positive → ``default`` (parse-with-fallback), so a
+    malformed structure node still slots into the deepest-first skeleton drop
+    with a well-ordered level instead of raising.
+    """
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return val if val > 0 else default
+
+
 def _build_supported_providers() -> Tuple[str, ...]:
     """Compose the supported-providers tuple at call time.
 
@@ -451,6 +490,13 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
         # surface. Resolution: kwarg > ``TEXTBOOK_SYNTHESIS_GRAMMAR_MODE``
         # env > autodetect-None. Mirrors the outline tier's knob.
         grammar_mode: Optional[str] = None,
+        # Structure-aware synthesis: the parsed ``textbook_structure.json``
+        # (``{"chapters": [...]}``) whose per-chapter heading tree feeds the
+        # ``ED4ALL_SYNTHESIS_SKELETON`` per-window skeleton. ``None`` / no
+        # chapters → the skeleton is empty and the window prompt is
+        # byte-identical (the deterministic decoupling from SemantiK sidecars:
+        # the skeleton is sourced from this already-in-path artifact only).
+        textbook_structure: Optional[Dict[str, Any]] = None,
     ) -> None:
         resolved_model = (
             model
@@ -556,6 +602,20 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
             or os.environ.get(ENV_GRAMMAR_MODE)
             or None
         )
+
+        # Structure-aware synthesis (``ED4ALL_SYNTHESIS_SKELETON``): read the
+        # gate once and index the textbook_structure chapters by id so
+        # ``synthesize_window_objectives`` can render the window's chapter
+        # heading skeleton. Off / no chapters → empty map → byte-identical
+        # window prompt.
+        self._synthesis_skeleton_enabled: bool = _resolve_synthesis_skeleton()
+        self._skeleton_chapters_by_id: Dict[str, Dict[str, Any]] = {}
+        if isinstance(textbook_structure, dict):
+            for _ch in textbook_structure.get("chapters") or []:
+                if isinstance(_ch, dict):
+                    _cid = str(_ch.get("id") or "")
+                    if _cid:
+                        self._skeleton_chapters_by_id[_cid] = _ch
 
     # ------------------------------------------------------------------
     # Dispatch override — route OpenAI-compatible providers through W-D12
@@ -1015,6 +1075,7 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
             window_chunks=window_chunks,
             course_name=course_name,
             draft_terminal_objectives=draft_terminal_objectives or [],
+            heading_skeleton=self._build_window_heading_skeleton(chapter_id),
         )
         extra_payload = self._build_synthesis_grammar_payload()
 
@@ -1595,6 +1656,104 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
             "No preamble, no markdown fences, no commentary."
         )
 
+    # ------------------------------------------------------------------
+    # Structure-aware synthesis — per-window heading skeleton
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _collect_skeleton_nodes(
+        chapter: Dict[str, Any],
+    ) -> List[Tuple[int, str]]:
+        """Flatten one chapter's heading tree into ``(headingLevel, text)``.
+
+        The chapter node itself leads (at its ``headingLevel``, default 1),
+        followed by a depth-first walk of ``sections[]`` and their recursive
+        ``subsections[]`` (the textbook_structure section shape). ``headingText``
+        is preferred, falling back to ``title`` / ``heading``. Empty-text nodes
+        are skipped. A section with no explicit ``headingLevel`` inherits one
+        level below the chapter (so the deepest-first drop still has a
+        well-ordered level to shed).
+        """
+        nodes: List[Tuple[int, str]] = []
+        ch_level = _coerce_heading_level(chapter.get("headingLevel"), 1)
+        ch_text = str(
+            chapter.get("headingText")
+            or chapter.get("title")
+            or ""
+        ).strip()
+        if ch_text:
+            nodes.append((ch_level, ch_text))
+
+        def _walk(sections: Any, default_level: int) -> None:
+            for sec in sections or []:
+                if not isinstance(sec, dict):
+                    continue
+                lvl = _coerce_heading_level(sec.get("headingLevel"), default_level)
+                txt = str(
+                    sec.get("headingText")
+                    or sec.get("title")
+                    or sec.get("heading")
+                    or ""
+                ).strip()
+                if txt:
+                    nodes.append((lvl, txt))
+                _walk(sec.get("subsections"), lvl + 1)
+
+        _walk(chapter.get("sections"), ch_level + 1)
+        return nodes
+
+    @staticmethod
+    def _render_heading_skeleton(chapter: Dict[str, Any]) -> str:
+        """Render one chapter's compact, budget-capped heading skeleton.
+
+        Deepest-heading-level-first truncation: while the rendered skeleton
+        exceeds the ``_SKELETON_HEADING_TOKEN_BUDGET`` (≈ chars / 2.5), the nodes
+        at the current MAXIMUM heading level are dropped, so the coarse chapter /
+        section spine survives and only the fine-grained leaves are shed. The
+        chapter-level heading is never dropped (a single surviving level breaks
+        the loop). ``""`` when the chapter yields no headings.
+        """
+        nodes = TextbookSynthesisProvider._collect_skeleton_nodes(chapter)
+        if not nodes:
+            return ""
+        budget_chars = int(
+            _SKELETON_HEADING_TOKEN_BUDGET * _SKELETON_HEADING_CHARS_PER_TOKEN
+        )
+
+        def _rendered(ns: List[Tuple[int, str]]) -> str:
+            if not ns:
+                return ""
+            min_level = min(lvl for lvl, _ in ns)
+            lines: List[str] = []
+            for lvl, text in ns:
+                indent = "  " * max(0, lvl - min_level)
+                lines.append(f"  {indent}- {text}")
+            return "\n".join(lines)
+
+        kept = list(nodes)
+        while len(_rendered(kept)) > budget_chars:
+            levels = {lvl for lvl, _ in kept}
+            if len(levels) <= 1:
+                break  # only the chapter spine remains — never drop it
+            max_level = max(levels)
+            kept = [(lvl, t) for lvl, t in kept if lvl != max_level]
+        return _rendered(kept)
+
+    def _build_window_heading_skeleton(self, chapter_id: str) -> str:
+        """Heading skeleton for the window's chapter, or ``""`` when disabled.
+
+        Empty (byte-identical prompt) when ``ED4ALL_SYNTHESIS_SKELETON`` is off,
+        when no chapter matches ``chapter_id`` in the indexed textbook_structure,
+        or when that chapter carries no headings. Deterministic — no LLM, no
+        SemantiK sidecar read.
+        """
+        if not self._synthesis_skeleton_enabled:
+            return ""
+        chapter = self._skeleton_chapters_by_id.get(str(chapter_id or ""))
+        if not isinstance(chapter, dict):
+            return ""
+        return self._render_heading_skeleton(chapter)
+
     def _render_window_objectives_prompt(
         self,
         *,
@@ -1603,6 +1762,7 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
         window_chunks: List[Dict[str, Any]],
         course_name: str,
         draft_terminal_objectives: List[Dict[str, Any]],
+        heading_skeleton: str = "",
     ) -> str:
         """W2 §2.1 — chunk-window candidate-objective prompt.
 
@@ -1611,6 +1771,11 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
         ``source_chunk_ids`` contract so the model cites a COPY, not an
         inference. Drops the hardcoded ``source_refs:[{chunk_ids:[]}]`` sentinel
         of the legacy chapter prompt.
+
+        ``heading_skeleton`` (``ED4ALL_SYNTHESIS_SKELETON``): when non-empty, a
+        compact CONTEXT-ONLY heading-structure section for the window's chapter
+        is inserted so TO/CO derivation is structure-aware. Empty → byte-identical
+        legacy prompt.
         """
         draft_lines: List[str] = []
         for draft in draft_terminal_objectives or []:
@@ -1627,11 +1792,21 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
             chunk_lines.append(f"  - [{cid}] {body}")
         chunks_block = "\n".join(chunk_lines) if chunk_lines else "  (none)"
 
+        skeleton_block = ""
+        if heading_skeleton:
+            skeleton_block = (
+                "Document heading structure for this chapter (CONTEXT ONLY — "
+                "to situate this window within the chapter's outline; do NOT "
+                "cite headings — objectives still cite ONLY chunk ids):\n"
+                f"{heading_skeleton}\n\n"
+            )
+
         return (
             f"Course: {course_name}\n"
             f"Chapter id: {chapter_id}   (window {window_index})\n\n"
             "Course draft terminal objectives (for grounding):\n"
             f"{draft_block}\n\n"
+            f"{skeleton_block}"
             "Source chunks (cite ONLY these ids in source_chunk_ids):\n"
             f"{chunks_block}\n\n"
             "Synthesize 1-3 candidate learning objectives this window's "

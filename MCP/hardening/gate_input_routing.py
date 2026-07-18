@@ -1163,6 +1163,13 @@ def _build_block_input(
 
     inputs: Dict[str, Any] = {"blocks": blocks}
 
+    # Thread the resolved blocks-export path so BlockProseEntailmentValidator's
+    # per-block resume sidecar (ED4ALL_VALIDATION_CHECKPOINT) can site its
+    # content-addressed cache next to the rewrite export
+    # (``<export>/.prose_entailment_cache/``). The other Block*Validators
+    # sharing this builder ignore the key; default byte-stable.
+    inputs["blocks_final_path"] = str(blocks_path)
+
     # IB4.6 — thread the ED4ALL_BLOCK_A11Y resolution into the Block-input
     # surface so RewriteHtmlShapeValidator's per-block a11y sub-check (IB4.1)
     # fires only when the flag is on. Harmless for the other Block*Validators

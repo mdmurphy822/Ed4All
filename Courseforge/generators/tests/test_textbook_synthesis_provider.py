@@ -1482,3 +1482,220 @@ def test_resolve_synthesis_max_tokens_parse_with_fallback(monkeypatch):
     assert _resolve_synthesis_max_tokens(None) == 9000
     # Explicit kwarg wins over env.
     assert _resolve_synthesis_max_tokens(2048) == 2048
+
+
+# ===========================================================================
+# Structure-aware synthesis — ED4ALL_SYNTHESIS_SKELETON per-window skeleton
+# ===========================================================================
+
+ENV_SYNTHESIS_SKELETON = tsp.ENV_SYNTHESIS_SKELETON
+
+
+def _structure_with_headings():
+    """A textbook_structure with a nested heading tree for chapter ``ch1``."""
+    return {
+        "chapters": [
+            {
+                "id": "ch1",
+                "headingLevel": 1,
+                "headingText": "Foundations",
+                "sections": [
+                    {
+                        "headingLevel": 2,
+                        "headingText": "Number Systems",
+                        "subsections": [
+                            {"headingLevel": 3, "headingText": "Integers"},
+                            {"headingLevel": 3, "headingText": "Rationals"},
+                        ],
+                    },
+                    {
+                        "headingLevel": 2,
+                        "headingText": "Order of Operations",
+                        "subsections": [],
+                    },
+                ],
+            },
+            {
+                "id": "ch2",
+                "headingLevel": 1,
+                "headingText": "Linear Equations",
+                "sections": [{"headingLevel": 2, "headingText": "Slope"}],
+            },
+        ]
+    }
+
+
+def test_skeleton_flag_off_prompt_byte_identical(monkeypatch):
+    """Flag off → the window prompt is byte-identical with and without the
+    threaded textbook_structure (the CONTEXT-ONLY skeleton never appears)."""
+    monkeypatch.delenv(ENV_SYNTHESIS_SKELETON, raising=False)
+    p_no_structure = _provider([json.dumps(_window_payload(["c1"]))])
+    p_with_structure = TextbookSynthesisProvider(
+        provider="anthropic",
+        anthropic_client=_FakeAnthropicClient([]),
+        textbook_structure=_structure_with_headings(),
+    )
+    window = _window(["c1"], chapter_id="ch1")
+    base = p_no_structure._render_window_objectives_prompt(
+        chapter_id="ch1",
+        window_index=0,
+        window_chunks=window["chunks"],
+        course_name="ALG_101",
+        draft_terminal_objectives=[],
+        heading_skeleton=p_no_structure._build_window_heading_skeleton("ch1"),
+    )
+    with_struct = p_with_structure._render_window_objectives_prompt(
+        chapter_id="ch1",
+        window_index=0,
+        window_chunks=window["chunks"],
+        course_name="ALG_101",
+        draft_terminal_objectives=[],
+        heading_skeleton=p_with_structure._build_window_heading_skeleton("ch1"),
+    )
+    assert base == with_struct
+    assert "heading structure" not in base.lower()
+
+
+def test_skeleton_flag_off_build_returns_empty(monkeypatch):
+    monkeypatch.delenv(ENV_SYNTHESIS_SKELETON, raising=False)
+    p = TextbookSynthesisProvider(
+        provider="anthropic",
+        anthropic_client=_FakeAnthropicClient([]),
+        textbook_structure=_structure_with_headings(),
+    )
+    assert p._build_window_heading_skeleton("ch1") == ""
+
+
+def test_skeleton_flag_on_section_present(monkeypatch):
+    """Flag on → the prompt gains a CONTEXT-ONLY heading skeleton carrying the
+    chapter + section + subsection headings, and the citation contract is
+    unchanged (still 'cite ONLY these ids')."""
+    monkeypatch.setenv(ENV_SYNTHESIS_SKELETON, "1")
+    p = TextbookSynthesisProvider(
+        provider="anthropic",
+        anthropic_client=_FakeAnthropicClient([]),
+        textbook_structure=_structure_with_headings(),
+    )
+    skeleton = p._build_window_heading_skeleton("ch1")
+    assert skeleton  # non-empty
+    prompt = p._render_window_objectives_prompt(
+        chapter_id="ch1",
+        window_index=0,
+        window_chunks=[{"id": "c1", "text": "body"}],
+        course_name="ALG_101",
+        draft_terminal_objectives=[],
+        heading_skeleton=skeleton,
+    )
+    assert "Document heading structure" in prompt
+    assert "Foundations" in prompt
+    assert "Number Systems" in prompt
+    assert "Integers" in prompt
+    # CONTEXT-ONLY: the citation-extraction contract is preserved verbatim.
+    assert "cite ONLY these ids in source_chunk_ids" in prompt
+    assert "NEVER emit source_chunk_ids: []" in prompt
+    # The skeleton precedes the source-chunk section.
+    assert prompt.index("Document heading structure") < prompt.index("Source chunks")
+
+
+def test_skeleton_flag_on_unknown_chapter_empty(monkeypatch):
+    """A window whose chapter_id is not in the structure → empty skeleton."""
+    monkeypatch.setenv(ENV_SYNTHESIS_SKELETON, "1")
+    p = TextbookSynthesisProvider(
+        provider="anthropic",
+        anthropic_client=_FakeAnthropicClient([]),
+        textbook_structure=_structure_with_headings(),
+    )
+    assert p._build_window_heading_skeleton("ch99") == ""
+
+
+def test_skeleton_deepest_level_dropped_first_when_over_budget(monkeypatch):
+    """Over-budget skeleton drops the DEEPEST heading level first; the chapter
+    + section spine survives."""
+    monkeypatch.setenv(ENV_SYNTHESIS_SKELETON, "1")
+    # Build a chapter whose deepest (level-3) leaves blow the token budget but
+    # whose level-1/2 spine fits.
+    deep_subs = [
+        {"headingLevel": 3, "headingText": "Leaf " + ("x" * 200) + f" {i}"}
+        for i in range(40)
+    ]
+    structure = {
+        "chapters": [
+            {
+                "id": "ch1",
+                "headingLevel": 1,
+                "headingText": "Chapter One Spine",
+                "sections": [
+                    {
+                        "headingLevel": 2,
+                        "headingText": "Section A Spine",
+                        "subsections": deep_subs,
+                    }
+                ],
+            }
+        ]
+    }
+    p = TextbookSynthesisProvider(
+        provider="anthropic",
+        anthropic_client=_FakeAnthropicClient([]),
+        textbook_structure=structure,
+    )
+    skeleton = p._build_window_heading_skeleton("ch1")
+    budget_chars = int(
+        tsp._SKELETON_HEADING_TOKEN_BUDGET
+        * tsp._SKELETON_HEADING_CHARS_PER_TOKEN
+    )
+    assert len(skeleton) <= budget_chars
+    # The coarse spine survives; the deep leaves are shed.
+    assert "Chapter One Spine" in skeleton
+    assert "Section A Spine" in skeleton
+    assert "Leaf" not in skeleton
+
+
+def test_skeleton_chapter_heading_never_dropped(monkeypatch):
+    """Even a pathologically huge single chapter heading is never dropped (a
+    single surviving level breaks the truncation loop)."""
+    monkeypatch.setenv(ENV_SYNTHESIS_SKELETON, "1")
+    structure = {
+        "chapters": [
+            {"id": "ch1", "headingLevel": 1, "headingText": "H" * 9000}
+        ]
+    }
+    p = TextbookSynthesisProvider(
+        provider="anthropic",
+        anthropic_client=_FakeAnthropicClient([]),
+        textbook_structure=structure,
+    )
+    skeleton = p._build_window_heading_skeleton("ch1")
+    assert "H" * 9000 in skeleton
+
+
+def test_skeleton_flag_on_synthesize_window_still_cites_chunks(monkeypatch):
+    """End-to-end: flag on, the window synthesis still resolves source_chunk_ids
+    from the allowed set (citation path unchanged by the skeleton)."""
+    monkeypatch.setenv(ENV_SYNTHESIS_SKELETON, "1")
+    p = TextbookSynthesisProvider(
+        provider="anthropic",
+        anthropic_client=_FakeAnthropicClient(
+            [json.dumps(_window_payload(["c1", "c9"]))]
+        ),
+        textbook_structure=_structure_with_headings(),
+    )
+    out = p.synthesize_window_objectives(
+        _window(["c1", "c2"], chapter_id="ch1"), course_name="ALG_101",
+    )
+    objs = out["candidate_objectives"]
+    assert len(objs) == 1
+    # c9 (out of set) stripped; c1 kept — the ⊆ enforcement is untouched.
+    assert objs[0]["source_chunk_ids"] == ["c1"]
+    assert objs[0]["grounded_citation"] is True
+
+
+def test_resolve_synthesis_skeleton_parse_with_fallback(monkeypatch):
+    for truthy in ("1", "true", "TRUE", "Yes", "on"):
+        monkeypatch.setenv(ENV_SYNTHESIS_SKELETON, truthy)
+        assert tsp._resolve_synthesis_skeleton() is True
+    for falsey in ("0", "false", "no", "off", "", "garbage"):
+        monkeypatch.setenv(ENV_SYNTHESIS_SKELETON, falsey)
+        assert tsp._resolve_synthesis_skeleton() is False
+    monkeypatch.delenv(ENV_SYNTHESIS_SKELETON, raising=False)
+    assert tsp._resolve_synthesis_skeleton() is False

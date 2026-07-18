@@ -290,6 +290,50 @@ _NO_DISPATCHER_MSG = (
 # (``_local_provider.py:540`` :: ``MAX_PARSE_RETRIES``).
 MAX_PARSE_RETRIES = 2
 
+# CURIE-churn fix (perf): postmint-aware CURIE-preservation skip.
+#
+# The per-block ``generate_rewrite`` path (unlike the batched cloud path,
+# which already force-injects with ZERO CURIE re-rolls) runs a CURIE-
+# preservation retry ladder: when the rewrite HTML drops an enforceable
+# CURIE token it RE-ROLLS the whole block (a fresh ~8k-prompt LLM call) up
+# to ``MAX_PARSE_RETRIES`` times, then force-injects the still-missing set
+# anyway at exhaustion. That trailing force-inject IS a deterministic
+# "postmint" pass: it anchors EXACTLY the enforceable set as hidden
+# ``data-cf-curie`` spans, which is EXACTLY what the preservation gate and
+# the downstream ``BlockCurieAnchoringValidator`` str path enforce — so the
+# re-rolls buy nothing the postmint doesn't already deliver (and they fight
+# the system prompt, which explicitly tells the model NOT to echo synthetic
+# CURIE tokens into visible prose). This flag lets an operator turn that
+# churn off WITHOUT going all the way to ``COURSEFORGE_CURIE_DETERMINISTIC``
+# (which additionally strips the model-facing CURIE directive + payload).
+#
+# When ON: a missing-CURIE candidate does NOT consume a preservation retry —
+# the enforceable set is postminted (force-injected) immediately and the
+# candidate is accepted, subject to every OTHER (router-side) gate. Default
+# OFF → byte-identical to the legacy CURIE-preservation retry ladder.
+ENV_CURIE_PRESERVE_SKIP_WHEN_POSTMINT = (
+    "COURSEFORGE_CURIE_PRESERVE_SKIP_WHEN_POSTMINT"
+)
+
+_CURIE_SKIP_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def resolve_curie_preserve_skip_when_postmint(
+    env: Optional[Dict[str, str]] = None,
+) -> bool:
+    """Resolve ``COURSEFORGE_CURIE_PRESERVE_SKIP_WHEN_POSTMINT`` (default OFF).
+
+    Truthy ``1/true/yes/on`` (case-insensitive, whitespace-trimmed) → on;
+    everything else (unset / garbage / explicit falsey) → off, so OFF is
+    byte-identical to the legacy CURIE-preservation retry ladder. Read once
+    at ``RewriteProvider.__init__`` so the whole call uses a consistent
+    state.
+    """
+    raw = (env or os.environ).get(ENV_CURIE_PRESERVE_SKIP_WHEN_POSTMINT)
+    if not raw:
+        return False
+    return str(raw).strip().lower() in _CURIE_SKIP_TRUTHY
+
 # rewrite-overflow-fix-2026-06: escalation marker stamped when the input-
 # truncation tripwire detects the served window silently dropped the system
 # prompt HEAD. Member of ``Courseforge/scripts/blocks.py::_ESCALATION_MARKERS``;
@@ -3009,6 +3053,14 @@ class RewriteProvider(_BaseLLMProvider):
         # is stamped only when it is a key here (the same universe the
         # ``BlockCurieAnchoringValidator`` treats as minted).
         self._curie_deterministic = resolve_curie_deterministic()
+        # CURIE-churn fix: when ON, a missing-CURIE candidate in the per-block
+        # ``generate_rewrite`` retry ladder is postminted (force-injected) +
+        # accepted immediately instead of burning a preservation re-roll. No
+        # effect when ``_curie_deterministic`` is ON (that path returns before
+        # the ladder is ever reached) → the two flags never conflict.
+        self._curie_preserve_skip_when_postmint = (
+            resolve_curie_preserve_skip_when_postmint()
+        )
         self._minted_curie_tokens: frozenset = frozenset(
             k for k in (minted_curie_map or {}) if isinstance(k, str)
         )
@@ -3997,6 +4049,59 @@ class RewriteProvider(_BaseLLMProvider):
                 )
 
             last_missing = missing
+
+            # COURSEFORGE_CURIE_PRESERVE_SKIP_WHEN_POSTMINT: the deterministic
+            # postmint force-inject (the SAME ``_force_inject_curies`` the
+            # exhaustion path runs below) anchors EXACTLY this ``enforceable``
+            # set as hidden ``data-cf-curie`` spans — which is EXACTLY what the
+            # preservation gate and the downstream str-path
+            # ``BlockCurieAnchoringValidator`` enforce. So re-rolling the whole
+            # block purely to coax the model into echoing the synthetic token is
+            # pure churn (and fights the system prompt, which tells the model
+            # NOT to echo CURIE tokens into visible prose; the batched cloud path
+            # already force-injects with zero CURIE re-rolls). When the flag is
+            # on we skip the preservation retry: postmint the enforceable set NOW
+            # and accept the candidate, subject to every OTHER (router-side)
+            # gate. The skip is LOUD (debug log per skip) and audit-captured.
+            if getattr(self, "_curie_preserve_skip_when_postmint", False):
+                logger.debug(
+                    "RewriteProvider: COURSEFORGE_CURIE_PRESERVE_SKIP_WHEN_"
+                    "POSTMINT on — SKIPPING CURIE-preservation retry for block "
+                    "%r (attempt %d, zero re-roll); postmint force-injects the "
+                    "enforceable set %s (dropped-from-prose=%s) as hidden "
+                    "data-cf-curie spans, exactly what rewrite_curie_anchoring "
+                    "enforces.",
+                    block.block_id,
+                    attempt,
+                    enforceable,
+                    missing,
+                )
+                injected_html = _force_inject_curies(html_response, enforceable)
+                self._emit_per_call_decision(
+                    raw_text=injected_html,
+                    retry_count=total_retries,
+                    block_id=block.block_id,
+                    block_type=block.block_type,
+                    page_id=block.page_id,
+                    escalation_marker=block.escalation_marker,
+                    outline_curie_count=len(outline_curies),
+                    remediation_attempts=attempt,
+                    curie_force_injected=True,
+                    curie_preserve_skipped=True,
+                    missing_curies=missing,
+                    enforced_curie_count=len(enforceable),
+                    pruned_curie_count=len(outline_curies) - len(enforceable),
+                    dropped_cited_chunk_ids=dropped_cited_chunk_ids,
+                )
+                return _apply_rewrite_touch(
+                    block=block,
+                    html_response=injected_html,
+                    provider=_touch_provenance(self._provider),
+                    model=self._model,
+                    decision_capture_id=self._last_capture_id(),
+                    purpose=_TOUCH_PURPOSE_CURIE_FORCED,
+                )
+
             logger.warning(
                 "RewriteProvider: CURIE-preservation retry %d/%d: "
                 "missing tokens=%s",
@@ -4401,6 +4506,9 @@ class RewriteProvider(_BaseLLMProvider):
         curie_force_injected = bool(
             call_context.get("curie_force_injected", False)
         )
+        curie_preserve_skipped = bool(
+            call_context.get("curie_preserve_skipped", False)
+        )
         curie_deterministic = bool(
             call_context.get("curie_deterministic", False)
         )
@@ -4500,6 +4608,16 @@ class RewriteProvider(_BaseLLMProvider):
             rationale_parts.append(
                 f"Escalation marker: {escalation_marker}."
             )
+        if curie_preserve_skipped:
+            rationale_parts.append(
+                f"COURSEFORGE_CURIE_PRESERVE_SKIP_WHEN_POSTMINT: the model "
+                f"dropped {missing_curies} from prose, but the preservation "
+                f"retry was SKIPPED (zero re-roll) — the deterministic postmint "
+                f"pass force-injected the enforceable set as hidden "
+                f"data-cf-curie spans, which is exactly what "
+                f"rewrite_curie_anchoring enforces, so the re-roll would have "
+                f"bought nothing."
+            )
         if curie_drop and curie_force_injected:
             rationale_parts.append(
                 f"Rewrite LLM dropped {missing_curies} after the "
@@ -4525,9 +4643,11 @@ __all__ = [
     "DEFAULT_MODEL_LOCAL",
     "DEFAULT_MODEL_TOGETHER",
     "DEFAULT_PROVIDER",
+    "ENV_CURIE_PRESERVE_SKIP_WHEN_POSTMINT",
     "ENV_MODEL",
     "ENV_PROVIDER",
     "MAX_PARSE_RETRIES",
+    "resolve_curie_preserve_skip_when_postmint",
     "RewriteProvider",
     "RewriteProviderError",
     "SUPPORTED_PROVIDERS",

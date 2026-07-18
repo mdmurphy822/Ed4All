@@ -5230,6 +5230,7 @@ def _stage2_window_fingerprint(
     model: str,
     num_ctx: int,
     system_prompt: str,
+    heading_skeleton: str = "",
 ) -> str:
     """Deterministic fingerprint of a stage-2 window's synthesis inputs.
 
@@ -5239,6 +5240,14 @@ def _stage2_window_fingerprint(
     resume. The chunk texts are the truncated bodies fed to the model (the
     ``window['chunks'][*]['text']`` render input), so a re-chunk that changes a
     body invalidates the cache even when the id set is unchanged.
+
+    ``heading_skeleton`` (``ED4ALL_SYNTHESIS_SKELETON``): the rendered per-window
+    chapter heading skeleton the provider injects into the prompt. When empty
+    (flag off / no chapter) NO key is added → the fingerprint dict is
+    byte-identical to legacy. When non-empty its hash is folded in, so flipping
+    the flag (or changing textbook_structure) invalidates the window resume
+    sidecar and those windows re-run on ``--resume`` — mirroring the
+    ``ED4ALL_OBJECTIVE_SEED_SANITIZE`` window-render-fingerprint contract.
     """
     _text_parts: List[str] = []
     for _c in chunks:
@@ -5246,7 +5255,7 @@ def _stage2_window_fingerprint(
             _text_parts.append(
                 f"{_c.get('id')}\x1f{_c.get('text')}"
             )
-    return _llm_compute_fingerprint({
+    _fp_inputs: Dict[str, Any] = {
         "v": _STAGE2_CHECKPOINT_SCHEMA_VERSION,
         "chunk_ids": sorted(str(c) for c in (chunk_ids or [])),
         "chunk_texts_sha": _llm_hash_text("\x1e".join(_text_parts)),
@@ -5254,7 +5263,11 @@ def _stage2_window_fingerprint(
         "model": model,
         "num_ctx": int(num_ctx),
         "system_prompt_sha": _llm_hash_text(system_prompt or ""),
-    })
+    }
+    # Empty → no key (byte-identical legacy fingerprint); non-empty → folded in.
+    if heading_skeleton:
+        _fp_inputs["heading_skeleton_sha"] = _llm_hash_text(heading_skeleton)
+    return _llm_compute_fingerprint(_fp_inputs)
 
 
 def _load_stage2_windows_checkpoint(
@@ -5849,11 +5862,26 @@ async def _run_stage2_window_synthesis(
                 _wi = 0
             return (str(wd.get("chapter_id") or ""), _wi)
 
+        # Structure-aware synthesis (ED4ALL_SYNTHESIS_SKELETON): the provider
+        # renders the per-window chapter heading skeleton it injects into the
+        # prompt. Folding it into the fingerprint makes a flag flip (or a
+        # changed textbook_structure) invalidate the window resume sidecar so
+        # those windows re-run on --resume. Empty when the flag is off → the
+        # fingerprint stays byte-identical to legacy.
+        _skeleton_fn = getattr(provider, "_build_window_heading_skeleton", None)
         _fp_by_key: Dict[Tuple[str, int], str] = {}
         _reused: Dict[Tuple[str, int], List[Dict[str, Any]]] = {}
         _to_dispatch: List[Dict[str, Any]] = []
         for _wd in _windows:
             _key = _window_key(_wd)
+            _wd_skeleton = ""
+            if callable(_skeleton_fn):
+                try:
+                    _wd_skeleton = _skeleton_fn(
+                        str(_wd.get("chapter_id") or "")
+                    ) or ""
+                except Exception:  # noqa: BLE001 — skeleton is best-effort
+                    _wd_skeleton = ""
             _fp = _stage2_window_fingerprint(
                 chunk_ids=_wd.get("chunk_ids") or [],
                 chunks=_wd.get("chunks") or [],
@@ -5861,6 +5889,7 @@ async def _run_stage2_window_synthesis(
                 model=_cp_model,
                 num_ctx=_num_ctx,
                 system_prompt=_TEXTBOOK_SYNTHESIS_SYSTEM_PROMPT,
+                heading_skeleton=_wd_skeleton,
             )
             _fp_by_key[_key] = _fp
             _rec = _cp_cache.get(_key) if _cp_enabled else None
@@ -11354,9 +11383,16 @@ async def _run_post_rewrite_validation(**kwargs) -> str:
                 continue
             if blk.escalation_marker is not None:
                 continue
-            fh.write(json.dumps(
-                _block_to_snake_case_entry(blk), ensure_ascii=False,
-            ))
+            # Stamp a REAL failure_reason (was implicitly null) — the failing
+            # gate(s) located at this block + the regen attempts consumed. For
+            # a CURIE-preservation miss the gate message carries the dropped
+            # tokens; for other gates the code+message head is the failure
+            # class. Additive field, never breaks a reader.
+            _failed_entry = _block_to_snake_case_entry(blk)
+            _failed_entry["failure_reason"] = _compose_block_failure_reason(
+                blk, gate_results
+            )
+            fh.write(json.dumps(_failed_entry, ensure_ascii=False))
             fh.write("\n")
 
     return json.dumps({
@@ -11394,6 +11430,65 @@ async def _run_post_rewrite_validation(**kwargs) -> str:
 # sequence, content, objective_ids, source_ids, ...). The helper
 # below projects a Block to that snake_case shape, mirroring the
 # accepted-keys set ``_entry_to_block`` uses to reconstruct.
+
+
+def _compose_block_failure_reason(
+    block: Any, gate_results: List[Dict[str, Any]]
+) -> Optional[str]:
+    """Compose a real ``failure_reason`` for a ``blocks_failed.jsonl`` row.
+
+    The rewrite/inter-tier ``blocks_failed.jsonl`` rows previously carried the
+    bare Block projection with NO failure attribution (an implicit ``null``
+    reason), so a postmortem couldn't tell WHY a block landed in the failed
+    set. This builds a compact, real reason from the per-block validation
+    signal already in hand:
+
+    * every failing gate's ``GateIssue`` located at THIS block
+      (``issue["location"] == block.block_id``) contributes a
+      ``"{gate_id}:{code} — {message head}"`` fragment. For a
+      CURIE-preservation gate the issue message already names the dropped /
+      unanchored tokens, so the missing-token list rides through; for any
+      other failure the gate code is the failure class and the message is its
+      head (the closest analog to an exception class + message head on a
+      gate-failed block).
+    * the block's ``validation_attempts`` (regen re-rolls consumed) is
+      appended so exhaustion cases are self-evident.
+
+    Returns ``None`` when no located issue is found (e.g. a batch-level
+    failure with no per-block ``location``) so the caller can still emit an
+    explicit ``failure_reason: null`` — an honest "failed but not per-block
+    attributable" signal rather than a fabricated one. Pure + total: never
+    raises on a malformed gate-result / issue shape.
+    """
+    block_id = getattr(block, "block_id", None)
+    if not block_id:
+        return None
+    parts: List[str] = []
+    for rd in gate_results or []:
+        if not isinstance(rd, dict) or rd.get("passed"):
+            continue
+        gate_id = rd.get("gate_id", "unknown_gate")
+        for issue in rd.get("issues", []) or []:
+            if not isinstance(issue, dict):
+                continue
+            if issue.get("location") != block_id:
+                continue
+            code = issue.get("code", "?")
+            msg = str(issue.get("message") or "").strip().replace("\n", " ")
+            head = msg[:200]
+            parts.append(
+                f"{gate_id}:{code}" + (f" — {head}" if head else "")
+            )
+    if not parts:
+        return None
+    reason = "; ".join(parts)
+    try:
+        attempts = int(getattr(block, "validation_attempts", 0) or 0)
+    except (TypeError, ValueError):
+        attempts = 0
+    if attempts:
+        reason = f"{reason} (validation_attempts={attempts})"
+    return reason
 
 
 def _block_to_snake_case_entry(block: Any) -> Dict[str, Any]:
@@ -16841,9 +16936,16 @@ async def _run_inter_tier_validation(**kwargs) -> str:
                 continue
             if blk.escalation_marker is not None:
                 continue
-            fh.write(json.dumps(
-                _block_to_snake_case_entry(blk), ensure_ascii=False,
-            ))
+            # Stamp a REAL failure_reason (was implicitly null) — the failing
+            # gate(s) located at this block + the regen attempts consumed. For
+            # a CURIE-preservation miss the gate message carries the dropped
+            # tokens; for other gates the code+message head is the failure
+            # class. Additive field, never breaks a reader.
+            _failed_entry = _block_to_snake_case_entry(blk)
+            _failed_entry["failure_reason"] = _compose_block_failure_reason(
+                blk, gate_results
+            )
+            fh.write(json.dumps(_failed_entry, ensure_ascii=False))
             fh.write("\n")
 
     return json.dumps({
@@ -20435,6 +20537,14 @@ def _build_tool_registry() -> dict:
                                 )
                             _stage2_provider = TextbookSynthesisProvider(
                                 capture=_stage2_capture,
+                                # Structure-aware synthesis
+                                # (ED4ALL_SYNTHESIS_SKELETON): thread the parsed
+                                # textbook_structure so each window's chapter
+                                # heading skeleton is available to
+                                # synthesize_window_objectives. No-op when the
+                                # flag is off (empty skeleton, byte-identical
+                                # prompt).
+                                textbook_structure=_ts_structure,
                             )
                         except Exception as exc:  # noqa: BLE001
                             logger.warning(

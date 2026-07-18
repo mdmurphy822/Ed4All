@@ -1089,10 +1089,118 @@ def test_ttft_off_row_has_no_ttft_field(monkeypatch, tmp_path):
     row = _json_ttft.loads(usage_path.read_text(encoding="utf-8").splitlines()[0])
     assert "ttft_ms" not in row
     assert "stream_usage_present" not in row
+    # perf-doc P4: finish_reason is stamped whenever the server reports it
+    # (``_success_body`` returns ``"stop"``); it is additive and never carries
+    # the TTFT keys.
+    assert row["finish_reason"] == "stop"
     assert set(row.keys()) == {
         "ts", "provider", "model", "prompt_tokens", "completion_tokens",
-        "duration_ms",
+        "duration_ms", "finish_reason",
     }
+
+
+# ---------------------------------------------------------------------------
+# perf-doc P4 — finish_reason in the OP2 usage row
+# ---------------------------------------------------------------------------
+
+
+def _length_body(content: str = "partial") -> dict:
+    """OpenAI-shaped body whose first choice was cut off at max_tokens."""
+    return {
+        "id": "cmpl-len",
+        "model": "test-model",
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": content},
+                "finish_reason": "length",
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 90,
+            "completion_tokens": 800,
+            "total_tokens": 890,
+        },
+    }
+
+
+def test_finish_reason_stamped_on_usage_row(monkeypatch, tmp_path):
+    """A normal ``finish_reason='stop'`` is recorded on the OP2 usage row."""
+    monkeypatch.setenv("ED4ALL_STATE_RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setenv("ED4ALL_RUN_ID", "RUN-FR-STOP")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_success_body("hi"))
+
+    client = _build(transport_handler=handler)
+    client.chat_completion([{"role": "user", "content": "hi"}])
+    row = _json_ttft.loads(
+        (tmp_path / "runs" / "RUN-FR-STOP" / "llm_usage.jsonl")
+        .read_text(encoding="utf-8").splitlines()[0]
+    )
+    assert row["finish_reason"] == "stop"
+
+
+def test_finish_reason_length_row_written_before_truncation_raise(
+    monkeypatch, tmp_path
+):
+    """The whole point of perf-doc P4: a ``finish_reason='length'`` response
+    RAISES ``output_truncated`` from ``_extract_text`` — but the metering row
+    is written FIRST and names the truncation, so truncation diagnosis is a
+    fact on the row rather than guesswork."""
+    monkeypatch.setenv("ED4ALL_STATE_RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setenv("ED4ALL_RUN_ID", "RUN-FR-LEN")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_length_body())
+
+    client = _build(transport_handler=handler)
+    with pytest.raises(SynthesisProviderError) as excinfo:
+        client.chat_completion([{"role": "user", "content": "hi"}])
+    assert excinfo.value.code == "output_truncated"
+    # Despite the raise, the usage row exists and records the truncation.
+    usage_path = tmp_path / "runs" / "RUN-FR-LEN" / "llm_usage.jsonl"
+    assert usage_path.exists()
+    row = _json_ttft.loads(usage_path.read_text(encoding="utf-8").splitlines()[0])
+    assert row["finish_reason"] == "length"
+    assert row["prompt_tokens"] == 90
+    assert row["completion_tokens"] == 800
+
+
+def test_finish_reason_omitted_when_absent(monkeypatch, tmp_path):
+    """A body missing ``finish_reason`` → the field is OMITTED so the row stays
+    byte-identical to the legacy OP2 shape (additive-only contract)."""
+    monkeypatch.setenv("ED4ALL_STATE_RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setenv("ED4ALL_RUN_ID", "RUN-FR-NONE")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"index": 0, "message": {"content": "ok"}}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 2},
+            },
+        )
+
+    client = _build(transport_handler=handler)
+    client.chat_completion([{"role": "user", "content": "hi"}])
+    row = _json_ttft.loads(
+        (tmp_path / "runs" / "RUN-FR-NONE" / "llm_usage.jsonl")
+        .read_text(encoding="utf-8").splitlines()[0]
+    )
+    assert "finish_reason" not in row
+
+
+def test_extract_finish_reason_helper():
+    """Unit: the extractor is total — malformed shapes yield None, never raise."""
+    _ex = OpenAICompatibleClient._extract_finish_reason
+    assert _ex({"choices": [{"finish_reason": "stop"}]}) == "stop"
+    assert _ex({"choices": [{"finish_reason": "length"}]}) == "length"
+    assert _ex({"choices": [{"finish_reason": None}]}) is None
+    assert _ex({"choices": [{"finish_reason": ""}]}) is None
+    assert _ex({"choices": []}) is None
+    assert _ex({}) is None
+    assert _ex({"choices": ["not-a-dict"]}) is None
 
 
 def test_ttft_missing_stream_usage_noted(monkeypatch, tmp_path):
