@@ -2904,6 +2904,160 @@ workflows:
       # rewrite-tier Block.content is an HTML string while outline-tier
       # Block.content is a dict; the same adapters handle both via
       # isinstance(content, dict | str) dispatch.
+      - name: assessment_synthesis
+        agents: []
+        parallel: false
+        max_concurrent: 1
+        depends_on: [content_generation, chunking]
+        # Mirror the packaging two-pass dep flip: when COURSEFORGE_TWO_PASS is
+        # on, single-pass content_generation is disabled, so depend on the
+        # rewrite-tier completion gate instead. ``chunking`` (DART chunkset)
+        # is the grounding source for synthesis and runs in both modes.
+        depends_on_when_env: "COURSEFORGE_TWO_PASS=true"
+        depends_on_when_env_value: [post_rewrite_validation, chunking]
+        timeout_minutes: 60
+        description: >
+          W10 — synthesize + emit grounded quizzes/assignments/discussions as
+          QTI 1.2 / imsdt / assignment XML into <export>/06_assessments/
+          before packaging (product-assessment surface, §2.4 Option A).
+        optional: true  # Can be skipped via generate_assessments=false
+
+        inputs_from:
+          - param: course_name
+            source: workflow_params
+            key: course_name
+          # Canonical Courseforge project export root (carries the
+          # NN_<stage>/ subdirs); the handler writes 06_assessments/ here.
+          - param: project_id
+            source: phase_outputs
+            phase: objective_extraction
+            output: project_id
+          # Real synthesized TO/CO objective_ids for grounding + item
+          # objective_id assignment (same source trainforge_assessment uses).
+          - param: objective_ids
+            source: phase_outputs
+            phase: course_planning
+            output: objective_ids
+          # DART chunkset (chunks.jsonl) — the grounding source for synthesis
+          # (already emitted by the ``chunking`` phase).
+          - param: dart_chunks_path
+            source: phase_outputs
+            phase: chunking
+            # Stage 3c: producer key flipped to semantik_chunks_path; the
+            # param (kwarg) name stays dart_chunks_path.
+            output: semantik_chunks_path
+          - param: bloom_levels
+            source: workflow_params
+            key: bloom_levels
+          - param: question_count
+            source: workflow_params
+            key: assessment_count
+          - param: libv2_root
+            source: workflow_params
+            key: libv2_root
+
+        outputs:
+          - assessments_path
+          - assessment_dir
+          - qti_dir
+          - assessment_id
+          - question_count
+          # Surface chunks_path so the assessment_objective_alignment gate
+          # builder can pair the assessments payload with the DART chunks.
+          - chunks_path
+
+        validation_gates:
+          # W10 §7 — QTI 1.2 well-formedness + XSD conformance + answer-key
+          # resolution for the synthesized quizzes. Critical day-1: a
+          # malformed item silently fails to import into an LMS. The gate
+          # input router (_build_qti_well_formed) feeds
+          # inputs["qti_dir"] = <export>/06_assessments.
+          - gate_id: qti_well_formed
+            validator: lib.validators.qti_well_formed.QtiWellFormedValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+            description: "W10 — QTI 1.2 well-formedness + XSD conformance + answer-key resolution for synthesized quizzes."
+
+          # W10 §6.1 — reuse the existing grounding gate on the PRODUCT
+          # assessment surface so synthesized quiz/assignment/discussion
+          # objective_ids must each resolve to a chunk's
+          # learning_outcome_refs[] OR the synthesized objectives' id set.
+          # Critical/block — inherits the no-fabrication contract that
+          # already runs on trainforge_assessment.
+          - gate_id: assessment_objective_alignment
+            validator: lib.validators.assessment_objective_alignment.AssessmentObjectiveAlignmentValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+            description: Every synthesized assessment/assignment/discussion objective_id must appear in at least one chunk's learning_outcome_refs OR the synthesized objectives' id set (W10 reuse of the Wave 24 + Wave 5 W5.E union surface).
+
+          # W10 §7 — per-TYPE grounding attribution for assignment +
+          # discussion items, SEPARATE from quiz items, so a
+          # missing-grounding assignment is distinguishable in the report
+          # from a missing-grounding quiz. The aggregate
+          # assessment_objective_alignment gate above covers all three
+          # types critically; this gate is the per-type breakdown.
+          # C3-2: the dedicated DiscussionAssignmentGroundingValidator now
+          # owns this gate — it isolates the discussion (B10) + assignment
+          # items and verifies each prompt is grounded in real source chunks
+          # (resolvable source_chunk_ids OR an objective_id present in some
+          # chunk's learning_outcome_refs), an independent per-item signal
+          # the aggregate alignment gate did NOT provide. Stays WARNING
+          # day-1 (mirrors the WS3 deferred-flip pattern); flip to critical
+          # after a >=2-corpus FP measurement.
+          - gate_id: discussion_assignment_grounded
+            validator: lib.validators.discussion_assignment_grounding.DiscussionAssignmentGroundingValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: "W10 — per-type grounding for assignment + discussion items (warning day-1; DiscussionAssignmentGroundingValidator flags DISCUSSION_UNGROUNDED / ASSIGNMENT_UNGROUNDED per item; deferred critical-flip)."
+
+          # FR-COURSE-03 — cumulative-retrieval breadth floor for the B14 final
+          # graded assessment. Flags CUMULATIVE_RETRIEVAL_TOO_NARROW when the
+          # final graded assessment spans < 2 terminal objectives while the
+          # course defines >= 4 TOs. Strict no-op when the course has < 4 TOs.
+          # Builder surfaces {assessments_path, synthesized_objectives_path}.
+          # TODO(calibration) — flip CUMULATIVE_RETRIEVAL_TOO_NARROW to
+          # critical after a >=2-corpus FP measurement (WS3/W4 deferred-flip
+          # pattern; IB3 is the single documented fastest-flip exception, this
+          # is NOT IB3).
+          - gate_id: cumulative_assessment
+            validator: lib.validators.cumulative_assessment.CumulativeAssessmentValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: FR-COURSE-03 — B14 final graded assessment must span >= 2 TOs when course has >= 4 TOs. Warning day-1; deferred critical-flip; no-op when < 4 TOs.
+
+          # W7.3 — synthesized-quiz distractor-quality gate (see the identical
+          # gate on course_generation::assessment_synthesis). Audits every
+          # synthesized MCQ's distractors for equals-key / duplicate / too-few /
+          # placeholder degeneracy — the QTI item shape that the authored-block
+          # distractor_* gates never reach. Reuses the _build_qti_well_formed
+          # builder (inputs["qti_dir"] = 06_assessments). Warning day-1;
+          # # TODO(calibration) deferred critical-flip (WS3/W4 pattern; NOT IB3).
+          - gate_id: synthesized_quiz_distractor
+            validator: lib.validators.synthesized_quiz_distractor.SynthesizedQuizDistractorValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: "W7.3 — synthesized-quiz MCQ distractor-quality gate (equals-key / duplicate / too-few / placeholder). Warning day-1; deferred critical-flip."
+
       - name: post_rewrite_validation
         agents: []
         parallel: false
@@ -3907,160 +4061,6 @@ workflows:
       # mirroring ``post_rewrite_validation`` / ``imscc_chunking``). Sits
       # AFTER content + chunks and BEFORE packaging; the two-pass alternate
       # dep waits on ``post_rewrite_validation`` like ``packaging`` does.
-      - name: assessment_synthesis
-        agents: []
-        parallel: false
-        max_concurrent: 1
-        depends_on: [content_generation, chunking]
-        # Mirror the packaging two-pass dep flip: when COURSEFORGE_TWO_PASS is
-        # on, single-pass content_generation is disabled, so depend on the
-        # rewrite-tier completion gate instead. ``chunking`` (DART chunkset)
-        # is the grounding source for synthesis and runs in both modes.
-        depends_on_when_env: "COURSEFORGE_TWO_PASS=true"
-        depends_on_when_env_value: [post_rewrite_validation, chunking]
-        timeout_minutes: 60
-        description: >
-          W10 — synthesize + emit grounded quizzes/assignments/discussions as
-          QTI 1.2 / imsdt / assignment XML into <export>/06_assessments/
-          before packaging (product-assessment surface, §2.4 Option A).
-        optional: true  # Can be skipped via generate_assessments=false
-
-        inputs_from:
-          - param: course_name
-            source: workflow_params
-            key: course_name
-          # Canonical Courseforge project export root (carries the
-          # NN_<stage>/ subdirs); the handler writes 06_assessments/ here.
-          - param: project_id
-            source: phase_outputs
-            phase: objective_extraction
-            output: project_id
-          # Real synthesized TO/CO objective_ids for grounding + item
-          # objective_id assignment (same source trainforge_assessment uses).
-          - param: objective_ids
-            source: phase_outputs
-            phase: course_planning
-            output: objective_ids
-          # DART chunkset (chunks.jsonl) — the grounding source for synthesis
-          # (already emitted by the ``chunking`` phase).
-          - param: dart_chunks_path
-            source: phase_outputs
-            phase: chunking
-            # Stage 3c: producer key flipped to semantik_chunks_path; the
-            # param (kwarg) name stays dart_chunks_path.
-            output: semantik_chunks_path
-          - param: bloom_levels
-            source: workflow_params
-            key: bloom_levels
-          - param: question_count
-            source: workflow_params
-            key: assessment_count
-          - param: libv2_root
-            source: workflow_params
-            key: libv2_root
-
-        outputs:
-          - assessments_path
-          - assessment_dir
-          - qti_dir
-          - assessment_id
-          - question_count
-          # Surface chunks_path so the assessment_objective_alignment gate
-          # builder can pair the assessments payload with the DART chunks.
-          - chunks_path
-
-        validation_gates:
-          # W10 §7 — QTI 1.2 well-formedness + XSD conformance + answer-key
-          # resolution for the synthesized quizzes. Critical day-1: a
-          # malformed item silently fails to import into an LMS. The gate
-          # input router (_build_qti_well_formed) feeds
-          # inputs["qti_dir"] = <export>/06_assessments.
-          - gate_id: qti_well_formed
-            validator: lib.validators.qti_well_formed.QtiWellFormedValidator
-            severity: critical
-            threshold:
-              max_critical_issues: 0
-            behavior:
-              on_fail: block
-              on_error: fail_closed
-            description: "W10 — QTI 1.2 well-formedness + XSD conformance + answer-key resolution for synthesized quizzes."
-
-          # W10 §6.1 — reuse the existing grounding gate on the PRODUCT
-          # assessment surface so synthesized quiz/assignment/discussion
-          # objective_ids must each resolve to a chunk's
-          # learning_outcome_refs[] OR the synthesized objectives' id set.
-          # Critical/block — inherits the no-fabrication contract that
-          # already runs on trainforge_assessment.
-          - gate_id: assessment_objective_alignment
-            validator: lib.validators.assessment_objective_alignment.AssessmentObjectiveAlignmentValidator
-            severity: critical
-            threshold:
-              max_critical_issues: 0
-            behavior:
-              on_fail: block
-              on_error: fail_closed
-            description: Every synthesized assessment/assignment/discussion objective_id must appear in at least one chunk's learning_outcome_refs OR the synthesized objectives' id set (W10 reuse of the Wave 24 + Wave 5 W5.E union surface).
-
-          # W10 §7 — per-TYPE grounding attribution for assignment +
-          # discussion items, SEPARATE from quiz items, so a
-          # missing-grounding assignment is distinguishable in the report
-          # from a missing-grounding quiz. The aggregate
-          # assessment_objective_alignment gate above covers all three
-          # types critically; this gate is the per-type breakdown.
-          # C3-2: the dedicated DiscussionAssignmentGroundingValidator now
-          # owns this gate — it isolates the discussion (B10) + assignment
-          # items and verifies each prompt is grounded in real source chunks
-          # (resolvable source_chunk_ids OR an objective_id present in some
-          # chunk's learning_outcome_refs), an independent per-item signal
-          # the aggregate alignment gate did NOT provide. Stays WARNING
-          # day-1 (mirrors the WS3 deferred-flip pattern); flip to critical
-          # after a >=2-corpus FP measurement.
-          - gate_id: discussion_assignment_grounded
-            validator: lib.validators.discussion_assignment_grounding.DiscussionAssignmentGroundingValidator
-            severity: warning
-            threshold:
-              max_critical_issues: 0
-            behavior:
-              on_fail: warn
-              on_error: warn
-            description: "W10 — per-type grounding for assignment + discussion items (warning day-1; DiscussionAssignmentGroundingValidator flags DISCUSSION_UNGROUNDED / ASSIGNMENT_UNGROUNDED per item; deferred critical-flip)."
-
-          # FR-COURSE-03 — cumulative-retrieval breadth floor for the B14 final
-          # graded assessment. Flags CUMULATIVE_RETRIEVAL_TOO_NARROW when the
-          # final graded assessment spans < 2 terminal objectives while the
-          # course defines >= 4 TOs. Strict no-op when the course has < 4 TOs.
-          # Builder surfaces {assessments_path, synthesized_objectives_path}.
-          # TODO(calibration) — flip CUMULATIVE_RETRIEVAL_TOO_NARROW to
-          # critical after a >=2-corpus FP measurement (WS3/W4 deferred-flip
-          # pattern; IB3 is the single documented fastest-flip exception, this
-          # is NOT IB3).
-          - gate_id: cumulative_assessment
-            validator: lib.validators.cumulative_assessment.CumulativeAssessmentValidator
-            severity: warning
-            threshold:
-              max_critical_issues: 0
-            behavior:
-              on_fail: warn
-              on_error: warn
-            description: FR-COURSE-03 — B14 final graded assessment must span >= 2 TOs when course has >= 4 TOs. Warning day-1; deferred critical-flip; no-op when < 4 TOs.
-
-          # W7.3 — synthesized-quiz distractor-quality gate (see the identical
-          # gate on course_generation::assessment_synthesis). Audits every
-          # synthesized MCQ's distractors for equals-key / duplicate / too-few /
-          # placeholder degeneracy — the QTI item shape that the authored-block
-          # distractor_* gates never reach. Reuses the _build_qti_well_formed
-          # builder (inputs["qti_dir"] = 06_assessments). Warning day-1;
-          # # TODO(calibration) deferred critical-flip (WS3/W4 pattern; NOT IB3).
-          - gate_id: synthesized_quiz_distractor
-            validator: lib.validators.synthesized_quiz_distractor.SynthesizedQuizDistractorValidator
-            severity: warning
-            threshold:
-              max_critical_issues: 0
-            behavior:
-              on_fail: warn
-              on_error: warn
-            description: "W7.3 — synthesized-quiz MCQ distractor-quality gate (equals-key / duplicate / too-few / placeholder). Warning day-1; deferred critical-flip."
-
       - name: packaging
         agents: [brightspace-packager]
         parallel: false
