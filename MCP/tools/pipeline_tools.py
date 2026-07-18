@@ -11569,6 +11569,84 @@ def _block_to_snake_case_entry(block: Any) -> Dict[str, Any]:
     return entry
 
 
+def _maybe_repair_block_html_balance(
+    blocks: List[Any],
+) -> Tuple[List[Any], int, Dict[str, int]]:
+    """Deterministic HTML tag-balance repair over rewrite-tier blocks.
+
+    Gated on ``COURSEFORGE_REWRITE_HTML_REPAIR`` (default OFF → the input
+    list is returned unchanged, byte-identical emit). When ON, every
+    str-content block runs through
+    :func:`lib.utils.html_balance.repair_html_balance` (drop stray closes /
+    insert missing intermediate closes / append missing closes — no LLM, no
+    text or attribute edits) so the emitted ``blocks_final.jsonl``
+    self-repairs the model's unbalanced-tag emissions before the
+    ``rewrite_html_shape`` gate audits them. A repaired block records the op
+    summary on its ``touched_by`` chain (``model="html-balance-repair"``,
+    ``provider="deterministic"``, ``tier="rewrite_val"``; the compact
+    ``op=count`` summary rides in ``decision_capture_id``).
+
+    Returns ``(blocks, n_repaired, op_counts)``. Never raises: a per-block
+    repair/replace failure leaves that block untouched.
+    """
+    from lib.utils.html_balance import (  # noqa: PLC0415
+        repair_html_balance,
+        resolve_rewrite_html_repair,
+        summarize_ops,
+    )
+
+    if not resolve_rewrite_html_repair():
+        return blocks, 0, {}
+
+    import dataclasses as _dc_repair  # noqa: PLC0415
+    from datetime import datetime as _dt, timezone as _tz  # noqa: PLC0415
+
+    from Courseforge.scripts.blocks import Touch  # noqa: PLC0415
+
+    out: List[Any] = []
+    n_repaired = 0
+    op_counts: Dict[str, int] = {}
+    for blk in blocks:
+        content = getattr(blk, "content", None)
+        if not isinstance(content, str):
+            out.append(blk)
+            continue
+        try:
+            fixed, ops = repair_html_balance(content)
+        except Exception:  # noqa: BLE001 — repair must never fail the phase
+            out.append(blk)
+            continue
+        if fixed == content:
+            out.append(blk)
+            continue
+        try:
+            touch = Touch(
+                model="html-balance-repair",
+                provider="deterministic",
+                tier="rewrite_val",
+                timestamp=_dt.now(_tz.utc).isoformat(),
+                decision_capture_id=(
+                    f"html_repair:{getattr(blk, 'block_id', '?')}:"
+                    f"{summarize_ops(ops)}"
+                ),
+                purpose="html_balance_repair",
+            )
+            blk = _dc_repair.replace(
+                blk,
+                content=fixed,
+                touched_by=(
+                    tuple(getattr(blk, "touched_by", ()) or ()) + (touch,)
+                ),
+            )
+            n_repaired += 1
+            for op in ops:
+                op_counts[op["op"]] = op_counts.get(op["op"], 0) + 1
+        except (TypeError, ValueError):
+            pass
+        out.append(blk)
+    return out, n_repaired, op_counts
+
+
 def _touches_from_entry(entry: dict) -> tuple:
     """Reconstruct the ``touched_by`` Touch tuple from a snake_case JSONL
     entry emitted by :func:`_block_to_snake_case_entry`.
@@ -19168,6 +19246,49 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
                 )
             except Exception:  # noqa: BLE001
                 pass
+
+    # ---- Deterministic HTML tag-balance repair (default OFF) -------------
+    # COURSEFORGE_REWRITE_HTML_REPAIR: repair model-emitted stray-close /
+    # missing-close tag imbalances (the dominant REWRITE_HTML_PARSE_FAIL
+    # class at the rewrite_html_shape gate) at emit time so blocks_final
+    # self-repairs. Runs AFTER the CURIE-anchoring sweep so appended closes
+    # land BEFORE the hidden data-cf-curie tail (the tail stays a top-level
+    # sibling). No LLM / no text or attribute edits; flag off → rewrite_blocks
+    # unchanged (byte-identical emit). Ops are recorded on each repaired
+    # block's touched_by chain by the helper.
+    rewrite_blocks, _n_html_repaired, _html_repair_op_counts = (
+        _maybe_repair_block_html_balance(rewrite_blocks)
+    )
+    if _n_html_repaired and capture is not None:
+        try:
+            capture.log_decision(
+                decision_type="content_selection",
+                decision=(
+                    f"HTML tag-balance repair fixed {_n_html_repaired} "
+                    f"rewrite-tier block(s) before the blocks_final emit "
+                    f"(ops: {_html_repair_op_counts})."
+                ),
+                rationale=(
+                    f"Deterministic single-pass repair (no LLM/GPU) closed "
+                    f"the rewrite-tier unbalanced-tag gap for "
+                    f"{_n_html_repaired}/{len(rewrite_blocks)} block(s): "
+                    f"stray close tags matching nothing open were dropped, "
+                    f"missing closes were inserted/appended in LIFO order "
+                    f"({_html_repair_op_counts}), text and attributes "
+                    f"untouched, so the rewrite_html_shape gate audits the "
+                    f"repaired markup instead of failing "
+                    f"REWRITE_HTML_PARSE_FAIL on model tag-balance slop. "
+                    f"course={course_code}."
+                ),
+                ml_features={
+                    "gate_id": "_run_content_generation_rewrite",
+                    "html_repair_blocks": _n_html_repaired,
+                    "html_repair_op_counts": _html_repair_op_counts,
+                    "rewrite_block_count": len(rewrite_blocks),
+                },
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
     # Persist final blocks JSONL (consumed by post_rewrite_validation).
     blocks_final_path = out_dir / "blocks_final.jsonl"
