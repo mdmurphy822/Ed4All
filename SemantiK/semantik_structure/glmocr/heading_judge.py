@@ -58,8 +58,31 @@ _ANCHOR_TRUNCATE = 80
 
 _TRANSIENT_RETRIES = 2  # extra attempts after the first, linear backoff
 _MAX_TOKENS_CEILING = 30000
-_MAX_TOKENS_FLOOR = 4096
+# Floor raised 4096 -> 16384 (trial-3, 2026-07-18): the completion budget must
+# hold the THINKING block too — a thinking-ON judgment over a ~96-pending
+# window deliberates 5-15k tokens before the JSON, so the old floor
+# length-exhausted EVERY window (and its doubled retry), yielding zero
+# verdicts. reasoning_budget is dead on this seat (chat template ignores it);
+# max_tokens is the only real ceiling. Window prompts are ~5-8k tokens, so
+# prompt + 16k completion still fits the 32k context with margin.
+_MAX_TOKENS_FLOOR = 16384
 _MAX_TOKENS_PER_PENDING = 24
+
+#: Concurrent window POSTs (trial-3: sequential windows made a 4-window chapter
+#: a 30-40 min pass; the windows are independent judgments, the seat batches
+#: them, and the reasoning-QC fan-out precedent applies). Bounded, floor 1.
+_WINDOW_CONCURRENCY = 4
+
+# OUTPUT-side window cap: the ladder above was input-token driven only, so a
+# chapter whose digest FITS the input budget still packed every pending heading
+# into ONE window — measured live (scan ch01: 308 pending), the response
+# (308 judgments + thinking) exhausted max_tokens (finish=length) and the
+# doubled retry (prompt + ~23k completion) overflowed the seat's context
+# window entirely (vLLM 400 → retry-ladder exhaustion). Windows are therefore
+# ALSO capped by pending count; 96 × 24 tok/pending + the floor ≈ 6.4k
+# completion tokens — comfortably inside both budgets with thinking on.
+# TODO(calibration): tune against measured per-pending completion sizes.
+_MAX_PENDING_PER_WINDOW = 96
 
 _CACHE_BASENAME = "heading_judge_cache"
 
@@ -190,8 +213,27 @@ def _split_windows(entries: Sequence[SkeletonEntry]) -> List[Tuple[str, List[int
         # No level-2 spine to split on — fall back to one no-anchor window.
         d = _render_digest(entries, anchors=False)
         return [(d, [e.region_index for e in entries if e.pending])]
-    windows: List[Tuple[str, List[int]]] = []
+    # Coalesce consecutive segments while the merged window stays under the
+    # OUTPUT-side pending cap — a chapter with ~40 tiny N.M segments becomes a
+    # few well-filled windows instead of ~40 POSTs. A single segment that alone
+    # exceeds the cap ships as its own (oversized) window: the per-window
+    # doubled-max_tokens retry absorbs moderate overflow, and slicing inside a
+    # section would cost the judge its local peer context.
+    merged: List[List[SkeletonEntry]] = []
+    cur_merged: List[SkeletonEntry] = []
+    cur_pending = 0
     for seg in segments:
+        seg_pending = sum(1 for e in seg if e.pending)
+        if cur_merged and cur_pending + seg_pending > _MAX_PENDING_PER_WINDOW:
+            merged.append(cur_merged)
+            cur_merged = []
+            cur_pending = 0
+        cur_merged.extend(seg)
+        cur_pending += seg_pending
+    if cur_merged:
+        merged.append(cur_merged)
+    windows: List[Tuple[str, List[int]]] = []
+    for seg in merged:
         body = _render_digest(seg, anchors=False)
         digest = (
             "FIXED-ANCHOR OUTLINE (immutable context — the chapter spine):\n"
@@ -233,15 +275,16 @@ def build_heading_skeleton(
     pending_ids = [e.region_index for e in entries if e.pending]
 
     digest_with = _render_digest(entries, anchors=True)
-    if _estimate_tokens(digest_with) <= _DIGEST_BUDGET_TOKENS:
+    fits_pending = len(pending_ids) <= _MAX_PENDING_PER_WINDOW
+    if fits_pending and _estimate_tokens(digest_with) <= _DIGEST_BUDGET_TOKENS:
         return SkeletonPlan(entries, digest_with, pending_ids,
                             [(digest_with, pending_ids)])
     # ladder 1: drop content anchors.
     digest_without = _render_digest(entries, anchors=False)
-    if _estimate_tokens(digest_without) <= _DIGEST_BUDGET_TOKENS:
+    if fits_pending and _estimate_tokens(digest_without) <= _DIGEST_BUDGET_TOKENS:
         return SkeletonPlan(entries, digest_without, pending_ids,
                             [(digest_without, pending_ids)])
-    # ladder 2: split into N.M-anchored windows.
+    # ladder 2: split into N.M-anchored windows (input OR output overflow).
     windows = _split_windows(entries)
     return SkeletonPlan(entries, digest_without, pending_ids, windows)
 
@@ -544,33 +587,55 @@ def judge_heading_levels(
         "transport_failures": 0, "finish": None, "cache_hit": False,
     }
     n_headings = len(plan.entries)
-    for digest, win_pending in plan.windows:
+
+    def _run_window(
+        digest: str, win_pending: List[int],
+    ) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+        """One window: cache probe -> POST -> cache put. Thread-safe (the
+        cache is per-window atomic-rename JSON files; wmeta is thread-local
+        and aggregated by the caller)."""
         n_pending = len(win_pending)
-        if n_pending == 0:
-            continue
         max_tokens = _max_tokens_for(n_pending)
         key = _window_cache_key(digest, model, max_tokens) if use_cache else None
-        parsed: Optional[Dict[str, Any]] = None
         if key is not None:
-            parsed = _cache_get(key)
-        if parsed is not None:
+            cached = _cache_get(key)
+            if cached is not None:
+                return cached, {"cache_hit": True}
+        parsed, wmeta = _judge_one_window(
+            digest, n_headings, n_pending, max_tokens, post_fn=post_fn)
+        if key is not None and parsed is not None and parsed.get("levels"):
+            _cache_put(key, parsed)
+        wmeta["posted"] = True
+        return parsed, wmeta
+
+    active = [(d, p) for d, p in plan.windows if p]
+    results: List[Tuple[Optional[Dict[str, Any]], Dict[str, Any]]] = []
+    if len(active) <= 1:
+        results = [_run_window(d, p) for d, p in active]
+    else:
+        # Fan the independent window judgments out concurrently — the seat's
+        # continuous batching runs them together (sequential windows made a
+        # 4-window chapter a 30-40 min pass at single-stream tok/s).
+        from concurrent.futures import ThreadPoolExecutor
+
+        width = max(1, min(_WINDOW_CONCURRENCY, len(active)))
+        with ThreadPoolExecutor(max_workers=width) as ex:
+            results = list(ex.map(lambda dp: _run_window(*dp), active))
+
+    for parsed, wmeta in results:
+        if wmeta.get("cache_hit"):
             meta["cache_hits"] += 1
             meta["cache_hit"] = True
         else:
-            meta["posts"] += 1
-            parsed, wmeta = _judge_one_window(
-                digest, n_headings, n_pending, max_tokens, post_fn=post_fn)
-            meta["finish"] = wmeta.get("finish")
+            if wmeta.get("posted"):
+                meta["posts"] += 1
+            meta["finish"] = wmeta.get("finish") or meta["finish"]
             if wmeta.get("length_exhausted"):
                 meta["length_exhausted"] += 1
             if wmeta.get("parse_failure"):
                 meta["parse_failures"] += 1
             if wmeta.get("transport_failure"):
                 meta["transport_failures"] += 1
-            # Cache only a GENUINE verdict (≥1 level); a fail-open / empty result
-            # is never cached (rule 7).
-            if key is not None and parsed is not None and parsed.get("levels"):
-                _cache_put(key, parsed)
             meta["cache_misses"] += 1
         if parsed:
             for k, v in (parsed.get("levels") or {}).items():

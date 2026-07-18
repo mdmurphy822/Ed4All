@@ -51,11 +51,13 @@ Not a validator class: `MCP/hardening/validation_gates.py::ValidationGateManager
 
 `lib/classifiers/bloom_bert_ensemble.py::_DEFAULT_ENSEMBLE_MEMBERS`:
 
-1. `kabir5297/bloom_taxonomy_classifier` — purpose-built 6-class Bloom classifier; natively aligned with the canonical `BLOOM_LEVELS` enum (`remember` / `understand` / `apply` / `analyze` / `evaluate` / `create`).
+1. `cip29/bert-blooms-taxonomy-classifier` — purpose-built 6-class Bloom classifier (`kabir5297/bloom_taxonomy_classifier` was deleted upstream and replaced by this member); argmax over the canonical `BLOOM_LEVELS` enum (`remember` / `understand` / `apply` / `analyze` / `evaluate` / `create`). **Carries no stated license** (see `docs/LICENSING.md`) — retired on the trivote path (below).
 2. `distilbert-base-uncased-finetuned-sst-2-english` — sentiment model contributing dispersion via the low-resolution `_SST2_TO_BLOOM` heuristic mapping (POSITIVE → `evaluate`, NEGATIVE → `remember`); intentionally a low-confidence vote whose role is dispersion contribution, not majority dominance.
 3. `MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli` — zero-shot NLI classifier; given a candidate text + the six Bloom-level labels as hypotheses, picks the highest-entailment level.
 
 Each member's `revision` field is pinned to a concrete HuggingFace commit SHA, and each resolved revision is captured in the `bert_ensemble_member_loaded` decision event so the audit trail records which revision produced each classification.
+
+**Trivote re-founding (`ED4ALL_BLOOM_TRIVOTE`, default OFF).** When the flag is truthy the `bloom_classifier_disagreement` gate NO LONGER runs the 3-member ensemble above: members 0 + 1 (the unlicensed `cip29` classifier and the sentiment model) are **never loaded**, and the gate re-founds on three interpretable voters — (1) the generator's OWN asserted `bloom_level` read from the artifact metadata, (2) zero-shot DeBERTa entailment of per-Bloom-level hypothesis templates on the ALREADY-LICENSED member 2 (`MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli` process-singleton — no second model load), and (3) the deterministic verb-based level from `lib/ontology/bloom.py` (`lib/classifiers/bloom_zero_shot.py::resolve_trivote_mode` / `trivote_disagreement`). The gate's meaning shifts to "does the generator's own Bloom claim survive independent checks." Member 2 stays the load-bearing NLI member in BOTH paths — the `_DEFAULT_ENSEMBLE_MEMBERS[2]` INDEX is how `NliClassifier.get_or_load` pulls the DeBERTa name+revision, so the list is retained UNCHANGED (never reordered/shortened) even on the trivote path. Default OFF → byte-identical legacy 3-member-ensemble path.
 
 ## Optional pyproject extras
 

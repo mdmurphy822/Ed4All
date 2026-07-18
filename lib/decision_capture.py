@@ -20,12 +20,14 @@ Phase 0 Hardening Enhancements:
 Adapted from INTEGRATOR CURRICULUM decision_capture.py
 """
 
+import atexit
 import hashlib
 import json
 import logging
 import os
 import secrets
 import threading
+import weakref
 from dataclasses import asdict, dataclass, field, is_dataclass
 
 # Worker W3: advisory file locking around the legacy decision-capture write
@@ -108,6 +110,47 @@ except ImportError:
         return False
 
 logger = logging.getLogger(__name__)
+
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def _env_truthy(name: str) -> bool:
+    """Parse-with-fallback truthy env resolver (``{1,true,yes,on}``)."""
+    return os.environ.get(name, "").strip().lower() in _TRUTHY
+
+
+# Builder-2 (decision-capture buffering). ``ED4ALL_CAPTURE_BUFFER`` (default
+# OFF) coalesces the per-decision ``write + flush + os.fsync`` on all three
+# JSONL mirrors (canonical LibV2 store + legacy training-captures mirror +
+# run-specific stream) into a single batched write every
+# ``ED4ALL_CAPTURE_BUFFER_ROWS`` rows (default 50). PROFILE: each
+# ``log_decision`` currently fsyncs 3 open handles, so a metadata-only gate
+# emitting ~424 decisions pays ~424*3 disk syncs (~5.8s/gate); batching cuts
+# the fsync count by ``ED4ALL_CAPTURE_BUFFER_ROWS``x.
+#
+# CRASH-LOSS TRADE: a hard crash / SIGKILL between flushes loses at most the
+# last ``ED4ALL_CAPTURE_BUFFER_ROWS`` buffered rows. Those rows are ADVISORY
+# TELEMETRY (decision captures for offline training-data mining) — NOT gate
+# verdicts, which live in the gate-result stream elsewhere — so the loss
+# window is telemetry-only. The buffer is drained on ``flush()``, on
+# ``close()`` / ``__del__`` / ``save()``, and via an ``atexit`` hook, so a
+# clean or signal-handled shutdown loses nothing.
+#
+# Default OFF ⇒ byte-identical per-call write path (each decision fsynced
+# immediately, exactly as before this flag landed). Garbage / falsey ⇒ off.
+_DEFAULT_CAPTURE_BUFFER_ROWS = 50
+
+
+def _resolve_capture_buffer_rows() -> int:
+    """Resolve ``ED4ALL_CAPTURE_BUFFER_ROWS`` (default 50; garbage/<=0 → 50)."""
+    raw = os.environ.get("ED4ALL_CAPTURE_BUFFER_ROWS", "").strip()
+    if not raw:
+        return _DEFAULT_CAPTURE_BUFFER_ROWS
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_CAPTURE_BUFFER_ROWS
+    return n if n > 0 else _DEFAULT_CAPTURE_BUFFER_ROWS
 
 
 # Wave 23 Sub-task B: ``normalize_course_code`` is the shared
@@ -421,6 +464,35 @@ class DecisionCapture:
                     logger.warning("Failed to open run stream file %s: %s", self._run_decisions_path, e)
                     self._run_stream_file = None
 
+        # Builder-2 decision-capture buffering (ED4ALL_CAPTURE_BUFFER). When
+        # enabled, serialized JSONL rows accumulate in ``self._buffer`` under
+        # ``self._log_lock`` and are batch-written+fsynced every
+        # ``self._buffer_rows`` rows (and on flush/close/atexit) instead of one
+        # fsync per decision per stream. Default OFF → byte-identical per-call
+        # write path (see ``_write_to_streams``).
+        self._buffer_enabled = _env_truthy("ED4ALL_CAPTURE_BUFFER")
+        self._buffer_rows = _resolve_capture_buffer_rows()
+        self._buffer: List[str] = []
+        self._atexit_flush_fn = None
+        if self._buffer_enabled and self.streaming_mode:
+            # Register a weakref-backed atexit drain so a clean process exit
+            # never loses buffered telemetry. The closure holds only a weakref
+            # (no strong ref to self), so it never keeps the capture alive; a
+            # GC'd or already-closed instance flushes as a no-op. Unregistered
+            # in close() to keep the atexit registry bounded.
+            self_ref = weakref.ref(self)
+
+            def _atexit_flush(_ref=self_ref):
+                inst = _ref()
+                if inst is not None:
+                    try:
+                        inst.flush()
+                    except Exception:
+                        pass
+
+            self._atexit_flush_fn = _atexit_flush
+            atexit.register(self._atexit_flush_fn)
+
     def _build_storage(
         self, course_code: str, tool: str, phase: Optional[str]
     ) -> LibV2Storage:
@@ -500,6 +572,21 @@ class DecisionCapture:
     def close(self):
         """Explicitly close all stream file handles."""
         self._scan_boilerplate_rationales()
+        # Builder-2: drain any buffered rows to disk BEFORE the handles close
+        # so a clean shutdown never loses buffered telemetry.
+        try:
+            self.flush()
+        except Exception:  # pragma: no cover - defensive; never block close()
+            pass
+        # Buffer is drained; drop the atexit hook so the registry stays bounded
+        # across many phase-scoped captures.
+        atexit_fn = getattr(self, "_atexit_flush_fn", None)
+        if atexit_fn is not None:
+            try:
+                atexit.unregister(atexit_fn)
+            except Exception:  # pragma: no cover
+                pass
+            self._atexit_flush_fn = None
         for attr in ('_stream_file', '_legacy_stream_file', '_run_stream_file'):
             fh = getattr(self, attr, None)
             if fh and not fh.closed:
@@ -720,23 +807,21 @@ class DecisionCapture:
         except Exception as e:
             logger.debug("Decision validation error: %s", e)
 
-    def _write_to_streams(self, record: Dict[str, Any]) -> None:
-        """Write a decision record to all configured stream locations."""
-        if not self.streaming_mode:
-            return
+    def _emit_to_stream_handles(self, data: str) -> None:
+        """flock-guarded ``write + flush + fsync`` of ``data`` to every open
+        stream handle.
 
-        line = json.dumps(record) + '\n'
+        ``data`` is one serialized JSONL row (per-call path) OR a batch of
+        already-newline-terminated rows concatenated (buffered flush path);
+        both are byte-equivalent on disk since each row already ends in
+        ``\\n``.
 
-        # Phase 0.5: Try WriteFacade first for atomic writes
-        if self._write_with_facade(line):
-            return
-
-        # Fall back to legacy triple-write.
-        # Worker W3: acquire LOCK_EX around each write so concurrent writers
-        # sharing a JSONL path (multi-worker fanout, pinned RUN_ID re-runs,
-        # module-scoped captures sharing _run_decisions_path) cannot
-        # interleave records mid-line. OSError fallback covers WSL2 DrvFS /
-        # NFS / unsupported FS where flock silently no-ops or crashes.
+        Worker W3: acquire LOCK_EX around each write so concurrent writers
+        sharing a JSONL path (multi-worker fanout, pinned RUN_ID re-runs,
+        module-scoped captures sharing _run_decisions_path) cannot interleave
+        records mid-line. OSError fallback covers WSL2 DrvFS / NFS /
+        unsupported FS where flock silently no-ops or crashes.
+        """
         for fh, label in [
             (self._stream_file, "decision stream"),
             (self._legacy_stream_file, "legacy stream"),
@@ -748,7 +833,7 @@ class DecisionCapture:
                         try:
                             _fcntl.flock(fh.fileno(), _fcntl.LOCK_EX)
                             try:
-                                fh.write(line)
+                                fh.write(data)
                                 fh.flush()
                                 os.fsync(fh.fileno())
                             finally:
@@ -764,16 +849,72 @@ class DecisionCapture:
                                 "writers may interleave.",
                                 getattr(fh, "name", label), lock_exc,
                             )
-                            fh.write(line)
+                            fh.write(data)
                             fh.flush()
                             os.fsync(fh.fileno())
                     else:
                         # Non-POSIX (Windows): pre-W3 unlocked behavior.
-                        fh.write(line)
+                        fh.write(data)
                         fh.flush()
                         os.fsync(fh.fileno())
                 except OSError as e:
                     logger.warning("%s write failed: %s", label, e)
+
+    def _flush_buffer_locked(self) -> None:
+        """Batch-write + fsync all buffered rows. Caller MUST hold _log_lock.
+
+        Concatenating buffered rows (each already ``\\n``-terminated) yields
+        bytes identical to writing them one at a time, so the on-disk JSONL is
+        byte-identical to the unbuffered path — only the fsync COUNT drops.
+        """
+        buf = getattr(self, "_buffer", None)
+        if not buf:
+            return
+        blob = "".join(buf)
+        buf.clear()
+        self._emit_to_stream_handles(blob)
+
+    def flush(self) -> None:
+        """Drain any buffered decision rows to disk.
+
+        No-op when ``ED4ALL_CAPTURE_BUFFER`` is off (nothing is ever buffered)
+        or the buffer is empty. Safe to call from a phase-end seam, from
+        close(), and from the atexit hook; acquires ``_log_lock`` so it is
+        thread-safe against concurrent ``log_decision`` calls.
+        """
+        lock = getattr(self, "_log_lock", None)
+        if lock is None:  # partial __init__ (e.g. __del__ after a failed ctor)
+            return
+        with lock:
+            self._flush_buffer_locked()
+
+    def _write_to_streams(self, record: Dict[str, Any]) -> None:
+        """Write a decision record to all configured stream locations."""
+        if not self.streaming_mode:
+            return
+
+        line = json.dumps(record) + '\n'
+
+        # Builder-2: buffered path. Accumulate the serialized row and batch the
+        # write+fsync every ``self._buffer_rows`` rows. ``_write_to_streams`` is
+        # already called under ``self._log_lock`` from ``log_decision``; guard
+        # the buffer with the same re-entrant lock so a direct call (e.g.
+        # tests) or a crossblock worker thread stays thread-safe. Facade is
+        # bypassed on this opt-in path (the batched legacy triple-write owns
+        # write discipline here).
+        if self._buffer_enabled:
+            with self._log_lock:
+                self._buffer.append(line)
+                if len(self._buffer) >= self._buffer_rows:
+                    self._flush_buffer_locked()
+            return
+
+        # Phase 0.5: Try WriteFacade first for atomic writes
+        if self._write_with_facade(line):
+            return
+
+        # Fall back to legacy triple-write (per-call flock + fsync).
+        self._emit_to_stream_handles(line)
 
     def log_decision(
         self,

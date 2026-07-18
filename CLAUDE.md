@@ -739,9 +739,9 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 |--------|-------|-----------:|
 | `TRAINFORGE_*` / `LOCAL_SYNTHESIS_*` / `TOGETHER_*` / `ANTHROPIC_SYNTHESIS_*` / `CURRICULUM_ALIGNMENT_*` / `WAVE18_*` | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 56 |
 | `NVIDIA_*` (vendor endpoint-registry row for the hosted large-model seat — `NVIDIA_API_KEY` / `NVIDIA_BASE_URL` / `NVIDIA_LARGE_MODEL`) | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 3 |
-| `SEMANTIK_*` (DART replacement — SemantiK semantic-cascade converter; also honors the legacy `DART_THETA_DEVICE` compat env) | [`SemantiK/CLAUDE.md § Opt-In Behavior Flags`](SemantiK/CLAUDE.md) | 156 |
+| `SEMANTIK_*` (DART replacement — SemantiK semantic-cascade converter; also honors the legacy `DART_THETA_DEVICE` compat env) | [`SemantiK/CLAUDE.md § Opt-In Behavior Flags`](SemantiK/CLAUDE.md) | 162 |
 | `COURSEFORGE_*` / `COURSEPLANNER_*` / `TEXTBOOK_SYNTHESIS_*` | [`Courseforge/CLAUDE.md § Opt-In Behavior Flags`](Courseforge/CLAUDE.md) | 45 |
-| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root index (below) + [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 199 |
+| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root index (below) + [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 217 |
 
 ### Cross-cutting flags (root-owned)
 
@@ -750,6 +750,8 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | Flag | Default | One-line purpose |
 |------|---------|------------------|
 | `DECISION_VALIDATION_STRICT` | unset | Fails closed on unknown `decision_type` values in decision captures. |
+| `ED4ALL_CAPTURE_BUFFER` | unset (off) | Coalesces the per-decision write+flush+fsync across the three JSONL capture mirrors into one batched write every N rows (telemetry-only crash-loss window; drains on flush/close/atexit). |
+| `ED4ALL_CAPTURE_BUFFER_ROWS` | `50` | Satellite of `ED4ALL_CAPTURE_BUFFER` — buffered-row batch size / worst-case telemetry-loss window (garbage / ≤0 → 50). |
 | `ED4ALL_BLOCK_QUALITY_RUBRIC` | unset (off) | IB6 keystone — the 8-dim 0-3 block-quality scoring + rollup pass and its composing validators. |
 | `ED4ALL_BLOCK_BODY_CHAR_CEILING` | `200` (global override) / per-type default | IB6.4 per-block D2 cognitive-load body ceiling |
 | `ED4ALL_BLOCK_QUALITY_SHADOW` | unset (off) | W8.8 shadow-collect gate for the IB6 block-quality validators |

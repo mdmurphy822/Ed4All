@@ -121,6 +121,9 @@ def test_anchor_dropped_when_over_budget(monkeypatch):
 
 def test_overflow_splits_into_windows_with_outline_context(monkeypatch):
     monkeypatch.setattr(hj, "_DIGEST_BUDGET_TOKENS", 1)
+    # Cap pendings-per-window at 1 so the three L2 segments cannot coalesce
+    # (the merge pass otherwise packs small segments into one window).
+    monkeypatch.setattr(hj, "_MAX_PENDING_PER_WINDOW", 1)
     prov = []
     idx = 0
     for sec in range(1, 4):  # three L2 sections, each with a pending child
@@ -136,6 +139,30 @@ def test_overflow_splits_into_windows_with_outline_context(monkeypatch):
     for digest, pend in plan.windows:
         assert "FIXED-ANCHOR OUTLINE" in digest  # full spine context in each
         assert len(pend) == 1
+
+
+def test_output_cap_splits_even_when_input_fits(monkeypatch):
+    """A chapter whose digest FITS the input budget but carries more pendings
+    than _MAX_PENDING_PER_WINDOW must still split (the measured live failure:
+    308 pendings in one window -> finish=length -> doubled retry -> context
+    overflow). Consecutive small segments coalesce up to the cap."""
+    monkeypatch.setattr(hj, "_MAX_PENDING_PER_WINDOW", 2)
+    prov = []
+    idx = 0
+    for sec in range(1, 5):  # four L2 sections, one pending child each
+        prov.append({"region_kind": "heading", "heading_text": f"1.{sec} Section",
+                     "level": 2, "first_raw_block_index": idx, "source_page": sec})
+        idx += 1
+        prov.append({"region_kind": "heading", "heading_text": f"Sub {sec}",
+                     "level": 3, "first_raw_block_index": idx, "source_page": sec,
+                     "heading_level_pending": True})
+        idx += 1
+    plan = hj.build_heading_skeleton(prov)
+    # 4 pendings at cap 2 -> two merged windows of 2 pendings each.
+    assert len(plan.windows) == 2
+    assert [len(p) for _, p in plan.windows] == [2, 2]
+    for digest, _ in plan.windows:
+        assert "FIXED-ANCHOR OUTLINE" in digest
 
 
 # ── Strict parse. ────────────────────────────────────────────────────────────
