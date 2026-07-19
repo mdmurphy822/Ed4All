@@ -423,20 +423,35 @@ workflows:
           # (calibration-validated): computes + gates on block-prose entailment.
           - gate_id: block_prose_entailment
             validator: lib.validators.block_prose_entailment.BlockProseEntailmentValidator
-            severity: critical
+            # OWNER RECALIBRATION 2026-07-19 (alg-glm-02 production sweep over
+            # 470 scored blocks): the entailment-rate signal is NOT
+            # generation-calibrated for pedagogical prose — floor-adjacent
+            # "unsupported" verdicts (entailment 0.50-0.59, contradiction
+            # ~0.13) were eyeball-verified as factually-correct pedagogical
+            # distillations (the NLI abstraction-strictness FP class; the
+            # validator's own docstring says it ships shadow until
+            # calibrated). Sweep: even at claim-floor 0.40 a 53-117-block
+            # low-entailment tail remains, while CONTRADICTED blocks — the
+            # fabrication-shaped signal — hold constant at 7 across every
+            # floor. So: severity critical->warning until the
+            # pedagogy-entailment classifier (teacher-label plan) or post-D2
+            # calibration justifies the flip; floors lowered to admit the
+            # verified-correct distillation band; contradiction knobs
+            # UNCHANGED (the hard signal, surfaced loudly in reports).
+            severity: warning
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: block
+              on_fail: warn
               on_error: fail_closed
             config:
               shadow: false
               thresholds:
-                min_block_entailment_rate: 0.60
-                entailment_floor: 0.70
+                min_block_entailment_rate: 0.40
+                entailment_floor: 0.50
                 contradiction_floor: 0.50
                 max_contradicted_rate: 0.05
-            description: "W4 — full-block-prose NLI entailment vs cited chunks (windowed scorer-v2). Critical (calibration-validated)."
+            description: "W4 — full-block-prose NLI entailment vs cited chunks (windowed scorer-v2). WARNING pending pedagogy-entailment calibration (owner recal 2026-07-19); contradiction remains the hard signal."
 
           # Numeric-literal grounding — the fabrication control for NUMERIC /
           # math content that the number-blind NLI gate cannot provide.
@@ -3318,20 +3333,35 @@ workflows:
           # floor + the source_chunks builder).
           - gate_id: block_prose_entailment
             validator: lib.validators.block_prose_entailment.BlockProseEntailmentValidator
-            severity: critical
+            # OWNER RECALIBRATION 2026-07-19 (alg-glm-02 production sweep over
+            # 470 scored blocks): the entailment-rate signal is NOT
+            # generation-calibrated for pedagogical prose — floor-adjacent
+            # "unsupported" verdicts (entailment 0.50-0.59, contradiction
+            # ~0.13) were eyeball-verified as factually-correct pedagogical
+            # distillations (the NLI abstraction-strictness FP class; the
+            # validator's own docstring says it ships shadow until
+            # calibrated). Sweep: even at claim-floor 0.40 a 53-117-block
+            # low-entailment tail remains, while CONTRADICTED blocks — the
+            # fabrication-shaped signal — hold constant at 7 across every
+            # floor. So: severity critical->warning until the
+            # pedagogy-entailment classifier (teacher-label plan) or post-D2
+            # calibration justifies the flip; floors lowered to admit the
+            # verified-correct distillation band; contradiction knobs
+            # UNCHANGED (the hard signal, surfaced loudly in reports).
+            severity: warning
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: block
+              on_fail: warn
               on_error: fail_closed
             config:
               shadow: false
               thresholds:
-                min_block_entailment_rate: 0.60
-                entailment_floor: 0.70
+                min_block_entailment_rate: 0.40
+                entailment_floor: 0.50
                 contradiction_floor: 0.50
                 max_contradicted_rate: 0.05
-            description: "W4 — full-block-prose NLI entailment vs cited chunks (windowed scorer-v2). Critical (calibration-validated)."
+            description: "W4 — full-block-prose NLI entailment vs cited chunks (windowed scorer-v2). WARNING pending pedagogy-entailment calibration (owner recal 2026-07-19); contradiction remains the hard signal."
 
           # Numeric-literal grounding — the fabrication control for NUMERIC /
           # math content that the number-blind NLI gate cannot provide
