@@ -351,6 +351,8 @@ class AssessmentGenerator:
         bloom_levels: List[str],
         question_count: int = 10,
         source_chunks: Optional[List[Dict[str, Any]]] = None,
+        ensure_objective_coverage: bool = False,
+        chunks_by_objective: Optional[Dict[str, List[Dict[str, Any]]]] = None,
     ) -> AssessmentData:
         """
         Generate an assessment for the given objectives.
@@ -361,6 +363,23 @@ class AssessmentGenerator:
             bloom_levels: Target Bloom's levels
             question_count: Number of questions to generate
             source_chunks: Optional content chunks from RAG retrieval
+            ensure_objective_coverage: When True, swap the legacy
+                objective-major x bloom-minor nested distribution (which
+                exhausts ``question_count`` on the first 1-2 objectives)
+                for a coverage-first pass — exactly ONE generation attempt
+                per objective in ``objective_ids`` (bloom level rotating by
+                position) BEFORE any count-driven fill, so every TO/CO gets
+                an item even when ``question_count < len(objective_ids)``.
+                Owner-directed per-CO assessment-coverage contract
+                (2026-07-19); default False → byte-identical legacy
+                distribution.
+            chunks_by_objective: Optional ``{objective_id: [chunk, ...]}``
+                scoping map consumed ONLY by the coverage-first pass: an
+                objective present in the map grounds its attempt in its OWN
+                cited chunks first, falling back to the full
+                ``source_chunks`` pool on a SkippedItem (coverage beats
+                scoping; the fallback pool is still real course chunks —
+                anti-fabrication preserved).
 
         Returns:
             AssessmentData with generated questions
@@ -402,28 +421,85 @@ class AssessmentGenerator:
         # Distribute questions across objectives and levels
         questions: List[QuestionData] = []
         skipped_items: List[SkippedItem] = []
-        questions_per_combo = max(1, question_count // (len(objective_ids) * len(bloom_levels)))
 
-        for obj_id in objective_ids:
-            for bloom_level in bloom_levels:
-                for _ in range(questions_per_combo):
-                    if len(questions) >= question_count:
-                        break
-
+        if ensure_objective_coverage:
+            # Coverage-first distribution (owner-directed per-CO coverage,
+            # 2026-07-19): objective-major single pass — one attempt per
+            # objective with the bloom level rotating by position, NEVER
+            # capped by question_count (coverage wins; the caller sizes
+            # question_count >= len(objective_ids) anyway). A skipped
+            # attempt that used an objective-scoped chunk subset retries
+            # ONCE against the full pool at the safest (first) bloom level
+            # so a thin CO citation set doesn't cost the CO its item.
+            covered_objectives: set = set()
+            for _obj_idx, obj_id in enumerate(objective_ids):
+                bloom_level = bloom_levels[_obj_idx % len(bloom_levels)]
+                scoped_chunks = (chunks_by_objective or {}).get(obj_id)
+                result = self._apparatus_guard(self._generate_question(
+                    objective_id=obj_id,
+                    bloom_level=bloom_level,
+                    source_chunks=scoped_chunks or source_chunks,
+                ))
+                if isinstance(result, SkippedItem) and (
+                    scoped_chunks or bloom_level != bloom_levels[0]
+                ):
+                    # Fallback attempt: full pool + first bloom level.
                     result = self._apparatus_guard(self._generate_question(
                         objective_id=obj_id,
-                        bloom_level=bloom_level,
+                        bloom_level=bloom_levels[0],
                         source_chunks=source_chunks,
                     ))
-                    if isinstance(result, QuestionData):
-                        questions.append(result)
-                    elif isinstance(result, SkippedItem):
-                        skipped_items.append(result)
+                if isinstance(result, QuestionData):
+                    questions.append(result)
+                    covered_objectives.add(obj_id)
+                elif isinstance(result, SkippedItem):
+                    skipped_items.append(result)
+            if self.capture:
+                uncovered = [
+                    o for o in objective_ids if o not in covered_objectives
+                ]
+                self.capture.log_decision(
+                    decision_type="assessment_planning",
+                    decision=(
+                        f"Coverage-first distribution produced "
+                        f"{len(questions)} items over "
+                        f"{len(covered_objectives)}/{len(objective_ids)} "
+                        f"objectives"
+                    ),
+                    rationale=(
+                        f"ensure_objective_coverage=True: one attempt per "
+                        f"objective (bloom rotating over "
+                        f"[{', '.join(bloom_levels)}]) so every TO/CO in "
+                        f"{objective_ids[:3]}... yields an assessment item "
+                        f"for the strict archival coverage gate; "
+                        f"uncovered_after_pass={uncovered[:5]} "
+                        f"(scoped-chunk map entries: "
+                        f"{len(chunks_by_objective or {})})"
+                    ),
+                )
+        else:
+            questions_per_combo = max(1, question_count // (len(objective_ids) * len(bloom_levels)))
 
+            for obj_id in objective_ids:
+                for bloom_level in bloom_levels:
+                    for _ in range(questions_per_combo):
+                        if len(questions) >= question_count:
+                            break
+
+                        result = self._apparatus_guard(self._generate_question(
+                            objective_id=obj_id,
+                            bloom_level=bloom_level,
+                            source_chunks=source_chunks,
+                        ))
+                        if isinstance(result, QuestionData):
+                            questions.append(result)
+                        elif isinstance(result, SkippedItem):
+                            skipped_items.append(result)
+
+                    if len(questions) >= question_count:
+                        break
                 if len(questions) >= question_count:
                     break
-            if len(questions) >= question_count:
-                break
 
         # Fill remaining with cycling through objectives. Bound the loop so
         # an all-skip path (e.g. empty source_chunks) cannot spin forever.

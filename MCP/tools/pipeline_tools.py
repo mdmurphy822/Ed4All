@@ -495,6 +495,28 @@ def _index_objective_records(
         if isinstance(_chap, dict):
             for _e in _chap.get("objectives") or []:
                 _put(co_map, _e)
+    # Per-CO coverage (owner-directed 2026-07-19): also harvest the flat
+    # ``learning_outcomes[]`` universe so a CO/TO present only there (not in
+    # the chapter/component arrays) still enters the objective maps — the W10
+    # assessment tier iterates ``co_map`` as the CO universe and drops items
+    # whose objective_id falls outside it (anti-fabrication filter), so a
+    # learning_outcomes-only CO would otherwise silently lose coverage.
+    # ``setdefault`` semantics via ``_put``: the richer chapter/component
+    # records above always win; this pass only fills gaps. Classification
+    # mirrors the archival validator's course.json fallback
+    # (``lib/validators/libv2/packet_integrity.py::_load_objectives``):
+    # hierarchy_level first, id-prefix fallback.
+    for _e in objectives_doc.get("learning_outcomes") or []:
+        if not isinstance(_e, dict):
+            continue
+        _lvl = str(_e.get("hierarchy_level") or "").lower()
+        _lo_id = _e.get("id") if isinstance(_e.get("id"), str) else ""
+        if _lvl == "terminal" or (_lo_id or "").upper().startswith("TO-"):
+            _put(to_map, _e)
+        elif _lvl in ("chapter", "component") or (
+            (_lo_id or "").upper().startswith("CO-")
+        ):
+            _put(co_map, _e)
     return to_map, co_map
 
 
@@ -733,6 +755,202 @@ def _build_assessment_artifacts_from_data(
         })
 
     return artifacts
+
+
+# ---------------------------------------------------------------------------
+# W10 per-CO coverage (owner-directed 2026-07-19) — QTI → assessment_item
+# chunk harvest. The strict archival gate
+# (``lib/validators/libv2/packet_integrity.py`` — OBJECTIVE_NO_ASSESSMENT /
+# UNCOVERED_TERMINAL_OUTCOME) requires an ``assessment_item`` CHUNK whose
+# ``learning_outcome_refs`` cover every TO/CO, but ``_run_imscc_chunking``
+# historically chunked ONLY the ``.html`` payloads inside the packaged IMSCC —
+# the QTI quiz XML the W10 ``assessment_synthesis`` phase emits under
+# ``06_assessments/`` was never chunked, so per-CO quiz items produced zero
+# per-CO coverage. These helpers close that gap: each QTI ``<item>`` (whose
+# ``title`` attribute carries the item's objective_id, set by
+# ``Courseforge/scripts/qti_emitter.py::question_to_qti_item``) becomes one
+# ``assessment_item`` chunk routed through the SAME ``_create_chunk`` callback
+# (→ ``Trainforge.chunker.extract_learning_outcome_refs`` arm 3 via
+# ``item["objective_refs"]``) so ref normalization / case policy
+# (``TRAINFORGE_PRESERVE_LO_CASE``) is byte-identical to the HTML path.
+# Anti-fabrication: an item whose title does not normalize to a canonical LO
+# id is SKIPPED (never emits an unanchored assessment chunk).
+# ---------------------------------------------------------------------------
+
+def _parse_qti_assessment_items(
+    xml_text: str,
+) -> Tuple[str, List[Dict[str, Any]]]:
+    """Parse one QTI 1.2 document into ``(assessment_title, items)``.
+
+    Namespace-agnostic (matches on local names). Each returned item dict
+    carries ``ident`` / ``objective_ref`` (the ``<item title=...>`` attr) /
+    ``stem_html`` (the presentation mattext OUTSIDE response labels) /
+    ``choice_texts`` (response_label mattexts, document order). A non-QTI
+    root (imsdt topic / assignment) or a parse error returns ``("", [])`` —
+    the caller simply harvests nothing from that document.
+    """
+    import xml.etree.ElementTree as _ET
+
+    def _local(tag: Any) -> str:
+        return tag.rsplit("}", 1)[-1] if isinstance(tag, str) and "}" in tag else str(tag)
+
+    try:
+        root = _ET.fromstring(xml_text)
+    except _ET.ParseError:
+        return "", []
+    if _local(root.tag) != "questestinterop":
+        return "", []
+
+    title = ""
+    items: List[Dict[str, Any]] = []
+    for el in root.iter():
+        lt = _local(el.tag)
+        if lt == "assessment" and not title:
+            title = (el.get("title") or "").strip()
+        elif lt == "item":
+            stem_html = ""
+            choice_texts: List[str] = []
+            label_matt_ids: set = set()
+            for lab in el.iter():
+                if _local(lab.tag) != "response_label":
+                    continue
+                for m in lab.iter():
+                    if _local(m.tag) == "mattext":
+                        label_matt_ids.add(id(m))
+                        if m.text and m.text.strip():
+                            choice_texts.append(m.text.strip())
+            for m in el.iter():
+                if _local(m.tag) == "mattext" and id(m) not in label_matt_ids:
+                    if m.text and m.text.strip():
+                        stem_html = m.text.strip()
+                        break
+            items.append({
+                "ident": (el.get("ident") or "").strip(),
+                "objective_ref": (el.get("title") or "").strip(),
+                "stem_html": stem_html,
+                "choice_texts": choice_texts,
+            })
+    return title, items
+
+
+def _harvest_qti_assessment_chunks(
+    qti_entries: List[Dict[str, str]],
+    *,
+    create_chunk: Any,
+    existing_chunks: List[Dict[str, Any]],
+    course_code: str,
+) -> List[Dict[str, Any]]:
+    """Mint one ``assessment_item`` chunk per objective-anchored QTI item.
+
+    ``qti_entries`` is ``[{"path": <zip inner path>, "content": <xml>}, ...]``
+    (the ``06_assessments/*.xml`` payloads read out of the packaged IMSCC).
+    ``create_chunk`` is ``_run_imscc_chunking``'s v4 chunk-emit callback, so
+    every emitted chunk carries the full canonical shape (source block,
+    concept tags, bloom heuristics, IRT stamps) and its
+    ``learning_outcome_refs`` flow through the canonical
+    ``extract_learning_outcome_refs`` normalization (arm 3,
+    ``item["objective_refs"]``). Chunk ids CONTINUE the numeric sequence of
+    ``existing_chunks`` via the canonical ``_generate_chunk_id`` (so
+    ``TRAINFORGE_CONTENT_HASH_IDS`` is honored and the chunk_v4 id pattern
+    holds). Items whose ``title`` does not normalize to a canonical LO id
+    are skipped — never an unanchored assessment chunk. Pure w.r.t. the
+    pipeline; any per-item failure skips that item only.
+    """
+    from Trainforge.chunker import (
+        extract_learning_outcome_refs as _harvest_lo_refs,
+        extract_plain_text as _harvest_plain_text,
+    )
+    try:
+        from Trainforge.chunker.chunker import (
+            _generate_chunk_id as _mint_chunk_id,
+        )
+    except Exception:  # noqa: BLE001 — canonical helper unavailable
+        def _mint_chunk_id(prefix, start_id, text, source_locator):  # type: ignore
+            return f"{prefix}{start_id:05d}"
+
+    prefix = f"{str(course_code).lower()}_chunk_"
+    # Continue after the highest positional suffix already minted so the
+    # unique_chunk_ids archival rule can never collide.
+    next_idx = 1
+    _suffix_re = re.compile(r"_chunk_(\d{5})$")
+    for _c in existing_chunks:
+        _m = _suffix_re.search(str(_c.get("id") or ""))
+        if _m:
+            next_idx = max(next_idx, int(_m.group(1)) + 1)
+
+    out: List[Dict[str, Any]] = []
+    for entry in sorted(qti_entries, key=lambda e: e.get("path") or ""):
+        inner_path = str(entry.get("path") or "")
+        quiz_title, items = _parse_qti_assessment_items(
+            str(entry.get("content") or "")
+        )
+        if not items:
+            continue
+        doc_stem = Path(inner_path).stem.lower().replace(" ", "-")
+        skipped_unanchored = 0
+        for pos, qti_item in enumerate(items):
+            obj_ref = qti_item.get("objective_ref") or ""
+            probe_item = {"objective_refs": [obj_ref]}
+            if not _harvest_lo_refs(probe_item, None):
+                skipped_unanchored += 1
+                continue
+            stem_html = qti_item.get("stem_html") or ""
+            text_parts: List[str] = []
+            stem_text = _harvest_plain_text(stem_html).strip() if stem_html else ""
+            if stem_text:
+                text_parts.append(stem_text)
+            for choice in qti_item.get("choice_texts") or []:
+                choice_text = _harvest_plain_text(choice).strip()
+                if choice_text:
+                    text_parts.append(choice_text)
+            text = "\n".join(text_parts).strip()
+            if not text:
+                skipped_unanchored += 1
+                continue
+            item_dict: Dict[str, Any] = {
+                "item_id": doc_stem,
+                "item_path": inner_path,
+                "title": quiz_title or doc_stem,
+                "resource_type": "quiz",
+                "module_id": doc_stem,
+                "module_title": quiz_title or doc_stem,
+                "week_num": 0,
+                "sections": [],
+                "learning_objectives": [],
+                "key_concepts": [],
+                "objective_refs": [obj_ref],
+                "misconceptions": [],
+            }
+            try:
+                chunk = create_chunk(
+                    chunk_id=_mint_chunk_id(
+                        prefix, next_idx, text,
+                        f"{inner_path}#{qti_item.get('ident') or pos}",
+                    ),
+                    text=text,
+                    html=stem_html,
+                    item=item_dict,
+                    section_heading=quiz_title or doc_stem,
+                    chunk_type="assessment_item",
+                    position_in_module=pos,
+                )
+            except Exception as exc:  # noqa: BLE001 — per-item fail-soft
+                logger.warning(
+                    "qti-assessment-chunk harvest: create_chunk failed for "
+                    "%s item %r (%s); skipping item.",
+                    inner_path, qti_item.get("ident"), exc,
+                )
+                continue
+            if isinstance(chunk, dict):
+                out.append(chunk)
+                next_idx += 1
+        if skipped_unanchored:
+            logger.info(
+                "qti-assessment-chunk harvest: skipped %d unanchored/empty "
+                "item(s) in %s (no canonical LO ref on <item title>).",
+                skipped_unanchored, inner_path,
+            )
+    return out
 
 
 def _synthesize_prose_prompt(
@@ -29109,6 +29327,26 @@ def _build_tool_registry() -> dict:
 
         generator = AssessmentGenerator(capture=capture, check_leaks=False)
         built_assessments: List[Any] = []
+
+        # Per-CO coverage support (owner-directed 2026-07-19): index the
+        # loaded chunks by id once so each objective's cited
+        # ``source_chunk_ids`` can scope its item's grounding. Anti-
+        # fabrication: only chunks that actually exist in the loaded
+        # chunkset are ever handed to the generator.
+        _chunk_by_id: Dict[str, Dict[str, Any]] = {}
+        for _c in loaded_chunks:
+            _cid_key = _c.get("id") or _c.get("chunk_id")
+            if isinstance(_cid_key, str) and _cid_key.strip():
+                _chunk_by_id.setdefault(_cid_key.strip(), _c)
+
+        def _cited_chunks_for_objective(obj_id: str) -> List[Dict[str, Any]]:
+            record = co_map.get(obj_id) or to_map.get(obj_id) or {}
+            cited: List[Dict[str, Any]] = []
+            for _cid in record.get("source_chunk_ids") or []:
+                if isinstance(_cid, str) and _cid.strip() in _chunk_by_id:
+                    cited.append(_chunk_by_id[_cid.strip()])
+            return cited
+
         for week_idx, tid in enumerate(terminal_ids, start=1):
             # Graceful stop at the unit boundary (sequential loop → plain
             # check_stop). Every completed unit is already checkpointed, so this
@@ -29122,7 +29360,15 @@ def _build_tool_registry() -> dict:
             obj_ids = [o for o in obj_ids if o in valid_objective_ids]
             if not obj_ids:
                 continue
+            # Per-CO coverage: the effective item budget grows to at least
+            # one item per objective (TO + every child CO) so the strict
+            # archival gate (OBJECTIVE_NO_ASSESSMENT / UNCOVERED_TERMINAL_
+            # OUTCOME) sees every objective assessed.
+            _q_effective_count = max(question_count, len(obj_ids))
             # ---- resume checkpoint: replay a completed quiz unit ----------
+            # ``cov=per_co_v1`` in the knobs deliberately invalidates pre-
+            # coverage sidecar units so a resumed run re-rolls quizzes under
+            # the per-CO contract instead of replaying TO-only ones.
             _q_fp = _assessment_unit_fingerprint(
                 kind="quiz",
                 terminal_id=tid,
@@ -29133,7 +29379,10 @@ def _build_tool_registry() -> dict:
                 provider="assessment_generator",
                 model="",
                 prompt_version=_ASSESSMENT_PROMPT_VERSION,
-                knobs=f"bloom={','.join(bloom_levels)};qc={question_count}",
+                knobs=(
+                    f"bloom={','.join(bloom_levels)};qc={question_count};"
+                    f"cov=per_co_v1"
+                ),
             )
             _q_key = _assessment_unit_key("quiz", tid)
             _q_reused = _assessments_store_obj.reuse(
@@ -29153,8 +29402,14 @@ def _build_tool_registry() -> dict:
                     course_code=str(course_code),
                     objective_ids=obj_ids,
                     bloom_levels=bloom_levels,
-                    question_count=question_count,
+                    question_count=_q_effective_count,
                     source_chunks=loaded_chunks or None,
+                    ensure_objective_coverage=True,
+                    chunks_by_objective={
+                        o: cited
+                        for o in obj_ids
+                        if (cited := _cited_chunks_for_objective(o))
+                    },
                 )
             except Exception as exc:
                 logger.warning(
@@ -29671,6 +29926,11 @@ def _build_tool_registry() -> dict:
         # ``IMSCCParser.extract_to_directory`` so the helper has no
         # filesystem side effects beyond the ``imscc_chunks/`` write.
         html_entries: List[Dict[str, str]] = []  # [{"path": ..., "content": ...}, ...]
+        # W10 per-CO coverage: also collect the packaged assessment XML
+        # (``06_assessments/*.xml`` — QTI quizzes + imsdt discussions +
+        # assignments; non-QTI roots are filtered later by the harvest
+        # helper) so per-item ``assessment_item`` chunks can be minted.
+        qti_entries: List[Dict[str, str]] = []
         if imscc_path is not None:
             try:
                 with _zipfile.ZipFile(imscc_path, "r") as zf:
@@ -29688,6 +29948,22 @@ def _build_tool_registry() -> dict:
                                 )
                                 continue
                             html_entries.append({"path": name, "content": content})
+                        elif name.endswith(".xml") and (
+                            "06_assessments/" in name
+                        ):
+                            try:
+                                content = zf.read(name).decode(
+                                    "utf-8", errors="ignore"
+                                )
+                            except Exception as exc:  # noqa: BLE001
+                                logger.warning(
+                                    "W10 per-CO coverage: failed to read "
+                                    "assessment XML %s from imscc (%s); "
+                                    "skipping.",
+                                    name, exc,
+                                )
+                                continue
+                            qti_entries.append({"path": name, "content": content})
             except _zipfile.BadZipFile as exc:
                 logger.warning(
                     "Phase 7c ST 16: %s is not a valid zip (%s); "
@@ -30109,6 +30385,39 @@ def _build_tool_registry() -> dict:
         if _overlap_words > 0:
             chunks = _apply_chunk_overlap(chunks, _overlap_words)
 
+        # W10 per-CO coverage (owner-directed 2026-07-19): mint one
+        # ``assessment_item`` chunk per objective-anchored QTI item found in
+        # the packaged ``06_assessments/`` XML, so the strict archival gate
+        # (OBJECTIVE_NO_ASSESSMENT / UNCOVERED_TERMINAL_OUTCOME) sees every
+        # TO/CO's quiz item as a chunk with harvestable
+        # ``learning_outcome_refs``. Runs AFTER the overlap pass (quiz text
+        # must never bleed into prose-overlap prefixes and vice versa).
+        # Fail-soft: a harvest failure keeps the HTML chunkset intact — the
+        # archival coverage gate downstream will surface the gap loudly.
+        _qti_assessment_chunks: List[Dict[str, Any]] = []
+        if qti_entries:
+            try:
+                _qti_assessment_chunks = _harvest_qti_assessment_chunks(
+                    qti_entries,
+                    create_chunk=_create_chunk,
+                    existing_chunks=chunks,
+                    course_code=course_code,
+                )
+            except Exception as exc:  # noqa: BLE001 — never break chunking
+                logger.warning(
+                    "W10 per-CO coverage: QTI assessment-chunk harvest "
+                    "failed (%s); emitting HTML-derived chunks only.",
+                    exc,
+                )
+                _qti_assessment_chunks = []
+            if _qti_assessment_chunks:
+                chunks.extend(_qti_assessment_chunks)
+                logger.info(
+                    "W10 per-CO coverage: harvested %d assessment_item "
+                    "chunk(s) from %d packaged assessment XML doc(s).",
+                    len(_qti_assessment_chunks), len(qti_entries),
+                )
+
         # IRT difficulty-calibration scaffold: emit ONE difficulty_calibration
         # decision event per run (parity with process_course's chunk-emit
         # path). Guarded by _irt_enabled → byte-stable no-op when the flag is
@@ -30188,7 +30497,12 @@ def _build_tool_registry() -> dict:
                 if not str(_content).strip() and _components:
                     _imscc_drop_image_only += 1
         _imscc_attributable = _imscc_drop_boilerplate + _imscc_drop_image_only
-        _imscc_dropped_total = max(0, _imscc_blocks_seen - len(chunks))
+        # W10 per-CO coverage: the QTI-derived assessment chunks are NOT
+        # emitted from the HTML source blocks counted above, so exclude them
+        # from the coverage-emit tally — including them would deflate
+        # ``dropped_total`` and hide real HTML-block drops.
+        _imscc_html_emitted = len(chunks) - len(_qti_assessment_chunks)
+        _imscc_dropped_total = max(0, _imscc_blocks_seen - _imscc_html_emitted)
         _imscc_drop_reasons: Dict[str, int] = {}
         if _imscc_drop_boilerplate:
             _imscc_drop_reasons["boilerplate"] = _imscc_drop_boilerplate
@@ -30199,7 +30513,7 @@ def _build_tool_registry() -> dict:
             _imscc_drop_reasons["merged_small_sections"] = _imscc_dedup_delta
         _imscc_source_coverage = _build_source_coverage_imscc(
             consumed_count=_imscc_blocks_seen,
-            emitted_count=len(chunks),
+            emitted_count=_imscc_html_emitted,
             drop_reasons=_imscc_drop_reasons,
             dropped_count=_imscc_dropped_total,
             label="imscc_chunking",
@@ -30259,6 +30573,7 @@ def _build_tool_registry() -> dict:
             "course_slug": course_slug,
             "chunks_count": len(chunks),
             "source_html_count": len(html_entries),
+            "qti_assessment_chunks_count": len(_qti_assessment_chunks),
             "source_imscc_sha256": source_imscc_sha256,
             "chunker_version": chunker_version,
         })
