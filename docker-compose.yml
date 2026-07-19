@@ -84,6 +84,20 @@ services:
       # full 8-passage prompt; MUST match the sidecar's OLLAMA_CONTEXT_LENGTH
       # below. 7B q4 + 8k KV cache still fits an 8GB GPU fully resident.
       ED4ALL_ANSWER_NUM_CTX: "8192"
+      # Answer-path candidate filter (2026-07-19 owner strictness report). The
+      # per-CO W10 coverage build harvests QTI assessment_item chunks into the
+      # chunkset; 800/810 can never pass the citation anchor gate (their text
+      # lives in QTI XML, not any archived HTML page), so a model citation of
+      # one withholds the whole answer. Exclude them from the grounded-answer
+      # candidate pool (over-fetch keeps top-k full). Code default: unset (no
+      # filtering).
+      ED4ALL_ANSWER_EXCLUDE_CHUNK_TYPES: "assessment_item"
+      # Anchor containment floor for the answer-path citation gate. Measured on
+      # alg-glm-02: instructional chunks anchor 192/197, and all 5 misses sit
+      # at 0.824-0.839 vs the 0.85 code default (next failure band <=0.70), so
+      # 0.80 admits every genuine chunk with no fabrication risk. Code default:
+      # 0.85.
+      ED4ALL_ANSWER_ANCHOR_CONTAINMENT: "0.80"
     volumes:
       # Mutable state/training/upload data lives on a named volume mounted at
       # /data (= ED4ALL_HOME). The repo's CODE is NOT bind-mounted — the image

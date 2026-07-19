@@ -2068,3 +2068,192 @@ def test_groundedness_capture_silent_when_flag_off(
     )
     assert result.status in (STATUS_ANSWERED, STATUS_ANSWERED_WITH_WARNINGS)
     assert _groundedness_comp_events(spy) == []
+
+
+# --------------------------------------------------------------------------- #
+# FIX A/B — grounded-answer chunk_type exclusion filter + tunable citation-gate
+# anchor-containment floor (Owner alg-glm-02 blocked_citation_gate fix).
+# --------------------------------------------------------------------------- #
+
+from lib.retrieval.answer_composer import ComposedAnswer  # noqa: E402
+from lib.retrieval import grounded_answer as _ga  # noqa: E402
+from lib.retrieval.grounded_answer import (  # noqa: E402
+    overfetch_for_exclude,
+    resolve_anchor_containment,
+    resolve_exclude_chunk_types,
+)
+
+
+class _FakeCTResult:
+    """Duck-typed LibV2 RetrievalResult carrying a first-class ``chunk_type``."""
+
+    def __init__(self, idx: int, chunk_type: str):
+        self.chunk_id = f"c{idx}"
+        self.text = f"passage {idx} about vector stores and embeddings"
+        self.score = 5.0  # clears the permissive lexical policy
+        self.chunk_type = chunk_type
+        self.item_path = "page.html"
+        self.section_heading = None
+        self.module_id = None
+        self.source = {"item_path": "page.html"}
+
+
+def _interleaved_pool(n: int = 24):
+    # even idx -> assessment_item (the QTI-harvested span-fabricated kind),
+    # odd idx -> explanation (genuine instructional prose).
+    return [
+        _FakeCTResult(i, "assessment_item" if i % 2 == 0 else "explanation")
+        for i in range(n)
+    ]
+
+
+def _spy_compose_factory(captured: dict):
+    def _spy(query, passages, *, client, capture, course_code, max_passages):
+        captured["passages"] = list(passages)
+        cid = passages[0].chunk_id if passages else "none"
+        return ComposedAnswer(
+            answer_text="A.",
+            cited_chunk_ids=[cid],
+            not_in_course=False,
+            model_id="fake",
+            prompt_version="v-test",
+            attempts=1,
+            latency_ms=0.0,
+            raw_response_len=2,
+            allowed_chunk_ids=[cid],
+        )
+
+    return _spy
+
+
+def test_fix_ab_env_unset_no_filtering_byte_identical(mini_libv2, monkeypatch):
+    """(1) Env unset → 0.85 floor + NO filtering: the composer sees exactly the
+    first `limit` candidates (assessment_items included), no over-fetch."""
+    monkeypatch.delenv("ED4ALL_ANSWER_EXCLUDE_CHUNK_TYPES", raising=False)
+    monkeypatch.delenv("ED4ALL_ANSWER_ANCHOR_CONTAINMENT", raising=False)
+    assert resolve_anchor_containment() == 0.85
+    assert resolve_exclude_chunk_types() == frozenset()
+
+    pool = _interleaved_pool(24)
+    fetched = {}
+
+    def _fake_retrieve(root, slug, q, *, engine, limit):
+        fetched["limit"] = limit
+        return pool[:limit]
+
+    monkeypatch.setattr(_ga, "_retrieve", _fake_retrieve)
+    captured = {}
+    monkeypatch.setattr(_ga, "compose_answer", _spy_compose_factory(captured))
+
+    _ga.answer_course_question(
+        mini_libv2, COURSE_SLUG, "vector stores",
+        client=object(), refusal_policy=_PERMISSIVE_LEXICAL,
+        completeness_recheck=False,
+    )
+    # Byte-identical: retriever asked for exactly `limit` (8), no over-fetch.
+    assert fetched["limit"] == 8
+    seen = [p.chunk_id for p in captured["passages"]]
+    assert seen == [f"c{i}" for i in range(8)]
+    # The assessment_item candidates are RETAINED on the default path.
+    assert "c0" in seen
+
+
+def test_fix_a_resolve_exclude_chunk_types_parsing(monkeypatch):
+    """(2) Exclude-list parsing incl. whitespace / blank / garbage tokens."""
+    monkeypatch.delenv("ED4ALL_ANSWER_EXCLUDE_CHUNK_TYPES", raising=False)
+    assert resolve_exclude_chunk_types() == frozenset()
+    monkeypatch.setenv(
+        "ED4ALL_ANSWER_EXCLUDE_CHUNK_TYPES", "  assessment_item , ,Summary ,, "
+    )
+    assert resolve_exclude_chunk_types() == frozenset({"assessment_item", "summary"})
+    # All-blank / whitespace → empty set (no filtering).
+    monkeypatch.setenv("ED4ALL_ANSWER_EXCLUDE_CHUNK_TYPES", "   ")
+    assert resolve_exclude_chunk_types() == frozenset()
+    monkeypatch.setenv("ED4ALL_ANSWER_EXCLUDE_CHUNK_TYPES", " , , ")
+    assert resolve_exclude_chunk_types() == frozenset()
+    # Explicit arg wins over env.
+    monkeypatch.setenv("ED4ALL_ANSWER_EXCLUDE_CHUNK_TYPES", "assessment_item")
+    assert resolve_exclude_chunk_types("x , Y") == frozenset({"x", "y"})
+    # Over-fetch helper: inactive → verbatim; active → min(limit*3, 50) >= limit.
+    assert overfetch_for_exclude(8, frozenset()) == 8
+    assert overfetch_for_exclude(8, frozenset({"a"})) == 24
+    assert overfetch_for_exclude(30, frozenset({"a"})) == 50
+
+
+def test_fix_a_filter_removes_assessment_items_and_overfetch_keeps_count(
+    mini_libv2, monkeypatch
+):
+    """(3) Filter drops assessment_item candidates; over-fetch keeps the
+    top-`limit` window full; the audit warning records the drop count."""
+    monkeypatch.setenv("ED4ALL_ANSWER_EXCLUDE_CHUNK_TYPES", "assessment_item")
+    pool = _interleaved_pool(24)
+    fetched = {}
+
+    def _fake_retrieve(root, slug, q, *, engine, limit):
+        fetched["limit"] = limit
+        return pool[:limit]
+
+    monkeypatch.setattr(_ga, "_retrieve", _fake_retrieve)
+    captured = {}
+    monkeypatch.setattr(_ga, "compose_answer", _spy_compose_factory(captured))
+
+    result = _ga.answer_course_question(
+        mini_libv2, COURSE_SLUG, "vector stores",
+        client=object(), refusal_policy=_PERMISSIVE_LEXICAL,
+        completeness_recheck=False,
+    )
+    # Over-fetched min(8*3, 50) = 24 from the retriever.
+    assert fetched["limit"] == 24
+    seen = [p.chunk_id for p in captured["passages"]]
+    # Window stays FULL at `limit` (8) after dropping every assessment_item.
+    assert len(seen) == 8
+    # Only the odd-index (explanation) chunks survive, in rank order.
+    assert seen == [f"c{i}" for i in range(1, 16, 2)]
+    # 8 assessment_items were consumed+dropped to reach 8 explanations.
+    assert any(
+        w.startswith("excluded_chunk_types:assessment_item:8")
+        for w in result.warnings
+    )
+
+
+def test_fix_b_resolve_anchor_containment_clamp_and_garbage(monkeypatch):
+    """(4) Containment resolver: clamp to [0.5, 1.0]; garbage/out-of-range →
+    0.85; explicit arg respected within range."""
+    monkeypatch.delenv("ED4ALL_ANSWER_ANCHOR_CONTAINMENT", raising=False)
+    assert resolve_anchor_containment() == 0.85
+    monkeypatch.setenv("ED4ALL_ANSWER_ANCHOR_CONTAINMENT", "0.80")
+    assert resolve_anchor_containment() == 0.80
+    for edge in ("0.5", "1.0"):
+        monkeypatch.setenv("ED4ALL_ANSWER_ANCHOR_CONTAINMENT", edge)
+        assert resolve_anchor_containment() == float(edge)
+    for bad in ("0.4", "1.5", "-1", "garbage", ""):
+        monkeypatch.setenv("ED4ALL_ANSWER_ANCHOR_CONTAINMENT", bad)
+        assert resolve_anchor_containment() == 0.85, bad
+    # Explicit arg wins verbatim within range; out-of-range explicit → default.
+    assert resolve_anchor_containment(0.9) == 0.9
+    assert resolve_anchor_containment(0.4) == 0.85
+
+
+def test_fix_b_threshold_threads_into_citation_gate(mini_libv2, monkeypatch):
+    """FIX B end-to-end: the resolved floor threads into every answer-path
+    ``resolve_citation_anchor`` call (gate + attribution)."""
+    monkeypatch.setenv("ED4ALL_ANSWER_ANCHOR_CONTAINMENT", "0.80")
+    seen_thresholds = []
+    real = _ga.resolve_citation_anchor
+
+    def _spy_anchor(chunk_record, course_dir, *, chunkset_kind, containment_threshold):
+        seen_thresholds.append(containment_threshold)
+        return real(
+            chunk_record, course_dir, chunkset_kind=chunkset_kind,
+            containment_threshold=containment_threshold,
+        )
+
+    monkeypatch.setattr(_ga, "resolve_citation_anchor", _spy_anchor)
+    client = FakeAnswerClient([_envelope("A.", ["mini_alpha_chunk_001"])])
+    _ga.answer_course_question(
+        mini_libv2, COURSE_SLUG, "What does a vector store index?",
+        client=client, refusal_policy=_PERMISSIVE_LEXICAL,
+        completeness_recheck=False,
+    )
+    assert seen_thresholds
+    assert all(t == 0.80 for t in seen_thresholds)

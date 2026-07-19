@@ -64,10 +64,14 @@ from lib.retrieval.grounded_answer import (
     _passage_chunk_record,
     _query_sha,
     _refused,
+    _result_chunk_type,
     _retrieve,
     _safe_log,
     _vector_index_chunkset_kind,
     answer_course_question,
+    overfetch_for_exclude,
+    resolve_anchor_containment,
+    resolve_exclude_chunk_types,
 )
 from lib.retrieval.refusal import (
     REASON_LOW_CONFIDENCE,
@@ -240,25 +244,41 @@ def _retrieve_union(
     *,
     engine: str,
     limit: int,
-) -> Tuple[List[RetrievedPassage], Dict[str, int], List[str]]:
+    exclude_types: Optional[frozenset] = None,
+) -> Tuple[List[RetrievedPassage], Dict[str, int], List[str], int]:
     """Retrieve per course, stamp provenance, return the score-sorted union.
 
-    Returns ``(passages, per_course_counts, failed_slugs)``. A course whose
-    retrieval raises is SKIPPED (recorded in ``failed_slugs``) — a per-course
-    error never fails the union (fail-open). Each surviving passage is stamped
-    with its ``course_slug``. The union is stable-sorted by descending score.
+    Returns ``(passages, per_course_counts, failed_slugs, excluded_count)``. A
+    course whose retrieval raises is SKIPPED (recorded in ``failed_slugs``) — a
+    per-course error never fails the union (fail-open). Each surviving passage is
+    stamped with its ``course_slug``. The union is stable-sorted by descending
+    score.
+
+    FIX A — when ``exclude_types`` is non-empty every course over-fetches
+    ``overfetch_for_exclude(limit, ...)`` and drops candidates whose
+    ``chunk_type`` is excluded BEFORE they enter the union (so the global trim
+    downstream stays full); ``excluded_count`` totals the drops. When empty the
+    fetch count + set are byte-identical to the legacy path.
     """
+    exclude_types = exclude_types or frozenset()
+    fetch_limit = overfetch_for_exclude(limit, exclude_types)
     passages: List[RetrievedPassage] = []
     per_course_counts: Dict[str, int] = {}
     failed: List[str] = []
+    excluded_count = 0
     for slug in slugs:
         try:
-            results = _retrieve(libv2_root, slug, query, engine=engine, limit=limit)
+            results = _retrieve(
+                libv2_root, slug, query, engine=engine, limit=fetch_limit
+            )
         except Exception:  # noqa: BLE001 — skip this course, keep the union
             failed.append(slug)
             continue
         n = 0
         for r in results:
+            if exclude_types and _result_chunk_type(r) in exclude_types:
+                excluded_count += 1
+                continue
             p = RetrievedPassage.from_retrieval_result(r, engine=engine)
             passages.append(_dc_replace(p, course_slug=slug))
             n += 1
@@ -266,7 +286,7 @@ def _retrieve_union(
     # Stable sort: Python's sort is stable, so ties keep per-course retrieval
     # order (which is per-course rank order). Descending score.
     passages.sort(key=lambda p: -float(p.score))
-    return passages, per_course_counts, failed
+    return passages, per_course_counts, failed, excluded_count
 
 
 # --------------------------------------------------------------------------- #
@@ -373,7 +393,7 @@ def answer_library_question(
     validate_citations: bool = True,
     with_groundedness: bool = False,
     capture: Optional[Any] = None,
-    containment_threshold: float = 0.85,
+    containment_threshold: Optional[float] = None,
     max_passages: int = 8,
     on_progress: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> GroundedAnswer:
@@ -393,6 +413,14 @@ def answer_library_question(
     start = time.monotonic()
     query_sha = _query_sha(query)
     libv2_root = _libv2_root(repo_root)
+
+    # FIX B — resolve the citation-gate anchor-containment floor once (explicit
+    # caller value wins; unset resolves ED4ALL_ANSWER_ANCHOR_CONTAINMENT, default
+    # 0.85 → byte-identical). The resolved float is passed down the single-course
+    # delegations AND used by the union gate below, so both paths share one floor.
+    containment_threshold = resolve_anchor_containment(containment_threshold)
+    # FIX A — the retrieval chunk_type exclusion set for the union path.
+    exclude_types = resolve_exclude_chunk_types()
 
     enabled = resolve_library_wide(library_wide)
 
@@ -433,10 +461,19 @@ def answer_library_question(
         )
 
     # 1) Union retrieval (per-course fail-open + provenance stamping).
-    union, per_course_counts, failed = _retrieve_union(
-        libv2_root, slugs, query, engine=engine, limit=limit
+    union, per_course_counts, failed, excluded_count = _retrieve_union(
+        libv2_root, slugs, query, engine=engine, limit=limit,
+        exclude_types=exclude_types,
     )
     contributing = sorted({p.course_slug for p in union if p.course_slug})
+
+    # FIX A audit trail — how many candidates the exclusion filter dropped across
+    # the union (empty on the default path); rides the answered/blocked warnings.
+    union_warnings: List[str] = []
+    if excluded_count:
+        union_warnings.append(
+            f"excluded_chunk_types:{','.join(sorted(exclude_types))}:{excluded_count}"
+        )
 
     # Retrieval degraded to <= 1 contributing course → fail-open single-course.
     if len(contributing) <= 1:
@@ -583,7 +620,7 @@ def answer_library_question(
             model_id=composed.model_id,
             prompt_version=composed.prompt_version,
             groundedness=None,
-            warnings=[],
+            warnings=list(union_warnings),
             start=start,
         )
 
@@ -604,7 +641,8 @@ def answer_library_question(
             confidence=confidence_payload,
             model_id=composed.model_id,
             prompt_version=composed.prompt_version,
-            warnings=[f"blocked_citation:{cid}" for cid in blocked],
+            warnings=list(union_warnings)
+            + [f"blocked_citation:{cid}" for cid in blocked],
             start=start,
         )
 
@@ -618,7 +656,7 @@ def answer_library_question(
         model_id=composed.model_id,
         prompt_version=composed.prompt_version,
         groundedness=None,
-        warnings=[],
+        warnings=list(union_warnings),
         start=start,
         status=STATUS_ANSWERED,
     )

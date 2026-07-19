@@ -154,6 +154,57 @@ def test_single_course_fail_open(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# FIX A — chunk_type exclusion filter on the library-wide union seam
+# --------------------------------------------------------------------------- #
+
+
+class _FakeCTResult(_FakeResult):
+    def __init__(self, chunk_id, chunk_type, score=0.9):
+        super().__init__(chunk_id, f"body {chunk_id}", score, item_path="m/p.html")
+        self.chunk_type = chunk_type
+
+
+def test_retrieve_union_default_no_filter_byte_identical(two_courses, monkeypatch):
+    """Empty exclude set → fetch `limit` verbatim, no drops (byte-identical)."""
+    fetched = {}
+
+    def _fake(libv2_root, slug, query, *, engine, limit):
+        fetched["limit"] = limit
+        return [_FakeCTResult(f"{slug}-a", "assessment_item"),
+                _FakeCTResult(f"{slug}-e", "explanation")]
+
+    monkeypatch.setattr(lw, "_retrieve", _fake)
+    passages, counts, failed, excluded = lw._retrieve_union(
+        two_courses, ["course-a"], "q", engine="lexical", limit=8,
+    )
+    assert fetched["limit"] == 8
+    assert excluded == 0
+    assert {p.chunk_id for p in passages} == {"course-a-a", "course-a-e"}
+
+
+def test_retrieve_union_excludes_named_chunk_types_and_overfetches(
+    two_courses, monkeypatch
+):
+    """Non-empty exclude set → over-fetch, drop excluded, count the drops."""
+    fetched = {}
+
+    def _fake(libv2_root, slug, query, *, engine, limit):
+        fetched["limit"] = limit
+        return [_FakeCTResult(f"{slug}-a", "assessment_item"),
+                _FakeCTResult(f"{slug}-e", "explanation")]
+
+    monkeypatch.setattr(lw, "_retrieve", _fake)
+    passages, counts, failed, excluded = lw._retrieve_union(
+        two_courses, ["course-a", "course-b"], "q",
+        engine="lexical", limit=8, exclude_types=frozenset({"assessment_item"}),
+    )
+    assert fetched["limit"] == 24  # min(8*3, 50)
+    assert excluded == 2  # one assessment_item per course
+    assert {p.chunk_id for p in passages} == {"course-a-e", "course-b-e"}
+    assert counts == {"course-a": 1, "course-b": 1}
+
+
+# --------------------------------------------------------------------------- #
 # Union + provenance
 # --------------------------------------------------------------------------- #
 

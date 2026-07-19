@@ -750,7 +750,7 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `NVIDIA_*` (vendor endpoint-registry row for the hosted large-model seat — `NVIDIA_API_KEY` / `NVIDIA_BASE_URL` / `NVIDIA_LARGE_MODEL`) | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 3 |
 | `SEMANTIK_*` (DART replacement — SemantiK semantic-cascade converter; also honors the legacy `DART_THETA_DEVICE` compat env) | [`SemantiK/CLAUDE.md § Opt-In Behavior Flags`](SemantiK/CLAUDE.md) | 163 |
 | `COURSEFORGE_*` / `COURSEPLANNER_*` / `TEXTBOOK_SYNTHESIS_*` | [`Courseforge/CLAUDE.md § Opt-In Behavior Flags`](Courseforge/CLAUDE.md) | 45 |
-| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root index (below) + [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 219 |
+| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root index (below) + [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 221 |
 
 ### Cross-cutting flags (root-owned)
 
@@ -783,6 +783,8 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `ED4ALL_ANSWER_PRUNE_MIN_OVERLAP` | `0.25` | Float support threshold for the PRUNE decision |
 | `ED4ALL_ANSWER_ADD_MIN_SHINGLE` | `0.50` | Float shingle floor for the ADD decision |
 | `ED4ALL_ANSWER_NLI_ADD` | `off` | Three-valued governor of the **NLI-based citation-ADD** arm |
+| `ED4ALL_ANSWER_EXCLUDE_CHUNK_TYPES` | unset (off) | FIX A — comma-separated `chunk_type` values to exclude from the grounded-answer retrieval candidate pool (drops e.g. QTI-harvested `assessment_item` chunks that fail the anchor gate by construction; over-fetches to keep top-`limit` full). Default unset → byte-identical. |
+| `ED4ALL_ANSWER_ANCHOR_CONTAINMENT` | `0.85` | FIX B — float citation-gate anchor containment floor for the answer path (clamped `[0.5, 1.0]`; garbage → 0.85); does not change `citation_anchor.py`'s own default. |
 | `ED4ALL_ANSWER_COMPLETENESS_RECHECK` | `on` | Governs the post-generation **completeness recheck** |
 | `ED4ALL_ANSWER_LIBRARY_WIDE` | unset (off) | W4 library-wide grounded ask |
 | `ED4ALL_ANSWER_INTENT_ROUTE` | unset (off) | W5.1 pre-retrieval intent-route bias on the grounded-answer path |

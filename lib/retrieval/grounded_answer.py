@@ -117,6 +117,10 @@ __all__ = [
     "DECISION_TYPE_NLI_CITATION_ADD",
     "DECISION_TYPE_COMPLETENESS_RECHECK",
     "DECISION_TYPE_HEDGE",
+    # FIX A/B — grounded-answer retrieval filter + anchor-containment env knobs.
+    "resolve_anchor_containment",
+    "resolve_exclude_chunk_types",
+    "overfetch_for_exclude",
     # Status constants (WS4 + CLI map these to display copy / exit codes).
     "STATUS_ANSWERED",
     "STATUS_ANSWERED_WITH_WARNINGS",
@@ -153,6 +157,20 @@ ENV_HEDGE_TIER = "ED4ALL_ANSWER_HEDGE_TIER"
 ENV_HEDGE_MARGIN = "ED4ALL_ANSWER_HEDGE_MARGIN"
 _DEFAULT_HEDGE_MARGIN = 0.15
 _HEDGE_WARNING = "low_confidence_hedge"
+
+# FIX A/B (Owner alg-glm-02 blocked_citation_gate) — grounded-answer retrieval
+# candidate chunk_type exclusion + a tunable citation-gate anchor-containment
+# floor. Both default to the legacy behavior (no filtering / 0.85) so an unset
+# environment is byte-identical.
+ENV_EXCLUDE_CHUNK_TYPES = "ED4ALL_ANSWER_EXCLUDE_CHUNK_TYPES"
+ENV_ANCHOR_CONTAINMENT = "ED4ALL_ANSWER_ANCHOR_CONTAINMENT"
+_DEFAULT_ANCHOR_CONTAINMENT = 0.85
+_ANCHOR_CONTAINMENT_MIN = 0.5
+_ANCHOR_CONTAINMENT_MAX = 1.0
+#: Over-fetch multiplier + hard cap applied ONLY when the exclude filter is
+#: active, so the top-`limit` window stays full after excluded candidates drop.
+_EXCLUDE_OVERFETCH_MULT = 3
+_EXCLUDE_OVERFETCH_CAP = 50
 #: Prepended to the answer prose when the hedge tier fires (an explicit, honest
 #: low-confidence caveat — never fabricated content, never a refusal).
 _HEDGE_CAVEAT = (
@@ -1761,6 +1779,103 @@ def _resolve_hedge_margin(default: float = _DEFAULT_HEDGE_MARGIN) -> float:
     return val if val > 0.0 else default
 
 
+def resolve_anchor_containment(explicit: Optional[float] = None) -> float:
+    """Resolve the citation-gate anchor **containment** threshold (FIX B).
+
+    The answer path anchors every cited chunk via ``resolve_citation_anchor``;
+    on some corpora genuine instructional chunks anchor at containment
+    ~0.82-0.84 — a knife-edge under the hardcoded 0.85 default that blocks an
+    otherwise-correct answer at the all-or-nothing citation gate. This knob lets
+    an operator lower the answer-path floor (the measured-safe deployment floor
+    for alg-glm-02 is 0.80; the next failure band is <=0.70). It does NOT touch
+    :mod:`lib.retrieval.citation_anchor`'s own 0.85 default — only the gate calls
+    the answer pipeline makes.
+
+    Style mirrors :func:`lib.retrieval.citation_attribution.resolve_min_overlap`.
+    Precedence: explicit arg > ``ED4ALL_ANSWER_ANCHOR_CONTAINMENT`` env >
+    :data:`_DEFAULT_ANCHOR_CONTAINMENT` (0.85). Garbage / out-of-range (not in
+    ``[0.5, 1.0]``) falls back to the 0.85 default (parse-with-fallback; a
+    misconfigured knob must never disable the anchor floor).
+    """
+    import os
+
+    if explicit is not None:
+        cand = explicit
+    else:
+        raw = os.environ.get(ENV_ANCHOR_CONTAINMENT)
+        if raw is None or str(raw).strip() == "":
+            return _DEFAULT_ANCHOR_CONTAINMENT
+        try:
+            cand = float(raw)
+        except (TypeError, ValueError):
+            return _DEFAULT_ANCHOR_CONTAINMENT
+    try:
+        cand = float(cand)
+    except (TypeError, ValueError):
+        return _DEFAULT_ANCHOR_CONTAINMENT
+    if _ANCHOR_CONTAINMENT_MIN <= cand <= _ANCHOR_CONTAINMENT_MAX:
+        return cand
+    return _DEFAULT_ANCHOR_CONTAINMENT
+
+
+def resolve_exclude_chunk_types(explicit: Optional[str] = None) -> frozenset:
+    """Resolve the grounded-answer retrieval ``chunk_type`` exclusion set (FIX A).
+
+    A course whose vector index carries QTI-harvested ``assessment_item`` chunks
+    (retrievable + model-citable, but span-fabricated against the archived HTML
+    by construction) blocks the WHOLE answer at the all-or-nothing citation gate.
+    This knob drops named ``chunk_type`` values from the retrieval candidate pool
+    BEFORE compose / gate / prune ever see them.
+
+    Precedence: explicit arg > ``ED4ALL_ANSWER_EXCLUDE_CHUNK_TYPES`` env.
+    Comma-separated, whitespace-tolerant, lower-cased; unset / empty / all-blank
+    → the empty set (no filtering, byte-identical legacy path).
+    """
+    import os
+
+    raw = explicit if explicit is not None else os.environ.get(ENV_EXCLUDE_CHUNK_TYPES)
+    if not raw:
+        return frozenset()
+    parts = [p.strip().lower() for p in str(raw).split(",")]
+    return frozenset(p for p in parts if p)
+
+
+def _result_chunk_type(result: Any) -> str:
+    """Best-effort lower-cased ``chunk_type`` of a raw retrieval result.
+
+    Reads the top-level ``chunk_type`` (the LibV2 ``RetrievalResult`` carries it
+    as a first-class attribute), falling back to a ``source.chunk_type`` and a
+    dict-shaped result. Empty string when absent (never matches an exclusion
+    token, so an untyped chunk is retained).
+    """
+    ct = getattr(result, "chunk_type", None)
+    if ct is None:
+        src = getattr(result, "source", None)
+        if isinstance(src, dict):
+            ct = src.get("chunk_type")
+    if ct is None and isinstance(result, dict):
+        ct = result.get("chunk_type")
+        if ct is None:
+            src = result.get("source")
+            if isinstance(src, dict):
+                ct = src.get("chunk_type")
+    return str(ct or "").strip().lower()
+
+
+def overfetch_for_exclude(limit: int, exclude_types: frozenset) -> int:
+    """Retriever fetch count so top-``limit`` stays full after exclusion (FIX A).
+
+    When ``exclude_types`` is non-empty, over-fetch ``min(limit*3, 50)`` (never
+    fewer than ``limit``) so excluded candidates can be dropped without starving
+    the top-``limit`` window. When empty, return ``limit`` verbatim (the retriever
+    sees the byte-identical legacy fetch count).
+    """
+    n = int(limit)
+    if not exclude_types:
+        return n
+    return max(n, min(n * _EXCLUDE_OVERFETCH_MULT, _EXCLUDE_OVERFETCH_CAP))
+
+
 def _hedge_active(verdict: Any, margin: float) -> bool:
     """True iff a CONFIDENT verdict sits in the borderline (hedge) band.
 
@@ -1914,7 +2029,7 @@ def answer_course_question(
     with_groundedness: bool = False,
     capture: Optional[Any] = None,
     chunkset_kind: Optional[str] = None,
-    containment_threshold: float = 0.85,
+    containment_threshold: Optional[float] = None,
     max_passages: int = 8,
     prune_mode: Optional[str] = None,
     prune_min_overlap: Optional[float] = None,
@@ -1932,6 +2047,11 @@ def answer_course_question(
     """
     start = time.monotonic()
     query_sha = _query_sha(query)
+
+    # FIX B — resolve the citation-gate anchor-containment floor. An explicit
+    # caller value wins verbatim; unset (None) resolves the
+    # ED4ALL_ANSWER_ANCHOR_CONTAINMENT env (default 0.85 → byte-identical).
+    containment_threshold = resolve_anchor_containment(containment_threshold)
 
     libv2_root = _libv2_root(repo_root)
     course_dir = libv2_root / "courses" / course_slug
@@ -2007,16 +2127,33 @@ def answer_course_question(
     if rerank_provider is not None:
         retrieve_limit = max(limit, resolve_candidate_pool())
 
+    # FIX A — resolve the chunk_type exclusion set once. When empty the closure
+    # below is byte-identical to the legacy path (no over-fetch, no filter).
+    # `_exclude_audit` accumulates how many candidates were dropped across every
+    # retrieval (main + W5.2 union + decompose + HyDE + completeness re-retrieve)
+    # so the answer can carry an audit warning.
+    _exclude_types = resolve_exclude_chunk_types()
+    _exclude_audit = {"excluded": 0}
+
     def _retrieve_passages(q: str, n: int) -> List[RetrievedPassage]:
-        raw = _retrieve(libv2_root, course_slug, q, engine=engine, limit=n)
+        fetch_n = overfetch_for_exclude(n, _exclude_types)
+        raw = _retrieve(libv2_root, course_slug, q, engine=engine, limit=fetch_n)
         out: List[RetrievedPassage] = []
         for r in raw:
+            if _exclude_types and _result_chunk_type(r) in _exclude_types:
+                # Drop an excluded chunk_type (e.g. QTI-harvested assessment_item)
+                # as early as possible so the composer / gate / prune never see it.
+                _exclude_audit["excluded"] += 1
+                continue
             p = RetrievedPassage.from_retrieval_result(r, engine=engine)
             if _intent_on:
                 # Fold the result's facet fields into the passage source so the
                 # W5.1 intent-bias reorder can read them (opt-in path only).
                 p = enrich_passage_facets(p, r)
             out.append(p)
+            # Truncate the over-fetched pool back to the requested `n`.
+            if _exclude_types and len(out) >= int(n):
+                break
         return out
 
     passages = _retrieve_passages(retrieval_query, retrieve_limit)
@@ -2100,6 +2237,16 @@ def answer_course_question(
             capture=capture,
             course_slug=course_slug,
             query_sha=query_sha,
+        )
+
+    # FIX A audit trail — surface how many candidates the chunk_type exclusion
+    # filter dropped across ALL retrievals (empty on the default path). Rides the
+    # answered / bypass / blocked warnings so the support story is auditable.
+    retrieval_warnings: List[str] = []
+    if _exclude_audit["excluded"]:
+        retrieval_warnings.append(
+            "excluded_chunk_types:"
+            f"{','.join(sorted(_exclude_types))}:{_exclude_audit['excluded']}"
         )
 
     # 2) Pre-LLM refusal on low confidence (zero client calls on refusal).
@@ -2293,7 +2440,7 @@ def answer_course_question(
         ]
         bypass_text, bypass_warnings, bypass_status = _hedge_answer(
             composed.answer_text,
-            list(recheck_warnings),
+            list(retrieval_warnings) + list(recheck_warnings),
             STATUS_ANSWERED,
             active=hedge_active,
         )
@@ -2342,7 +2489,8 @@ def answer_course_question(
             confidence=confidence_payload,
             model_id=composed.model_id,
             prompt_version=composed.prompt_version,
-            warnings=[f"blocked_citation:{cid}" for cid in blocked],
+            warnings=list(retrieval_warnings)
+            + [f"blocked_citation:{cid}" for cid in blocked],
             start=start,
         )
 
@@ -2351,7 +2499,7 @@ def answer_course_question(
     #    model could have cited (composed.allowed_chunk_ids), in retrieval-rank
     #    order — so an uncited definitional supporter the model under-cited can
     #    be credited, and a model-cited chunk supporting zero claims dropped.
-    warnings: List[str] = list(recheck_warnings)
+    warnings: List[str] = list(retrieval_warnings) + list(recheck_warnings)
     mode = resolve_prune_mode(prune_mode)
     min_overlap = resolve_min_overlap(prune_min_overlap)
     add_min_shingle = resolve_add_min_shingle()
