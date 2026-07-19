@@ -306,10 +306,11 @@ def test_length_exhaust_after_one_retry_fails_open():
     stub = _StubPost(content='{"levels": {"1": 4}}', finish="length")
     report = hj.run_heading_judge(prov, tree, esc, post_fn=stub, use_cache=False,
                                   emit_capture=False)
-    # Ladder: initial + doubled retry on the full window, then the
-    # reasoning-preserving SPLIT judges each single-pending half (initial +
-    # doubled retry each) before failing open — 6 calls, never thinking-off.
-    assert stub.calls == 6
+    # Split-FIRST ladder: initial POST on the full window, then the SPLIT
+    # judges each single-pending half (initial + last-resort doubled retry
+    # each, halves being unsplittable) before failing open — 5 calls, never
+    # thinking-off, never a doubled retry on a splittable window.
+    assert stub.calls == 5
     assert stub.last_max_tokens > hj._max_tokens_for(len(prov))  # doubled
     assert report["applied"] == 0  # ladder exhausted → fail-open
 
@@ -605,7 +606,7 @@ def test_length_exhaust_falls_to_split_and_merges_halves():
         win_pending=[1, 2, 3, 4])
     assert parsed == {"levels": {"1": 3, "2": 4, "3": 4, "4": 3}}
     assert wmeta["finish"] == "split" and wmeta["split_depth"] == 1
-    assert len(calls) == 4  # full + doubled retry + 2 halves
+    assert len(calls) == 3  # full + 2 halves (split-first: no doubled retry)
 
 
 def test_doubled_retry_skipped_when_it_would_overflow_context():
@@ -666,3 +667,63 @@ def test_ctx_budget_and_ceiling_env_overrides(monkeypatch):
     base = hj._max_tokens_for(96)
     monkeypatch.setenv("SEMANTIK_HEADING_JUDGE_MAX_TOKENS", "49152")
     assert hj._max_tokens_for(96) == base
+
+
+# ── Timeout = over-deliberation → split (never blind re-POST). ───────────────
+def test_timeout_on_first_post_triggers_split():
+    def post(messages, max_tokens):
+        user = messages[1]["content"]
+        n_pend = int(user.split("(")[1].split(",")[1].split()[0])
+        if n_pend == 4:
+            raise hj._JudgeTransportError("read timed out", transient=False,
+                                          timeout=True)
+        if "Alpha" in user:
+            return '{"levels": {"1": 3, "2": 4}}', "stop"
+        return '{"levels": {"3": 4, "4": 3}}', "stop"
+
+    parsed, wmeta = hj._judge_one_window(
+        _windowed_digest(), 5, 4, hj._max_tokens_for(4), post_fn=post,
+        win_pending=[1, 2, 3, 4])
+    assert parsed == {"levels": {"1": 3, "2": 4, "3": 4, "4": 3}}
+    assert wmeta["finish"] == "split"
+
+
+def test_default_post_fn_never_retries_timeouts():
+    attempts = []
+
+    class _TimeoutExc(Exception):
+        pass
+    _TimeoutExc.__name__ = "ReadTimeout"
+
+    class _FakeReq:
+        def post(self, url, json=None, headers=None, timeout=None):  # noqa: A002
+            attempts.append(1)
+            raise _TimeoutExc("read timed out")
+
+    seat = hj.HeadingJudgeSeat(base_url="http://x/v1", api_key=None,
+                               model="m", timeout=1.0)
+    fn = hj._make_default_post_fn(seat, requests_module=_FakeReq())
+    with pytest.raises(hj._JudgeTransportError) as ei:
+        fn([{"role": "user", "content": "hi"}], 64)
+    assert ei.value.timeout is True
+    assert len(attempts) == 1  # ONE attempt — a timeout is never blind-retried
+
+
+def test_non_timeout_transient_errors_still_retry():
+    attempts = []
+
+    class _FakeResp:
+        status_code = 503
+        text = "busy"
+
+    class _FakeReq:
+        def post(self, url, json=None, headers=None, timeout=None):  # noqa: A002
+            attempts.append(1)
+            return _FakeResp()
+
+    seat = hj.HeadingJudgeSeat(base_url="http://x/v1", api_key=None,
+                               model="m", timeout=1.0)
+    fn = hj._make_default_post_fn(seat, requests_module=_FakeReq())
+    with pytest.raises(hj._JudgeTransportError):
+        fn([{"role": "user", "content": "hi"}], 64)
+    assert len(attempts) == 3  # transient 5xx keeps the bounded retry ladder

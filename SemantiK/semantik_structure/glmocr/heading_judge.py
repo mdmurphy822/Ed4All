@@ -144,11 +144,15 @@ class ApplyResult:
 
 
 class _JudgeTransportError(Exception):
-    """A POST transport error. ``transient`` decides whether it is retried."""
+    """A POST transport error. ``transient`` decides whether it is retried;
+    ``timeout`` marks the read-timeout flavor (the wall-clock face of
+    over-deliberation) — never blind-retried, it triggers the window SPLIT."""
 
-    def __init__(self, message: str, *, transient: bool) -> None:
+    def __init__(self, message: str, *, transient: bool,
+                 timeout: bool = False) -> None:
         super().__init__(message)
         self.transient = transient
+        self.timeout = timeout
 
 
 # ── Skeleton construction. ──────────────────────────────────────────────────
@@ -367,9 +371,11 @@ def _post_judge_completion(
     try:
         resp = requests_module.post(url, json=body, headers=headers, timeout=timeout)
     except Exception as exc:  # noqa: BLE001 — timeout / conn → transient
+        is_timeout = "timeout" in type(exc).__name__.lower()
         raise _JudgeTransportError(
             f"heading-judge request failed ({type(exc).__name__}): {exc}",
-            transient=True,
+            transient=not is_timeout,
+            timeout=is_timeout,
         ) from exc
     _duration_ms = (_time.monotonic() - _t0) * 1000.0
     status = int(getattr(resp, "status_code", 200))
@@ -475,7 +481,11 @@ def _make_default_post_fn(
                     requests_module=requests_module,
                 )
             except _JudgeTransportError as exc:
-                if not exc.transient or i == attempts - 1:
+                # A read-TIMEOUT is over-deliberation, not flakiness — blind
+                # re-POSTing the identical request burns another full timeout
+                # window (up to 20 min each). Propagate immediately so the
+                # caller's split ladder handles it.
+                if exc.timeout or not exc.transient or i == attempts - 1:
                     raise
                 _time.sleep(0.5 * (i + 1))
         raise _JudgeTransportError("heading-judge retry ladder exhausted", transient=True)
@@ -684,17 +694,51 @@ def _judge_one_window(
     win_pending: Optional[Sequence[int]] = None,
     depth: int = 0,
 ) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
-    """POST one window; on ``finish_reason=length`` retry once with doubled
-    ``max_tokens`` ONLY when it fits the serving context, then fall to the
-    reasoning-preserving window SPLIT (halve the pendings, judge each half
-    thinking-on — the reasoning-QC split-ladder precedent; NEVER a thinking-off
-    retry). Returns ``(parsed_or_None, wmeta)``."""
+    """POST one window; on over-deliberation — ``finish_reason=length`` OR a
+    read-TIMEOUT (its wall-clock flavor) — fall to the reasoning-preserving
+    window SPLIT FIRST (halve the pendings, judge each half thinking-on at a
+    fresh completion floor — the reasoning-QC split-ladder precedent; NEVER a
+    thinking-off retry). The doubled-max_tokens retry is the LAST resort for
+    an UNSPLITTABLE (single-pending / depth-capped) window only: measured
+    live, a window that exhausts ~18.6k thinking tokens free-runs to whatever
+    cap it is granted (37k also exhausted/timed out), so more rope wastes
+    10-20 min of wall where the split finishes. Returns
+    ``(parsed_or_None, wmeta)``."""
     messages = build_judge_messages(digest, n_headings, n_pending)
+    over_deliberated = False
+    content: Optional[str] = None
+    finish: Optional[str] = None
     try:
         content, finish = post_fn(messages, max_tokens)
-    except _JudgeTransportError:
-        return None, {"transport_failure": True, "finish": None}
+    except _JudgeTransportError as exc:
+        if not exc.timeout:
+            return None, {"transport_failure": True, "finish": None}
+        over_deliberated = True
+        finish = "timeout"
     if finish == "length":
+        over_deliberated = True
+
+    if over_deliberated:
+        halves = (_split_window_digest(digest, win_pending or [])
+                  if depth < _MAX_WINDOW_SPLIT_DEPTH else [])
+        if len(halves) == 2:
+            merged: Dict[str, Any] = {}
+            agg: Dict[str, Any] = {"finish": "split", "split_depth": depth + 1}
+            for hd, hp in halves:
+                parsed_h, wmeta_h = _judge_one_window(
+                    hd, n_headings, len(hp), _max_tokens_for(len(hp)),
+                    post_fn=post_fn, win_pending=hp, depth=depth + 1)
+                for flag in ("transport_failure", "parse_failure",
+                             "length_exhausted"):
+                    if wmeta_h.get(flag):
+                        agg[flag] = True
+                if parsed_h is not None:
+                    merged.update(parsed_h.get("levels") or {})
+            if merged:
+                return {"levels": merged}, agg
+            agg["length_exhausted"] = True
+            return None, agg
+        # Unsplittable: the doubled retry is the only remaining move.
         new_max = min(resolve_max_tokens_ceiling(), max_tokens * 2)
         if new_max > max_tokens and (
                 _estimate_prompt_tokens(messages) + new_max
@@ -702,28 +746,14 @@ def _judge_one_window(
             try:
                 content, finish = post_fn(messages, new_max)
             except _JudgeTransportError:
-                return None, {"transport_failure": True, "finish": "length"}
-        if finish == "length":
-            halves = (_split_window_digest(digest, win_pending or [])
-                      if depth < _MAX_WINDOW_SPLIT_DEPTH else [])
-            if len(halves) == 2:
-                merged: Dict[str, Any] = {}
-                agg: Dict[str, Any] = {"finish": "split", "split_depth": depth + 1}
-                for hd, hp in halves:
-                    parsed_h, wmeta_h = _judge_one_window(
-                        hd, n_headings, len(hp), _max_tokens_for(len(hp)),
-                        post_fn=post_fn, win_pending=hp, depth=depth + 1)
-                    for flag in ("transport_failure", "parse_failure",
-                                 "length_exhausted"):
-                        if wmeta_h.get(flag):
-                            agg[flag] = True
-                    if parsed_h is not None:
-                        merged.update(parsed_h.get("levels") or {})
-                if merged:
-                    return {"levels": merged}, agg
-                agg["length_exhausted"] = True
-                return None, agg
-            return None, {"length_exhausted": True, "finish": "length"}
+                return None, {"transport_failure": True, "finish": finish}
+            if finish != "length":
+                parsed = parse_judge_response(content)
+                if parsed is None:
+                    return None, {"parse_failure": True, "finish": finish}
+                return parsed, {"finish": finish}
+        return None, {"length_exhausted": True, "finish": finish}
+
     parsed = parse_judge_response(content)
     if parsed is None:
         return None, {"parse_failure": True, "finish": finish}
