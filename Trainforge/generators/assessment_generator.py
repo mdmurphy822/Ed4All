@@ -278,8 +278,41 @@ class AssessmentGenerator:
         self.capture = capture
         self.check_leaks = check_leaks and LEAK_CHECKER_AVAILABLE
         self._leak_checker = LeakChecker(strict_mode=False) if self.check_leaks else None
+        # Diversity rotation (alg-glm-02 production defect: terms[0] /
+        # statements[0] at every site collapsed a 50-question run onto ONE
+        # term -> 1/50 unique stems, one distractor on 50/50). Rotate
+        # through distinct extracted targets before any reuse.
+        self._used_terms: set = set()
+        self._used_statements: set = set()
         self._content_extractor = ContentExtractor()
         self.rag = rag
+
+
+    def _rotate_term(self, terms):
+        """Pick the first extracted term not yet used this run; reset the
+        tracker only when every distinct term has been consumed (diversity
+        rotation — never collapses a run onto terms[0])."""
+        for t in terms:
+            key = str(getattr(t, "term", t)).strip().lower()
+            if key and key not in self._used_terms:
+                self._used_terms.add(key)
+                return t
+        self._used_terms.clear()
+        t = terms[0]
+        self._used_terms.add(str(getattr(t, "term", t)).strip().lower())
+        return t
+
+    def _rotate_statement(self, statements):
+        """Statement analog of :meth:`_rotate_term`."""
+        for st in statements:
+            key = str(getattr(st, "text", st))[:80].strip().lower()
+            if key and key not in self._used_statements:
+                self._used_statements.add(key)
+                return st
+        self._used_statements.clear()
+        st = statements[0]
+        self._used_statements.add(str(getattr(st, "text", st))[:80].strip().lower())
+        return st
 
     def generate(
         self,
@@ -724,7 +757,7 @@ class AssessmentGenerator:
 
             if terms:
                 # Use a key term: ask for its definition
-                target = terms[0]
+                target = self._rotate_term(terms)
                 # Bloom-verb-leading phrasing (alg-glm-02 production defect):
                 # "Which of the following best describes X?" carries no
                 # canonical Bloom verb form ("describes" is conjugated;
@@ -844,7 +877,7 @@ class AssessmentGenerator:
 
             elif statements and len(statements) >= 4:
                 # Use a factual statement: ask which is true
-                correct_stmt = statements[0]
+                correct_stmt = self._rotate_statement(statements)
                 stem = "<p>Which of the following statements is correct?</p>"
 
                 # W7.4 — a regex-negated "false" distractor can be accidentally
@@ -959,7 +992,7 @@ class AssessmentGenerator:
             statements = self._content_extractor.extract_factual_statements(source_chunks)
 
             if statements:
-                stmt = statements[0]
+                stmt = self._rotate_statement(statements)
                 # Randomly decide true vs false (use question_id hash for determinism)
                 make_false = hash(question_id) % 2 == 0
 
@@ -1073,7 +1106,7 @@ class AssessmentGenerator:
             terms = self._content_extractor.extract_key_terms(source_chunks)
 
             if terms:
-                target = terms[0]
+                target = self._rotate_term(terms)
                 # Replace the term in the context sentence with a blank
                 blanked = re.sub(
                     re.escape(target.term),
@@ -1274,7 +1307,7 @@ class AssessmentGenerator:
                 )
 
             elif terms:
-                target = terms[0]
+                target = self._rotate_term(terms)
                 stem = (
                     f"<p>In your own words, briefly {verb} what "
                     f"<em>{target.term}</em> means and why it is significant.</p>"
