@@ -29695,6 +29695,41 @@ def _build_tool_registry() -> dict:
             )
             artifacts = []
         manifest = _write_assessment_artifacts(out_dir, artifacts)
+
+        # ---- Instructor answer key (assessment-quality overhaul C.2) -------- #
+        # A deterministic, grounded sidecar carrying everything the six CC QTI
+        # primitives cannot transport: worked solutions (each citing the chunk
+        # ids the generator stamped), per-distractor misconception rationale,
+        # and Bloom-derived rubric scaffolds for the essay / discussion /
+        # assignment surfaces. Emitted whenever ANY graded item exists; wired
+        # into manifest.json as a new assessments[] row type="answer_key" whose
+        # answer_key.html ships as a CC webcontent resource. Best-effort: an
+        # emit failure logs a warning and never aborts the phase.
+        _has_answer_key = False
+        if built_assessments or discussions or assignments:
+            try:
+                from Courseforge.scripts.answer_key_emitter import emit_answer_key
+                _ak_entry = emit_answer_key(
+                    out_dir,
+                    assessments=built_assessments,
+                    discussions=discussions,
+                    assignments=assignments,
+                    objective_text=id_to_statement,
+                    course_code=str(course_code),
+                    course_title=f"{course_code} — Instructor Answer Key",
+                )
+                manifest.setdefault("assessments", []).append(_ak_entry)
+                (out_dir / "manifest.json").write_text(
+                    json.dumps(manifest, indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                _has_answer_key = True
+            except Exception as exc:  # noqa: BLE001 — never abort the phase
+                logger.warning(
+                    "run_assessment_synthesis: answer-key emit failed (%s); "
+                    "quizzes/prose still emitted.", exc,
+                )
+
         # Resume is only for an INTERRUPTED run: drop the sidecar now that the
         # final manifest write has succeeded (mirrors the tier sidecars).
         _assessments_store_obj.remove()
@@ -29715,6 +29750,7 @@ def _build_tool_registry() -> dict:
             "discussion_count": disc_n,
             "assignment_count": asgn_n,
             "prose_provider": prose_provider_name or None,
+            "answer_key": _has_answer_key,
         })
 
     registry["run_assessment_synthesis"] = _run_assessment_synthesis
@@ -29936,6 +29972,14 @@ def _build_tool_registry() -> dict:
                 with _zipfile.ZipFile(imscc_path, "r") as zf:
                     for name in sorted(zf.namelist()):
                         if name.endswith(".html") or name.endswith(".htm"):
+                            # Instructor-only sidecars under 06_assessments/
+                            # (e.g. answer_key.html — correct answers + worked
+                            # solutions) are NOT learner content and must never
+                            # enter the retrieval corpus (answer-key leakage).
+                            # The QTI XML in the same dir is separately harvested
+                            # into assessment_item chunks via qti_entries.
+                            if "06_assessments/" in name:
+                                continue
                             try:
                                 content = zf.read(name).decode(
                                     "utf-8", errors="ignore"

@@ -112,10 +112,16 @@ class QTIParser:
         if title_elem is not None and title_elem.text:
             title = title_elem.text
 
-        # Parse questions
+        # Parse questions. Match the EXACT ``item`` local name (namespace
+        # stripped) — NOT a substring — so sibling elements whose tag merely
+        # CONTAINS "item" (``itemmetadata``, and the spec-legal
+        # ``itemfeedback`` whose ``ident`` is XSD-required) are never
+        # misclassified as questions. Real QTI question elements are exactly
+        # ``<item>``.
         questions = []
         for item in root.iter():
-            if 'item' in item.tag.lower() and item.get('ident'):
+            local = item.tag.rsplit('}', 1)[-1].lower()
+            if local == 'item' and item.get('ident'):
                 question = self._parse_item(item)
                 if question:
                     questions.append(question)

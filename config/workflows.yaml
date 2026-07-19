@@ -1140,6 +1140,43 @@ workflows:
               on_error: warn
             description: "W7.3 — synthesized-quiz MCQ distractor-quality gate (equals-key / duplicate / too-few / placeholder). Warning day-1; deferred critical-flip."
 
+          # Assessment-quality overhaul — deterministic Haladyna item-writing
+          # linter over the shipped 06_assessments QTI items (stem central-idea
+          # / unemphasized negative / None-All-of-above / absolute-term / longest-
+          # key cue / option overlap / a-an agreement / single-key). Reuses the
+          # _build_qti_well_formed builder (inputs["qti_dir"] = 06_assessments).
+          # The Bloom-honesty ceiling arm is a documented deferred seam (needs the
+          # per-item item_subtype/bloom_level metadata surface). Warning day-1;
+          # # TODO(calibration) deferred critical-flip after a >=2-corpus FP
+          # measurement (WS3/W4 deferred-flip pattern; NOT IB3).
+          - gate_id: assessment_item_writing
+            validator: lib.validators.assessment_item_writing.AssessmentItemWritingValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: "Assessment-quality overhaul — deterministic Haladyna item-writing linter on the shipped QTI items. Warning day-1; deferred critical-flip."
+
+          # Assessment-quality overhaul — PORT the AssessmentQualityValidator
+          # (placeholder / TOC-fragment / verb-less-stem / per-type diversity /
+          # few-choices) onto the shipped 06_assessments product surface. Today
+          # it gates only the internal Trainforge assessment JSON; the builder's
+          # W10 fallback parses 06_assessments/*.xml into the questions shape so
+          # the LMS-imported cartridge is gated too. Warning day-1 on the product
+          # surface (deferred critical-flip; the trainforge_assessment wiring
+          # keeps its own severity).
+          - gate_id: assessment_quality
+            validator: lib.validators.assessment.AssessmentQualityValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: "Assessment-quality overhaul — AssessmentQualityValidator ported onto the shipped 06_assessments QTI product surface (placeholder / TOC / verb-less / diversity). Warning day-1."
+
       - name: packaging
         agents: [brightspace-packager]
         parallel: true
@@ -3154,6 +3191,34 @@ workflows:
               on_fail: warn
               on_error: warn
             description: "W7.3 — synthesized-quiz MCQ distractor-quality gate (equals-key / duplicate / too-few / placeholder). Warning day-1; deferred critical-flip."
+
+          # Assessment-quality overhaul — deterministic Haladyna item-writing
+          # linter over the shipped 06_assessments QTI items. Mirrors the
+          # textbook_to_course wiring; reuses the _build_qti_well_formed builder.
+          # Warning day-1; deferred critical-flip (WS3/W4 pattern; NOT IB3).
+          - gate_id: assessment_item_writing
+            validator: lib.validators.assessment_item_writing.AssessmentItemWritingValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: "Assessment-quality overhaul — deterministic Haladyna item-writing linter on the shipped QTI items. Warning day-1; deferred critical-flip."
+
+          # Assessment-quality overhaul — PORT AssessmentQualityValidator onto
+          # the shipped 06_assessments product surface (placeholder / TOC /
+          # verb-less / diversity). Builder W10 fallback parses the QTI into the
+          # questions shape. Warning day-1 on the product surface.
+          - gate_id: assessment_quality
+            validator: lib.validators.assessment.AssessmentQualityValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: "Assessment-quality overhaul — AssessmentQualityValidator ported onto the shipped 06_assessments QTI product surface. Warning day-1."
 
       - name: post_rewrite_validation
         agents: []

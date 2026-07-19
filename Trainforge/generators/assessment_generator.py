@@ -57,6 +57,293 @@ def _cognitive_task_type_enabled() -> bool:
     return os.environ.get(_COGNITIVE_TASK_TYPE_ENV, "").strip().lower() in _TRUTHY
 
 
+# --------------------------------------------------------------------------- #
+# Assessment-quality overhaul — item-writing rules at generation
+# --------------------------------------------------------------------------- #
+#
+# Rodriguez's meta-analysis: a 3-option MC (1 key + 2 functional distractors)
+# discriminates as well as or better than 4/5-option items — the 3rd+
+# distractors are non-functional. Default to 3 options total; an operator can
+# restore the legacy 4-option layout with ED4ALL_ASSESSMENT_OPTION_COUNT=4.
+# Parse-with-fallback: garbage / <3 / >6 → 3.
+_OPTION_COUNT_ENV = "ED4ALL_ASSESSMENT_OPTION_COUNT"
+
+
+def _resolve_option_count() -> int:
+    """Total options per MC item (1 key + N-1 distractors); default 3.
+
+    Reads ED4ALL_ASSESSMENT_OPTION_COUNT. Any non-integer, or a value outside
+    the sane [3, 6] band, falls back to the 3-option default (parse-with-
+    fallback — a partly-garbage override never yields a degenerate item).
+    """
+    raw = os.environ.get(_OPTION_COUNT_ENV, "").strip()
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return 3
+    if val < 3 or val > 6:
+        return 3
+    return val
+
+
+#: Banned option surface forms (Haladyna–Downing–Rodriguez guidelines): the
+#: complex-alternative crutches "None/All of the above" and absolute-term
+#: options (always/never) that a test-wise learner exploits. Enforced at
+#: ASSEMBLY so a banned string never reaches choices[] (the _negate_statement
+#: always↔never swap is kept for its unit-tested verifiably-false contract, but
+#: any option it produces carrying an absolute term is dropped here and the
+#: caller draws a replacement / skips).
+_RE_NOTA_AOTA = re.compile(
+    r"\b(?:none|all|both|neither)\s+of\s+the\s+(?:above|following|other)\b",
+    re.IGNORECASE,
+)
+_RE_ABSOLUTE_TERM = re.compile(r"\b(?:always|never)\b", re.IGNORECASE)
+
+
+def _is_banned_option(text: str) -> bool:
+    """True when option ``text`` is a banned MC surface form.
+
+    Strips HTML before matching so ``<p>None of the above</p>`` is caught.
+    Bans None/All-of-the-above complex alternatives and absolute-term
+    (always/never) options.
+    """
+    plain = re.sub(r"<[^>]+>", " ", text or "")
+    if _RE_NOTA_AOTA.search(plain):
+        return True
+    if _RE_ABSOLUTE_TERM.search(plain):
+        return True
+    return False
+
+
+#: Named deterministic misconception TRANSFORMS (the DiVERT principle: a
+#: functional distractor encodes a specific procedural error, not surface
+#: plausibility). Each transform is a symbolic/text rewrite of a correct
+#: worked-solution step; the tuple is (error_name, callable, human_note). The
+#: callable returns the perturbed text OR None when it does not apply (so a
+#: step that carries no matching structure is skipped, never mangled). These
+#: replace the always/never injection for distractor synthesis.
+def _t_sign_drop(text: str):
+    """Drop a leading unary minus / flip the first ``- N`` term to ``+ N``.
+
+    Models the "dropped a negative sign" error. Applies to the first
+    ``<op> <number>`` where op is a binary minus.
+    """
+    m = re.search(r"(?<=[\dA-Za-z\)])\s*-\s*(\d+(?:\.\d+)?)", text)
+    if not m:
+        return None
+    return text[: m.start()] + " + " + m.group(1) + text[m.end():]
+
+
+def _t_fail_distribute_negative(text: str):
+    """Distribute a negative over only the FIRST term of a parenthesised sum.
+
+    ``-(a + b)`` → ``-a + b`` (forgot to flip the second sign). Models the
+    classic fail-to-distribute-negative error.
+    """
+    m = re.search(r"-\s*\(\s*([^()+]+?)\s*\+\s*([^()]+?)\s*\)", text)
+    if not m:
+        return None
+    return text[: m.start()] + f"-{m.group(1).strip()} + {m.group(2).strip()}" + text[m.end():]
+
+
+def _t_add_exponents_on_multiply(text: str):
+    """Rewrite ``x^a * x^b`` as ``x^(a*b)`` instead of ``x^(a+b)``.
+
+    Models the add-exponents-on-multiply / multiply-exponents confusion —
+    here the perturbation multiplies where addition is correct.
+    """
+    m = re.search(r"([A-Za-z])\^(\d+)\s*\*\s*\1\^(\d+)", text)
+    if not m:
+        return None
+    var, a, b = m.group(1), int(m.group(2)), int(m.group(3))
+    return text[: m.start()] + f"{var}^{a * b}" + text[m.end():]
+
+
+def _t_left_to_right_not_pemdas(text: str):
+    """Evaluate ``a + b * c`` strictly left-to-right → ``(a + b) * c``.
+
+    Models the order-of-operations (ignore PEMDAS) error. Only rewrites the
+    display form (a distractor STEP), not a computed value.
+    """
+    m = re.search(r"(\d+(?:\.\d+)?)\s*\+\s*(\d+(?:\.\d+)?)\s*\*\s*(\d+(?:\.\d+)?)", text)
+    if not m:
+        return None
+    return text[: m.start()] + f"({m.group(1)} + {m.group(2)}) * {m.group(3)}" + text[m.end():]
+
+
+#: (error_name, transform, instructor-facing misconception note).
+_MISCONCEPTION_TRANSFORMS = (
+    ("sign_drop", _t_sign_drop,
+     "Dropped a negative sign when moving a term across the equals sign."),
+    ("fail_to_distribute_negative", _t_fail_distribute_negative,
+     "Distributed the negative over only the first term of the parentheses."),
+    ("add_exponents_on_multiply", _t_add_exponents_on_multiply,
+     "Multiplied the exponents instead of adding them when multiplying like bases."),
+    ("left_to_right_not_pemdas", _t_left_to_right_not_pemdas,
+     "Evaluated left-to-right instead of following order of operations (PEMDAS)."),
+)
+
+
+def _apply_first_misconception(text: str):
+    """Return ``(perturbed_text, error_name, note)`` for the first applicable
+    misconception transform, or ``None`` when none applies to ``text``.
+    """
+    for name, fn, note in _MISCONCEPTION_TRANSFORMS:
+        out = fn(text)
+        if out is not None and out.strip() and out.strip() != (text or "").strip():
+            return out, name, note
+    return None
+
+
+# --------------------------------------------------------------------------- #
+# Bloom-honesty ceiling — a type may CLAIM apply/analyze only if its structure
+# supports it. Single-fact MC/TF/term-FIB/matching cap at understand; the
+# constructed-response / multi-step types (MR, error-analysis, numeric,
+# ordering, two-tier) may claim up to apply/analyze. An item's asserted
+# bloom_level is CLAMPED to its subtype ceiling; clamps are recorded in the
+# generation stats (deterministic — no LLM, so no DecisionCapture required).
+# --------------------------------------------------------------------------- #
+from lib.ontology.bloom import BLOOM_LEVELS as _BLOOM_LEVELS  # noqa: E402
+
+_BLOOM_ORDER = {name: i for i, name in enumerate(_BLOOM_LEVELS)}
+
+_SUBTYPE_BLOOM_CEILING: Dict[str, str] = {
+    "mc_single": "understand",
+    "tf": "understand",
+    "fib_term": "understand",
+    "matching_mc": "understand",
+    "fib_numeric": "apply",
+    "mc_multiple_response": "apply",
+    "ordering_mc": "apply",
+    "two_tier_answer": "analyze",
+    "two_tier_reason": "analyze",
+    "error_analysis": "analyze",
+}
+
+
+def _clamp_bloom(bloom_level: str, item_subtype: Optional[str]) -> str:
+    """Clamp ``bloom_level`` down to ``item_subtype``'s structural ceiling.
+
+    Returns the (possibly lowered) level. Unknown subtype / level → unchanged
+    (fail-open — never RAISES a claim, only lowers an over-claim). The item
+    STATEMENT is untouched; only the asserted metadata level moves.
+    """
+    ceiling = _SUBTYPE_BLOOM_CEILING.get(item_subtype or "")
+    if ceiling is None:
+        return bloom_level
+    cur = _BLOOM_ORDER.get((bloom_level or "").lower())
+    cap = _BLOOM_ORDER.get(ceiling)
+    if cur is None or cap is None:
+        return bloom_level
+    if cur > cap:
+        return ceiling
+    return bloom_level
+
+
+# --------------------------------------------------------------------------- #
+# Deterministic diversified-tier target mix (fractions sum to ~0.90; classic
+# single-answer MC fills the remainder). Consumed by the mix PLANNER, which
+# turns a question_count into a deterministic, reproducible list of item
+# subtypes. Percentages per the approved plan.
+# --------------------------------------------------------------------------- #
+_TARGET_MIX = (
+    ("mc_multiple_response", 0.15),
+    ("error_analysis", 0.20),
+    ("fib_numeric", 0.20),
+    ("matching_mc", 0.15),
+    ("ordering_mc", 0.05),
+    ("two_tier_answer", 0.10),
+    ("tf_justified", 0.05),
+    # remainder → mc_single
+)
+
+
+def plan_item_mix(question_count: int) -> List[str]:
+    """Deterministic largest-remainder allocation of subtypes for a count.
+
+    Returns a list of length ``question_count`` of item-subtype tokens per
+    ``_TARGET_MIX``; classic ``mc_single`` fills the remainder. Deterministic +
+    reproducible (no RNG) — the same count always yields the same plan, which
+    keeps resume / replay stable. A count of 0 → [].
+    """
+    n = max(0, int(question_count))
+    if n == 0:
+        return []
+    # Largest-remainder apportionment so the emitted plan matches the target
+    # fractions as closely as an integer count allows.
+    raw = [(name, frac * n) for name, frac in _TARGET_MIX]
+    counts = {name: int(val) for name, val in raw}
+    allocated = sum(counts.values())
+    # Distribute leftover (from flooring) to the largest fractional parts first,
+    # capping total diversified at ~90% so mc_single always gets a share.
+    frac_parts = sorted(
+        ((val - int(val), name) for name, val in raw), reverse=True
+    )
+    max_diversified = int(round(0.90 * n))
+    i = 0
+    while allocated < max_diversified and frac_parts and i < 4 * len(frac_parts):
+        _part, name = frac_parts[i % len(frac_parts)]
+        counts[name] = counts.get(name, 0) + 1
+        allocated += 1
+        i += 1
+    counts["mc_single"] = n - allocated
+    # Emit in a stable interleaved order (round-robin over the subtypes present)
+    # so a small quiz still spans several types instead of clustering.
+    order = [name for name, _ in _TARGET_MIX] + ["mc_single"]
+    plan: List[str] = []
+    pools = {name: counts.get(name, 0) for name in order}
+    while len(plan) < n:
+        progressed = False
+        for name in order:
+            if pools[name] > 0:
+                plan.append(name)
+                pools[name] -= 1
+                progressed = True
+                if len(plan) >= n:
+                    break
+        if not progressed:
+            break
+    return plan
+
+
+@dataclass
+class GenerationStats:
+    """Deterministic-tier generation telemetry (no LLM).
+
+    Records the realized item-subtype histogram, Bloom-ceiling clamps, and
+    per-subtype skip reasons so an operator can audit WHY the realized mix
+    diverges from the target without grepping decision JSONL.
+    """
+    subtype_counts: Dict[str, int] = field(default_factory=dict)
+    bloom_clamps: List[Dict[str, str]] = field(default_factory=list)
+    skips: List[Dict[str, str]] = field(default_factory=list)
+
+    def record_item(self, subtype: str) -> None:
+        self.subtype_counts[subtype] = self.subtype_counts.get(subtype, 0) + 1
+
+    def record_clamp(
+        self, question_id: str, subtype: str, before: str, after: str
+    ) -> None:
+        self.bloom_clamps.append({
+            "question_id": question_id,
+            "item_subtype": subtype,
+            "from": before,
+            "to": after,
+        })
+
+    def record_skip(self, subtype: str, reason: str) -> None:
+        self.skips.append({"item_subtype": subtype, "reason": reason})
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "subtype_counts": dict(self.subtype_counts),
+            "bloom_clamp_count": len(self.bloom_clamps),
+            "bloom_clamps": self.bloom_clamps[:20],
+            "skip_count": len(self.skips),
+            "skips": self.skips[:20],
+        }
+
+
 # Import content extractor for content-grounded generation
 from Trainforge.generators.content_extractor import ContentExtractor
 
@@ -138,6 +425,30 @@ class QuestionData:
     # AND the question stem carries a canonical task verb; otherwise stays
     # None and is OMITTED from to_dict() so legacy output is byte-identical.
     cognitive_task_type: Optional[str] = None
+    # Assessment-quality overhaul (Phase 2 deterministic diversified tier) —
+    # RESPONSE CARDINALITY + pedagogy discriminator. All three are additive +
+    # OPTIONAL: a legacy single-answer item leaves them at their default and
+    # to_dict() OMITS them, so the pre-feature serialized shape is
+    # byte-identical.
+    #
+    # ``correct_answers`` carries the plural keys of a MULTIPLE-RESPONSE
+    # (select-all) item — the six CC QTI 1.2 primitives include
+    # cc.multiple_response, so this is portable. Single-answer items keep the
+    # scalar ``correct_answer`` and leave this empty; when populated the keys
+    # ALSO carry ``is_correct=True`` in ``choices`` so the MR item is
+    # self-describing without this field.
+    correct_answers: List[str] = field(default_factory=list)
+    # ``item_subtype`` names the PEDAGOGY simulated within a portable QTI
+    # primitive (mc_single, mc_multiple_response, tf, fib_numeric,
+    # error_analysis, matching_mc, ordering_mc, two_tier_answer,
+    # two_tier_reason). ``question_type`` stays one of the CC-portable
+    # primitives (multiple_choice / multiple_response / true_false /
+    # fill_in_blank); the subtype is metadata only. None → omitted.
+    item_subtype: Optional[str] = None
+    # ``linked_item_id`` binds the two tiers of a two-tier answer+reason item
+    # (Treagust misconception diagnosis) — the answer tier points at its
+    # reason tier and vice versa. None → omitted.
+    linked_item_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {
@@ -159,6 +470,12 @@ class QuestionData:
         # shape is byte-identical to the pre-feature output.
         if self.cognitive_task_type is not None:
             d["cognitive_task_type"] = self.cognitive_task_type
+        if self.correct_answers:
+            d["correct_answers"] = self.correct_answers
+        if self.item_subtype is not None:
+            d["item_subtype"] = self.item_subtype
+        if self.linked_item_id is not None:
+            d["linked_item_id"] = self.linked_item_id
         return d
 
 
@@ -284,6 +601,17 @@ class AssessmentGenerator:
         # through distinct extracted targets before any reuse.
         self._used_terms: set = set()
         self._used_statements: set = set()
+        # Per-Bloom-level question_type rotation cursor (assessment-quality
+        # overhaul): the legacy generator always fired available_types[0],
+        # collapsing every remember-level item onto multiple_choice and
+        # leaving the essay / short_answer paths dead. Rotate across the
+        # level's available_types so a multi-item run spans formats.
+        self._type_rotation: Dict[str, int] = {}
+        # Deterministic diversified-tier telemetry handle; set by
+        # generate_diversified(), read by the builders when present.
+        self._stats: Optional[GenerationStats] = None
+        # Per-run distractor rotation cursor shared by the diversified builders.
+        self._div_offset = 0
         self._content_extractor = ContentExtractor()
         self.rag = rag
 
@@ -686,10 +1014,14 @@ class AssessmentGenerator:
 
         question_id = f"Q-{str(uuid.uuid4())[:8]}"
 
-        # Select question type based on Bloom's level
+        # Select question type based on Bloom's level. Rotate across the
+        # level's available_types (instead of always [0]) so a multi-item run
+        # spans formats and the essay / short_answer paths are reachable.
         level_config = BLOOM_LEVELS.get(bloom_level, BLOOM_LEVELS["understand"])
         available_types = level_config["question_types"]
-        question_type = available_types[0]  # Select first suitable type
+        _cursor = self._type_rotation.get(bloom_level, 0)
+        question_type = available_types[_cursor % len(available_types)]
+        self._type_rotation[bloom_level] = _cursor + 1
 
         # Build pedagogical rationale for question type selection
         type_rationales = {
@@ -991,9 +1323,22 @@ class AssessmentGenerator:
                 )
 
             elif statements and len(statements) >= 4:
-                # Use a factual statement: ask which is true
+                # Use a factual statement: ask which is true. Carry the central
+                # idea in the stem (Haladyna rule 1) — a bare "Which statement
+                # is correct?" is a non-problem. Anchor on the statement's key
+                # subject so the stem names what is being assessed.
                 correct_stmt = self._rotate_statement(statements)
-                stem = "<p>Which of the following statements is correct?</p>"
+                _subject = (getattr(correct_stmt, "key_subject", "") or "").strip()
+                if _subject:
+                    stem = (
+                        f"<p>Which of the following statements about "
+                        f"<em>{_subject}</em> is accurate?</p>"
+                    )
+                else:
+                    stem = (
+                        "<p>Which of the following statements is best supported "
+                        "by the source material?</p>"
+                    )
 
                 # W7.4 — a regex-negated "false" distractor can be accidentally
                 # TRUE (double-negation of an already-negative source, or a
@@ -1589,6 +1934,718 @@ class AssessmentGenerator:
 
         # Last resort: prepend "It is not true that"
         return f"It is not true that {statement[0].lower()}{statement[1:]}"
+
+    # ------------------------------------------------------------------ #
+    # Deterministic diversified tier (assessment-quality overhaul, Phase 2)
+    # ------------------------------------------------------------------ #
+
+    def _clamp_and_record(
+        self, question_id: str, subtype: str, bloom_level: str
+    ) -> str:
+        """Clamp ``bloom_level`` to ``subtype``'s ceiling; record any clamp."""
+        clamped = _clamp_bloom(bloom_level, subtype)
+        if clamped != bloom_level and self._stats is not None:
+            self._stats.record_clamp(question_id, subtype, bloom_level, clamped)
+        return clamped
+
+    @staticmethod
+    def _trim(text: str, cap: int = 200) -> str:
+        text = (text or "").strip()
+        return text if len(text) <= cap else text[: cap - 3] + "..."
+
+    def _assemble_single_key_choices(
+        self,
+        correct_text: str,
+        distractor_specs: List[Any],
+        option_count: int,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Assemble a 1-key MC choice list honoring the item-writing rules.
+
+        ``distractor_specs`` is a list of ``str`` or ``(text, note)`` tuples.
+        Bans NOTA/AOTA + absolute-term options, drops duplicates / options
+        equal to the key, caps distractors to ``option_count - 1``. Returns
+        None when fewer than 2 functional distractors survive (→ caller skips).
+        """
+        key = self._trim(correct_text)
+        if not key or _is_banned_option(key):
+            return None
+        seen = {re.sub(r"<[^>]+>", " ", key).strip().lower()}
+        kept: List[Dict[str, Any]] = []
+        for spec in distractor_specs:
+            if len(kept) >= option_count - 1:
+                break
+            if isinstance(spec, tuple):
+                d_text, note = spec[0], spec[1]
+            else:
+                d_text, note = spec, None
+            d_text = self._trim(d_text)
+            norm = re.sub(r"<[^>]+>", " ", d_text).strip().lower()
+            if not d_text or not norm or norm in seen:
+                continue
+            if _is_banned_option(d_text):
+                continue
+            seen.add(norm)
+            choice: Dict[str, Any] = {"text": f"<p>{d_text}</p>", "is_correct": False}
+            if note:
+                choice["misconception_note"] = note
+            kept.append(choice)
+        if len(kept) < 2:
+            return None
+        return [{"text": f"<p>{key}</p>", "is_correct": True}] + kept
+
+    def build_multiple_response(
+        self,
+        question_id: str,
+        objective_id: str,
+        bloom_level: str,
+        source_chunks: Optional[List[Dict[str, Any]]],
+    ):
+        """(a) MULTIPLE-RESPONSE select-all — genuine apply.
+
+        From a worked-example chunk with >=3 solution steps: the real steps are
+        the keys ("which of the following ARE steps in solving X"); distractors
+        are misconception-transformed steps + foreign steps. Portable via
+        cc.multiple_response.
+        """
+        subtype = "mc_multiple_response"
+        if not source_chunks:
+            return SkippedItem(question_id, "multiple_response", bloom_level,
+                               objective_id, "no_source_chunks")
+        procedures = self._content_extractor.extract_procedures(source_chunks)
+        target = next((p for p in procedures if len(p.steps) >= 3), None)
+        if target is None:
+            return SkippedItem(question_id, "multiple_response", bloom_level,
+                               objective_id, "no_multistep_procedure")
+        keys = [self._trim(s) for s in target.steps[:4] if s.strip()]
+        keys = [k for k in keys if k and not _is_banned_option(k)]
+        if len(keys) < 2:
+            return SkippedItem(question_id, "multiple_response", bloom_level,
+                               objective_id, "insufficient_real_steps")
+        key_norms = {re.sub(r"<[^>]+>", " ", k).lower().strip() for k in keys}
+        distractors: List[Dict[str, Any]] = []
+        # Misconception-transformed steps.
+        for step in target.steps:
+            if len(distractors) >= 3:
+                break
+            out = _apply_first_misconception(step)
+            if out is None:
+                continue
+            d_text, _err, note = out
+            d_text = self._trim(d_text)
+            norm = re.sub(r"<[^>]+>", " ", d_text).lower().strip()
+            if norm in key_norms or _is_banned_option(d_text):
+                continue
+            key_norms.add(norm)
+            distractors.append({"text": f"<p>{d_text}</p>", "is_correct": False,
+                                "misconception_note": note})
+        # Foreign steps from OTHER procedures (real text, not fabricated).
+        for p in procedures:
+            if p is target:
+                continue
+            for step in p.steps:
+                if len(distractors) >= 3:
+                    break
+                d_text = self._trim(step)
+                norm = re.sub(r"<[^>]+>", " ", d_text).lower().strip()
+                if not d_text or norm in key_norms or _is_banned_option(d_text):
+                    continue
+                key_norms.add(norm)
+                distractors.append({"text": f"<p>{d_text}</p>", "is_correct": False})
+        if len(distractors) < 2:
+            return SkippedItem(question_id, "multiple_response", bloom_level,
+                               objective_id, "insufficient_distractors")
+        clamped = self._clamp_and_record(question_id, subtype, bloom_level)
+        choices = [{"text": f"<p>{k}</p>", "is_correct": True} for k in keys]
+        choices.extend(distractors)
+        return QuestionData(
+            question_id=question_id,
+            question_type="multiple_response",
+            stem=(f"<p>Select <strong>all</strong> of the following that are "
+                  f"correct steps in {self._trim(target.title.lower(), 80)}.</p>"),
+            bloom_level=clamped,
+            objective_id=objective_id,
+            choices=choices,
+            correct_answers=keys,
+            item_subtype=subtype,
+            points=float(len(keys)),
+            feedback=("<p>The correct steps are those drawn directly from the "
+                      "worked solution.</p>"),
+            source_chunks=[target.source_chunk_id],
+            generation_rationale=(
+                f"Multiple-response select-all from {len(keys)} real steps of "
+                f"'{target.title}'; {len(distractors)} distractors "
+                f"(misconception-transformed + foreign steps)"
+            ),
+        )
+
+    def build_error_analysis(
+        self,
+        question_id: str,
+        objective_id: str,
+        bloom_level: str,
+        source_chunks: Optional[List[Dict[str, Any]]],
+    ):
+        """(b) ERROR-ANALYSIS MC — analyze level.
+
+        Perturb ONE step of a worked solution with a named misconception
+        transform; render the full (perturbed) solution and ask which step
+        contains the error. The misconception_note on the key names the error.
+        """
+        subtype = "error_analysis"
+        if not source_chunks:
+            return SkippedItem(question_id, "multiple_choice", bloom_level,
+                               objective_id, "no_source_chunks")
+        procedures = self._content_extractor.extract_procedures(source_chunks)
+        target = next((p for p in procedures if len(p.steps) >= 3), None)
+        if target is None:
+            return SkippedItem(question_id, "multiple_choice", bloom_level,
+                               objective_id, "no_multistep_procedure")
+        # Find the first step a misconception transform applies to.
+        perturb_idx = None
+        note = None
+        for idx, step in enumerate(target.steps):
+            out = _apply_first_misconception(step)
+            if out is not None:
+                perturb_idx, _perturbed, note = idx, out[0], out[1]
+                break
+        if perturb_idx is None:
+            return SkippedItem(question_id, "multiple_choice", bloom_level,
+                               objective_id, "no_perturbable_step")
+        _out = _apply_first_misconception(target.steps[perturb_idx])
+        perturbed_text = _out[0]
+        # Render the solution with the perturbed step in place.
+        rendered_steps: List[str] = []
+        for i, step in enumerate(target.steps):
+            body = perturbed_text if i == perturb_idx else step
+            rendered_steps.append(f"Step {i + 1}: {self._trim(body, 160)}")
+        solution_html = "".join(f"<li>{s}</li>" for s in rendered_steps)
+        stem = (
+            f"<p>A student solved <em>{self._trim(target.title.lower(), 80)}</em> "
+            f"as follows:</p><ol>{solution_html}</ol>"
+            f"<p>Which step contains the error?</p>"
+        )
+        # Options = the step labels; key = the perturbed step's label.
+        choices: List[Dict[str, Any]] = []
+        for i in range(len(target.steps)):
+            is_key = (i == perturb_idx)
+            choice: Dict[str, Any] = {
+                "text": f"<p>Step {i + 1}</p>", "is_correct": is_key,
+            }
+            if is_key and note:
+                choice["misconception_note"] = note
+            choices.append(choice)
+        clamped = self._clamp_and_record(question_id, subtype, bloom_level)
+        return QuestionData(
+            question_id=question_id,
+            question_type="multiple_choice",
+            stem=stem,
+            bloom_level=clamped,
+            objective_id=objective_id,
+            choices=choices,
+            correct_answer=f"Step {perturb_idx + 1}",
+            item_subtype=subtype,
+            points=3.0,
+            feedback=f"<p>Step {perturb_idx + 1} is incorrect. {note}</p>",
+            source_chunks=[target.source_chunk_id],
+            generation_rationale=(
+                f"Error-analysis MC; perturbed step {perturb_idx + 1} of "
+                f"'{target.title}' with misconception '{note}'"
+            ),
+        )
+
+    def build_numeric_fib(
+        self,
+        question_id: str,
+        objective_id: str,
+        bloom_level: str,
+        source_chunks: Optional[List[Dict[str, Any]]],
+    ):
+        """(c) NUMERIC-FIB — real apply/compute, sympy-VERIFIED key.
+
+        Harvests a single-variable equation from a worked-example chunk, solves
+        it with sympy, and ships ONLY when the computed key checks out under
+        substitution. Unverifiable candidates → SkippedItem with a reason.
+        """
+        subtype = "fib_numeric"
+        if not source_chunks:
+            return SkippedItem(question_id, "fill_in_blank", bloom_level,
+                               objective_id, "no_source_chunks")
+        try:
+            import sympy  # type: ignore
+            from lib.validators.worked_example_math import (
+                _iter_fragments, _split_equation_sides, _parse_side,
+            )
+        except Exception:  # noqa: BLE001 — sympy is an optional extra
+            return SkippedItem(question_id, "fill_in_blank", bloom_level,
+                               objective_id, "sympy_missing")
+
+        for chunk in source_chunks:
+            chunk_id = chunk.get("id", chunk.get("chunk_id", ""))
+            html = chunk.get("text", "") or ""
+            for frag, _ctx in _iter_fragments(html):
+                sides = _split_equation_sides(frag)
+                if sides is None or len(sides) != 2:
+                    continue
+                lhs = _parse_side(sides[0])
+                rhs = _parse_side(sides[1])
+                if lhs is None or rhs is None:
+                    continue
+                free = (lhs.free_symbols | rhs.free_symbols)
+                if len(free) != 1:
+                    continue
+                var = next(iter(free))
+                # Skip a trivial ``var = number`` restatement (nothing to solve).
+                expr = sympy.simplify(lhs - rhs)
+                if expr == 0:
+                    continue
+                try:
+                    sols = sympy.solve(sympy.Eq(lhs, rhs), var)
+                except Exception:  # noqa: BLE001
+                    continue
+                numeric_sols = [s for s in sols
+                                if getattr(s, "free_symbols", set()) == set()
+                                and getattr(s, "is_real", None) is not False]
+                if len(numeric_sols) != 1:
+                    continue
+                sol = numeric_sols[0]
+                # VERIFY by substitution — ship only if it checks out.
+                try:
+                    residual = sympy.simplify(expr.subs(var, sol))
+                except Exception:  # noqa: BLE001
+                    continue
+                if residual != 0:
+                    continue
+                # Render a clean numeric key.
+                try:
+                    fval = float(sol)
+                    key = str(int(fval)) if fval == int(fval) else str(fval)
+                except Exception:  # noqa: BLE001
+                    key = str(sol)
+                clamped = self._clamp_and_record(question_id, subtype, bloom_level)
+                eq_disp = f"{sides[0].strip()} = {sides[1].strip()}"
+                return QuestionData(
+                    question_id=question_id,
+                    question_type="fill_in_blank",
+                    stem=(f"<p>Solve for <em>{var}</em>: "
+                          f"<code>{eq_disp}</code>. Enter the value of "
+                          f"<em>{var}</em>.</p>"),
+                    bloom_level=clamped,
+                    objective_id=objective_id,
+                    correct_answer=key,
+                    item_subtype=subtype,
+                    points=2.0,
+                    feedback=(f"<p>{var} = {key} (verified by substitution). "
+                              f"Set the accepted-answer tolerance in the LMS "
+                              f"editor.</p>"),
+                    source_chunks=[chunk_id],
+                    generation_rationale=(
+                        f"Numeric FIB; sympy-solved {eq_disp} → {var}={key}, "
+                        f"verified residual=0"
+                    ),
+                )
+        if self._stats is not None:
+            self._stats.record_skip(subtype, "numeric_unverifiable")
+        return SkippedItem(question_id, "fill_in_blank", bloom_level,
+                           objective_id, "numeric_unverifiable")
+
+    def build_matching_mc(
+        self,
+        question_id: str,
+        objective_id: str,
+        bloom_level: str,
+        source_chunks: Optional[List[Dict[str, Any]]],
+    ):
+        """(d) MATCHING-as-MC — one MC per term, distractors = sibling defs.
+
+        Homogeneous by construction: every option is a definition drawn from
+        the same section's term set.
+        """
+        subtype = "matching_mc"
+        if not source_chunks:
+            return SkippedItem(question_id, "multiple_choice", bloom_level,
+                               objective_id, "no_source_chunks")
+        terms = self._content_extractor.extract_key_terms(source_chunks)
+        if len(terms) < 3:
+            return SkippedItem(question_id, "multiple_choice", bloom_level,
+                               objective_id, "insufficient_terms")
+        target = self._rotate_term(terms)
+        self._div_offset += 1
+        pool = [t for t in terms if t.term != target.term
+                and t.definition.strip().lower() != target.definition.strip().lower()]
+        n = len(pool)
+        distractor_specs: List[str] = []
+        for k in range(n):
+            other = pool[(self._div_offset + k) % n]
+            distractor_specs.append(other.definition)
+        option_count = _resolve_option_count()
+        choices = self._assemble_single_key_choices(
+            target.definition, distractor_specs, option_count
+        )
+        if choices is None:
+            return SkippedItem(question_id, "multiple_choice", bloom_level,
+                               objective_id, "insufficient_sibling_defs")
+        clamped = self._clamp_and_record(question_id, subtype, bloom_level)
+        return QuestionData(
+            question_id=question_id,
+            question_type="multiple_choice",
+            stem=(f"<p>Which definition best matches the term "
+                  f"<em>{target.term}</em>?</p>"),
+            bloom_level=clamped,
+            objective_id=objective_id,
+            choices=choices,
+            item_subtype=subtype,
+            points=1.0,
+            feedback=f"<p>{self._trim(target.context_sentence)}</p>",
+            source_chunks=[target.source_chunk_id],
+            generation_rationale=(
+                f"Matching-as-MC for term '{target.term}'; "
+                f"{len(choices) - 1} sibling-definition distractors"
+            ),
+        )
+
+    def build_ordering_mc(
+        self,
+        question_id: str,
+        objective_id: str,
+        bloom_level: str,
+        source_chunks: Optional[List[Dict[str, Any]]],
+    ):
+        """(e) ORDERING-as-MC — pick the correct order of steps.
+
+        True sequence + 2 deterministic plausible permutations. Used sparingly
+        (5% of the mix).
+        """
+        subtype = "ordering_mc"
+        if not source_chunks:
+            return SkippedItem(question_id, "multiple_choice", bloom_level,
+                               objective_id, "no_source_chunks")
+        procedures = self._content_extractor.extract_procedures(source_chunks)
+        target = next((p for p in procedures if len(p.steps) >= 3), None)
+        if target is None:
+            return SkippedItem(question_id, "multiple_choice", bloom_level,
+                               objective_id, "no_multistep_procedure")
+        steps = [self._trim(s, 90) for s in target.steps[:4] if s.strip()]
+        if len(steps) < 3:
+            return SkippedItem(question_id, "multiple_choice", bloom_level,
+                               objective_id, "insufficient_steps")
+
+        def _render(order: List[int]) -> str:
+            return " → ".join(f"({j + 1}) {steps[o]}" for j, o in enumerate(order))
+
+        correct_order = list(range(len(steps)))
+        # Two deterministic plausible permutations: swap first two; reverse.
+        perm_swap = correct_order.copy()
+        perm_swap[0], perm_swap[1] = perm_swap[1], perm_swap[0]
+        perm_rev = list(reversed(correct_order))
+        distractor_specs: List[str] = []
+        correct_render = _render(correct_order)
+        for perm in (perm_swap, perm_rev):
+            if perm != correct_order:
+                distractor_specs.append(_render(perm))
+        option_count = min(3, _resolve_option_count())
+        choices = self._assemble_single_key_choices(
+            correct_render, distractor_specs, max(option_count, 3)
+        )
+        if choices is None:
+            return SkippedItem(question_id, "multiple_choice", bloom_level,
+                               objective_id, "insufficient_permutations")
+        clamped = self._clamp_and_record(question_id, subtype, bloom_level)
+        return QuestionData(
+            question_id=question_id,
+            question_type="multiple_choice",
+            stem=(f"<p>Which of the following shows the correct order of steps "
+                  f"to {self._trim(target.title.lower(), 80)}?</p>"),
+            bloom_level=clamped,
+            objective_id=objective_id,
+            choices=choices,
+            item_subtype=subtype,
+            points=2.0,
+            feedback="<p>The correct sequence follows the worked solution.</p>",
+            source_chunks=[target.source_chunk_id],
+            generation_rationale=(
+                f"Ordering-as-MC over {len(steps)} steps of '{target.title}'"
+            ),
+        )
+
+    def build_two_tier(
+        self,
+        question_id: str,
+        objective_id: str,
+        bloom_level: str,
+        source_chunks: Optional[List[Dict[str, Any]]],
+    ):
+        """(f) TWO-TIER answer+reason — Treagust misconception diagnosis.
+
+        Returns a LIST of two linked QuestionData: an answer tier (a term MC)
+        and a reason tier whose distractors are misconception statements. The
+        two are linked via ``linked_item_id``.
+        """
+        if not source_chunks:
+            return SkippedItem(question_id, "multiple_choice", bloom_level,
+                               objective_id, "no_source_chunks")
+        terms = self._content_extractor.extract_key_terms(source_chunks)
+        if len(terms) < 3:
+            return SkippedItem(question_id, "multiple_choice", bloom_level,
+                               objective_id, "insufficient_terms")
+        # Harvest misconception statements for the reason tier's distractors.
+        misconception_texts: List[str] = []
+        for chunk in source_chunks:
+            for mc in (chunk.get("misconceptions") or []):
+                if isinstance(mc, dict) and mc.get("misconception"):
+                    misconception_texts.append(mc["misconception"])
+        target = self._rotate_term(terms)
+        self._div_offset += 1
+        pool = [t for t in terms if t.term != target.term]
+        # Answer tier — a term MC.
+        n = len(pool)
+        ans_distractors = [pool[(self._div_offset + k) % n].definition
+                           for k in range(n)]
+        option_count = _resolve_option_count()
+        ans_choices = self._assemble_single_key_choices(
+            target.definition, ans_distractors, option_count
+        )
+        if ans_choices is None:
+            return SkippedItem(question_id, "multiple_choice", bloom_level,
+                               objective_id, "insufficient_sibling_defs")
+        # Reason tier — key is the grounded rationale; distractors are
+        # misconception statements (falling back to transformed sibling defs).
+        reason_key = self._trim(target.context_sentence)
+        reason_specs: List[str] = list(misconception_texts)
+        if len(reason_specs) < 2:
+            for t in pool:
+                out = _apply_first_misconception(t.definition)
+                if out is not None:
+                    reason_specs.append(out[0])
+                if len(reason_specs) >= 3:
+                    break
+        # Last-resort: sibling definitions as (wrong-because-off-topic) reasons.
+        if len(reason_specs) < 2:
+            reason_specs.extend(t.definition for t in pool)
+        reason_choices = self._assemble_single_key_choices(
+            reason_key, reason_specs, option_count
+        )
+        if reason_choices is None:
+            return SkippedItem(question_id, "multiple_choice", bloom_level,
+                               objective_id, "insufficient_reason_distractors")
+        ans_id = question_id
+        reason_id = f"{question_id}-reason"
+        ans_clamped = self._clamp_and_record(ans_id, "two_tier_answer", bloom_level)
+        reason_clamped = self._clamp_and_record(
+            reason_id, "two_tier_reason", bloom_level)
+        answer_item = QuestionData(
+            question_id=ans_id,
+            question_type="multiple_choice",
+            stem=(f"<p><strong>Tier 1.</strong> Which definition best matches "
+                  f"<em>{target.term}</em>?</p>"),
+            bloom_level=ans_clamped,
+            objective_id=objective_id,
+            choices=ans_choices,
+            item_subtype="two_tier_answer",
+            points=1.0,
+            feedback=f"<p>{self._trim(target.context_sentence)}</p>",
+            source_chunks=[target.source_chunk_id],
+            linked_item_id=reason_id,
+            generation_rationale=(
+                f"Two-tier answer tier for term '{target.term}'"),
+        )
+        reason_item = QuestionData(
+            question_id=reason_id,
+            question_type="multiple_choice",
+            stem=(f"<p><strong>Tier 2.</strong> What is the best reason your "
+                  f"Tier 1 answer for <em>{target.term}</em> is correct?</p>"),
+            bloom_level=reason_clamped,
+            objective_id=objective_id,
+            choices=reason_choices,
+            item_subtype="two_tier_reason",
+            points=2.0,
+            feedback=f"<p>{self._trim(target.context_sentence)}</p>",
+            source_chunks=[target.source_chunk_id],
+            linked_item_id=ans_id,
+            generation_rationale=(
+                f"Two-tier reason tier; distractors are misconception "
+                f"statements for term '{target.term}'"),
+        )
+        return [answer_item, reason_item]
+
+    def build_tf_justified(
+        self,
+        question_id: str,
+        objective_id: str,
+        bloom_level: str,
+        source_chunks: Optional[List[Dict[str, Any]]],
+    ):
+        """(g) True/False (subtype ``tf``) — cheap variety.
+
+        Reuses the verified-negation T/F path and stamps the subtype + Bloom
+        ceiling. (The linked short-FIB justification tier is intentionally
+        deferred — see the worker report; TF alone is portable + honest.)
+        """
+        result = self._generate_true_false(
+            question_id, objective_id, bloom_level,
+            BLOOM_LEVELS.get(bloom_level, BLOOM_LEVELS["understand"]),
+            source_chunks,
+        )
+        if isinstance(result, QuestionData):
+            result.item_subtype = "tf"
+            result.bloom_level = self._clamp_and_record(
+                question_id, "tf", bloom_level)
+        return result
+
+    def build_mc_single(
+        self,
+        question_id: str,
+        objective_id: str,
+        bloom_level: str,
+        source_chunks: Optional[List[Dict[str, Any]]],
+    ):
+        """Classic single-answer MC (subtype ``mc_single``) — fills the mix
+        remainder. Reuses the content-grounded MC path and stamps the subtype
+        + Bloom ceiling; banned options are already excluded by the MC path's
+        own distractor synthesis plus the assembly ban.
+        """
+        result = self._generate_multiple_choice(
+            question_id, objective_id, bloom_level,
+            BLOOM_LEVELS.get(bloom_level, BLOOM_LEVELS["understand"]),
+            source_chunks,
+        )
+        if isinstance(result, QuestionData):
+            # Drop any banned option the legacy path may have admitted.
+            result.choices = [c for c in result.choices
+                              if c.get("is_correct")
+                              or not _is_banned_option(c.get("text", ""))]
+            result.item_subtype = "mc_single"
+            result.bloom_level = self._clamp_and_record(
+                question_id, "mc_single", bloom_level)
+        return result
+
+    #: Subtype → builder-method name dispatch for the diversified tier.
+    _SUBTYPE_BUILDERS = {
+        "mc_multiple_response": "build_multiple_response",
+        "error_analysis": "build_error_analysis",
+        "fib_numeric": "build_numeric_fib",
+        "matching_mc": "build_matching_mc",
+        "ordering_mc": "build_ordering_mc",
+        "two_tier_answer": "build_two_tier",
+        "tf_justified": "build_tf_justified",
+        "mc_single": "build_mc_single",
+    }
+
+    def _build_by_subtype(
+        self, subtype: str, question_id: str, objective_id: str,
+        bloom_level: str, source_chunks: Optional[List[Dict[str, Any]]],
+    ):
+        """Dispatch to the builder for ``subtype``; returns QuestionData,
+        a List[QuestionData] (two-tier), or SkippedItem."""
+        method_name = self._SUBTYPE_BUILDERS.get(subtype, "build_mc_single")
+        return getattr(self, method_name)(
+            question_id, objective_id, bloom_level, source_chunks)
+
+    def generate_diversified(
+        self,
+        course_code: str,
+        objective_ids: List[str],
+        bloom_levels: List[str],
+        question_count: int = 10,
+        source_chunks: Optional[List[Dict[str, Any]]] = None,
+        chunks_by_objective: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+        ensure_objective_coverage: bool = False,
+    ) -> AssessmentData:
+        """Assemble a deterministic diversified assessment per the target mix.
+
+        Plans the item-subtype mix (``plan_item_mix``), dispatches each planned
+        slot to its builder (grounded to source chunk ids), and falls back to
+        classic single-answer MC on a SkippedItem so per-CO coverage still
+        holds. The realized subtype histogram + Bloom clamps + skips are
+        recorded on ``self._stats`` (also returned via ``last_generation_stats``).
+        """
+        session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        assessment_id = f"ASM-{course_code}-{session_id}"
+        self._stats = GenerationStats()
+        questions: List[QuestionData] = []
+        skipped: List[SkippedItem] = []
+
+        def _emit(result, subtype: str) -> None:
+            items = result if isinstance(result, list) else [result]
+            any_q = False
+            for it in items:
+                if isinstance(it, QuestionData):
+                    questions.append(it)
+                    self._stats.record_item(it.item_subtype or subtype)
+                    any_q = True
+                elif isinstance(it, SkippedItem):
+                    skipped.append(it)
+                    self._stats.record_skip(subtype, it.reason)
+            return any_q
+
+        def _scoped(obj_id: str) -> Optional[List[Dict[str, Any]]]:
+            return (chunks_by_objective or {}).get(obj_id) or source_chunks
+
+        plan = plan_item_mix(question_count)
+
+        if ensure_objective_coverage:
+            # One item per objective first (coverage wins), subtype rotating
+            # over the planned mix by position.
+            for idx, obj_id in enumerate(objective_ids):
+                subtype = plan[idx % len(plan)] if plan else "mc_single"
+                qid = f"Q-{str(uuid.uuid4())[:8]}"
+                result = self._build_by_subtype(
+                    subtype, qid, obj_id, bloom_levels[idx % len(bloom_levels)],
+                    _scoped(obj_id))
+                produced = _emit(result, subtype)
+                if not produced:
+                    # Fall back to classic MC so the CO still gets an item.
+                    fb = self.build_mc_single(
+                        f"Q-{str(uuid.uuid4())[:8]}", obj_id,
+                        bloom_levels[0], source_chunks)
+                    _emit(fb, "mc_single")
+
+        # Count-driven fill across the planned mix.
+        pos = 0
+        attempts = 0
+        max_attempts = max(1, question_count) * 4
+        while len(questions) < question_count and attempts < max_attempts:
+            subtype = plan[pos % len(plan)] if plan else "mc_single"
+            obj_id = objective_ids[pos % len(objective_ids)]
+            bloom = bloom_levels[pos % len(bloom_levels)]
+            qid = f"Q-{str(uuid.uuid4())[:8]}"
+            result = self._build_by_subtype(subtype, qid, obj_id, bloom, _scoped(obj_id))
+            produced = _emit(result, subtype)
+            if not produced:
+                fb = self.build_mc_single(
+                    f"Q-{str(uuid.uuid4())[:8]}", obj_id, bloom, source_chunks)
+                _emit(fb, "mc_single")
+            pos += 1
+            attempts += 1
+
+        # Trim to the requested count (a two-tier builder can overshoot by 1).
+        if len(questions) > question_count:
+            questions = questions[:question_count]
+
+        if self.capture:
+            self.capture.log_decision(
+                decision_type="assessment_generation",
+                decision=(
+                    f"Diversified assessment {assessment_id}: "
+                    f"{len(questions)} items across "
+                    f"{len(self._stats.subtype_counts)} subtypes"),
+                rationale=(
+                    f"Deterministic diversified tier realized subtype mix "
+                    f"{self._stats.subtype_counts} (target plan={dict((s, plan.count(s)) for s in set(plan))}); "
+                    f"{self._stats.to_dict()['bloom_clamp_count']} Bloom-ceiling "
+                    f"clamps, {len(skipped)} skips; all items grounded to source "
+                    f"chunk ids, no LLM in the loop"),
+            )
+
+        self.last_generation_stats = self._stats
+        return AssessmentData(
+            assessment_id=assessment_id,
+            title=f"Assessment: {course_code}",
+            course_code=course_code,
+            questions=questions,
+            objectives_targeted=objective_ids,
+            bloom_levels=bloom_levels,
+            skipped_items=skipped,
+        )
 
     def generate_for_objective(
         self,

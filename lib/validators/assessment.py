@@ -65,6 +65,36 @@ from lib.validators._assessment_helpers.thresholds import (  # noqa: F401
 logger = logging.getLogger(__name__)
 
 
+# Assessment-quality overhaul (Phase 2) — item subtypes that legitimately carry
+# more than one correct key on the ``multiple_choice``-typed surface. Mirrors
+# ``Trainforge.generators.assessment_generator`` item_subtype universe; kept as
+# a local constant so the validator never needs the generator at import time.
+_MULTI_KEY_SUBTYPES: frozenset = frozenset({"mc_multiple_response"})
+
+
+def _item_allows_multiple_keys(q: Dict[str, Any]) -> bool:
+    """True when a question legitimately carries >1 correct key.
+
+    A genuine multiple-response / select-all item is exempt from the
+    single-key ``WRONG_CORRECT_COUNT`` hard-fail. Detected via ANY of: a
+    ``question_type`` that normalizes to ``multiple_response``; an
+    ``item_subtype`` in the multi-key set (``mc_multiple_response``); or a
+    populated plural ``correct_answers`` list (the diversified tier's
+    self-describing shape). Two-tier answer/reason items keep a single key by
+    construction, so they are NOT force-exempted here — they only qualify if
+    they actually declare plural keys.
+    """
+    if _normalize_question_type(q) == "multiple_response":
+        return True
+    subtype = q.get("item_subtype")
+    if isinstance(subtype, str) and subtype.strip() in _MULTI_KEY_SUBTYPES:
+        return True
+    plural = q.get("correct_answers")
+    if isinstance(plural, list) and len(plural) > 1:
+        return True
+    return False
+
+
 def _emit_assessment_quality_decision(
     capture: Any,
     *,
@@ -410,7 +440,28 @@ class AssessmentQualityValidator:
                     )
                 )
             correct = [c for c in choices if c.get("is_correct")]
-            if len(correct) != 1:
+            # Assessment-quality overhaul (Phase 2) — RELAX the single-key
+            # hard-fail for genuine multiple-response / multi-key items. The
+            # deterministic diversified tier types a select-all item as
+            # item_subtype=mc_multiple_response (question_type stays a portable
+            # CC primitive, sometimes "multiple_choice") and carries the plural
+            # keys in ``correct_answers`` (each key ALSO flagged is_correct in
+            # ``choices``, so the item is self-describing). For such items a
+            # correct-count > 1 is CORRECT, not a defect — only a zero-key item
+            # is a real fault. Single-answer items keep the exact-one contract.
+            if _item_allows_multiple_keys(q):
+                if len(correct) < 1:
+                    issues.append(
+                        GateIssue(
+                            severity="error",
+                            code="WRONG_CORRECT_COUNT",
+                            message=(
+                                f"{q_id}: multiple-response item has "
+                                f"{len(correct)} correct answers (need >=1)"
+                            ),
+                        )
+                    )
+            elif len(correct) != 1:
                 issues.append(
                     GateIssue(
                         severity="error",

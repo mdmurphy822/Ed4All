@@ -6,10 +6,13 @@ Covers the Phase-5 wiring slice of
 * the new ``assessment_synthesis`` phase exists in BOTH ``textbook_to_course``
   and ``course_generation``, sits BEFORE ``packaging``, and is declared
   ``agents: []`` (the validator-only-phase / phase-name-dispatch pattern);
-* the phase wires exactly the five contracted gates
+* the phase wires exactly the seven contracted gates
   (``qti_well_formed`` critical, ``assessment_objective_alignment`` critical,
   ``discussion_assignment_grounded`` warning, ``cumulative_assessment`` warning,
-  ``synthesized_quiz_distractor`` warning);
+  ``synthesized_quiz_distractor`` warning, ``assessment_item_writing`` warning,
+  ``assessment_quality`` warning — the last two added by the assessment-quality
+  overhaul: the Haladyna item-writing linter + the AssessmentQualityValidator
+  ported onto the shipped 06_assessments product surface);
 * ``packaging`` depends on ``assessment_synthesis`` (both the default and the
   two-pass ``depends_on_when_env_value`` dep list);
 * ``MCP/core/executor.py::_PHASE_TOOL_MAPPING['assessment_synthesis']`` routes
@@ -64,6 +67,21 @@ EXPECTED_GATES = {
         "warning",
         "lib.validators.synthesized_quiz_distractor."
         "SynthesizedQuizDistractorValidator",
+    ),
+    # Assessment-quality overhaul: deterministic Haladyna item-writing linter
+    # over the shipped 06_assessments QTI items. Warning-day-1; reuses the
+    # qti_well_formed input builder.
+    "assessment_item_writing": (
+        "warning",
+        "lib.validators.assessment_item_writing."
+        "AssessmentItemWritingValidator",
+    ),
+    # Assessment-quality overhaul: AssessmentQualityValidator ported onto the
+    # shipped 06_assessments product surface (placeholder / TOC / verb-less /
+    # diversity) via the _build_assessment_quality QTI fallback. Warning-day-1.
+    "assessment_quality": (
+        "warning",
+        "lib.validators.assessment.AssessmentQualityValidator",
     ),
 }
 

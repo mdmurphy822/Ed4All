@@ -99,6 +99,12 @@ _AUTO_GRADABLE_PROFILES = frozenset({
     "cc.multiple_response.v0p1",
     "cc.true_false.v0p1",
     "cc.fib.v0p1",
+    # cc.pattern_match.v0p1 is the sixth CC QTI 1.2 profile (optional): a
+    # response_str/render_fib fill-in whose resprocessing ORs one varequal per
+    # accepted answer string. Auto-gradable — it must carry a resolvable
+    # answer key like the other four. (assessment-quality overhaul — the
+    # emitter emits it for a fill_in_blank declaring multiple correct_answers.)
+    "cc.pattern_match.v0p1",
 })
 _MANUAL_PROFILES = frozenset({
     "cc.essay.v0p1",

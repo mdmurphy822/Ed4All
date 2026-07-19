@@ -129,3 +129,45 @@ def test_placeholder_hit_surfaces_in_capture() -> None:
     call = capture.calls[0]
     assert call["decision"].startswith("failed:")
     assert "PLACEHOLDER_QUESTION" in call["rationale"]
+
+
+# --------------------------------------------------------------------------- #
+# Assessment-quality overhaul (Phase 2) — WRONG_CORRECT_COUNT relaxation for
+# genuine multiple-response / multi-key items.
+# --------------------------------------------------------------------------- #
+def _codes_for(questions) -> set:
+    result = AssessmentQualityValidator().validate(
+        {"assessment_data": {"questions": questions}}
+    )
+    return {i.code for i in result.issues}
+
+
+def _two_key_mc(**over):
+    q = _make_question(question_id="MK")
+    # Flag a second choice correct → two keys.
+    q["choices"][1]["is_correct"] = True
+    q.update(over)
+    return q
+
+
+def test_wrong_correct_count_still_fires_for_plain_mc():
+    """A plain multiple_choice with two keys is STILL a defect (unchanged)."""
+    assert "WRONG_CORRECT_COUNT" in _codes_for([_two_key_mc()])
+
+
+def test_wrong_correct_count_relaxed_for_mr_subtype():
+    """item_subtype=mc_multiple_response exempts the single-key hard-fail."""
+    q = _two_key_mc(item_subtype="mc_multiple_response")
+    assert "WRONG_CORRECT_COUNT" not in _codes_for([q])
+
+
+def test_wrong_correct_count_relaxed_for_multiple_response_type():
+    """question_type=multiple_response is not gated by the MC single-key check."""
+    q = _two_key_mc(question_type="multiple_response")
+    assert "WRONG_CORRECT_COUNT" not in _codes_for([q])
+
+
+def test_wrong_correct_count_relaxed_for_plural_correct_answers():
+    """A populated plural correct_answers marks a legitimate multi-key item."""
+    q = _two_key_mc(correct_answers=["A", "B"])
+    assert "WRONG_CORRECT_COUNT" not in _codes_for([q])

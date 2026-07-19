@@ -381,11 +381,33 @@ _ASSESSMENTS_MANIFEST_NAME = "manifest.json"
 _ASSESSMENTS_TITLE = "Assessments"
 
 # IMS CC 1.3 resource-type strings (Courseforge/docs/troubleshooting.md:64-66).
+# These are the DISTINCTLY-assessment QTI resource types (the ``.values()`` set
+# is used elsewhere to discriminate assessment resources from ordinary content).
 _ASSESSMENT_RES_TYPE: Dict[str, str] = {
     "qti": "imsqti_xmlv1p2/imscc_xmlv1p3/assessment",
     "discussion": "imsdt_xmlv1p3",
     "assignment": "associatedcontent/imscc_xmlv1p3/learning-application-resource",
 }
+
+# 06_assessments/ sidecar kinds that ship as a plain CC ``webcontent`` resource
+# (NOT a distinctly-assessment QTI type). ``answer_key`` is the instructor-facing
+# sidecar (a rendered accessible HTML page written by
+# ``Courseforge/scripts/answer_key_emitter.py``); a CC-conformant importer treats
+# it as an ordinary content page. Kept OUT of ``_ASSESSMENT_RES_TYPE`` so the
+# distinctly-assessment ``.values()`` set stays the three QTI types.
+_ASSESSMENT_WEBCONTENT_RES_TYPE: Dict[str, str] = {
+    "answer_key": "webcontent",
+}
+
+
+def _assessment_res_type_for_kind(kind: str) -> Optional[str]:
+    """Resolve a sidecar ``kind`` to its CC resource-type string, or ``None``.
+
+    Unions the distinctly-assessment QTI map with the webcontent-sidecar map so
+    ``build_manifest`` + ``_classify_assessment`` accept ``answer_key`` while the
+    bare ``_ASSESSMENT_RES_TYPE`` set stays the three QTI types.
+    """
+    return _ASSESSMENT_RES_TYPE.get(kind) or _ASSESSMENT_WEBCONTENT_RES_TYPE.get(kind)
 
 # Root-element → assessment-type inference (namespace-stripped local name).
 _ROOT_TO_TYPE: Dict[str, str] = {
@@ -492,7 +514,7 @@ def _classify_assessment(
     element) is dropped with a warning.
     """
     kind = (declared_type or "").strip().lower()
-    if kind not in _ASSESSMENT_RES_TYPE:
+    if _assessment_res_type_for_kind(kind) is None:
         root_tag = _local_root_tag(xml_path)
         inferred = _ROOT_TO_TYPE.get((root_tag or "").lower())
         if inferred is None:
@@ -957,7 +979,7 @@ def build_manifest(
     if assessments and not outline_only:
         assessments_item: Optional[ET.Element] = None  # lazy top-level fallback
         for assessment in assessments:
-            res_type = _ASSESSMENT_RES_TYPE.get(assessment.kind)
+            res_type = _assessment_res_type_for_kind(assessment.kind)
             if res_type is None:  # defensive; classifier never yields others
                 continue
             parent_item = (

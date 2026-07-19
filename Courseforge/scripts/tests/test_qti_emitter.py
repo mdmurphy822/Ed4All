@@ -31,6 +31,7 @@ from qti_emitter import (  # noqa: E402
     assessment_to_qti,
     assignment_to_resource,
     discussion_to_imsdt,
+    itemfeedback_enabled,
     question_to_qti_item,
     resolve_cc_profile,
 )
@@ -503,3 +504,414 @@ def test_generator_shaped_quiz_passes_qti_well_formed_gate():
         {"qti_strings": [{"id": "week_01_quiz.xml", "xml": xml_str}]}
     )
     assert result.passed is True, [i.code for i in result.issues]
+
+
+# ===========================================================================
+# ITEMFEEDBACK — per-distractor misconception notes + worked-solution feedback
+# (assessment-quality overhaul). Default ON; kill-switch
+# ED4ALL_ASSESSMENT_ITEMFEEDBACK=0.
+# ===========================================================================
+import xml.etree.ElementTree as _ET  # noqa: E402
+
+
+def _localname(tag: str) -> str:
+    return tag.rsplit("}", 1)[1] if "}" in tag else tag
+
+
+def _iter_local(root, local: str):
+    for el in root.iter():
+        if _localname(el.tag) == local:
+            yield el
+
+
+def _mc_with_feedback(qid: str = "q-mc-fb") -> dict:
+    """A generator-shaped MC carrying a worked-solution ``feedback`` plus two
+    per-distractor ``misconception_note`` keys (the exact shape the diversified
+    tier authors)."""
+    return {
+        "question_id": qid,
+        "question_type": "multiple_choice",
+        "stem": "<p>What is 2 + 2?</p>",
+        "bloom_level": "remember",
+        "objective_id": "CO-10",
+        "choices": [
+            {"text": "<p>4</p>", "is_correct": True},
+            {"text": "<p>22</p>", "is_correct": False,
+             "misconception_note": "Concatenated the digits instead of adding."},
+            {"text": "<p>5</p>", "is_correct": False,
+             "misconception_note": "Off-by-one counting error."},
+        ],
+        "feedback": "<p>2 + 2 = 4 by counting up two from two.</p>",
+        "points": 1.0,
+    }
+
+
+def test_itemfeedback_default_on_emits_solution_and_response():
+    item = question_to_qti_item(_mc_with_feedback())
+    feedbacks = list(_iter_local(item, "itemfeedback"))
+    # 1 Solution (worked solution) + 2 Response (per-distractor) = 3.
+    assert len(feedbacks) == 3
+    # Exactly one carries a <solution>; the other two a <flow_mat>.
+    solutions = [fb for fb in feedbacks if list(_iter_local(fb, "solution"))]
+    assert len(solutions) == 1
+    # displayfeedback linkage: every linkrefid resolves to an itemfeedback ident.
+    idents = {fb.get("ident") for fb in feedbacks}
+    dfs = list(_iter_local(item, "displayfeedback"))
+    assert len(dfs) == 3  # 1 Solution + 2 Response
+    for df in dfs:
+        assert df.get("linkrefid") in idents
+    ftypes = sorted(df.get("feedbacktype") for df in dfs)
+    assert ftypes == ["Response", "Response", "Solution"]
+
+
+def test_itemfeedback_default_on_xsd_valid_and_roundtrips():
+    xml_str = assessment_to_qti(_assessment([_mc_with_feedback()]))
+    _assert_xsd_valid(xml_str, _QTI_XSD)
+    parsed = QTIParser().parse_string(xml_str)
+    pq = parsed.questions[0]
+    # The scoring key survives the added feedback respconditions.
+    assert pq.correct_response == "A"
+
+
+def test_itemfeedback_passes_qti_well_formed_gate():
+    from lib.validators.qti_well_formed import QtiWellFormedValidator
+
+    xml_str = assessment_to_qti(_assessment([_mc_with_feedback()]))
+    result = QtiWellFormedValidator().validate(
+        {"qti_strings": [{"id": "week_01_quiz.xml", "xml": xml_str}]}
+    )
+    assert result.passed is True, [i.code for i in result.issues]
+
+
+def test_itemfeedback_off_is_byte_identical_to_no_feedback(monkeypatch):
+    """ED4ALL_ASSESSMENT_ITEMFEEDBACK=0 emits byte-identically to the same item
+    with the feedback + misconception fields stripped (default-ON parse)."""
+    monkeypatch.setenv("ED4ALL_ASSESSMENT_ITEMFEEDBACK", "0")
+    assert itemfeedback_enabled() is False
+    xml_off = assessment_to_qti(_assessment([_mc_with_feedback()]))
+    assert "<itemfeedback" not in xml_off
+    assert "displayfeedback" not in xml_off
+    monkeypatch.delenv("ED4ALL_ASSESSMENT_ITEMFEEDBACK")
+    assert itemfeedback_enabled() is True
+
+    stripped = _mc_with_feedback()
+    stripped.pop("feedback")
+    for c in stripped["choices"]:
+        c.pop("misconception_note", None)
+    xml_stripped = assessment_to_qti(_assessment([stripped]))
+    assert xml_off == xml_stripped
+
+
+def test_itemfeedback_off_variants_parse_with_fallback(monkeypatch):
+    for falsey in ("0", "false", "no", "off", "FALSE", "Off"):
+        monkeypatch.setenv("ED4ALL_ASSESSMENT_ITEMFEEDBACK", falsey)
+        assert itemfeedback_enabled() is False
+    for truthy in ("1", "true", "yes", "on", "garbage", ""):
+        monkeypatch.setenv("ED4ALL_ASSESSMENT_ITEMFEEDBACK", truthy)
+        assert itemfeedback_enabled() is True
+
+
+def test_itemfeedback_solution_only_when_no_notes():
+    q = _mc_question()  # no notes, no feedback
+    q["feedback"] = "<p>The additive identity is 0.</p>"
+    item = question_to_qti_item(q)
+    feedbacks = list(_iter_local(item, "itemfeedback"))
+    assert len(feedbacks) == 1
+    assert list(_iter_local(feedbacks[0], "solution"))
+    xml_str = assessment_to_qti(_assessment([q]))
+    _assert_xsd_valid(xml_str, _QTI_XSD)
+
+
+# ===========================================================================
+# NEW TYPE EMISSION — multiple_response via correct_answers, pattern_match,
+# error-analysis / matching / ordering / two-tier as CC primitives.
+# ===========================================================================
+def _mr_via_correct_answers() -> dict:
+    """Generator-shaped MR: keys carried in the plural ``correct_answers`` as
+    choice TEXTS (no scalar correct_answer), is_correct flags set."""
+    return {
+        "question_id": "q-mr-ca",
+        "question_type": "multiple_response",
+        "stem": "<p>Select all correct steps.</p>",
+        "bloom_level": "apply",
+        "objective_id": "CO-11",
+        "choices": [
+            {"text": "<p>Distribute the coefficient</p>", "is_correct": True},
+            {"text": "<p>Add the exponents</p>", "is_correct": False,
+             "misconception_note": "Exponents add only on multiplication of like bases."},
+            {"text": "<p>Combine like terms</p>", "is_correct": True},
+            {"text": "<p>Drop the sign</p>", "is_correct": False},
+        ],
+        "correct_answers": ["Distribute the coefficient", "Combine like terms"],
+        "feedback": "<p>The correct steps come straight from the worked solution.</p>",
+        "points": 2.0,
+    }
+
+
+def test_mr_correct_answers_plural_resolves_and_of_varequal():
+    q = _mr_via_correct_answers()
+    item = question_to_qti_item(q)
+    # The SCORING key is the <and> of the two correct idents (feedback
+    # respconditions add their own varequals outside the <and>).
+    and_el = next(_iter_local(item, "and"))
+    scoring = sorted(ve.text for ve in _iter_local(and_el, "varequal"))
+    assert scoring == ["A", "C"]
+    xml_str = assessment_to_qti(_assessment([q]))
+    _assert_xsd_valid(xml_str, _QTI_XSD)
+    # profile is multiple_response.
+    profiles = [fe.text for fe in item.iter("fieldentry")]
+    assert "cc.multiple_response.v0p1" in profiles
+
+
+def test_mr_correct_answers_no_is_correct_still_resolves():
+    """Plural correct_answers alone (no is_correct flags) must resolve the key
+    by choice-text match — the answer-key ladder extension for MR."""
+    q = _mr_via_correct_answers()
+    for c in q["choices"]:
+        c.pop("is_correct", None)
+    item = question_to_qti_item(q)
+    and_el = next(_iter_local(item, "and"))
+    correct = {ve.text for ve in _iter_local(and_el, "varequal")}
+    # Keys A + C resolved by text.
+    assert correct == {"A", "C"}
+
+
+def test_mr_passes_qti_well_formed_gate():
+    from lib.validators.qti_well_formed import QtiWellFormedValidator
+
+    xml_str = assessment_to_qti(_assessment([_mr_via_correct_answers()]))
+    result = QtiWellFormedValidator().validate(
+        {"qti_strings": [{"id": "week_01_quiz.xml", "xml": xml_str}]}
+    )
+    assert result.passed is True, [i.code for i in result.issues]
+
+
+def _pattern_match_fib() -> dict:
+    """A fill_in_blank with MULTIPLE accepted answer strings → pattern_match."""
+    return {
+        "question_id": "q-pm-001",
+        "question_type": "fill_in_blank",
+        "stem": "<p>Write one-half as a decimal or fraction.</p>",
+        "bloom_level": "apply",
+        "objective_id": "CO-12",
+        "choices": [],
+        "correct_answers": ["1/2", "0.5", ".5"],
+        "feedback": "<p>Accepted: 1/2, 0.5 — set the accepted-answer set in the LMS.</p>",
+        "points": 2.0,
+    }
+
+
+def test_pattern_match_profile_and_or_of_varequal():
+    q = _pattern_match_fib()
+    assert resolve_cc_profile("pattern_match") == "cc.pattern_match.v0p1"
+    item = question_to_qti_item(q)
+    profiles = [fe.text for fe in item.iter("fieldentry")]
+    assert "cc.pattern_match.v0p1" in profiles
+    # response_str/render_fib presentation, <or> of one varequal per accepted.
+    assert item.find(".//response_str") is not None
+    assert item.find(".//render_fib") is not None
+    or_els = list(_iter_local(item, "or"))
+    assert len(or_els) == 1
+    varequals = [ve.text for ve in _iter_local(or_els[0], "varequal")]
+    assert varequals == ["1/2", "0.5", ".5"]
+
+
+def test_pattern_match_xsd_valid_and_key_recovered():
+    q = _pattern_match_fib()
+    xml_str = assessment_to_qti(_assessment([q]))
+    _assert_xsd_valid(xml_str, _QTI_XSD)
+    parsed = QTIParser().parse_string(xml_str)
+    # QTIParser reads the key from resprocessing regardless of inferred type.
+    assert parsed.questions[0].correct_response in {"1/2", "0.5", ".5"}
+
+
+def test_pattern_match_passes_qti_well_formed_gate():
+    from lib.validators.qti_well_formed import QtiWellFormedValidator
+
+    xml_str = assessment_to_qti(_assessment([_pattern_match_fib()]))
+    result = QtiWellFormedValidator().validate(
+        {"qti_strings": [{"id": "week_01_quiz.xml", "xml": xml_str}]}
+    )
+    assert result.passed is True, [i.code for i in result.issues]
+
+
+def test_single_correct_answer_fib_stays_exact_fib():
+    """One accepted answer → cc.fib.v0p1 exact-match, NOT pattern_match."""
+    q = {
+        "question_id": "q-fib-single",
+        "question_type": "fill_in_blank",
+        "stem": "<p>Compute 3 + 4.</p>",
+        "bloom_level": "apply",
+        "objective_id": "CO-13",
+        "correct_answers": ["7"],
+        "points": 1.0,
+    }
+    item = question_to_qti_item(q)
+    profiles = [fe.text for fe in item.iter("fieldentry")]
+    assert "cc.fib.v0p1" in profiles
+    assert item.find(".//or") is None
+
+
+def _error_analysis_mc() -> dict:
+    """Error-analysis MC (generator shape): step labels as options, the key
+    carries the misconception_note naming the injected error."""
+    return {
+        "question_id": "q-ea-001",
+        "question_type": "multiple_choice",
+        "stem": ("<p>A student solved 2(x+3)=10 as follows:</p>"
+                 "<ol><li>Step 1: 2x+3=10</li><li>Step 2: 2x=7</li>"
+                 "<li>Step 3: x=3.5</li></ol><p>Which step contains the error?</p>"),
+        "bloom_level": "analyze",
+        "objective_id": "CO-14",
+        "choices": [
+            {"text": "<p>Step 1</p>", "is_correct": True,
+             "misconception_note": "Failed to distribute the 2 across (x+3)."},
+            {"text": "<p>Step 2</p>", "is_correct": False},
+            {"text": "<p>Step 3</p>", "is_correct": False},
+        ],
+        "correct_answer": "Step 1",
+        "item_subtype": "error_analysis",
+        "feedback": "<p>Step 1 is incorrect. Distribute the 2 first: 2x+6=10.</p>",
+        "points": 3.0,
+    }
+
+
+def test_error_analysis_emits_item_subtype_metadata_and_key_feedback():
+    q = _error_analysis_mc()
+    item = question_to_qti_item(q)
+    # item_subtype recorded as machine-readable metadata.
+    fields = {}
+    for fld in _iter_local(item, "qtimetadatafield"):
+        lab = fld.find("fieldlabel")
+        ent = fld.find("fieldentry")
+        if lab is not None and ent is not None:
+            fields[lab.text] = ent.text
+    assert fields.get("item_subtype") == "error_analysis"
+    assert fields.get("cc_profile") == "cc.multiple_choice.v0p1"
+    # The key choice carries a misconception_note → a Response itemfeedback for it.
+    responses = [df for df in _iter_local(item, "displayfeedback")
+                 if df.get("feedbacktype") == "Response"]
+    assert len(responses) == 1
+    # It links the key choice A.
+    rc_varequal = None
+    for rc in _iter_local(item, "respcondition"):
+        if rc.get("continue") == "Yes":
+            rc_varequal = next(_iter_local(rc, "varequal")).text
+    assert rc_varequal == "A"
+
+
+def test_error_analysis_xsd_valid_and_passes_gate():
+    from lib.validators.qti_well_formed import QtiWellFormedValidator
+
+    xml_str = assessment_to_qti(_assessment([_error_analysis_mc()]))
+    _assert_xsd_valid(xml_str, _QTI_XSD)
+    parsed = QTIParser().parse_string(xml_str)
+    assert parsed.questions[0].correct_response == "A"
+    result = QtiWellFormedValidator().validate(
+        {"qti_strings": [{"id": "quiz.xml", "xml": xml_str}]}
+    )
+    assert result.passed is True, [i.code for i in result.issues]
+
+
+def _two_tier_items() -> list:
+    """Two linked MC items (answer + reason) — the generator emits these as a
+    LIST; the emitter emits each as a plain cc.multiple_choice with linkage
+    metadata."""
+    answer = {
+        "question_id": "q-2t-001",
+        "question_type": "multiple_choice",
+        "stem": "<p><strong>Tier 1.</strong> Which definition matches <em>slope</em>?</p>",
+        "bloom_level": "analyze",
+        "objective_id": "CO-15",
+        "choices": [
+            {"text": "<p>rise over run</p>", "is_correct": True},
+            {"text": "<p>run over rise</p>", "is_correct": False},
+            {"text": "<p>the y-intercept</p>", "is_correct": False},
+        ],
+        "item_subtype": "two_tier_answer",
+        "linked_item_id": "q-2t-001-reason",
+        "feedback": "<p>Slope is rise over run.</p>",
+        "points": 1.0,
+    }
+    reason = {
+        "question_id": "q-2t-001-reason",
+        "question_type": "multiple_choice",
+        "stem": "<p><strong>Tier 2.</strong> Why is your Tier 1 answer correct?</p>",
+        "bloom_level": "analyze",
+        "objective_id": "CO-15",
+        "choices": [
+            {"text": "<p>It measures vertical change per horizontal change.</p>", "is_correct": True},
+            {"text": "<p>It is always positive.</p>", "is_correct": False,
+             "misconception_note": "Slope can be negative or zero."},
+            {"text": "<p>It equals the y-value.</p>", "is_correct": False},
+        ],
+        "item_subtype": "two_tier_reason",
+        "linked_item_id": "q-2t-001",
+        "feedback": "<p>Slope is the ratio of vertical to horizontal change.</p>",
+        "points": 2.0,
+    }
+    return [answer, reason]
+
+
+def test_two_tier_emits_two_linked_mc_items():
+    answer, reason = _two_tier_items()
+    a_item = question_to_qti_item(answer)
+    r_item = question_to_qti_item(reason)
+    a_fields = {fld.find("fieldlabel").text: fld.find("fieldentry").text
+                for fld in _iter_local(a_item, "qtimetadatafield")}
+    r_fields = {fld.find("fieldlabel").text: fld.find("fieldentry").text
+                for fld in _iter_local(r_item, "qtimetadatafield")}
+    assert a_fields["item_subtype"] == "two_tier_answer"
+    assert a_fields["linked_item_id"] == "q-2t-001-reason"
+    assert r_fields["item_subtype"] == "two_tier_reason"
+    assert r_fields["linked_item_id"] == "q-2t-001"
+    # Both stay portable cc.multiple_choice.
+    assert a_fields["cc_profile"] == "cc.multiple_choice.v0p1"
+    assert r_fields["cc_profile"] == "cc.multiple_choice.v0p1"
+
+
+def test_two_tier_xsd_valid_and_passes_gate():
+    from lib.validators.qti_well_formed import QtiWellFormedValidator
+
+    xml_str = assessment_to_qti(_assessment(_two_tier_items()))
+    _assert_xsd_valid(xml_str, _QTI_XSD)
+    parsed = QTIParser().parse_string(xml_str)
+    assert len(parsed.questions) == 2
+    assert all(q.correct_response == "A" for q in parsed.questions)
+    result = QtiWellFormedValidator().validate(
+        {"qti_strings": [{"id": "quiz.xml", "xml": xml_str}]}
+    )
+    assert result.passed is True, [i.code for i in result.issues]
+
+
+def test_diversified_quiz_all_types_passes_gate():
+    """A quiz mixing every diversified shape passes the acceptance oracle and
+    is XSD-valid."""
+    from lib.validators.qti_well_formed import QtiWellFormedValidator
+
+    questions = [
+        _mc_with_feedback(),
+        _mr_via_correct_answers(),
+        _pattern_match_fib(),
+        _error_analysis_mc(),
+        *_two_tier_items(),
+        _numeric_fib_question(),
+        _tf_question(),
+    ]
+    xml_str = assessment_to_qti(_assessment(questions))
+    _assert_xsd_valid(xml_str, _QTI_XSD)
+    result = QtiWellFormedValidator().validate(
+        {"qti_strings": [{"id": "week_01_quiz.xml", "xml": xml_str}]}
+    )
+    assert result.passed is True, [i.code for i in result.issues]
+    # Every emitted item profile is in the supported six-profile set.
+    root = _ET.fromstring(xml_str)
+    for field in root.iter(f"{{{QTI_NS}}}qtimetadatafield"):
+        label = field.find(f"{{{QTI_NS}}}fieldlabel")
+        entry = field.find(f"{{{QTI_NS}}}fieldentry")
+        if label is not None and label.text == "cc_profile" and entry is not None:
+            assert entry.text == CC_EXAM_PROFILE or entry.text in SUPPORTED_ITEM_PROFILES
+
+
+def test_pattern_match_in_supported_profiles():
+    assert "cc.pattern_match.v0p1" in SUPPORTED_ITEM_PROFILES

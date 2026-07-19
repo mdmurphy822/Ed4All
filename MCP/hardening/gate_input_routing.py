@@ -549,23 +549,111 @@ def _build_assessment_quality(
         "output_path",
         "assessment_id",  # trainforge fallback
     )
-    if not path_str:
-        return {}, ["ASSESSMENTS_FILE_MISSING"]
+    if path_str:
+        try:
+            path = Path(path_str)
+            ok = path.exists() and path.is_file()
+            if ok:
+                try:
+                    size = path.stat().st_size
+                except OSError:
+                    size = 0
+                ok = size > 0
+        except (OSError, ValueError, TypeError):
+            ok = False
+        if ok:
+            return {"assessment_path": str(path)}, []
+
+    # Assessment-quality overhaul (Phase 2) — PORT AssessmentQualityValidator
+    # onto the W10 product surface. The ``assessment_synthesis`` phase ships no
+    # questions JSON (only QTI XML + manifest), so when no assessment JSON
+    # resolves we parse the shipped ``06_assessments/*.xml`` into the
+    # ``{"questions": [...]}`` shape the validator consumes. This makes the
+    # placeholder / TOC-fragment / verb-less-stem / diversity checks fire on the
+    # LMS-imported cartridge, not only the internal authored blocks. The
+    # trainforge_assessment phase (JSON path present) is byte-identical — this
+    # fallback only triggers when no JSON path exists.
+    qti_data = _assessment_data_from_qti_surface(phase_outputs, workflow_params)
+    if qti_data is not None and qti_data.get("questions"):
+        return {"assessment_data": qti_data}, []
+
+    return {}, ["ASSESSMENTS_FILE_MISSING"]
+
+
+def _assessment_data_from_qti_surface(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Parse the W10 ``06_assessments/*.xml`` into ``{"questions": [...]}``.
+
+    Reuses the shared QTI normalizer from
+    ``lib.validators.assessment_item_writing`` so the parse stays in one place.
+    Each QTI ``<item>`` becomes a question dict carrying ``question_type`` (from
+    ``cc_profile``), ``stem``, ``choices`` (``{id, text, is_correct}``),
+    ``correct_answer``, and ``objective_id`` (the item ``title``). Returns
+    ``None`` when no ``06_assessments`` directory resolves. Best-effort: any
+    parse failure is skipped (well-formedness is owned by ``qti_well_formed``).
+    """
+    import xml.etree.ElementTree as _ET
+
+    # Resolve the qti_dir the same way _build_qti_well_formed does.
+    explicit = _locate(phase_outputs, "qti_dir", "assessment_dir")
+    qti_dir: Optional[Path] = None
+    if isinstance(explicit, str) and explicit:
+        qti_dir = Path(explicit)
+    else:
+        export_dir = _find_project_export_dir(phase_outputs, workflow_params)
+        if export_dir is not None:
+            qti_dir = export_dir / "06_assessments"
+    if qti_dir is None or not qti_dir.exists() or not qti_dir.is_dir():
+        return None
 
     try:
-        path = Path(path_str)
-        if not path.exists() or not path.is_file():
-            return {}, ["ASSESSMENTS_FILE_MISSING"]
-        try:
-            size = path.stat().st_size
-        except OSError:
-            size = 0
-        if size <= 0:
-            return {}, ["ASSESSMENTS_FILE_MISSING"]
-    except (OSError, ValueError, TypeError):
-        return {}, ["ASSESSMENTS_FILE_MISSING"]
+        from lib.validators.assessment_item_writing import (
+            _item_from_xml,
+            _iter_local,
+        )
+    except Exception:  # noqa: BLE001 — degrade cleanly
+        return None
 
-    return {"assessment_path": str(path)}, []
+    _profile_to_type = {
+        "cc.multiple_choice.v0p1": "multiple_choice",
+        "cc.multiple_response.v0p1": "multiple_response",
+        "cc.true_false.v0p1": "true_false",
+        "cc.fib.v0p1": "fill_in_blank",
+        "cc.essay.v0p1": "essay",
+    }
+    questions: List[Dict[str, Any]] = []
+    for xml_path in sorted(qti_dir.rglob("*.xml")):
+        try:
+            root = _ET.fromstring(xml_path.read_text(encoding="utf-8"))
+        except (OSError, _ET.ParseError):
+            continue
+        for elem in _iter_local(root, "item"):
+            norm = _item_from_xml(elem)
+            q_type = _profile_to_type.get(norm["cc_profile"], "")
+            if not q_type:
+                # Non-CC / assessment container item — skip.
+                continue
+            correct = [c for c in norm["options"] if c.get("is_correct")]
+            questions.append({
+                "question_id": norm["id"],
+                "question_type": q_type,
+                "stem": norm["stem_html"],
+                "choices": [
+                    {
+                        "id": c["id"],
+                        "text": c["text"],
+                        "is_correct": c["is_correct"],
+                    }
+                    for c in norm["options"]
+                ],
+                "correct_answer": (correct[0]["text"] if correct else None),
+                "objective_id": "",
+            })
+    if not questions:
+        return None
+    return {"questions": questions}
 
 
 def _build_bloom_alignment(
@@ -3437,6 +3525,20 @@ def default_router() -> GateInputRouter:
     # missing corpus or an unbuilt harness.
     r.register(
         "lib.validators.synthesized_quiz_distractor.SynthesizedQuizDistractorValidator",
+        _build_qti_well_formed,
+    )
+    # Assessment-quality overhaul — AssessmentItemWritingValidator (the
+    # deterministic Haladyna item-writing linter) fires at the
+    # ``assessment_synthesis`` phase as the warning-severity
+    # ``assessment_item_writing`` gate. Its QTI input contract is IDENTICAL to
+    # QtiWellFormedValidator / SynthesizedQuizDistractorValidator (it globs
+    # ``inputs["qti_dir"] = <export>/06_assessments`` for ``*.xml``), so it
+    # reuses that builder verbatim; the Bloom-honesty ceiling arm activates only
+    # when a structured ``assessment_items`` list is additionally supplied (the
+    # documented deferred metadata-surface seam) and otherwise degrades to an
+    # info-severity note. Warning day-1; deferred critical-flip (WS3/W4 pattern).
+    r.register(
+        "lib.validators.assessment_item_writing.AssessmentItemWritingValidator",
         _build_qti_well_formed,
     )
     # ConceptGraphValidator fires at ``concept_extraction`` and needs
