@@ -623,7 +623,9 @@ def test_doubled_retry_skipped_when_it_would_overflow_context():
         n_pend = int(user.split("(")[1].split(",")[1].split()[0])
         if n_pend == 4:
             return "overflow", "length"
-        return '{"levels": {"1": 3}}', "stop"
+        if "Alpha" in user:
+            return '{"levels": {"1": 3, "2": 4}}', "stop"
+        return '{"levels": {"3": 4, "4": 3}}', "stop"
 
     base = hj._max_tokens_for(4)
     parsed, wmeta = hj._judge_one_window(
@@ -789,3 +791,65 @@ def test_partial_split_verdict_is_never_cached(tmp_path, monkeypatch):
     assert meta2["cache_hits"] == 0  # nothing served from a partial verdict
     assert m2 == {1: 4, 24: 3}
     assert len(list((tmp_path / "heading_judge_cache").rglob("*.json"))) == 1
+
+
+# ── COVERAGE contract: omitted pendings heal via split; gaps never cache. ────
+def test_partial_coverage_heals_via_missing_id_split():
+    # Full window returns valid JSON covering only 2 of 4 pendings; the heal
+    # splits over the MISSING ids and merges.
+    def post(messages, max_tokens):
+        user = messages[1]["content"]
+        n_pend = int(user.split("(")[1].split(",")[1].split()[0])
+        if n_pend == 4:
+            return '{"levels": {"1": 3, "2": 4}}', "stop"  # omits 3, 4
+        if "Gamma" in user and "Delta" not in user:
+            return '{"levels": {"3": 4}}', "stop"
+        return '{"levels": {"4": 3}}', "stop"
+
+    parsed, wmeta = hj._judge_one_window(
+        _windowed_digest(), 5, 4, hj._max_tokens_for(4), post_fn=post,
+        win_pending=[1, 2, 3, 4])
+    assert parsed == {"levels": {"1": 3, "2": 4, "3": 4, "4": 3}}
+    assert wmeta.get("coverage_healed") == 2
+    assert "coverage_gap" not in wmeta
+
+
+def test_unhealed_coverage_gap_blocks_caching(tmp_path, monkeypatch):
+    monkeypatch.setenv("SEMANTIK_CACHE_DIR", str(tmp_path))
+    plan = hj.build_heading_skeleton(_prov())  # pendings [1, 24]
+
+    def post(messages, max_tokens):
+        # ALWAYS omits id 24, whole window and halves alike → gap survives
+        return '{"levels": {"1": 4}}', "stop"
+
+    m, meta = hj.judge_heading_levels(plan, post_fn=post, use_cache=True,
+                                      model="m")
+    assert m == {1: 4}
+    # gap 1 of 2 pendings > tolerance max(1, 2//50)=1? gap==1 <= 1 → tolerated.
+    # So this verdict is WITHIN tolerance and may cache — assert the boundary:
+    # with 2 pendings a 1-id gap is honest fail-open (matches live ch01 0.3%).
+    assert len(list((tmp_path / "heading_judge_cache").rglob("*.json"))) == 1
+
+
+def test_large_coverage_gap_cache_is_healed_on_hit(tmp_path, monkeypatch):
+    # Simulate the live ch06 poisoning: a pre-contract cached verdict with a
+    # big gap must be treated as a MISS on the next run and re-judged.
+    monkeypatch.setenv("SEMANTIK_CACHE_DIR", str(tmp_path))
+    plan = hj.build_heading_skeleton(_prov())
+    digest, win_pending = plan.windows[0]
+    base = hj._max_tokens_for(len(win_pending))
+    key = hj._window_cache_key(digest, "m", base)
+    # poison: covers NEITHER pending... cover 0 of 2 → gap 2 > tol 1
+    hj._cache_put(key, {"levels": {"999": 3}})
+
+    def post(messages, max_tokens):
+        return '{"levels": {"1": 4, "24": 3}}', "stop"
+
+    m, meta = hj.judge_heading_levels(plan, post_fn=post, use_cache=True,
+                                      model="m")
+    assert meta["cache_hits"] == 0  # poisoned entry NOT served
+    assert m == {1: 4, 24: 3}
+    # and the healed full verdict re-cached over it
+    assert json.loads(
+        (hj._cache_path(key, tmp_path / "heading_judge_cache")).read_text()
+    )["levels"] == {"1": 4, "24": 3}

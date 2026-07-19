@@ -722,31 +722,10 @@ def _judge_one_window(
         halves = (_split_window_digest(digest, win_pending or [])
                   if depth < _MAX_WINDOW_SPLIT_DEPTH else [])
         if len(halves) == 2:
-            merged: Dict[str, Any] = {}
-            agg: Dict[str, Any] = {"finish": "split", "split_depth": depth + 1}
-            # The halves are independent judgments — fan them CONCURRENTLY so
-            # an exhausting window costs first-POST + max(halves), not
-            # first-POST + sum(halves) (the seat batches them; measured ch02:
-            # serial halves stretched the chapter to 78 min). Bounded: ≤2
-            # threads per split, depth ≤ _MAX_WINDOW_SPLIT_DEPTH.
-            from concurrent.futures import ThreadPoolExecutor
-
-            def _judge_half(pair):
-                hd, hp = pair
-                return _judge_one_window(
-                    hd, n_headings, len(hp), _max_tokens_for(len(hp)),
-                    post_fn=post_fn, win_pending=hp, depth=depth + 1)
-
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                results = list(pool.map(_judge_half, halves))
-            for parsed_h, wmeta_h in results:
-                for flag in ("transport_failure", "parse_failure",
-                             "length_exhausted"):
-                    if wmeta_h.get(flag):
-                        agg[flag] = True
-                if parsed_h is not None:
-                    merged.update(parsed_h.get("levels") or {})
+            merged, agg = _fan_halves(halves, n_headings, post_fn, depth)
+            agg["finish"] = "split"
             if merged:
+                _stamp_coverage_gap(agg, merged, win_pending)
                 return {"levels": merged}, agg
             agg["length_exhausted"] = True
             return None, agg
@@ -763,13 +742,94 @@ def _judge_one_window(
                 parsed = parse_judge_response(content)
                 if parsed is None:
                     return None, {"parse_failure": True, "finish": finish}
-                return parsed, {"finish": finish}
+                wmeta = {"finish": finish}
+                _stamp_coverage_gap(wmeta, parsed.get("levels") or {}, win_pending)
+                return parsed, wmeta
         return None, {"length_exhausted": True, "finish": finish}
 
     parsed = parse_judge_response(content)
     if parsed is None:
         return None, {"parse_failure": True, "finish": finish}
-    return parsed, {"finish": finish}
+    # COVERAGE contract (live ch06 defect): a syntactically-valid verdict may
+    # OMIT assigned pendings (102/193 returned, 91 silently dropped — no
+    # failure flag fires). Heal by splitting over the MISSING ids only and
+    # merging (smaller focused windows re-attend); a residual gap is stamped
+    # so the caller never caches an under-judged verdict.
+    levels: Dict[str, Any] = dict(parsed.get("levels") or {})
+    missing = _coverage_gap_ids(levels, win_pending)
+    if len(missing) >= 2 and depth < _MAX_WINDOW_SPLIT_DEPTH:
+        heal_halves = _split_window_digest(digest, missing)
+        if len(heal_halves) == 2:
+            healed, agg = _fan_halves(heal_halves, n_headings, post_fn, depth)
+            levels.update(healed)
+            agg["finish"] = finish
+            agg["coverage_healed"] = len(healed)
+            _stamp_coverage_gap(agg, levels, win_pending)
+            return {"levels": levels}, agg
+    wmeta = {"finish": finish}
+    _stamp_coverage_gap(wmeta, levels, win_pending)
+    return {"levels": levels}, wmeta
+
+
+def _fan_halves(
+    halves: List[Tuple[str, List[int]]],
+    n_headings: int,
+    post_fn,
+    depth: int,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Judge two half-windows CONCURRENTLY (an exhausting window costs
+    first-POST + max(halves), not + sum(halves); the seat batches them —
+    measured ch02: serial halves stretched the chapter to 78 min). Bounded:
+    ≤2 threads per split, depth ≤ _MAX_WINDOW_SPLIT_DEPTH. Returns
+    ``(merged_levels, aggregated_flags)``."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    agg: Dict[str, Any] = {"split_depth": depth + 1}
+    merged: Dict[str, Any] = {}
+
+    def _judge_half(pair):
+        hd, hp = pair
+        return _judge_one_window(
+            hd, n_headings, len(hp), _max_tokens_for(len(hp)),
+            post_fn=post_fn, win_pending=hp, depth=depth + 1)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(_judge_half, halves))
+    for parsed_h, wmeta_h in results:
+        for flag in ("transport_failure", "parse_failure", "length_exhausted"):
+            if wmeta_h.get(flag):
+                agg[flag] = True
+        if parsed_h is not None:
+            merged.update(parsed_h.get("levels") or {})
+    return merged, agg
+
+
+def _coverage_gap_ids(
+    levels: Dict[str, Any], win_pending: Optional[Sequence[int]],
+) -> List[int]:
+    """Pending region ids the verdict did NOT assign a level to."""
+    have = set()
+    for k in levels:
+        try:
+            have.add(int(k))
+        except (TypeError, ValueError):
+            continue
+    return [int(i) for i in (win_pending or []) if int(i) not in have]
+
+
+def _coverage_gap_tolerance(win_pending: Optional[Sequence[int]]) -> int:
+    """Gap size accepted as honest fail-open (1 id, or 2% of a big window)."""
+    return max(1, len(win_pending or []) // 50)
+
+
+def _stamp_coverage_gap(
+    wmeta: Dict[str, Any],
+    levels: Dict[str, Any],
+    win_pending: Optional[Sequence[int]],
+) -> None:
+    gap = len(_coverage_gap_ids(levels, win_pending))
+    if gap > _coverage_gap_tolerance(win_pending):
+        wmeta["coverage_gap"] = gap
 
 
 def judge_heading_levels(
@@ -812,15 +872,27 @@ def judge_heading_levels(
         if key is not None:
             cached = _cache_get(key)
             if cached is not None:
-                return cached, {"cache_hit": True}
+                # A cached verdict written before the coverage contract may be
+                # PARTIAL (the live ch06 poisoning: valid JSON omitting 91
+                # assigned ids, no failure flag). Serve it only when its gap
+                # is within the honest fail-open tolerance; else treat as a
+                # MISS so the window re-judges + heals + re-caches.
+                gap = _coverage_gap_ids(cached.get("levels") or {}, win_pending)
+                if len(gap) <= _coverage_gap_tolerance(win_pending):
+                    return cached, {"cache_hit": True}
+                logger.warning(
+                    "heading-judge cached verdict has coverage gap %d/%d — "
+                    "re-judging window", len(gap), len(win_pending))
         parsed, wmeta = _judge_one_window(
             digest, n_headings, n_pending, max_tokens, post_fn=post_fn,
             win_pending=win_pending)
         # Cache ONLY a fully-clean verdict: a partial split (one half judged,
-        # one failed) must NOT persist, or a resume would serve the partial
-        # forever and the failed half's pendings would never be re-judged.
+        # one failed) or an under-judged verdict (coverage_gap) must NOT
+        # persist, or a resume would serve the partial forever and its
+        # pendings would never be re-judged.
         clean = not any(wmeta.get(f) for f in (
-            "transport_failure", "parse_failure", "length_exhausted"))
+            "transport_failure", "parse_failure", "length_exhausted",
+            "coverage_gap"))
         if key is not None and parsed is not None and parsed.get("levels") and clean:
             _cache_put(key, parsed)
         wmeta["posted"] = True
