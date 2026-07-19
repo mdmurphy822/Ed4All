@@ -410,3 +410,96 @@ def test_accepts_dataclass_to_dict_input():
     parsed = QTIParser().parse_string(xml_str)
     assert parsed.questions[0].correct_response == "B"
     _assert_xsd_valid(xml_str, _QTI_XSD)
+
+
+# ---------------------------------------------------------------------------
+# Answer-key resolution ladder (assessment-tail fix 2026-07-19).
+#
+# The production AssessmentGenerator marks MCQ keys via per-choice
+# ``is_correct`` flags and leaves ``correct_answer`` unset, and wraps choice
+# texts in ``<p>…</p>``. The pre-fix emitter resolved keys ONLY from
+# ``correct_answer`` (exact id/text match), so every production MCQ emitted
+# ungraded (QTI_NO_ANSWER_KEY on all 50 alg-glm-02 quiz items).
+# ---------------------------------------------------------------------------
+
+def _generator_shaped_mcq(qid: str = "q-gen-001") -> dict:
+    """The EXACT shape AssessmentGenerator emits: is_correct flags, no
+    correct_answer, <p>-wrapped choice texts, no choice ids."""
+    return {
+        "question_id": qid,
+        "question_type": "multiple_choice",
+        "stem": "<p>Which of the following best describes <em>X</em>?</p>",
+        "bloom_level": "understand",
+        "objective_id": "TO-01",
+        "choices": [
+            {"text": "<p>the correct definition</p>", "is_correct": True},
+            {"text": "<p>a plausible distractor</p>", "is_correct": False},
+            {"text": "<p>another distractor</p>", "is_correct": False},
+            {"text": "<p>a third distractor</p>", "is_correct": False},
+        ],
+        "points": 2.0,
+    }
+
+
+def test_mcq_is_correct_flags_resolve_answer_key():
+    xml_str = assessment_to_qti(_assessment([_generator_shaped_mcq()]))
+    assert "<resprocessing>" in xml_str
+    assert "<varequal" in xml_str
+    parsed = QTIParser().parse_string(xml_str)
+    pq = parsed.questions[0]
+    # Choice ids fall back to letters; the flagged choice (index 0 → "A")
+    # must be the emitted key.
+    assert pq.correct_response == "A"
+    _assert_xsd_valid(xml_str, _QTI_XSD)
+
+
+def test_correct_answer_bare_text_matches_html_wrapped_choice():
+    q = _generator_shaped_mcq()
+    # correct_answer as the BARE text of a non-first choice (no <p> wrapper);
+    # must beat the is_correct fallback (explicit key wins).
+    q["correct_answer"] = "a plausible distractor"
+    xml_str = assessment_to_qti(_assessment([q]))
+    parsed = QTIParser().parse_string(xml_str)
+    assert parsed.questions[0].correct_response == "B"
+
+
+def test_no_key_at_all_still_ungraded_anti_fabrication():
+    q = _generator_shaped_mcq()
+    for c in q["choices"]:
+        c["is_correct"] = False
+    xml_str = assessment_to_qti(_assessment([q]))
+    # No resolvable key from either arm → emitted ungraded (never invents).
+    assert "<resprocessing>" not in xml_str
+
+
+def test_multiple_response_is_correct_flags_emit_and_of_varequal():
+    q = {
+        "question_id": "q-mr-flags",
+        "question_type": "multiple_response",
+        "stem": "<p>Select all that apply.</p>",
+        "bloom_level": "understand",
+        "objective_id": "TO-01",
+        "choices": [
+            {"text": "<p>right one</p>", "is_correct": True},
+            {"text": "<p>wrong one</p>", "is_correct": False},
+            {"text": "<p>right two</p>", "is_correct": True},
+            {"text": "<p>wrong two</p>", "is_correct": False},
+        ],
+        "points": 2.0,
+    }
+    xml_str = assessment_to_qti(_assessment([q]))
+    assert "<and>" in xml_str
+    assert xml_str.count("<varequal") == 2
+    _assert_xsd_valid(xml_str, _QTI_XSD)
+
+
+def test_generator_shaped_quiz_passes_qti_well_formed_gate():
+    """End-to-end: emit a generator-shaped quiz and run the ACTUAL
+    qti_well_formed gate over it (the acceptance oracle)."""
+    from lib.validators.qti_well_formed import QtiWellFormedValidator
+
+    xml_str = assessment_to_qti(_assessment([_generator_shaped_mcq()]))
+    result = QtiWellFormedValidator().validate(
+        {"qti_strings": [{"id": "week_01_quiz.xml", "xml": xml_str}]}
+    )
+    assert result.passed is True, [i.code for i in result.issues]

@@ -369,3 +369,108 @@ def test_gate_id_override():
         {**_inputs(_well_formed_qti()), "gate_id": "custom_gate"}
     )
     assert result.gate_id == "custom_gate"
+
+
+# --------------------------------------------------------------------------
+# Per-doc-type XSD routing (assessment-tail fix 2026-07-19).
+#
+# The assessment_synthesis phase writes THREE resource types into
+# 06_assessments/ — QTI quizzes, imsdt discussion topics, and assignment
+# resources. The pre-fix gate validated all three against the QTI XSD only,
+# so every (schema-valid) discussion/assignment doc failed with
+# "No matching global declaration available for the validation root"
+# (the alg-glm-02 production failure). The gate now routes each document to
+# its own vendored XSD by root namespace.
+# --------------------------------------------------------------------------
+
+IMSDT_NS = "http://www.imsglobal.org/xsd/imsccv1p3/imsdt_v1p3"
+ASSIGNMENT_NS = "http://www.imsglobal.org/xsd/imscc_extensions/assignment"
+
+
+def _imsdt_doc(texttype: str = "text/html") -> str:
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        f'<topic xmlns="{IMSDT_NS}">'
+        "<title>Week 1 Discussion</title>"
+        f'<text texttype="{texttype}">Discuss the objective.</text>'
+        "</topic>"
+    )
+
+
+def _assignment_doc() -> str:
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        f'<assignment xmlns="{ASSIGNMENT_NS}" identifier="ASGN-CO-01">'
+        "<title>Week 1 Assignment</title>"
+        '<text texttype="text/html">Complete a short task.</text>'
+        '<instructor_text texttype="text/html">Grade against the objective.</instructor_text>'
+        '<gradable points_possible="10">true</gradable>'
+        "</assignment>"
+    )
+
+
+def test_imsdt_topic_routes_to_imsdt_xsd_and_passes():
+    result = QtiWellFormedValidator().validate(
+        _inputs(_imsdt_doc(), label="week_01_discussion.xml")
+    )
+    assert result.passed is True, _codes(result)
+    assert "QTI_XSD_INVALID" not in _codes(result)
+
+
+def test_assignment_routes_to_assignment_xsd_and_passes():
+    result = QtiWellFormedValidator().validate(
+        _inputs(_assignment_doc(), label="week_01_assignment.xml")
+    )
+    assert result.passed is True, _codes(result)
+    assert "QTI_XSD_INVALID" not in _codes(result)
+
+
+def test_mixed_dir_all_three_doc_types_pass(tmp_path):
+    """The alg-glm-02 production regression: quiz + discussion + assignment
+    in one 06_assessments dir must ALL validate (each against its own XSD)."""
+    (tmp_path / "week_01_quiz.xml").write_text(
+        _well_formed_qti(), encoding="utf-8"
+    )
+    (tmp_path / "week_01_discussion.xml").write_text(
+        _imsdt_doc(), encoding="utf-8"
+    )
+    (tmp_path / "week_01_assignment.xml").write_text(
+        _assignment_doc(), encoding="utf-8"
+    )
+    result = QtiWellFormedValidator().validate({"qti_dir": str(tmp_path)})
+    assert result.passed is True, _codes(result)
+
+
+def test_invalid_imsdt_texttype_fails_xsd():
+    pytest.importorskip("lxml")
+    # text/rtf is outside the imsdt TextType.Enum (text/plain | text/html).
+    result = QtiWellFormedValidator().validate(
+        _inputs(_imsdt_doc(texttype="text/rtf"), label="bad_discussion.xml")
+    )
+    assert result.passed is False
+    assert "QTI_XSD_INVALID" in _codes(result)
+
+
+def test_unknown_root_still_fails_loud():
+    pytest.importorskip("lxml")
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<mystery xmlns="urn:example:unknown"><thing/></mystery>'
+    )
+    result = QtiWellFormedValidator().validate(
+        _inputs(xml, label="mystery.xml")
+    )
+    # Unknown roots fall through to the QTI XSD → loud failure, never a
+    # silent pass.
+    assert result.passed is False
+
+
+def test_non_qti_docs_skip_item_checks():
+    """A discussion topic carries no QTI items — no QTI_NO_ANSWER_KEY /
+    QTI_UNSUPPORTED_PROFILE may fire against it."""
+    result = QtiWellFormedValidator().validate(
+        _inputs(_imsdt_doc(), label="week_02_discussion.xml")
+    )
+    codes = _codes(result)
+    assert "QTI_NO_ANSWER_KEY" not in codes
+    assert "QTI_UNSUPPORTED_PROFILE" not in codes

@@ -147,13 +147,17 @@ def _qtimetadata_field(parent: ET.Element, label: str, entry: str) -> None:
     ET.SubElement(field, "fieldentry").text = entry
 
 
-def _normalize_choices(q: Dict[str, Any]) -> List[Dict[str, str]]:
-    """Return a list of ``{id, text}`` choices from the generator shape.
+def _normalize_choices(q: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Return a list of ``{id, text, is_correct}`` choices from the generator shape.
 
     ``QuestionData.choices`` is ``List[Dict]``; entries may carry ``id``/``text``
-    (or ``label``/``content``) or be bare strings.
+    (or ``label``/``content``) or be bare strings. The generator's per-choice
+    ``is_correct`` flag is carried through (assessment-tail fix 2026-07-19):
+    ``AssessmentGenerator`` MCQs mark the key via ``is_correct`` and leave
+    ``correct_answer`` unset, so dropping the flag here silently emitted every
+    MCQ ungraded (``QTI_NO_ANSWER_KEY``).
     """
-    out: List[Dict[str, str]] = []
+    out: List[Dict[str, Any]] = []
     for i, choice in enumerate(q.get("choices") or []):
         if isinstance(choice, dict):
             cid = str(choice.get("id") or choice.get("ident") or choice.get("label") or "").strip()
@@ -162,10 +166,16 @@ def _normalize_choices(q: Dict[str, Any]) -> List[Dict[str, str]]:
                 if choice.get("text") is not None
                 else choice.get("content", choice.get("value", ""))
             )
+            is_correct = bool(choice.get("is_correct"))
         else:
             cid = ""
             ctext = str(choice)
-        out.append({"id": _choice_ident(cid, i), "text": ctext})
+            is_correct = False
+        out.append({
+            "id": _choice_ident(cid, i),
+            "text": ctext,
+            "is_correct": is_correct,
+        })
     return out
 
 
@@ -186,28 +196,50 @@ def _tf_choices() -> List[Dict[str, str]]:
     return [{"id": "True", "text": "True"}, {"id": "False", "text": "False"}]
 
 
-def _correct_choice_ids(q: Dict[str, Any], choices: List[Dict[str, str]]) -> List[str]:
-    """Resolve the correct choice ident(s) from ``correct_answer``.
+_TAG_RE = re.compile(r"<[^>]+>")
 
-    ``correct_answer`` may be a choice id, a choice text, or (for
-    multiple_response) a list / comma-separated string of either. We match
-    against the resolved choice idents and texts so a generator that stores the
-    answer as display text still resolves.
+
+def _norm_answer_text(text: str) -> str:
+    """Normalize a choice text / answer token for matching.
+
+    Strips HTML tags (generator choice texts arrive wrapped in ``<p>…</p>``
+    while ``correct_answer`` is usually the bare text), collapses whitespace,
+    and lowercases — so the two forms compare equal.
+    """
+    return " ".join(_TAG_RE.sub(" ", text or "").split()).lower()
+
+
+def _correct_choice_ids(q: Dict[str, Any], choices: List[Dict[str, Any]]) -> List[str]:
+    """Resolve the correct choice ident(s).
+
+    Resolution ladder (assessment-tail fix 2026-07-19):
+
+    1. ``correct_answer`` — a choice id, a choice text, or (for
+       multiple_response) a list / comma-separated string of either. Text
+       matching is HTML-stripped + whitespace-normalized so a bare-text
+       answer matches a ``<p>``-wrapped choice body.
+    2. Per-choice ``is_correct`` flags — the shape ``AssessmentGenerator``
+       MCQs actually emit (``correct_answer`` unset). Never fabricates: only
+       choices the generator itself flagged are used.
+
+    An empty return means genuinely no key — the caller emits the item
+    ungraded (anti-fabrication contract, unchanged).
     """
     raw = q.get("correct_answer")
-    if raw is None:
-        return []
-    if isinstance(raw, (list, tuple, set)):
-        tokens = [str(t).strip() for t in raw]
-    else:
-        text = str(raw).strip()
-        # multiple_response answers are often comma-separated.
-        tokens = [t.strip() for t in text.split(",")] if "," in text else [text]
-    tokens = [t for t in tokens if t]
+    tokens: List[str] = []
+    if raw is not None:
+        if isinstance(raw, (list, tuple, set)):
+            tokens = [str(t).strip() for t in raw]
+        else:
+            text = str(raw).strip()
+            # multiple_response answers are often comma-separated.
+            tokens = [t.strip() for t in text.split(",")] if "," in text else [text]
+        tokens = [t for t in tokens if t]
 
     by_id = {c["id"]: c["id"] for c in choices}
     by_id_ci = {c["id"].lower(): c["id"] for c in choices}
     by_text_ci = {c["text"].strip().lower(): c["id"] for c in choices}
+    by_text_norm = {_norm_answer_text(c["text"]): c["id"] for c in choices}
 
     resolved: List[str] = []
     for tok in tokens:
@@ -217,11 +249,18 @@ def _correct_choice_ids(q: Dict[str, Any], choices: List[Dict[str, str]]) -> Lis
             cid = by_id_ci[tok.lower()]
         elif tok.strip().lower() in by_text_ci:
             cid = by_text_ci[tok.strip().lower()]
+        elif _norm_answer_text(tok) and _norm_answer_text(tok) in by_text_norm:
+            cid = by_text_norm[_norm_answer_text(tok)]
         else:
             continue
         if cid not in resolved:
             resolved.append(cid)
-    return resolved
+
+    if resolved:
+        return resolved
+
+    # Fallback: the generator's own per-choice is_correct flags.
+    return [c["id"] for c in choices if c.get("is_correct")]
 
 
 def _resolved_item_type(q: Dict[str, Any]) -> str:

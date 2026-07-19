@@ -23375,6 +23375,17 @@ def _build_tool_registry() -> dict:
             # + ``MCP/core/workflow_runner.py::_LEGACY_PHASE_PARAM_ROUTING``.
             imscc_chunks_path_kw = kwargs.get("imscc_chunks_path") or ""
 
+            # LOUD kwargs receipt (assessment-tail fix 2026-07-19) — the
+            # alg-glm-02 run's Phase 8 went silent after the chunkset log
+            # line; log what arrived so the next silent run is diagnosable.
+            logger.info(
+                "generate_assessments: received kwargs course_id=%r "
+                "imscc_path=%r project_id=%r imscc_chunks_path=%r "
+                "question_count=%r",
+                course_id, imscc_path_str, project_id_kw,
+                imscc_chunks_path_kw, question_count,
+            )
+
             # Normalize list-ish params.
             if isinstance(bloom_levels_str, list):
                 bloom_levels = [str(b).strip() for b in bloom_levels_str if str(b).strip()]
@@ -23416,7 +23427,14 @@ def _build_tool_registry() -> dict:
                     if matches:
                         project_dir = matches[0]
             if project_dir is None:
+                logger.error(
+                    "generate_assessments: FAILING LOUD — cannot locate "
+                    "project workspace (imscc_path=%r, course_id=%r).",
+                    imscc_path_str, course_id,
+                )
                 return json.dumps({
+                    "success": False,
+                    "error_code": "TRAINFORGE_NO_PROJECT_WORKSPACE",
                     "error": "Cannot locate project workspace for Trainforge output",
                     "imscc_path": imscc_path_str,
                     "course_id": course_id,
@@ -23429,7 +23447,13 @@ def _build_tool_registry() -> dict:
             trainforge_dir.mkdir(parents=True, exist_ok=True)
 
             if not imscc_path or not imscc_path.exists() or imscc_path.stat().st_size == 0:
+                logger.error(
+                    "generate_assessments: FAILING LOUD — IMSCC package "
+                    "not found or empty (imscc_path=%r).", imscc_path_str,
+                )
                 return json.dumps({
+                    "success": False,
+                    "error_code": "TRAINFORGE_IMSCC_MISSING",
                     "error": "IMSCC package not found or empty; Trainforge requires the packaging phase to complete first",
                     "imscc_path": imscc_path_str,
                 })
@@ -23444,7 +23468,13 @@ def _build_tool_registry() -> dict:
             try:
                 from Trainforge.process_course import CourseProcessor
             except Exception as e:
+                logger.error(
+                    "generate_assessments: FAILING LOUD — CourseProcessor "
+                    "import failed: %s", e,
+                )
                 return json.dumps({
+                    "success": False,
+                    "error_code": "TRAINFORGE_IMPORT_FAILED",
                     "error": f"Failed to import CourseProcessor: {e}",
                     "traceback": _traceback.format_exc(limit=4),
                 })
@@ -23514,7 +23544,13 @@ def _build_tool_registry() -> dict:
             try:
                 summary = processor.process()
             except Exception as e:
+                logger.exception(
+                    "generate_assessments: FAILING LOUD — "
+                    "CourseProcessor.process() raised."
+                )
                 return json.dumps({
+                    "success": False,
+                    "error_code": "TRAINFORGE_PROCESS_FAILED",
                     "error": f"CourseProcessor.process() failed: {e}",
                     "traceback": _traceback.format_exc(limit=6),
                     "output_dir": str(trainforge_dir),
@@ -23526,7 +23562,13 @@ def _build_tool_registry() -> dict:
             semantic_graph_path = trainforge_dir / "graph" / "concept_graph_semantic.json"
 
             if not chunks_path.exists():
+                logger.error(
+                    "generate_assessments: FAILING LOUD — CourseProcessor "
+                    "did not produce chunks.jsonl under %s.", trainforge_dir,
+                )
                 return json.dumps({
+                    "success": False,
+                    "error_code": "TRAINFORGE_NO_CHUNKS",
                     "error": "CourseProcessor did not produce chunks.jsonl",
                     "output_dir": str(trainforge_dir),
                 })
@@ -23626,7 +23668,13 @@ def _build_tool_registry() -> dict:
             try:
                 from Trainforge.generators.assessment_generator import AssessmentGenerator
             except Exception as e:
+                logger.error(
+                    "generate_assessments: FAILING LOUD — "
+                    "AssessmentGenerator import failed: %s", e,
+                )
                 return json.dumps({
+                    "success": False,
+                    "error_code": "TRAINFORGE_IMPORT_FAILED",
                     "error": f"Failed to import AssessmentGenerator: {e}",
                     "traceback": _traceback.format_exc(limit=4),
                     "chunks_path": str(chunks_path),
@@ -23652,7 +23700,13 @@ def _build_tool_registry() -> dict:
                     source_chunks=loaded_chunks,
                 )
             except Exception as e:
+                logger.exception(
+                    "generate_assessments: FAILING LOUD — "
+                    "AssessmentGenerator.generate() raised."
+                )
                 return json.dumps({
+                    "success": False,
+                    "error_code": "TRAINFORGE_GENERATE_FAILED",
                     "error": f"AssessmentGenerator.generate() failed: {e}",
                     "traceback": _traceback.format_exc(limit=6),
                     "chunks_path": str(chunks_path),
@@ -23660,6 +23714,32 @@ def _build_tool_registry() -> dict:
 
             assessments_path = trainforge_dir / "assessments.json"
             assessment_doc = assessment.to_dict()
+
+            # Generation-silence contract (assessment-tail fix 2026-07-19):
+            # zero generated questions is NEVER silent. The valid,
+            # empty-but-parseable assessments.json is still written below
+            # (downstream gates must parse it, never crash on a missing/
+            # empty file), and a LOUD warning surfaces the count + the
+            # skip reasons so the operator sees WHY the generator emitted
+            # nothing (leak-checked / negation-unverifiable / no content).
+            if not assessment.questions:
+                _skips = [
+                    s.to_dict() if hasattr(s, "to_dict") else s
+                    for s in (getattr(assessment, "skipped_items", []) or [])
+                ]
+                _skip_reasons: dict = {}
+                for _s in _skips:
+                    _r = (_s or {}).get("reason", "unknown") if isinstance(_s, dict) else "unknown"
+                    _skip_reasons[_r] = _skip_reasons.get(_r, 0) + 1
+                logger.warning(
+                    "generate_assessments: ZERO questions generated for "
+                    "course=%r (chunks=%d, objectives=%d, skipped_items=%d, "
+                    "skip_reasons=%s). Writing a valid empty "
+                    "assessments.json so downstream gates parse instead of "
+                    "crashing; investigate the generator inputs.",
+                    course_id, len(loaded_chunks), len(objective_ids),
+                    len(_skips), _skip_reasons,
+                )
             # Single write, single well-formed JSON document. The legacy
             # "Extra data" bug came from calling json.dump then appending
             # additional text to the same handle; we guard against that
@@ -23728,6 +23808,12 @@ def _build_tool_registry() -> dict:
                 "success": True,
                 "assessment_id": assessment.assessment_id,
                 "question_count": len(assessment.questions),
+                # Generation-silence contract: surface the zero-question case
+                # in the phase-output envelope, not only in the log.
+                "zero_questions_warning": (
+                    "generator produced ZERO questions; empty-but-parseable "
+                    "assessments.json written"
+                ) if not assessment.questions else None,
                 "skipped_items_count": skipped_total,
                 "skipped_items_summary": skipped_summary,
                 "output_path": str(assessments_path),
@@ -28732,15 +28818,89 @@ def _build_tool_registry() -> dict:
         """
         import traceback as _traceback
 
+        # ---- LOUD kwargs receipt (assessment-tail fix 2026-07-19) --------
+        # The alg-glm-02 production run lost project_id across a
+        # course_planning fail-open + resume, and the resulting
+        # {"error": ...} envelope (no ``success`` key) was treated as a
+        # COMPLETED task by the executor — a <100ms silent no-op that left
+        # 06_assessments/ missing for packaging. Log exactly what arrived so
+        # the next such run is diagnosable from the log alone.
+        logger.info(
+            "run_assessment_synthesis: received kwargs project_id=%r "
+            "course_code=%r course_name=%r dart_chunks_path=%r "
+            "synthesized_objectives_path=%r",
+            kwargs.get("project_id"),
+            kwargs.get("course_code"),
+            kwargs.get("course_name"),
+            kwargs.get("dart_chunks_path"),
+            kwargs.get("synthesized_objectives_path"),
+        )
+
         project_id = kwargs.get("project_id") or ""
         if not project_id:
+            # Defensive fallback (courseforge-rewrite subcommand precedent —
+            # MCP/core/workflow_runner.py::_resolve_stage_project_dir):
+            # resolve the NEWEST Courseforge/exports/PROJ-<course>-* export
+            # for this course instead of silently erroring out.
+            _fallback_course = str(
+                kwargs.get("course_code") or kwargs.get("course_name") or ""
+            ).strip()
+            if _fallback_course:
+                _exports_root = courseforge_exports_dir()
+                _prefix = f"PROJ-{_fallback_course}-"
+                _cands = []
+                if _exports_root.is_dir():
+                    for _cand in _exports_root.iterdir():
+                        if _cand.is_dir() and _cand.name.startswith(_prefix):
+                            try:
+                                _cands.append((_cand.stat().st_mtime, _cand))
+                            except OSError:
+                                continue
+                if _cands:
+                    _cands.sort(reverse=True)
+                    project_id = _cands[0][1].name
+                    logger.warning(
+                        "run_assessment_synthesis: project_id kwarg was "
+                        "missing/None (upstream phase_outputs did not carry "
+                        "it — e.g. a course_planning fail-open resume); "
+                        "defensively resolved to the newest export %r "
+                        "(most recent of %d candidates matching %r).",
+                        project_id, len(_cands), _prefix,
+                    )
+                else:
+                    logger.error(
+                        "run_assessment_synthesis: project_id kwarg missing "
+                        "AND no export dir under %s matches prefix %r — "
+                        "cannot emit 06_assessments.",
+                        _exports_root, _prefix,
+                    )
+        if not project_id:
+            logger.error(
+                "run_assessment_synthesis: FAILING LOUD — no project_id "
+                "received and none resolvable from course=%r. Received "
+                "kwargs keys: %s",
+                kwargs.get("course_code") or kwargs.get("course_name"),
+                sorted(kwargs.keys()),
+            )
             return json.dumps({
-                "error": "run_assessment_synthesis requires project_id",
+                "success": False,
+                "error_code": "ASSESSMENT_SYNTHESIS_NO_PROJECT_ID",
+                "error": (
+                    "run_assessment_synthesis requires project_id (none "
+                    "received; newest-export fallback found no "
+                    "PROJ-<course>-* dir)"
+                ),
             })
 
         project_path = courseforge_exports_dir() / project_id
         if not project_path.exists():
+            logger.error(
+                "run_assessment_synthesis: FAILING LOUD — project export "
+                "dir not found: %s", project_path,
+            )
             return json.dumps({
+                "success": False,
+                "error_code": "ASSESSMENT_SYNTHESIS_PROJECT_DIR_MISSING",
                 "error": f"Project export dir not found: {project_path}",
             })
 

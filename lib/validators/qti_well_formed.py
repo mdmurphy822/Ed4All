@@ -14,7 +14,13 @@ QTI ``<questestinterop>`` document:
     (critical, ``action="block"``).
 
 (b) **XSD conformance** — when ``lxml`` is installed, validate the document
-    against the vendored ``Courseforge/schemas/imscc/ccv1p3_qtiasiv1p2p1.xsd``.
+    against the vendored XSD MATCHING ITS ROOT NAMESPACE (assessment-tail
+    fix 2026-07-19): QTI ``questestinterop`` → ``ccv1p3_qtiasiv1p2p1.xsd``;
+    imsdt discussion ``topic`` → ``ccv1p3_imsdt_v1p3.xsd``; ``assignment``
+    → ``cc_extresource_assignmentv1p0.xsd`` (all under
+    ``Courseforge/schemas/imscc/``). Non-QTI docs skip the QTI-only checks
+    (a)/(c)/(d) — they carry no items. Unknown roots fall through to the QTI
+    XSD so they fail loudly.
     Schema violations emit ``QTI_XSD_INVALID`` (critical). When ``lxml`` is
     absent the validator GRACEFULLY DEGRADES to "well-formed only" — it emits
     a single warning-severity ``QTI_LXML_MISSING`` GateIssue (``passed=True``
@@ -101,18 +107,57 @@ _MANUAL_PROFILES = frozenset({
 _SUPPORTED_ITEM_PROFILES = _AUTO_GRADABLE_PROFILES | _MANUAL_PROFILES
 
 
-def _resolve_xsd_path() -> Optional[Path]:
-    """Locate ``Courseforge/schemas/imscc/ccv1p3_qtiasiv1p2p1.xsd``.
+# Per-document-type XSD routing (assessment-tail fix 2026-07-19).
+#
+# The ``assessment_synthesis`` phase emits THREE canonical IMS CC resource
+# document types into ``06_assessments/`` — QTI 1.2 assessments
+# (``questestinterop``), discussion topics (``imsdt`` ``topic``), and
+# assignment learning-application resources (``assignment``). Each has its
+# OWN vendored XSD under ``Courseforge/schemas/imscc/``. The pre-fix gate
+# validated every ``*.xml`` against the QTI XSD only, so every (schema-valid)
+# discussion/assignment doc failed with "No matching global declaration
+# available for the validation root". The gate now routes each document to
+# its own XSD by root-element namespace; the QTI-specific checks (parse
+# oracle, answer-key, cc_profile) still run only on QTI documents.
+_QTI_ROOT_NS = "http://www.imsglobal.org/xsd/ims_qtiasiv1p2"
+_IMSDT_ROOT_NS = "http://www.imsglobal.org/xsd/imsccv1p3/imsdt_v1p3"
+_ASSIGNMENT_ROOT_NS = "http://www.imsglobal.org/xsd/imscc_extensions/assignment"
+
+# doc_kind -> vendored XSD basename. ``qti`` doubles as the fallback for
+# unknown roots so a mystery document still fails LOUDLY against the QTI
+# schema rather than silently passing.
+_XSD_BY_DOC_KIND = {
+    "qti": "ccv1p3_qtiasiv1p2p1.xsd",
+    "imsdt": "ccv1p3_imsdt_v1p3.xsd",
+    "assignment": "cc_extresource_assignmentv1p0.xsd",
+}
+
+
+def _doc_kind_of_root(root: ET.Element) -> str:
+    """Classify a parsed document by its root element namespace + name.
+
+    Returns ``"qti"`` / ``"imsdt"`` / ``"assignment"``; unknown roots
+    classify as ``"qti"`` (fail-loud fallback — see ``_XSD_BY_DOC_KIND``).
+    """
+    tag = root.tag
+    ns = tag.rsplit("}", 1)[0].lstrip("{") if "}" in tag else ""
+    local = _localname(tag)
+    if local == "topic" and ns == _IMSDT_ROOT_NS:
+        return "imsdt"
+    if local == "assignment" and ns == _ASSIGNMENT_ROOT_NS:
+        return "assignment"
+    return "qti"
+
+
+def _resolve_xsd_path(basename: str = "ccv1p3_qtiasiv1p2p1.xsd") -> Optional[Path]:
+    """Locate a vendored XSD under ``Courseforge/schemas/imscc/``.
 
     Walks up from this file until it finds the vendored XSD. Returns ``None``
     when not found (validator degrades to well-formed-only with a warning).
     """
     here = Path(__file__).resolve()
     for parent in [here, *here.parents]:
-        candidate = (
-            parent / "Courseforge" / "schemas" / "imscc"
-            / "ccv1p3_qtiasiv1p2p1.xsd"
-        )
+        candidate = parent / "Courseforge" / "schemas" / "imscc" / basename
         if candidate.exists():
             return candidate
     return None
@@ -216,15 +261,32 @@ class QtiWellFormedValidator:
                 )
             return self._result(gate_id, issues)
 
-        # ---- 2. Resolve the XSD oracle once (lazy lxml import).
-        xsd_validator, lxml_issue = self._load_xsd_validator()
-        if lxml_issue is not None:
-            issues.append(lxml_issue)
+        # ---- 2. Lazy per-doc-type XSD oracle cache (lazy lxml import).
+        # Each of the three emitted resource types (QTI assessment / imsdt
+        # discussion topic / assignment) validates against ITS OWN vendored
+        # XSD; the cache loads each at most once per validate() call and the
+        # degrade warnings are de-duplicated by message.
+        xsd_cache: Dict[str, Any] = {}
+        seen_degrade_messages: set = set()
+
+        def _xsd_for(doc_kind: str) -> Any:
+            if doc_kind in xsd_cache:
+                return xsd_cache[doc_kind]
+            basename = _XSD_BY_DOC_KIND.get(
+                doc_kind, _XSD_BY_DOC_KIND["qti"]
+            )
+            schema, degrade_issue = self._load_xsd_validator(basename)
+            xsd_cache[doc_kind] = schema
+            if degrade_issue is not None:
+                if degrade_issue.message not in seen_degrade_messages:
+                    seen_degrade_messages.add(degrade_issue.message)
+                    issues.append(degrade_issue)
+            return schema
 
         # ---- 3. Validate each document.
         for label, xml in documents:
             issues.extend(
-                self._validate_one(label, xml, xsd_validator)
+                self._validate_one(label, xml, _xsd_for)
             )
 
         return self._result(gate_id, issues)
@@ -321,8 +383,10 @@ class QtiWellFormedValidator:
         return documents, issues
 
     @staticmethod
-    def _load_xsd_validator() -> Tuple[Any, Optional[GateIssue]]:
-        """Lazily build the lxml ``XMLSchema`` validator.
+    def _load_xsd_validator(
+        basename: str = "ccv1p3_qtiasiv1p2p1.xsd",
+    ) -> Tuple[Any, Optional[GateIssue]]:
+        """Lazily build the lxml ``XMLSchema`` validator for one vendored XSD.
 
         Returns ``(schema_or_None, lxml_or_schema_issue_or_None)``. When
         ``lxml`` is absent, returns ``(None, QTI_LXML_MISSING warning)`` —
@@ -344,15 +408,15 @@ class QtiWellFormedValidator:
                 suggestion="pip install lxml",
             )
 
-        xsd_path = _resolve_xsd_path()
+        xsd_path = _resolve_xsd_path(basename)
         if xsd_path is None:
             return None, GateIssue(
                 severity="warning",
                 code="QTI_LXML_MISSING",
                 message=(
-                    "ccv1p3_qtiasiv1p2p1.xsd not found (searched upward "
-                    f"from {Path(__file__).resolve()}); skipping QTI XSD "
-                    "conformance check."
+                    f"{basename} not found (searched upward "
+                    f"from {Path(__file__).resolve()}); skipping XSD "
+                    "conformance check for this document type."
                 ),
             )
 
@@ -371,10 +435,47 @@ class QtiWellFormedValidator:
             )
 
     def _validate_one(
-        self, label: str, xml: str, xsd_validator: Any,
+        self, label: str, xml: str, xsd_for: Any,
     ) -> List[GateIssue]:
-        """Run checks (a)-(d) against a single QTI document string."""
+        """Validate a single ``06_assessments`` document string.
+
+        ``xsd_for`` is a ``doc_kind -> XMLSchema-or-None`` resolver (the
+        per-call cache built in :meth:`validate`). The document is first
+        classified by root-element namespace: QTI documents run the full
+        (a)-(d) check set against the QTI XSD; imsdt discussion-topic and
+        assignment documents run well-formedness + THEIR OWN vendored XSD
+        (they carry no QTI items, so the parse-oracle / answer-key /
+        cc_profile checks do not apply). Unknown roots fall through to the
+        QTI XSD so they still fail loudly.
+        """
         issues: List[GateIssue] = []
+
+        # ---- Well-formedness + doc-type classification (ElementTree).
+        try:
+            root = ET.fromstring(xml)
+        except ET.ParseError as exc:
+            issues.append(
+                GateIssue(
+                    severity="critical",
+                    code="QTI_PARSE_ERROR",
+                    message=(
+                        f"QTI document {label} failed ElementTree parse: "
+                        f"{exc}"
+                    ),
+                    location=label,
+                )
+            )
+            return issues
+
+        doc_kind = _doc_kind_of_root(root)
+
+        if doc_kind != "qti":
+            # imsdt topic / assignment resource — validate against its own
+            # vendored XSD; no QTI item structure to check.
+            xsd_validator = xsd_for(doc_kind)
+            if xsd_validator is not None:
+                issues.extend(self._validate_xsd(label, xml, xsd_validator))
+            return issues
 
         # ---- (a) Parse / round-trip the in-tree QTIParser oracle.
         try:
@@ -410,26 +511,8 @@ class QtiWellFormedValidator:
             )
             return issues
 
-        # We need our own ElementTree root for the structural walks (the
-        # oracle returns a dataclass, not the tree). Parse separately;
-        # parse_string already succeeded so this won't normally raise.
-        try:
-            root = ET.fromstring(xml)
-        except ET.ParseError as exc:
-            issues.append(
-                GateIssue(
-                    severity="critical",
-                    code="QTI_PARSE_ERROR",
-                    message=(
-                        f"QTI document {label} failed ElementTree parse: "
-                        f"{exc}"
-                    ),
-                    location=label,
-                )
-            )
-            return issues
-
         # ---- (b) XSD conformance (when lxml present).
+        xsd_validator = xsd_for("qti")
         if xsd_validator is not None:
             issues.extend(self._validate_xsd(label, xml, xsd_validator))
 

@@ -332,11 +332,22 @@ def _all_html_paths(
 
 
 def _locate(phase_outputs: Dict[str, Any], *keys: str) -> Optional[str]:
-    """Find the first non-empty str value matching any key across all phases."""
-    for phase_data in phase_outputs.values():
-        if not isinstance(phase_data, dict):
-            continue
-        for key in keys:
+    """Find the first non-empty str value for the HIGHEST-PRIORITY key.
+
+    Iteration is KEY-major (assessment-tail fix 2026-07-19): every builder
+    passes ``keys`` in descending priority (e.g. ``assessments_path`` before
+    the generic ``output_path`` fallback), so a specific key match anywhere
+    in ``phase_outputs`` must win over a generic-key match in an earlier
+    phase. The pre-fix PHASE-major loop let ``semantik_conversion`` (the
+    first phase, which emits ``output_path`` = the accessible HTML) shadow
+    ``trainforge_assessment``'s real ``assessments_path`` — the
+    assessment gates then json-parsed an HTML file and crashed with
+    "Expecting value: line 1 column 1".
+    """
+    for key in keys:
+        for phase_data in phase_outputs.values():
+            if not isinstance(phase_data, dict):
+                continue
             val = phase_data.get(key)
             if isinstance(val, str) and val:
                 return val
