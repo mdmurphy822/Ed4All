@@ -727,3 +727,65 @@ def test_non_timeout_transient_errors_still_retry():
     with pytest.raises(hj._JudgeTransportError):
         fn([{"role": "user", "content": "hi"}], 64)
     assert len(attempts) == 3  # transient 5xx keeps the bounded retry ladder
+
+
+# ── Split halves run concurrently; partial split verdicts never cache. ───────
+def test_split_halves_run_concurrently():
+    import threading
+    import time as _t
+    in_flight = {"now": 0, "peak": 0}
+    lock = threading.Lock()
+
+    def post(messages, max_tokens):
+        user = messages[1]["content"]
+        n_pend = int(user.split("(")[1].split(",")[1].split()[0])
+        if n_pend == 4:
+            return "overflow", "length"
+        with lock:
+            in_flight["now"] += 1
+            in_flight["peak"] = max(in_flight["peak"], in_flight["now"])
+        _t.sleep(0.05)
+        with lock:
+            in_flight["now"] -= 1
+        if "Alpha" in user:
+            return '{"levels": {"1": 3, "2": 4}}', "stop"
+        return '{"levels": {"3": 4, "4": 3}}', "stop"
+
+    parsed, wmeta = hj._judge_one_window(
+        _windowed_digest(), 5, 4, hj._max_tokens_for(4), post_fn=post,
+        win_pending=[1, 2, 3, 4])
+    assert parsed == {"levels": {"1": 3, "2": 4, "3": 4, "4": 3}}
+    assert in_flight["peak"] == 2  # both halves in flight together
+
+
+def test_partial_split_verdict_is_never_cached(tmp_path, monkeypatch):
+    monkeypatch.setenv("SEMANTIK_CACHE_DIR", str(tmp_path))
+    plan = hj.build_heading_skeleton(_prov())  # 2 pendings → halves of 1
+
+    def post_partial(messages, max_tokens):
+        user = messages[1]["content"]
+        n_pend = int(user.split("(")[1].split(",")[1].split()[0])
+        if n_pend == 2:
+            return "overflow", "length"  # full window exhausts → split
+        if "Chapter Outline" in user:
+            return '{"levels": {"1": 4}}', "stop"  # half A succeeds
+        raise hj._JudgeTransportError("boom", transient=False)  # half B fails
+
+    m1, meta1 = hj.judge_heading_levels(plan, post_fn=post_partial,
+                                        use_cache=True, model="m")
+    assert m1 == {1: 4}  # partial applied this run (fail-open half kept)
+    assert not list((tmp_path / "heading_judge_cache").rglob("*.json"))
+
+    # a re-run must RE-JUDGE (no poisoned cache hit) — now everything works
+    def post_good(messages, max_tokens):
+        user = messages[1]["content"]
+        n_pend = int(user.split("(")[1].split(",")[1].split()[0])
+        if n_pend == 2:
+            return '{"levels": {"1": 4, "24": 3}}', "stop"
+        raise AssertionError("halves should not be needed")
+
+    m2, meta2 = hj.judge_heading_levels(plan, post_fn=post_good,
+                                        use_cache=True, model="m")
+    assert meta2["cache_hits"] == 0  # nothing served from a partial verdict
+    assert m2 == {1: 4, 24: 3}
+    assert len(list((tmp_path / "heading_judge_cache").rglob("*.json"))) == 1

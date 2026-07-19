@@ -724,10 +724,22 @@ def _judge_one_window(
         if len(halves) == 2:
             merged: Dict[str, Any] = {}
             agg: Dict[str, Any] = {"finish": "split", "split_depth": depth + 1}
-            for hd, hp in halves:
-                parsed_h, wmeta_h = _judge_one_window(
+            # The halves are independent judgments — fan them CONCURRENTLY so
+            # an exhausting window costs first-POST + max(halves), not
+            # first-POST + sum(halves) (the seat batches them; measured ch02:
+            # serial halves stretched the chapter to 78 min). Bounded: ≤2
+            # threads per split, depth ≤ _MAX_WINDOW_SPLIT_DEPTH.
+            from concurrent.futures import ThreadPoolExecutor
+
+            def _judge_half(pair):
+                hd, hp = pair
+                return _judge_one_window(
                     hd, n_headings, len(hp), _max_tokens_for(len(hp)),
                     post_fn=post_fn, win_pending=hp, depth=depth + 1)
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = list(pool.map(_judge_half, halves))
+            for parsed_h, wmeta_h in results:
                 for flag in ("transport_failure", "parse_failure",
                              "length_exhausted"):
                     if wmeta_h.get(flag):
@@ -804,7 +816,12 @@ def judge_heading_levels(
         parsed, wmeta = _judge_one_window(
             digest, n_headings, n_pending, max_tokens, post_fn=post_fn,
             win_pending=win_pending)
-        if key is not None and parsed is not None and parsed.get("levels"):
+        # Cache ONLY a fully-clean verdict: a partial split (one half judged,
+        # one failed) must NOT persist, or a resume would serve the partial
+        # forever and the failed half's pendings would never be re-judged.
+        clean = not any(wmeta.get(f) for f in (
+            "transport_failure", "parse_failure", "length_exhausted"))
+        if key is not None and parsed is not None and parsed.get("levels") and clean:
             _cache_put(key, parsed)
         wmeta["posted"] = True
         return parsed, wmeta
