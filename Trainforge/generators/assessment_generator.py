@@ -329,7 +329,12 @@ class AssessmentGenerator:
         texts = [str(result.correct_answer or "")]
         texts += [str(c.get("text") or "") for c in (result.choices or [])
                   if isinstance(c, dict)]
-        if any(_is_apparatus_text(t) for t in texts):
+        import re as _re
+        # stem-bleed shape: a mid-text '?' followed by more prose means a
+        # question fragment fused into the answer ("...= 7? Substitute 18...")
+        _bleed = _re.compile(r"\?\s+\S")
+        if any(_is_apparatus_text(t) or _bleed.search(t)
+               for t in texts if t.strip()):
             return SkippedItem(
                 question_id=result.question_id,
                 question_type=result.question_type,
@@ -812,14 +817,23 @@ class AssessmentGenerator:
                     distractors.append(mc_text)
 
                 # Strategy 2: Other terms' definitions
-                for other in terms[1:4]:
+                # Distractor rotation (alg-glm-02: terms[1:4] was STATIC, so
+                # the same 3 distractors repeated on 49/50 questions —
+                # TEMPLATED_DISTRACTORS). Exclude the target, rotate the pool
+                # start per question.
+                _pool = [t for t in terms if t.term != target.term]
+                self._distractor_offset = getattr(self, "_distractor_offset", 0) + 1
+                _n = len(_pool)
+                for _k in range(_n):
+                    other = _pool[(self._distractor_offset + _k) % _n]
                     if len(distractors) >= 3:
                         break
                     if other.definition != target.definition:
                         d_text = other.definition
                         if len(d_text) > 200:
                             d_text = d_text[:197] + "..."
-                        distractors.append(d_text)
+                        if d_text not in distractors:
+                            distractors.append(d_text)
 
                 # Strategy 3: Factual statements
                 for stmt in statements:
