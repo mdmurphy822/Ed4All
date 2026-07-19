@@ -63,6 +63,31 @@ _ROLE_TO_CSS: Dict[str, str] = {
     "exercise_item": "pedagogy-try-it",
 }
 
+# ── D3: caption-label + end-matter-apparatus furniture constraints. ─────────
+# A numbered caption/pedagogical label ("Figure 1.2" / "Example 1.3" /
+# "Table 1.4" / "Try It 1.5") the layout model over-promoted to a heading. It
+# must NEVER become a heading at section level ≤3 — Figure/Table route to the
+# caption path, Example/Try It to the apparatus path.
+_CAPTION_LABEL_RE = re.compile(
+    r"^(figure|example|table|try\s+it)\s+\d+\.\d+", re.IGNORECASE
+)
+
+# Genuine end-matter apparatus section headings the layout model failed to
+# recognize (KEY TERMS / KEY CONCEPTS / CHAPTER REVIEW / REVIEW EXERCISES /
+# PRACTICE TEST). Frozen fallback; the live set is DATA-DRIVEN from the schema
+# lexicon profiles' ``apparatus_sections`` display list when reachable.
+_FALLBACK_ENDMATTER: Tuple[str, ...] = (
+    "key terms",
+    "key concepts",
+    "chapter review",
+    "review exercises",
+    "practice test",
+)
+# Leading / trailing chapter-ordinal junk ("1.5 Key Terms" / "Key Terms 415")
+# stripped conservatively before the whole-text marker match.
+_CH_ORDINAL_PREFIX_RE = re.compile(r"^\s*\d+(?:\.\d+)?\s+")
+_CH_ORDINAL_SUFFIX_RE = re.compile(r"\s+\d+(?:\.\d+)?\s*$")
+
 
 def _schema_dir() -> Optional[Path]:
     """Best-effort locate ``schemas/taxonomies`` walking up from this file.
@@ -142,6 +167,69 @@ def is_table_caption(text: str) -> bool:
 
 def is_figure_caption_text(text: str) -> bool:
     return bool(_FIGURE_CAPTION_RE.match(strip_md_heading(text)))
+
+
+def caption_label_kind(text: str) -> Optional[str]:
+    """Classify a numbered caption/pedagogical LABEL (D3, item 1).
+
+    Returns ``"caption"`` for ``Figure N.M`` / ``Table N.M`` (route to the
+    caption paragraph path), ``"apparatus"`` for ``Example N.M`` / ``Try It
+    N.M`` (route to the apparatus paragraph path), or ``None`` for anything
+    else. Matched after ``strip_md_heading``, case-insensitive.
+    """
+    m = _CAPTION_LABEL_RE.match(strip_md_heading(text))
+    if not m:
+        return None
+    head = re.sub(r"\s+", "", m.group(1).lower())  # "try it" → "tryit"
+    return "caption" if head in {"figure", "table"} else "apparatus"
+
+
+@lru_cache(maxsize=1)
+def _endmatter_markers() -> Tuple[str, ...]:
+    """End-matter apparatus SECTION-heading markers (casefold), unioned with the
+    frozen fallback (so a bare SemantiK checkout still recognizes the canonical
+    five).
+
+    Data source is each lexicon profile's ``apparatus_sections`` display list —
+    DELIBERATELY not the broader ``apparatus_whitelist``. The whitelist folds in
+    worked-example BODY labels (``solution``/``self check``) and the scholarly /
+    admonition overlay CALLOUT labels (``theorem``/``lemma``/``note``/
+    ``warning``/…); promoting any of those BARE labels to a level-2 SECTION
+    heading is exactly the over-segmentation the D3 furniture constraint fights.
+    ``apparatus_sections`` is the genuine end-matter-section list (generic-
+    academic → the canonical five, matching the fallback), so a new corpus
+    onboards an end-matter section by adding an ``apparatus_sections`` row.
+    """
+    markers = set(_FALLBACK_ENDMATTER)
+    schema = _schema_dir()
+    if schema is not None:
+        lex = schema / "semantik_lexicon.json"
+        try:
+            data = json.loads(lex.read_text(encoding="utf-8"))
+            for prof in (data.get("profiles") or {}).values():
+                for row in prof.get("apparatus_sections", []) or []:
+                    disp = str((row or {}).get("display", "")).strip()
+                    if disp:
+                        markers.add(disp.lower())
+        except (OSError, ValueError, TypeError):
+            pass
+    return tuple(sorted(markers))
+
+
+def is_endmatter_apparatus(text: str) -> bool:
+    """True when ``text`` is a BARE end-matter apparatus section heading (D3,
+    item 2).
+
+    Only a short (≤6-word) heading-shaped occurrence whose whole text IS the
+    marker — optionally wrapped by a leading/trailing chapter ordinal — matches;
+    a prose sentence merely mentioning "key terms" does not.
+    """
+    t = strip_md_heading(text).strip()
+    if not t or len(t.split()) > 6:
+        return False
+    core = _CH_ORDINAL_PREFIX_RE.sub("", t)
+    core = _CH_ORDINAL_SUFFIX_RE.sub("", core).strip()
+    return core.lower() in _endmatter_markers()
 
 
 def heading_level_for_title(text: str) -> Tuple[int, bool]:
@@ -225,5 +313,7 @@ __all__ = [
     "is_box_title",
     "is_table_caption",
     "is_figure_caption_text",
+    "caption_label_kind",
+    "is_endmatter_apparatus",
     "strip_md_heading",
 ]

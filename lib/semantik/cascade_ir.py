@@ -37,10 +37,25 @@ memory and is consumed in-process by the seam.
 from __future__ import annotations
 
 import logging
+import os
 import re
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 logger = logging.getLogger(__name__)
+
+# D2: the GLM-OCR-lane math/text-normalizer gate (SEMANTIK_GLMOCR_MATH_NORMALIZE)
+# also governs the caption-less-figure placeholder-leak fix below. Resolved
+# locally (os.environ directly, same default-on falsey-set parse as
+# glmocr.math_normalize.resolve_math_normalize_mode) so this Ed4All-venv module
+# never imports the cross-venv-clean glmocr package.
+_GLMOCR_MATH_NORMALIZE_FALSEY = {"0", "false", "no", "off"}
+
+
+def _resolve_glmocr_math_normalize() -> bool:
+    """Default-on (in-lane) gate for the D2 sr-only figcaption placeholder fix."""
+    return (
+        os.environ.get("SEMANTIK_GLMOCR_MATH_NORMALIZE") or ""
+    ).strip().lower() not in _GLMOCR_MATH_NORMALIZE_FALSEY
 
 # A section heading of the form "N.M[.K] Title" (e.g. "1.1 Introduction to
 # Whole Numbers", "2.3 Solve Equations"). The leading integer ``N`` is the
@@ -270,11 +285,24 @@ def _render_figure_html(
     # No image src: a text-only <figure>. Carry the caption as the visible
     # <figcaption>; when no caption resolved, the type-level alt is the honest
     # accessible name so the figure is never a silent empty element.
-    figcap = (
-        f"<figcaption>{_esc_text(caption)}</figcaption>"
-        if caption
-        else f"<figcaption>{_esc_text(_TYPE_LEVEL_ALT)}</figcaption>"
-    )
+    if caption:
+        figcap = f"<figcaption>{_esc_text(caption)}</figcaption>"
+    elif _resolve_glmocr_math_normalize():
+        # D2: the caption-less placeholder is screen-reader-only so Trainforge's
+        # HTMLTextExtractor (which discards sr-only subtrees) never leaks
+        # "Figure." into adjacent chunk text; the accessible name stays in the
+        # a11y tree (WCAG intact — sr-only content is still exposed to AT). The
+        # ``sr-only`` class rides an INNER <span>, not the <figcaption> itself:
+        # the extractor's a11y-hidden subtree scope decrements only on </p> /
+        # </span> end tags (its ``_A11Y_HIDDEN_TAGS`` heuristic — html.parser
+        # gives no attrs on end tags), so an sr-only <figcaption> would strand
+        # the depth counter and swallow every following chunk's text.
+        figcap = (
+            f'<figcaption><span class="sr-only">'
+            f"{_esc_text(_TYPE_LEVEL_ALT)}</span></figcaption>"
+        )
+    else:  # explicit SEMANTIK_GLMOCR_MATH_NORMALIZE=0 → byte-identical legacy
+        figcap = f"<figcaption>{_esc_text(_TYPE_LEVEL_ALT)}</figcaption>"
     return f"<figure>{figcap}</figure>"
 
 

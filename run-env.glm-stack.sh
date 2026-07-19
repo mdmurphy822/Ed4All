@@ -216,3 +216,11 @@ export ED4ALL_PLANNING_GATE_RETRIES=10
 # 2026-07-18 TRT-bench torch baseline: 512-tok forwards at batch 64 = 80.8
 # pairs/s vs 68.1 at batch 32 (+19%) — raise the long-pair bucket batch.
 export ED4ALL_NLI_BUCKET_BATCH="256,128,64,64"
+
+# 2026-07-19: VENDOR-DEPTH TO/CO — per-SECTION stage-2 windows (~64 on this
+# corpus) + 12-candidate budget (prompt/schema/grammar agree). Structure-true
+# replacement for the vendor-super accidental fan-out (794 one-chunk windows).
+# Folds into window fingerprints (prior chapter-packed sidecars re-run once).
+export ED4ALL_OBJECTIVE_WINDOW_PER_SECTION=1
+# D1/D4 chunk fixes auto-on for pipeline runs; D2 math normalizer default-ON
+# in the GLM-OCR lane; no extra env needed.

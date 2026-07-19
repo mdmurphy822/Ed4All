@@ -155,6 +155,20 @@ _CORPUS_GENERALIZATION_ENV_DEFAULTS: Dict[str, str] = {
     # Corpus-generalization recovery paths (general / non-RDF textbooks)
     "TRAINFORGE_LEXICAL_CONCEPT_SEEDS": "true",
     "TRAINFORGE_OBJECTIVE_QUALITY_GATE": "true",
+    # D1 (vendor-parity audit 2026-07-18): derive PAGE-LEVEL key_concepts for
+    # markup-less accessible-HTML pages (the SemantiK GLM-OCR lane emits no
+    # <strong>/<b>/<dt>, so HTMLContentParser harvests none → chunks emit
+    # empty concept_tags; measured 704/705 empty on a real GLM-OCR course).
+    # Fills EMPTY key_concepts only; page-level (not chunk-local, which
+    # fragments the KG). Byte-stable off. See
+    # lib/ontology/page_concept_fallback.py.
+    "TRAINFORGE_PAGE_CONCEPT_FALLBACK": "true",
+    # D4 (vendor-parity audit 2026-07-18): relocate stranded next-section
+    # heading tails (SemantiK GLM-OCR lane glues the next section's
+    # "N.M EXERCISES" opener onto the prior chunk's tail; measured 46/705 on a
+    # real GLM-OCR course). Text-only, deterministic, idempotent; byte-stable
+    # no-op outside a run. See Trainforge/chunker/stranded_heading_tails.py.
+    "TRAINFORGE_RELOCATE_STRANDED_HEADINGS": "true",
     # Defensive heading-sanity filter: repair a chunk's section_heading to its
     # nearest clean ancestor heading when the upstream heading classifier
     # mis-tagged answer-key / exercise-prose / numeric noise as a heading. The

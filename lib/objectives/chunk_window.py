@@ -29,7 +29,8 @@ from __future__ import annotations
 import math
 import os
 import re
-from dataclasses import dataclass, field
+import unicodedata
+from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -77,9 +78,14 @@ class ChunkWindow:
     join_method: str  # "sourceid" | "order_fallback"
     estimated_prompt_tokens: int  # for the decision event + tripwire
     dropped_trailing: int = 0  # chunks dropped from this chapter that didn't fit
+    #: Per-section window mode (``ED4ALL_OBJECTIVE_WINDOW_PER_SECTION``): the
+    #: source section's heading text. Empty on every legacy (chapter-packed)
+    #: window — and elided from ``to_dict`` when empty, so the flag-off dict
+    #: shape stays byte-identical.
+    section_label: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        out = {
             "chapter_id": self.chapter_id,
             "window_index": self.window_index,
             "chunk_ids": list(self.chunk_ids),
@@ -88,6 +94,10 @@ class ChunkWindow:
             "estimated_prompt_tokens": self.estimated_prompt_tokens,
             "dropped_trailing": self.dropped_trailing,
         }
+        # Elide when empty: legacy windows stay byte-identical.
+        if self.section_label:
+            out["section_label"] = self.section_label
+        return out
 
 
 # ---------------------------------------------------------------------------
@@ -531,4 +541,227 @@ def group_chunks_into_windows(
             cur_tokens += line_tokens
     _close_window()
 
+    return windows
+
+
+# ---------------------------------------------------------------------------
+# Vendor-depth per-SECTION windows (ED4ALL_OBJECTIVE_WINDOW_PER_SECTION)
+# ---------------------------------------------------------------------------
+#: Master gate for one-window-per-SECTION stage-2 map units. Default OFF →
+#: the legacy chapter-greedy packing above runs byte-identical. When on, the
+#: stage-2 window builder partitions each chapter's chunks along the
+#: ``textbook_structure.json`` chapter→section tree (ordered walk anchored on
+#: each chunk's ``section_heading`` provenance), so a 10-chapter / 71-section
+#: corpus synthesizes ~71 section-scoped windows instead of ~23 giant packed
+#: windows — the measured mechanism gap behind 52 vs ~800 COs (the vendor-super
+#: depth came from 794 accidental one-chunk windows; this is the intentional,
+#: structure-true version of that per-unit fan-out).
+_WINDOW_PER_SECTION_ENV = "ED4ALL_OBJECTIVE_WINDOW_PER_SECTION"
+_WINDOW_PER_SECTION_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+#: Coalescing floor: a section that attracted fewer than this many chunks is
+#: merged into its preceding sibling (the first group merges forward) so no
+#: window is starved of source material.
+SECTION_MIN_CHUNKS = 3
+
+#: Ordered-walk lookahead: a chunk may advance the section pointer by at most
+#: this many sections at once (recovers a single missed boundary without
+#: letting a spurious heading echo jump the walk across the chapter).
+_SECTION_LOOKAHEAD = 2
+
+#: Leading ``N.M`` section-ordinal pattern (e.g. ``1.2 Use the Language …``).
+_SECTION_ORDINAL_RE = re.compile(r"^(\d+)\.(\d+)\b")
+
+#: How much of a chunk's TEXT head is scanned for the section heading when the
+#: ``section_heading`` provenance carries a subsection heading instead.
+_SECTION_TEXT_HEAD_CHARS = 300
+
+
+def resolve_window_per_section(value: Optional[bool] = None) -> bool:
+    """Resolve the ``ED4ALL_OBJECTIVE_WINDOW_PER_SECTION`` gate (default OFF).
+
+    Explicit arg > env. Truthy tokens ``1``/``true``/``yes``/``on`` (any case)
+    enable; falsey / garbage / unset → off (parse-with-fallback, mirroring
+    :func:`resolve_seed_sanitize`). Read at window-build time.
+    """
+    if value is not None:
+        return bool(value)
+    return (
+        os.environ.get(_WINDOW_PER_SECTION_ENV, "").strip().lower()
+        in _WINDOW_PER_SECTION_TRUTHY
+    )
+
+
+def _norm_heading_text(text: Any) -> str:
+    """NFKC + casefold + whitespace-collapse a heading for comparison."""
+    s = unicodedata.normalize("NFKC", str(text or "")).casefold()
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _section_heading_text(section: Dict[str, Any]) -> str:
+    """Best-effort display heading for a structure-tree section."""
+    if not isinstance(section, dict):
+        return ""
+    for key in ("headingText", "heading", "title"):
+        val = section.get(key)
+        if val:
+            return str(val).strip()
+    return ""
+
+
+def _chunk_matches_section(chunk: Dict[str, Any], section: Dict[str, Any]) -> bool:
+    """Does ``chunk`` look like the START (membership) of ``section``?
+
+    Three arms, cheapest first:
+
+    1. normalized ``section_heading`` provenance equals / prefixes the section
+       heading (either direction — converted HTML may truncate);
+    2. both carry the same leading ``N.M`` ordinal (scan corpora keep the
+       numbering even when the title text drifts);
+    3. the section heading appears verbatim in the chunk's TEXT head (the
+       heading opens the section's first chunk when provenance carries a
+       subsection heading instead).
+    """
+    sec_head = _norm_heading_text(_section_heading_text(section))
+    if not sec_head:
+        return False
+    chunk_head = _norm_heading_text(_chunk_heading(chunk))
+    if chunk_head:
+        if chunk_head == sec_head or chunk_head.startswith(sec_head):
+            return True
+        if len(chunk_head) > 4 and sec_head.startswith(chunk_head):
+            return True
+        m_sec = _SECTION_ORDINAL_RE.match(sec_head)
+        m_chk = _SECTION_ORDINAL_RE.match(chunk_head)
+        if m_sec and m_chk and m_sec.groups() == m_chk.groups():
+            return True
+    text_head = _norm_heading_text(
+        _chunk_body(chunk)[:_SECTION_TEXT_HEAD_CHARS]
+    )
+    if text_head and sec_head in text_head:
+        return True
+    return False
+
+
+def partition_chunks_by_section(
+    chapter: Dict[str, Any],
+    chapter_chunks: List[Dict[str, Any]],
+    *,
+    min_chunks: int = SECTION_MIN_CHUNKS,
+) -> List[Tuple[str, List[Dict[str, Any]]]]:
+    """Partition one chapter's DOCUMENT-ORDERED chunks along its section tree.
+
+    Ordered walk: a pointer over ``chapter["sections"]`` advances when a chunk
+    matches the NEXT (lookahead ≤ :data:`_SECTION_LOOKAHEAD`) section's heading
+    — via ``section_heading`` provenance, the shared ``N.M`` ordinal, or the
+    chunk text head. Chunks before the first matched boundary belong to the
+    first section. A section whose boundary never matches simply attracts no
+    chunks and disappears (its chunks stay with the preceding section — the
+    same coalescing outcome).
+
+    Coalescing floor: any group with fewer than ``min_chunks`` chunks merges
+    into the preceding surviving group (the first group merges forward), so no
+    starved window is ever emitted. Document order and the disjoint-cover
+    invariant are preserved: the concatenation of all returned groups equals
+    ``chapter_chunks`` exactly.
+
+    Returns ``[(section_label, chunks), ...]``; degenerates to a single
+    ``("", chapter_chunks)`` group when the chapter declares fewer than two
+    sections (the caller falls back to legacy packing).
+    """
+    sections = [
+        s for s in (chapter.get("sections") or []) if isinstance(s, dict)
+    ]
+    if len(sections) < 2 or not chapter_chunks:
+        return [("", list(chapter_chunks))]
+
+    labels = [_section_heading_text(s) for s in sections]
+    assigned: List[List[Dict[str, Any]]] = [[] for _ in sections]
+    cur = -1
+    for chunk in chapter_chunks:
+        nxt = cur + 1
+        advance: Optional[int] = None
+        for j in range(nxt, min(nxt + _SECTION_LOOKAHEAD, len(sections))):
+            if _chunk_matches_section(chunk, sections[j]):
+                advance = j
+                break
+        if advance is not None:
+            cur = advance
+        assigned[max(cur, 0)].append(chunk)
+
+    # Drop empty groups (missed boundaries) keeping document order.
+    groups: List[Tuple[str, List[Dict[str, Any]]]] = [
+        (labels[i], assigned[i]) for i in range(len(sections)) if assigned[i]
+    ]
+    if not groups:
+        return [("", list(chapter_chunks))]
+
+    # Coalesce starved groups into the PRECEDING survivor (first merges
+    # forward). Single pass left-to-right; label of the ABSORBING group wins.
+    floor = max(1, int(min_chunks))
+    coalesced: List[Tuple[str, List[Dict[str, Any]]]] = []
+    for label, chunks in groups:
+        if coalesced and len(chunks) < floor:
+            prev_label, prev_chunks = coalesced[-1]
+            coalesced[-1] = (prev_label, prev_chunks + chunks)
+        else:
+            coalesced.append((label, list(chunks)))
+    if len(coalesced) > 1 and len(coalesced[0][1]) < floor:
+        # First group was starved: merge it FORWARD into its next sibling.
+        first_label, first_chunks = coalesced.pop(0)
+        nxt_label, nxt_chunks = coalesced[0]
+        coalesced[0] = (nxt_label or first_label, first_chunks + nxt_chunks)
+    return coalesced
+
+
+def group_chunks_into_section_windows(
+    chapter: Dict[str, Any],
+    chunks_for_chapter_list: List[Dict[str, Any]],
+    *,
+    num_ctx: int,
+    system_prompt: str,
+    draft_block: str,
+    max_tokens: int,
+    join_method: str = "sourceid",
+    response_reserve: Optional[int] = None,
+    sanitize_seeds: Optional[bool] = None,
+    min_chunks: int = SECTION_MIN_CHUNKS,
+) -> List[ChunkWindow]:
+    """Per-SECTION analogue of :func:`group_chunks_into_windows`.
+
+    Partitions the chapter's chunks along its section tree
+    (:func:`partition_chunks_by_section`), then reuses the SAME greedy budget
+    packer WITHIN each section group — so the serving-window invariant still
+    holds (an oversized section splits into >1 window instead of overflowing),
+    while a normal section yields exactly one window. ``window_index`` runs
+    sequentially across the whole chapter (unique per chapter, the checkpoint
+    key contract); each window is stamped with its ``section_label``.
+
+    A chapter with fewer than two declared sections degrades to the legacy
+    packer output byte-identically (single unlabelled group).
+    """
+    groups = partition_chunks_by_section(
+        chapter, chunks_for_chapter_list, min_chunks=min_chunks
+    )
+    windows: List[ChunkWindow] = []
+    for label, group_chunks in groups:
+        packed = group_chunks_into_windows(
+            chapter,
+            group_chunks,
+            num_ctx=num_ctx,
+            system_prompt=system_prompt,
+            draft_block=draft_block,
+            max_tokens=max_tokens,
+            join_method=join_method,
+            response_reserve=response_reserve,
+            sanitize_seeds=sanitize_seeds,
+        )
+        for w in packed:
+            windows.append(
+                replace(
+                    w,
+                    window_index=len(windows),
+                    section_label=label,
+                )
+            )
     return windows

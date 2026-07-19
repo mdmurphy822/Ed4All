@@ -759,3 +759,41 @@ def test_overflow_continuation_blocks_still_in_sidecar():
     # The chapter title never leaks in as a section (only per-block titles).
     titles = {s["section_title"] for s in sidecar["sections"]}
     assert not any("(cont.)" in t for t in titles), titles
+
+
+# ---------------------------------------------------------------------------
+# D2: caption-less figure placeholder is screen-reader-only (no chunk-text leak)
+# ---------------------------------------------------------------------------
+
+
+def test_captionless_figure_placeholder_is_sr_only_by_default(monkeypatch):
+    """A caption-less figure ships its "Figure." placeholder inside an sr-only
+    <span> so Trainforge's HTMLTextExtractor discards it from chunk text while
+    the accessible name stays in the a11y tree."""
+    monkeypatch.delenv("SEMANTIK_GLMOCR_MATH_NORMALIZE", raising=False)
+    from lib.semantik.cascade_ir import _render_figure_html, _TYPE_LEVEL_ALT
+
+    html = _render_figure_html("", None, image_src=None, caption_text=None)
+    assert '<figcaption><span class="sr-only">Figure.</span></figcaption>' in html
+    assert _TYPE_LEVEL_ALT == "Figure."
+
+
+def test_captionless_figure_placeholder_flag_off_is_visible(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_GLMOCR_MATH_NORMALIZE", "0")
+    from lib.semantik.cascade_ir import _render_figure_html
+
+    html = _render_figure_html("", None, image_src=None, caption_text=None)
+    assert html == "<figure><figcaption>Figure.</figcaption></figure>"  # byte-identical legacy
+
+
+def test_real_caption_stays_visible_figcaption(monkeypatch):
+    """A resolved caption is NEVER sr-only'd — it renders as a visible
+    <figcaption> regardless of the flag."""
+    from lib.semantik.cascade_ir import _render_figure_html
+
+    for val in ("1", "0"):
+        monkeypatch.setenv("SEMANTIK_GLMOCR_MATH_NORMALIZE", val)
+        html = _render_figure_html("", None, image_src=None,
+                                   caption_text="A real widget diagram")
+        assert "<figcaption>A real widget diagram</figcaption>" in html
+        assert "sr-only" not in html

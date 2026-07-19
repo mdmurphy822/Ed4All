@@ -5231,6 +5231,8 @@ def _stage2_window_fingerprint(
     num_ctx: int,
     system_prompt: str,
     heading_skeleton: str = "",
+    window_mode: str = "",
+    max_candidates: Optional[int] = None,
 ) -> str:
     """Deterministic fingerprint of a stage-2 window's synthesis inputs.
 
@@ -5248,6 +5250,15 @@ def _stage2_window_fingerprint(
     the flag (or changing textbook_structure) invalidates the window resume
     sidecar and those windows re-run on ``--resume`` — mirroring the
     ``ED4ALL_OBJECTIVE_SEED_SANITIZE`` window-render-fingerprint contract.
+
+    ``window_mode`` (``ED4ALL_OBJECTIVE_WINDOW_PER_SECTION``): the window-build
+    mode tag (``"per_section:<label>"``) folded in only when non-empty, so a
+    resume never serves a chapter-packed sidecar to a per-section run (or vice
+    versa). ``max_candidates`` (``ED4ALL_OBJECTIVE_WINDOW_MAX_CANDIDATES``):
+    the per-window candidate budget, folded in only when not ``None`` — a
+    budget change re-rolls the window (the "1-N" line is user-prompt text the
+    legacy fingerprint never saw). Both default-absent → byte-identical legacy
+    fingerprints.
     """
     _text_parts: List[str] = []
     for _c in chunks:
@@ -5267,6 +5278,11 @@ def _stage2_window_fingerprint(
     # Empty → no key (byte-identical legacy fingerprint); non-empty → folded in.
     if heading_skeleton:
         _fp_inputs["heading_skeleton_sha"] = _llm_hash_text(heading_skeleton)
+    # Default-absent → no key (byte-identical legacy fingerprint).
+    if window_mode:
+        _fp_inputs["window_mode"] = str(window_mode)
+    if max_candidates is not None:
+        _fp_inputs["max_candidates"] = int(max_candidates)
     return _llm_compute_fingerprint(_fp_inputs)
 
 
@@ -5718,8 +5734,10 @@ async def _run_stage2_window_synthesis(
 
     from lib.objectives.chunk_window import (
         chunks_for_chapter,
+        group_chunks_into_section_windows,
         group_chunks_into_windows,
         resolve_seed_sanitize,
+        resolve_window_per_section,
     )
     from lib.objectives.objective_grounding import ground_candidates
     from lib.objectives.objective_dedup import dedup_candidates
@@ -5763,6 +5781,22 @@ async def _run_stage2_window_synthesis(
                 pass
         _max_tokens = int(getattr(provider, "_max_tokens", 4096) or 4096)
 
+        # Vendor-depth per-SECTION windows (ED4ALL_OBJECTIVE_WINDOW_PER_SECTION,
+        # default OFF): one stage-2 map unit per textbook_structure SECTION
+        # instead of chapter-greedy packing. The resolved candidate budget
+        # (ED4ALL_OBJECTIVE_WINDOW_MAX_CANDIDATES; 12 in per-section mode) is
+        # folded into the window fingerprint below so a mode/budget flip never
+        # serves a cross-mode resume sidecar.
+        _per_section = resolve_window_per_section()
+        _max_cands: Optional[int] = None
+        try:
+            from Courseforge.generators._textbook_synthesis_provider import (
+                resolve_window_max_candidates as _resolve_window_max_cands,
+            )
+            _max_cands = _resolve_window_max_cands()
+        except Exception:  # noqa: BLE001 — budget resolver is best-effort
+            _max_cands = None
+
         # Build the flat ordered window list across all chapters, annotating
         # joined chunks with their chapter_id for Pass C's rescue pool.
         _windows: List[Dict[str, Any]] = []
@@ -5781,7 +5815,12 @@ async def _run_stage2_window_synthesis(
                     rec = chunks_by_id.get(_cid)
                     if isinstance(rec, dict):
                         rec.setdefault("chapter_id", cid)
-            ch_windows = group_chunks_into_windows(
+            _window_builder = (
+                group_chunks_into_section_windows
+                if _per_section
+                else group_chunks_into_windows
+            )
+            ch_windows = _window_builder(
                 chapter,
                 chapter_chunks,
                 num_ctx=_num_ctx,
@@ -5792,6 +5831,14 @@ async def _run_stage2_window_synthesis(
             )
             for w in ch_windows:
                 _windows.append(w.to_dict())
+        if _per_section:
+            logger.info(
+                "plan_course_structure: Stage-2 per-SECTION window mode ON "
+                "(ED4ALL_OBJECTIVE_WINDOW_PER_SECTION) — %d window(s) across "
+                "%d chapter(s); candidate budget/window=%s.",
+                len(_windows), len(chapters),
+                _max_cands if _max_cands is not None else "legacy(1-3)",
+            )
         _dropped_chunks = len(all_chunks) - len(_joined_ids)
         if _dropped_chunks > 0:
             logger.info(
@@ -5882,6 +5929,11 @@ async def _run_stage2_window_synthesis(
                     ) or ""
                 except Exception:  # noqa: BLE001 — skeleton is best-effort
                     _wd_skeleton = ""
+            _wd_mode = ""
+            if _per_section:
+                _wd_mode = (
+                    f"per_section:{str(_wd.get('section_label') or '')}"
+                )
             _fp = _stage2_window_fingerprint(
                 chunk_ids=_wd.get("chunk_ids") or [],
                 chunks=_wd.get("chunks") or [],
@@ -5890,6 +5942,8 @@ async def _run_stage2_window_synthesis(
                 num_ctx=_num_ctx,
                 system_prompt=_TEXTBOOK_SYNTHESIS_SYSTEM_PROMPT,
                 heading_skeleton=_wd_skeleton,
+                window_mode=_wd_mode,
+                max_candidates=_max_cands,
             )
             _fp_by_key[_key] = _fp
             _rec = _cp_cache.get(_key) if _cp_enabled else None
@@ -27706,6 +27760,40 @@ def _build_tool_registry() -> dict:
                     "source_references": parsed.source_references,
                 })
 
+        # D1 fix (TRAINFORGE_PAGE_CONCEPT_FALLBACK, default OFF → byte-
+        # identical): the SemantiK GLM-OCR accessible-HTML lane emits NO
+        # <strong>/<b>/<dt> markup, so HTMLContentParser harvests ZERO
+        # page-level ``key_concepts`` and every chunk of the page ends up
+        # with empty ``concept_tags`` (measured 704/705 empty on a real
+        # GLM-OCR course vs ~14 tags/chunk on a publisher-HTML course whose
+        # bold/dt markup feeds the parser). When ON, derive a PAGE-LEVEL
+        # key-concept list from each markup-less page's OWN text (lexical /
+        # statistical only — no embeddings, no LLM) and assign it to
+        # ``item["key_concepts"]`` so the EXISTING page-level tagging path
+        # (``extract_concept_tags`` below) fires unchanged and all chunks of
+        # the page share the same tag set (the vendor semantics — deliberately
+        # PAGE-level, NOT chunk-local, since chunk-local tags fragment the KG).
+        # Only fills EMPTY key_concepts — a page with real parser-harvested
+        # concepts is untouched. Best-effort: a derivation failure must not
+        # abort the chunking phase.
+        try:
+            from lib.ontology.page_concept_fallback import (
+                apply_page_concept_fallback as _apply_page_concept_fallback,
+            )
+            _page_concepts_filled = _apply_page_concept_fallback(parsed_items)
+            if _page_concepts_filled:
+                logger.info(
+                    "Phase 7b ST 11: TRAINFORGE_PAGE_CONCEPT_FALLBACK derived "
+                    "page-level key_concepts on %d markup-less page(s).",
+                    _page_concepts_filled,
+                )
+        except Exception:  # noqa: BLE001 — page-concept fallback is best-effort
+            logger.warning(
+                "Phase 7b ST 11: page-concept fallback failed; keeping parser "
+                "key_concepts",
+                exc_info=True,
+            )
+
         # Minimal create_chunk callback — emits a v4-shaped chunk dict
         # without CourseProcessor's deep instance state. The chunker
         # delegates per-chunk materialisation here so the surface
@@ -28374,6 +28462,33 @@ def _build_tool_registry() -> dict:
                                     _exc,
                                 )
                 chunks = kept_chunks
+
+        # Defect D4 (vendor-parity audit 2026-07-18): relocate stranded
+        # next-section heading tails (TRAINFORGE_RELOCATE_STRANDED_HEADINGS,
+        # default OFF -> byte-identical legacy emit; auto-on for pipeline runs
+        # via _apply_corpus_generalization_defaults). In the SemantiK GLM-OCR
+        # lane the opener of the FOLLOWING section can be glued onto the TAIL
+        # of the prior section's last chunk (e.g. "...Figure. 1.1 EXERCISES");
+        # this deterministic post-pass moves a standalone "N.M <SECTION-MARKER>"
+        # onto the next SAME-FLOW chunk. Text-only mutation (html untouched,
+        # the Track-K overlap precedent), applied after every drop/filter pass
+        # so relocation is between the FINAL emitted chunks.
+        if chunks:
+            try:
+                from Trainforge.chunker import (
+                    relocate_stranded_heading_tails,
+                    resolve_relocate_stranded_headings,
+                )
+
+                if resolve_relocate_stranded_headings():
+                    chunks = relocate_stranded_heading_tails(chunks)
+            except Exception as exc:  # noqa: BLE001 — post-pass is best-effort
+                logger.warning(
+                    "stranded-heading-tail relocation raised (%s); keeping "
+                    "all %d chunks unmodified.",
+                    exc,
+                    len(chunks),
+                )
 
         # Track K: optional verbatim chunk overlap. When
         # ``TRAINFORGE_CHUNK_OVERLAP_WORDS`` > 0, prepend the verbatim

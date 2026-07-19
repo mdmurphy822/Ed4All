@@ -6,7 +6,10 @@ placeholder text (NO real course content), NO GPU, NO seat.
 
 from __future__ import annotations
 
+import pytest
+
 from semantik_structure.glmocr import region_map as rm
+from semantik_structure.glmocr import math_normalize as mn
 from semantik_structure.glmocr.transform import GlmPage, transform_document
 
 
@@ -97,13 +100,15 @@ def test_apparatus_title_demoted_from_heading_track():
 
 
 def test_box_title_promotion():
+    # ≥3-word box title still promotes to a heading (the D3.3 ≤2-word demotion
+    # constraint does not apply here).
     page = GlmPage(page_no=1, regions=[
-        _region(0, "text", "Widget Assembly"),
+        _region(0, "text", "Widget Assembly Overview"),
         _region(1, "text", "A body paragraph with at least four words present."),
     ])
     tr = transform_document([page])
     assert tr.region_provenance[0]["region_kind"] == "heading"
-    assert tr.region_provenance[0]["heading_text"] == "Widget Assembly"
+    assert tr.region_provenance[0]["heading_text"] == "Widget Assembly Overview"
 
 
 # ── tables ───────────────────────────────────────────────────────────────────
@@ -350,6 +355,172 @@ def test_mid_document_doc_title_not_level_1():
     assert gammas[0]["heading_text"] == "4.3 Gamma Topic"
     # the synthesized chapter opener is NOT suppressed
     assert tr.heading_tree[0] == (1, "Chapter 4")
+
+
+# ── D2: deterministic math/text normalizer ──────────────────────────────────
+
+
+def test_normalize_math_collapses_digit_split_inside_delimiters():
+    # exact audit-evidence strings
+    assert mn.normalize_math_text("$\\sqrt {5 0}$") == "$\\sqrt {50}$"
+    assert mn.normalize_math_text("$4 2 m n$") == "$42 m n$"  # digit-letter never joined
+    assert mn.normalize_math_text("$\\frac{1 1}{2 8}$") == "$\\frac{11}{28}$"
+    # fixpoint: "1 2 3" → "123"
+    assert mn.normalize_math_text("$1 2 3$") == "$123$"
+
+
+def test_normalize_math_collapses_letter_spacing_in_text_command():
+    assert mn.normalize_math_text("$\\mathrm {S i m p l i f y}$") == "$\\mathrm {Simplify}$"
+    # a real multi-word \text arg is NEVER collapsed
+    assert mn.normalize_math_text("$\\text{the answer}$") == "$\\text{the answer}$"
+
+
+def test_normalize_math_never_joins_across_operator_or_outside_math():
+    assert mn.normalize_math_text("$x + 1 0$") == "$x + 10$"
+    assert mn.normalize_math_text("$1 + 0$") == "$1 + 0$"  # operator gap
+    # digits OUTSIDE any math delimiter are untouched
+    assert mn.normalize_math_text("chapter 1 0 review") == "chapter 1 0 review"
+
+
+def test_fix_spaced_ordinals_joins_section_number():
+    assert mn.fix_spaced_ordinals("1. 2 Use the Language") == "1.2 Use the Language"
+
+
+def test_fix_spaced_ordinals_never_touches_list_item_or_decimal():
+    # a numbered list item (no second bare digit) is untouched
+    assert mn.fix_spaced_ordinals("1. Simplify the expression") == "1. Simplify the expression"
+    # an already-joined decimal is untouched
+    assert mn.fix_spaced_ordinals("1.2 Use the Language") == "1.2 Use the Language"
+
+
+def test_normalizer_wired_into_transform_default_on():
+    page = GlmPage(page_no=1, regions=[
+        _region(0, "paragraph_title", "1. 2 Use the Language of Algebra"),
+        _region(1, "display_formula", "\\frac{1 1}{2 8}"),
+        _region(2, "text", "Body prose that clearly forms a sentence here."),
+    ])
+    prov = transform_document([page]).region_provenance
+    head = next(p for p in prov if p["region_kind"] == "heading")
+    assert head["heading_text"] == "1.2 Use the Language of Algebra"
+    math = next(p for p in prov if p["region_kind"] == "math")
+    assert "\\frac{11}{28}" in math["raw_text"]
+
+
+def test_normalizer_flag_falsey_is_byte_identical(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_GLMOCR_MATH_NORMALIZE", "0")
+    page = GlmPage(page_no=1, regions=[
+        _region(0, "paragraph_title", "1. 2 Use the Language of Algebra"),
+        _region(1, "display_formula", "\\frac{1 1}{2 8}"),
+        _region(2, "text", "Body prose that clearly forms a sentence here."),
+    ])
+    prov = transform_document([page]).region_provenance
+    head = next(p for p in prov if p["region_kind"] == "heading")
+    assert head["heading_text"] == "1. 2 Use the Language of Algebra"  # untouched
+    math = next(p for p in prov if p["region_kind"] == "math")
+    assert "\\frac{1 1}{2 8}" in math["raw_text"]
+
+
+def test_resolve_math_normalize_mode_default_on_falsey_set(monkeypatch):
+    monkeypatch.delenv("SEMANTIK_GLMOCR_MATH_NORMALIZE", raising=False)
+    assert mn.resolve_math_normalize_mode() is True
+    for off in ("0", "false", "no", "off", "OFF"):
+        monkeypatch.setenv("SEMANTIK_GLMOCR_MATH_NORMALIZE", off)
+        assert mn.resolve_math_normalize_mode() is False
+    for on in ("1", "true", "yes", "garbage", ""):
+        monkeypatch.setenv("SEMANTIK_GLMOCR_MATH_NORMALIZE", on)
+        assert mn.resolve_math_normalize_mode() is True
+
+
+# ── D3: caption-label demotion / end-matter promotion / box-title constraint ─
+
+
+@pytest.mark.parametrize("label,expected_role", [
+    ("Figure 1.2", "caption"),
+    ("Table 1.4", "caption"),
+    ("Example 1.3", "apparatus"),
+    ("Try It 1.5", "apparatus"),
+])
+def test_numbered_caption_label_never_becomes_heading(label, expected_role):
+    page = GlmPage(page_no=1, regions=[
+        _region(0, "paragraph_title", label),
+        _region(1, "text", "Some body prose that follows the label region here."),
+    ])
+    prov = transform_document([page]).region_provenance
+    lab = prov[0]
+    assert lab["region_kind"] == "paragraph"
+    assert lab.get("role") == expected_role
+
+
+@pytest.mark.parametrize("marker", [
+    "KEY TERMS", "Key Concepts", "Chapter Review", "REVIEW EXERCISES", "PRACTICE TEST",
+])
+def test_endmatter_apparatus_promoted_to_level_2_heading(marker):
+    page = GlmPage(page_no=1, regions=[
+        _region(0, "paragraph_title", marker),
+        _region(1, "text", "End-matter apparatus body prose sentence goes here."),
+    ])
+    prov = transform_document([page]).region_provenance
+    head = prov[0]
+    assert head["region_kind"] == "heading"
+    assert head["level"] == 2
+    assert not head.get("heading_level_pending")
+
+
+def test_endmatter_with_leading_chapter_ordinal_promoted():
+    page = GlmPage(page_no=1, regions=[
+        _region(0, "paragraph_title", "1.5 Key Terms"),
+        _region(1, "text", "End-matter apparatus body prose sentence goes here."),
+    ])
+    prov = transform_document([page]).region_provenance
+    assert prov[0]["region_kind"] == "heading" and prov[0]["level"] == 2
+
+
+def test_endmatter_apparatus_promoted_from_paragraph_typed_region():
+    # a bare marker GLM-OCR mistyped as body text is still promoted
+    page = GlmPage(page_no=1, regions=[
+        _region(0, "text", "Key Terms"),
+        _region(1, "text", "End-matter apparatus body prose sentence goes here."),
+    ])
+    prov = transform_document([page]).region_provenance
+    assert prov[0]["region_kind"] == "heading" and prov[0]["level"] == 2
+
+
+def test_prose_mentioning_key_terms_not_promoted():
+    page = GlmPage(page_no=1, regions=[
+        _region(0, "text", "The key terms in this chapter build on prior work."),
+    ])
+    prov = transform_document([page]).region_provenance
+    assert prov[0]["region_kind"] == "paragraph"
+
+
+def test_two_word_box_title_not_promoted_to_heading():
+    for word in ("Equation", "Opposite"):
+        page = GlmPage(page_no=1, regions=[
+            _region(0, "text", word),
+            _region(1, "text", "A body paragraph with at least four words present."),
+        ])
+        prov = transform_document([page]).region_provenance
+        assert prov[0]["region_kind"] == "paragraph"
+        assert prov[0]["pedagogy_class"] == "definition-box"
+
+
+def test_three_word_box_title_still_promoted():
+    page = GlmPage(page_no=1, regions=[
+        _region(0, "text", "Widget Assembly Guide"),
+        _region(1, "text", "A body paragraph with at least four words present."),
+    ])
+    prov = transform_document([page]).region_provenance
+    assert prov[0]["region_kind"] == "heading"
+
+
+def test_two_word_box_title_flag_off_keeps_heading(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_GLMOCR_MATH_NORMALIZE", "0")
+    page = GlmPage(page_no=1, regions=[
+        _region(0, "text", "Opposite"),
+        _region(1, "text", "A body paragraph with at least four words present."),
+    ])
+    prov = transform_document([page]).region_provenance
+    assert prov[0]["region_kind"] == "heading"  # legacy behavior preserved
 
 
 def test_toc_harvested_from_single_blob_region():

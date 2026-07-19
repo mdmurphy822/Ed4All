@@ -35,15 +35,25 @@ def test_render_figure_no_src_is_text_only():
     assert html == "<figure><figcaption>A widget.</figcaption></figure>"
 
 
-def test_render_figure_empty_no_src_ships_type_level_caption():
+def test_render_figure_empty_no_src_ships_type_level_caption(monkeypatch):
     # A figure with no caption / alt / src must NEVER degrade to a silent
     # empty <figure></figure> (the figure/table assembly drop this regression
-    # closes). It ships the honest type-level "Figure." accessible name as a
-    # <figcaption> so the figure stays visible + labelled to a screen reader.
+    # closes). It ships the honest type-level "Figure." accessible name so the
+    # figure stays labelled to a screen reader. D2 (default-on
+    # SEMANTIK_GLMOCR_MATH_NORMALIZE): the placeholder rides an sr-only <span>
+    # so it stays out of Trainforge chunk text; the accessible name is intact.
+    monkeypatch.delenv("SEMANTIK_GLMOCR_MATH_NORMALIZE", raising=False)
     html = _render_figure_html("", "", None)
     assert html != "<figure></figure>"
-    assert html == "<figure><figcaption>Figure.</figcaption></figure>"
+    assert html == (
+        '<figure><figcaption><span class="sr-only">Figure.</span></figcaption></figure>'
+    )
     assert "<img" not in html  # still no broken <img src="">
+    # Explicit falsey flag → byte-identical legacy visible figcaption.
+    monkeypatch.setenv("SEMANTIK_GLMOCR_MATH_NORMALIZE", "0")
+    assert _render_figure_html("", "", None) == (
+        "<figure><figcaption>Figure.</figcaption></figure>"
+    )
 
 
 def test_render_figure_caption_text_when_no_alt_or_raw():

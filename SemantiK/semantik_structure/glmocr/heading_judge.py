@@ -40,6 +40,7 @@ from . import (
     resolve_heading_judge_model,
     resolve_heading_judge_timeout,
 )
+from . import region_map as rm
 
 logger = logging.getLogger(__name__)
 
@@ -977,6 +978,15 @@ def apply_judged_levels(
             result.dropped += 1
             continue
         if ilvl < 2 or ilvl > 6:  # rule 2: level 1 never assignable; range [2,6]
+            result.dropped += 1
+            continue
+        # D3.4 defensive clamp: a numbered caption/pedagogical label
+        # ("Figure/Example/Table/Try It N.M") must never be assigned a section
+        # level ≤3 (it is furniture the transform should have routed off the
+        # heading track). Drop the assignment, tallied like the fixed-anchor drop.
+        if ilvl <= 3 and rm.caption_label_kind(
+            str(pending_by_id[rid].get("heading_text") or "")
+        ) is not None:
             result.dropped += 1
             continue
         accepted[rid] = ilvl

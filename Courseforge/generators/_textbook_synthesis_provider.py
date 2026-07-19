@@ -228,6 +228,49 @@ _BLOOM_LEVEL_ENUM: Tuple[str, ...] = (
 )
 
 
+# Vendor-depth candidate budget — per-window candidate-objective cap for the
+# Stage-2 window surface (``ED4ALL_OBJECTIVE_WINDOW_MAX_CANDIDATES``). The
+# resolved budget is wired into BOTH the synthesis prompt ("Synthesize 1-N …")
+# and the parse-side JSON-Schema ``maxItems`` so the two always agree. Default
+# unset → ``None`` = the exact legacy behavior (prompt literal "1-3", schema
+# maxItems 12) UNLESS per-section windows are on
+# (``ED4ALL_OBJECTIVE_WINDOW_PER_SECTION``), where the default budget is 12
+# (the measured vendor-run per-unit yield ceiling).
+ENV_WINDOW_MAX_CANDIDATES = "ED4ALL_OBJECTIVE_WINDOW_MAX_CANDIDATES"
+_PER_SECTION_DEFAULT_MAX_CANDIDATES = 12
+
+
+def resolve_window_max_candidates() -> Optional[int]:
+    """Resolve the per-window candidate budget (parse-with-fallback).
+
+    Resolution (high → low):
+
+    1. ``ED4ALL_OBJECTIVE_WINDOW_MAX_CANDIDATES`` as a positive int → that
+       value (garbage / non-positive falls through — a misconfigured knob
+       never disables the surface);
+    2. per-section window mode on (``ED4ALL_OBJECTIVE_WINDOW_PER_SECTION``)
+       → :data:`_PER_SECTION_DEFAULT_MAX_CANDIDATES` (12);
+    3. otherwise → ``None`` = byte-identical legacy prompt + schema.
+
+    Read at call time so tests (and the fingerprint seam) can env-toggle.
+    """
+    raw = os.environ.get(ENV_WINDOW_MAX_CANDIDATES, "").strip()
+    if raw:
+        try:
+            val = int(raw)
+            if val > 0:
+                return val
+        except (TypeError, ValueError):
+            pass
+    try:
+        from lib.objectives.chunk_window import resolve_window_per_section
+    except Exception:  # noqa: BLE001 — resolver import is best-effort
+        return None
+    if resolve_window_per_section():
+        return _PER_SECTION_DEFAULT_MAX_CANDIDATES
+    return None
+
+
 # W2 §3: the single window-objectives JSON Schema (Draft 2020-12). NOT
 # per-block-type — the synthesis surface emits one shape. ``source_chunk_ids``
 # carries ``minItems: 1`` so the grammar itself forbids the empty citation list
@@ -270,6 +313,28 @@ _WINDOW_OBJECTIVES_SCHEMA: Dict[str, Any] = {
         }
     },
 }
+
+
+def _window_objectives_schema(
+    max_candidates: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Return the window-objectives schema for the resolved candidate budget.
+
+    ``None`` → the module-level :data:`_WINDOW_OBJECTIVES_SCHEMA` IDENTITY
+    (byte-identical legacy object — no copy, so ``is``-comparisons and the
+    retry schema-hint dump stay exactly as before). A positive int → a deep
+    copy whose ``candidate_objectives.maxItems`` equals the budget, so the
+    parse-side cap always agrees with the prompt's "Synthesize 1-N" budget.
+    """
+    if max_candidates is None:
+        return _WINDOW_OBJECTIVES_SCHEMA
+    import copy
+
+    schema = copy.deepcopy(_WINDOW_OBJECTIVES_SCHEMA)
+    schema["properties"]["candidate_objectives"]["maxItems"] = int(
+        max_candidates
+    )
+    return schema
 
 
 def _bloom_verb_examples(*, per_level: int = 5) -> str:
@@ -1069,6 +1134,12 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
             c for c in (window.get("chunks") or []) if isinstance(c, dict)
         ]
 
+        # Vendor-depth candidate budget: one resolved value drives the prompt
+        # ("Synthesize 1-N"), the parse-side schema maxItems, AND the grammar
+        # payload — so all three agree. ``None`` = byte-identical legacy.
+        max_candidates = resolve_window_max_candidates()
+        window_schema = _window_objectives_schema(max_candidates)
+
         base_prompt = self._render_window_objectives_prompt(
             chapter_id=chapter_id,
             window_index=window_index,
@@ -1076,8 +1147,12 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
             course_name=course_name,
             draft_terminal_objectives=draft_terminal_objectives or [],
             heading_skeleton=self._build_window_heading_skeleton(chapter_id),
+            max_candidates=max_candidates,
+            section_label=str(window.get("section_label") or ""),
         )
-        extra_payload = self._build_synthesis_grammar_payload()
+        extra_payload = self._build_synthesis_grammar_payload(
+            schema=window_schema
+        )
 
         last_error: Optional[str] = None
         last_raw: str = ""
@@ -1088,7 +1163,7 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
             user_prompt = base_prompt
             if attempt > 0 and last_error:
                 schema_hint = json.dumps(
-                    _WINDOW_OBJECTIVES_SCHEMA, sort_keys=True
+                    window_schema, sort_keys=True
                 )
                 user_prompt = (
                     f"{base_prompt}\n\n"
@@ -1109,7 +1184,7 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
                 continue
             try:
                 jsonschema.Draft202012Validator(
-                    _WINDOW_OBJECTIVES_SCHEMA
+                    window_schema
                 ).validate(candidate)
             except jsonschema.ValidationError as exc:
                 last_error = str(exc.message)[:300]
@@ -1763,6 +1838,8 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
         course_name: str,
         draft_terminal_objectives: List[Dict[str, Any]],
         heading_skeleton: str = "",
+        max_candidates: Optional[int] = None,
+        section_label: str = "",
     ) -> str:
         """W2 §2.1 — chunk-window candidate-objective prompt.
 
@@ -1776,6 +1853,12 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
         compact CONTEXT-ONLY heading-structure section for the window's chapter
         is inserted so TO/CO derivation is structure-aware. Empty → byte-identical
         legacy prompt.
+
+        ``max_candidates`` (``ED4ALL_OBJECTIVE_WINDOW_MAX_CANDIDATES``): the
+        per-window candidate budget. ``None`` → the LITERAL legacy "1-3" line
+        (byte-identical prompt); a positive int → "Synthesize 1-N".
+        ``section_label`` (per-section window mode): when non-empty, a
+        ``Section:`` header line names the window's source section.
         """
         draft_lines: List[str] = []
         for draft in draft_terminal_objectives or []:
@@ -1801,16 +1884,35 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
                 f"{heading_skeleton}\n\n"
             )
 
+        section_line = ""
+        if section_label:
+            section_line = f"Section: {section_label}\n"
+
+        # ``None`` keeps the LITERAL legacy line so the flag-off prompt stays
+        # byte-identical; a resolved budget rewrites only the "1-N" range.
+        if max_candidates is None:
+            synthesize_line = (
+                "Synthesize 1-3 candidate learning objectives this window's "
+                "chunks teach.\n"
+            )
+        else:
+            synthesize_line = (
+                f"Synthesize 1-{int(max_candidates)} candidate learning "
+                "objectives this window's chunks teach. Cover EVERY distinct "
+                "skill or concept the chunks teach — do not stop at the "
+                "first few.\n"
+            )
+
         return (
             f"Course: {course_name}\n"
-            f"Chapter id: {chapter_id}   (window {window_index})\n\n"
+            f"Chapter id: {chapter_id}   (window {window_index})\n"
+            f"{section_line}\n"
             "Course draft terminal objectives (for grounding):\n"
             f"{draft_block}\n\n"
             f"{skeleton_block}"
             "Source chunks (cite ONLY these ids in source_chunk_ids):\n"
             f"{chunks_block}\n\n"
-            "Synthesize 1-3 candidate learning objectives this window's "
-            "chunks teach.\n"
+            f"{synthesize_line}"
             f"{_BLOOM_DIVERSITY_DIRECTIVE}\n"
             "RESPOND ONLY WITH A JSON OBJECT with top-level key "
             '"candidate_objectives": [{"statement", "bloom_level" '
@@ -2108,7 +2210,9 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
             objectives.append(obj)
         return objectives, out_of_set_dropped, empty_citation
 
-    def _build_synthesis_grammar_payload(self) -> Dict[str, Any]:
+    def _build_synthesis_grammar_payload(
+        self, schema: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         """W2 §3 — parameterless analogue of ``_build_grammar_payload``.
 
         ONE schema (``_WINDOW_OBJECTIVES_SCHEMA``) — the synthesis surface emits
@@ -2117,6 +2221,11 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
         ``_GENERIC_JSON_GBNF`` (imported, not duplicated). The grammar enforces
         shape + non-empty ``source_chunk_ids``; the ⊆ membership is enforced
         post-parse (§2.3).
+
+        ``schema``: optional override — the caller's budget-adjusted
+        window-objectives schema (``_window_objectives_schema``) so the
+        grammar-mode payload always agrees with the parse-side cap. ``None``
+        → the module-level legacy schema (byte-identical).
         """
         # Lazy import to avoid pulling the outline-tier module at import time of
         # this provider; the GBNF string is the only symbol reused.
@@ -2127,7 +2236,8 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
         except Exception:  # noqa: BLE001 — GBNF fallback is optional
             _GENERIC_JSON_GBNF = None  # type: ignore[assignment]
 
-        schema = _WINDOW_OBJECTIVES_SCHEMA
+        if schema is None:
+            schema = _WINDOW_OBJECTIVES_SCHEMA
         base_url = (self._base_url or "").lower()
         mode = (self._grammar_mode or "").lower() or None
         provider = self._provider
@@ -2577,4 +2687,7 @@ __all__ = [
     "_SYNTHESIS_NUM_CTX_ENV",
     "_MAX_SYNTHESIS_PARSE_RETRIES",
     "_WINDOW_OBJECTIVES_SCHEMA",
+    "ENV_WINDOW_MAX_CANDIDATES",
+    "resolve_window_max_candidates",
+    "_window_objectives_schema",
 ]

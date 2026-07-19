@@ -92,6 +92,11 @@ from Trainforge.chunker.chunker import (
     split_by_sentences,
     type_from_heading,
 )
+from Trainforge.chunker.stranded_heading_tails import (
+    RELOCATE_STRANDED_HEADINGS_ENV,
+    relocate_stranded_heading_tails,
+    resolve_relocate_stranded_headings,
+)
 from Trainforge.chunker.helpers import (
     extract_learning_outcome_refs,
     extract_plain_text,
@@ -118,6 +123,7 @@ __all__ = [
     "DEFAULT_NGRAM_TOKENS",
     "MAX_CHUNK_SIZE",
     "MIN_CHUNK_SIZE",
+    "RELOCATE_STRANDED_HEADINGS_ENV",
     "TARGET_CHUNK_SIZE",
     "apply_chunk_overlap",
     "chunk_content",
@@ -131,7 +137,9 @@ __all__ = [
     "merge_section_source_ids",
     "parse_dart_pages_attr",
     "merge_small_sections",
+    "relocate_stranded_heading_tails",
     "resolve_chunk_overlap_words",
+    "resolve_relocate_stranded_headings",
     "split_by_sentences",
     "strip_assessment_feedback",
     "strip_boilerplate",

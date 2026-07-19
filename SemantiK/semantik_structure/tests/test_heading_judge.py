@@ -206,6 +206,25 @@ def test_apply_basic_correction():
                for e in esc)
 
 
+def test_caption_label_pending_heading_never_assigned_section_level():
+    """D3.4: a numbered caption/pedagogical label ("Figure N.M") that leaked into
+    the pending set must never be judged to a section level ≤3 — the assignment
+    is dropped + tallied like the fixed-anchor drop."""
+    prov = _prov()
+    # replace the pending body subsection (id 24) with a caption label
+    for r in prov:
+        if r["first_raw_block_index"] == 24:
+            r["heading_text"] = "Figure 1.5"
+    esc, tree = _escalations(), []
+    # judge id 24 (caption label) → level 3 (must be dropped); id 1 → level 2 (kept)
+    result = hj.apply_judged_levels(prov, tree, esc, {1: 2, 24: 3})
+    assert result.applied == 1  # only id 1 applied
+    assert result.dropped == 1  # the caption-label assignment dropped
+    r24 = next(r for r in prov if r["first_raw_block_index"] == 24)
+    assert r24["level"] == 3  # unchanged from its defaulted level
+    assert r24.get("heading_level_pending") is True  # never resolved
+
+
 def test_pending_only_mutation_fixed_anchor_dropped():
     prov, esc, tree = _prov(), _escalations(), []
     # target the FIXED L2 anchor (id 18) + the fixed chapter opener (id 0)

@@ -32,6 +32,11 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from . import region_map as rm
+from .math_normalize import (
+    fix_spaced_ordinals,
+    normalize_math_text,
+    resolve_math_normalize_mode,
+)
 
 # ── Input page shape (injectable; the SDK client produces these). ───────────
 
@@ -218,6 +223,26 @@ def _emit_structural(
 
     if base == "heading":
         text = rm.strip_md_heading(content)
+        # D3.2: a BARE end-matter apparatus heading (KEY TERMS / CHAPTER REVIEW
+        # / REVIEW EXERCISES / PRACTICE TEST / …) is a REAL section heading —
+        # checked BEFORE the apparatus demotion below (apparatus_pedagogy_class
+        # would otherwise demote "self check" etc.).
+        if rm.is_endmatter_apparatus(text):
+            return _prov(idx=idx, region_kind="heading", heading_text=text,
+                         level=2, page=page, native_label=nl, bbox=bbox,
+                         heading_level_pending=False)
+        # D3.1: a numbered caption/pedagogical label ("Figure/Example/Table/
+        # Try It N.M") must NEVER be a section heading — Figure/Table → caption
+        # path, Example/Try It → apparatus path.
+        clk = rm.caption_label_kind(text)
+        if clk == "caption":
+            return _prov(idx=idx, region_kind="paragraph", raw_text=text,
+                         page=page, role="caption", native_label=nl, bbox=bbox)
+        if clk == "apparatus":
+            return _prov(idx=idx, region_kind="paragraph", raw_text=text,
+                         page=page, role="apparatus",
+                         pedagogy_class=rm.apparatus_pedagogy_class(text),
+                         native_label=nl, bbox=bbox)
         # apparatus / table-caption demotions off the heading track.
         ped = rm.apparatus_pedagogy_class(text)
         if ped:
@@ -279,14 +304,33 @@ def _emit_structural(
                      page=page, role=role, native_label=nl, bbox=bbox)
 
     # base == "paragraph" — apparatus / box-title / prose.
+    # D3.2: a bare end-matter apparatus heading GLM-OCR mistyped as body text
+    # ("KEY TERMS" / "CHAPTER REVIEW") is a REAL section heading (checked before
+    # the apparatus demotion; the ≤6-word whole-text-is-marker predicate rejects
+    # a prose sentence merely mentioning the marker).
+    if rm.is_endmatter_apparatus(content):
+        return _prov(idx=idx, region_kind="heading",
+                     heading_text=rm.strip_md_heading(content), level=2,
+                     page=page, native_label=nl, bbox=bbox,
+                     heading_level_pending=False)
     ped = rm.apparatus_pedagogy_class(content)
     if ped:
         return _prov(idx=idx, region_kind="paragraph", raw_text=content,
                      page=page, role="apparatus", pedagogy_class=ped,
                      native_label=nl, bbox=bbox)
     if rm.is_box_title(content, next_text, next_kind):
+        # D3.3: a ≤2-word box-title candidate ("Equation", "Opposite") is a
+        # definition LABEL, not a section heading — emit it via the
+        # pedagogical-label path. Gated under SEMANTIK_GLMOCR_MATH_NORMALIZE so
+        # the arm has a byte-identical revert lever (no new flag). ≥3-word box
+        # titles keep the legacy heading promotion.
+        title = rm.strip_md_heading(content)
+        if len(title.split()) <= 2 and resolve_math_normalize_mode():
+            return _prov(idx=idx, region_kind="paragraph", raw_text=content,
+                         page=page, pedagogy_class="definition-box",
+                         native_label=nl, bbox=bbox)
         return _prov(idx=idx, region_kind="heading",
-                     heading_text=rm.strip_md_heading(content), level=3,
+                     heading_text=title, level=3,
                      page=page, native_label=nl, bbox=bbox,
                      heading_level_pending=True)
     return _prov(idx=idx, region_kind="paragraph", raw_text=content, page=page,
@@ -469,10 +513,41 @@ def transform_document(pages: Sequence[GlmPage]) -> TransformResult:
 
     _stitch_cross_page(prov, escalations)
     _anchor_declared_sections(prov, heading_tree, escalations)
+    _normalize_math_and_ordinals(prov, heading_tree)
     # strip internal bookkeeping keys before returning the wire contract
     for p in prov:
         p.pop("_escalated_caption", None)
     return TransformResult(prov, heading_tree, escalations)
+
+
+def _normalize_math_and_ordinals(
+    prov: List[Dict[str, Any]], heading_tree: List[Tuple[int, str]]
+) -> None:
+    """D2 FINAL deterministic pass (gated on SEMANTIK_GLMOCR_MATH_NORMALIZE,
+    default ON in-lane): normalize per-glyph OCR math spacing on every region's
+    ``raw_text``, and rejoin split section ordinals on plain-paragraph
+    ``raw_text`` + heading ``heading_text``. Byte-identical when the flag is
+    explicitly falsey (the pass never runs)."""
+    if not resolve_math_normalize_mode():
+        return
+    heading_changed = False
+    for p in prov:
+        rt = p.get("raw_text")
+        if rt:
+            p["raw_text"] = normalize_math_text(rt)
+        kind = p.get("region_kind")
+        if kind == "paragraph" and not p.get("role") and p.get("raw_text"):
+            p["raw_text"] = fix_spaced_ordinals(p["raw_text"])
+        elif kind == "heading" and p.get("heading_text"):
+            fixed = fix_spaced_ordinals(str(p["heading_text"]))
+            if fixed != p["heading_text"]:
+                p["heading_text"] = fixed
+                heading_changed = True
+    if heading_changed:
+        heading_tree[:] = [
+            (int(p.get("level", 3) or 3), str(p.get("heading_text", "")))
+            for p in prov if p.get("region_kind") == "heading"
+        ]
 
 
 # ToC declaration: "1.1 Title" / "1. 1 Title" (per-region OCR often splits the
