@@ -194,6 +194,10 @@ export ED4ALL_VRAM_DOCTOR=1
 export ED4ALL_LLM_TTFT_METER=1
 export ED4ALL_GENERATION_CHECKPOINT=on
 export ED4ALL_LOG_LEVEL=INFO                   # 2026-07-18: per-gate + dispatcher stats visibility
+export ED4ALL_CAPTURE_BUFFER=1                 # 2026-07-18: batch decision-capture I/O (3x fsync per
+                                               # decision was the uniform ~5.8s/gate; rows byte-identical)
+export COURSEFORGE_CURIE_PRESERVE_SKIP_WHEN_POSTMINT=1  # 2026-07-18: zero CURIE-preservation retry
+                                               # churn under postmint (validated: 0 vs 803 retries)
 
 # ---- Timeouts (generous; graceful-stop turns timeouts into pauses) ---------
 export ED4ALL_TASK_TIMEOUT_MINUTES=600
@@ -209,3 +213,6 @@ export ED4ALL_PLANNING_GATE_RETRIES=10
 
 # ED4ALL_RUN_ID is set at launch time by the launch wrapper so every usage tap
 # (incl. the new SemantiK taps) lands in one state/runs/<id>/llm_usage.jsonl.
+# 2026-07-18 TRT-bench torch baseline: 512-tok forwards at batch 64 = 80.8
+# pairs/s vs 68.1 at batch 32 (+19%) — raise the long-pair bucket batch.
+export ED4ALL_NLI_BUCKET_BATCH="256,128,64,64"

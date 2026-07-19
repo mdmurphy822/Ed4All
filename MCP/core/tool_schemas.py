@@ -810,6 +810,30 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
         ),
     },
 
+    "run_heading_judge": {
+        "required": [],
+        "optional": [
+            "pdf_paths",
+            "course_name",
+        ],
+        "defaults": {},
+        "param_mapping": {
+            "course": "course_name",
+            "name": "course_name",
+            "course_code": "course_name",
+        },
+        "description": (
+            "heading_judge phase handler (SEMANTIK_HEADING_JUDGE) — runs "
+            "the standalone Super heading-level judge --apply per GLM-OCR "
+            "{stem}.glmocr_layout.json sidecar as a subprocess and copies "
+            "judged HTML + corrected escalations back over the conversion "
+            "output (.prejudge.bak/.bak kept; layout sidecar never "
+            "overwritten). Skip-with-pass when the flag is off / the corpus "
+            "is born-digital; per-chapter FAIL-OPEN. Routed by phase NAME "
+            "via _PHASE_TOOL_MAPPING; validator-only phase."
+        ),
+    },
+
     "run_vector_indexing": {
         "required": [],
         "optional": [

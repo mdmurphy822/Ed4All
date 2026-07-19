@@ -414,9 +414,15 @@ class TestSkipDartFlag:
         )
         assert dart_phase.get("status") == "SKIPPED"
         assert "skip-dart" in dart_phase.get("skip_reason", "").lower()
-        # staging should still be in the plan and depend on semantik_conversion.
+        # staging should still be in the plan; the conversion chain now runs
+        # through the heading_judge phase (semantik_conversion ->
+        # heading_judge -> staging; SEMANTIK_HEADING_JUDGE permanent wiring).
         staging = next(p for p in payload["phases"] if p["name"] == "staging")
-        assert "semantik_conversion" in staging["depends_on"]
+        assert "heading_judge" in staging["depends_on"]
+        heading_judge = next(
+            p for p in payload["phases"] if p["name"] == "heading_judge"
+        )
+        assert "semantik_conversion" in heading_judge["depends_on"]
         # Workflow params carry the skip_dart + dart_output_dir keys.
         assert payload["params"]["skip_dart"] is True
         assert payload["params"]["dart_output_dir"] == str(tmp_path)

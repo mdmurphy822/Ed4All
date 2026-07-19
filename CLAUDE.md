@@ -389,7 +389,7 @@ and the GUI stay in sync. Full detail: `gui/README.md § Claude Code integration
 | `extract_textbook_structure` | `objective_extraction` | Runs `SemanticStructureExtractor` over every staged DART HTML file and merges per-file chapter/section hierarchies into a single `textbook_structure.json`. |
 | `plan_course_structure` | `course_planning` | Synthesizes canonical `TO-NN` / `CO-NN` learning objectives from the textbook structure and publishes `synthesized_objectives.json`. |
 
-**Phase-name dispatch override** (`MCP/core/executor.py::_PHASE_TOOL_MAPPING`): six phases route by phase name, not agent name — `content_generation_outline` → `run_content_generation_outline`; `inter_tier_validation` → `run_inter_tier_validation`; `content_generation_rewrite` → `run_content_generation_rewrite`; `post_rewrite_validation` → `run_post_rewrite_validation`; `imscc_chunking` → `run_imscc_chunking`; `assessment_synthesis` → `run_assessment_synthesis`. Validator-only phases declare `agents: []` in `config/workflows.yaml`; `workflow_runner._create_phase_tasks` synthesizes a virtual `phase-handler` task only when the phase appears in this map. The mapping cannot be inferred from YAML.
+**Phase-name dispatch override** (`MCP/core/executor.py::_PHASE_TOOL_MAPPING`): seven phases route by phase name, not agent name — `content_generation_outline` → `run_content_generation_outline`; `inter_tier_validation` → `run_inter_tier_validation`; `content_generation_rewrite` → `run_content_generation_rewrite`; `post_rewrite_validation` → `run_post_rewrite_validation`; `imscc_chunking` → `run_imscc_chunking`; `assessment_synthesis` → `run_assessment_synthesis`; `heading_judge` → `run_heading_judge` (the SEMANTIK_HEADING_JUDGE post-conversion Super heading-level judge — skip-with-pass when off / born-digital, per-chapter fail-open copy-back). Validator-only phases declare `agents: []` in `config/workflows.yaml`; `workflow_runner._create_phase_tasks` synthesizes a virtual `phase-handler` task only when the phase appears in this map. The mapping cannot be inferred from YAML.
 
 ### Analysis Tools
 
@@ -445,31 +445,40 @@ tracker.update_status("content_generator", "IN_PROGRESS",
        is accepted on READ (checkpoint alias + phase_outputs resume-
        normalization) so old paused runs still `--resume`.
 
-2. staging
+2. heading_judge (optional, SEMANTIK_HEADING_JUDGE)
+   └── Super heading-level judge over the GLM-OCR lane's
+       {stem}.glmocr_layout.json sidecars: re-levels heading_level_pending
+       headings via the standalone judge subprocess, then copies judged
+       {stem}_accessible.html + corrected escalations back over the
+       conversion output (.prejudge.bak / .bak kept; the layout sidecar is
+       never overwritten). Skip-with-pass when the flag is off or the
+       corpus is born-digital; per-chapter FAIL-OPEN (never blocks a build).
+
+3. staging
    └── Stage DART outputs to Courseforge inputs
 
-3. objective_extraction
+4. objective_extraction
    └── Parse staged DART HTML into textbook_structure.json (chapters,
        sections, content blocks); auto-scales duration_weeks to max(8,
        chapters) when --weeks is unset.
 
-4. source_mapping
+5. source_mapping
    └── Map DART source blocks to Courseforge module pages; emits
        source_module_map.json consumed by content_generation.
 
-5. course_planning
+6. course_planning
    └── Synthesize canonical TO-NN / CO-NN learning objectives from
        textbook_structure; emits synthesized_objectives.json. Re-scales
        duration_weeks to the TO-driven max(8, num_tos) when --weeks is
        unset (WS5 §3.2 pacing — see docs/operations/pipeline-invocation.md
        § 2.1; skipped for --weeks / --reuse-objectives).
 
-6. content_generation
+7. content_generation
    └── Generate course content modules (parallel batches of 10). Every
        emitted sourceId must resolve against the DART staging manifest
        (source_refs gate).
 
-7. assessment_synthesis (optional)
+8. assessment_synthesis (optional)
    └── W10 — synthesize grounded quizzes, short assignments, and
        discussion prompts from the DART chunkset and emit QTI 1.2 /
        imsdt / assignment XML + manifest.json into <export>/06_assessments/
@@ -478,15 +487,15 @@ tracker.update_status("content_generator", "IN_PROGRESS",
        gated critical on qti_well_formed + assessment_objective_alignment.
        Runs before packaging; skipped via generate_assessments=false.
 
-8. packaging
+9. packaging
    └── Package course as IMSCC via the mature multi-file packager.
 
-9. trainforge_assessment (optional)
+10. trainforge_assessment (optional)
    └── Generate assessments from the IMSCC package. Fails closed if any
        assessment objective_id isn't covered by a chunk's
        learning_outcome_refs.
 
-10. training_synthesis (optional)
+11. training_synthesis (optional)
    └── Synthesize instruction + preference training pairs from the
        generated chunks + assessments. Routes via the
        `training-synthesizer` agent (tool: `synthesize_training`).
@@ -495,11 +504,11 @@ tracker.update_status("content_generator", "IN_PROGRESS",
        `training_specs/.synthesis_pairs_checkpoint.jsonl` (opt out via
        `--no-checkpoint`).
 
-11. libv2_archival
+12. libv2_archival
    └── Archive course artifacts to LibV2 (raw PDFs, DART HTML, IMSCC,
        RAG corpus). Gated by libv2_manifest integrity checks.
 
-12. vector_indexing (optional)
+13. vector_indexing (optional)
    └── Build the per-course on-device vector index from the LibV2-archived
        chunkset so a freshly-built course is askable. Routes via the
        `rag-indexer` agent (tool: `run_vector_indexing`). Runs by default;
@@ -507,7 +516,7 @@ tracker.update_status("content_generator", "IN_PROGRESS",
        `TRAINFORGE_REQUIRE_EMBEDDINGS` is set (then fails closed on a
        broken embedding backend).
 
-13. finalization
+14. finalization
    └── Final validation and training data export.
 ```
 

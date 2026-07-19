@@ -1459,11 +1459,62 @@ workflows:
               on_error: fail_closed
             description: Ensure DART HTML emits skip-link, role=main, aria-labelledby sections, and DART semantic classes
 
+      # SEMANTIK_HEADING_JUDGE permanent wiring — post-conversion Super
+      # heading-level judge over the GLM-OCR lane's {stem}.glmocr_layout.json
+      # sidecars (validated live 2026-07-18: 1525/1528 pendings judged,
+      # residual 1154->1, zero level skips). Validator-only phase routed by
+      # NAME via MCP/core/executor.py::_PHASE_TOOL_MAPPING['heading_judge']
+      # -> run_heading_judge (agents: [] => the runner synthesizes one
+      # virtual phase-handler task). Skip-with-pass when SEMANTIK_HEADING_JUDGE
+      # is off (byte-identical no-op) or the corpus carries no GLM-OCR layout
+      # sidecars (born-digital). Per-chapter FAIL-OPEN: a nonzero exit /
+      # timeout keeps that chapter's pre-judge HTML and the phase still
+      # completes (warnings list) — the judge never blocks a build. Judged
+      # {stem}_accessible.html overwrites the conversion output (keeping a
+      # .prejudge.bak); corrected escalations overwrite the corpus sidecar
+      # (keeping .bak); {stem}.glmocr_layout.json is NEVER overwritten.
+      - name: heading_judge
+        agents: []
+        parallel: false
+        max_concurrent: 1
+        # SEAT SCHEDULE: the judge runs on the Super seat; the schedule swaps
+        # out the conversion seats (spark-glm/spark-qwen) and brings Super up
+        # for the judged skeleton POSTs.
+        seats: [spark-super]
+        depends_on: [semantik_conversion]
+        # Per-chapter subprocess timeout is SEMANTIK_HEADING_JUDGE_CHAPTER_TIMEOUT
+        # (default 5400 s); a 10-chapter book judged serially needs a generous
+        # phase ceiling. Per-window resume cache (heading_judge_cache, default
+        # ON) makes a resumed/re-run phase nearly free.
+        timeout_minutes: 600
+        description: >
+          Super heading-level judge over GLM-OCR layout sidecars — re-levels
+          heading_level_pending headings via the standalone judge subprocess,
+          then copies judged HTML + corrected escalations back over the
+          conversion output (fail-open per chapter).
+
+        inputs_from:
+          - param: pdf_paths
+            source: workflow_params
+            key: pdf_paths
+          - param: course_name
+            source: workflow_params
+            key: course_name
+
+        outputs:
+          - success
+          - chapters_judged
+          - chapters_skipped
+          - chapters_failed
+          - total_applied
+          - total_kept
+          - residual_pending
+
       - name: staging
         agents: [textbook-stager]
         parallel: false
         max_concurrent: 1
-        depends_on: [semantik_conversion]
+        depends_on: [heading_judge]
         timeout_minutes: 10
         description: Stage DART outputs to Courseforge inputs directory
 

@@ -19718,6 +19718,465 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
     })
 
 
+# =============================================================================
+# Heading-judge phase (SEMANTIK_HEADING_JUDGE) — permanent pipeline wiring
+# =============================================================================
+# Post-conversion Super heading-level JUDGE over the GLM-OCR lane's
+# ``{stem}.glmocr_layout.json`` sidecars, wired as the ``heading_judge``
+# validator-only phase between ``semantik_conversion`` and ``staging``
+# (routed by NAME via ``MCP/core/executor.py::_PHASE_TOOL_MAPPING``).
+# Validated live 2026-07-18 on a 10-chapter run (1525/1528 pendings judged,
+# residual 1154->1, zero level skips). Contract:
+#
+#   * SEMANTIK_HEADING_JUDGE off  -> skip-with-pass (byte-identical no-op).
+#   * no ``*.glmocr_layout.json`` -> skip-with-pass (born-digital corpus).
+#   * per chapter: run the standalone judge as a SUBPROCESS
+#     (``python -m semantik_structure.glmocr.heading_judge_standalone
+#     <layout> --apply --out <dir>`` with cwd = the SemantiK repo root) and
+#     COPY BACK: judged ``{stem}_accessible.html`` OVERWRITES the conversion
+#     output HTML (keeping ``.prejudge.bak``); corrected escalations
+#     OVERWRITE ``<corpus>/{stem}.glmocr_escalations.jsonl`` (keeping
+#     ``.bak``). ``{stem}.glmocr_layout.json`` is NEVER overwritten — the
+#     judge's ``corrected_layout.json`` has a DIFFERENT shape
+#     (region_provenance + heading_tree, not pages).
+#   * FAIL-OPEN per chapter: nonzero exit / timeout -> warning + continue
+#     (the corpus keeps that chapter's pre-judge HTML); the phase always
+#     completes successfully with a warnings list. Never blocks the build.
+#   * graceful stop: the run-scoped stop sentinel is polled between
+#     chapters (``check_stop`` — the standard phase-helper contract).
+#   * OP2 metering: the subprocess env carries SEMANTIK_LLM_USAGE_PATH =
+#     ``state/runs/<run_id>/llm_usage.jsonl`` + SEMANTIK_LLM_USAGE_PHASE =
+#     ``heading_judge`` so each judge POST rows into the run's usage tap
+#     (``semantik_structure/glmocr/heading_judge.py::_emit_usage_row``).
+# =============================================================================
+
+_HEADING_JUDGE_FLAG_ENV = "SEMANTIK_HEADING_JUDGE"
+_HEADING_JUDGE_CHAPTER_TIMEOUT_ENV = "SEMANTIK_HEADING_JUDGE_CHAPTER_TIMEOUT"
+_HEADING_JUDGE_CHAPTER_TIMEOUT_DEFAULT = 5400.0
+_HEADING_JUDGE_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def _heading_judge_enabled() -> bool:
+    """Parse-with-fallback SEMANTIK_HEADING_JUDGE (truthy set {1,true,yes,on},
+    case-insensitive; unset / garbage / falsey -> off)."""
+    raw = (os.environ.get(_HEADING_JUDGE_FLAG_ENV) or "").strip().lower()
+    return raw in _HEADING_JUDGE_TRUTHY
+
+
+def _resolve_heading_judge_chapter_timeout() -> float:
+    """Per-chapter subprocess timeout (s); parse-with-fallback to 5400."""
+    raw = (os.environ.get(_HEADING_JUDGE_CHAPTER_TIMEOUT_ENV) or "").strip()
+    if raw:
+        try:
+            val = float(raw)
+            if val > 0 and val == val and val not in (
+                float("inf"), float("-inf")
+            ):
+                return val
+        except ValueError:
+            pass
+    return _HEADING_JUDGE_CHAPTER_TIMEOUT_DEFAULT
+
+
+def _heading_judge_corpus_dirs(pdf_paths: Any) -> List[Path]:
+    """Resolve the corpus dir(s) that hold ``*.glmocr_layout.json`` sidecars.
+
+    ``SEMANTIK_GLMOCR_OUTPUT_DIR`` (when set) wins — the GLM-OCR lane wrote
+    its sidecars there. Otherwise each ``pdf_paths`` token (comma-separated
+    string or list, mirroring the ``semantik_conversion`` param shape)
+    contributes its own directory (dir token) or its parent (file token) —
+    the lane's default sidecar location is the PDF's parent. Order-preserving
+    dedupe.
+    """
+    explicit = (os.environ.get("SEMANTIK_GLMOCR_OUTPUT_DIR") or "").strip()
+    if explicit:
+        return [Path(explicit)]
+    if isinstance(pdf_paths, (list, tuple)):
+        tokens = [str(t).strip() for t in pdf_paths if str(t).strip()]
+    elif pdf_paths:
+        tokens = [t.strip() for t in str(pdf_paths).split(",") if t.strip()]
+    else:
+        tokens = []
+    dirs: List[Path] = []
+    seen: Set[str] = set()
+    for tok in tokens:
+        p = Path(tok)
+        d = p if p.is_dir() else p.parent
+        key = str(d.resolve()) if d.exists() else str(d)
+        if key not in seen:
+            seen.add(key)
+            dirs.append(d)
+    return dirs
+
+
+def _heading_judge_residual_pending(escalations_path: Path) -> int:
+    """Count remaining ``heading_level_pending`` rows in a corrected
+    escalations sidecar (best-effort; unreadable -> 0)."""
+    count = 0
+    try:
+        with escalations_path.open(encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if (
+                    isinstance(row, dict)
+                    and row.get("reason") == "heading_level_pending"
+                ):
+                    count += 1
+    except OSError:
+        return 0
+    return count
+
+
+def _heading_judge_copy_back(
+    stem: str, judged_dir: Path, corpus_dir: Path
+) -> List[str]:
+    """COPY-BACK contract (validated live): judged HTML over the conversion
+    output (``.prejudge.bak`` kept), corrected escalations over the corpus
+    sidecar (``.bak`` kept). NEVER touches ``{stem}.glmocr_layout.json``.
+
+    Returns a warnings list (missing judged artifact / copy failure);
+    warnings never fail the phase (fail-open).
+    """
+    from lib.paths import semantik_output_dir  # noqa: PLC0415
+
+    warnings_out: List[str] = []
+
+    html_src = judged_dir / f"{stem}_accessible.html"
+    if html_src.is_file():
+        try:
+            html_dest = semantik_output_dir() / f"{stem}_accessible.html"
+            html_dest.parent.mkdir(parents=True, exist_ok=True)
+            if html_dest.exists():
+                shutil.copy2(
+                    html_dest,
+                    html_dest.parent / f"{html_dest.name}.prejudge.bak",
+                )
+            shutil.copy2(html_src, html_dest)
+        except OSError as exc:
+            warnings_out.append(
+                f"{stem}: judged-HTML copy-back failed ({exc}); "
+                f"pre-judge HTML kept"
+            )
+    else:
+        warnings_out.append(
+            f"{stem}: judged HTML missing at {html_src} (re-render skipped "
+            f"in the judge subprocess?); pre-judge HTML kept"
+        )
+
+    esc_src = judged_dir / f"{stem}.glmocr_escalations.jsonl"
+    if esc_src.is_file():
+        try:
+            esc_dest = corpus_dir / f"{stem}.glmocr_escalations.jsonl"
+            if esc_dest.exists():
+                shutil.copy2(
+                    esc_dest, esc_dest.parent / f"{esc_dest.name}.bak"
+                )
+            shutil.copy2(esc_src, esc_dest)
+        except OSError as exc:
+            warnings_out.append(
+                f"{stem}: corrected-escalations copy-back failed ({exc}); "
+                f"pre-judge escalations kept"
+            )
+    else:
+        warnings_out.append(
+            f"{stem}: corrected escalations missing at {esc_src}; "
+            f"pre-judge escalations kept"
+        )
+    return warnings_out
+
+
+def _emit_heading_judge_capture(
+    course_code: str, stem: str, report: Dict[str, Any]
+) -> None:
+    """One ``structure_review`` DecisionCapture per successfully judged
+    chapter, with the ``heading_level_judge`` metadata discriminator.
+    Best-effort — a capture failure never breaks the phase."""
+    try:
+        from lib.decision_capture import DecisionCapture  # noqa: PLC0415
+
+        applied = int(report.get("applied") or 0)
+        kept = int(report.get("kept") or 0)
+        clamped = int(report.get("clamped") or 0)
+        dropped = int(report.get("dropped") or 0)
+        windows = int(report.get("windows") or 0)
+        n_pending = int(report.get("n_pending") or 0)
+        model = str(report.get("model") or "unknown")
+
+        capture = DecisionCapture(
+            course_code=course_code or stem or "unknown",
+            phase="semantik_conversion",
+            tool="semantik",
+        )
+        # DYNAMIC rationale (>=20 chars) — interpolates the chapter's own
+        # judgment tallies + the judge model so the capture is replayable.
+        rationale = (
+            f"Heading-level judge ({model}) judged {n_pending} pending "
+            f"heading(s) on {stem} across {windows} skeleton window(s): "
+            f"{applied} level correction(s) applied, {kept} kept at their "
+            f"current level, {clamped} clamped by the parent+1 contiguity "
+            f"contract, {dropped} fixed-anchor target(s) dropped. "
+            f"Deterministic clamp re-stamped PENDING headings only "
+            f"(levels, never text)."
+        )
+        capture.log_decision(
+            decision_type="structure_review",
+            decision=(
+                f"heading_judge applied={applied} kept={kept} "
+                f"clamped={clamped} dropped={dropped} windows={windows}"
+            ),
+            rationale=rationale,
+            alternatives_considered=[
+                {
+                    "option": "keep the transform's flat level-3 default",
+                    "reason_rejected": (
+                        "heading_level_pending headings sit flat at level 3; "
+                        "the judge re-levels them against the chapter's own "
+                        "N.M spine under the no-skip clamp"
+                    ),
+                },
+            ],
+            # STRUCTURED discriminator (lands in record metadata) so
+            # downstream analysis separates heading-judge rows from the
+            # Stage-5d reviewer's structure_review rows on a FIELD.
+            heading_level_judge=True,
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort; never break phase
+        logger.warning(
+            "heading_judge DecisionCapture failed (non-fatal) on %s: %s",
+            stem,
+            exc,
+        )
+
+
+async def _run_heading_judge(**kwargs) -> str:
+    """Phase handler for the ``heading_judge`` textbook_to_course phase.
+
+    Resolved kwargs (workflows.yaml ``inputs_from``):
+        pdf_paths: the corpus param the ``semantik_conversion`` phase consumed
+            (comma-separated PDF paths OR a directory) — the GLM-OCR layout
+            sidecars live beside the PDFs (or in SEMANTIK_GLMOCR_OUTPUT_DIR).
+        course_name: course code for DecisionCapture attribution.
+
+    Output counts: ``chapters_judged`` (subprocess success, >=1 pending
+    heading), ``chapters_skipped`` (subprocess success, zero pendings),
+    ``chapters_failed`` (nonzero exit / timeout — fail-open), plus
+    ``total_applied`` / ``total_kept`` summed from the per-chapter reports
+    and ``residual_pending`` summed from the corrected escalations.
+    """
+    import asyncio as _asyncio
+    import functools as _functools
+    import subprocess  # noqa: PLC0415
+
+    if not _heading_judge_enabled():
+        logger.info(
+            "run_heading_judge: %s off — skip-with-pass (byte-identical "
+            "no-op).",
+            _HEADING_JUDGE_FLAG_ENV,
+        )
+        return json.dumps({
+            "success": True,
+            "skipped": True,
+            "reason": "flag_off",
+            "chapters_judged": 0,
+            "chapters_skipped": 0,
+            "chapters_failed": 0,
+            "total_applied": 0,
+            "total_kept": 0,
+            "residual_pending": 0,
+        })
+
+    pdf_paths = kwargs.get("pdf_paths") or ""
+    course_name = (
+        kwargs.get("course_name") or kwargs.get("course_code") or ""
+    )
+    corpus_dirs = _heading_judge_corpus_dirs(pdf_paths)
+
+    sidecars: List[Tuple[Path, Path]] = []  # (layout_path, corpus_dir)
+    for d in corpus_dirs:
+        try:
+            for layout in sorted(d.glob("*.glmocr_layout.json")):
+                sidecars.append((layout, d))
+        except OSError:
+            continue
+    if not sidecars:
+        logger.info(
+            "run_heading_judge: no *.glmocr_layout.json sidecars under %s — "
+            "born-digital corpus; skip-with-pass.",
+            [str(d) for d in corpus_dirs] or "<no corpus dirs>",
+        )
+        return json.dumps({
+            "success": True,
+            "skipped": True,
+            "reason": "no_sidecars",
+            "chapters_judged": 0,
+            "chapters_skipped": 0,
+            "chapters_failed": 0,
+            "total_applied": 0,
+            "total_kept": 0,
+            "residual_pending": 0,
+        })
+
+    # Subprocess seat: SEMANTIK_PYTHON / SEMANTIK_RUNTIME_DIR when set (the
+    # cross-venv bridge contract), else this interpreter + <repo>/SemantiK.
+    from lib.paths import SEMANTIK_PATH, get_state_runs_dir  # noqa: PLC0415
+
+    judge_python = (
+        (os.environ.get(_SEMANTIK_PYTHON_ENV) or "").strip() or sys.executable
+    )
+    runtime_dir_raw = (
+        os.environ.get(_SEMANTIK_RUNTIME_DIR_ENV) or ""
+    ).strip()
+    judge_cwd = Path(runtime_dir_raw) if runtime_dir_raw else SEMANTIK_PATH
+    timeout = _resolve_heading_judge_chapter_timeout()
+
+    # OP2 usage tap + judged-output dir: run-scoped when a run id resolves.
+    run_id = (os.environ.get("ED4ALL_RUN_ID") or "").strip()
+    usage_path: Optional[Path] = None
+    out_dir: Optional[Path] = None
+    if run_id:
+        try:
+            run_dir = get_state_runs_dir() / run_id
+            usage_path = run_dir / "llm_usage.jsonl"
+            out_dir = run_dir / "heading_judge"
+        except Exception:  # noqa: BLE001 — path resolution must not fail phase
+            usage_path = None
+            out_dir = None
+    if out_dir is None:
+        out_dir = sidecars[0][1] / "heading_judge_out"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    judge_env = dict(os.environ)
+    judge_env[_HEADING_JUDGE_FLAG_ENV] = "1"
+    if usage_path is not None:
+        judge_env["SEMANTIK_LLM_USAGE_PATH"] = str(usage_path)
+        judge_env["SEMANTIK_LLM_USAGE_PHASE"] = "heading_judge"
+
+    chapters_judged = 0
+    chapters_skipped = 0
+    chapters_failed = 0
+    total_applied = 0
+    total_kept = 0
+    residual_pending = 0
+    warnings_list: List[str] = []
+
+    for idx, (layout, corpus_dir) in enumerate(sidecars):
+        # Graceful-stop contract: poll the run-scoped stop sentinel at every
+        # chapter boundary (raises GracefulStopRequested -> the phase pauses;
+        # the judge's per-window resume cache makes the resume nearly free).
+        check_stop("heading_judge", idx)
+
+        stem = layout.name
+        for suffix in (".glmocr_layout.json", ".json"):
+            if stem.endswith(suffix):
+                stem = stem[: -len(suffix)]
+                break
+
+        cmd = [
+            judge_python,
+            "-m",
+            "semantik_structure.glmocr.heading_judge_standalone",
+            str(layout),
+            "--apply",
+            "--out",
+            str(out_dir),
+        ]
+        try:
+            proc = await _asyncio.to_thread(
+                _functools.partial(
+                    subprocess.run,
+                    cmd,
+                    cwd=str(judge_cwd),
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    env=judge_env,
+                )
+            )
+        except subprocess.TimeoutExpired:
+            chapters_failed += 1
+            warnings_list.append(
+                f"{stem}: heading judge timed out after {timeout:.0f}s; "
+                f"pre-judge HTML kept (fail-open). Raise "
+                f"{_HEADING_JUDGE_CHAPTER_TIMEOUT_ENV} if the chapter "
+                f"legitimately needs longer."
+            )
+            logger.warning("run_heading_judge: %s", warnings_list[-1])
+            continue
+        except (OSError, subprocess.SubprocessError) as exc:
+            chapters_failed += 1
+            warnings_list.append(
+                f"{stem}: heading judge subprocess could not run "
+                f"({judge_python}): {exc}; pre-judge HTML kept (fail-open)."
+            )
+            logger.warning("run_heading_judge: %s", warnings_list[-1])
+            continue
+
+        if proc.returncode != 0:
+            stderr_tail = (proc.stderr or "").strip()[-400:]
+            chapters_failed += 1
+            warnings_list.append(
+                f"{stem}: heading judge exited {proc.returncode}; pre-judge "
+                f"HTML kept (fail-open). stderr tail: {stderr_tail}"
+            )
+            logger.warning("run_heading_judge: %s", warnings_list[-1])
+            continue
+
+        # Success: COPY BACK (never the layout sidecar), then tally + capture.
+        warnings_list.extend(
+            _heading_judge_copy_back(stem, out_dir, corpus_dir)
+        )
+
+        report: Dict[str, Any] = {}
+        report_path = out_dir / f"{stem}.heading_judgments.json"
+        try:
+            loaded = json.loads(report_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                report = loaded
+        except (OSError, ValueError):
+            warnings_list.append(
+                f"{stem}: heading_judgments.json unreadable at {report_path}"
+            )
+
+        if int(report.get("n_pending") or 0) > 0:
+            chapters_judged += 1
+        else:
+            chapters_skipped += 1
+        total_applied += int(report.get("applied") or 0)
+        total_kept += int(report.get("kept") or 0)
+        residual_pending += _heading_judge_residual_pending(
+            out_dir / f"{stem}.glmocr_escalations.jsonl"
+        )
+        _emit_heading_judge_capture(course_name, stem, report)
+
+    logger.info(
+        "run_heading_judge: %d judged / %d zero-pending / %d failed "
+        "(fail-open); applied=%d kept=%d residual_pending=%d",
+        chapters_judged,
+        chapters_skipped,
+        chapters_failed,
+        total_applied,
+        total_kept,
+        residual_pending,
+    )
+    return json.dumps({
+        "success": True,
+        "chapters_judged": chapters_judged,
+        "chapters_skipped": chapters_skipped,
+        "chapters_failed": chapters_failed,
+        "total_applied": total_applied,
+        "total_kept": total_kept,
+        "residual_pending": residual_pending,
+        "warnings": warnings_list,
+        "judged_dir": str(out_dir),
+    })
+
+
 def _build_tool_registry() -> dict:
     """
     Build a tool registry mapping tool names to callable async functions.
@@ -28092,6 +28551,11 @@ def _build_tool_registry() -> dict:
         })
 
     registry["run_dart_chunking"] = _run_dart_chunking
+
+    # heading_judge phase handler (SEMANTIK_HEADING_JUDGE permanent wiring;
+    # registry-only — NOT an @mcp.tool; dispatched by phase NAME via
+    # MCP/core/executor.py::_PHASE_TOOL_MAPPING['heading_judge']).
+    registry["run_heading_judge"] = _run_heading_judge
 
     # ============================================================================
     # W10 Phase 2: _run_assessment_synthesis — PRODUCT assessment surface

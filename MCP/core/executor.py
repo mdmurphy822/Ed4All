@@ -286,6 +286,17 @@ _PHASE_TOOL_MAPPING: Dict[str, str] = {
     # synthesizes + emits QTI 1.2 / imsdt / assignment XML into
     # ``<export>/06_assessments/`` before the packaging phase consumes it.
     "assessment_synthesis": "run_assessment_synthesis",
+    # SEMANTIK_HEADING_JUDGE permanent wiring — post-conversion Super
+    # heading-level judge over the GLM-OCR lane's ``{stem}.glmocr_layout.json``
+    # sidecars, between ``semantik_conversion`` and ``staging``. Declared
+    # ``agents: []`` (validator-only-phase pattern) so the runner synthesizes
+    # the single virtual ``phase-handler`` task; routes to
+    # ``run_heading_judge`` (MCP/tools/pipeline_tools.py), which shells out to
+    # ``semantik_structure.glmocr.heading_judge_standalone --apply`` per
+    # chapter, copies judged HTML/escalations back over the conversion output
+    # (keeping ``.prejudge.bak`` / ``.bak``), and FAIL-OPENS per chapter.
+    # Skip-with-pass when SEMANTIK_HEADING_JUDGE is off or no sidecars exist.
+    "heading_judge": "run_heading_judge",
 }
 
 

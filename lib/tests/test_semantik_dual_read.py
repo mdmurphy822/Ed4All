@@ -337,9 +337,15 @@ def test_conversion_phase_declared_semantik_in_config():
     names = [p["name"] for p in tbc["phases"]]
     assert "semantik_conversion" in names
     assert "dart_conversion" not in names
-    # staging still depends on the (renamed) conversion phase.
+    # staging still reaches the (renamed) conversion phase — since the
+    # SEMANTIK_HEADING_JUDGE permanent wiring, via the heading_judge phase
+    # (semantik_conversion -> heading_judge -> staging).
     staging = next(p for p in tbc["phases"] if p["name"] == "staging")
-    assert "semantik_conversion" in staging["depends_on"]
+    assert "heading_judge" in staging["depends_on"]
+    heading_judge = next(
+        p for p in tbc["phases"] if p["name"] == "heading_judge"
+    )
+    assert "semantik_conversion" in heading_judge["depends_on"]
 
 
 def _dual_read_runner():
