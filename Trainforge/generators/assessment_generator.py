@@ -725,7 +725,17 @@ class AssessmentGenerator:
             if terms:
                 # Use a key term: ask for its definition
                 target = terms[0]
-                stem = f"<p>Which of the following best describes <em>{target.term}</em>?</p>"
+                # Bloom-verb-leading phrasing (alg-glm-02 production defect):
+                # "Which of the following best describes X?" carries no
+                # canonical Bloom verb form ("describes" is conjugated;
+                # lib/ontology/bloom.py matches whole-word canonical verbs),
+                # so EVERY term MCQ fired assessment_quality VERB_LESS_STEM.
+                # "Identify" registers as remember-level — same question,
+                # detector-visible verb.
+                stem = (
+                    f"<p>Identify the statement that best describes "
+                    f"<em>{target.term}</em>.</p>"
+                )
 
                 correct_text = target.definition
                 # Trim to reasonable length
