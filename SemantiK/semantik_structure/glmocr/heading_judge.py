@@ -360,6 +360,9 @@ def _post_judge_completion(
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     url = _chat_completions_url(base_url)
+    import time as _time
+
+    _t0 = _time.monotonic()
     try:
         resp = requests_module.post(url, json=body, headers=headers, timeout=timeout)
     except Exception as exc:  # noqa: BLE001 — timeout / conn → transient
@@ -367,6 +370,7 @@ def _post_judge_completion(
             f"heading-judge request failed ({type(exc).__name__}): {exc}",
             transient=True,
         ) from exc
+    _duration_ms = (_time.monotonic() - _t0) * 1000.0
     status = int(getattr(resp, "status_code", 200))
     if status != 200:
         transient = status >= 500 or status == 429
@@ -391,7 +395,55 @@ def _post_judge_completion(
             f"heading-judge malformed response (no choices[0].message): keys={keys}",
             transient=False,
         ) from exc
+    _emit_usage_row(data.get("usage"), model=model, duration_ms=_duration_ms,
+                    finish_reason=finish)
     return (None if content is None else str(content)), finish
+
+
+def _emit_usage_row(
+    usage: Any,
+    *,
+    model: str,
+    duration_ms: float,
+    finish_reason: Optional[str],
+) -> None:
+    """Best-effort per-POST metering row (the OP2 ``llm_usage.jsonl`` shape).
+
+    Cross-venv clean (zero Ed4All imports — the ``stop_seam`` twin posture):
+    the target path is injected via ``SEMANTIK_LLM_USAGE_PATH`` (an absolute
+    path to the run's ``llm_usage.jsonl``); ``SEMANTIK_LLM_USAGE_PHASE``
+    (default ``heading_judge``) stamps the additive ``phase`` field so the
+    stat-matrix reporter can attribute rows that fall between pipeline
+    checkpoints. Unset path → no-op (byte-identical). ANY failure is
+    swallowed — metering must never perturb a judge call. Cache HITs never
+    reach this function, so rows count only real seat POSTs.
+    """
+    path = os.environ.get("SEMANTIK_LLM_USAGE_PATH", "").strip()
+    if not path:
+        return
+    try:
+        from datetime import datetime, timezone
+
+        row: Dict[str, Any] = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "provider": "semantik-heading-judge",
+            "model": model,
+            "phase": os.environ.get(
+                "SEMANTIK_LLM_USAGE_PHASE", "heading_judge").strip()
+            or "heading_judge",
+            "prompt_tokens": int((usage or {}).get("prompt_tokens", 0) or 0),
+            "completion_tokens": int(
+                (usage or {}).get("completion_tokens", 0) or 0),
+            "duration_ms": round(float(duration_ms), 3),
+        }
+        if finish_reason is not None:
+            row["finish_reason"] = str(finish_reason)
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row) + "\n")
+    except Exception as exc:  # noqa: BLE001 — metering must never break judging
+        logger.debug("heading-judge usage tap failed (ignoring): %s", exc)
 
 
 def _make_default_post_fn(

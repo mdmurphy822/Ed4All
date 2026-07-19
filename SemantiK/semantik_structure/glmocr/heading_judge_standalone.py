@@ -59,6 +59,7 @@ def run_standalone(
     apply: bool = False,
     seat=None,
     post_fn=None,
+    use_cache: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Judge one layout sidecar; return the report dict. Never touches inputs."""
     from .heading_judge import (
@@ -90,8 +91,11 @@ def run_standalone(
     verdict_map: Dict[int, int] = {}
     meta: Dict[str, Any] = {}
     if plan.pending_ids:
+        # ``use_cache=None`` defers to ``resolve_heading_judge_checkpoint()``
+        # (default ON) so a killed / stopped standalone pass resumes its
+        # already-judged windows from the content-addressed sidecar cache.
         verdict_map, meta = judge_heading_levels(
-            plan, seat=seat, post_fn=post_fn, use_cache=False)
+            plan, seat=seat, post_fn=post_fn, use_cache=use_cache)
     result = apply_judged_levels(prov, heading_tree, escalations, verdict_map)
 
     report = {
@@ -156,13 +160,18 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help="output directory (default ./heading_judge_out)")
     parser.add_argument("--apply", action="store_true",
                         help="also write corrected layout + escalations + HTML")
+    parser.add_argument("--no-cache", action="store_true",
+                        help="bypass the per-window resume sidecar cache "
+                             "(default: cache ON per "
+                             "SEMANTIK_HEADING_JUDGE_CHECKPOINT)")
     args = parser.parse_args(argv)
 
     layout = Path(args.layout)
     if not layout.is_file():
         print(f"error: layout sidecar not found: {layout}", file=sys.stderr)
         return 2
-    report = run_standalone(layout, out_dir=Path(args.out), apply=args.apply)
+    report = run_standalone(layout, out_dir=Path(args.out), apply=args.apply,
+                            use_cache=False if args.no_cache else None)
     print(json.dumps({k: v for k, v in report.items()
                       if k != "skeleton_digest"}, ensure_ascii=False, indent=1))
     return 0

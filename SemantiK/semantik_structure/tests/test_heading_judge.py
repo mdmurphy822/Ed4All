@@ -412,3 +412,109 @@ def test_lane_flag_on_resolves(monkeypatch):
     assert resolve_heading_judge_mode() is True
     monkeypatch.setenv("SEMANTIK_HEADING_JUDGE", "garbage")
     assert resolve_heading_judge_mode() is False
+
+
+# ── Standalone runner: cache passthrough (A2 sidecar contract). ──────────────
+def _run_standalone_capturing_cache(tmp_path, monkeypatch, **kwargs):
+    """Drive run_standalone with the judge seams stubbed; return the
+    ``use_cache`` kwarg that reached ``judge_heading_levels``."""
+    from types import SimpleNamespace
+
+    from semantik_structure.glmocr import heading_judge_standalone as hjs
+
+    layout = tmp_path / "x.glmocr_layout.json"
+    layout.write_text(json.dumps({"pages": []}), encoding="utf-8")
+
+    seen = {}
+    plan = SimpleNamespace(pending_ids=[1], entries=[1], windows=[1], digest="d")
+    monkeypatch.setattr(hj, "build_heading_skeleton", lambda prov: plan)
+    monkeypatch.setattr(
+        hj, "judge_heading_levels",
+        lambda p, **kw: (seen.update(kw) or ({}, {})))
+    monkeypatch.setattr(
+        hj, "apply_judged_levels",
+        lambda prov, tree, esc, vm: SimpleNamespace(
+            applied=0, clamped=0, dropped=0, kept=0, corrections={}))
+    hjs.run_standalone(layout, out_dir=tmp_path / "out", **kwargs)
+    return seen.get("use_cache", "MISSING")
+
+
+def test_standalone_default_defers_cache_to_resolver(tmp_path, monkeypatch):
+    # The A2 regression: use_cache must NOT be hardcoded False — default None
+    # defers to resolve_heading_judge_checkpoint() (default ON) so a killed
+    # standalone pass resumes its judged windows from the sidecar cache.
+    assert _run_standalone_capturing_cache(tmp_path, monkeypatch) is None
+
+
+def test_standalone_no_cache_opt_out_passes_false(tmp_path, monkeypatch):
+    assert _run_standalone_capturing_cache(
+        tmp_path, monkeypatch, use_cache=False) is False
+
+
+# ── Usage tap (stat-matrix metering rows). ───────────────────────────────────
+class _FakeResp:
+    def __init__(self, payload, status=200):
+        self._payload = payload
+        self.status_code = status
+        self.text = json.dumps(payload)
+
+    def json(self):
+        return self._payload
+
+
+class _FakeRequests:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def post(self, url, json=None, headers=None, timeout=None):  # noqa: A002
+        return _FakeResp(self._payload)
+
+
+def _judge_payload():
+    return {
+        "choices": [{"message": {"content": '{"levels": {"1": 4}}'},
+                     "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 123, "completion_tokens": 45},
+    }
+
+
+def test_usage_tap_emits_op2_shaped_row(tmp_path, monkeypatch):
+    usage_path = tmp_path / "llm_usage.jsonl"
+    monkeypatch.setenv("SEMANTIK_LLM_USAGE_PATH", str(usage_path))
+    monkeypatch.setenv("SEMANTIK_LLM_USAGE_PHASE", "heading_judge_a2")
+    content, finish = hj._post_judge_completion(
+        base_url="http://x/v1", api_key=None, model="test-model",
+        messages=[{"role": "user", "content": "hi"}], max_tokens=64,
+        timeout=5.0, requests_module=_FakeRequests(_judge_payload()))
+    assert finish == "stop"
+    rows = [json.loads(l) for l in usage_path.read_text().splitlines()]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["provider"] == "semantik-heading-judge"
+    assert row["model"] == "test-model"
+    assert row["phase"] == "heading_judge_a2"
+    assert row["prompt_tokens"] == 123
+    assert row["completion_tokens"] == 45
+    assert row["finish_reason"] == "stop"
+    assert row["duration_ms"] >= 0
+    assert "ts" in row
+
+
+def test_usage_tap_unset_env_is_noop(tmp_path, monkeypatch):
+    monkeypatch.delenv("SEMANTIK_LLM_USAGE_PATH", raising=False)
+    hj._post_judge_completion(
+        base_url="http://x/v1", api_key=None, model="m",
+        messages=[], max_tokens=8, timeout=5.0,
+        requests_module=_FakeRequests(_judge_payload()))
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_usage_tap_failure_never_breaks_the_call(monkeypatch):
+    # unwritable path → tap swallows, judge call still returns content
+    monkeypatch.setenv("SEMANTIK_LLM_USAGE_PATH", "/proc/nope/llm_usage.jsonl")
+    content, finish = hj._post_judge_completion(
+        base_url="http://x/v1", api_key=None, model="m",
+        messages=[], max_tokens=8, timeout=5.0,
+        requests_module=_FakeRequests(_judge_payload()))
+    assert content == '{"levels": {"1": 4}}'
+    assert finish == "stop"
