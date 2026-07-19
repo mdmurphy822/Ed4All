@@ -22,6 +22,7 @@ from lib.retrieval.gold_set import (
     critical_issues,
     doc_schema_version,
     load_gold_set,
+    question_phrasing,
 )
 from lib.utils import sha256_file
 
@@ -233,3 +234,48 @@ def test_chunk_content_sha256_helper_matches(tmp_path: Path):
     # stable across whitespace-only differences
     chunk2 = {"id": "c001", "text": "Mixed WHITESPACE and Case"}
     assert chunk_content_sha256(chunk) == chunk_content_sha256(chunk2)
+
+
+# ---------------------------------------------------------------- phrasing axis
+
+
+def test_phrasing_valid_value_loads_clean(tmp_path: Path):
+    """A v1.1 question with a valid closed-enum phrasing loads clean."""
+    course = tmp_path / "demo-101"
+    _write_chunks(course)
+    doc = _v1_1_gold(course)
+    doc["questions"][0]["phrasing"] = "colloquial"
+    doc["questions"][1]["phrasing"] = "malformed"
+    _write_gold(course, doc)
+    gold, issues = load_gold_set(course, verify=True)
+    assert not critical_issues(issues), [(i.code, i.message) for i in issues]
+    assert question_phrasing(gold["questions"][0]) == "colloquial"
+    assert question_phrasing(gold["questions"][1]) == "malformed"
+
+
+def test_phrasing_invalid_value_rejected(tmp_path: Path):
+    """A phrasing outside the closed enum is a schema violation (both the
+    jsonschema path and the structural fallback enforce the enum)."""
+    course = tmp_path / "demo-101"
+    _write_chunks(course)
+    doc = _v1_1_gold(course)
+    doc["questions"][0]["phrasing"] = "slang"  # not in the enum
+    _write_gold(course, doc)
+    _, issues = load_gold_set(course, verify=True)
+    assert "GOLD_SET_SCHEMA_VIOLATION" in _codes(issues)
+
+
+def test_phrasing_absent_defaults_to_canonical(tmp_path: Path):
+    """A phrasing-less question loads unchanged and reads as canonical
+    (backward compatibility: existing gold sets carry no phrasing field)."""
+    course = tmp_path / "demo-101"
+    _write_chunks(course)
+    doc = _v1_1_gold(course)  # neither question carries a phrasing field
+    assert "phrasing" not in doc["questions"][0]
+    _write_gold(course, doc)
+    gold, issues = load_gold_set(course, verify=True)
+    assert not critical_issues(issues), [(i.code, i.message) for i in issues]
+    assert question_phrasing(gold["questions"][0]) == "canonical"
+    # The accessor also defaults a garbage value to canonical.
+    assert question_phrasing({"phrasing": 123}) == "canonical"
+    assert question_phrasing({}) == "canonical"

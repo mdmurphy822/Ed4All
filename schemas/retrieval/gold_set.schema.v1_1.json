@@ -93,6 +93,11 @@
             "enum": ["easy", "medium", "hard"],
             "description": "Optional authored difficulty. easy = verbatim in one chunk; medium = paraphrase or 2-chunk join; hard = >= 3 chunks, across-weeks, or a partially-covered multi_part. Cross-checked by the coverage report (~40/40/20 target)."
           },
+          "phrasing": {
+            "type": "string",
+            "enum": ["canonical", "colloquial", "malformed"],
+            "description": "Optional learner-phrasing axis (default 'canonical' when absent). canonical: a well-formed textbook-style question ('What is the standard form of a linear equation?'). colloquial: a casual/bare learner voice ('what is the greatest common factor?', 'what's the quadratic formula and when to use it?'). malformed: realistic learner typos / doubled articles / dropped words that stay humanly interpretable ('what is a the standard form?'). The grounded eval (lib/retrieval/grounded_eval.py) slices answerability by this value so an operator can see at a glance whether colloquial / malformed reasonable questions still pass. Provenance/analysis only — never affects per-question scoring."
+          },
           "objective_refs": {
             "type": "array",
             "description": "Optional authored learning-objective ids (TO-NN / CO-NN) this question exercises. Cross-checked by the coverage report against the course objectives map.",

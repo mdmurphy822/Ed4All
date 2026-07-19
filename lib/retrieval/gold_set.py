@@ -86,6 +86,14 @@ _QUESTION_TYPES_V1_1 = (
 )
 _QUESTION_TYPES = _QUESTION_TYPES_V1_1  # union — used by the type-imbalance + fallback
 
+# Learner-phrasing axis (v1.1, optional). A gold question with no ``phrasing``
+# field is treated as ``canonical`` (back-compat: existing gold sets load
+# unchanged). The per-version JSON Schema is the authoritative enum when
+# jsonschema is importable; this tuple backs the structural-fallback check and
+# the ``question_phrasing`` accessor the grounded eval slices on.
+_PHRASING_VALUES = ("canonical", "colloquial", "malformed")
+_DEFAULT_PHRASING = "canonical"
+
 # Warning thresholds.
 _TYPE_IMBALANCE_MIN_QUESTIONS = 30   # only flag imbalance at scale
 _TYPE_IMBALANCE_FRACTION = 0.10      # any type < 10% of questions
@@ -380,6 +388,22 @@ def _structural_fallback(gold: Dict[str, Any]) -> List[GoldSetIssue]:
                     question_id=qid if isinstance(qid, str) else None,
                 )
             )
+        # v1.1: optional learner-phrasing axis. Absent → treated as canonical
+        # (back-compat). Present but not one of the closed enum → schema
+        # violation (the jsonschema path enforces the same enum via the schema
+        # file; this backs the jsonschema-absent fallback).
+        if "phrasing" in q and q.get("phrasing") not in _PHRASING_VALUES:
+            issues.append(
+                GoldSetIssue(
+                    code="GOLD_SET_SCHEMA_VIOLATION",
+                    severity="critical",
+                    message=(
+                        f"phrasing must be one of {_PHRASING_VALUES} when present; "
+                        f"got {q.get('phrasing')!r}."
+                    ),
+                    question_id=qid if isinstance(qid, str) else None,
+                )
+            )
         # v1.1: multi_part questions must carry a parts[] block.
         if q.get("question_type") == "multi_part":
             parts = q.get("parts")
@@ -627,6 +651,17 @@ def validate_gold_set(
     return issues
 
 
+def question_phrasing(q: Dict[str, Any]) -> str:
+    """Return a gold question's learner-phrasing value, defaulting to canonical.
+
+    A question with no (or an unrecognized) ``phrasing`` field reads as
+    ``canonical`` — the eval's per-phrasing breakdown treats an unlabeled
+    question as a well-formed one, so a legacy phrasing-less gold set slices
+    entirely into the canonical bucket (back-compat)."""
+    val = q.get("phrasing") if isinstance(q, dict) else None
+    return val if val in _PHRASING_VALUES else _DEFAULT_PHRASING
+
+
 def _is_refusal_question(q: Dict[str, Any]) -> bool:
     """A gold question is treated as a refusal-style entry (exempt from the
     expected_key_points completeness check) when it is explicitly flagged
@@ -638,6 +673,7 @@ def _is_refusal_question(q: Dict[str, Any]) -> bool:
     cat = q.get("category")
     return isinstance(cat, str) and cat in (
         "off_topic", "off_topic_llm", "adjacent_domain", "out_of_scope_detail",
+        "ill_posed",
     )
 
 
@@ -822,6 +858,7 @@ __all__ = [
     "has_critical_issues",
     "critical_issues",
     "doc_schema_version",
+    "question_phrasing",
     "chunk_content_sha256",
     "_quote_in_chunk",
     "_quote_chunk_match_count",

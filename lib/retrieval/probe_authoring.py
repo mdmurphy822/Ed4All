@@ -15,6 +15,15 @@ operator). Three probe categories:
     (:data:`OOS_DETAIL_TEMPLATES`) over accepted/draft gold questions; each
     carries ``derived_from_gold_question_id``.
 
+A fourth category, ``ill_posed``, exists in the taxonomy (refusal_probes
+schema v1.1 enum + the ``_is_refusal_question`` category set) but is NOT
+auto-drafted here: it is a near-domain question referencing a non-existent or
+self-contradictory concept whose vocabulary sounds algebraic (e.g. "the least
+common factor of 95", "the largest common multiple of 6 and 8"). A correct
+system must refuse / correct the premise rather than answer a neighbouring real
+concept, so these are hand-authored (surfaced by real GUI learner phrasing) and
+verified with the same read-only dry-run evidence.
+
 For EVERY probe candidate the tool auto-runs the read-only retrieval dry-run
 PER ENGINE (lexical / semantic / hybrid-rrf) via the existing ``retrieve_chunks``
 machinery and fills the v1.1 ``dry_runs[]`` evidence (top chunk id + scores +

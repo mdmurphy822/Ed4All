@@ -139,7 +139,7 @@ def test_report_shape_and_headline(libv2_course):
         answer_fn=_gold_answer_fn(_GROUNDED_OK),
         with_groundedness=True, write=False,
     )
-    assert report["schema_version"] == "1.5"
+    assert report["schema_version"] == "1.6"
     assert report["course_slug"] == slug
     assert report["engine"] == "lexical"
     assert report["model_id"] == "fake-model"
@@ -367,6 +367,65 @@ def test_groundedness_breakdown_null_when_groundedness_off(libv2_course):
     assert b["questions_scored"] == 0
     assert b["macro_groundedness"] is None
     assert b["by_question_type"] == {}
+
+
+# ===========================================================================
+# Schema 1.6 — per-learner-phrasing answerability breakdown
+# ===========================================================================
+
+def test_phrasing_breakdown_helper_math():
+    from lib.retrieval.grounded_eval import _phrasing_breakdown
+
+    records = [
+        {"phrasing": "canonical", "status": "answered"},
+        {"phrasing": "canonical", "status": "answered_with_warnings"},
+        {"phrasing": "colloquial", "status": "answered"},
+        {"phrasing": "colloquial", "status": "refused_low_confidence"},
+        {"phrasing": "malformed", "status": "blocked_citation_gate"},
+    ]
+    b = _phrasing_breakdown(records)
+    assert set(b) == {"canonical", "colloquial", "malformed"}
+    # canonical: 2 questions, both answered (answered + answered_with_warnings).
+    assert b["canonical"]["n"] == 2
+    assert b["canonical"]["answered_count"] == 2
+    assert b["canonical"]["answered_rate"] == pytest.approx(1.0)
+    assert b["canonical"]["refused_count"] == 0
+    assert b["canonical"]["blocked_count"] == 0
+    # colloquial: 1 answered, 1 refused → rate 0.5, one refusal.
+    assert b["colloquial"]["n"] == 2
+    assert b["colloquial"]["answered_count"] == 1
+    assert b["colloquial"]["answered_rate"] == pytest.approx(0.5)
+    assert b["colloquial"]["refused_count"] == 1
+    # malformed: the single question was blocked at the citation gate.
+    assert b["malformed"]["n"] == 1
+    assert b["malformed"]["answered_count"] == 0
+    assert b["malformed"]["answered_rate"] == pytest.approx(0.0)
+    assert b["malformed"]["blocked_count"] == 1
+
+
+def test_phrasing_breakdown_empty_records_is_empty():
+    from lib.retrieval.grounded_eval import _phrasing_breakdown
+
+    assert _phrasing_breakdown([]) == {}
+
+
+def test_phrasing_breakdown_backcompat_all_canonical(libv2_course):
+    """The mini fixture gold set carries NO phrasing field (v1.0) → every gold
+    question slices into the single 'canonical' bucket (back-compat)."""
+    repo_root, slug, _ = libv2_course
+    report = run_grounded_eval(
+        repo_root, slug, engine="lexical",
+        answer_fn=_gold_answer_fn(_GROUNDED_OK),
+        with_groundedness=True, write=False,
+    )
+    b = report["headline"]["phrasing_breakdown"]
+    # All 3 fixture questions are unlabeled → canonical; all answered.
+    assert set(b) == {"canonical"}
+    assert b["canonical"]["n"] == 3
+    assert b["canonical"]["answered_count"] == 3
+    assert b["canonical"]["answered_rate"] == pytest.approx(1.0)
+    assert b["canonical"]["refused_count"] == 0
+    assert b["canonical"]["blocked_count"] == 0
 
 
 def test_computational_numeric_check_rollup_zero_on_off_default(libv2_course):

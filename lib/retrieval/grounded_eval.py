@@ -45,6 +45,7 @@ from lib.retrieval.gold_set import (
     _load_chunks_by_id,
     has_critical_issues,
     load_gold_set,
+    question_phrasing,
 )
 
 #: Bumped 1.0 -> 1.1 for the P4 additive per-question scoring fields
@@ -78,7 +79,16 @@ from lib.retrieval.gold_set import (
 #: (a roll-up of the W1.8 per-answer numeric-grounding diagnostic — all-zero on
 #: the default path where ``ED4ALL_GROUNDEDNESS_COMPUTATIONAL`` is off). Both are
 #: diagnostics, NOT pinned milestones.
-EVAL_SCHEMA_VERSION = "1.5"
+#: ``EVAL_SCHEMA_VERSION`` 1.5 → 1.6 (additive only — every 1.5 key unchanged):
+#: adds ``headline.phrasing_breakdown`` — a per-learner-phrasing answerability
+#: slice (canonical / colloquial / malformed, from the v1.1 gold ``phrasing``
+#: field, defaulting to canonical). For each phrasing value it reports n,
+#: answered_count, answered_rate (status in the answered set), blocked_count, and
+#: refused_count so an operator can see at a glance whether the bare/colloquial
+#: and malformed-but-reasonable learner questions (surfaced by real GUI testing)
+#: pass, not only the well-formed textbook phrasings. Diagnostic, NOT a pinned
+#: milestone.
+EVAL_SCHEMA_VERSION = "1.6"
 RETRIEVAL_EVAL_SUBDIR = "retrieval_eval"
 
 #: Progress-writer arm name for the grounded eval (matches eval_arms.ARM_GROUNDED
@@ -582,6 +592,51 @@ def _groundedness_breakdown(records: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def _phrasing_breakdown(records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Per-learner-phrasing answerability breakdown (GUI-phrasing axis).
+
+    ``records`` carries one row per gold question: ``{"phrasing", "status"}``
+    (phrasing is the v1.1 ``phrasing`` field resolved via
+    ``gold_set.question_phrasing`` — a phrasing-less question reads as
+    ``canonical``). For each observed phrasing value the block reports:
+      * ``n`` — questions with that phrasing,
+      * ``answered_count`` / ``answered_rate`` — status in the answered set,
+      * ``blocked_count`` — citation-gate / invalid-citation blocks,
+      * ``refused_count`` — false refusals on an answerable gold question.
+    ``answered_rate`` is ``None`` for an empty bucket (never a fabricated 0.0).
+    Additive diagnostic — NOT a pinned milestone; the goal is a glance-level read
+    of whether the bare/colloquial and malformed-but-reasonable learner
+    questions pass, not only the well-formed textbook phrasings.
+    """
+    by_ph: Dict[str, List[str]] = {}
+    for r in records:
+        by_ph.setdefault(str(r.get("phrasing") or _DEFAULT_PHRASING_LABEL), []).append(
+            str(r.get("status") or "")
+        )
+    out: Dict[str, Any] = {}
+    for ph in sorted(by_ph):
+        statuses = by_ph[ph]
+        n = len(statuses)
+        answered = sum(1 for s in statuses if s in _ANSWERED_STATUSES)
+        refused = sum(1 for s in statuses if s in _REFUSED_STATUSES)
+        blocked = sum(
+            1 for s in statuses if s in (_BLOCKED_INVALID, _BLOCKED_GATE)
+        )
+        out[ph] = {
+            "n": n,
+            "answered_count": answered,
+            "answered_rate": (answered / n) if n else None,
+            "blocked_count": blocked,
+            "refused_count": refused,
+        }
+    return out
+
+
+#: Label a phrasing-less gold question falls into (mirrors
+#: ``gold_set._DEFAULT_PHRASING`` without importing the private name).
+_DEFAULT_PHRASING_LABEL = "canonical"
+
+
 def _citations_list(answer: Any) -> List[Dict[str, Any]]:
     """Read a pipeline answer's citations as a list of dicts (duck-typed)."""
     cites = getattr(answer, "citations", None)
@@ -805,6 +860,11 @@ def run_grounded_eval(
     # + macro/micro basis). One row per answered question whose groundedness
     # report was available.
     groundedness_breakdown_records: List[Dict[str, Any]] = []
+    # Per-learner-phrasing answerability records (schema 1.6). One row per gold
+    # question: its resolved phrasing (canonical/colloquial/malformed) + final
+    # status. Recorded for EVERY question incl. composer-exhausted ones so the
+    # per-phrasing n counts the whole gold set.
+    phrasing_records: List[Dict[str, Any]] = []
     # NLI-ADD shadow diagnostics (NOT a pinned milestone): how many answers the
     # NLI-ADD arm WOULD have credited an uncited supporter on, the total would-add
     # count, and how many zero-citation answers it would have recovered. Rolls up
@@ -849,6 +909,7 @@ def run_grounded_eval(
     for q in questions:
         qid = str(q.get("question_id", ""))
         qtext = str(q.get("question_text", ""))
+        phrasing = question_phrasing(q)
         all_rel, primary_rel = _relevant_chunk_ids(q)
 
         try:
@@ -871,6 +932,9 @@ def run_grounded_eval(
             # the rest of the gold set. The eval artifact still writes.
             composer_exhausted_count += 1
             latencies.append(0.0)
+            phrasing_records.append(
+                {"phrasing": phrasing, "status": _COMPOSER_EXHAUSTED}
+            )
             per_question_report.append(
                 {
                     "question_id": qid,
@@ -903,6 +967,7 @@ def run_grounded_eval(
             continue
 
         status = str(_answer_field(answer, "status", "unknown"))
+        phrasing_records.append({"phrasing": phrasing, "status": status})
         latency = float(_answer_field(answer, "latency_ms", 0.0))
         latencies.append(latency)
         if model_id is None:
@@ -1459,6 +1524,14 @@ def run_grounded_eval(
         "groundedness_breakdown": _groundedness_breakdown(
             groundedness_breakdown_records
         ),
+        # Schema 1.6 additive: per-learner-phrasing answerability slice
+        # (canonical / colloquial / malformed). One row per phrasing value with
+        # n / answered_count / answered_rate / blocked_count / refused_count over
+        # the gold questions carrying that phrasing (a phrasing-less question
+        # reads as canonical). Surfaced so an operator can see at a glance
+        # whether the bare/colloquial + malformed-but-reasonable learner
+        # questions (real GUI phrasings) pass — diagnostic, NOT a pinned metric.
+        "phrasing_breakdown": _phrasing_breakdown(phrasing_records),
         # W1.8 roll-up (additive; all-zero on the default off path): the
         # computational-sentence numeric-grounding diagnostic aggregated over all
         # answered questions. WARNING-only — never fed any pinned metric.

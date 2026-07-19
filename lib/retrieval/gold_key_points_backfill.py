@@ -59,7 +59,8 @@ _PASSAGE_BODY_CAP = 1200
 # gold_set._is_refusal_question — kept local so this module has no private-name
 # import coupling to the loader).
 _REFUSAL_CATEGORIES = frozenset(
-    {"off_topic", "off_topic_llm", "adjacent_domain", "out_of_scope_detail"}
+    {"off_topic", "off_topic_llm", "adjacent_domain", "out_of_scope_detail",
+     "ill_posed"}
 )
 
 

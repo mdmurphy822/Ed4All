@@ -186,8 +186,10 @@ def test_eval_schema_bumped_to_1_1():
     # headline.citation_precision_preadd + per-row cited_chunk_ids/cited_pages.
     # 1.5 (additive) added headline.groundedness_breakdown +
     # headline.computational_numeric_check (W1.9 / W1.8 roll-up).
+    # 1.6 (additive) added headline.phrasing_breakdown (per-learner-phrasing
+    # answerability slice: canonical / colloquial / malformed).
     # The report schema_version moves with it.
-    assert EVAL_SCHEMA_VERSION == "1.5"
+    assert EVAL_SCHEMA_VERSION == "1.6"
 
 
 def test_gold_pin_block_carries_section4_fields(v1_1_course):
@@ -285,7 +287,7 @@ def test_report_json_round_trips(v1_1_course):
     )
     written = Path(report["_written"]["report_path"])
     doc = json.loads(written.read_text(encoding="utf-8"))
-    assert doc["schema_version"] == "1.5"
+    assert doc["schema_version"] == "1.6"
     assert doc["gold"]["question_count"] == 2
     assert "key_point_coverage" in doc["questions"][0]
     assert "part_coverage" in doc["questions"][1]
@@ -441,3 +443,68 @@ def test_part_coverage_zero_multipart_rates_honest(tmp_path, monkeypatch):
     assert hp["correctly_flagged_rate"] is None
     # no per-question part_coverage block on a non-multi_part question
     assert "part_coverage" not in report["questions"][0]
+
+
+# ===========================================================================
+# Schema 1.6 — per-learner-phrasing answerability breakdown (report level)
+# ===========================================================================
+
+def _phrasing_q(qid: str, text: str, phrasing: str) -> dict:
+    """A minimal answerable factual_recall gold question carrying `phrasing`,
+    anchored on the shared c1 chunk body."""
+    return {
+        "question_id": qid,
+        "question_text": text,
+        "question_type": "factual_recall",
+        "phrasing": phrasing,
+        "expected_citation_population": "any",
+        "relevant_passages": [
+            {"chunk_id": "c1", "relevance": "primary",
+             "anchor": {"item_path": "textbook.html", "text_quote": _MP_CHUNK_A}},
+        ],
+        "authoring": {"method": "manual", "author": "@t",
+                      "reviewed_by": "PENDING_REVIEW", "status": "seed"},
+    }
+
+
+def test_phrasing_breakdown_report_level_with_injected_answer_fn(tmp_path, monkeypatch):
+    """End-to-end: a v1.1 gold set with canonical / colloquial / malformed
+    questions + an injected answer_fn that ANSWERS the canonical and colloquial
+    ones but REFUSES the malformed one. The headline.phrasing_breakdown must
+    slice answered_rate + refused_count by phrasing so an operator sees at a
+    glance that the malformed phrasing regressed."""
+    questions = [
+        _phrasing_q("gq-syn-mp-202-0001",
+                    "What is the standard form of a linear equation?", "canonical"),
+        _phrasing_q("gq-syn-mp-202-0002",
+                    "what is a the standard form?", "malformed"),
+        _phrasing_q("gq-syn-mp-202-0003",
+                    "what's the standard form thing?", "colloquial"),
+    ]
+    repo_root, slug = _write_multipart_course(tmp_path, monkeypatch, questions=questions)
+
+    def _fn(_repo, _slug, query, **_kw):
+        # Refuse ONLY the malformed phrasing; answer the other two.
+        if query == "what is a the standard form?":
+            return {"status": "refused_low_confidence", "answer_text": None,
+                    "citations": [], "latency_ms": 1.0}
+        return _FakeAnswer(answer_text=f"Standard form: {_MP_CHUNK_A}.",
+                           citations=[_FakeCite("c1")])
+
+    report = run_grounded_eval(
+        repo_root, slug, engine="lexical", answer_fn=_fn,
+        with_groundedness=False, write=False,
+    )
+    b = report["headline"]["phrasing_breakdown"]
+    assert set(b) == {"canonical", "colloquial", "malformed"}
+    # canonical + colloquial answered; malformed refused.
+    assert b["canonical"]["n"] == 1 and b["canonical"]["answered_count"] == 1
+    assert b["canonical"]["answered_rate"] == 1.0
+    assert b["colloquial"]["answered_count"] == 1
+    assert b["colloquial"]["answered_rate"] == 1.0
+    assert b["malformed"]["n"] == 1
+    assert b["malformed"]["answered_count"] == 0
+    assert b["malformed"]["answered_rate"] == 0.0
+    assert b["malformed"]["refused_count"] == 1
+    # A malformed false refusal on an answerable gold question is a false refusal.
+    assert report["headline"]["refusal"]["false_refusals_on_gold"] == 1

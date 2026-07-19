@@ -104,8 +104,8 @@
           },
           "category": {
             "type": "string",
-            "enum": ["off_topic", "adjacent_domain", "out_of_scope_detail"],
-            "description": "Probe taxonomy. off_topic: a wholly different discipline. adjacent_domain: a plausible neighbour topic the corpus demonstrably lacks (the hardest negatives — they share vocabulary). out_of_scope_detail: the course's own topic at a depth/specificity the corpus does not cover."
+            "enum": ["off_topic", "adjacent_domain", "out_of_scope_detail", "ill_posed"],
+            "description": "Probe taxonomy. off_topic: a wholly different discipline. adjacent_domain: a plausible neighbour topic the corpus demonstrably lacks (the hardest negatives — they share vocabulary). out_of_scope_detail: the course's own topic at a depth/specificity the corpus does not cover. ill_posed: a near-domain question that references a non-existent or self-contradictory concept whose vocabulary sounds algebraic ('the least common factor of 95', 'the largest common multiple of 6 and 8') — a correct system must REFUSE / correct the premise rather than answer a neighbouring real concept (GCF/LCM). Manually authored; verified by the same dry_run evidence."
           },
           "why_unanswerable": {
             "type": "string",
