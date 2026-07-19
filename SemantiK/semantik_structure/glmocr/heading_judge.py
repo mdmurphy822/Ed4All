@@ -306,7 +306,8 @@ def build_judge_messages(
 def _max_tokens_for(n_pending: int) -> int:
     return max(
         _MAX_TOKENS_FLOOR,
-        min(_MAX_TOKENS_CEILING, _MAX_TOKENS_FLOOR + _MAX_TOKENS_PER_PENDING * n_pending),
+        min(resolve_max_tokens_ceiling(),
+            _MAX_TOKENS_FLOOR + _MAX_TOKENS_PER_PENDING * n_pending),
     )
 
 
@@ -596,9 +597,32 @@ def _cache_put(key: str, verdict: Dict[str, Any]) -> None:
 # window's ~93 pendings stay unjudged). Conservative chars//3 estimate;
 # 31500 = the seat's 32,768 window minus a ~1.2k safety margin, so a
 # small-prompt window still gets its doubled retry while a big-prompt one
-# falls straight to the split.
+# falls straight to the split. Both the budget and the completion ceiling are
+# env-tunable so a seat re-pinned to a longer --max-model-len (the model's
+# native max_position_embeddings is 262,144) lifts them WITHOUT a code change:
+# SEMANTIK_HEADING_JUDGE_CTX_BUDGET / SEMANTIK_HEADING_JUDGE_MAX_TOKENS
+# (parse-with-fallback to the 32k-seat defaults below).
 _CTX_TOKENS_BUDGET = 31500
 _MAX_WINDOW_SPLIT_DEPTH = 2
+
+
+def _resolve_pos_int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    try:
+        v = int(raw)
+        return v if v > 0 else default
+    except (TypeError, ValueError):
+        return default
+
+
+def resolve_ctx_tokens_budget() -> int:
+    return _resolve_pos_int_env("SEMANTIK_HEADING_JUDGE_CTX_BUDGET",
+                                _CTX_TOKENS_BUDGET)
+
+
+def resolve_max_tokens_ceiling() -> int:
+    return _resolve_pos_int_env("SEMANTIK_HEADING_JUDGE_MAX_TOKENS",
+                                _MAX_TOKENS_CEILING)
 
 
 def _estimate_prompt_tokens(messages: Sequence[Dict[str, str]]) -> int:
@@ -671,9 +695,10 @@ def _judge_one_window(
     except _JudgeTransportError:
         return None, {"transport_failure": True, "finish": None}
     if finish == "length":
-        new_max = min(_MAX_TOKENS_CEILING, max_tokens * 2)
+        new_max = min(resolve_max_tokens_ceiling(), max_tokens * 2)
         if new_max > max_tokens and (
-                _estimate_prompt_tokens(messages) + new_max <= _CTX_TOKENS_BUDGET):
+                _estimate_prompt_tokens(messages) + new_max
+                <= resolve_ctx_tokens_budget()):
             try:
                 content, finish = post_fn(messages, new_max)
             except _JudgeTransportError:

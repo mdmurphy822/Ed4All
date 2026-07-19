@@ -649,3 +649,20 @@ def test_half_failure_fails_open_that_half_only():
         win_pending=[1, 2, 3, 4])
     assert parsed == {"levels": {"1": 3, "2": 4}}  # good half survives
     assert wmeta.get("transport_failure") is True  # failure surfaced honestly
+
+
+def test_ctx_budget_and_ceiling_env_overrides(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_HEADING_JUDGE_CTX_BUDGET", "63500")
+    monkeypatch.setenv("SEMANTIK_HEADING_JUDGE_MAX_TOKENS", "49152")
+    assert hj.resolve_ctx_tokens_budget() == 63500
+    assert hj.resolve_max_tokens_ceiling() == 49152
+    monkeypatch.setenv("SEMANTIK_HEADING_JUDGE_CTX_BUDGET", "garbage")
+    monkeypatch.setenv("SEMANTIK_HEADING_JUDGE_MAX_TOKENS", "-5")
+    assert hj.resolve_ctx_tokens_budget() == hj._CTX_TOKENS_BUDGET
+    assert hj.resolve_max_tokens_ceiling() == hj._MAX_TOKENS_CEILING
+    # base per-window max_tokens (the cache-key input) unchanged by a ceiling
+    # raise — floor+24*96 stays under both ceilings
+    monkeypatch.delenv("SEMANTIK_HEADING_JUDGE_MAX_TOKENS", raising=False)
+    base = hj._max_tokens_for(96)
+    monkeypatch.setenv("SEMANTIK_HEADING_JUDGE_MAX_TOKENS", "49152")
+    assert hj._max_tokens_for(96) == base
