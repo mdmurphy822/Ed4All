@@ -314,6 +314,31 @@ class AssessmentGenerator:
         self._used_statements.add(str(getattr(st, "text", st))[:80].strip().lower())
         return st
 
+    def _apparatus_guard(self, result):
+        """Chokepoint guard (alg-glm-02 production defect): apparatus text
+        ('Solution: r Check: ...', 'Show answer ...') leaked into correct
+        answers through THREE harvest paths (factual statements, term
+        definitions, chunk misconception corrections). Rather than filtering
+        every path, reject any assembled question whose answer/choice text is
+        apparatus-flavored — converted to a SkippedItem so the fill loop
+        draws a replacement (never a placeholder, the W1 contract).
+        """
+        from Trainforge.generators.content_extractor import _is_apparatus_text
+        if not isinstance(result, QuestionData):
+            return result
+        texts = [str(result.correct_answer or "")]
+        texts += [str(c.get("text") or "") for c in (result.choices or [])
+                  if isinstance(c, dict)]
+        if any(_is_apparatus_text(t) for t in texts):
+            return SkippedItem(
+                question_id=result.question_id,
+                question_type=result.question_type,
+                bloom_level=result.bloom_level,
+                objective_id=result.objective_id,
+                reason="apparatus_contaminated_content",
+            )
+        return result
+
     def generate(
         self,
         course_code: str,
@@ -380,11 +405,11 @@ class AssessmentGenerator:
                     if len(questions) >= question_count:
                         break
 
-                    result = self._generate_question(
+                    result = self._apparatus_guard(self._generate_question(
                         objective_id=obj_id,
                         bloom_level=bloom_level,
                         source_chunks=source_chunks,
-                    )
+                    ))
                     if isinstance(result, QuestionData):
                         questions.append(result)
                     elif isinstance(result, SkippedItem):
@@ -404,11 +429,11 @@ class AssessmentGenerator:
             obj_id = objective_ids[idx % len(objective_ids)]
             bloom_level = bloom_levels[idx % len(bloom_levels)]
 
-            result = self._generate_question(
+            result = self._apparatus_guard(self._generate_question(
                 objective_id=obj_id,
                 bloom_level=bloom_level,
                 source_chunks=source_chunks,
-            )
+            ))
             if isinstance(result, QuestionData):
                 questions.append(result)
             elif isinstance(result, SkippedItem):
@@ -1499,11 +1524,11 @@ class AssessmentGenerator:
         questions: List[QuestionData] = []
         skipped: List[SkippedItem] = []
         for _ in range(question_count):
-            result = self._generate_question(
+            result = self._apparatus_guard(self._generate_question(
                 objective_id=obj_id,
                 bloom_level=bloom_level,
                 source_chunks=source_chunks,
-            )
+            ))
             if isinstance(result, QuestionData):
                 questions.append(result)
             elif isinstance(result, SkippedItem):
