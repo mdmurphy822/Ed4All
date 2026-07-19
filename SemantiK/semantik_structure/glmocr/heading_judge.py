@@ -588,6 +588,68 @@ def _cache_put(key: str, verdict: Dict[str, Any]) -> None:
 
 
 # ── Judge orchestration. ─────────────────────────────────────────────────────
+# Serving-context budget for the doubled-max_tokens retry: prompt estimate +
+# completion cap must stay under the seat's 32,768-token window or vLLM 400s
+# ("maximum context length exceeded") — which the transport layer correctly
+# classifies non-transient, silently fail-opening the window (the live A2
+# defect: thinking exhausts the first POST, the doubled retry overflows, the
+# window's ~93 pendings stay unjudged). Conservative chars//3 estimate;
+# 31500 = the seat's 32,768 window minus a ~1.2k safety margin, so a
+# small-prompt window still gets its doubled retry while a big-prompt one
+# falls straight to the split.
+_CTX_TOKENS_BUDGET = 31500
+_MAX_WINDOW_SPLIT_DEPTH = 2
+
+
+def _estimate_prompt_tokens(messages: Sequence[Dict[str, str]]) -> int:
+    return sum(len(m.get("content") or "") for m in messages) // 3
+
+
+_WINDOW_HEADINGS_MARKER = "\nWINDOW HEADINGS:\n"
+_PENDING_LINE_RE = re.compile(r"^R(\d+) p\S+ h\d+\*")
+_LINE_ID_RE = re.compile(r"^R(\d+) ")
+
+
+def _split_window_digest(
+    digest: str, win_pending: Sequence[int],
+) -> List[Tuple[str, List[int]]]:
+    """Reasoning-preserving SPLIT of one window digest into two halves at the
+    midpoint of its PENDING lines (anchor continuation lines travel with their
+    heading; the FIXED-ANCHOR OUTLINE preamble — when present — is kept on both
+    halves so each retains the chapter spine context). Returns ``[]`` when the
+    window has fewer than 2 pending lines (nothing to split)."""
+    if _WINDOW_HEADINGS_MARKER in digest:
+        preamble, body = digest.split(_WINDOW_HEADINGS_MARKER, 1)
+        preamble = preamble + _WINDOW_HEADINGS_MARKER
+    else:
+        preamble, body = "", digest
+    groups: List[List[str]] = []
+    for ln in body.split("\n"):
+        if ln.startswith("    >") and groups:
+            groups[-1].append(ln)
+        else:
+            groups.append([ln])
+    pend_set = set(int(i) for i in win_pending)
+
+    def _gid(g: List[str]) -> Optional[int]:
+        m = _LINE_ID_RE.match(g[0])
+        return int(m.group(1)) if m else None
+
+    pending_idx = [i for i, g in enumerate(groups)
+                   if _PENDING_LINE_RE.match(g[0]) and _gid(g) in pend_set]
+    if len(pending_idx) < 2:
+        return []
+    cut = pending_idx[len(pending_idx) // 2]  # first half = pendings before cut
+    halves = [groups[:cut], groups[cut:]]
+    out: List[Tuple[str, List[int]]] = []
+    for half in halves:
+        ids = [_gid(g) for g in half
+               if _PENDING_LINE_RE.match(g[0]) and _gid(g) in pend_set]
+        body_txt = "\n".join(ln for g in half for ln in g)
+        out.append((preamble + body_txt, [i for i in ids if i is not None]))
+    return out
+
+
 def _judge_one_window(
     digest: str,
     n_headings: int,
@@ -595,9 +657,14 @@ def _judge_one_window(
     max_tokens: int,
     *,
     post_fn: Callable[[Sequence[Dict[str, str]], int], Tuple[Optional[str], Optional[str]]],
+    win_pending: Optional[Sequence[int]] = None,
+    depth: int = 0,
 ) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
-    """POST one window (retry once on ``finish_reason=length`` with doubled
-    ``max_tokens``); returns ``(parsed_or_None, wmeta)``."""
+    """POST one window; on ``finish_reason=length`` retry once with doubled
+    ``max_tokens`` ONLY when it fits the serving context, then fall to the
+    reasoning-preserving window SPLIT (halve the pendings, judge each half
+    thinking-on — the reasoning-QC split-ladder precedent; NEVER a thinking-off
+    retry). Returns ``(parsed_or_None, wmeta)``."""
     messages = build_judge_messages(digest, n_headings, n_pending)
     try:
         content, finish = post_fn(messages, max_tokens)
@@ -605,11 +672,32 @@ def _judge_one_window(
         return None, {"transport_failure": True, "finish": None}
     if finish == "length":
         new_max = min(_MAX_TOKENS_CEILING, max_tokens * 2)
-        try:
-            content, finish = post_fn(messages, new_max)
-        except _JudgeTransportError:
-            return None, {"transport_failure": True, "finish": "length"}
+        if new_max > max_tokens and (
+                _estimate_prompt_tokens(messages) + new_max <= _CTX_TOKENS_BUDGET):
+            try:
+                content, finish = post_fn(messages, new_max)
+            except _JudgeTransportError:
+                return None, {"transport_failure": True, "finish": "length"}
         if finish == "length":
+            halves = (_split_window_digest(digest, win_pending or [])
+                      if depth < _MAX_WINDOW_SPLIT_DEPTH else [])
+            if len(halves) == 2:
+                merged: Dict[str, Any] = {}
+                agg: Dict[str, Any] = {"finish": "split", "split_depth": depth + 1}
+                for hd, hp in halves:
+                    parsed_h, wmeta_h = _judge_one_window(
+                        hd, n_headings, len(hp), _max_tokens_for(len(hp)),
+                        post_fn=post_fn, win_pending=hp, depth=depth + 1)
+                    for flag in ("transport_failure", "parse_failure",
+                                 "length_exhausted"):
+                        if wmeta_h.get(flag):
+                            agg[flag] = True
+                    if parsed_h is not None:
+                        merged.update(parsed_h.get("levels") or {})
+                if merged:
+                    return {"levels": merged}, agg
+                agg["length_exhausted"] = True
+                return None, agg
             return None, {"length_exhausted": True, "finish": "length"}
     parsed = parse_judge_response(content)
     if parsed is None:
@@ -659,7 +747,8 @@ def judge_heading_levels(
             if cached is not None:
                 return cached, {"cache_hit": True}
         parsed, wmeta = _judge_one_window(
-            digest, n_headings, n_pending, max_tokens, post_fn=post_fn)
+            digest, n_headings, n_pending, max_tokens, post_fn=post_fn,
+            win_pending=win_pending)
         if key is not None and parsed is not None and parsed.get("levels"):
             _cache_put(key, parsed)
         wmeta["posted"] = True

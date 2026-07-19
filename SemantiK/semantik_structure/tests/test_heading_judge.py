@@ -306,9 +306,12 @@ def test_length_exhaust_after_one_retry_fails_open():
     stub = _StubPost(content='{"levels": {"1": 4}}', finish="length")
     report = hj.run_heading_judge(prov, tree, esc, post_fn=stub, use_cache=False,
                                   emit_capture=False)
-    assert stub.calls == 2  # one initial + one length retry
+    # Ladder: initial + doubled retry on the full window, then the
+    # reasoning-preserving SPLIT judges each single-pending half (initial +
+    # doubled retry each) before failing open — 6 calls, never thinking-off.
+    assert stub.calls == 6
     assert stub.last_max_tokens > hj._max_tokens_for(len(prov))  # doubled
-    assert report["applied"] == 0  # second length → fail-open
+    assert report["applied"] == 0  # ladder exhausted → fail-open
 
 
 # ── End-to-end judge + apply through the stub. ───────────────────────────────
@@ -544,3 +547,105 @@ def test_cache_round_trips_on_real_disk(tmp_path, monkeypatch):
                                         model="m")
     assert stub2.calls == 0 and m2 == {1: 4, 24: 3}
     assert meta2["cache_hits"] == 1
+
+
+# ── Reasoning-preserving window SPLIT ladder (length-exhaust recovery). ──────
+def _windowed_digest():
+    """A windowed-shape digest: FIXED preamble + 4 pending lines w/ anchors."""
+    return (
+        "FIXED-ANCHOR OUTLINE (immutable context — the chapter spine):\n"
+        "R0 p1 h1. Chapter 1\n"
+        "\nWINDOW HEADINGS:\n"
+        "R0 p1 h1. Chapter 1\n"
+        "R1 p1 h3* Alpha\n"
+        "    > First sentence alpha.\n"
+        "R2 p1 h3* Beta\n"
+        "R3 p2 h3* Gamma\n"
+        "    > First sentence gamma.\n"
+        "R4 p2 h3* Delta"
+    )
+
+
+def test_split_window_digest_halves_pendings_and_keeps_preamble():
+    halves = hj._split_window_digest(_windowed_digest(), [1, 2, 3, 4])
+    assert len(halves) == 2
+    (d1, p1), (d2, p2) = halves
+    assert p1 == [1, 2] and p2 == [3, 4]
+    for d in (d1, d2):
+        assert d.startswith("FIXED-ANCHOR OUTLINE")
+        assert "WINDOW HEADINGS:" in d
+    # anchor continuation lines travel with their heading
+    assert "> First sentence alpha." in d1 and "> First sentence alpha." not in d2
+    assert "> First sentence gamma." in d2
+    # fixed context line survives in half 1's body
+    assert "R0 p1 h1. Chapter 1" in d1
+
+
+def test_split_window_digest_single_pending_returns_empty():
+    assert hj._split_window_digest("R1 p1 h3* Only", [1]) == []
+
+
+def test_length_exhaust_falls_to_split_and_merges_halves():
+    # Full window: length on first POST AND on the (fitting) doubled retry →
+    # split fires; each HALF judged fine; verdicts merge.
+    calls = []
+
+    def post(messages, max_tokens):
+        calls.append(max_tokens)
+        user = messages[1]["content"]
+        n_pend = int(user.split("(")[1].split(",")[1].split()[0])
+        if n_pend == 4:
+            return "thinking overflow", "length"
+        if "Alpha" in user:
+            return '{"levels": {"1": 3, "2": 4}}', "stop"
+        return '{"levels": {"3": 4, "4": 3}}', "stop"
+
+    parsed, wmeta = hj._judge_one_window(
+        _windowed_digest(), 5, 4, hj._max_tokens_for(4), post_fn=post,
+        win_pending=[1, 2, 3, 4])
+    assert parsed == {"levels": {"1": 3, "2": 4, "3": 4, "4": 3}}
+    assert wmeta["finish"] == "split" and wmeta["split_depth"] == 1
+    assert len(calls) == 4  # full + doubled retry + 2 halves
+
+
+def test_doubled_retry_skipped_when_it_would_overflow_context():
+    # A prompt big enough that doubling would exceed _CTX_TOKENS_BUDGET must
+    # NOT re-POST at the doubled cap (the vLLM-400 fail-open defect) — it goes
+    # straight to the split.
+    big_pad = "x" * (hj._CTX_TOKENS_BUDGET * 3)  # est >> budget
+    digest = _windowed_digest() + "\n" + big_pad
+    seen = []
+
+    def post(messages, max_tokens):
+        seen.append(max_tokens)
+        user = messages[1]["content"]
+        n_pend = int(user.split("(")[1].split(",")[1].split()[0])
+        if n_pend == 4:
+            return "overflow", "length"
+        return '{"levels": {"1": 3}}', "stop"
+
+    base = hj._max_tokens_for(4)
+    parsed, wmeta = hj._judge_one_window(
+        digest, 5, 4, base, post_fn=post, win_pending=[1, 2, 3, 4])
+    # first call at base, then the two half calls — NEVER a doubled call
+    assert seen[0] == base
+    assert all(t <= hj._MAX_TOKENS_CEILING for t in seen)
+    assert len(seen) == 3
+    assert wmeta["finish"] == "split"
+
+
+def test_half_failure_fails_open_that_half_only():
+    def post(messages, max_tokens):
+        user = messages[1]["content"]
+        n_pend = int(user.split("(")[1].split(",")[1].split()[0])
+        if n_pend == 4:
+            return "overflow", "length"
+        if "Alpha" in user:
+            return '{"levels": {"1": 3, "2": 4}}', "stop"
+        raise hj._JudgeTransportError("seat hiccup", transient=False)
+
+    parsed, wmeta = hj._judge_one_window(
+        _windowed_digest(), 5, 4, hj._max_tokens_for(4), post_fn=post,
+        win_pending=[1, 2, 3, 4])
+    assert parsed == {"levels": {"1": 3, "2": 4}}  # good half survives
+    assert wmeta.get("transport_failure") is True  # failure surfaced honestly
