@@ -23588,6 +23588,38 @@ def _build_tool_registry() -> dict:
                     except (json.JSONDecodeError, ValueError):
                         continue
 
+            # Scaffolding suppression (alg-glm-02 production defect): the
+            # packager's own "Learning Objectives Map" navigation page chunks
+            # carry objective-list boilerplate ("Supporting chapter
+            # objectives (N): CO-NN — ..."); the term extractor mined them as
+            # CONTENT, producing verb-less garbage MCQ stems ("Which of the
+            # following best describes Supporting chapter objectives (6):
+            # ..."). Filter chunks whose provenance/section names OUR OWN
+            # emitted scaffolding (the sr-scaffolding-suppression precedent:
+            # our navigation markup must never become assessment content).
+            # Keys on the packager's own template strings
+            # (render_learning_objectives_page.py), never subject vocabulary.
+            def _is_packager_scaffolding_chunk(_c: dict) -> bool:
+                _sec = str(((_c.get("source") or {}).get("section_heading")
+                            or "")).strip()
+                if "Learning Objectives Map" in _sec:
+                    return True
+                _head = str(_c.get("text") or "")[:120]
+                return _head.startswith("Supporting chapter objectives (")
+
+            _n_before = len(loaded_chunks)
+            loaded_chunks = [
+                _c for _c in loaded_chunks
+                if not _is_packager_scaffolding_chunk(_c)
+            ]
+            if len(loaded_chunks) != _n_before:
+                logger.info(
+                    "generate_assessments: filtered %d packager-scaffolding "
+                    "chunk(s) (Learning Objectives Map / objective-list "
+                    "boilerplate) from assessment content selection.",
+                    _n_before - len(loaded_chunks),
+                )
+
             mc_entities: list = []
             mc_seen: set = set()
             for _c in loaded_chunks:

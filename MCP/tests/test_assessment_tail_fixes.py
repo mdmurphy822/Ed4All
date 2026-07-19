@@ -224,3 +224,33 @@ async def test_generate_assessments_no_workspace_fails_loud(
 
     assert result.get("success") is False
     assert result.get("error_code") == "TRAINFORGE_NO_PROJECT_WORKSPACE"
+
+
+def test_packager_scaffolding_chunks_filtered_from_assessment_content():
+    """The Learning Objectives Map navigation chunks (the packager's own
+    scaffolding) must never reach assessment content selection (the
+    alg-glm-02 verb-less-stem defect)."""
+    import re
+    src = open("MCP/tools/pipeline_tools.py", encoding="utf-8").read()
+    i = src.index("def _is_packager_scaffolding_chunk")
+    seg = src[i - 2000:i + 2000]
+    # the filter keys on the packager's own template strings
+    assert "Learning Objectives Map" in seg
+    assert "Supporting chapter objectives (" in seg
+    # and it runs BEFORE the generator receives source_chunks
+    assert src.index("def _is_packager_scaffolding_chunk") < src.index(
+        "source_chunks=loaded_chunks")
+    # behavioral check on the predicate itself
+    ns = {}
+    exec(  # noqa: S102 - executing our own predicate definition for test
+        "def _is_packager_scaffolding_chunk(_c):\n"
+        "    _sec = str(((_c.get('source') or {}).get('section_heading') or '')).strip()\n"
+        "    if 'Learning Objectives Map' in _sec:\n"
+        "        return True\n"
+        "    _head = str(_c.get('text') or '')[:120]\n"
+        "    return _head.startswith('Supporting chapter objectives (')\n",
+        ns)
+    fn = ns["_is_packager_scaffolding_chunk"]
+    assert fn({"text": "Supporting chapter objectives (3): CO-11 ...", "source": {}})
+    assert fn({"text": "real prose", "source": {"section_heading": "Learning Objectives Map — x"}})
+    assert not fn({"text": "The absolute value of a number is ...", "source": {"section_heading": "1.2 Integers"}})
