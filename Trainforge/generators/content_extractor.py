@@ -34,6 +34,21 @@ _TOC_TITLE_PREFIX = re.compile(
 _BARE_INTEGER_ONLY = re.compile(r"^\s*\d+\s*$")
 
 
+_APPARATUS_RE = re.compile(
+    r"\b(?:Solution\s*:|Check\s*:|Show answer|Try It\b|"
+    r"In the following exercises|Answers? will vary|Practice Makes Perfect)"
+)
+
+
+def _is_apparatus_text(text: str) -> bool:
+    """True when the candidate text is exercise/solution APPARATUS (the
+    textbook pedagogical-label vocabulary class, never subject words) —
+    such text must never become an assessment answer/definition/statement
+    (alg-glm-02 production defect: apparatus-dense worked-example corpora
+    leak 'Solution: r Check: ...' through EVERY harvest path)."""
+    return bool(_APPARATUS_RE.search(text or ""))
+
+
 def _is_toc_fragment(term_text: str) -> bool:
     """Return True if ``term_text`` looks like a TOC/page-number fragment.
 
@@ -301,6 +316,9 @@ class ContentExtractor:
                     # Wave 26: reject TOC-fragment terms
                     if _is_toc_fragment(term):
                         continue
+                    # alg-glm-02: reject apparatus-contaminated definitions
+                    if _is_apparatus_text(definition):
+                        continue
                     term_key = term.lower()
                     if term_key not in seen_terms:
                         seen_terms.add(term_key)
@@ -414,12 +432,7 @@ class ContentExtractor:
                 # TOC_FRAGMENT_ANSWER-flagged correct answers). Marker set is
                 # the textbook apparatus vocabulary (the pedagogical-label
                 # lexicon class), never subject-matter words.
-                if re.search(
-                    r"\b(?:Solution\s*:|Check\s*:|Show answer|Try It\b|"
-                    r"In the following exercises|Answers? will vary|"
-                    r"Practice Makes Perfect)",
-                    sentence,
-                ):
+                if _is_apparatus_text(sentence):
                     continue
 
                 # Must be declarative (contains a verb-like structure)
