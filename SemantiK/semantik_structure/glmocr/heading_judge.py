@@ -542,7 +542,12 @@ def parse_judge_response(raw: Optional[str]) -> Optional[Dict[str, Any]]:
 
 # ── Cache (content-addressed sidecar; mirrors reasoning_qc_cache). ───────────
 def _judge_cache_root() -> Path:
-    from . import paths as _semantik_paths
+    # NB: ``paths`` is the PARENT package's module (semantik_structure.paths);
+    # a same-package ``from . import paths`` raises ImportError (no
+    # glmocr/paths.py), which the swallow-all cache guards turned into a
+    # silent never-caches bug — pinned by
+    # test_cache_root_resolves_without_monkeypatch.
+    from .. import paths as _semantik_paths
 
     return _semantik_paths.resolve_cache(_CACHE_BASENAME)
 

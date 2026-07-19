@@ -518,3 +518,29 @@ def test_usage_tap_failure_never_breaks_the_call(monkeypatch):
         requests_module=_FakeRequests(_judge_payload()))
     assert content == '{"levels": {"1": 4}}'
     assert finish == "stop"
+
+
+# ── Cache root resolves through the REAL paths module (no monkeypatch). ──────
+def test_cache_root_resolves_without_monkeypatch():
+    # Regression: `from . import paths` inside glmocr/ raised ImportError
+    # (no glmocr/paths.py) and the swallow-all cache guards turned that into
+    # a silent never-caches bug. The root must resolve via the PARENT
+    # package's paths module.
+    root = hj._judge_cache_root()
+    assert root.name == "heading_judge_cache"
+
+
+def test_cache_round_trips_on_real_disk(tmp_path, monkeypatch):
+    # End-to-end through the REAL _judge_cache_root (env-redirected), not a
+    # monkeypatched root: files must actually land on disk and serve hits.
+    monkeypatch.setenv("SEMANTIK_CACHE_DIR", str(tmp_path))
+    plan = hj.build_heading_skeleton(_prov())
+    stub1 = _StubPost(content='{"levels": {"1": 4, "24": 3}}')
+    hj.judge_heading_levels(plan, post_fn=stub1, use_cache=True, model="m")
+    sidecars = list((tmp_path / "heading_judge_cache").rglob("*.json"))
+    assert len(sidecars) == 1  # the verdict persisted for real
+    stub2 = _StubPost(content='{"levels": {"9": 9}}')
+    m2, meta2 = hj.judge_heading_levels(plan, post_fn=stub2, use_cache=True,
+                                        model="m")
+    assert stub2.calls == 0 and m2 == {1: 4, 24: 3}
+    assert meta2["cache_hits"] == 1
