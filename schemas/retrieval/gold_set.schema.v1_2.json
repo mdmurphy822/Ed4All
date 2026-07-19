@@ -1,15 +1,15 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://ed4all.dev/ns/retrieval/v1_1/gold_set.schema.json",
-  "title": "Retrieval Eval Gold Set (v1.1)",
-  "description": "Retrieval-answer-eval-set §1.1/§1.4 — the v1.1 evolution of schemas/retrieval/gold_set.schema.json. v1.0 stays const-pinned + frozen; this file ships the additive shape change so the loader (lib/retrieval/gold_set.py) can validate either version against the schema matching the doc's schema_version. NEW vs v1.0: two question_type values (procedural — an ordered procedure in 1-2 chunks; multi_part — >= 2 enumerable parts, parts may be deliberately partially covered); optional per-question fields expected_key_points (operator-reviewed claim-level completeness points), parts[] (required iff multi_part — each part covered/uncovered, uncovered parts carry an absence_note for the ws3.v2 completeness probes), expected_citation_population (source/course/both/any — for union corpora that mix original-document chunks with generated course-page chunks), objective_refs (TO-NN/CO-NN authored cross-check), difficulty (easy/medium/hard), synthesis_scope (within_week/across_weeks for conceptual_synthesis + multi_part); and an optional anchor.content_sha256 (normalized chunk-text hash at authoring) — the O(1) re-resolution key the gold-repin ladder (lib/retrieval/gold_repin.py) uses to survive a pure chunk-id renumber (e.g. a union-corpus rebuild). text_quote + item_path remain the fallback anchors. Validated by lib/retrieval/gold_set.py::validate_gold_set + schemas/tests/test_gold_set_schema_v1_1.py.",
+  "$id": "https://ed4all.dev/ns/retrieval/v1_2/gold_set.schema.json",
+  "title": "Retrieval Eval Gold Set (v1.2)",
+  "description": "Retrieval-answer-eval-set — the v1.2 evolution of schemas/retrieval/gold_set.schema.v1_1.json. v1.0 + v1.1 stay const-pinned + frozen; this file ships the additive shape change so the loader (lib/retrieval/gold_set.py) can validate either version against the schema matching the doc's schema_version. NEW vs v1.1: three OPTIONAL per-question fields carrying the learner-intent / expected-behavior / conversation-history axes the eval slices on. learner_intent (closed enum; absent = unclassified) classifies the shape of the learner's ask (computational_solve / word_problem / error_diagnosis / conceptual_why / comparative / example_seeking / notation_symbol / course_navigation / multi_turn_followup). expected_behavior (closed enum; absent = answer_grounded) declares the CORRECT pipeline behavior for the question — answer_grounded (cite-and-answer), answer_computational (numeric/derivation answer), answer_with_redirect (answer but nudge toward the assessment/self-work per the L2 guard), correct_premise (the question's premise is false — correct it rather than answer), navigate ('where is X covered' — point to the location), refuse (out of scope — decline). prior_turns (array of {role: user|assistant, text}; absent = single-turn) supplies the preceding conversation for a multi-turn item so an antecedent-rewrite eval arm can resolve the follow-up. All three are provenance/analysis axes — the grounded eval (lib/retrieval/grounded_eval.py) slices by them; they never change per-question relevance scoring. Everything else is byte-identical to v1.1. Validated by lib/retrieval/gold_set.py::validate_gold_set + schemas/tests/test_gold_set_schema_v1_1.py precedent.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "course_slug", "chunkset", "authored_at", "frozen", "questions"],
   "properties": {
     "schema_version": {
-      "const": "1.1",
-      "description": "Gold-set schema version. Const-pinned to 1.1 in this file; the loader selects the schema whose const matches the doc's schema_version."
+      "const": "1.2",
+      "description": "Gold-set schema version. Const-pinned to 1.2 in this file; the loader selects the schema whose const matches the doc's schema_version."
     },
     "course_slug": {
       "type": "string",
@@ -82,6 +82,54 @@
             "type": "string",
             "enum": ["factual_recall", "procedural", "conceptual_synthesis", "multi_part", "where_covered"],
             "description": "Question taxonomy (v1.1). factual_recall: a verbatim fact in one chunk. procedural: an ordered procedure in 1-2 chunks (key points are the steps). conceptual_synthesis: answer spans >= 2 chunks. multi_part: >= 2 enumerable parts (the parts[] block is required; parts may be deliberately partially covered). where_covered: 'where does the course cover X'."
+          },
+          "learner_intent": {
+            "type": "string",
+            "enum": [
+              "computational_solve",
+              "word_problem",
+              "error_diagnosis",
+              "conceptual_why",
+              "comparative",
+              "example_seeking",
+              "notation_symbol",
+              "course_navigation",
+              "multi_turn_followup"
+            ],
+            "description": "Optional (v1.2; absent = unclassified): the shape of the learner's ask, sliced by the grounded eval. computational_solve: 'solve/compute/evaluate X'. word_problem: a real-world story problem to set up + solve. error_diagnosis: 'why is my work / this step wrong'. conceptual_why: a why/how understanding question. comparative: 'what is the difference between A and B'. example_seeking: 'give me / show me an example of X'. notation_symbol: 'what does this symbol / notation mean'. course_navigation: 'where / in which week is X covered'. multi_turn_followup: a follow-up that only resolves given prior_turns. Provenance/analysis only — never affects per-question scoring."
+          },
+          "expected_behavior": {
+            "type": "string",
+            "enum": [
+              "answer_grounded",
+              "answer_computational",
+              "answer_with_redirect",
+              "correct_premise",
+              "navigate",
+              "refuse"
+            ],
+            "description": "Optional (v1.2; absent = answer_grounded): the CORRECT pipeline behavior for this question. answer_grounded: cite-and-answer from the corpus. answer_computational: a numeric / derivation answer. answer_with_redirect: answer but nudge the learner toward the assessment / their own work (the L2 assessment-aware guard). correct_premise: the question's premise is false or ill-posed — correct it rather than answer as posed. navigate: a 'where is X covered' locate-the-content response. refuse: out of scope — decline. Provenance/analysis only — never affects per-question relevance scoring."
+          },
+          "prior_turns": {
+            "type": "array",
+            "description": "Optional (v1.2; absent = single-turn): the preceding conversation for a multi-turn item, oldest-first, so an antecedent-rewrite eval arm can resolve a follow-up question against its context.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["role", "text"],
+              "properties": {
+                "role": {
+                  "type": "string",
+                  "enum": ["user", "assistant"],
+                  "description": "Who spoke this turn."
+                },
+                "text": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "The turn's text."
+                }
+              }
+            }
           },
           "synthesis_scope": {
             "type": "string",
@@ -250,7 +298,7 @@
               "template": {
                 "type": "string",
                 "enum": ["stratified", "definition", "worked_example", "both_population", "conceptual_why", "comparative", "example_seeking", "notation_symbol", "word_problem", "phrasing_malformed", "phrasing_colloquial"],
-                "description": "Optional (llm_assisted only): which gold-candidate drafting arm produced the question. stratified: the §1.2 stratified sampler; definition: a glossary-term definition question; worked_example: a Problem/Solution/Step procedural question; both_population: a synthesis question pairing a course-population chunk with a source-population chunk on the same concept (expected_citation_population=both). The learner_intent arms (conceptual_why / comparative / example_seeking / notation_symbol / word_problem) each mine the matching corpus shape; the phrasing arms (phrasing_malformed / phrasing_colloquial) are paraphrase variants of a canonical question that reuse its relevant_passages verbatim. Provenance only — never affects eval scoring."
+                "description": "Optional (llm_assisted only): which gold-candidate drafting arm produced the question. stratified: the §1.2 stratified sampler; definition: a glossary-term definition question; worked_example: a Problem/Solution/Step procedural question; both_population: a synthesis question pairing a course-population chunk with a source-population chunk on the same concept (expected_citation_population=both). The v1.2 learner_intent arms (conceptual_why / comparative / example_seeking / notation_symbol / word_problem) each mine the matching corpus shape and stamp the learner_intent + expected_behavior axes; the phrasing arms (phrasing_malformed / phrasing_colloquial) are paraphrase variants of a canonical question (v1.1 phrasing axis) that reuse its relevant_passages verbatim. Provenance only — never affects eval scoring."
               }
             }
           }

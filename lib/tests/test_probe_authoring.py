@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from lib.retrieval.probe_authoring import (
+    ILL_POSED_BANK,
     OFF_TOPIC_BANK,
     OOS_DETAIL_TEMPLATES,
     PROBE_AUTHORING_PROMPT_VERSION,
@@ -21,6 +22,7 @@ from lib.retrieval.probe_authoring import (
     attach_dry_runs,
     build_probe_candidates_doc,
     generate_probe_candidates,
+    ill_posed_candidates,
     off_topic_candidates,
     off_topic_llm_candidates,
     out_of_scope_detail_candidates,
@@ -201,6 +203,91 @@ def test_off_topic_llm_capture_fires():
     assert len(ev) == 1
     assert len(ev[0]["rationale"]) >= 20
     assert "off-topic" in ev[0]["rationale"].lower()
+
+
+# --------------------------------------------------------------- ill_posed
+
+
+def _algebra_chunks():
+    return {
+        "c001": _chunk("c001", "least common multiple text",
+                       tags=["least common multiple", "greatest common factor"]),
+        "c002": _chunk("c002", "discriminant text",
+                       tags=["discriminant", "quadratic equation"]),
+    }
+
+
+def test_ill_posed_shape_and_expected_outcome():
+    out = ill_posed_candidates(_algebra_chunks(), 6)
+    assert out, "algebra vocab should yield near-domain ill_posed probes"
+    for c in out:
+        assert c["category"] == "ill_posed"
+        assert c["expected_outcome"] == "correct_premise"
+        assert c["authoring"]["method"] == "manual"
+        assert PROBE_AUTHORING_PROMPT_VERSION in c["authoring"]["author"]
+
+
+def test_ill_posed_deterministic():
+    a = ill_posed_candidates(_algebra_chunks(), 6)
+    b = ill_posed_candidates(_algebra_chunks(), 6)
+    assert [c["question_text"] for c in a] == [c["question_text"] for c in b]
+
+
+def test_ill_posed_near_domain_gate_filters_off_domain():
+    # A course whose vocabulary shares NO tokens with the algebra false-premise
+    # bank yields no ill_posed probes (they would not be near-domain traps).
+    off = {"c001": _chunk("c001", "text", tags=["photosynthesis", "chloroplast"])}
+    assert ill_posed_candidates(off, 6) == []
+
+
+def test_ill_posed_empty_vocab_uses_whole_bank():
+    # No concept_tags => the whole bank is eligible (no near-domain gate).
+    novocab = {"c001": _chunk("c001", "text", tags=[])}
+    out = ill_posed_candidates(novocab, 3)
+    assert len(out) == 3
+
+
+def test_ill_posed_zero_n_empty():
+    assert ill_posed_candidates(_algebra_chunks(), 0) == []
+
+
+def test_ill_posed_bank_entries_carry_needles():
+    for question, why, needles in ILL_POSED_BANK:
+        assert question.endswith("?")
+        assert len(why) >= 20
+        assert needles and all(isinstance(t, str) for t in needles)
+
+
+def test_generate_probe_candidates_includes_ill_posed(tmp_path):
+    cdir = _write_course(tmp_path)
+    # Give the course algebra vocabulary so the near-domain gate fires.
+    import json as _json
+    chunks_path = cdir / "corpus" / "chunks.jsonl"
+    with chunks_path.open("w") as fh:
+        fh.write(_json.dumps({"id": "c000", "text": "lcm",
+                              "concept_tags": ["least common multiple",
+                                               "greatest common factor",
+                                               "discriminant", "quadratic equation"],
+                              "source": {"item_path": "week_01/c000.html"}}) + "\n")
+    from lib.utils import sha256_file
+    sha = sha256_file(chunks_path)
+    gold = _json.loads((cdir / "retrieval_eval" / "gold_set.json").read_text())
+    gold["chunkset"]["chunks_sha256"] = sha
+    (cdir / "retrieval_eval" / "gold_set.json").write_text(_json.dumps(gold))
+
+    retrieve = _fake_retrieve({"lexical": [("c000", 0.1, "b")],
+                               "semantic": [], "hybrid-rrf": []})
+    doc, _ = generate_probe_candidates(
+        cdir, client=FakeProbeClient(["[]"]), retrieve_fn=retrieve,
+        libv2_root=tmp_path,
+        targets={"off_topic": 0, "off_topic_llm": 0, "adjacent_domain": 0,
+                 "out_of_scope_detail": 0, "ill_posed": 3},
+    )
+    ill = [p for p in doc["probe_candidates"] if p["category"] == "ill_posed"]
+    assert len(ill) == 3
+    assert all(p["expected_outcome"] == "correct_premise" for p in ill)
+    assert all(len(p["dry_runs"]) == 3 for p in ill)
+    assert doc["authoring_run"]["by_category"]["ill_posed"] == 3
 
 
 # --------------------------------------------------------------- dry-runs

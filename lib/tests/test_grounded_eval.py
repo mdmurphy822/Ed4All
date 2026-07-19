@@ -20,6 +20,7 @@ from lib.retrieval.grounded_eval import (
     PipelineUnavailable,
     _sample_size,
     _seeded_order,
+    probe_expected_outcome,
     run_grounded_eval,
 )
 
@@ -139,7 +140,7 @@ def test_report_shape_and_headline(libv2_course):
         answer_fn=_gold_answer_fn(_GROUNDED_OK),
         with_groundedness=True, write=False,
     )
-    assert report["schema_version"] == "1.6"
+    assert report["schema_version"] == "1.7"
     assert report["course_slug"] == slug
     assert report["engine"] == "lexical"
     assert report["model_id"] == "fake-model"
@@ -584,6 +585,25 @@ def test_sample_size_rule():
     assert _sample_size(50) == 10        # max(10, 20% of 50)=10
     assert _sample_size(100) == 20       # 20% of 100
     assert _sample_size(8) == 8          # capped
+
+
+# ===========================================================================
+# Refusal-probe expected_outcome accessor (refusal-probes schema v1.1 additive)
+# ===========================================================================
+
+def test_probe_expected_outcome_accessor():
+    # explicit values pass through
+    assert probe_expected_outcome({"expected_outcome": "refuse"}) == "refuse"
+    assert probe_expected_outcome(
+        {"expected_outcome": "correct_premise"}
+    ) == "correct_premise"
+    # absent → default refuse (back-compat: legacy probes carry no field)
+    assert probe_expected_outcome({}) == "refuse"
+    assert probe_expected_outcome({"probe_id": "rp-demo-0001"}) == "refuse"
+    # unrecognized / malformed → default refuse
+    assert probe_expected_outcome({"expected_outcome": "answer"}) == "refuse"
+    assert probe_expected_outcome({"expected_outcome": 3}) == "refuse"
+    assert probe_expected_outcome("not-a-dict") == "refuse"
 
 
 # ===========================================================================

@@ -62,14 +62,17 @@ GOLD_SET_FILENAME = "gold_set.json"
 
 # Supported gold-set schema versions. The loader validates a doc against the
 # schema whose ``const`` schema_version matches the doc's declared version
-# (dual-version acceptance — v1.0 const-pinned/frozen, v1.1 additive).
-_SUPPORTED_SCHEMA_VERSIONS = ("1.0", "1.1")
+# (multi-version acceptance — v1.0 const-pinned/frozen, v1.1 additive
+# [phrasing / content_sha256 / procedural+multi_part], v1.2 additive
+# [learner_intent / expected_behavior / prior_turns]).
+_SUPPORTED_SCHEMA_VERSIONS = ("1.0", "1.1", "1.2")
 _DEFAULT_SCHEMA_VERSION = "1.0"
 
 # Schema filename per version (relative to schemas/retrieval/).
 _SCHEMA_FILENAME_BY_VERSION = {
     "1.0": "gold_set.schema.json",
     "1.1": "gold_set.schema.v1_1.json",
+    "1.2": "gold_set.schema.v1_2.json",
 }
 
 # Question-type taxonomy. v1.0 = the first three; v1.1 adds procedural +
@@ -93,6 +96,36 @@ _QUESTION_TYPES = _QUESTION_TYPES_V1_1  # union — used by the type-imbalance +
 # the ``question_phrasing`` accessor the grounded eval slices on.
 _PHRASING_VALUES = ("canonical", "colloquial", "malformed")
 _DEFAULT_PHRASING = "canonical"
+
+# Learner-intent + expected-behavior axes (v1.2, optional). Both are closed
+# enums. A question with no ``learner_intent`` reads as *unclassified* (None —
+# there is no default enum member); a question with no ``expected_behavior``
+# reads as ``answer_grounded`` (the default correct behavior). The per-version
+# JSON Schema is the authoritative enum when jsonschema is importable; these
+# tuples back the structural-fallback checks and the public accessors the
+# grounded eval slices on. ``prior_turns`` (absent → single-turn []) supplies a
+# multi-turn item's preceding conversation.
+_LEARNER_INTENT_VALUES = (
+    "computational_solve",
+    "word_problem",
+    "error_diagnosis",
+    "conceptual_why",
+    "comparative",
+    "example_seeking",
+    "notation_symbol",
+    "course_navigation",
+    "multi_turn_followup",
+)
+_EXPECTED_BEHAVIOR_VALUES = (
+    "answer_grounded",
+    "answer_computational",
+    "answer_with_redirect",
+    "correct_premise",
+    "navigate",
+    "refuse",
+)
+_DEFAULT_EXPECTED_BEHAVIOR = "answer_grounded"
+_PRIOR_TURN_ROLES = ("user", "assistant")
 
 # Warning thresholds.
 _TYPE_IMBALANCE_MIN_QUESTIONS = 30   # only flag imbalance at scale
@@ -404,6 +437,68 @@ def _structural_fallback(gold: Dict[str, Any]) -> List[GoldSetIssue]:
                     question_id=qid if isinstance(qid, str) else None,
                 )
             )
+        # v1.2: optional learner_intent / expected_behavior closed enums.
+        # Absent → unclassified / answer_grounded (back-compat). Present but out
+        # of the closed enum → schema violation (the jsonschema path enforces the
+        # same enum via the v1.2 schema file; this backs the fallback).
+        if "learner_intent" in q and q.get("learner_intent") not in _LEARNER_INTENT_VALUES:
+            issues.append(
+                GoldSetIssue(
+                    code="GOLD_SET_SCHEMA_VIOLATION",
+                    severity="critical",
+                    message=(
+                        f"learner_intent must be one of {_LEARNER_INTENT_VALUES} "
+                        f"when present; got {q.get('learner_intent')!r}."
+                    ),
+                    question_id=qid if isinstance(qid, str) else None,
+                )
+            )
+        if (
+            "expected_behavior" in q
+            and q.get("expected_behavior") not in _EXPECTED_BEHAVIOR_VALUES
+        ):
+            issues.append(
+                GoldSetIssue(
+                    code="GOLD_SET_SCHEMA_VIOLATION",
+                    severity="critical",
+                    message=(
+                        f"expected_behavior must be one of {_EXPECTED_BEHAVIOR_VALUES} "
+                        f"when present; got {q.get('expected_behavior')!r}."
+                    ),
+                    question_id=qid if isinstance(qid, str) else None,
+                )
+            )
+        # v1.2: optional prior_turns[] — each entry {role: user|assistant, text}.
+        if "prior_turns" in q:
+            turns = q.get("prior_turns")
+            if not isinstance(turns, list):
+                issues.append(
+                    GoldSetIssue(
+                        code="GOLD_SET_SCHEMA_VIOLATION",
+                        severity="critical",
+                        message="prior_turns must be an array when present.",
+                        question_id=qid if isinstance(qid, str) else None,
+                    )
+                )
+            else:
+                for turn in turns:
+                    if (
+                        not isinstance(turn, dict)
+                        or turn.get("role") not in _PRIOR_TURN_ROLES
+                        or not (isinstance(turn.get("text"), str) and turn.get("text"))
+                    ):
+                        issues.append(
+                            GoldSetIssue(
+                                code="GOLD_SET_SCHEMA_VIOLATION",
+                                severity="critical",
+                                message=(
+                                    "each prior_turns entry must be an object with "
+                                    f"role in {_PRIOR_TURN_ROLES} and a non-empty text."
+                                ),
+                                question_id=qid if isinstance(qid, str) else None,
+                            )
+                        )
+                        break
         # v1.1: multi_part questions must carry a parts[] block.
         if q.get("question_type") == "multi_part":
             parts = q.get("parts")
@@ -644,8 +739,9 @@ def validate_gold_set(
     # Metadata-completeness warnings (per-question; never fail the load). The
     # difficulty / expected_citation_population / expected_key_points fields are
     # v1.1 additions, so a v1.0 doc (which has no such fields by schema) is not
-    # flagged — only a v1.1 doc is expected to carry them.
-    if doc_schema_version(gold) == "1.1":
+    # flagged — a v1.1+ doc is expected to carry them (v1.2 inherits the v1.1
+    # metadata contract unchanged).
+    if doc_schema_version(gold) in ("1.1", "1.2"):
         issues.extend(_metadata_completeness_issues(questions))
 
     return issues
@@ -660,6 +756,51 @@ def question_phrasing(q: Dict[str, Any]) -> str:
     entirely into the canonical bucket (back-compat)."""
     val = q.get("phrasing") if isinstance(q, dict) else None
     return val if val in _PHRASING_VALUES else _DEFAULT_PHRASING
+
+
+def question_learner_intent(q: Dict[str, Any]) -> Optional[str]:
+    """Return a gold question's learner-intent value, or ``None`` (unclassified).
+
+    A question with no (or an unrecognized) ``learner_intent`` field reads as
+    unclassified — there is no default enum member, so the accessor returns
+    ``None`` and the eval's per-intent breakdown drops it into an unclassified
+    bucket (back-compat: legacy / v1.0 / v1.1 gold sets carry no such field)."""
+    val = q.get("learner_intent") if isinstance(q, dict) else None
+    return val if val in _LEARNER_INTENT_VALUES else None
+
+
+def question_expected_behavior(q: Dict[str, Any]) -> str:
+    """Return a gold question's expected-behavior value, defaulting to
+    ``answer_grounded``.
+
+    A question with no (or an unrecognized) ``expected_behavior`` field reads as
+    ``answer_grounded`` — the default correct pipeline behavior (cite-and-answer
+    from the corpus), so a legacy behavior-less gold set slices entirely into the
+    answer_grounded bucket (back-compat)."""
+    val = q.get("expected_behavior") if isinstance(q, dict) else None
+    return val if val in _EXPECTED_BEHAVIOR_VALUES else _DEFAULT_EXPECTED_BEHAVIOR
+
+
+def question_prior_turns(q: Dict[str, Any]) -> List[Dict[str, str]]:
+    """Return a gold question's prior conversation turns, or ``[]`` (single-turn).
+
+    A question with no ``prior_turns`` field reads as single-turn (empty list).
+    Only well-formed ``{role: user|assistant, text}`` entries are returned;
+    malformed entries are dropped (the loader already surfaces a
+    GOLD_SET_SCHEMA_VIOLATION for them, so the accessor stays lenient for
+    consumers that call it on an already-validated doc)."""
+    turns = q.get("prior_turns") if isinstance(q, dict) else None
+    if not isinstance(turns, list):
+        return []
+    out: List[Dict[str, str]] = []
+    for turn in turns:
+        if not isinstance(turn, dict):
+            continue
+        role = turn.get("role")
+        text = turn.get("text")
+        if role in _PRIOR_TURN_ROLES and isinstance(text, str) and text:
+            out.append({"role": role, "text": text})
+    return out
 
 
 def _is_refusal_question(q: Dict[str, Any]) -> bool:
@@ -859,6 +1000,9 @@ __all__ = [
     "critical_issues",
     "doc_schema_version",
     "question_phrasing",
+    "question_learner_intent",
+    "question_expected_behavior",
+    "question_prior_turns",
     "chunk_content_sha256",
     "_quote_in_chunk",
     "_quote_chunk_match_count",

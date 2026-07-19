@@ -148,6 +148,108 @@ WORKED_EXAMPLE_TEMPLATE = "worked_example"
 BOTH_POPULATION_TEMPLATE = "both_population"
 DEFAULT_TEMPLATE = "stratified"
 
+# ---------------------------------------------------------------- intent arms
+#
+# Per-learner_intent drafting arms (v1.2 learner_intent axis). Each arm mines a
+# corpus-shape that maps to a real GUI learner intent, drafts ONE question per
+# mined seed, and STAMPS the v1.2 ``learner_intent`` + ``expected_behavior``
+# fields on the candidate (both schema-valid question fields) so the grounded
+# eval's per-intent slice sees them. The arms reuse the deterministic
+# candidate-assembly + pre-screen machinery; the model emits only question
+# semantics + a verbatim quote (word_problem relaxes the quote pre-screen to
+# numeric-literal containment — see the per-intent prescreen policy below).
+#
+#   * conceptual_why  — explanation chunks carrying because/reason cues; asks a
+#                       "why does X hold" question. expected_behavior=answer_grounded.
+#   * comparative     — TWO distinct-concept chunks paired; asks a contrast
+#                       question whose answer cites both. answer_grounded.
+#   * example_seeking — chunk_type/role=example chunks; asks for a worked/named
+#                       example. answer_grounded.
+#   * notation_symbol — chunks carrying math notation/symbols; asks what a
+#                       symbol/notation means. answer_grounded.
+#   * word_problem    — application chunks (numeric literals + a word-problem
+#                       cue); asks a computational word problem.
+#                       expected_behavior=answer_computational. The pre-screen
+#                       is RELAXED to numeric-literal containment (a word
+#                       problem's grounding is the shared numbers, not a
+#                       >=40-char verbatim quote).
+INTENT_CONCEPTUAL_WHY = "conceptual_why"
+INTENT_COMPARATIVE = "comparative"
+INTENT_EXAMPLE_SEEKING = "example_seeking"
+INTENT_NOTATION_SYMBOL = "notation_symbol"
+INTENT_WORD_PROBLEM = "word_problem"
+
+# Per-intent arm policy: question_type, expected_behavior, and the pre-screen
+# policy (``verbatim_quote`` = the default >=40-char verbatim containment;
+# ``numeric_literal`` = the word-problem relaxation). ``comparative`` is a
+# TWO-chunk arm handled separately (draft_comparative_candidates) and is not in
+# this single-chunk table.
+_INTENT_ARMS: Dict[str, Dict[str, str]] = {
+    INTENT_CONCEPTUAL_WHY: {
+        "question_type": "conceptual_synthesis",
+        "expected_behavior": "answer_grounded",
+        "prescreen_policy": "verbatim_quote",
+    },
+    INTENT_EXAMPLE_SEEKING: {
+        "question_type": "factual_recall",
+        "expected_behavior": "answer_grounded",
+        "prescreen_policy": "verbatim_quote",
+    },
+    INTENT_NOTATION_SYMBOL: {
+        "question_type": "factual_recall",
+        "expected_behavior": "answer_grounded",
+        "prescreen_policy": "verbatim_quote",
+    },
+    INTENT_WORD_PROBLEM: {
+        "question_type": "procedural",
+        "expected_behavior": "answer_computational",
+        "prescreen_policy": "numeric_literal",
+    },
+}
+
+# The learner_intents whose primary-passage pre-screen is numeric-literal
+# relaxed rather than verbatim-quote. Derived from _INTENT_ARMS so the prescreen
+# and the drafting stay in lockstep (one source of truth).
+_NUMERIC_PRESCREEN_INTENTS = frozenset(
+    intent for intent, arm in _INTENT_ARMS.items()
+    if arm["prescreen_policy"] == "numeric_literal"
+)
+
+# conceptual_why: an explanation chunk that states a REASON — a because/since/
+# therefore/so-that causal cue. Deliberately conservative; the model + quote
+# pre-screen are the real gate.
+_CAUSAL_CUE_RE = re.compile(
+    r"\b(because|since|therefore|thus|hence|so that|in order to|"
+    r"the reason|as a result|due to|which is why|this means)\b",
+    re.IGNORECASE,
+)
+# example_seeking: an example chunk. STRUCTURAL signal first (chunk_type /
+# teaching_role / content_type_label == example), then a textual "For example"/
+# "e.g." fallback so a prose example without the structural label still mines.
+_EXAMPLE_CHUNK_TYPES = frozenset({"example", "worked_example"})
+_EXAMPLE_TEXT_RE = re.compile(
+    r"\b(for example|for instance|e\.g\.|consider the|as an example)\b",
+    re.IGNORECASE,
+)
+# notation_symbol: math notation / operator symbols. A chunk qualifies when it
+# carries at least _NOTATION_MIN_SYMBOLS symbol occurrences (a single stray '='
+# in prose is not a notation chunk).
+_NOTATION_SYMBOL_RE = re.compile(
+    r"[=≤≥≠±×÷√∑∏∫∞≈∝∈∉⊆⊂∪∩→←↔°πθλµ·^]|\\\(|\\\[|\\frac|\\sqrt|\\sum"
+)
+_NOTATION_MIN_SYMBOLS = 2
+# word_problem: an application chunk — carries numeric literals AND a
+# word-problem cue (how many / find / calculate / total / per / each …). Numbers
+# alone (a page number, a year) do not make a word problem.
+_NUMERIC_LITERAL_RE = re.compile(r"-?\d+(?:[.,]\d+)?")
+_WORD_PROBLEM_CUE_RE = re.compile(
+    r"\b(how many|how much|how long|find the|calculate|compute|"
+    r"what is the total|altogether|each|per |average|how far|"
+    r"how fast|at what|solve for)\b",
+    re.IGNORECASE,
+)
+_WORD_PROBLEM_MIN_NUMERICS = 2
+
 # A glossary chunk pairs a short Title-Case TERM with a sentence-y definition
 # that follows it. We mine ``Term Definition`` boundaries: a Title-Case run of
 # 1-4 words immediately followed by a capitalized definition sentence. The
@@ -1426,7 +1528,850 @@ def _log_template_authoring(
         pass
 
 
+# ---------------------------------------------------------------- intent miners
+
+
+def mine_conceptual_why_chunks(
+    chunks_by_id: Dict[str, Dict[str, Any]],
+) -> List[str]:
+    """Chunk ids of explanation chunks that state a REASON (a because/since/
+    therefore causal cue). Id order, deterministic. Glossary + worked-example
+    chunks are skipped (their arms own them)."""
+    out: List[str] = []
+    for cid in sorted(chunks_by_id):
+        chunk = chunks_by_id[cid]
+        if _is_glossary_chunk(chunk):
+            continue
+        text = str(chunk.get("text") or "")
+        if _PROBLEM_RE.search(text) and (
+            _SOLUTION_RE.search(text) or _STEP_RE.search(text)
+        ):
+            continue  # worked example — the worked_example arm owns it
+        if _CAUSAL_CUE_RE.search(text):
+            out.append(cid)
+    return out
+
+
+def mine_example_chunks(
+    chunks_by_id: Dict[str, Dict[str, Any]],
+) -> List[str]:
+    """Chunk ids that read as an EXAMPLE — the structural chunk_type /
+    teaching_role / content_type_label == example marker, or a textual
+    "for example"/"e.g." cue as a fallback. Id order, deterministic."""
+    out: List[str] = []
+    for cid in sorted(chunks_by_id):
+        chunk = chunks_by_id[cid]
+        ctype = str(chunk.get("chunk_type") or "").lower()
+        role = str(chunk.get("teaching_role") or "").lower()
+        ctl = str(chunk.get("content_type_label") or "").lower()
+        structural = (
+            ctype in _EXAMPLE_CHUNK_TYPES
+            or role in _EXAMPLE_CHUNK_TYPES
+            or ctl in _EXAMPLE_CHUNK_TYPES
+        )
+        if structural or _EXAMPLE_TEXT_RE.search(str(chunk.get("text") or "")):
+            out.append(cid)
+    return out
+
+
+def mine_notation_chunks(
+    chunks_by_id: Dict[str, Dict[str, Any]],
+) -> List[str]:
+    """Chunk ids carrying math notation / operator symbols (>=
+    :data:`_NOTATION_MIN_SYMBOLS` symbol occurrences). Id order, deterministic."""
+    out: List[str] = []
+    for cid in sorted(chunks_by_id):
+        text = str(chunks_by_id[cid].get("text") or "")
+        if len(_NOTATION_SYMBOL_RE.findall(text)) >= _NOTATION_MIN_SYMBOLS:
+            out.append(cid)
+    return out
+
+
+def mine_word_problem_chunks(
+    chunks_by_id: Dict[str, Dict[str, Any]],
+) -> List[str]:
+    """Chunk ids of APPLICATION chunks — >= :data:`_WORD_PROBLEM_MIN_NUMERICS`
+    numeric literals AND a word-problem cue (how many / find / per / …). Numbers
+    alone (a year, a page number) do not qualify. Id order, deterministic."""
+    out: List[str] = []
+    for cid in sorted(chunks_by_id):
+        text = str(chunks_by_id[cid].get("text") or "")
+        if (
+            len(_NUMERIC_LITERAL_RE.findall(text)) >= _WORD_PROBLEM_MIN_NUMERICS
+            and _WORD_PROBLEM_CUE_RE.search(text)
+        ):
+            out.append(cid)
+    return out
+
+
+_INTENT_MINERS = {
+    INTENT_CONCEPTUAL_WHY: mine_conceptual_why_chunks,
+    INTENT_EXAMPLE_SEEKING: mine_example_chunks,
+    INTENT_NOTATION_SYMBOL: mine_notation_chunks,
+    INTENT_WORD_PROBLEM: mine_word_problem_chunks,
+}
+
+
+def mine_intent_chunks(
+    intent: str, chunks_by_id: Dict[str, Dict[str, Any]]
+) -> List[str]:
+    """Dispatch to the single-chunk miner for a learner ``intent``."""
+    miner = _INTENT_MINERS.get(intent)
+    if miner is None:
+        raise ValueError(f"no single-chunk miner for intent {intent!r}")
+    return miner(chunks_by_id)
+
+
+# ---------------------------------------------------------------- intent drafting
+
+
+def _intent_prompt(intent: str, chunk: Dict[str, Any]) -> Tuple[str, str]:
+    """``(system, user)`` prompts for a single-chunk intent arm. The model emits
+    only question semantics + a verbatim quote; deterministic fields are
+    module-filled. word_problem asks the quote to carry the numeric values."""
+    hint, quote_hint = {
+        INTENT_CONCEPTUAL_WHY: (
+            "Ask a 'why' / 'what is the reason' question whose answer explains "
+            "the cause or justification stated in the chunk.",
+            "that states the reason",
+        ),
+        INTENT_EXAMPLE_SEEKING: (
+            "Ask the learner to give or identify a concrete example of the "
+            "concept the chunk illustrates.",
+            "that contains the example",
+        ),
+        INTENT_NOTATION_SYMBOL: (
+            "Ask what a symbol or piece of notation in the chunk means or how "
+            "it is read.",
+            "that contains the symbol / notation",
+        ),
+        INTENT_WORD_PROBLEM: (
+            "Ask a computational word problem answerable with the numbers in "
+            "the chunk; the answer is a computed value.",
+            "that contains the relevant numbers",
+        ),
+    }.get(intent, ("Ask a clear question answerable from the chunk.", ""))
+    system = (
+        "You author one evaluation question of a specific kind, grounded in a "
+        "single source chunk. Output JSON only with keys: question_text (a "
+        "clear question of at least 10 characters), expected_key_points (a JSON "
+        "array of 2 to 4 short factual points the correct answer must state), "
+        "and quote (a VERBATIM substring copied from the source chunk text "
+        f"{quote_hint}). Copy the quote character for character from the chunk "
+        "— do not paraphrase it. Do not add facts not present in the chunk."
+    )
+    chunk_text = str(chunk.get("text") or "")
+    user = (
+        f"Question kind: {intent}. {hint}\n\n"
+        f"Source chunk text:\n{chunk_text}\n\n"
+        'Output JSON only: {"question_text": "...", '
+        '"expected_key_points": ["...", "..."], "quote": "<verbatim substring>"}'
+    )
+    return system, user
+
+
+def _build_intent_candidate(
+    intent: str,
+    chunk_id: str,
+    chunk: Dict[str, Any],
+    draft: Dict[str, Any],
+    *,
+    model_id: str,
+) -> Dict[str, Any]:
+    """Assemble a v1.2-shaped single-chunk intent candidate: reuse the template
+    candidate machinery, then stamp ``learner_intent`` + ``expected_behavior``
+    (both schema-valid v1.2 question fields) and ``authoring.template=<intent>``."""
+    arm = _INTENT_ARMS[intent]
+    candidate = _build_template_candidate(
+        chunk_id, chunk, draft, model_id=model_id,
+        question_type=arm["question_type"], template=intent,
+    )
+    candidate["learner_intent"] = intent
+    candidate["expected_behavior"] = arm["expected_behavior"]
+    return candidate
+
+
+def draft_intent_candidates(
+    intent: str,
+    chunk_ids: Sequence[str],
+    chunks_by_id: Dict[str, Dict[str, Any]],
+    *,
+    client: Any,
+    model_id: Optional[str] = None,
+    capture: Optional[Any] = None,
+) -> List[Dict[str, Any]]:
+    """Draft one candidate per mined seed chunk for a single-chunk learner
+    ``intent`` arm (conceptual_why / example_seeking / notation_symbol /
+    word_problem). Stamps ``learner_intent`` + ``expected_behavior``. One
+    ``gold_candidate_authoring`` decision is emitted per batch with a dynamic
+    rationale naming the intent arm. NEVER an Anthropic surface."""
+    if intent not in _INTENT_ARMS:
+        raise ValueError(f"{intent!r} is not a single-chunk intent arm")
+    resolved_model = model_id or getattr(client, "model", "local")
+    candidates: List[Dict[str, Any]] = []
+    errors = 0
+    for cid in chunk_ids:
+        chunk = chunks_by_id.get(cid) or {}
+        system, user = _intent_prompt(intent, chunk)
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        try:
+            text = client.chat_completion(messages, max_tokens=512, temperature=0.2)
+            draft = _parse_draft(text)
+            cand = _build_intent_candidate(
+                intent, cid, chunk, draft, model_id=resolved_model
+            )
+        except (GoldDraftError, Exception) as exc:  # noqa: BLE001 — record, don't drop
+            errors += 1
+            cand = _build_error_candidate(
+                cid, chunk, resolved_model,
+                question_type=_INTENT_ARMS[intent]["question_type"], template=intent,
+            )
+            cand["learner_intent"] = intent
+            cand["expected_behavior"] = _INTENT_ARMS[intent]["expected_behavior"]
+            cand["draft_error"] = str(exc)
+        candidates.append(cand)
+
+    _log_template_authoring(
+        capture, template=intent, model=resolved_model,
+        seeds=list(chunk_ids), n=len(candidates), errors=errors,
+        detail=f"learner_intent '{intent}' arm "
+               f"(expected_behavior={_INTENT_ARMS[intent]['expected_behavior']}, "
+               f"prescreen={_INTENT_ARMS[intent]['prescreen_policy']})",
+    )
+    return candidates
+
+
+# ---------------------------------------------------------------- comparative arm
+#
+# The comparative intent asks a CONTRAST question across two DISTINCT-concept
+# chunks ("how does X differ from Y"). Unlike both_population (which pairs the
+# SAME concept across populations), comparative pairs chunks whose CONCEPT
+# identity differs (distinct concept_tags) but which SHARE subject-area
+# vocabulary (so the contrast is meaningful — prime vs composite, mean vs
+# median). Related concepts routinely share vocabulary, so the pairing keys on
+# concept-tag DISTINCTNESS plus a shared-body-token floor, NOT a low-overlap
+# ceiling. A chunk with no concept_tags cannot be identity-distinguished and is
+# skipped (comparative is opt-in; a tag-less corpus yields no comparative pairs).
+
+_COMPARATIVE_MIN_SHARED_TOKENS = 2  # same subject area => >= this many shared tokens
+
+
+def _concept_signature(chunk: Dict[str, Any]) -> frozenset:
+    """The chunk's CONCEPT identity for comparative distinctness — the
+    normalized ``concept_tags`` set (lowercased, whitespace-folded)."""
+    sig: set = set()
+    for tag in chunk.get("concept_tags") or []:
+        if isinstance(tag, str) and tag.strip():
+            sig.add(" ".join(tag.lower().split()))
+    return frozenset(sig)
+
+
+@dataclass(frozen=True)
+class ComparativePair:
+    """A mined ``(chunk_a, chunk_b)`` pair on two DISTINCT concepts that share
+    subject-area vocabulary. ``shared`` is the shared content-token count."""
+
+    chunk_a_id: str
+    chunk_b_id: str
+    shared: int
+
+
+def mine_comparative_pairs(
+    chunks_by_id: Dict[str, Dict[str, Any]],
+    *,
+    max_pairs: int = 25,
+) -> List[ComparativePair]:
+    """Deterministically pair concept-bearing chunks whose concept_tags DIFFER
+    (distinct concepts) but which share >= :data:`_COMPARATIVE_MIN_SHARED_TOKENS`
+    content tokens (same subject area) for a contrast question. Each chunk is
+    used at most once; the best (most shared vocabulary) partner is chosen, ties
+    broken by partner id. Id order. Pure + deterministic."""
+    ids = [
+        cid for cid in sorted(chunks_by_id)
+        if _concept_signature(chunks_by_id[cid])
+    ]
+    tokens = {cid: _content_tokens(chunks_by_id[cid]) for cid in ids}
+    sigs = {cid: _concept_signature(chunks_by_id[cid]) for cid in ids}
+    used: set = set()
+    pairs: List[ComparativePair] = []
+    for a in ids:
+        if len(pairs) >= max_pairs:
+            break
+        if a in used:
+            continue
+        best: Optional[Tuple[int, str]] = None
+        for b in ids:
+            if b == a or b in used:
+                continue
+            if sigs[a] == sigs[b]:
+                continue  # same concept identity => not a contrast pair
+            shared = len(tokens[a] & tokens[b])
+            if shared < _COMPARATIVE_MIN_SHARED_TOKENS:
+                continue
+            # Maximize shared vocabulary (most relatable contrast); tie-break by
+            # partner id ASC for determinism.
+            if best is None or shared > best[0] or (shared == best[0] and b < best[1]):
+                best = (shared, b)
+        if best is not None:
+            used.add(a)
+            used.add(best[1])
+            pairs.append(ComparativePair(chunk_a_id=a, chunk_b_id=best[1],
+                                         shared=best[0]))
+    return pairs
+
+
+def _comparative_prompt(text_a: str, text_b: str) -> Tuple[str, str]:
+    """``(system, user)`` prompts asking for ONE contrast question whose answer
+    requires BOTH chunks, with a verbatim quote from each."""
+    system = (
+        "You author one CONTRAST question that asks how two related but DISTINCT "
+        "concepts differ. Its complete answer requires BOTH source chunks — it "
+        "must NOT be answerable from either alone. Output JSON only with keys: "
+        "question_text (a clear contrast question of at least 10 characters), "
+        "expected_key_points (a JSON array of 2 to 4 short factual points the "
+        "correct answer must state), quote_a (a VERBATIM substring of at least "
+        "40 characters copied from the FIRST chunk), and quote_b (a VERBATIM "
+        "substring of at least 40 characters copied from the SECOND chunk). Copy "
+        "each quote character for character — do not paraphrase. Do not add "
+        "facts not present in the chunks."
+    )
+    user = (
+        f"FIRST chunk text:\n{text_a}\n\n"
+        f"SECOND chunk text:\n{text_b}\n\n"
+        'Output JSON only: {"question_text": "...", '
+        '"expected_key_points": ["...", "..."], '
+        '"quote_a": "<verbatim from first chunk>", '
+        '"quote_b": "<verbatim from second chunk>"}'
+    )
+    return system, user
+
+
+def _parse_comparative_draft(text: str) -> Dict[str, Any]:
+    """Parse a comparative draft into ``{question_text, expected_key_points,
+    quote_a, quote_b}``. Reuses the lenient JSON-object recovery pattern."""
+    raw = (text or "").strip()
+    parsed: Optional[Dict[str, Any]] = None
+    try:
+        cand = json.loads(raw)
+        if isinstance(cand, dict):
+            parsed = cand
+    except json.JSONDecodeError:
+        parsed = None
+    if parsed is None:
+        start = raw.find("{")
+        depth = 0
+        for i in range(start, len(raw)) if start >= 0 else []:
+            if raw[i] == "{":
+                depth += 1
+            elif raw[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        cand = json.loads(raw[start:i + 1])
+                        if isinstance(cand, dict):
+                            parsed = cand
+                    except json.JSONDecodeError:
+                        parsed = None
+                    break
+    if not isinstance(parsed, dict):
+        raise GoldDraftError(f"no JSON object recoverable from comparative tail {raw[-120:]!r}")
+    qt = parsed.get("question_text")
+    quote_a = parsed.get("quote_a")
+    quote_b = parsed.get("quote_b")
+    if not isinstance(qt, str):
+        raise GoldDraftError("comparative draft missing question_text")
+    if not isinstance(quote_a, str):
+        raise GoldDraftError("comparative draft missing quote_a")
+    if not isinstance(quote_b, str):
+        raise GoldDraftError("comparative draft missing quote_b")
+    kps = parsed.get("expected_key_points")
+    if not isinstance(kps, list):
+        kps = []
+    kps = [str(k).strip() for k in kps if isinstance(k, (str, int, float)) and str(k).strip()]
+    return {
+        "question_text": qt.strip(),
+        "expected_key_points": kps[:_KEY_POINTS_MAX],
+        "quote_a": quote_a.strip(),
+        "quote_b": quote_b.strip(),
+    }
+
+
+def _build_comparative_candidate(
+    pair: ComparativePair,
+    chunk_a: Dict[str, Any],
+    chunk_b: Dict[str, Any],
+    draft: Dict[str, Any],
+    *,
+    model_id: str,
+) -> Dict[str, Any]:
+    """Assemble a v1.2 comparative candidate: two passages (a=primary,
+    b=supporting), learner_intent=comparative, expected_behavior=answer_grounded,
+    question_type=conceptual_synthesis."""
+    week_a = _week_of_item_path((chunk_a.get("source") or {}).get("item_path", ""))
+    week_b = _week_of_item_path((chunk_b.get("source") or {}).get("item_path", ""))
+    n_weeks = len({w for w in (week_a, week_b) if w})
+    candidate: Dict[str, Any] = {
+        "question_id": f"gqc-cmp-{pair.chunk_a_id}-{pair.chunk_b_id}",
+        "question_text": draft["question_text"],
+        "question_type": "conceptual_synthesis",
+        "difficulty": "hard" if n_weeks >= 2 else "medium",
+        "synthesis_scope": "across_weeks" if n_weeks >= 2 else "within_week",
+        "learner_intent": INTENT_COMPARATIVE,
+        "expected_behavior": "answer_grounded",
+        "relevant_passages": [
+            {"chunk_id": pair.chunk_a_id, "relevance": "primary",
+             "anchor": _anchor_for(chunk_a, draft["quote_a"])},
+            {"chunk_id": pair.chunk_b_id, "relevance": "supporting",
+             "anchor": _anchor_for(chunk_b, draft["quote_b"])},
+        ],
+        "authoring": {
+            "method": "llm_assisted",
+            "author": f"{model_id}/{GOLD_AUTHORING_PROMPT_VERSION}",
+            "reviewed_by": "PENDING_REVIEW",
+            "status": "draft",
+            "template": INTENT_COMPARATIVE,
+        },
+    }
+    refs = tuple(sorted(set(_objective_refs(chunk_a)) | set(_objective_refs(chunk_b))))
+    if refs:
+        candidate["objective_refs"] = list(refs)
+    kps = draft.get("expected_key_points") or []
+    if len(kps) >= _KEY_POINTS_MIN:
+        candidate["expected_key_points"] = kps[:_KEY_POINTS_MAX]
+    return candidate
+
+
+def draft_comparative_candidates(
+    pairs: Sequence[ComparativePair],
+    chunks_by_id: Dict[str, Dict[str, Any]],
+    *,
+    client: Any,
+    model_id: Optional[str] = None,
+    capture: Optional[Any] = None,
+) -> List[Dict[str, Any]]:
+    """Draft one comparative (contrast) candidate per mined distinct-concept
+    pair. Two passages + verbatim quote per chunk. One
+    ``gold_candidate_authoring`` decision per batch. NEVER an Anthropic surface."""
+    resolved_model = model_id or getattr(client, "model", "local")
+    candidates: List[Dict[str, Any]] = []
+    errors = 0
+    for pair in pairs:
+        chunk_a = chunks_by_id.get(pair.chunk_a_id) or {}
+        chunk_b = chunks_by_id.get(pair.chunk_b_id) or {}
+        system, user = _comparative_prompt(
+            str(chunk_a.get("text") or ""), str(chunk_b.get("text") or "")
+        )
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        try:
+            text = client.chat_completion(messages, max_tokens=640, temperature=0.2)
+            draft = _parse_comparative_draft(text)
+            cand = _build_comparative_candidate(
+                pair, chunk_a, chunk_b, draft, model_id=resolved_model
+            )
+        except (GoldDraftError, Exception) as exc:  # noqa: BLE001 — record, don't drop
+            errors += 1
+            cand = {
+                "question_id": f"gqc-cmp-{pair.chunk_a_id}-{pair.chunk_b_id}",
+                "question_text": "",
+                "question_type": "conceptual_synthesis",
+                "learner_intent": INTENT_COMPARATIVE,
+                "expected_behavior": "answer_grounded",
+                "relevant_passages": [
+                    {"chunk_id": pair.chunk_a_id, "relevance": "primary",
+                     "anchor": {"item_path": str((chunk_a.get("source") or {}).get("item_path") or ""),
+                                "text_quote": ""}},
+                    {"chunk_id": pair.chunk_b_id, "relevance": "supporting",
+                     "anchor": {"item_path": str((chunk_b.get("source") or {}).get("item_path") or ""),
+                                "text_quote": ""}},
+                ],
+                "authoring": {
+                    "method": "llm_assisted",
+                    "author": f"{resolved_model}/{GOLD_AUTHORING_PROMPT_VERSION}",
+                    "reviewed_by": "PENDING_REVIEW",
+                    "status": "draft",
+                    "template": INTENT_COMPARATIVE,
+                },
+                "draft_error": str(exc),
+            }
+        candidates.append(cand)
+
+    pair_labels = [f"{p.chunk_a_id}+{p.chunk_b_id}" for p in pairs]
+    _log_template_authoring(
+        capture, template=INTENT_COMPARATIVE, model=resolved_model,
+        seeds=pair_labels, n=len(candidates), errors=errors,
+        detail=f"learner_intent 'comparative' arm — paired {len(pairs)} "
+               f"distinct-concept chunk pair(s) for a contrast question",
+    )
+    return candidates
+
+
+# ---------------------------------------------------------------- paraphraser
+#
+# A phrasing paraphraser takes ACCEPTED canonical gold questions and emits
+# learner-phrasing VARIANTS (v1.1 ``phrasing`` axis) that reuse the original's
+# relevant_passages VERBATIM — only the question_text changes. Two arms:
+#
+#   (a) malformed — DETERMINISTIC (seeded, no LLM) typo / dropped-article /
+#       dropped-word / telegraphic templates. phrasing="malformed".
+#   (b) colloquial — the local provider rewrites the question in a bare,
+#       conversational learner voice. phrasing="colloquial". A paraphrase that
+#       drifts off the original answer target (token-overlap below the floor)
+#       is REJECTED — a colloquial rewrite must still ask the SAME thing.
+#
+# Both preserve relevant_passages byte-for-byte (the retrieval target is
+# unchanged), carry a candidate-only ``derived_from_gold_question_id`` (stripped
+# at promotion), and set authoring.template=phrasing_{malformed,colloquial}.
+
+PHRASING_MALFORMED_TEMPLATE = "phrasing_malformed"
+PHRASING_COLLOQUIAL_TEMPLATE = "phrasing_colloquial"
+
+# Reject a colloquial paraphrase whose significant-token Jaccard vs the original
+# question falls below this floor (it has drifted off the answer target). Set to
+# catch a topic CHANGE, not to demand high surface similarity — a genuine
+# colloquial rewrite legitimately swaps many surface words.
+_PARAPHRASE_MIN_OVERLAP = 0.25
+# Function words dropped before the token-overlap comparison so the floor keys
+# on content words, not "the/is/of".
+_PARAPHRASE_STOPWORDS = frozenset(
+    {
+        "the", "a", "an", "is", "are", "was", "were", "of", "to", "in", "on",
+        "for", "and", "or", "do", "does", "did", "how", "what", "why", "when",
+        "which", "that", "this", "with", "as", "at", "by", "be", "you", "your",
+        "it", "its", "can", "could", "would", "should", "we", "i", "me",
+    }
+)
+_ARTICLES = ("the", "a", "an")
+
+
+def _overlap_tokens(text: str) -> set:
+    toks = re.findall(r"[a-z0-9]+", str(text).lower())
+    return {t for t in toks if t not in _PARAPHRASE_STOPWORDS and len(t) > 1}
+
+
+def _token_overlap(a: str, b: str) -> float:
+    ta, tb = _overlap_tokens(a), _overlap_tokens(b)
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / len(ta | tb)
+
+
+def make_malformed_variant(question: str, *, seed: int = 0) -> str:
+    """Deterministically produce ONE malformed learner-phrasing variant of
+    ``question`` (typo / dropped-article / dropped-word / telegraphic). Seeded:
+    the same ``(question, seed)`` always yields the same variant. Never returns
+    an empty / <10-char string (falls back to a lowercased de-punctuated form)."""
+    original = str(question or "").strip()
+    words = original.split()
+    # Deterministic template pick from a hash of the question + seed.
+    h = int(hashlib.sha256(f"{seed}:{original}".encode()).hexdigest()[:8], 16)
+    template = h % 4
+
+    def _drop_article(ws: List[str]) -> List[str]:
+        out = [w for w in ws if w.lower().strip("?.,") not in _ARTICLES]
+        return out or ws
+
+    def _drop_word(ws: List[str]) -> List[str]:
+        # Drop one non-first, non-last content word (deterministic index).
+        idxs = [
+            i for i in range(1, len(ws) - 1)
+            if ws[i].lower().strip("?.,") not in _PARAPHRASE_STOPWORDS
+        ]
+        if not idxs:
+            return ws
+        drop = idxs[h % len(idxs)]
+        return ws[:drop] + ws[drop + 1:]
+
+    def _typo(text: str) -> str:
+        # Swap two adjacent characters in the longest word (deterministic).
+        if not words:
+            return text
+        longest = max(range(len(words)), key=lambda i: len(words[i]))
+        w = words[longest]
+        core = w.rstrip("?.,")
+        if len(core) >= 4:
+            j = 1 + (h % (len(core) - 2))
+            core = core[:j] + core[j + 1] + core[j] + core[j + 2:]
+            ws = list(words)
+            ws[longest] = core + w[len(core):]
+            return " ".join(ws)
+        return text
+
+    def _telegraphic(ws: List[str]) -> List[str]:
+        out = [w for w in ws if w.lower().strip("?.,") not in _PARAPHRASE_STOPWORDS]
+        return out or ws
+
+    if template == 0:
+        variant = " ".join(_drop_article(words))
+    elif template == 1:
+        variant = " ".join(_drop_word(words))
+    elif template == 2:
+        variant = _typo(original)
+    else:
+        variant = " ".join(_telegraphic(words)).rstrip("?.").strip() + "?"
+
+    variant = variant.strip()
+    if len(variant) < _MIN_QUESTION_CHARS:
+        # Fall back to a lowercased, de-punctuated malformation that never
+        # under-runs the pre-screen length floor.
+        variant = original.lower()
+    return variant
+
+
+def _variant_candidate(
+    base: Dict[str, Any],
+    variant_text: str,
+    *,
+    phrasing: str,
+    template: str,
+    method: str,
+    model_id: str,
+) -> Dict[str, Any]:
+    """Build a phrasing-variant candidate from a base gold question, reusing its
+    relevant_passages VERBATIM and stamping the phrasing axis + provenance."""
+    cand: Dict[str, Any] = {
+        "question_id": f"gqc-{phrasing}-{base.get('question_id', 'q')}",
+        "question_text": variant_text,
+        "question_type": base.get("question_type", "factual_recall"),
+        # relevant_passages preserved byte-for-byte (the retrieval target is the
+        # SAME as the canonical question — only the phrasing changes).
+        "relevant_passages": json.loads(json.dumps(base.get("relevant_passages") or [])),
+        "phrasing": phrasing,
+        "authoring": {
+            "method": method,
+            "author": f"{model_id}/{GOLD_AUTHORING_PROMPT_VERSION}",
+            "reviewed_by": "PENDING_REVIEW",
+            "status": "draft",
+            "template": template,
+        },
+    }
+    # Carry forward the schema-valid axis / metadata fields when present.
+    for key in ("objective_refs", "expected_citation_population",
+                "expected_key_points", "learner_intent", "expected_behavior",
+                "synthesis_scope", "difficulty", "parts"):
+        if key in base:
+            cand[key] = json.loads(json.dumps(base[key]))
+    base_id = base.get("question_id")
+    if isinstance(base_id, str):
+        # Candidate-only provenance link (stripped at promotion — the gold
+        # question schema has no derived-from field).
+        cand["derived_from_gold_question_id"] = base_id
+    return cand
+
+
+def paraphrase_malformed(
+    questions: Sequence[Dict[str, Any]],
+    *,
+    seed: int = 0,
+    model_id: str = "deterministic",
+) -> List[Dict[str, Any]]:
+    """Deterministically emit ONE malformed phrasing variant per input gold
+    question (no LLM). phrasing='malformed'. Pure + seeded."""
+    out: List[Dict[str, Any]] = []
+    for q in questions:
+        if not isinstance(q, dict):
+            continue
+        qt = str(q.get("question_text") or "")
+        if not qt.strip():
+            continue
+        variant = make_malformed_variant(qt, seed=seed)
+        out.append(_variant_candidate(
+            q, variant, phrasing="malformed",
+            template=PHRASING_MALFORMED_TEMPLATE, method="manual",
+            model_id="malformed-paraphraser",
+        ))
+    return out
+
+
+def _colloquial_prompt(question: str) -> Tuple[str, str]:
+    system = (
+        "You rewrite a formal course question in a bare, conversational learner "
+        "voice — the way a student would actually type it into a chat box. Keep "
+        "the SAME meaning and ask for the SAME thing; only change the phrasing. "
+        "Output JSON only: {\"question\": \"<colloquial rewrite>\"}."
+    )
+    user = (
+        f"Formal question:\n{question}\n\n"
+        'Rewrite it colloquially. Output JSON only: {"question": "..."}'
+    )
+    return system, user
+
+
+def _parse_colloquial(text: str) -> Optional[str]:
+    """Recover the colloquial rewrite string from a model response."""
+    raw = (text or "").strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```[a-zA-Z]*\s*", "", raw)
+        raw = re.sub(r"\s*```\s*$", "", raw).strip()
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            val = parsed.get("question") or parsed.get("question_text")
+            if isinstance(val, str) and val.strip():
+                return val.strip().strip("\"'").strip()
+    except json.JSONDecodeError:
+        pass
+    # Embedded-object scan.
+    start = raw.find("{")
+    depth = 0
+    for i in range(start, len(raw)) if start >= 0 else []:
+        if raw[i] == "{":
+            depth += 1
+        elif raw[i] == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    parsed = json.loads(raw[start:i + 1])
+                    if isinstance(parsed, dict):
+                        val = parsed.get("question") or parsed.get("question_text")
+                        if isinstance(val, str) and val.strip():
+                            return val.strip().strip("\"'").strip()
+                except json.JSONDecodeError:
+                    pass
+                break
+    return None
+
+
+def paraphrase_colloquial(
+    questions: Sequence[Dict[str, Any]],
+    *,
+    client: Any,
+    model_id: Optional[str] = None,
+    capture: Optional[Any] = None,
+    min_overlap: float = _PARAPHRASE_MIN_OVERLAP,
+) -> List[Dict[str, Any]]:
+    """Emit colloquial phrasing variants via the local provider (one call per
+    input question). phrasing='colloquial'; relevant_passages preserved verbatim.
+    A rewrite whose significant-token overlap vs the original falls below
+    ``min_overlap`` is REJECTED (it drifted off the answer target). One
+    ``gold_candidate_authoring`` decision is emitted with a dynamic rationale.
+    NEVER an Anthropic surface."""
+    resolved_model = model_id or getattr(client, "model", "local")
+    out: List[Dict[str, Any]] = []
+    attempted = 0
+    rejected = 0
+    for q in questions:
+        if not isinstance(q, dict):
+            continue
+        qt = str(q.get("question_text") or "").strip()
+        if not qt:
+            continue
+        attempted += 1
+        system, user = _colloquial_prompt(qt)
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        try:
+            text = client.chat_completion(messages, max_tokens=256, temperature=0.4)
+            variant = _parse_colloquial(text)
+        except Exception:  # noqa: BLE001 — a failed rewrite is skipped, not fatal
+            variant = None
+        if not variant or len(variant) < _MIN_QUESTION_CHARS:
+            rejected += 1
+            continue
+        # Reject a paraphrase that changed the answer target.
+        if _token_overlap(qt, variant) < min_overlap:
+            rejected += 1
+            continue
+        out.append(_variant_candidate(
+            q, variant, phrasing="colloquial",
+            template=PHRASING_COLLOQUIAL_TEMPLATE, method="llm_assisted",
+            model_id=resolved_model,
+        ))
+
+    if capture is not None:
+        try:
+            capture.log_decision(
+                decision_type="gold_candidate_authoring",
+                decision=(
+                    f"drafted {len(out)} colloquial phrasing variant(s) via "
+                    f"local model {resolved_model}; {rejected} rejected "
+                    f"(parse-fail or off-target)."
+                ),
+                rationale=(
+                    f"Colloquial phrasing-paraphrase pass over {attempted} "
+                    f"canonical gold question(s) using license-clean local model "
+                    f"{resolved_model} (prompt {GOLD_AUTHORING_PROMPT_VERSION}); "
+                    f"accepted={len(out)}, rejected={rejected} at token-overlap "
+                    f"floor {min_overlap}. Each variant preserves the original's "
+                    f"relevant_passages verbatim (same retrieval target) and is "
+                    f"stamped phrasing=colloquial so the eval's phrasing slice "
+                    f"measures bare/learner voice, not only textbook phrasing."
+                ),
+            )
+        except Exception:  # pragma: no cover — defensive
+            pass
+    return out
+
+
+# ---------------------------------------------------------------- round-trip
+
+
+# Env-overridable retrieval engine for the round-trip prescreen filter. Default
+# ``lexical`` is CPU-safe (BM25, no embed model — offline-test-safe); set to
+# ``hybrid-rrf`` (or ``semantic``) for a production authoring run with a built
+# vector index. Parse-with-fallback: an unknown value → ``lexical``.
+ENV_ROUNDTRIP_ENGINE = "ED4ALL_GOLD_ROUNDTRIP_ENGINE"
+_ROUNDTRIP_ENGINES = ("lexical", "semantic", "hybrid-rrf")
+_DEFAULT_ROUNDTRIP_ENGINE = "lexical"
+_ROUNDTRIP_TOP_K = 8
+
+
+def resolve_roundtrip_engine() -> str:
+    """Resolve the round-trip retrieval engine from the environment
+    (parse-with-fallback to ``lexical``)."""
+    import os
+    val = (os.environ.get(ENV_ROUNDTRIP_ENGINE) or "").strip().lower()
+    return val if val in _ROUNDTRIP_ENGINES else _DEFAULT_ROUNDTRIP_ENGINE
+
+
+def make_roundtrip_filter(
+    retrieve_fn: Any,
+    libv2_root: Any,
+    course_slug: str,
+    *,
+    k: int = _ROUNDTRIP_TOP_K,
+    engine: Optional[str] = None,
+) -> Any:
+    """Build a ``roundtrip_fn(question_text) -> List[chunk_id]`` closure over the
+    LibV2 ``retrieve_chunks`` machinery for the prescreen round-trip filter.
+
+    ``retrieve_fn`` is duck-typed on ``retrieve_fn(libv2_root, query,
+    course_slug=, engine=, limit=)`` (i.e. ``retrieve_chunks``; tests inject a
+    fake). The engine defaults to :func:`resolve_roundtrip_engine`
+    (``ED4ALL_GOLD_ROUNDTRIP_ENGINE``, default CPU-safe ``lexical``). A retriever
+    that raises records an EMPTY top-k (the candidate then fails the round-trip —
+    fail-closed, never a silent pass)."""
+    resolved_engine = engine or resolve_roundtrip_engine()
+
+    def _roundtrip(question_text: str) -> List[str]:
+        try:
+            results = list(
+                retrieve_fn(libv2_root, question_text, course_slug=course_slug,
+                            engine=resolved_engine, limit=k)
+            )
+        except Exception:  # noqa: BLE001 — a missing index => empty top-k
+            return []
+        return [str(getattr(r, "chunk_id", "")) for r in results[:k]]
+
+    return _roundtrip
+
+
 # ---------------------------------------------------------------- prescreen
+
+
+def _numeric_literals(text: str) -> set:
+    """The set of normalized numeric literals in ``text`` (thousands/decimal
+    separators folded so ``1,000`` and ``1000`` compare equal)."""
+    return {
+        m.replace(",", "") for m in _NUMERIC_LITERAL_RE.findall(str(text or ""))
+    }
 
 
 def prescreen_candidate(
@@ -1434,6 +2379,7 @@ def prescreen_candidate(
     chunks_by_id: Dict[str, Dict[str, Any]],
     *,
     prior_questions: Sequence[str] = (),
+    roundtrip_fn: Optional[Any] = None,
 ) -> PrescreenVerdict:
     """Deterministic mechanical pre-screen of one candidate (§2.2 step 3).
 
@@ -1445,6 +2391,16 @@ def prescreen_candidate(
       * ``QUOTE_AMBIGUOUS`` — quote contained in > 3 chunks of the set.
       * ``NEAR_DUPLICATE`` — question shingle-contained >= 0.80 in a prior
         question (drafted earlier this batch or already in the gold set).
+      * ``ROUNDTRIP_MISS`` — (when ``roundtrip_fn`` supplied) the primary source
+        chunk is not in the retriever's top-k for the drafted question text.
+
+    Per-intent prescreen policy: a ``learner_intent=word_problem`` candidate is
+    scored with the NUMERIC-LITERAL policy (the quote need only share a numeric
+    literal with its chunk — a word problem's grounding is the numbers, not a
+    >=40-char verbatim quote); every other candidate uses the verbatim-quote
+    policy. Phrasing VARIANT candidates (``phrasing`` in colloquial/malformed)
+    are EXEMPT from the near-duplicate check — an intentional paraphrase of a
+    canonical question is a near-duplicate BY DESIGN.
     """
     reasons: List[str] = []
     if candidate.get("draft_error"):
@@ -1453,6 +2409,7 @@ def prescreen_candidate(
     if len(qt.strip()) < _MIN_QUESTION_CHARS:
         reasons.append("QUESTION_TOO_SHORT")
 
+    numeric_policy = candidate.get("learner_intent") in _NUMERIC_PRESCREEN_INTENTS
     passages = candidate.get("relevant_passages") or []
     primary = next(
         (p for p in passages if isinstance(p, dict) and p.get("relevance") == "primary"),
@@ -1462,7 +2419,18 @@ def prescreen_candidate(
         anchor = primary.get("anchor") or {}
         quote = str(anchor.get("text_quote") or "")
         cid = primary.get("chunk_id")
-        if len(quote.strip()) < _MIN_QUOTE_CHARS:
+        if numeric_policy:
+            # word_problem: the quote must carry >=1 numeric literal that also
+            # appears in the source chunk (shared numbers = grounding).
+            q_nums = _numeric_literals(quote)
+            if not q_nums:
+                reasons.append("QUOTE_NO_NUMERIC")
+            elif isinstance(cid, str) and cid in chunks_by_id:
+                if not (q_nums & _numeric_literals(chunks_by_id[cid].get("text", ""))):
+                    reasons.append("NUMERIC_NOT_IN_CHUNK")
+            elif isinstance(cid, str):
+                reasons.append("QUOTE_NOT_IN_CHUNK")  # chunk id absent => unanchorable
+        elif len(quote.strip()) < _MIN_QUOTE_CHARS:
             reasons.append("QUOTE_TOO_SHORT")
         elif isinstance(cid, str) and cid in chunks_by_id:
             if not _quote_in_chunk(quote, chunks_by_id[cid]):
@@ -1494,8 +2462,11 @@ def prescreen_candidate(
         elif isinstance(s_cid, str):
             reasons.append("SUPPORTING_QUOTE_NOT_IN_CHUNK")
 
-    # Near-dup: only meaningful for a non-empty question.
-    if qt.strip():
+    # Near-dup: only meaningful for a non-empty question, and SKIPPED for
+    # phrasing variants (an intentional paraphrase of a canonical question is a
+    # near-duplicate by design — that is the whole point of the phrasing axis).
+    is_phrasing_variant = candidate.get("phrasing") in ("colloquial", "malformed")
+    if qt.strip() and not is_phrasing_variant:
         for prior in prior_questions:
             if not prior or not prior.strip():
                 continue
@@ -1505,6 +2476,19 @@ def prescreen_candidate(
                 reasons.append("NEAR_DUPLICATE")
                 break
 
+    # Round-trip filter (optional): a draft survives only if its PRIMARY source
+    # chunk appears in the existing retriever's top-k for the drafted question
+    # text. Only meaningful for an anchorable question with a resolvable primary.
+    if roundtrip_fn is not None and qt.strip() and isinstance(primary, dict):
+        cid = primary.get("chunk_id")
+        if isinstance(cid, str) and cid:
+            try:
+                top_ids = list(roundtrip_fn(qt))
+            except Exception:  # noqa: BLE001 — a retriever failure fails closed
+                top_ids = []
+            if cid not in top_ids:
+                reasons.append("ROUNDTRIP_MISS")
+
     return PrescreenVerdict(passed=not reasons, reasons=reasons)
 
 
@@ -1513,13 +2497,17 @@ def prescreen_candidates(
     chunks_by_id: Dict[str, Dict[str, Any]],
     *,
     existing_questions: Sequence[str] = (),
+    roundtrip_fn: Optional[Any] = None,
 ) -> List[Tuple[Dict[str, Any], PrescreenVerdict]]:
     """Pre-screen a batch; near-dup checks accumulate intra-batch + against
-    ``existing_questions`` (the gold set's question_texts)."""
+    ``existing_questions`` (the gold set's question_texts). ``roundtrip_fn`` (when
+    supplied) enforces the round-trip retrieval filter per candidate."""
     seen: List[str] = list(existing_questions)
     out: List[Tuple[Dict[str, Any], PrescreenVerdict]] = []
     for cand in candidates:
-        verdict = prescreen_candidate(cand, chunks_by_id, prior_questions=seen)
+        verdict = prescreen_candidate(
+            cand, chunks_by_id, prior_questions=seen, roundtrip_fn=roundtrip_fn
+        )
         out.append((cand, verdict))
         qt = str(cand.get("question_text") or "").strip()
         if qt:
@@ -1579,11 +2567,22 @@ _DEFAULT_TEMPLATES: Tuple[str, ...] = (
     WORKED_EXAMPLE_TEMPLATE,
     BOTH_POPULATION_TEMPLATE,
 )
+# Opt-in per-learner_intent template arms (v1.2 learner_intent axis). NOT in
+# _DEFAULT_TEMPLATES — a default run stays byte-identical; select them
+# explicitly (``templates=[..., "conceptual_why", "comparative", ...]``).
+_INTENT_TEMPLATES: Tuple[str, ...] = (
+    INTENT_CONCEPTUAL_WHY,
+    INTENT_COMPARATIVE,
+    INTENT_EXAMPLE_SEEKING,
+    INTENT_NOTATION_SYMBOL,
+    INTENT_WORD_PROBLEM,
+)
 # Cap the per-template mined-seed counts so the template arms supplement the
 # stratified arm without flooding it (they over-generate ~half the base target).
 _DEFAULT_DEFINITION_CAP = 25
 _DEFAULT_WORKED_EXAMPLE_CAP = 25
 _DEFAULT_BOTH_POPULATION_CAP = 25
+_DEFAULT_INTENT_CAP = 25
 
 
 def generate_gold_candidates(
@@ -1599,6 +2598,8 @@ def generate_gold_candidates(
     definition_cap: int = _DEFAULT_DEFINITION_CAP,
     worked_example_cap: int = _DEFAULT_WORKED_EXAMPLE_CAP,
     both_population_cap: int = _DEFAULT_BOTH_POPULATION_CAP,
+    intent_cap: int = _DEFAULT_INTENT_CAP,
+    roundtrip_fn: Optional[Any] = None,
 ) -> Tuple[Dict[str, Any], Optional[Path]]:
     """End-to-end §2.2 steps 1-3: sample / mine → draft → pre-screen → write doc.
 
@@ -1612,10 +2613,20 @@ def generate_gold_candidates(
       * ``worked_example`` — deterministically-mined Problem/Solution/Step
         chunks, one procedural question per chunk (capped at
         ``worked_example_cap``).
+      * ``both_population`` — course/source concept pairs (capped at
+        ``both_population_cap``).
+
+    The v1.2 learner_intent arms (``conceptual_why`` / ``comparative`` /
+    ``example_seeking`` / ``notation_symbol`` / ``word_problem``) are OPT-IN
+    (select them explicitly via ``templates=[...]``; NOT in the default set, so a
+    default run is byte-identical). Each mines its corpus shape (capped at
+    ``intent_cap``) and stamps the ``learner_intent`` + ``expected_behavior`` axes.
 
     All arms draft via the license-clean local ``client``, then the combined
     candidate list is pre-screened deterministically and written to
-    ``retrieval_eval/gold_candidates.json``. Returns ``(doc, written_path)``.
+    ``retrieval_eval/gold_candidates.json``. When ``roundtrip_fn`` is supplied
+    (build one with :func:`make_roundtrip_filter`) the pre-screen additionally
+    enforces the round-trip retrieval filter. Returns ``(doc, written_path)``.
 
     Raises ``FileNotFoundError`` when the gold set / chunkset is absent (the
     chunkset pin is the source of truth for which corpus to sample).
@@ -1670,13 +2681,33 @@ def generate_gold_candidates(
         )
         candidates.extend(boths)
         by_template[BOTH_POPULATION_TEMPLATE] = len(boths)
+    # Opt-in learner_intent arms (each stamps learner_intent + expected_behavior).
+    for intent in _INTENT_ARMS:
+        if intent in selected:
+            ids = mine_intent_chunks(intent, chunks_by_id)[:max(0, intent_cap)]
+            arm_cands = draft_intent_candidates(
+                intent, ids, chunks_by_id, client=client,
+                model_id=model_id, capture=capture,
+            )
+            candidates.extend(arm_cands)
+            by_template[intent] = len(arm_cands)
+    if INTENT_COMPARATIVE in selected:
+        cmp_pairs = mine_comparative_pairs(chunks_by_id, max_pairs=max(0, intent_cap))
+        cmp_cands = draft_comparative_candidates(
+            cmp_pairs, chunks_by_id, client=client, model_id=model_id, capture=capture
+        )
+        candidates.extend(cmp_cands)
+        by_template[INTENT_COMPARATIVE] = len(cmp_cands)
 
     existing = [
         str(q.get("question_text") or "")
         for q in (gold.get("questions") or [])
         if isinstance(q, dict)
     ]
-    screened = prescreen_candidates(candidates, chunks_by_id, existing_questions=existing)
+    screened = prescreen_candidates(
+        candidates, chunks_by_id, existing_questions=existing,
+        roundtrip_fn=roundtrip_fn,
+    )
     resolved_model = model_id or getattr(client, "model", "local")
     doc = build_candidates_doc(
         gold.get("course_slug", course_dir.name),
@@ -1756,8 +2787,13 @@ def _is_accepted(candidate: Dict[str, Any]) -> bool:
 
 
 def _strip_candidate_fields(candidate: Dict[str, Any]) -> Dict[str, Any]:
-    """Drop candidate-only fields (prescreen, draft_error) for the gold doc."""
-    out = {k: v for k, v in candidate.items() if k not in ("prescreen", "draft_error")}
+    """Drop candidate-only fields (prescreen, draft_error, and the phrasing
+    paraphraser's ``derived_from_gold_question_id`` provenance link) for the gold
+    doc — the gold question schema is ``additionalProperties:false``."""
+    out = {
+        k: v for k, v in candidate.items()
+        if k not in ("prescreen", "draft_error", "derived_from_gold_question_id")
+    }
     return out
 
 
@@ -1910,9 +2946,18 @@ __all__ = [
     "DEFINITION_TEMPLATE",
     "WORKED_EXAMPLE_TEMPLATE",
     "BOTH_POPULATION_TEMPLATE",
+    "INTENT_CONCEPTUAL_WHY",
+    "INTENT_COMPARATIVE",
+    "INTENT_EXAMPLE_SEEKING",
+    "INTENT_NOTATION_SYMBOL",
+    "INTENT_WORD_PROBLEM",
+    "PHRASING_MALFORMED_TEMPLATE",
+    "PHRASING_COLLOQUIAL_TEMPLATE",
+    "ENV_ROUNDTRIP_ENGINE",
     "SampleSlot",
     "GlossarySeed",
     "BothPopulationPair",
+    "ComparativePair",
     "PrescreenVerdict",
     "PromoteReport",
     "GoldDraftError",
@@ -1925,6 +2970,19 @@ __all__ = [
     "draft_worked_example_candidates",
     "mine_both_population_pairs",
     "draft_both_population_candidates",
+    "mine_conceptual_why_chunks",
+    "mine_example_chunks",
+    "mine_notation_chunks",
+    "mine_word_problem_chunks",
+    "mine_intent_chunks",
+    "draft_intent_candidates",
+    "mine_comparative_pairs",
+    "draft_comparative_candidates",
+    "make_malformed_variant",
+    "paraphrase_malformed",
+    "paraphrase_colloquial",
+    "make_roundtrip_filter",
+    "resolve_roundtrip_engine",
     "prescreen_candidate",
     "prescreen_candidates",
     "build_candidates_doc",

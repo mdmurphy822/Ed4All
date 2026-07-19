@@ -188,8 +188,12 @@ def test_eval_schema_bumped_to_1_1():
     # headline.computational_numeric_check (W1.9 / W1.8 roll-up).
     # 1.6 (additive) added headline.phrasing_breakdown (per-learner-phrasing
     # answerability slice: canonical / colloquial / malformed).
+    # 1.7 (additive) added the two-axis headline.abstention scorer + Wilson CIs +
+    # top-level flag_config + citation_recall + groundedness_rate_micro; and
+    # RE-SEMANTICS'd headline.citation_precision to the per-question macro average
+    # (legacy pooled → headline.citation_precision_legacy).
     # The report schema_version moves with it.
-    assert EVAL_SCHEMA_VERSION == "1.6"
+    assert EVAL_SCHEMA_VERSION == "1.7"
 
 
 def test_gold_pin_block_carries_section4_fields(v1_1_course):
@@ -287,7 +291,7 @@ def test_report_json_round_trips(v1_1_course):
     )
     written = Path(report["_written"]["report_path"])
     doc = json.loads(written.read_text(encoding="utf-8"))
-    assert doc["schema_version"] == "1.6"
+    assert doc["schema_version"] == "1.7"
     assert doc["gold"]["question_count"] == 2
     assert "key_point_coverage" in doc["questions"][0]
     assert "part_coverage" in doc["questions"][1]

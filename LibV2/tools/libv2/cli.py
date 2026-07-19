@@ -3528,6 +3528,41 @@ def answer_eval(ctx, course: str, engine: str, limit: int, no_groundedness: bool
     sys.exit(eval_arms_main(argv))
 
 
+@main.command("answer-eval-diff")
+@click.argument("old_report", type=click.Path(exists=True, dir_okay=False))
+@click.argument("new_report", type=click.Path(exists=True, dir_okay=False))
+@click.option("--tolerance-pp", type=float, default=5.0,
+              help="regression tolerance in percentage points (default: 5.0)")
+@click.option("--json", "as_json", is_flag=True,
+              help="emit the machine-readable diff shape instead of the table")
+@click.pass_context
+def answer_eval_diff(ctx, old_report: str, new_report: str,
+                     tolerance_pp: float, as_json: bool):
+    """Diff two grounded_answer_eval_<ts>.json reports (regression check).
+
+    Thin delegation to ``python -m lib.retrieval.grounded_eval_diff`` (same
+    logic, one CLI). Compares headline rates (answer_rate, groundedness
+    macro/micro, citation metrics, refusal/abstention rates) plus the
+    per-phrasing + per-category diagnostic buckets, prints a delta table with
+    regression highlighting, and exits 1 on any PINNED regression beyond
+    ``--tolerance-pp`` (0 otherwise). Diagnostic buckets are informational and
+    never drive the exit code. A changed ``ED4ALL_ANSWER_*`` flag stamp (when
+    present in the report headers) is surfaced as a config-diff section so a
+    config-attributable delta is not misread as a regression.
+
+    \b
+    Example:
+        libv2 answer-eval-diff old.json new.json --tolerance-pp 5.0
+        libv2 answer-eval-diff old.json new.json --json
+    """
+    from lib.retrieval.grounded_eval_diff import main as grounded_eval_diff_main
+
+    argv = [old_report, new_report, "--tolerance-pp", str(tolerance_pp)]
+    if as_json:
+        argv.append("--json")
+    sys.exit(grounded_eval_diff_main(argv))
+
+
 @main.command("refusal-calibrate")
 @click.option("--course", "-c", required=True, help="Course slug to calibrate")
 @click.option("--engine", type=click.Choice(["lexical", "semantic", "hybrid-rrf"]),

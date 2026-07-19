@@ -17,24 +17,42 @@ from lib.retrieval.gold_authoring import (
     BOTH_POPULATION_TEMPLATE,
     DEFINITION_TEMPLATE,
     GOLD_AUTHORING_PROMPT_VERSION,
+    INTENT_COMPARATIVE,
+    INTENT_CONCEPTUAL_WHY,
+    INTENT_EXAMPLE_SEEKING,
+    INTENT_NOTATION_SYMBOL,
+    INTENT_WORD_PROBLEM,
     WORKED_EXAMPLE_TEMPLATE,
     GoldPromoteError,
     PrescreenVerdict,
     build_candidates_doc,
     draft_both_population_candidates,
     draft_candidates,
+    draft_comparative_candidates,
     draft_definition_candidates,
+    draft_intent_candidates,
     draft_worked_example_candidates,
     generate_gold_candidates,
+    make_malformed_variant,
+    make_roundtrip_filter,
     mine_both_population_pairs,
+    mine_comparative_pairs,
+    mine_conceptual_why_chunks,
+    mine_example_chunks,
     mine_glossary_terms,
+    mine_notation_chunks,
+    mine_word_problem_chunks,
     mine_worked_example_chunks,
+    paraphrase_colloquial,
+    paraphrase_malformed,
     prescreen_candidate,
     prescreen_candidates,
     promote_candidates_into_gold,
+    resolve_roundtrip_engine,
     sample_chunks,
     _build_type_plan,
     _difficulty_heuristic,
+    _strip_candidate_fields,
 )
 from lib.retrieval.gold_set import chunk_content_sha256
 
@@ -763,3 +781,376 @@ def test_draft_both_population_capture_fires_dynamic():
     assert BOTH_POPULATION_TEMPLATE in ev[0]["rationale"]
     assert "crs1+src1" in ev[0]["rationale"]
     assert len(ev[0]["rationale"]) >= 20
+
+
+# --------------------------------------------------------------- intent arms
+
+
+_WHY_TEXT = (
+    "Fractions must share a common denominator before addition because you can "
+    "only combine parts that are the same size; the reason is the unit must match."
+)
+_NOTATION_TEXT = (
+    "The slope of a line is written m = (y2 - y1) / (x2 - x1) and satisfies "
+    "m ≤ 1 for a gentle incline; the ± sign marks direction."
+)
+_WORDPROB_TEXT = (
+    "A cyclist rides 30 miles in 2 hours. How many miles does she travel per "
+    "hour on average, and how far will she go in 5 hours at that rate?"
+)
+_EXAMPLE_TEXT = (
+    "For example, to add 2/3 and 1/6 you first rewrite 2/3 as 4/6, then add to "
+    "get 5/6, which is already in lowest terms."
+)
+
+
+def _why_chunk(cid="why1"):
+    return _chunk(cid, _WHY_TEXT, item_path="week_01/why.html", los=["co-01"])
+
+
+def test_mine_intent_miners_match_shapes():
+    chunks = {
+        "why1": _why_chunk(),
+        "not1": _chunk("not1", _NOTATION_TEXT, item_path="week_02/n.html"),
+        "wp1": _chunk("wp1", _WORDPROB_TEXT, item_path="week_03/w.html"),
+        "ex1": _chunk("ex1", _EXAMPLE_TEXT, item_path="week_01/e.html",
+                      chunk_type="example"),
+        "plain": _chunk("plain", "A short neutral sentence with no cues.",
+                        item_path="week_04/p.html"),
+    }
+    assert mine_conceptual_why_chunks(chunks) == ["why1"]
+    assert mine_notation_chunks(chunks) == ["not1"]
+    assert mine_word_problem_chunks(chunks) == ["wp1"]
+    assert "ex1" in mine_example_chunks(chunks)
+    assert "plain" not in mine_conceptual_why_chunks(chunks)
+
+
+def test_draft_intent_conceptual_why_shape_and_stamp():
+    chunks = {"why1": _why_chunk()}
+    quote = "you can only combine parts that are the same size"
+    client = FakeDraftClient([_draft_json(
+        q="Why must fractions share a common denominator before adding?",
+        quote=quote, kps=("same size parts", "unit must match"))])
+    cands = draft_intent_candidates(
+        INTENT_CONCEPTUAL_WHY, ["why1"], chunks, client=client)
+    assert len(cands) == 1
+    c = cands[0]
+    assert c["learner_intent"] == INTENT_CONCEPTUAL_WHY
+    assert c["expected_behavior"] == "answer_grounded"
+    assert c["question_type"] == "conceptual_synthesis"
+    assert c["authoring"]["template"] == INTENT_CONCEPTUAL_WHY
+    assert prescreen_candidate(c, chunks).passed
+
+
+def test_draft_intent_capture_fires_dynamic():
+    chunks = {"why1": _why_chunk()}
+    quote = "you can only combine parts that are the same size"
+    cap = SpyCapture()
+    draft_intent_candidates(
+        INTENT_CONCEPTUAL_WHY, ["why1"], chunks,
+        client=FakeDraftClient([_draft_json(quote=quote)]), capture=cap)
+    ev = [e for e in cap.events if e["decision_type"] == "gold_candidate_authoring"]
+    assert len(ev) == 1
+    assert INTENT_CONCEPTUAL_WHY in ev[0]["rationale"]
+    assert "why1" in ev[0]["rationale"]
+    assert len(ev[0]["rationale"]) >= 20
+
+
+def test_draft_intent_records_parse_failure():
+    chunks = {"why1": _why_chunk()}
+    cands = draft_intent_candidates(
+        INTENT_NOTATION_SYMBOL, ["why1"], chunks,
+        client=FakeDraftClient(["not json"]))
+    assert cands and "draft_error" in cands[0]
+    assert cands[0]["learner_intent"] == INTENT_NOTATION_SYMBOL
+    assert cands[0]["expected_behavior"] == "answer_grounded"
+
+
+def test_word_problem_numeric_prescreen_accepts_shared_number():
+    chunks = {"wp1": _chunk("wp1", _WORDPROB_TEXT, item_path="week_03/w.html")}
+    # numeric-literal quote (not a 40-char verbatim span); shares 30 with chunk.
+    client = FakeDraftClient([_draft_json(
+        q="How many miles does the cyclist travel per hour?",
+        quote="30 miles in 2 hours", kps=("30 miles", "2 hours"))])
+    c = draft_intent_candidates(
+        INTENT_WORD_PROBLEM, ["wp1"], chunks, client=client)[0]
+    assert c["expected_behavior"] == "answer_computational"
+    v = prescreen_candidate(c, chunks)
+    assert v.passed, v.reasons
+
+
+def test_word_problem_numeric_prescreen_rejects_no_numeric():
+    chunks = {"wp1": _chunk("wp1", _WORDPROB_TEXT, item_path="week_03/w.html")}
+    c = draft_intent_candidates(
+        INTENT_WORD_PROBLEM, ["wp1"], chunks,
+        client=FakeDraftClient([_draft_json(
+            q="How far does the cyclist go?", quote="she travels quite far")]))[0]
+    v = prescreen_candidate(c, chunks)
+    assert not v.passed
+    assert "QUOTE_NO_NUMERIC" in v.reasons
+
+
+def test_word_problem_numeric_prescreen_rejects_number_not_in_chunk():
+    chunks = {"wp1": _chunk("wp1", _WORDPROB_TEXT, item_path="week_03/w.html")}
+    c = draft_intent_candidates(
+        INTENT_WORD_PROBLEM, ["wp1"], chunks,
+        client=FakeDraftClient([_draft_json(
+            q="How far does the cyclist go?", quote="a value of 999 units")]))[0]
+    v = prescreen_candidate(c, chunks)
+    assert "NUMERIC_NOT_IN_CHUNK" in v.reasons
+
+
+# --------------------------------------------------------------- comparative arm
+
+
+def _comparative_chunks():
+    a = _chunk("cmpA", "A prime number has exactly two distinct positive "
+               "divisors: one and itself.", item_path="week_01/p.html",
+               los=["co-01"], tags=["prime number"])
+    b = _chunk("cmpB", "A composite number has more than two positive divisors "
+               "and factors into a product of primes.", item_path="week_02/c.html",
+               los=["co-02"], tags=["composite number"])
+    return {"cmpA": a, "cmpB": b}
+
+
+def _comparative_draft():
+    return json.dumps({
+        "question_text": "How does a prime number differ from a composite number?",
+        "expected_key_points": ["two divisors", "more than two divisors"],
+        "quote_a": "A prime number has exactly two distinct positive divisors: one and itself.",
+        "quote_b": "A composite number has more than two positive divisors and factors into a product of primes.",
+    })
+
+
+def test_mine_comparative_pairs_distinct_concepts_shared_vocab():
+    pairs = mine_comparative_pairs(_comparative_chunks())
+    assert len(pairs) == 1
+    assert pairs[0].chunk_a_id == "cmpA" and pairs[0].chunk_b_id == "cmpB"
+    assert pairs[0].shared >= 2
+
+
+def test_mine_comparative_pairs_skips_same_concept():
+    chunks = {
+        "a": _chunk("a", "A prime number has two divisors here.",
+                    item_path="w1/a.html", tags=["prime number"]),
+        "b": _chunk("b", "A prime number is only divisible by one and itself.",
+                    item_path="w1/b.html", tags=["prime number"]),
+    }
+    assert mine_comparative_pairs(chunks) == []
+
+
+def test_draft_comparative_two_passage_and_stamp():
+    chunks = _comparative_chunks()
+    pairs = mine_comparative_pairs(chunks)
+    cands = draft_comparative_candidates(
+        pairs, chunks, client=FakeDraftClient([_comparative_draft()]))
+    assert len(cands) == 1
+    c = cands[0]
+    assert c["learner_intent"] == INTENT_COMPARATIVE
+    assert c["expected_behavior"] == "answer_grounded"
+    assert c["question_type"] == "conceptual_synthesis"
+    assert c["authoring"]["template"] == INTENT_COMPARATIVE
+    refs = [(p["chunk_id"], p["relevance"]) for p in c["relevant_passages"]]
+    assert ("cmpA", "primary") in refs and ("cmpB", "supporting") in refs
+    assert prescreen_candidate(c, chunks).passed, prescreen_candidate(c, chunks).reasons
+
+
+def test_draft_comparative_supporting_quote_must_anchor():
+    chunks = _comparative_chunks()
+    pairs = mine_comparative_pairs(chunks)
+    bad = json.dumps({
+        "question_text": "How does a prime differ from a composite number?",
+        "expected_key_points": ["two", "more"],
+        "quote_a": "A prime number has exactly two distinct positive divisors: one and itself.",
+        "quote_b": "a string absent from the second chunk entirely here",
+    })
+    c = draft_comparative_candidates(pairs, chunks, client=FakeDraftClient([bad]))[0]
+    v = prescreen_candidate(c, chunks)
+    assert not v.passed
+    assert "SUPPORTING_QUOTE_NOT_IN_CHUNK" in v.reasons
+
+
+def test_draft_comparative_capture_fires():
+    chunks = _comparative_chunks()
+    pairs = mine_comparative_pairs(chunks)
+    cap = SpyCapture()
+    draft_comparative_candidates(
+        pairs, chunks, client=FakeDraftClient([_comparative_draft()]), capture=cap)
+    ev = [e for e in cap.events if e["decision_type"] == "gold_candidate_authoring"]
+    assert len(ev) == 1
+    assert INTENT_COMPARATIVE in ev[0]["rationale"]
+    assert "cmpA+cmpB" in ev[0]["rationale"]
+
+
+# --------------------------------------------------------------- paraphraser
+
+
+def _canonical_question():
+    return {
+        "question_id": "gq-demo-0007",
+        "question_text": "What must fractions share before they can be added together?",
+        "question_type": "factual_recall",
+        "objective_refs": ["co-01"],
+        "expected_key_points": ["a common denominator"],
+        "relevant_passages": [{
+            "chunk_id": "c001", "relevance": "primary",
+            "anchor": {"item_path": "week_01/a.html",
+                       "text_quote": _TEXT_B, "content_sha256": "deadbeef"}}],
+    }
+
+
+def test_paraphrase_malformed_deterministic_and_differs():
+    q = _canonical_question()
+    a = paraphrase_malformed([q], seed=3)
+    b = paraphrase_malformed([q], seed=3)
+    assert [x["question_text"] for x in a] == [x["question_text"] for x in b]
+    assert a[0]["question_text"] != q["question_text"]
+    assert a[0]["phrasing"] == "malformed"
+    # relevant_passages preserved verbatim (retrieval target unchanged).
+    assert a[0]["relevant_passages"] == q["relevant_passages"]
+    assert a[0]["derived_from_gold_question_id"] == "gq-demo-0007"
+
+
+def test_make_malformed_variant_never_too_short():
+    for seed in range(6):
+        v = make_malformed_variant("What is a set?", seed=seed)
+        assert len(v) >= 10
+
+
+def test_paraphrase_malformed_variant_survives_prescreen():
+    q = _canonical_question()
+    chunks = {"c001": _chunk("c001", _TEXT_B, item_path="week_01/a.html")}
+    variant = paraphrase_malformed([q], seed=1)[0]
+    # A phrasing variant is a near-duplicate of its canonical BY DESIGN — the
+    # near-dup check is skipped, and the copied quote anchors.
+    v = prescreen_candidate(variant, chunks, prior_questions=[q["question_text"]])
+    assert v.passed, v.reasons
+
+
+def test_paraphrase_colloquial_accepts_on_target():
+    q = _canonical_question()
+    resp = json.dumps({"question": "what do fractions have to share before they can be added"})
+    cap = SpyCapture()
+    out = paraphrase_colloquial([q], client=FakeDraftClient([resp]), capture=cap)
+    assert len(out) == 1
+    assert out[0]["phrasing"] == "colloquial"
+    assert out[0]["authoring"]["method"] == "llm_assisted"
+    assert out[0]["relevant_passages"] == q["relevant_passages"]
+    ev = [e for e in cap.events if e["decision_type"] == "gold_candidate_authoring"]
+    assert len(ev) == 1
+    assert len(ev[0]["rationale"]) >= 20
+
+
+def test_paraphrase_colloquial_rejects_off_target():
+    q = _canonical_question()
+    resp = json.dumps({"question": "how do you bake a chocolate cake from scratch"})
+    out = paraphrase_colloquial([q], client=FakeDraftClient([resp]))
+    assert out == []
+
+
+def test_paraphrase_colloquial_strips_provenance_on_promote():
+    q = _canonical_question()
+    resp = json.dumps({"question": "what do fractions have to share before they can be added up"})
+    out = paraphrase_colloquial([q], client=FakeDraftClient([resp]))
+    stripped = _strip_candidate_fields(out[0])
+    assert "derived_from_gold_question_id" not in stripped
+
+
+# --------------------------------------------------------------- round-trip
+
+
+def _fake_retrieve(top_by_query):
+    class _R:
+        def __init__(self, cid):
+            self.chunk_id = cid
+    def _fn(libv2_root, query, *, course_slug, engine, limit):
+        return [_R(cid) for cid in top_by_query.get(engine, [])][:limit]
+    return _fn
+
+
+def test_roundtrip_filter_accepts_when_chunk_in_topk():
+    chunks = {"c001": _chunk("c001", _TEXT_A, item_path="week_01/a.html")}
+    cand = draft_candidates(
+        sample_chunks(chunks, n=1, seed=0), chunks,
+        client=FakeDraftClient([_draft_json()]))[0]
+    rt = make_roundtrip_filter(
+        _fake_retrieve({"lexical": ["zzz", "c001", "yyy"]}),
+        Path("/x"), "demo", engine="lexical")
+    v = prescreen_candidate(cand, chunks, roundtrip_fn=rt)
+    assert v.passed, v.reasons
+
+
+def test_roundtrip_filter_rejects_when_chunk_absent():
+    chunks = {"c001": _chunk("c001", _TEXT_A, item_path="week_01/a.html")}
+    cand = draft_candidates(
+        sample_chunks(chunks, n=1, seed=0), chunks,
+        client=FakeDraftClient([_draft_json()]))[0]
+    rt = make_roundtrip_filter(
+        _fake_retrieve({"lexical": ["aaa", "bbb"]}),
+        Path("/x"), "demo", engine="lexical")
+    v = prescreen_candidate(cand, chunks, roundtrip_fn=rt)
+    assert not v.passed
+    assert "ROUNDTRIP_MISS" in v.reasons
+
+
+def test_roundtrip_engine_env_default(monkeypatch):
+    monkeypatch.delenv("ED4ALL_GOLD_ROUNDTRIP_ENGINE", raising=False)
+    assert resolve_roundtrip_engine() == "lexical"
+    monkeypatch.setenv("ED4ALL_GOLD_ROUNDTRIP_ENGINE", "hybrid-rrf")
+    assert resolve_roundtrip_engine() == "hybrid-rrf"
+    monkeypatch.setenv("ED4ALL_GOLD_ROUNDTRIP_ENGINE", "garbage")
+    assert resolve_roundtrip_engine() == "lexical"
+
+
+def test_roundtrip_filter_fails_closed_on_retriever_error():
+    chunks = {"c001": _chunk("c001", _TEXT_A, item_path="week_01/a.html")}
+    cand = draft_candidates(
+        sample_chunks(chunks, n=1, seed=0), chunks,
+        client=FakeDraftClient([_draft_json()]))[0]
+
+    def _boom(libv2_root, query, *, course_slug, engine, limit):
+        raise RuntimeError("no index")
+
+    rt = make_roundtrip_filter(_boom, Path("/x"), "demo", engine="lexical")
+    v = prescreen_candidate(cand, chunks, roundtrip_fn=rt)
+    assert "ROUNDTRIP_MISS" in v.reasons
+
+
+def test_generate_gold_candidates_intent_arm_opt_in(tmp_path):
+    """Selecting an intent arm runs it, records its per-template count, and
+    stamps learner_intent; the default template set stays byte-identical."""
+    slug = "demo-union-101"
+    cdir = tmp_path / "courses" / slug
+    (cdir / "corpus").mkdir(parents=True)
+    chunks = {"why1": _why_chunk("why1")}
+    chunks_path = cdir / "corpus" / "chunks.jsonl"
+    with chunks_path.open("w") as fh:
+        for c in chunks.values():
+            fh.write(json.dumps(c) + "\n")
+    from lib.utils import sha256_file
+    sha = sha256_file(chunks_path)
+    gold = {
+        "schema_version": "1.1", "course_slug": slug,
+        "chunkset": {"kind": "corpus", "chunks_path": "corpus/chunks.jsonl",
+                     "chunks_sha256": sha},
+        "authored_at": "2026-06-11T00:00:00Z", "frozen": False,
+        "questions": [{
+            "question_id": f"gq-{slug}-0001", "question_type": "factual_recall",
+            "question_text": "seed question about fractions here?",
+            "relevant_passages": [{"chunk_id": "why1", "relevance": "primary",
+                "anchor": {"item_path": "week_01/why.html",
+                           "text_quote": chunks["why1"]["text"][:50]}}],
+            "authoring": {"method": "manual", "author": "@t",
+                          "reviewed_by": "@r", "status": "reviewed"}}],
+    }
+    (cdir / "retrieval_eval").mkdir(parents=True)
+    (cdir / "retrieval_eval" / "gold_set.json").write_text(json.dumps(gold))
+    quote = "you can only combine parts that are the same size"
+    doc, _ = generate_gold_candidates(
+        cdir, client=FakeDraftClient([_draft_json(
+            q="Why must fractions share a denominator before adding?", quote=quote)]),
+        capture=SpyCapture(), templates=[INTENT_CONCEPTUAL_WHY])
+    bt = doc["authoring_run"]["by_template"]
+    assert INTENT_CONCEPTUAL_WHY in bt and "stratified" not in bt
+    intents = {c.get("learner_intent") for c in doc["candidates"]}
+    assert intents == {INTENT_CONCEPTUAL_WHY}

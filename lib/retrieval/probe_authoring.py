@@ -15,14 +15,17 @@ operator). Three probe categories:
     (:data:`OOS_DETAIL_TEMPLATES`) over accepted/draft gold questions; each
     carries ``derived_from_gold_question_id``.
 
-A fourth category, ``ill_posed``, exists in the taxonomy (refusal_probes
-schema v1.1 enum + the ``_is_refusal_question`` category set) but is NOT
-auto-drafted here: it is a near-domain question referencing a non-existent or
-self-contradictory concept whose vocabulary sounds algebraic (e.g. "the least
-common factor of 95", "the largest common multiple of 6 and 8"). A correct
-system must refuse / correct the premise rather than answer a neighbouring real
-concept, so these are hand-authored (surfaced by real GUI learner phrasing) and
-verified with the same read-only dry-run evidence.
+A fourth category, ``ill_posed`` (refusal_probes schema v1.1 enum +
+``expected_outcome=correct_premise``), IS auto-composed here — DETERMINISTICALLY,
+no LLM (:func:`ill_posed_candidates`): a near-domain question referencing a
+non-existent or self-contradictory concept whose vocabulary sounds algebraic
+(e.g. "the least common factor of 18 and 24", "the discriminant of a linear
+equation"). It is composed from a fixed swapped-concept bank
+(:data:`ILL_POSED_BANK`) filtered to the entries whose concept vocabulary
+OVERLAPS the course's ``concept_tags`` term inventory (the near-domain gate), so
+the probe is a plausible in-vocabulary trap. A correct system must CORRECT the
+premise rather than answer a neighbouring real concept. Verified with the same
+read-only dry-run evidence as the other categories.
 
 For EVERY probe candidate the tool auto-runs the read-only retrieval dry-run
 PER ENGINE (lexical / semantic / hybrid-rrf) via the existing ``retrieve_chunks``
@@ -65,11 +68,17 @@ _TOP_PASSAGE_EXCERPT_CHARS = 240
 # ``off_topic``): the model invents wholly-unrelated-discipline questions
 # (cooking / geography / pop culture) rather than drawing from the fixed bank,
 # so the off-topic negatives are not pinned to one hand-authored list.
+# ``ill_posed`` is the DETERMINISTIC false-premise arm (no LLM): near-domain
+# questions referencing a non-existent / self-contradictory concept whose
+# vocabulary merely sounds algebraic ('the least common factor of 95'). A
+# correct system must CORRECT the premise (expected_outcome=correct_premise)
+# rather than answer a neighbouring real concept.
 _PROBE_TARGET = {
     "off_topic": 8,
     "off_topic_llm": 10,
     "adjacent_domain": 10,
     "out_of_scope_detail": 7,
+    "ill_posed": 6,
 }
 
 
@@ -248,6 +257,127 @@ def out_of_scope_detail_candidates(
                 "authoring": {
                     "method": "manual",
                     "author": f"oos-perturb/{PROBE_AUTHORING_PROMPT_VERSION}",
+                    "reviewed_by": "PENDING_REVIEW",
+                    "status": "draft",
+                },
+            }
+        )
+    return out
+
+
+# ---------------------------------------------------------------- ill_posed
+#
+# Deterministic (no LLM) near-domain FALSE-PREMISE probes. Each references a
+# non-existent / self-contradictory concept whose vocabulary merely SOUNDS
+# algebraic (swapped concept pairs — 'least common factor', 'greatest common
+# multiple', 'discriminant of a linear equation'). A correct system must CORRECT
+# the premise rather than answer a neighbouring real concept, so these carry
+# ``expected_outcome=correct_premise`` (refusal_probes schema v1.1). They are
+# NEAR-domain: emitted only when their concept vocabulary OVERLAPS the course's
+# own term inventory (the composed-from-term-inventories contract), so the probe
+# is a plausible in-vocabulary trap, not a wholly off-topic question. When the
+# corpus exposes no ``concept_tags`` vocabulary the whole bank is eligible.
+#
+# Each entry: (question_text, why_unanswerable, needle_tokens). ``needle_tokens``
+# are the domain words the near-domain gate matches against the course vocab.
+ILL_POSED_BANK: Tuple[Tuple[str, str, Tuple[str, ...]], ...] = (
+    (
+        "What is the least common factor of 18 and 24?",
+        "'Least common factor' is not a real concept — the least common MULTIPLE "
+        "and the greatest common FACTOR are (a swapped concept pair). A correct "
+        "system corrects the premise rather than answering a neighbouring concept.",
+        ("common", "factor", "multiple"),
+    ),
+    (
+        "What is the greatest common multiple of 6 and 8?",
+        "'Greatest common multiple' is ill-posed (multiples grow without bound) — "
+        "the greatest common FACTOR and least common MULTIPLE are the real "
+        "concepts. A correct system corrects the false premise.",
+        ("common", "multiple", "factor"),
+    ),
+    (
+        "What is the discriminant of the linear equation 3x + 5 = 0?",
+        "A discriminant is defined for QUADRATIC equations, not linear ones; a "
+        "linear equation has no discriminant. A correct system corrects the "
+        "premise rather than inventing one.",
+        ("discriminant", "linear", "equation", "quadratic"),
+    ),
+    (
+        "What is the slope of the single point (2, 5)?",
+        "Slope is a property of a LINE (two points), not a single point; the "
+        "premise is self-contradictory. A correct system corrects it.",
+        ("slope", "point", "line"),
+    ),
+    (
+        "What is the prime factorization of the fraction 3/4?",
+        "Prime factorization is defined for positive INTEGERS, not fractions; the "
+        "premise references a non-existent object. A correct system corrects it.",
+        ("prime", "factorization", "fraction", "integer"),
+    ),
+    (
+        "What is the vertex of the linear function y = 2x + 1?",
+        "A vertex is a feature of a PARABOLA (a quadratic), not a linear "
+        "function, which is a straight line with no vertex. A correct system "
+        "corrects the premise.",
+        ("vertex", "linear", "function", "quadratic"),
+    ),
+    (
+        "What is the reciprocal of zero?",
+        "The reciprocal of zero is undefined (division by zero); the premise asks "
+        "for a value that does not exist. A correct system corrects it.",
+        ("reciprocal", "zero", "division"),
+    ),
+    (
+        "What is the degree of the variable in the constant term 7?",
+        "A constant term has no variable, so 'the degree of its variable' is "
+        "ill-posed. A correct system corrects the premise.",
+        ("degree", "variable", "constant", "term"),
+    ),
+)
+
+
+def _course_vocab_tokens(chunks_by_id: Dict[str, Dict[str, Any]]) -> set:
+    """Lowercased single-word tokens from the course ``concept_tags`` inventory
+    (tags split on non-alphanumerics) — the near-domain gate for ill_posed."""
+    toks: set = set()
+    for chunk in chunks_by_id.values():
+        for tag in chunk.get("concept_tags") or []:
+            if isinstance(tag, str):
+                for w in re.findall(r"[a-z]+", tag.lower()):
+                    toks.add(w)
+    return toks
+
+
+def ill_posed_candidates(
+    chunks_by_id: Dict[str, Dict[str, Any]], n: int
+) -> List[Dict[str, Any]]:
+    """Deterministic near-domain false-premise (``ill_posed``) probe candidates.
+
+    Composes from the fixed swapped-concept bank, filtered to the entries whose
+    concept vocabulary OVERLAPS the course's ``concept_tags`` term inventory
+    (near-domain gate; the whole bank is eligible when the corpus exposes no
+    vocabulary). Each carries ``expected_outcome=correct_premise``. Bank order,
+    deterministic. Returns up to ``n``."""
+    if n <= 0:
+        return []
+    vocab = _course_vocab_tokens(chunks_by_id)
+    out: List[Dict[str, Any]] = []
+    for question_text, why, needles in ILL_POSED_BANK:
+        if len(out) >= n:
+            break
+        # Near-domain gate: at least one concept token present in the course
+        # vocabulary. Empty vocabulary => whole bank eligible (no gate).
+        if vocab and not (set(needles) & vocab):
+            continue
+        out.append(
+            {
+                "question_text": question_text,
+                "category": "ill_posed",
+                "expected_outcome": "correct_premise",
+                "why_unanswerable": why,
+                "authoring": {
+                    "method": "manual",
+                    "author": f"ill-posed-composer/{PROBE_AUTHORING_PROMPT_VERSION}",
                     "reviewed_by": "PENDING_REVIEW",
                     "status": "draft",
                 },
@@ -647,6 +777,9 @@ def generate_probe_candidates(
             tgt.get("out_of_scope_detail", 0),
         )
     )
+    candidates.extend(
+        ill_posed_candidates(chunks_by_id, tgt.get("ill_posed", 0))
+    )
 
     candidates = attach_dry_runs(
         candidates, retrieve_fn=retrieve_fn, libv2_root=libv2_root,
@@ -669,11 +802,13 @@ __all__ = [
     "PROBE_AUTHORING_PROMPT_VERSION",
     "OFF_TOPIC_BANK",
     "OOS_DETAIL_TEMPLATES",
+    "ILL_POSED_BANK",
     "DryRunEvidence",
     "run_dry_runs",
     "off_topic_candidates",
     "off_topic_llm_candidates",
     "out_of_scope_detail_candidates",
+    "ill_posed_candidates",
     "adjacent_domain_candidates",
     "attach_dry_runs",
     "build_probe_candidates_doc",

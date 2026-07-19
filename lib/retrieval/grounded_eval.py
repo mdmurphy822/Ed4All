@@ -29,8 +29,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import sys
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -45,6 +47,7 @@ from lib.retrieval.gold_set import (
     _load_chunks_by_id,
     has_critical_issues,
     load_gold_set,
+    question_expected_behavior,
     question_phrasing,
 )
 
@@ -88,7 +91,34 @@ from lib.retrieval.gold_set import (
 #: and malformed-but-reasonable learner questions (surfaced by real GUI testing)
 #: pass, not only the well-formed textbook phrasings. Diagnostic, NOT a pinned
 #: milestone.
-EVAL_SCHEMA_VERSION = "1.6"
+#: ``EVAL_SCHEMA_VERSION`` 1.6 → 1.7 (additive only — every 1.6 key unchanged;
+#: eval-expansion two-axis abstention wave):
+#:   * NEW ``headline.abstention`` — a two-axis scorer classifying each item's
+#:     observed outcome {answered, premise_corrected, refused, blocked,
+#:     composer_exhausted} against its expected axis {answerable, false_premise,
+#:     unanswerable}, with an outcome matrix, ``premise_correction_rate``, and
+#:     ``corrected_refusal`` recall/precision. ``premise_corrected`` on a
+#:     false-premise item that ANSWERED is detected by a local-LLM GEval-style
+#:     judge (FreshQA rule: credited only when the answer flags the false
+#:     premise). The legacy ``headline.refusal`` block is UNCHANGED (marked
+#:     legacy via a ``_note``) for comparability.
+#:   * NEW 95% Wilson score intervals (``*_ci``) on every rate in
+#:     ``phrasing_breakdown``, the abstention block, and the new per-category
+#:     probe stats (``headline.refusal.by_category``); any bucket n<30 is
+#:     stamped ``"basis": "diagnostic"``.
+#:   * NEW top-level ``flag_config`` — the resolved ``ED4ALL_ANSWER_*`` +
+#:     eval-judge env config, so a stored eval report is attributable.
+#:   * CITATION SEMANTICS: ``headline.citation_precision`` is now the
+#:     supported-over-CITED PER-QUESTION macro average (mean over questions that
+#:     emitted ≥1 citation of relevant/emitted). The legacy POOLED number moves
+#:     to ``headline.citation_precision_legacy`` (cross-run comparability). NEW
+#:     ``headline.citation_recall`` = cited-over-required macro average over
+#:     answered questions pinning ≥1 relevant passage (single-passage questions
+#:     contribute 1.0-or-0.0 — stated honestly in the field docs).
+#:   * NEW ``headline.groundedness_rate_micro`` — the claim-weighted micro
+#:     average (entailed/scored) promoted to a first-class headline field next
+#:     to the macro mean.
+EVAL_SCHEMA_VERSION = "1.7"
 RETRIEVAL_EVAL_SUBDIR = "retrieval_eval"
 
 #: Progress-writer arm name for the grounded eval (matches eval_arms.ARM_GROUNDED
@@ -514,9 +544,448 @@ def _load_probes(probes_path: Path) -> List[Dict[str, Any]]:
     return list(probes) if isinstance(probes, list) else []
 
 
+#: The valid refusal-probe expected_outcome enum + its default (refusal-probes
+#: schema v1.1, additive optional field). Absent / unrecognized → ``refuse`` (the
+#: outcome every legacy probe expects). ``correct_premise`` marks an ill_posed
+#: probe whose false premise a correct pipeline must correct rather than answer
+#: or refuse blankly.
+_PROBE_EXPECTED_OUTCOME_VALUES = ("refuse", "correct_premise")
+_DEFAULT_PROBE_EXPECTED_OUTCOME = "refuse"
+
+
+def probe_expected_outcome(probe: Dict[str, Any]) -> str:
+    """Return a refusal probe's expected_outcome, defaulting to ``refuse``.
+
+    A probe with no (or an unrecognized) ``expected_outcome`` field reads as
+    ``refuse`` — the outcome every legacy probe expects (back-compat: existing
+    probe sets carry no such field). ``correct_premise`` is the ill_posed
+    variant the eval can score separately."""
+    val = probe.get("expected_outcome") if isinstance(probe, dict) else None
+    return val if val in _PROBE_EXPECTED_OUTCOME_VALUES else _DEFAULT_PROBE_EXPECTED_OUTCOME
+
+
+# --------------------------------------------------------------------------- #
+# Two-axis abstention scorer + premise-correction judge (schema 1.7)
+# --------------------------------------------------------------------------- #
+
+#: Env overrides for the premise-correction judge backend. Both default to the
+#: answer backend's OWN resolution (``ED4ALL_ANSWER_PROVIDER`` / ``_MODEL`` →
+#: registry), so a run that pins neither routes the judge through the same
+#: loopback-only local seat the answer path uses. Loopback enforcement lives in
+#: ``answer_backend.resolve_answer_backend`` (a non-loopback resolved base_url
+#: raises); the judge inherits it for free.
+ENV_EVAL_JUDGE_PROVIDER = "ED4ALL_EVAL_JUDGE_PROVIDER"
+ENV_EVAL_JUDGE_MODEL = "ED4ALL_EVAL_JUDGE_MODEL"
+
+#: Expected-axis universe: the correct-handling class an item belongs to.
+_AXIS_ANSWERABLE = "answerable"
+_AXIS_FALSE_PREMISE = "false_premise"
+_AXIS_UNANSWERABLE = "unanswerable"
+_EXPECTED_AXES = (_AXIS_ANSWERABLE, _AXIS_FALSE_PREMISE, _AXIS_UNANSWERABLE)
+
+#: Observed-outcome universe.
+_OUTCOME_ANSWERED = "answered"
+_OUTCOME_PREMISE_CORRECTED = "premise_corrected"
+_OUTCOME_REFUSED = "refused"
+_OUTCOME_BLOCKED = "blocked"
+_OUTCOME_COMPOSER_EXHAUSTED = "composer_exhausted"
+_OBSERVED_OUTCOMES = (
+    _OUTCOME_ANSWERED,
+    _OUTCOME_PREMISE_CORRECTED,
+    _OUTCOME_REFUSED,
+    _OUTCOME_BLOCKED,
+    _OUTCOME_COMPOSER_EXHAUSTED,
+)
+
+
+@dataclass(frozen=True)
+class _JudgeVerdict:
+    """Result of the false-premise-correction judge on one answered item."""
+
+    corrected: bool
+    confidence: Optional[float]
+    raw: str
+
+
+def _gold_expected_axis(q: Dict[str, Any]) -> str:
+    """Classify a gold question onto the expected-abstention axis.
+
+    ``expected_behavior == "correct_premise"`` (v1.2) → false_premise; an
+    explicitly unanswerable / refusal-flagged question → unanswerable; else
+    answerable (gold sets are answerable by construction, so the default is
+    answerable and a legacy behavior-less gold set slices entirely there)."""
+    if question_expected_behavior(q) == "correct_premise":
+        return _AXIS_FALSE_PREMISE
+    if q.get("unanswerable") is True or q.get("is_refusal") is True:
+        return _AXIS_UNANSWERABLE
+    return _AXIS_ANSWERABLE
+
+
+_JUDGE_SYSTEM_PROMPT = (
+    "You are a strict evaluation judge. You are given a learner QUESTION that "
+    "is believed to contain a FALSE PREMISE (an assumption the course material "
+    "does not support, or contradicts) and a tutor's ANSWER. Decide ONE thing: "
+    "did the answer FLAG or CORRECT the false premise instead of going along "
+    "with it? Think step by step using the rubric, then emit a single JSON "
+    "object.\n"
+    "Rubric:\n"
+    "1. Identify the false premise embedded in the question.\n"
+    "2. Check whether the answer explicitly disputes, corrects, or flags that "
+    "premise (e.g. 'that is not accurate', 'the course actually says ...').\n"
+    "3. An answer that silently accepts the premise and answers as if it were "
+    "true does NOT correct it.\n"
+    'Return JSON only: {"reasoning": "<one sentence>", '
+    '"flags_false_premise": true|false, "confidence": <0.0-1.0>}.'
+)
+
+
+def _build_judge_messages(
+    question_text: str, answer_text: str, cited_texts: List[str]
+) -> List[Dict[str, str]]:
+    context = "\n".join(f"- {t}" for t in cited_texts if t) or "(no citations)"
+    user = (
+        f"QUESTION (believed to contain a false premise):\n{question_text}\n\n"
+        f"ANSWER:\n{answer_text}\n\n"
+        f"CITED COURSE PASSAGES:\n{context}\n\n"
+        "Did the answer flag or correct the false premise? Respond with the "
+        "JSON object only."
+    )
+    return [
+        {"role": "system", "content": _JUDGE_SYSTEM_PROMPT},
+        {"role": "user", "content": user},
+    ]
+
+
+def _parse_judge_response(raw: Any) -> Optional[Tuple[bool, Optional[float]]]:
+    """Lenient parse of the judge JSON envelope.
+
+    Returns ``(corrected, confidence)`` or ``None`` when nothing parseable was
+    returned (the caller then degrades the outcome to 'answered')."""
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    text = raw.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        nl = text.find("\n")
+        if nl != -1:
+            text = text[nl + 1:]
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    try:
+        obj = json.loads(text[start:end + 1])
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(obj, dict):
+        return None
+    flag = obj.get("flags_false_premise")
+    if isinstance(flag, str):
+        flag = flag.strip().lower() in ("true", "yes", "1")
+    corrected = bool(flag)
+    conf: Optional[float]
+    try:
+        conf = float(obj.get("confidence"))
+    except (TypeError, ValueError):
+        conf = None
+    if conf is not None:
+        conf = max(0.0, min(1.0, conf))
+    return corrected, conf
+
+
+def _emit_judge_decision(
+    capture: Any,
+    candidate: Dict[str, Any],
+    verdict: Optional[_JudgeVerdict],
+    error: Optional[str],
+) -> None:
+    """Emit the per-call judge decision-capture event (dynamic rationale).
+
+    This is the NEW LLM call site's mandatory capture (root CLAUDE.md § LLM
+    call-site instrumentation). Best-effort: a capture failure never aborts the
+    eval."""
+    item_id = candidate.get("item_id", "")
+    qprefix = (candidate.get("question_text") or "")[:80]
+    if verdict is None:
+        outcome = "degraded_to_answered"
+        conf_s = "n/a"
+        corrected_s = "unknown"
+    else:
+        outcome = (
+            "premise_corrected" if verdict.corrected else "answered_uncorrected"
+        )
+        conf_s = (
+            f"{verdict.confidence:.2f}"
+            if verdict.confidence is not None
+            else "n/a"
+        )
+        corrected_s = str(verdict.corrected)
+    rationale = (
+        f"False-premise correction judge on {candidate.get('kind', 'item')} "
+        f"{item_id!r} (q='{qprefix}'): flags_false_premise={corrected_s}, "
+        f"confidence={conf_s}, outcome={outcome}"
+        + (f"; judge_error={error}" if error else "")
+    )
+    try:
+        capture.log_decision(
+            decision_type="fresh_eval_invocation",
+            decision=outcome,
+            rationale=rationale,
+            context=str(candidate.get("kind") or ""),
+        )
+    except Exception:  # noqa: BLE001 — decision capture must never abort the eval
+        pass
+
+
+def _judge_premise_correction(
+    judge_client: Any, candidate: Dict[str, Any], capture: Optional[Any]
+) -> Optional[_JudgeVerdict]:
+    """Run the GEval-style false-premise-correction judge on ONE candidate.
+
+    Returns a :class:`_JudgeVerdict`, or ``None`` on ANY failure/timeout/parse
+    failure — the caller degrades that candidate's outcome to 'answered' with a
+    warning (the judge NEVER crashes the eval). Emits one decision-capture event
+    per call when a ``capture`` handle is threaded."""
+    messages = _build_judge_messages(
+        candidate["question_text"],
+        candidate.get("answer_text") or "",
+        candidate.get("cited_texts") or [],
+    )
+    raw: Any = ""
+    parsed: Optional[Tuple[bool, Optional[float]]] = None
+    error: Optional[str] = None
+    try:
+        raw = judge_client.chat_completion(
+            messages, max_tokens=256, temperature=0.0
+        )
+        parsed = _parse_judge_response(raw)
+    except Exception as exc:  # noqa: BLE001 — judge failure degrades gracefully
+        error = f"{type(exc).__name__}: {exc}"
+    verdict: Optional[_JudgeVerdict]
+    if parsed is None:
+        verdict = None
+    else:
+        corrected, conf = parsed
+        verdict = _JudgeVerdict(
+            corrected=corrected, confidence=conf, raw=str(raw)
+        )
+    if capture is not None:
+        _emit_judge_decision(capture, candidate, verdict, error)
+    return verdict
+
+
+def _resolve_judge_client(capture: Optional[Any]) -> Tuple[Optional[Any], Optional[Any]]:
+    """Build the loopback-only judge client via the answer-backend registry.
+
+    ``ED4ALL_EVAL_JUDGE_PROVIDER`` / ``_MODEL`` win when set, else the answer
+    backend's own resolution (``ED4ALL_ANSWER_*`` → registry). Returns
+    ``(client, resolved)`` or ``(None, None)`` on any resolution/build failure
+    (graceful degrade — every candidate then falls back to 'answered')."""
+    try:
+        from lib.retrieval.answer_backend import (
+            build_answer_client,
+            resolve_answer_backend,
+        )
+
+        provider = os.environ.get(ENV_EVAL_JUDGE_PROVIDER) or None
+        model = os.environ.get(ENV_EVAL_JUDGE_MODEL) or None
+        resolved = resolve_answer_backend(provider_name=provider, model_id=model)
+        client = build_answer_client(resolved, capture=capture, json_mode=True)
+        return client, resolved
+    except Exception:  # noqa: BLE001 — judge unavailable → degrade, never crash
+        return None, None
+
+
 # --------------------------------------------------------------------------- #
 # Metric arithmetic
 # --------------------------------------------------------------------------- #
+
+def _wilson_ci(successes: int, n: int, z: float = 1.96) -> Dict[str, Any]:
+    """95% Wilson score interval for a binomial proportion.
+
+    ``n < 30`` → ``"basis": "diagnostic"`` (too small to trust the point
+    estimate), else ``"sufficient"``. An empty basis (``n <= 0``) returns
+    ``lo``/``hi`` ``None`` — never a fabricated 0.0 interval.
+    """
+    if n <= 0:
+        return {"lo": None, "hi": None, "n": 0, "basis": "diagnostic"}
+    phat = successes / n
+    z2 = z * z
+    denom = 1.0 + z2 / n
+    center = (phat + z2 / (2 * n)) / denom
+    margin = (z * math.sqrt((phat * (1 - phat) + z2 / (4 * n)) / n)) / denom
+    return {
+        "lo": max(0.0, center - margin),
+        "hi": min(1.0, center + margin),
+        "n": n,
+        "basis": "diagnostic" if n < 30 else "sufficient",
+    }
+
+
+def _abstention_block(
+    records: List[Dict[str, Any]], judge_meta: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Two-axis abstention scorer (schema 1.7).
+
+    ``records`` = one row per gold question AND per probe:
+    ``{"expected_axis", "outcome"}``. Builds the expected-axis × observed-outcome
+    matrix, the premise-correction rate over false-premise items, and the
+    corrected-refusal recall/precision that credits BOTH a refusal and a
+    premise-correction as an acceptable decline. Every rate carries a Wilson CI.
+    Additive diagnostic — NOT a pinned milestone.
+    """
+    matrix = {
+        axis: {o: 0 for o in _OBSERVED_OUTCOMES} for axis in _EXPECTED_AXES
+    }
+    axis_totals = {axis: 0 for axis in _EXPECTED_AXES}
+    for r in records:
+        axis = r.get("expected_axis")
+        outcome = r.get("outcome")
+        if axis not in matrix:
+            continue
+        axis_totals[axis] += 1
+        if outcome in matrix[axis]:
+            matrix[axis][outcome] += 1
+
+    fp = matrix[_AXIS_FALSE_PREMISE]
+    un = matrix[_AXIS_UNANSWERABLE]
+    ans = matrix[_AXIS_ANSWERABLE]
+    fp_total = axis_totals[_AXIS_FALSE_PREMISE]
+    corrected = fp[_OUTCOME_PREMISE_CORRECTED]
+    premise_rate = (corrected / fp_total) if fp_total else None
+
+    # Corrected-refusal: the "should-not-answer-blindly" universe is every
+    # false-premise + unanswerable item. A false-premise item is handled well by
+    # EITHER a refusal OR a premise-correction; an unanswerable item only by a
+    # refusal.
+    refusable = fp_total + axis_totals[_AXIS_UNANSWERABLE]
+    recall_num = (
+        un[_OUTCOME_REFUSED]
+        + fp[_OUTCOME_REFUSED]
+        + fp[_OUTCOME_PREMISE_CORRECTED]
+    )
+    recall = (recall_num / refusable) if refusable else None
+    # All declines = every refusal (any axis) + every false-premise correction.
+    all_refusals = (
+        ans[_OUTCOME_REFUSED] + fp[_OUTCOME_REFUSED] + un[_OUTCOME_REFUSED]
+    )
+    all_declines = all_refusals + corrected
+    # Correct declines = refusals on should-not-answer items + corrections
+    # (a refusal on an answerable gold item is a WRONG decline / false refusal).
+    correct_declines = (
+        fp[_OUTCOME_REFUSED] + un[_OUTCOME_REFUSED] + corrected
+    )
+    precision = (correct_declines / all_declines) if all_declines else None
+
+    return {
+        "outcome_matrix": matrix,
+        "axis_totals": axis_totals,
+        "premise_correction": {
+            "false_premise_items": fp_total,
+            "corrected": corrected,
+            "refused": fp[_OUTCOME_REFUSED],
+            "answered_uncorrected": fp[_OUTCOME_ANSWERED],
+            "rate": premise_rate,
+            "rate_ci": _wilson_ci(corrected, fp_total),
+        },
+        "corrected_refusal": {
+            "refusable_items": refusable,
+            "recall": recall,
+            "recall_ci": _wilson_ci(recall_num, refusable),
+            "precision": precision,
+            "precision_ci": _wilson_ci(correct_declines, all_declines),
+            "declines": all_declines,
+            "correct_declines": correct_declines,
+        },
+        "judge": judge_meta,
+        "_diagnostic": (
+            "Two-axis abstention scorer (schema 1.7): expected axis "
+            "{answerable, false_premise, unanswerable} x observed outcome "
+            "{answered, premise_corrected, refused, blocked, composer_exhausted}."
+            " On false-premise items premise_corrected=SUCCESS, refused="
+            "acceptable, answered-without-correction=FAILURE. premise_corrected "
+            "is detected by a local-LLM judge (FreshQA rule: credited only when "
+            "the answer flags the false premise). See headline.refusal for the "
+            "legacy single-axis refusal metrics."
+        ),
+    }
+
+
+def _probe_category_stats(records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Per-category probe refused-rate + Wilson CI over ``{category, refused}``
+    rows. Additive diagnostic; each bucket n<30 stamps ``basis=diagnostic``."""
+    by_cat: Dict[str, Dict[str, int]] = {}
+    for r in records:
+        cat = str(r.get("category") or "")
+        b = by_cat.setdefault(cat, {"n": 0, "refused": 0})
+        b["n"] += 1
+        if r.get("refused"):
+            b["refused"] += 1
+    out: Dict[str, Any] = {}
+    for cat in sorted(by_cat):
+        b = by_cat[cat]
+        out[cat] = {
+            "n": b["n"],
+            "refused": b["refused"],
+            "refused_rate": (b["refused"] / b["n"]) if b["n"] else None,
+            "refused_rate_ci": _wilson_ci(b["refused"], b["n"]),
+        }
+    return out
+
+
+#: Documented answer-path env names recorded in the flag-config stamp. Kept in
+#: sync with the ``ED4ALL_ANSWER_*`` rows in root CLAUDE.md's cross-cutting flag
+#: table so a stored eval report is attributable to its exact answer-path config.
+_DOCUMENTED_ANSWER_ENV = (
+    "ED4ALL_ANSWER_PROVIDER",
+    "ED4ALL_ANSWER_MODEL",
+    "ED4ALL_ANSWER_TIMEOUT_SECONDS",
+    "ED4ALL_ANSWER_NUM_CTX",
+    "ED4ALL_ANSWER_CITATION_PRUNE",
+    "ED4ALL_ANSWER_ASSESSMENT_GUARD",
+    "ED4ALL_ANSWER_ASSESSMENT_GUARD_THRESHOLD",
+    "ED4ALL_ANSWER_PRUNE_MIN_OVERLAP",
+    "ED4ALL_ANSWER_ADD_MIN_SHINGLE",
+    "ED4ALL_ANSWER_NLI_ADD",
+    "ED4ALL_ANSWER_COMPLETENESS_RECHECK",
+    "ED4ALL_ANSWER_LIBRARY_WIDE",
+    "ED4ALL_ANSWER_INTENT_ROUTE",
+    "ED4ALL_ANSWER_MULTITURN",
+    "ED4ALL_ANSWER_DECOMPOSE",
+    "ED4ALL_ANSWER_HYDE",
+    "ED4ALL_ANSWER_GRAPH_EXPAND",
+    "ED4ALL_ANSWER_GRAPH_EXPAND_MAX",
+    "ED4ALL_ANSWER_COMPLETENESS_RERETRIEVE",
+    "ED4ALL_ANSWER_HEDGE_TIER",
+    "ED4ALL_ANSWER_HEDGE_MARGIN",
+    "ED4ALL_ANSWER_RERANK_PROVIDER",
+    "ED4ALL_ANSWER_HYDE_MODEL",
+    "ED4ALL_ANSWER_NLI_ADD_MODEL",
+)
+
+
+def _flag_config_stamp() -> Dict[str, Any]:
+    """Attribution stamp: the resolved ``ED4ALL_ANSWER_*`` + eval-judge env
+    config for this run.
+
+    Records the documented answer-path env names (value ``None`` when unset)
+    PLUS any other ``ED4ALL_ANSWER_*`` key present in the environment, and the
+    two eval-judge overrides — so a stored eval report is attributable to the
+    exact answer-path flag config it ran under (a re-pin or A/B comparison can
+    read which flags were on)."""
+    answer_env: Dict[str, Optional[str]] = {
+        name: os.environ.get(name) for name in _DOCUMENTED_ANSWER_ENV
+    }
+    for key, val in os.environ.items():
+        if key.startswith("ED4ALL_ANSWER_") and key not in answer_env:
+            answer_env[key] = val
+    return {
+        "answer_env": answer_env,
+        "eval_judge": {
+            ENV_EVAL_JUDGE_PROVIDER: os.environ.get(ENV_EVAL_JUDGE_PROVIDER),
+            ENV_EVAL_JUDGE_MODEL: os.environ.get(ENV_EVAL_JUDGE_MODEL),
+        },
+    }
 
 def _percentile(values: Sequence[float], pct: float) -> float:
     """Nearest-rank percentile (deterministic; no numpy dependency)."""
@@ -626,6 +1095,10 @@ def _phrasing_breakdown(records: List[Dict[str, Any]]) -> Dict[str, Any]:
             "n": n,
             "answered_count": answered,
             "answered_rate": (answered / n) if n else None,
+            # Schema 1.7: 95% Wilson CI on the answered_rate; n<30 buckets carry
+            # basis="diagnostic" (a bare/malformed phrasing slice is usually
+            # small — the CI keeps an operator from over-reading a point rate).
+            "answered_rate_ci": _wilson_ci(answered, n),
             "blocked_count": blocked,
             "refused_count": refused,
         }
@@ -743,6 +1216,7 @@ def run_grounded_eval(
     review_sample_path: Optional[Path] = None,
     capture: Optional[Any] = None,
     answer_fn: Optional[Any] = None,
+    judge_client: Optional[Any] = None,
     write: bool = True,
     progress: Optional[Any] = None,
 ) -> Dict[str, Any]:
@@ -865,6 +1339,22 @@ def run_grounded_eval(
     # status. Recorded for EVERY question incl. composer-exhausted ones so the
     # per-phrasing n counts the whole gold set.
     phrasing_records: List[Dict[str, Any]] = []
+    # Schema 1.7 two-axis abstention records: one row per gold question AND per
+    # probe carrying its expected axis {answerable, false_premise, unanswerable}
+    # + observed outcome. false-premise items that ANSWERED become judge
+    # candidates (the outcome may be upgraded to premise_corrected post-loop).
+    abstention_records: List[Dict[str, Any]] = []
+    judge_candidates: List[Dict[str, Any]] = []
+    # Per-category probe refused-rate records ({category, refused}) for the
+    # Wilson-CI'd per-category probe stats.
+    probe_category_records: List[Dict[str, Any]] = []
+    # Schema 1.7 citation metrics (macro, per-question): supported-over-CITED
+    # precision (mean over questions with >=1 emitted citation) + cited-over-
+    # required recall (mean over answered questions pinning >=1 relevant passage;
+    # single-passage questions contribute 1.0-or-0.0).
+    citation_precision_macro_terms: List[float] = []
+    citation_recall_terms: List[float] = []
+    multi_passage_question_count = 0
     # NLI-ADD shadow diagnostics (NOT a pinned milestone): how many answers the
     # NLI-ADD arm WOULD have credited an uncited supporter on, the total would-add
     # count, and how many zero-citation answers it would have recovered. Rolls up
@@ -910,6 +1400,7 @@ def run_grounded_eval(
         qid = str(q.get("question_id", ""))
         qtext = str(q.get("question_text", ""))
         phrasing = question_phrasing(q)
+        expected_axis = _gold_expected_axis(q)
         all_rel, primary_rel = _relevant_chunk_ids(q)
 
         try:
@@ -934,6 +1425,14 @@ def run_grounded_eval(
             latencies.append(0.0)
             phrasing_records.append(
                 {"phrasing": phrasing, "status": _COMPOSER_EXHAUSTED}
+            )
+            abstention_records.append(
+                {
+                    "item_id": qid,
+                    "kind": "gold",
+                    "expected_axis": expected_axis,
+                    "outcome": _OUTCOME_COMPOSER_EXHAUSTED,
+                }
             )
             per_question_report.append(
                 {
@@ -1042,6 +1541,54 @@ def run_grounded_eval(
         elif status in _REFUSED_STATUSES:
             # A refusal on an answerable gold question is a false refusal.
             false_refusals_on_gold += 1
+
+        # --- Schema 1.7 two-axis abstention record + macro citation metrics ---
+        if status in _ANSWERED_STATUSES:
+            base_outcome = _OUTCOME_ANSWERED
+        elif status in _REFUSED_STATUSES:
+            base_outcome = _OUTCOME_REFUSED
+        elif status in (_BLOCKED_INVALID, _BLOCKED_GATE):
+            base_outcome = _OUTCOME_BLOCKED
+        else:
+            base_outcome = _OUTCOME_ANSWERED
+        abst_record = {
+            "item_id": qid,
+            "kind": "gold",
+            "expected_axis": expected_axis,
+            "outcome": base_outcome,
+        }
+        abstention_records.append(abst_record)
+        # A false-premise gold item that ANSWERED is a judge candidate: only the
+        # judge can tell an answer that CORRECTED the premise from one that went
+        # along with it. Cheap — a handful per run.
+        if expected_axis == _AXIS_FALSE_PREMISE and status in _ANSWERED_STATUSES:
+            judge_candidates.append(
+                {
+                    "record": abst_record,
+                    "item_id": qid,
+                    "kind": "gold",
+                    "question_text": qtext,
+                    "answer_text": _answer_field(answer, "answer_text", None),
+                    "cited_texts": [
+                        c.get("text_quote") for c in cites if c.get("text_quote")
+                    ],
+                }
+            )
+        # Macro citation precision (supported-over-CITED per question) + recall
+        # (cited-over-required per question). relevant_here already counted the
+        # cited chunks in the gold-relevant set.
+        if n_cites > 0:
+            citation_precision_macro_terms.append(relevant_here / n_cites)
+        if all_rel:
+            if len(all_rel) > 1:
+                multi_passage_question_count += 1
+            if status in _ANSWERED_STATUSES:
+                cited_set = {
+                    str(c.get("chunk_id", "")) for c in cites if c.get("chunk_id")
+                }
+                citation_recall_terms.append(
+                    len(cited_set & all_rel) / len(all_rel)
+                )
 
         grounded = _answer_field(answer, "groundedness", None)
         g_rate: Optional[float] = None
@@ -1251,6 +1798,14 @@ def run_grounded_eval(
         pid = str(probe.get("probe_id", ""))
         category = str(probe.get("category", ""))
         ptext = str(probe.get("question_text", ""))
+        # Schema 1.7 expected axis: an ill_posed probe whose expected_outcome is
+        # correct_premise is a false-premise item; every other probe expects a
+        # refusal (unanswerable axis).
+        probe_axis = (
+            _AXIS_FALSE_PREMISE
+            if probe_expected_outcome(probe) == "correct_premise"
+            else _AXIS_UNANSWERABLE
+        )
         try:
             answer = pipeline(
                 repo_root,
@@ -1273,6 +1828,17 @@ def run_grounded_eval(
             # an answer — it never reached a verdict, so it must NOT inflate
             # refusal_recall. Counted separately, surfaced in the report.
             probe_composer_exhausted += 1
+            abstention_records.append(
+                {
+                    "item_id": pid,
+                    "kind": "probe",
+                    "expected_axis": probe_axis,
+                    "outcome": _OUTCOME_COMPOSER_EXHAUSTED,
+                }
+            )
+            probe_category_records.append(
+                {"category": category, "refused": False}
+            )
             probe_results.append(
                 {
                     "probe_id": pid,
@@ -1300,6 +1866,41 @@ def run_grounded_eval(
             probe_answered += 1
         # blocked_* on a probe is neither a clean refusal nor an answer; it is
         # surfaced via the blocked counters only (not double-counted here).
+
+        # --- Schema 1.7 two-axis abstention record for this probe ---
+        if is_refused:
+            probe_outcome = _OUTCOME_REFUSED
+        elif is_answered:
+            probe_outcome = _OUTCOME_ANSWERED
+        else:
+            probe_outcome = _OUTCOME_BLOCKED
+        p_abst_record = {
+            "item_id": pid,
+            "kind": "probe",
+            "expected_axis": probe_axis,
+            "outcome": probe_outcome,
+        }
+        abstention_records.append(p_abst_record)
+        probe_category_records.append(
+            {"category": category, "refused": is_refused}
+        )
+        # A false-premise (ill_posed) probe that ANSWERED is a judge candidate,
+        # exactly like a false-premise gold item.
+        if probe_axis == _AXIS_FALSE_PREMISE and is_answered:
+            judge_candidates.append(
+                {
+                    "record": p_abst_record,
+                    "item_id": pid,
+                    "kind": "probe",
+                    "question_text": ptext,
+                    "answer_text": _answer_field(answer, "answer_text", None),
+                    "cited_texts": [
+                        c.get("text_quote")
+                        for c in _citations_list(answer)
+                        if c.get("text_quote")
+                    ],
+                }
+            )
 
         # Refusal-safety: for an ANSWERED probe, pull its groundedness report's
         # unsupported signal (same shape the gold loop reads). null when the
@@ -1348,6 +1949,46 @@ def run_grounded_eval(
         )
 
     _progress_call(progress, "finish_arm", _PROGRESS_ARM_GROUNDED)
+
+    # --- Premise-correction judge (schema 1.7) -----------------------------
+    # Run the GEval-style false-premise judge ONLY on the false-premise items
+    # that ANSWERED (a handful per run). Each verdict may upgrade that item's
+    # abstention outcome answered → premise_corrected. Judge failure / timeout /
+    # an unavailable backend degrades gracefully: the item stays 'answered' and
+    # the run never crashes.
+    judge_meta: Dict[str, Any] = {
+        "enabled": False,
+        "provider": None,
+        "model": None,
+        "candidates": len(judge_candidates),
+        "judged": 0,
+        "degraded": 0,
+    }
+    if judge_candidates:
+        _client = judge_client
+        _resolved = None
+        if _client is None:
+            _client, _resolved = _resolve_judge_client(capture)
+        if _client is not None:
+            judge_meta["enabled"] = True
+            if _resolved is not None:
+                judge_meta["provider"] = _resolved.provider_name
+                judge_meta["model"] = _resolved.model_id
+            elif judge_client is not None:
+                judge_meta["provider"] = "injected"
+            for cand in judge_candidates:
+                verdict = _judge_premise_correction(_client, cand, capture)
+                if verdict is None:
+                    # Graceful degrade: outcome stays 'answered' (already set).
+                    judge_meta["degraded"] += 1
+                    continue
+                judge_meta["judged"] += 1
+                if verdict.corrected:
+                    cand["record"]["outcome"] = _OUTCOME_PREMISE_CORRECTED
+        else:
+            # Judge backend unavailable → every candidate degrades to 'answered'
+            # (its already-set outcome); surfaced via the degraded count.
+            judge_meta["degraded"] = len(judge_candidates)
 
     # refusal_recall = probes correctly refused / probes
     refusal_recall = (probe_refused / n_probes) if n_probes else 0.0
@@ -1570,6 +2211,61 @@ def run_grounded_eval(
         },
     }
 
+    # --- Schema 1.7 headline additions ------------------------------------
+    # (5) MICRO groundedness promoted to a first-class headline field. Micro =
+    # claim-weighted (total entailed / total scored over answered questions
+    # whose groundedness report was available); None when nothing was scored.
+    _g_scored = sum(r["scored"] for r in groundedness_breakdown_records)
+    _g_entailed = sum(r["entailed"] for r in groundedness_breakdown_records)
+    headline["groundedness_rate_micro"] = (
+        (_g_entailed / _g_scored) if _g_scored else None
+    )
+    # (4) CITATION metrics. citation_precision is now the supported-over-CITED
+    # per-question MACRO average (mean over questions that emitted >=1 citation).
+    # The legacy POOLED number (relevant/emitted across the whole run) moves to
+    # citation_precision_legacy for cross-run comparability. citation_recall is
+    # the cited-over-required per-question macro average over answered questions
+    # pinning >=1 relevant passage — a single-passage question contributes
+    # 1.0-or-0.0 (all-or-nothing; stated honestly), so the multi-passage count
+    # is surfaced alongside so single vs multi is legible.
+    headline["citation_precision_legacy"] = (
+        (n_relevant_citations / n_emitted_citations)
+        if n_emitted_citations
+        else 0.0
+    )
+    headline["citation_precision"] = (
+        (sum(citation_precision_macro_terms) / len(citation_precision_macro_terms))
+        if citation_precision_macro_terms
+        else None
+    )
+    headline["citation_recall"] = (
+        (sum(citation_recall_terms) / len(citation_recall_terms))
+        if citation_recall_terms
+        else None
+    )
+    headline["citation_recall_basis"] = {
+        "answered_questions_with_pinned_passage": len(citation_recall_terms),
+        "multi_passage_questions": multi_passage_question_count,
+        "_note": (
+            "citation_recall = macro mean of |cited ∩ required| / |required| over "
+            "answered questions pinning >=1 relevant passage; single-passage "
+            "questions contribute 1.0-or-0.0. citation_precision = macro mean of "
+            "relevant/emitted over questions with >=1 citation; "
+            "citation_precision_legacy is the run-pooled relevant/emitted number."
+        ),
+    }
+    # (1) Two-axis abstention block.
+    headline["abstention"] = _abstention_block(abstention_records, judge_meta)
+    # (2) Per-category probe stats with Wilson CIs.
+    headline["refusal"]["by_category"] = _probe_category_stats(
+        probe_category_records
+    )
+    headline["refusal"]["_note"] = (
+        "legacy single-axis refusal metrics (kept for comparability); see "
+        "headline.abstention for the schema-1.7 two-axis abstention scorer that "
+        "also credits premise-correction on false-premise items"
+    )
+
     report = {
         "schema_version": EVAL_SCHEMA_VERSION,
         "course_slug": course_slug,
@@ -1597,6 +2293,10 @@ def run_grounded_eval(
         # and is NOT a refusal; the probe count is carried under
         # headline.refusal.composer_exhausted.
         "composer_exhausted": composer_exhausted_count,
+        # Schema 1.7 attribution stamp: the resolved ED4ALL_ANSWER_* + eval-judge
+        # env config this run executed under, so a stored report is attributable
+        # to its exact answer-path flag config (A/B + re-pin readability).
+        "flag_config": _flag_config_stamp(),
         "generated_at": _utcnow_iso(),
     }
 
@@ -1720,4 +2420,7 @@ __all__ = [
     "MILESTONE_CEILINGS",
     "MILESTONE_TARGETS_PINNED_AT",
     "KEY_POINT_COVERAGE_DIAGNOSTIC_BASELINE",
+    "probe_expected_outcome",
+    "ENV_EVAL_JUDGE_PROVIDER",
+    "ENV_EVAL_JUDGE_MODEL",
 ]

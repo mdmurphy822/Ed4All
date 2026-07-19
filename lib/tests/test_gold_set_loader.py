@@ -284,7 +284,7 @@ def test_real_seed_gold_set_zero_critical(slug):
     # (retrieval-answer-eval-set P1) can drop unresolvable orphans, and the
     # authoring sprint scales the set up, so the count is variable by design.
     assert len(gold["questions"]) >= 1
-    assert gold.get("schema_version") in {"1.0", "1.1"}
+    assert gold.get("schema_version") in {"1.0", "1.1", "1.2"}
     assert gold["chunkset"]["kind"] in {"imscc", "dart", "corpus"}
 
 

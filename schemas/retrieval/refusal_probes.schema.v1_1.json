@@ -117,6 +117,11 @@
             "pattern": "^gq-[a-z0-9-]+-\\d{4}$",
             "description": "Optional: gold-question id this probe is the out-of-scope twin of. Audit aid, not scored."
           },
+          "expected_outcome": {
+            "type": "string",
+            "enum": ["refuse", "correct_premise"],
+            "description": "Optional (additive; absent = refuse): the CORRECT pipeline outcome for this probe. refuse: the probe is out of scope — the pipeline must decline (the default, and the outcome every legacy probe expects). correct_premise: the probe references a non-existent / self-contradictory concept whose vocabulary merely sounds in-domain (the ill_posed category — 'the least common factor of 95') and a correct system must CORRECT the false premise rather than either answer it or refuse it blankly. Provenance/analysis only — never changes the dry_run-evidence contract."
+          },
           "dry_run": {
             "$ref": "#/$defs/dry_run_evidence",
             "description": "Required legacy single dry-run (back-compat). Kept even when dry_runs[] is present; conventionally the lexical engine."

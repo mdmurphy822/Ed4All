@@ -415,10 +415,21 @@ def test_real_course_probe_set_validates_and_is_verified(slug):
             "ill_posed",
         }
         _SCALED_PROBE_FLOOR = 25
-        if len(probes) >= _SCALED_PROBE_FLOOR:
+        # A GROWN (eval-expansion-era) set is distinguished from the FROZEN
+        # scaled reference by the v1.2-era ``expected_outcome`` field: the
+        # expansion deliberately emphasizes ``ill_posed`` (false-premise) probes,
+        # so the frozen reference's adjacent-domain-plurality shape must not be
+        # asserted against it — only category breadth and the conventional core.
+        _is_grown = any("expected_outcome" in p for p in probes)
+        if len(probes) >= _SCALED_PROBE_FLOOR and not _is_grown:
             # Scaled frozen-gold basis: the deliberate hard-negative shape.
             assert {"off_topic", "adjacent_domain", "out_of_scope_detail"} <= set(by_cat)
             assert by_cat["adjacent_domain"] == max(by_cat.values())
+        elif len(probes) >= _SCALED_PROBE_FLOOR:
+            # Grown expansion-era set: conventional core + ill_posed present,
+            # broad category coverage (>= 4 distinct categories).
+            assert {"off_topic", "adjacent_domain", "out_of_scope_detail", "ill_posed"} <= set(by_cat)
+            assert len(by_cat) >= 4
         else:
             # Seed set (not yet scaled): still carries multi-category breadth
             # (>= 3 distinct categories) so it is a genuine negative panel, not a
