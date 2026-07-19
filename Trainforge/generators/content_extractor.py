@@ -407,6 +407,21 @@ class ContentExtractor:
                 if sentence.endswith("?") or len(sentence) < 20 or len(sentence) > 300:
                     continue
 
+                # Skip exercise/solution APPARATUS text (alg-glm-02
+                # production defect: on an apparatus-dense worked-example
+                # corpus the extractor mined "Solution: r Check: If r = 20,
+                # ..." fragments as factual statements, which then shipped as
+                # TOC_FRAGMENT_ANSWER-flagged correct answers). Marker set is
+                # the textbook apparatus vocabulary (the pedagogical-label
+                # lexicon class), never subject-matter words.
+                if re.search(
+                    r"\b(?:Solution\s*:|Check\s*:|Show answer|Try It\b|"
+                    r"In the following exercises|Answers? will vary|"
+                    r"Practice Makes Perfect)",
+                    sentence,
+                ):
+                    continue
+
                 # Must be declarative (contains a verb-like structure)
                 if not re.search(r"\b(?:is|are|was|were|has|have|can|will|does|do|provides?|involves?|requires?|includes?|consists?|contains?|represents?)\b", sentence, re.IGNORECASE):
                     continue
