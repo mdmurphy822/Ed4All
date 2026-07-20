@@ -175,7 +175,11 @@ def test_learn_ask_QUERY_empty_query_still_422_with_fragment(client):
     assert "html" in body  # learner-safe fragment rides along under QUERY too
 
 
-def test_learn_ask_GET_is_405(client):
-    # GET is not in the method set (a body-less read of this endpoint is invalid).
+def test_learn_ask_GET_never_reaches_handler(client):
+    # GET is not in the method set (a body-less read of this endpoint is
+    # invalid). In the full app a GET falls through to the SPA/static
+    # catch-all (404) rather than Starlette's bare-router 405 — either way
+    # the ask handler must not serve it (2026-07-19 on-host run).
     r = client.get("/api/learn/ask")
-    assert r.status_code == 405
+    assert r.status_code in (404, 405)
+    assert "answer" not in (r.json() if r.headers.get("content-type", "").startswith("application/json") else {})

@@ -860,8 +860,12 @@ def build_manifest(
         "identifier": "ORG_1",
         "structure": "rooted-hierarchy",
     })
+    # CC 1.3 imscp profile: the ROOT item of a rooted-hierarchy organization
+    # admits only <item>/<metadata> children — a <title> here violates the
+    # profile XSD (caught by cartridge_conformance once the manifest-profile
+    # schemas were vendored 2026-07-19) and breaks strict LMS imports. The
+    # course title travels in <metadata>/<lomimscc:lom> above.
     root_item = ET.SubElement(org, cc("item"), {"identifier": "ROOT"})
-    ET.SubElement(root_item, cc("title")).text = f"{course_code}: {course_title}"
 
     # Resources
     resources = ET.SubElement(manifest, cc("resources"))

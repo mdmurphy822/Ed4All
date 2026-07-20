@@ -9,6 +9,21 @@ This directory contains XML Schema Definition (XSD) files for validating IMSCC p
 | `cc_extresource_assignmentv1p0.xsd` | `http://www.imsglobal.org/xsd/imscc_extensions/assignment` | Assignment XML validation |
 | `ccv1p3_imsdt_v1p3.xsd` | `http://www.imsglobal.org/xsd/imsccv1p3/imsdt_v1p3` | Discussion topic XML validation |
 | `ccv1p3_qtiasiv1p2p1.xsd` | `http://www.imsglobal.org/xsd/ims_qtiasiv1p2` | QTI 1.2 assessment validation |
+| `ccv1p3_imscp_v1p2_v1p0.xsd` | `http://www.imsglobal.org/xsd/imsccv1p3/imscp_v1p1` | CC 1.3 manifest-profile validation (imsmanifest.xml) |
+| `ccv1p3_lommanifest_v1p0.xsd` | `http://ltsc.ieee.org/xsd/imsccv1p3/LOM/manifest` | LOM manifest-metadata profile |
+| `ccv1p3_lomresource_v1p0.xsd` | `http://ltsc.ieee.org/xsd/imsccv1p3/LOM/resource` | LOM resource-metadata profile |
+| `ccv1p3_imsccauth_v1p3.xsd` | `http://www.imsglobal.org/xsd/imsccv1p3/imsccauth_v1p3` | Authorization import (imscp dependency) |
+| `ccv1p3_imscsmd_v1p0.xsd` | `http://www.imsglobal.org/xsd/imsccv1p3/imscsmd_v1p0` | Curriculum-standards metadata import (imscp dependency) |
+| `xml.xsd` | `http://www.w3.org/XML/1998/namespace` | W3C xml base attributes (imscp dependency) |
+
+The manifest-profile set (`ccv1p3_imscp_*` + its five imports above) was vendored
+2026-07-19 from the canonical 1EdTech URLs
+(`http://www.imsglobal.org/profile/cc/ccv1p3/...` + `/xsd/w3/2001/xml.xsd`);
+remote `schemaLocation` URLs inside `ccv1p3_imscp_v1p2_v1p0.xsd` were rewritten
+to local relative filenames so lxml resolves them offline (the only edit — all
+declarations are canonical). `lib/validators/cartridge_conformance.py`
+auto-discovers every XSD here by `targetNamespace`, so adding a schema file
+enables its namespace check with no code change.
 
 ## Usage
 

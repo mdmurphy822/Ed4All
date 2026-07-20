@@ -3,10 +3,16 @@
 Track L (L2). Every fixture cartridge is SYNTHETIC and built in-test as a ZIP
 (no course slugs, no device paths, no network / model). Resource-document
 shapes mirror the real emitter output but are hand-authored strings so the
-test is independent of the packager. XSD checks exercise the three vendored
-resource XSDs (QTI / imsdt / assignment); the CC manifest-profile XSD is not
-yet vendored, so a clean cartridge carries exactly one graceful-degrade
-``CARTRIDGE_XSD_MISSING`` warning for the manifest namespace.
+test is independent of the packager. XSD checks exercise the vendored resource
+XSDs (QTI / imsdt / assignment) AND — since the 1EdTech CC 1.3 manifest-profile
+XSDs were vendored 2026-07-19 (``ccv1p3_imscp_v1p2_v1p0.xsd`` + the lom* /
+imscc* imports) — the manifest itself. A clean cartridge now carries ZERO
+issues: the synthetic ``_manifest`` fixtures below are authored to be genuinely
+CC-1.3-profile-conformant (``<metadata>`` with schema/schemaversion +
+``lomimscc:lom``; a rooted-hierarchy organization whose ROOT item has NO title
+and whose nested items DO). The intended-to-fail fixtures fail for their
+specific reason (bad resource-type, dangling href, orphaned answer_key, …),
+not incidental manifest non-conformance.
 """
 
 from __future__ import annotations
@@ -21,6 +27,12 @@ import pytest
 from lib.validators.cartridge_conformance import CartridgeConformanceValidator
 
 CC13_MANIFEST_NS = "http://www.imsglobal.org/xsd/imsccv1p3/imscp_v1p1"
+# CC 1.2 manifest namespace — recognised (no CARTRIDGE_UNKNOWN_CC_VERSION) but
+# NOT vendored, so a CC-1.2 manifest degrades to a CARTRIDGE_XSD_MISSING warning
+# rather than being validated against the CC 1.3 imscp XSD. Used by the
+# cross-version resource-type test so CC 1.1/1.2 resource-type tokens live in
+# their own-version manifest instead of tripping the CC 1.3 XSD type enumeration.
+CC12_MANIFEST_NS = "http://www.imsglobal.org/xsd/imsccv1p2/imscp_v1p1"
 LOM_MANIFEST_NS = "http://ltsc.ieee.org/xsd/imsccv1p3/LOM/manifest"
 IMSDT_NS = "http://www.imsglobal.org/xsd/imsccv1p3/imsdt_v1p3"
 ASSIGNMENT_NS = "http://www.imsglobal.org/xsd/imscc_extensions/assignment"
@@ -122,14 +134,27 @@ def _webcontent_html(body: str = "Hello") -> str:
 # --------------------------------------------------------------------------
 
 def _manifest(resources_xml: str, ns: str = CC13_MANIFEST_NS) -> str:
+    # CC-1.3-profile-conformant (validates against ccv1p3_imscp_v1p2_v1p0.xsd):
+    #  * <metadata> carries schema + schemaversion + the required
+    #    lomimscc:lom (the imscp ManifestMetadata.Type sequence).
+    #  * the rooted-hierarchy organization's ROOT item is ItemOrg.Type — it
+    #    takes NO <title> (a <title> there is the exact legacy packager defect
+    #    the vendored XSDs now catch); its nested Item.Type child REQUIRES a
+    #    <title>.
     return (
         "<?xml version='1.0' encoding='utf-8'?>"
         f'<manifest xmlns="{ns}" xmlns:lomimscc="{LOM_MANIFEST_NS}" '
         'identifier="TEST_manifest">'
         "<metadata><schema>IMS Common Cartridge</schema>"
-        "<schemaversion>1.3.0</schemaversion></metadata>"
+        "<schemaversion>1.3.0</schemaversion>"
+        "<lomimscc:lom><lomimscc:general><lomimscc:title>"
+        '<lomimscc:string language="en">Test Course</lomimscc:string>'
+        "</lomimscc:title></lomimscc:general></lomimscc:lom>"
+        "</metadata>"
         '<organizations><organization identifier="ORG_1" structure="rooted-hierarchy">'
-        '<item identifier="ROOT"><title>Test</title></item>'
+        '<item identifier="ROOT">'
+        '<item identifier="WEEK_1"><title>Week 1</title></item>'
+        "</item>"
         "</organization></organizations>"
         f"<resources>{resources_xml}</resources>"
         "</manifest>"
@@ -186,8 +211,10 @@ def test_valid_cartridge_passes_clean(tmp_path):
     assert result.passed, _codes(result)
     assert result.action is None
     assert _critical_codes(result) == []
-    # The CC manifest-profile XSD is not vendored → exactly one degrade warning.
-    assert "CARTRIDGE_XSD_MISSING" in _codes(result)
+    # The CC manifest-profile XSD is now vendored (2026-07-19) alongside the
+    # resource XSDs, so every XML doc in a clean cartridge routes to a real
+    # schema — a conformant fixture carries ZERO issues (no XSD_MISSING degrade).
+    assert _codes(result) == []
 
 
 def test_resource_doc_is_xsd_validated(tmp_path):
@@ -225,7 +252,16 @@ def test_unknown_resource_type_trips_type_unknown(tmp_path):
 
 
 def test_cc11_and_cc12_resource_types_are_conformant(tmp_path):
-    """A CC 1.1 / 1.2 versioned type token must not be false-flagged."""
+    """A CC 1.1 / 1.2 versioned type token must not be false-flagged by the
+    programmatic resource-type enumeration.
+
+    The CC 1.1/1.2 resource-type tokens are carried in a CC 1.2 manifest (their
+    own version) — the CC 1.3 imscp XSD's ``type`` enumeration lists only the
+    CC 1.3 tokens, so housing them in a CC 1.3 manifest would XSD-invalidate the
+    fixture for a reason unrelated to what this test targets. The CC 1.2
+    manifest namespace has no vendored XSD → clean degrade, and the programmatic
+    ``_is_conformant_resource_type`` family patterns still accept the tokens.
+    """
     members = _default_members()
     resources = (
         _resource("RES_page", RES_WEB, "week_01/content.html")
@@ -236,10 +272,13 @@ def test_cc11_and_cc12_resource_types_are_conformant(tmp_path):
             "week_01/content.html",
         )
     )
-    members["imsmanifest.xml"] = _manifest(resources)
+    members["imsmanifest.xml"] = _manifest(resources, ns=CC12_MANIFEST_NS)
     path = _build_zip(tmp_path, members)
     result = CartridgeConformanceValidator().validate({"imscc_path": str(path)})
     assert "CARTRIDGE_RESOURCE_TYPE_UNKNOWN" not in _codes(result)
+    # The versioned tokens are conformant, so nothing critical fires (the CC 1.2
+    # manifest degrades to a warning, not an XSD-invalid critical).
+    assert _critical_codes(result) == [], _critical_codes(result)
 
 
 def test_missing_manifest_trips_manifest_missing(tmp_path):
@@ -358,9 +397,37 @@ def test_lxml_missing_degrades(tmp_path, monkeypatch):
     assert result.passed, _critical_codes(result)
 
 
+# The exact XSD-error signature the CC 1.3 imscp profile emits for a <title>
+# child on the ROOT (ItemOrg.Type) organization item — the ONE known legacy
+# defect (see below). lxml's message reads e.g. "Element '{...}title': This
+# element is not expected."
+_ROOT_TITLE_XSD_SIGNATURE = "title': This element is not expected"
+
+
 def test_real_built_cartridge_shape_if_present():
     """Smoke against a real built cartridge when one is on disk (never fails
-    the suite when absent — keeps the test hermetic)."""
+    the suite when absent — keeps the test hermetic).
+
+    The cartridge is located dynamically (no course slug in tracked code).
+
+    2026-07-19: the archived cartridges on disk were all built BEFORE the
+    packager's ROOT-item ``<title>`` fix (``package_multifile_imscc.py`` no
+    longer emits a ``<title>`` on the ROOT ``ItemOrg.Type`` item, which the CC
+    1.3 imscp profile forbids). So the newly-vendored manifest-profile XSDs
+    now legitimately flag that ONE legacy defect as ``CARTRIDGE_XSD_INVALID``.
+    We therefore assert:
+
+      (a) the validator RAN with full XSD coverage — no ``CARTRIDGE_XSD_MISSING``
+          for the imscp manifest namespace (proves the manifest XSDs vendored
+          and routed), and
+      (b) EVERY ``CARTRIDGE_XSD_INVALID`` issue matches the known root-title
+          signature — i.e. the only conformance break on disk is the legacy
+          ROOT-title one, nothing new / unexplained.
+
+    Once the pipeline is re-run end-to-end with the fixed packager, the built
+    cartridge will be fully conformant; at that point tighten this to
+    ``assert result.passed`` (and drop the root-title carve-out below).
+    """
     candidates = sorted(
         Path("LibV2/courses").glob("*/source/imscc/*.imscc")
     ) if Path("LibV2/courses").is_dir() else []
@@ -369,5 +436,19 @@ def test_real_built_cartridge_shape_if_present():
     result = CartridgeConformanceValidator().validate(
         {"imscc_path": str(candidates[0])}
     )
-    # A real, spec-valid cartridge must carry no critical conformance break.
-    assert result.passed, _critical_codes(result)
+    codes = _codes(result)
+    # (a) Full XSD coverage: the imscp manifest namespace resolved to a real
+    # vendored schema, so there is no degrade warning for it.
+    assert "CARTRIDGE_XSD_MISSING" not in codes, codes
+    # (b) Any XSD-invalid finding must be the single known legacy defect: a
+    # <title> on the ROOT organization item (predates the packager fix).
+    xsd_invalid = [i for i in result.issues if i.code == "CARTRIDGE_XSD_INVALID"]
+    for issue in xsd_invalid:
+        assert _ROOT_TITLE_XSD_SIGNATURE in issue.message, issue.message
+    # And no OTHER critical conformance break beyond that root-title signature.
+    other_critical = [
+        i.code
+        for i in result.issues
+        if i.severity == "critical" and i.code != "CARTRIDGE_XSD_INVALID"
+    ]
+    assert other_critical == [], other_critical
