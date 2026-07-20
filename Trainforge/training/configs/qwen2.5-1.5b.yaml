@@ -21,8 +21,17 @@ target_modules:
   - gate_proj
   - up_proj
   - down_proj
-use_4bit: true
+# SFT program recipe (scratchpad/sft_data_program.md §C): bf16 LoRA is the
+# default for the shipped 1.5B course-tutor. Flip to `true` to fall back to
+# QLoRA (4-bit) on a memory-constrained box.
+use_4bit: false
 min_dpo_pairs: 50
 dpo_preference_filter: editorial_or_misconception
 dpo_fail_hard: true
 seed: 42
+# Per-epoch checkpoint retention for the downstream-probe selector.
+save_total_limit: 3
+completion_only_loss: true
+verify_loss_mask: true
+early_stopping_patience: 1
+checkpoint_selection_metric: gold_keypoint_coverage

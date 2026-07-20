@@ -37,6 +37,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from lib.decision_capture import DecisionCapture
+from lib.licensing import (
+    assert_checkpoint_license,
+    assert_export_licenses,
+    assert_nemotron_pin,
+)
 from lib.paths import LIBV2_COURSES, SCHEMAS_PATH
 from lib.utils import sha256_file, write_jsonl
 
@@ -194,6 +199,13 @@ class TrainingRunner:
         model card + decision capture (and adapter, when not dry-run).
         """
         self._assert_training_specs_present()
+        self._assert_licensing_preflight()
+        # SFT-D B3/B4: deterministically normalize the course's graph/ layout
+        # BEFORE hashing provenance so the CRITICAL pedagogy_graph_hash
+        # resolves (B3 re-emit) and the concept graph is where downstream
+        # eval + retrieval expect it (B4 copy). Idempotent + fail-soft: a
+        # course that already carries both artifacts is left byte-identical.
+        self._ensure_graph_layout()
 
         provenance = self._compute_provenance()
         model_id = self._mint_model_id(provenance)
@@ -364,6 +376,90 @@ class TrainingRunner:
                 f"``python -m Trainforge.synthesize_training --slug "
                 f"{self.course_slug}`` first."
             )
+
+    def _ensure_graph_layout(self) -> None:
+        """SFT-D B3/B4: normalize ``course_dir/graph/`` (best-effort).
+
+        Delegates to :func:`Trainforge.training.graph_layout.ensure_graph_layout`
+        which (B4) copies ``concept_graph/concept_graph_semantic.json`` into
+        ``graph/`` when missing and (B3) deterministically re-emits
+        ``graph/pedagogy_graph.json`` from the chunkset. Fail-soft: any
+        unexpected error is logged and swallowed — the subsequent
+        ``_compute_provenance`` still fails LOUD if the CRITICAL
+        pedagogy_graph_hash truly can't resolve.
+        """
+        try:
+            from Trainforge.training.graph_layout import ensure_graph_layout
+
+            report = ensure_graph_layout(self.course_dir)
+            if report.get("concept_graph_copied") or report.get(
+                "pedagogy_graph_emitted"
+            ):
+                logger.info(
+                    "TrainingRunner: graph-layout normalized for %s "
+                    "(concept_graph_copied=%s, pedagogy_graph_emitted=%s).",
+                    self.course_slug,
+                    report.get("concept_graph_copied"),
+                    report.get("pedagogy_graph_emitted"),
+                )
+        except Exception as exc:  # noqa: BLE001 - best-effort normalization
+            logger.warning(
+                "TrainingRunner: graph-layout normalization failed for %s "
+                "(%s); proceeding to provenance (which fails loud on a truly "
+                "missing pedagogy graph).",
+                self.course_slug, exc,
+            )
+
+    def _assert_licensing_preflight(self) -> None:
+        """Fail-closed licensing gates before a single weight is trained.
+
+        SFT-C S6/S7. Three build invariants, all fail-closed:
+
+        1. **Nemotron license-pin** — the roster still pins the NVIDIA
+           Nemotron Open Model License (Dec 15 2025); a drift to the
+           general NVIDIA OML fails the build.
+        2. **Per-checkpoint LICENSE assertion at ingest** — the student
+           base checkpoint's license is asserted (non-commercial licenses
+           refused for a commercially-shipped adapter).
+        3. **Export-time teacher filter** — every instruction / preference
+           pair's teacher is asserted non-barred / non-claude / registered.
+
+        Byte-identical for a license-clean corpus: the export filter only
+        fires on a *positively identified* barred / claude / unregistered
+        teacher (a legacy pair with no ``provider`` / ``generating_seat``
+        field passes), and every SUPPORTED base model resolves in the
+        roster. Canonical posture: ``docs/LICENSING.md``.
+        """
+        # 1. Nemotron license-pin / FAIL-BUILD-ON-RE-PIN guard.
+        assert_nemotron_pin()
+
+        # 2. Per-checkpoint LICENSE assertion at ingest (student base weights).
+        assert_checkpoint_license(self.base_model, role="base_model")
+
+        # 3. Export-time teacher filter over the pair corpus.
+        specs_dir = self.course_dir / "training_specs"
+        for spec_name in ("instruction_pairs.jsonl", "preference_pairs.jsonl"):
+            assert_export_licenses(
+                self._iter_pair_records(specs_dir / spec_name),
+                source_desc=f"{self.course_slug}/{spec_name}",
+            )
+
+    @staticmethod
+    def _iter_pair_records(path: Path):
+        """Yield JSON pair dicts from a JSONL file (skip blank / bad lines)."""
+        if not path.exists():
+            return
+        with path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(obj, dict):
+                    yield obj
 
     # ------------------------------------------------------------------ #
     # Provenance + ID minting                                             #
@@ -698,13 +794,14 @@ class TrainingRunner:
                 "huggingface_repo": self.spec.huggingface_repo,
             },
             "adapter_format": "safetensors",
-            "training_config": self.config.to_dict(),
+            # ``to_card_dict`` filters to the schema-accepted keys — drops the
+            # redundant base_model echo AND the S8 orchestration knobs
+            # (completion_only_loss / save_total_limit / …) so the schema's
+            # strict additionalProperties=false guard doesn't trip.
+            "training_config": self.config.to_card_dict(),
             "provenance": provenance,
             "created_at": _iso_now(),
         }
-        # Drop the redundant base_model echo from training_config so
-        # the schema's strict additionalProperties=false doesn't trip.
-        card["training_config"].pop("base_model", None)
 
         if eval_scores is not None:
             # Filter to canonical keys the schema accepts so the
