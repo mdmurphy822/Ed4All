@@ -368,8 +368,7 @@ state/replay_data/
 # --- pre-push sanitization (2026-07-20) ---
 # Per-run operator env stacks: carry real API keys (e.g. SPARK_API_KEY) + endpoint URLs.
 run-env.*.sh
-# Tracked, secret-free stack templates (verified: no real key values)
-!run-env.glm-stack.sh
+# The sanitized, portable template is the one tracked reference profile.
 !run-env.example.sh
 # Editor/operator backups
 *.bak
