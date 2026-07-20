@@ -36,7 +36,8 @@ TEXTISH_LABELS = frozenset(
 # Footnote-family labels kept as role-annotated paragraphs.
 FOOTNOTE_LABELS = frozenset({"footnote", "vision_footnote"})
 # The two labels the default SDK config ABANDONS that the lane explicitly KEEPS
-# (owner directive: aside_text + reference are content, not furniture).
+# (``aside_text`` and ``reference`` carry instructional content — dropping them
+# is silent content loss, not furniture removal).
 KEPT_ASIDE_LABELS = frozenset({"aside_text", "reference"})
 FORMULA_LABELS = frozenset({"display_formula", "inline_formula"})
 FIGURE_LABELS = frozenset({"image", "chart"})

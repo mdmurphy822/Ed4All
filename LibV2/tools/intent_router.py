@@ -2,8 +2,8 @@
 
 Wave 77 β shipped ``ed4all libv2 query`` for *user-driven* faceted
 filtering — the user already knows what facets they want and the CLI
-just applies them. ChatGPT's review identified that the package needs
-an *intent-routed* retrieval surface where natural-language queries
+just applies them. That leaves a gap: the package also needs an
+*intent-routed* retrieval surface where natural-language queries
 dispatch to the right backend automatically:
 
 * exact graph lookup for objective queries (``which chunks assess

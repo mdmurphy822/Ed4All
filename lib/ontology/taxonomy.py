@@ -231,8 +231,8 @@ def get_valid_topics(division: str, domain: str, subdomain: str) -> Set[str]:
 #
 # The opener / apparatus / confusable vocabularies the SemantiK adapter seam
 # consumes live in ``schemas/taxonomies/semantik_lexicon.json`` as PROFILES so a
-# new corpus is onboarded by a lexicon entry, never a code edit (owner directive
-# 3: lexicon profiles, not corpus-specific code). Profile selection is env-driven
+# new corpus is onboarded by a lexicon entry, never a code edit (lexicon
+# profiles, not corpus-specific code). Profile selection is env-driven
 # (``SEMANTIK_LEXICON_PROFILE``); the default is the ``generic-academic`` base
 # overlaid by the ``open-textbook`` overlay. The loader is a single-shot ``lru_cache``
 # read (mirrors :func:`load_taxonomy`); the per-profile getters take a resolved

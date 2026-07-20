@@ -1,7 +1,7 @@
 """Wave 75 — LibV2 importer must copy objectives.json into the archive.
 
-ChatGPT's review of the RDF/SHACL calibration-corpus archive flagged
-that ``course.json`` declared only the 7 terminal outcomes — the 29
+An audit of the RDF/SHACL calibration-corpus archive found that
+``course.json`` declared only the 7 terminal outcomes — the 29
 component objectives synthesized by Courseforge never propagated
 into the LibV2 archive, so 312 chunk ``learning_outcome_refs`` to
 ``co-*`` codes couldn't resolve.

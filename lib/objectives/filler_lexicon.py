@@ -5,8 +5,9 @@ skill once the Bloom verb and generic scaffolding are removed — "Apply various
 techniques to solve real-world problems" reduces to nothing nameable. The
 DOMAIN-AGNOSTIC "filler" vocabulary that produces this vacuity (hedge quantifiers,
 empty nouns, evaluative adjectives) lives in
-``schemas/taxonomies/objective_filler_lexicon.json`` as PROFILES (owner directive:
-publisher / subject vocabulary is data, not code) and is loaded here through the
+``schemas/taxonomies/objective_filler_lexicon.json`` as PROFILES (publisher /
+subject vocabulary is DATA, not code, so a new corpus is onboarded by adding a
+profile rather than editing Python) and is loaded here through the
 one documented entry point ``lib.ontology.taxonomy.load_taxonomy``.
 
 This module is the SINGLE shared helper the plan requires both Defect B and

@@ -38,8 +38,9 @@ from .transform import GlmPage
 logger = logging.getLogger(__name__)
 
 # Labels the DEFAULT SDK config abandons that the lane KEEPS as content
-# (owner directive: aside_text + reference are content, footnote is a genuine
-# note — only running header/folio/decoration are furniture).
+# (``aside_text`` + ``reference`` carry instructional content and ``footnote``
+# is a genuine note; only running header / folio / decoration are furniture, so
+# dropping these three would be silent content loss).
 _KEEP_AS_TEXT = ("aside_text", "reference", "footnote")
 
 # transformers/accelerate model loading is NOT thread-safe: init_empty_weights

@@ -191,8 +191,8 @@ PEDAGOGICAL_MARKERS: Set[str] = frozenset({
     "takeaway",
     "rubric",
     "rubrics",
-    # ChatGPT review flagged these top-3 polluters in the RDF/SHACL
-    # calibration corpus concept graph; they're the meta-vocabulary that scaffolds
+    # Measured as the top-3 polluters of the RDF/SHACL calibration corpus
+    # concept graph; they're the meta-vocabulary that scaffolds
     # assessments rather than the domain content the assessments cover.
     "assessment",
     "assessments",

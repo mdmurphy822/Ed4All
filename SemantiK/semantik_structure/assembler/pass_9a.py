@@ -387,7 +387,8 @@ def run_pass_9a(
         # T4 — DETERMINISTIC-FIRST math. When SEMANTIK_MATH_RECONSTRUCT is on
         # and Stage-5 stamped a gate-valid deterministic <math> candidate on
         # this math region, prefer it over the Stage-6 generative candidate
-        # (owner directive: deterministic-first). Counted in the fallback
+        # (deterministic-first: a verifiable, reproducible emitter always wins
+        # over a generative one). Counted in the fallback
         # family (a deterministic, non-LLM emitter) so the per_region_emit
         # drop arithmetic stays correct. Flag OFF -> no stamp -> this is a
         # no-op and the legacy selection runs (byte-identical).

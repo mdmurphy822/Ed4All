@@ -1,4 +1,4 @@
-"""ED4ALL_PLANNING_REROLL_SALT plumbing tests (owner directive 2026-07-17).
+"""ED4ALL_PLANNING_REROLL_SALT plumbing tests.
 
 The course_planning gate-retry loop in ``MCP/core/workflow_runner.py`` sets
 ``ED4ALL_PLANNING_REROLL_SALT=attempt-N`` before each re-dispatch. Two

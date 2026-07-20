@@ -663,7 +663,7 @@ class IMSCCExtractor:
 
     def _check_remediation_need(self, res_type: ResourceType, href: str) -> Tuple[bool, str]:
         """Check if a resource needs remediation"""
-        # PDFs always need DART conversion
+        # PDFs always need conversion to accessible HTML
         if res_type == ResourceType.PDF:
             return True, "PDF requires DART conversion to accessible HTML"
 

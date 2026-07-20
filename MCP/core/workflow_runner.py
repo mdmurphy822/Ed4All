@@ -841,11 +841,14 @@ def _summarize_gate_failure(gate_results: Any) -> str:
 
 
 # =============================================================================
-# course_planning GATE-FAILURE RETRY (owner directive 2026-07-17)
+# course_planning GATE-FAILURE RETRY
 # =============================================================================
 #
-# "a failed entailment should not kill the whole run; it should gracefully
-# retry (max 10 retries, if 10 fails then log and loudly warn)."
+# Invariant: a single failed entailment must not kill an entire run. The phase
+# retries within an operator-configured budget
+# (``ED4ALL_PLANNING_GATE_RETRIES``, default 0 = off); once that budget is
+# exhausted it fails open with a LOUD warning rather than silently continuing
+# or hard-failing.
 #
 # Scope: the ``course_planning`` phase ONLY. A critical gate failure there
 # (e.g. ``objective_entailment`` blocking on one unentailed terminal
@@ -872,8 +875,8 @@ def _summarize_gate_failure(gate_results: Any) -> str:
 # complete-WITH-WARNING (fail-open, never blocked): a LOUD ``logger.error``
 # line plus a GateIssue-style ``PLANNING_GATE_RETRIES_EXHAUSTED`` warning
 # entry appended to the phase's ``_gate_results`` chain, and the workflow
-# CONTINUES — the owner's explicit fail-open-after-retries directive for
-# this phase. Default 0 → byte-identical legacy block behavior.
+# CONTINUES: for this phase, fail-open-after-retries is the intended
+# terminal behavior. Default 0 → byte-identical legacy block behavior.
 
 _PLANNING_GATE_RETRIES_ENV = "ED4ALL_PLANNING_GATE_RETRIES"
 _PLANNING_REROLL_SALT_ENV = "ED4ALL_PLANNING_REROLL_SALT"
@@ -1625,9 +1628,10 @@ class WorkflowRunner:
         (silent CUDA-OOM deaths, council+reviewer coexistence): every GPU model
         loads, does its job, and hands the card over at the boundary.
 
-        A no-op unless ``ED4ALL_GPU_LIFECYCLE`` is on (default ON — the owner
-        directive wants lease semantics AS the behavior; residency/timing only,
-        never an output byte). When off, this returns IMMEDIATELY — no ollama
+        A no-op unless ``ED4ALL_GPU_LIFECYCLE`` is on (default ON — lease
+        semantics ARE the intended behavior, and the sweep touches residency /
+        timing only, never an output byte, so defaulting it on cannot change
+        any artifact). When off, this returns IMMEDIATELY — no ollama
         HTTP call, no worker thread — so control flow is byte-identical.
 
         When on, the blocking sweep (ollama ``/api/ps`` + ``keep_alive:0``
@@ -2150,8 +2154,9 @@ class WorkflowRunner:
         # observability — no behaviour change.
         self._emit_provider_banner()
 
-        # SEAT SCHEDULE dry-run report: log the full phase→seat plan (the
-        # "logical order" the owner asked to see) once at workflow start. No-op
+        # SEAT SCHEDULE dry-run report: log the full phase→seat plan in
+        # execution order once at workflow start, so the seat transitions are
+        # auditable BEFORE any container is started or stopped. No-op
         # unless ED4ALL_SEAT_SCHEDULE is on.
         self._maybe_report_seat_schedule(workflow_type, sorted_phases)
 
@@ -2686,7 +2691,7 @@ class WorkflowRunner:
                 break
 
             if not gates_passed and not getattr(phase, "optional", False):
-                # Owner directive 2026-07-17: a course_planning gate failure
+                # A course_planning gate failure
                 # (e.g. one unentailed terminal objective) retries gracefully
                 # instead of killing the whole run. Default 0 keeps the legacy
                 # block below byte-identical; see the module-level
@@ -5371,8 +5376,8 @@ class WorkflowRunner:
     ) -> Tuple[Dict[str, Any], bool, Any, Dict[str, Any], Dict[str, Any]]:
         """Gracefully retry a gate-failed ``course_planning`` phase.
 
-        Owner directive 2026-07-17 — see the module-level
-        ``resolve_planning_gate_retries`` block for the full contract.
+        See the module-level ``resolve_planning_gate_retries`` block for the
+        full contract.
         Called ONLY when the phase's gates failed and the budget is > 0.
 
         Per attempt: log the failing critical gate ids + issue codes, evict
@@ -5465,8 +5470,8 @@ class WorkflowRunner:
                                 f"Evicted cluster sidecar={evicted} "
                                 f"({sidecar}), kept the window/CO cache, "
                                 f"re-dispatching TO derivation with re-roll "
-                                f"salt {salt} per the owner's 2026-07-17 "
-                                f"graceful-retry directive."
+                                f"salt {salt} under the graceful-retry "
+                                f"contract for this phase."
                             ),
                             alternatives_considered=[
                                 "stop the workflow on the first critical "
@@ -5545,12 +5550,12 @@ class WorkflowRunner:
                 f"codes={','.join(s['critical_issue_codes']) or 'none'}"
                 for s in attempt_summaries
             )
-            # LOUD, operator-facing — the owner's explicit
-            # fail-open-after-retries directive for this phase.
+            # LOUD, operator-facing — budget exhaustion must never degrade
+            # silently, even though this phase fails open.
             logger.error(
                 "PLANNING_GATE_RETRIES_EXHAUSTED: course_planning validation "
                 "gates still failing after %d retry attempt(s) (%s). "
-                "Proceeding FAIL-OPEN per the owner's 2026-07-17 directive — "
+                "Proceeding FAIL-OPEN by design for this phase — "
                 "phase marked complete-with-warning; downstream phases run "
                 "against the un-gated objectives. Review "
                 "synthesized_objectives.json before promoting this course.",
@@ -5571,7 +5576,7 @@ class WorkflowRunner:
                     "message": (
                         f"course_planning validation gates still failing "
                         f"after {attempts_used} retry attempt(s); "
-                        f"fail-open per owner directive (2026-07-17). "
+                        f"failing open so the run continues. "
                         f"Per-attempt failing-gate summary: {per_attempt}."
                     ),
                     "location": None,
@@ -5599,13 +5604,13 @@ class WorkflowRunner:
                             f"retry attempt(s) failed ({per_attempt}); "
                             f"marking the phase complete-with-warning "
                             f"(PLANNING_GATE_RETRIES_EXHAUSTED) and letting "
-                            f"the workflow continue per the owner's "
-                            f"2026-07-17 fail-open-after-retries directive."
+                            f"the workflow continue under this phase's "
+                            f"fail-open-after-retries contract."
                         ),
                         alternatives_considered=[
                             "block the workflow after budget exhaustion "
-                            "(legacy behavior; contradicts the owner "
-                            "directive for this phase)",
+                            "(legacy behavior; contradicts this phase's "
+                            "fail-open contract)",
                         ],
                     )
                 except Exception:  # noqa: BLE001 — capture never blocks

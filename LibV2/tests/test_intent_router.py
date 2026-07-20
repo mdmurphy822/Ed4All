@@ -412,7 +412,8 @@ def test_dispatch_envelope_carries_required_keys(tmp_path: Path):
         "route", "source_path", "entities", "results",
     ):
         assert key in out, f"missing envelope key: {key}"
-    # source_path mirrors route for ChatGPT-review parity.
+    # ``source_path`` is a stable alias of ``route``: consumers that key on
+    # the generic envelope field must see the same backend descriptor.
     assert out["source_path"] == out["route"]
     # confidence in [0, 1].
     assert 0.0 <= out["confidence"] <= 1.0

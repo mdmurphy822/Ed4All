@@ -118,9 +118,12 @@ def test_every_rdf_shacl_co_has_at_least_one_vocab_candidate():
 
 
 def test_curated_overrides_backstop_generic_co_statements():
-    """The COs ChatGPT flagged (co-09, co-10) must have curated
-    overrides because their statements yield only generic terms
-    under conservative auto-extraction."""
+    """co-09 and co-10 must carry curated overrides.
+
+    Their statements yield only generic terms under conservative
+    auto-extraction, so without the curated backstop they would retag
+    against near-empty vocabularies.
+    """
     obj = _load_objectives()
     merged = merged_vocabularies(obj)
     # These two MUST have multi-term curated entries.

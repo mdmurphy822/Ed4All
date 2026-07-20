@@ -61,8 +61,9 @@ def _mk_chunk(chunk_id, tags):
 def test_every_emitted_node_carries_class(monkeypatch):
     monkeypatch.setattr(typed_edge_inference, "SCOPE_CONCEPT_IDS", False)
 
-    # Mix domain concepts + the contamination flagged by ChatGPT's
-    # review so we verify the classifier is actually consulted.
+    # Mix genuine domain concepts with known non-concept contamination
+    # (boilerplate tags, answer keys, outcome codes) so the assertion proves
+    # the classifier is actually consulted rather than trivially passing.
     chunks = [
         _mk_chunk("c_001", ["rdf-graph", "key-takeaway", "answer-b", "to-04"]),
         _mk_chunk("c_002", ["rdf-graph", "key-takeaway", "answer-b", "submission-format"]),

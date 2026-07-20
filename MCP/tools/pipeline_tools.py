@@ -495,7 +495,7 @@ def _index_objective_records(
         if isinstance(_chap, dict):
             for _e in _chap.get("objectives") or []:
                 _put(co_map, _e)
-    # Per-CO coverage (owner-directed 2026-07-19): also harvest the flat
+    # Per-CO coverage: also harvest the flat
     # ``learning_outcomes[]`` universe so a CO/TO present only there (not in
     # the chapter/component arrays) still enters the objective maps — the W10
     # assessment tier iterates ``co_map`` as the CO universe and drops items
@@ -758,7 +758,7 @@ def _build_assessment_artifacts_from_data(
 
 
 # ---------------------------------------------------------------------------
-# W10 per-CO coverage (owner-directed 2026-07-19) — QTI → assessment_item
+# W10 per-CO coverage — QTI → assessment_item
 # chunk harvest. The strict archival gate
 # (``lib/validators/libv2/packet_integrity.py`` — OBJECTIVE_NO_ASSESSMENT /
 # UNCOVERED_TERMINAL_OUTCOME) requires an ``assessment_item`` CHUNK whose
@@ -942,9 +942,9 @@ def _harvest_qti_assessment_chunks(
                 )
                 continue
             if isinstance(chunk, dict):
-                # D1 (owner directive 2026-07-19): the harvested end-of-section
-                # assessment_item chunks are verbatim OpenStax content DEMOTED
-                # to an internal practice bank. They stay in the chunkset so
+                # D1: the harvested end-of-section assessment_item chunks are
+                # VERBATIM source-textbook exercises, so they are DEMOTED to an
+                # internal practice bank. They stay in the chunkset so
                 # archival coverage stands, but are tagged so the graded-QTI /
                 # SFT-source / answer paths exclude them by default (the
                 # assessment_sft_generator's grounding filter refuses to source
@@ -5433,8 +5433,8 @@ def _planning_reroll_salt() -> str:
     """Per-attempt course_planning gate-retry re-roll salt.
 
     Set to ``attempt-N`` by ``WorkflowRunner._retry_course_planning_gates``
-    (owner directive 2026-07-17) before each gate-failure re-dispatch of the
-    ``course_planning`` phase; empty on every normal run. Folded into the
+    before each gate-failure re-dispatch of the ``course_planning`` phase;
+    empty on every normal run. Folded into the
     cluster-stage sidecar FINGERPRINT (both TO-derivation call sites) — and,
     independently, into the ``TextbookSynthesisProvider`` system prompt — so
     a retry attempt genuinely differs from the cached/previous attempt
@@ -23639,9 +23639,9 @@ def _build_tool_registry() -> dict:
             # + ``MCP/core/workflow_runner.py::_LEGACY_PHASE_PARAM_ROUTING``.
             imscc_chunks_path_kw = kwargs.get("imscc_chunks_path") or ""
 
-            # LOUD kwargs receipt (assessment-tail fix 2026-07-19) — the
-            # alg-glm-02 run's Phase 8 went silent after the chunkset log
-            # line; log what arrived so the next silent run is diagnosable.
+            # LOUD kwargs receipt — a production run's Phase 8 went silent
+            # after the chunkset log line with no further output; log what
+            # arrived so the next silent run is diagnosable.
             logger.info(
                 "generate_assessments: received kwargs course_id=%r "
                 "imscc_path=%r project_id=%r imscc_chunks_path=%r "
@@ -23852,7 +23852,7 @@ def _build_tool_registry() -> dict:
                     except (json.JSONDecodeError, ValueError):
                         continue
 
-            # Scaffolding suppression (alg-glm-02 production defect): the
+            # Scaffolding suppression (observed production defect): the
             # packager's own "Learning Objectives Map" navigation page chunks
             # carry objective-list boilerplate ("Supporting chapter
             # objectives (N): CO-NN — ..."); the term extractor mined them as
@@ -29155,8 +29155,8 @@ def _build_tool_registry() -> dict:
         """
         import traceback as _traceback
 
-        # ---- LOUD kwargs receipt (assessment-tail fix 2026-07-19) --------
-        # The alg-glm-02 production run lost project_id across a
+        # ---- LOUD kwargs receipt -----------------------------------------
+        # A production run lost project_id across a
         # course_planning fail-open + resume, and the resulting
         # {"error": ...} envelope (no ``success`` key) was treated as a
         # COMPLETED task by the executor — a <100ms silent no-op that left

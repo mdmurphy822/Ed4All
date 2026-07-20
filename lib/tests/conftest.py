@@ -164,8 +164,8 @@ def sample_tool_capability():
                 }
             },
             sandbox_level=SandboxLevel.RESTRICTED,
-            allowed_paths=["/home/bacon/Desktop/Ed4All/state"],
-            blocked_paths=["/home/bacon/Desktop/Ed4All/.env"]
+            allowed_paths=["/tmp/ed4all-test/state"],
+            blocked_paths=["/tmp/ed4all-test/.env"]
         )
     except ImportError:
         pytest.skip("tool_registry not available")

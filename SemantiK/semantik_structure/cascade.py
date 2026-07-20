@@ -64,7 +64,7 @@ def _gpu_lifecycle_release(
 ) -> None:
     """Fire a gated, fail-soft GPU-lifecycle release at a cascade stage seam.
 
-    Deterministic lease semantics (owner directive): a GPU model stays resident
+    Deterministic lease semantics: a GPU model stays resident
     for its stage's batch and releases the card at the SEAM to the next stage
     (post-Stage-5e ollama hand-off before the Stage-6 GGUF; post-captioner /
     post-Stage-6 / post-theta torch; post second-pass+ocr_repair ollama). Uses

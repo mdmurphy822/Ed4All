@@ -4,8 +4,8 @@ A FULL-CARTRIDGE strict-conformance gate that validates a *built* ``.imscc``
 package end-to-end against the vendored IMS Common Cartridge / QTI schema pack,
 so a cartridge that would silently fail (or import wrong) into an LMS is caught
 at the packaging boundary. This is the LMS-agnostic portability guarantee that
-replaces per-LMS testing (owner directive 2026-07-19: spec conformance is the
-contract, not per-vendor targets).
+replaces per-LMS testing: SPEC conformance is the contract, not per-vendor
+targets (a passing vendor import proves nothing about the next vendor).
 
 Unlike ``lib/validators/qti_well_formed.py`` — which validates only the loose
 ``06_assessments/*.xml`` documents BEFORE packaging — this validator opens the

@@ -1,7 +1,7 @@
 r"""Tier-2 composite-unit planner (adapter-seam, model-free, lexicon-role-driven).
 
-Wave #22 (owner directive 1 — higher-level composite blocks coagulating smaller
-blocks). The SemantiK adapter promotes pedagogical openers to headings and
+Wave #22 — higher-level composite blocks coagulating smaller blocks. The
+SemantiK adapter promotes pedagogical openers to headings and
 delivers list/table/definition_list bodies, but the emitted blocks stay a FLAT
 run of sibling ``<section>`` / callout-group elements: a worked example, its
 solution, and its practice exercises are three unrelated siblings; a glossary

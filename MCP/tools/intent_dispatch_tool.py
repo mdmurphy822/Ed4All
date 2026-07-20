@@ -48,7 +48,7 @@ def intent_dispatch_query(
             "intent_class": str,   # one of INTENT_CLASSES
             "confidence": float,
             "route": str,          # human-readable backend descriptor
-            "source_path": str,    # alias of ``route`` for ChatGPT-review parity
+            "source_path": str,    # stable alias of ``route`` (generic envelope key)
             "entities": dict,      # full extract_entities output
             "results": list,       # backend-specific shape
         }

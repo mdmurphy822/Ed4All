@@ -1,6 +1,7 @@
 """Deterministic-first math-reconstruction policy.
 
-Owner directive: **DETERMINISTIC-FIRST**. The reconstruction chain, in
+Design invariant: **DETERMINISTIC-FIRST** — a verifiable, reproducible
+emitter always outranks a generative one. The reconstruction chain, in
 strict priority order, is
 
     1. deterministic 2-D -> presentation-MathML  (:mod:`.structure_infer`
@@ -230,8 +231,8 @@ def stamp_math_reconstruction(
 def build_local_math_generative_fn() -> GenerativeFn | None:
     """Construct the LOCAL QLoRA math-specialist generative fallback.
 
-    Honours the owner directive: the generative tier is the ON-DEVICE,
-    license-clean QLoRA math specialist — **never** the hosted 70B. It
+    Licensing invariant: the generative tier is the ON-DEVICE, license-clean
+    QLoRA math specialist — **never** a hosted vendor model. It
     forces the local GGUF runtime (``make_runtime("real", force_local=
     True)``) so an endpoint provider selection / displace flag cannot route
     math through the cloud seat. Returns ``None`` when the local specialist

@@ -1,6 +1,6 @@
 """Per-model vLLM CONTAINER lifecycle lease helper (Ed4All venv).
 
-GOAL (owner directive, task #10): **do NOT keep models resident** — a model
+GOAL: **do NOT keep models resident** — a model
 loads, does its job, and STOPS serving when done. This is the container-level
 extension of :mod:`lib.gpu_lifecycle`: where that module hands the GPU card
 between ollama / torch seats at a phase boundary (``keep_alive:0`` +

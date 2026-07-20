@@ -2,12 +2,12 @@
 
 theta (the Stage-12 DeBERTa cross-encoder) is the historic semantic-preservation
 guardrail, but it is stub-collapsed (the v8 mode-collapse flat-0.7 placeholder)
-and the owner wants it OUT of the trust chain. This gate is its deterministic,
+so it carries no trustworthy signal and is OUT of the trust chain. This gate is
+its deterministic,
 model-free replacement for the ONE thing theta was supposed to catch:
 **content loss** — text that entered structure detection (the fused per-page
-extraction block/unit texts) but vanished from the emitted HTML (exactly the
-class of defect found tonight: a worked example present in extraction, absent
-from output).
+extraction block/unit texts) but vanished from the emitted HTML (the observed
+failure class: a worked example present in extraction, absent from output).
 
 Mechanism (pure, CPU-only, no LLM): after final assembly, tokenize the
 extraction-side text universe PER PAGE and the emitted HTML text, then compute
@@ -246,8 +246,8 @@ def run_unit_coverage_gate(
 ) -> dict[str, Any]:
     """Compute the coverage report and emit LOUD operator log lines.
 
-    Logs one ``theta bypassed`` note (the owner directive: this gate supersedes
-    the stub-collapsed theta as the content-loss signal), a per-below-min-page
+    Logs one ``theta bypassed`` note (this gate supersedes the stub-collapsed
+    theta as the content-loss signal), a per-below-min-page
     line naming the longest missing span, and a document-level FAIL-CLOSED line
     when any page dropped below the hard floor.
     """

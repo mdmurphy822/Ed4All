@@ -1,7 +1,7 @@
 """Track L (L3) — Moodle-in-Docker Common Cartridge import smoke test.
 
 The single REAL-import sanity check behind the LMS-agnostic conformance
-contract (owner directive 2026-07-19 D2): a spec-valid ``.imscc`` must actually
+contract: a spec-valid ``.imscc`` must actually
 restore into a real LMS. Moodle is the automatable target (official / bitnami
 image, self-hostable); Canvas self-host was judged too heavy and Brightspace is
 non-self-hostable.

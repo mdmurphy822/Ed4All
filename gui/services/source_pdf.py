@@ -6,7 +6,8 @@ page. The first three hops already resolve (citation anchor + ``source_page`` /
 ``dart:{slug}#{block_id}`` source block was synthesized from.
 
 Layout (set by ``MCP/tools/pipeline_tools.py::archive_to_libv2``): raw PDFs land
-under ``LibV2/courses/<slug>/source/pdf/<name>.pdf``. The DART converter writes a
+under ``LibV2/courses/<slug>/source/pdf/<name>.pdf``. The conversion phase
+(SemantiK; the legacy DART converter was retired) writes a
 ``{stem}_synthesized.json`` sidecar carrying a ``source_pdf`` field that records
 which PDF a staged HTML document (and therefore its ``dart:{slug}`` sourceId
 half) came from; those sidecars are archived alongside the course, so this module

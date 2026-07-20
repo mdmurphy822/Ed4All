@@ -1,8 +1,8 @@
 """Wave #22 — SemantiK pedagogical-lexicon taxonomy loader.
 
 The opener / apparatus / confusable vocabularies moved out of hardcoded Python
-constants into ``schemas/taxonomies/semantik_lexicon.json`` (owner directive 3:
-lexicon profiles, not corpus-specific code). These tests lock the loader's
+constants into ``schemas/taxonomies/semantik_lexicon.json`` (lexicon profiles,
+not corpus-specific code). These tests lock the loader's
 profile-merge semantics AND assert the default ``generic-academic+open-textbook``
 profile reproduces the historical classifier vocabulary exactly (behavior-
 preserving refactor). The legacy publisher-named profile-key spellings must

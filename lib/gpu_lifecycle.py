@@ -1,6 +1,6 @@
 """Deterministic GPU-lifecycle lease helper (Ed4All venv).
 
-GOAL (owner directive): **deterministic lease semantics** — every GPU model
+GOAL: **deterministic lease semantics** — every GPU model
 loads, does its job, releases the card, and hands it to the next stage. This
 is NOT a contention heuristic (that is what
 :mod:`lib.classifiers.nli_classifier` eviction + :mod:`lib.llm.vram_doctor`

@@ -96,8 +96,7 @@ ENV_MAX_TOKENS = "TEXTBOOK_SYNTHESIS_MAX_TOKENS"
 # 14B + 4096-token output runs ~120-300s. 300s is the default; override
 # via ``TEXTBOOK_SYNTHESIS_TIMEOUT_SECONDS`` or the ``timeout`` kwarg.
 ENV_TIMEOUT = "TEXTBOOK_SYNTHESIS_TIMEOUT_SECONDS"
-# Per-attempt course_planning gate-retry re-roll salt (owner directive
-# 2026-07-17). Set to ``attempt-N`` by
+# Per-attempt course_planning gate-retry re-roll salt. Set to ``attempt-N`` by
 # ``MCP/core/workflow_runner.py::WorkflowRunner._retry_course_planning_gates``
 # before each gate-failure re-dispatch of the ``course_planning`` phase;
 # empty on every normal run. Read at CONSTRUCTION (the phase handler builds

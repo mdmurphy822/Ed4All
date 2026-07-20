@@ -2,10 +2,9 @@
 
 The live-archive assertions run against an opt-in course archive (set
 ``ED4ALL_INTENT_ROUTER_FIXTURE_SLUG`` to a slug under
-``$ED4ALL_LIBV2_ROOT/courses/``). The reference counts encoded here
-were independently verified by ChatGPT's Wave 76 review against the
-RDF/SHACL calibration corpus (``--week 7`` → 18; ``--outcome to-04``
-→ ≥69; ``--outcome co-18`` → ≥44).
+``$ED4ALL_LIBV2_ROOT/courses/``). The reference counts encoded here were
+independently verified against the RDF/SHACL calibration corpus
+(``--week 7`` → 18; ``--outcome to-04`` → ≥69; ``--outcome co-18`` → ≥44).
 
 A small handful of structural tests use synthetic fixtures so the suite
 isn't tightly coupled to the live archive's exact byte content.
