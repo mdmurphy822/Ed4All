@@ -58,7 +58,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Optional, Union
+from typing import Dict, NamedTuple, Optional, Union
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +91,49 @@ ENV_SEAT_SCHEDULE = "ED4ALL_SEAT_SCHEDULE"
 #: degrades softly to no-op on the unmapped seats.
 ENV_SEAT_BASE_URLS = "ED4ALL_SEAT_BASE_URLS"
 
+#: Data-driven per-seat LAUNCH-SPEC registry (``seat_name=<launch spec>``) that
+#: lets the seat schedule COLD-RECREATE a container (``docker rm -f`` + relaunch),
+#: not merely warm ``docker start`` a pre-existing one — the self-heal path for a
+#: seat that mode-collapses on a warm restart. The RHS spec is either an absolute
+#: path to an ops-owned launch SCRIPT (``spark-super=/opt/seats/launch-super.sh``,
+#: the RECOMMENDED form — keeps the long spec-decode vLLM command out of the env
+#: and lets ops own the exact argv) OR a full shell command line. Tokens are
+#: separated by ``;`` (preferred — a launch command may itself contain ``,``) or
+#: by ``,`` when no ``;`` is present; each token is split on its FIRST ``=`` only,
+#: so the spec may itself contain ``=`` (e.g. ``--env FOO=bar``). Malformed tokens
+#: are SKIPPED with a one-time warning (mirrors the other registries). A seat with
+#: NO launch spec can still warm-start but CANNOT self-heal a mode collapse.
+ENV_SEAT_LAUNCH_SPECS = "ED4ALL_SEAT_LAUNCH_SPECS"
+
+#: Env-tunable CEILING (seconds) on the seat load-wait poll loop — the maximum a
+#: ``start_seat`` / ``recreate_seat`` health-check poll will wait for a seat to
+#: become live AND coherent before giving up. It is a CEILING, not a fixed sleep:
+#: the poll returns the instant the seat is actually ready, so a fast seat
+#: proceeds in seconds and only a slow / stuck one approaches this bound. Default
+#: **1200s (20 min)** — a 120B NVFP4 seat's cold load + swap is ~8-10 min observed
+#: and the old 600s was cutting it close. Parse-with-fallback: a positive
+#: int/float wins; garbage / non-positive → the 1200s default.
+ENV_SEAT_LOAD_TIMEOUT_SECONDS = "ED4ALL_SEAT_LOAD_TIMEOUT_SECONDS"
+
+#: Default seat load-wait ceiling (seconds) — see
+#: :data:`ENV_SEAT_LOAD_TIMEOUT_SECONDS`.
+_DEFAULT_SEAT_LOAD_TIMEOUT_SECONDS = 1200.0
+
+#: Env-tunable COUNT of content-coherence probe attempts once a seat is LIVE.
+#: Coherence is a DIFFERENT gate from liveness: a mode-collapsed seat is
+#: live-but-incoherent and detectable in SECONDS, so it must NOT ride out the
+#: ``ED4ALL_SEAT_LOAD_TIMEOUT_SECONDS`` liveness ceiling. After ``/v1/models``
+#: answers, the coherence probe is retried at most this many times (short
+#: interval between); if still incoherent the schedule cold-recreates IMMEDIATELY
+#: (a live-but-incoherent seat self-heals in ~30-45s + reload, not ~20 min).
+#: Default **3**. Parse-with-fallback: a positive int wins; garbage / non-positive
+#: → 3.
+ENV_SEAT_COHERENCE_ATTEMPTS = "ED4ALL_SEAT_COHERENCE_ATTEMPTS"
+
+#: Default number of content-coherence probe attempts — see
+#: :data:`ENV_SEAT_COHERENCE_ATTEMPTS`.
+_DEFAULT_SEAT_COHERENCE_ATTEMPTS = 3
+
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 
 #: Per-request timeout (seconds) for the ``/v1/models`` readiness probe. A probe
@@ -111,6 +154,20 @@ _REGISTRY_WARNED = False
 
 #: Sibling of :data:`_REGISTRY_WARNED` for the ``seat_name=base_url`` registry.
 _SEAT_REGISTRY_WARNED = False
+
+#: Sibling of :data:`_REGISTRY_WARNED` for the ``seat_name=launch_spec`` registry.
+_LAUNCH_SPEC_WARNED = False
+
+#: Interval (seconds) between the BOUNDED content-coherence probe attempts
+#: (:func:`_coherence_check`). Short (~8s) so a just-loaded seat's first coherent
+#: completion is picked up promptly; the number of attempts (not this interval)
+#: bounds the coherence stage (see :data:`ENV_SEAT_COHERENCE_ATTEMPTS`).
+_COHERENCE_POLL_INTERVAL_SECONDS = 8.0
+
+#: How often (seconds) the load-wait poll loops emit a "still loading, N s
+#: elapsed" progress line, so a human/operator can see a long wait is advancing
+#: (not hung) without spamming the log every poll tick.
+_PROGRESS_LOG_INTERVAL_SECONDS = 30.0
 
 #: Per-request HTTP timeout (seconds) for the content-level COHERENCE PROBE
 #: (``POST /v1/chat/completions``). Longer than the ``/v1/models`` liveness
@@ -513,10 +570,109 @@ def all_registered_seat_names(value: Optional[str] = None) -> set:
     return set(parse_seat_registry(value).keys())
 
 
+def resolve_seat_load_timeout(value: Optional[str] = None) -> float:
+    """Resolve the seat load-wait CEILING (seconds).
+
+    Resolution chain: explicit ``value`` → ``ED4ALL_SEAT_LOAD_TIMEOUT_SECONDS``
+    env → **default 1200s (20 min)**. Parse-with-fallback: a positive int/float
+    string wins; anything else — unset / blank / garbage / non-positive — falls
+    back to the 1200s default (a 120B NVFP4 seat's cold load is ~8-10 min; the
+    ceiling must comfortably exceed that). This is a CEILING on the health-check
+    poll, NOT a fixed sleep: the poll returns the instant the seat is ready.
+    """
+    raw = value if value is not None else os.environ.get(ENV_SEAT_LOAD_TIMEOUT_SECONDS)
+    if raw is None or not str(raw).strip():
+        return _DEFAULT_SEAT_LOAD_TIMEOUT_SECONDS
+    try:
+        parsed = float(str(raw).strip())
+    except (TypeError, ValueError):
+        return _DEFAULT_SEAT_LOAD_TIMEOUT_SECONDS
+    if parsed <= 0:
+        return _DEFAULT_SEAT_LOAD_TIMEOUT_SECONDS
+    return parsed
+
+
+def resolve_seat_coherence_attempts(value: Optional[str] = None) -> int:
+    """Resolve the bounded COUNT of content-coherence probe attempts.
+
+    Resolution chain: explicit ``value`` → ``ED4ALL_SEAT_COHERENCE_ATTEMPTS``
+    env → **default 3**. Parse-with-fallback: a positive int wins; anything else
+    — unset / blank / garbage / non-positive — falls back to 3. Coherence is
+    bounded (a mode-collapsed seat is detectable in seconds) and must NOT ride
+    out the liveness ceiling: after this many failed attempts the schedule
+    cold-recreates immediately.
+    """
+    raw = value if value is not None else os.environ.get(ENV_SEAT_COHERENCE_ATTEMPTS)
+    if raw is None or not str(raw).strip():
+        return _DEFAULT_SEAT_COHERENCE_ATTEMPTS
+    try:
+        parsed = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return _DEFAULT_SEAT_COHERENCE_ATTEMPTS
+    if parsed <= 0:
+        return _DEFAULT_SEAT_COHERENCE_ATTEMPTS
+    return parsed
+
+
+def parse_seat_launch_specs(value: Optional[str] = None) -> Dict[str, str]:
+    """Parse the ``seat_name=<launch spec>`` registry into ``{seat_name: spec}``.
+
+    Reads ``ED4ALL_SEAT_LAUNCH_SPECS`` (or the explicit ``value``). Tokens are
+    separated by ``;`` when present (a launch command may itself contain ``,``),
+    else by ``,``. Each token is split on its FIRST ``=`` only, so the spec (the
+    RHS — a script path or a full shell command) may contain further ``=`` (e.g.
+    ``--env FOO=bar``). Fail-soft: unset / blank returns ``{}``; a token without
+    a ``=`` (or with an empty seat name / empty spec) is SKIPPED with a one-time
+    warning — a partly-garbage registry still yields its valid pairs.
+    """
+    global _LAUNCH_SPEC_WARNED
+    raw = value if value is not None else os.environ.get(ENV_SEAT_LAUNCH_SPECS)
+    if raw is None or not str(raw).strip():
+        return {}
+
+    sep = ";" if ";" in str(raw) else ","
+    registry: Dict[str, str] = {}
+    bad_tokens = []
+    for token in str(raw).split(sep):
+        token = token.strip()
+        if not token:
+            continue
+        if "=" not in token:
+            bad_tokens.append(token)
+            continue
+        seat, spec = token.split("=", 1)
+        seat = seat.strip()
+        spec = spec.strip()
+        if not seat or not spec:
+            bad_tokens.append(token)
+            continue
+        registry[seat] = spec
+
+    if bad_tokens and not _LAUNCH_SPEC_WARNED:
+        logger.warning(
+            "vllm_container_lifecycle: ignored %d malformed %s token(s) %r "
+            "(expected 'seat_name=<launch script path or command>'); using %d "
+            "valid pair(s).",
+            len(bad_tokens), ENV_SEAT_LAUNCH_SPECS, bad_tokens, len(registry),
+        )
+        _LAUNCH_SPEC_WARNED = True
+    return registry
+
+
+def resolve_seat_launch_spec(
+    seat_name: str, *, value: Optional[str] = None
+) -> Optional[str]:
+    """Return the launch spec mapped to ``seat_name``, or None if none configured."""
+    registry = parse_seat_launch_specs(value)
+    if not registry:
+        return None
+    return registry.get(str(seat_name).strip())
+
+
 def start_seat(
     seat_name: str,
     *,
-    timeout_seconds: float = 600,
+    timeout_seconds: Optional[float] = None,
     run_dir: Optional[Union[str, Path]] = None,
 ) -> Optional[float]:
     """Bring the logical ``seat_name`` up and WAIT until it answers ``/v1/models``.
@@ -524,6 +680,14 @@ def start_seat(
     NOT gated by :func:`resolve_vllm_container_lifecycle_mode` — the seat-
     schedule caller owns the on/off decision. Resolves ``seat_name`` →
     base_url (:data:`ENV_SEAT_BASE_URLS`) → container (:data:`ENV_VLLM_CONTAINERS`).
+
+    ``timeout_seconds`` is the load-wait CEILING: ``None`` → resolve from
+    :func:`resolve_seat_load_timeout` (``ED4ALL_SEAT_LOAD_TIMEOUT_SECONDS``,
+    default 1200s). This is stage (a) of the two-stage readiness gate — a
+    ``/v1/models`` liveness poll that returns the instant the swap/load is done;
+    the caller (:func:`start_seat_coherent`) then runs stage (b), the content
+    coherence poll. The loop emits a periodic "still loading, N s elapsed"
+    progress line during long waits.
 
     Returns:
       * ``0.0``  — the seat was already serving (no ``docker start``).
@@ -535,6 +699,8 @@ def start_seat(
 
     Best-effort — never raises.
     """
+    if timeout_seconds is None:
+        timeout_seconds = resolve_seat_load_timeout()
     base_url = resolve_seat_base_url(seat_name)
     if not base_url:
         return None
@@ -568,20 +734,30 @@ def start_seat(
         return None
 
     deadline = start + float(timeout_seconds)
+    next_progress = start + _PROGRESS_LOG_INTERVAL_SECONDS
     while time.monotonic() < deadline:
         if _probe_ready(base_url):
             load_seconds = time.monotonic() - start
             logger.info(
-                "vllm_container_lifecycle: seat %r (%s) ready after %.1fs.",
+                "vllm_container_lifecycle: seat %r (%s) live on /v1/models after "
+                "%.1fs.",
                 seat_name, base_url, load_seconds,
             )
             if run_dir is not None:
                 record_load_event(run_dir, base_url, load_seconds)
             return load_seconds
+        now = time.monotonic()
+        if now >= next_progress:
+            logger.info(
+                "vllm_container_lifecycle: seat %r (%s) still loading, %ds "
+                "elapsed (ceiling %ds)…",
+                seat_name, base_url, int(now - start), int(timeout_seconds),
+            )
+            next_progress = now + _PROGRESS_LOG_INTERVAL_SECONDS
         time.sleep(_POLL_INTERVAL_SECONDS)
 
     logger.warning(
-        "vllm_container_lifecycle: seat %r (%s / %s) not ready within %ss.",
+        "vllm_container_lifecycle: seat %r (%s / %s) not live within %ss.",
         seat_name, base_url, container, timeout_seconds,
     )
     return None
@@ -718,11 +894,391 @@ def coherence_probe(
         return False
 
 
+# ==========================================================================
+# COLD-RECREATE self-heal for a mode-collapsed seat (ED4ALL_SEAT_LAUNCH_SPECS).
+#
+# ``start_seat`` can only WARM ``docker start`` a pre-existing container; a seat
+# that mode-collapses on that warm restart (passes ``/v1/models`` yet emits
+# soup/null — the documented failure) would otherwise fail the phase LOUDLY with
+# no automatic recovery. These primitives add the cold-recreate path — ``docker
+# rm -f`` the collapsed container + re-run its data-driven launch spec — so the
+# manual "cold stop → start → re-probe" recovery becomes automatic pipeline
+# behavior. Everything is best-effort / NEVER-raises (module doctrine); the loud
+# failure stays owned by the orchestrator, which turns a non-``ok``
+# :class:`SeatStartResult` into a ``SeatScheduleProbeError``.
+# ==========================================================================
+
+
+def _run_launch_spec(spec: str, *, timeout: float) -> bool:
+    """Run a seat launch spec (script path or full command) via the shell.
+
+    The spec is ops-owned config (a script path like ``/opt/seats/launch.sh`` or
+    a full ``docker run …`` command line), so it is executed through the shell to
+    honor its argv/redirection exactly as written. Best-effort — NEVER raises: a
+    non-zero rc, a launch-command timeout, or any subprocess failure logs a
+    warning and returns False. ``timeout`` bounds the launch INVOCATION (a
+    ``docker run -d`` returns immediately; a script that blocks until ready is
+    still bounded by the load-wait ceiling passed here).
+    """
+    try:
+        proc = subprocess.run(
+            spec, shell=True, capture_output=True, text=True, timeout=timeout
+        )
+        if proc.returncode == 0:
+            return True
+        logger.warning(
+            "vllm_container_lifecycle: launch spec %r failed (rc=%d): %s",
+            spec, proc.returncode, (proc.stderr or "").strip(),
+        )
+        return False
+    except subprocess.TimeoutExpired:
+        logger.warning(
+            "vllm_container_lifecycle: launch spec %r timed out after %ss.",
+            spec, timeout,
+        )
+        return False
+    except Exception as exc:  # noqa: BLE001 — any launch failure is non-fatal here
+        logger.warning(
+            "vllm_container_lifecycle: launch spec %r raised: %s", spec, exc
+        )
+        return False
+
+
+def _emit_recreate_capture(
+    seat_name: str,
+    base_url: Optional[str],
+    container: Optional[str],
+    *,
+    reason: str,
+    load_seconds: Optional[float],
+    launched: bool,
+) -> None:
+    """Emit a DecisionCapture recording a seat COLD-RECREATE (best-effort).
+
+    Project law: a new decision path logs a DecisionCapture with a dynamic
+    rationale interpolating the load-bearing signals (seat, base_url, container,
+    ``reason``, the reload seconds, whether the relaunch command returned 0). A
+    recreate is a genuine autonomous recovery decision, so it is captured for
+    post-hoc replay. NEVER raises — a capture-write failure must not break the
+    recovery it observes.
+    """
+    try:
+        from lib.decision_capture import DecisionCapture
+
+        dc = DecisionCapture(
+            course_code="_seat_schedule_",
+            phase="seat_schedule",
+            tool="orchestrator",
+        )
+        dc.log_decision(
+            decision_type="seat_cold_recreate",
+            decision=(
+                f"cold-recreated vLLM seat {seat_name!r} "
+                f"(container {container!r} at {base_url})"
+            ),
+            rationale=(
+                f"seat {seat_name!r} ({base_url}, container {container!r}) "
+                f"reason={reason}: the warm docker-start passed /v1/models "
+                f"liveness but FAILED the content coherence probe (mode-collapse "
+                f"doctrine), so the schedule cold-recreated it via docker rm -f + "
+                f"its ED4ALL_SEAT_LAUNCH_SPECS launch spec "
+                f"(relaunch_ok={launched}, reload_seconds={load_seconds}). "
+                f"Automatic self-heal replacing the manual cold-restart."
+            ),
+            alternatives_considered=[
+                "warm docker start only (already failed the coherence probe)",
+                "raise SeatScheduleProbeError without any recovery attempt",
+            ],
+        )
+        try:
+            dc.save()
+        except Exception:  # noqa: BLE001 — save is best-effort
+            pass
+    except Exception as exc:  # noqa: BLE001 — capture must never crash the recovery
+        logger.debug(
+            "vllm_container_lifecycle: recreate DecisionCapture failed for seat "
+            "%r (ignoring): %s",
+            seat_name, exc,
+        )
+
+
+def recreate_seat(
+    seat_name: str,
+    *,
+    run_dir: Optional[Union[str, Path]] = None,
+    reason: str = "warm_start_incoherent",
+    timeout_seconds: Optional[float] = None,
+) -> Optional[float]:
+    """COLD-recreate ``seat_name``: ``docker rm -f`` + relaunch + poll to live.
+
+    The self-heal path a warm ``docker start`` cannot provide. Resolves
+    ``seat_name`` → base_url → container and → its launch spec
+    (:func:`resolve_seat_launch_spec` / ``ED4ALL_SEAT_LAUNCH_SPECS``). Sequence:
+
+      1. ``docker rm -f`` the (mode-collapsed) container — best-effort.
+      2. Run the launch spec (script path or full command) via
+         :func:`_run_launch_spec`. A launch failure → warn + ``None``.
+      3. Poll ``/v1/models`` until live or the load-wait ceiling
+         (``timeout_seconds`` → :func:`resolve_seat_load_timeout`, default 1200s),
+         with a periodic progress line. Timeout → ``None``.
+
+    Emits a DecisionCapture recording the recreate (dynamic rationale naming
+    seat / base_url / ``reason``). Returns the measured reload seconds on success,
+    else ``None`` (unresolvable seat / no launch spec / launch failed / timeout).
+    Best-effort — never raises. The CALLER re-runs the coherence probe: a live
+    reload does not by itself prove coherence.
+    """
+    if timeout_seconds is None:
+        timeout_seconds = resolve_seat_load_timeout()
+    base_url = resolve_seat_base_url(seat_name)
+    if not base_url:
+        return None
+    container = _lookup_container(base_url)
+    if not container:
+        logger.warning(
+            "vllm_container_lifecycle: seat %r resolves to base_url %s but that "
+            "URL is not in %s; cannot recreate.",
+            seat_name, base_url, ENV_VLLM_CONTAINERS,
+        )
+        return None
+    spec = resolve_seat_launch_spec(seat_name)
+    if not spec:
+        logger.error(
+            "vllm_container_lifecycle: seat %r has NO launch spec in %s; cannot "
+            "cold-recreate (a warm start cannot self-heal a mode collapse).",
+            seat_name, ENV_SEAT_LAUNCH_SPECS,
+        )
+        return None
+
+    logger.warning(
+        "vllm_container_lifecycle: COLD-RECREATING seat %r (container %r at %s) "
+        "reason=%s — docker rm -f + relaunch via launch spec.",
+        seat_name, container, base_url, reason,
+    )
+    start = time.monotonic()
+    # 1. Remove the collapsed container (best-effort; a launch that re-`docker
+    #    run --name <container>` needs the old name freed).
+    _run_docker(["rm", "-f", container])
+    # 2. Relaunch from the data-driven spec.
+    launched = _run_launch_spec(spec, timeout=float(timeout_seconds))
+    if not launched:
+        _emit_recreate_capture(
+            seat_name, base_url, container,
+            reason=reason, load_seconds=None, launched=False,
+        )
+        logger.error(
+            "vllm_container_lifecycle: seat %r launch spec did not succeed; "
+            "recreate FAILED.",
+            seat_name,
+        )
+        return None
+
+    # 3. Poll to liveness within the ceiling.
+    deadline = start + float(timeout_seconds)
+    next_progress = start + _PROGRESS_LOG_INTERVAL_SECONDS
+    reload_seconds: Optional[float] = None
+    while time.monotonic() < deadline:
+        if _probe_ready(base_url):
+            reload_seconds = time.monotonic() - start
+            logger.info(
+                "vllm_container_lifecycle: seat %r (%s) live on /v1/models "
+                "after cold recreate in %.1fs.",
+                seat_name, base_url, reload_seconds,
+            )
+            if run_dir is not None:
+                record_load_event(run_dir, base_url, reload_seconds)
+            break
+        now = time.monotonic()
+        if now >= next_progress:
+            logger.info(
+                "vllm_container_lifecycle: seat %r (%s) recreate still loading, "
+                "%ds elapsed (ceiling %ds)…",
+                seat_name, base_url, int(now - start), int(timeout_seconds),
+            )
+            next_progress = now + _PROGRESS_LOG_INTERVAL_SECONDS
+        time.sleep(_POLL_INTERVAL_SECONDS)
+
+    _emit_recreate_capture(
+        seat_name, base_url, container,
+        reason=reason, load_seconds=reload_seconds, launched=True,
+    )
+    if reload_seconds is None:
+        logger.warning(
+            "vllm_container_lifecycle: seat %r (%s / %s) not live within %ss "
+            "after cold recreate.",
+            seat_name, base_url, container, timeout_seconds,
+        )
+    return reload_seconds
+
+
+def _coherence_check(
+    base_url: str,
+    *,
+    seat_name: str,
+    attempts: Optional[int] = None,
+    interval: float = _COHERENCE_POLL_INTERVAL_SECONDS,
+) -> bool:
+    """BOUNDED content-coherence check: at most ``attempts`` probes once LIVE.
+
+    Stage (b) of the readiness gate, and DELIBERATELY bounded — unlike the
+    liveness poll (which legitimately waits out the full load ceiling for a slow
+    120B load), a mode-collapsed seat is live-but-incoherent and detectable in
+    SECONDS, so it must NOT ride out ``ED4ALL_SEAT_LOAD_TIMEOUT_SECONDS``. Probes
+    :func:`coherence_probe` up to ``attempts`` times (``None`` →
+    :func:`resolve_seat_coherence_attempts`, default 3), sleeping a short
+    ``interval`` between tries, and returns ``True`` on the first pass. After all
+    attempts fail it returns ``False`` so the caller cold-recreates IMMEDIATELY
+    (self-heal in ~30-45s, not ~20 min). NEVER raises (``coherence_probe`` is
+    itself never-raising).
+    """
+    if attempts is None:
+        attempts = resolve_seat_coherence_attempts()
+    for attempt in range(1, attempts + 1):
+        if coherence_probe(base_url):
+            return True
+        if attempt < attempts:
+            logger.info(
+                "vllm_container_lifecycle: seat %r (%s) live but not yet "
+                "coherent (attempt %d/%d); retrying in %ss…",
+                seat_name, base_url, attempt, attempts, interval,
+            )
+            time.sleep(interval)
+    logger.warning(
+        "vllm_container_lifecycle: seat %r (%s) STILL incoherent after %d "
+        "bounded coherence attempt(s) — declaring mode-collapse.",
+        seat_name, base_url, attempts,
+    )
+    return False
+
+
+class SeatStartResult(NamedTuple):
+    """Outcome of :func:`start_seat_coherent`.
+
+    ``ok`` — the seat is up AND coherent (the phase may proceed). ``reason`` is a
+    stable machine token the orchestrator maps to a ``SeatScheduleProbeError``
+    message: ``already_serving`` / ``warm_start_coherent`` / ``start_failed`` /
+    ``warm_incoherent_no_spec`` / ``cold_recreate_coherent`` / ``recreate_failed``
+    / ``still_incoherent_after_recreate``. ``recreated`` records whether the cold
+    self-heal path fired.
+    """
+
+    ok: bool
+    reason: str
+    load_seconds: Optional[float]
+    recreated: bool
+    base_url: Optional[str]
+
+
+def start_seat_coherent(
+    seat_name: str,
+    *,
+    run_dir: Optional[Union[str, Path]] = None,
+    timeout_seconds: Optional[float] = None,
+) -> SeatStartResult:
+    """Bring ``seat_name`` up, WAIT until live AND coherent, self-heal on collapse.
+
+    The full reliable readiness gate the seat schedule needs, composed from the
+    module primitives:
+
+      1. :func:`start_seat` — warm ``docker start`` + poll ``/v1/models`` to
+         LIVENESS (stage a), bounded by the load-wait ceiling
+         (``timeout_seconds`` → :func:`resolve_seat_load_timeout`, default 1200s)
+         — a genuinely slow 120B load legitimately needs this whole ceiling.
+      2. :func:`_coherence_check` — a BOUNDED content-coherence check (stage b):
+         at most :func:`resolve_seat_coherence_attempts` probes (default 3), NOT
+         the liveness ceiling, because a mode-collapse is detectable in seconds.
+      3. If the warm seat is live but INCOHERENT after those bounded attempts AND
+         a launch spec is configured → :func:`recreate_seat` (``docker rm -f`` +
+         relaunch) IMMEDIATELY (do NOT wait out the ceiling), then re-run stages
+         a+b once more.
+
+    Net effect: a slow load waits patiently (up to the ceiling for LIVENESS); a
+    mode-collapse self-heals in ~bounded-coherence-attempts + the recreate load
+    time, not ~20 min. Returns a :class:`SeatStartResult`; NEVER raises. The
+    orchestrator turns a non-``ok`` result into a LOUD ``SeatScheduleProbeError``
+    (loud-failure stays owned by the caller, per module doctrine). ``ok`` only
+    when the seat both came up and passed coherence — warm, or after exactly one
+    cold recreate.
+    """
+    if timeout_seconds is None:
+        timeout_seconds = resolve_seat_load_timeout()
+    base_url = resolve_seat_base_url(seat_name)
+
+    # --- WARM: docker start + LIVENESS poll to the full ceiling (stage a) --
+    load = start_seat(seat_name, timeout_seconds=timeout_seconds, run_dir=run_dir)
+    if load is None:
+        return SeatStartResult(
+            ok=False, reason="start_failed", load_seconds=None,
+            recreated=False, base_url=base_url,
+        )
+    # Stage b: BOUNDED coherence check (a mode-collapse is detectable in seconds
+    # — do NOT let it ride out the liveness ceiling).
+    if _coherence_check(base_url, seat_name=seat_name):
+        return SeatStartResult(
+            ok=True,
+            reason=("already_serving" if load == 0.0 else "warm_start_coherent"),
+            load_seconds=load, recreated=False, base_url=base_url,
+        )
+
+    # --- Warm seat is live but INCOHERENT → cold-recreate self-heal -------
+    logger.warning(
+        "vllm_container_lifecycle: seat %r warm-started but FAILED the bounded "
+        "coherence check (possible mode collapse); attempting cold-recreate "
+        "self-heal IMMEDIATELY (not waiting out the liveness ceiling).",
+        seat_name,
+    )
+    spec = resolve_seat_launch_spec(seat_name)
+    if not spec:
+        logger.error(
+            "vllm_container_lifecycle: seat %r incoherent and NO launch spec "
+            "configured (%s) — cannot self-heal.",
+            seat_name, ENV_SEAT_LAUNCH_SPECS,
+        )
+        return SeatStartResult(
+            ok=False, reason="warm_incoherent_no_spec", load_seconds=load,
+            recreated=False, base_url=base_url,
+        )
+
+    # --- COLD: docker rm -f + relaunch + LIVENESS poll to the ceiling -----
+    reload = recreate_seat(
+        seat_name, run_dir=run_dir,
+        reason="warm_start_incoherent", timeout_seconds=timeout_seconds,
+    )
+    if reload is None:
+        return SeatStartResult(
+            ok=False, reason="recreate_failed", load_seconds=load,
+            recreated=True, base_url=base_url,
+        )
+    # Stage b again: BOUNDED coherence check after the cold recreate.
+    if _coherence_check(base_url, seat_name=seat_name):
+        logger.info(
+            "vllm_container_lifecycle: seat %r COLD-RECREATED and now COHERENT "
+            "after %.1fs (self-heal succeeded).",
+            seat_name, reload,
+        )
+        return SeatStartResult(
+            ok=True, reason="cold_recreate_coherent", load_seconds=reload,
+            recreated=True, base_url=base_url,
+        )
+    logger.error(
+        "vllm_container_lifecycle: seat %r STILL incoherent after a cold "
+        "recreate — giving up (the orchestrator will fail the phase LOUDLY).",
+        seat_name,
+    )
+    return SeatStartResult(
+        ok=False, reason="still_incoherent_after_recreate", load_seconds=reload,
+        recreated=True, base_url=base_url,
+    )
+
+
 __all__ = [
     "ENV_VLLM_CONTAINER_LIFECYCLE",
     "ENV_VLLM_CONTAINERS",
     "ENV_SEAT_SCHEDULE",
     "ENV_SEAT_BASE_URLS",
+    "ENV_SEAT_LAUNCH_SPECS",
+    "ENV_SEAT_LOAD_TIMEOUT_SECONDS",
+    "ENV_SEAT_COHERENCE_ATTEMPTS",
     "resolve_vllm_container_lifecycle_mode",
     "parse_container_registry",
     "ensure_serving",
@@ -733,7 +1289,14 @@ __all__ = [
     "parse_seat_registry",
     "resolve_seat_base_url",
     "all_registered_seat_names",
+    "resolve_seat_load_timeout",
+    "resolve_seat_coherence_attempts",
+    "parse_seat_launch_specs",
+    "resolve_seat_launch_spec",
     "start_seat",
     "stop_seat",
     "coherence_probe",
+    "recreate_seat",
+    "start_seat_coherent",
+    "SeatStartResult",
 ]

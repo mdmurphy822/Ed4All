@@ -1134,8 +1134,11 @@ class SeatScheduleProbeError(RuntimeError):
     seat either could not be brought up in time OR came up but returned
     incoherent/empty content on the content-level coherence probe (the
     mode-collapse doctrine: a restarted seat can pass ``/v1/models`` yet emit
-    degenerate soup). The enforcer converts this into a LOUD phase failure —
-    never a silent degrade. Only fires under ``ED4ALL_SEAT_SCHEDULE``.
+    degenerate soup) AND the automatic cold-recreate self-heal (``docker rm -f``
+    + relaunch via ``ED4ALL_SEAT_LAUNCH_SPECS``) either was not configured or
+    also failed to bring the seat back coherently. The enforcer converts this
+    into a LOUD phase failure — never a silent degrade. Only fires under
+    ``ED4ALL_SEAT_SCHEDULE``.
     """
 
 
@@ -1771,13 +1774,15 @@ class WorkflowRunner:
             (no opinion; carry state forward).
           * Otherwise: STOP every seat in ``current_seats`` not in the desired
             set, then START + WAIT + COHERENCE-PROBE every desired seat not
-            already known-serving. On the FIRST scheduled phase
+            already known-serving, cold-recreating (``docker rm -f`` + relaunch)
+            once on a mode-collapse. On the FIRST scheduled phase
             (``current_seats`` is ``None`` = unknown), stop every REGISTERED seat
             not desired first, so the run starts from a clean seat state.
 
         Raises :class:`SeatScheduleProbeError` when a newly-needed seat cannot be
-        brought up coherently (LOUD failure). All stops + config-gap skips are
-        best-effort. Blocking docker/HTTP work runs off the event loop.
+        brought up coherently — even after the automatic cold-recreate self-heal
+        (LOUD failure). All stops + config-gap skips are best-effort. Blocking
+        docker/HTTP work runs off the event loop.
         """
         from lib.vllm_container_lifecycle import resolve_seat_schedule_mode
 
@@ -1810,9 +1815,8 @@ class WorkflowRunner:
         """
         from lib.vllm_container_lifecycle import (
             all_registered_seat_names,
-            coherence_probe,
             resolve_seat_base_url,
-            start_seat,
+            start_seat_coherent,
             stop_seat,
         )
 
@@ -1849,26 +1853,45 @@ class WorkflowRunner:
                     phase_name, seat,
                 )
                 continue
-            load = start_seat(seat, run_dir=run_dir)
-            if load is None:
-                raise SeatScheduleProbeError(
-                    f"seat_schedule[{phase_name}]: required seat {seat!r} "
-                    f"({base_url}) could not be brought up (docker start failed "
-                    f"or readiness timed out). Failing the phase LOUDLY rather "
-                    f"than running it seat-starved."
+            # Bring the seat up, WAIT until it is live AND coherent, and
+            # AUTOMATICALLY cold-recreate (docker rm -f + relaunch via
+            # ED4ALL_SEAT_LAUNCH_SPECS) once if the warm start mode-collapses
+            # (live on /v1/models but emitting soup/null). This turns the manual
+            # cold-restart-on-mode-collapse into automatic pipeline behavior.
+            result = start_seat_coherent(seat, run_dir=run_dir)
+            if not result.ok:
+                if result.reason == "start_failed":
+                    raise SeatScheduleProbeError(
+                        f"seat_schedule[{phase_name}]: required seat {seat!r} "
+                        f"({base_url}) could not be brought up (docker start "
+                        f"failed or readiness timed out). Failing the phase "
+                        f"LOUDLY rather than running it seat-starved."
+                    )
+                if result.reason == "recreate_failed":
+                    raise SeatScheduleProbeError(
+                        f"seat_schedule[{phase_name}]: seat {seat!r} ({base_url}) "
+                        f"failed the coherence probe and its automatic cold "
+                        f"recreate (docker rm -f + launch spec) could not bring "
+                        f"it back up. Failing the phase LOUDLY."
+                    )
+                # warm_incoherent_no_spec | still_incoherent_after_recreate
+                healed = (
+                    " even after an automatic cold recreate"
+                    if result.recreated
+                    else " and no launch spec is configured to self-heal (set "
+                         "ED4ALL_SEAT_LAUNCH_SPECS)"
                 )
-            # Content-level coherence probe — the mode-collapse guard. A seat can
-            # pass /v1/models yet emit degenerate/null content after a restart.
-            if not coherence_probe(base_url):
                 raise SeatScheduleProbeError(
                     f"seat_schedule[{phase_name}]: seat {seat!r} ({base_url}) "
                     f"started but FAILED the coherence probe (empty/degenerate "
-                    f"content — possible mode collapse). Failing the phase "
-                    f"LOUDLY (mode-collapse doctrine); cold-restart the seat."
+                    f"content — possible mode collapse){healed}. Failing the "
+                    f"phase LOUDLY (mode-collapse doctrine)."
                 )
             logger.info(
-                "seat_schedule[%s]: seat %r ready + coherent (load=%.1fs).",
-                phase_name, seat, load,
+                "seat_schedule[%s]: seat %r ready + coherent "
+                "(load=%.1fs, recreated=%s, via=%s).",
+                phase_name, seat, result.load_seconds or 0.0,
+                result.recreated, result.reason,
             )
 
         return set(desired)
@@ -2357,11 +2380,14 @@ class WorkflowRunner:
             # SEAT SCHEDULE enforcement (ED4ALL_SEAT_SCHEDULE): at this phase
             # START boundary, reconcile the resident vLLM seats to the phase's
             # declared ``seats:`` annotation — stop no-longer-needed seats,
-            # start + WAIT + COHERENCE-PROBE newly-needed ones. Runs AFTER the
-            # skip / optional / dependency guards (so a skipped phase never spins
-            # a seat up) and BEFORE the phase dispatches. A coherence-probe /
-            # start failure raises SeatScheduleProbeError → the phase fails
-            # LOUDLY (mode-collapse doctrine), never a silent seat-starved run.
+            # start + WAIT + COHERENCE-PROBE newly-needed ones, and AUTOMATICALLY
+            # cold-recreate (docker rm -f + relaunch via ED4ALL_SEAT_LAUNCH_SPECS)
+            # a seat that mode-collapses on a warm start. Runs AFTER the skip /
+            # optional / dependency guards (so a skipped phase never spins a seat
+            # up) and BEFORE the phase dispatches. A start / coherence failure
+            # that even the cold-recreate self-heal cannot fix raises
+            # SeatScheduleProbeError → the phase fails LOUDLY (mode-collapse
+            # doctrine), never a silent seat-starved run.
             # No-op + byte-identical control flow unless the flag is on.
             try:
                 seat_state = await self._apply_seat_schedule(

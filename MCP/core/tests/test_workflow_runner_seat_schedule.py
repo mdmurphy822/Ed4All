@@ -20,12 +20,21 @@ import asyncio
 import pytest
 
 import lib.vllm_container_lifecycle as vcl
+from lib.vllm_container_lifecycle import SeatStartResult
 from MCP.core.config import OrchestratorConfig
 from MCP.core.workflow_runner import (
     SeatScheduleProbeError,
     WorkflowRunner,
     _phase_seats,
 )
+
+
+def _ok(seat, **k):
+    """A start_seat_coherent stub that reports a healthy warm start."""
+    return SeatStartResult(
+        ok=True, reason="warm_start_coherent", load_seconds=1.0,
+        recreated=False, base_url=vcl.resolve_seat_base_url(seat),
+    )
 
 _SEATS = (
     "spark-super=http://localhost:8001,"
@@ -97,9 +106,11 @@ def _two_pass_running_order():
 def test_seat_transitions_across_two_pass_order(monkeypatch, _seat_env):
     monkeypatch.setenv("COURSEFORGE_TWO_PASS", "true")
     starts, stops = [], []
-    monkeypatch.setattr(vcl, "start_seat", lambda seat, **k: starts.append(seat) or 1.0)
+    monkeypatch.setattr(
+        vcl, "start_seat_coherent",
+        lambda seat, **k: starts.append(seat) or _ok(seat),
+    )
     monkeypatch.setattr(vcl, "stop_seat", lambda seat: stops.append(seat) or True)
-    monkeypatch.setattr(vcl, "coherence_probe", lambda base_url, **k: True)
 
     order = _two_pass_running_order()
     seat_state = None
@@ -129,9 +140,11 @@ def test_first_phase_clean_start_stops_undesired_registered_seats(monkeypatch, _
     """seat_state=None (fresh run): the first scheduled phase stops every
     REGISTERED seat not desired before starting its own."""
     starts, stops = [], []
-    monkeypatch.setattr(vcl, "start_seat", lambda seat, **k: starts.append(seat) or 1.0)
+    monkeypatch.setattr(
+        vcl, "start_seat_coherent",
+        lambda seat, **k: starts.append(seat) or _ok(seat),
+    )
     monkeypatch.setattr(vcl, "stop_seat", lambda seat: stops.append(seat) or True)
-    monkeypatch.setattr(vcl, "coherence_probe", lambda base_url, **k: True)
 
     # First phase wants only the glm/qwen conversion seats.
     new = WorkflowRunner._apply_seat_schedule_blocking(
@@ -146,25 +159,91 @@ def test_first_phase_clean_start_stops_undesired_registered_seats(monkeypatch, _
 # --------------------------------------------------------------------------
 # Coherence-probe failure fails the phase LOUDLY
 # --------------------------------------------------------------------------
-def test_probe_failure_raises_loud(monkeypatch, _seat_env):
-    monkeypatch.setattr(vcl, "start_seat", lambda seat, **k: 2.0)
+def test_warm_incoherent_no_spec_raises_loud(monkeypatch, _seat_env):
+    """Warm start live but incoherent AND no launch spec → LOUD, message names
+    the missing self-heal config."""
     monkeypatch.setattr(vcl, "stop_seat", lambda seat: True)
-    monkeypatch.setattr(vcl, "coherence_probe", lambda base_url, **k: False)
+    monkeypatch.setattr(
+        vcl, "start_seat_coherent",
+        lambda seat, **k: SeatStartResult(
+            ok=False, reason="warm_incoherent_no_spec", load_seconds=2.0,
+            recreated=False, base_url="http://localhost:8001",
+        ),
+    )
     with pytest.raises(SeatScheduleProbeError) as ei:
         WorkflowRunner._apply_seat_schedule_blocking(
             "course_planning", {"spark-super"}, {"spark-glm"}, None
         )
-    assert "coherence probe" in str(ei.value).lower()
+    msg = str(ei.value).lower()
+    assert "coherence probe" in msg
+    assert "ed4all_seat_launch_specs" in msg
 
 
-def test_start_failure_raises_loud(monkeypatch, _seat_env):
-    monkeypatch.setattr(vcl, "start_seat", lambda seat, **k: None)  # could not come up
+def test_warm_and_cold_both_incoherent_raises_loud(monkeypatch, _seat_env):
+    """Even after an automatic cold recreate the seat stays incoherent → LOUD,
+    message says the self-heal was attempted."""
     monkeypatch.setattr(vcl, "stop_seat", lambda seat: True)
-    monkeypatch.setattr(vcl, "coherence_probe", lambda base_url, **k: pytest.fail("probed"))
-    with pytest.raises(SeatScheduleProbeError):
+    monkeypatch.setattr(
+        vcl, "start_seat_coherent",
+        lambda seat, **k: SeatStartResult(
+            ok=False, reason="still_incoherent_after_recreate", load_seconds=5.0,
+            recreated=True, base_url="http://localhost:8001",
+        ),
+    )
+    with pytest.raises(SeatScheduleProbeError) as ei:
         WorkflowRunner._apply_seat_schedule_blocking(
             "course_planning", {"spark-super"}, {"spark-glm"}, None
         )
+    assert "even after an automatic cold recreate" in str(ei.value).lower()
+
+
+def test_cold_recreate_coherent_no_raise(monkeypatch, _seat_env):
+    """Warm mode-collapse but the cold recreate self-heals → NO raise; the
+    desired seat state is returned and the recovery is logged."""
+    monkeypatch.setattr(vcl, "stop_seat", lambda seat: True)
+    monkeypatch.setattr(
+        vcl, "start_seat_coherent",
+        lambda seat, **k: SeatStartResult(
+            ok=True, reason="cold_recreate_coherent", load_seconds=7.0,
+            recreated=True, base_url="http://localhost:8001",
+        ),
+    )
+    new = WorkflowRunner._apply_seat_schedule_blocking(
+        "course_planning", {"spark-super"}, {"spark-glm"}, None
+    )
+    assert new == {"spark-super"}
+
+
+def test_recreate_failed_raises_loud(monkeypatch, _seat_env):
+    monkeypatch.setattr(vcl, "stop_seat", lambda seat: True)
+    monkeypatch.setattr(
+        vcl, "start_seat_coherent",
+        lambda seat, **k: SeatStartResult(
+            ok=False, reason="recreate_failed", load_seconds=2.0,
+            recreated=True, base_url="http://localhost:8001",
+        ),
+    )
+    with pytest.raises(SeatScheduleProbeError) as ei:
+        WorkflowRunner._apply_seat_schedule_blocking(
+            "course_planning", {"spark-super"}, {"spark-glm"}, None
+        )
+    assert "cold recreate" in str(ei.value).lower()
+
+
+def test_start_failure_raises_loud(monkeypatch, _seat_env):
+    monkeypatch.setattr(vcl, "stop_seat", lambda seat: True)
+    monkeypatch.setattr(
+        vcl, "start_seat_coherent",
+        lambda seat, **k: SeatStartResult(
+            ok=False, reason="start_failed", load_seconds=None,
+            recreated=False, base_url="http://localhost:8001",
+        ),
+    )
+    with pytest.raises(SeatScheduleProbeError) as ei:
+        WorkflowRunner._apply_seat_schedule_blocking(
+            "course_planning", {"spark-super"}, {"spark-glm"}, None
+        )
+    assert "could not be brought up" in str(ei.value).lower()
 
 
 def test_unmapped_seat_is_config_gap_not_loud(monkeypatch):
@@ -173,8 +252,10 @@ def test_unmapped_seat_is_config_gap_not_loud(monkeypatch):
     monkeypatch.setenv(vcl.ENV_SEAT_SCHEDULE, "1")
     monkeypatch.setenv(vcl.ENV_SEAT_BASE_URLS, "")  # nothing mapped
     monkeypatch.setenv(vcl.ENV_VLLM_CONTAINERS, "")
-    monkeypatch.setattr(vcl, "start_seat", lambda seat, **k: pytest.fail("started"))
-    monkeypatch.setattr(vcl, "coherence_probe", lambda base_url, **k: pytest.fail("probed"))
+    monkeypatch.setattr(
+        vcl, "start_seat_coherent",
+        lambda seat, **k: pytest.fail("started an unmapped seat"),
+    )
     # Does not raise; returns the desired set.
     new = WorkflowRunner._apply_seat_schedule_blocking(
         "course_planning", {"spark-super"}, None, None
@@ -187,7 +268,7 @@ def test_unmapped_seat_is_config_gap_not_loud(monkeypatch):
 # --------------------------------------------------------------------------
 def test_flag_off_is_noop(monkeypatch):
     monkeypatch.delenv(vcl.ENV_SEAT_SCHEDULE, raising=False)
-    monkeypatch.setattr(vcl, "start_seat", lambda *a, **k: pytest.fail("started"))
+    monkeypatch.setattr(vcl, "start_seat_coherent", lambda *a, **k: pytest.fail("started"))
     monkeypatch.setattr(vcl, "stop_seat", lambda *a, **k: pytest.fail("stopped"))
     r = _runner()
     prior = {"spark-glm"}
@@ -198,7 +279,7 @@ def test_flag_off_is_noop(monkeypatch):
 
 
 def test_no_opinion_phase_carries_state(monkeypatch, _seat_env):
-    monkeypatch.setattr(vcl, "start_seat", lambda *a, **k: pytest.fail("started"))
+    monkeypatch.setattr(vcl, "start_seat_coherent", lambda *a, **k: pytest.fail("started"))
     monkeypatch.setattr(vcl, "stop_seat", lambda *a, **k: pytest.fail("stopped"))
     r = _runner()
     prior = {"spark-glm", "spark-qwen"}

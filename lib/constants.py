@@ -156,6 +156,8 @@ VALID_DECISION_TYPES: Set[str] = {
     "result_fusion",
     "chunk_deduplication",
     "index_strategy",
+    # Orchestrator seat-schedule self-heal (ED4ALL_SEAT_SCHEDULE)
+    "seat_cold_recreate",
 }
 
 # Decision types with relaxed quality requirements (shorter rationale acceptable)
