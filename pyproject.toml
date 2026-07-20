@@ -214,6 +214,18 @@ semantik = [
     "timm>=1.0",
     "num2words>=0.5",
 ]
+# Eval-calibration cross-check (opt-in, OFFLINE ONLY). RAGAS is used ONCE,
+# offline, to validate our citation-precision/recall denominator math against
+# the field's ContextPrecision convention (eval-expansion plan §A, item E6) —
+# it is NOT a runtime dependency and is NEVER imported in the eval run loop or
+# any gate (our harness owns the metrics; the local-judge stays on our own
+# loopback seat). Install ONLY during a declared fetch window
+# (`pip install -e '.[eval-calibration]'`), run the one-time denominator
+# cross-check, then keep offline. Exact pin so the calibration basis is
+# reproducible; bump deliberately, never via a resolver float. Apache-2.0.
+eval-calibration = [
+    "ragas==0.2.10",
+]
 
 [project.scripts]
 ed4all = "cli.main:main"

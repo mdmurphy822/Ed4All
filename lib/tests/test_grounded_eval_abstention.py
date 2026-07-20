@@ -596,7 +596,7 @@ def test_report_round_trips_with_new_blocks(libv2_course):
         with_groundedness=False, write=True,
     )
     doc = json.loads(Path(report["_written"]["report_path"]).read_text("utf-8"))
-    assert doc["schema_version"] == "1.7"
+    assert doc["schema_version"] == "1.8"
     assert "abstention" in doc["headline"]
     assert "flag_config" in doc
     assert "citation_recall" in doc["headline"]

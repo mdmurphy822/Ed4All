@@ -46,6 +46,14 @@ ENV_ANSWER_PROVIDER = "ED4ALL_ANSWER_PROVIDER"        # default "local"
 ENV_ANSWER_MODEL = "ED4ALL_ANSWER_MODEL"              # default: registry model chain
 ENV_ANSWER_TIMEOUT = "ED4ALL_ANSWER_TIMEOUT_SECONDS"  # default 120.0
 
+# E7a — diagnostic-composer arm. When either env is set (or an explicit kwarg is
+# passed) the eval runner composes answers on a STRONGER local seat (e.g. the
+# Nemotron Super vLLM seat) while retrieval + gates stay byte-identical, so a
+# failure can be attributed to retrieval vs composition. BOTH default absent →
+# production resolution is untouched (byte-identical).
+ENV_EVAL_COMPOSER_PROVIDER = "ED4ALL_EVAL_COMPOSER_PROVIDER"  # default absent
+ENV_EVAL_COMPOSER_MODEL = "ED4ALL_EVAL_COMPOSER_MODEL"        # default absent
+
 _DEFAULT_PROVIDER = "local"
 _DEFAULT_TIMEOUT = 120.0
 
@@ -184,6 +192,37 @@ def resolve_answer_backend(
     )
 
 
+def resolve_eval_composer_backend(
+    provider_name: Optional[str] = None,
+    model_id: Optional[str] = None,
+) -> Optional[ResolvedAnswerBackend]:
+    """Resolve the E7a diagnostic-composer backend, or ``None`` when inactive.
+
+    The diagnostic-composer arm lets an eval caller run answer *composition* on
+    a stronger local seat while retrieval + every gate stay identical. It is
+    activated by the explicit ``provider_name`` / ``model_id`` kwargs (the eval
+    runner sets these) OR the ``ED4ALL_EVAL_COMPOSER_PROVIDER`` /
+    ``ED4ALL_EVAL_COMPOSER_MODEL`` env pair. When NEITHER a kwarg nor an env is
+    present the arm is OFF and this returns ``None`` — the caller then falls
+    through to the ordinary production resolution (byte-identical).
+
+    Resolution reuses :func:`resolve_answer_backend`, so the SAME loopback-only
+    enforcement applies to the diagnostic seat: a non-loopback resolved
+    base_url raises :class:`AnswerProviderNotLocal` (there is no cloud composer
+    arm either). Precedence per field: kwarg > eval-specific env > (for the
+    model only, when the eval model env is unset) the standard answer model
+    chain (``ED4ALL_ANSWER_MODEL`` → registry default of the chosen provider).
+    """
+    prov = provider_name or os.environ.get(ENV_EVAL_COMPOSER_PROVIDER)
+    model = model_id or os.environ.get(ENV_EVAL_COMPOSER_MODEL)
+    if not prov and not model:
+        return None
+    return resolve_answer_backend(
+        provider_name=prov or None,
+        model_id=model or None,
+    )
+
+
 def build_answer_client(
     resolved: Optional[ResolvedAnswerBackend] = None,
     *,
@@ -234,10 +273,13 @@ __all__ = [
     "ENV_ANSWER_PROVIDER",
     "ENV_ANSWER_MODEL",
     "ENV_ANSWER_TIMEOUT",
+    "ENV_EVAL_COMPOSER_PROVIDER",
+    "ENV_EVAL_COMPOSER_MODEL",
     "AnswerBackendUnavailable",
     "PromptTruncatedError",
     "AnswerProviderNotLocal",
     "ResolvedAnswerBackend",
     "resolve_answer_backend",
+    "resolve_eval_composer_backend",
     "build_answer_client",
 ]

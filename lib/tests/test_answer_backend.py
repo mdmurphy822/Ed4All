@@ -8,9 +8,12 @@ from lib.retrieval.answer_backend import (
     ENV_ANSWER_MODEL,
     ENV_ANSWER_PROVIDER,
     ENV_ANSWER_TIMEOUT,
+    ENV_EVAL_COMPOSER_MODEL,
+    ENV_EVAL_COMPOSER_PROVIDER,
     ResolvedAnswerBackend,
     build_answer_client,
     resolve_answer_backend,
+    resolve_eval_composer_backend,
 )
 
 
@@ -22,6 +25,7 @@ from lib.retrieval.answer_backend import (
 def _clean_env(monkeypatch):
     for var in (
         ENV_ANSWER_PROVIDER, ENV_ANSWER_MODEL, ENV_ANSWER_TIMEOUT,
+        ENV_EVAL_COMPOSER_PROVIDER, ENV_EVAL_COMPOSER_MODEL,
         "LOCAL_SYNTHESIS_BASE_URL", "LOCAL_SYNTHESIS_MODEL",
         "LOCAL_SYNTHESIS_API_KEY",
     ):
@@ -133,6 +137,54 @@ def test_build_answer_client_default_json_mode_is_true(monkeypatch):
     monkeypatch.setattr(occ, "OpenAICompatibleClient", _FakeClient)
     build_answer_client()  # resolved=None → env/default resolution
     assert captured["json_mode"] is True
+
+
+# ---------------------------------------------------------------------------
+# E7a — diagnostic-composer backend resolution
+# ---------------------------------------------------------------------------
+
+
+def test_eval_composer_absent_by_default_returns_none():
+    # Both envs unset + no kwargs → arm OFF (production resolution untouched).
+    assert resolve_eval_composer_backend() is None
+
+
+def test_eval_composer_env_provider_activates(monkeypatch):
+    monkeypatch.setenv(ENV_EVAL_COMPOSER_PROVIDER, "local")
+    resolved = resolve_eval_composer_backend()
+    assert isinstance(resolved, ResolvedAnswerBackend)
+    assert resolved.provider_name == "local"
+    assert "localhost" in resolved.base_url or "127.0.0.1" in resolved.base_url
+
+
+def test_eval_composer_env_model_only_activates(monkeypatch):
+    # A model override alone activates the arm on the default (local) provider.
+    monkeypatch.setenv(ENV_EVAL_COMPOSER_MODEL, "super-120b")
+    resolved = resolve_eval_composer_backend()
+    assert resolved is not None
+    assert resolved.model_id == "super-120b"
+    assert resolved.provider_name == "local"
+
+
+def test_eval_composer_kwarg_provider_wins_over_env(monkeypatch):
+    monkeypatch.setenv(ENV_EVAL_COMPOSER_PROVIDER, "local")
+    monkeypatch.setenv(ENV_EVAL_COMPOSER_MODEL, "env-model")
+    resolved = resolve_eval_composer_backend(model_id="kwarg-model")
+    assert resolved.model_id == "kwarg-model"
+
+
+def test_eval_composer_enforces_loopback(monkeypatch):
+    # The diagnostic seat is loopback-gated exactly like the production path.
+    monkeypatch.setenv(ENV_EVAL_COMPOSER_PROVIDER, "together")
+    with pytest.raises(AnswerProviderNotLocal):
+        resolve_eval_composer_backend()
+
+
+def test_eval_composer_non_loopback_local_url_refused(monkeypatch):
+    monkeypatch.setenv(ENV_EVAL_COMPOSER_PROVIDER, "local")
+    monkeypatch.setenv("LOCAL_SYNTHESIS_BASE_URL", "https://api.example.com/v1")
+    with pytest.raises(AnswerProviderNotLocal):
+        resolve_eval_composer_backend()
 
 
 def test_build_answer_client_json_mode_false_threads_through(monkeypatch):

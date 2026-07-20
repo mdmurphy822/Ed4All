@@ -192,8 +192,11 @@ def test_eval_schema_bumped_to_1_1():
     # top-level flag_config + citation_recall + groundedness_rate_micro; and
     # RE-SEMANTICS'd headline.citation_precision to the per-question macro average
     # (legacy pooled → headline.citation_precision_legacy).
+    # 1.8 (additive) added headline.multiturn (E2 reachability), the top-level
+    # risk_coverage selective-QA view (E3), and the optional top-level
+    # library_wide slice (E2).
     # The report schema_version moves with it.
-    assert EVAL_SCHEMA_VERSION == "1.7"
+    assert EVAL_SCHEMA_VERSION == "1.8"
 
 
 def test_gold_pin_block_carries_section4_fields(v1_1_course):
@@ -291,7 +294,7 @@ def test_report_json_round_trips(v1_1_course):
     )
     written = Path(report["_written"]["report_path"])
     doc = json.loads(written.read_text(encoding="utf-8"))
-    assert doc["schema_version"] == "1.7"
+    assert doc["schema_version"] == "1.8"
     assert doc["gold"]["question_count"] == 2
     assert "key_point_coverage" in doc["questions"][0]
     assert "part_coverage" in doc["questions"][1]

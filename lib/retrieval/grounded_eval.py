@@ -49,7 +49,10 @@ from lib.retrieval.gold_set import (
     load_gold_set,
     question_expected_behavior,
     question_phrasing,
+    question_prior_turns,
 )
+from lib.retrieval.grounded_eval_library import run_library_eval
+from lib.retrieval.grounded_eval_risk import selective_qa_view
 
 #: Bumped 1.0 -> 1.1 for the P4 additive per-question scoring fields
 #: (key_point_coverage, part_coverage, population breakdown). Every v1.0
@@ -118,7 +121,25 @@ from lib.retrieval.gold_set import (
 #:   * NEW ``headline.groundedness_rate_micro`` — the claim-weighted micro
 #:     average (entailed/scored) promoted to a first-class headline field next
 #:     to the macro mean.
-EVAL_SCHEMA_VERSION = "1.7"
+#: ``EVAL_SCHEMA_VERSION`` 1.7 → 1.8 (additive only — every 1.7 key unchanged;
+#: eval-expansion phase-3 reachability + risk-coverage wave, E2/E3):
+#:   * NEW ``headline.multiturn`` — a multi-turn REACHABILITY diagnostic: how
+#:     many gold questions carried ``prior_turns`` (v1.2) and therefore actually
+#:     drove the ``ED4ALL_ANSWER_MULTITURN`` retrieval-rewrite seam
+#:     (``answer_course_question(prior_turns=...)``). Previously ``prior_turns``
+#:     was never threaded, so the multiturn path was structurally unreachable
+#:     from the harness. All-zero on a legacy / single-turn gold set (byte-stable).
+#:   * NEW top-level ``risk_coverage`` — the E3 selective-QA / risk-coverage view
+#:     (AURC, abstention AUROC, ECE, coverage-vs-accuracy curve) computed as PURE
+#:     post-processing over the per-answer groundedness scores already in the
+#:     report (no new model calls). ``basis == "none"`` when nothing was scored
+#:     (with_groundedness off). See ``lib/retrieval/grounded_eval_risk.py``.
+#:   * NEW top-level ``library_wide`` — present ONLY when a caller passes a
+#:     ``library_questions`` slice (E2 reachability): drives
+#:     ``answer_library_question`` over a cross-course question set, cleanly
+#:     skipped when the resolved library holds a single course. Absent by
+#:     default (additive/optional). See ``lib/retrieval/grounded_eval_library.py``.
+EVAL_SCHEMA_VERSION = "1.8"
 RETRIEVAL_EVAL_SUBDIR = "retrieval_eval"
 
 #: Progress-writer arm name for the grounded eval (matches eval_arms.ARM_GROUNDED
@@ -1219,6 +1240,9 @@ def run_grounded_eval(
     judge_client: Optional[Any] = None,
     write: bool = True,
     progress: Optional[Any] = None,
+    library_questions: Optional[Sequence[Dict[str, Any]]] = None,
+    library_answer_fn: Optional[Any] = None,
+    library_course_slugs: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     """Run the grounded-answer pipeline over a course's gold set + probes.
 
@@ -1339,6 +1363,19 @@ def run_grounded_eval(
     # status. Recorded for EVERY question incl. composer-exhausted ones so the
     # per-phrasing n counts the whole gold set.
     phrasing_records: List[Dict[str, Any]] = []
+    # Schema 1.8 multiturn REACHABILITY (E2): how many gold questions carried
+    # prior_turns (v1.2) and therefore actually drove the ED4ALL_ANSWER_MULTITURN
+    # retrieval-rewrite seam (answer_course_question(prior_turns=...)). All-zero on
+    # a legacy / single-turn gold set. Also tallies how many of those still
+    # answered (the multiturn path did not break answerability).
+    multiturn_gold_count = 0
+    multiturn_answered_count = 0
+    multiturn_prior_turns_total = 0
+    # Schema 1.8 risk-coverage records (E3): one {confidence, correct} row per
+    # ANSWERED gold question whose groundedness report was available. confidence =
+    # per-answer groundedness rate; correct = cited a gold-relevant chunk. Fed to
+    # the pure-post-processing selective-QA view (no new model calls).
+    risk_records: List[Dict[str, Any]] = []
     # Schema 1.7 two-axis abstention records: one row per gold question AND per
     # probe carrying its expected axis {answerable, false_premise, unanswerable}
     # + observed outcome. false-premise items that ANSWERED become judge
@@ -1402,6 +1439,15 @@ def run_grounded_eval(
         phrasing = question_phrasing(q)
         expected_axis = _gold_expected_axis(q)
         all_rel, primary_rel = _relevant_chunk_ids(q)
+        # E2 reachability: convert the gold question's v1.2 prior_turns
+        # ({role, text} entries) into the flat text sequence
+        # answer_course_question(prior_turns=...) consumes, so a multi-turn gold
+        # item actually drives the ED4ALL_ANSWER_MULTITURN retrieval-rewrite seam
+        # (byte-identical when off — the pipeline gates on multiturn_enabled()).
+        prior_turn_texts = [t["text"] for t in question_prior_turns(q)]
+        if prior_turn_texts:
+            multiturn_gold_count += 1
+            multiturn_prior_turns_total += len(prior_turn_texts)
 
         try:
             answer = pipeline(
@@ -1415,6 +1461,7 @@ def run_grounded_eval(
                 with_groundedness=with_groundedness,
                 capture=capture,
                 chunkset_kind=gold_chunkset_kind,
+                prior_turns=(prior_turn_texts or None),
             )
         except catchable as exc:
             # Per-question composer failure (parse/citation exhaustion, or a
@@ -1467,6 +1514,8 @@ def run_grounded_eval(
 
         status = str(_answer_field(answer, "status", "unknown"))
         phrasing_records.append({"phrasing": phrasing, "status": status})
+        if prior_turn_texts and status in _ANSWERED_STATUSES:
+            multiturn_answered_count += 1
         latency = float(_answer_field(answer, "latency_ms", 0.0))
         latencies.append(latency)
         if model_id is None:
@@ -1639,6 +1688,18 @@ def run_grounded_eval(
                     and claim.get("best_chunk_cited") is False
                 ):
                     entailed_uncited_count += 1
+
+        # --- E3 risk-coverage record ---------------------------------------
+        # An ANSWERED question with an available groundedness report contributes
+        # one {confidence, correct} pair to the selective-QA view: confidence =
+        # per-answer groundedness rate (the "knows-when-it-doesn't" signal);
+        # correct = the answer cited a gold-relevant chunk (an answer-quality
+        # label INDEPENDENT of the groundedness confidence, so AURC/AUROC are
+        # meaningful, not self-referential). Skipped when no report was scored.
+        if status in _ANSWERED_STATUSES and g_rate is not None:
+            risk_records.append(
+                {"confidence": g_rate, "correct": relevant_here > 0}
+            )
 
         # --- NLI-ADD shadow diagnostics (additive; present only when the arm ran)
         nli_add = _answer_field(answer, "nli_citation_add", None)
@@ -2265,6 +2326,22 @@ def run_grounded_eval(
         "headline.abstention for the schema-1.7 two-axis abstention scorer that "
         "also credits premise-correction on false-premise items"
     )
+    # (E2) Multi-turn REACHABILITY diagnostic. Surfaces how many gold questions
+    # carried prior_turns and therefore actually drove the multiturn seam — the
+    # harness now PASSES prior_turns (previously it never did, so multiturn was
+    # structurally unreachable). All-zero on a single-turn gold set.
+    headline["multiturn"] = {
+        "gold_with_prior_turns": multiturn_gold_count,
+        "answered_with_prior_turns": multiturn_answered_count,
+        "prior_turns_total": multiturn_prior_turns_total,
+        "reachable": multiturn_gold_count > 0,
+        "_diagnostic": (
+            "multi-turn reachability (E2): count of gold questions carrying "
+            "prior_turns that drove answer_course_question(prior_turns=...); the "
+            "ED4ALL_ANSWER_MULTITURN retrieval-rewrite fires only when that flag "
+            "is on. Diagnostic, NOT a pinned milestone; all-zero single-turn."
+        ),
+    }
 
     report = {
         "schema_version": EVAL_SCHEMA_VERSION,
@@ -2297,8 +2374,30 @@ def run_grounded_eval(
         # env config this run executed under, so a stored report is attributable
         # to its exact answer-path flag config (A/B + re-pin readability).
         "flag_config": _flag_config_stamp(),
+        # Schema 1.8 (E3): selective-QA / risk-coverage view over the per-answer
+        # groundedness scores (AURC, abstention AUROC, ECE, coverage curve). Pure
+        # post-processing — no new model calls; basis=="none" when nothing scored.
+        "risk_coverage": selective_qa_view(risk_records),
         "generated_at": _utcnow_iso(),
     }
+
+    # Schema 1.8 (E2): OPTIONAL library-wide reachability slice. Present only when
+    # a caller passes library_questions — drives answer_library_question over a
+    # cross-course set; cleanly skips when the resolved library is single-course.
+    # Absent by default → additive, byte-identical to the single-course report.
+    if library_questions is not None:
+        report["library_wide"] = run_library_eval(
+            repo_root,
+            course_slug,
+            library_questions,
+            engine=engine,
+            limit=limit,
+            client=client,
+            with_groundedness=with_groundedness,
+            capture=capture,
+            course_slugs=library_course_slugs,
+            answer_fn=library_answer_fn,
+        )
 
     review_sample = _build_review_sample(course_slug, per_question_detail)
 

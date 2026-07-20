@@ -2036,6 +2036,7 @@ def answer_course_question(
     completeness_recheck: Optional[bool] = None,
     prior_turns: Optional[Sequence[str]] = None,
     on_progress: Optional[Callable[[Dict[str, Any]], None]] = None,
+    eval_composer_backend: Optional[Any] = None,
 ) -> GroundedAnswer:
     """Answer a single-course question, grounded + citation-gated.
 
@@ -2044,6 +2045,20 @@ def answer_course_question(
     -> evaluate confidence / refuse PRE-LLM -> compose_answer -> model-side
     ``not_in_course`` -> citation gate -> ``GroundedAnswer``. No canned-answer
     fallback; backend/index absence raises a typed error.
+
+    E7a diagnostic-composer arm: ``eval_composer_backend`` (a
+    ``ResolvedAnswerBackend``) — or, when it is ``None``, the
+    ``ED4ALL_EVAL_COMPOSER_PROVIDER`` / ``ED4ALL_EVAL_COMPOSER_MODEL`` env pair
+    resolved via ``resolve_eval_composer_backend()`` — routes ONLY the
+    answer-composition call (and the completeness re-ask) through a stronger
+    LOCAL seat, so an eval caller can separate retrieval failures from
+    composition failures. Retrieval, augmentation (incl. HyDE), the refusal
+    gate, and every citation/prune/groundedness gate stay byte-identical (they
+    keep using the production ``client`` / no client). Before the diagnostic
+    seat is trusted it is PREFLIGHTED for coherence (the vLLM
+    restart-mode-collapse guard); a seat that fails raises
+    :class:`~lib.retrieval.seat_preflight.SeatCoherenceError` (loud, names the
+    seat). Default absent → production composition, byte-identical.
     """
     start = time.monotonic()
     query_sha = _query_sha(query)
@@ -2314,16 +2329,46 @@ def answer_course_question(
             confidence_payload = dict(confidence_payload)
             confidence_payload["hedged"] = True
 
-    # 3) Compose the answer (THE LLM call site, owned by the composer).
-    if client is None:
-        from lib.retrieval.answer_backend import build_answer_client
+    # 2.9) E7a diagnostic-composer arm (default OFF → byte-identical). Resolve a
+    #      stronger LOCAL composer seat from the explicit kwarg / the eval env
+    #      pair; when active, PREFLIGHT it for coherence (vLLM
+    #      restart-mode-collapse guard) and route ONLY composition through it.
+    #      Retrieval + every gate above/below stay on the production client.
+    compose_client = None
+    if eval_composer_backend is None:
+        from lib.retrieval.answer_backend import resolve_eval_composer_backend
 
-        client = build_answer_client(capture=capture)
+        eval_composer_backend = resolve_eval_composer_backend()
+    if eval_composer_backend is not None:
+        from lib.retrieval.answer_backend import build_answer_client
+        from lib.retrieval.seat_preflight import (
+            preflight_or_raise,
+            seat_label_for_backend,
+        )
+
+        compose_client = build_answer_client(
+            resolved=eval_composer_backend, capture=capture
+        )
+        # Refuse to measure against a seat that passed readiness but emits
+        # degenerate / null content (loud SeatCoherenceError names the seat).
+        preflight_or_raise(
+            compose_client,
+            seat_label=seat_label_for_backend(eval_composer_backend),
+            capture=capture,
+        )
+
+    # 3) Compose the answer (THE LLM call site, owned by the composer).
+    if compose_client is None:
+        if client is None:
+            from lib.retrieval.answer_backend import build_answer_client
+
+            client = build_answer_client(capture=capture)
+        compose_client = client
 
     composed: ComposedAnswer = compose_answer(
         query,
         passages,
-        client=client,
+        client=compose_client,
         capture=capture,
         course_code=course_slug,
         max_passages=max_passages,
@@ -2398,7 +2443,7 @@ def answer_course_question(
             query=query,
             composed=composed,
             passages=passages,
-            client=client,
+            client=compose_client,
             capture=capture,
             course_slug=course_slug,
             query_sha=query_sha,
