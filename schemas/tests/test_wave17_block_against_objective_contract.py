@@ -1,86 +1,45 @@
-"""GPT Feedback v2 — Wave 1.7 end-of-wave block-against-objective gate.
+"""End-of-wave block-against-objective gate.
 
-Authored 2026-05-06 against the closing 6-test gate enumerated in
-the Wave 1.7 block-against-objective gate spec § 4.
+SELF-CONTAINED contract test: every fixture is inlined locally so a
+future rename of a per-worker test file cannot silently disable this
+gate.
 
-Predecessors landed:
+Two contracts that read as surprising and are deliberate:
 
-* W1.7.A at 1666f4f — ``Block.objective_alignment`` audit field +
-  bumped JSON-LD ``$defs.Block`` / ``$defs.ObjectiveAlignment``.
-* W1.7.B at 9b3fa56 — outline + rewrite prompts surface the Bloom
-  triple ``[Bloom: <level>, verb: <verb>]`` per objective +
-  behavioral-outcome system-prompt directives.
-* W1.7.C at 6fea5c2 — :class:`lib.validators.block_objective_delivery.
-  BlockObjectiveDeliveryValidator` (tri-axis NLI / Bloom / verb) plus
-  Drift A/B fixes (gate-input routing) and the
-  :class:`lib.classifiers.nli_classifier.NliClassifier` stub.
-* W1.7.D at 6dbbad9 — rewrite-tier remediation suffix dispatch on the
-  three Wave 1.7 issue codes plus the
-  ``per_claim_attribution_unfixable``-style escalation marker.
-
-This file is a SELF-CONTAINED contract test mirroring the Wave 1.5 +
-Wave 1.6 predecessor gates (``test_wave15_per_claim_attribution_contract.py``,
-``test_wave16_per_objective_attribution_contract.py``). Every fixture
-is inlined locally so a future rename of a per-worker test file cannot
-silently disable the wave-end gate.
-
-Drift notes vs plan §4:
-
-* Plan §4 Test 2 reads "``result.passed is False``", but the W1.7.C
-  validator ships every Wave 1.7 GateIssue at ``severity="warning"``
-  by construction (Day-1 contract — promotion to critical is a
-  Wave 3 follow-up after RDF/SHACL calibration corpus calibration). The
-  ``passed`` flag stays ``True``; the regeneration signal the
-  router actually consumes is ``action="regenerate"`` plus the
-  warning-severity GateIssue code. We pin the ``action`` + code +
-  rationale interpolation here per the plan §4 Test 2 explicit
-  contract amendment in the W1.7 brief. Same drift Wave 1.5 / 1.6
-  wave-end gates absorbed.
-* Plan §4 Test 5 reads "Use the existing
-  ``_run_rewrite_with_failing_validator`` test harness"; the actual
-  W1.7.D dispatch surface is
-  :func:`Courseforge.router.remediation._build_wave17_directive`
-  (and its three per-axis sub-builders). We test the dispatch
-  directly per the W1.7 brief — this is more durable than mocking
-  the rewrite-provider call path.
+* ``BlockObjectiveDeliveryValidator`` ships every issue at
+  ``severity="warning"``, so ``result.passed`` stays ``True`` even on a
+  real miss. The signal the router consumes is ``action="regenerate"``
+  plus the issue code — asserting on ``passed`` here would test nothing.
+* The remediation dispatch is exercised through
+  :func:`Courseforge.router.remediation._append_remediation_for_gates`
+  directly rather than by mocking the rewrite-provider call path; the
+  regex extractors in ``remediation.py`` parse the validator's
+  f-string-formatted ``GateIssue.message``, so the synthetic messages
+  below must keep that exact shape.
 
 Tests:
 
-* ``test_1_jsonld_schema_admits_new_and_legacy_shapes`` — pin the
-  bumped ``$defs.Block`` / ``$defs.ObjectiveAlignment`` Draft-2020-12
-  schema: legacy shape (no ``objectiveAlignment``) validates,
-  populated shape validates, status-out-of-enum FAILS, missing
-  ``objective_id`` FAILS, ``statement_entailment_score`` outside
-  [0, 1] FAILS.
+* ``test_1_jsonld_schema_admits_new_and_legacy_shapes`` — ``$defs.Block``
+  / ``$defs.ObjectiveAlignment``: legacy shape (no
+  ``objectiveAlignment``) validates, populated shape validates,
+  status-out-of-enum / missing ``objective_id`` /
+  ``statement_entailment_score`` outside [0, 1] all FAIL.
 * ``test_2_anti_silent_degradation_intentional_bloom_mismatch_fires``
-  — ``BlockObjectiveDeliveryValidator`` fires
-  ``BLOCK_OBJECTIVE_BLOOM_UNDERMET`` on a gap-4 fixture; rationale
-  interpolates ``bloom_gap=4`` + ``declared_bloom='create'`` +
-  ``observed_bloom='remember'``.
-* ``test_3_legacy_blocks_skip_bloom_axis_cleanly`` — pre-Wave-1
-  Block with ``observed_bloom_level=None`` skips the Bloom axis;
-  the Bloom-axis decision-capture event carries
-  ``status=unverifiable``; the verb axis still runs and emits a
-  decision event.
+  — ``BLOCK_OBJECTIVE_BLOOM_UNDERMET`` fires with the numeric gap and
+  both Bloom levels interpolated into the decision-capture rationale.
+* ``test_3_legacy_blocks_skip_bloom_axis_cleanly`` — a Block with
+  ``observed_bloom_level=None`` skips the Bloom axis and records
+  ``status=unverifiable``; the verb axis still runs.
 * ``test_4_outline_and_rewrite_prompts_carry_bloom_triple_verbatim``
-  — both ``OutlineProvider._render_user_prompt`` and
-  ``RewriteProvider._render_user_prompt`` render the verbatim
-  ``"[Bloom: create, verb: design]"`` substring + the objective
-  statement; both system prompts carry their respective
+  — both tiers render the ``[Bloom: <level>, verb: <verb>]`` triple and
+  the objective statement; both system prompts carry their
   behavioral-outcome directives.
 * ``test_5_remediation_dispatch_emits_distinct_per_code_directives``
-  — each of the three Wave 1.7 issue codes produces a distinct
-  remediation suffix substring keyed off the validator's
-  f-string-formatted GateIssue.message context (objective_id,
-  scores, Bloom levels, verb synonyms).
-* ``test_6_collected_count_guard_and_check_schema_clean`` —
-  wave-end "no silent test removal" ratchet across four trees
-  (``lib/validators/tests/``, ``schemas/tests/``,
-  ``Courseforge/router/tests/``, ``Courseforge/generators/tests/``);
-  ``Draft202012Validator.check_schema(...)`` clean on the bumped
-  ``$defs.Block`` AND ``$defs.ObjectiveAlignment``; AST-walk
-  cross-check that the four pre-existing statistical-tier gate
-  test files still carry their post-Wave-1.7 baseline counts.
+  — each issue code produces a distinct remediation suffix.
+* ``test_6_collected_count_guard_and_check_schema_clean`` — test-count
+  ratchet across four trees, ``check_schema`` cleanliness on the Block /
+  ObjectiveAlignment surface, plus per-file floors on the four
+  statistical-tier gate test files.
 """
 from __future__ import annotations
 
@@ -96,8 +55,8 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-# Block lives at ``Courseforge/scripts/blocks.py`` — mirror the import
-# bridge used by the Courseforge router test suite + Wave 1.5/1.6 gates.
+# Block lives at ``Courseforge/scripts/blocks.py``, which is not an
+# importable package — bridge the directory onto sys.path.
 _SCRIPTS_DIR = PROJECT_ROOT / "Courseforge" / "scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
@@ -107,15 +66,13 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 # --------------------------------------------------------------------------- #
-# Audited post-Wave-1.7 baselines — encoded as constants so a future
-# silent test removal trips the ratchet. Counts captured 2026-05-06 on
-# dev-v0.3.0 at HEAD by AST-walking each tree's ``test_*.py`` files
-# and tallying every ``def test_`` declaration (the same algorithm
-# ``_count_test_functions`` runs at gate time). Mirrors the
-# AST-vs-collect-only contract noted in the Wave 1.5 / 1.6 gates: AST
-# counts are LOWER than ``pytest --collect-only`` counts because
-# pytest expands parametrized cases at collection time. Both
-# algorithms are monotonic so the ratchet contract holds either way.
+# Per-tree test-count floors — a silent test removal trips the ratchet.
+# Counts come from AST-walking each tree's ``test_*.py`` and tallying
+# ``def test_`` declarations (the algorithm ``_count_test_functions``
+# runs at gate time). AST counts are LOWER than
+# ``pytest --collect-only`` counts (pytest expands parametrized cases at
+# collection time), so the two must never be mixed across gates; each is
+# monotonic on its own.
 # --------------------------------------------------------------------------- #
 
 _MIN_VALIDATORS_TESTS = 479
@@ -123,10 +80,10 @@ _MIN_SCHEMAS_TESTS = 339
 _MIN_ROUTER_TESTS = 154
 _MIN_GENERATORS_TESTS = 87
 
-#: Per-file floors for the four pre-existing statistical-tier gate
-#: test suites — Test 6 sub-clause: confirm Drift-B (W1.7.C
-#: gate-input routing fix) didn't silently remove a test from any of
-#: the four files the Drift-B fix touched the input shape of.
+#: Per-file floors for the four statistical-tier gate test suites whose
+#: gate-input shape the tri-axis validator changed — the tree-level
+#: ratchet above would not notice a removal in one file offset by
+#: additions elsewhere in the same tree.
 _MIN_STATISTICAL_TIER_TEST_COUNTS: Dict[str, int] = {
     "lib/validators/tests/test_objective_assessment_similarity.py": 9,
     "lib/validators/tests/test_concept_example_similarity.py": 11,
@@ -166,12 +123,10 @@ def _build_block_def_validator(jsonschema_mod, schema_doc):
     The returned validator validates a single Block payload directly
     via ``validator.validate(payload)``.
     """
-    # Build a tiny envelope schema that inlines ``$defs`` from the parent
-    # document so ``#/$defs/...`` refs resolve, and whose top-level
-    # ``$ref`` points at the Block sub-schema. This avoids depending on
-    # jsonschema's $RefResolver API surface (which churned across
-    # 4.0 → 4.18 — Draft-2020-12-friendly Registry pattern is the
-    # cross-version-stable path).
+    # Inline the parent's ``$defs`` into a tiny envelope whose top-level
+    # ``$ref`` points at the Block sub-schema, so ``#/$defs/...`` refs
+    # resolve. Deliberately avoids jsonschema's $RefResolver API, whose
+    # surface is not stable across the 4.x line.
     envelope = {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$ref": "#/$defs/Block",
@@ -188,7 +143,7 @@ def _block_payload(
     """Build a minimally-valid Block JSON-LD payload.
 
     ``drop_alignment=True`` (default) omits ``objectiveAlignment``
-    entirely (legacy / pre-Wave-1.7 shape).
+    entirely — the legacy shape.
     """
     base: Dict[str, Any] = {
         "blockId": "page_01#concept_intro_0",
@@ -228,10 +183,9 @@ def _count_test_functions(tree: Path) -> Tuple[int, List[str]]:
     """AST-walk every ``test_*.py`` under ``tree`` and count ``def test_``
     declarations.
 
-    Mirrors the helper in ``test_wave15_per_claim_attribution_contract.py``
-    + ``test_wave16_per_objective_attribution_contract.py`` so the
-    algorithm is identical between gates and the count contract is
-    genuinely monotonic across waves.
+    Must stay byte-identical to the counting helper in the sibling
+    wave-end gates — mixing counting algorithms breaks the monotonic
+    ratchet contract across gates.
     """
     if not tree.exists():
         return 0, []
@@ -272,9 +226,7 @@ class _RecordingCapture:
     """Minimal capture stub recording every ``log_decision`` payload.
 
     Inlined so a rename of any per-worker capture helper can't silently
-    break this gate. Mirrors the
-    ``test_wave15_per_claim_attribution_contract.py::_RecordingCapture``
-    pattern (attribute name preserved for cross-wave grep symmetry).
+    break this gate.
     """
 
     def __init__(self) -> None:
@@ -290,18 +242,16 @@ class _RecordingCapture:
 
 
 def test_1_jsonld_schema_admits_new_and_legacy_shapes() -> None:
-    """Plan §4 Test 1 — bumped ``$defs.Block`` /
-    ``$defs.ObjectiveAlignment`` contract.
-
-    Five sub-clauses:
+    """``$defs.Block`` / ``$defs.ObjectiveAlignment`` schema contract.
 
     * 1a. Legacy Block payload (no ``objectiveAlignment`` field at all)
-      validates clean.
+      validates clean — the field must stay optional or every
+      pre-existing corpus fails validation.
     * 1b. Block payload with a non-empty ``objectiveAlignment[]`` of
       well-formed entries validates clean.
     * 1c. ``status`` outside the canonical 4-value enum
       (``delivered`` / ``underdelivered`` / ``verb_only`` /
-      ``unverifiable``) FAILS validation.
+      ``unverifiable``) FAILS.
     * 1d. Entry missing required ``objective_id`` FAILS.
     * 1e. ``statement_entailment_score`` outside ``[0, 1]`` FAILS.
     """
@@ -383,22 +333,15 @@ def test_1_jsonld_schema_admits_new_and_legacy_shapes() -> None:
 
 
 def test_2_anti_silent_degradation_intentional_bloom_mismatch_fires() -> None:
-    """Plan §4 Test 2 — gap-5 Bloom mismatch fires
+    """A declared-vs-observed Bloom mismatch fires
     ``BLOCK_OBJECTIVE_BLOOM_UNDERMET`` with ``action="regenerate"``.
 
-    Drift A vs plan §4 Test 2: the W1.7.C validator ships every Wave 1.7
-    GateIssue at warning severity by construction (Day-1 contract,
-    plan §6.1). The ``passed`` flag stays True; the regeneration signal
-    is ``action="regenerate"`` plus the warning-severity GateIssue
-    code. Pin both per the W1.7 brief amendment — same drift Wave 1.5
-    / 1.6 wave-end gates absorbed.
+    The validator emits at warning severity, so ``passed`` stays True —
+    ``action`` plus the issue code are the only load-bearing signals.
 
-    Drift B vs plan §4 Test 2: plan brief reads ``bloom_gap=4``, but
-    the canonical Bloom enum (``lib/ontology/bloom.BLOOM_LEVELS``)
-    is 6 levels (``remember`` idx 0 … ``create`` idx 5), so the
-    declared-vs-observed gap for ``create`` → ``remember`` is 5, not
-    4. The validator interpolates the actual numeric gap into the
-    rationale; we pin the truth, not the brief.
+    The expected gap is 5, not 4: the canonical Bloom enum
+    (``lib/ontology/bloom.BLOOM_LEVELS``) has 6 levels (``remember``
+    idx 0 … ``create`` idx 5), so ``create`` → ``remember`` spans 5.
     """
     from blocks import Block  # noqa: WPS433  (path-injected module)
     from lib.validators.block_objective_delivery import (
@@ -431,9 +374,9 @@ def test_2_anti_silent_degradation_intentional_bloom_mismatch_fires() -> None:
     }
 
     capture = _RecordingCapture()
-    # No NLI override — get_or_load() returns None per the W1.7.C stub
-    # so the entailment axis silently graceful-degrades; Bloom + verb
-    # axes still run (which is exactly what this test is exercising).
+    # No NLI override: the loader returns None, so the entailment axis
+    # graceful-degrades and the Bloom + verb axes — what this test
+    # exercises — still run.
     validator = BlockObjectiveDeliveryValidator()
     result = validator.validate({
         "blocks": [block],
@@ -441,10 +384,10 @@ def test_2_anti_silent_degradation_intentional_bloom_mismatch_fires() -> None:
         "decision_capture": capture,
     })
 
-    # Drift vs plan §4: Wave 1.7 ships warning-only; ``passed`` stays
-    # True. The router-consumed signal is ``action="regenerate"``.
+    # Warning-only validator: ``passed`` stays True, so ``action`` is
+    # the router-consumed signal.
     assert result.action == "regenerate", (
-        f"expected action='regenerate' on Bloom-gap=4 miss; "
+        f"expected action='regenerate' on a Bloom-gap miss; "
         f"got action={result.action!r}"
     )
     codes = [i.code for i in result.issues]
@@ -453,11 +396,9 @@ def test_2_anti_silent_degradation_intentional_bloom_mismatch_fires() -> None:
         f"got codes={codes!r}"
     )
 
-    # Decision-capture event MUST carry bloom_gap=4 +
-    # declared_bloom='create' + observed_bloom='remember' in the
-    # rationale. Validator interpolates these via the
-    # ``_emit_decision`` helper at lib/validators/block_objective_delivery.py
-    # `:316-329`.
+    # The rationale must interpolate the numeric gap and both Bloom
+    # levels (via the validator's ``_emit_decision`` helper) so an audit
+    # can replay the decision without re-running the validator.
     relevant = [
         e for e in capture.events
         if e.get("decision_type") == "block_objective_delivery_check"
@@ -471,9 +412,8 @@ def test_2_anti_silent_degradation_intentional_bloom_mismatch_fires() -> None:
     bloom_event_rationales = [str(e.get("rationale", "")) for e in relevant]
     assert any("bloom_gap=5" in r for r in bloom_event_rationales), (
         "decision-capture rationale MUST surface bloom_gap=5 "
-        "(create-idx-5 minus remember-idx-0 = 5; plan brief said "
-        "4 but the canonical Bloom enum has 6 levels — pin the "
-        "truth, not the brief); got rationales: "
+        "(create idx 5 minus remember idx 0 over the 6-level "
+        "canonical Bloom enum); got rationales: "
         f"{bloom_event_rationales!r}"
     )
     assert any("declared_bloom='create'" in r for r in bloom_event_rationales), (
@@ -496,21 +436,18 @@ def test_2_anti_silent_degradation_intentional_bloom_mismatch_fires() -> None:
 
 
 def test_3_legacy_blocks_skip_bloom_axis_cleanly() -> None:
-    """Plan §4 Test 3 — pre-Wave-1 Block with ``observed_bloom_level=None``
-    silently skips the Bloom axis.
+    """A Block with ``observed_bloom_level=None`` skips the Bloom axis.
 
-    Catches the regression where a future author tightens the Bloom
-    check to require ``observed_bloom_level`` be non-None — silently
-    breaking every existing corpus.
+    Catches the regression where an author tightens the Bloom check to
+    require ``observed_bloom_level`` be non-None — which would fail
+    every legacy corpus, none of which carries the field.
 
     Block prose contains ``"design"`` (a ``create``-level synonym) so
-    the verb axis fires and passes. NLI loader graceful-degrades
-    (W1.7.C stub returns None; entailment axis emits the
-    ``BLOCK_OBJECTIVE_NLI_DEPS_MISSING`` warning + ``passed=True,
-    action=None``). Net outcome: result.passed=True, no
-    ``BLOCK_OBJECTIVE_BLOOM_UNDERMET`` issue, the per-pair
-    decision-capture event carries ``status=unverifiable`` (because
-    the Bloom axis SKIPPED while no axis fired a real miss).
+    the verb axis fires and passes; the NLI loader graceful-degrades to
+    a warning. Net outcome: ``passed=True``, no
+    ``BLOCK_OBJECTIVE_BLOOM_UNDERMET``, and a per-pair decision-capture
+    event carrying ``status=unverifiable`` — a skipped axis with no real
+    miss must not be recorded as a pass.
     """
     from blocks import Block  # noqa: WPS433
     from lib.validators.block_objective_delivery import (
@@ -592,9 +529,8 @@ def test_3_legacy_blocks_skip_bloom_axis_cleanly() -> None:
     )
 
     # Defence-in-depth — the verb axis MUST have run on the same pair.
-    # The ``verb_match_count=`` interpolation is present per the
-    # ``_emit_decision`` helper (str(verb_match_count) when not None).
-    # Block prose contains "design" → at least one match.
+    # ``verb_match_count=`` is only interpolated when the axis ran, and
+    # the fixture prose contains "design", so the count must be > 0.
     assert any("verb_match_count=" in r for r in rationales), (
         "verb-axis decision-capture event MUST carry "
         "verb_match_count= interpolation (the verb axis still runs "
@@ -619,9 +555,8 @@ def test_3_legacy_blocks_skip_bloom_axis_cleanly() -> None:
 def test_4_outline_and_rewrite_prompts_carry_bloom_triple_verbatim(
     monkeypatch,
 ) -> None:
-    """Plan §4 Test 4 — both outline and rewrite tier prompts surface
-    the ``[Bloom: <level>, verb: <verb>]`` triple verbatim plus their
-    behavioral-outcome system-prompt directives.
+    """Both tiers surface the ``[Bloom: <level>, verb: <verb>]`` triple
+    verbatim plus their behavioral-outcome system-prompt directives.
 
     Four sentinel checks:
 
@@ -646,19 +581,16 @@ def test_4_outline_and_rewrite_prompts_carry_bloom_triple_verbatim(
 
     # Sub-test 4c — outline system prompt directive sentinel.
     assert "MUST be at or above the declared Bloom" in _OUTLINE_SYSTEM_PROMPT, (
-        "Wave 1.7 W1.7.B outline-system-prompt behavioral-outcome "
-        "directive sentinel 'MUST be at or above the declared Bloom' "
-        "missing — the outline-tier model needs the Bloom-floor "
-        "directive surfaced verbatim at the system-prompt level."
+        "outline system prompt is missing the 'MUST be at or above the "
+        "declared Bloom' directive — the outline-tier model needs the "
+        "Bloom floor surfaced verbatim at the system-prompt level."
     )
 
     # Sub-test 4d — rewrite system prompt directive sentinel.
     assert "MUST teach the BEHAVIORAL OUTCOME" in _REWRITE_SYSTEM_PROMPT, (
-        "Wave 1.7 W1.7.B rewrite-system-prompt behavioral-outcome "
-        "directive sentinel 'MUST teach the BEHAVIORAL OUTCOME' "
-        "missing — the rewrite-tier model needs the behavioral-"
-        "outcome directive surfaced verbatim at the system-prompt "
-        "level."
+        "rewrite system prompt is missing the 'MUST teach the "
+        "BEHAVIORAL OUTCOME' directive — the rewrite-tier model needs "
+        "it surfaced verbatim at the system-prompt level."
     )
 
     # Build the fixture for sub-tests 4a + 4b.
@@ -699,55 +631,52 @@ def test_4_outline_and_rewrite_prompts_carry_bloom_triple_verbatim(
         block=block, source_chunks=chunks, objectives=objectives,
     )
     assert "[Bloom: create, verb: design]" in rendered_outline, (
-        "Wave 1.7 W1.7.B outline-tier _render_user_prompt MUST surface "
-        "the verbatim '[Bloom: create, verb: design]' triple inline "
-        "with each objective. The 7B-class outline model has no "
-        "structural way to recover the declared cognitive demand "
-        "without this inline annotation."
+        "outline-tier _render_user_prompt MUST surface the verbatim "
+        "'[Bloom: create, verb: design]' triple inline with each "
+        "objective. A 7B-class outline model has no structural way to "
+        "recover the declared cognitive demand without this inline "
+        "annotation."
     )
     assert objective_statement in rendered_outline, (
-        "Wave 1.7 W1.7.B outline-tier _render_user_prompt MUST render "
-        "the objective statement verbatim alongside the Bloom triple."
+        "outline-tier _render_user_prompt MUST render the objective "
+        "statement verbatim alongside the Bloom triple."
     )
 
-    # Sub-test 4b — rewrite-tier user-prompt rendering. Use the
-    # Wave 1.5 Test 5 pattern: api_key env var + an inert
-    # ``anthropic_client=object()`` to bypass any real network call.
+    # Sub-test 4b — rewrite-tier user-prompt rendering. The api_key env
+    # var plus an inert ``anthropic_client=object()`` satisfy
+    # construction without any real network call.
     monkeypatch.setenv("ANTHROPIC_API_KEY", "ak")
     rewrite_provider = RewriteProvider(anthropic_client=object())
     rendered_rewrite = rewrite_provider._render_user_prompt(
         block=block, source_chunks=chunks, objectives=objectives,
     )
     assert "[Bloom: create, verb: design]" in rendered_rewrite, (
-        "Wave 1.7 W1.7.B rewrite-tier _render_user_prompt MUST surface "
-        "the verbatim '[Bloom: create, verb: design]' triple inline "
-        "with each objective. Symmetric with the outline-tier rendering."
+        "rewrite-tier _render_user_prompt MUST surface the verbatim "
+        "'[Bloom: create, verb: design]' triple inline with each "
+        "objective, symmetric with the outline tier."
     )
     assert objective_statement in rendered_rewrite, (
-        "Wave 1.7 W1.7.B rewrite-tier _render_user_prompt MUST render "
-        "the objective statement verbatim alongside the Bloom triple."
+        "rewrite-tier _render_user_prompt MUST render the objective "
+        "statement verbatim alongside the Bloom triple."
     )
 
 
 # --------------------------------------------------------------------------- #
-# Test 5 — rewrite remediation: each Wave 1.7 issue code injects its own suffix
+# Test 5 — rewrite remediation: each issue code injects its own suffix
 # --------------------------------------------------------------------------- #
 
 
 def test_5_remediation_dispatch_emits_distinct_per_code_directives() -> None:
-    """Plan §4 Test 5 — each Wave 1.7 issue code produces a distinct
-    remediation-suffix directive substring.
+    """Each issue code produces a distinct remediation-suffix directive.
 
-    Source surface: :func:`Courseforge.router.remediation.
-    _append_remediation_for_gates` plus its
-    :func:`_format_failure_block` per-issue dispatch helper. Tests
-    drive the suffix builder directly via three synthetic GateResults
-    whose issues each carry one of the three Wave 1.7 codes plus a
-    realistic message body matching the validator's f-string format
-    (the regex extractors in ``remediation.py`` parse against this
-    format).
+    Drives :func:`Courseforge.router.remediation.
+    _append_remediation_for_gates` directly via three synthetic
+    GateResults. Each synthetic message must match the validator's
+    f-string format verbatim — the regex extractors in
+    ``remediation.py`` parse against that shape, so a loosely-worded
+    fixture would silently exercise nothing.
 
-    Asserts each code produces a DISTINCT directive substring:
+    Each code produces a DISTINCT directive substring:
 
     * ``BLOCK_OBJECTIVE_BLOOM_UNDERMET`` → contains
       ``"bloom_level"`` + ``"levels below"`` + the bloom_gap value.
@@ -770,12 +699,8 @@ def test_5_remediation_dispatch_emits_distinct_per_code_directives() -> None:
     # ------------------------------------------------------------------
     # Sub-test 5a — BLOCK_OBJECTIVE_BLOOM_UNDERMET dispatch.
     # ------------------------------------------------------------------
-    # Validator emits messages of the form:
-    #   "Block 'page_01#concept_intro_0' (block_type='concept') "
-    #   "bloom_level='remember' is 4 levels below the declared "
-    #   "objective 'CO-08''s bloom_level='create'. ..."
-    # Per ``_RE_OBSERVED_BLOOM`` / ``_RE_BLOOM_GAP`` /
-    # ``_RE_DECLARED_BLOOM`` regex shapes in remediation.py.
+    # Message shape must match ``_RE_OBSERVED_BLOOM`` / ``_RE_BLOOM_GAP``
+    # / ``_RE_DECLARED_BLOOM`` in remediation.py.
     bloom_message = (
         "Block 'page_01#concept_intro_0' (block_type='concept') "
         "bloom_level='remember' is 4 levels below the declared "
@@ -787,7 +712,7 @@ def test_5_remediation_dispatch_emits_distinct_per_code_directives() -> None:
         gate_id="rewrite_block_objective_delivery",
         validator_name="block_objective_delivery",
         validator_version="1.0.0",
-        passed=True,  # Wave 1.7 ships warning-only; passed stays True.
+        passed=True,  # warning-only validator; passed stays True
         issues=[
             GateIssue(
                 severity="warning",
@@ -823,12 +748,9 @@ def test_5_remediation_dispatch_emits_distinct_per_code_directives() -> None:
     # ------------------------------------------------------------------
     # Sub-test 5b — BLOCK_OBJECTIVE_STATEMENT_UNDERSUPPORTED dispatch.
     # ------------------------------------------------------------------
-    # Validator emits messages of the form:
-    #   "Block 'page_01#concept_intro_0' (block_type='concept') "
-    #   "prose did not entail objective 'CO-08'. NLI entailment="
-    #   "0.1234 (floor 0.4000); contradiction=0.7800 (floor 0.5000)."
-    # Per ``_RE_OBJECTIVE_ID`` / ``_RE_ENTAILMENT_SCORE`` /
-    # ``_RE_ENTAILMENT_FLOOR`` regex shapes in remediation.py.
+    # Message shape must match ``_RE_OBJECTIVE_ID`` /
+    # ``_RE_ENTAILMENT_SCORE`` / ``_RE_ENTAILMENT_FLOOR`` in
+    # remediation.py.
     statement_message = (
         "Block 'page_01#concept_intro_0' (block_type='concept') "
         "prose did not entail objective 'CO-08'. NLI entailment="
@@ -890,15 +812,8 @@ def test_5_remediation_dispatch_emits_distinct_per_code_directives() -> None:
     # ------------------------------------------------------------------
     # Sub-test 5c — BLOCK_OBJECTIVE_VERB_ABSENT dispatch.
     # ------------------------------------------------------------------
-    # Validator emits messages of the form:
-    #   "Block 'page_01#concept_intro_0' (block_type='concept') "
-    #   "prose contains no synonym of the objective 'CO-08''s "
-    #   "bloom_verb='construct'. Re-emit prose using 'construct' "
-    #   "or one of the 'create'-level synonyms (e.g. compose, "
-    #   "construct, create, design, develop, formulate, generate, "
-    #   "invent)."
-    # Per ``_RE_BLOOM_VERB`` / ``_RE_VERB_SYNONYMS_PREVIEW`` regex
-    # shapes in remediation.py.
+    # Message shape must match ``_RE_BLOOM_VERB`` /
+    # ``_RE_VERB_SYNONYMS_PREVIEW`` in remediation.py.
     verb_message = (
         "Block 'page_01#concept_intro_0' (block_type='concept') "
         "prose contains no synonym of the objective 'CO-08''s "
@@ -972,27 +887,23 @@ def test_5_remediation_dispatch_emits_distinct_per_code_directives() -> None:
 
 
 def test_6_collected_count_guard_and_check_schema_clean() -> None:
-    """Plan §4 Test 6 — wave-end "no silent test removal" ratchet PLUS
-    Draft202012Validator.check_schema cleanliness on the bumped Block /
-    ObjectiveAlignment schema.
+    """Test-count ratchet + ``check_schema`` cleanliness.
 
-    Walks every ``test_*.py`` under the four trees Wave 1.7 ratchets
-    and counts each ``def test_`` declaration via ``ast.walk``. Asserts
-    each tree's count is at least the post-Wave-1.7 baseline encoded in
-    the ``_MIN_*_TESTS`` constants above. Ratchets upward — if a future
-    wave legitimately ADDS tests, bump the constant; if a refactor
-    accidentally REMOVES tests, this gate fires.
+    Counts ``def test_`` declarations under four trees and asserts each
+    is at or above its ``_MIN_*_TESTS`` floor. The ratchet only moves up
+    — adding tests means bumping the constant; a refactor that removes
+    tests trips the gate.
 
     Also asserts:
 
-    * ``Draft202012Validator.check_schema`` passes on the bumped
-      ``$defs.Block`` AND ``$defs.ObjectiveAlignment`` definitions
-      with ZERO ``DeprecationWarning``s captured.
-    * The four pre-existing statistical-tier gate test files still
-      carry their post-Wave-1.7 baseline counts (Drift-B fix
-      additivity check — the W1.7.C
-      ``_build_block_statistical_input`` change must not have
-      silently removed any test from those files).
+    * ``Draft202012Validator.check_schema`` passes on ``$defs.Block``
+      AND ``$defs.ObjectiveAlignment`` with ZERO
+      ``DeprecationWarning``s — a deprecated construct still LOADS, so
+      without this the only symptom is a warning at every consumer's
+      validation time.
+    * The four statistical-tier gate test files still meet their
+      per-file floors; the tree-level ratchet alone would miss a
+      removal in one file offset by additions elsewhere in that tree.
     """
     jsonschema = _require_jsonschema()
 
@@ -1021,8 +932,7 @@ def test_6_collected_count_guard_and_check_schema_clean() -> None:
         "regression suspected):\n  " + "\n  ".join(failures)
     )
 
-    # Per-file floors for the four pre-existing statistical-tier gate
-    # test files — Drift-B additivity check.
+    # Per-file floors for the four statistical-tier gate test files.
     per_file_failures: List[str] = []
     for rel_path, floor in _MIN_STATISTICAL_TIER_TEST_COUNTS.items():
         path = PROJECT_ROOT / rel_path
@@ -1030,19 +940,15 @@ def test_6_collected_count_guard_and_check_schema_clean() -> None:
         if actual < floor:
             per_file_failures.append(
                 f"{rel_path}: collected {actual} test functions; "
-                f"floor is {floor}. Drift-B fix in W1.7.C should be "
-                f"additive — a regression would suggest a removed test."
+                f"floor is {floor} — a test was removed from this file."
             )
     assert not per_file_failures, (
         "Wave-end statistical-tier per-file ratchet tripped:\n  "
         + "\n  ".join(per_file_failures)
     )
 
-    # check_schema sub-clause: capture every emitted warning and assert
-    # ZERO are DeprecationWarnings on the bumped Block /
-    # ObjectiveAlignment schema. Plan §4 Test 6 named clause: "no
-    # warnings tagged DeprecationWarning from the new
-    # objective_alignment field surface".
+    # Capture every emitted warning and assert ZERO are
+    # DeprecationWarnings on the Block / ObjectiveAlignment surface.
     schema_doc = _load_jsonld_schema_doc()
     deprecation_warnings: List[str] = []
 
@@ -1066,7 +972,7 @@ def test_6_collected_count_guard_and_check_schema_clean() -> None:
                         f"{w.category.__name__}: {w.message}"
                     )
     assert not deprecation_warnings, (
-        "jsonschema emitted DeprecationWarning(s) on the bumped "
+        "jsonschema emitted DeprecationWarning(s) on the "
         "objectiveAlignment schema surface:\n  "
         + "\n  ".join(deprecation_warnings)
     )

@@ -1,4 +1,4 @@
-"""Wave 92 — SLM Eval Harness.
+"""SLM Eval Harness.
 
 End-to-end orchestrator that composes the holdout builder + each
 generic-layer + corpus-aware-tier evaluator into a single
@@ -38,10 +38,10 @@ import yaml
 logger = logging.getLogger(__name__)
 
 
-# Wave 105: SHA-256 of empty bytes — used as a placeholder marker in
-# legacy / stub holdout_split.json files. When the harness sees this
-# hash it must refuse to score Tier-2 evaluators because the holdout
-# set is untrustworthy (running them anyway risks train-on-test leak).
+# SHA-256 of empty bytes — the placeholder marker in legacy / stub
+# holdout_split.json files. When the harness sees this hash it must
+# refuse to score Tier-2 evaluators: the holdout set is untrustworthy,
+# and scoring against it anyway risks a train-on-test leak.
 _EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
 
 
@@ -275,17 +275,17 @@ def _load_profile(name: str) -> Dict[str, Any]:
 def _resolve_default_profile(course_path: Path) -> str:
     """Pick a default profile.
 
-    Resolution order (Wave 132c):
+    Resolution order:
 
     1. ``manifest.eval_profile`` — explicit declaration is authoritative.
-       Set this on every course manifest going forward; substring sniffing
-       silently picks ``generic`` for any course whose name doesn't
-       contain ``rdf`` / ``shacl`` / ``semantic web``, which drops the
+       Set this on every course manifest: substring sniffing silently
+       picks ``generic`` for any course whose name doesn't contain
+       ``rdf`` / ``shacl`` / ``semantic web``, which drops the
        rdf_shacl-specific syntactic checks.
     2. Substring sniff over ``classification.subdomains`` / ``topics`` —
        legacy fallback; emits a warning so the operator knows to set
-       ``eval_profile`` on the manifest. Preserved so courses imported
-       before Wave 132c keep passing without a manifest backfill.
+       ``eval_profile`` on the manifest. Kept so courses imported before
+       the field existed pass without a manifest backfill.
     3. ``"generic"`` — default when the manifest is missing or unreadable.
     """
     manifest_path = course_path / "manifest.json"
@@ -328,17 +328,17 @@ class EvalReport:
     per_invariant: Dict[str, Any]
     calibration_ece: Optional[float]
     profile: str
-    # Wave 102 additive: source-match precision + named hallucination rate.
+    # Source-match precision + named hallucination rate.
     source_match: Optional[float] = None
-    # Wave 108 / Phase B additive: negative-grounding signals.
+    # Negative-grounding signals.
     negative_grounding_accuracy: Optional[float] = None
     yes_rate: Optional[float] = None
-    # Wave 109 / Phase C additive: per-property accuracy when the
-    # course has a property manifest. None elsewhere; keys are property IDs.
+    # Per-property accuracy when the course has a property manifest.
+    # None elsewhere; keys are property IDs.
     per_property_accuracy: Optional[Dict[str, Optional[float]]] = None
-    # Wave 138a additive: per-content-type-label teaching_role
-    # distribution + expected-mode mismatches. Tier-2 corpus-derived,
-    # no LLM dispatch. None when chunks.jsonl is absent.
+    # Per-content-type-label teaching_role distribution + expected-mode
+    # mismatches. Tier-2 corpus-derived, no LLM dispatch. None when
+    # chunks.jsonl is absent.
     content_type_role_alignment: Optional[Dict[str, Any]] = None
     content_type_role_alignment_summary: Optional[Dict[str, Any]] = None
 
@@ -362,9 +362,9 @@ class EvalReport:
             )
         if self.yes_rate is not None:
             out["yes_rate"] = round(self.yes_rate, 4)
-        # Wave 102: hallucination_rate is the named inverse of
-        # faithfulness so the ablation renderer can show it as its own
-        # column without recomputing.
+        # hallucination_rate is the named inverse of faithfulness so the
+        # ablation renderer can show it as its own column without
+        # recomputing.
         out.setdefault("metrics", {})
         out["metrics"]["hallucination_rate"] = round(
             max(0.0, min(1.0, 1.0 - float(self.faithfulness))), 4,
@@ -381,7 +381,7 @@ class EvalReport:
             for k, v in self.per_property_accuracy.items():
                 rounded[k] = round(float(v), 4) if v is not None else None
             out["per_property_accuracy"] = rounded
-        # Wave 138a: payload is shaped, not numeric — no rounding.
+        # Payload is shaped, not numeric — no rounding.
         if self.content_type_role_alignment is not None:
             out["content_type_role_alignment"] = self.content_type_role_alignment
         if self.content_type_role_alignment_summary is not None:
@@ -427,17 +427,16 @@ class SLMEvalHarness:
         self.profile_name = profile_name
         self.profile = _load_profile(profile_name)
         self.max_holdout_questions = max_holdout_questions
-        # 2026-04-30 smoke mode: when True, the report is written to
-        # smoke_eval_report.json (NOT eval_report.json) and stamped
-        # with `smoke_mode: true` so downstream readers
-        # (EvalGatingValidator, hf_model_index.py) refuse to gate or
-        # render it. The harness still loads the real adapter and runs
-        # at small N — the point is end-to-end plumbing verification.
+        # Smoke mode: the report is written to smoke_eval_report.json
+        # (NOT eval_report.json) and stamped `smoke_mode: true` so
+        # downstream readers (EvalGatingValidator, hf_model_index.py)
+        # refuse to gate or render it. The harness still loads the real
+        # adapter and runs at small N — the point is end-to-end plumbing
+        # verification, not a scoreable result.
         self.smoke_mode = bool(smoke_mode)
-        # Wave 138a per-stage checkpoint: a 45-60 min eval that crashes
-        # at minute 50 used to start over. With this sidecar each
-        # completed stage replays from cache on resume — only the
-        # failing stage re-runs.
+        # Per-stage checkpoint sidecar: on resume each completed stage
+        # replays from cache so only the failing stage re-runs, instead
+        # of the whole multi-stage eval starting over.
         self.eval_checkpoint_enabled = bool(eval_checkpoint_enabled)
         self.eval_stage_checkpoint_path: Optional[Path] = (
             Path(eval_stage_checkpoint_path)
@@ -471,23 +470,20 @@ class SLMEvalHarness:
         from Trainforge.eval.chunk_ids import is_chunk_id
         from Trainforge.eval.chunk_labels import ChunkLabelResolver
 
-        # Audit 2026-04-30 fix: load corpus chunks once per eval run
-        # so probe templates can substitute human-readable labels for
-        # chunk-ID literals. Without this, probes like
-        # "Does the assessment '<course-slug>_chunk_00270' assess CO-18?"
-        # leak the chunk-ID into the model's context, the model echoes
-        # it back, and the classifier scores ambiguous → faithfulness=0.
+        # Load corpus chunks once per eval run so probe templates can
+        # substitute human-readable labels for chunk-ID literals. A probe
+        # carrying a raw chunk-ID leaks it into the model's context, the
+        # model echoes it back, and the classifier scores the response
+        # ambiguous → faithfulness collapses to 0.
         label_resolver = ChunkLabelResolver.from_course(self.course_path)
 
         evaluators = self.profile.get("evaluators", {})
         caps = self.profile.get("caps", {})
-        # 2026-04-30 smoke mode: clamp every per-evaluator cap so the
-        # ones that don't go through `self.max_holdout_questions`
-        # (invariant_prompts, key_terms, disambiguation_pairs) still
-        # honor the small-N contract. Without this, a smoke run hits
-        # 167+ model calls (~36 min) instead of the 2-5 min target.
-        # max_holdout_questions is also clamped here as a belt-and-
-        # suspenders alongside the existing main() override.
+        # Smoke mode: clamp every per-evaluator cap. The caps that do NOT
+        # flow through `self.max_holdout_questions` (invariant_prompts,
+        # key_terms, disambiguation_pairs) would otherwise run at full
+        # size and blow the small-N contract. max_holdout_questions is
+        # clamped here too, redundantly with the main() override.
         if self.smoke_mode:
             _SMOKE_N = 3
             caps = {
@@ -498,10 +494,10 @@ class SLMEvalHarness:
                 "max_disambiguation_pairs": min(_SMOKE_N, caps.get("max_disambiguation_pairs", 50)),
             }
         if output_path is None:
-            # 2026-04-30 smoke mode: write to the smoke_ sidecar so the
-            # canonical eval_report.json is never overwritten. The
-            # `smoke_mode: true` field below is the load-bearing
-            # signal; the filename is a defensive secondary.
+            # Smoke mode writes to the smoke_ sidecar so the canonical
+            # eval_report.json is never overwritten. The `smoke_mode:
+            # true` field below is the load-bearing signal; the filename
+            # is a defensive secondary.
             report_name = (
                 "smoke_eval_report.json" if self.smoke_mode else "eval_report.json"
             )
@@ -523,14 +519,13 @@ class SLMEvalHarness:
         if not holdout_path.exists():
             HoldoutBuilder(self.course_path).build()
 
-        # Wave 105: refuse to score Tier-2 (graph-derived) evaluators
-        # when the holdout split is a placeholder. SHA-256(b"") is
-        # the canonical "empty content" hash — when the holdout
-        # builder was a stub, the file landed on disk with this
-        # hash. Running Tier-2 against an empty / unverified split
-        # risks train-on-test contamination, so we drop those
-        # evaluators and stamp the report's ``tier_2_status`` field
-        # so the model card reviewer sees the gap.
+        # Refuse to score Tier-2 (graph-derived) evaluators when the
+        # holdout split is a placeholder — SHA-256(b"") is the "empty
+        # content" hash a stubbed holdout builder leaves on disk.
+        # Running Tier-2 against an empty / unverified split risks
+        # train-on-test contamination, so drop those evaluators and
+        # stamp ``tier_2_status`` so the model-card reviewer sees the gap
+        # rather than reading the absence as a clean pass.
         tier_2_status: Optional[str] = None
         try:
             holdout_payload = json.loads(
@@ -576,9 +571,9 @@ class SLMEvalHarness:
                 return len(items)
             return min(len(items), int(cap))
 
-        # Wave 138a: load any per-stage checkpoint from a prior crashed run
-        # so completed stages replay from cache rather than re-paying for
-        # 45-60 min of model dispatches.
+        # Load any per-stage checkpoint from a prior crashed run so
+        # completed stages replay from cache rather than re-paying for
+        # their model dispatches.
         self._eval_stage_cache = _load_eval_stage_checkpoint(
             self.eval_stage_checkpoint_path
         )
@@ -595,9 +590,9 @@ class SLMEvalHarness:
             expected_calls: Optional[int],
             fn: Callable[[], Any],
         ) -> Any:
-            # Wave 138a: skip the stage entirely if a prior run cached its
-            # result. Emit a stage_skipped event so progress tracking
-            # records the skip explicitly.
+            # Skip the stage entirely if a prior run cached its result.
+            # Emit a stage_skipped event so progress tracking records the
+            # skip explicitly rather than showing a silent gap.
             if name in self._eval_stage_cache:
                 progress.emit(
                     "stage_skipped", stage=name, reason="checkpoint",
@@ -638,14 +633,14 @@ class SLMEvalHarness:
                 "correct": fr["correct"],
             }
             faithfulness_score = fr["accuracy"]
-            # Wave 108 / Phase B: yes_rate surfaces yes-bias even when
-            # accuracy is high (every probe is a TRUE statement, so a
-            # 'yes always' model trivially scores 1.0).
+            # yes_rate surfaces yes-bias even when accuracy is high:
+            # every probe here is a TRUE statement, so a 'yes always'
+            # model trivially scores 1.0 on accuracy alone.
             faithfulness_yes_rate = fr.get("yes_rate")
-            # Wave 104: surface per-question records for the trace
-            # writer in the ablation runner. Each row carries the
-            # probe text, model response, ground-truth chunk id (for
-            # chunk-anchored edges), and pass/fail outcome.
+            # Per-question records for the ablation runner's trace
+            # writer. Each row carries the probe text, model response,
+            # ground-truth chunk id (for chunk-anchored edges), and the
+            # pass/fail outcome.
             for r in fr.get("per_question_results", []) or []:
                 edge = r.get("edge", {}) or {}
                 source = edge.get("source")
@@ -659,7 +654,7 @@ class SLMEvalHarness:
                     "correct": r.get("outcome") == "correct",
                 })
 
-        # --- Negative grounding (Wave 108 / Phase B) ---------------- #
+        # --- Negative grounding ------------------------------------- #
         # Same probe-template machinery as faithfulness, but ground-truth
         # is "no". Catches yes-biased template-recognizer adapters that
         # answer "yes" to everything (fail open on positive-only probes).
@@ -686,7 +681,7 @@ class SLMEvalHarness:
             }
             negative_grounding_score = ng.get("negative_grounding_accuracy")
 
-        # --- Per-property eval (Wave 109 / Phase C) ---------------- #
+        # --- Per-property eval -------------------------------------- #
         # No-ops for courses without a property manifest. Surface
         # per-property accuracy in eval_report.json so the
         # EvalGatingValidator can apply per-property thresholds.
@@ -711,14 +706,14 @@ class SLMEvalHarness:
             except Exception as exc:  # noqa: BLE001 — advisory
                 logger.warning("PerPropertyEvaluator failed: %s", exc)
 
-        # --- Teaching-role alignment (Wave 138a, Plan1-W2) --------- #
+        # --- Teaching-role alignment -------------------------------- #
         # Tier-2 corpus-level check; no model dispatch. Reads
         # imscc_chunks/chunks.jsonl (or legacy corpus/chunks.jsonl via
-        # the Phase 7c shim), aggregates teaching_role distribution
-        # per content_type_label, flags expected-mode mismatches.
-        # Wall-time: <100ms on a 1000-chunk corpus. Output flows
-        # through to eval_report.json so EvalGatingValidator can apply
-        # the warning-severity content_type_role_alignment threshold.
+        # the compatibility shim), aggregates the teaching_role
+        # distribution per content_type_label, and flags expected-mode
+        # mismatches. Output flows through to eval_report.json so
+        # EvalGatingValidator can apply the warning-severity
+        # content_type_role_alignment threshold.
         content_type_role_alignment: Optional[Dict[str, Any]] = None
         content_type_role_alignment_summary: Optional[Dict[str, Any]] = None
         from lib.libv2_storage import resolve_imscc_chunks_path
@@ -753,9 +748,9 @@ class SLMEvalHarness:
         # --- Behavioral invariants (Layer 2) ---------------------- #
         invariant_pass_rates: List[float] = []
         inv_cfg = evaluators.get("invariants") or {}
-        # Wave 104: collect per-prompt records across invariants so the
-        # ablation runner can emit per-probe traces. We retain the
-        # invariant name as the prefix for probe_id disambiguation.
+        # Per-prompt records across invariants, for the ablation runner's
+        # per-probe traces. The invariant name is retained as the
+        # probe_id prefix so ids stay unique across invariants.
         invariant_per_prompt: List[Dict[str, Any]] = []
 
         def _collect_invariant_probes(invariant_name: str, result: Dict[str, Any]) -> None:
@@ -891,7 +886,7 @@ class SLMEvalHarness:
             per_invariant["disambiguation"] = dis
             invariant_pass_rates.append(dis["pass_rate"])
 
-        # --- Source-match (Wave 102 - precision companion to faithfulness)
+        # --- Source-match (precision companion to faithfulness) ----- #
         source_match_score: Optional[float] = None
         source_match_per_question: List[Dict[str, Any]] = []
         if evaluators.get("source_match"):
@@ -922,7 +917,7 @@ class SLMEvalHarness:
                     "correct": r.get("outcome") == "match",
                 })
 
-        # --- Wave 3 W3.F: 6 per-question metrics ----------------- #
+        # --- 6 per-question metrics --------------------------------- #
         # Pure post-emit scoring against the assessments.json + chunk
         # corpus already on disk in the course tree. No model dispatch
         # for 5 of 6 (only bloom_alignment_rate + source_support_rate
@@ -1006,27 +1001,26 @@ class SLMEvalHarness:
             ),
         )
 
-        # Wave 104: aggregate per-question records into a single
-        # `per_question` array so the ablation runner can emit one
-        # trace per probe per setup. Records carry probe text, model
-        # response, ground-truth chunk id (where known), and a
-        # boolean correctness signal for failure-mode classification.
+        # Aggregate per-question records into a single `per_question`
+        # array so the ablation runner can emit one trace per probe per
+        # setup. Records carry probe text, model response, ground-truth
+        # chunk id (where known), and a boolean correctness signal for
+        # failure-mode classification.
         per_question_all: List[Dict[str, Any]] = []
         per_question_all.extend(faithfulness_per_question)
         per_question_all.extend(invariant_per_prompt)
         per_question_all.extend(source_match_per_question)
 
-        # Wave 104: surface mean retrieval latency when the model
-        # callable is RAG-backed. Both BaseOnlyCallable / AdapterCallable
-        # leave this attribute unset; RAGCallable exposes it as a
-        # rolling mean over its retrieval calls.
+        # Mean retrieval latency, present only when the model callable is
+        # RAG-backed: BaseOnlyCallable / AdapterCallable leave this
+        # attribute unset; RAGCallable exposes it as a rolling mean over
+        # its retrieval calls.
         mean_latency = getattr(model_callable, "mean_latency_ms", None)
 
         out_dict = report.to_dict()
-        # Wave 3 W3.F: fold the 6 per-question metrics into the
-        # report's top level. Each carries its full per-question
-        # breakdown so an audit can replay why a metric is below
-        # threshold.
+        # Fold the 6 per-question metrics into the report's top level.
+        # Each carries its full per-question breakdown so an audit can
+        # replay why a metric is below threshold.
         if answerable_rate_result is not None:
             out_dict["answerable_rate"] = answerable_rate_result
         if single_correct_rate_result is not None:
@@ -1046,35 +1040,32 @@ class SLMEvalHarness:
         if mean_latency is not None:
             out_dict.setdefault("metrics", {})
             out_dict["metrics"]["mean_latency_ms"] = round(float(mean_latency), 2)
-        # Wave 105: surface the Tier-2 holdout status so reviewers see
-        # exactly why those metrics may be absent. Carries either
-        # "ok" (default) or a "skipped: ..." reason.
+        # Surface the Tier-2 holdout status so reviewers see exactly why
+        # those metrics may be absent. Either "ok" or a "skipped: ..."
+        # reason — never omitted, so absence can't read as a pass.
         out_dict["tier_2_status"] = tier_2_status or "ok"
 
-        # 2026-04-30 smoke mode: stamp the smoke_mode field
-        # unconditionally so downstream readers (EvalGatingValidator,
-        # hf_model_index.py) can short-circuit on smoke reports
-        # without filename-sniffing. False on a real eval run.
+        # Stamp smoke_mode UNCONDITIONALLY so downstream readers
+        # (EvalGatingValidator, hf_model_index.py) can short-circuit on
+        # smoke reports without filename-sniffing. False on a real run.
         out_dict["smoke_mode"] = bool(self.smoke_mode)
 
-        # Worker W3.B: training_corpus_promotion pass-through. When the
-        # course tree carries a freshly-built
-        # ``<course>/quality/trainforge_assessment_quality_report.json``
-        # (W2.B aggregator output), mirror its
-        # ``phase_results.synthesis.promotion_ladder`` block onto the
-        # eval report's top-level ``training_corpus_promotion`` field.
-        # Strict pass-through: this surface re-projects the same
-        # numbers; never re-computes them. Best-effort — a missing /
+        # training_corpus_promotion pass-through. When the course tree
+        # carries a
+        # ``<course>/quality/trainforge_assessment_quality_report.json``,
+        # mirror its ``phase_results.synthesis.promotion_ladder`` block
+        # onto the eval report's ``training_corpus_promotion`` field.
+        # Strict pass-through: this surface re-projects the same numbers
+        # and never re-computes them. Best-effort — a missing /
         # malformed report logs a warning and skips, never raises.
         promotion_ladder = self._read_training_corpus_promotion_ladder()
         if promotion_ladder is not None:
             out_dict["training_corpus_promotion"] = promotion_ladder
 
-        # Audit 2026-04-30 / A8: prefix-bigram diversity. Surfaces
-        # template collapse (the cc07cc76 run had top-3 bigrams covering
-        # 25.2% of generations and 52.1% of outputs reusing a single
-        # hedging pattern) so a reviewer sees the signal without
-        # re-running the eval. Never blocks; advisory metric only.
+        # Prefix-bigram diversity. Surfaces template collapse — a high
+        # top-3 bigram share means the adapter is reusing a few fixed
+        # openings — so a reviewer sees the signal without re-running the
+        # eval. Never blocks; advisory metric only.
         diversity = _compute_prefix_bigram_diversity(per_question_all)
         if diversity is not None:
             out_dict["diversity"] = diversity
@@ -1085,10 +1076,10 @@ class SLMEvalHarness:
             encoding="utf-8",
         )
         progress.finish()
-        # Wave 138a: clean exit — the canonical eval_report.json now
-        # carries every stage's authoritative result, so the resume
-        # sidecar is redundant. On a crash this block never runs and
-        # the sidecar preserves progress for the next attempt.
+        # Clean exit: eval_report.json now carries every stage's
+        # authoritative result, so the resume sidecar is redundant and is
+        # removed. On a crash this block never runs and the sidecar
+        # preserves progress for the next attempt.
         if self._eval_stage_checkpoint_fh is not None:
             self._eval_stage_checkpoint_fh.close()
             self._eval_stage_checkpoint_fh = None
@@ -1100,13 +1091,13 @@ class SLMEvalHarness:
         return output_path
 
     # ------------------------------------------------------------------ #
-    # Wave 3 W3.F: per-question metrics — assessment + chunk loaders + #
-    # 6 _run_<metric> dispatchers.                                      #
+    # Per-question metrics — assessment + chunk loaders +                 #
+    # 6 _run_<metric> dispatchers.                                        #
     # ------------------------------------------------------------------ #
 
     def _load_prompts_for_metrics(self) -> List[Dict[str, Any]]:
-        """Load assessment questions in the prompt-dict shape the W3.F
-        evaluators expect.
+        """Load assessment questions in the prompt-dict shape the
+        per-question evaluators expect.
 
         Resolves ``<course>/assessments.json`` (the canonical Trainforge
         emit). Each ``question`` is normalised to the
@@ -1159,11 +1150,11 @@ class SLMEvalHarness:
                 "bloom_level": q.get("bloom_level") or "",
                 "feedback": q.get("feedback") or "",
                 "rendered_html": q.get("rendered_html") or q.get("html") or "",
-                # W7.A: thread question_type through so per-evaluator
+                # Thread question_type through so per-evaluator
                 # segmentation (answerable_rate / placeholder_rate /
                 # bloom_alignment_rate / single_correct_rate /
                 # distractor_entropy / source_support_rate) can bucket
-                # by type. Mirror of the W6.A resolution chain.
+                # by type.
                 "question_type": q.get("question_type") or q.get("type") or "",
             })
         return prompts
@@ -1173,8 +1164,8 @@ class SLMEvalHarness:
 
         Reads from the canonical
         ``LibV2/courses/<slug>/imscc_chunks/chunks.jsonl`` (or the
-        legacy ``corpus/chunks.jsonl`` via the Phase 7c shim). Best-
-        effort — returns ``{}`` on any read / parse error so the
+        legacy ``corpus/chunks.jsonl`` via the compatibility shim).
+        Best-effort — returns ``{}`` on any read / parse error so the
         metric stages degrade rather than crash.
         """
         try:
@@ -1226,10 +1217,10 @@ class SLMEvalHarness:
         IMSCC-render step). Returns an empty list when no question
         carries any HTML so the metric short-circuits cleanly.
 
-        Wave 7 W7.B: returns ``List[Tuple[str, str]]`` of
-        ``(html, question_type)`` so the parallel-index pairing for the
-        single_correct_rate per-question-type segmentation is built at
-        the loader, not at the call site.
+        Returns ``List[Tuple[str, str]]`` of ``(html, question_type)`` so
+        the pairing for single_correct_rate's per-question-type
+        segmentation is built at the loader rather than by re-indexing
+        two parallel lists at the call site.
         """
         blocks: List[Tuple[str, str]] = []
         for p in prompts:
@@ -1292,7 +1283,8 @@ class SLMEvalHarness:
         return SourceSupportRateEvaluator().evaluate(prompts, chunk_corpus)
 
     def _read_training_corpus_promotion_ladder(self) -> Optional[Dict[str, Any]]:
-        """Worker W3.B: read promotion-ladder pass-through from W2.B aggregator.
+        """Read the promotion-ladder block emitted by the assessment
+        quality aggregator.
 
         Looks at ``<course>/quality/trainforge_assessment_quality_report.json``
         and returns its ``phase_results.synthesis.promotion_ladder``
@@ -1374,13 +1366,11 @@ class SLMEvalHarness:
 def main() -> None:  # pragma: no cover — CLI passthrough
     """Re-eval a trained adapter without re-running the trainer.
 
-    The previous CLI hardcoded a ``"yes (stub)"`` callable, which made
-    the standalone harness invocation produce a meaningless eval
-    report (faithfulness=1.0 against all-true probes, source_match=0,
-    yes_rate=1.0, single repeated prefix bigram). Audit 2026-04-30
-    Phase B caught this when re-evaluating the cc07cc76 adapter — the
-    operator's runner-equivalent fix is now baked into the CLI so a
-    re-eval is a one-liner.
+    Loads the real adapter by default. The stub callable is opt-in
+    (``--stub``) because a ``"yes"``-always callable scores
+    faithfulness=1.0 against the all-true probe set, source_match=0,
+    yes_rate=1.0 and a single repeated prefix bigram — a report that
+    looks scoreable but means nothing.
 
     Usage:
 
@@ -1453,21 +1443,20 @@ def main() -> None:  # pragma: no cover — CLI passthrough
         "--smoke",
         action="store_true",
         help=(
-            "2026-04-30 smoke mode: load the real adapter, cap each "
-            "evaluator at N=3 prompts, force --with-ablation off, and "
-            "write to <adapter>/eval/smoke_eval_report.json. The report "
-            "carries `smoke_mode: true` so EvalGatingValidator and "
-            "hf_model_index refuse to gate or render it. Wall-time "
-            "target: 2-5 minutes on a 3070. Use to verify the eval "
-            "pipeline before paying for a 45-60 minute full run. "
-            "Mutually exclusive with --stub."
+            "Smoke mode: load the real adapter, cap each evaluator at "
+            "N=3 prompts, force --with-ablation off, and write to "
+            "<adapter>/eval/smoke_eval_report.json. The report carries "
+            "`smoke_mode: true` so EvalGatingValidator and "
+            "hf_model_index refuse to gate or render it. Use to verify "
+            "the eval pipeline before paying for a full run. Mutually "
+            "exclusive with --stub."
         ),
     )
     parser.add_argument(
         "--no-eval-checkpoint",
         action="store_true",
         help=(
-            "Wave 138a: disable the per-stage eval-results checkpoint "
+            "Disable the per-stage eval-results checkpoint "
             "sidecar. Default is on — each completed evaluator stage "
             "writes its result dict to "
             "<course>/eval/.eval_results_checkpoint.jsonl so a re-run "
@@ -1485,11 +1474,11 @@ def main() -> None:  # pragma: no cover — CLI passthrough
             "fake callable, --smoke uses the real adapter at small N."
         )
 
-    # 2026-04-30 smoke mode: cap to 3 prompts/evaluator regardless of
-    # any explicit --max-prompts the operator passed; force ablation
-    # off (its 2nd model load + 4-setup loop blows the wall-time
-    # target); and route output to the smoke_ sidecar unless an
-    # explicit --output was provided.
+    # Smoke mode caps to 3 prompts/evaluator regardless of any explicit
+    # --max-prompts the operator passed, and forces ablation off (its
+    # second model load + 4-setup loop defeats the point of a smoke
+    # run). Output routes to the smoke_ sidecar unless an explicit
+    # --output was provided.
     if args.smoke:
         args.with_ablation = False
         args.max_prompts = 3
@@ -1500,10 +1489,10 @@ def main() -> None:  # pragma: no cover — CLI passthrough
 
     course_path = Path(args.course_path)
 
-    # Output path resolution: prefer the adapter-side eval/ dir so the
-    # report lands where EvalGatingValidator looks for it. Smoke mode
-    # picks the smoke_ sidecar so the canonical eval_report.json is
-    # never overwritten by a 3-prompt run.
+    # Prefer the adapter-side eval/ dir so the report lands where
+    # EvalGatingValidator looks for it. Smoke mode picks the smoke_
+    # sidecar so the canonical eval_report.json is never overwritten by
+    # a 3-prompt run.
     report_filename = "smoke_eval_report.json" if args.smoke else "eval_report.json"
     if args.output is not None:
         output_path: Optional[Path] = Path(args.output)

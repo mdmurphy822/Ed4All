@@ -1,6 +1,6 @@
 """Content-generation helpers for the textbook-to-course pipeline.
 
-Supports ``MCP.tools.pipeline_tools._generate_course_content`` (Worker α) by:
+Supports ``MCP.tools.pipeline_tools._generate_course_content`` by:
 
 - parsing staged DART HTML into a clean section/paragraph structure,
 - synthesizing canonical learning-objective dicts (``CO-NN`` / ``TO-NN``)
@@ -9,8 +9,8 @@ Supports ``MCP.tools.pipeline_tools._generate_course_content`` (Worker α) by:
   :func:`Courseforge.scripts.generate_course.generate_week` consumes.
 
 The actual HTML rendering (full ``data-cf-*`` + JSON-LD surface) is delegated
-to ``generate_week`` — Worker α is a thin orchestration wrapper that feeds
-the mature Courseforge emitter with DART-derived inputs.
+to ``generate_week``; this module is a thin orchestration wrapper feeding
+the Courseforge emitter DART-derived inputs.
 
 No external deps beyond the stdlib + existing Ed4All libraries.
 """
@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 # Project imports — mature Bloom/taxonomy helpers.
 from lib.ontology.bloom import (
-    bloom_to_cognitive_domain,  # Wave 48: schema-sourced cognitive domain
+    bloom_to_cognitive_domain,  # schema-sourced cognitive domain
     detect_bloom_level,
 )
 from lib.ontology.learning_objectives import BLOOMS_VERBS, mint_lo_id
@@ -55,18 +55,18 @@ _STOPWORDS = frozenset([
 ])
 
 # Section / heading boundary; DART emits both <h1> (page top) and <h2>/<h3>.
-# Wave 27: we capture the full opening tag too so we can harvest
-# ``data-dart-block-id`` for source-id carry-through.
+# The full opening tag is captured too, so ``data-dart-block-id`` can be
+# harvested for source-id carry-through.
 _SECTION_RE = re.compile(
     r"(?is)(<section[^>]*>)(.*?)(?=</section>|$)"
 )
 _HEADING_RE = re.compile(
     r"(?is)<(h[1-6])[^>]*>(.*?)</\1>"
 )
-# Wave 35: full-document heading fallback — we need both the start offset
-# and the tag name so the scan-by-boundary pass can tie each paragraph
-# back to the nearest enclosing <h2>/<h3>. ``_HEADING_BOUNDARY_RE``
-# matches the opening tag only; the closing tag's offset is derived.
+# Full-document heading fallback. Both the start offset and the tag name
+# are needed so the scan-by-boundary pass can tie each paragraph back to
+# the nearest enclosing <h2>/<h3>. This matches the opening tag only; the
+# closing tag's offset is derived.
 _HEADING_OPEN_RE = re.compile(
     r"(?is)<h([2-3])[^>]*>(.*?)</h\1>"
 )
@@ -74,18 +74,18 @@ _PARAGRAPH_RE = re.compile(r"(?is)<p[^>]*>(.*?)</p>")
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
 
-# Wave 27: extract DART block-id from the section wrapper opening tag.
-# DART Wave 8+ stamps ``data-dart-block-id="{block_id}"`` on every top-
-# level section; we carry it through onto the Courseforge page's section
-# element as ``data-cf-source-ids="dart:{slug}#{block_id}"``.
-# DART->semantik purge Stage 3 (dual-READ): the section wrapper may carry the
-# freshly-emitted ``data-semantik-block-id`` OR a legacy ``data-dart-block-id``.
+# Extract the block-id from the section wrapper opening tag. Every
+# top-level section is stamped with a block-id attribute; it is carried
+# through onto the Courseforge page's section element as
+# ``data-cf-source-ids="dart:{slug}#{block_id}"``. Dual-READ: the wrapper
+# may carry the current ``data-semantik-block-id`` OR the legacy
+# ``data-dart-block-id``, so both must match.
 _DATA_DART_BLOCK_ID_RE = re.compile(
     r"""(?is)data-(?:dart|semantik)-block-id\s*=\s*["']([^"']+)["']"""
 )
 
-# Wave 24: DART Wave 13+ emits each chapter as <article role="doc-chapter">.
-# When present, parse_dart_html_files tags every topic with its chapter_id so
+# Chapters are emitted as <article role="doc-chapter">. When present,
+# parse_dart_html_files tags every topic with its chapter_id so
 # _group_topics_by_week can respect chapter boundaries when distributing
 # topics across weeks.
 _DOC_CHAPTER_ARTICLE_RE = re.compile(
@@ -110,8 +110,8 @@ _HEADING_BLOCKLIST_TOKENS = frozenset([
     # Publisher / location chrome
     "vancouver bc", "vancouver, bc", "toronto on", "london uk",
     "creative commons", "bccampus", "published by",
-    # Wave 27 HIGH-4: publisher-credit / cover / copyright chrome that
-    # has been observed leaking into week titles on real corpora.
+    # Publisher-credit / cover / copyright chrome that leaks into week
+    # titles otherwise.
     "cover design", "cover art", "designed by", "illustrated by",
     "illustrations by", "illustration by", "translation by",
     "all rights reserved", "rights reserved", "edited by",
@@ -149,11 +149,11 @@ _CITY_ABBREV_RE = re.compile(
 # whole string is just proper nouns (and maybe the lead-ins "by" / "edited by"
 # / "cover design by").
 #
-# Wave 27 broadens to include initialed names (e.g. single-letter initials
-# like "J.", multi-initial sequences like "J.R.R.", titles like "Dr.") and
-# parenthetical nicknames (e.g. "J.R.R. (Ronald) Tolkien"). Token may be
-# all-caps when short (acronym initials) but a plain capitalized word
-# (>= 2 letters) is still the common case.
+# Also matches initialed names (single-letter initials like "J.",
+# multi-initial sequences like "J.R.R.", titles like "Dr.") and
+# parenthetical nicknames ("J.R.R. (Ronald) Tolkien"). A token may be
+# all-caps when short (acronym initials), but a plain capitalized word
+# (>= 2 letters) is the common case.
 _NAME_TOKEN_RE = re.compile(
     r"^(?:"
     r"[A-Z]\."                      # single initial: "A."
@@ -168,19 +168,19 @@ _AUTHOR_BYLINE_LEADINS = frozenset([
     "illustrations by", "illustration by", "translation by",
 ])
 
-# Wave 27 HIGH-4: formulaic-phrase markers. "The functional syntax
-# equivalent is as follows:" style lead-ins are chapter-body prose
-# erroneously promoted to section headings by pdftotext.
+# Formulaic-phrase markers. "The functional syntax equivalent is as
+# follows:" style lead-ins are chapter-body prose that pdftotext
+# erroneously promoted to a section heading.
 _FORMULAIC_PHRASE_RE = re.compile(
     r"(?i)(functional|logical|mathematical|formal)\s+"
     r"(syntax|form|expression|representation|notation|equivalent)"
 )
 
-# Wave 27 HIGH-4: math / logic notation detector. Any one of these Unicode
-# symbols inside a short (≤ 40 chars) heading marks it as formula residue
-# rather than a real chapter title. Used for cases like "C v ∀R.D",
-# "∀x (P(x) → Q(x))", etc. Formulas are valid inline content but should
-# never be treated as topic headings for objective synthesis.
+# Math / logic notation detector. Any one of these Unicode symbols inside
+# a short (≤ 40 chars) heading marks it as formula residue rather than a
+# real chapter title ("C v ∀R.D", "∀x (P(x) → Q(x))"). Formulas are valid
+# inline content but must never become topic headings for objective
+# synthesis.
 _MATH_NOTATION_CHARS = frozenset(
     "∀∃∈∉⊆⊇∪∩∧∨¬⊤⊥≡≢⇒⇔→←↔⊃⊂≤≥≠≈"
     "∑∏∫∞∂∇αβγδεζηθικλμνξοπρστυφχψω"
@@ -200,12 +200,10 @@ _COLON_PROMPT_TAIL_RE = re.compile(r":\s*$")
 # (unusual symbols / CamelCase multi-token strings) but for an ontology or
 # formal-methods textbook they're pedagogically meaningful — real examples
 # from the chapter body shown as section anchors. We KEEP them as valid
-# headings. Detection is informational only; no rejection.
-#
-# Decision (recorded here per task directive): formula-like heading
-# fragments are legitimate content in ontology / formal-methods textbooks
-# and should be preserved even though they superficially look like
-# sentence-body residue.
+# headings. Detection is informational only; no rejection — formula-like
+# fragments are legitimate content in ontology / formal-methods
+# textbooks even though they superficially resemble sentence-body
+# residue.
 
 
 def _is_low_signal_heading(heading: str) -> bool:
@@ -316,16 +314,15 @@ def _is_low_signal_heading(heading: str) -> bool:
     if _COLON_PROMPT_TAIL_RE.search(text) and word_count > 3:
         return True
 
-    # Wave 27 HIGH-4: math / logic notation detector. Short heading
-    # containing Unicode math symbols (∀ ∃ ∈ ⊆ ∧ ¬ etc.) is formula
-    # residue from the chapter body, not a real chapter title. Applied
-    # BEFORE the formulaic-phrase check because formula residues are
-    # often all-symbols with no English word at all.
+    # A short heading containing Unicode math symbols (∀ ∃ ∈ ⊆ ∧ ¬ …) is
+    # formula residue from the chapter body, not a real chapter title.
+    # Must run BEFORE the formulaic-phrase check: formula residues are
+    # often all-symbols with no English word for that check to match.
     if len(text) <= 40 and any(ch in _MATH_NOTATION_CHARS for ch in text):
         return True
 
-    # Wave 27 HIGH-4: formulaic-phrase lead-ins that pdftotext hoisted
-    # into a heading ("The functional syntax equivalent is as follows:").
+    # Formulaic-phrase lead-ins that pdftotext hoisted into a heading
+    # ("The functional syntax equivalent is as follows:").
     if _FORMULAIC_PHRASE_RE.search(text):
         return True
 
@@ -337,7 +334,7 @@ def _is_low_signal_heading(heading: str) -> bool:
     #   (2) every token is a Name-like token AND at least one token is
     #       hyphenated / multi-initialed (high-confidence author signal
     #       like "J.K." or "A.B."). OR
-    #   (3) Wave 27: exactly 2-3 tokens AND every token looks like a
+    #   (3) exactly 2-3 tokens AND every token looks like a
     #       proper name AND no token matches the common-title-word set.
     #       Catches bare 2-name bylines ("Author Surname") without false-
     #       positive-demoting "European Union", "Creative Commons",
@@ -398,8 +395,8 @@ _SENTENCE_STARTER_WORDS = frozenset([
     "given", "since", "so", "then", "also", "further",
 ])
 
-# Wave 27 HIGH-4: common English title-bearing nouns / adjectives. When a
-# short 2-3 token capitalized heading contains any of these, it's very likely
+# Common English title-bearing nouns / adjectives. When a short 2-3 token
+# capitalized heading contains any of these, it's very likely
 # a legitimate chapter / section title ("European Union Policy", "Digital
 # Pedagogy", "Creative Commons", "Research Methods", "Science of Learning"),
 # NOT a bare author byline ("Jane Doe", "John Smith"). Kept intentionally
@@ -768,7 +765,7 @@ def _build_article_block_id_map(html: str) -> List[Tuple[int, int, str]]:
     """Return (start, end, block_id) tuples for every ``<article …
     data-dart-block-id="…">`` in ``html``. Used by the heading-fallback
     parser to ground each topic on the enclosing chapter's block id
-    when paragraphs live outside ``<section>`` wrappers (Wave 35).
+    when paragraphs live outside ``<section>`` wrappers.
     """
     spans: List[Tuple[int, int, str]] = []
     for match in re.finditer(r"(?is)<article[^>]*>", html):
@@ -799,11 +796,10 @@ def _parse_html_heading_fallback(
     """Section-boundary fallback for DART HTML where paragraphs live
     outside ``<section>`` wrappers.
 
-    Wave 35: on some real corpora DART emits ``<section
-    data-dart-block-id="…">`` tags that hold only a heading, while the
-    1000+ ``<p>`` tags sit directly inside ``<main>``/``<article>``
-    between consecutive sections. The primary section-based parser
-    returned zero topics on those files, which fired the Wave 32
+    Some corpora emit ``<section data-dart-block-id="…">`` tags that hold
+    only a heading, with the ``<p>`` tags sitting directly inside
+    ``<main>``/``<article>`` between consecutive sections. The primary
+    section-based parser returns zero topics on those files, tripping the
     CONTENT_GENERATION_EMPTY guard. This fallback walks every
     ``<section>`` opening tag, harvests its block id + heading, and
     grabs the paragraphs between ``</section>`` and the next
@@ -964,9 +960,9 @@ def parse_dart_html_files(html_paths: List[Path]) -> List[Dict[str, Any]]:
         file_misconception_map[stem] = extract_misconceptions(whole_text)
         file_question_map[stem] = extract_self_check_questions(whole_text)
 
-        # Wave 24: locate <article role="doc-chapter"> wrappers first so we
-        # can tag each topic with its owning chapter. Sections outside any
-        # article (e.g. pre-Wave-13 DART output) get chapter_id=None.
+        # Locate <article role="doc-chapter"> wrappers first so each
+        # topic can be tagged with its owning chapter. Sections outside
+        # any article get chapter_id=None.
         chapter_spans: List[Tuple[int, int, str]] = []  # (start, end, chapter_id)
         for idx, match in enumerate(_DOC_CHAPTER_ARTICLE_RE.finditer(html), start=1):
             # Locate the article's own id= attribute, falling back to a
@@ -985,9 +981,9 @@ def parse_dart_html_files(html_paths: List[Path]) -> List[Dict[str, Any]]:
         # Prefer DART-shaped <section> blocks; fall back to whole-document
         # heading-boundary split when no <section> tags are present. When
         # <section> is present we also capture its byte-offset so chapter
-        # assignment can map the section back to its article wrapper, and
-        # Wave 27 captures ``data-dart-block-id`` from the opening tag so
-        # source-ids carry through into the Courseforge page.
+        # assignment can map the section back to its article wrapper, plus
+        # ``data-dart-block-id`` from the opening tag so source-ids carry
+        # through into the Courseforge page.
         # Section tuple: (opening_tag, body, start_offset)
         section_matches: List[Tuple[str, str, int]] = []
         for m in _SECTION_RE.finditer(html):
@@ -1023,10 +1019,9 @@ def parse_dart_html_files(html_paths: List[Path]) -> List[Dict[str, Any]]:
             if _is_low_signal_heading(heading):
                 continue
 
-            # Wave 27: harvest DART block-id from the section wrapper.
-            # When absent (pre-Wave-12 DART output), leave empty so the
-            # downstream renderer falls back to the Wave 9 source-
-            # module-map path or silently elides source-ids.
+            # Harvest the block-id from the section wrapper. When absent,
+            # leave it empty so the downstream renderer falls back to the
+            # source-module-map path or elides source-ids.
             block_id_match = _DATA_DART_BLOCK_ID_RE.search(opening_tag)
             dart_block_id = (
                 block_id_match.group(1).strip() if block_id_match else ""
@@ -1038,13 +1033,13 @@ def parse_dart_html_files(html_paths: List[Path]) -> List[Dict[str, Any]]:
                 "key_terms": _extract_key_terms(full_text),
                 "source_file": stem,
                 "word_count": word_count,
-                # Wave 24: chapter_id from <article role="doc-chapter">;
-                # None when DART didn't emit doc-chapter wrappers.
+                # chapter_id from <article role="doc-chapter">; None when
+                # the converter emitted no doc-chapter wrappers.
                 "chapter_id": _chapter_for_offset(section_offset),
-                # Wave 27: DART provenance for per-element source-id
-                # carry-through. ``dart_block_ids`` is a list so future
-                # multi-block topics (e.g. merged sibling sections) can
-                # contribute a comma-joined source-ids attribute.
+                # Source provenance for per-element source-id
+                # carry-through. A list, so multi-block topics (e.g.
+                # merged sibling sections) can contribute a comma-joined
+                # source-ids attribute.
                 "dart_block_ids": [dart_block_id] if dart_block_id else [],
                 # Populated in the finalization pass below so every topic
                 # from the same source carries the file's extracted items.
@@ -1053,11 +1048,10 @@ def parse_dart_html_files(html_paths: List[Path]) -> List[Dict[str, Any]]:
                 "extracted_questions": [],
             })
 
-        # Wave 35: when the section-based pass added nothing for this
-        # file (DART emitted heading-only <section> tags with the real
-        # paragraphs floating in <main>), fall back to a
-        # heading-boundary scan over the whole HTML so we still ground
-        # Courseforge pages in the source material.
+        # When the section-based pass added nothing for this file
+        # (heading-only <section> tags with the real paragraphs floating
+        # in <main>), fall back to a heading-boundary scan over the whole
+        # HTML so Courseforge pages stay grounded in source material.
         if len(topics) == topics_before_file:
             topics.extend(
                 _parse_html_heading_fallback(html, stem, _chapter_for_offset)
@@ -1130,8 +1124,8 @@ def collect_staged_html(
 # course-outliner / rewrite tier may rewrite this in place once the
 # course's actual learner persona is established (e.g. "First-year
 # nursing students"); this default is the safe baseline that keeps the
-# emitted LO ABCD-shape valid against ``$defs.AbcdObjective`` (Phase 6
-# Subtask 1) on every corpus.
+# emitted LO ABCD-shape valid against ``$defs.AbcdObjective`` on every
+# corpus.
 _DEFAULT_ABCD_AUDIENCE: str = "Students"
 
 
@@ -1141,8 +1135,8 @@ def _resolve_abcd_verb(
 ) -> Optional[str]:
     """Return a canonical Bloom-aligned verb for the ABCD ``behavior.verb`` slot.
 
-    Phase 6 Subtask 8 contract: the verb in ``abcd.behavior.verb`` MUST
-    be a member of ``BLOOMS_VERBS[bloom_level]``. This helper picks:
+    Contract: the verb in ``abcd.behavior.verb`` MUST be a member of
+    ``BLOOMS_VERBS[bloom_level]``. This helper picks:
 
       1. ``bloom_verb`` when it's already a member of the canonical
          set for that level (preferred — preserves the verb the
@@ -1234,8 +1228,8 @@ def _build_abcd_for_objective(
     Audience defaults to ``_DEFAULT_ABCD_AUDIENCE`` ("Students"); the
     downstream course-outliner / rewrite tier MAY overwrite it with a
     course-specific persona once one is known. ``condition`` and
-    ``degree`` are emitted as empty strings per Subtask 8 contract —
-    they're filled in by the LLM-driven outliner downstream
+    ``degree`` are emitted as empty strings — they're filled in by the
+    LLM-driven outliner downstream
     (``$defs.AbcdObjective`` permits them as empty strings since their
     schema has no ``minLength`` constraint).
     """
@@ -1298,14 +1292,13 @@ def _normalize_objective_entry(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     key_concepts = raw.get("key_concepts") or raw.get("keyConcepts")
     if key_concepts:
         entry["key_concepts"] = list(key_concepts)
-    # Layer-A/B terminal-coverage fix: preserve CO→TO roll-up back-pointers
-    # and chapter attribution when present. Previously stripped here, which
-    # (a) emptied the roll-up set so prune_orphan_terminals deleted every
-    # terminal, and (b) caused ORPHAN_TERMINAL_NO_CHAPTER_REF false
-    # positives in the CO-less Layer-B branch. Downstream consumers that
-    # need these: Trainforge/pedagogy_graph_builder.py (CO→TO edges),
-    # lib/validators/libv2/packet_integrity.py (CO→TO expansion). Pure
-    # pass-through — all other normalization is unchanged.
+    # Preserve CO→TO roll-up back-pointers and chapter attribution when
+    # present — these MUST NOT be stripped: an empty roll-up set makes
+    # prune_orphan_terminals delete every terminal, and a missing chapter
+    # ref triggers ORPHAN_TERMINAL_NO_CHAPTER_REF on the CO-less branch.
+    # Downstream consumers: Trainforge/pedagogy_graph_builder.py (CO→TO
+    # edges), lib/validators/libv2/packet_integrity.py (CO→TO expansion).
+    # Pure pass-through — all other normalization is unchanged.
     for passthrough_key in (
         "parent_to",
         "parent_terminal",
@@ -1317,17 +1310,16 @@ def _normalize_objective_entry(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         val = raw.get(passthrough_key)
         if val is not None:
             entry[passthrough_key] = val
-    # Phase 6 ST 7-8: preserve ABCD when supplied verbatim by the user
-    # (e.g. via ``--reuse-objectives``). Both ``abcd`` and the canonical
+    # Preserve ABCD when supplied verbatim by the user (e.g. via
+    # ``--reuse-objectives``). Both ``abcd`` and the canonical
     # JSON-LD ``$defs.AbcdObjective`` shape are tolerated so corpora
     # round-trip through ``synthesized_objectives.json`` cleanly.
     abcd = raw.get("abcd")
     if isinstance(abcd, dict):
         entry["abcd"] = dict(abcd)
-    # Wave 1.6 W1.6.A: preserve ``source_refs`` verbatim regardless of
-    # shape (legacy ``List[str]`` OR Wave-1.6 structured
-    # ``List[{ref, chunk_ids[]}]``). Pre-Wave-1.6 this field was dropped
-    # entirely on ``--reuse-objectives`` round-trips, destroying
+    # Preserve ``source_refs`` verbatim regardless of shape (legacy
+    # ``List[str]`` OR structured ``List[{ref, chunk_ids[]}]``). Dropping
+    # this field on a ``--reuse-objectives`` round-trip destroys the
     # per-objective attribution carried by user-supplied payloads. The
     # field is shape-tolerant pass-through here; the canonical schema
     # ``schemas/knowledge/objectives_v1.schema.json`` carries the
@@ -1412,17 +1404,16 @@ def _topic_objective_source_ref(
     """Build a single structured ``source_refs`` entry for an objective
     derived from ``topic``.
 
-    Wave 1.6 W1.6.B: per-objective source attribution. Returns a single
+    Per-objective source attribution. Returns a single
     ``{ref, chunk_ids[]}`` dict when the topic carries enough provenance
     (``source_file`` + ``dart_block_ids``) to build at least one
     ``dart:{slug}#{block_id}`` chunk-id. Returns ``None`` when the topic
-    is non-attributable (legacy fixtures predating Wave 12 DART output;
-    no ``dart_block_ids`` ever set).
+    is non-attributable (no ``dart_block_ids`` ever set).
 
-    Resolution rules (mirrors the plan §2 Fix 1.6.B contract):
+    Resolution rules:
 
     * ``ref`` — ``chapter_id`` from ``<article role="doc-chapter">`` when
-      DART tagged it (Wave 24+); else falls back to a section heading
+      the converter tagged it; else falls back to a section heading
       slug derived from the topic heading via :func:`canonical_slug`.
       The synthesizer cannot reach ``textbook_structure.json`` from
       this layer, so the slugified heading is the best available
@@ -1557,8 +1548,8 @@ def synthesize_objectives_from_topics(
     Output shape matches what ``generate_week`` consumes. IDs follow the
     JSON-LD schema's ``^[A-Z]{2,}-\\d{2,}$`` pattern: ``TO-NN`` for terminal,
     ``CO-NN`` for chapter-level (minted via
-    :func:`lib.ontology.learning_objectives.mint_lo_id`, the Wave 24
-    canonical helper — no more inline f-string magic).
+    :func:`lib.ontology.learning_objectives.mint_lo_id` — never an
+    inline f-string).
 
     Content policy (NO placeholder generations):
       * Every emitted objective statement MUST come from the source corpus
@@ -1610,8 +1601,8 @@ def synthesize_objectives_from_topics(
     # First: harvest all real LO statements extracted by parse_dart_html_files.
     # A single textbook section may emit multiple LOs; we round-robin assign
     # them across weeks below.
-    # Wave 1.6 W1.6.B: carry the originating topic dict alongside the
-    # heading + statements so Path A emit can build the structured
+    # Carry the originating topic dict alongside the heading +
+    # statements so Path A emit can build the structured
     # ``source_refs[]`` from the topic's ``source_file`` + ``dart_block_ids``.
     all_extracted_los: List[Tuple[str, List[str], Dict[str, Any]]] = []
     for topic in topics:
@@ -1648,11 +1639,10 @@ def synthesize_objectives_from_topics(
                 if wk_idx is not None:
                     covered_week_indices.add(wk_idx)
             primary_term_slug = canonical_slug(heading) or ""
-            # Wave 1.6 W1.6.B: every Path A LO from this topic shares the
-            # same source attribution — single-element structured
-            # ``source_refs[]`` derived from the topic's DART provenance.
-            # ``None`` when the topic carries no ``dart_block_ids`` (legacy
-            # pre-Wave-12 DART output); the validator wired in W1.6.C
+            # Every Path A LO from this topic shares the same source
+            # attribution — a single-element structured ``source_refs[]``
+            # derived from the topic's provenance. ``None`` when the topic
+            # carries no ``dart_block_ids``; the downstream validator
             # surfaces the empty case without failing closed.
             topic_ref = _topic_objective_source_ref(source_topic)
             for statement in statements:
@@ -1666,20 +1656,19 @@ def synthesize_objectives_from_topics(
                     entry["bloom_level"] = level
                 if verb:
                     entry["bloom_verb"] = verb
-                # Phase 6 ST 8: emit ABCD discrete fields alongside the
-                # legacy bloom_level / bloom_verb / statement so the
-                # downstream AbcdObjectiveValidator can audit verb-Bloom
-                # alignment without re-parsing prose. Skip when no
-                # Bloom level was detected — the schema requires a
-                # non-empty behavior.verb.
+                # Emit ABCD discrete fields alongside bloom_level /
+                # bloom_verb / statement so AbcdObjectiveValidator can
+                # audit verb-Bloom alignment without re-parsing prose.
+                # Skipped when no Bloom level was detected — the schema
+                # requires a non-empty behavior.verb.
                 abcd = _build_abcd_for_objective(
                     statement, level, verb, key_terms=key_concepts,
                 )
                 if abcd is not None:
                     entry["abcd"] = abcd
-                # Wave 1.6 W1.6.B: structured source_refs[] (single entry
-                # per topic; multi-entry aggregation happens on the
-                # Path B secondary-heading rollup).
+                # Structured source_refs[] — single entry per topic;
+                # multi-entry aggregation happens on the Path B
+                # secondary-heading rollup.
                 entry["source_refs"] = [dict(topic_ref)] if topic_ref else []
                 # First ``effective_max_terminal`` go to terminal; rest COs.
                 if to_counter <= effective_max_terminal:
@@ -1717,19 +1706,17 @@ def synthesize_objectives_from_topics(
         primary_key_concepts = [
             canonical_slug(t) for t in primary_terms[:3] if canonical_slug(t)
         ]
-        # Wave 1.6 W1.6.B: primary heading carries a single-element
-        # structured source_refs entry (its own topic's DART chunk-ids).
+        # The primary heading carries a single-element structured
+        # source_refs entry (its own topic's chunk-ids).
         primary_ref = _topic_objective_source_ref(primary)
         primary_source_refs: List[Dict[str, Any]] = (
             [dict(primary_ref)] if primary_ref else []
         )
-        # Wave 1.6 W1.6.B: a terminal outcome synthesizes across an
-        # entire week's worth of topics (the plan's worked example —
-        # to-07 "Integrate RDF, SPARQL, SHACL, and OWL 2 into an
-        # end-to-end semantic web solution" cites four different
-        # textbooks). Aggregate per-topic source_refs into a multi-entry
-        # list (one entry per distinct heading) so the structured shape
-        # captures the multi-source synthesis explicitly.
+        # A terminal outcome synthesizes across an entire week's worth of
+        # topics, so its per-topic source_refs aggregate into a
+        # multi-entry list (one entry per distinct heading) — the
+        # structured shape has to record the multi-source synthesis
+        # explicitly rather than crediting only the primary heading.
         aggregated_terminal_refs: List[Dict[str, Any]] = list(primary_source_refs)
         seen_refs: set = {
             (entry.get("ref"), tuple(entry.get("chunk_ids") or []))
@@ -1758,14 +1745,14 @@ def synthesize_objectives_from_topics(
                 terminal_entry["bloom_level"] = level
             if verb:
                 terminal_entry["bloom_verb"] = verb
-            # Phase 6 ST 8: ABCD discrete fields.
+            # ABCD discrete fields.
             abcd = _build_abcd_for_objective(
                 primary_heading, level, verb, key_terms=primary_terms,
             )
             if abcd is not None:
                 terminal_entry["abcd"] = abcd
-            # Wave 1.6 W1.6.B: aggregated structured source_refs[]
-            # (one entry per topic the terminal synthesizes across).
+            # Aggregated structured source_refs[] — one entry per topic
+            # the terminal synthesizes across.
             terminal_entry["source_refs"] = [dict(r) for r in aggregated_terminal_refs]
             terminal.append(terminal_entry)
             to_counter += 1
@@ -1779,27 +1766,25 @@ def synthesize_objectives_from_topics(
                 primary_entry["bloom_level"] = level
             if verb:
                 primary_entry["bloom_verb"] = verb
-            # Phase 6 ST 8: ABCD discrete fields.
+            # ABCD discrete fields.
             abcd = _build_abcd_for_objective(
                 primary_heading, level, verb, key_terms=primary_terms,
             )
             if abcd is not None:
                 primary_entry["abcd"] = abcd
-            # Wave 1.6 W1.6.B: COs are bound to a single heading;
-            # single-element structured source_refs[] (no aggregation).
+            # COs are bound to a single heading; single-element
+            # structured source_refs[] (no aggregation).
             primary_entry["source_refs"] = [dict(r) for r in primary_source_refs]
             chapter.append(primary_entry)
             co_counter += 1
 
         # One CO per additional heading in the week (chapter-level
         # objectives bind to the secondary sections the week covers).
-        # Wave 1.6 W1.6.B: when MULTIPLE secondary headings roll up in
-        # this week, each emitted CO is a STANDALONE objective bound to
-        # ONE secondary heading — single-entry source_refs[] per CO. The
-        # multi-entry aggregation case fires when a secondary heading's
-        # own topic carries multiple ``dart_block_ids`` (rare; future
-        # multi-block-merged topics) — those projects to multiple
-        # ``chunk_ids[]`` inside ONE source_refs[] entry, not multiple
+        # When MULTIPLE secondary headings roll up in this week, each
+        # emitted CO is a STANDALONE objective bound to ONE secondary
+        # heading — single-entry source_refs[] per CO. A secondary topic
+        # carrying multiple ``dart_block_ids`` projects to multiple
+        # ``chunk_ids[]`` inside ONE source_refs[] entry, not to multiple
         # entries.
         for secondary in week_topics[1:]:
             sec_heading = secondary["heading"]
@@ -1817,14 +1802,14 @@ def synthesize_objectives_from_topics(
                 chapter_entry["bloom_level"] = sec_level
             if sec_verb:
                 chapter_entry["bloom_verb"] = sec_verb
-            # Phase 6 ST 8: ABCD discrete fields.
+            # ABCD discrete fields.
             sec_abcd = _build_abcd_for_objective(
                 sec_heading, sec_level, sec_verb, key_terms=sec_terms,
             )
             if sec_abcd is not None:
                 chapter_entry["abcd"] = sec_abcd
-            # Wave 1.6 W1.6.B: structured source_refs[] for the
-            # secondary heading's own topic.
+            # Structured source_refs[] for the secondary heading's own
+            # topic.
             sec_ref = _topic_objective_source_ref(secondary)
             chapter_entry["source_refs"] = [dict(sec_ref)] if sec_ref else []
             chapter.append(chapter_entry)
@@ -1836,12 +1821,9 @@ def synthesize_objectives_from_topics(
 def _page_roles_for_week(lo_count: int) -> Tuple[str, ...]:
     """Return the canonical page-role tuple for a week with ``lo_count`` LOs.
 
-    Wave 24 HIGH-5 fix: pre-Wave-24, ``pipeline_tools.py`` hardcoded a
-    5-tuple (overview, content_01, application, self_check, summary) for
-    every week regardless of how many LOs the week carried. That meant a
-    1-LO week got 5 pages (mostly filler) and a 12-LO week also got 5
-    pages (one content page cramming 12 LOs). This helper scales the
-    content-page count with ``lo_count``:
+    Scales the content-page count with ``lo_count`` instead of a fixed
+    5-tuple, so a 1-LO week doesn't get 4 filler pages and a 12-LO week
+    doesn't cram every LO onto one content page:
 
       * 1 ``overview`` page (always)
       * ⌈lo_count / 2⌉ ``content_NN`` pages (min 1, max 6 content pages)
@@ -1884,13 +1866,13 @@ def _group_topics_by_week(
     """Return a list of length ``duration_weeks``; each entry is the list
     of topics assigned to that week.
 
-    Wave 24: when DART emits ``<article role="doc-chapter">`` wrappers,
-    the parser tags every topic with a ``chapter_id``. We prefer to keep
-    all topics from the same chapter in the same week (so the week
-    aligns with a real textbook chapter). Chapters are only split across
-    weeks when they exceed ``max_topics_per_week``. When no chapter_ids
-    are present (pre-Wave-13 DART output) we fall back to the legacy
-    positional bucketing so older fixtures don't regress.
+    When the converter emits ``<article role="doc-chapter">`` wrappers,
+    the parser tags every topic with a ``chapter_id``, and all topics
+    from the same chapter are kept in the same week so the week aligns
+    with a real textbook chapter. A chapter is split across weeks only
+    when it exceeds ``max_topics_per_week``. When no chapter_ids are
+    present, fall back to legacy positional bucketing so older fixtures
+    don't regress.
 
     Distribution is block-based: consecutive topics stay together in the
     same week, which mirrors how a textbook's chapter ordering maps to a
@@ -1903,9 +1885,9 @@ def _group_topics_by_week(
     if not topics:
         return buckets
 
-    # Wave 24: prefer chapter-respecting grouping when chapter_ids are
-    # present on every topic. If any topic lacks a chapter_id, fall back
-    # to legacy positional bucketing so mixed corpora don't lose topics.
+    # Prefer chapter-respecting grouping when EVERY topic carries a
+    # chapter_id; if any topic lacks one, fall back to positional
+    # bucketing so a mixed corpus doesn't lose topics.
     has_chapters = all(
         bool(t.get("chapter_id")) for t in topics
     )
@@ -1945,8 +1927,7 @@ def _group_topics_by_week(
             buckets[week_idx].extend(piece)
         return buckets
 
-    # Legacy positional bucketing — retained for pre-Wave-13 DART output
-    # and non-DART HTML that doesn't carry chapter_ids.
+    # Legacy positional bucketing — for HTML that carries no chapter_ids.
     per_week = max(1, (len(topics) + duration_weeks - 1) // duration_weeks)
     for idx, topic in enumerate(topics):
         week_idx = min(idx // per_week, duration_weeks - 1)
@@ -2124,14 +2105,13 @@ def build_week_data(
     # one per distinct source topic. Minimum 1 to preserve the 5-page
     # floor required by the integration-test contract.
     # ---------------------------------------------------------------- #
-    # Wave 42: drop topics that have no body paragraph with ≥30 words
-    # BEFORE content-page emission. parse_dart_html_files keeps a topic
-    # whose paragraphs total ≥30 words combined, but ContentGrounding-
-    # Validator counts per-paragraph non-trivial bodies (≥30 words
-    # each) via NON_TRIVIAL_WORD_FLOOR, so a topic with only short
-    # paragraphs emits an <h2>-only page and trips
-    # AGGREGATE_EMPTY_PAGES. Filter here so no content_module
-    # references such a topic.
+    # Drop topics with no body paragraph ≥30 words BEFORE content-page
+    # emission. parse_dart_html_files keeps a topic whose paragraphs
+    # total ≥30 words COMBINED, but ContentGroundingValidator counts
+    # non-trivial bodies PER paragraph (NON_TRIVIAL_WORD_FLOOR), so a
+    # topic of only short paragraphs emits an <h2>-only page and trips
+    # AGGREGATE_EMPTY_PAGES. Filter here so no content_module references
+    # such a topic.
     renderable_topics = [
         t for t in week_topics if _topic_has_non_trivial_paragraph(t)
     ]
@@ -2216,22 +2196,21 @@ def build_week_data(
     }
 
 
-# Wave 42: mirror ContentGroundingValidator.NON_TRIVIAL_WORD_FLOOR (=30).
-# Kept as a local constant instead of a cross-module import so content
-# generation doesn't take a runtime dependency on validators/.
+# Mirrors ContentGroundingValidator.NON_TRIVIAL_WORD_FLOOR (=30). Kept as
+# a local constant, not a cross-module import, so content generation
+# takes no runtime dependency on validators/.
 _NON_TRIVIAL_WORD_FLOOR = 30
 
 
 def _topic_has_non_trivial_paragraph(topic: Dict[str, Any]) -> bool:
     """Return True when ``topic`` has at least one paragraph ≥30 words.
 
-    Wave 42 emission guard: parse_dart_html_files keeps topics whose
-    paragraphs total ≥30 words combined, but the grounding validator
-    counts paragraphs individually (see
-    ``lib/validators/content_grounding.py``). This helper lets
+    parse_dart_html_files keeps topics whose paragraphs total ≥30 words
+    combined, but the grounding validator counts paragraphs individually
+    (see ``lib/validators/content_grounding.py``). This lets
     :func:`build_week_data` drop topics that would render as an
-    <h2>-only section — which both trip AGGREGATE_EMPTY_PAGES and fail
-    the critical invariant that content pages always carry body prose.
+    <h2>-only section, which trip AGGREGATE_EMPTY_PAGES and violate the
+    critical invariant that content pages always carry body prose.
     """
     for para in topic.get("paragraphs") or []:
         if not isinstance(para, str):
@@ -2241,11 +2220,11 @@ def _topic_has_non_trivial_paragraph(topic: Dict[str, Any]) -> bool:
     return False
 
 
-# Phase 2 Subtask 36: ``_parse_provider_page_html`` (and its companion
-# regexes) moved into ``Courseforge/scripts/blocks.py`` so the
-# :class:`ContentGeneratorProvider` constructs a ``Block`` directly. The
-# wire-in below now consumes ``block.content`` / ``block.key_terms``
-# without an intermediate HTML regex pass.
+# ``_parse_provider_page_html`` (and its companion regexes) live in
+# ``Courseforge/scripts/blocks.py`` — :class:`ContentGeneratorProvider`
+# constructs a ``Block`` directly, so the wire-in below consumes
+# ``block.content`` / ``block.key_terms`` with no intermediate HTML
+# regex pass.
 
 
 def _build_content_modules_dynamic(
@@ -2260,8 +2239,8 @@ def _build_content_modules_dynamic(
 ) -> List[Dict[str, Any]]:
     """Return ``content_modules`` list — **one module per LO or topic**.
 
-    Policy (per user directive — "number of html files per week should be
-    dynamic based on learning objectives identified"):
+    Policy — the number of content pages per week is dynamic, driven by
+    the count of learning objectives identified:
       * N = max(len(week_objectives), len(week_topics), 1) — when we
         have 3 distinct LOs we want 3 content pages, each focused on one
         LO + its source section.
@@ -2277,8 +2256,8 @@ def _build_content_modules_dynamic(
 
     Minimum one module to preserve the integration test's 5-page floor.
 
-    Phase 3 Subtask 62: when a ``content_router`` is supplied (the
-    operator opted-in via ``COURSEFORGE_TWO_PASS=true``), this helper
+    When a ``content_router`` is supplied (operator opted in via
+    ``COURSEFORGE_TWO_PASS=true``), this helper
     pre-builds one ``Block`` stub per topic position with empty
     ``content`` and dispatches the whole list through
     :meth:`CourseforgeRouter.route_all` (one outline pass + one rewrite
@@ -2300,8 +2279,8 @@ def _build_content_modules_dynamic(
     obj_count = len(week_objectives)
     module_count = max(topic_count, obj_count, 1)
 
-    # Phase 3 Subtask 62: pre-build the Block list and dispatch via
-    # ``route_all`` once when a router is supplied. The dict keys the
+    # Pre-build the Block list and dispatch via ``route_all`` once when a
+    # router is supplied. The dict keys the
     # rewritten Block list by ``i`` (the topic position) so the
     # per-iteration loop below can look up its block in O(1).
     rewritten_blocks_by_index: Dict[int, Any] = {}
@@ -2385,17 +2364,15 @@ def _build_content_modules_dynamic(
         topic = week_topics[i] if i < topic_count else None
         obj = week_objectives[i] if i < obj_count else None
 
-        # Wave 45: when the week has more LOs than topics, positions
-        # i >= topic_count produce ``topic=None``. The pre-Wave-45
-        # policy emitted a heading-only section with
-        # ``paragraphs: []`` for those slots. Those pages fail
-        # ContentGroundingValidator's AGGREGATE_EMPTY_PAGES critical
-        # check because the validator counts paragraphs individually
-        # (30-word floor). Skip those positions entirely — the LO still
-        # appears on the week's objectives list (emitted on every page
-        # by ``_render_objectives_section``), so dropping the standalone
-        # page doesn't lose pedagogical coverage. The fallback module
-        # at the bottom preserves the minimum-one-module contract.
+        # When the week has more LOs than topics, positions
+        # i >= topic_count produce ``topic=None``. A heading-only section
+        # with ``paragraphs: []`` there fails
+        # ContentGroundingValidator's AGGREGATE_EMPTY_PAGES check (it
+        # counts paragraphs individually, 30-word floor). Skip those
+        # positions — the LO still appears on the week's objectives list
+        # (emitted on every page by ``_render_objectives_section``), so
+        # dropping the standalone page loses no coverage. The fallback
+        # module below preserves the minimum-one-module contract.
         if topic is None:
             continue
 
@@ -2415,12 +2392,12 @@ def _build_content_modules_dynamic(
         section_role = "definition" if i == 0 else "explanation"
         sections = [_topic_to_section(topic, section_role=section_role)]
 
-        # Phase 3 Subtask 62: when a ``content_router`` was supplied,
-        # consume the rewritten Block harvested by the upfront
-        # ``route_all`` dispatch. Blocks with ``escalation_marker`` set
-        # (outline tier failed and was skipped by the rewrite pass) fall
-        # through to the deterministic DART-paragraph floor — mirroring
-        # the legacy provider's exception-fallback behavior.
+        # When a ``content_router`` was supplied, consume the rewritten
+        # Block harvested by the upfront ``route_all`` dispatch. Blocks
+        # with ``escalation_marker`` set (outline tier failed and was
+        # skipped by the rewrite pass) fall through to the deterministic
+        # DART-paragraph floor, mirroring the provider's
+        # exception-fallback path.
         if content_router is not None:
             block = rewritten_blocks_by_index.get(i)
             if block is not None and getattr(block, "escalation_marker", None) is None:
@@ -2459,12 +2436,11 @@ def _build_content_modules_dynamic(
                     getattr(block, "escalation_marker", None),
                 )
 
-        # Phase 1 ToS unblock: when an in-process content_provider is
-        # wired (and no router was), attempt to author the page prose
-        # via the provider and overlay the parsed paragraphs onto the
-        # deterministic section. Failure modes (empty return, parse
-        # miss, provider exception) all fall back to the legacy
-        # DART-paragraph path WITHOUT raising — the deterministic
+        # When an in-process content_provider is wired (and no router
+        # was), author the page prose via the provider and overlay the
+        # parsed paragraphs onto the deterministic section. Every failure
+        # mode (empty return, parse miss, provider exception) falls back
+        # to the DART-paragraph path WITHOUT raising — the deterministic
         # surface stays the floor.
         elif content_provider is not None:
             try:
@@ -2501,8 +2477,8 @@ def _build_content_modules_dynamic(
                     page_template="<!--CONTENT_MODULE-->",
                     page_context=page_context,
                 )
-                # Phase 2 Subtask 36: consume the Block directly. The
-                # Block carries the rendered prose on ``content`` (a
+                # Consume the Block directly. The Block carries the
+                # rendered prose on ``content`` (a
                 # single concatenated string) and the key-term slugs
                 # on ``key_terms``. Split the prose on double-newline
                 # to recover paragraph boundaries when the provider
@@ -2562,13 +2538,11 @@ def _build_content_modules_dynamic(
             "misconceptions": module_misconceptions,
         })
 
-    # Wave 45: when every position was topic-less (e.g. a corpus with
-    # zero extracted topics for this week), fall through to a single
-    # minimal LO-backed module so the 5-page weekly floor is preserved
-    # and downstream consumers that expect at least one content page
-    # don't crash. The AGGREGATE_EMPTY_PAGES gate then flags the
-    # course for the user — correct behaviour for a genuinely empty
-    # source region.
+    # When every position was topic-less (a week with zero extracted
+    # topics), fall through to a single minimal LO-backed module so the
+    # 5-page weekly floor holds and consumers expecting at least one
+    # content page don't crash. The AGGREGATE_EMPTY_PAGES gate then flags
+    # the course — correct behaviour for a genuinely empty source region.
     if not modules:
         obj = week_objectives[0] if week_objectives else None
         fallback_heading = (
@@ -2601,8 +2575,8 @@ def _topic_to_section(
     application pages still emit component metadata (via generate_week)
     because those keys live on the HTML elements, not the JSON-LD.
 
-    Wave 27 HIGH-3: when the DART source carries ``data-dart-block-id``
-    on the section wrapper, emit ``source_references[]`` on the
+    When the source carries ``data-dart-block-id`` on the section
+    wrapper, emit ``source_references[]`` on the
     generated section so
     :func:`Courseforge.scripts.generate_course._render_content_sections`
     stamps ``data-cf-source-ids="dart:{slug}#{block_id}"`` on the
@@ -2631,23 +2605,22 @@ def _topic_source_references(
 ) -> List[Dict[str, Any]]:
     """Build a ``sourceReferences[]`` list from a parsed DART topic.
 
-    Wave 27: every block ID captured on the source <section> wrapper
-    becomes one ``{sourceId, role}`` entry. The first block ID plays
-    the ``primary`` role; any additional IDs (future: multi-block
-    topics merged into one) play ``contributing``. Returns an empty
-    list when the topic has no DART block IDs — back-compat path for
-    pre-Wave-12 DART HTML.
+    Every block ID captured on the source <section> wrapper becomes one
+    ``{sourceId, role}`` entry. The first block ID plays the ``primary``
+    role; additional IDs (multi-block topics merged into one) play
+    ``contributing``. Returns an empty list when the topic has no block
+    IDs.
 
     Slug normalization differs between the two halves of the
     ``dart:{slug}#{block_id}`` shape:
 
-    * Document slug — Wave 35 switched from :func:`canonical_slug`
-      (which collapses underscores into one token) to a gentler
-      lowercase + space-to-hyphen transform that matches the
-      :class:`ContentGroundingValidator` and Wave 9 source-router.
-      Pre-Wave-35 emitted slugs like ``sampledigitalcourseaccessible``
-      couldn't resolve against validator-visible staged HTML whose
-      stem was ``sample_digital_course_accessible``.
+      * Document slug — a lowercase + space-to-hyphen transform, NOT
+      :func:`canonical_slug` (which collapses underscores into one
+      token). The gentler transform matches the
+      :class:`ContentGroundingValidator` and the source-router; a
+      canonical_slug like ``sampledigitalcourseaccessible`` cannot
+      resolve against validator-visible staged HTML whose stem is
+      ``sample_digital_course_accessible``.
     * Block ID — uses a gentler lowercase + pattern-filter so DART's
       native ``s3_c0`` / 16-hex IDs survive unchanged (the
       ``canonical_slug`` helper would collapse underscores and break
@@ -2784,7 +2757,7 @@ def _render_objectives_section(
     has a discoverable objectives surface (the ``page_objectives`` gate
     scans for ``data-cf-objective-id`` on every page, not just overview).
 
-    Wave 35: optional ``source_ids`` stamp ``data-cf-source-ids`` on the
+    Optional ``source_ids`` stamp ``data-cf-source-ids`` on the
     outer ``<section>`` so :class:`ContentGroundingValidator`'s ancestor
     walk can ground the ``<li>`` items (some synthesized LO statements
     exceed the 30-word non-trivial floor).
@@ -2803,7 +2776,7 @@ def _render_objectives_section(
             detected_level, detected_verb = detect_bloom_level(statement)
             bloom_level = bloom_level or detected_level
             bloom_verb = bloom_verb or detected_verb
-        # Wave 48: schema-sourced cognitive domain
+        # schema-sourced cognitive domain
         domain = bloom_to_cognitive_domain(bloom_level)
         attrs = [f'data-cf-objective-id="{_html.escape(obj_id)}"']
         if bloom_level:
@@ -2848,10 +2821,10 @@ def ensure_objectives_on_page(
     Keeps the overview page's pre-existing ``.objectives`` block intact
     (skip-path via sentinel). For every other page that lacks objectives
     metadata, insert the block right after the page's ``<h1>``. Needed
-    so Wave 2's ``page_objectives`` gate + the integration test's per-page
+    so the ``page_objectives`` gate + the integration test's per-page
     ``data-cf-objective-id`` check both pass across all 5 pages.
 
-    Wave 35: when the page body carries a ``<section
+    When the page body carries a ``<section
     data-cf-source-ids="…">`` wrapper (emitted by
     ``_render_content_sections`` on content pages), mirror those ids
     onto the injected objectives ``<section>`` so

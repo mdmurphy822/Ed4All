@@ -88,7 +88,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_SEED = 17  # Arbitrary but stable; stage adds chunk-index for variety.
 
 
-# Phase 4 — the Anthropic-SDK training-pair synthesis path (the
+# the Anthropic-SDK training-pair synthesis path (the
 # ``AnthropicSynthesisProvider`` class + its SDK transport) was REMOVED
 # entirely. ``provider="anthropic"`` is now UNCONDITIONALLY forbidden for
 # training-pair synthesis: there is NO acknowledgment escape, because the code
@@ -140,7 +140,7 @@ class SynthesisStats:
     preference_pairs_emitted: int = 0
     preference_pairs_rejected: int = 0
     rejected_reasons: Dict[str, int] = field(default_factory=dict)
-    # Worker W2.E: per-pair promotion-validator filter count. Increments
+    # per-pair promotion-validator filter count. Increments
     # on every pair that the TrainingPairPromotionValidator rejects
     # before write — surfaces silently-dropped pairs in the audit trail.
     # See lib/validators/training_pair_promotion.py for the rejection
@@ -149,7 +149,7 @@ class SynthesisStats:
     # gate failures (template-recognizer, content-type, duplicate-prompt,
     # etc.) — dropped_count is the post-emit pre-write filter delta.
     dropped_count: int = 0
-    # Worker W3.B: promotion-ladder counters surfaced into operator
+    # promotion-ladder counters surfaced into operator
     # telemetry. The same per-pair filter site that drives
     # ``dropped_count`` populates these counters too. Three monotonic
     # ladder steps + a parallel rejection-reason histogram so an
@@ -175,7 +175,7 @@ class SynthesisStats:
     trainable_pairs_total: int = 0
     rejected_promotion_pairs: int = 0
     promotion_rejection_reasons: Dict[str, int] = field(default_factory=dict)
-    # Wave 77: stratified-sampling additions. None when stratification
+    # stratified-sampling additions. None when stratification
     # not active, so legacy callers keep the same payload shape.
     misconception_dpo_pairs_emitted: int = 0
     stratify_dimensions: List[str] = field(default_factory=list)
@@ -183,7 +183,7 @@ class SynthesisStats:
     capped_at_max_pairs: bool = False
     max_pairs_cap: Optional[int] = None
     difficulty_curriculum: bool = False
-    # Wave 79 Worker B: prerequisite-aware curriculum mode.
+    # prerequisite-aware curriculum mode.
     curriculum_from_graph: bool = False
     prereq_windowed: bool = False
     prereq_context_tokens: int = DEFAULT_PREREQ_CONTEXT_TOKENS
@@ -193,21 +193,21 @@ class SynthesisStats:
     pairs_with_prereq_recap: int = 0
     source_grounded_pairs: int = 0
     instruction_variants_per_chunk: int = 1
-    # Wave 111 / Phase E: budget telemetry surfaced to callers.
+    # budget telemetry surfaced to callers.
     capped_at_max_dispatches: bool = False
     dispatched_count: int = 0
     cache_hits_count: int = 0
-    # Audit 2026-04-30: KG-metadata + violation-detection generators.
+    # KG-metadata + violation-detection generators.
     kg_metadata_pairs_emitted: int = 0
     violation_pairs_emitted: int = 0
-    # Wave 124 (audit 2026-04-30 follow-up): abstention +
+    # abstention +
     # schema-translation generators. cc07cc76 hallucination_rate=0.63
     # was driven by zero abstention pairs + zero schema-to-English
     # bridge pairs; counters here surface the cohort sizes for the
     # post-run pilot report and the audit script.
     abstention_pairs_emitted: int = 0
     schema_translation_pairs_emitted: int = 0
-    # Wave 4 W4.C: per-pair claim-support (W4.A) + LO-refs (W4.B) +
+    # per-pair claim-support (W4.A) + LO-refs (W4.B) +
     # objective-delivery (W4.C) filter counters. All three validators
     # run AFTER TrainingPairPromotionValidator (W2.E) returns
     # ``validated`` and before the pair lands on disk; rejects
@@ -258,7 +258,7 @@ class SynthesisStats:
             "preference_pairs_rejected": self.preference_pairs_rejected,
             "rejected_reasons": dict(self.rejected_reasons),
             "dropped_count": self.dropped_count,
-            # Worker W3.B: promotion-ladder counters projected into the
+            # promotion-ladder counters projected into the
             # ``synthesis.last_run`` block of dataset_config.json so the
             # W2.B aggregator + the eval_report.json pass-through both
             # have a stable wire-shape to copy through. Reason histogram
@@ -289,7 +289,7 @@ class SynthesisStats:
             "pairs_with_prereq_recap": self.pairs_with_prereq_recap,
             "source_grounded_pairs": self.source_grounded_pairs,
             "instruction_variants_per_chunk": self.instruction_variants_per_chunk,
-            # Wave 4 W4.C: per-pair claim-support (W4.A) + LO-refs
+            # per-pair claim-support (W4.A) + LO-refs
             # (W4.B) + objective-delivery (W4.C) filter counters
             # projected into the ``synthesis.last_run`` block of
             # dataset_config.json so the W2.B aggregator + the
@@ -330,7 +330,7 @@ def _eligible(chunk: Dict[str, Any]) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Wave 77: stratified-sampling + LibV2-archive helpers
+# stratified-sampling + LibV2-archive helpers
 # ---------------------------------------------------------------------------
 
 # Canonical difficulty tiers, ordered foundational -> advanced. Used by the
@@ -375,11 +375,11 @@ def _resolve_libv2_corpus_dir(slug: str, libv2_root: Optional[Path] = None) -> P
 
 
 # --------------------------------------------------------------------------- #
-# Wave 9 TIGHT — dual-source DART block-text resolver
+# dual-source DART block-text resolver
 # --------------------------------------------------------------------------- #
 
 
-import re as _w9_re  # local alias so Wave 9 helpers don't shadow re imports
+import re as _w9_re  # local alias so the block-text helpers don't shadow re imports
 
 
 # Mirrors :data:`lib.validators.content_grounding._DART_BLOCK_ID_RE`.
@@ -407,7 +407,7 @@ _W9_WHITESPACE_RE = _w9_re.compile(r"\s+")
 def _resolve_dart_block_text_map(
     staging_dir: Optional[Path],
 ) -> Dict[str, str]:
-    """Wave 9 TIGHT — build the ``dart:<slug>#<block_id> -> text`` map.
+    """build the ``dart:<slug>#<block_id> -> text`` map.
 
     Mirrors the staging-DART HTML walk at
     ``lib/validators/content_grounding.py:343`` (the precedent the W9
@@ -538,7 +538,7 @@ def _smoke_stratified_sample(
     target_count: int,
     rng: random.Random,
 ) -> List[Dict[str, Any]]:
-    """Wave 120: smoke-mode chunk sampler.
+    """smoke-mode chunk sampler.
 
     Selects ~``target_count`` chunks for fast-feedback runs. Strategy:
 
@@ -599,12 +599,11 @@ def _build_misconception_dpo_pair(
 ) -> Optional[Dict[str, Any]]:
     """Convert a single (misconception, correction) entry into a DPO pair.
 
-    Returns None when either side is empty. Wave 112 Task 6: the silent-drop
-    path now emits a ``misconception_pair_skipped`` audit event via
-    ``capture.log_decision`` so a corpus rebuild that quietly loses a
-    property family is still visible in the decision-capture stream.
-    ``capture`` is optional only so legacy unit-tests that exercise this
-    helper in isolation still work — every production call site (Wave 77
+    Returns None when either side is empty. The silent-drop path emits a
+    ``misconception_pair_skipped`` audit event via ``capture.log_decision``
+    so a corpus rebuild that quietly loses a property family is still visible
+    in the decision-capture stream. ``capture`` is optional only so unit tests
+    can exercise this helper in isolation — every production call site (the
     augmentation loop in ``run_synthesis``) passes one in.
     """
     from Trainforge.generators.preference_factory import _misconception_id
@@ -643,7 +642,7 @@ def _build_misconception_dpo_pair(
 
     chunk_id = str(chunk.get("id") or chunk.get("chunk_id") or "")
     chunk_bloom = str(chunk.get("bloom_level") or "").lower() or None
-    # Wave 95: use the misconception's OWN bloom_level (not the chunk's)
+    # use the misconception's OWN bloom_level (not the chunk's)
     # for mc_id computation. This mirrors
     # ``CourseProcessor._build_misconceptions_for_graph`` which seeds the
     # hash off ``entry.get("bloom_level")``. Using the chunk's bloom level
@@ -770,7 +769,7 @@ def _attach_source_grounding(
     return grounded
 
 
-# Wave 132d: the persona-prefix variant is a frame template parametrized
+# the persona-prefix variant is a frame template parametrized
 # by ``{persona}``. Pre-Wave-132d this slot was hardcoded to
 # "For an RDF/SHACL learner, {prompt_lc}", which was wrong for any
 # non-SHACL course. The persona is sourced from
@@ -801,7 +800,7 @@ def _apply_instruction_variant(
     frame = _INSTRUCTION_PROMPT_FRAMES[
         variant_index % len(_INSTRUCTION_PROMPT_FRAMES)
     ]
-    # Wave 132d: lazy-import keeps the module-import cost flat for the
+    # lazy-import keeps the module-import cost flat for the
     # mock-provider call paths that don't need a manifest.
     if not learner_persona:
         from lib.ontology.property_manifest import DEFAULT_LEARNER_PERSONA
@@ -839,7 +838,7 @@ def _update_dataset_config(
     config.setdefault("statistics", {})
     config["statistics"]["instruction_pairs"] = stats.instruction_pairs_emitted
     config["statistics"]["preference_pairs"] = stats.preference_pairs_emitted
-    # Worker W3.B: surface the promotion-ladder counters into a
+    # surface the promotion-ladder counters into a
     # dedicated, operator-readable block under ``statistics`` so
     # downstream readers (W2.B aggregator, eval_report.json
     # pass-through) have a stable wire-shape independent of the
@@ -990,12 +989,12 @@ def _last_event_id(capture: DecisionCapture) -> str:
     ``DecisionCapture.log_decision`` appends to ``capture.decisions``; we pull
     ``event_id`` off the tail.
 
-    Wave 112 Task 1: this used to fall back to ``""`` when ``capture.decisions``
-    was empty. Empty-string fallback then rode into the emitted JSONL as
-    ``decision_capture_id: ""`` -- a schema-violating value that broke
-    strict-mode pair validation downstream. Every production call site logs a
-    decision before it asks for the event_id, so empty here is unambiguously a
-    bug. Fail loud rather than poisoning the corpus.
+    Do NOT fall back to ``""`` when ``capture.decisions`` is empty: that
+    empty string rides into the emitted JSONL as ``decision_capture_id: ""``,
+    a schema-violating value that breaks strict-mode pair validation
+    downstream. Every production call site logs a decision before it asks for
+    the event_id, so empty here is unambiguously a bug — fail loud rather than
+    poisoning the corpus.
     """
     if not capture.decisions:
         raise RuntimeError(
@@ -1008,7 +1007,7 @@ def _last_event_id(capture: DecisionCapture) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Wave 8 Worker A — deterministic-pair audit-stamp helper
+# deterministic-pair audit-stamp helper
 # ---------------------------------------------------------------------------
 #
 # The four deterministic generators (kg_metadata, violation, abstention,
@@ -1283,15 +1282,15 @@ def _resolve_pedagogy_graph_path(
 
 
 # ---------------------------------------------------------------------------
-# Worker A — per-pair resume checkpoint sidecar
+# per-pair resume checkpoint sidecar
 # ---------------------------------------------------------------------------
 #
 # A long local-LLM rebuild (10+ hours on a 14B-Q4 paraphrase pass over a
 # few hundred chunks) that crashes mid-loop loses every emitted pair on
 # restart: the chunk loop re-paraphrases everything from scratch
-# regardless of what the Wave 116 ``.jsonl.in_progress`` sidecar already
-# holds. The Wave 116 sidecar is observability only — its file handle is
-# opened in ``"w"`` mode, which truncates on restart.
+# regardless of what the ``.jsonl.in_progress`` sidecar already holds. That
+# sidecar is observability only — its file handle is opened in ``"w"`` mode,
+# which truncates on restart.
 #
 # This sidecar is the resume cache. One JSON line per ACCEPTED pair
 # (post-validation, post-decoration, ready to land in the final
@@ -1440,9 +1439,9 @@ def run_synthesis(
         capture: Optional pre-built DecisionCapture. If None, one is created
             for the ``synthesize-training`` phase and saved at end of run.
 
-    Wave 77 keyword-only additions (all default-off so legacy callers --
-    process_course.py, MCP synthesize_training tool, the textbook_to_course
-    pipeline phase -- keep their existing behaviour):
+    Keyword-only options (all default-off so existing callers --
+    process_course.py, the MCP synthesize_training tool, the
+    textbook_to_course pipeline phase -- keep their behaviour):
 
         stratify: List of dimensions in ``{"bloom","chunk_type","outcome",
             "difficulty"}``. When set, eligible chunks are sampled
@@ -1470,7 +1469,7 @@ def run_synthesis(
     Returns:
         :class:`SynthesisStats` with counts.
     """
-    # Wave1-I1 ToS-unblock: TRAINFORGE_SYNTHESIS_PROVIDER overrides the
+    # TRAINFORGE_SYNTHESIS_PROVIDER overrides the
     # caller-supplied ``provider`` kwarg when set. Mirrors the
     # ``TRAINFORGE_ASSESSMENT_PROVIDER`` / ``COURSEFORGE_PROVIDER`` /
     # ``COURSEPLANNER_PROVIDER`` env-var precedence pattern. Pairs with
@@ -1483,15 +1482,13 @@ def run_synthesis(
     # license-clean Qwen, ``together`` for hosted OSS) once via the
     # environment without threading the provider through every caller.
     # Empty / whitespace values are treated as unset to match the
-    # executor's predicate. See Finding 1 of
-    # ``plans/dispatch-7-execution-inspection-2026-05.md`` and
-    # ``docs/LICENSING.md`` § "Synthesis providers" for the licensing
-    # contract that motivates the override.
+    # executor's predicate. See ``docs/LICENSING.md`` § "Synthesis
+    # providers" for the licensing contract that motivates the override.
     _env_provider = os.environ.get("TRAINFORGE_SYNTHESIS_PROVIDER", "").strip()
     if _env_provider:
         provider = _env_provider
 
-    # Phase 4 — the Anthropic-SDK training-pair synthesis path was REMOVED.
+    # the Anthropic-SDK training-pair synthesis path was REMOVED.
     # ``provider="anthropic"`` is UNCONDITIONALLY forbidden here: there is no
     # acknowledgment escape, because the ``AnthropicSynthesisProvider`` class +
     # its SDK transport no longer exist, so the SLM training corpus can never
@@ -1578,7 +1575,7 @@ def run_synthesis(
         )
 
     corpus_dir = Path(corpus_dir)
-    # Phase 7c: prefer imscc_chunks/, fall back to legacy corpus/ via shim.
+    # prefer imscc_chunks/, fall back to legacy corpus/ via shim.
     from lib.libv2_storage import resolve_imscc_chunks_path
     chunks_path = resolve_imscc_chunks_path(corpus_dir, "chunks.jsonl")
     if output_dir is not None:
@@ -1587,7 +1584,7 @@ def run_synthesis(
         training_specs_dir = corpus_dir / "training_specs"
     training_specs_dir.mkdir(parents=True, exist_ok=True)
 
-    # Wave 120: smoke modes route JSONL outputs to ``smoke_*`` siblings
+    # smoke modes route JSONL outputs to ``smoke_*`` siblings
     # so a smoke run never clobbers the canonical instruction_pairs.jsonl
     # / preference_pairs.jsonl from a prior full run. dataset_config.json
     # is left at the canonical path because the smoke run's stats are
@@ -1600,7 +1597,7 @@ def run_synthesis(
         preference_out = training_specs_dir / "preference_pairs.jsonl"
     dataset_config_path = training_specs_dir / "dataset_config.json"
 
-    # Wave 116: incremental sidecar write. Each emitted instruction /
+    # incremental sidecar write. Each emitted instruction /
     # preference pair is appended to a ``.jsonl.in_progress`` sibling
     # file with ``flush()`` after every write so an operator can
     # ``tail -f`` the synthesis run and so a killed run leaves
@@ -1620,9 +1617,9 @@ def run_synthesis(
     inst_progress_fh = instruction_progress.open("w", encoding="utf-8")
     pref_progress_fh = preference_progress.open("w", encoding="utf-8")
 
-    # Worker A: per-pair resume checkpoint sidecar. Hidden dotfile so
+    # per-pair resume checkpoint sidecar. Hidden dotfile so
     # operators looking at ``training_specs/`` see the canonical artifacts
-    # + Wave 116 ``.in_progress`` observability sidecars without visual
+    # + the ``.in_progress`` observability sidecars without visual
     # noise from machinery they don't need to inspect by hand. Default
     # to checkpoint-on whenever the call site has a write target on disk
     # (i.e. always under the canonical ``run_synthesis`` invocation);
@@ -1665,14 +1662,14 @@ def run_synthesis(
     else:
         checkpoint_fh = None
 
-    # Wave 117 / 119: load property manifest once. The manifest gates
+    # load property manifest once. The manifest gates
     # ALL pilot-report writes (in-flight and final). pilot_report_every
     # only governs the in-flight cadence — the final write fires
     # whenever a manifest exists, regardless of pilot_report_every, so
     # an operator who set --pilot-report-every 0 still gets the
     # post-run summary on disk.
     pilot_manifest = None
-    # Wave 120: smoke modes write to a sidecar so the canonical
+    # smoke modes write to a sidecar so the canonical
     # pilot_report.md is never overwritten by a partial run.
     if smoke_mode in ("deterministic", "paraphrase"):
         pilot_report_path = training_specs_dir / "smoke_pilot_report.md"
@@ -1690,7 +1687,7 @@ def run_synthesis(
                 pilot_slug,
             )
             pilot_manifest = None
-    # Wave 120: smoke modes scale every property's ``min_pairs`` floor
+    # smoke modes scale every property's ``min_pairs`` floor
     # so a 20-chunk smoke run can pass when the full corpus would.
     # Deterministic = floor 1 (one pair proves preservation through
     # the deterministic path); paraphrase = floor 2 (some chance the
@@ -1731,7 +1728,7 @@ def run_synthesis(
             stratify_dims.append(d_clean)
 
     chunks = _read_chunks(chunks_path)
-    # Wave 120: smoke modes. "deterministic" forces provider=mock and
+    # smoke modes. "deterministic" forces provider=mock and
     # subsamples to ~20 stratified chunks; "paraphrase" keeps the
     # configured provider but applies the same subsampling. Both write
     # smoke_pilot_report.md as a sidecar so the canonical
@@ -1752,12 +1749,12 @@ def run_synthesis(
     instruction_variants = max(1, int(instruction_variants_per_chunk))
     stats.instruction_variants_per_chunk = instruction_variants
 
-    # Wave 79 Worker B: load the pedagogy graph eagerly when curriculum mode
+    # load the pedagogy graph eagerly when curriculum mode
     # is active so a missing graph fails loud instead of silently degrading
     # to chunk-id ordering. The build itself is cheap (sub-1k concept dict
     # build + Kahn's pass) so doing it once here is fine.
     #
-    # Wave 91 Action B: graph is now REQUIRED by default. Workflow runs
+    # graph is now REQUIRED by default. Workflow runs
     # default to ``--curriculum-from-graph=true`` so synthesis never
     # silently produces graph-less ordering. Set ``--no-graph`` (or
     # ``allow_no_graph=True`` programmatically) to opt out for legacy
@@ -1790,7 +1787,7 @@ def run_synthesis(
         )
         owns_capture = True
 
-    # Wave 107: construct the claude_session paraphrase provider once per
+    # construct the claude_session paraphrase provider once per
     # run. The factory layer dispatches to whichever object is passed via
     # paraphrase_provider when provider != "mock". Anthropic stays lazily
     # constructed inside the factory so its API-key precondition only fires
@@ -1800,8 +1797,8 @@ def run_synthesis(
         from Trainforge.generators._claude_session_provider import (
             ClaudeSessionProvider,
         )
-        # Wave 110 / Phase D: default telemetry_path under training_specs/.
-        # Wave 111 / Phase E: fall back to training_specs_dir even when no
+        # default telemetry_path under training_specs/.
+        # fall back to training_specs_dir even when no
         # explicit cache_path is set, so a session run always leaves a
         # telemetry trail for post-hoc analysis.
         effective_telemetry = telemetry_path
@@ -1817,12 +1814,12 @@ def run_synthesis(
             telemetry_path=effective_telemetry,
         )
     elif provider == "together":
-        # Wave 113 prep: ToS-clean OSS-teacher paraphrase via Together
+        # ToS-clean OSS-teacher paraphrase via Together
         # AI's hosted models. HTTP-driven (no SDK dependency); session-
         # budget tracking is unnecessary because the provider is paid-
         # per-call rather than rate-limited per Claude session.
         #
-        # Phase 3: when TRAINFORGE_AGNOSTIC_SYNTHESIS is ON (default),
+        # when TRAINFORGE_AGNOSTIC_SYNTHESIS is ON (default),
         # route through the LLM-agnostic SynthesisProvider (verbose hosted
         # prompts via terse_prompts=False) — golden-tested byte-identical
         # to TogetherSynthesisProvider on well-formed responses. The leaf
@@ -1840,7 +1837,7 @@ def run_synthesis(
             )
             paraphrase_provider = TogetherSynthesisProvider(capture=capture)
     elif provider == "local":
-        # Wave 113: third synthesis path — a local OpenAI-compatible
+        # third synthesis path — a local OpenAI-compatible
         # model server (Ollama / vLLM / llama.cpp / LM Studio). Same
         # HTTP wire shape as Together, so the provider subclasses
         # ``TogetherSynthesisProvider`` and only overrides the
@@ -1850,14 +1847,14 @@ def run_synthesis(
         # tracking — the provider is HTTP-driven, not Claude-session
         # rate-limited.
         #
-        # Wave 120: smoke-paraphrase caps parse retries at 1 so the
+        # smoke-paraphrase caps parse retries at 1 so the
         # property-heavy stratified sample doesn't compound retry cost
         # × 20 chunks into an unbounded wall time. Production
         # (smoke_mode='none') keeps the default budget.
         local_kwargs: Dict[str, Any] = {"capture": capture}
         if smoke_mode == "paraphrase":
             local_kwargs["max_parse_retries"] = 1
-        # Phase 3: when TRAINFORGE_AGNOSTIC_SYNTHESIS is ON (default),
+        # when TRAINFORGE_AGNOSTIC_SYNTHESIS is ON (default),
         # route through the LLM-agnostic SynthesisProvider (terse local
         # prompts via terse_prompts=True) — golden-tested byte-identical
         # to LocalSynthesisProvider on well-formed responses. The leaf
@@ -1881,16 +1878,16 @@ def run_synthesis(
     instruction_records: List[Dict[str, Any]] = []
     preference_records: List[Dict[str, Any]] = []
 
-    # Wave 111 / Phase E: budget-exceeded sentinel — hoisted above the
-    # try-body in Wave 116 so the finally-block can reference it
-    # safely even if an exception propagates before the loop assigns
-    # it. Imported eagerly so the symbol exists in the finally scope.
+    # Budget-exceeded sentinel — MUST be hoisted above the try-body so the
+    # finally-block can reference it even when an exception propagates before
+    # the loop assigns it. Imported eagerly so the symbol exists in the
+    # finally scope.
     from Trainforge.generators._session_budget import (
         SynthesisBudgetExceeded as _SBE,
     )
     _budget_exhausted_exc: Optional[_SBE] = None
 
-    # Wave 116: gate sidecar deletion on a clean exit. The flag is
+    # gate sidecar deletion on a clean exit. The flag is
     # only set True after the entire try-body completes without any
     # exception (budget-exceeded or otherwise). The finally block
     # checks both this flag AND ``_budget_exhausted_exc is None`` so
@@ -1925,7 +1922,7 @@ def run_synthesis(
             ],
         )
 
-        # Wave 77: split chunk traversal into "count eligible" and
+        # split chunk traversal into "count eligible" and
         # "iterate emit-order" so stratified sampling can reorder the
         # emit-order without changing the eligibility tally.
         eligible_chunks: List[Tuple[int, Dict[str, Any]]] = []
@@ -1969,13 +1966,11 @@ def run_synthesis(
         # expectation that capping is per-file, not the combined total).
         per_artifact_cap = max_pairs
 
-        # Wave 119: warn pre-flight when --max-pairs will clip the run
-        # before all eligible chunks are visited. This is the failure
-        # mode that bit Wave 118's first 14B rerun: a 30-pair cap on a
-        # 295-chunk corpus stopped at chunk 30, never visiting any of
-        # the property-bearing chunks at index 46+. Surfacing it here
-        # gives the operator a chance to abort and re-launch without
-        # the cap before paying for the full run.
+        # Warn pre-flight when --max-pairs will clip the run before all
+        # eligible chunks are visited: the cap stops the traversal at the
+        # Nth pair, so chunks later in the order are never visited at all
+        # (a low cap can miss every property-bearing chunk). Surfacing it
+        # here lets the operator abort before paying for the full run.
         if (
             max_pairs is not None
             and max_pairs < len(iter_chunks)
@@ -1990,29 +1985,28 @@ def run_synthesis(
                 max_pairs, len(iter_chunks),
             )
 
-        # Wave 111 / Phase E: graceful SynthesisBudgetExceeded handling.
+        # graceful SynthesisBudgetExceeded handling.
         # When the claude_session provider hits its dispatch cap mid-loop,
         # we stop emitting + persist whatever we have so far so the
         # caller can write a pilot_progress.json snapshot and return
         # SynthesisStats with capped_at_max_dispatches=True.
         # ``_SBE`` and ``_budget_exhausted_exc`` are hoisted above the
-        # try-block (Wave 116) so the finally-block can reference them.
+        # try-block so the finally-block can reference them.
 
-        # Wave 117: count chunks fully processed (post both instruction
+        # count chunks fully processed (post both instruction
         # + preference branches) so the periodic pilot_report.md writer
         # snapshots a consistent view of all pairs from each chunk.
         chunks_processed_counter = 0
 
-        # Wave 122 follow-up: factory-side dedupe. The audit's zero-
-        # tolerance ``duplicates`` gate flags any cross-chunk paraphrase
-        # collision; tracking emitted prompts and rejecting the second
-        # occurrence keeps the gate clean without re-running the
-        # paraphrase. Distinct sets per artefact so an instruction
-        # prompt can legitimately match a preference prompt.
+        # Factory-side dedupe. The zero-tolerance ``duplicates`` gate flags
+        # any cross-chunk paraphrase collision; tracking emitted prompts and
+        # rejecting the second occurrence keeps the gate clean without
+        # re-running the paraphrase. Distinct sets per artefact so an
+        # instruction prompt can legitimately match a preference prompt.
         emitted_inst_prompts: set = set()
         emitted_pref_prompts: set = set()
 
-        # Wave 127: hoist deterministic generators ABOVE the chunk loop.
+        # hoist deterministic generators ABOVE the chunk loop.
         # The four generators (kg_metadata, violation_detection,
         # abstention, schema_translation) walk fixture catalogs / the
         # pedagogy graph / the property manifest — none of them iterate
@@ -2146,7 +2140,7 @@ def run_synthesis(
                         _gsft_count, _cg_removed,
                     )
 
-        # Audit 2026-04-30: append KG-metadata pairs (yes/no membership
+        # append KG-metadata pairs (yes/no membership
         # probes mirroring faithfulness._RELATION_TEMPLATES). Closes the
         # zero-KG-metadata-recall regression in the cc07cc76 corpus —
         # the eval harness asks these questions, the corpus must teach
@@ -2180,7 +2174,7 @@ def run_synthesis(
                     max_pairs=int(kg_metadata_max_pairs),
                     seed=seed,
                 )
-                # Wave 8 Worker A: stamp audit fields BEFORE the on-disk
+                # stamp audit fields BEFORE the on-disk
                 # emit so every kg_metadata pair on disk carries the
                 # deterministic-template skip-discriminator that the
                 # W2.E + W4.A + W4.B + W4.C gate-runner walks read.
@@ -2189,7 +2183,7 @@ def run_synthesis(
                 instruction_records.extend(kg_pairs)
                 stats.kg_metadata_pairs_emitted = kg_stats.pairs_emitted
                 stats.instruction_pairs_emitted += kg_stats.pairs_emitted
-                # Wave 127: mirror to .in_progress sidecar.
+                # mirror to .in_progress sidecar.
                 for _p in kg_pairs:
                     _utils_append_jsonl(inst_progress_fh, _p, flush=False)
                 inst_progress_fh.flush()
@@ -2203,12 +2197,12 @@ def run_synthesis(
                     ped_path,
                 )
 
-        # Audit 2026-04-30: append violation-detection pairs (pyshacl-
+        # append violation-detection pairs (pyshacl-
         # oracle-verified (graph, shape, valid?, reason) tuples). Closes
         # the zero-negative-grounding regression — the corpus must teach
         # the model to refuse a graph that violates a shape.
         #
-        # Wave 133c: gate SHACL-specific violation pairs by the manifest's
+        # gate SHACL-specific violation pairs by the manifest's
         # validation_kind field. The hand-curated catalog hardcodes sh:/
         # rdfs:/owl: shapes + pyshacl as the oracle, so a non-RDF/SHACL
         # course (e.g. JSON Schema) toggling --with-violation-detection
@@ -2263,7 +2257,7 @@ def run_synthesis(
                 )
                 vio_pairs, vio_stats = [], None
             if vio_stats is not None:
-                # Wave 8 Worker A: stamp audit fields BEFORE the on-disk
+                # stamp audit fields BEFORE the on-disk
                 # emit so every violation pair on disk carries the
                 # deterministic-template skip-discriminator.
                 for _p in vio_pairs:
@@ -2271,7 +2265,7 @@ def run_synthesis(
                 instruction_records.extend(vio_pairs)
                 stats.violation_pairs_emitted = vio_stats.pairs_emitted
                 stats.instruction_pairs_emitted += vio_stats.pairs_emitted
-                # Wave 127: mirror to .in_progress sidecar.
+                # mirror to .in_progress sidecar.
                 for _p in vio_pairs:
                     _utils_append_jsonl(inst_progress_fh, _p, flush=False)
                 inst_progress_fh.flush()
@@ -2284,7 +2278,7 @@ def run_synthesis(
                     vio_stats.oracle_disagreements,
                 )
 
-        # Wave 124 (audit 2026-04-30 follow-up): append abstention
+        # append abstention
         # probes ('the source does not establish X'). Closes the
         # cc07cc76 hallucination_rate=0.63 — the eval harness probes
         # for absent edges and the corpus must teach the model to
@@ -2311,7 +2305,7 @@ def run_synthesis(
                     max_pairs=int(abstention_max_pairs),
                     seed=seed,
                 )
-                # Wave 8 Worker A: stamp audit fields BEFORE the on-disk
+                # stamp audit fields BEFORE the on-disk
                 # emit so every abstention pair on disk carries the
                 # deterministic-template skip-discriminator.
                 for _p in ab_pairs:
@@ -2319,7 +2313,7 @@ def run_synthesis(
                 instruction_records.extend(ab_pairs)
                 stats.abstention_pairs_emitted = ab_stats.pairs_emitted
                 stats.instruction_pairs_emitted += ab_stats.pairs_emitted
-                # Wave 127: mirror to .in_progress sidecar.
+                # mirror to .in_progress sidecar.
                 for _p in ab_pairs:
                     _utils_append_jsonl(inst_progress_fh, _p, flush=False)
                 inst_progress_fh.flush()
@@ -2333,7 +2327,7 @@ def run_synthesis(
                     ped_path,
                 )
 
-        # Wave 124 (audit 2026-04-30 follow-up): append schema-to-
+        # append schema-to-
         # English bridge pairs. Walks the property manifest's surface
         # forms (sh:datatype, rdfs:subClassOf, ...) and emits one
         # definition + one usage pair per CURIE. Closes the schema-
@@ -2359,7 +2353,7 @@ def run_synthesis(
                     max_pairs=int(schema_translation_max_pairs),
                     seed=seed,
                 )
-                # Wave 8 Worker A: stamp audit fields BEFORE the on-disk
+                # stamp audit fields BEFORE the on-disk
                 # emit so every schema_translation pair on disk carries
                 # the deterministic-template skip-discriminator.
                 for _p in st_pairs:
@@ -2367,7 +2361,7 @@ def run_synthesis(
                 instruction_records.extend(st_pairs)
                 stats.schema_translation_pairs_emitted = st_stats.pairs_emitted
                 stats.instruction_pairs_emitted += st_stats.pairs_emitted
-                # Wave 127: mirror to .in_progress sidecar.
+                # mirror to .in_progress sidecar.
                 for _p in st_pairs:
                     _utils_append_jsonl(inst_progress_fh, _p, flush=False)
                 inst_progress_fh.flush()
@@ -2382,7 +2376,7 @@ def run_synthesis(
                     manifest_for_st.family,
                 )
 
-        # Worker W2.E: instantiate the per-pair promotion validator once.
+        # instantiate the per-pair promotion validator once.
         # Filters every accepted pair through the 7-criterion hard-
         # rejection chain (placeholder residue, unsupported answer,
         # weak distractor, unanswerable stem, source-free generation,
@@ -2394,7 +2388,7 @@ def run_synthesis(
         )
         _promotion_validator = TrainingPairPromotionValidator()
 
-        # Wave 4 W4.C: per-pair claim-support (W4.A) + LO-refs (W4.B)
+        # per-pair claim-support (W4.A) + LO-refs (W4.B)
         # filters. Both run AFTER the W2.E promotion validator returns
         # ``validated``; rejects increment ``claim_support_rejected`` /
         # ``lo_refs_rejected`` and bump the matching key in the
@@ -2415,7 +2409,7 @@ def run_synthesis(
         _claim_support_validator = PairClaimSupportValidator()
         _lo_refs_validator = PairLearningOutcomeRefsValidator()
 
-        # Wave 5 W5.D: pre-compute the chunk_id -> text lookup map
+        # pre-compute the chunk_id -> text lookup map
         # consumed by ``PairClaimSupportValidator.validate_pair`` for
         # the per-claim attribution scoping path. Built once outside
         # the chunk loop so per-pair calls are O(1) lookups, not
@@ -2433,7 +2427,7 @@ def run_synthesis(
             else None
         )
 
-        # Wave 9 TIGHT: pre-compute the dart:<slug>#<block_id> -> text
+        # pre-compute the dart:<slug>#<block_id> -> text
         # lookup map consumed by ``PairClaimSupportValidator.validate_pair``
         # for the dual-source DART cross-check (chunker-drift slice).
         # Built once outside the chunk loop — per-pair calls are O(1)
@@ -2459,7 +2453,7 @@ def run_synthesis(
                 staging_dir, len(_dart_block_text_map),
             )
 
-        # Wave 4 W4.C MEDIUM: per-pair tri-axis objective-delivery
+        # Per-pair tri-axis objective-delivery
         # filter. Runs AFTER W4.A/W4.B return ``validated``. Rejects
         # increment ``objective_delivery_rejected`` and the matching
         # key in the free-form ``promotion_rejection_reasons`` dict
@@ -2560,7 +2554,7 @@ def run_synthesis(
                 stop_control.check_stop(
                     "training_synthesis.pair_loop", _stop_units, run_id=None,
                 )
-            # Wave 120: detect property surface forms in this chunk so
+            # detect property surface forms in this chunk so
             # the paraphrase provider preserves them verbatim. None ->
             # no manifest loaded; empty list -> chunk doesn't reference
             # any declared property.
@@ -2570,13 +2564,11 @@ def run_synthesis(
                 if pilot_manifest is not None
                 else []
             )
-            # Wave 135b: extend force-injection to the FULL chunk CURIE
-            # set, not just manifest-declared surface forms. Per the
-            # 2026-04 audit the corpus uses ~339 distinct CURIE prefixes
-            # (mean 3.58 per chunk); only the 40 manifest-declared
-            # CURIEs land in chunk_preserve_tokens via
-            # detect_surface_forms. The rest (prov:, dcat:, geo:, etc.)
-            # were silently stripped by the LLM until Wave 135b.
+            # Force-injection covers the FULL chunk CURIE set, not just
+            # manifest-declared surface forms: only manifest-declared CURIEs
+            # land in chunk_preserve_tokens via detect_surface_forms, so
+            # restricting to those lets the LLM silently strip every other
+            # prefix in the corpus (prov:, dcat:, geo:, ...).
             #
             # Non-manifest CURIEs hit the degraded fallback path in the
             # factories (FORM_DATA only knows the 40 manifest CURIEs),
@@ -2594,7 +2586,7 @@ def run_synthesis(
             effective_preserve_tokens = (
                 chunk_preserve_tokens + extra_anchor_tokens
             )
-            # Worker A: pull a cache-stable chunk_id once per chunk so
+            # pull a cache-stable chunk_id once per chunk so
             # the per-variant resume-cache lookup uses the same value the
             # synthesize_instruction_pair / synthesize_preference_pair
             # path would have written into ``pair["chunk_id"]``. Falls
@@ -2613,7 +2605,7 @@ def run_synthesis(
                     stats.capped_at_max_pairs = True
                     break
                 pair_seed = seed + idx + (variant_index * 100_000)
-                # Worker A: per-pair resume-cache check. If the prior
+                # per-pair resume-cache check. If the prior
                 # run already emitted this (chunk_id, "instruction",
                 # variant_index) triple, replay the cached pair into
                 # the canonical buffers + sidecars and skip the LLM
@@ -2650,7 +2642,7 @@ def run_synthesis(
                         instruction_records.append(cached_pair)
                         emitted_inst_prompts.add(cached_prompt)
                         stats.instruction_pairs_emitted += 1
-                        # Mirror the cached pair to the Wave 116 sidecar
+                        # Mirror the cached pair to the .in_progress sidecar
                         # so ``tail -f`` continues to surface every
                         # accepted pair, regardless of whether it came
                         # from the LLM or the resume cache.
@@ -2675,10 +2667,10 @@ def run_synthesis(
                         stats.rejected_reasons.get(f"instruction:{reason}", 0) + 1
                     )
                 else:
-                    # REC-VOC-03 Phase 2 (Worker T): opt-in content_type enforcement
-                    # against ChunkType enum. Flag off -> no-op; flag on -> fail-closed.
-                    # Matches Worker I's TRAINFORGE_VALIDATE_CHUNKS pattern at
-                    # process_course.py:1987-2009.
+                    # Opt-in content_type enforcement against the ChunkType
+                    # enum. Flag off -> no-op; flag on -> fail-closed. Mirrors
+                    # the TRAINFORGE_VALIDATE_CHUNKS pattern in
+                    # process_course.py.
                     ct_value = inst_result.pair.get("content_type", "")
                     if not validate_chunk_type(ct_value):
                         stats.instruction_pairs_rejected += 1
@@ -2703,16 +2695,13 @@ def run_synthesis(
                             else None
                         ),
                     )
-                    # Wave 120 (renamed Wave 135d): audit-log when the
-                    # paraphrase emit chose the deterministic draft path
-                    # rather than the LLM paraphrase. Lets post-hoc
-                    # analysis identify chunks where the LLM
-                    # consistently fell short of the (now opt-in)
-                    # preservation floor. Wave 135 contract: the
-                    # deterministic-draft path is the expected outcome
-                    # on ``degraded_placeholder`` FORM_DATA entries; the
-                    # event name no longer asserts a "preservation
-                    # failure" — it just reports which path emitted.
+                    # Audit-log when the paraphrase emit chose the
+                    # deterministic draft path rather than the LLM paraphrase,
+                    # so post-hoc analysis can find chunks where the LLM fell
+                    # short of the (opt-in) preservation floor. The event name
+                    # deliberately asserts no failure: the deterministic-draft
+                    # path is the EXPECTED outcome on ``degraded_placeholder``
+                    # FORM_DATA entries, so it only reports which path emitted.
                     if inst_result.pair.get("paraphrase_fallback_reason"):
                         capture.log_decision(
                             decision_type="paraphrase_used_deterministic_draft",
@@ -2733,7 +2722,7 @@ def run_synthesis(
                             ),
                             context=f"chunk_id={inst_result.pair['chunk_id']}",
                         )
-                    # Wave 122 follow-up: cross-chunk prompt-collision
+                    # Cross-chunk prompt-collision
                     # dedupe. Skip the emit if the final-shape prompt
                     # already landed for an earlier chunk; the rejected
                     # bucket gets a ``duplicate_prompt`` reason so the
@@ -2765,12 +2754,12 @@ def run_synthesis(
                     inst_result.pair["decision_capture_id"] = _last_event_id(capture)
                     if _attach_source_grounding(inst_result.pair, chunk):
                         stats.source_grounded_pairs += 1
-                    # Worker W2.E: per-pair, post-emit, pre-write filter.
+                    # per-pair, post-emit, pre-write filter.
                     # Stamps audit fields on the pair regardless of
                     # outcome; on reject, skips append + sidecar +
                     # checkpoint so a rejected pair never lands on disk
                     # and is not re-emitted on resume.
-                    # Worker W3.B: increment candidate counter BEFORE
+                    # increment candidate counter BEFORE
                     # the validator call — every factory-output pair
                     # that survived the per-template quality gate AND
                     # the cross-chunk dedupe is a candidate.
@@ -2795,7 +2784,7 @@ def run_synthesis(
                             stats.rejected_reasons.get(_key, 0) + 1
                         )
                         stats.dropped_count += 1
-                        # Worker W3.B: promotion-ladder rejection counters.
+                        # promotion-ladder rejection counters.
                         stats.rejected_promotion_pairs += 1
                         _reason_key = _promo_reason or "unknown"
                         stats.promotion_rejection_reasons[_reason_key] = (
@@ -2805,7 +2794,7 @@ def run_synthesis(
                         )
                         continue
                     inst_result.pair["promotion_status"] = _promo_status
-                    # Wave 4 W4.C: per-pair claim-support (W4.A) +
+                    # per-pair claim-support (W4.A) +
                     # LO-refs (W4.B) filters run AFTER the W2.E
                     # promotion validator returns ``validated``. Each
                     # reject increments the matching W4 counter AND
@@ -2818,7 +2807,7 @@ def run_synthesis(
                     # three validators pass, rather than incrementing
                     # at W2.E pass and decrementing on W4 reject.
                     if _promo_status == "validated":
-                        # Wave 5 W5.D: thread the precomputed
+                        # thread the precomputed
                         # ``_claim_support_chunk_text_map`` so the
                         # claim-support validator can scope NLI
                         # premise per-claim when chunk["key_claims"]
@@ -2827,7 +2816,7 @@ def run_synthesis(
                         # ``chunks_by_id`` empty), the validator
                         # graceful-degrades to whole-chunk-text
                         # scoring (back-compat day-1).
-                        # Wave 9 TIGHT: thread the dual-source DART
+                        # thread the dual-source DART
                         # cross-check map + severity dial. When the
                         # map is empty (no staging_dir / non-textbook-
                         # to-course corpus), severity is "off" so the
@@ -2899,7 +2888,7 @@ def run_synthesis(
                             )
                             stats.lo_refs_rejected += 1
                             continue
-                        # Wave 4 W4.C MEDIUM: per-pair tri-axis
+                        # Per-pair tri-axis
                         # objective-delivery filter runs AFTER W4.B
                         # passes. Mirrors the W4.A/W4.B reject
                         # bookkeeping (W2.E ladder counters +
@@ -2947,24 +2936,24 @@ def run_synthesis(
                         # counter (preserves the invariant) and the
                         # new W4.C post-W4 survivor counter.
                         stats.pair_validation_passed += 1
-                    # Worker W3.B: validated counter increments on
+                    # validated counter increments on
                     # promotion_status != "rejected".
                     stats.validated_pairs_total += 1
                     instruction_records.append(inst_result.pair)
                     emitted_inst_prompts.add(final_prompt)
                     stats.instruction_pairs_emitted += 1
-                    # Worker W3.B: trainable counter — incremented after
+                    # trainable counter — incremented after
                     # the pair lands in the in-memory records list (which
                     # is byte-equivalent to the JSONL emit a few lines
                     # below). Distinct counter from validated so a future
                     # post-validation write loss surfaces here without
                     # conflating the two ladder steps.
                     stats.trainable_pairs_total += 1
-                    # Wave 116: mirror to .in_progress sidecar with
+                    # mirror to .in_progress sidecar with
                     # flush() so ``tail -f`` and post-kill inspection
                     # see this pair without waiting on OS buffers.
                     _utils_append_jsonl(inst_progress_fh, inst_result.pair)
-                    # Worker A: append the accepted pair to the resume
+                    # append the accepted pair to the resume
                     # checkpoint. A subsequent run that loads this
                     # sidecar will skip the LLM dispatch for this
                     # (chunk_id, "instruction", variant_index) triple.
@@ -2984,7 +2973,7 @@ def run_synthesis(
                 per_artifact_cap is not None
                 and stats.preference_pairs_emitted >= per_artifact_cap
             )
-            # Worker A: per-pair resume-cache check for the preference
+            # per-pair resume-cache check for the preference
             # branch. Single-variant (only one preference pair per
             # chunk), so the variant_index is always 0.
             _pref_cp_key = (chunk_id_for_checkpoint, "preference", 0)
@@ -3065,7 +3054,7 @@ def run_synthesis(
                             ),
                             context=f"chunk_id={pref_result.pair['chunk_id']}",
                         )
-                    # Wave 122 follow-up: cross-chunk dedupe (preference).
+                    # Cross-chunk dedupe (preference).
                     # Nested ``if`` rather than ``continue`` so the
                     # outer chunk loop still falls through to the
                     # pilot_report progress block below.
@@ -3090,14 +3079,14 @@ def run_synthesis(
                         pref_result.pair["decision_capture_id"] = _last_event_id(capture)
                         if _attach_source_grounding(pref_result.pair, chunk):
                             stats.source_grounded_pairs += 1
-                        # Worker W2.E: per-pair promotion filter on the
+                        # per-pair promotion filter on the
                         # preference branch. Mirrors the instruction
                         # branch exactly. Nested if/else (rather than
                         # continue) so the outer chunk loop still falls
                         # through to the pilot_report progress block —
                         # matches the surrounding control-flow
                         # convention for the preference branch.
-                        # Worker W3.B: candidate counter increments
+                        # candidate counter increments
                         # BEFORE the validator dispatch, matching the
                         # instruction-branch semantics — every pair that
                         # survived the per-template quality gate AND the
@@ -3123,7 +3112,7 @@ def run_synthesis(
                                 stats.rejected_reasons.get(_pref_key, 0) + 1
                             )
                             stats.dropped_count += 1
-                            # Worker W3.B: promotion-ladder rejection
+                            # promotion-ladder rejection
                             # counters mirror the instruction branch.
                             stats.rejected_promotion_pairs += 1
                             _pref_reason_key = (
@@ -3138,7 +3127,7 @@ def run_synthesis(
                             pref_result.pair["promotion_status"] = (
                                 _pref_promo_status
                             )
-                            # Wave 4 W4.C: per-pair claim-support
+                            # per-pair claim-support
                             # (W4.A) + LO-refs (W4.B) filters mirror
                             # the instruction-pair branch. ``_pref_w4_rejected``
                             # tracks whether either W4 validator
@@ -3150,12 +3139,12 @@ def run_synthesis(
                             # rejected pair to ``preference_records``.
                             _pref_w4_rejected = False
                             if _pref_promo_status == "validated":
-                                # Wave 5 W5.D: thread the precomputed
+                                # thread the precomputed
                                 # chunk_id -> text map (same as the
                                 # instruction-pair branch). Mirrors
                                 # the W4.A symmetric instruction /
                                 # preference handling.
-                                # Wave 9 TIGHT: thread the dual-source
+                                # thread the dual-source
                                 # DART cross-check map + severity dial.
                                 # Mirrors the instruction-pair branch.
                                 _pref_claim_status, _pref_claim_reason, _pref_claim_fields = (
@@ -3237,7 +3226,7 @@ def run_synthesis(
                                         stats.lo_refs_rejected += 1
                                         _pref_w4_rejected = True
                                     else:
-                                        # Wave 4 W4.C MEDIUM: per-pair
+                                        # Per-pair
                                         # tri-axis objective-delivery
                                         # filter on the preference
                                         # branch. Mirrors the
@@ -3307,21 +3296,21 @@ def run_synthesis(
                                 # bumped inside the W4 branches above.
                                 pass
                             else:
-                                # Worker W3.B: validated counter
+                                # validated counter
                                 # increments on promotion_status !=
                                 # "rejected" AND post-W4 survival.
                                 stats.validated_pairs_total += 1
                                 preference_records.append(pref_result.pair)
                                 emitted_pref_prompts.add(final_pref_prompt)
                                 stats.preference_pairs_emitted += 1
-                                # Worker W3.B: trainable counter — pair
+                                # trainable counter — pair
                                 # has landed in the in-memory records
                                 # list and will be flushed to JSONL via
                                 # _write_jsonl at end of run.
                                 stats.trainable_pairs_total += 1
-                                # Wave 116: mirror to .in_progress sidecar.
+                                # mirror to .in_progress sidecar.
                                 _utils_append_jsonl(pref_progress_fh, pref_result.pair)
-                                # Worker A: append the accepted preference
+                                # append the accepted preference
                                 # pair to the resume checkpoint.
                                 _append_synthesis_pairs_checkpoint(
                                     checkpoint_fh,
@@ -3335,7 +3324,7 @@ def run_synthesis(
                                     seed=pair_seed,
                                 )
 
-            # Wave 117: every N processed chunks, regenerate the
+            # every N processed chunks, regenerate the
             # in-flight pilot_report.md so the operator running a
             # multi-hour rebuild has live property-coverage /
             # template-distribution visibility. Atomic tmp-and-rename
@@ -3381,7 +3370,7 @@ def run_synthesis(
                         "Wave 117: pilot_report.md write failed: %s", exc,
                     )
 
-        # --- Wave 77: misconception -> DPO pair augmentation -----------------
+        # --- misconception -> DPO pair augmentation --------------------------
         # Emit one DPO pair per editorial (misconception, correction) entry
         # found on the eligible chunks. These augment the standard preference
         # pairs and are subject to the same per-artifact cap. We iterate the
@@ -3430,10 +3419,10 @@ def run_synthesis(
                     preference_records.append(pair)
                     stats.preference_pairs_emitted += 1
                     stats.misconception_dpo_pairs_emitted += 1
-                    # Wave 116: mirror to .in_progress sidecar.
+                    # mirror to .in_progress sidecar.
                     _utils_append_jsonl(pref_progress_fh, pair)
 
-        # Wave 111 / Phase E: surface budget telemetry on stats whether
+        # surface budget telemetry on stats whether
         # the loop completed normally OR hit the dispatch cap.
         if paraphrase_provider is not None and hasattr(paraphrase_provider, "budget"):
             bsum = paraphrase_provider.budget.summary()
@@ -3466,7 +3455,7 @@ def run_synthesis(
                 "run_synthesis hit max_dispatches=%s; wrote progress to %s",
                 _budget_exhausted_exc.max_dispatches, progress_path,
             )
-            # Wave 116: preserve sidecars on budget-exceeded so the
+            # preserve sidecars on budget-exceeded so the
             # operator can inspect partial output and re-run with a
             # higher cap to resume from the cache.
             logger.warning(
@@ -3475,7 +3464,7 @@ def run_synthesis(
                 instruction_progress, preference_progress,
             )
 
-        # Wave 117: finalize pilot_report.md (in_flight=False) on every
+        # finalize pilot_report.md (in_flight=False) on every
         # exit path (normal completion OR budget-cap break). The JSONL
         # is the source of truth; this is the human-readable companion
         # artifact.
@@ -3539,7 +3528,7 @@ def run_synthesis(
             preference_records.sort(key=lambda r: (r["chunk_id"], r.get("seed", 0)))
 
         # ------------------------------------------------------------------
-        # Wave 79 Worker B: prerequisite-aware curriculum reordering + recap
+        # prerequisite-aware curriculum reordering + recap
         # ------------------------------------------------------------------
         # Runs AFTER the difficulty-curriculum pass so the topo order wins
         # when both flags are set (the prerequisite graph encodes more
@@ -3616,13 +3605,13 @@ def run_synthesis(
         # Apply --prereq-windowed AFTER ordering so the recap reflects the
         # final emit shape. We mutate the prompt field in place (both
         # instruction and preference pair records use ``prompt``).
-        # Wave 127: skip pairs from the four deterministic generators —
+        # skip pairs from the four deterministic generators —
         # they were hoisted above the chunk loop, but their fixture-based
         # prompts (especially violation-detection's bounded-length TTL
         # graphs) shouldn't get prereq context prepended; doing so can
-        # push a violation prompt past its 400-char schema limit. Wave 131:
-        # the prefix tuple is now imported from lib.ontology.template_prefixes
-        # (single source of truth shared with curie_preservation validator).
+        # push a violation prompt past its 400-char schema limit. The prefix
+        # tuple is imported from lib.ontology.template_prefixes — the single
+        # source of truth shared with the curie_preservation validator.
         if curriculum_ctx is not None and prereq_windowed:
             for rec in instruction_records:
                 if str(rec.get("template_id", "")).startswith(
@@ -3663,7 +3652,7 @@ def run_synthesis(
                     rec["prompt"] = recap + "\n\n" + original
                     stats.pairs_with_prereq_recap += 1
 
-        # Wave 127: deterministic generators (kg_metadata,
+        # deterministic generators (kg_metadata,
         # violation_detection, abstention, schema_translation) used to
         # run here, post-chunk-loop. They were hoisted to fire BEFORE
         # the chunk loop so an operator `tail -f`-ing the
@@ -3776,7 +3765,7 @@ def run_synthesis(
             ),
         )
 
-        # Wave 116: try-body completed without raising. Mark the run
+        # try-body completed without raising. Mark the run
         # clean so the finally-block deletes the sidecars. A
         # SynthesisBudgetExceeded run reaches this line too (it is
         # caught above and produces ``pilot_progress.json``), so we
@@ -3785,7 +3774,7 @@ def run_synthesis(
         clean_exit = True
 
     finally:
-        # Wave 116: always close sidecar file handles, even on
+        # always close sidecar file handles, even on
         # exception. Delete only on a fully clean exit (no exception
         # propagated AND no budget cap hit). On budget-exceeded or
         # any other early exit, the sidecars stay on disk so the
@@ -3798,7 +3787,7 @@ def run_synthesis(
             pref_progress_fh.close()
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("Failed to close preference sidecar: %s", e)
-        # Worker A: close the resume checkpoint handle, mirroring the
+        # close the resume checkpoint handle, mirroring the
         # existing Wave-116 sidecar close logic. The append handle
         # always closes; the file itself is unlinked only on a
         # fully-clean exit so a SynthesisBudgetExceeded / unexpected
@@ -3827,7 +3816,7 @@ def run_synthesis(
 
 
 # ---------------------------------------------------------------------------
-# Wave 77: LibV2-archive entry path
+# LibV2-archive entry path
 # ---------------------------------------------------------------------------
 
 def run_synthesis_from_libv2(
@@ -3959,8 +3948,8 @@ def build_parser() -> argparse.ArgumentParser:
             "Trainforge course output directory or LibV2 course archive."
         )
     )
-    # Either --corpus (legacy: Trainforge output dir) or --slug (Wave 77:
-    # LibV2 archive entry path). At least one must be provided.
+    # Either --corpus (legacy Trainforge output dir) or --slug (LibV2
+    # archive entry path). At least one must be provided.
     src = p.add_mutually_exclusive_group(required=True)
     src.add_argument(
         "--corpus",
@@ -4050,7 +4039,7 @@ def build_parser() -> argparse.ArgumentParser:
             "hour 9 doesn't re-pay for the first 9 hours' work."
         ),
     )
-    # Wave 77 additions
+    # Stratified-sampling / LibV2-archive options
     p.add_argument(
         "--stratify",
         default="",
@@ -4092,7 +4081,7 @@ def build_parser() -> argparse.ArgumentParser:
             "<corpus>/training_specs/."
         ),
     )
-    # Wave 79 Worker B (Wave 91: now default-on; --no-graph to opt out).
+    # Curriculum mode: default-on; --no-graph to opt out.
     p.add_argument(
         "--curriculum-from-graph",
         action="store_true",
@@ -4105,7 +4094,7 @@ def build_parser() -> argparse.ArgumentParser:
             "(first_seen_week, concept_id) asc."
         ),
     )
-    # Wave 91 Action B: opt-out flag for legacy corpora that lack a
+    # opt-out flag for legacy corpora that lack a
     # pedagogy graph. Without it, missing graph raises FileNotFoundError
     # at run time so the silent-degrade-to-chunk-id-order regression is
     # impossible.
@@ -4157,7 +4146,7 @@ def build_parser() -> argparse.ArgumentParser:
             "editorial misconception DPO pairs."
         ),
     )
-    # Wave 120: smoke modes. Stratified ~20-chunk sample so every
+    # smoke modes. Stratified ~20-chunk sample so every
     # property surface form gets at least 3 chunks of representation;
     # writes ``smoke_pilot_report.md`` (sidecar — never overwrites
     # the canonical ``pilot_report.md``); floors scaled down so a
@@ -4190,7 +4179,7 @@ def build_parser() -> argparse.ArgumentParser:
             "time. Local-server 14B ceiling: ~20 min."
         ),
     )
-    # Audit 2026-04-30: KG-metadata + violation-detection generators.
+    # KG-metadata + violation-detection generators.
     # Both are off by default so existing callers / corpora keep their
     # current behaviour; flip on with --with-kg-metadata /
     # --with-violation-detection to teach the adapter the literal
@@ -4272,7 +4261,7 @@ def build_parser() -> argparse.ArgumentParser:
             "forms so every form keeps representation up to the cap."
         ),
     )
-    # Wave 124 (audit 2026-04-30 follow-up): abstention +
+    # abstention +
     # schema-translation generators. Both are off by default, parallel
     # to --with-kg-metadata / --with-violation-detection. Closes the
     # cc07cc76 hallucination_rate=0.63 + zero schema-to-English bridge
@@ -4389,7 +4378,7 @@ def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
     diff_curriculum = bool(getattr(args, "difficulty_curriculum", False))
     max_pairs_cap = getattr(args, "max_pairs", None)
     output_dir = Path(args.output) if getattr(args, "output", None) else None
-    # Wave 91 Action B: graph-required by default; --no-graph opts out.
+    # graph-required by default; --no-graph opts out.
     no_graph = bool(getattr(args, "no_graph", False))
     curriculum_graph = bool(getattr(args, "curriculum_from_graph", True))
     if no_graph:
@@ -4399,15 +4388,15 @@ def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
         getattr(args, "prereq_context_tokens", DEFAULT_PREREQ_CONTEXT_TOKENS)
     )
     pedagogy_path = Path(args.pedagogy_graph) if getattr(args, "pedagogy_graph", None) else None
-    # Wave 110 / Phase D: --max-dispatches is meaningful only with claude_session.
+    # --max-dispatches is meaningful only with claude_session.
     max_dispatches = getattr(args, "max_dispatches", None)
     if max_dispatches is not None and args.provider != "claude_session":
         raise SystemExit(
             "--max-dispatches is only meaningful with --provider claude_session"
         )
-    # Wave 117: incremental pilot_report.md writes during the chunk loop.
+    # incremental pilot_report.md writes during the chunk loop.
     pilot_report_every = int(getattr(args, "pilot_report_every", 20) or 0)
-    # Wave 120: smoke modes (mutex group, only one can be set).
+    # smoke modes (mutex group, only one can be set).
     if getattr(args, "smoke_deterministic", False):
         smoke_mode = "deterministic"
     elif getattr(args, "smoke_paraphrase", False):
@@ -4415,14 +4404,14 @@ def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
     else:
         smoke_mode = "none"
 
-    # Audit 2026-04-30: KG-metadata + violation-detection generators.
+    # KG-metadata + violation-detection generators.
     with_kg_metadata = bool(getattr(args, "with_kg_metadata", False))
     kg_metadata_max_pairs = int(getattr(args, "kg_metadata_max_pairs", 2000))
     with_violation_detection = bool(
         getattr(args, "with_violation_detection", False)
     )
     violation_shapes_glob = getattr(args, "violation_shapes_glob", None)
-    # Wave 125a: optional cap on violation-detection emit count.
+    # optional cap on violation-detection emit count.
     violation_detection_max_pairs_arg = getattr(
         args, "violation_detection_max_pairs", None,
     )
@@ -4431,7 +4420,7 @@ def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
         if violation_detection_max_pairs_arg is not None
         else None
     )
-    # Wave 124: abstention + schema-translation generators.
+    # abstention + schema-translation generators.
     with_abstention = bool(getattr(args, "with_abstention", False))
     abstention_max_pairs = int(getattr(args, "abstention_max_pairs", 1000))
     with_schema_translation = bool(
@@ -4446,7 +4435,7 @@ def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
     with_graph_sft = bool(getattr(args, "with_graph_sft", False))
     graph_sft_max_pairs = getattr(args, "graph_sft_max_pairs", None)
 
-    # Worker A: --no-checkpoint opts out of the per-pair resume cache.
+    # --no-checkpoint opts out of the per-pair resume cache.
     # Default behaviour (flag absent) leaves
     # ``synthesis_pairs_checkpoint_path=None`` so ``run_synthesis``
     # auto-derives ``<training_specs>/.synthesis_pairs_checkpoint.jsonl``.
@@ -4541,7 +4530,7 @@ def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
         print("  Rejected reasons:")
         for reason, count in sorted(stats.rejected_reasons.items()):
             print(f"    {reason}: {count}")
-    # Wave 111 / Phase E: surface session-budget telemetry on
+    # surface session-budget telemetry on
     # claude_session runs. Counts are 0 for non-session providers.
     if stats.dispatched_count or stats.cache_hits_count:
         print(

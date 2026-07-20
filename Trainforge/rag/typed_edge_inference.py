@@ -77,7 +77,7 @@ logger = logging.getLogger(__name__)
 
 ARTIFACT_KIND = "concept_semantic"
 
-# REC-ID-02 (Wave 4, Worker O): opt-in course-scoped concept IDs.
+# Opt-in course-scoped concept IDs.
 # When TRAINFORGE_SCOPE_CONCEPT_IDS=true, every concept-node ID is emitted as
 # ``f"{course_id}:{slug}"`` instead of the flat slug. Default off → legacy
 # behaviour. The flag is captured at import time; tests that need to toggle
@@ -96,8 +96,7 @@ def _make_concept_id(slug: str, course_id: Optional[str]) -> str:
     match the graph's scoped namespace.
 
     Cross-course behaviour: two courses carrying the same concept slug
-    produce two distinct scoped IDs — no silent merge. Wave 5 adds explicit
-    ``aliases[]`` / equivalence edges for cross-course reconciliation.
+    produce two distinct scoped IDs — no silent merge.
     """
     if SCOPE_CONCEPT_IDS and course_id:
         return f"{course_id}:{slug}"
@@ -107,12 +106,12 @@ def _make_concept_id(slug: str, course_id: Optional[str]) -> str:
 # whose (source, target) pair is already claimed by a higher-precedence
 # type.
 #
-# REC-LNK-04 (Wave 5.2, Worker U): 5 new pedagogical edge types slot at
-# tier 2 (same as ``prerequisite``). In practice they don't collide with
-# taxonomic edges because their endpoint namespaces differ (concept↔chunk,
-# concept↔LO, chunk↔LO, misconception↔concept, question↔LO vs the
-# concept↔concept taxonomic edges). Tier 2 assignment is defensive —
-# ties among tier-2 rules break by fixed rule-invocation order.
+# The pedagogical edge types sit at tier 2 (same as ``prerequisite``). In
+# practice they don't collide with taxonomic edges because their endpoint
+# namespaces differ (concept↔chunk, concept↔LO, chunk↔LO,
+# misconception↔concept, question↔LO vs the concept↔concept taxonomic
+# edges). Tier 2 assignment is defensive — ties among tier-2 rules break by
+# fixed rule-invocation order.
 _PRECEDENCE: Dict[str, int] = {
     "is-a": 3,
     # SKOS hierarchy slugs share the top tier with ``is-a``: both
@@ -127,10 +126,10 @@ _PRECEDENCE: Dict[str, int] = {
     "broader-than": 3,
     "narrower-than": 3,
     "assesses": 2,
-    # GPT-feedback (12 May 2026) item 4 — three misconception-anchored
-    # materializers slot at tier 2. Endpoint namespaces (misconception↔chunk,
-    # misconception↔question, misconception↔LO) don't collide with the
-    # concept↔concept taxonomic edges, so tier assignment is defensive.
+    # Misconception-anchored materializers, also tier 2. Their endpoint
+    # namespaces (misconception↔chunk, misconception↔question,
+    # misconception↔LO) don't collide with the concept↔concept taxonomic
+    # edges, so the tier assignment is defensive.
     "corrected-by-chunk": 2,
     "defined-by": 2,
     "derived-from-objective": 2,
@@ -167,13 +166,13 @@ def _stamp_provenance(
 ) -> Dict[str, Any]:
     """Stamp ``run_id`` + ``created_at`` onto a node or edge dict in-place.
 
-    REC-PRV-01 (Worker P Wave 4.1). ``run_id`` is omitted when ``None`` so
-    tests that construct graphs without a DecisionCapture instance keep
-    passing. ``created_at`` is always stamped — it's produced by the
-    orchestrator, not the rule modules, so it's always available.
+    ``run_id`` is omitted when ``None`` so callers that construct graphs
+    without a DecisionCapture instance still work. ``created_at`` is always
+    stamped — it's produced by the orchestrator, not the rule modules, so
+    it's always available.
 
-    Schema side: both fields are OPTIONAL per ``concept_graph_semantic.schema.json``
-    — legacy artifacts without them still validate.
+    Both fields are OPTIONAL per ``concept_graph_semantic.schema.json`` —
+    legacy artifacts without them still validate.
     """
     if run_id:
         obj["run_id"] = run_id
@@ -184,19 +183,16 @@ def _stamp_provenance(
 def _stamp_edge_kind(edge: Dict[str, Any]) -> Dict[str, Any]:
     """Stamp ``edge_kind`` (asserted | inferred) onto an edge dict in-place.
 
-    GPT-feedback (12 May 2026) item 1. Looks up the edge's
-    ``provenance.rule`` in the canonical
+    Looks up the edge's ``provenance.rule`` in the canonical
     :mod:`lib.ontology.edge_kind` registry and writes the classification
     onto the edge as a top-level ``edge_kind`` field. Unknown rules
-    silently skip the stamp (back-compat: legacy graphs validate
-    without the field, and a future rule landing without a registry
-    update doesn't crash the build — the unit test in
-    ``Trainforge/tests/test_edge_kind_classification.py`` fails-loudly
-    on that drift).
+    silently skip the stamp, so legacy graphs validate without the field
+    and a future rule landing without a registry update doesn't crash the
+    build; ``Trainforge/tests/test_edge_kind_classification.py`` is what
+    fails loudly on that drift instead.
 
-    Schema side: ``edge_kind`` is OPTIONAL per
-    ``concept_graph_semantic.schema.json`` — legacy edges without the
-    field validate untouched.
+    ``edge_kind`` is OPTIONAL per ``concept_graph_semantic.schema.json`` —
+    legacy edges without the field validate untouched.
     """
     prov = edge.get("provenance") or {}
     rule = prov.get("rule") if isinstance(prov, dict) else None
@@ -254,15 +250,13 @@ def _build_nodes(
     no typed edge can reference a node that didn't already qualify for the
     base graph.
 
-    REC-PRV-01 (Worker P Wave 4.1): when ``run_id`` / ``created_at`` are
-    provided, stamp them onto each node so the semantic graph is
-    time- and run-addressable.
+    When ``run_id`` / ``created_at`` are provided, they are stamped onto
+    each node so the semantic graph is time- and run-addressable.
     """
-    # Wave 75: defensive backfill — if the upstream concept_graph was
-    # built before classifier wiring landed, classify on the fly so the
-    # semantic graph still ships ``class`` on every node. Imported lazily
-    # so the rule library stays decoupled from lib/ontology at module
-    # import time.
+    # Defensive backfill — an upstream concept_graph built before classifier
+    # wiring landed carries no ``class``, so classify on the fly and keep the
+    # field present on every node. Imported lazily so the rule library stays
+    # decoupled from lib/ontology at module import time.
     from lib.ontology.concept_classifier import classify_concept
 
     nodes: List[Dict[str, Any]] = []
@@ -272,21 +266,18 @@ def _build_nodes(
             "label": n.get("label", n["id"]),
             "frequency": n.get("frequency", 0),
         }
-        # REC-LNK-04 (Wave 5.2, Worker U) / Worker S handoff: carry
-        # ``occurrences[]`` (Wave 5.1, REC-LNK-01) from the co-occurrence
-        # graph node into the semantic graph node so downstream consumers
-        # (e.g. the ``defined-by`` rule) don't have to re-derive the
-        # inverted index from chunks. Preserves Worker S's invariant that
-        # ``occurrences[]`` is available on every concept node that has
-        # chunks referencing it.
+        # Carry ``occurrences[]`` from the co-occurrence graph node into the
+        # semantic graph node so downstream consumers (e.g. the ``defined-by``
+        # rule) don't have to re-derive the inverted index from chunks. The
+        # invariant to preserve: ``occurrences[]`` is available on every
+        # concept node that has chunks referencing it.
         occurrences = n.get("occurrences")
         if occurrences:
             node["occurrences"] = list(occurrences)
-        # Wave 75: carry ``class`` through to the semantic graph so
-        # retrieval can filter pedagogical / assessment / low-signal
-        # nodes uniformly across both graph artifacts. Backfill via the
-        # classifier when the source node lacks the field (legacy
-        # graphs).
+        # Carry ``class`` through so retrieval can filter pedagogical /
+        # assessment / low-signal nodes uniformly across both graph
+        # artifacts. Backfill via the classifier when the source node
+        # lacks the field.
         klass = n.get("class")
         if not klass:
             # Strip course_id prefix when scoping is on so the classifier
@@ -312,16 +303,16 @@ def _build_nodes(
 # consumers resolve the endpoints by ID-namespace prefix; no new node types are
 # added to the concept graph."
 #
-# That convention left ``concept_graph_semantic.json`` carrying typed edges with
-# zero materialized nodes for those endpoints whenever the upstream co-occurrence
-# ``concept_graph`` was degenerate (empty ``concept_tags`` → no DomainConcept
-# nodes). The LibV2 ``packet_integrity`` gate's ``edge_endpoint_typing`` rule
-# then could not classify the endpoints (``node_class`` lookup → ``None``) and
-# failed the ``assesses`` contract (source must be ``Chunk``, target must be
-# ``Outcome``/``ComponentObjective``) — the ``EDGE_ENDPOINT_TYPE_MISMATCH``
-# archival blocker.
+# Relying on that convention alone is not enough. Whenever the upstream
+# co-occurrence ``concept_graph`` is degenerate (empty ``concept_tags`` → no
+# DomainConcept nodes), the graph carries typed edges with zero materialized
+# nodes for those endpoints; the LibV2 ``packet_integrity`` gate's
+# ``edge_endpoint_typing`` rule then cannot classify them (``node_class``
+# lookup → ``None``) and fails the ``assesses`` contract (source must be
+# ``Chunk``, target must be ``Outcome``/``ComponentObjective``), blocking
+# archival with ``EDGE_ENDPOINT_TYPE_MISMATCH``.
 #
-# Fix: after edge resolution, synthesize a typed node for every edge endpoint
+# So after edge resolution we synthesize a typed node for every edge endpoint
 # that isn't already a node, classifying it by its ID namespace using the SAME
 # class names ``pedagogy_graph_builder`` uses (``Chunk`` / ``Outcome`` /
 # ``ComponentObjective`` / ``Misconception``) and that
@@ -329,8 +320,8 @@ def _build_nodes(
 # graphs whose endpoints already resolve to concept nodes are untouched, and a
 # graph with no pedagogical edges materializes no extra nodes.
 #
-# A second materialization arm covers ``targets-concept`` edges (Wave 66):
-# their ``target`` is an LO-authored concept slug (objectives ``key_concepts``
+# A second materialization arm covers ``targets-concept`` edges: their
+# ``target`` is an LO-authored concept slug (objectives ``key_concepts``
 # vocabulary), NOT a chunk-derived concept-tag slug. When such a target has no
 # co-occurrence DomainConcept node (the LO named a concept the chunks never
 # tagged) it is materialized as a provenance-flagged DomainConcept node
@@ -340,8 +331,7 @@ def _build_nodes(
 # losing the LO's targetedConcepts. Namespace classification keeps precedence
 # (a key_concept that slugifies to ``to-01`` still classifies as ``Outcome``),
 # so only genuinely concept-shaped targets take the DomainConcept arm. Both
-# arms are unconditional (not flag-gated) — precedent: the pedagogical-endpoint
-# materializer landed unconditionally.
+# arms are unconditional, not flag-gated.
 
 # Compiled once: a corpus chunk ID carries a ``chunk_`` token (matches
 # ``Trainforge.eval.chunk_ids.is_chunk_id``). A synthetic question ID is
@@ -546,10 +536,9 @@ def _llm_escalate(
         }
         if created_at is not None:
             _stamp_provenance(record, run_id, created_at)
-        # GPT-feedback item 1: LLM-escalated edges are classified as
-        # `inferred` via the canonical registry (rule name forced to
-        # `llm_typed_edge` above), so the stamp is symmetric with the
-        # deterministic rule loop.
+        # LLM-escalated edges classify as `inferred` via the canonical
+        # registry (rule name forced to `llm_typed_edge` above), keeping the
+        # stamp symmetric with the deterministic rule loop.
         _stamp_edge_kind(record)
         normalized.append(record)
         if decision_capture is not None:
@@ -588,8 +577,8 @@ def build_semantic_graph_with_dataset(
     emit_trig: Optional[bool] = None,
     course_package_version: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], Optional[Any]]:
-    """Phase 3 sibling of ``build_semantic_graph`` that additionally
-    composes an ``rdflib.Dataset`` of per-rule named graphs.
+    """Sibling of ``build_semantic_graph`` that additionally composes an
+    ``rdflib.Dataset`` of per-rule named graphs.
 
     Returns ``(json_dict, dataset)``. ``json_dict`` is byte-identical to
     what ``build_semantic_graph`` returns for the same inputs (the JSON
@@ -680,32 +669,30 @@ def build_semantic_graph(
         llm_callable: Callable used for LLM escalation. Injected so tests
             and fallback paths are deterministic.
         decision_capture: Optional ``DecisionCapture`` instance. Used only
-            when LLM escalation fires (per CLAUDE.md: "ALL Claude decisions
-            MUST be logged"). When ``run_id`` is not explicitly provided,
+            when LLM escalation fires (every LLM decision must be logged).
+            When ``run_id`` is not explicitly provided,
             ``decision_capture.run_id`` (if present) is used as the source
-            for per-node/per-edge provenance (REC-PRV-01, Worker P).
+            for per-node/per-edge provenance.
         related_threshold: Minimum co-occurrence weight for ``related-to``.
         now: Override for ``generated_at``. When supplied, makes the
             artifact byte-identical across runs.
-        run_id: REC-PRV-01 (Worker P Wave 4.1). Pipeline run identifier
-            stamped on every emitted node + edge. When ``None``, falls
-            back to ``decision_capture.run_id`` if available; otherwise
-            no ``run_id`` field is stamped. The per-node/per-edge
-            ``created_at`` is always stamped with the artifact-level
-            timestamp (``now`` or ``datetime.now(timezone.utc)``).
-        misconceptions: REC-LNK-04 (Wave 5.2, Worker U). Optional list of
-            misconception entities (see ``schemas/knowledge/misconception.schema.json``).
-            Used by the ``misconception-of`` rule to emit
+        run_id: Pipeline run identifier stamped on every emitted node +
+            edge. When ``None``, falls back to ``decision_capture.run_id``
+            if available; otherwise no ``run_id`` field is stamped. The
+            per-node/per-edge ``created_at`` is always stamped with the
+            artifact-level timestamp (``now`` or
+            ``datetime.now(timezone.utc)``).
+        misconceptions: Optional list of misconception entities (see
+            ``schemas/knowledge/misconception.schema.json``). Used by the
+            ``misconception-of`` rule to emit
             ``misconception_id -> concept_id`` edges when the upstream
             ``concept_id`` field is populated. Current call sites pass
-            ``None`` → rule emits empty. Signal wiring deferred to a
-            future wave.
-        questions: REC-LNK-04 (Wave 5.2, Worker U). Optional list of
-            assessment-question dicts carrying at minimum ``id`` +
-            ``objective_id`` (and optional ``source_chunk_id``). Used by
-            the ``assesses`` rule to emit ``question_id -> objective_id``
-            edges. Current call sites pass ``None`` → rule emits empty.
-            Signal wiring deferred to a future wave.
+            ``None`` → rule emits empty.
+        questions: Optional list of assessment-question dicts carrying at
+            minimum ``id`` + ``objective_id`` (and optional
+            ``source_chunk_id``). Used by the ``assesses`` rule to emit
+            ``question_id -> objective_id`` edges. Current call sites pass
+            ``None`` → rule emits empty.
 
     Returns:
         Dict matching ``schemas/knowledge/concept_graph_semantic.schema.json``.
@@ -737,7 +724,7 @@ def _compute_graph_build_hash(
     rule_versions: Dict[str, int],
     rulepack_version: str,
 ) -> str:
-    """GPT Feedback v2 (May 12 / item 3): deterministic build-hash.
+    """Deterministic build-hash over the graph's inputs.
 
     SHA-256 over a canonicalised JSON payload of the inputs that produced
     this graph. ``generated_at`` is excluded so two byte-identical runs
@@ -792,23 +779,23 @@ def _build_semantic_graph_internal(
     terminal_objectives: Optional[List[Dict[str, Any]]] = None,
     course_package_version: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], List[Any]]:
-    """Phase 3 internal: compute the JSON artifact AND the per-rule
-    output list (``RuleOutput`` records) so the TriG writer can emit
-    even-zero-edge named graphs.
+    """Compute the JSON artifact AND the per-rule output list
+    (``RuleOutput`` records) so the TriG writer can emit even-zero-edge
+    named graphs.
 
     Returns ``(json_dict, rule_outputs)``. ``rule_outputs`` is a list of
     ``named_graph_writer.RuleOutput`` records — one per rule invoked,
-    in fixed invocation order. The list is *pre-precedence*: each
-    rule's emit is preserved exactly as the rule produced it
-    (post-stamp), which is what Wave 82 self-detection needs (the
-    JSON layer drops collisions; the named-graph layer keeps the raw
-    per-rule emit so SPARQL can diff per-rule edge counts across runs).
+    in fixed invocation order. The list is *pre-precedence*: each rule's
+    emit is preserved exactly as the rule produced it (post-stamp). The
+    JSON layer drops collisions; the named-graph layer must keep the raw
+    per-rule emit so SPARQL can diff per-rule edge counts across runs and
+    detect a rule that silently went to zero.
     """
-    # Lazy import to keep the rule-only callers (legacy
-    # ``build_semantic_graph``) free of rdflib at import time.
+    # Lazy import to keep the rule-only callers (``build_semantic_graph``)
+    # free of rdflib at import time.
     from Trainforge.rag.named_graph_writer import RuleOutput
 
-    # REC-PRV-01: resolve effective run_id / created_at once so every node
+    # Resolve effective run_id / created_at once so every node
     # and edge in the artifact shares the same stamp. ``created_at`` equals
     # the artifact-level ``generated_at`` deliberately — the graph is an
     # atomic snapshot; per-element timestamps would drift only by sub-ms
@@ -825,9 +812,9 @@ def _build_semantic_graph_internal(
     rule_versions: Dict[str, int] = {}
     rule_outputs: List[Any] = []
 
-    # Phase 5: when TRAINFORGE_USE_SHACL_RULES=true, route the
-    # ``defined-by`` slot through the SHACL-AF rule runner instead of
-    # the Python rule. The runner exposes the same
+    # When TRAINFORGE_USE_SHACL_RULES=true, route the ``defined-by`` slot
+    # through the SHACL-AF rule runner instead of the Python rule. The
+    # runner exposes the same
     # ``(chunks, course, concept_graph) -> list[edge dict]`` signature
     # so the dispatch loop is otherwise unchanged. Equivalence with
     # the Python rule is pinned by
@@ -840,9 +827,9 @@ def _build_semantic_graph_internal(
 
     # Rules are invoked in a fixed order so that equal-precedence ties
     # break deterministically. Taxonomic rules (is-a, prerequisite,
-    # related-to) fire first to preserve Wave 4 behaviour on their output
-    # shape; Wave 5.2 pedagogical rules (REC-LNK-04, Worker U) follow
-    # alphabetically by EDGE_TYPE.
+    # related-to) fire first; the pedagogical rules follow, ordered
+    # alphabetically by EDGE_TYPE. Reordering this list changes which edge
+    # survives a tie, so treat the order as part of the output contract.
     rule_specs: List[Tuple[Any, Any, Dict[str, Any]]] = [
         (infer_is_a, _is_a_mod, {}),
         (infer_prerequisite, _prereq_mod, {}),
@@ -857,9 +844,8 @@ def _build_semantic_graph_internal(
             _targets_concept_mod,
             {"objectives_metadata": objectives_metadata},
         ),
-        # GPT-feedback (12 May 2026) item 4 — three misconception-anchored
-        # materializers. Ordering follows the alphabetical-by-EDGE_TYPE
-        # convention used for the prior Wave 5.2 pedagogical-edge rules.
+        # Misconception-anchored materializers, in the same
+        # alphabetical-by-EDGE_TYPE order as the pedagogical rules above.
         (infer_corrected_by_chunk, _corrected_by_chunk_mod, {}),
         (
             infer_detected_by_question,
@@ -873,7 +859,7 @@ def _build_semantic_graph_internal(
         ),
     ]
 
-    # W3.1 content-dependency prerequisite rule
+    # Content-dependency prerequisite rule
     # (``prerequisite_from_definition_mention``). CONDITIONALLY registered —
     # ONLY when ``TRAINFORGE_PREREQ_DEFINITION_MENTION`` is on. The rule name is
     # folded into ``rule_versions`` (below), which is serialized into
@@ -908,21 +894,20 @@ def _build_semantic_graph_internal(
         except Exception as exc:
             logger.warning("Rule %s failed: %s", rule_mod.RULE_NAME, exc)
             produced = []
-        # REC-PRV-01: stamp each rule-produced edge with run provenance
-        # before precedence resolution. Rule modules stay pure (they don't
-        # know about run_id); the orchestrator decorates their output.
-        # GPT-feedback item 1: stamp edge_kind from the canonical
-        # rule-classification registry in lockstep so every emitted edge
-        # carries the asserted/inferred discriminator alongside its
-        # run / created_at provenance.
+        # Stamp each rule-produced edge with run provenance before precedence
+        # resolution. Rule modules stay pure (they don't know about run_id);
+        # the orchestrator decorates their output. edge_kind is stamped from
+        # the canonical rule-classification registry in lockstep so every
+        # emitted edge carries the asserted/inferred discriminator alongside
+        # its run / created_at provenance.
         for edge in produced:
             _stamp_provenance(edge, effective_run_id, created_at)
             _stamp_edge_kind(edge)
         rule_edges.extend(produced)
         rule_versions[rule_mod.RULE_NAME] = rule_mod.RULE_VERSION
-        # Phase 3: capture the per-rule emit verbatim (even when empty)
-        # so the named-graph writer can register a zero-edge graph for
-        # Wave 82 self-detection.
+        # Capture the per-rule emit verbatim, even when empty, so the
+        # named-graph writer can register a zero-edge graph — that is how a
+        # rule that silently stopped producing edges becomes detectable.
         rule_outputs.append(
             RuleOutput(
                 rule_name=rule_mod.RULE_NAME,
@@ -978,7 +963,7 @@ def _build_semantic_graph_internal(
 
     generated_at = effective_now.isoformat()
 
-    # GPT Feedback v2 (May 12 / item 3): aggregate lineage fields.
+    # Aggregate lineage fields.
     sorted_rule_versions = dict(sorted(rule_versions.items()))
     course_id_for_hash = course.get("course_id") if isinstance(course, dict) else None
     resolved_course_package_version = course_package_version
@@ -1000,8 +985,7 @@ def _build_semantic_graph_internal(
         "kind": ARTIFACT_KIND,
         "generated_at": generated_at,
         "rule_versions": sorted_rule_versions,
-        # GPT Feedback v2 (May 12 / item 3): see
-        # schemas/knowledge/concept_graph_semantic.schema.json.
+        # Consumer contract: schemas/knowledge/concept_graph_semantic.schema.json
         "rulepack_version": RULEPACK_VERSION,
         "graph_build_hash": graph_build_hash,
         "course_package_version": resolved_course_package_version,

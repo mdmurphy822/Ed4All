@@ -1,11 +1,5 @@
 """Gate-severity contract for ``TaskExecutor.execute_phase``.
 
-Root-cause regression suite for the ``post_rewrite_validation``
-gate-severity anomaly (see run
-``TTC_alg-vendor-rag-01_20260708_173318``): a phase whose ONLY failing
-gates are ``severity: warning`` was suspected of blocking the workflow
-(``gates_passed=False``).
-
 Two contracts are pinned here:
 
 1. **Warning failures never block; critical ones do.** The executor's
@@ -16,11 +10,10 @@ Two contracts are pinned here:
    ``GateResult`` carries no ``severity`` field; without the executor
    stamping the declared ``GateConfig`` severity onto each result dict,
    a persisted checkpoint cannot distinguish a blocking (critical)
-   failure from an advisory (warning) one. That ambiguity is exactly
-   what let an all-warning failure set be misfiled as a phase-level
-   ``gates_passed=False`` "harness anomaly". These tests assert the
-   severity is present on every persisted/returned result so diagnosis
-   can never be blinded again.
+   failure from an advisory (warning) one — and an all-warning failure
+   set reads as an unexplained phase-level ``gates_passed=False``. These
+   tests assert the severity is present on every persisted/returned
+   result so that diagnosis stays possible.
 
 In-process against a synthetic ``TaskExecutor`` — no live workflow, no
 checkpoint manager, no filesystem.
@@ -97,8 +90,8 @@ def _by_id(gate_results):
 
 
 # --------------------------------------------------------------------- #
-# 1. Reproduction: warning-only failures do NOT block, and the verdict
-#    is severity-auditable.
+# 1. Warning-only failures do NOT block, and the verdict is
+#    severity-auditable.
 # --------------------------------------------------------------------- #
 
 
@@ -141,7 +134,7 @@ async def test_warning_only_failures_do_not_block_and_are_auditable():
 
 
 # --------------------------------------------------------------------- #
-# 2. Regression: a failing critical gate still blocks.
+# 2. A failing critical gate blocks.
 # --------------------------------------------------------------------- #
 
 
@@ -161,8 +154,8 @@ async def test_critical_failure_blocks_and_is_labelled():
 
 
 # --------------------------------------------------------------------- #
-# 3. Regression: mixed critical + warning failures block (on the
-#    critical), and BOTH severities are recorded.
+# 3. Mixed critical + warning failures block (on the critical), and
+#    BOTH severities are recorded.
 # --------------------------------------------------------------------- #
 
 
@@ -218,7 +211,7 @@ async def test_missing_severity_defaults_critical_and_warns(caplog):
 
 # --------------------------------------------------------------------- #
 # 5. The YAML ``behavior:`` block is forwarded into the parsed
-#    GateConfig (previously dropped by the hand-rolled construction).
+#    GateConfig.
 # --------------------------------------------------------------------- #
 
 
@@ -272,8 +265,8 @@ async def test_behavior_block_forwarded_into_gateconfig():
     assert captured, "gate must have run"
     gate = captured[0]
     assert gate.behavior_on_fail == GateBehavior.WARN, (
-        "the YAML behavior.on_fail must be forwarded into GateConfig "
-        "(previously the executor hand-rolled GateConfig and dropped it)"
+        "the YAML behavior.on_fail must be forwarded into GateConfig; "
+        "hand-rolling GateConfig drops it"
     )
     assert gate.behavior_on_error == GateBehavior.WARN
 

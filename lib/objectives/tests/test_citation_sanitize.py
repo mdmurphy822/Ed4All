@@ -41,15 +41,15 @@ from lib.validators.objective_source_refs import (  # noqa: E402
 # --------------------------------------------------------------------------- #
 _REAL_CHUNKS: List[Dict[str, Any]] = [
     {
-        "id": "openstax_alg_ch01_chunk_00001",
+        "id": "test_course_ch01_chunk_00001",
         "source": {
             "source_references": [
-                {"sourceId": "semantik:openstax-alg#s1"},
+                {"sourceId": "semantik:test-course#s1"},
             ]
         },
     },
     {
-        "id": "openstax_alg_ch01_chunk_00002",
+        "id": "test_course_ch01_chunk_00002",
         "source": {},
     },
 ]
@@ -58,11 +58,11 @@ _STRUCTURE_UNIVERSE = {"ch01", "sec01a"}
 
 
 def _real_chunk_id() -> str:
-    return "openstax_alg_ch01_chunk_00001"
+    return "test_course_ch01_chunk_00001"
 
 
 def _real_source_id() -> str:
-    return "semantik:openstax-alg#s1"
+    return "semantik:test-course#s1"
 
 
 # --------------------------------------------------------------------------- #
@@ -70,7 +70,7 @@ def _real_source_id() -> str:
 # --------------------------------------------------------------------------- #
 def test_build_chunk_universe_harvests_id_and_sourceid() -> None:
     assert _real_chunk_id() in _CHUNK_UNIVERSE
-    assert "openstax_alg_ch01_chunk_00002" in _CHUNK_UNIVERSE
+    assert "test_course_ch01_chunk_00002" in _CHUNK_UNIVERSE
     assert _real_source_id() in _CHUNK_UNIVERSE
     assert len(_CHUNK_UNIVERSE) == 3
 
@@ -238,7 +238,7 @@ def test_legacy_all_fabricated_becomes_empty() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Group-of-groups (WS5) chapter_objectives shape.
+# Group-of-groups chapter_objectives shape.
 # --------------------------------------------------------------------------- #
 def test_group_of_groups_shape_handled() -> None:
     doc = {

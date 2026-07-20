@@ -1,16 +1,12 @@
-"""Concept-graph node classifier (Wave 75).
+"""Concept-graph node classifier.
 
 Classifies every concept-graph node into a coarse class so retrieval can
 filter pedagogical scaffolding ("key-takeaway", "rubric"), assessment
 options ("answer-b"), and stop-word-like artifacts ("not", "do-not")
 out of domain-concept similarity search.
 
-The Wave 75 review surfaced that the existing
-``concept_graph.json`` for the RDF/SHACL calibration corpus carried 459
-nodes including pedagogical/assessment scaffolding that polluted
-similarity search. This classifier is the deterministic, side-effect-free
-labeler that lets retrieval gate by class without dropping or merging
-nodes (existing edges stay intact).
+Labeling only — nodes are never dropped or merged here, so existing
+edges stay intact and callers decide what to gate on.
 
 Classes
 -------
@@ -64,36 +60,32 @@ CONCEPT_CLASSES = frozenset({
 # insensitive because concept-graph slugs are typically lowercased.
 _LO_ID_RE = re.compile(r"^(?:to|co)-\d{2,}$", re.IGNORECASE)
 
-# Rule 2: assessment-option choices (multiple-choice answer slots).
-# Wave 76 expands beyond a-d single-letter options to cover
-# answer-true / answer-false / option-true variants observed in the
-# RDF/SHACL calibration corpus review.
+# Rule 2: assessment-option choices (multiple-choice answer slots),
+# covering both a-d letter options and true/false/yes/no variants.
 _ANSWER_OPTION_RE = re.compile(
     r"^(?:answer|option)-(?:[a-d]|true|false|yes|no)$",
     re.IGNORECASE,
 )
 
-# Wave 76: naked truth/answer tokens that escape into the concept
-# stream from quiz body text. As concept slugs they're always
-# quiz-answer noise rather than domain terms.
+# Naked truth/answer tokens that escape into the concept stream from
+# quiz body text. As concept slugs they're always quiz-answer noise
+# rather than domain terms.
 _TRUTH_VALUE_TOKENS: Set[str] = frozenset({"true", "false", "yes", "no"})
 
-# Wave 76: HTML entity contamination — when slugification runs over
-# raw HTML without entity decoding first, ``&mdash;`` becomes the
-# literal string ``mdash`` embedded in the slug (e.g.
-# ``pitfall-mdash-target-class``). Same shape for ``ndash`` and the
-# numeric variants. Once these tokens are detected we drop the whole
-# concept as a fragment — the entity glue tells us the slug spanned a
-# punctuation boundary the chunker should have respected.
+# HTML entity contamination — when slugification runs over raw HTML
+# without entity decoding first, ``&mdash;`` becomes the literal string
+# ``mdash`` embedded in the slug (e.g. ``pitfall-mdash-target-class``).
+# Same shape for ``ndash`` and friends. The entity glue means the slug
+# spanned a punctuation boundary, so the whole concept is a fragment.
 _HTML_ENTITY_NOISE_RE = re.compile(
     r"(?:^|-)(?:mdash|ndash|hellip|nbsp|amp|quot|lt|gt|apos|rsquo|lsquo|rdquo|ldquo)(?:-|$)",
     re.IGNORECASE,
 )
 
-# Wave 76: article / preposition / conjunction prefixes that mark
-# sentence-fragment slugs. ``to-`` and ``co-`` are intentionally
-# OMITTED — Rule 1 catches LO IDs first, and Wave 75 tests pin
-# ``to-string`` / ``co-author`` / ``co-occurrence`` as DomainConcept.
+# Article / preposition / conjunction prefixes that mark sentence-
+# fragment slugs. ``to-`` and ``co-`` are intentionally OMITTED — Rule 1
+# already catches LO IDs, and adding them here would misclassify real
+# domain terms (``to-string``, ``co-author``, ``co-occurrence``).
 _FRAGMENT_PREFIXES: Set[str] = frozenset({
     "a-",
     "the-",
@@ -123,8 +115,8 @@ _FRAGMENT_PREFIXES: Set[str] = frozenset({
     "important-",
 })
 
-# Wave 76: pedagogical-marker pattern matchers for compound slugs that
-# the static stoplist misses (``module-4-deliverable``,
+# Pedagogical-marker pattern matchers for compound slugs that the
+# static stoplist misses (``module-4-deliverable``,
 # ``rubric-preview``, ``application-activity``, ``self-check-five``).
 _PEDAGOGY_PATTERN_RE = re.compile(
     r"(?:^|-)(?:rubric|deliverable|self-check|key-takeaway|takeaway|"
@@ -133,28 +125,21 @@ _PEDAGOGY_PATTERN_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Wave 76: ``module-NN-*`` / ``week-NN-*`` / ``content-N-*`` slugs
+# ``module-NN-*`` / ``week-NN-*`` / ``content-N-*`` / ``step-N-*`` slugs
 # are course logistics, not domain concepts. ``content-N-X-Y`` is
 # Courseforge's section-numbering pattern (Section 1.1 → ``content-1``)
-# and the trailing tokens are heading-fragment text.
-#
-# Wave 82 (Phase D2): adds ``step-N`` to the logistics filter — the
-# RDF/SHACL calibration corpus audit found ``step-1`` and ``step-2`` showing up as
-# top-frequency concepts because procedural-instruction headings of
-# the shape "Step 1: ..." were slugified verbatim and entered the
-# concept stream.
+# and the trailing tokens are heading-fragment text; ``step-N-*`` comes
+# from procedural headings of the shape "Step 1: ..." slugified verbatim.
 _LOGISTICS_PREFIX_RE = re.compile(
     r"^(?:module|week|unit|lesson|chapter|section|content|pitfall|"
     r"objective|outcome|step)-\d+(?:-|$)",
     re.IGNORECASE,
 )
 
-# Wave 76: trailing stopword detection. A slug whose LAST hyphen-
-# delimited token is a stopword is a sentence fragment that the
-# 4-token slugifier truncation produced. Examples flagged in the
-# RDF/SHACL calibration corpus review: ``content-1-aggregation-and``,
-# ``competency-questions-are-the``, ``bring-a-shacl-sparql`` (where
-# the last token is itself a tail of an unfinished phrase).
+# Trailing stopword detection. A slug whose LAST hyphen-delimited token
+# is a stopword is a sentence fragment produced by the 4-token slugifier
+# truncation (``content-1-aggregation-and``,
+# ``competency-questions-are-the``).
 _TAIL_STOPWORDS: Set[str] = frozenset({
     "a", "an", "the",
     "and", "or", "but", "nor",
@@ -165,10 +150,9 @@ _TAIL_STOPWORDS: Set[str] = frozenset({
     "do", "does", "did",
 })
 
-# Wave 76: starting auxiliary / wh- tokens. Slugs that begin with
-# ``are-``, ``is-``, ``do-``, ``how-``, ``why-``, ``what-`` etc. are
-# almost always question-fragment slugs from quiz body text or
-# discussion prompts (e.g. ``are-you-enriching-rdf``).
+# Starting auxiliary / wh- tokens. Slugs that begin with ``are-``,
+# ``is-``, ``do-``, ``how-``, ``why-``, ``what-`` etc. are almost always
+# question-fragment slugs from quiz body text or discussion prompts.
 _AUXILIARY_LEAD_TOKENS: Set[str] = frozenset({
     "are", "is", "was", "were", "do", "does", "did",
     "have", "has", "had", "will", "would", "should", "could",
@@ -176,8 +160,8 @@ _AUXILIARY_LEAD_TOKENS: Set[str] = frozenset({
     "how", "why", "what", "where", "when", "which", "who", "whose",
 })
 
-# Wave 76: LO IDs baked into the MIDDLE of a slug (``composition-to-03-progress``
-# is a heading fragment that contains the LO reference ``to-03``).
+# LO IDs baked into the MIDDLE of a slug (``composition-to-03-progress``
+# is a heading fragment that captured the LO reference ``to-03``).
 # Match anything of the shape ``...-(to|co)-NN-...``.
 _EMBEDDED_LO_RE = re.compile(
     r"-(?:to|co)-\d{2,}-",
@@ -191,9 +175,8 @@ PEDAGOGICAL_MARKERS: Set[str] = frozenset({
     "takeaway",
     "rubric",
     "rubrics",
-    # Measured as the top-3 polluters of the RDF/SHACL calibration corpus
-    # concept graph; they're the meta-vocabulary that scaffolds
-    # assessments rather than the domain content the assessments cover.
+    # Meta-vocabulary that scaffolds assessments rather than the domain
+    # content the assessments cover.
     "assessment",
     "assessments",
     "quiz",
@@ -240,9 +223,7 @@ PEDAGOGICAL_MARKERS: Set[str] = frozenset({
     "example",
     "examples",
     "feedback",
-    # Wave 76 additions surfaced by the RDF/SHACL calibration corpus review: compound
-    # pedagogy artifacts that masqueraded as DomainConcept under the
-    # Wave 75 stoplist.
+    # Compound pedagogy artifacts that the single-word entries above miss.
     "application-activity",
     "rubric-preview",
     "rubric-rubric",
@@ -250,11 +231,9 @@ PEDAGOGICAL_MARKERS: Set[str] = frozenset({
     "checkpoint",
     "milestone",
     "self-checks",
-    # Wave 82 (Phase D2): procedural-instruction verbs the RDF/SHACL
-    # calibration corpus audit caught masquerading as top-frequency domain concepts. "Plan"
-    # and "Verify" are common imperative-mood headings ("Plan your
-    # approach", "Verify the validation report") — pedagogical
-    # scaffolding, not domain vocabulary.
+    # Procedural-instruction verbs that appear as imperative-mood
+    # headings ("Plan your approach", "Verify the validation report") —
+    # pedagogical scaffolding, not domain vocabulary.
     "plan",
     "verify",
 })
@@ -333,9 +312,9 @@ LOW_SIGNAL_TOKENS: Set[str] = frozenset({
     "etc",
 })
 
-# Change B: domain-agnostic scaffolding-noise tokens. These are
-# pedagogical / procedural / comparative scaffolding words that slug-
-# extraction pulls out of headings and body copy ("Pros", "Cons",
+# Domain-agnostic scaffolding-noise tokens: pedagogical / procedural /
+# comparative scaffolding words that slug-extraction pulls out of
+# headings and body copy ("Pros", "Cons",
 # "Creating a graph", "Mutating state", "Advanced") and which fall
 # through ``classify_concept`` to ``DomainConcept`` despite carrying no
 # subject-matter signal. Unlike :data:`LOW_SIGNAL_TOKENS` (stopwords),
@@ -371,9 +350,8 @@ SCAFFOLDING_NOISE_TOKENS: Set[str] = frozenset({
     "updating",
     "reading",
     "writing",
-    # RAG-course audit (W-audit): single-token generic abstractions /
-    # logistics words that survived as DomainConcept and injected ~30% of
-    # related-to noise. Domain-agnostic; never real RAG concepts.
+    # Single-token generic abstractions / logistics words that otherwise
+    # survive as DomainConcept. Domain-agnostic by construction.
     "optional",
     "objective",
     "problem",
@@ -393,10 +371,10 @@ SCAFFOLDING_NOISE_TOKENS: Set[str] = frozenset({
     "finished",
 })
 
-# RAG-course audit (W-audit): MULTI-TOKEN course-logistics /
-# instructional scaffolding phrases (hyphen-joined slugs) that survived
-# as DomainConcept. Curated + conservative: only exact-match slugs that
-# are domain-agnostic logistics phrasing. Real multi-word concepts
+# MULTI-TOKEN course-logistics / instructional scaffolding phrases
+# (hyphen-joined slugs) that otherwise survive as DomainConcept.
+# Curated + conservative: only exact-match slugs that are domain-
+# agnostic logistics phrasing. Real multi-word concepts
 # (``vector-store``, ``knowledge-base``, ``semantic-guardrailing``,
 # ``running-state``, ``prompt-engineering``) MUST stay out of this set.
 _SCAFFOLDING_NOISE_PHRASES: Set[str] = frozenset({
@@ -413,7 +391,7 @@ _SCAFFOLDING_NOISE_PHRASES: Set[str] = frozenset({
     "edge-case-inspection",
 })
 
-# Change B (N2): action-verb stems for the ``-ing`` gerund-noise rule.
+# N2 action-verb stems for the ``-ing`` gerund-noise rule.
 # A single-token slug ending ``-ing`` whose de-gerund stem is in this
 # set is procedural scaffolding ("creating", "branching", "piping").
 _SCAFFOLDING_ACTION_STEMS: Set[str] = frozenset({
@@ -513,20 +491,18 @@ INSTRUCTIONAL_ARTIFACTS: Set[str] = frozenset({
     "resources",
     "schedule",
     "calendar",
-    # Wave 76: additional logistics terms surfaced in the RDF/SHACL
-    # calibration corpus cleanup pass.
+    # Additional course-logistics terms.
     "module-overview",
     "week-overview",
     "course-introduction",
     "syllabus",
 })
 
-# Wave 76: classes that the concept-extraction pipeline should
-# REJECT (drop entirely from the concept stream) rather than emit. The
-# Wave 75 classifier was post-hoc — it labeled but did not filter, so
-# pollution still entered chunks ``concept_tags`` and the resulting
-# concept_graph nodes. Wave 76 wires :func:`is_droppable_class` at
-# extraction time. Membership rationale:
+# Classes the concept-extraction pipeline REJECTS (drops entirely from
+# the concept stream) rather than emits — filtering must happen at
+# extraction time via :func:`is_droppable_class`, otherwise the
+# pollution still reaches chunk ``concept_tags`` and the concept_graph
+# nodes even though it is correctly labeled. Membership rationale:
 #
 # - ``PedagogicalMarker`` — instructional scaffolding, not domain
 #   vocabulary.
@@ -535,8 +511,8 @@ INSTRUCTIONAL_ARTIFACTS: Set[str] = frozenset({
 #   artifacts.
 # - ``InstructionalArtifact`` — submission logistics + meta-content.
 # - ``LearningObjective`` — LO IDs (TO-04, CO-12); these belong in
-#   ``objectives.json`` not ``concept_graph.json``. Per the Wave 76
-#   task spec, they're dropped from concept space entirely.
+#   ``objectives.json`` not ``concept_graph.json``, so they are dropped
+#   from concept space entirely.
 DROPPABLE_CLASSES: Set[str] = frozenset({
     PEDAGOGICAL_MARKER,
     ASSESSMENT_OPTION,
@@ -550,35 +526,26 @@ def is_droppable_class(klass: str) -> bool:
     """Return True iff ``klass`` is a class the extractor should drop.
 
     Used by ``Trainforge.process_course.CourseProcessor._extract_concept_tags``
-    (and the Wave 76 retroactive cleanup script) to filter at emit
-    time. Domain concepts and misconceptions are kept.
+    to filter at emit time. Domain concepts and misconceptions are kept.
     """
     return klass in DROPPABLE_CLASSES
 
 
-# Wave 76: serialization-format aliases. Slugifier strips ``/`` and
-# ``+``, so ``RDF/XML``/``rdfxml``/``rdf-xml`` collapse to a mix of
-# slugs depending on the upstream punctuation. The mapping below
-# canonicalizes any equivalent variant onto a single concept slug so
-# the graph doesn't carry near-duplicate nodes.
+# Serialization-format + W3C-standard surface-form aliases. The
+# slugifier strips ``/`` and ``+``, so ``RDF/XML``/``rdfxml``/``rdf-xml``
+# collapse to different slugs depending on upstream punctuation; this
+# map canonicalizes every variant onto one concept slug so the graph
+# doesn't carry near-duplicate nodes, and routes non-canonical query
+# terms to the anchor slugs ``lib/ontology/tech_anchors.py`` emits.
 #
-# Wave 82 (Phase C2): extended with W3C-standard surface-form aliases
-# so non-canonical query terms route to the canonical anchor slugs
-# emitted by ``lib/ontology/tech_anchors.py``. Pairs with the Phase C1
-# wiring that seeds the canonical nodes when
-# TRAINFORGE_SEED_TECH_CONCEPTS=true.
-#
-# Wave 83 / Phase 2.2 — RDF/SHACL enrichment:
-# This dict has been demoted to a TRANSITION CACHE. The source of
-# truth is now ``schemas/context/aliases.ttl`` (loaded by
-# ``lib.ontology.aliases``). ``canonicalize_alias`` consults the
-# Turtle path first and falls back to this dict only when the Turtle
-# load returns the slug unchanged but a dict entry exists. The dict
-# stays in place during the rollout to insure against rdflib import
-# failures and incomplete Turtle coverage; it will be removed once
-# parity is proven across all corpora — see
+# TRANSITION CACHE ONLY. The source of truth is
+# ``schemas/context/aliases.ttl`` (loaded by ``lib.ontology.aliases``);
+# ``canonicalize_alias`` consults the Turtle path first and falls back
+# here only on a Turtle miss. This dict exists to insure against rdflib
+# import failure and incomplete Turtle coverage, and is removable once
+# parity holds across all corpora —
 # ``lib/ontology/tests/test_aliases.py::test_known_aliases_dict_parity``
-# which asserts every entry below is reachable via the Turtle path.
+# asserts every entry below is reachable via the Turtle path.
 KNOWN_EQUIVALENT_ALIASES: Dict[str, str] = {
     "rdfxml": "rdf-xml",
     "rdf-xml": "rdf-xml",  # canonical
@@ -590,14 +557,14 @@ KNOWN_EQUIVALENT_ALIASES: Dict[str, str] = {
     "n-quads": "n-quads",
     "turtle": "turtle",
     "ttl": "turtle",
-    # Wave 82 — W3C standards full-name → acronym slug.
+    # W3C standards full-name → acronym slug.
     "rdf-schema": "rdfs",
     "rdfs": "rdfs",
     "web-ontology-language": "owl",
     "owl": "owl",
     "shapes-constraint-language": "shacl",
     "shacl": "shacl",
-    # Wave 82 — owl:sameAs surface variants → predicate slug.
+    # owl:sameAs surface variants → predicate slug.
     "owlsameas": "same-as",
     "owl-sameas": "same-as",
     "sameas": "same-as",
@@ -608,13 +575,12 @@ KNOWN_EQUIVALENT_ALIASES: Dict[str, str] = {
 def canonicalize_alias(slug: str) -> str:
     """Return the canonical slug for known equivalent variants.
 
-    Wave 83 (Phase 2.2): consults
-    ``schemas/context/aliases.ttl`` via :mod:`lib.ontology.aliases`
-    first. Falls back to :data:`KNOWN_EQUIVALENT_ALIASES` only when the
-    Turtle path returns the slug unchanged AND the dict has a mapping
-    — this preserves the original return contract for the (legacy)
-    edge case where rdflib isn't installed or the Turtle file is
-    out-of-date.
+    Consults ``schemas/context/aliases.ttl`` via
+    :mod:`lib.ontology.aliases` first. Falls back to
+    :data:`KNOWN_EQUIVALENT_ALIASES` only when the Turtle path returns
+    the slug unchanged AND the dict has a mapping — this keeps the
+    return contract intact when rdflib isn't installed or the Turtle
+    file is out of date.
 
     Pass-through for slugs not in either source.
     """
@@ -633,7 +599,7 @@ def canonicalize_alias(slug: str) -> str:
     return KNOWN_EQUIVALENT_ALIASES.get(slug.lower(), slug)
 
 
-# Wave 76: trivial English plural suffixes that slug-extraction tends
+# Trivial English plural suffixes that slug-extraction tends
 # to flip-flop on (``triple``/``triples``, ``graph``/``graphs``,
 # ``ontology``/``ontologies``). The collapse helper prefers the
 # singular when both forms appear.
@@ -676,8 +642,8 @@ def _has_fragment_prefix(norm: str) -> bool:
     that marks it as a sentence fragment.
 
     The ``to-``/``co-`` LO prefixes are deliberately not in the set —
-    Rule 1 catches LO IDs first, and Wave 75 tests pin ``to-string``,
-    ``co-author``, ``co-occurrence`` as DomainConcept.
+    Rule 1 catches LO IDs first, and including them would misclassify
+    real domain terms (``to-string``, ``co-author``, ``co-occurrence``).
     """
     for prefix in _FRAGMENT_PREFIXES:
         if norm.startswith(prefix):
@@ -702,8 +668,7 @@ def classify_concept(
          ``AssessmentOption``.
       3. Slug ∈ :data:`_TRUTH_VALUE_TOKENS` (``true``/``false``/``yes``/
          ``no``) → ``AssessmentOption``.
-      4. Slug in :data:`PEDAGOGICAL_MARKERS` (Wave 75 + Wave 76
-         additions) → ``PedagogicalMarker``.
+      4. Slug in :data:`PEDAGOGICAL_MARKERS` → ``PedagogicalMarker``.
       5. :data:`_PEDAGOGY_PATTERN_RE` matches (compound pedagogy slugs
          like ``module-4-deliverable``, ``rubric-preview``,
          ``application-activity-week-2``) → ``PedagogicalMarker``.
@@ -712,11 +677,11 @@ def classify_concept(
       7. Slug in :data:`INSTRUCTIONAL_ARTIFACTS` →
          ``InstructionalArtifact``.
       8. Slug in :data:`LOW_SIGNAL_TOKENS` → ``LowSignal``.
-      9. Wave 76 length / numeric guards (``len < 3`` or pure-numeric)
+      9. Length / numeric guards (``len < 3`` or pure-numeric)
          → ``LowSignal``.
-     10. Wave 76 :data:`_HTML_ENTITY_NOISE_RE` matches (``-mdash-``,
+     10. :data:`_HTML_ENTITY_NOISE_RE` matches (``-mdash-``,
          ``-ndash-``, etc.) → ``LowSignal``.
-     11. Wave 76 fragment-prefix detection
+     11. Fragment-prefix detection
          (:func:`_has_fragment_prefix`) → ``LowSignal``.
      12. ``hints['is_misconception']`` truthy → ``Misconception``.
      13. Empty / missing input → ``LowSignal`` (graceful default).
@@ -746,7 +711,7 @@ def classify_concept(
     if _ANSWER_OPTION_RE.match(norm):
         return ASSESSMENT_OPTION
 
-    # Rule 3 (Wave 76): naked truth-value tokens.
+    # Rule 3: naked truth-value tokens.
     if norm in _TRUTH_VALUE_TOKENS:
         return ASSESSMENT_OPTION
 
@@ -754,7 +719,7 @@ def classify_concept(
     if norm in PEDAGOGICAL_MARKERS:
         return PEDAGOGICAL_MARKER
 
-    # Rule 5 (Wave 76): compound pedagogy patterns
+    # Rule 5: compound pedagogy patterns
     # (module-4-deliverable, rubric-preview, application-activity-*).
     # Run BEFORE the logistics prefix check so ``module-3-rubric`` is
     # routed to PedagogicalMarker (rubric carries the pedagogy
@@ -763,7 +728,7 @@ def classify_concept(
     if _PEDAGOGY_PATTERN_RE.search(norm):
         return PEDAGOGICAL_MARKER
 
-    # Rule 6 (Wave 76): module-NN / week-NN / unit-NN logistics
+    # Rule 6: module-NN / week-NN / unit-NN logistics
     # prefixes. Anything matching here is course-shell scaffolding,
     # not domain content.
     if _LOGISTICS_PREFIX_RE.match(norm):
@@ -777,13 +742,13 @@ def classify_concept(
     if norm in LOW_SIGNAL_TOKENS:
         return LOW_SIGNAL
 
-    # Rule 9 (Wave 76): drop pure-numeric and too-short slugs.
+    # Rule 9: drop pure-numeric and too-short slugs.
     if len(norm) < 3:
         return LOW_SIGNAL
     if norm.replace("-", "").isdigit():
         return LOW_SIGNAL
 
-    # Rule 10 (Wave 76): HTML-entity contamination. Slugs like
+    # Rule 10: HTML-entity contamination. Slugs like
     # ``pitfall-mdash-target-class`` arise when slugification ran over
     # raw HTML without an ``html.unescape`` pre-step. Once we see the
     # entity glue token we know the slug spans a punctuation boundary
@@ -791,14 +756,14 @@ def classify_concept(
     if _HTML_ENTITY_NOISE_RE.search(norm):
         return LOW_SIGNAL
 
-    # Rule 11 (Wave 76): article/preposition/conjunction prefix
+    # Rule 11: article/preposition/conjunction prefix
     # detection. ``a-literal-is-just``, ``after-the-self-check``,
     # ``every-direct-type-of`` — sentence fragments that escaped the
     # chunker.
     if _has_fragment_prefix(norm):
         return LOW_SIGNAL
 
-    # Wave 76 (additional): embedded LO ID detection. Slugs containing
+    # Embedded LO ID detection. Slugs containing
     # an LO reference in the middle (e.g. ``composition-to-03-progress``)
     # are heading fragments that captured the inline reference. Run
     # this before the stopword / auxiliary checks because it's the

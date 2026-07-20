@@ -1,15 +1,12 @@
-"""Per-gate input routing (Wave 23 Sub-task A).
+"""Per-gate input routing.
 
-Pre-Wave-23, ``TaskExecutor.execute_phase`` invoked
-``ValidationGateManager.run_phase_gates`` with a single generic blob
-(``{'artifacts': ..., 'results': ...}``) regardless of which validator
-was about to run. Every real validator expects a bespoke shape
-(``html_path``, ``content_dir``, ``imscc_path``, ``page_paths`` + friends,
-``manifest_path`` + ``course_dir``, ...), so in practice every gate
-either returned an error issue ("MISSING_CONTENT_DIR" /
-"EMPTY_CONTENT" / ...), which — because most gates were configured
-at ``severity: warning / on_fail: warn`` — still let the phase pass.
-Other gates wired at ``severity: critical`` happened to be unused.
+Each validator expects a bespoke input shape (``html_path``,
+``content_dir``, ``imscc_path``, ``page_paths`` + friends, ``manifest_path``
++ ``course_dir``, ...). Handing every gate one generic
+``{'artifacts': ..., 'results': ...}`` blob makes each gate return a
+MISSING_* / EMPTY_* error issue instead of inspecting the real artifact —
+and because most gates are ``severity: warning``, that error still lets the
+phase pass, so the gate is silently vacuous.
 
 This module is the single source of truth for mapping a phase's
 accumulated outputs + workflow-level params into the per-validator
@@ -181,9 +178,8 @@ def _find_content_dir(
     Courseforge's content-generation phase emits ``content_paths`` as a
     comma-joined list of generated HTML paths under a
     ``.../content/`` directory. The ``content_dir`` is the common
-    parent. When the phase exposes a ``project_path`` (pre-Wave-8
-    shape) we prefer ``project_path / "content"`` to match the
-    packager's layout.
+    parent. When the phase exposes a ``project_path`` (older shape) we
+    prefer ``project_path / "content"`` to match the packager's layout.
 
     Disk-glob fallback (additive, backward-compatible): when none of
     the existing resolution arms match — which happens for
@@ -334,15 +330,14 @@ def _all_html_paths(
 def _locate(phase_outputs: Dict[str, Any], *keys: str) -> Optional[str]:
     """Find the first non-empty str value for the HIGHEST-PRIORITY key.
 
-    Iteration is KEY-major (assessment-tail fix 2026-07-19): every builder
-    passes ``keys`` in descending priority (e.g. ``assessments_path`` before
-    the generic ``output_path`` fallback), so a specific key match anywhere
-    in ``phase_outputs`` must win over a generic-key match in an earlier
-    phase. The pre-fix PHASE-major loop let ``semantik_conversion`` (the
-    first phase, which emits ``output_path`` = the accessible HTML) shadow
-    ``trainforge_assessment``'s real ``assessments_path`` — the
-    assessment gates then json-parsed an HTML file and crashed with
-    "Expecting value: line 1 column 1".
+    Iteration MUST be KEY-major: every builder passes ``keys`` in descending
+    priority (e.g. ``assessments_path`` before the generic ``output_path``
+    fallback), so a specific-key match anywhere in ``phase_outputs`` wins over
+    a generic-key match in an earlier phase. A PHASE-major loop instead lets an
+    early phase's generic ``output_path`` (e.g. ``semantik_conversion``'s
+    accessible HTML) shadow a later phase's specific ``assessments_path``, so
+    the assessment gates json-parse an HTML file and crash on "Expecting value:
+    line 1 column 1".
     """
     for key in keys:
         for phase_data in phase_outputs.values():
@@ -454,11 +449,10 @@ def _build_oscqr(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
 ) -> BuilderResult:
-    """Wave 31 OSCQRValidator: forward course_path / content_dir + course.json + imscc.
+    """OSCQRValidator: forward course_path / content_dir + course.json + imscc.
 
-    The Wave 31 implementation inspects the whole course artifact:
-    weekly HTML pages, course.json (for assessments), and optionally
-    the IMSCC package.
+    The validator inspects the whole course artifact: weekly HTML pages,
+    course.json (for assessments), and optionally the IMSCC package.
     """
     inputs: Dict[str, Any] = {}
     # Prefer content_dir from content_generation; fall back to course_dir
@@ -488,12 +482,11 @@ def _build_dart_markers(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
 ) -> BuilderResult:
-    """Wave 29: batch-aware DART markers resolution.
+    """batch-aware DART markers resolution.
 
-    Pre-Wave-29 the builder only returned a single ``html_path``; when
-    the DART phase emitted multiple HTML files (batch corpora) only the
-    first file was validated. Now we surface the full list as
-    ``html_paths`` alongside a representative ``html_path`` so:
+    Surfaces the full list as ``html_paths`` alongside a representative
+    ``html_path``. Returning only ``html_path`` validates just the first
+    file when the DART phase emitted a batch corpus, so both are surfaced:
 
     * the validator's single-file entrypoint still works (back-compat)
     * an aggregating caller can walk ``html_paths`` to validate every
@@ -525,22 +518,17 @@ def _build_assessment_quality(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
 ) -> BuilderResult:
-    """Wave 29: check file existence / non-empty before handing off.
+    """check file existence / non-empty before handing off.
 
-    Pre-Wave-29 the builder returned any string path the phase
-    surfaced, letting the validator crash with
-    ``json.JSONDecodeError: Expecting value: line 1 column 1 (char 0)``
-    when the path pointed at an empty or absent file (a common outcome
-    when ``--no-assessments`` was half-honoured, or when Trainforge
-    phase bailed early without writing the assessments file).
+    A bare path can point at an empty or absent file (e.g. ``--no-assessments``
+    half-honoured, or the Trainforge phase bailing before it wrote the file),
+    which makes the validator crash on ``json.loads`` with "Expecting value:
+    line 1 column 1". So:
 
-    Now we:
-
-    * resolve the candidate path as before,
+    * resolve the candidate path,
     * verify it exists AND is non-empty,
-    * return ``(None, ['ASSESSMENTS_FILE_MISSING'])`` when it isn't so
-      the gate is marked skipped with a structured reason rather than
-      crashing on ``json.loads``.
+    * return ``(None, ['ASSESSMENTS_FILE_MISSING'])`` when it isn't, marking
+      the gate skipped with a structured reason instead of crashing.
     """
     path_str = _locate(
         phase_outputs,
@@ -720,13 +708,12 @@ def _build_libv2_manifest(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
 ) -> BuilderResult:
-    """Wave 29: derive ``manifest_path`` from ``course_dir`` when absent.
+    """derive ``manifest_path`` from ``course_dir`` when absent.
 
-    Pre-Wave-29 the builder only looked for an explicit ``manifest_path``
-    key in phase outputs. The ``libv2_archival`` phase emits
-    ``course_dir`` (the archived course root) and guarantees
-    ``manifest.json`` sits inside — so when ``manifest_path`` isn't
-    surfaced explicitly we derive it as ``course_dir/manifest.json``.
+    The ``libv2_archival`` phase emits ``course_dir`` (the archived course
+    root) and guarantees ``manifest.json`` sits inside, so when
+    ``manifest_path`` isn't surfaced explicitly it derives as
+    ``course_dir/manifest.json``.
     """
     manifest = _locate(phase_outputs, "manifest_path")
     course_dir = _locate(phase_outputs, "course_dir")
@@ -749,7 +736,7 @@ def _build_libv2_manifest(
 
 
 # ---------------------------------------------------------------------- #
-# W1: Phase 3 / 3.5 / 4 Block-input + statistical-tier builders
+# Phase 3 / 3.5 / 4 Block-input + statistical-tier builders
 # ---------------------------------------------------------------------- #
 
 
@@ -773,10 +760,10 @@ def _accepted_block_fields() -> frozenset:
         # CalloutStructureValidator / InteractionFeedbackValidator read off
         # hydrated blocks. Default None → byte-stable when absent from the JSONL.
         "feedback", "option_feedback", "callout_kind",
-        # FR-INT-04 — B10 three-move discussion protocol fields the
+        # B10 three-move discussion protocol fields the
         # B10ProtocolValidator reads. Default None → byte-stable when absent.
         "discussion_protocol", "discussion_bloom_verb",
-        # FR-INT-03 — B11 predict-then-reveal calibration fields the
+        # B11 predict-then-reveal calibration fields the
         # InteractionFeedbackValidator (REFLECTION_NO_CAPTURE) +
         # AnatomySlotPresenceValidator (benchmark-in-feedback) read. Default None
         # → byte-stable when absent from the JSONL.
@@ -1010,7 +997,7 @@ def _build_chunkset_drift(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
 ) -> BuilderResult:
-    """Wave 3 W3.D — input builder for ChunksetDriftValidator.
+    """input builder for ChunksetDriftValidator.
 
     Surfaces ``{dart_chunks_path, imscc_chunks_path, course_path}``.
     The validator compares two chunksets emitted by the chunking +
@@ -1021,8 +1008,8 @@ def _build_chunkset_drift(
 
     * Explicit ``dart_chunks_path`` / ``imscc_chunks_path`` keys in
       phase outputs (the chunking / imscc_chunking phases emit these).
-    * Derive both from the libv2_archival ``course_dir`` (Wave 23
-      contract). Canonical post-Phase-7c layout:
+    * Derive both from the libv2_archival ``course_dir``. Canonical
+      layout:
       ``<course_dir>/dart_chunks/chunks.jsonl`` +
       ``<course_dir>/imscc_chunks/chunks.jsonl``.
     * Fall back to the Phase-7c shim ``<course_dir>/corpus/chunks.jsonl``
@@ -1111,7 +1098,7 @@ def _build_objective_source_refs(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
 ) -> BuilderResult:
-    """Wave 1.6 W1.6.C — input builder for ObjectiveSourceRefValidator.
+    """input builder for ObjectiveSourceRefValidator.
 
     Surfaces ``{synthesized_objectives_path, textbook_structure_path?,
     dart_chunks_manifest_path?, require_to_attribution?}`` so the
@@ -1141,8 +1128,8 @@ def _build_objective_source_refs(
     * ``require_to_attribution`` — optional, default false. Surfaces
       from gate config (the meta-schema accepts a ``config:`` block at
       the gate level which the executor merges into inputs at
-      ``MCP/core/executor.py:1442``). Wave 1.6 day-1 default keeps TOs
-      from firing OBJECTIVE_MISSING_SOURCE_REFS.
+      ``MCP/core/executor.py``). The default keeps TOs from firing
+      OBJECTIVE_MISSING_SOURCE_REFS.
     """
     inputs: Dict[str, Any] = {}
 
@@ -1181,7 +1168,7 @@ def _build_manifest_completeness(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
 ) -> BuilderResult:
-    """W3 — input builder for ManifestCompletenessValidator.
+    """input builder for ManifestCompletenessValidator.
 
     Surfaces ``{manifest_path, dart_chunks_manifest_path?,
     content_development_dir?}`` so the validator's RESOLUTION walk sees the
@@ -1299,7 +1286,7 @@ def _build_block_input(
     # sharing this builder ignore the key; default byte-stable.
     inputs["blocks_final_path"] = str(blocks_path)
 
-    # IB4.6 — thread the ED4ALL_BLOCK_A11Y resolution into the Block-input
+    # thread the ED4ALL_BLOCK_A11Y resolution into the Block-input
     # surface so RewriteHtmlShapeValidator's per-block a11y sub-check (IB4.1)
     # fires only when the flag is on. Harmless for the other Block*Validators
     # sharing this builder — they ignore the key. Default OFF → byte-stable.
@@ -1310,7 +1297,7 @@ def _build_block_input(
     except Exception:  # noqa: BLE001 — never let the resolver import break routing
         inputs["block_a11y_enabled"] = False
 
-    # IB5.8 — thread the ED4ALL_NEW_BLOCK_TYPES resolution into the Block-input
+    # thread the ED4ALL_NEW_BLOCK_TYPES resolution into the Block-input
     # surface so RewriteHtmlShapeValidator's IB5 B04/B06 a11y-shape arms (IB5.7)
     # fire only when the flag is on. Harmless for the other Block*Validators
     # sharing this builder — they ignore the key. Default OFF → byte-stable.
@@ -1321,7 +1308,7 @@ def _build_block_input(
     except Exception:  # noqa: BLE001 — never let the resolver import break routing
         inputs["new_block_types_enabled"] = False
 
-    # FR-INT-03 — thread the ED4ALL_REFLECTION_CALIBRATION resolution into the
+    # thread the ED4ALL_REFLECTION_CALIBRATION resolution into the
     # Block-input surface so the InteractionFeedbackValidator's REFLECTION_NO_
     # CAPTURE arm + the AnatomySlotPresenceValidator's benchmark-in-feedback
     # check fire only when the flag is on. Harmless for the other validators
@@ -1571,7 +1558,7 @@ def _resolve_objective_statements_map(
 def _build_source_chunks_from_dart_jsonl(
     phase_outputs: Dict[str, Any],
 ) -> Dict[str, str]:
-    """W4 — id→chunk-TEXT map from the DART chunkset ``chunks.jsonl``.
+    """id→chunk-TEXT map from the DART chunkset ``chunks.jsonl``.
 
     The staging manifest's ``files[].text`` (the legacy
     :func:`_build_rewrite_block_input` source) is best-effort and is often
@@ -1772,8 +1759,8 @@ def _build_block_only_input(
     ``inputs['blocks']`` (preferred) or ``inputs['blocks_path']``. We
     surface ``blocks`` as Block dataclass instances; the validator
     silently skips non-dict entries via the dict / str dispatch in
-    ``_extract_jsonld_blocks``, but Phase 4 PoC contract is
-    informational severity so a partial drop just yields a warning.
+    ``_extract_jsonld_blocks``, and the gate is informational severity so a
+    partial drop just yields a warning.
     """
     # Prefer rewrite-tier blocks (post_rewrite_validation::rewrite_shacl)
     # when present, else outline-tier (inter_tier_validation::outline_shacl).
@@ -1803,25 +1790,21 @@ def _build_block_statistical_input(
     Surfaces ``{blocks, objectives_path, objective_statements?,
     objectives?}``. The executor merges ``gate.config`` (and therefore
     ``gate.config.thresholds``) into the inputs dict at
-    ``executor.py:1442`` so the per-validator threshold dial flows
-    through unchanged. Each validator additionally accepts
-    ``objective_statements`` / ``concept_definitions`` /
-    ``paraphrase_fn`` / ``embedder`` overrides via ``inputs.*``; the
-    Phase 4 PoC contract degrades to ``passed=True`` warnings when
-    those auxiliaries aren't wired.
+    ``executor.py`` so the per-validator threshold dial flows through
+    unchanged. Each validator additionally accepts ``objective_statements`` /
+    ``concept_definitions`` / ``paraphrase_fn`` / ``embedder`` overrides via
+    ``inputs.*``; the contract degrades to ``passed=True`` warnings when those
+    auxiliaries aren't wired.
 
-    GPT Feedback v2 Wave 1.7 W1.7.C — Drift B fix: pre-Wave-1.7 the
-    builder only emitted ``{blocks, objectives_path}``, so the existing
-    ``ObjectiveAssessmentSimilarityValidator`` silently degraded to
-    ``OBJECTIVE_STATEMENT_UNRESOLVED`` warnings on every block since
-    Phase 4 PoC. Wave 1.7 fixes this by loading
-    ``synthesized_objectives.json`` from ``objectives_path``,
-    flattening via :func:`lib.validators.abcd_objective._flatten_objectives`,
-    and surfacing both:
+    Emitting only ``{blocks, objectives_path}`` leaves
+    ``ObjectiveAssessmentSimilarityValidator`` degraded to
+    ``OBJECTIVE_STATEMENT_UNRESOLVED`` warnings on every block, so this also
+    loads ``synthesized_objectives.json`` from ``objectives_path``, flattens
+    via :func:`lib.validators.abcd_objective._flatten_objectives`, and
+    surfaces both:
 
     * ``objective_statements: Dict[str, str]`` — convenience map
-      ``{lo.id: lo.statement}`` consumed by the Wave-N2 similarity
-      validators.
+      ``{lo.id: lo.statement}`` consumed by the similarity validators.
     * ``objectives: Dict[str, Dict[str, Any]]`` — full LO dicts keyed
       by id (with ``bloom_level`` / ``bloom_verb`` / ``statement``)
       consumed by the new
@@ -1848,7 +1831,7 @@ def _build_block_statistical_input(
     objectives_path_raw = inputs.get("objectives_path")
     if objectives_path_raw:
         pruned["objectives_path"] = objectives_path_raw
-        # Wave 1.7 W1.7.C — Drift B fix. Load + flatten + surface the
+        # Load + flatten + surface the
         # objective_statements + objectives maps so every statistical-
         # tier validator (and the new BlockObjectiveDeliveryValidator)
         # sees populated inputs. When the feature cache is present the flatten
@@ -1972,7 +1955,7 @@ def _build_chunkset_manifest_inputs(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
 ) -> BuilderResult:
-    """Wave2-I9 — input builder for ChunksetManifestValidator.
+    """input builder for ChunksetManifestValidator.
 
     The validator's ``validate()`` reads ``inputs["chunkset_manifest_path"]``
     (see ``lib/validators/chunkset_manifest.py:213``). This gate fires
@@ -1991,11 +1974,9 @@ def _build_chunkset_manifest_inputs(
     * Derive ``<chunks_dir>/manifest.json`` from the sibling
       ``dart_chunks_path`` (DART) or ``imscc_chunks_path`` (IMSCC).
 
-    Pre-Wave2-I9 the validator silently skipped with
-    ``__no_builder_registered__`` because no builder was registered;
-    the gate ran ``passed=True warning-severity`` (gate config
-    ``severity: warning``, ``on_fail: warn``, ``on_error: warn``),
-    so the manifest was never inspected. Finding 5 / Wave2-I9.
+    Without a registered builder the validator falls through to
+    ``__no_builder_registered__`` and the ``severity: warning`` gate passes
+    without ever inspecting the manifest.
     """
     chunking = phase_outputs.get("chunking") or {}
     imscc_chunking = phase_outputs.get("imscc_chunking") or {}
@@ -2036,7 +2017,7 @@ def _build_chunk_wcag_status(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
 ) -> BuilderResult:
-    """IB4.2 — input builder for ChunkWcagStatusValidator.
+    """input builder for ChunkWcagStatusValidator.
 
     Surfaces the chunkset JSONL path so the validator can audit the data-only
     ``wcag_block_status`` / ``figure_alt`` chunk fields. Fires symmetrically at
@@ -2112,7 +2093,7 @@ def _build_concept_graph_inputs(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
 ) -> BuilderResult:
-    """Wave2-I9 — input builder for ConceptGraphValidator.
+    """input builder for ConceptGraphValidator.
 
     The validator's ``validate()`` reads ``inputs["concept_graph_path"]``
     (see ``lib/validators/concept_graph.py:218``). Phase
@@ -2123,8 +2104,7 @@ def _build_concept_graph_inputs(
     Optional ``min_nodes`` / ``min_edge_types`` thresholds flow
     through ``gate.config`` via the executor's
     ``executor.py:1442`` merge — the builder doesn't need to surface
-    them. Pre-Wave2-I9 the gate skipped silently with
-    ``__no_builder_registered__``.
+    them.
     """
     ce = phase_outputs.get("concept_extraction") or {}
     candidate = ce.get("concept_graph_path")
@@ -2452,7 +2432,7 @@ def _build_abcd_objective_inputs(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
 ) -> BuilderResult:
-    """Wave2-I9 — input builder for AbcdObjectiveValidator.
+    """input builder for AbcdObjectiveValidator.
 
     The validator's ``_coerce_objectives`` resolution chain reads
     (in priority order) ``inputs["objectives"]`` >
@@ -2466,9 +2446,8 @@ def _build_abcd_objective_inputs(
     consumer (course_planning emit > workflow_params override >
     derived from objective_extraction.project_path).
 
-    Pre-Wave2-I9 the gate skipped silently with
-    ``__no_builder_registered__`` despite being wired as
-    ``abcd_verb_alignment`` at the course_planning phase.
+    Without a registered builder the ``abcd_verb_alignment`` gate at
+    course_planning skips silently via ``__no_builder_registered__``.
     """
     objectives_path = _resolve_objectives_path(phase_outputs, workflow_params)
     if not objectives_path:
@@ -2480,21 +2459,21 @@ def _build_assessment_objective_alignment(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
 ) -> BuilderResult:
-    """Wave 24: assessments path + chunks path builder.
+    """assessments path + chunks path builder.
 
     The Trainforge phase emits ``output_path`` for the assessments.json
     and produces ``chunks.jsonl`` under ``{trainforge_dir}/corpus/``.
     The trainforge_dir is the parent of the IMSCC's project dir —
     derive it conservatively from the assessments output path.
 
-    **Wave 5 W5.E**: also surface
-    ``phase_outputs.course_planning.synthesized_objectives_path`` (or
-    any other phase that emits the canonical synthesized objectives) so
-    the validator can union the synthesized objectives' ``id`` set into
-    the chunks-side ``learning_outcome_refs`` resolution surface.
-    Closes Finding F: a chunks-side empty ``learning_outcome_refs``
-    used to trigger phantom-ref criticality even when the assessment
-    objective IS in the synthesized objectives. Routed via the
+    Also surfaces
+    ``phase_outputs.course_planning.synthesized_objectives_path`` (or any
+    phase emitting the canonical synthesized objectives) so the validator can
+    union the synthesized objectives' ``id`` set into the chunks-side
+    ``learning_outcome_refs`` resolution surface — otherwise an empty
+    chunks-side ``learning_outcome_refs`` triggers phantom-ref criticality
+    even when the assessment objective IS in the synthesized objectives.
+    Routed via the
     canonical ``_resolve_objectives_path`` helper so the resolution
     chain matches the rest of the synthesized-objectives consumers
     (course_planning emit > workflow_params override > derived from
@@ -2513,7 +2492,7 @@ def _build_assessment_objective_alignment(
 
     inputs: Dict[str, Any] = {"assessments_path": assessments}
 
-    # Wave 5 W5.E: surface synthesized_objectives_path when available.
+    # surface synthesized_objectives_path when available.
     # Optional input — missing is fine; the validator falls back to the
     # chunks-only resolution surface byte-identically with the pre-W5.E
     # behaviour.
@@ -2532,7 +2511,7 @@ def _build_assessment_objective_alignment(
         try:
             ap = Path(assessments)
             for parent in [ap.parent, *ap.parents]:
-                # Phase 7c: prefer imscc_chunks/, fall back to corpus/.
+                # prefer imscc_chunks/, fall back to corpus/.
                 for subdir in ("imscc_chunks", "corpus"):
                     candidate = parent / subdir / "chunks.jsonl"
                     if candidate.exists():
@@ -2549,7 +2528,7 @@ def _build_assessment_objective_alignment(
             pass
 
     if not chunks:
-        # Wave 29: fall back to the LibV2-archived corpus when
+        # fall back to the LibV2-archived corpus when
         # Trainforge didn't surface chunks_path directly. The
         # libv2_archival phase emits ``course_dir`` (and sometimes
         # ``course_slug``) for the archived course root; the
@@ -2848,10 +2827,9 @@ class GateInputRouter:
         """Look up + run the builder; return ({}, []) fallthrough on miss.
 
         Unknown validators fall through to the fallback ``artifacts``
-        blob — this is the pre-Wave-23 behaviour and preserves graceful
-        degradation when someone wires a new validator in YAML before
-        registering a builder. The executor logs a warning when this
-        happens so the drift is observable.
+        blob, preserving graceful degradation when someone wires a new
+        validator in YAML before registering a builder. The executor logs a
+        warning when this happens so the drift is observable.
 
         ``cache`` (opt-in ``ED4ALL_VALIDATION_FEATURE_CACHE``) is threaded ONLY
         into builders that declare a ``cache`` parameter — the heavy
@@ -2892,7 +2870,7 @@ def default_router() -> GateInputRouter:
         "lib.validators.page_objectives.PageObjectivesValidator",
         _build_page_objectives,
     )
-    # Phase 4 PoC: SHACL parallel of page_objectives. Reuses the
+    # SHACL parallel of page_objectives. Reuses the
     # Python-validator's input contract (content_dir + objectives_path)
     # verbatim so workflow-config drift is impossible.
     r.register(
@@ -2974,7 +2952,7 @@ def default_router() -> GateInputRouter:
         "lib.validators.libv2_manifest.LibV2ManifestValidator",
         _build_libv2_manifest,
     )
-    # Wave 78: packet integrity validator (gates the libv2_archival
+    # packet integrity validator (gates the libv2_archival
     # phase fail-closed). Reuses the same input shape as the manifest
     # validator (course_dir + manifest_path) — the validator's gate
     # adapter resolves archive_root from either.
@@ -3026,7 +3004,7 @@ def default_router() -> GateInputRouter:
         "lib.validators.cumulative_assessment.CumulativeAssessmentValidator",
         _build_cumulative_assessment,
     )
-    # Wave 31: content grounding — verifies Courseforge content traces
+    # content grounding — verifies Courseforge content traces
     # back to DART source blocks. The builder lives in the validator
     # module so routing stays co-located with the check.
     try:
@@ -3051,7 +3029,7 @@ def default_router() -> GateInputRouter:
         logger.warning("content_authorship validator import failed")
 
     # ------------------------------------------------------------------ #
-    # W1 — Phase 3 / 3.5 / 4 Courseforge two-pass validator wiring.
+    # Phase 3 / 3.5 / 4 Courseforge two-pass validator wiring.
     # Closes the no-builder fallthrough that stamped these gates
     # passed=True via waiver_info["skipped"]="true". 13 validators
     # split into five input-shape groups; one helper per group.
@@ -3084,7 +3062,7 @@ def default_router() -> GateInputRouter:
         "lib.validators.example_completeness.ExampleCompletenessValidator",
         _build_block_input_rewrite,
     )
-    # IB6.6 — block->module->course quality-rollup GATE (FR-07/13, framework
+    # block->module->course quality-rollup GATE (FR-07/13, framework
     # §6.5). Self-sufficient: it scores the rewrite-tier ``blocks`` surface
     # with the canonical IB6.1 rubric scorer and rolls the scores up via the
     # BlockQualityRollupAggregator, returning passed iff course_pass. Reuses
@@ -3191,7 +3169,7 @@ def default_router() -> GateInputRouter:
         "lib.validators.rewrite_html_shape.RewriteHtmlShapeValidator",
         _build_block_input_rewrite,
     )
-    # IB4.5 — UdlCoverageValidator audits the UDL multiple-means coverage of the
+    # UdlCoverageValidator audits the UDL multiple-means coverage of the
     # Block batch (derives on read). Consumes only ``inputs['blocks']`` so it
     # reuses the rewrite-tier Block surface (falls through to outline-tier
     # inside _build_block_input when only blocks_outline_path is present).
@@ -3207,7 +3185,7 @@ def default_router() -> GateInputRouter:
         "lib.validators.resource_link_purpose.ResourceLinkPurposeValidator",
         _build_block_input_rewrite,
     )
-    # FR-INT-02 — B08SequenceValidator audits the guided-practice sequence
+    # B08SequenceValidator audits the guided-practice sequence
     # (follows a worked_example) + fade_state presence on ``guided_practice``
     # blocks. Consumes only ``inputs['blocks']`` (IN ORDER) so it reuses the
     # rewrite-tier Block surface (no-ops + byte-stable when ED4ALL_NEW_BLOCK_TYPES
@@ -3216,7 +3194,7 @@ def default_router() -> GateInputRouter:
         "lib.validators.b08_sequence.B08SequenceValidator",
         _build_block_input_rewrite,
     )
-    # FR-INT-06 — B09DebriefValidator audits the mandatory case/scenario debrief
+    # B09DebriefValidator audits the mandatory case/scenario debrief
     # in the transition/consolidate slot on ``scenario`` blocks. Consumes only
     # ``inputs['blocks']`` so it reuses the rewrite-tier Block surface (no-ops +
     # byte-stable when ED4ALL_NEW_BLOCK_TYPES is unset; the same flag the B09
@@ -3225,7 +3203,7 @@ def default_router() -> GateInputRouter:
         "lib.validators.b09_debrief.B09DebriefValidator",
         _build_block_input_rewrite,
     )
-    # FR-INT-04 — B10ProtocolValidator audits the three-move discussion protocol
+    # B10ProtocolValidator audits the three-move discussion protocol
     # (post -> respond -> synthesize) on ``discussion_prompt`` blocks. Consumes
     # only ``inputs['blocks']`` so it reuses the rewrite-tier Block surface
     # (no-ops + byte-stable when ED4ALL_NEW_BLOCK_TYPES is unset; the same flag
@@ -3234,7 +3212,7 @@ def default_router() -> GateInputRouter:
         "lib.validators.b10_protocol.B10ProtocolValidator",
         _build_block_input_rewrite,
     )
-    # FR-A11Y-02 — InteractiveA11yValidator audits WCAG 2.1.1/2.5.7
+    # InteractiveA11yValidator audits WCAG 2.1.1/2.5.7
     # (drag-only-no-keyboard) + 1.4.1 (colour-only signalling) on interaction
     # blocks. Consumes only ``inputs['blocks']`` (+ the threaded
     # ``block_a11y_enabled``) so it reuses the rewrite-tier Block surface
@@ -3243,7 +3221,7 @@ def default_router() -> GateInputRouter:
         "lib.validators.interactive_a11y.InteractiveA11yValidator",
         _build_block_input_rewrite,
     )
-    # FR-A11Y-03 — CalloutStructureValidator audits typed B12 callouts (WCAG
+    # CalloutStructureValidator audits typed B12 callouts (WCAG
     # 1.4.1 non-color coding + body-overflow + motion). Consumes only
     # ``inputs['blocks']`` so it reuses the rewrite-tier Block surface (no-ops +
     # byte-stable when ED4ALL_CALLOUT_TYPED is unset — the same flag that makes
@@ -3252,7 +3230,7 @@ def default_router() -> GateInputRouter:
         "lib.validators.callout_structure.CalloutStructureValidator",
         _build_block_input_rewrite,
     )
-    # W1.5 — KeyTermsDefinitionQualityValidator audits key-terms vocab cards
+    # KeyTermsDefinitionQualityValidator audits key-terms vocab cards
     # (template_type == "key_terms" or block_type == "vocab_card") for circular /
     # too-long / not-distinct glossary definitions. Consumes only
     # ``inputs['blocks']`` so it reuses the rewrite-tier Block surface (reads its
@@ -3304,7 +3282,7 @@ def default_router() -> GateInputRouter:
         "lib.validators.rewrite_source_grounding.RewriteSourceGroundingValidator",
         _build_rewrite_block_input,
     )
-    # W4 — full-prose NLI entailment gate (post_rewrite_validation). Reuses
+    # full-prose NLI entailment gate (post_rewrite_validation). Reuses
     # the same rewrite-block + source_chunks builder so the NLI premise map is
     # populated from the authoritative DART chunkset chunks.jsonl.
     r.register(
@@ -3405,10 +3383,9 @@ def default_router() -> GateInputRouter:
         "lib.validators.bloom_classifier_disagreement.BloomClassifierDisagreementValidator",
         _build_block_statistical_input,
     )
-    # GPT Feedback v2 Wave 1.7 W1.7.C — tri-axis per-block-per-objective
-    # delivery gate. Reuses the statistical-tier builder so the Drift B
-    # fix (objective_statements + objectives surfacing from
-    # synthesized_objectives.json) flows through unchanged.
+    # Tri-axis per-block-per-objective delivery gate. Reuses the
+    # statistical-tier builder so the objective_statements + objectives
+    # surfacing from synthesized_objectives.json flows through unchanged.
     r.register(
         "lib.validators.block_objective_delivery.BlockObjectiveDeliveryValidator",
         _build_block_statistical_input,
@@ -3448,7 +3425,7 @@ def default_router() -> GateInputRouter:
         _build_degraded_chunk_input,
     )
 
-    # Wave 1.6 W1.6.C — per-objective source-attribution gate at
+    # per-objective source-attribution gate at
     # course_planning. Builder resolves synthesized_objectives_path,
     # textbook_structure_path, and the DART chunkset manifest sidecar
     # from upstream phase outputs. ``require_to_attribution`` surfaces
@@ -3457,7 +3434,7 @@ def default_router() -> GateInputRouter:
         "lib.validators.objective_source_refs.ObjectiveSourceRefValidator",
         _build_objective_source_refs,
     )
-    # W4 — LO-statement NLI entailment gate at course_planning. IDENTICAL
+    # LO-statement NLI entailment gate at course_planning. IDENTICAL
     # inputs to objective_source_refs (synthesized_objectives_path +
     # dart_chunks_manifest_path), so reuse the same builder; the validator's
     # own id→text loader reads the sibling chunks.jsonl for premise text.
@@ -3466,7 +3443,7 @@ def default_router() -> GateInputRouter:
         _build_objective_source_refs,
     )
 
-    # W3 — per-block synthesis-manifest RESOLUTION gate at content_generation +
+    # per-block synthesis-manifest RESOLUTION gate at content_generation +
     # post_rewrite_validation. Builder resolves the block_synthesis_manifest.jsonl
     # sidecar from the resolved content_dir + the DART chunkset manifest.json
     # (resolution universe) from chunking.dart_chunks_path. Pre-registration NO
@@ -3477,7 +3454,7 @@ def default_router() -> GateInputRouter:
         _build_manifest_completeness,
     )
 
-    # Wave 3 W3.D — DART vs. IMSCC chunkset drift detector at
+    # DART vs. IMSCC chunkset drift detector at
     # libv2_archival. Builder resolves dart_chunks_path /
     # imscc_chunks_path from the chunking + imscc_chunking phase
     # outputs (when present); falls back to deterministic LibV2 paths
@@ -3490,11 +3467,10 @@ def default_router() -> GateInputRouter:
         _build_chunkset_drift,
     )
 
-    # Wave2-I9 — Finding 5: three validators silently skipped via
-    # ``__no_builder_registered__`` because the router didn't know how
-    # to derive their required inputs from phase outputs. The gate ran
-    # ``passed=True warning-severity`` (a no-op), preventing the
-    # validator from ever inspecting the artifact.
+    # These three validators need inputs the router must derive from phase
+    # outputs; without a builder they fall through to
+    # ``__no_builder_registered__`` and their warning-severity gate passes as
+    # a no-op, never inspecting the artifact.
     #
     # ChunksetManifestValidator fires at both ``chunking`` (DART) and
     # ``imscc_chunking`` (IMSCC) phases; the builder handles both by
@@ -3504,7 +3480,7 @@ def default_router() -> GateInputRouter:
         "lib.validators.chunkset_manifest.ChunksetManifestValidator",
         _build_chunkset_manifest_inputs,
     )
-    # IB4.2 — ChunkWcagStatusValidator gates the data-only chunk WCAG fields
+    # ChunkWcagStatusValidator gates the data-only chunk WCAG fields
     # (wcag_block_status / figure_alt) at chunking (DART) + imscc_chunking
     # (IMSCC). Needs the chunkset JSONL path; warning-day-1.
     r.register(
@@ -3519,7 +3495,7 @@ def default_router() -> GateInputRouter:
         "lib.validators.qti_well_formed.QtiWellFormedValidator",
         _build_qti_well_formed,
     )
-    # W7.3 — SynthesizedQuizDistractorValidator fires at the
+    # SynthesizedQuizDistractorValidator fires at the
     # ``assessment_synthesis`` phase (both course_generation and
     # textbook_to_course) as the warning-severity
     # ``synthesized_quiz_distractor`` gate. It audits every synthesized MCQ's
@@ -3615,7 +3591,7 @@ def default_router() -> GateInputRouter:
         "lib.validators.source_coverage.SourceCoverageValidator",
         _build_chapter_objective_coverage_inputs,
     )
-    # W7.5 (M-TO) — TerminalObjectiveSourceGroundingValidator fires at
+    # TerminalObjectiveSourceGroundingValidator fires at
     # ``course_planning`` as the opt-in (``ED4ALL_TO_SOURCE_GROUNDING``)
     # warning-severity ``terminal_objective_source_grounding`` gate. It embeds
     # each TO statement + the source chunks its cluster cites and flags a TO
@@ -3726,18 +3702,18 @@ def default_router() -> GateInputRouter:
     # outline-tier emit, so the inter_tier seam resolves the outline
     # blocks correctly.
 
-    # IB6.4 — per-block D2 cognitive-load body ceiling. blocks-only.
+    # per-block D2 cognitive-load body ceiling. blocks-only.
     r.register(
         "lib.validators.content.BlockCognitiveLoadValidator",
         _build_block_input_rewrite,
     )
-    # IB6 — anatomy six-slot presence (reads reflection_calibration_enabled,
+    # anatomy six-slot presence (reads reflection_calibration_enabled,
     # threaded by the shim). blocks-only.
     r.register(
         "lib.validators.anatomy_slot_presence.AnatomySlotPresenceValidator",
         _build_block_input_rewrite,
     )
-    # IB6.3 — interaction→feedback contract (reads the OPTIONAL
+    # interaction→feedback contract (reads the OPTIONAL
     # distractor_signals_by_block + reflection_calibration_enabled, both
     # graceful-degrade). blocks-only.
     r.register(
@@ -3752,7 +3728,7 @@ def default_router() -> GateInputRouter:
         "lib.validators.block_quality_rubric.BlockQualityRubricValidator",
         _build_block_input_rewrite,
     )
-    # IB6 — 15-point QA checklist. COMPOSES the OPTIONAL
+    # 15-point QA checklist. COMPOSES the OPTIONAL
     # ``gate_results_by_block`` + ``spacing_by_block`` maps (both
     # graceful-degrade). blocks-only via the shim.
     r.register(
@@ -3771,21 +3747,21 @@ def default_router() -> GateInputRouter:
         "lib.validators.bloom_type_range.BloomTypeRangeValidator",
         _build_block_input_rewrite,
     )
-    # W7 — per-page instructional-depth (pedagogical density) floors.
+    # per-page instructional-depth (pedagogical density) floors.
     # blocks-only (reads OPTIONAL ``thresholds`` override via gate.config).
     # Wired at outline_instructional_depth + rewrite_instructional_depth.
     r.register(
         "lib.validators.instructional_depth.InstructionalDepthValidator",
         _build_block_input_rewrite,
     )
-    # W6 — deterministic Bloom structural-enforcement on assessment_item
+    # deterministic Bloom structural-enforcement on assessment_item
     # stems. blocks-only. Wired at outline_bloom_structural_enforcement +
     # rewrite_bloom_structural_enforcement.
     r.register(
         "lib.validators.bloom.structural_enforcement.BloomStructuralEnforcementValidator",
         _build_block_input_rewrite,
     )
-    # W2 — assessment answerability / retrieval-grounding. Needs the Block
+    # assessment answerability / retrieval-grounding. Needs the Block
     # set PLUS the per-source chunk-body map (``chunks_lookup`` →
     # fallback ``source_chunks``) so it can overlap each assessment_item
     # answer against its referenced source chunk. Routes to the rewrite-

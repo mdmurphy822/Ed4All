@@ -1,9 +1,9 @@
-"""Phase IA WS3 (D4) — calibrated refusal policy for the grounded-answer path.
+"""Calibrated refusal policy for the grounded-answer path.
 
 The refusal layer is the *pre-LLM* honesty gate: when retrieval confidence is
-too low to ground an answer, the grounded-answer pipeline (wave B) refuses
-BEFORE ever calling the local model — cheap, deterministic, and verifiable
-("zero client calls on refusal"). This module owns:
+too low to ground an answer, the grounded-answer pipeline refuses BEFORE ever
+calling the local model — cheap, deterministic, and verifiable ("zero client
+calls on refusal"). This module owns:
 
 * :class:`RefusalPolicy` — the engine- and (for semantic engines)
   embedding-model-pinned thresholds. Cosine scales are NOT comparable across
@@ -21,16 +21,15 @@ BEFORE ever calling the local model — cheap, deterministic, and verifiable
   distributions, sweeps thresholds, and emits
   ``retrieval_eval/refusal_calibration.json``. When the distributions overlap
   so badly that no threshold meets the precision/recall rule, it HONESTLY
-  reports ``recommended: null`` and leaves the policy ``v0-uncalibrated``
-  (the plan's pre-declared honest fallback).
+  reports ``recommended: null`` and leaves the policy ``v0-uncalibrated``.
 
 No LLM, no network, no decision capture on the policy path — the verdict is
 pure arithmetic over retrieval scores. The calibration ``__main__`` does touch
-the (local, file-backed) retriever and reads the WS1 gold set, but performs no
+the (local, file-backed) retriever and reads the gold set, but performs no
 generation and no cloud call.
 
-WS4 + the wave-B pipeline consume :class:`RefusalVerdict`; they emit the
-``reason_code`` as data and own the learner-facing display copy.
+Consumers take :class:`RefusalVerdict`, treat ``reason_code`` as data, and own
+the learner-facing display copy — this module never hardcodes copy.
 """
 
 from __future__ import annotations
@@ -66,29 +65,28 @@ __all__ = [
 ]
 
 # --------------------------------------------------------------------------- #
-# Reason codes (WS4 owns the display copy; we emit codes only — § D4.2 / § 3.3)
+# Reason codes — this module emits codes only; consumers own the display copy.
 # --------------------------------------------------------------------------- #
 
 #: Pre-LLM refusal: retrieval confidence below the policy floor.
 REASON_LOW_CONFIDENCE = "low_confidence"
 #: Model-side refusal: the composed envelope set ``not_in_course: true``.
-#: (Emitted by the wave-B pipeline, not this module — exported so the enum of
+#: (Emitted by the answer pipeline, not this module — exported so the enum of
 #: reason codes lives in one place.)
 REASON_NOT_IN_COURSE_MODEL = "not_in_course_model"
 
 POLICY_VERSION_UNCALIBRATED = "ws3.v0-uncalibrated"
-#: Measured-pin marker (D4.2 measure-then-pin). A single shared constant whose
-#: ONLY job is to let a consumer distinguish a measured threshold from the
-#: permissive v0 default — per-pin provenance (model, courses, date) lives in
-#: the PINNED_POLICIES comment block, not the version string. Bumped on each
-#: re-calibration wave; every pin references the constant, so the bump applies
-#: uniformly (the tier-2 reproduce-the-committed-verdict test, not the version
-#: string, is what guards each individual pin's numeric value against drift).
+#: Measured-pin marker. A single shared constant whose ONLY job is to let a
+#: consumer distinguish a measured threshold from the permissive v0 default;
+#: per-pin provenance lives in the PINNED_POLICIES comment block, not in the
+#: version string. Every pin references this constant, so a re-calibration bump
+#: applies uniformly — the reproduce-the-committed-verdict test, not the
+#: version string, is what guards each pin's numeric value against drift.
 POLICY_VERSION_PINNED = "ws3.v3-pinned-2026-06-12"
 
 
 # --------------------------------------------------------------------------- #
-# Policy + verdict dataclasses (frozen — § D4)
+# Policy + verdict dataclasses (frozen)
 # --------------------------------------------------------------------------- #
 
 
@@ -152,7 +150,8 @@ class RefusalVerdict:
     ``reason_code`` is :data:`REASON_LOW_CONFIDENCE` (the only pre-LLM refusal
     reason); the model-side ``not_in_course`` refusal carries
     :data:`REASON_NOT_IN_COURSE_MODEL` and is set by the pipeline, not here.
-    WS4 renders the learner-facing copy from the code — WS3 never hardcodes it.
+    The caller renders learner-facing copy from the code; this module never
+    hardcodes it.
     """
 
     refuse: bool
@@ -174,7 +173,7 @@ class RefusalVerdict:
 
 
 # --------------------------------------------------------------------------- #
-# Default (v0-uncalibrated, permissive) policies — § D4
+# Default (v0-uncalibrated, permissive) policies
 # --------------------------------------------------------------------------- #
 
 # Permissive on purpose: lexical blended scores are corpus-dependent (a single
@@ -243,7 +242,7 @@ def default_policy_for(engine: str) -> RefusalPolicy:
 
 
 # --------------------------------------------------------------------------- #
-# Pinned (measured) policies — § D4.2 measure-then-pin
+# Pinned (measured) policies
 # --------------------------------------------------------------------------- #
 
 # Each pin is the clean ``recommended.min_top_score`` from a course's
@@ -264,76 +263,48 @@ def default_policy_for(engine: str) -> RefusalPolicy:
 # DEFAULT_POLICIES entry the calibration sweep was measured against (the sweep
 # only re-pins min_top_score; the count signal + floor are unchanged).
 #
-# CROSS-COURSE DERIVATION (bge-large semantic pin, v2): the per-course sweep
-# rule picks the LARGEST single-course qualifying threshold, but a pin shipped
-# in the binary must hold across the whole corpus, not just one course. Across
-# the local course archives we calibrated, each course's recommended semantic
-# threshold differed; the per-course MAX would over-refuse genuinely answerable
-# queries on the lower-scoring courses (answer_recall fell to 0.70/0.80 there),
-# fabricating refusals. The honest cross-course pin is therefore the MINIMUM of
-# the per-course recommendations — the only value that keeps
-# refusal_precision >= 0.90 AND answer_recall >= 0.95 simultaneously on every
-# calibrated course (refusal under-firing is the safe failure direction this
-# module is built around). That minimum coincides with one course's committed
-# recommendation exactly, so the tier-2 reproduce-the-committed-verdict test
+# CROSS-COURSE DERIVATION: the per-course sweep rule picks the LARGEST
+# single-course qualifying threshold, but a pin shipped in the binary must hold
+# across the whole corpus, not just one course. Per-course recommendations
+# differ, so a per-course MAX over-refuses genuinely answerable queries on the
+# lower-scoring courses — fabricating refusals. The honest cross-course pin is
+# therefore the MINIMUM of the per-course recommendations: the only value that
+# keeps refusal_precision >= 0.90 AND answer_recall >= 0.95 simultaneously on
+# every calibrated course (refusal under-firing is the safe failure direction
+# this module is built around). That minimum coincides with one course's
+# committed recommendation exactly, so the reproduce-the-committed-verdict test
 # still anchors the numeric value to an on-disk artifact.
 #
-# HYBRID-RRF: PINNED 2026-06-12 (supersedes the prior "deliberately UNPINNED"
-# verdict — kept here for history). HISTORY: through the v2 (2026-06-10) waves
-# every local course archive we calibrated at n=10/9 left the hybrid-rrf
-# answerable/unanswerable fused-score distributions overlapping; no threshold met
-# the precision/recall rule (recommended=null), so we honestly shipped no hybrid
-# pin and hybrid-rrf fell through to the v0-uncalibrated default. That changed
-# with the scaled-up frozen gold set: the single-course union-corpus calibration
-# basis (77 gold questions / 34 refusal probes, gold v1.1, 2026-06-12, bge-large
-# embedder + 7B answerer) yields a clean recommendation for (hybrid-rrf,
-# BAAI/bge-large-en-v1.5).
+# HYBRID-RRF, why its refusal_recall is low BY DESIGN: the fused
+# answerable/unanswerable distributions are NOT separable (the calibration
+# artifact reports separable:false with a large overlap band). The pin is set at
+# the left tail of pure off-topic probes whose fused score falls below every
+# answerable query's, which clears refusal_precision=1.0 and answer_recall=1.0
+# at refusal_recall≈0.2. That is the honest ceiling of a RETRIEVAL threshold on
+# this fused scale: the remaining refusal recall lives inside the overlap band —
+# near-miss / adjacent-domain probes whose fused score is indistinguishable from
+# a genuinely answerable query — and is a MODEL-policy matter (the
+# composed-envelope not_in_course refusal, REASON_NOT_IN_COURSE_MODEL). Do NOT
+# raise the threshold to catch them: refusal_precision collapses at the very
+# next sweep step, i.e. it fabricates refusals on answerable queries.
 #
-# The fused distributions are STILL NOT SEPARABLE at this scale — the calibration
-# artifact reports separable:false (overlap_fraction 0.951, min_gap -0.0031,
-# min_positive 0.029643 sitting just BELOW max_negative 0.032787). What the
-# larger probe set buys is a left tail of pure off-topic probes whose fused score
-# falls below every answerable query's: the recommended min_top_score=0.029643
-# clears refusal_precision=1.0 AND answer_recall=1.0, but only refusal_recall=0.2.
-# That 0.2 is the honest ceiling of a RETRIEVAL threshold on this fused scale:
-# this pin catches ONLY the pure off-topic tail (the 1-in-5 probe whose fused
-# score dips beneath the answerable floor). The remaining 0.8 of refusal recall
-# lives inside the overlap band — near-miss / adjacent-domain probes whose fused
-# score is indistinguishable from a genuinely answerable query — and is therefore
-# a MODEL-policy matter (the composed-envelope not_in_course refusal,
-# REASON_NOT_IN_COURSE_MODEL), NOT a retrieval-threshold matter. Pushing the
-# threshold up to catch them would fabricate refusals on answerable queries
-# (refusal_precision collapses to 0.83 at the very next sweep step; see the
-# artifact's overlap block + sweep). Refusal under-firing is the safe failure
-# direction this module is built around, so we pin at the precision-/recall-clean
-# boundary (0.029642 floor-rounded; the artifact's 0.029643 is the same raw
-# score half-up-rounded — see the BOUNDARY CORRECTION note at the pin) and
-# leave near-miss refusal to the model arm.
+# SINGLE-COURSE BASIS CAVEAT: the hybrid-rrf pin rests on one corpus, so the
+# cross-course MIN convention degenerates to that course's recommendation until
+# a second different-family course joins the calibration. The
+# reproduce-the-committed-verdict test anchors the numeric value to the on-disk
+# artifact, and the corpus-safe test re-checks the pin clears the rule on every
+# committed hybrid-rrf calibration discovered.
 #
-# SINGLE-COURSE BASIS CAVEAT (risk R4): this is a single-course, single-corpus
-# pin. The cross-course MIN-pin convention degenerates to one course's
-# recommendation until a second different-family course joins the calibration;
-# the tier-2 reproduce-the-committed-verdict test anchors the numeric value to
-# the on-disk artifact, and the corpus-safe test re-checks the pin clears the
-# rule on every committed hybrid-rrf calibration discovered.
-#
-# Measured pins:
-#   (semantic, sentence-transformers/all-MiniLM-L6-v2)  2026-06-09
-#       min_top_score=0.369377  refusal_precision=1.0  answer_recall=1.0
-#   (lexical, None)  2026-06-10
-#       min_top_score=4.455352  refusal_precision=1.0  answer_recall=1.0
-#   (semantic, BAAI/bge-large-en-v1.5)  calibrated on 3 local course archives,
-#       2026-06-10; pin = MIN of the per-course recommendations (see above)
-#       min_top_score=0.653916  refusal_precision=1.0  answer_recall=1.0
-#   (hybrid-rrf, BAAI/bge-large-en-v1.5)  single-course union-corpus calibration
-#       basis, 2026-06-12 (77q/34-probe gold v1.1, bge-large + 7B); separable:false
-#       (overlap_fraction 0.951, min_gap -0.0031)
-#       min_top_score=0.029642  refusal_precision=1.0  answer_recall=1.0
-#       (artifact shows 0.029643 — the pre-correction half-up-rounded emission
-#       of the same raw boundary score; see the BOUNDARY CORRECTION note at
-#       the pin below)
-#       refusal_recall=0.2 (pure off-topic tail only — near-miss refusal is
-#       model-policy-owned; see the overlap block above)
+# Measured pins (all at refusal_precision=1.0, answer_recall=1.0):
+#   (semantic, sentence-transformers/all-MiniLM-L6-v2)  min_top_score=0.369377
+#   (lexical, None)                                     min_top_score=4.455352
+#   (semantic, BAAI/bge-large-en-v1.5)                  min_top_score=0.653916
+#       pin = MIN of the per-course recommendations (see above)
+#   (hybrid-rrf, BAAI/bge-large-en-v1.5)                min_top_score=0.029642
+#       separable:false; refusal_recall≈0.2 — pure off-topic tail only, with
+#       near-miss refusal owned by the model arm (see the overlap block above).
+#       The artifact records 0.029643, the half-up-rounded emission of the same
+#       raw boundary score; see the BOUNDARY CORRECTION note at the pin below.
 PINNED_POLICIES: Dict[tuple, RefusalPolicy] = {
     ("semantic", "sentence-transformers/all-MiniLM-L6-v2"): RefusalPolicy(
         engine="semantic",
@@ -365,20 +336,17 @@ PINNED_POLICIES: Dict[tuple, RefusalPolicy] = {
         policy_version=POLICY_VERSION_PINNED,
         embedding_model_id=None,
     ),
-    # hybrid-rrf pin: min_top_score is the precision-/recall-clean recommendation
-    # from the single-course union-corpus calibration (2026-06-12). score_floor +
-    # count signal inherit the RRF-scale v0 default the sweep was measured against
-    # (the calibration only re-pins min_top_score). refusal_recall=0.2 at this
-    # threshold — pure off-topic tail only; see the comment block above.
+    # hybrid-rrf pin: min_top_score is the precision-/recall-clean sweep
+    # recommendation. score_floor + count signal inherit the RRF-scale v0
+    # default the sweep was measured against (the calibration only re-pins
+    # min_top_score). refusal_recall≈0.2 at this threshold — pure off-topic tail
+    # only; see the comment block above.
     #
-    # BOUNDARY CORRECTION (2026-06-12, same day): the calibrator originally
-    # emitted the recommendation half-up-rounded (round(t, 6) = 0.029643),
-    # which sits ABOVE the raw boundary positive (0.0296425457…) the sweep had
-    # counted as answered — the pinned policy refused that gold question at
-    # runtime (caught by the first scorer-v2 eval run, answer_rate dip). The
-    # pin is corrected to the floor-rounded emission (0.029642 <= raw t); the
-    # calibrator now floor-rounds all sweep thresholds (see _sweep_thresholds)
-    # so future re-pins can't reintroduce the clip. Sweep semantics unchanged.
+    # BOUNDARY: this value is FLOOR-rounded, not half-up-rounded. A half-up
+    # emission can land ABOVE the raw boundary positive the sweep counted as
+    # answered, so the pinned policy (``score >= min_top_score``) would refuse
+    # that very question at runtime. ``_sweep_thresholds`` floor-rounds every
+    # emitted threshold to keep re-pins clip-free.
     ("hybrid-rrf", "BAAI/bge-large-en-v1.5"): RefusalPolicy(
         engine="hybrid-rrf",
         min_top_score=0.029642,
@@ -424,7 +392,7 @@ def resolve_policy(
 
 
 # --------------------------------------------------------------------------- #
-# Verdict logic — § D4
+# Verdict logic
 # --------------------------------------------------------------------------- #
 
 
@@ -477,11 +445,11 @@ def evaluate_confidence(
 def should_refuse(
     retrieval_results: Sequence[Any], policy: RefusalPolicy
 ) -> RefusalVerdict:
-    """The refusal-shaped entry point the wave-B pipeline + WS4 consume.
+    """The refusal-shaped entry point the answer pipeline consumes.
 
     Returns :class:`RefusalVerdict`: ``refuse=True`` with
     ``reason_code=REASON_LOW_CONFIDENCE`` when confidence fails, else
-    ``refuse=False`` with ``reason_code=None``. Display copy is WS4's.
+    ``refuse=False`` with ``reason_code=None``. Display copy is the caller's.
     """
     verdict = evaluate_confidence(retrieval_results, policy)
     refuse = not verdict.confident
@@ -496,7 +464,7 @@ def should_refuse(
 
 
 # --------------------------------------------------------------------------- #
-# Calibration (measure-then-pin) — § D4.2
+# Calibration (measure-then-pin)
 # --------------------------------------------------------------------------- #
 
 CALIBRATION_SCHEMA_VERSION = "1.0"
@@ -543,7 +511,7 @@ def _overlap_stats(
     positives: Sequence[float], negatives: Sequence[float]
 ) -> Dict[str, Any]:
     """Distribution-overlap statistics between the answerable (positive) and
-    unanswerable (negative) top-score distributions (plan risk R8).
+    unanswerable (negative) top-score distributions.
 
     A clean (separable) calibration has ``min_positive > max_negative``
     (``min_gap > 0``, ``overlap_fraction == 0``): SOME threshold perfectly
@@ -668,9 +636,8 @@ def _sweep_thresholds(
                 # numbers above were measured with the RAW candidate t under
                 # ``score >= t``. Emitting round(t, 6) can round UP past a
                 # boundary positive whose score IS t, so the runtime pin
-                # (``score >= emitted``) refuses the very question the sweep
-                # counted as answered (observed: gold q at 0.0296425457…
-                # clipped by an emitted 0.029643). floor(t·1e6)/1e6 keeps
+                # (``score >= emitted``) would refuse the very question the
+                # sweep counted as answered. floor(t·1e6)/1e6 keeps
                 # emitted <= t, so everything the sweep answered still answers;
                 # the only drift is a sub-1e-6 band of negatives answering —
                 # refusal under-firing, the module's safe failure direction.
@@ -774,7 +741,7 @@ def _utcnow_iso() -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Live-retriever calibration driver + __main__ — § D4.2
+# Live-retriever calibration driver + __main__
 # --------------------------------------------------------------------------- #
 
 RETRIEVAL_EVAL_SUBDIR = "retrieval_eval"
@@ -863,11 +830,11 @@ def calibrate(
         pos_scores.append(ts)
         pos_n_above.append(na)
 
-    # Negatives: prefer the v1.1 per-engine probe dry_runs[] when they cover
-    # this engine (engine-aware evidence recorded against the live index at
-    # authoring), else re-run retrieval on the probe text. Using the recorded
-    # dry-runs lets a sweep include hybrid-rrf without re-querying, and keeps
-    # the 'unanswerable' claim engine-aware (plan §4).
+    # Negatives: prefer the per-engine probe dry_runs[] when they cover this
+    # engine (evidence recorded against the live index at authoring time), else
+    # re-run retrieval on the probe text. Using the recorded dry-runs lets a
+    # sweep include hybrid-rrf without re-querying and keeps the 'unanswerable'
+    # claim engine-aware.
     neg_scores, neg_n_above = negatives_from_probe_dry_runs(probes, engine)
     if not neg_scores:
         for p in (probes or {}).get("probes", []):
@@ -908,7 +875,7 @@ def negatives_from_probe_dry_runs(
     probes_doc: Optional[Dict[str, Any]], engine: str
 ) -> Tuple[List[float], List[int]]:
     """Extract the (top_score, n_above_floor-proxy) negative arm for ONE engine
-    from a v1.1 probe set's per-engine ``dry_runs[]`` (plan §4).
+    from a probe set's per-engine ``dry_runs[]``.
 
     For each probe, prefer the ``dry_runs[]`` entry whose ``engine`` matches;
     fall back to the legacy single ``dry_run`` when (a) the probe has no

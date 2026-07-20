@@ -171,12 +171,11 @@ workflows:
           # target: verb-triple mismatch-rate measured on >=2 corpora with
           # manual FP audit; the per-pair verb_triple_status on every alignment
           # entry makes the audit replayable.
-          # MEASURED (flip-wave-2): pooled verb-triple/anchored-rubric/triangle
-          # fire-rate 0.32, worst-corpus 0.51 across 2 distinct internal
-          # calibration corpora — OUT of the low band, so the fast-flip did NOT
-          # clear. Blocker is now a generator-side alignment fix (mis-aligned
-          # blocks are genuinely being emitted), NOT a missing corpus/harness;
-          # re-measure after that fix. TODO(calibration) marker retained.
+          # Measured fire-rate is OUT of the low band, so the fast-flip has not
+          # cleared. The blocker is a generator-side alignment fix (mis-aligned
+          # blocks are genuinely being emitted), NOT a missing corpus or
+          # harness; re-measure after that fix. TODO(calibration) marker
+          # retained.
           - gate_id: outline_anchored_rubric
             validator: lib.validators.alignment.anchored_rubric.AnchoredRubricValidator
             severity: warning
@@ -212,12 +211,8 @@ workflows:
           # slots, the (verb·level·knowledge-type) Bloom chip, and the rendered
           # interaction/feedback HTML are all rewrite-tier emit), so against
           # outline-tier dict blocks they blanket-fail every block as a false
-          # positive (a real calibration run, 2026-06-24: udl_coverage
-          # 50/50 UDL_SINGLE_REPRESENTATION, qa_checklist 50/50 QA3_NO_BLOOM_TAG,
-          # block_quality_rubric 2664, interaction_feedback 2146,
-          # anatomy_slot_presence 74). They remain wired at
-          # post_rewrite_validation, where the rendered fields exist and the
-          # signal is real.
+          # positive. They remain wired at post_rewrite_validation, where the
+          # rendered fields exist and the signal is real.
           # IB6.4 cognitive-load: reads the BODY text (content), present at
           # outline tier → meaningful pre-render. No-op when the keystone flag
           # ED4ALL_BLOCK_QUALITY_RUBRIC is unset (byte-stable). Warning-day-1;
@@ -423,21 +418,14 @@ workflows:
           # (calibration-validated): computes + gates on block-prose entailment.
           - gate_id: block_prose_entailment
             validator: lib.validators.block_prose_entailment.BlockProseEntailmentValidator
-            # OWNER RECALIBRATION 2026-07-19 (alg-glm-02 production sweep over
-            # 470 scored blocks): the entailment-rate signal is NOT
-            # generation-calibrated for pedagogical prose — floor-adjacent
-            # "unsupported" verdicts (entailment 0.50-0.59, contradiction
-            # ~0.13) were eyeball-verified as factually-correct pedagogical
-            # distillations (the NLI abstraction-strictness FP class; the
-            # validator's own docstring says it ships shadow until
-            # calibrated). Sweep: even at claim-floor 0.40 a 53-117-block
-            # low-entailment tail remains, while CONTRADICTED blocks — the
-            # fabrication-shaped signal — hold constant at 7 across every
-            # floor. So: severity critical->warning until the
-            # pedagogy-entailment classifier (teacher-label plan) or post-D2
-            # calibration justifies the flip; floors lowered to admit the
-            # verified-correct distillation band; contradiction knobs
-            # UNCHANGED (the hard signal, surfaced loudly in reports).
+            # WARNING, not critical: the entailment-rate signal is not
+            # calibrated for pedagogical prose. Floor-adjacent "unsupported"
+            # verdicts are dominated by factually-correct pedagogical
+            # distillations that NLI rejects for abstraction strictness, and
+            # lowering the floor does not clear that tail. CONTRADICTION is the
+            # fabrication-shaped signal and is floor-insensitive, so its knobs
+            # stay strict and it remains the hard signal in reports. Promote to
+            # critical only behind a pedagogy-aware entailment classifier.
             severity: warning
             threshold:
               max_critical_issues: 0
@@ -455,18 +443,15 @@ workflows:
 
           # Numeric-literal grounding — the fabrication control for NUMERIC /
           # math content that the number-blind NLI gate cannot provide.
-          # Established this session (content-block-quality iters 5/5b):
-          # DeBERTa-v3-mnli scores a fabricated worked-example input (-40/88,
-          # present in ZERO real chunks) ABOVE every grounded math claim, and
+          # DeBERTa-v3-mnli scores a fabricated worked-example input (present in
+          # ZERO real chunks) ABOVE every grounded math claim, and
           # groundedness._is_computational EXEMPTS such claims, so
           # block_prose_entailment gives no numeric fabrication protection.
           # This gate cross-checks each prose fraction's num/denom pair against
-          # the cited source under OCR-tolerant containment. Day-1 SHADOW
-          # (warning): measured clean separation on a real full-book
-          # corpus (grounded blocks 0% source-absent; fabrication blocks flag).
+          # the cited source under OCR-tolerant containment.
           - gate_id: numeric_literal_grounding
             validator: lib.validators.numeric_literal_grounding.NumericLiteralGroundingValidator
-            severity: warning                  # 2026-07-09 RE-CALIBRATED critical->warning: first full 7B-authored vendor-HTML build (659 blocks, per-block outline content) failed 49% of blocks (score 0.51) on min_absent_fractions=1 while NLI block_prose_entailment passed 0.94 — novel worked examples inherently mint practice numbers absent from source. Keep measuring; RE-PROMOTE once a symbolic step-verification gate (sympy-check of worked-example derivations) can separate wrong math from novel-but-correct math.
+            severity: warning                  # WARNING, not critical: novel worked examples inherently mint practice numbers absent from source, so min_absent_fractions=1 fails roughly half of authored blocks that NLI entailment passes. Promote only behind a symbolic step-verification gate (sympy-checking worked-example derivations), which can separate wrong math from novel-but-correct math.
             threshold:
               max_critical_issues: 0
             behavior:
@@ -624,12 +609,11 @@ workflows:
           # content-bearing block + a per-week engagement/autonomy floor;
           # QA-13 / D7) on the rewrite-tier Block batch. Deterministic (derives
           # on read); runs warning-day-1 regardless of ED4ALL_BLOCK_A11Y.
-          # Flipped critical (calibration-validated, flip-wave-2): UDL_SINGLE_
-          # REPRESENTATION measured pooled fire-rate 0.0000 across 2 distinct
-          # internal calibration corpora (both in the [0.0, 0.10] band; the
-          # harness no-op audit confirmed the gate was genuinely exercised on
-          # both, not a flag-off skip). Still warning-day-1 at the validator
-          # (returns passed=True), so clean/warning-only runs never block.
+          # Critical (calibration-validated): UDL_SINGLE_REPRESENTATION's pooled
+          # fire-rate sits in the [0.0, 0.10] flip band across >=2 distinct
+          # corpora, genuinely exercised (not a flag-off skip). The validator
+          # itself is still warning-day-1 (returns passed=True), so
+          # clean/warning-only runs never block.
           - gate_id: udl_coverage
             validator: lib.validators.udl_coverage.UdlCoverageValidator
             severity: critical
@@ -643,17 +627,14 @@ workflows:
           # IB6 — eight-dimension block-quality rubric surface. All five gates
           # no-op (passed=True, info issue) when the IB6 keystone flag
           # ED4ALL_BLOCK_QUALITY_RUBRIC is unset, so default-off runs are
-          # byte-stable. Flip status (flip-wave-2 measurement, 2 distinct
-          # internal calibration corpora): anatomy_slot_presence + block_quality_
-          # rubric + interaction_feedback are calibration-validated critical (in
-          # band, no no-op inflation per the harness no-op audit). The remaining
-          # two STAY warning — they are OUT OF the [0.0, 0.10] band, so the
-          # blocker is a manual FP audit / generator-side fix, NOT a missing
-          # corpus: block_cognitive_load (IB6.4) pooled fire-rate 0.31, worst-
-          # corpus 0.32; qa_checklist (IB6.7) pooled 0.28, worst 0.31. Both
-          # persistently fire on real content (the anchored 0-3 mean floors would
-          # block early runs); re-measure after the generator-side density fixes
-          # (see plans/finegrain/ib6-*.md §4) before any flip.
+          # byte-stable. Flip status: anatomy_slot_presence, block_quality_rubric
+          # and interaction_feedback are calibration-validated critical (in the
+          # [0.0, 0.10] band, no no-op inflation). block_cognitive_load (IB6.4)
+          # and qa_checklist (IB6.7) STAY warning — they sit well OUT of that
+          # band, so the blocker is a manual FP audit / generator-side density
+          # fix, NOT a missing corpus. Both persistently fire on real content,
+          # so flipping them now would block early runs on the anchored 0-3
+          # mean floors.
           - gate_id: block_cognitive_load
             validator: lib.validators.content.BlockCognitiveLoadValidator
             severity: warning
@@ -2803,12 +2784,8 @@ workflows:
           # slots, the (verb·level·knowledge-type) Bloom chip, and the rendered
           # interaction/feedback HTML are all rewrite-tier emit), so against
           # outline-tier dict blocks they blanket-fail every block as a false
-          # positive (a real calibration run, 2026-06-24: udl_coverage
-          # 50/50 UDL_SINGLE_REPRESENTATION, qa_checklist 50/50 QA3_NO_BLOOM_TAG,
-          # block_quality_rubric 2664, interaction_feedback 2146,
-          # anatomy_slot_presence 74). They remain wired at
-          # post_rewrite_validation, where the rendered fields exist and the
-          # signal is real.
+          # positive. They remain wired at post_rewrite_validation, where the
+          # rendered fields exist and the signal is real.
           # IB6.4 cognitive-load: reads the BODY text (content), present at
           # outline tier → meaningful pre-render. No-op when the keystone flag
           # ED4ALL_BLOCK_QUALITY_RUBRIC is unset (byte-stable). Warning-day-1;
@@ -3418,21 +3395,14 @@ workflows:
           # floor + the source_chunks builder).
           - gate_id: block_prose_entailment
             validator: lib.validators.block_prose_entailment.BlockProseEntailmentValidator
-            # OWNER RECALIBRATION 2026-07-19 (alg-glm-02 production sweep over
-            # 470 scored blocks): the entailment-rate signal is NOT
-            # generation-calibrated for pedagogical prose — floor-adjacent
-            # "unsupported" verdicts (entailment 0.50-0.59, contradiction
-            # ~0.13) were eyeball-verified as factually-correct pedagogical
-            # distillations (the NLI abstraction-strictness FP class; the
-            # validator's own docstring says it ships shadow until
-            # calibrated). Sweep: even at claim-floor 0.40 a 53-117-block
-            # low-entailment tail remains, while CONTRADICTED blocks — the
-            # fabrication-shaped signal — hold constant at 7 across every
-            # floor. So: severity critical->warning until the
-            # pedagogy-entailment classifier (teacher-label plan) or post-D2
-            # calibration justifies the flip; floors lowered to admit the
-            # verified-correct distillation band; contradiction knobs
-            # UNCHANGED (the hard signal, surfaced loudly in reports).
+            # WARNING, not critical: the entailment-rate signal is not
+            # calibrated for pedagogical prose. Floor-adjacent "unsupported"
+            # verdicts are dominated by factually-correct pedagogical
+            # distillations that NLI rejects for abstraction strictness, and
+            # lowering the floor does not clear that tail. CONTRADICTION is the
+            # fabrication-shaped signal and is floor-insensitive, so its knobs
+            # stay strict and it remains the hard signal in reports. Promote to
+            # critical only behind a pedagogy-aware entailment classifier.
             severity: warning
             threshold:
               max_critical_issues: 0
@@ -3449,18 +3419,16 @@ workflows:
             description: "W4 — full-block-prose NLI entailment vs cited chunks (windowed scorer-v2). WARNING pending pedagogy-entailment calibration (owner recal 2026-07-19); contradiction remains the hard signal."
 
           # Numeric-literal grounding — the fabrication control for NUMERIC /
-          # math content that the number-blind NLI gate cannot provide
-          # (content-block-quality iters 5/5b). DeBERTa-v3-mnli scores a
-          # fabricated worked-example input ABOVE every grounded math claim,
-          # and groundedness._is_computational EXEMPTS such claims, so
-          # block_prose_entailment gives no numeric fabrication protection.
-          # This gate cross-checks each prose fraction's num/denom pair against
-          # the cited source under OCR-tolerant containment. Measured clean
-          # separation on a real full-book corpus (grounded blocks 0%
-          # source-absent; fabrication blocks flag).
+          # math content that the number-blind NLI gate cannot provide.
+          # DeBERTa-v3-mnli scores a fabricated worked-example input ABOVE
+          # every grounded math claim, and groundedness._is_computational
+          # EXEMPTS such claims, so block_prose_entailment gives no numeric
+          # fabrication protection. This gate cross-checks each prose
+          # fraction's num/denom pair against the cited source under
+          # OCR-tolerant containment.
           - gate_id: numeric_literal_grounding
             validator: lib.validators.numeric_literal_grounding.NumericLiteralGroundingValidator
-            severity: warning                  # 2026-07-09 RE-CALIBRATED critical->warning: first full 7B-authored vendor-HTML build (659 blocks, per-block outline content) failed 49% of blocks (score 0.51) on min_absent_fractions=1 while NLI block_prose_entailment passed 0.94 — novel worked examples inherently mint practice numbers absent from source. Keep measuring; RE-PROMOTE once a symbolic step-verification gate (sympy-check of worked-example derivations) can separate wrong math from novel-but-correct math.
+            severity: warning                  # WARNING, not critical: novel worked examples inherently mint practice numbers absent from source, so min_absent_fractions=1 fails roughly half of authored blocks that NLI entailment passes. Promote only behind a symbolic step-verification gate (sympy-checking worked-example derivations), which can separate wrong math from novel-but-correct math.
             threshold:
               max_critical_issues: 0
             behavior:
@@ -3850,12 +3818,11 @@ workflows:
           # content-bearing block + a per-week engagement/autonomy floor;
           # QA-13 / D7) on the rewrite-tier Block batch. Deterministic (derives
           # on read); runs warning-day-1 regardless of ED4ALL_BLOCK_A11Y.
-          # Flipped critical (calibration-validated, flip-wave-2): UDL_SINGLE_
-          # REPRESENTATION measured pooled fire-rate 0.0000 across 2 distinct
-          # internal calibration corpora (both in the [0.0, 0.10] band; the
-          # harness no-op audit confirmed the gate was genuinely exercised on
-          # both, not a flag-off skip). Still warning-day-1 at the validator
-          # (returns passed=True), so clean/warning-only runs never block.
+          # Critical (calibration-validated): UDL_SINGLE_REPRESENTATION's pooled
+          # fire-rate sits in the [0.0, 0.10] flip band across >=2 distinct
+          # corpora, genuinely exercised (not a flag-off skip). The validator
+          # itself is still warning-day-1 (returns passed=True), so
+          # clean/warning-only runs never block.
           - gate_id: udl_coverage
             validator: lib.validators.udl_coverage.UdlCoverageValidator
             severity: critical
@@ -3869,17 +3836,14 @@ workflows:
           # IB6 — eight-dimension block-quality rubric surface. All five gates
           # no-op (passed=True, info issue) when the IB6 keystone flag
           # ED4ALL_BLOCK_QUALITY_RUBRIC is unset, so default-off runs are
-          # byte-stable. Flip status (flip-wave-2 measurement, 2 distinct
-          # internal calibration corpora): anatomy_slot_presence + block_quality_
-          # rubric + interaction_feedback are calibration-validated critical (in
-          # band, no no-op inflation per the harness no-op audit). The remaining
-          # two STAY warning — they are OUT OF the [0.0, 0.10] band, so the
-          # blocker is a manual FP audit / generator-side fix, NOT a missing
-          # corpus: block_cognitive_load (IB6.4) pooled fire-rate 0.31, worst-
-          # corpus 0.32; qa_checklist (IB6.7) pooled 0.28, worst 0.31. Both
-          # persistently fire on real content (the anchored 0-3 mean floors would
-          # block early runs); re-measure after the generator-side density fixes
-          # (see plans/finegrain/ib6-*.md §4) before any flip.
+          # byte-stable. Flip status: anatomy_slot_presence, block_quality_rubric
+          # and interaction_feedback are calibration-validated critical (in the
+          # [0.0, 0.10] band, no no-op inflation). block_cognitive_load (IB6.4)
+          # and qa_checklist (IB6.7) STAY warning — they sit well OUT of that
+          # band, so the blocker is a manual FP audit / generator-side density
+          # fix, NOT a missing corpus. Both persistently fire on real content,
+          # so flipping them now would block early runs on the anchored 0-3
+          # mean floors.
           - gate_id: block_cognitive_load
             validator: lib.validators.content.BlockCognitiveLoadValidator
             severity: warning

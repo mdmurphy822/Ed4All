@@ -1897,11 +1897,11 @@ def _apply_alignment_floors(
        ``OBJECTIVE_NO_ACTIVITY``), and re-page an over-ceiling exposition onto a
        page the retrieval floor never inspected (re-firing
        ``MODULE_NO_RETRIEVAL``). Running the floors LAST means no IB7 pass can
-       touch the injected blocks. The floors place blocks in gate-valid
-       positions BY CONSTRUCTION (retrieval after the page's content; activity +
-       assessment on their default pages), so they do not need climb/spacing to
-       order them — superseding the earlier "before IB7 so climb/spacing order
-       them" comment, which the review showed is unsafe.
+       touch the injected blocks. Running them BEFORE the IB7 passes so that
+       climb/spacing order the injected blocks is NOT a safe alternative, for
+       exactly that reason. The floors place blocks in gate-valid positions BY
+       CONSTRUCTION (retrieval after the page's content; activity + assessment
+       on their default pages), so they do not need climb/spacing to order them.
 
     2. **Retrieval BEFORE triangle** — the retrieval floor may inject a
        ``self_check_question`` (an ``_TRIANGLE_ACTIVITY_TYPES`` member) onto a
@@ -2135,10 +2135,10 @@ def _apply_page_floors(
 # The I6 block types (``table`` / ``acronym`` / ``key_idea``) are seated as
 # CONTENT-page floor fillers (``_PAGE_TYPE_FLOOR_FILLERS["content"]``), but the
 # content page has NO floor (``_PAGE_TYPE_FLOORS["content"] == 0``), so the
-# top-up never deploys them — deployment relied entirely on the large seat CHOOSING
-# them (it chose them 0× across 7 weeks in the live run). This pass makes the
-# three types deterministically deploy whenever their content SHAPE is present
-# in the TO's source, independent of large-seat judgment:
+# top-up never deploys them, which leaves deployment relying entirely on the
+# large seat CHOOSING them — a seat that in practice does not. This pass makes
+# the three types deterministically deploy whenever their content SHAPE is
+# present in the TO's source, independent of large-seat judgment:
 #
 #   * tabular source shape present + no ``table`` block        → inject one
 #   * acronym/mnemonic spelled out + no ``acronym`` block      → inject one

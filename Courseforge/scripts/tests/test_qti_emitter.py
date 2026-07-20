@@ -1,4 +1,4 @@
-"""W10 Phase 1 — tests for the QTI / discussion / assignment emitter.
+"""Tests for the QTI / discussion / assignment emitter.
 
 Keystone oracle: every emitted QTI assessment XML must ROUND-TRIP through the
 in-tree ``Trainforge/parsers/qti_parser.py::QTIParser.parse_string`` (parse it
@@ -128,7 +128,7 @@ def _numeric_fib_question() -> dict:
 
 
 def _non_numeric_fib_question() -> dict:
-    """A fill_in_blank whose answer is not canonical-numeric → §9.1 downgrade."""
+    """A fill_in_blank whose answer is not canonical-numeric → MC downgrade."""
     return {
         "question_id": "q-fib-005",
         "question_type": "fill_in_blank",
@@ -243,7 +243,7 @@ def test_numeric_fib_emitted_as_fib():
 
 
 def test_non_numeric_fib_downgrades_to_multiple_choice():
-    """Spec §9.1: a non-canonical-numeric fill-in downgrades to MC."""
+    """A non-canonical-numeric fill-in downgrades to MC."""
     q = _non_numeric_fib_question()
     item = question_to_qti_item(q)
     # The emitted item uses a response_lid (multiple choice), not response_str.
@@ -414,13 +414,14 @@ def test_accepts_dataclass_to_dict_input():
 
 
 # ---------------------------------------------------------------------------
-# Answer-key resolution ladder (assessment-tail fix 2026-07-19).
+# Answer-key resolution ladder.
 #
 # The production AssessmentGenerator marks MCQ keys via per-choice
 # ``is_correct`` flags and leaves ``correct_answer`` unset, and wraps choice
-# texts in ``<p>…</p>``. The pre-fix emitter resolved keys ONLY from
-# ``correct_answer`` (exact id/text match), so every production MCQ emitted
-# ungraded (QTI_NO_ANSWER_KEY on all 50 alg-glm-02 quiz items).
+# texts in ``<p>…</p>``. Resolving the key ONLY from ``correct_answer`` (exact
+# id/text match) therefore emits every production MCQ ungraded
+# (QTI_NO_ANSWER_KEY); the ladder must also read the flags and match bare text
+# against HTML-wrapped choice text.
 # ---------------------------------------------------------------------------
 
 def _generator_shaped_mcq(qid: str = "q-gen-001") -> dict:
@@ -508,8 +509,7 @@ def test_generator_shaped_quiz_passes_qti_well_formed_gate():
 
 # ===========================================================================
 # ITEMFEEDBACK — per-distractor misconception notes + worked-solution feedback
-# (assessment-quality overhaul). Default ON; kill-switch
-# ED4ALL_ASSESSMENT_ITEMFEEDBACK=0.
+# Default ON; kill-switch ED4ALL_ASSESSMENT_ITEMFEEDBACK=0.
 # ===========================================================================
 import xml.etree.ElementTree as _ET  # noqa: E402
 

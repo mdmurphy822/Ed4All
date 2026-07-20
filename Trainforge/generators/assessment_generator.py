@@ -30,10 +30,10 @@ if str(PROJECT_ROOT) not in sys.path:
 if TYPE_CHECKING:
     from lib.decision_capture import DecisionCapture
 
-# Runtime import for the MLFeatures dataclass used by Worker W1's
+# Runtime import for the MLFeatures dataclass used by the
 # assessment_template_skip decision-capture events. Best-effort: when
-# lib.decision_capture isn't importable (minimal test harness), we
-# fall back to None so the runtime keeps working without the helper.
+# lib.decision_capture isn't importable (minimal test harness), fall back to
+# None so the runtime keeps working without the helper.
 try:
     from lib.decision_capture import MLFeatures  # type: ignore
 except Exception:  # pragma: no cover - defensive fallback
@@ -41,13 +41,11 @@ except Exception:  # pragma: no cover - defensive fallback
 
 logger = logging.getLogger(__name__)
 
-# GPT Feedback (May 12) item 5 — observable cognitive task-type axis on the
-# assessment-generator surface, gated behind TRAINFORGE_COGNITIVE_TASK_TYPE.
-# Default unset -> the QuestionData.cognitive_task_type field stays None and
-# to_dict() omits it, so legacy assessment output is byte-identical. When the
-# flag is truthy, each emitted question is tagged with the task verb detected
-# in its stem (mirrors the always-on chunk-emit precedent at
-# Trainforge/process_course.py). Standard TRAINFORGE_* truthy-token parse.
+# Observable cognitive task-type axis, gated behind
+# TRAINFORGE_COGNITIVE_TASK_TYPE. Default unset -> the
+# QuestionData.cognitive_task_type field stays None and to_dict() omits it, so
+# legacy assessment output is byte-identical. When the flag is truthy, each
+# emitted question is tagged with the task verb detected in its stem.
 _COGNITIVE_TASK_TYPE_ENV = "TRAINFORGE_COGNITIVE_TASK_TYPE"
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 
@@ -58,7 +56,7 @@ def _cognitive_task_type_enabled() -> bool:
 
 
 # --------------------------------------------------------------------------- #
-# Assessment-quality overhaul — item-writing rules at generation
+# Item-writing rules at generation
 # --------------------------------------------------------------------------- #
 #
 # Rodriguez's meta-analysis: a 3-option MC (1 key + 2 functional distractors)
@@ -87,7 +85,7 @@ def _resolve_option_count() -> int:
 
 
 # --------------------------------------------------------------------------- #
-# A1 — bounded LLM apply-arm (flag-gated, default OFF).
+# Bounded LLM apply-arm (flag-gated, default OFF).
 #
 # Route apply word-problems + per-distractor misconception prose through the
 # in-tree ``AssessmentGeneratorProvider.generate_assessments`` (local registry
@@ -108,9 +106,8 @@ _APPLY_ARM_MAX_ENV = "ED4ALL_ASSESSMENT_APPLY_ARM_MAX"
 #: Providers the apply-arm refuses (ToS-restricted for the assessment corpus,
 #: which feeds the SLM training surface — license-clean local seats only).
 _APPLY_ARM_BARRED_PROVIDERS = frozenset({"anthropic", "claude_session"})
-#: item_subtype for an LLM-drafted apply word-problem; its structural ceiling is
-#: ``apply`` (the arm is designed to genuinely assess apply — a higher CLAIM is
-#: clamped here when the trivote can't back it).
+#: item_subtype for an LLM-drafted apply word-problem. Its structural ceiling
+#: is ``apply``; a higher CLAIM is clamped when the trivote can't back it.
 _APPLY_ARM_SUBTYPE = "apply_word_problem"
 
 
@@ -139,7 +136,7 @@ def _apply_arm_provider_allowed(provider_name: str, roster: Any = None) -> bool:
     Refuses the ToS-restricted Anthropic seats outright. When a ``roster``
     (endpoint-registry-shaped mapping of ``provider -> {license verdict ...}``)
     is supplied AND carries a ``verdict`` of ``barred`` for this provider, the
-    seat is refused too (S6 multi-teacher roster license flow-down). Absent a
+    seat is refused too (multi-teacher roster license flow-down). Absent a
     roster / license field, a non-Anthropic local seat is allowed.
     """
     name = (provider_name or "").strip().lower()
@@ -189,8 +186,7 @@ def _is_banned_option(text: str) -> bool:
 #: plausibility). Each transform is a symbolic/text rewrite of a correct
 #: worked-solution step; the tuple is (error_name, callable, human_note). The
 #: callable returns the perturbed text OR None when it does not apply (so a
-#: step that carries no matching structure is skipped, never mangled). These
-#: replace the always/never injection for distractor synthesis.
+#: step that carries no matching structure is skipped, never mangled).
 def _t_sign_drop(text: str):
     """Drop a leading unary minus / flip the first ``- N`` term to ``+ N``.
 
@@ -287,8 +283,8 @@ _SUBTYPE_BLOOM_CEILING: Dict[str, str] = {
     "two_tier_answer": "analyze",
     "two_tier_reason": "analyze",
     "error_analysis": "analyze",
-    # A1 — LLM-drafted apply word-problem: genuinely assesses apply, so a
-    # higher CLAIM (analyze+) that the trivote can't back clamps down to here.
+    # LLM-drafted apply word-problem: genuinely assesses apply, so a higher
+    # CLAIM (analyze+) that the trivote can't back clamps down to here.
     "apply_word_problem": "apply",
 }
 
@@ -316,7 +312,7 @@ def _clamp_bloom(bloom_level: str, item_subtype: Optional[str]) -> str:
 # Deterministic diversified-tier target mix (fractions sum to ~0.90; classic
 # single-answer MC fills the remainder). Consumed by the mix PLANNER, which
 # turns a question_count into a deterministic, reproducible list of item
-# subtypes. Percentages per the approved plan.
+# subtypes.
 # --------------------------------------------------------------------------- #
 _TARGET_MIX = (
     ("mc_multiple_response", 0.12),
@@ -442,9 +438,8 @@ except ImportError:
     LEAK_CHECKER_AVAILABLE = False
 
 # Source of truth for the verb lists: schemas/taxonomies/bloom_verbs.json
-# via lib.ontology.bloom. Migrated in Wave 1.2 / Worker H (REC-BL-01).
-# TODO(wave-future): migrate patterns + question_types to taxonomy schemas
-# (only the verb portion is loaded from the canonical taxonomy today).
+# via lib.ontology.bloom. Only the verb portion is loaded from the canonical
+# taxonomy; patterns + question_types below are still local.
 from lib.ontology.bloom import get_verbs_list as _get_canonical_verbs_list  # noqa: E402
 
 _CANONICAL_VERBS = _get_canonical_verbs_list()
@@ -499,20 +494,18 @@ class QuestionData:
     feedback: Optional[str] = None
     source_chunks: List[str] = field(default_factory=list)
     generation_rationale: Optional[str] = None
-    # GPT Feedback v2 Wave 1 / W1.A — observed Bloom level as classified
-    # by the BERT ensemble + boolean alignment signal (observed ==
-    # declared). Both stay default ``None`` until the Wave 2 classifier
-    # wires in. Round-tripped unconditionally through to_dict() — None is
-    # an acceptable shape for a not-yet-classified question.
+    # Observed Bloom level as classified by the BERT ensemble + boolean
+    # alignment signal (observed == declared). Round-tripped unconditionally
+    # through to_dict() — None is an acceptable shape for a not-yet-classified
+    # question.
     observed_bloom_level: Optional[str] = None
     bloom_alignment: Optional[bool] = None
-    # GPT Feedback (May 12) item 5 — observable cognitive task verb
-    # (classify / compute / debug / critique / ...), orthogonal to
-    # bloom_level. Populated only when TRAINFORGE_COGNITIVE_TASK_TYPE is on
-    # AND the question stem carries a canonical task verb; otherwise stays
-    # None and is OMITTED from to_dict() so legacy output is byte-identical.
+    # Observable cognitive task verb (classify / compute / debug / critique /
+    # ...), orthogonal to bloom_level. Populated only when
+    # TRAINFORGE_COGNITIVE_TASK_TYPE is on AND the question stem carries a
+    # canonical task verb; otherwise stays None and is OMITTED from to_dict()
+    # so legacy output is byte-identical.
     cognitive_task_type: Optional[str] = None
-    # Assessment-quality overhaul (Phase 2 deterministic diversified tier) —
     # RESPONSE CARDINALITY + pedagogy discriminator. All three are additive +
     # OPTIONAL: a legacy single-answer item leaves them at their default and
     # to_dict() OMITS them, so the pre-feature serialized shape is
@@ -583,11 +576,11 @@ class QuestionData:
 class SkippedItem:
     """A question generation attempt that was skipped (no placeholder emitted).
 
-    Worker W1: when source_chunks is missing or content extraction yields
-    nothing usable for the requested question type, the generator emits a
-    SkippedItem instead of the prior deterministic-template placeholder.
-    Downstream consumers (Trainforge synthesis, training data export)
-    filter these out rather than ingest placeholders.
+    When source_chunks is missing or content extraction yields nothing usable
+    for the requested question type, the generator emits a SkippedItem rather
+    than a deterministic-template placeholder — placeholder strings shipped
+    into the training corpus poison it. Downstream consumers (Trainforge
+    synthesis, training data export) filter these out.
     """
     question_id: str
     question_type: str
@@ -619,13 +612,10 @@ class AssessmentData:
     skipped_items: List[SkippedItem] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
-        # W3.H sub-task H4: build the canonical source_coverage block
-        # for the assessment-items arrow. items_attempted = questions
-        # + skipped_items (every slot the generator tried to fill);
-        # items_emitted = len(questions). Drop reasons pull from the
-        # SkippedItem.reason field (existing post-W2.D enum:
-        # ``no_source_chunks``, ``no_extractable_content``,
-        # ``padded_distractor_fallback_eliminated``, ...).
+        # Canonical source_coverage block for the assessment-items arrow.
+        # items_attempted = questions + skipped_items (every slot the
+        # generator tried to fill); items_emitted = len(questions). Drop
+        # reasons pull from the SkippedItem.reason field.
         from lib.governance.source_coverage import build_source_coverage
         _drop_histogram: Dict[str, int] = {}
         for _s in self.skipped_items:
@@ -697,7 +687,7 @@ class AssessmentGenerator:
                  If provided and source_chunks is None during generation,
                  chunks will be retrieved automatically.
             assessment_provider: Optional pre-built ``AssessmentGeneratorProvider``
-                for the A1 apply-arm. Test seam — when None and the apply-arm
+                for the apply-arm. Test seam — when None and the apply-arm
                 is enabled, one is constructed from the environment.
             groundedness_scorer: Optional ``score_groundedness``-shaped callable
                 ``(answer_text, cited_passages, *, split_claims=...) -> report``
@@ -709,10 +699,10 @@ class AssessmentGenerator:
                 seam / GPU-gated — when None the trivote runs on the deterministic
                 asserted + verb voters only (no model load).
             teacher_roster: Optional endpoint-registry-shaped license roster
-                consulted by the apply-arm provider license guard (S6).
+                consulted by the apply-arm provider license guard.
         """
         self.capture = capture
-        # A1 apply-arm injection seams (test-overridable; production defaults
+        # Apply-arm injection seams (test-overridable; production defaults
         # lazy-resolve). None until first use.
         self._assessment_provider = assessment_provider
         self._groundedness_scorer = groundedness_scorer
@@ -720,17 +710,17 @@ class AssessmentGenerator:
         self._teacher_roster = teacher_roster
         self.check_leaks = check_leaks and LEAK_CHECKER_AVAILABLE
         self._leak_checker = LeakChecker(strict_mode=False) if self.check_leaks else None
-        # Diversity rotation (alg-glm-02 production defect: terms[0] /
-        # statements[0] at every site collapsed a 50-question run onto ONE
-        # term -> 1/50 unique stems, one distractor on 50/50). Rotate
-        # through distinct extracted targets before any reuse.
+        # Diversity rotation. Always picking terms[0] / statements[0] collapses
+        # a whole run onto ONE term (one unique stem, the same distractor on
+        # every item), so rotate through distinct extracted targets before any
+        # reuse.
         self._used_terms: set = set()
         self._used_statements: set = set()
-        # Per-Bloom-level question_type rotation cursor (assessment-quality
-        # overhaul): the legacy generator always fired available_types[0],
-        # collapsing every remember-level item onto multiple_choice and
-        # leaving the essay / short_answer paths dead. Rotate across the
-        # level's available_types so a multi-item run spans formats.
+        # Per-Bloom-level question_type rotation cursor. Always firing
+        # available_types[0] collapses every remember-level item onto
+        # multiple_choice and leaves the essay / short_answer paths dead;
+        # rotate across the level's available_types so a multi-item run spans
+        # formats.
         self._type_rotation: Dict[str, int] = {}
         # Deterministic diversified-tier telemetry handle; set by
         # generate_diversified(), read by the builders when present.
@@ -768,13 +758,15 @@ class AssessmentGenerator:
         return st
 
     def _apparatus_guard(self, result):
-        """Chokepoint guard (alg-glm-02 production defect): apparatus text
-        ('Solution: r Check: ...', 'Show answer ...') leaked into correct
-        answers through THREE harvest paths (factual statements, term
-        definitions, chunk misconception corrections). Rather than filtering
-        every path, reject any assembled question whose answer/choice text is
-        apparatus-flavored — converted to a SkippedItem so the fill loop
-        draws a replacement (never a placeholder, the W1 contract).
+        """Chokepoint guard against apparatus text in answers/choices.
+
+        Apparatus text ('Solution: r Check: ...', 'Show answer ...') reaches
+        correct answers through three separate harvest paths (factual
+        statements, term definitions, chunk misconception corrections).
+        Filtering each path individually leaves gaps, so reject any assembled
+        question whose answer/choice text is apparatus-flavored — converted to
+        a SkippedItem so the fill loop draws a replacement, never a
+        placeholder.
         """
         from Trainforge.generators.content_extractor import _is_apparatus_text
         if not isinstance(result, QuestionData):
@@ -823,9 +815,7 @@ class AssessmentGenerator:
                 per objective in ``objective_ids`` (bloom level rotating by
                 position) BEFORE any count-driven fill, so every TO/CO gets
                 an item even when ``question_count < len(objective_ids)``.
-                Owner-directed per-CO assessment-coverage contract
-                (2026-07-19); default False → byte-identical legacy
-                distribution.
+                Default False → byte-identical legacy distribution.
             chunks_by_objective: Optional ``{objective_id: [chunk, ...]}``
                 scoping map consumed ONLY by the coverage-first pass: an
                 objective present in the map grounds its attempt in its OWN
@@ -876,11 +866,10 @@ class AssessmentGenerator:
         skipped_items: List[SkippedItem] = []
 
         if ensure_objective_coverage:
-            # Coverage-first distribution (owner-directed per-CO coverage,
-            # 2026-07-19): objective-major single pass — one attempt per
-            # objective with the bloom level rotating by position, NEVER
-            # capped by question_count (coverage wins; the caller sizes
-            # question_count >= len(objective_ids) anyway). A skipped
+            # Coverage-first distribution: objective-major single pass — one
+            # attempt per objective with the bloom level rotating by
+            # position, NEVER capped by question_count (coverage wins; the
+            # caller sizes question_count >= len(objective_ids)). A skipped
             # attempt that used an objective-scoped chunk subset retries
             # ONCE against the full pool at the safest (first) bloom level
             # so a thin CO citation set doesn't cost the CO its item.
@@ -1035,10 +1024,8 @@ class AssessmentGenerator:
             skipped_items=skipped_items,
         )
 
-        # Worker W1: surface skipped items in the rationale stream so an
-        # operator can see why questions are missing without grepping
-        # decision JSONL files. Includes total + first-3 summaries
-        # (objective_id + bloom_level + reason).
+        # Surface skipped items in the rationale stream so an operator can see
+        # why questions are missing without grepping decision JSONL files.
         if self.capture and skipped_items:
             preview = "; ".join(
                 f"{s.question_id}={s.reason}@{s.objective_id}/{s.bloom_level}"
@@ -1113,8 +1100,7 @@ class AssessmentGenerator:
 
         Returns:
             QuestionData on success; SkippedItem when source_chunks is
-            empty / unavailable and the deterministic-template fallback
-            would have fired (Worker W1: kill silent placeholder emit).
+            empty / unavailable — never a templated placeholder.
         """
         # Self-serve retrieval if no chunks provided
         if source_chunks is None and self.rag is not None:
@@ -1209,9 +1195,9 @@ class AssessmentGenerator:
                 question_id, objective_id, bloom_level, level_config, source_chunks
             )
 
-        # Worker W1: skip-emit path. Log a structured skip event with
-        # interpolated rationale (objective + bloom + reason + question
-        # type) so post-hoc audits can replay why each slot was dropped.
+        # Skip-emit path. Log a structured skip event with interpolated
+        # rationale (objective + bloom + reason + question type) so post-hoc
+        # audits can replay why each slot was dropped.
         if isinstance(result, SkippedItem):
             if self.capture:
                 self.capture.log_decision(
@@ -1238,13 +1224,11 @@ class AssessmentGenerator:
                 )
             return result
 
-        # GPT Feedback (May 12) item 5 — tag the emitted question with the
-        # observable cognitive task verb detected in its stem. Gated on
-        # TRAINFORGE_COGNITIVE_TASK_TYPE: default unset -> the field stays
-        # None and to_dict() omits it (byte-identical legacy output). When on
-        # AND a canonical task verb is present, stamp the field and emit one
-        # decision-capture event mirroring the always-on chunk-emit precedent
-        # at Trainforge/process_course.py.
+        # Tag the emitted question with the observable cognitive task verb
+        # detected in its stem. Gated on TRAINFORGE_COGNITIVE_TASK_TYPE:
+        # default unset -> the field stays None and to_dict() omits it
+        # (byte-identical legacy output). When on AND a canonical task verb is
+        # present, stamp the field and emit one decision-capture event.
         if _cognitive_task_type_enabled():
             task_type: Optional[str] = None
             try:
@@ -1302,9 +1286,9 @@ class AssessmentGenerator:
         """Generate a multiple choice question from content.
 
         Returns QuestionData on success, or SkippedItem when source_chunks
-        is missing / empty / yields nothing extractable. Worker W1 killed
-        the deterministic-template fallback that previously emitted
-        ``"Correct answer based on content"`` placeholder strings.
+        is missing / empty / yields nothing extractable. There is deliberately
+        no template fallback — a placeholder answer string would pass the
+        structural validators and poison the training corpus.
         """
         # Try content-grounded generation
         if source_chunks:
@@ -1321,13 +1305,13 @@ class AssessmentGenerator:
             if terms:
                 # Use a key term: ask for its definition
                 target = self._rotate_term(terms)
-                # Bloom-verb-leading phrasing (alg-glm-02 production defect):
-                # "Which of the following best describes X?" carries no
-                # canonical Bloom verb form ("describes" is conjugated;
-                # lib/ontology/bloom.py matches whole-word canonical verbs),
-                # so EVERY term MCQ fired assessment_quality VERB_LESS_STEM.
-                # "Identify" registers as remember-level — same question,
-                # detector-visible verb.
+                # Bloom-verb-leading phrasing. "Which of the following best
+                # describes X?" carries no canonical Bloom verb form
+                # ("describes" is conjugated; lib/ontology/bloom.py matches
+                # whole-word canonical verbs), so every term MCQ phrased that
+                # way fires assessment_quality VERB_LESS_STEM. "Identify"
+                # registers as remember-level — same question, detector-visible
+                # verb.
                 stem = (
                     f"<p>Identify the statement that best describes "
                     f"<em>{target.term}</em>.</p>"
@@ -1349,10 +1333,10 @@ class AssessmentGenerator:
                         mc_text = mc_text[:197] + "..."
                     distractors.append(mc_text)
 
-                # Strategy 2: Other terms' definitions
-                # Distractor rotation (alg-glm-02: terms[1:4] was STATIC, so
-                # the same 3 distractors repeated on 49/50 questions —
-                # TEMPLATED_DISTRACTORS). Exclude the target, rotate the pool
+                # Strategy 2: Other terms' definitions.
+                # Distractor rotation: a static terms[1:4] slice repeats the
+                # same 3 distractors on nearly every question
+                # (TEMPLATED_DISTRACTORS). Exclude the target, rotate the pool
                 # start per question.
                 _pool = [t for t in terms if t.term != target.term]
                 self._distractor_offset = getattr(self, "_distractor_offset", 0) + 1
@@ -1378,16 +1362,13 @@ class AssessmentGenerator:
                             d_text = d_text[:197] + "..."
                         distractors.append(d_text)
 
-                # Worker W2.D — kill the padded-distractor fallback. The
-                # pre-W2.D path emitted f"A concept unrelated to {target.term}
-                # in this context" template strings into the choices[] when
-                # misconception/distractor synthesis exhausted plausible
-                # options. The pad text trivially passed structural validators
-                # (string + non-duplicate of the correct answer) and got
-                # baked into training pairs. Replace with SkippedItem +
-                # ``distractor_padding_skipped`` decision-capture event so
-                # the count of insufficient-distractor questions surfaces
-                # in the audit log instead of silently corrupting the corpus.
+                # No padded-distractor fallback. Padding the choices with a
+                # template string ("A concept unrelated to <term> in this
+                # context") trivially passes the structural validators (it is
+                # a string and differs from the key) and then gets baked into
+                # training pairs. Emit a SkippedItem plus a
+                # ``distractor_padding_skipped`` event instead, so
+                # insufficient-distractor questions surface in the audit log.
                 if len(distractors) < 3:
                     if self.capture is not None:
                         try:
@@ -1465,9 +1446,9 @@ class AssessmentGenerator:
                         "by the source material?</p>"
                     )
 
-                # W7.4 — a regex-negated "false" distractor can be accidentally
-                # TRUE (double-negation of an already-negative source, or a
-                # no-op negation). Verify each negation is non-trivially false
+                # A regex-negated "false" distractor can be accidentally TRUE
+                # (double-negation of an already-negative source, or a no-op
+                # negation). Verify each negation is non-trivially false
                 # and DROP the ones that aren't, drawing from ALL remaining
                 # factual statements so a bad negation is regenerated rather
                 # than silently emitted as a true option.
@@ -1543,9 +1524,9 @@ class AssessmentGenerator:
                     ),
                 )
 
-        # Worker W1: skip-emit instead of template fallback. Returning a
-        # SkippedItem keeps the placeholder strings out of the training
-        # corpus; the caller filters Nones / Skips and surfaces a count.
+        # Skip-emit rather than a templated placeholder: returning a
+        # SkippedItem keeps placeholder strings out of the training corpus;
+        # the caller filters Skips and surfaces a count.
         reason = (
             "no_source_chunks"
             if not source_chunks
@@ -1570,8 +1551,8 @@ class AssessmentGenerator:
         """Generate a true/false question from content.
 
         Returns QuestionData on success, or SkippedItem when no chunks
-        are available / no factual statement can be extracted. Worker W1
-        killed the legacy ``"Statement about ... content."`` placeholder.
+        are available / no factual statement can be extracted. There is
+        deliberately no ``"Statement about ... content."`` placeholder.
         """
         if source_chunks:
             statements = self._content_extractor.extract_factual_statements(source_chunks)
@@ -1581,8 +1562,8 @@ class AssessmentGenerator:
                 # Randomly decide true vs false (use question_id hash for determinism)
                 make_false = hash(question_id) % 2 == 0
 
-                # W7.4 — a regex-negated T/F "false" stem can be accidentally
-                # TRUE. Verify the negation is non-trivially false; if it isn't,
+                # A regex-negated T/F "false" stem can be accidentally TRUE.
+                # Verify the negation is non-trivially false; if it isn't,
                 # fall back to the TRUE variant rather than ship a "false" item
                 # whose stem may be true (never emit an unverifiable false).
                 negated: Optional[str] = None
@@ -1659,7 +1640,7 @@ class AssessmentGenerator:
                         ),
                     )
 
-        # Worker W1: skip-emit instead of template fallback.
+        # Skip-emit rather than a templated placeholder.
         reason = (
             "no_source_chunks"
             if not source_chunks
@@ -1684,8 +1665,8 @@ class AssessmentGenerator:
         """Generate a fill-in-the-blank question from content.
 
         Returns QuestionData on success, or SkippedItem when no chunks
-        are available / no key term can be blanked. Worker W1 killed the
-        legacy ``"The key concept from ... is _______."`` placeholder.
+        are available / no key term can be blanked. There is deliberately no
+        ``"The key concept from ... is _______."`` placeholder.
         """
         if source_chunks:
             terms = self._content_extractor.extract_key_terms(source_chunks)
@@ -1718,7 +1699,7 @@ class AssessmentGenerator:
                         ),
                     )
 
-        # Worker W1: skip-emit instead of template fallback.
+        # Skip-emit rather than a templated placeholder.
         reason = (
             "no_source_chunks"
             if not source_chunks
@@ -1743,9 +1724,9 @@ class AssessmentGenerator:
         """Generate an essay question from content.
 
         Returns QuestionData on success, or SkippedItem when no chunks
-        are available / no relationship or example can be extracted.
-        Worker W1 killed the legacy ``"...concepts from ... and provide
-        examples."`` placeholder.
+        are available / no relationship or example can be extracted. There is
+        deliberately no ``"...concepts from ... and provide examples."``
+        placeholder.
         """
         verb = level_config["verbs"][0]
 
@@ -1810,7 +1791,7 @@ class AssessmentGenerator:
                     ),
                 )
 
-        # Worker W1: skip-emit instead of template fallback.
+        # Skip-emit rather than a templated placeholder.
         reason = (
             "no_source_chunks"
             if not source_chunks
@@ -1835,9 +1816,9 @@ class AssessmentGenerator:
         """Generate a short answer question from content.
 
         Returns QuestionData on success, or SkippedItem when no chunks
-        are available / no procedure/relationship/term can be extracted.
-        Worker W1 killed the legacy ``"Briefly ... the key points from
-        ..."`` placeholder.
+        are available / no procedure/relationship/term can be extracted. There
+        is deliberately no ``"Briefly ... the key points from ..."``
+        placeholder.
         """
         verb = level_config["verbs"][0]
 
@@ -1913,7 +1894,7 @@ class AssessmentGenerator:
                     ),
                 )
 
-        # Worker W1: skip-emit instead of template fallback.
+        # Skip-emit rather than a templated placeholder.
         reason = (
             "no_source_chunks"
             if not source_chunks
@@ -1927,7 +1908,7 @@ class AssessmentGenerator:
             reason=reason,
         )
 
-    #: W7.4 — negation cue tokens. When the SOURCE claim already carries one,
+    #: Negation cue tokens. When the SOURCE claim already carries one,
     #: a naive regex negation risks a double-negative (net-TRUE) statement, so
     #: the correctness check rejects it. When the NEGATED string carries two or
     #: more, the negation itself double-negated (also risks net-TRUE).
@@ -1956,7 +1937,7 @@ class AssessmentGenerator:
     def _negation_is_verifiably_false(
         cls, original: str, negated: str
     ) -> bool:
-        """W7.4 — deterministic check that ``negated`` is non-trivially false.
+        """Deterministic check that ``negated`` is non-trivially false.
 
         ``_negate_statement`` flips a claim's polarity with a regex; with ZERO
         correctness check a regex-negated statement can be accidentally TRUE
@@ -1997,7 +1978,7 @@ class AssessmentGenerator:
     def _safe_negate_statement(cls, statement: str) -> Optional[str]:
         """Negate ``statement`` and return it ONLY if verifiably false.
 
-        Wraps :meth:`_negate_statement` with the W7.4 correctness check.
+        Wraps :meth:`_negate_statement` with the correctness check.
         Returns ``None`` when the produced negation could be accidentally
         TRUE (so the caller drops it and regenerates), else the negated text.
         """
@@ -2061,7 +2042,7 @@ class AssessmentGenerator:
         return f"It is not true that {statement[0].lower()}{statement[1:]}"
 
     # ------------------------------------------------------------------ #
-    # Deterministic diversified tier (assessment-quality overhaul, Phase 2)
+    # Deterministic diversified tier
     # ------------------------------------------------------------------ #
 
     def _clamp_and_record(
@@ -2125,7 +2106,7 @@ class AssessmentGenerator:
         bloom_level: str,
         source_chunks: Optional[List[Dict[str, Any]]],
     ):
-        """(a) MULTIPLE-RESPONSE select-all — genuine apply.
+        """MULTIPLE-RESPONSE select-all — genuine apply.
 
         From a worked-example chunk with >=3 solution steps: the real steps are
         the keys ("which of the following ARE steps in solving X"); distractors
@@ -2210,7 +2191,7 @@ class AssessmentGenerator:
         bloom_level: str,
         source_chunks: Optional[List[Dict[str, Any]]],
     ):
-        """(b) ERROR-ANALYSIS MC — analyze level.
+        """ERROR-ANALYSIS MC — analyze level.
 
         Perturb ONE step of a worked solution with a named misconception
         transform; render the full (perturbed) solution and ask which step
@@ -2285,7 +2266,7 @@ class AssessmentGenerator:
         bloom_level: str,
         source_chunks: Optional[List[Dict[str, Any]]],
     ):
-        """(c) NUMERIC-FIB — real apply/compute, sympy-VERIFIED key.
+        """NUMERIC-FIB — real apply/compute, sympy-VERIFIED key.
 
         Harvests a single-variable equation from a worked-example chunk, solves
         it with sympy, and ships ONLY when the computed key checks out under
@@ -2305,11 +2286,11 @@ class AssessmentGenerator:
                                objective_id, "sympy_missing")
 
         # Assemble candidate (fragment, chunk_id) pairs in a stable order:
-        # first the marked-math harvest per chunk (byte-identical to the legacy
-        # loop), THEN — only when ED4ALL_ASSESSMENT_NUMERIC_RECOVERY is on — the
-        # plain-text equations recovered from Solution/Check/Step-N apparatus
-        # regions (A3). Appending recovery AFTER the marked-math candidates keeps
-        # the flag-off path bitwise-identical (recovery returns []).
+        # first the marked-math harvest per chunk, THEN — only when
+        # ED4ALL_ASSESSMENT_NUMERIC_RECOVERY is on — the plain-text equations
+        # recovered from Solution/Check/Step-N apparatus regions. Recovery must
+        # be appended AFTER the marked-math candidates so the flag-off path
+        # stays bitwise-identical (recovery returns []).
         candidates: List[Tuple[str, str]] = []
         for chunk in source_chunks:
             chunk_id = chunk.get("id", chunk.get("chunk_id", ""))
@@ -2395,7 +2376,7 @@ class AssessmentGenerator:
         bloom_level: str,
         source_chunks: Optional[List[Dict[str, Any]]],
     ):
-        """(d) MATCHING-as-MC — one MC per term, distractors = sibling defs.
+        """MATCHING-as-MC — one MC per term, distractors = sibling defs.
 
         Homogeneous by construction: every option is a definition drawn from
         the same section's term set.
@@ -2450,7 +2431,7 @@ class AssessmentGenerator:
         bloom_level: str,
         source_chunks: Optional[List[Dict[str, Any]]],
     ):
-        """(e) ORDERING-as-MC — pick the correct order of steps.
+        """ORDERING-as-MC — pick the correct order of steps.
 
         True sequence + 2 deterministic plausible permutations. Used sparingly
         (5% of the mix).
@@ -2514,7 +2495,7 @@ class AssessmentGenerator:
         bloom_level: str,
         source_chunks: Optional[List[Dict[str, Any]]],
     ):
-        """(f) TWO-TIER answer+reason — Treagust misconception diagnosis.
+        """TWO-TIER answer+reason — Treagust misconception diagnosis.
 
         Returns a LIST of two linked QuestionData: an answer tier (a term MC)
         and a reason tier whose distractors are misconception statements. The
@@ -2614,11 +2595,11 @@ class AssessmentGenerator:
         bloom_level: str,
         source_chunks: Optional[List[Dict[str, Any]]],
     ):
-        """(g) True/False (subtype ``tf``) — cheap variety.
+        """True/False (subtype ``tf``) — cheap variety.
 
         Reuses the verified-negation T/F path and stamps the subtype + Bloom
-        ceiling. (The linked short-FIB justification tier is intentionally
-        deferred — see the worker report; TF alone is portable + honest.)
+        ceiling. The linked short-FIB justification tier is deliberately not
+        emitted — TF alone is portable and honest.
         """
         result = self._generate_true_false(
             question_id, objective_id, bloom_level,
@@ -2707,7 +2688,7 @@ class AssessmentGenerator:
         bloom_level: str,
         source_chunks: Optional[List[Dict[str, Any]]],
     ):
-        """(h) SHORT-ANSWER — 2-4 sentence constructed response.
+        """SHORT-ANSWER — 2-4 sentence constructed response.
 
         Drafted from explanation/concept chunks: a SPECIFIC ``Explain why <claim>``
         stem grounded in a real factual statement (never a bare "discuss X").
@@ -2791,7 +2772,7 @@ class AssessmentGenerator:
         bloom_level: str,
         source_chunks: Optional[List[Dict[str, Any]]],
     ):
-        """(i) EXTENDED-RESPONSE — "solve and show your work" / "compare X and Y".
+        """EXTENDED-RESPONSE — "solve and show your work" / "compare X and Y".
 
         Prefers a worked-example chunk (>=2 steps) → a solve-and-justify prompt
         whose rubric criteria are the real solution steps (each cites the chunk)
@@ -2995,8 +2976,8 @@ class AssessmentGenerator:
         if len(questions) > question_count:
             questions = questions[:question_count]
 
-        # A1 — bounded LLM apply-arm (flag-gated, default OFF). Additive on top
-        # of the deterministic tier; every drafted item passes the sympy /
+        # Bounded LLM apply-arm (flag-gated, default OFF). Additive on top of
+        # the deterministic tier; every drafted item passes the sympy /
         # groundedness / trivote verify chain before it ships.
         if _apply_arm_enabled():
             apply_items = self._run_apply_arm(
@@ -3037,7 +3018,7 @@ class AssessmentGenerator:
         )
 
     # ------------------------------------------------------------------ #
-    # A1 — bounded LLM apply-arm (verify-gated). All methods below are only
+    # Bounded LLM apply-arm (verify-gated). All methods below are only
     # reached when ED4ALL_ASSESSMENT_APPLY_ARM is on (checked in
     # generate_diversified), so the default path never touches them.
     # ------------------------------------------------------------------ #
@@ -3045,7 +3026,7 @@ class AssessmentGenerator:
     def _resolve_apply_arm_provider(self) -> Optional[Any]:
         """Resolve the apply-arm provider seat (injected or env-built), or None.
 
-        License-gated: refuses Anthropic seats + roster-barred teachers, so the
+        License-gated: refuses Anthropic seats and roster-barred teachers, so the
         LLM-drafted assessment corpus (which feeds the SLM training surface)
         stays license-clean by construction. Returns None (arm skipped) on any
         resolution / license failure — the arm is ADDITIVE, never fatal.

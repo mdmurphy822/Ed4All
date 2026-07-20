@@ -1,9 +1,9 @@
 """Unit tests for ``lib/validators/qti_well_formed.py::QtiWellFormedValidator``.
 
-W10 Phase 5. All QTI fixtures are HAND-AUTHORED in-test (no dependency on the
-concurrent ``Courseforge/scripts/qti_emitter.py`` worker), following the
-Pattern-15 shape documented at ``Courseforge/docs/troubleshooting.md:79-130``.
-No course slugs or device paths — every fixture is an in-test string.
+All QTI fixtures are HAND-AUTHORED in-test rather than emitted by
+``Courseforge/scripts/qti_emitter.py``, so a bug in the emitter cannot make
+these tests pass. Shapes follow ``Courseforge/docs/troubleshooting.md``. No
+course slugs or device paths — every fixture is an in-test string.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ QTI_NS = "http://www.imsglobal.org/xsd/ims_qtiasiv1p2"
 
 
 # --------------------------------------------------------------------------
-# Fixture builders (Pattern-15 shape — Courseforge/docs/troubleshooting.md).
+# Fixture builders (shapes per Courseforge/docs/troubleshooting.md).
 # --------------------------------------------------------------------------
 
 def _wrap(assessment_inner: str, assessment_attrs: str = 'ident="quiz_w1" title="Week 1 Quiz"') -> str:
@@ -372,14 +372,13 @@ def test_gate_id_override():
 
 
 # --------------------------------------------------------------------------
-# Per-doc-type XSD routing (assessment-tail fix 2026-07-19).
+# Per-doc-type XSD routing.
 #
 # The assessment_synthesis phase writes THREE resource types into
 # 06_assessments/ — QTI quizzes, imsdt discussion topics, and assignment
-# resources. The pre-fix gate validated all three against the QTI XSD only,
-# so every (schema-valid) discussion/assignment doc failed with
-# "No matching global declaration available for the validation root"
-# (the alg-glm-02 production failure). The gate now routes each document to
+# resources. Validating all three against the QTI XSD fails every
+# (schema-valid) discussion/assignment doc with "No matching global declaration
+# available for the validation root", so the gate must route each document to
 # its own vendored XSD by root namespace.
 # --------------------------------------------------------------------------
 
@@ -426,8 +425,8 @@ def test_assignment_routes_to_assignment_xsd_and_passes():
 
 
 def test_mixed_dir_all_three_doc_types_pass(tmp_path):
-    """The alg-glm-02 production regression: quiz + discussion + assignment
-    in one 06_assessments dir must ALL validate (each against its own XSD)."""
+    """Quiz + discussion + assignment in one 06_assessments dir must ALL
+    validate, each against its own XSD."""
     (tmp_path / "week_01_quiz.xml").write_text(
         _well_formed_qti(), encoding="utf-8"
     )

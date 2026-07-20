@@ -4117,9 +4117,8 @@ def _backfill_dart_chunk_lo_refs(
             "reason": "empty_objective_ids_allowlist",
         }
 
-    # DART->semantik purge Stage 3c: dual-read the staged chunkset dir
-    # (semantik_chunks/ -> dart_chunks/ -> corpus/) so a new-name course and an
-    # un-migrated archive both resolve here.
+    # Dual-read the staged chunkset dir (semantik_chunks/ -> dart_chunks/ ->
+    # corpus/) so a current course and an un-migrated archive both resolve.
     from lib.libv2_storage import resolve_staged_chunks_path
     chunks_path = resolve_staged_chunks_path(
         _resolve_libv2_root(libv2_root) / "courses" / course_slug
@@ -4290,7 +4289,7 @@ def _load_dart_chunkset_for_planning(
     course_slug: str,
     kwargs: Dict[str, Any],
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
-    """W2 §1.6 — load the DART chunkset for the window-map (Pass B).
+    """Load the DART chunkset for the window-map (Pass B).
 
     Resolves the staged chunkset under
     ``<libv2>/courses/<slug>/`` (via :func:`resolve_staged_chunks_path`, which
@@ -4300,21 +4299,21 @@ def _load_dart_chunkset_for_planning(
     chapter-grained path (``grounding_mode="chapter_fallback"``) — never a hard
     crash on a legacy run.
 
-    ``course_slug`` is resolved robustly: callers pass the RAW course name (e.g.
-    ``OPENSTAX_ALG_MC3_OFF6``) but the LibV2 course directory is created with the
-    SLUGIFIED name (``openstax-alg-mc3-off6`` via
-    :meth:`LibV2Storage._generate_slug`). We try the name as given first
-    (backward-compat: a caller may already pass a correct slug), then fall back
-    to the LibV2 slug transform, using whichever resolves to an existing file.
+    ``course_slug`` is resolved robustly: callers pass the RAW course name
+    (upper-case, underscore-separated) but the LibV2 course directory is created
+    with the SLUGIFIED name (lower-case, hyphen-separated, via
+    :meth:`LibV2Storage._generate_slug`). Try the name as given first (a caller
+    may already pass a correct slug), then fall back to the LibV2 slug
+    transform, using whichever resolves to an existing file.
 
     Each chunk record is annotated in-memory with a ``chapter_id`` (resolved via
     the sourceId-slug join against the loaded ``textbook_structure`` chapters) so
     Pass C's re-ground rescue can scope to the candidate's chapter pool. The
     annotation is best-effort: chunks that don't join carry no ``chapter_id``.
     """
-    # DART->semantik purge Stage 3c: dual-read staged chunkset (semantik ->
-    # dart -> corpus) so new-name courses ground correctly. Slug fix: try the
-    # raw course_slug first, then the LibV2 _generate_slug transform (lower +
+    # Dual-read the staged chunkset (semantik -> dart -> corpus) so both
+    # current and un-migrated archives ground correctly. Try the raw
+    # course_slug first, then the LibV2 _generate_slug transform (lower +
     # '_'/' ' -> '-'), so a RAW course name resolves to its slugified dir.
     from lib.libv2_storage import LibV2Storage, resolve_staged_chunks_path
     libv2_courses_root = _resolve_libv2_root(kwargs.get("libv2_root")) / "courses"
@@ -6579,12 +6578,12 @@ async def _run_stage2_window_synthesis(
     # cited-chunk -> window map since windows partition the joined chunkset)
     # UNIONED with the CO's chapter bucket and its currently-cited ids — by
     # cosine(statement, chunk text) and re-cite the strongest supporters,
-    # fixing the measured 7B neighbor-citation sloppiness that Fix 1A's
-    # prune-only pass cannot reach. Runs HERE (after
-    # dedup + split + backfill, BEFORE CO-id minting / TO derivation) so the
-    # backlink, TO source_refs union, and learning_outcome_refs all see the
-    # improved citations — and runs regardless of whether window candidates
-    # came from a live 7B call or the resume sidecar (pure post-processing).
+    # recovering from neighbor-citation sloppiness that a prune-only pass
+    # cannot reach. Runs HERE (after dedup + split + backfill, BEFORE CO-id
+    # minting / TO derivation) so the backlink, TO source_refs union, and
+    # learning_outcome_refs all see the improved citations — and runs whether
+    # the window candidates came from a live call or the resume sidecar (pure
+    # post-processing).
     from lib.objectives.citation_reselect import (
         reselect_citations,
         resolve_citation_reselect,
@@ -8209,15 +8208,10 @@ def register_pipeline_tools(mcp):
 # the existing Ed4All tool JSON contract (config/workflows.yaml:898 required
 # keys + the new SemantiK provenance keys).
 #
-# Migration plan plans/finegrain/semantic-v2-dart-migration-2026-06-21.md §5
-# step 1 pins the signature; §3.7 pins the exit_action→success mapping + the
-# required output keys; §3.3a item 2 the `--reuse-conversion` reuse mechanism.
-#
-# This function does NOT flip the live `extract_and_convert_pdf` dispatch
-# (that is P3c). It is unit-tested with a MOCKED cascade (no models/GPU).
+# Unit-tested with a MOCKED cascade (no models/GPU).
 # ---------------------------------------------------------------------------
 
-# §3.3a item 2 — `--reuse-conversion` env mirror (analogous to the
+# `--reuse-conversion` env mirror (analogous to the
 # `--reuse-objectives` plumbing). When truthy AND prior artifacts exist at the
 # output path, the cascade is skipped and the prior HTML + sidecars are reused
 # (model-nondeterminism guarantee on re-runs). Parse-with-fallback truthy set
@@ -10898,8 +10892,8 @@ _COURSEFORGE_TWO_PASS_TRUTHY = frozenset({"1", "true", "yes", "on"})
 # ``Courseforge.scripts.blocks.BLOCK_TYPES``, MUST have an outline-tier
 # bound in ``_OUTLINE_KIND_BOUNDS`` (gates outline dispatch) AND a rewrite
 # output contract in ``_BLOCK_TYPE_OUTPUT_CONTRACTS`` (gates rewrite
-# dispatch). ``self_check_question`` and ``activity`` satisfy both
-# (verified 2026-06-15). Every ``target_bloom`` MUST be a member of
+# dispatch). ``self_check_question`` and ``activity`` satisfy both.
+# Every ``target_bloom`` MUST be a member of
 # ``lib.ontology.bloom.BLOOM_LEVELS``.
 # ---------------------------------------------------------------------------
 # P3 (7b-sonnet-parity §P3): five page TYPES per week.
@@ -14490,17 +14484,16 @@ def _page_co_slice_bounds(
 
     Coverage-gap fix: the page-per-CO NEVER-INCREASE guard
     (:func:`_resolve_content_page_count`) can resolve FEWER content pages than
-    the week has COs (a CO-rich / topic-thin week). The historical 1:1
-    positional binding (page ``i`` ↔ CO ``i``) then silently stranded every CO
-    past index ``n_pages - 1`` — the measured 193/604 COVERAGE-GAP defect. This
-    helper partitions the week's CO list across the week's content pages
+    the week has COs (a CO-rich / topic-thin week). A 1:1 positional binding
+    (page ``i`` ↔ CO ``i``) then silently strands every CO past index
+    ``n_pages - 1``. This helper partitions the week's CO list across pages
     instead: the ``n_pages`` slices exactly tile ``range(co_count)`` (page
     ``i`` gets COs ``floor(i*m/n) .. floor((i+1)*m/n) - 1``), so every CO is
     bound to EXACTLY ONE page (zero-stranded by construction, still book
     order, still deterministic).
 
-    When ``co_count == n_pages`` (the calibrated common case) every page gets
-    exactly one CO — byte-identical to the historical 1:1 binding. Returns
+    When ``co_count == n_pages`` (the common case) every page gets exactly one
+    CO, matching the plain 1:1 binding. Returns
     ``(0, 0)`` for an out-of-range page / empty CO list (no binding — the
     caller's legacy topic path handles it).
     """
@@ -15685,11 +15678,10 @@ async def _run_content_generation_outline(**kwargs) -> str:
                             break
             # Under page-per-CO a content page is bound 1:1 to a CO, so derive
             # its heading + slug from the BOUND CO's statement rather than the
-            # positional ``topic.heading`` (which routinely belongs to an
-            # unrelated section — measured 20/38 pages drifted). Single-sourced
-            # via ``_content_page_heading_slug``; non-page-per-CO (and any
-            # content page with no resolvable bound CO) keeps the exact legacy
-            # topic-heading path — byte-stable.
+            # positional ``topic.heading``, which routinely belongs to an
+            # unrelated section. Single-sourced via
+            # ``_content_page_heading_slug``; non-page-per-CO (and any content
+            # page with no resolvable bound CO) keeps the topic-heading path.
             heading, slug_value = _content_page_heading_slug(
                 page_bound_co_id=_page_bound_co_id,
                 page_bound_co_statement=_page_bound_co_statement,
@@ -18038,7 +18030,7 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
 
     # Rewrite-tier routing intentionally passes validators=[] (in-loop
     # remediation OFF; the standalone post_rewrite_validation phase owns
-    # validation — operator decision 2026-06-09). Each block is dispatched
+    # validation). Each block is dispatched
     # through ``router.route_rewrite_with_remediation`` for its sidecar-
     # rehydrated ``source_chunks`` / ``objectives`` grounding (loaded from
     # the W2-persisted ``outline_chunks.json`` / ``outline_objectives.json``
@@ -20043,8 +20035,7 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
 # ``{stem}.glmocr_layout.json`` sidecars, wired as the ``heading_judge``
 # validator-only phase between ``semantik_conversion`` and ``staging``
 # (routed by NAME via ``MCP/core/executor.py::_PHASE_TOOL_MAPPING``).
-# Validated live 2026-07-18 on a 10-chapter run (1525/1528 pendings judged,
-# residual 1154->1, zero level skips). Contract:
+# Contract:
 #
 #   * SEMANTIK_HEADING_JUDGE off  -> skip-with-pass (byte-identical no-op).
 #   * no ``*.glmocr_layout.json`` -> skip-with-pass (born-digital corpus).
@@ -24025,8 +24016,8 @@ def _build_tool_registry() -> dict:
             assessments_path = trainforge_dir / "assessments.json"
             assessment_doc = assessment.to_dict()
 
-            # Generation-silence contract (assessment-tail fix 2026-07-19):
-            # zero generated questions is NEVER silent. The valid,
+            # Generation-silence contract: zero generated questions is NEVER
+            # silent. The valid,
             # empty-but-parseable assessments.json is still written below
             # (downstream gates must parse it, never crash on a missing/
             # empty file), and a LOUD warning surfaces the count + the
@@ -27035,11 +27026,11 @@ def _build_tool_registry() -> dict:
 
         # ------------------------------------------------------------------
         # NVIDIA-KG item 1: thread the synthesized course objectives into
-        # the typed-edge build. Pre-fix this phase passed ``course=None``
-        # + ``objectives_metadata=None`` unconditionally, so the
-        # LO-dependent rules (``prerequisite_from_lo_order``,
-        # ``targets_concept_from_lo``) early-returned with zero edges on
-        # every course (one calibration corpus measured 982 edges, zero prerequisite).
+        # the typed-edge build. Passing ``course=None`` +
+        # ``objectives_metadata=None`` makes the LO-dependent rules
+        # (``prerequisite_from_lo_order``, ``targets_concept_from_lo``)
+        # early-return with zero edges on every course, so the graph builds
+        # with no prerequisite edges at all.
         # Resolution chain: explicit ``objectives_path`` kwarg (routed
         # from the ``reuse_objectives_path`` workflow param) → project
         # export ``01_learning_objectives/synthesized_objectives.json``
@@ -28183,13 +28174,12 @@ def _build_tool_registry() -> dict:
                     "source_references": parsed.source_references,
                 })
 
-        # D1 fix (TRAINFORGE_PAGE_CONCEPT_FALLBACK, default OFF → byte-
-        # identical): the SemantiK GLM-OCR accessible-HTML lane emits NO
-        # <strong>/<b>/<dt> markup, so HTMLContentParser harvests ZERO
-        # page-level ``key_concepts`` and every chunk of the page ends up
-        # with empty ``concept_tags`` (measured 704/705 empty on a real
-        # GLM-OCR course vs ~14 tags/chunk on a publisher-HTML course whose
-        # bold/dt markup feeds the parser). When ON, derive a PAGE-LEVEL
+        # TRAINFORGE_PAGE_CONCEPT_FALLBACK (default OFF): the GLM-OCR
+        # accessible-HTML lane emits NO <strong>/<b>/<dt> markup, so
+        # HTMLContentParser harvests ZERO page-level ``key_concepts`` and
+        # every chunk of the page ends up with empty ``concept_tags`` — where
+        # a publisher-HTML course, whose bold/dt markup feeds the parser, gets
+        # a full tag set. When ON, derive a PAGE-LEVEL
         # key-concept list from each markup-less page's OWN text (lexical /
         # statistical only — no embeddings, no LLM) and assign it to
         # ``item["key_concepts"]`` so the EXISTING page-level tagging path
@@ -28886,16 +28876,15 @@ def _build_tool_registry() -> dict:
                                 )
                 chunks = kept_chunks
 
-        # Defect D4 (vendor-parity audit 2026-07-18): relocate stranded
-        # next-section heading tails (TRAINFORGE_RELOCATE_STRANDED_HEADINGS,
-        # default OFF -> byte-identical legacy emit; auto-on for pipeline runs
-        # via _apply_corpus_generalization_defaults). In the SemantiK GLM-OCR
-        # lane the opener of the FOLLOWING section can be glued onto the TAIL
-        # of the prior section's last chunk (e.g. "...Figure. 1.1 EXERCISES");
-        # this deterministic post-pass moves a standalone "N.M <SECTION-MARKER>"
-        # onto the next SAME-FLOW chunk. Text-only mutation (html untouched,
-        # the Track-K overlap precedent), applied after every drop/filter pass
-        # so relocation is between the FINAL emitted chunks.
+        # Relocate stranded next-section heading tails
+        # (TRAINFORGE_RELOCATE_STRANDED_HEADINGS, default OFF; auto-on for
+        # pipeline runs via _apply_corpus_generalization_defaults). In the
+        # GLM-OCR lane the opener of the FOLLOWING section can be glued onto
+        # the TAIL of the prior section's last chunk; this deterministic
+        # post-pass moves a standalone "N.M <SECTION-MARKER>" onto the next
+        # SAME-FLOW chunk. Text-only mutation (html untouched). MUST run after
+        # every drop/filter pass so relocation is between the FINAL emitted
+        # chunks.
         if chunks:
             try:
                 from Trainforge.chunker import (
@@ -28939,14 +28928,13 @@ def _build_tool_registry() -> dict:
                 response_present=_irt_response_present,
             )
 
-        # Persist chunks + manifest to LibV2/courses/<slug>/semantik_chunks/.
-        # Phase 8 ST 3: route through `_resolve_libv2_root` (see helper
-        # docstring for resolution chain). Default behaviour unchanged.
-        # DART->semantik purge Stage 3c (2026-07-11): the ratified emit dir is
-        # ``semantik_chunks/`` (was ``dart_chunks/``). Readers dual-resolve via
+        # Persist chunks + manifest to LibV2/courses/<slug>/semantik_chunks/,
+        # routed through `_resolve_libv2_root` (see helper docstring for the
+        # resolution chain). Only NEW conversions land under
+        # ``semantik_chunks/``; readers dual-resolve via
         # ``lib.libv2_storage.resolve_imscc_chunks_dir`` (semantik -> dart ->
-        # corpus), so un-migrated archives that still hold ``dart_chunks/`` keep
-        # resolving; only NEW conversions land under ``semantik_chunks/``.
+        # corpus) so un-migrated archives still holding ``dart_chunks/`` keep
+        # resolving.
         from lib.libv2_storage import SEMANTIK_CHUNKS_DIRNAME
         course_dir = (
             _resolve_libv2_root(kwargs.get("libv2_root"))
@@ -29440,8 +29428,8 @@ def _build_tool_registry() -> dict:
             "ED4ALL_ASSESSMENT_DIVERSIFIED", ""
         ).strip().lower() in {"1", "true", "yes", "on"}
 
-        # Per-CO coverage support (owner-directed 2026-07-19): index the
-        # loaded chunks by id once so each objective's cited
+        # Per-CO coverage support: index the loaded chunks by id once so each
+        # objective's cited
         # ``source_chunk_ids`` can scope its item's grounding. Anti-
         # fabrication: only chunks that actually exist in the loaded
         # chunkset are ever handed to the generator.
@@ -30547,8 +30535,8 @@ def _build_tool_registry() -> dict:
         if _overlap_words > 0:
             chunks = _apply_chunk_overlap(chunks, _overlap_words)
 
-        # W10 per-CO coverage (owner-directed 2026-07-19): mint one
-        # ``assessment_item`` chunk per objective-anchored QTI item found in
+        # Per-CO coverage: mint one ``assessment_item`` chunk per
+        # objective-anchored QTI item found in
         # the packaged ``06_assessments/`` XML, so the strict archival gate
         # (OBJECTIVE_NO_ASSESSMENT / UNCOVERED_TERMINAL_OUTCOME) sees every
         # TO/CO's quiz item as a chunk with harvestable

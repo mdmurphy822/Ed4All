@@ -1,4 +1,4 @@
-"""Vendor-depth per-SECTION stage-2 windows (ED4ALL_OBJECTIVE_WINDOW_PER_SECTION).
+"""Per-SECTION stage-2 windows (ED4ALL_OBJECTIVE_WINDOW_PER_SECTION).
 
 Pins the section-window builder: the one-window-per-section shape on a
 10-chapter / 71-section fixture tree, the ordered-walk boundary matching
@@ -112,12 +112,18 @@ def test_resolver_explicit_arg_wins(monkeypatch):
 
 
 # ===========================================================================
-# 71-window shape on the fixture tree (the alg-glm-02 topology)
+# 71-window shape on a full-textbook-scale section tree
 # ===========================================================================
 
 
 def test_71_window_shape_on_10_chapter_71_section_tree():
-    """10 chapters / 71 sections (the real corpus topology) → 71 windows."""
+    """A textbook-scale tree (10 chapters, 71 sections total, varying section
+    counts per chapter) yields exactly one window per section.
+
+    Every section here holds 4 chunks, i.e. above the coalescing floor, so this
+    pins the one-window-per-section shape and window ordering only — the
+    small-section coalescing path is covered separately.
+    """
     section_counts = [10, 7, 6, 7, 6, 7, 6, 9, 8, 5]  # == 71
     assert sum(section_counts) == 71
     total_windows = 0

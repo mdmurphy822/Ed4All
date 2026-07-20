@@ -30,9 +30,8 @@ Differences from the Together provider:
   out-of-box pick that fits an 8 GB GPU on Ollama.
   ``LOCAL_SYNTHESIS_MODEL`` overrides per server.
 - ``out["provider"]`` is set to ``"local"`` so downstream consumers
-  (pair schemas, the Wave-107 mock-corpus gate, the eval harness)
-  can distinguish local-server output from the Together-hosted
-  output.
+  (pair schemas, the mock-corpus gate, the eval harness) can
+  distinguish local-server output from Together-hosted output.
 
 Tradeoff vs Together: latency is 5-30s per call (depends on local
 hardware + model size), but cost-per-call is zero after the hardware
@@ -82,48 +81,32 @@ ENV_API_KEY = "LOCAL_SYNTHESIS_API_KEY"
 DEFAULT_TIMEOUT = 60.0
 
 
-# Wave 135b: soft-floor at 0.0 because the force-injection path in
-# ``instruction_factory`` / ``preference_factory`` is the canonical-
-# anchor authority — the LLM provides natural-language variation; the
-# deterministic injector provides canonical CURIE anchoring via the
-# Wave 135a FORM_DATA contract (``_RDF_SHACL_FALLBACK_FORM_DATA`` covers
-# all 40 manifest CURIEs with an ``anchored_status`` discriminator).
-# Operators wanting Wave 120's strict per-call gate pass
-# ``min_preserve_rate=1.0`` to the constructor.
-#
-# History:
-# - Wave 120: strict 100% per-call gate (default 1.0 implicit).
-# - Wave 130a: manifest grew 6 -> 40 CURIEs; per-chunk preserve_tokens
-#   mean 3.58 / median 3 / max 17 made strict 100% un-satisfiable on
-#   14B-Q4 / 7B-Q4 models — ~50% first-attempt fallback rate.
-# - Wave 134: soft-floor at 0.80 — tolerated 20% loss but still failed
-#   chunks with 5+ tokens >50% of the time.
-# - Wave 135b: soft-floor at 0.0. Force-injection at the factory layer
-#   handles canonical anchoring downstream; the LLM provider's job is
-#   natural-language paraphrase variety only.
+# Soft-floor at 0.0: the force-injection path in ``instruction_factory``
+# / ``preference_factory`` is the canonical-anchor authority, so the LLM
+# only owes natural-language variety and the deterministic injector
+# supplies CURIE anchoring downstream. A strict per-call floor here is
+# the wrong lever — a chunk carrying many preserve_tokens fails it most
+# of the time on quantized 7B/14B models, discarding good paraphrases
+# for anchoring the injector would have restored anyway. Operators who
+# do want the strict gate pass ``min_preserve_rate=1.0``.
 DEFAULT_MIN_PRESERVE_RATE = 0.0
 
 
-# Wave 114: local-class kind bounds — initially lowered the 40-char
-# prompt floor inherited from ``_synthesis_common.py::_KIND_BOUNDS``
-# to 25 to accommodate 7B-Q4 paraphrase compression.
+# The local prompt floor MUST stay at 40 to match
+# ``schemas/knowledge/instruction_pair.schema.json``'s
+# ``prompt.minLength: 40``. A lower provider-side floor (tempting, since
+# quantized 7B models compress paraphrases) admits pairs the schema then
+# rejects at audit time — the misalignment surfaces late, after the run.
+# Callers who genuinely need a lower floor pass an explicit
+# ``kind_bounds={"prompt": (25, PROMPT_MAX), ...}``. Completion floor
+# stays at 50: a 30-char training target has quality problems a short
+# prompt does not.
 #
-# Wave 122 follow-up (post-uncapped audit): the canonical
-# ``schemas/knowledge/instruction_pair.schema.json`` enforces
-# ``prompt.minLength: 40``. The 25-floor admitted 5/263 paraphrases on
-# the RDF/SHACL calibration corpus's 14B run that the schema then rejected at audit time
-# (e.g. "Define what an IRI is in RDF." at 29 chars). Realigning the
-# default floor to 40 closes the schema/provider misalignment; 7B-Q4
-# users who legitimately need a lower floor can still pass
-# ``kind_bounds={"prompt": (25, PROMPT_MAX), ...}`` to the constructor.
-# Completion floor stays at 50 — a 30-char training-target completion
-# has legitimate quality concerns the prompt floor does not.
-# Wave 114: terse system prompts for the local path. 7B-Q4 instruction
-# models attend less reliably to long behavioral preambles; the
-# trailing JSON directive in the user message is the most-respected
-# part of the prompt. Keeping these <50 words frees attention for the
-# task itself. Anthropic / Together providers retain their original
-# verbose prompts (Sonnet-class models use the extra context fine).
+# The local system prompts are deliberately terse (<50 words). Quantized
+# instruction models attend less reliably to long behavioral preambles,
+# and the trailing JSON directive in the user message is the
+# most-respected part of the prompt. Anthropic / Together keep their
+# verbose prompts — larger models use the extra context fine.
 _LOCAL_INSTRUCTION_SYSTEM_PROMPT = (
     "You paraphrase training pairs from a deterministic template. "
     "Rewrite the prompt and completion using different wording but "
@@ -211,20 +194,18 @@ class LocalSynthesisProvider:
         self._kind_bounds: Dict[str, tuple] = (
             dict(kind_bounds) if kind_bounds else dict(DEFAULT_LOCAL_KIND_BOUNDS)
         )
-        # Wave 120: smoke-mode callers pass a low cap (typically 1) so
-        # the parse-retry budget bounds smoke wall time. Default None ->
-        # use the module constant for production runs that prioritise
+        # Smoke-mode callers pass a low cap (typically 1) so the
+        # parse-retry budget bounds smoke wall time. Default None ->
+        # the module constant, for production runs that prioritise
         # paraphrase quality over speed.
         self._max_parse_retries = (
             int(max_parse_retries)
             if max_parse_retries is not None
             else MAX_PARSE_RETRIES
         )
-        # Wave 135b: soft preservation contract — fraction of
-        # ``preserve_tokens`` that must appear verbatim per call.
-        # Default 0.0 because force-injection at the factory layer
-        # handles canonical anchoring; the LLM only owns paraphrase
-        # variety. 1.0 restores Wave 120's strict per-call gate.
+        # Soft preservation contract — fraction of ``preserve_tokens``
+        # that must appear verbatim per call. Default 0.0 (see
+        # DEFAULT_MIN_PRESERVE_RATE); 1.0 is the strict per-call gate.
         self._min_preserve_rate = (
             float(min_preserve_rate)
             if min_preserve_rate is not None
@@ -240,15 +221,14 @@ class LocalSynthesisProvider:
         # the Together provider composes — only the configuration
         # differs.
         #
-        # Wave 113 hardening: ``json_mode=True`` makes every request
-        # carry both the Ollama-style ``format: "json"`` field AND the
-        # OpenAI-spec ``response_format: {"type": "json_object"}`` field.
-        # 7B-class instruction models in 4-bit quantization (e.g.
-        # ``qwen2.5:7b-instruct-q4_K_M`` on Ollama) are unreliable at
-        # strict-JSON output without grammar-constrained decoding;
-        # ``format: "json"`` triggers Ollama's JSON-grammar mode and
-        # eliminates the natural-language drift that crashed the Wave
-        # 113 Task 10 pilot run after 3 parse retries.
+        # ``json_mode=True`` makes every request carry BOTH the
+        # Ollama-style ``format: "json"`` field and the OpenAI-spec
+        # ``response_format: {"type": "json_object"}`` field — different
+        # local servers honour different ones. Quantized 7B-class
+        # instruction models are unreliable at strict-JSON output
+        # without grammar-constrained decoding; ``format: "json"``
+        # triggers Ollama's JSON-grammar mode, which is what keeps a run
+        # from exhausting its parse retries on natural-language drift.
         self._oa_client = OpenAICompatibleClient(
             base_url=self._base_url,
             model=self._model,
@@ -289,13 +269,14 @@ class LocalSynthesisProvider:
     ) -> Dict[str, Any]:
         """Paraphrase a draft instruction pair against its chunk.
 
-        Wave 120: ``preserve_tokens`` lists technical CURIEs / surface
-        forms that MUST appear verbatim in the model's output (e.g.
+        ``preserve_tokens`` lists technical CURIEs / surface forms that
+        MUST appear verbatim in the model's output (e.g.
         ``["sh:NodeShape", "rdfs:subClassOf"]``). The directive is
         injected into the user prompt and verified after parse — a
-        response that drops any required token triggers a remediation
-        retry. Exhaustion raises ``surface_form_preservation_failed``
-        so the caller can fall back to the deterministic draft.
+        response falling below ``min_preserve_rate`` triggers a
+        remediation retry. Exhaustion raises
+        ``surface_form_preservation_failed`` so the caller can fall back
+        to the deterministic draft.
         """
         if not isinstance(draft, dict):
             raise TypeError("draft must be a dict")
@@ -322,9 +303,9 @@ class LocalSynthesisProvider:
         )
         out["provider"] = self._provider_name
 
-        # W-D11 T11.3 — thread structured-claim arrays through emit
-        # when the LLM produced them. Optional emit; absent on the
-        # today-default (prompt, completion) shape.
+        # Thread structured-claim arrays through emit when the LLM
+        # produced them. Optional — absent on the default
+        # (prompt, completion) shape.
         for k in ("key_claims", "per_claim_support"):
             if k in parsed:
                 out[k] = parsed[k]
@@ -347,11 +328,10 @@ class LocalSynthesisProvider:
     ) -> Dict[str, Any]:
         """Paraphrase a draft preference triple against its chunk.
 
-        Wave 120: ``preserve_tokens`` listed CURIEs are checked against
-        the ``chosen`` field (the factually-correct completion) so a
-        paraphrase that strips ``sh:NodeShape`` from the chosen answer
-        is rejected. ``rejected`` is not checked — the rule-synthesized
-        rejection may legitimately omit the technical token.
+        ``preserve_tokens`` CURIEs are checked against the ``chosen``
+        field (the factually-correct completion) only. ``rejected`` is
+        deliberately NOT checked — the rule-synthesized rejection may
+        legitimately omit the technical token.
         """
         if not isinstance(draft, dict):
             raise TypeError("draft must be a dict")
@@ -381,8 +361,8 @@ class LocalSynthesisProvider:
         )
         out["provider"] = self._provider_name
 
-        # W-D11 T11.3 — thread structured-claim arrays through emit
-        # when the LLM produced them.
+        # Thread structured-claim arrays through emit when the LLM
+        # produced them.
         for k in ("key_claims", "per_claim_support"):
             if k in parsed:
                 out[k] = parsed[k]
@@ -426,27 +406,25 @@ class LocalSynthesisProvider:
     ) -> Tuple[Dict[str, Any], Dict[str, int], int]:
         """Call the local server and parse JSON via the lenient extractor.
 
-        Wave 113 hardening: 7B-class instruction models in 4-bit
-        quantization wrap their JSON in markdown code fences or
-        surround it with prose despite explicit "JSON only" prompt
-        directives. The embedded client's
-        :meth:`OpenAICompatibleClient._extract_json_lenient` recovers
-        the JSON across the three common drift patterns before parse
-        failure escalates.
+        Quantized instruction models wrap their JSON in markdown code
+        fences or surround it with prose despite explicit "JSON only"
+        directives, so parsing goes through the embedded client's
+        :meth:`OpenAICompatibleClient._extract_json_lenient` rather than
+        a bare ``json.loads``.
 
-        Wave 114 hardening: a parsed response whose required-key
-        values fall below the per-kind length floor now triggers a
-        remediation retry (length-retry), parallel to JSON-parse
-        retry. The model receives a corrective user message stating
-        the observed-vs-required length and rewrites its own prior
-        output. Preserves Wave 112's no-sentinel-injection invariant
-        — the retry asks the model to expand, never injects filler.
+        A parsed response whose required-key values fall below the
+        per-kind length floor triggers a remediation retry, parallel to
+        the JSON-parse retry: the model receives a corrective user
+        message stating observed-vs-required length and rewrites its own
+        prior output. This preserves the no-sentinel-injection invariant
+        — the retry asks the model to expand, and NEVER pads the field
+        with filler, which would poison the pair.
 
         After ``MAX_PARSE_RETRIES`` exhaustion (across either failure
         class), raises ``SynthesisProviderError`` with code
         ``paraphrase_invalid_after_retry`` and a truncated 500-char
-        tail of the last response — postmortem visibility on what the
-        model actually emitted.
+        tail of the last response, for postmortem visibility into what
+        the model actually emitted.
         """
         messages = self._build_messages(system_prompt, chunk_text, user_prompt)
         attempts = 0
@@ -493,22 +471,21 @@ class LocalSynthesisProvider:
                     messages, field, length, floor,
                 )
                 continue
-            # Wave 120: surface-form preservation gate. After length
-            # passes, verify each preserve_token appears verbatim in the
+            # Surface-form preservation gate. After length passes,
+            # verify each preserve_token appears verbatim in the
             # nominated fields (instruction: prompt + completion;
-            # preference: chosen only). 14B-class local models silently
-            # rewrite ``sh:NodeShape`` -> "node shape", which is what
-            # bit Wave 119's full-corpus run.
+            # preference: chosen only). Local models silently rewrite
+            # ``sh:NodeShape`` -> "node shape", which reads fine but
+            # destroys the CURIE anchoring the pair exists to teach.
             missing_tokens = self._missing_preserve_tokens(
                 parsed, preserve_tokens or [], preserve_in_keys,
             )
-            # Wave 134: soft preservation contract. Compute the actual
-            # preservation rate vs. the configured floor; only retry +
-            # fall back when the rate falls BELOW the floor. The
-            # remediation hint still lists the specific missing tokens so
-            # the model has the best chance of also recovering them on
-            # retry, but the gate accepts the result early if enough
-            # tokens (default ≥80%) survived the paraphrase.
+            # Soft preservation contract: compute the actual
+            # preservation rate against the configured floor and retry
+            # only when the rate falls BELOW it. The remediation hint
+            # still names the specific missing tokens so a retry has the
+            # best chance of recovering them, but a result at or above
+            # the floor is accepted without burning another call.
             preserve_token_count = len(preserve_tokens or [])
             if preserve_token_count > 0 and missing_tokens:
                 preserved_rate = (
@@ -543,9 +520,9 @@ class LocalSynthesisProvider:
                     self._min_preserve_rate, missing_tokens,
                 )
             return parsed, last_usage, total_http_retries
-        # Wave 120: distinguish preservation failure so the caller can
-        # fall back to the deterministic draft instead of dropping the
-        # pair entirely.
+        # Distinguish preservation failure with its own error code so
+        # the caller can fall back to the deterministic draft instead of
+        # dropping the pair entirely.
         if preserve_tokens and last_err and "surface forms missing" in last_err:
             raise SynthesisProviderError(
                 f"{type(self).__name__}: paraphrase dropped required surface "
@@ -632,7 +609,7 @@ class LocalSynthesisProvider:
         The remediation message is short and concrete: states the
         observed-vs-required length and asks for a specific edit.
         Avoids any sentinel filler — the model rewrites its own prior
-        output, preserving Wave 112's no-injection invariant.
+        output, preserving the no-filler-injection invariant.
         """
         remediation = (
             f"The prior response had {field}={length} chars but the "
@@ -708,11 +685,11 @@ class LocalSynthesisProvider:
         preserve = cls._preserve_directive(
             preserve_tokens or [], "the prompt or completion",
         )
-        # Wave 126: definition-style chunks (content_type=definition or
-        # Bloom='remember') tend to elicit short "Define X." prompts (~20-30
-        # chars) that fail the schema's 40-char floor. Inject an explicit
-        # explanation-asking directive so the first attempt produces a
-        # long-form question instead of leaning on the retry path.
+        # Definition-style chunks (content_type=definition or
+        # Bloom='remember') elicit short "Define X." prompts that fall
+        # under the schema's 40-char floor. Inject an explicit
+        # explanation-asking directive so the FIRST attempt produces a
+        # long-form question rather than relying on the retry path.
         content_type = str(draft.get("content_type", "")).lower()
         bloom_level = str(draft.get("bloom_level", "")).lower()
         is_definition_kind = (
@@ -880,13 +857,11 @@ class LocalSynthesisProvider:
         retry_count: int,
         parsed: Optional[Dict[str, Any]] = None,
     ) -> str:
-        # Wave 115: interpolate per-chunk pedagogical signals
-        # (bloom_level, concept_tags) so the rationale string varies
-        # materially across calls. Decision-capture validator scores
-        # formulaic rationales as 'developing'; chunk-specific
-        # interpolation lifts the score to 'proficient' without
-        # changing what gets sent to the model.
-        # W-D11 T11.3: append per-claim evidence_quote emit rate.
+        # Interpolate per-chunk pedagogical signals (bloom_level,
+        # concept_tags) so the rationale varies materially across calls:
+        # the decision-capture validator scores formulaic rationales as
+        # 'developing'. None of this changes what is sent to the model.
+        # Also appends the per-claim evidence_quote emit rate.
         from Trainforge.generators._base_synthesis_provider import (
             render_evidence_quote_rationale_fragment,
         )

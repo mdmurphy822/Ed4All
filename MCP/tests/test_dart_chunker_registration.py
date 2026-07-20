@@ -1,29 +1,25 @@
-"""
-Phase 7b Subtask 9 — regression test for the chunker agent registration.
+"""Regression test for the chunker agent registration.
 
-DART->semantik naming purge (task #19 Stage 3): the agent was renamed
-``dart-chunker`` -> ``semantik-chunker``. The legacy ``dart-chunker`` name
-is kept as a read-compat dispatch alias in ``AGENT_TOOL_MAPPING`` so old
-resume states / configs still route.
+The canonical agent name is ``semantik-chunker``; the legacy
+``dart-chunker`` name survives ONLY as a read-compat dispatch alias in
+``AGENT_TOOL_MAPPING``, so paused runs resumed from an old checkpoint
+still route. Removing the alias breaks resume.
 
-Pins both registration sites so a future refactor can't silently drop
-either half of the chunker wiring:
+Pins three sites so a refactor can't silently drop half the wiring:
 
-1. ``MCP/core/executor.py::AGENT_TOOL_MAPPING`` carries a
-   ``"semantik-chunker": "run_dart_chunking"`` entry (canonical) plus the
-   legacy ``"dart-chunker"`` alias. The actual ``run_dart_chunking`` helper
-   is implemented by ST 11 and registered in
-   ``MCP/tools/pipeline_tools.py::_build_tool_registry``; this test asserts
-   only the mapping shape.
+1. ``MCP/core/executor.py::AGENT_TOOL_MAPPING`` maps both
+   ``semantik-chunker`` (canonical) and ``dart-chunker`` (alias) to
+   ``run_dart_chunking``. Only the mapping shape is asserted here; the
+   helper itself is registered in
+   ``MCP/tools/pipeline_tools.py::_build_tool_registry``.
 
-2. ``config/agents.yaml`` has a ``semantik-chunker`` entry under ``agents``
-   with ``type: utility`` (mirroring the ``textbook-stager`` precedent —
-   deterministic transformation, in-code dispatcher, no ``.md`` spec).
+2. ``config/agents.yaml`` carries a ``semantik-chunker`` entry with
+   ``type: utility`` — a deterministic transformation dispatched
+   in-code, with no ``.md`` agent spec.
 
-3. ``semantik-chunker`` does NOT leak into ``AGENT_SUBAGENT_SET`` — it is
-   a deterministic chunker, not an LLM-reasoning agent, so it must
-   stay on the in-process ``_invoke_tool`` path regardless of
-   ``ED4ALL_AGENT_DISPATCH``.
+3. ``semantik-chunker`` does NOT appear in ``AGENT_SUBAGENT_SET``. It
+   runs no LLM, so it must stay on the in-process ``_invoke_tool`` path
+   regardless of ``ED4ALL_AGENT_DISPATCH``.
 """
 import sys
 from pathlib import Path
@@ -48,19 +44,18 @@ def test_semantik_chunker_in_agent_tool_mapping():
     """``semantik-chunker`` (canonical) must map to ``run_dart_chunking``,
     and the legacy ``dart-chunker`` alias must still resolve (read-compat)."""
     assert "semantik-chunker" in AGENT_TOOL_MAPPING, (
-        "task #19 Stage 3 regression — semantik-chunker missing from "
-        "AGENT_TOOL_MAPPING in MCP/core/executor.py"
+        "semantik-chunker missing from AGENT_TOOL_MAPPING in "
+        "MCP/core/executor.py"
     )
     assert AGENT_TOOL_MAPPING["semantik-chunker"] == "run_dart_chunking", (
-        "task #19 Stage 3 regression — semantik-chunker must map to "
-        "run_dart_chunking (the ST 11 helper registered in "
+        "semantik-chunker must map to run_dart_chunking (registered in "
         "MCP/tools/pipeline_tools.py::_build_tool_registry); got "
         f"{AGENT_TOOL_MAPPING['semantik-chunker']!r}"
     )
-    # Legacy dart-chunker dispatch alias survives (Stage-1 read-compat).
     assert AGENT_TOOL_MAPPING.get("dart-chunker") == "run_dart_chunking", (
-        "task #19 Stage 3 regression — legacy dart-chunker dispatch alias "
-        "must still resolve to run_dart_chunking for old resume states"
+        "the legacy dart-chunker alias must still resolve to "
+        "run_dart_chunking, or runs resumed from an old checkpoint "
+        "fail to dispatch"
     )
 
 
@@ -70,23 +65,20 @@ def test_semantik_chunker_in_agents_yaml():
     data = yaml.safe_load(AGENTS_YAML.read_text())
     agents = data.get("agents", {})
     assert "semantik-chunker" in agents, (
-        "task #19 Stage 3 regression — semantik-chunker missing from "
-        "config/agents.yaml::agents"
+        "semantik-chunker missing from config/agents.yaml::agents"
     )
 
     entry = agents["semantik-chunker"]
     assert entry.get("type") == "utility", (
-        "task #19 Stage 3 regression — semantik-chunker must be type=utility "
-        "(deterministic chunker, no LLM dispatch — mirrors "
-        f"textbook-stager precedent); got type={entry.get('type')!r}"
+        "semantik-chunker must be type=utility (deterministic chunker, "
+        f"no LLM dispatch); got type={entry.get('type')!r}"
     )
-    # Capabilities list is a soft contract — assert it exists and is
-    # non-empty so a future drop-by-merge-conflict gets caught, but
-    # don't pin the exact strings.
+    # The capabilities list is a soft contract: assert only that it is
+    # non-empty, so a drop-by-merge-conflict is caught without pinning
+    # strings that legitimately evolve.
     capabilities = entry.get("capabilities") or []
     assert capabilities, (
-        "task #19 Stage 3 regression — semantik-chunker must declare at "
-        "least one capability"
+        "semantik-chunker must declare at least one capability"
     )
 
 
@@ -96,8 +88,7 @@ def test_semantik_chunker_is_not_subagent():
     ``AGENT_SUBAGENT_SET`` (which would route it through
     ``dispatcher.dispatch_task`` when ``ED4ALL_AGENT_DISPATCH=true``)."""
     assert "semantik-chunker" not in AGENT_SUBAGENT_SET, (
-        "task #19 Stage 3 regression — semantik-chunker leaked into "
-        "AGENT_SUBAGENT_SET. The chunker is a deterministic "
-        "transformation with no LLM dispatch; it must stay on the "
-        "in-process _invoke_tool path."
+        "semantik-chunker leaked into AGENT_SUBAGENT_SET. The chunker "
+        "is a deterministic transformation with no LLM dispatch; it "
+        "must stay on the in-process _invoke_tool path."
     )

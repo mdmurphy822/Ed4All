@@ -46,65 +46,43 @@ _TRUTHY = frozenset({"1", "true", "yes", "on"})
 # is inert and snapshots stay byte-identical (read each call so tests toggle).
 BLOCK_QUALITY_RUBRIC_ENV = "ED4ALL_BLOCK_QUALITY_RUBRIC"
 
-# W8.8 SHADOW-COLLECT flag. Default OFF. Chicken-and-egg fix: the IB6 gates are
-# default-OFF (keystone rubric flag), so they never COMPUTE and never generate the
-# fire-rate data the calibration harness needs to justify a critical-flip. When this
-# flag is truthy (and the keystone rubric flag is off), the IB6 validators run their
-# MEASUREMENT path — computing + recording the per-block signals (metadata + warning
-# GateIssues + decision captures the calibration harness reads) — WITHOUT any verdict
-# change: these gates are warning-day-1 (severity: warning, on_fail: warn), so they
-# already never block, and shadow adds no critical issue. The emit-side render (the
-# ``ED4ALL_BLOCK_QUALITY_RUBRIC``-gated chip / rubric-field HTML) stays OFF, so product
-# bytes / snapshots remain byte-identical — only validator telemetry accrues.
+# SHADOW-COLLECT flag. Default OFF. Breaks the chicken-and-egg where the IB6
+# gates, being default-OFF, never compute and so never generate the fire-rate
+# data calibration needs to justify a critical flip. When truthy (and the
+# keystone rubric flag is off), the IB6 validators run their MEASUREMENT path —
+# per-block signals, warning GateIssues, decision captures — with no verdict
+# change (these gates are warning-only) and with the emit-side chip / rubric
+# HTML still OFF, so product bytes stay byte-identical; only telemetry accrues.
 BLOCK_QUALITY_SHADOW_ENV = "ED4ALL_BLOCK_QUALITY_SHADOW"
 
 # IB6.4 D2 body ceiling (chars). Default 200 ("~200char single idea" target).
 BLOCK_BODY_CHAR_CEILING_ENV = "ED4ALL_BLOCK_BODY_CHAR_CEILING"
 _DEFAULT_BODY_CHAR_CEILING = 200
 
-# IB6.4 per-block-TYPE body-char budget (FIX 2 — type-blind-ceiling fix;
-# FIX 3 — per-type granularity calibration, cal2 cohort).
+# Per-block-TYPE body-char budget.
 #
-# The single global 200-char ceiling was structurally unsatisfiable for the
-# exposition / answer-bearing block types: across two real corpora only 1 of 99
-# non-exempt blocks measured <=200 chars (measured medians 794 and 1216 on
-# two calibration corpora). The
-# 200 target is the right ATOMIC single-idea budget (key_idea / callout / vocab
-# card / formula — a one-line idea), but exposition that legitimately develops
-# ONE idea across a worked example, a diagram long-description, a scenario, or a
-# multi-step problem needs a higher budget, and a STRUCTURAL aggregator (a
-# prereq set, a recap, a checklist, an acronym table) is a roll-up of several
-# entries by construction, so it needs a higher budget still.
+# A single global 200-char ceiling is structurally unsatisfiable for the
+# exposition / answer-bearing types and pins the gate at its 50-issue cap with
+# mostly FALSE positives. 200 is the right ATOMIC single-idea budget (key_idea /
+# callout / vocab_card / formula — a one-line idea), but exposition that
+# legitimately develops ONE idea across a worked example, a diagram
+# long-description, a scenario, or a multi-step problem needs more, and a
+# STRUCTURAL aggregator (prereq set, recap, checklist, acronym table) is a
+# roll-up of several entries by construction, so it needs more still.
 #
-# FIX 2 raised only 6 exposition types to 1000 and left every OTHER non-exempt
-# type pinned at the 200 atomic default. On the cal2 cohort (a 66-block
-# calibration-corpus rewrite) the 7B authored reasonable-length content for
-# many of those still-pinned types — objective 1599 / acronym 1267 /
-# prereq_set 836 / hook 547 / problem 897 / reflection_prompt 1003 / recap 473
-# / checklist 784 / activity 1623 / explanation 2879 — so 37 non-exempt blocks
-# (50 incl. the orthogonal chunk axis) tripped the char ceiling, pinning the
-# gate at its 50-issue cap with mostly FALSE positives (a 547-char hook is not
-# an "everything-block"; it is a normally-sized activation prompt).
-#
-# FIX 3 extends the table to a realistic per-type ceiling reflecting each
-# type's INTENDED granularity, grounded in the cal2 cohort's measured p50-p75
-# bodies (so the table does NOT just blanket-raise to never fire — genuine
-# over-stuffers still trip it):
+# The three tiers are calibrated to each type's INTENDED granularity around
+# measured p50-p75 bodies — deliberately NOT a blanket raise, so genuine
+# over-stuffers still trip the ceiling:
 #
 #   * ATOMIC (~200) — a single one-line idea: vocab_card / callout / formula /
-#     key_idea. (cal2 key_idea ran 266-516 → still trips the char axis, which
-#     is the intended catch: a key_idea is meant to be one line.)
+#     key_idea. A typical key_idea still trips this; that is the intended catch.
 #   * DEVELOPED (~1000) — one idea developed across a few sentences / steps:
 #     concept / example / worked_example / self_check_question / diagram /
-#     scenario (the FIX 2 six) PLUS explanation / problem / activity /
-#     guided_practice / misconception / hook / multimedia. (cal2 p50-p75 for
-#     these sits 397-937; the genuine over-stuffers — concept 1839,
-#     explanation 2879 — still trip it.)
+#     scenario / explanation / problem / activity / guided_practice /
+#     misconception / hook / multimedia.
 #   * AGGREGATING (~1200) — a structural roll-up of several entries by
 #     construction: prereq_set / recap / checklist / reflection_prompt /
-#     acronym / table / discussion_prompt / resources / flip_card_grid. (cal2
-#     p75 836/473/784/1165 sits under 1200; the genuine over-stuffer —
-#     acronym 2058 — still trips it.)
+#     acronym / table / discussion_prompt / resources / flip_card_grid.
 #
 # ``objective`` and ``summary_takeaway`` are NOT in the table: they are
 # EXEMPT from the body-overflow check entirely in
@@ -163,22 +141,22 @@ def block_quality_rubric_enabled() -> bool:
 
 
 def block_quality_shadow_enabled() -> bool:
-    """True iff ``ED4ALL_BLOCK_QUALITY_SHADOW`` is truthy (W8.8, read each call).
+    """True iff ``ED4ALL_BLOCK_QUALITY_SHADOW`` is truthy (read each call).
 
-    Shadow-collect is measurement-only: the IB6 gates compute + record their signals
-    without gating (they are warning-day-1, so no verdict changes) so calibration
-    fire-rate data can accrue while the keystone rubric flag — and its emit-side
-    rendering — stays off. Parse-with-fallback: garbage / unset → False.
+    Shadow-collect is measurement-only: the IB6 gates compute + record their
+    signals without gating (they are warning-only, so no verdict changes) so
+    calibration fire-rate data can accrue while the keystone rubric flag — and
+    its emit-side rendering — stays off. Garbage / unset → False.
     """
     return os.environ.get(BLOCK_QUALITY_SHADOW_ENV, "").strip().lower() in _TRUTHY
 
 
 def block_quality_scoring_active() -> bool:
-    """True iff the IB6 scoring/measurement path should run (W8.8).
+    """True iff the IB6 scoring/measurement path should run.
 
     ``ED4ALL_BLOCK_QUALITY_RUBRIC`` (the keystone: scoring + emit + rollup) OR
-    ``ED4ALL_BLOCK_QUALITY_SHADOW`` (measurement only, no emit, no verdict change).
-    Default (both unset) → False → byte-identical to the pre-W8.8 disabled no-op.
+    ``ED4ALL_BLOCK_QUALITY_SHADOW`` (measurement only, no emit, no verdict
+    change). Both unset → False → the whole surface is a no-op.
     """
     return block_quality_rubric_enabled() or block_quality_shadow_enabled()
 
@@ -261,15 +239,15 @@ def is_interactive_block(block: Any) -> bool:
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
 
-# IB6.4 escaped-provenance scrub (FIX 2 — escaped-tag measurement bug).
+# Escaped-provenance scrub.
 #
 # Source-provenance markup is sometimes ENTITY-ESCAPED into a block's body
 # (``&lt;aside data-cf-source-ids='dart:slug#b1'&gt;…&lt;/aside&gt;``). The
-# plain ``_TAG_RE`` only strips literal ``<...>`` tags, so an escaped run is
-# counted as visible body text and inflates the measured length (observed: a
-# a real ``key_idea`` 667 → 2843 chars). We TARGET escaped-tag runs only — we do
-# NOT blanket-unescape every entity, because a legitimately-escaped ``&amp;``
-# or a math ``&lt;`` ("x &lt; 5") is real content and must keep its length.
+# plain ``_TAG_RE`` only strips literal ``<...>`` tags, so an escaped run counts
+# as visible body text and can multiply the measured length. TARGET escaped-tag
+# runs only — do NOT blanket-unescape every entity, because a legitimately
+# escaped ``&amp;`` or a math ``&lt;`` ("x &lt; 5") is real content and must
+# keep its length.
 #
 # Rule:
 #   1. Drop an escaped ``aside`` provenance element WHOLE — opening tag,
@@ -344,7 +322,7 @@ def body_text_of(block: Any) -> str:
                 val = content.get(key)
                 if isinstance(val, str) and val.strip():
                     parts.append(val)
-    # FIX 2: drop entity-escaped provenance markup BEFORE stripping literal
+    # Drop entity-escaped provenance markup BEFORE stripping literal
     # tags so an escaped ``&lt;aside data-cf-source-ids=…&gt;…&lt;/aside&gt;``
     # run does not inflate the measured body length. Scoped to body_text_of so
     # strip_html_text's contract (used by interaction_feedback) is unchanged.

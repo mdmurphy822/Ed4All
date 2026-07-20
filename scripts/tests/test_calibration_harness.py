@@ -71,8 +71,8 @@ def test_corpus_key_strips_timestamp_prefix_and_variant():
 
 
 def test_corpus_key_dash_underscore_equivalence():
-    # The dash vs underscore variants of one corpus must collapse to one key (the bug
-    # that originally inflated distinct count to 2).
+    # Dash and underscore variants name ONE corpus; if they keyed separately the
+    # distinct-corpus count would double and a single corpus could look flip-ready.
     assert ch._corpus_key("sample-alg-9") == ch._corpus_key("SAMPLE_ALG_9")
 
 
@@ -158,7 +158,7 @@ def test_content_key_from_textbook_structure_when_no_blocks(tmp_path):
     d = _write_export_with_structure(
         tmp_path,
         "alg-from-structure",
-        ["/inp/textbooks/TTC_x/sample-algebra-2e-s11to13_accessible.html"],
+        ["/inp/textbooks/run_x/sample-algebra-2e-s11to13_accessible.html"],
     )
     assert ch._content_corpus_key(d, "alg-from-structure") == "src:sample-algebra-2e"
 
@@ -379,7 +379,7 @@ def test_report_has_all_gate_families():
 
 
 # --------------------------------------------------------------------------------------
-# W8.2 — GATE_FAMILIES reconciled with config/workflows.yaml deferred-flip gates.
+# GATE_FAMILIES reconciled with config/workflows.yaml deferred-flip gates.
 # --------------------------------------------------------------------------------------
 def test_config_deferred_parser_associates_marker_with_own_gate_only():
     # Synthesize a tiny two-gate config where the FIRST gate has NO marker and the
@@ -462,8 +462,9 @@ def test_uncurated_deferred_gate_is_auto_synthesized():
 
 
 # --------------------------------------------------------------------------------------
-# schema-v2 attribution: per-block fire_rate from per-block issue_count, NOT the
-# smeared phase-level ``passed`` flag (the bug this fix removes).
+# schema-v2 attribution: per-block fire_rate comes from per-block issue_count,
+# NOT the phase-level ``passed`` flag — that flag is smeared onto every block,
+# so reading it would drive every gate's fire rate toward 100%.
 # --------------------------------------------------------------------------------------
 def _read_report_dict(report_dict: dict) -> "ch.CorpusResult":
     import json
@@ -505,7 +506,7 @@ def test_block_fire_rate_uses_per_block_issue_count_not_phase_passed():
     res = _read_report_dict(report_dict)
     obs = res.observations["IB4 UDL multiple-means coverage"]
     assert obs.evaluated == 4
-    assert obs.fired == 1            # NOT 4 (the schema-v1 smear)
+    assert obs.fired == 1            # NOT 4 (reading the smeared flag)
     assert abs(obs.fire_rate - 0.25) < 1e-9
 
 
@@ -573,7 +574,8 @@ def test_aggregator_reader_records_pre_courseforge_phase_families():
     # A full-run aggregator carrying chunk_wcag_status (chunking phase),
     # co_terminal_alignment + source_coverage + objective_source_refs (course_planning)
     # -> each family records ONE phase-level observation that fires iff issue_count > 0.
-    # ``passed`` stays True (warning-day-1) and must NOT suppress the fire.
+    # A warning-severity gate reports passed=True while carrying issues, so
+    # ``passed`` must NOT suppress the fire.
     agg = {
         "per_phase": [
             {

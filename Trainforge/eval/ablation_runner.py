@@ -1,4 +1,4 @@
-"""Wave 102 - Ablation orchestrator.
+"""Ablation orchestrator.
 
 Produces two ablation tables that drop into the HF README and the
 ``ablation_report.json`` next to ``eval_report.json``:
@@ -59,9 +59,9 @@ _DEFAULT_BENCHMARK = "ED4ALL-Bench"
 _DEFAULT_BENCHMARK_VERSION = "1.0"
 
 
-# Wave 105: when a setup tagged as +rag produces empty retrieved_chunks
-# for more than this fraction of probes, the runner emits a CRITICAL
-# log line and stamps `setup.health = "rag_inert"` on that row.
+# When a setup tagged as +rag produces empty retrieved_chunks for more
+# than this fraction of probes, the runner emits a CRITICAL log line and
+# stamps `setup.health = "rag_inert"` on that row.
 _RAG_INERT_FRACTION_THRESHOLD = 0.5
 
 
@@ -76,7 +76,7 @@ def _is_rag_setup_label(setup_label: str) -> bool:
 
 
 class _RAGRecordingProxy:
-    """Wave 105: wrap a RAG-backed callable to capture per-prompt chunks.
+    """Wrap a RAG-backed callable to capture per-prompt chunks.
 
     The harness invokes the model callable once per probe but doesn't
     know about retrieval. We need the chunks the underlying RAGCallable
@@ -202,11 +202,11 @@ class AblationRunner:
         self.max_holdout_questions = max_holdout_questions
         self.harness_factory = harness_factory or self._default_harness_factory
 
-        # Wave 103: pin the eval config so top_k / temperature / etc.
-        # come from the per-course lockfile rather than constructor
-        # arguments. When the per-course config is missing the loader
-        # falls back to schemas/eval/default_eval_config.yaml and logs
-        # a warning.
+        # Pin the eval config so top_k / temperature / etc. come from
+        # the per-course lockfile rather than constructor arguments —
+        # ablation rows are only comparable when every setup ran under
+        # identical decoding variables. A missing per-course config
+        # falls back to schemas/eval/default_eval_config.yaml + a warning.
         if eval_config is None:
             try:
                 eval_config = load_eval_config(self.course_path)
@@ -234,21 +234,21 @@ class AblationRunner:
 
     def run(self, output_path: Optional[Path] = None) -> Path:
         """Run both tables and emit ``ablation_report.json``."""
-        # Wave 103: open a trace writer if none was injected, so every
-        # run materialises eval_traces.jsonl alongside the report.
+        # Open a trace writer if none was injected, so every run
+        # materialises eval_traces.jsonl alongside the report.
         owned_trace_writer = False
         if self.trace_writer is None:
             trace_path = self.course_path / "eval" / "eval_traces.jsonl"
             self.trace_writer = TraceWriter(trace_path)
             owned_trace_writer = True
 
-        # Wave 104: collect per-setup eval_reports so we can emit a
+        # Collect per-setup eval_reports so `run()` can emit a
         # consolidated `eval_report.json` next to ablation_report.json.
-        # The consolidated report carries the canonical Wave 92 EvalReport
-        # shape (faithfulness / coverage / per_tier / per_invariant)
-        # for the headline `adapter+rag` setup when present, falling
-        # through to the strongest setup otherwise. Tier metadata for
-        # the other setups lives under `per_setup`.
+        # It carries the canonical EvalReport shape (faithfulness /
+        # coverage / per_tier / per_invariant) for the headline
+        # `adapter+rag` setup when present, falling through to the
+        # strongest setup otherwise. Tier metadata for the other setups
+        # lives under `per_setup`.
         self._eval_reports_by_setup: Dict[str, Dict[str, Any]] = {}
 
         try:
@@ -285,12 +285,11 @@ class AblationRunner:
 
         self._headline_delta_block = report["headline_delta"]
 
-        # Wave 104: consolidated eval_report.json. The harness writes
-        # one per scratch setup; the runner picks the canonical setup
-        # (adapter+rag if present, else the strongest setup by
-        # accuracy) and copies its payload to eval_report.json
-        # alongside the ablation report. Per-setup payloads remain
-        # accessible at `eval/_ablation_<setup>.json`.
+        # Consolidated eval_report.json. The harness writes one per
+        # scratch setup; the runner picks the canonical setup
+        # (adapter+rag if present, else the strongest by accuracy) and
+        # copies its payload to eval_report.json alongside the ablation
+        # report. Per-setup payloads stay at `eval/_ablation_<setup>.json`.
         self._write_consolidated_eval_report(output_path.parent)
 
         return output_path
@@ -300,10 +299,10 @@ class AblationRunner:
 
         Picks the canonical setup (adapter+rag if available, else the
         setup with the highest coverage) and copies its eval_report
-        payload to `eval/eval_report.json`. The Wave 92 contract
-        requires this file to exist next to model_card.json provenance
-        hashes; the ablation runner overrides per-setup output paths
-        to scratch files, so we re-emit the canonical here.
+        payload to `eval/eval_report.json`. That file must exist next to
+        the model_card.json provenance hashes, and the ablation runner
+        overrides per-setup output paths to scratch files — so the
+        canonical report has to be re-emitted here.
         """
         if not self._eval_reports_by_setup:
             return
@@ -347,7 +346,7 @@ class AblationRunner:
         )
 
     # ------------------------------------------------------------------ #
-    # Wave 103 helpers                                                    #
+    # Trace + health helpers                                              #
     # ------------------------------------------------------------------ #
 
     def _evaluate_rag_health(
@@ -357,7 +356,7 @@ class AblationRunner:
         recorder: Optional["_RAGRecordingProxy"],
         eval_report: Dict[str, Any],
     ) -> Optional[str]:
-        """Wave 105: classify RAG health for a setup row.
+        """Classify RAG health for a setup row.
 
         Returns ``"rag_inert"`` when more than
         :data:`_RAG_INERT_FRACTION_THRESHOLD` of the probes a
@@ -425,15 +424,15 @@ class AblationRunner:
             return
 
         for i, probe in enumerate(probes):
-            # Wave 104: harness-emitted per_question records carry
-            # `ground_truth_chunk_id` directly; older fixtures may
-            # carry a `retrieved_chunks` array. Tolerate both shapes.
+            # Harness-emitted per_question records carry
+            # `ground_truth_chunk_id` directly; older fixtures may carry
+            # a `retrieved_chunks` array. Tolerate both shapes.
             chunks = probe.get("retrieved_chunks") or []
-            # Wave 105: when the harness didn't surface chunks per
-            # probe, look the chunks up via the per-prompt recorder
-            # populated by the RAGCallable. Match against the probe
-            # text first; if absent, leave chunks empty (the runner
-            # health check upstream will have already flagged this).
+            # When the harness didn't surface chunks per probe, look
+            # them up via the per-prompt recorder populated by the
+            # RAGCallable, keyed on the probe text. If absent, leave
+            # chunks empty — the health check above has already flagged
+            # a systematically-empty retrieval path.
             if not chunks and rag_recorder is not None:
                 probe_text = str(probe.get("probe", ""))
                 recorded = rag_recorder.records.get(probe_text)
@@ -506,8 +505,8 @@ class AblationRunner:
     def _run_headline_table(self) -> List[Dict[str, Any]]:
         rows: List[Dict[str, Any]] = []
         for setup in self.setups:
-            # Wave 105: wrap +rag callables so we can capture
-            # retrieved_chunks per probe and write them into traces.
+            # Wrap +rag callables so retrieved_chunks are captured per
+            # probe and written into traces.
             recorder: Optional[_RAGRecordingProxy] = None
             run_callable = setup.callable
             if _is_rag_setup_label(setup.setup):
@@ -525,8 +524,8 @@ class AblationRunner:
                 # Keep the per-setup scratch file alongside the report;
                 # cheap on disk and useful for post-hoc auditing.
                 pass
-            # Wave 104: stash the eval_report so `run()` can write a
-            # consolidated `eval_report.json` after the loop.
+            # Stash the eval_report so `run()` can write a consolidated
+            # `eval_report.json` after the loop.
             if hasattr(self, "_eval_reports_by_setup"):
                 self._eval_reports_by_setup[setup.setup] = eval_report
             metrics = _extract_metrics(eval_report)
@@ -539,8 +538,8 @@ class AblationRunner:
                 "source_match": _round(metrics["source_match"]),
                 "qualitative_score": qualitative,
             }
-            # Wave 105: stamp setup.health and emit a CRITICAL log if the
-            # +rag path produced empty retrievals on >50% of probes.
+            # Stamp setup.health and emit a CRITICAL log when the +rag
+            # path produced empty retrievals on most probes.
             health = self._evaluate_rag_health(
                 setup_label=setup.setup,
                 recorder=recorder,
@@ -549,10 +548,10 @@ class AblationRunner:
             if health is not None:
                 row["health"] = health
             rows.append(row)
-            # Wave 103: trace probes for this setup. Headline rows
-            # never specify a retrieval method (the headline ablation
-            # is anchored on bm25 by convention, not as a method
-            # sweep); record None to keep the schema consistent.
+            # Trace probes for this setup. Headline rows never specify a
+            # retrieval method — the headline ablation is anchored on
+            # bm25 by convention, not run as a method sweep — so record
+            # None to keep the trace schema consistent.
             self._emit_traces_for_setup(
                 setup_label=setup.setup,
                 retrieval_method=None,
@@ -568,13 +567,12 @@ class AblationRunner:
         judge = setup.qualitative_judge
         if judge is None or not getattr(judge, "enabled", False):
             return None
-        # Wave 102 minimal wiring: score the per-question entries we
-        # can find in the eval_report. Faithfulness layer publishes
-        # ``per_tier.faithfulness`` aggregates; the per-probe records
-        # live under per_tier or per_invariant depending on the layer.
-        # When the report doesn't expose per-probe records (e.g. the
-        # synthesized fixtures used in tests), we score the
-        # aggregates and return the mean.
+        # Score whatever per-question entries the eval_report exposes.
+        # The faithfulness layer publishes ``per_tier.faithfulness``
+        # aggregates; per-probe records live under per_tier or
+        # per_invariant depending on the layer. When the report exposes
+        # no per-probe records (e.g. synthesized test fixtures), score
+        # the aggregates and return the mean.
         probes = []
         # Look for per-question records in the faithfulness payload
         # (the production harness writes a richer per-question array
@@ -616,8 +614,8 @@ class AblationRunner:
         rows: List[Dict[str, Any]] = []
         for method in _RETRIEVAL_METHODS:
             method_callable = self.retrieval_method_factory(method)
-            # Wave 105: every method-sweep row is implicitly +rag; wrap
-            # the callable to capture retrieved_chunks for traces.
+            # Every method-sweep row is implicitly +rag; wrap the
+            # callable to capture retrieved_chunks for traces.
             recorder = _RAGRecordingProxy(method_callable)
             run_callable = recorder
             harness = self.harness_factory(
@@ -631,10 +629,10 @@ class AblationRunner:
             harness.run_all(output_path=scratch)
             eval_report = json.loads(scratch.read_text(encoding="utf-8"))
             metrics = _extract_metrics(eval_report)
-            # Wave 104: prefer the callable's mean_latency_ms (rolling
-            # mean over its retrieval calls); fall back to the
-            # harness's persisted metric in eval_report.metrics for
-            # cases where the callable itself didn't surface latency.
+            # Prefer the callable's mean_latency_ms (rolling mean over
+            # its retrieval calls); fall back to the harness's persisted
+            # eval_report.metrics value when the callable didn't surface
+            # latency itself.
             mean_latency = getattr(method_callable, "mean_latency_ms", None)
             if mean_latency is None:
                 mean_latency = (
@@ -658,9 +656,8 @@ class AblationRunner:
             if health is not None:
                 row["health"] = health
             rows.append(row)
-            # Wave 103: trace each probe under the
-            # adapter+rag-method-sweep label, tagging the active
-            # retrieval method.
+            # Trace each probe under the adapter+rag-method-sweep
+            # label, tagging the active retrieval method.
             self._emit_traces_for_setup(
                 setup_label="adapter+rag-method-sweep",
                 retrieval_method=method,

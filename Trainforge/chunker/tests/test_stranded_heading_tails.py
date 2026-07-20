@@ -1,4 +1,4 @@
-"""Defect D4 — stranded next-section heading-tail relocation regression net.
+"""Stranded next-section heading-tail relocation regression net.
 
 Covers the deterministic, default-off ``TRAINFORGE_RELOCATE_STRANDED_HEADINGS``
 post-pass:
@@ -11,11 +11,10 @@ post-pass:
   cross-module / no-follower / mid-sentence guards, the
   already-starts-with-marker de-dup, and idempotence.
 
-Fixtures use the EXACT audit evidence from
-``LibV2/courses/alg-glm-02/semantik_chunks/chunks.jsonl`` chunk 00007 ->
-00008: a chunk ending ``"...Figure. 1.1 EXERCISES"`` relocating
-``"1.1 EXERCISES"`` to open the next chunk. All fixtures are inline
-duck-typed chunk dicts; no models / GPU / corpus.
+Fixtures reproduce the shape an OCR'd textbook chunkset produces: a chunk
+ending ``"...Figure. 1.1 EXERCISES"`` relocating ``"1.1 EXERCISES"`` to open
+the next chunk. All fixtures are inline duck-typed chunk dicts; no models /
+GPU / corpus.
 """
 
 import copy
@@ -60,27 +59,24 @@ def test_resolve_reads_os_environ_by_default(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Fixtures mirroring the real corpus shape (00007 -> 00008)
+# Fixtures mirroring a real OCR'd chunkset pair
 # ---------------------------------------------------------------------------
 
 
 def _audit_pair():
-    """The exact audit evidence: 00007 tail glued with "1.1 EXERCISES"."""
+    """A chunk tail glued with the next section's "1.1 EXERCISES" marker."""
     return [
         {
-            "id": "alg_glm_02_chunk_00007",
-            "text": (
-                "See the sieve of Eratosthenes ( "
-                "https://openstax.org/l/01sieveoferato ) Figure. 1.1 EXERCISES"
-            ),
+            "id": "course_chunk_00007",
+            "text": "See the sieve of Eratosthenes Figure. 1.1 EXERCISES",
             "word_count": 9,
             "tokens_estimate": 11,
             "html": "<p>...unchanged html...</p>",
-            "follows_chunk": "alg_glm_02_chunk_00006",
+            "follows_chunk": "course_chunk_00006",
             "source": {"module_id": "ch01_accessible"},
         },
         {
-            "id": "alg_glm_02_chunk_00008",
+            "id": "course_chunk_00008",
             "text": (
                 "In the following exercises, find the place value of each "
                 "digit in the given numbers."
@@ -88,14 +84,14 @@ def _audit_pair():
             "word_count": 15,
             "tokens_estimate": 19,
             "html": "<p>...unchanged html...</p>",
-            "follows_chunk": "alg_glm_02_chunk_00007",
+            "follows_chunk": "course_chunk_00007",
             "source": {"module_id": "ch01_accessible"},
         },
     ]
 
 
 # ---------------------------------------------------------------------------
-# Core relocation — the audit case
+# Core relocation — the stranded-marker case
 # ---------------------------------------------------------------------------
 
 
@@ -113,8 +109,8 @@ def test_stranded_marker_relocated_to_next_chunk():
     # html deliberately untouched on both chunks.
     assert [c["html"] for c in chunks] == html_before
     # id / follows_chunk / source untouched.
-    assert chunks[0]["id"] == "alg_glm_02_chunk_00007"
-    assert chunks[1]["follows_chunk"] == "alg_glm_02_chunk_00007"
+    assert chunks[0]["id"] == "course_chunk_00007"
+    assert chunks[1]["follows_chunk"] == "course_chunk_00007"
 
 
 def test_word_count_and_tokens_recomputed_both_chunks():

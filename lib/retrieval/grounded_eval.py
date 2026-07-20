@@ -1,26 +1,21 @@
-"""Grounded-answer eval harness (D8) — runs the grounded-answer pipeline over a
+"""Grounded-answer eval harness — runs the grounded-answer pipeline over a
 course's gold set + refusal probes and rolls up groundedness + citation-precision
 metrics into a ``retrieval_eval/grounded_answer_eval_<ts>.json`` report plus a
-deterministic, seeded human-rubric review sample.
-
-This is master-plan headline metrics #2 (groundedness) and #3 (citation
-precision). The nightly command mirrors the WS2 benchmark operationally::
+deterministic, seeded human-rubric review sample::
 
     python -m lib.retrieval.grounded_eval --course <slug> --engine lexical
 
-writing a timestamped sibling of WS2's ``benchmark_*.json``. CI never runs the
-real-model eval — the report-shape tests run this harness on the mini-course
-fixture with a ``FakeAnswerClient`` + a deterministic fake NLI.
+CI never runs the real-model eval — the report-shape tests run this harness on
+the mini-course fixture with a ``FakeAnswerClient`` + a deterministic fake NLI.
 
 Pipeline dependency: this harness drives
-``lib.retrieval.grounded_answer.answer_course_question`` (E6 wave B). That
-module is import-guarded — if it has not landed,
-:func:`run_grounded_eval` raises :class:`PipelineUnavailable` (a
-``NotImplementedError`` subclass) naming the missing dependency. No fake
-pipeline results are ever fabricated.
+``lib.retrieval.grounded_answer.answer_course_question``. That module is
+import-guarded — when it is not importable, :func:`run_grounded_eval` raises
+:class:`PipelineUnavailable` (a ``NotImplementedError`` subclass) naming the
+missing dependency. No fake pipeline results are ever fabricated.
 
-Filenames written here are disjoint from WS1 (``gold_set.json``), WS2
-(``benchmark_*.json``), and E6 (``refusal_probes.json`` /
+Filenames written here are disjoint from the other eval artifacts
+(``gold_set.json``, ``benchmark_*.json``, ``refusal_probes.json``,
 ``refusal_calibration.json``): this harness owns
 ``grounded_answer_eval_*.json`` and ``groundedness_review_sample.json``.
 """
@@ -54,91 +49,61 @@ from lib.retrieval.gold_set import (
 from lib.retrieval.grounded_eval_library import run_library_eval
 from lib.retrieval.grounded_eval_risk import selective_qa_view
 
-#: Bumped 1.0 -> 1.1 for the P4 additive per-question scoring fields
-#: (key_point_coverage, part_coverage, population breakdown). Every v1.0
-#: report field is preserved; the new fields are additive and present only
-#: when the v1.1 gold question carries the matching authored data.
-#: ``EVAL_SCHEMA_VERSION`` 1.2 → 1.3 (additive only — every 1.2 key unchanged):
-#: the refusal-probe loop now scores groundedness on ANSWERED probes (probes the
-#: pipeline failed to refuse), rolling the unsupported-vs-corpus signal into the
-#: ``headline.refusal`` block (``answered_probe_count``,
-#: ``unsupported_answer_rate_on_answered_probes``,
-#: ``claim_level_unsupported_rate_on_answered_probes``,
-#: ``answered_probe_claims_scored``) and persisting per-probe rows under a NEW
-#: top-level ``probe_results`` key (probe_id / category / refused / answered /
-#: unsupported_rate-or-null) — mirroring the per-question ``questions`` rows.
-#: The existing ``refusal_recall`` / ``refusal_precision`` / ``n_probes`` fields
-#: and every other headline metric are UNCHANGED.
-#: ``EVAL_SCHEMA_VERSION`` 1.3 → 1.4 (additive only — every 1.3 key unchanged;
-#: nli-add-flip plan PR-1 + gold-enrichment plan step 1): adds the
-#: ``headline.citation_precision_preadd`` metric (citation_precision recomputed
-#: over the citation set BEFORE the NLI-ADD pass appended anything — equal to
-#: ``citation_precision`` whenever NLI-ADD is off/shadow, the only modes
-#: shipping today) and persists per-question ``cited_chunk_ids`` + ``cited_pages``
-#: on EVERY ``questions`` row (previously the cited chunk_ids lived only inside
-#: the 25-question review sample). Both are prerequisites for measuring the
-#: NLI-ADD flip + the multi-passage gold enrichment over all questions.
-#: ``EVAL_SCHEMA_VERSION`` 1.4 → 1.5 (additive only — every 1.4 key unchanged;
-#: W1.9): adds ``headline.groundedness_breakdown`` (macro + micro groundedness
-#: sliced by difficulty stratum AND by question_type, over answered questions
-#: whose groundedness report was available) and ``headline.computational_numeric_check``
-#: (a roll-up of the W1.8 per-answer numeric-grounding diagnostic — all-zero on
-#: the default path where ``ED4ALL_GROUNDEDNESS_COMPUTATIONAL`` is off). Both are
-#: diagnostics, NOT pinned milestones.
-#: ``EVAL_SCHEMA_VERSION`` 1.5 → 1.6 (additive only — every 1.5 key unchanged):
-#: adds ``headline.phrasing_breakdown`` — a per-learner-phrasing answerability
-#: slice (canonical / colloquial / malformed, from the v1.1 gold ``phrasing``
-#: field, defaulting to canonical). For each phrasing value it reports n,
-#: answered_count, answered_rate (status in the answered set), blocked_count, and
-#: refused_count so an operator can see at a glance whether the bare/colloquial
-#: and malformed-but-reasonable learner questions (surfaced by real GUI testing)
-#: pass, not only the well-formed textbook phrasings. Diagnostic, NOT a pinned
-#: milestone.
-#: ``EVAL_SCHEMA_VERSION`` 1.6 → 1.7 (additive only — every 1.6 key unchanged;
-#: eval-expansion two-axis abstention wave):
-#:   * NEW ``headline.abstention`` — a two-axis scorer classifying each item's
-#:     observed outcome {answered, premise_corrected, refused, blocked,
+#: Report schema for ``grounded_answer_eval_*.json``. The schema has only ever
+#: grown ADDITIVELY: every key from an earlier version is still emitted, so a
+#: consumer pinned to an older version keeps working. Beyond the core
+#: per-question rows and headline metrics, the report carries:
+#:   * ``headline.refusal`` — LEGACY refusal recall/precision over the probe set,
+#:     plus groundedness scored on ANSWERED probes (probes the pipeline failed to
+#:     refuse) as an unsupported-vs-corpus signal; per-probe rows live under the
+#:     top-level ``probe_results``.
+#:   * ``headline.abstention`` — the current two-axis scorer, classifying each
+#:     item's observed outcome {answered, premise_corrected, refused, blocked,
 #:     composer_exhausted} against its expected axis {answerable, false_premise,
 #:     unanswerable}, with an outcome matrix, ``premise_correction_rate``, and
 #:     ``corrected_refusal`` recall/precision. ``premise_corrected`` on a
-#:     false-premise item that ANSWERED is detected by a local-LLM GEval-style
-#:     judge (FreshQA rule: credited only when the answer flags the false
-#:     premise). The legacy ``headline.refusal`` block is UNCHANGED (marked
-#:     legacy via a ``_note``) for comparability.
-#:   * NEW 95% Wilson score intervals (``*_ci``) on every rate in
-#:     ``phrasing_breakdown``, the abstention block, and the new per-category
-#:     probe stats (``headline.refusal.by_category``); any bucket n<30 is
-#:     stamped ``"basis": "diagnostic"``.
-#:   * NEW top-level ``flag_config`` — the resolved ``ED4ALL_ANSWER_*`` +
-#:     eval-judge env config, so a stored eval report is attributable.
-#:   * CITATION SEMANTICS: ``headline.citation_precision`` is now the
-#:     supported-over-CITED PER-QUESTION macro average (mean over questions that
-#:     emitted ≥1 citation of relevant/emitted). The legacy POOLED number moves
-#:     to ``headline.citation_precision_legacy`` (cross-run comparability). NEW
-#:     ``headline.citation_recall`` = cited-over-required macro average over
-#:     answered questions pinning ≥1 relevant passage (single-passage questions
-#:     contribute 1.0-or-0.0 — stated honestly in the field docs).
-#:   * NEW ``headline.groundedness_rate_micro`` — the claim-weighted micro
-#:     average (entailed/scored) promoted to a first-class headline field next
-#:     to the macro mean.
-#: ``EVAL_SCHEMA_VERSION`` 1.7 → 1.8 (additive only — every 1.7 key unchanged;
-#: eval-expansion phase-3 reachability + risk-coverage wave, E2/E3):
-#:   * NEW ``headline.multiturn`` — a multi-turn REACHABILITY diagnostic: how
-#:     many gold questions carried ``prior_turns`` (v1.2) and therefore actually
-#:     drove the ``ED4ALL_ANSWER_MULTITURN`` retrieval-rewrite seam
-#:     (``answer_course_question(prior_turns=...)``). Previously ``prior_turns``
-#:     was never threaded, so the multiturn path was structurally unreachable
-#:     from the harness. All-zero on a legacy / single-turn gold set (byte-stable).
-#:   * NEW top-level ``risk_coverage`` — the E3 selective-QA / risk-coverage view
-#:     (AURC, abstention AUROC, ECE, coverage-vs-accuracy curve) computed as PURE
-#:     post-processing over the per-answer groundedness scores already in the
-#:     report (no new model calls). ``basis == "none"`` when nothing was scored
-#:     (with_groundedness off). See ``lib/retrieval/grounded_eval_risk.py``.
-#:   * NEW top-level ``library_wide`` — present ONLY when a caller passes a
-#:     ``library_questions`` slice (E2 reachability): drives
-#:     ``answer_library_question`` over a cross-course question set, cleanly
-#:     skipped when the resolved library holds a single course. Absent by
-#:     default (additive/optional). See ``lib/retrieval/grounded_eval_library.py``.
+#:     false-premise item that ANSWERED is credited by a local-LLM judge only
+#:     when the answer actually flags the false premise.
+#:   * ``headline.citation_precision`` — supported-over-CITED PER-QUESTION macro
+#:     average (mean over questions emitting >=1 citation). The older POOLED
+#:     number is retained as ``headline.citation_precision_legacy`` for
+#:     cross-run comparability. ``headline.citation_precision_preadd`` is the
+#:     same metric over the citation set BEFORE the NLI-ADD pass appended
+#:     anything (equal to ``citation_precision`` whenever NLI-ADD is off/shadow).
+#:     ``headline.citation_recall`` is cited-over-required, macro-averaged over
+#:     answered questions pinning >=1 relevant passage — single-passage questions
+#:     contribute 1.0-or-0.0, which is stated honestly in the field docs.
+#:   * ``headline.groundedness_rate_micro`` — the claim-weighted micro average
+#:     (entailed/scored), beside the macro mean.
+#:   * ``headline.groundedness_breakdown`` — macro + micro groundedness sliced by
+#:     difficulty stratum and by question_type, over answered questions with an
+#:     available groundedness report.
+#:   * ``headline.computational_numeric_check`` — roll-up of the per-answer
+#:     numeric-grounding diagnostic; all-zero when
+#:     ``ED4ALL_GROUNDEDNESS_COMPUTATIONAL`` is off.
+#:   * ``headline.phrasing_breakdown`` — per-learner-phrasing answerability slice
+#:     (canonical / colloquial / malformed) so an operator can see whether bare
+#:     and malformed-but-reasonable learner questions pass, not only well-formed
+#:     textbook phrasings.
+#:   * ``headline.multiturn`` — reachability diagnostic counting gold questions
+#:     that carried ``prior_turns`` and therefore actually drove the
+#:     ``ED4ALL_ANSWER_MULTITURN`` retrieval-rewrite seam. All-zero on a
+#:     single-turn gold set.
+#:   * 95% Wilson score intervals (``*_ci``) on every rate in
+#:     ``phrasing_breakdown``, the abstention block, and
+#:     ``headline.refusal.by_category``; any bucket with n<30 is stamped
+#:     ``"basis": "diagnostic"``.
+#:   * top-level ``flag_config`` — the resolved ``ED4ALL_ANSWER_*`` + eval-judge
+#:     env config, so a stored report is attributable to the config that made it.
+#:   * top-level ``risk_coverage`` — selective-QA view (AURC, abstention AUROC,
+#:     ECE, coverage-vs-accuracy curve) computed as PURE post-processing over the
+#:     groundedness scores already in the report (no new model calls);
+#:     ``basis == "none"`` when nothing was scored.
+#:   * top-level ``library_wide`` — present ONLY when a caller passes a
+#:     ``library_questions`` slice; drives ``answer_library_question`` over a
+#:     cross-course question set and is skipped when the library holds a single
+#:     course.
+#: The breakdown/diagnostic blocks above are diagnostics, NOT pinned milestones.
 EVAL_SCHEMA_VERSION = "1.8"
 RETRIEVAL_EVAL_SUBDIR = "retrieval_eval"
 
@@ -173,173 +138,71 @@ REVIEW_SAMPLE_SCHEMA_VERSION = "4"
 # Milestone targets — measure-then-pin (floors CURRENT evidence meets)
 # --------------------------------------------------------------------------- #
 
-#: Date the targets below were pinned. RE-PINNED 2026-06-12 against the first
-#: scaled-up frozen-gold eval run (single-course union-corpus calibration basis).
+#: Date the targets below were pinned. Consumed by the staleness test, which
+#: nags when the pins age relative to the newest committed eval report.
 MILESTONE_TARGETS_PINNED_AT = "2026-06-12"
 
-#: COMPARABILITY BOUNDARY (plan §4): these targets are RE-PINNED against the
-#: 2026-06-12 frozen-gold run and are NOT comparable to the prior 2026-06-10
-#: pins. The basis changed in two ways the plan flags as a hard boundary:
-#:   (1) Gold scaled up from a 10-question/9-probe seed to a 77-question frozen
-#:       gold v1.1 + 34 refusal probes (single course, union corpus). With one
-#:       relevant passage pinned per drafted gold question, citation_precision is
-#:       EXPECTED to move via denominator semantics (a multi-citation answer
-#:       mathematically deflates the per-question precision), NOT via a pipeline
-#:       change — so the pre/post citation_precision floors are not comparable.
-#:   (2) refusal metrics move to a NEW hard-probe basis (34 probes incl. scaled
-#:       near-miss / adjacent-domain negatives) — NOT comparable to the old
-#:       9-probe basis.
+#: COMPARABILITY BOUNDARY. A target may only be compared against runs sharing
+#: its basis. Two things break comparability and have both happened here:
+#:   (1) GOLD-SET SHAPE. Each drafted gold question pins exactly ONE relevant
+#:       passage, so citation_precision moves on gold DENOMINATOR semantics — a
+#:       multi-citation answer mathematically deflates per-question precision —
+#:       not on any pipeline change. A richer multi-passage gold raises it.
+#:       Refusal metrics likewise move with the probe basis (probe count and how
+#:       many are near-miss vs pure off-topic).
+#:   (2) SCORER VERSION. Groundedness scorer v2 (artifact filter + computational
+#:       exemption + windowed rescue + gate-eligible evidence pool) admits a
+#:       wider evidence pool than v1 and raises the rate by construction, so v1
+#:       and v2 groundedness/unsupported numbers are NOT comparable.
 #:
-#: SINGLE-COURSE CAVEAT (risk R4): with one calibrated course the MIN-pin
-#: convention degenerates to that course's measurement; every floor below carries
-#: a single-corpus caveat until a second different-family course joins. Re-pin
-#: (tighten) only after a new measured run on a different course clears a
-#: stricter bound — never tighten from fewer courses than the prior pin.
-#:
-#: Measured run (single-course union-corpus calibration basis, 2026-06-12;
-#: model qwen2.5:7b-instruct-q4_K_M, prompt ws3.v2, bge-large + hybrid-rrf,
-#: 77q frozen gold v1.1 / 34 probes, local backend):
-#:   answer_rate 0.961  citation_resolution_rate 1.0  citation_precision 0.3495
-#:   groundedness_rate_mean 0.572  unsupported_claim_rate 0.2326
-#:   refusal_recall 0.50  refusal_precision 0.8947  key_point_coverage 0.5439
-#:
-#: Re-measured clean run (same day, scorer v2 + pinned ws3.v3 refusal policy
-#: incl. the floor-rounding boundary fix, prune=on @ 0.444444):
-#:   answer_rate 0.9351  citation_resolution_rate 1.0  citation_precision 0.4457
-#:   groundedness_rate_mean 0.807  unsupported_claim_rate 0.0891
-#:   refusal_recall 0.8235  refusal_precision 0.875  key_point_coverage 0.5482
-#: Scorer-v1 vs scorer-v2 groundedness numbers are NOT comparable (see the
-#: per-pin notes); refusal numbers moved with the policy pin, not a model
-#: change.
-#:
-#: Gold v1.2 three-arm run (2026-06-12, the CURRENT pin basis): gold expanded
-#: 77 → 117 questions (operator-approved definition + worked_example
-#: templates), probes 34 → 44 (+10 pure off-topic), composer prompt ws3.v3
-#: (synthesis/apply clauses), ED4ALL_ANSWER_NUM_CTX=8192 (production parity —
-#: prior runs measured the 4096 config), prune=on @ 0.444444, NLI-ADD shadow:
-#:   answer_rate 0.9727 (107/110)  citation_resolution_rate 1.0
-#:   citation_precision 0.3314  groundedness_rate_mean 0.8045
-#:   unsupported_claim_rate 0.0366  refusal_recall 0.6364  refusal_precision
-#:   0.9655  key_point_coverage 0.6565  false_refusals_on_gold 1
-#: Three-arm context (same scorer, same questions): BASE (qwen, no retrieval)
-#: key_point_coverage 0.1521; RETRIEVAL extractive ceiling 0.9557 (hit@k
-#: 0.9182); GROUNDED 0.6565. citation_precision moved 0.4457 → 0.3314 via gold
-#: denominator semantics again (the 40 new template questions pin ONE relevant
-#: passage each), not a pipeline change. Latency p50 8.5s → 24.0s: the 8192
-#: serving window + 17 long-form worked_example questions; production runs the
-#: same config, so this is the honest user-facing number for that mix.
-#:
-#: Gold v1.3 gap-closed run (2026-06-12, all coverage/validation warnings
-#: cleared: 125q — 11 both-population, difficulty 54/58/13 in-band, 13/13
-#: multi_part parts[] authored with passage refs, all expected_key_points
-#: present; same probes/config as v1.2): answer_rate 0.976 (122/125)
-#: citation_resolution_rate 1.0  citation_precision 0.3216
-#: groundedness_rate_mean 0.8258  unsupported_claim_rate 0.0348
-#: refusal_recall 0.6364  refusal_precision 0.9655  key_point_coverage 0.6420
-#: part_coverage answered_rate 0.4643 (first real measurement — multi-part
-#: drop-rate is now visible). Three-arm: BASE 0.1569 / RETRIEVAL ceiling
-#: 0.9279 (hit@k 0.9040) / GROUNDED 0.6420. Every pin below holds on this
-#: basis unchanged. Shadow NLI-ADD: 22 would-adds, hand-audited 22/22 genuine
-#: at ent>=0.70 + cov>=0.80 + numerics + anchor — the flip-to-on evidence.
-#:
-#: CONFIG-LABEL CORRECTION (2026-06-13): the v1.2 + v1.3 runs above were
-#: labeled "ED4ALL_ANSWER_NUM_CTX=8192 production parity" but actually ran
-#: against a host-native ollama serving 4096 (the env var is only a local
-#: prompt-budget hint; it does NOT set the server window — that needs
-#: OLLAMA_CONTEXT_LENGTH or a Modelfile num_ctx PARAMETER). Additionally the
-#: BASE arm reused the grounded pipeline's json_mode=True client, so raw qwen
-#: emitted JSON the scorer-v2 artifact filter discarded — BASE hallucination
-#: + key_point_coverage (0.1569) for v1.2/v1.3 are INVALID (filtered content).
-#:
-#: DEFINITIVE run (2026-06-13, gold v1.3 125q + 44 probes; TRUE 8192 via a
-#: Modelfile-baked qwen2.5-7b-8k; BASE arm json_mode=False free text;
-#: ED4ALL_NLI_DEVICE=cuda fp16 — grounded per-item latency 24s→5.8s):
-#:   answer_rate 0.976  citation_resolution_rate 1.0  citation_precision 0.3627
-#:   groundedness_rate_mean 0.899  unsupported_claim_rate 0.0395
-#:   refusal_recall 0.8182  refusal_precision 0.9474  key_point_coverage 0.6883
-#: Safety (44 probes): answered-not-refused BASE 1.00 → GROUNDED 0.182;
-#:   probe_fabrication_rate BASE 1.00 → GROUNDED 0.011 (base fabricates on
-#:   every refusable question; grounded ~1%). Hallucination-vs-corpus BASE
-#:   0.0591 → GROUNDED 0.0395 (33% rel). Three-arm coverage BASE 0.40 (CORRECTED
-#:   from the invalid 0.157 — free-text base is far more capable than the
-#:   json-filtered measurement showed; the grounding coverage gain is ~1.7x,
-#:   NOT the ~3.5x the broken base number implied) / RETRIEVAL 0.928 /
-#:   GROUNDED 0.688. Every pin below holds unchanged on this definitive basis.
-#:
-#: citation_resolution_rate stays pinned at 1.0: every emitted citation resolved
-#: on this run too, so the floor IS the measurement — any dip is a real
-#: anchoring break, not noise.
+#: SINGLE-COURSE CAVEAT: with one calibrated course the MIN-pin convention
+#: degenerates to that course's measurement, so every floor below carries a
+#: single-corpus caveat until a second different-family course joins. NEVER
+#: tighten a pin from fewer courses than the prior pin established — re-pin only
+#: after a measured run on a different course clears the stricter bound.
 MILESTONE_TARGETS: Dict[str, float] = {
-    # FLOOR. Re-pinned 0.92 → 0.95 on the gold-v1.2 / ws3.v3 / 8192-ctx basis
-    # (three-arm run 2026-06-12: measured 0.9727 = 107/110). The 0.92 pin's
-    # attributed non-answers are RESOLVED on this basis: the ws3.v3
-    # synthesis/apply prompt fixed the conceptual-synthesis false refusals
-    # (4 → 1 false_refusals_on_gold) and the 8192 serving window stopped the
-    # context budget from dropping a 4th-ranked gold passage whole (the
-    # florist-LCM refusal — prior runs measured the 4096 config). Remaining
-    # non-answers: 1 false refusal + 1 composer_exhausted + 1 citation-gate
-    # fail-closed block. Single-corpus caveat applies.
+    # FLOOR. Non-answers that remain are a mix of false refusal,
+    # composer_exhausted, and citation-gate fail-closed blocks — all real
+    # per-question outcomes, not harness noise. Single-corpus caveat applies.
     "answer_rate": 0.95,
-    # FLOOR == measurement. Every emitted citation resolved on the 2026-06-12
-    # run (and on all prior runs). Pinned at 1.0 exactly; any dip is a real
-    # anchoring break.
+    # FLOOR == measurement: every emitted citation has resolved on every run.
+    # Pinned at 1.0 exactly, so any dip is a real anchoring break, not noise.
     "citation_resolution_rate": 1.0,
-    # FLOOR. measured 0.3495 (77q gold v1.1) and 0.3314 (117q gold v1.2,
-    # 2026-06-12) — pinned to 0.30. DENOMINATOR ARTIFACT: each drafted gold
-    # question pins exactly ONE relevant passage, so a multi-citation answer
-    # mathematically deflates per-question citation_precision (the v1.2 dip
-    # vs the 0.4457 clean run is the 40 new one-passage template questions,
-    # not a pipeline change). NOT comparable to the old 0.45/10q-basis pin.
-    # A richer multi-passage gold would raise it.
+    # FLOOR. Kept well under the measured value because the metric is dominated
+    # by gold DENOMINATOR semantics (one relevant passage pinned per question),
+    # so it moves whenever the gold set's shape changes without any pipeline
+    # change. A richer multi-passage gold would raise it.
     "citation_precision": 0.30,
-    # FLOOR. measured 0.572 under scorer v1 (single course 2026-06-12); the
-    # first scorer-v2 run measured 0.805 (same day, same frozen gold — wider
-    # gate-eligible evidence pool + windowed rescue + computational exemption
-    # raise the rate by construction, so the two are NOT comparable). Floor
-    # kept at 0.15 — the prior cross-course floor — because a single run does
-    # not establish a credible cross-corpus bound (R4); tightening waits on a
-    # second different-family course.
+    # FLOOR. Deliberately far below the scorer-v2 measurement: a single course
+    # does not establish a credible cross-corpus bound, so this stays at the
+    # older cross-course floor until a second different-family course is
+    # measured. (v1 and v2 groundedness numbers are not comparable.)
     "groundedness_rate_mean": 0.15,
-    # CEILING. Re-pinned 0.25 → 0.10 on the scorer-v2 basis (2026-06-12:
-    # 0.0904 on the first v2 run, 0.0891 on the clean run after the refusal
-    # floor-rounding fix; single course, 77q frozen gold v1.1, hybrid-rrf, 7B,
-    # prune=on @ 0.444444). Basis change: the v1 pin (measured 0.2326) counted
-    # scorer noise the 2026-06-12 manual audit attributed to NLI false
-    # negatives on glossary-style multi-topic chunks, novel-but-correct
-    # computations, and claim-splitter artifacts (true fabrication ~5%);
-    # scorer v2 (artifact filter + computational exemption + windowed rescue +
-    # gate-eligible evidence pool) removes them, so v1/v2 values are NOT
-    # comparable and the single-course never-tighten rule does not apply to a
-    # basis-invalidated pin. Residual ~9% is dominated by question-induced
-    # evaluative synthesis (gold questions that ask "which is better?") —
-    # honest unsupported, not fabrication. Tightened 0.10 → 0.05 on the gold
-    # v1.2 basis (measured 0.0366 over 117q — the definition/worked_example
-    # templates ground cleanly, diluting the evaluative-synthesis tail).
-    # Single-corpus caveat applies.
+    # CEILING. Retuned on the scorer-v2 basis, which removes the v1 scorer's
+    # false negatives on glossary-style multi-topic chunks, novel-but-correct
+    # computations, and claim-splitter artifacts — so v1 and v2 values are NOT
+    # comparable and the never-tighten-from-one-course rule does not bind a
+    # basis-invalidated pin. The residual is dominated by question-induced
+    # evaluative synthesis (gold questions asking "which is better?"), which is
+    # honestly unsupported rather than fabricated. Single-corpus caveat applies.
     "unsupported_claim_rate": 0.05,
-    # FLOOR. Re-pinned 0.45 → 0.55 on the 44-probe gold-v1.2 basis
-    # (2026-06-12: measured 0.6364 incl. the 10 new pure off-topic probes).
-    # NOT comparable to the 34-probe or 9-probe bases. The remaining recall
-    # gap is near-miss / adjacent-domain probes inside the score-overlap band
-    # — MODEL-policy-owned, not a retrieval-threshold matter — see
-    # lib/retrieval/refusal.py PINNED_POLICIES hybrid-rrf overlap block.
-    "refusal_precision_floor_note": 0.0,  # placeholder removed below
-    # FLOOR. measured 0.6364 (44-probe basis 2026-06-12), pinned 0.55.
+    # FLOOR (refusal_recall). Not comparable across probe bases (probe count +
+    # near-miss vs pure off-topic mix). The remaining recall gap is near-miss /
+    # adjacent-domain probes inside the score-overlap band — MODEL-policy-owned,
+    # not a retrieval-threshold matter — see lib/retrieval/refusal.py
+    # PINNED_POLICIES hybrid-rrf overlap block.
+    "refusal_precision_floor_note": 0.0,  # placeholder anchoring the note above; popped below
+    # FLOOR.
     "refusal_recall": 0.55,
-    # FLOOR. Re-pinned 0.85 → 0.90 (measured 0.9655 on the 44-probe gold-v1.2
-    # basis; ws3.v3 cut false refusals on gold 4 → 1).
+    # FLOOR.
     "refusal_precision": 0.90,
 }
 # Remove the inline placeholder key used only to anchor the refusal_recall note.
 MILESTONE_TARGETS.pop("refusal_precision_floor_note", None)
 
-#: DIAGNOSTIC (unpinned). key_point_coverage baselines: 0.54 (77q gold v1.1),
-#: 0.6565 (117q gold v1.2), 0.6420 (125q gold v1.3 gap-closed run, 2026-06-12
-#: — same scorer measured BASE 0.1569 and the RETRIEVAL extractive ceiling
-#: 0.9279, so grounded converts ~69% of what retrieval surfaces). Deliberately
-#: NOT in MILESTONE_TARGETS until the metric is stable across a second
-#: different-family course (plan risk R7 posture); the staleness test does NOT
-#: gate on it.
+#: DIAGNOSTIC (unpinned) key_point_coverage baseline. Deliberately NOT in
+#: MILESTONE_TARGETS until the metric is stable across a second
+#: different-family course; the staleness test does NOT gate on it.
 KEY_POINT_COVERAGE_DIAGNOSTIC_BASELINE = 0.6420
 
 #: Names of milestone targets that are CEILINGS (measured value must be <= the
@@ -365,7 +228,7 @@ _COMPOSER_EXHAUSTED = "composer_exhausted"
 
 
 class PipelineUnavailable(NotImplementedError):
-    """The grounded-answer pipeline (E6 wave B) has not landed yet.
+    """The grounded-answer pipeline is not importable.
 
     Raised (never silently degraded) when
     ``lib.retrieval.grounded_answer.answer_course_question`` is not importable,
@@ -400,7 +263,7 @@ def _composer_exhaustion_errors() -> Tuple[type, ...]:
 
 
 def _import_answer_pipeline() -> Any:
-    """Import-guard ``answer_course_question`` (E6 wave B dependency).
+    """Import-guard the ``answer_course_question`` dependency.
 
     Returns the callable, or raises :class:`PipelineUnavailable` naming the
     missing module / symbol. The import is lazy so the harness module is
@@ -1023,7 +886,7 @@ def _percentile(values: Sequence[float], pct: float) -> float:
 
 
 def _breakdown_agg(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Aggregate one slice of per-question groundedness records (W1.9).
+    """Aggregate one slice of per-question groundedness records.
 
     ``rows`` = ``[{"g_rate": float, "scored": int, "entailed": int}, ...]``.
     Returns the MACRO (unweighted per-question mean of ``groundedness_rate``,
@@ -1047,7 +910,7 @@ def _breakdown_agg(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def _groundedness_breakdown(records: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Macro + per-stratum + per-question-type groundedness breakdown (W1.9).
+    """Macro + per-stratum + per-question-type groundedness breakdown.
 
     ``records`` carries one row per ANSWERED gold question whose groundedness
     report was available: ``{"difficulty", "question_type", "g_rate", "scored",
@@ -1289,7 +1152,7 @@ def run_grounded_eval(
         "path": str(gold_set_path) if gold_set_path else None,
         "chunks_sha256": chunkset.get("chunks_sha256"),
         "chunkset_kind": chunkset.get("kind"),
-        # Measure-then-pin feed (plan §4): record the gold set's identity in the
+        # Measure-then-pin feed: record the gold set's identity in the
         # report so a re-pin of MILESTONE_TARGETS records which gold set + how
         # many questions produced the measured floors (pre/post scale-up is a
         # comparability boundary — citation_precision is EXPECTED to move with
@@ -1347,14 +1210,14 @@ def run_grounded_eval(
     computational_claim_count = 0
     filtered_claim_count = 0
     entailed_uncited_count = 0
-    # W1.8 roll-up (additive; all-zero on the default off path where no answer
+    # Numeric-grounding roll-up (all-zero on the default off path where no answer
     # carries a ``computational_numeric_check`` block): computational sentences
     # whose numeric literals were verified against the cited chunks, and how
     # many carried an ungrounded (fabricated-looking) numeric literal.
     comp_numeric_claims_checked = 0
     comp_numeric_ungrounded_claims = 0
     comp_numeric_ungrounded_total = 0
-    # W1.9 per-question groundedness records (difficulty stratum + question_type
+    # Per-question groundedness records (difficulty stratum + question_type
     # + macro/micro basis). One row per answered question whose groundedness
     # report was available.
     groundedness_breakdown_records: List[Dict[str, Any]] = []
@@ -1404,7 +1267,7 @@ def run_grounded_eval(
     # P4 additive aggregates (key-point completeness, part coverage, per-
     # population citations). All roll up only over ANSWERED questions that
     # carry the matching authored v1.1 data; absent on v1.0 gold sets.
-    # Per-population citation precision (plan §4): tally emitted + relevant
+    # Per-population citation precision: tally emitted + relevant
     # citations by the population (source/course) of the cited chunk, joined the
     # same way the coverage report classifies a chunk. 'both' counts a citation
     # that lands in a question whose gold passages span both populations.
@@ -1655,7 +1518,7 @@ def run_grounded_eval(
             groundedness_rates.append(g_rate)
             unsupported_rates.append(u_rate)
             per_claim = list(grounded.get("claims", []) or [])
-            # W1.9 breakdown record: entailed = scored − unsupported − contradicted
+            # Breakdown record: entailed = scored − unsupported − contradicted
             # (the three exhaustive scored verdicts; clamped ≥0 defensively).
             groundedness_breakdown_records.append(
                 {
@@ -1669,7 +1532,7 @@ def run_grounded_eval(
             # Scorer-v2 additive diagnostics (absent / 0 on a v1 report).
             computational_claim_count += int(grounded.get("computational_count", 0) or 0)
             filtered_claim_count += int(grounded.get("filtered_count", 0) or 0)
-            # W1.8 numeric-grounding roll-up (present only when the opt-in check
+            # Numeric-grounding roll-up (present only when the opt-in check
             # ran; absent → contributes 0 → byte-stable on the default path).
             cnc = grounded.get("computational_numeric_check")
             if isinstance(cnc, dict):
@@ -1709,10 +1572,10 @@ def run_grounded_eval(
                 nli_answers_with_would_adds += 1
                 nli_total_would_adds += len(would)
                 # WARNING-class, not a recovery win: would-adds on a
-                # zero-citation (prune-to-empty) answer were hand-judged 3/3
-                # question-induced false adds (2026-06-12 investigation). ON
-                # mode never adds to these; this count surfaces how often the
-                # criterion fires where it is known-suspect.
+                # zero-citation (prune-to-empty) answer have audited as
+                # question-induced FALSE adds. ON mode never adds to these; this
+                # count only surfaces how often the criterion fires where it is
+                # known-suspect.
                 if n_cites == 0 or nli_add.get("zero_citation_answer"):
                     nli_zero_citation_answers_recovered += 1
 
@@ -1772,14 +1635,12 @@ def run_grounded_eval(
             "citation_relevant_primary": relevant_primary_here,
             "groundedness_rate": g_rate,
             "latency_ms": latency,
-            # ADDITIVE (gold-enrichment plan step 1): persist EVERY emitted
-            # citation's chunk_id on EVERY per-question row (previously these
-            # ids lived only inside the 25-question review sample). This makes
-            # citation_precision auditable + the multi-passage enrichment
-            # measurable over all 125 questions — each id can be joined to its
-            # chunk body to judge whether an unpinned-but-cited passage is a
-            # genuine supporter. page_label rides along when the pipeline
-            # carried it (cheap; the citation dict already exposes it).
+            # Persist EVERY emitted citation's chunk_id on EVERY per-question
+            # row (not only inside the sampled review subset), so
+            # citation_precision is auditable across the whole gold set: each id
+            # can be joined to its chunk body to judge whether an
+            # unpinned-but-cited passage is a genuine supporter. page_label
+            # rides along when the pipeline carried it.
             "cited_chunk_ids": cited_ids,
             "cited_pages": [
                 c.get("page_label")
@@ -1793,11 +1654,9 @@ def run_grounded_eval(
             row["part_coverage"] = part_cov.to_dict()
         if pop_break is not None:
             row["citation_population"] = pop_break.to_dict()
-        # Persist the NLI-ADD shadow block per question (additive; present only
-        # when the arm ran). Without this the would-add audit set existed only
-        # as headline counts — the 2026-06-12 three-arm run's 18/20 would-adds
-        # could not be hand-audited post-hoc. The shadow→on flip decision is
-        # gated on auditing exactly these rows.
+        # Persist the NLI-ADD shadow block per question (present only when the
+        # arm ran). Headline counts alone cannot be hand-audited post-hoc, and
+        # the shadow→on flip decision is gated on auditing exactly these rows.
         if isinstance(nli_add, dict):
             row["nli_citation_add"] = nli_add
         per_question_report.append(row)
@@ -2082,7 +1941,7 @@ def run_grounded_eval(
         # number (the model's own citations) while citation_precision reflects
         # the post-add set — so the ADD's denominator effect against a
         # one-passage gold is MEASURED, not assumed, and the flip run is not
-        # misread as a precision regression (see plan §2.2/§2.3).
+        # misread as a precision regression.
         "citation_precision_preadd": (
             (n_relevant_citations_preadd / n_emitted_citations_preadd)
             if n_emitted_citations_preadd
@@ -2180,7 +2039,7 @@ def run_grounded_eval(
             "covered_key_points": kp_covered,
             "coverage_rate": (kp_covered / kp_total) if kp_total else None,
         },
-        # P4 additive (diagnostic, NOT pinned — risk R7): multi_part coverage.
+        # Diagnostic, NOT pinned: multi_part coverage.
         "part_coverage": {
             "questions_scored": part_questions,
             "covered_parts": part_covered_total,
@@ -2218,7 +2077,7 @@ def run_grounded_eval(
                 "first v2 run"
             ),
         },
-        # W1.9 additive: macro + micro groundedness sliced by difficulty stratum
+        # Macro + micro groundedness sliced by difficulty stratum
         # AND by question_type over answered questions whose groundedness report
         # was available. Diagnostic breakdown (NOT a pinned milestone) — surfaces
         # where grounding is weak (which stratum / question shape) rather than
@@ -2234,7 +2093,7 @@ def run_grounded_eval(
         # whether the bare/colloquial + malformed-but-reasonable learner
         # questions (real GUI phrasings) pass — diagnostic, NOT a pinned metric.
         "phrasing_breakdown": _phrasing_breakdown(phrasing_records),
-        # W1.8 roll-up (additive; all-zero on the default off path): the
+        # Numeric-grounding roll-up (all-zero on the default off path): the
         # computational-sentence numeric-grounding diagnostic aggregated over all
         # answered questions. WARNING-only — never fed any pinned metric.
         "computational_numeric_check": {

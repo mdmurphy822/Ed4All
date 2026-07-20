@@ -81,15 +81,15 @@ logger = logging.getLogger(__name__)
 # The SectionContentType enum in schemas/taxonomies/content_type.json is the
 # single source of truth for values emitted on <h2>/<h3> via
 # data-cf-content-type (and mirrored into JSON-LD sections[].contentType).
-# ``_infer_content_type`` used to return a free string — any typo or new
-# heuristic branch could silently ship an ad-hoc value. We now validate the
-# return against this frozenset at the emit site.
+# ``_infer_content_type`` returns a free string, so a typo or a new heuristic
+# branch could silently ship an ad-hoc value; the return is validated against
+# this frozenset at the emit site.
 #
 # Enforcement: TRAINFORGE_ENFORCE_CONTENT_TYPE=truthy ("1","true","yes","on")
 # raises on miss; unset/falsy logs a WARNING and falls back to "explanation"
 # (the safest default in the enum). Mirrors the opt-in policy used by
-# lib/validators/content_type.py for Trainforge chunks. Wave 56 extends the
-# same enforcement to callouts via ``_validate_callout_content_type`` so the
+# lib/validators/content_type.py for Trainforge chunks. The same enforcement
+# covers callouts via ``_validate_callout_content_type`` so the
 # CalloutContentType enum ("application-note", "note") is also gated at
 # emit time — a single env-var toggle now covers both section and callout
 # emit sites.
@@ -189,12 +189,12 @@ def _validate_section_content_type(value: str) -> str:
 def _validate_callout_content_type(value: str) -> str:
     """Validate a CalloutContentType value at emit time.
 
-    Wave 56: mirrors ``_validate_section_content_type`` for callouts. The
-    callout emit site at ``_render_content_sections`` used to hardcode
-    ``"application-note"`` / ``"note"`` without validation — any typo or
-    new callout subtype could silently ship an ad-hoc value outside the
-    taxonomy. The same ``TRAINFORGE_ENFORCE_CONTENT_TYPE`` env var gates
-    enforcement so a single toggle covers both sections and callouts.
+    Mirrors ``_validate_section_content_type`` for callouts. Without this,
+    the callout emit site at ``_render_content_sections`` would pass
+    ``"application-note"`` / ``"note"`` through unvalidated, letting a typo
+    or a new callout subtype ship an ad-hoc value outside the taxonomy. The
+    same ``TRAINFORGE_ENFORCE_CONTENT_TYPE`` env var gates enforcement so a
+    single toggle covers both sections and callouts.
 
     On miss with the flag truthy: raise ValueError. Otherwise: WARN and
     fall back to ``"note"`` (the neutral callout, safer than
@@ -428,8 +428,7 @@ def _courseforge_emit_blocks_enabled() -> bool:
 
     Mirrors :func:`_shacl_enforcement_enabled`. Default off so the
     Phase 2 ``blocks[]`` / ``data-cf-block-id`` emit stays gated until
-    byte-stable confirmation completes (per pre-resolved decision #8 in
-    ``plans/phase2_intermediate_format_detailed.md``).
+    byte-stable confirmation completes.
     """
     return os.getenv(_EMIT_BLOCKS_ENV, "").strip().lower() in _ENFORCE_TRUTHY_VALUES
 
@@ -4293,11 +4292,11 @@ def _build_misconceptions_metadata(
 ) -> List[Dict[str, Any]]:
     """Enrich misconception dicts with Bloom metadata for the JSON-LD emit.
 
-    Wave 60: misconceptions used to ship as free ``{misconception, correction}``
-    pairs with no cognitive-demand signal. The KG couldn't distinguish an
-    "apply"-level mistake (common when learners mis-sequence a procedure)
-    from an "analyze"-level one (common when learners misread evidence),
-    so diagnostic-question generation couldn't key on the right demand.
+    A bare ``{misconception, correction}`` pair carries no cognitive-demand
+    signal, which leaves the KG unable to distinguish an "apply"-level
+    mistake (learner mis-sequences a procedure) from an "analyze"-level one
+    (learner misreads evidence) — and diagnostic-question generation cannot
+    then key on the right demand.
 
     Bloom-level inference (in :func:`_build_misconception_blocks`):
 
@@ -5027,14 +5026,13 @@ def generate_week(
     # <p>/<li>/<tr>) is preserved. No wrapper when summary_ids is
     # empty (preserves the test_no_map_no_emit back-compat contract).
     summary_body = ""
-    # Wave 43: prepend a "Chapter Recap" <section data-cf-source-ids="…">
-    # carrying 1-3 substantive paragraphs from the week's content_modules
-    # (same DART prose the content pages cite, so no new text synthesis).
-    # Summary pages previously emitted only Key Takeaways <li>s (5-15
-    # words each) + reflection prompts — zero non-trivial paragraphs per
-    # ContentGroundingValidator's NON_TRIVIAL_WORD_FLOOR = 30 — which
-    # tripped AGGREGATE_EMPTY_PAGES when summary was a meaningful
-    # fraction of total pages (8/44 on a real smoke run).
+    # Prepend a "Chapter Recap" <section data-cf-source-ids="…"> carrying 1-3
+    # substantive paragraphs from the week's content_modules (same DART prose
+    # the content pages cite, so no new text synthesis). Without it a summary
+    # page emits only Key Takeaways <li>s (5-15 words each) + reflection
+    # prompts — zero paragraphs clearing ContentGroundingValidator's
+    # NON_TRIVIAL_WORD_FLOOR = 30 — which trips AGGREGATE_EMPTY_PAGES once
+    # summary pages are a meaningful fraction of total pages.
     #
     # Only emit the recap when BOTH the page carries grounding
     # (summary_heading_attrs non-empty) AND content_modules yields at

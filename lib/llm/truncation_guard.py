@@ -9,13 +9,9 @@ re-stamp green. The only signal is the server-reported
 ``usage.prompt_tokens``: a count far BELOW the local estimate means the
 head was dropped.
 
-This module hoists the tripwire originally written for the grounded-
-answer path (``lib/retrieval/answer_composer.py::_check_prompt_not_truncated``)
-into a provider-agnostic helper so the Courseforge rewrite tier (and any
-future content-gen call site) can reuse the exact same detection without
-re-deriving the constants. The answer path's wrapper now delegates here,
-preserving byte-equivalent behaviour (same 0.5 / 256 constants, same
-message intent).
+The helper is provider-agnostic so every call site (the grounded-answer
+path and the Courseforge rewrite tier) shares one detection and one set of
+constants rather than re-deriving them.
 
 The check is a GUARD, not a requirement:
 
@@ -39,32 +35,26 @@ __all__ = [
 
 
 # ---------------------------------------------------------------------------
-# Char-per-token calibration (2026-07-09 live measurement).
+# Char-per-token calibration
 # ---------------------------------------------------------------------------
 #
 # ``lib.retrieval._prompts.estimate_tokens`` divides char length by 2.5 — an
 # INTENTIONAL UPPER bound on the token count (a math/symbol-dense corpus packs
-# ~2.5 chars/token; prose packs ~4). A 2026-07-09 live measurement of this
-# project's math-heavy algebra corpus (accessible HTML / text) against
-# qwen2.5-7b-16k via Ollama ``/v1`` — comparing the 2.5-c/t estimate to the
-# server-reported ``usage.prompt_tokens`` — found REAL tokenization runs at
-# ~3.38 chars/token, i.e. the 2.5 estimate OVERCOUNTS the real prompt by
-# ~1.35x. Refusing dispatch on that raw upper bound rejected hundreds of
-# blocks whose REAL token count fit the served window (397/659 rewrite blocks
-# in the 2026-07-08 run were refused pre-dispatch and mass-fell-back to
-# template rendering). The two guards below therefore CALIBRATE against this
-# measurement instead of trusting the raw 2.5-c/t upper bound:
+# ~2.5 chars/token; prose packs ~4). Real tokenization measures ~3.38
+# chars/token, so that estimate OVERCOUNTS a real prompt by ~1.35x. Gating on
+# the raw upper bound therefore refuses a large fraction of prompts whose REAL
+# token count fits the served window (they then mass-fall-back to template
+# rendering). Both guards below CALIBRATE against the measured ratio instead:
 #
 # - the PRE-dispatch refusal (:func:`check_prompt_fits_window`) converts the
 #   estimate with an OPTIMISTIC divisor chosen ABOVE the measured 3.38 c/t, so
 #   a refusal fires ONLY when even a generous reading of the prompt cannot
 #   fit;
 # - the POST-dispatch mid-size arm (:func:`check_prompt_not_truncated`)
-#   converts the estimate by the measured 3.38 ratio before its "materially
-#   below" comparison, so a legitimate near-full-window prompt no longer
-#   false-trips.
+#   converts the estimate by the measured 3.38 ratio before comparing, so a
+#   legitimate near-full-window prompt no longer false-trips.
 UPPER_BOUND_CHARS_PER_TOKEN = 2.5
-# Live 2026-07-09 measurement (qwen2.5-7b-16k, math-heavy algebra corpus).
+# Measured real tokenization rate on math-dense accessible HTML.
 MEASURED_CHARS_PER_TOKEN = 3.38
 # Chosen ABOVE the measured 3.38 so the pre-dispatch refusal only fires when
 # even an optimistic reading overflows the window (headroom against corpora
@@ -86,7 +76,7 @@ def check_prompt_fits_window(
     LOCAL estimate exceeds that window WILL be head-truncated on dispatch.
     ``estimated`` is the 2.5-char/token UPPER bound (see
     :data:`UPPER_BOUND_CHARS_PER_TOKEN`), which OVERCOUNTS real tokenization by
-    ~1.35x (the 2026-07-09 measurement). Refusing on that raw upper bound
+    ~1.35x. Refusing on that raw upper bound
     rejects blocks whose real token count fits the window, so the refusal is
     CALIBRATED: the estimate is converted to an OPTIMISTIC token count via a
     divisor chosen ABOVE the measured 3.38 c/t
@@ -182,12 +172,12 @@ def check_prompt_not_truncated(
         evidence: a prompt whose (over-counting 2.5-c/t) estimate does not
         clear ``1.1 * num_ctx`` could not have overflowed the assumed window,
         so its reported count landing near ``num_ctx`` is coincidence, not a
-        clip — and it must NEVER mid-size-trip. Replaces the old
-        ``materially_below_fraction`` degenerate rule, which (because the
-        estimate over-counts ~1.35x) was satisfied by virtually every honestly
-        served prompt and collapsed the arm to "reported ~= num_ctx", false-
-        firing on any prompt whose TRUE token count coincidentally landed near
-        the assumed cap (the live ``outline_input_truncated`` false-positive).
+        clip — and it must NEVER mid-size-trip. Do NOT replace this with a
+        "reported materially below the estimate" rule: because the estimate
+        over-counts ~1.35x, that predicate holds for virtually every honestly
+        served prompt and collapses the arm to "reported ~= num_ctx", which
+        false-fires on any prompt whose TRUE token count happens to land near
+        the assumed cap.
     cap_margin:
         MID-SIZE arm, condition 2 — relative half-width of the "reported is
         pinned AT the window ceiling from below" band (default ``0.02`` →
@@ -196,9 +186,8 @@ def check_prompt_not_truncated(
         whisker of ``num_ctx``; combined with condition 1 that is the
         signature of a mid-size head-truncation the ``/2`` severe arm misses
         (e.g. an 8192-served window on a ~12k estimate reports ~8194 >
-        estimate/2 and would otherwise PASS). The lower bound is deliberately
-        tight (``0.98``, not the old ``0.95``) to shrink — but NOT eliminate —
-        the residual-FP band (see Notes).
+        estimate/2 and would otherwise PASS). The band is deliberately tight
+        to shrink — but NOT eliminate — the residual-FP band (see Notes).
 
     Raises
     ------
@@ -219,14 +208,13 @@ def check_prompt_not_truncated(
     an honestly-served prompt whose TRUE token count happens to land inside
     ``[0.98, 1.02] * num_ctx`` are INDISTINGUISHABLE from
     ``usage.prompt_tokens`` alone: both report a count pinned at the assumed
-    ceiling. The live FP had a HEALTHY 16k server, an assumed window of 4096,
-    and true prompts ~4.0-4.3k tokens whose 2.5-c/t estimate over-shot 4096 —
-    so condition 1 (estimate over-window) was satisfied and the ONLY separator
-    was where ``reported`` fell relative to the cap band. Narrowing the band to
-    ``[0.98, 1.02]`` (from the old ``[0.95, 1.05]``) kills the tails of that
-    distribution (reported strictly below ``0.98 * num_ctx`` or above
-    ``1.02 * num_ctx`` no longer trips), but a served prompt whose true size
-    lands *exactly* at the assumed cap will still trip. There is no
+    ceiling. This bites hardest when ``num_ctx`` UNDERSTATES the server's real
+    window: the 2.5-c/t estimate then over-shoots the assumed cap (satisfying
+    condition 1) while the honestly served true size lands near it, leaving the
+    cap band as the only separator. The tight ``[0.98, 1.02]`` band kills the
+    tails of that distribution (reported strictly below ``0.98 * num_ctx`` or
+    above ``1.02 * num_ctx`` no longer trips), but a served prompt whose true
+    size lands *exactly* at the assumed cap will still trip. There is no
     deterministic separator for that inner band without a healthy-completion
     signal (``finish_reason`` / completion-token count), which this helper does
     not receive; the message therefore surfaces the estimate/reported ratio so
@@ -248,11 +236,11 @@ def check_prompt_not_truncated(
     if estimated < min_estimate:
         return  # too small for the ratio to be meaningful.
     threshold = estimated * reported_fraction
-    # SEVERE arm (legacy, UNTOUCHED): reported far below the raw upper-bound
-    # estimate. Kept on the raw 2.5-c/t bound — a >2x shortfall is unambiguous
-    # under either tokenization, and a normal ~0.74x report never clears it.
+    # SEVERE arm: reported far below the raw upper-bound estimate. Stays on the
+    # raw 2.5-c/t bound — a >2x shortfall is unambiguous under either
+    # tokenization, and a normal ~0.74x report never clears it.
     severe = reported_int < threshold
-    # MID-SIZE arm (redesigned 2026-07-10). A mid-size clip requires POSITIVE
+    # MID-SIZE arm. A mid-size clip requires POSITIVE
     # evidence, not mere coincidence with the assumed window. BOTH must hold:
     #   (1) the ASSEMBLED prompt overflows the ASSUMED window by a real margin
     #       (estimated >= over_window_fraction * num_ctx) — so a clip is even
@@ -261,12 +249,11 @@ def check_prompt_not_truncated(
     #   (2) `reported` is pinned at the window ceiling FROM BELOW
     #       ([0.98, 1.02] * num_ctx) — a real clip lands usage within a whisker
     #       of num_ctx.
-    # The old rule ("reported materially below a calibrated estimate AND within
-    # +/-5% of num_ctx") degenerated to "reported ~= num_ctx" because the
-    # 2.5-c/t estimate over-counts ~1.35x, so `materially_below` was true for
-    # virtually every honest prompt — false-firing on any prompt whose TRUE
-    # token count coincidentally sat near the assumed cap (the live
-    # outline_input_truncated FP on a healthy 16k server, assumed window 4096).
+    # Do NOT weaken (1) into "reported materially below a calibrated estimate":
+    # because the 2.5-c/t estimate over-counts ~1.35x, that predicate holds for
+    # virtually every honest prompt, degenerating the arm to "reported ~=
+    # num_ctx" and false-firing whenever a TRUE token count happens to sit near
+    # the assumed cap.
     over_window = num_ctx > 0 and estimated >= over_window_fraction * float(num_ctx)
     if num_ctx > 0:
         cap_tolerance = float(num_ctx) * cap_margin

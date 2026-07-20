@@ -1,64 +1,23 @@
-"""GPT Feedback v2 — Wave 2 end-of-wave validators + aggregators gate.
+"""Wave 2 end-of-wave contract gate: validators + aggregators.
 
-Authored 2026-05-06 against the closing 7-test gate enumerated in
-``plans/gpt-feedback-2-wave2-validators-aggregators-2026-05.md``
-§"End-of-Wave-2 validation gate" (lines 526-637).
+Covers the four Wave 2 net-new validators (DistractorStructuralValidator,
+PaddedDistractorValidator, TrainingPairPromotionValidator,
+ClaimSupportValidator) plus the two post-loop aggregators.
 
-Predecessors landed (this wave is closing):
+Every fixture is inlined locally rather than imported from a per-worker test
+module, so renaming any of those modules cannot silently disable this gate.
 
-* W2.A at afcfc2b — Courseforge aggregator extension
-  (``lib/aggregators/courseforge_validation_report.py``).
-* W2.B at b824ea1 — TrainForge assessment quality aggregator
-  (``lib/aggregators/trainforge_assessment_quality_report.py``).
-* W2.C at e6d6e87 — :class:`lib.validators.distractor_structural.
-  DistractorStructuralValidator`.
-* W2.D at 771735e — :class:`lib.validators.padded_distractor.
-  PaddedDistractorValidator` plus the generator-side padded-fallback
-  kill in :func:`Trainforge.generators.assessment_generator.
-  AssessmentGenerator._generate_multiple_choice` (returns a
-  ``SkippedItem(reason="padded_distractor_fallback_eliminated")``
-  with a sibling ``distractor_padding_skipped`` decision-capture
-  event).
-* W2.E at 1e2b9fd — :class:`lib.validators.training_pair_promotion.
-  TrainingPairPromotionValidator` per-pair pre-write filter (seven
-  rejection criteria + per-pair audit emit).
-* W2.F at b5e37cf — :class:`lib.validators.claim_support.
-  ClaimSupportValidator` plus the real
-  :class:`lib.classifiers.nli_classifier.NliClassifier` loader
-  replacing the W1.7.C stub.
+Two deliberate deviations from the plan this gate was written against:
 
-This file is a SELF-CONTAINED contract test mirroring the Wave 1.5 /
-Wave 1.6 / Wave 1.7 predecessor gates
-(``test_wave15_per_claim_attribution_contract.py``,
-``test_wave16_per_objective_attribution_contract.py``,
-``test_wave17_block_against_objective_contract.py``). Every fixture
-is inlined locally so a future rename of a per-worker test file
-cannot silently disable the wave-end gate.
-
-Drift notes vs plan §"End-of-Wave-2 validation gate":
-
-* Plan Test 3 calls for either G1 (Wave 3, deferred) OR a sibling
-  read in ``MCP/tools/trainforge_tools.py::get_trainforge_status``.
-  The sibling read landed alongside this test file: the helper now
-  reads ``LibV2/courses/<slug>/quality/trainforge_assessment_quality_report.json``
-  and surfaces ``promotion_decision`` + ``summary`` fields in the
-  status dump. Test 3 asserts the writer + the new reader both grep.
-* Plan Test 5 wording reads "Synthesize 10 deliberately-bad pairs"
-  but the per-pair filter is per-pair (``validate_pair``), not
-  batch-aware. The test loops the 10 pairs through ``validate_pair``
-  individually and aggregates the rejection count + per-pair
-  rejection_reason matches. Stats accounting is per the test's own
-  Counter (the production stats live on
-  ``synthesize_training.SynthesisStats`` and aren't directly
-  reachable from the validator).
-* Plan Test 6 sub-clause C reads "assert it FAILS to fail (i.e.
-  would silently pass)". Cleaner pin: assert the mock NLI is called
-  the expected number of times so a future short-circuit (where the
-  validator returns early without ever invoking NLI) trips the
-  guard. Plan brief explicitly carves out: "actually, the cleaner
-  regression: assert the validator is NOT short-circuiting around
-  the NLI call (e.g. by inspecting the call count on the mock)" —
-  test pins this cleaner contract.
+* Test 5 loops the 10 deliberately-bad pairs through ``validate_pair``
+  individually because the promotion filter is per-pair, not batch-aware.
+  Rejection counts come from the test's own Counter — the production stats
+  live on ``synthesize_training.SynthesisStats`` and are not reachable from
+  the validator.
+* Test 6 asserts the mock NLI was actually CALLED rather than trying to
+  assert a vacuous pass. A validator that short-circuits around NLI dispatch
+  produces the same passed/action signature as a genuine pass, so call count
+  is the only signal that distinguishes them.
 """
 from __future__ import annotations
 
@@ -78,8 +37,8 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-# Block lives at Courseforge/scripts/blocks.py — mirror the import
-# bridge the sibling per-worker tests + Wave 1.5/1.6/1.7 gates use.
+# Block lives at Courseforge/scripts/blocks.py, which is not an importable
+# package root — put its dir on sys.path so `from blocks import Block` works.
 _SCRIPTS_DIR = PROJECT_ROOT / "Courseforge" / "scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
@@ -89,15 +48,12 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 # --------------------------------------------------------------------------- #
-# Audited post-Wave-2 baselines — encoded as constants so a future silent
-# test removal trips the ratchet. Counts captured 2026-05-06 on
-# dev-v0.3.0 at HEAD by AST-walking each tree's ``test_*.py`` files
-# and tallying every ``def test_`` declaration (the same algorithm
-# ``_count_test_functions`` runs at gate time). Mirrors the
-# AST-vs-collect-only contract noted in the Wave 1.5 / 1.6 / 1.7
-# gates: AST counts are LOWER than ``pytest --collect-only`` counts
-# because pytest expands parametrized cases at collection time. Both
-# algorithms are monotonic so the ratchet contract holds either way.
+# Per-tree test-count floors, so a silent test removal trips the ratchet.
+# Counted by AST-walking each tree's ``test_*.py`` and tallying ``def test_``
+# declarations — the same algorithm ``_count_test_functions`` runs at gate
+# time. These are deliberately NOT ``pytest --collect-only`` counts, which are
+# higher because pytest expands parametrized cases; both are monotonic, so the
+# ratchet holds either way, but the two must not be mixed.
 # --------------------------------------------------------------------------- #
 
 _MIN_VALIDATORS_TESTS = 490
@@ -107,11 +63,10 @@ _MIN_SCHEMAS_TESTS = 345
 
 
 # --------------------------------------------------------------------------- #
-# Wave 2 net-new validator inventory. Each row carries:
-#   (label, validator-module-relative path, per-validator-test relative path,
-#    decision_type strings the validator MUST emit)
-# Aggregators (W2.A / W2.B) are tracked separately because their emit
-# surface is the workflow-runner aggregator, not a per-validator file.
+# Net-new validator inventory: (label, per-validator-test relative path,
+# decision_type strings the validator MUST emit).
+# Aggregators are tracked separately because their emit surface is the
+# workflow-runner aggregator, not a per-validator file.
 # --------------------------------------------------------------------------- #
 
 _W2_VALIDATORS: List[Dict[str, Any]] = [
@@ -137,11 +92,10 @@ _W2_VALIDATORS: List[Dict[str, Any]] = [
     },
 ]
 
-# Every Wave 2 decision_type the schema enum MUST admit. Spans
-# validators (W2.C / W2.D / W2.E / W2.F), aggregators (W2.A / W2.B),
-# and the W2.D generator-side ``distractor_padding_skipped`` event
-# emitted from ``assessment_generator._generate_multiple_choice``
-# when the padded-fallback path is short-circuited.
+# Every decision_type the schema enum MUST admit: the four validators, the
+# two aggregators, and the generator-side ``distractor_padding_skipped`` event
+# emitted from ``assessment_generator._generate_multiple_choice`` when the
+# padded-fallback path is short-circuited.
 _W2_REQUIRED_DECISION_TYPES: Tuple[str, ...] = (
     "distractor_structural_check",         # W2.C
     "padded_distractor_check",             # W2.D regression-net validator
@@ -162,9 +116,8 @@ def _count_test_functions(tree: Path) -> Tuple[int, List[str]]:
     """AST-walk every ``test_*.py`` under ``tree`` and count ``def test_``
     declarations.
 
-    Mirrors the helper in the Wave 1.5 / 1.6 / 1.7 gates so the
-    algorithm is identical between gates and the count contract is
-    genuinely monotonic across waves.
+    Duplicated verbatim across the sibling wave gates so every gate's count
+    contract is measured the same way and stays comparable.
     """
     if not tree.exists():
         return 0, []
@@ -204,14 +157,11 @@ def _load_decision_event_enum() -> set:
 
 
 def _ast_test_function_source(test_path: Path) -> str:
-    """Return the raw source of every ``def test_*`` function defined in
-    ``test_path``. Used by Test 1 to grep for capture-wiring patterns
-    inside test functions only (so module-level fixtures don't pollute
-    the search).
+    """Return the raw source of every ``def test_*`` function in ``test_path``.
 
-    Returns concatenated function source bodies; on parse error returns
-    the entire file source as a defensive fallback (better to over-
-    match than miss a real wiring assertion).
+    Scoped to test-function bodies so module-level fixtures don't pollute the
+    capture-wiring grep. On parse error, returns the whole file: over-matching
+    is preferable to missing a real wiring assertion.
     """
     if not test_path.exists():
         return ""
@@ -245,10 +195,9 @@ def _ast_test_function_source(test_path: Path) -> str:
 class _RecordingCapture:
     """Minimal capture stub recording every ``log_decision`` payload.
 
-    Inlined so a rename of any per-worker capture helper can't silently
-    break this gate. Mirrors the ``_RecordingCapture`` pattern in the
-    Wave 1.5/1.6/1.7 gates (attribute name preserved for cross-wave
-    grep symmetry).
+    Inlined so a rename of any per-worker capture helper can't silently break
+    this gate. Name kept identical across the sibling wave gates so they stay
+    greppable as one family.
     """
 
     def __init__(self) -> None:
@@ -273,18 +222,11 @@ _CAPTURE_WIRING_NEEDLES: Tuple[str, ...] = (
 
 
 def test_1_each_w2_validator_has_capture_wiring_test() -> None:
-    """Plan §"Test 1 — every new validator has at least one
-    decision-emit test".
+    """Every Wave 2 validator has at least one decision-emit test.
 
-    For each of the 4 Wave 2 net-new validators, locate the
-    per-validator test file at ``lib/validators/tests/test_<name>.py``,
-    AST-walk the file's ``def test_*`` function source bodies, and
-    assert at least one references the validator's emit-decision
-    pattern (any of the canonical capture-wiring needles).
-
-    Failure mode: a future refactor removes the per-validator
-    capture-wiring assertion → this gate fires with a clear message
-    naming the missing wiring + the search needles tried.
+    For each net-new validator, AST-walk its per-validator test file's
+    ``def test_*`` bodies and assert at least one references a capture-wiring
+    needle. Fires when a refactor drops the capture-wiring assertion.
     """
     failures: List[str] = []
     for entry in _W2_VALIDATORS:
@@ -318,16 +260,11 @@ def test_1_each_w2_validator_has_capture_wiring_test() -> None:
 
 
 def test_2_w2_decision_types_in_schema_enum() -> None:
-    """Plan §"Test 2 — every new validator's decision_type is in the
-    schema enum".
-
-    Loads ``schemas/events/decision_event.schema.json::properties.
-    decision_type.enum`` into a set and asserts every Wave 2 emit
-    string is a member.
+    """Every Wave 2 decision_type is a member of the schema enum.
 
     Catches the silent-degrade class where a validator emits a fresh
-    decision_type that ``DECISION_VALIDATION_STRICT=true`` would drop
-    on the floor — the audit trail loses the event without warning.
+    decision_type that ``DECISION_VALIDATION_STRICT=true`` drops on the
+    floor — the audit trail loses the event with no warning.
     """
     enum_set = _load_decision_event_enum()
     missing: List[str] = []
@@ -348,25 +285,12 @@ def test_2_w2_decision_types_in_schema_enum() -> None:
 
 
 def test_3_trainforge_assessment_quality_report_has_consumer() -> None:
-    """Plan §"Test 3 — anti-silent-degradation: aggregator OUTPUT is
-    consumed".
+    """The assessment-quality aggregator's output is actually consumed.
 
-    W2.B emits ``trainforge_assessment_quality_report.json``. If no
-    downstream reader consumes it, the file is silently dropped.
-
-    Greps the repo for the path string, asserts ``>= 2`` hits — the
-    writer (W2.B's aggregator) AND at least one non-test reader.
-
-    Acceptable readers per plan:
-
-    * ``MCP/tools/trainforge_tools.py::get_trainforge_status`` — the
-      Wave 2-era sibling read landed alongside this test file (the
-      pre-existing ``eval_report.json`` parallel read at the same
-      surface establishes the precedent pattern).
-    * Master promotion-chain aggregator G1 — Wave 3 follow-up;
-      may not exist yet.
-
-    Catches the "we wrote a report no one reads" silent-success class.
+    Greps the repo for ``trainforge_assessment_quality_report.json`` and
+    requires >= 2 hits: the writing aggregator AND at least one non-test
+    reader. Catches the "we wrote a report nobody reads" silent-success
+    class, where the aggregator keeps passing while its output is dead.
     """
     target = "trainforge_assessment_quality_report.json"
     # Prefer ``rg`` if available (faster + ignores binaries cleanly);
@@ -466,14 +390,12 @@ def test_3_trainforge_assessment_quality_report_has_consumer() -> None:
 
 
 def test_4_padded_distractor_fallback_eliminated() -> None:
-    """Plan §"Test 4 — anti-silent-degradation: padded-distractor
-    regression".
+    """The padded-distractor fallback stays dead, and its skip stays visible.
 
-    Construct a synthetic chunk + AssessmentGenerator config that
-    would have triggered the pre-W2.D ``while len(distractors) < 3:``
-    padding fallback (only one extractable key term + zero
-    misconceptions → < 3 plausible distractors resolve). Run the
-    generator end-to-end and assert:
+    Constructs a chunk that would have triggered the removed
+    ``while len(distractors) < 3:`` padding fallback (one extractable key
+    term, zero misconceptions → fewer than 3 plausible distractors resolve),
+    runs the generator end-to-end, and asserts:
 
     * NO emitted distractor matches
       ``r"^(A |An )?(concept|topic|item|element) unrelated to "``.
@@ -483,9 +405,9 @@ def test_4_padded_distractor_fallback_eliminated() -> None:
     * The generator-side ``distractor_padding_skipped`` decision event
       lands in the capture stream.
 
-    Catches BOTH the silent-skip regression (fallback removed without
-    SkippedItem emit) AND the silent-reintroduction regression
-    (validator regex deleted).
+    Catches BOTH the silent-skip regression (padding removed without a
+    SkippedItem emit) and the silent-reintroduction regression (the padding
+    template comes back).
     """
     import re
 
@@ -494,11 +416,10 @@ def test_4_padded_distractor_fallback_eliminated() -> None:
         SkippedItem,
     )
 
-    # Force the precondition: the chunk yields exactly ONE definition
-    # via the ``X is defined as Y`` pattern, no misconceptions, and no
-    # other definable terms. The W2.D-killed code path used to pad
-    # the second + third distractor with the literal
-    # ``"A concept unrelated to {term} in this context"`` template.
+    # Force the precondition: the chunk yields exactly ONE definition via the
+    # ``X is defined as Y`` pattern, no misconceptions, and no other definable
+    # terms. The removed code path padded the second + third distractor with
+    # the literal ``"A concept unrelated to {term} in this context"`` template.
     chunk_text = (
         "Provenance is defined as the documented chain of custody for a "
         "data artifact across its lifecycle in a research workflow. "
@@ -602,11 +523,10 @@ def test_4_padded_distractor_fallback_eliminated() -> None:
 
 
 def test_5_per_pair_promotion_drop_is_visible() -> None:
-    """Plan §"Test 5 — anti-silent-degradation: per-pair promotion
-    drop is visible".
+    """Every per-pair promotion drop carries a visible rejection reason.
 
-    Synthesize 10 deliberately-bad pairs covering the W2.E rejection
-    criteria. Run each through ``validate_pair`` and assert:
+    Runs 10 deliberately-bad pairs covering the rejection criteria through
+    ``validate_pair`` and asserts:
 
     * The number of pairs marked ``promotion_status="rejected"`` matches
       the count of injected bad pairs.
@@ -615,16 +535,14 @@ def test_5_per_pair_promotion_drop_is_visible() -> None:
     * A per-rejection-reason Counter shows the expected distribution
       (3 placeholder_residue, 2 source_free_generation, etc.).
 
-    Catches silent-drop class where pairs vanish without an audit log.
+    Catches the silent-drop class where pairs vanish with no audit log.
     """
     from lib.validators.training_pair_promotion import (
         TrainingPairPromotionValidator,
     )
 
-    # Stub embedder + bloom classifier inlined here so this gate
-    # doesn't depend on the per-worker test fixtures (those live at
-    # lib/validators/tests/test_training_pair_promotion.py and could
-    # be renamed / refactored without notice).
+    # Stub embedder + bloom classifier inlined so this gate doesn't depend on
+    # the per-worker fixtures, which could be renamed without notice.
 
     class _StubEmbedder:
         """Bag-of-tokens cosine embedder; no ML deps."""
@@ -781,9 +699,9 @@ def test_5_per_pair_promotion_drop_is_visible() -> None:
         f"Test design bug: expected 10 bad pairs; got {len(bad_pairs)}"
     )
 
-    # Two validator instances: the default ensemble agrees on
-    # "remember" (no Bloom rejection); a second instance is wired with
-    # a "create" classifier so the low_bloom_alignment pair fires.
+    # Two validator instances: the default ensemble agrees on "remember" (so
+    # no Bloom rejection), while the second is wired with a "create"
+    # classifier so the low_bloom_alignment pair actually fires.
     default_validator = TrainingPairPromotionValidator(
         embedder=_StubEmbedder(),
         bloom_classifier=_StubBloomEnsemble(level="remember", score=0.85),
@@ -866,9 +784,9 @@ def test_5_per_pair_promotion_drop_is_visible() -> None:
 
 
 class _StubNliClassifier:
-    """Drop-in test stub for ``NliClassifier``. Records every
-    ``score_pair`` / ``score_batch`` call so tests can assert the
-    validator is NOT short-circuiting around the NLI surface."""
+    """Drop-in stub for ``NliClassifier``. Records every ``score_pair`` /
+    ``score_batch`` call so tests can assert the validator is NOT
+    short-circuiting around the NLI surface."""
 
     def __init__(self, score_for_all: Any) -> None:
         # ``score_for_all`` may be a NliScore instance (used
@@ -921,7 +839,7 @@ def _build_claim_support_block(
 
 
 def test_6_claim_support_contradiction_and_entailment_regression() -> None:
-    """Plan §"Test 6 — claim-support regression".
+    """Claim-support: contradiction fires, entailment passes, NLI is called.
 
     Three fixtures:
 
@@ -960,8 +878,8 @@ def test_6_claim_support_contradiction_and_entailment_regression() -> None:
         "source_chunks": {"dart:rdf_intro#blk_0": cited_chunk_a},
     })
 
-    # Wave 1.7-symmetric: passed stays True (issues are warning-
-    # severity); action="regenerate" is the router-consumed signal.
+    # passed stays True (every issue is warning-severity); the router consumes
+    # action="regenerate" instead.
     assert result_a.passed is True, (
         "ClaimSupportValidator ships every Wave 2 W2.F issue at "
         "warning severity; passed must stay True. Got "
@@ -1026,11 +944,9 @@ def test_6_claim_support_contradiction_and_entailment_regression() -> None:
     )
 
     # ---- Fixture C — silent-degrade detection ----
-    # Mock NLI returns entailment=0.99 for everything, exactly the
-    # silent-degrade scenario the plan flags. The cleaner regression
-    # (per plan): assert the validator IS calling NLI so a future
-    # short-circuit (early return without ever invoking NLI) trips
-    # this guard.
+    # Mock NLI returns entailment=0.99 for everything. A vacuous pass and a
+    # short-circuit produce the same passed/action signature, so the only
+    # distinguishing assertion is that NLI was actually invoked.
     always_entailed = NliScore(
         entailment=0.99, neutral=0.005, contradiction=0.005
     )
@@ -1093,20 +1009,16 @@ def test_6_claim_support_contradiction_and_entailment_regression() -> None:
 
 
 def test_7_collected_count_guard_and_check_schema_clean() -> None:
-    """Plan §"Test 7 — collected-count guard + full sweep".
+    """Test-count ratchet across four trees + JSON-LD schema cleanliness.
 
-    Mirrors Wave 1.5 / 1.6 / 1.7 Test 6 / 7 patterns. AST-walks four
-    trees and asserts each tree's ``def test_*`` count is at the
-    post-Wave-2 baseline (encoded in the ``_MIN_*_TESTS`` constants
-    above). Ratchets upward — if a future wave legitimately ADDS
-    tests, bump the constant; if a refactor accidentally REMOVES
-    tests, this gate fires.
+    AST-walks four test trees and asserts each is at or above its
+    ``_MIN_*_TESTS`` floor. The ratchet only moves up: legitimately adding
+    tests means bumping the constant; a refactor that removes tests fires
+    this gate.
 
-    Plus: ``Draft202012Validator.check_schema(...)`` must run clean
-    (no ``DeprecationWarning``) on the bumped
-    ``courseforge_jsonld_v1.schema.json`` (Wave 1.7 added
-    ``$defs.ObjectiveAlignment``, Wave 2 didn't touch the JSON-LD
-    schema but the cleanliness check stays as a regression sentinel).
+    Also asserts ``Draft202012Validator.check_schema(...)`` runs clean (no
+    ``DeprecationWarning``) on ``courseforge_jsonld_v1.schema.json`` — a
+    sentinel against a future edit introducing a deprecated field shape.
     """
     jsonschema = pytest.importorskip("jsonschema")
 
@@ -1139,10 +1051,8 @@ def test_7_collected_count_guard_and_check_schema_clean() -> None:
         "regression suspected):\n  " + "\n  ".join(failures)
     )
 
-    # Draft202012 cleanliness check on the bumped JSON-LD schema. Wave 1.7
-    # added ``$defs.ObjectiveAlignment``; Wave 2 didn't touch this file
-    # but a regression sentinel here catches a future wave that adds a
-    # deprecated field shape silently.
+    # Draft202012 cleanliness sentinel on the JSON-LD schema — catches a
+    # future edit that silently introduces a deprecated field shape.
     schema_path = (
         PROJECT_ROOT
         / "schemas"

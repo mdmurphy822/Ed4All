@@ -49,15 +49,13 @@ from .param_mapper import ParameterMappingError, TaskParameterMapper  # noqa: E4
 
 # Phase 0 Hardening: Import hardening modules with graceful fallback.
 #
-# Wave 22 F1 fix: these modules live in ``MCP/hardening/``, not in
-# ``MCP/core/``. The historical relative imports (``from .error_classifier
-# import ...``) silently hit the ``except ImportError`` arm, flipped every
-# ``HARDENING_*`` flag to ``False``, and left the entire Phase 0 stack
-# as a no-op at runtime. Tests that imported ``MCP.hardening.*`` directly
-# did not catch the regression. Absolute imports from ``..hardening.*``
-# restore the wiring; ``except ImportError`` is retained defensively for
-# deployments that strip the hardening package, and a debug log makes
-# future silent regressions observable.
+# These modules live in ``MCP/hardening/``, NOT ``MCP/core/`` — a relative
+# ``from .error_classifier import ...`` silently hits the ``except ImportError``
+# arm, flips every ``HARDENING_*`` flag to False, and no-ops the whole Phase 0
+# stack at runtime (tests importing ``MCP.hardening.*`` directly do not catch
+# it). Keep the absolute ``..hardening.*`` form. ``except ImportError`` is
+# retained for deployments that strip the hardening package; the debug log keeps
+# a silent regression observable.
 try:
     from ..hardening.error_classifier import (
         ErrorClass,
@@ -145,67 +143,48 @@ AGENT_TOOL_MAPPING = {
     # -------------------------------------------------------------------------
     # COURSEFORGE AGENTS
     # -------------------------------------------------------------------------
-    # Wave 24: course-outliner now routes to plan_course_structure (real
-    # LO synthesis + persisting) instead of create_course_project (which
-    # only created subdirs + emitted {COURSE}_OBJ_N placeholders). The
-    # course_generation workflow still has a planning phase that uses
-    # this agent, so plan_course_structure is robust to missing textbook
-    # structure (falls back to whatever objectives JSON is supplied).
+    # course-outliner routes to plan_course_structure (real LO synthesis +
+    # persistence), NOT create_course_project (which only makes subdirs and
+    # emits {COURSE}_OBJ_N placeholders). plan_course_structure must stay
+    # robust to a missing textbook structure — the course_generation workflow
+    # reaches it with only an objectives JSON.
     "course-outliner": "plan_course_structure",
     "requirements-collector": "get_courseforge_status",
     "content-generator": "generate_course_content",
     "brightspace-packager": "package_imscc",
-    # SemantiK migration: the standalone ``validate_wcag_compliance`` MCP tool
-    # (a DART tool) was retired. WCAG/OSCQR validation now runs as the
-    # ``wcag_compliance`` + OSCQR validation GATES (validators in
-    # ``lib.validators.wcag`` / ``lib.validators.oscqr``), so the evaluator
-    # agent routes to the benign status tool like ``quality-assurance``.
+    # WCAG/OSCQR validation runs as validation GATES (``lib.validators.wcag`` /
+    # ``lib.validators.oscqr``), not as a tool — so these evaluator agents route
+    # to the benign status tool.
     "oscqr-course-evaluator": "get_courseforge_status",
     "quality-assurance": "get_courseforge_status",
 
     # -------------------------------------------------------------------------
     # PIPELINE AGENTS (Textbook-to-Course)
     # -------------------------------------------------------------------------
-    # Wave 24: textbook-ingestor now routes to extract_textbook_structure
-    # (real SemanticStructureExtractor dispatch) instead of create_course_project.
+    # textbook-ingestor routes to extract_textbook_structure (real
+    # SemanticStructureExtractor dispatch), not create_course_project.
     "textbook-stager": "stage_dart_outputs",
     "textbook-ingestor": "extract_textbook_structure",
     "source-router": "build_source_module_map",
-    # Phase 6 ST 11/12: pedagogy-graph-builder is the agent backing the
-    # new ``concept_extraction`` workflow phase. The phase entry in
-    # ``config/workflows.yaml::textbook_to_course`` lists this agent;
-    # ``_run_concept_extraction`` (registered in
-    # ``MCP/tools/pipeline_tools.py::_build_tool_registry``) is the
-    # in-process tool that produces the concept graph + manifest.
+    # Backs the ``concept_extraction`` phase; ``_run_concept_extraction``
+    # (registered in ``MCP/tools/pipeline_tools.py::_build_tool_registry``)
+    # produces the concept graph + manifest.
     "pedagogy-graph-builder": "run_concept_extraction",
-    # Phase 7b ST 9/11: semantik-chunker is the agent backing the
-    # ``chunking`` workflow phase. Utility-style agent (no LLM dispatch);
-    # ``run_dart_chunking`` (registered in
-    # ``MCP/tools/pipeline_tools.py::_build_tool_registry`` by ST 11) is
-    # the in-process tool that emits ``LibV2/courses/<slug>/dart_chunks/
+    # Backs the ``chunking`` phase. Utility-style agent (no LLM dispatch);
+    # ``run_dart_chunking`` emits ``LibV2/courses/<slug>/dart_chunks/
     # chunks.jsonl`` + ``manifest.json`` via ``Trainforge.chunker.chunk_content``.
-    # DART->semantik purge (task #19 Stage 3): agent renamed dart-chunker ->
-    # semantik-chunker; the legacy dart-chunker key is kept as a read-compat
-    # dispatch alias so old resume states / configs still route.
+    # The legacy ``dart-chunker`` key stays as a read-compat dispatch alias so
+    # resume states / configs written before the rename still route.
     "semantik-chunker": "run_dart_chunking",
     "dart-chunker": "run_dart_chunking",  # legacy alias (read-compat)
 
     # -------------------------------------------------------------------------
     # CONVERSION / REMEDIATION AGENTS
     # -------------------------------------------------------------------------
-    # SemantiK migration: ``semantik-converter`` backs the surviving
-    # ``semantik_conversion`` phase (renamed from ``dart_conversion`` in task
-    # #19 Stage 3d); ``extract_and_convert_pdf`` routes that phase to the
-    # SemantiK v2 cascade seam (the legacy DART converter was retired).
-    # ``semantik-automation-coordinator`` (a Courseforge IMSCC-conversion
-    # orchestrator) and ``remediation-validator`` previously bound the retired
-    # ``batch_convert_multi_source`` / ``validate_wcag_compliance`` DART tools;
-    # they now route to ``extract_and_convert_pdf`` / ``get_courseforge_status``
-    # respectively (WCAG validation runs as the ``wcag_compliance`` gate).
-    # DART->semantik purge (task #19 Stage 3): agents renamed dart-converter ->
-    # semantik-converter, dart-automation-coordinator ->
-    # semantik-automation-coordinator; the legacy dart-* keys are kept as
-    # read-compat dispatch aliases so old resume states / configs still route.
+    # ``semantik-converter`` backs the ``semantik_conversion`` phase;
+    # ``extract_and_convert_pdf`` routes it to the SemantiK v2 cascade seam.
+    # The legacy ``dart-*`` keys stay as read-compat dispatch aliases so resume
+    # states / configs written before the rename still route.
     "semantik-automation-coordinator": "extract_and_convert_pdf",
     "semantik-converter": "extract_and_convert_pdf",
     "dart-automation-coordinator": "extract_and_convert_pdf",  # legacy alias
@@ -221,22 +200,14 @@ AGENT_TOOL_MAPPING = {
     # TRAINFORGE AGENTS
     # -------------------------------------------------------------------------
     "assessment-extractor": "analyze_imscc_content",
-    # rag-indexer builds the per-course on-device vector index (real
-    # embeddings + numpy exact-search index) via ``run_vector_indexing``.
-    # It was previously mis-mapped to ``analyze_imscc_content`` (an
-    # HTML/word-count scan that never produced an index) — the
-    # ``rag_training`` ``indexing`` phase could "succeed" without building
-    # any index. The mapping now points at the real indexing tool, which
-    # FAILS CLOSED when the embedding backend is unavailable (no
-    # file-counting masquerade). ``analyze_imscc_content`` stays wired for
-    # the agents that legitimately use it (assessment-extractor,
-    # content-analyzer).
+    # rag-indexer must route to ``run_vector_indexing`` (real embeddings +
+    # numpy exact-search index), which FAILS CLOSED when the embedding backend
+    # is unavailable. Do NOT point it at ``analyze_imscc_content``: that is an
+    # HTML/word-count scan, so the ``rag_training`` ``indexing`` phase would
+    # report success without building any index.
     "rag-indexer": "run_vector_indexing",
     "assessment-generator": "generate_assessments",
     "assessment-validator": "validate_assessment",
-    # Wave 30 Gap 3: wire the previously-unused synthesize_training CLI
-    # entry point as a first-class pipeline phase so textbook_to_course
-    # runs actually emit instruction + preference training pairs.
     "training-synthesizer": "synthesize_training",
 
     # -------------------------------------------------------------------------
@@ -247,17 +218,15 @@ AGENT_TOOL_MAPPING = {
 
 
 # =============================================================================
-# Phase 3.5 Subtask 31 — Phase-name-aware tool dispatch
+# Phase-name-aware tool dispatch
 # =============================================================================
-# Maps workflow phase names to MCP tool names for the Phase 3 two-pass
-# router phases. The dispatcher checks ``_PHASE_TOOL_MAPPING.get(phase)``
-# BEFORE falling back to ``AGENT_TOOL_MAPPING.get(agent_type)`` so the
-# three new phases (``content_generation_outline``, ``inter_tier_validation``,
-# ``content_generation_rewrite``) plus the Wave-B ``post_rewrite_validation``
-# phase route to their dedicated handlers regardless of the agent name
-# threaded through the task. Empty agent lists (e.g. validator-only
-# phases) still get a single synthetic task created via the phase-name
-# dispatch path so the helper actually runs.
+# Maps workflow phase names to MCP tool names. The dispatcher checks
+# ``_PHASE_TOOL_MAPPING.get(phase)`` BEFORE falling back to
+# ``AGENT_TOOL_MAPPING.get(agent_type)``, so these phases reach their dedicated
+# handlers regardless of which agent name is threaded through the task.
+# Membership here is also what lets a validator-only phase (``agents: []``) run
+# at all: ``workflow_runner._create_phase_tasks`` synthesizes its single virtual
+# ``phase-handler`` task only for phases present in this map.
 # =============================================================================
 
 _PHASE_TOOL_MAPPING: Dict[str, str] = {
@@ -265,74 +234,50 @@ _PHASE_TOOL_MAPPING: Dict[str, str] = {
     "inter_tier_validation": "run_inter_tier_validation",
     "content_generation_rewrite": "run_content_generation_rewrite",
     "post_rewrite_validation": "run_post_rewrite_validation",
-    # Phase 7c ST 16: imscc_chunking phase routes to its own tool
-    # regardless of agent. Phase reuses the ``dart-chunker`` agent
-    # (utility / content-agnostic chunker, no LLM dispatch) per the
-    # plan's "same agent spec — chunker is symmetric" call, but the
-    # IMSCC-side tool emits to ``imscc_chunks/`` with
-    # ``chunkset_kind="imscc"`` + ``source_imscc_sha256`` while the
-    # DART-side tool (mapped via AGENT_TOOL_MAPPING fallback) emits to
-    # ``dart_chunks/`` with ``chunkset_kind="dart"`` +
-    # ``source_dart_html_sha256``. The phase-name dispatch override
-    # selects the right helper without forking the agent registry.
+    # Both chunking phases share one content-agnostic chunker agent, but emit
+    # differently: the IMSCC-side tool writes ``imscc_chunks/`` with
+    # ``chunkset_kind="imscc"`` + ``source_imscc_sha256``, the DART-side tool
+    # (reached via the AGENT_TOOL_MAPPING fallback) writes ``dart_chunks/`` with
+    # ``chunkset_kind="dart"`` + ``source_dart_html_sha256``. The phase-name
+    # override picks the right helper without forking the agent registry.
     "imscc_chunking": "run_imscc_chunking",
-    # W10 (plan plans/finegrain/w10-assessments-qti-discussions-2026-06.md
-    # §2.4 Option A) — pre-packaging PRODUCT-assessment synthesis phase.
-    # Declared ``agents: []`` in config/workflows.yaml (validator-only-phase
-    # pattern), so ``workflow_runner._create_phase_tasks`` synthesizes a
-    # single virtual ``phase-handler`` task ONLY because this phase appears
-    # here; routes to ``run_assessment_synthesis`` (handler owned by the
-    # concurrent 2B-core worker in MCP/tools/pipeline_tools.py) which
-    # synthesizes + emits QTI 1.2 / imsdt / assignment XML into
-    # ``<export>/06_assessments/`` before the packaging phase consumes it.
+    # Pre-packaging assessment synthesis: emits QTI 1.2 / imsdt / assignment XML
+    # into ``<export>/06_assessments/`` for the packaging phase to consume.
     "assessment_synthesis": "run_assessment_synthesis",
-    # SEMANTIK_HEADING_JUDGE permanent wiring — post-conversion Super
-    # heading-level judge over the GLM-OCR lane's ``{stem}.glmocr_layout.json``
-    # sidecars, between ``semantik_conversion`` and ``staging``. Declared
-    # ``agents: []`` (validator-only-phase pattern) so the runner synthesizes
-    # the single virtual ``phase-handler`` task; routes to
-    # ``run_heading_judge`` (MCP/tools/pipeline_tools.py), which shells out to
-    # ``semantik_structure.glmocr.heading_judge_standalone --apply`` per
-    # chapter, copies judged HTML/escalations back over the conversion output
-    # (keeping ``.prejudge.bak`` / ``.bak``), and FAIL-OPENS per chapter.
+    # Post-conversion heading-level judge over the GLM-OCR lane's
+    # ``{stem}.glmocr_layout.json`` sidecars, between ``semantik_conversion``
+    # and ``staging``. Shells out per chapter, copies judged HTML/escalations
+    # back over the conversion output (keeping ``.prejudge.bak`` / ``.bak``),
+    # and FAIL-OPENS per chapter — a judge failure must never block a build.
     # Skip-with-pass when SEMANTIK_HEADING_JUDGE is off or no sidecars exist.
     "heading_judge": "run_heading_judge",
 }
 
 
 # =============================================================================
-# Wave 74 — Agent classification for per-task subagent dispatch
+# Agent classification for per-task subagent dispatch
 # =============================================================================
 #
-# The entries in ``AGENT_TOOL_MAPPING`` above each resolve to a Python tool
-# that ``TaskExecutor._invoke_tool`` calls in-process. For Wave 38's gap
-# close we additionally classify each agent as either:
+# Every ``AGENT_TOOL_MAPPING`` entry resolves to a Python tool that
+# ``TaskExecutor._invoke_tool`` calls in-process. This set additionally splits
+# agents into:
 #
-#   * **subagent-dispatched** — the work genuinely needs LLM reasoning
-#     (content generation, assessment question synthesis, semantic
-#     remediation, pedagogical quality evaluation). When
-#     ``ED4ALL_AGENT_DISPATCH=true`` AND a dispatcher is threaded into
-#     the executor, tasks for these agents route through
-#     ``dispatcher.dispatch_task`` instead of the in-process tool. A
-#     Claude Code subagent on the other end of the mailbox bridge does
-#     the work per that agent's spec file.
+#   * **subagent-dispatched** (listed here) — work that genuinely needs LLM
+#     reasoning. When ``ED4ALL_AGENT_DISPATCH`` is truthy AND a dispatcher is
+#     threaded into the executor, these route through
+#     ``dispatcher.dispatch_task`` instead of the in-process tool, and a
+#     subagent on the other end of the mailbox bridge does the work per that
+#     agent's spec file.
 #
-#   * **Python-tool** — the work is deterministic (PDF extraction,
-#     TF-IDF routing, file staging, IMSCC packaging, WCAG static
-#     validation, archival). These stay on the legacy ``_invoke_tool``
-#     path regardless of the flag. DART alt-text + block classification
-#     still route through the Wave 73 ``MailboxBrokeredBackend`` for
-#     their LLM sub-calls; that's orthogonal to this classification.
+#   * **Python-tool** (absent here) — deterministic work (extraction, TF-IDF
+#     routing, staging, packaging, static validation, archival). These stay on
+#     ``_invoke_tool`` regardless of the flag. Their LLM sub-calls (e.g. alt
+#     text, block classification) still go through ``MailboxBrokeredBackend``;
+#     that is orthogonal to this classification.
 #
-# Classification derives from whether the agent spec
-# (``Courseforge/agents/*.md``, ``Trainforge/agents/*.md``)
-# is authored around reasoning-style directives
-# ("design a", "evaluate", "generate questions covering", etc.) or
-# deterministic-tool directives ("parse the XML", "stage files", "hash
-# the manifest"). The list is explicit rather than derived because a
-# future agent that claims the ``*.md`` shape of a reasoning agent but
-# is backed by a Python tool (or vice-versa) should flip classification
-# only after a deliberate PR review.
+# Membership is an explicit list, not derived from the agent spec's prose
+# style: an agent that reads like a reasoning agent but is backed by a Python
+# tool (or vice-versa) must only flip classification under deliberate review.
 AGENT_SUBAGENT_SET = frozenset({
     # Courseforge reasoning agents
     "course-outliner",         # LO synthesis from textbook structure
@@ -340,7 +285,7 @@ AGENT_SUBAGENT_SET = frozenset({
     "oscqr-course-evaluator",  # OSCQR rubric evaluation (subjective)
     "quality-assurance",       # pattern prevention & validation narrative
 
-    # DART / Remediation reasoning agents (HTML enhancement)
+    # Remediation reasoning agents (HTML enhancement)
     "content-analyzer",                # accessibility + quality gap detection
     "accessibility-remediation",       # alt-text, heading hierarchy fixes
     "content-quality-remediation",     # educational depth enhancement
@@ -354,14 +299,11 @@ AGENT_SUBAGENT_SET = frozenset({
 })
 
 
-# Wave1-I8 (Finding 7 of plans/dispatch-7-execution-inspection-2026-05.md):
-# the agent → provider-env-var mapping used by the Wave-D ToS-unblock
-# short-circuits below. Lifted out of the inline ``os.environ.get(...)``
-# checks so (a) ``workflow_runner`` can emit a one-shot provider banner
-# at workflow start without re-stating the literals and (b) future
-# provider plumbing lands as a single map entry instead of a duplicate
-# ``_force_inprocess_for_*`` triple. Byte-equivalent to the prior inline
-# string literals — same env vars resolved, same short-circuits triggered.
+# Agent → provider-env-var mapping driving the in-process short-circuits below.
+# Kept as a map rather than inline ``os.environ.get(...)`` checks so
+# ``workflow_runner`` can emit its provider banner without re-stating the
+# literals, and new provider plumbing is one entry rather than a duplicated
+# ``_force_inprocess_for_*`` triple.
 AGENT_PROVIDER_ENV_MAP: Mapping[str, str] = {
     "content-generator": "COURSEFORGE_PROVIDER",
     "course-outliner": "COURSEPLANNER_PROVIDER",
@@ -369,34 +311,28 @@ AGENT_PROVIDER_ENV_MAP: Mapping[str, str] = {
 }
 
 
-# Marketable-v1 A3 (blessed authoring-provider route): the COMPLETE map of
-# every subagent-classified agent (``AGENT_SUBAGENT_SET``) to the env var
-# that, when set, short-circuits the Wave-74 mailbox subagent dispatch and
-# routes the agent's LLM work through the in-process OpenAI-compatible
-# provider lattice instead. ``AGENT_PROVIDER_ENV_MAP`` (above) covers only
-# the three agents whose short-circuit was lifted out of the inline
-# ``_force_inprocess_for_*`` triple; ``training-synthesizer``'s
-# ``TRAINFORGE_SYNTHESIS_PROVIDER`` short-circuit lives inline in
-# ``_invoke_tool`` (it predates the lift). This map is the single source of
-# truth for "which env var blesses each LLM agent into the in-process
-# lattice" — consumed by the authoring-route guardrail in
-# ``workflow_runner._enforce_authoring_provider_route`` so the GUI / headless
-# runs fail fast (instead of hanging on an unserviced mailbox or silently
-# degrading to a templated stub) when an LLM-needing agent in the workflow
-# has no provider env set.
+# The COMPLETE map of subagent-classified agents (``AGENT_SUBAGENT_SET``) to the
+# env var that, when set, short-circuits mailbox subagent dispatch and routes
+# that agent's LLM work through the in-process OpenAI-compatible provider
+# lattice. Single source of truth for "which env var blesses each LLM agent into
+# the in-process lattice", consumed by
+# ``workflow_runner._enforce_authoring_provider_route`` so headless/GUI runs FAIL
+# FAST instead of hanging on an unserviced mailbox or silently degrading to a
+# templated stub.
 #
-# The remaining subagent-classified agents (oscqr-course-evaluator,
+# ``AGENT_PROVIDER_ENV_MAP`` above is a strict subset (three agents);
+# ``training-synthesizer``'s ``TRAINFORGE_SYNTHESIS_PROVIDER`` short-circuit is
+# still inline in ``_invoke_tool``.
+#
+# The other subagent-classified agents (oscqr-course-evaluator,
 # quality-assurance, content-analyzer, accessibility-remediation,
-# content-quality-remediation, intelligent-design-mapper,
-# assessment-extractor, assessment-validator) have NO provider short-circuit
-# in ``_invoke_tool`` — they can ONLY run via Claude-session subagent
-# dispatch. None of them appear in the ``textbook_to_course`` workflow (they
-# belong to ``course_generation`` / the
-# assessment-validation surface), so the blessed textbook authoring route is
-# fully coverable by the four entries below. Agents absent from this map are
-# treated by the guardrail as "session-only" — a run that would dispatch one
-# to the mailbox without a servicer still fails fast, but the actionable fix
-# is "run inside a Claude session", not "set a provider env".
+# content-quality-remediation, intelligent-design-mapper, assessment-extractor,
+# assessment-validator) have NO provider short-circuit — they can only run via
+# session subagent dispatch, and none appear in ``textbook_to_course``, so the
+# four entries below fully cover the textbook authoring route. The guardrail
+# treats agents absent from this map as session-only: dispatching one without a
+# servicer still fails fast, but the fix is "run inside a session", not "set a
+# provider env".
 AGENT_AUTHORING_PROVIDER_ENV_MAP: Mapping[str, str] = {
     "content-generator": "COURSEFORGE_PROVIDER",
     "course-outliner": "COURSEPLANNER_PROVIDER",
@@ -405,10 +341,8 @@ AGENT_AUTHORING_PROVIDER_ENV_MAP: Mapping[str, str] = {
 }
 
 
-# Feature flag enabling the dispatch_task routing fork. Default **off**
-# so Wave 74 Session 1 lands the infrastructure without altering any
-# existing pipeline run. Evaluated per-call so tests can toggle via
-# ``monkeypatch.setenv``.
+# Feature flag enabling the dispatch_task routing fork. Default off. Evaluated
+# per-call so tests can toggle via ``monkeypatch.setenv``.
 _AGENT_DISPATCH_ENV = "ED4ALL_AGENT_DISPATCH"
 
 
@@ -424,7 +358,7 @@ def _agent_dispatch_enabled() -> bool:
 
 
 # --------------------------------------------------------------------------- #
-# Graceful-stop timeout → pause conversion (plan P5, AMENDMENT #5 / D10)
+# Graceful-stop timeout → pause conversion
 # --------------------------------------------------------------------------- #
 # When a wall-clock deadline expires, the executor does NOT immediately cancel
 # the in-flight coroutine (``asyncio.wait_for`` would — that is exactly the hard
@@ -445,9 +379,8 @@ def _grace_seconds(timeout_seconds: float) -> float:
 
     Read from the module constants at call time so a test can monkeypatch
     :data:`BATCH_TIMEOUT_GRACE_FRACTION` / :data:`BATCH_TIMEOUT_GRACE_CAP_SECONDS`
-    and observe the change. Kept as a float (the plan's ``int(...)`` floor only
-    matters sub-second — irrelevant at the production multi-minute scale where
-    grace is ~180s — and float-vs-int here makes the window testable).
+    and observe the change. Returns a float rather than an int floor so
+    sub-second windows stay testable.
     """
     try:
         t = float(timeout_seconds)
@@ -456,7 +389,7 @@ def _grace_seconds(timeout_seconds: float) -> float:
     return min(BATCH_TIMEOUT_GRACE_CAP_SECONDS, BATCH_TIMEOUT_GRACE_FRACTION * t)
 
 
-# Task-scoped in-process stop channel (D10). Distinct from the run-scoped
+# Task-scoped in-process stop channel. Distinct from the run-scoped
 # filesystem sentinel in ``lib.generation.stop_control``: when a SINGLE task
 # exceeds ``ED4ALL_TASK_TIMEOUT_MINUTES`` the executor sets this per-task Event
 # and grants a grace window before a hard cancel — but it NEVER writes the
@@ -485,13 +418,12 @@ def current_task_stop_event() -> Optional[threading.Event]:
     return _TASK_STOP_EVENT.get()
 
 
-# W2.1: CUDA-OOM detection + free-VRAM probe were factored into the shared
-# ``lib.llm.oom`` module so the validation-gate path
-# (``MCP/hardening/validation_gates.py``) can recognise an OOM raised inside a
-# validator WITHOUT a circular import (executor imports validation_gates). The
-# module-level ``_is_cuda_oom`` / ``_probe_free_vram_mib`` names are retained as
-# aliases so existing call sites and tests that patch
-# ``MCP.core.executor._probe_free_vram_mib`` keep working unchanged.
+# CUDA-OOM detection + free-VRAM probe live in the shared ``lib.llm.oom`` module
+# so the validation-gate path (``MCP/hardening/validation_gates.py``) can
+# recognise an OOM raised inside a validator WITHOUT a circular import (the
+# executor imports validation_gates). The module-level ``_is_cuda_oom`` /
+# ``_probe_free_vram_mib`` aliases are load-bearing: call sites and tests patch
+# ``MCP.core.executor._probe_free_vram_mib``.
 #
 # Scope note for the executor's use of ``_is_cuda_oom``: here it governs
 # LOGGING ONLY. The OOM branch in ``_execute_with_retries`` uses it to decide
@@ -585,13 +517,12 @@ class TaskExecutor:
             batch_timeout_minutes: Timeout for entire batch (Phase 0)
             dispatcher: Optional dispatcher exposing a
                 ``dispatch_task(*, task_name, agent_type, task_params,
-                run_id, phase_context) -> dict`` coroutine. Wave 74:
-                when present and ``ED4ALL_AGENT_DISPATCH=true`` and the
-                task's agent_type is in ``AGENT_SUBAGENT_SET``,
-                ``_invoke_tool`` routes through the dispatcher instead of
-                the in-process ``tool_registry`` entry. Defaults ``None``
-                so legacy callers (tests, direct instantiation) keep the
-                pre-Wave-74 execution path.
+                run_id, phase_context) -> dict`` coroutine. When present
+                and ``ED4ALL_AGENT_DISPATCH`` is truthy and the task's
+                agent_type is in ``AGENT_SUBAGENT_SET``, ``_invoke_tool``
+                routes through the dispatcher instead of the in-process
+                ``tool_registry`` entry. ``None`` keeps the in-process
+                path for tests / direct instantiation.
         """
         self.tool_registry = tool_registry or {}
         self.capture = capture
@@ -689,12 +620,10 @@ class TaskExecutor:
                 threshold=poison_pill_threshold,
                 window_seconds=300
             )
-            # Wave 36: wire the RetryPolicy so ``_execute_with_retries``
-            # actually sleeps between attempts on transient errors. The
-            # base_delay / max_delay / exponential_base are driven by
-            # the OrchestratorConfig fields, honoring the
-            # ``retry_delay_seconds`` knob that pre-Wave-36 was defined
-            # but never consulted.
+            # RetryPolicy is what makes ``_execute_with_retries`` actually sleep
+            # between attempts on transient errors; base_delay / max_delay /
+            # exponential_base come from OrchestratorConfig's
+            # ``retry_delay_seconds``.
             base_delay = float(
                 getattr(self.config, "retry_delay_seconds", 5) or 5
             )
@@ -728,19 +657,16 @@ class TaskExecutor:
             self.gate_manager = ValidationGateManager(capture=self.capture)
             logger.debug(f"[{self.run_id}] Validation gate manager initialized")
 
-        # Wave 23 Sub-task A: per-gate input router. Pre-Wave-23, gates
-        # received a generic ``{'artifacts': ..., 'results': ...}`` blob
-        # regardless of validator shape, so critical gates silently
-        # returned MISSING_INPUT issues and warning-severity gates
-        # silently passed. The router builds per-validator kwargs from
-        # the phase's accumulated outputs + workflow params.
+        # Per-gate input router: builds per-validator kwargs from the phase's
+        # accumulated outputs + workflow params. Handing every gate one generic
+        # ``{'artifacts': ..., 'results': ...}`` blob instead makes critical
+        # gates return MISSING_INPUT and warning gates silently pass.
         self.gate_input_router = None
         if HARDENING_GATE_INPUT_ROUTING and default_router is not None:
             self.gate_input_router = default_router()
             logger.debug(f"[{self.run_id}] Gate input router initialized")
 
-        # Lock manager for cross-process resource locking (Wave 22 F1 fix:
-        # was imported but never instantiated).
+        # Lock manager for cross-process resource locking.
         self.lock_manager = None
         if HARDENING_LOCKFILE and self.run_path:
             try:
@@ -849,12 +775,10 @@ class TaskExecutor:
         agent_type = task.get("agent_type", "")
         phase_name = task.get("phase", "")
 
-        # Phase 3.5 Subtask 31: phase-name dispatch overrides agent-based
-        # routing for the four two-pass router phases. When the phase
-        # name is in ``_PHASE_TOOL_MAPPING``, route to the phase's
-        # dedicated handler regardless of the agent_type threaded
-        # through the task. Falls back to the legacy
-        # ``AGENT_TOOL_MAPPING`` for every other phase.
+        # Phase-name dispatch overrides agent-based routing: a phase in
+        # ``_PHASE_TOOL_MAPPING`` reaches its dedicated handler regardless of
+        # the agent_type threaded through the task. Every other phase falls
+        # back to ``AGENT_TOOL_MAPPING``.
         tool_name = _PHASE_TOOL_MAPPING.get(phase_name)
         if not tool_name:
             tool_name = AGENT_TOOL_MAPPING.get(agent_type)
@@ -949,20 +873,15 @@ class TaskExecutor:
             try:
                 result = await self._invoke_tool(tool_name, task_params)
 
-                # Wave 33 Bug C: Inspect the tool envelope for an
-                # explicit failure signal before marking the task
-                # COMPLETE. Pre-Wave-33 any dict that parsed (including
-                # ``{"success": False, "error_code": "..."}``) was
-                # treated as success, so gate aggregation ran on the
-                # "12/12 complete" phase summary even when every task
-                # returned a permanent-error envelope — the
-                # ``content_generation`` phase routinely reported
-                # ``gates=pass`` on 48 empty-template pages.
+                # Inspect the tool envelope for an explicit failure signal
+                # before marking the task COMPLETE. Treating any parsed dict as
+                # success lets ``{"success": False, ...}`` envelopes through, so
+                # gate aggregation runs against an "all complete" phase summary
+                # and passes gates on content that was never produced.
                 #
-                # Treat ``success=False`` as a permanent failure: no
-                # retry (the tool already decided its own outcome),
-                # status=FAILED, error_code / error_message surfaced
-                # from the envelope into the ExecutionResult so
+                # ``success=False`` is a PERMANENT failure: no retry (the tool
+                # already decided its own outcome), status=FAILED, with
+                # error_code / error_message lifted out of the envelope so
                 # downstream gate aggregation sees the failure.
                 if isinstance(result, dict) and result.get("success") is False:
                     error_code = str(
@@ -1152,16 +1071,13 @@ class TaskExecutor:
                     rationale=rationale,
                 )
 
-            # Wave 36: honor the configured retry backoff between
-            # attempts. Pre-Wave-36 the loop would re-dispatch
-            # immediately, which for rate-limited LLM calls meant we'd
-            # fire max_retries requests inside the provider's cooldown
-            # window and amplify the throttling. ``RetryPolicy`` is
-            # driven by the ErrorClassifier's classification of the
-            # most recent failure (transient → exponential, else fixed
-            # base_delay). Under pytest we short-circuit the sleep so
-            # the test suite doesn't stretch into minutes when
-            # exercising retry paths on the 30s default config.
+            # Honor the configured retry backoff between attempts. Re-
+            # dispatching immediately fires every retry inside a rate-limited
+            # provider's cooldown window and amplifies the throttling.
+            # ``RetryPolicy`` picks the curve from the ErrorClassifier's verdict
+            # on the most recent failure (transient → exponential, else fixed
+            # base_delay). The sleep is short-circuited under pytest so retry
+            # paths don't stretch the suite by the multi-second default delay.
             if (
                 attempt < self.max_retries
                 and self.retry_policy
@@ -1200,24 +1116,19 @@ class TaskExecutor:
         Uses TaskParameterMapper to translate generic task parameters
         to the tool-specific parameter names expected by each tool.
 
-        Wave 74 (per-task subagent dispatch):
+        Per-task subagent dispatch:
 
-        When ``ED4ALL_AGENT_DISPATCH=true`` AND a ``dispatcher`` was
-        injected into the executor AND the task's ``agent_type`` is
-        classified as subagent-dispatched (see ``AGENT_SUBAGENT_SET``),
-        the call is routed through ``dispatcher.dispatch_task`` instead
-        of the in-process ``tool_registry[tool_name]``. The dispatcher
-        hands the mapped params to a Claude Code subagent (via the Wave
-        34 mailbox bridge) that executes the agent's markdown spec and
-        returns a tool-shape dict matching what the Python emitter
-        would have produced. This closes the Wave 38 gap that caused
-        content_generation / assessment phases to run as in-process
-        templates regardless of ``--mode`` selection.
+        When ``ED4ALL_AGENT_DISPATCH`` is truthy AND a ``dispatcher`` was
+        injected AND the task's ``agent_type`` is in ``AGENT_SUBAGENT_SET``,
+        the call routes through ``dispatcher.dispatch_task`` instead of
+        ``tool_registry[tool_name]``. The dispatcher hands the mapped
+        params to a subagent (via the mailbox bridge) that executes the
+        agent's markdown spec and returns a tool-shape dict matching what
+        the Python emitter would have produced. Without this fork these
+        phases run as in-process templates regardless of ``--mode``.
 
-        The fork is surgical: when any of the three conditions fail we
-        fall through to the legacy in-process invocation unchanged.
-        Tests / legacy callers that don't pass a dispatcher keep the
-        pre-Wave-74 behaviour byte-for-byte.
+        If any of the three conditions fail, execution falls through to
+        the in-process invocation unchanged.
 
         Args:
             tool_name: Name of the MCP tool to invoke
@@ -1230,55 +1141,33 @@ class TaskExecutor:
             ValueError: If tool not registered
             ParameterMappingError: If required parameters are missing
         """
-        # Wave 74 fork: if the dispatcher + feature flag + agent
-        # classification all point to subagent dispatch, route there
-        # before touching the in-process registry. This happens BEFORE
-        # the tool_registry lookup so agents that don't have a Python
-        # tool backing them (a future all-agent workflow) don't trip
-        # the "Tool not registered" guard.
+        # Subagent-dispatch fork: when the dispatcher + feature flag + agent
+        # classification all point to subagent dispatch, route there BEFORE the
+        # tool_registry lookup, so an agent with no Python tool backing it does
+        # not trip the "Tool not registered" guard.
         agent_type = None
         if isinstance(task_params, dict):
             agent_type = task_params.get("agent_type")
-        # Phase 1 ToS-unblock: COURSEFORGE_PROVIDER short-circuits the
-        # Wave-74 subagent dispatch for the content-generator agent only.
-        # Operators who set the env var want their LLM provider (anthropic
-        # / together / local), not the Claude Code subagent. Other Wave-74
-        # agents (course-outliner, oscqr-course-evaluator, etc.) keep
-        # dispatching unchanged.
+        # Per-agent provider short-circuits: setting an agent's provider env var
+        # means the operator wants their own LLM provider, so subagent dispatch
+        # is bypassed and the work runs on the in-process provider lattice.
+        # Agents without an env var set keep dispatching unchanged.
         #
-        # Wave W-D14 ToS-unblock: COURSEPLANNER_PROVIDER short-circuits
-        # the Wave-74 subagent dispatch for the course-outliner agent
-        # only. Mirrors the COURSEFORGE_PROVIDER semantics above —
-        # setting the env var routes objective synthesis through an
-        # in-process OpenAI-compatible / Anthropic provider via
-        # ``Courseforge.generators._outliner_provider.OutlinerProvider``
-        # so the synthesised LO text (which lands in
-        # ``synthesized_objectives.json`` and propagates to every
-        # downstream chunk's ``learning_outcome_refs[]``) is produced
-        # by an operator-selected license-clean provider rather than
-        # the Claude Code subagent.
+        #   COURSEFORGE_PROVIDER        -> content-generator
+        #   COURSEPLANNER_PROVIDER      -> course-outliner, via
+        #       ``Courseforge.generators._outliner_provider.OutlinerProvider``
+        #   TRAINFORGE_ASSESSMENT_PROVIDER -> assessment-generator, via
+        #       ``Trainforge.generators._assessment_provider.AssessmentGeneratorProvider``
         #
-        # Wave W-D15 ToS-unblock: TRAINFORGE_ASSESSMENT_PROVIDER
-        # short-circuits the Wave-74 subagent dispatch for the
-        # assessment-generator agent only. Mirrors the
-        # COURSEFORGE_PROVIDER / COURSEPLANNER_PROVIDER semantics above —
-        # setting the env var routes assessment-question synthesis
-        # through an in-process OpenAI-compatible / Anthropic provider
-        # via
-        # ``Trainforge.generators._assessment_provider.AssessmentGeneratorProvider``
-        # so the authored questions (which land in ``assessments.json``
-        # and feed into the downstream ``training_synthesis``
-        # instruction-pair / preference-pair surface — i.e. they ARE
-        # training data for the resulting SLM adapter) are produced by
-        # an operator-selected license-clean provider rather than the
-        # Claude Code subagent.
+        # Licensing is the reason these exist: synthesized LO text lands in
+        # ``synthesized_objectives.json`` and propagates into every downstream
+        # chunk's ``learning_outcome_refs[]``, and authored questions land in
+        # ``assessments.json`` and feed ``training_synthesis`` — i.e. both
+        # become training data for the resulting SLM adapter, so they must come
+        # from an operator-selected license-clean provider.
         #
-        # Wave1-I8: the agent → env-var pairs were lifted to
-        # ``AGENT_PROVIDER_ENV_MAP`` so ``workflow_runner`` can emit a
-        # provider banner without restating the literals. Each entry
-        # below resolves the same env var with the same ``.strip()``
-        # guard the inline triple did pre-lift; behaviour is
-        # byte-equivalent.
+        # The pairs live in ``AGENT_PROVIDER_ENV_MAP`` so ``workflow_runner``
+        # can emit its provider banner without restating the literals.
         _provider_env = AGENT_PROVIDER_ENV_MAP.get(agent_type or "")
         _provider_env_set = bool(
             os.environ.get(_provider_env, "").strip() if _provider_env else ""
@@ -1538,9 +1427,9 @@ class TaskExecutor:
 
         progress["completed"] = sum(1 for t in tasks if t.get("status") == "COMPLETE")
         progress["in_progress"] = sum(1 for t in tasks if t.get("status") == "IN_PROGRESS")
-        # Wave 33 Bug C: count "FAILED" and "TIMEOUT" alongside "ERROR"
-        # so the persisted workflow progress reflects tool envelopes
-        # with ``success=False``, not just raised exceptions.
+        # Count "FAILED" and "TIMEOUT" alongside "ERROR" so persisted progress
+        # reflects tool envelopes with ``success=False``, not only raised
+        # exceptions.
         progress["failed"] = sum(
             1 for t in tasks
             if t.get("status") in ("ERROR", "FAILED", "TIMEOUT")
@@ -1651,16 +1540,15 @@ class TaskExecutor:
         has no phase checkpoint) skips per-task checkpointing.
 
         Args:
-            results_sink: W2.2 — optional caller-owned dict that this method
+            results_sink: optional caller-owned dict that this method
                 writes each finished task's ``ExecutionResult`` into as it
                 goes (in addition to returning it). ``execute_phase`` passes
                 one so that when ``asyncio.wait_for`` CANCELS this coroutine
                 on a whole-phase batch timeout — discarding the local return
                 value — the results of tasks that ALREADY completed before
                 the deadline survive in the caller's sink instead of being
-                thrown away. ``None`` (the default) preserves the legacy
-                behaviour byte-for-byte: a fresh local dict is used and
-                returned. Each task's result is recorded into the sink the
+                thrown away. ``None`` (the default) uses and returns a fresh
+                local dict. Each task's result is recorded into the sink the
                 INSTANT that task finishes (not after the whole batch's
                 gather), so a batch-timeout cancellation preserves even the
                 tasks that already completed within the in-flight batch — only
@@ -1673,7 +1561,7 @@ class TaskExecutor:
         results = results_sink if results_sink is not None else {}
         completed_ids = set()
 
-        # W2.2: record each task's result into ``results`` the instant it
+        # Record each task's result into ``results`` the instant it
         # finishes rather than after the whole batch's ``gather`` returns.
         # When ``execute_phase`` wraps this coroutine in ``asyncio.wait_for``
         # and the batch deadline fires, the cancellation is delivered to the
@@ -1759,7 +1647,7 @@ class TaskExecutor:
                 break
 
             # Execute batch. Each ``_run_and_record`` writes its own result
-            # into ``results`` as it finishes (W2.2), so no post-gather
+            # into ``results`` as it finishes, so no post-gather
             # zip-and-record pass is needed. ``return_exceptions=True`` keeps
             # a single task's raised exception from cancelling its siblings;
             # the helper itself already funnels non-cancellation exceptions
@@ -1770,17 +1658,14 @@ class TaskExecutor:
                 return_exceptions=True,
             )
 
-            # Wave 38: stop the batch loop as soon as any task emits
-            # POISON_PILL so subsequent batches don't waste work.
-            # In-flight siblings inside the current batch have already
-            # completed (``asyncio.gather`` awaits them all), so this
-            # doesn't cancel mid-flight requests — that would require
-            # switching to ``asyncio.wait(FIRST_COMPLETED)`` + explicit
-            # task.cancel(), which risks partial-state artifacts on
-            # the tool side. The stop-next-batch behaviour is the safe
-            # minimum: CLAUDE.md promises poison detection halts the
-            # batch; pre-Wave-38 it only marked the offender and kept
-            # dispatching remaining runnables.
+            # Stop the batch loop as soon as any task emits POISON_PILL so
+            # subsequent batches don't waste work. In-flight siblings in the
+            # current batch have already completed (``asyncio.gather`` awaits
+            # them all), so nothing is cancelled mid-flight. Cancelling mid-
+            # flight would require ``asyncio.wait(FIRST_COMPLETED)`` + explicit
+            # task.cancel(), which risks partial-state artifacts on the tool
+            # side — stopping at the next batch boundary is the safe minimum
+            # that still satisfies "poison detection halts the batch".
             if any(
                 r.status == "POISON_PILL"
                 for r in results.values()
@@ -1914,8 +1799,7 @@ class TaskExecutor:
         # the lifetime of the executor; without this reset, three same-
         # pattern errors spread across phases N, N+1, ... falsely trip the
         # detector on phase N+1's first error. Per-phase reset matches the
-        # Wave 38 semantics that poison detection halts a batch (not the
-        # whole workflow).
+        # contract that poison detection halts a batch, not the whole workflow.
         self.reset_poison_detector()
 
         # Start checkpoint
@@ -1942,15 +1826,14 @@ class TaskExecutor:
 
         # Execute tasks with batch timeout.
         #
-        # W2.2: a whole-phase batch timeout must NOT discard the results (and
+        # A whole-phase batch timeout must NOT discard the results (and
         # checkpoints) of tasks that ALREADY completed before the deadline.
-        # ``asyncio.wait_for`` cancels ``_execute_parallel`` and throws away
-        # its local return value, so pre-fix the ``except`` rebuilt a fresh
-        # ``results`` dict marking every still-PENDING task TIMEOUT — every
-        # finished task's real ExecutionResult (and its checkpoint) was lost.
-        # We thread a caller-owned ``results_sink`` so completed results
-        # survive the cancellation; on timeout we PRESERVE those and mark only
-        # the still-unfinished tasks TIMEOUT (abandoned / retried later).
+        # ``asyncio.wait_for`` cancels ``_execute_parallel`` and throws away its
+        # local return value, so rebuilding ``results`` in the ``except`` arm
+        # loses every finished task's real ExecutionResult. Thread a caller-
+        # owned ``results_sink`` instead so completed results survive the
+        # cancellation; on timeout preserve those and mark only the
+        # still-unfinished tasks TIMEOUT (abandoned / retried later).
         partial_results: Dict[str, ExecutionResult] = {}
         # Graceful stop: publish the active phase for ``_execute_parallel`` /
         # ``_run_and_record`` (they read ``self._active_phase_name`` rather than
@@ -1959,17 +1842,17 @@ class TaskExecutor:
         _prev_active_phase = getattr(self, "_active_phase_name", None)
         self._active_phase_name = phase_name
         try:
-            # Graceful-stop timeout → pause (AMENDMENT #5). ``asyncio.wait_for``
+            # Graceful-stop timeout → pause. ``asyncio.wait_for``
             # CANCELS ``_execute_parallel`` at the deadline — precisely the hard
             # kill the "checkpoint on command" grace period must prevent. So we
             # wrap the batch in a Task and enforce the deadline with a
             # NON-cancelling ``asyncio.wait``, in two stages:
             #   stage 1 — wait to the batch deadline; on expiry request a
-            #     RUN-SCOPED graceful stop (the whole-phase pause path — the
-            #     owner contract "timeouts become pauses"), then
+            #     RUN-SCOPED graceful stop (the whole-phase pause path — a
+            #     timeout becomes a pause, never a failure), then
             #   stage 2 — wait a bounded grace window for the in-flight workers
             #     to reach their next unit boundary. Each worker's cooperative
-            #     stop-check (Wave-A/C in-loop sites) observes the sentinel,
+            #     in-loop stop-check observes the sentinel,
             #     checkpoints its in-flight unit, and returns a PAUSED result;
             #     the batch loop-top halts new dispatch. A grace-drained batch
             #     therefore surfaces PAUSED results, NOT TIMEOUT.
@@ -2015,7 +1898,7 @@ class TaskExecutor:
                 # machinery, not the operator — leaving it would spuriously
                 # pause the NEXT phase of this run), hard-cancel, and TIMEOUT-mark
                 # only the still-unfinished tasks exactly as before. Completed
-                # results survive in ``partial_results`` (the W2.2 sink).
+                # results survive in the ``partial_results`` sink.
                 clear_stop(self.run_id)
                 batch_task.cancel()
                 try:
@@ -2148,7 +2031,7 @@ class TaskExecutor:
                 )
             return results, True, None
 
-        # Run validation gates (Wave 23: per-gate input routing)
+        # Run validation gates (per-gate input routing)
         gates_passed = True
         if gate_configs and self.gate_manager and HARDENING_VALIDATION_GATES:
             # Build the fallback artifacts blob for validators not yet in
@@ -2169,20 +2052,14 @@ class TaskExecutor:
             _phase_outputs = dict(phase_outputs or {})
             _workflow_params = workflow_params or {}
 
-            # Wave 33 Bug B: extract the current phase's outputs into
-            # ``_phase_outputs`` BEFORE running the gate router so
-            # builders can resolve inputs that come from THIS phase's
-            # just-produced results. Pre-Wave-33 the router only saw
-            # prior phases' outputs because ``_extract_phase_outputs``
-            # ran in ``WorkflowRunner.run_workflow`` AFTER
-            # ``execute_phase`` returned — the 6 gates annexed in
-            # sim-03 (``dart_markers``, ``source_refs``,
-            # ``page_objectives``, ``assessment_objective_alignment``,
-            # ``content_grounding``, ``libv2_manifest``) therefore
-            # logged "skipped — missing inputs: *" on every real run.
-            # Injecting the current phase's extraction here gives the
-            # router a single source of truth: it sees every phase's
-            # outputs up to and including the in-progress phase.
+            # Extract the current phase's outputs into ``_phase_outputs``
+            # BEFORE running the gate router, so builders can resolve inputs
+            # produced by THIS phase. ``WorkflowRunner.run_workflow`` only calls
+            # ``_extract_phase_outputs`` AFTER ``execute_phase`` returns, so
+            # without this injection the router sees prior phases only and every
+            # gate whose inputs come from the phase it guards logs
+            # "skipped — missing inputs". This gives the router one source of
+            # truth: all outputs up to and including the in-progress phase.
             if extract_phase_outputs_fn is not None:
                 try:
                     current_extracted = extract_phase_outputs_fn(
@@ -2208,14 +2085,12 @@ class TaskExecutor:
 
             gate_results_list = []
             parsed_gates = []
-            # gate_id -> declared severity string. ``GateResult`` carries
-            # NO severity field, so unless the executor stamps the parsed
-            # ``GateConfig`` severity onto each persisted/returned result
-            # dict a post-hoc reader cannot tell a blocking (critical)
-            # failure from an advisory (warning) one. That ambiguity is
-            # exactly what let an all-warning ``post_rewrite_validation``
-            # failure set be misfiled as a phase-level gates_passed=False
-            # "harness anomaly" (run TTC_alg-vendor-rag-01_20260708_173318).
+            # gate_id -> declared severity string. ``GateResult`` carries NO
+            # severity field, so unless the executor stamps the parsed
+            # ``GateConfig`` severity onto each persisted/returned result dict,
+            # a post-hoc reader cannot tell a blocking (critical) failure from
+            # an advisory (warning) one — and an all-warning failure set reads
+            # as an unexplained phase-level gates_passed=False.
             severity_by_gate_id: Dict[str, str] = {}
             for gc in gate_configs:
                 try:
@@ -2237,14 +2112,14 @@ class TaskExecutor:
                                 "to silence this."
                             )
                         # Parse via the canonical ``from_dict`` so the YAML
-                        # ``behavior:`` block (on_fail / on_error) is
-                        # forwarded into GateConfig — the prior hand-rolled
-                        # construction silently dropped it (defaulting to
-                        # BLOCK / FAIL_CLOSED). Copy first: ``from_dict``
-                        # pops ``behavior`` and would otherwise mutate the
-                        # shared ``phase.validation_gates`` dict. Normalise
-                        # the ``validator``/``validator_path`` alias the old
-                        # path accepted before delegating.
+                        # ``behavior:`` block (on_fail / on_error) reaches
+                        # GateConfig; constructing GateConfig by hand drops it
+                        # and silently defaults to BLOCK / FAIL_CLOSED. Copy
+                        # first: ``from_dict`` POPS ``behavior`` and would
+                        # otherwise mutate the shared
+                        # ``phase.validation_gates`` dict. Normalise the
+                        # ``validator``/``validator_path`` alias before
+                        # delegating.
                         gc2 = dict(gc)
                         gc2.setdefault(
                             'validator', gc2.get('validator_path', ''),
@@ -2433,10 +2308,8 @@ class TaskExecutor:
         # Log phase completion
         if self.capture:
             completed = sum(1 for r in results.values() if r.status == "COMPLETE")
-            # Wave 33 Bug C: include the FAILED status so task
-            # envelopes with ``success=False`` surface in the phase
-            # summary rather than being silently lumped under
-            # "completed".
+            # Include FAILED so task envelopes with ``success=False`` surface in
+            # the phase summary rather than being lumped under "completed".
             failed = sum(
                 1 for r in results.values()
                 if r.status in ("ERROR", "TIMEOUT", "FAILED")

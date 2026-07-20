@@ -14,10 +14,10 @@ from typing import Any, Dict, List, Tuple
 
 from lib.ontology.slugs import deslugify_concept
 
-# Wave 26: TOC / page-number / chapter-heading blocklist. These patterns
-# identify key-term candidates that are actually table-of-contents
-# fragments rather than real course terminology. They are applied BEFORE
-# a KeyTerm is appended in :meth:`ContentExtractor.extract_key_terms`.
+# TOC / page-number / chapter-heading blocklist. These patterns identify
+# key-term candidates that are actually table-of-contents fragments rather
+# than real course terminology. Applied BEFORE a KeyTerm is appended in
+# :meth:`ContentExtractor.extract_key_terms`.
 _TOC_THREE_INTS = re.compile(r"\b\d+\b.*\b\d+\b.*\b\d+\b", re.DOTALL)
 # Dotted numeric followed (anywhere later) by a bare integer, e.g.
 # "1.1 Structural changes ... 14" — characteristic of TOC lines with
@@ -42,29 +42,32 @@ _APPARATUS_RE = re.compile(
 
 
 def _is_apparatus_text(text: str) -> bool:
-    """True when the candidate text is exercise/solution APPARATUS (the
-    textbook pedagogical-label vocabulary class, never subject words) —
-    such text must never become an assessment answer/definition/statement
-    (alg-glm-02 production defect: apparatus-dense worked-example corpora
-    leak 'Solution: r Check: ...' through EVERY harvest path)."""
+    """True when the candidate text is exercise/solution APPARATUS.
+
+    The marker set is the textbook pedagogical-label vocabulary class, never
+    subject words. Such text must never become an assessment
+    answer/definition/statement: on an apparatus-dense worked-example corpus
+    it otherwise leaks (e.g. "Solution: r Check: ...") through every harvest
+    path.
+    """
     return bool(_APPARATUS_RE.search(text or ""))
 
 
 # --------------------------------------------------------------------------- #
-# A3 — apparatus-guard numeric-recovery (flag-gated, default OFF).
+# Apparatus-guard numeric-recovery (flag-gated, default OFF).
 #
 # The apparatus guard above strips Solution/Check/Step-N worked-example content
 # from EVERY harvest path (key terms, factual statements, misconception
 # corrections) because that pedagogical-label vocabulary poisons those answer
-# surfaces. But a worked example's Solution/Check region is *also the richest
-# source of a clean, single-variable, sympy-verifiable equation* — exactly what
-# the numeric-FIB item builder needs. On a GLM-OCR scan corpus the equations
+# surfaces. But a worked example's Solution/Check region is also the richest
+# source of a clean, single-variable, sympy-verifiable equation — exactly what
+# the numeric-FIB item builder needs. On a scanned/OCR'd corpus those equations
 # arrive as PLAIN TEXT ("3x + 5 = 20") with no LaTeX / <code> markup, so the
 # marked-math harvester (``worked_example_math._iter_fragments``) finds nothing
 # and zero numeric items ship.
 #
 # ``ED4ALL_ASSESSMENT_NUMERIC_RECOVERY`` (default off) re-admits those apparatus
-# regions FOR THE NUMERIC-FIB EXTRACTION PATH ONLY. The recovered candidates are
+# regions FOR THE NUMERIC-FIB EXTRACTION PATH ONLY. Recovered candidates are
 # still fully sympy-verified downstream (solve → substitute → residual == 0), so
 # this only widens candidate SUPPLY; unverifiable candidates are dropped. The
 # apparatus guard stays intact for every other harvest path, and the recovery
@@ -159,9 +162,9 @@ def _numeric_recovery_enabled() -> bool:
 def _is_toc_fragment(term_text: str) -> bool:
     """Return True if ``term_text`` looks like a TOC/page-number fragment.
 
-    Wave 26: Applied to the candidate term text (group 1 of a regex match)
-    BEFORE that text becomes a ``KeyTerm.term``. Real terminology never
-    matches these patterns.
+    Applied to the candidate term text (group 1 of a regex match) BEFORE that
+    text becomes a ``KeyTerm.term``. Real terminology never matches these
+    patterns.
     """
     if not term_text:
         return True
@@ -388,7 +391,7 @@ class ContentExtractor:
         Prefers structured key_terms from chunk metadata when available,
         falls back to regex pattern matching.
 
-        Wave 26: rejects TOC fragments + page-number patterns via
+        Rejects TOC fragments + page-number patterns via
         :func:`_is_toc_fragment`. When a chunk's candidate terms are all
         rejected the chunk is tagged with a ``EMPTY_TERMS_TOC_CHUNK``
         diagnostic in its ``metadata_diagnostics`` list so downstream
@@ -420,10 +423,9 @@ class ContentExtractor:
                     if len(term) < 3 or len(definition) < 10:
                         continue
                     candidates_seen += 1
-                    # Wave 26: reject TOC-fragment terms
                     if _is_toc_fragment(term):
                         continue
-                    # alg-glm-02: reject apparatus-contaminated definitions
+                    # Apparatus text must never become a definition.
                     if _is_apparatus_text(definition):
                         continue
                     term_key = term.lower()
@@ -448,8 +450,8 @@ class ContentExtractor:
                 if len(term) < 2 or term.lower() in seen_terms:
                     continue
                 candidates_seen += 1
-                # Wave 26: reject TOC fragments in bold/strong terms too —
-                # textbooks often bold chapter headings.
+                # Reject TOC fragments in bold/strong terms too — textbooks
+                # often bold chapter headings.
                 if _is_toc_fragment(term):
                     continue
                 # Get surrounding sentence context
@@ -480,9 +482,9 @@ class ContentExtractor:
 
             # Strategy 3: concept_tags matched in text
             for tag in concept_tags:
-                # Wave 130d: route deslugify through the canonical helper
-                # so trailing CO-NN / TO-NN learning-objective refs get
-                # stripped before they bleed into key-term display text.
+                # Route deslugify through the canonical helper so trailing
+                # CO-NN / TO-NN learning-objective refs get stripped before
+                # they bleed into key-term display text.
                 tag_lower = deslugify_concept(tag.lower())
                 if tag_lower in seen_terms:
                     continue
@@ -502,9 +504,9 @@ class ContentExtractor:
                         ))
                         break
 
-            # Wave 26 diagnostic: all candidates were rejected as TOC
-            # fragments. Tag the chunk so downstream callers can see that
-            # key-term extraction yielded nothing for a reason.
+            # All candidates were rejected as TOC fragments. Tag the chunk so
+            # downstream callers can see that key-term extraction yielded
+            # nothing for a reason.
             if candidates_seen > 0 and candidates_accepted == 0:
                 diagnostics = chunk.setdefault("metadata_diagnostics", [])
                 if "EMPTY_TERMS_TOC_CHUNK" not in diagnostics:
@@ -532,13 +534,10 @@ class ContentExtractor:
                 if sentence.endswith("?") or len(sentence) < 20 or len(sentence) > 300:
                     continue
 
-                # Skip exercise/solution APPARATUS text (alg-glm-02
-                # production defect: on an apparatus-dense worked-example
-                # corpus the extractor mined "Solution: r Check: If r = 20,
-                # ..." fragments as factual statements, which then shipped as
-                # TOC_FRAGMENT_ANSWER-flagged correct answers). Marker set is
-                # the textbook apparatus vocabulary (the pedagogical-label
-                # lexicon class), never subject-matter words.
+                # Skip exercise/solution APPARATUS text. On an
+                # apparatus-dense worked-example corpus such fragments
+                # ("Solution: r Check: If r = 20, ...") otherwise mine as
+                # factual statements and ship as correct answers.
                 if _is_apparatus_text(sentence):
                     continue
 
@@ -683,7 +682,7 @@ class ContentExtractor:
     def recover_numeric_equation_candidates(
         self, chunks: List[Dict[str, Any]]
     ) -> List[Tuple[str, str]]:
-        """A3 — flag-gated recovery of plain-text equation candidates.
+        """Flag-gated recovery of plain-text equation candidates.
 
         Scans each chunk's text for apparatus markers (``Solution:`` /
         ``Check:`` / ``Step N:``) and, within the window that FOLLOWS each

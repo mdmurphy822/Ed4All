@@ -1,23 +1,18 @@
-"""Wave 23 Sub-task B tests — orchestrator → executor plumbing.
+"""Orchestrator → executor plumbing.
 
-Pre-Wave-23, ``PipelineOrchestrator._get_executor()`` constructed
-``TaskExecutor(tool_registry=...)`` with NO run_id, NO run_path, and
-NO capture. Effects at runtime:
+``PipelineOrchestrator._get_executor(workflow_state=...)`` must hand the
+``TaskExecutor`` the workflow's own run_id, run_path, and DecisionCapture.
+Constructing it with none of those is silently wrong, not loud:
 
-* ``TaskExecutor.run_id`` auto-generated from timestamp →
-  ``run_path`` became ``state/runs/run_{ts}/`` instead of the
-  workflow's actual ``params.run_id`` (e.g. ``TTC_<course>_...``).
-* ``CheckpointManager`` wrote to an orphan directory nobody read.
-* ``LockfileManager`` operated outside the workflow's namespace.
-* ``self.capture is None`` → ``phase_start`` / ``phase_completion``
-  / ``task_retry`` / ``workflow_execution`` emit sites at
-  ``executor.py:728, 875, 981`` never fired.
+* ``TaskExecutor.run_id`` falls back to a timestamp, so ``run_path`` becomes
+  ``state/runs/run_{ts}/`` instead of the workflow's run directory —
+  ``CheckpointManager`` writes to an orphan dir nobody reads and
+  ``LockfileManager`` operates outside the workflow's namespace.
+* ``self.capture is None`` makes every ``phase_start`` /
+  ``phase_completion`` / ``task_retry`` / ``workflow_execution`` emit site a
+  no-op, so a completed run leaves empty checkpoint + capture dirs.
 
-Evidence from the Wave 22 audit: 15/15 ``state/runs/*/checkpoints/``
-dirs empty; ``training-captures/textbook-pipeline/<course_id>/``
-empty despite a completed run.
-
-This suite locks in the wire-up and back-compat semantics.
+This suite locks in the wire-up and the no-state back-compat semantics.
 """
 
 from __future__ import annotations
@@ -37,7 +32,8 @@ from MCP.orchestrator.pipeline_orchestrator import PipelineOrchestrator
 @pytest.fixture
 def synthetic_workflow_state(tmp_path, monkeypatch):
     """Write a minimal workflow state + return (orchestrator, state)."""
-    run_id = "TTC_TEST_100_20260420_123456"
+    # Shape-preserving synthetic run id (<workflow-prefix>_<course>_<stamp>).
+    run_id = "WF_TEST_100_20260420_123456"
     state = {
         "workflow_id": run_id,
         "type": "textbook_to_course",
@@ -64,17 +60,15 @@ def synthetic_workflow_state(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "MCP.core.workflow_runner.STATE_PATH", tmp_path,
     )
-    # Wave 74: TaskExecutor now resolves run_path via
-    # ``lib.paths.get_state_runs_dir`` which honors
-    # ``ED4ALL_STATE_RUNS_DIR``. Set it here so executor checkpoints
-    # for this test land in tmp_path instead of project state/runs/.
+    # TaskExecutor resolves run_path via ``lib.paths.get_state_runs_dir``,
+    # which honors ``ED4ALL_STATE_RUNS_DIR``. Set it so this test's executor
+    # checkpoints land in tmp_path instead of the project state/runs/.
     monkeypatch.setenv("ED4ALL_STATE_RUNS_DIR", str(tmp_path / "runs"))
-    # ``_get_executor`` also exports ``ED4ALL_RUN_ID`` into the
-    # process env (so downstream pipeline tools can build a
-    # MailboxBrokeredBackend bound to this run's mailbox). monkeypatch
-    # so the env var is restored on teardown — otherwise an unrelated
-    # later test that calls ``build_backend()`` reads the stale
-    # ``TTC_TEST_100_*`` and recreates ``state/runs/<old-run-id>/``.
+    # ``_get_executor`` also exports ``ED4ALL_RUN_ID`` into the process env
+    # (so downstream pipeline tools can build a MailboxBrokeredBackend bound
+    # to this run's mailbox). monkeypatch so it is restored on teardown —
+    # otherwise an unrelated later test calling ``build_backend()`` reads the
+    # stale id and recreates ``state/runs/<old-run-id>/``.
     monkeypatch.setenv("ED4ALL_RUN_ID", run_id)
     return run_id, state
 
@@ -117,9 +111,8 @@ def test_get_executor_with_workflow_state_creates_capture(synthetic_workflow_sta
 
     assert executor.capture is not None, (
         "Executor must receive a DecisionCapture when a workflow state "
-        "is known. Pre-Wave-23, capture was None and every "
-        "phase_start/phase_completion/task_retry/workflow_execution "
-        "emit site silently no-oped."
+        "is known; otherwise every phase_start/phase_completion/"
+        "task_retry/workflow_execution emit site silently no-ops."
     )
 
 
@@ -163,7 +156,7 @@ def test_executor_is_cached_across_dispatcher_callbacks(synthetic_workflow_state
 
 
 def test_normalize_course_code_is_importable_from_lib_decision_capture():
-    """Wave 23 promotion — normalize_course_code must be exported from lib."""
+    """normalize_course_code must be exported from lib.decision_capture."""
     from lib.decision_capture import normalize_course_code
     assert callable(normalize_course_code)
 

@@ -70,7 +70,7 @@ _SCHEMA_PATH: Path = (
 
 
 # ---------------------------------------------------------------------------
-# Hardcoded fallback table (GPT Feedback v2 Wave 3 W3.C)
+# Hardcoded fallback table
 # ---------------------------------------------------------------------------
 #
 # Per-block-type validator-matrix defaults. Mirrors the canonical YAML
@@ -86,7 +86,7 @@ _SCHEMA_PATH: Path = (
 # :meth:`CourseforgeRouter._dispatch_validation_chain`:
 #   per-block-id override (YAML overrides[]) >
 #   per-block-type validators block (YAML blocks[type].validators) >
-#   tier env defaults (existing) >
+#   tier env defaults >
 #   this DEFAULT_BLOCK_ROUTING table.
 #
 # Shape per entry: ``{"required": [gate_id, ...],
@@ -202,9 +202,9 @@ DEFAULT_BLOCK_ROUTING: Dict[str, Dict[str, Any]] = {
         "optional": [],
         "fail_action": "regenerate",
     },
-    # Issue I6 instruction-palette-v2 additions. table / acronym / key_idea
-    # are source-grounded structural blocks; source_ref required so each is
-    # auditable. table + key_idea additionally type-checked (content_type).
+    # table / acronym / key_idea are source-grounded structural blocks;
+    # source_ref required so each is auditable. table + key_idea are
+    # additionally type-checked (content_type).
     "table": {
         "required": ["source_ref", "content_type"],
         "optional": [],
@@ -220,10 +220,10 @@ DEFAULT_BLOCK_ROUTING: Dict[str, Dict[str, Any]] = {
         "optional": [],
         "fail_action": "regenerate",
     },
-    # IB5 framework-aligned pedagogical block types. Hook is wrapper-only
-    # (source attribution only); multimedia / worked_example / diagram carry a
+    # Framework-aligned pedagogical block types. hook is wrapper-only (source
+    # attribution only); multimedia / worked_example / diagram carry a
     # grounded body so they require source_ref, with the type-specific a11y /
-    # shape contract enforced by rewrite_html_shape's IB5 arms (warning-day-1).
+    # shape contract enforced by rewrite_html_shape.
     "hook": {
         "required": ["source_ref"],
         "optional": [],
@@ -249,9 +249,9 @@ DEFAULT_BLOCK_ROUTING: Dict[str, Dict[str, Any]] = {
         "optional": ["accessibility"],
         "fail_action": "regenerate",
     },
-    # FR-INT-02 — B08 first-class Guided Practice. A grounded faded-scaffold
-    # practice block (B08 sibling of activity / problem); source_ref required so
-    # each is auditable, accessibility optional (mirrors activity).
+    # Grounded faded-scaffold practice block (sibling of activity / problem);
+    # source_ref required so each is auditable, accessibility optional
+    # (mirrors activity).
     "guided_practice": {
         "required": ["objective_ref", "source_ref"],
         "optional": ["accessibility"],
@@ -293,9 +293,8 @@ class BlockRoutingPolicy:
       mirrors ``blocks[type].escalate_immediately`` for a fast lookup
       from :meth:`Courseforge.router.router.CourseforgeRouter._resolve_spec`.
     - ``n_candidates_by_block_type`` / ``regen_budget_by_block_type``
-      — same fast-lookup pattern for the self-consistency knobs
-      consumed by Subtasks 37 / 41.
-    - ``regen_budget_rewrite_by_block_type`` (Phase 3.5 Subtask 21):
+      — same fast-lookup pattern for the self-consistency knobs.
+    - ``regen_budget_rewrite_by_block_type``:
       per-block-type override for the rewrite-tier regen budget
       consumed by
       :meth:`Courseforge.router.router.CourseforgeRouter._resolve_rewrite_regen_budget`.
@@ -311,7 +310,7 @@ class BlockRoutingPolicy:
     )
     n_candidates_by_block_type: Dict[str, int] = field(default_factory=dict)
     regen_budget_by_block_type: Dict[str, int] = field(default_factory=dict)
-    # Phase 3.5 Subtask 21: rewrite-tier regen budget map.
+    # Rewrite-tier regen budget map (outline tier uses the field above).
     regen_budget_rewrite_by_block_type: Dict[str, int] = field(
         default_factory=dict
     )
@@ -337,7 +336,7 @@ class BlockRoutingPolicy:
     capability_tier_chain_by_default_tier: Dict[
         str, List[str]
     ] = field(default_factory=dict)
-    # GPT Feedback v2 Wave 3 W3.C — per-block-type validator matrix.
+    # Per-block-type validator matrix.
     # Keys: block_type (entries from ``BLOCK_TYPES``). Values: dict
     # carrying ``{"required": [gate_id, ...],
     # "optional": [gate_id, ...], "fail_action": str}``. Consumed by
@@ -544,7 +543,7 @@ def _policy_from_dict(raw: Dict[str, Any]) -> BlockRoutingPolicy:
     for tier, spec_dict in (raw.get("defaults") or {}).items():
         if not isinstance(spec_dict, dict):
             continue
-        # Phase 3a env-var-first contract (Subtask 23): when the YAML's
+        # Env-var-first contract: when the YAML's
         # ``defaults[tier].model`` is the same hardcoded sentinel literal
         # the loader / hardcoded-defaults table ships with AND the
         # corresponding tier-default env var
@@ -577,9 +576,8 @@ def _policy_from_dict(raw: Dict[str, Any]) -> BlockRoutingPolicy:
     escalate_map: Dict[str, bool] = {}
     n_candidates_map: Dict[str, int] = {}
     regen_budget_map: Dict[str, int] = {}
-    # Phase 3.5 Subtask 21: rewrite-tier regen budget map.
     regen_budget_rewrite_map: Dict[str, int] = {}
-    # GPT Feedback v2 Wave 3 W3.C: per-block-type validator matrix.
+    # Per-block-type validator matrix.
     # Initialised from the hardcoded ``DEFAULT_BLOCK_ROUTING`` table so
     # every block_type has a baseline; the YAML walk below overlays
     # operator-explicit entries onto the table.
@@ -621,12 +619,11 @@ def _policy_from_dict(raw: Dict[str, Any]) -> BlockRoutingPolicy:
         regen_budget = entry.get("regen_budget")
         if isinstance(regen_budget, int):
             regen_budget_map[block_type] = regen_budget
-        # Phase 3.5 Subtask 21: rewrite-tier per-block-type budget.
         regen_budget_rewrite = entry.get("regen_budget_rewrite")
         if isinstance(regen_budget_rewrite, int):
             regen_budget_rewrite_map[block_type] = regen_budget_rewrite
-        # GPT Feedback v2 Wave 3 W3.C: per-block-type validator matrix.
-        # Operator-explicit YAML entry overlays the hardcoded default.
+        # Operator-explicit YAML validators entry overlays the hardcoded
+        # DEFAULT_BLOCK_ROUTING default for this block_type.
         validators_entry = entry.get("validators")
         if isinstance(validators_entry, dict):
             validators_map[block_type] = {
@@ -736,7 +733,7 @@ def _project_capability_aware_spec(
 
 
 # ---------------------------------------------------------------------------
-# Phase 3a env-var-first override (Subtask 23)
+# Env-var-first tier-default model override
 # ---------------------------------------------------------------------------
 
 # Sentinel YAML model literals that the shipped
@@ -744,9 +741,8 @@ def _project_capability_aware_spec(
 # ``defaults.outline.model`` / ``defaults.rewrite.model``. These mirror
 # the hardcoded fallback table at
 # ``Courseforge/router/router.py::_DEFAULT_OUTLINE_MODEL`` /
-# ``_DEFAULT_REWRITE_MODEL_ANTHROPIC``. Keeping the strings in sync is
-# checked by the Subtask-23 acceptance test
-# (Courseforge/router/tests/test_router.py::test_phase3a_*).
+# ``_DEFAULT_REWRITE_MODEL_ANTHROPIC``; they must stay in sync, which
+# ``Courseforge/router/tests/test_router.py::test_phase3a_*`` asserts.
 _YAML_SENTINEL_OUTLINE_MODEL = "qwen2.5:7b-instruct-q4_K_M"
 _YAML_SENTINEL_REWRITE_MODEL = "claude-sonnet-4-6"
 
@@ -768,7 +764,7 @@ def _maybe_apply_env_model_override(
 ) -> Dict[str, Any]:
     """Apply env-var-first override to a tier-default spec dict.
 
-    Phase 3a §3.3 contract (Subtask 23): an operator who has set
+    An operator who has set
     ``COURSEFORGE_OUTLINE_MODEL`` / ``COURSEFORGE_REWRITE_MODEL``
     expects the env var to win over the shipped YAML default. The
     YAML's ``defaults.{tier}.model`` is intentionally pinned to the
@@ -834,10 +830,10 @@ def _spec_from_dict(
     the same conventional defaults the hardcoded fallback table uses
     when fields are unspecified.
 
-    The schema constrains ``provider`` and ``model`` shape so missing
-    values here mean the operator left them out intentionally; we
-    fall back to per-tier conventions (outline = local 7B Qwen at
-    temperature 0.0 / 1200 tokens; rewrite = 0.4 / 2400 tokens).
+    The schema constrains ``provider`` and ``model`` shape, so missing
+    values here mean the operator left them out intentionally; we fall
+    back to per-tier conventions — outline at temperature 0.0 / 1200
+    tokens, rewrite at 0.4 / 2400 tokens, both on the local 7B Qwen.
     """
     provider = spec_dict.get("provider", "local")
     model = spec_dict.get(

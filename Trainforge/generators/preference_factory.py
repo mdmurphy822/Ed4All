@@ -5,7 +5,7 @@ Trainforge Preference Pair Factory
 Synthesizes DPO-style (prompt, chosen, rejected) preference pairs from an
 enriched Trainforge chunk. Mock-provider path: deterministic, no LLM call.
 
-Design constraints (Worker C plan):
+Design constraints:
 - One function = one pair. The stage composes many calls.
 - Only chunks with non-empty ``learning_outcome_refs`` produce pairs.
 - The ``rejected`` completion is drawn from ``chunk.misconceptions`` when
@@ -101,7 +101,7 @@ def _looks_like_fragment(text: str) -> bool:
     return str(text or "").strip().endswith(":")
 
 
-# Wave 122: assessment-scaffolding patterns (mirror instruction_factory).
+# Assessment-scaffolding patterns (kept in lockstep with instruction_factory).
 _ASSESSMENT_SCAFFOLD_PATTERNS = [
     re.compile(r'\bQuestion\s+\d+\s*\(\s*[A-Z]+-\d+\s*,?\s*Bloom\s*:', re.IGNORECASE),
     re.compile(r'\b(?:Q|Item)\s*\d+\s*\(\s*[A-Z]+-\d+\b'),
@@ -149,10 +149,10 @@ def _jaccard(a: str, b: str) -> float:
 def _derive_topic(chunk: Dict[str, Any]) -> str:
     tags = chunk.get("concept_tags") or []
     if tags:
-        # Wave 130d: deslugify_concept strips a trailing ``-(co|to)-NN``
-        # LO-ref suffix before the hyphen-to-space transform so
-        # ``property-paths-co-15`` -> ``property paths`` rather than
-        # bleeding ``co 15`` artifact tokens into the prompt.
+        # deslugify_concept strips a trailing ``-(co|to)-NN`` LO-ref suffix
+        # before the hyphen-to-space transform, so ``property-paths-co-15``
+        # becomes ``property paths`` instead of bleeding ``co 15`` artifact
+        # tokens into the prompt. A plain hyphen-to-space replace would not.
         return deslugify_concept(str(tags[0]))
     key_terms = chunk.get("key_terms") or []
     if key_terms and isinstance(key_terms[0], dict):
@@ -178,34 +178,29 @@ def _misconception_id(
     correction_text: str,
     bloom_level: Optional[str] = None,
 ) -> str:
-    """Content-hash misconception ID (REC-LNK-02, Wave 69 extends seed).
+    """Content-hash misconception ID, form ``mc_<16-hex-char sha256>``.
 
-    Stable across runs and across chunk re-chunking. Form:
-    ``mc_<16-hex-char sha256>``. Replaces the earlier unstable
-    position-based format ``{chunk_id}_mc_{index:02d}_{hash}``.
+    Stable across runs and across chunk re-chunking (unlike a
+    position-based ``{chunk_id}_mc_{index}`` scheme).
 
-    Wave 69: ``bloom_level`` (optional 3rd arg) joins the seed so two
-    misconceptions sharing statement + correction text but different
-    Bloom cognitive demands emit distinct IDs. The seed is built as:
+    ``bloom_level`` joins the seed so two misconceptions sharing statement
+    + correction text but different Bloom cognitive demands emit distinct
+    IDs. The seed has two forms:
 
     * ``{statement}|{correction}|{bloom_level}`` when a bloom level is
-      supplied (Wave 60+ corpora), and
-    * ``{statement}|{correction}`` when no bloom level is supplied (Wave 72).
+      supplied, and
+    * ``{statement}|{correction}`` when it is not.
 
-    The two-form seed keeps pre-Wave-60 / legacy-corpus IDs stable with
-    the pre-Wave-69 hash. Pre-Wave-72 the bloom-less path appended a
-    trailing ``|`` and silently rekeyed every legacy misconception — this
-    shape matches the documented intent. Outer whitespace is normalised
-    but inner whitespace is preserved, so cosmetic edits do not churn
-    IDs but real text edits do.
+    The two forms matter: always appending the (empty) bloom segment would
+    add a trailing ``|`` and silently rekey every misconception in a
+    corpus that predates bloom levels. Outer whitespace is normalised but
+    inner whitespace is preserved, so cosmetic edits do not churn IDs but
+    real text edits do.
     """
-    # Wave 72: two-segment seed for bloom-less misconceptions so legacy
-    # corpora keep the pre-Wave-69 hash. The graph-side call site
-    # (``CourseProcessor._build_misconceptions_for_graph``) applies the
-    # same branch to stay in lock-step.
-    # Wave 99: extracted to ``lib.ontology.misconception_id.canonical_mc_id``
-    # so this site, ``process_course._build_misconceptions_for_graph``, and
-    # ``pedagogy_graph_builder._mc_id`` share one source of truth.
+    # Delegated to ``lib.ontology.misconception_id.canonical_mc_id`` so this
+    # site, ``process_course._build_misconceptions_for_graph``, and
+    # ``pedagogy_graph_builder._mc_id`` share one source of truth — the three
+    # must stay in lock-step or IDs diverge between corpus and graph.
     from lib.ontology.misconception_id import canonical_mc_id
     return canonical_mc_id(misconception_text, correction_text, bloom_level)
 
@@ -238,8 +233,9 @@ def _build_chosen(
 ) -> str:
     """Build the preferred (chosen) completion -- grounded and correct.
 
-    Wave 121: ``disallow_summary=True`` skips the ``chunk.summary``
-    branch (same leakage retry pattern as instruction_factory).
+    ``disallow_summary=True`` skips the ``chunk.summary`` branch; callers
+    use it to retry after a verbatim-leakage hit, since ``chunk.summary``
+    is often a near-verbatim extract of the source.
     """
     parts: List[str] = []
 
@@ -273,9 +269,9 @@ def _build_chosen(
     tags = [str(t) for t in (chunk.get("concept_tags") or []) if t]
     if tags and not parts:
         joined = ", ".join(tags[:3])
-        # Wave 122: parallel scaffolding rotation. Same 4-phrasing set
-        # as instruction_factory; same chunk_id-hash deterministic
-        # selection. See instruction_factory comment for context.
+        # Scaffolding rotation: same phrasing set and same chunk_id-hash
+        # deterministic selection as instruction_factory, so the two
+        # factories don't emit one identical stock sentence corpus-wide.
         scaffolds = [
             f"{topic} is best understood by tying {joined} to the underlying schema, not by listing labels.",
             f"A learner working on {topic} should ground each idea in {joined} rather than memorising surface terms.",
@@ -340,11 +336,11 @@ _NEGATION_SWAPS = [
 ]
 
 
-# Wave 121: rotated phrasings (LEGACY token-stuffing path). Wave 135b:
-# used only when the chunk's CURIE has no anchored FORM_DATA entry
-# (degraded_placeholder OR non-manifest). The PRIMARY anchored-injection
-# path embeds an actual definition sentence drawn from FORM_DATA — see
-# the dispatch in ``_enforce_preserve_tokens_in_preference``.
+# Rotated phrasings for the fallback token-stuffing path. Used ONLY when
+# the chunk's CURIE has no anchored FORM_DATA entry (degraded_placeholder
+# OR non-manifest). The primary path embeds an actual definition sentence
+# drawn from FORM_DATA — see the dispatch in
+# ``_enforce_preserve_tokens_in_preference``.
 _PROMPT_REFERENCE_PHRASINGS: List[str] = [
     " (Reference: {tokens}.)",
     " (Relevant terms: {tokens}.)",
@@ -372,8 +368,8 @@ def _chunk_id_hash_int(chunk_id: str) -> int:
 
 
 def _append_anchored_to_prompt(prompt: str, anchor_definition: str) -> str:
-    """Wave 135b — append a recall-style hook embedding the anchored
-    definition; length-clamped against ``PROMPT_MAX``."""
+    """Append a recall-style hook embedding the anchored definition;
+    length-clamped against ``PROMPT_MAX``."""
     suffix = f" Recall how {anchor_definition}"
     if not suffix.endswith("."):
         suffix = suffix + "."
@@ -385,8 +381,8 @@ def _append_anchored_to_prompt(prompt: str, anchor_definition: str) -> str:
 
 
 def _append_anchored_to_chosen(chosen: str, anchor_definition: str) -> str:
-    """Wave 135b — append the full anchored definition to the chosen
-    completion; length-clamped against ``COMPLETION_MAX``."""
+    """Append the full anchored definition to the chosen completion;
+    length-clamped against ``COMPLETION_MAX``."""
     addition = f" {anchor_definition}".rstrip()
     if not addition.endswith("."):
         addition = addition + "."
@@ -410,9 +406,9 @@ def _emit_degraded_capture(
     chunk_id: str,
     side: str,
 ) -> None:
-    """Wave 135b — mirror of the instruction-factory helper. Emits
+    """Mirror of the instruction-factory helper. Emits
     ``form_data_degraded_placeholder_skipped`` when an anchored-injection
-    attempt falls back to the legacy token-stuffing path.
+    attempt falls back to the token-stuffing path.
     """
     if capture is None:
         return
@@ -450,11 +446,11 @@ def _enforce_preserve_tokens_in_preference(
     *,
     capture: Optional[Any] = None,
 ) -> Dict[str, Any]:
-    """Wave 135b — anchored force-injection on prompt + ``chosen``.
+    """Anchored force-injection on prompt + ``chosen``.
 
     Mirrors the instruction-factory dispatcher (see that module's
-    docstring for the full contract). Touches the ``rejected`` field
-    NEVER — DPO needs the misconception signal to reach the trainer
+    docstring for the full contract). NEVER touches the ``rejected``
+    field — DPO needs the misconception signal to reach the trainer
     intact, and the rejected completion legitimately may not contain
     the literal CURIE.
     """
@@ -593,21 +589,21 @@ def synthesize_preference_pair(
     Args:
         chunk: Enriched chunk dict. Must have non-empty ``learning_outcome_refs``.
         seed: Deterministic seed.
-        provider: ``"mock"`` (deterministic), ``"anthropic"`` (Wave 91:
-            paraphrase via Claude SDK), ``"claude_session"`` (Wave 107:
-            paraphrase via the running Claude Code session),
-            ``"together"``, or ``"local"``.
+        provider: ``"mock"`` (deterministic), ``"anthropic"`` (accepted for
+            back-compat but never paraphrased — see below),
+            ``"claude_session"`` (paraphrase via the running Claude Code
+            session), ``"together"``, or ``"local"``.
         misconception_index: Which misconception in the chunk to target.
             If the chunk has fewer than ``misconception_index+1`` misconceptions,
             falls back to rule-synthesized rejection.
         paraphrase_provider: Optional provider instance with a
             ``paraphrase_preference(draft, chunk) -> dict`` method. Used
-            when ``provider`` is ``"anthropic"``, ``"claude_session"``,
-            ``"together"``, or ``"local"``. When
-            ``provider="anthropic"`` and this is None, a default
-            :class:`AnthropicSynthesisProvider` is constructed. For
-            ``provider="claude_session"`` the caller MUST supply the
-            instance.
+            when ``provider`` is ``"claude_session"``, ``"together"``, or
+            ``"local"``. For ``"together"`` / ``"local"`` a default
+            instance is constructed when this is None; for
+            ``"claude_session"`` the caller MUST supply the instance,
+            because the provider needs an injected LocalDispatcher.
+            ``"anthropic"`` never reaches the paraphrase step.
 
     Returns:
         PreferenceSynthesisResult. ``pair`` is None if a hard gate failed.
@@ -659,14 +655,14 @@ def synthesize_preference_pair(
         selected_mc = normalised_mcs[idx]
 
     chosen = _build_chosen(chunk, topic, selected_mc)
-    # Wave 121: same completion-side leakage retry as instruction_factory.
-    # _build_chosen leans on chunk.summary which is often a near-verbatim
-    # extract; if leak detected, retry skipping the summary branch.
+    # Completion-side leakage retry (mirrors instruction_factory).
+    # _build_chosen leans on chunk.summary, which is often a near-verbatim
+    # extract; on a leak, retry skipping the summary branch.
     if _contains_verbatim_span(chosen, chunk_text):
         chosen = _build_chosen(chunk, topic, selected_mc, disallow_summary=True)
-    # Wave 122: assessment-scaffolding contamination retry. The
-    # 2026-04-29 audit caught chunk_00066's "Question 1 (CO-07, Bloom:
-    # ...)..." sequence flowing through both chosen + rejected.
+    # Assessment-scaffolding contamination retry: a chunk whose summary is an
+    # assessment outline ("Question 1 (CO-07, Bloom: ...)") would otherwise
+    # carry that scaffolding into both chosen and rejected.
     if _contains_assessment_scaffolding(chosen):
         chosen = _build_chosen(chunk, topic, selected_mc, disallow_summary=True)
 
@@ -678,8 +674,9 @@ def synthesize_preference_pair(
             mc_id = _misconception_id(
                 str(selected_mc.get("misconception", "")),
                 str(selected_mc.get("correction", "")),
-                # Wave 69: bloom-level participates in the seed; lower-cased
-                # via the helper. Absent / None on pre-Wave-60 corpora.
+                # bloom_level participates in the seed (lower-cased by the
+                # helper). Absent / None on corpora predating bloom levels,
+                # which the helper's two-form seed handles.
                 str(selected_mc.get("bloom_level") or ""),
             )
 
@@ -694,14 +691,11 @@ def synthesize_preference_pair(
     # We require 1 - jaccard >= 0.3  ==>  jaccard <= 0.7.
     jaccard_ok = (1.0 - jaccard) >= JACCARD_DELTA_MIN
     distinct_ok = chosen != rejected
-    # Wave 121: leak gate now covers both prompt and chosen against
-    # chunk_text (rejected is synthetic / misconception so leak isn't
-    # meaningful there).
-    # Wave 122: also reject when chosen OR rejected carries assessment-
-    # scaffolding patterns. Rejected can carry it because
-    # _rule_synthesize_rejected derives from chosen via token swaps;
-    # the question pattern is unaffected by negation, so the scaffolding
-    # propagates.
+    # The leak gate covers prompt and chosen against chunk_text; rejected is
+    # synthetic / misconception-derived, so verbatim leak isn't meaningful
+    # there. The scaffolding gate DOES cover rejected, because
+    # _rule_synthesize_rejected derives from chosen via token swaps and the
+    # question pattern survives negation, so scaffolding propagates into it.
     leak_ok = (
         not _contains_verbatim_span(prompt, chunk_text)
         and not _contains_verbatim_span(chosen, chunk_text)
@@ -769,21 +763,21 @@ def synthesize_preference_pair(
         "schema_version": "v1",
     }
 
-    # Paraphrase the mock draft via the selected LLM seat. Same fail-loud
-    # contract as the instruction factory: missing key raises, malformed JSON
-    # retries. Phase 4: ``anthropic`` is NOT in the dispatch set — the
-    # Anthropic-SDK training path was removed (run_synthesis fails closed on
-    # it before reaching here), so a ``provider="anthropic"`` call falls
-    # through unparaphrased, mirroring how ``mock`` / ``nvidia`` skip the
-    # paraphrase block.
+    # Paraphrase the deterministic draft via the selected LLM seat. Same
+    # fail-loud contract as the instruction factory: missing key raises,
+    # malformed JSON retries. ``anthropic`` is deliberately NOT in the
+    # dispatch set — the Anthropic-SDK training path is gone (run_synthesis
+    # fails closed on it before reaching here), so a
+    # ``provider="anthropic"`` call falls through unparaphrased, mirroring
+    # how ``mock`` skips the paraphrase block.
     if provider in ("claude_session", "together", "local"):
         provider_instance = paraphrase_provider
         if provider_instance is None:
             if provider == "together":
-                # Phase 3: agnostic cutover (default ON) — route the
-                # hosted OpenAI-wire seat through the leaf-exact builder
+                # Default ON: route the hosted OpenAI-wire seat through the
+                # registry-driven builder, which pins the leaf-exact knobs
                 # (verbose prompts, preserve disabled, hard 60s timeout).
-                # The leaf is the rollback path.
+                # The per-vendor leaf below is the rollback path.
                 from Trainforge.generators._synthesis_provider import (
                     agnostic_synthesis_enabled,
                 )
@@ -798,10 +792,10 @@ def synthesize_preference_pair(
                     )
                     provider_instance = TogetherSynthesisProvider()
             elif provider == "local":
-                # Phase 3: agnostic cutover (default ON) — route the
-                # local OpenAI-wire seat through the leaf-exact builder
+                # Default ON: route the local OpenAI-wire seat through the
+                # registry-driven builder, which pins the leaf-exact knobs
                 # (terse prompts, preserve enabled, hard 60s timeout). The
-                # leaf is the rollback path.
+                # per-vendor leaf below is the rollback path.
                 from Trainforge.generators._synthesis_provider import (
                     agnostic_synthesis_enabled,
                 )
@@ -821,10 +815,9 @@ def synthesize_preference_pair(
                     "to be supplied; no lazy fallback because the provider "
                     "needs a LocalDispatcher injected by the caller."
                 )
-        # Wave 120: same preserve-and-fallback contract as the
-        # instruction factory. Preference pairs check ``chosen`` only —
-        # the rule-synthesized rejection legitimately may not contain
-        # the literal CURIE.
+        # Same preserve-and-fallback contract as the instruction factory.
+        # Preference pairs check ``chosen`` only — the rule-synthesized
+        # rejection legitimately may not contain the literal CURIE.
         deterministic_draft = dict(pair)
         try:
             try:
@@ -844,11 +837,10 @@ def synthesize_preference_pair(
             else:
                 raise
 
-    # Wave 120 -> Wave 135b: force-inject preserve_tokens missing from
-    # prompt + chosen. Wave 135b dispatches per-token on the FORM_DATA
-    # ``anchored_status`` discriminator: ``"complete"`` -> embed an
-    # actual definition sentence; degraded / non-manifest -> fall back
-    # to legacy token-stuffing AND emit a
+    # Force-inject preserve_tokens missing from prompt + chosen, dispatching
+    # per-token on the FORM_DATA ``anchored_status`` discriminator:
+    # ``"complete"`` -> embed an actual definition sentence; degraded /
+    # non-manifest -> fall back to token-stuffing AND emit a
     # ``form_data_degraded_placeholder_skipped`` decision-capture event.
     if preserve_tokens:
         pair = _enforce_preserve_tokens_in_preference(

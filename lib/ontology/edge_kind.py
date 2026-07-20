@@ -1,4 +1,4 @@
-"""Canonical inference-rule -> edge_kind classifier (GPT feedback 12 May 2026, item 1).
+"""Canonical inference-rule -> edge_kind classifier.
 
 Every typed-edge inference rule in the Trainforge concept-graph pipeline
 emits edges that fall into one of two categories:
@@ -69,10 +69,9 @@ _RULE_KIND_REGISTRY: Final[Dict[str, str]] = {
     "misconception_of_from_misconception_ref": EDGE_KIND_ASSERTED,
     "targets_concept_from_lo": EDGE_KIND_ASSERTED,
     "defined_by_from_first_mention": EDGE_KIND_ASSERTED,
-    # GPT feedback 12 May 2026 item 4 — three new misconception-anchored
-    # materializers. Each promotes an existing explicit pointer in the
-    # corpus (chunk.misconceptions[].correction; question.misconception_id;
-    # misconception.lo_id) into a typed edge.
+    # Misconception-anchored materializers. Each promotes an existing
+    # explicit pointer in the corpus (chunk.misconceptions[].correction;
+    # question.misconception_id; misconception.lo_id) into a typed edge.
     "corrected_by_from_chunk_misconception": EDGE_KIND_ASSERTED,
     "detected_by_from_distractor_misconception_id": EDGE_KIND_ASSERTED,
     "interferes_with_outcome_from_misconception_lo": EDGE_KIND_ASSERTED,
@@ -80,15 +79,15 @@ _RULE_KIND_REGISTRY: Final[Dict[str, str]] = {
     "is_a_from_key_terms": EDGE_KIND_INFERRED,
     "exemplifies_from_example_chunks": EDGE_KIND_INFERRED,
     "prerequisite_from_lo_order": EDGE_KIND_INFERRED,
-    # W3.1 — content-dependency (definition-in-TO_a assumed-in-TO_b) TO->TO
+    # Content-dependency (definition-in-TO_a assumed-in-TO_b) TO->TO
     # prerequisite edges. A deterministic no-LLM CONTENT signal (concept
     # first-mention/definition anchor), NOT an explicit upstream pointer, so
     # it classifies as inferred alongside prerequisite_from_lo_order. Producer:
     # lib/generation/prerequisite_from_definition_mention.py (gated by
     # TRAINFORGE_PREREQ_DEFINITION_MENTION). NB: this rule module lives under
-    # lib/generation/ (a lib-side edge producer feeding the concept graph),
-    # not Trainforge/rag/inference_rules/, so the inference_rules-discovery
-    # test does not auto-cover it; the entry is asserted directly here.
+    # lib/generation/, not Trainforge/rag/inference_rules/, so the
+    # inference_rules-discovery test does not auto-cover it; the entry must be
+    # declared here by hand.
     "prerequisite_from_definition_mention": EDGE_KIND_INFERRED,
     "related_from_cooccurrence": EDGE_KIND_INFERRED,
     "llm_typed_edge": EDGE_KIND_INFERRED,

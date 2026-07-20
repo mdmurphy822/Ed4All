@@ -44,7 +44,7 @@ class ContentSection:
     components: List[str] = field(default_factory=list)  # flip-card, accordion, etc.
     content_type: Optional[str] = None  # from data-cf-content-type
     key_terms: List[str] = field(default_factory=list)  # from data-cf-key-terms
-    # REC-VOC-02 (Wave 2, Worker K): deterministic teaching_role emitted by
+    # deterministic teaching_role emitted by
     # Courseforge on flip-card/self-check/activity elements. When a section
     # contains exactly one distinct data-cf-teaching-role value among its
     # tagged children, ``teaching_role`` surfaces it; if multiple distinct
@@ -53,7 +53,7 @@ class ContentSection:
     # ``teaching_roles`` always lists every distinct value seen for audit.
     teaching_role: Optional[str] = None
     teaching_roles: List[str] = field(default_factory=list)
-    # REC-JSL-03 (Wave 3, Worker M): learning-objective references harvested
+    # learning-objective references harvested
     # from ``data-cf-objective-ref`` attributes on ``.activity-card`` and
     # ``.self-check`` elements within the section body. Courseforge emits
     # these at generate_course.py:378,491. Multiple activities per section
@@ -62,35 +62,35 @@ class ContentSection:
     # merge these into a chunk's ``learning_outcome_refs`` so the
     # Activity→LO KG edge materializes.
     objective_refs: List[str] = field(default_factory=list)
-    # Wave 10: ``data-cf-source-ids`` values harvested from the section body.
+    # ``data-cf-source-ids`` values harvested from the section body.
     # Courseforge emits these on ``<section>`` / heading / component wrapper
-    # elements per Wave 9 (P2 decision: never on ``<p>``/``<li>``/``<tr>``).
+    # elements only — never on ``<p>``/``<li>``/``<tr>``.
     # Stored as the raw ``sourceId`` strings (``dart:{slug}#{block_id}``);
     # process_course.py converts them to full SourceReference dicts with an
     # auto-role of ``contributing`` when JSON-LD doesn't supply the full
     # shape. Sorted + deduplicated for deterministic downstream diffs.
     source_references: List[str] = field(default_factory=list)
-    # Wave 81: ``data-cf-template-type`` value harvested from the enclosing
-    # ``<section>`` element. Courseforge Wave 79 C content-generator emits this
+    # ``data-cf-template-type`` value harvested from the enclosing
+    # ``<section>`` element. The Courseforge content-generator emits this
     # attribute on every section root with values like ``explanation``,
     # ``example``, ``procedure``, ``real_world_scenario``, ``common_pitfall``,
     # ``problem_solution``, ``summary``, ``overview``, ``self_check``. When
     # present, process_course.py prefers this over the heading-keyword heuristic
-    # (``_type_from_heading``) so the chunker no longer collapses the four new
+    # (``_type_from_heading``) so the chunker does not collapse the four newer
     # template types into the legacy six. ``None`` for non-Courseforge IMSCC
-    # packages or for legacy Courseforge corpora that predate Wave 79 C.
+    # packages and for legacy Courseforge corpora that predate the attribute.
     template_type: Optional[str] = None
-    # Wave 5 (W5.A — ingestion mirror for W1.5): per-block ``keyClaims``
+    # per-block ``keyClaims``
     # array harvested from the JSON-LD ``blocks[]`` projection. Each entry
     # carries at minimum ``claim`` (string) + ``source_chunk_ids``
     # (List[str]) — the chunker uses these to materialize the
     # ``key_claims`` audit field on ``chunk_v4`` so downstream consumers
     # (Trainforge synthesis, NLI claim-support gate) can verify per-claim
     # grounding without re-walking the source HTML. Defensive default
-    # ``[]`` so legacy emit paths (pre-W1.5 Courseforge corpora and
+    # ``[]`` so legacy emit paths (older Courseforge corpora and
     # non-Courseforge IMSCC packages) never see ``None``.
     key_claims: List[Dict[str, Any]] = field(default_factory=list)
-    # Wave 5 (W5.A — ingestion mirror for W1.7): per-block
+    # per-block
     # ``objectiveAlignment`` array harvested from the JSON-LD ``blocks[]``
     # projection. Each entry declares an ``objective_id`` plus alignment
     # metadata (``status`` / ``declared_bloom`` / etc.) so the
@@ -99,7 +99,7 @@ class ContentSection:
     # than re-deriving from the page-level objective list. Defensive
     # default ``[]`` so legacy emit paths never see ``None``.
     objective_alignment: List[Dict[str, Any]] = field(default_factory=list)
-    # A7 (end-user-HTML audit, 2026-07-04): the ``data-dart-opener`` role
+    # the ``data-dart-opener`` role
     # (``objectives`` / ``try_it`` / ``worked_example`` / …) the SemantiK
     # adapter stamps on a promoted pedagogical-opener ``<h4>`` heading. When
     # present it marks a pedagogical sub-unit boundary; the chunker
@@ -107,7 +107,7 @@ class ContentSection:
     # ``ED4ALL_CHUNK_SECTION_HARD_BREAK`` so a chunk never fuses an example, its
     # solution, and the next example. ``None`` for non-DART / legacy sections.
     data_dart_opener: Optional[str] = None
-    # Wave #22 Tier-2 (composite units): the ``data-dart-unit`` type
+    # Composite units: the ``data-dart-unit`` type
     # (``worked_example`` / ``section_opener`` / ``exercise_set`` / …) the
     # SemantiK adapter stamps on the ``<section class="dart-unit">`` wrapper that
     # coagulates a run of sibling blocks into one pedagogical whole. Harvested
@@ -124,7 +124,7 @@ class ContentSection:
     # its resolved composite unit's subclass. ``None`` for non-unit / legacy /
     # un-subclassed sections.
     data_dart_subclass: Optional[str] = None
-    # Wave #22 quick-wins (chunk pedagogical-role metadata): the distinct
+    # Chunk pedagogical-role metadata: the distinct
     # ``data-dart-flow`` role values (``statement`` / ``solution-steps`` /
     # ``procedure-steps``) the SemantiK adapter stamps on the BLOCKS inside this
     # section's body (``lib/semantik/adapter.py`` flow-annotation pass /
@@ -146,24 +146,23 @@ class LearningObjective:
     cognitive_domain: Optional[str] = None  # factual/conceptual/procedural/metacognitive
     key_concepts: List[str] = field(default_factory=list)
     assessment_suggestions: List[str] = field(default_factory=list)
-    # Wave 59 (Courseforge emit) / Wave 69 (Trainforge consume): LO hierarchy
+    # LO hierarchy
     # tier derived from canonical ID prefix. ``terminal`` = course-wide
     # rollup (TO-NN); ``chapter`` = chapter-level LO (CO-NN) rolling up to
-    # a terminal. Elided when the JSON-LD doesn't declare it (legacy pre-
-    # Wave 59 corpus).
+    # a terminal. Elided when the JSON-LD doesn't declare it (legacy corpus).
     hierarchy_level: Optional[str] = None
-    # Wave 59 (Courseforge emit) / Wave 69 (Trainforge consume): parent LO
+    # parent LO
     # ID — the terminal objective a chapter LO rolls up to. Absent on
     # terminals (they are KG roots). Optional on chapter LOs — carried when
     # Courseforge's synthesized_objectives.json supplied the mapping.
     parent_objective_id: Optional[str] = None
-    # Wave 57 (Courseforge emit) / Wave 69 (Trainforge consume): Bloom-
+    # Bloom-
     # qualified LO→concept edges. Each entry is {"concept": <slug>,
     # "bloom_level": <canonical level>} — note the snake_case keys (our
     # internal convention) vs. Courseforge's camelCase
     # targetedConcepts/bloomLevel on the wire. Bloom levels are lowercased
     # at parse time to match Trainforge's case-insensitive reference
-    # resolution. Fed into build_semantic_graph to materialize the Wave 66
+    # resolution. Fed into build_semantic_graph to materialize the
     # ``targets-concept`` edge type.
     targeted_concepts: List[Dict[str, str]] = field(default_factory=list)
 
@@ -183,17 +182,17 @@ class ParsedHTMLModule:
     misconceptions: List[Dict[str, str]] = field(default_factory=list)
     prerequisite_pages: List[str] = field(default_factory=list)
     suggested_assessment_types: List[str] = field(default_factory=list)
-    # REC-JSL-03 (Wave 3, Worker M): page-level union of every distinct
+    # page-level union of every distinct
     # ``data-cf-objective-ref`` value found anywhere in the HTML. Used as
     # the fallback attachment set in process_course when a chunk cannot be
     # mapped back to a specific section (the no-sections code path in
     # _chunk_content). Populated even when ``sections`` is empty.
     objective_refs: List[str] = field(default_factory=list)
-    # Wave 10: page-level aggregated source references. Each entry is a
+    # page-level aggregated source references. Each entry is a
     # full ``SourceReference`` dict (per schemas/knowledge/source_reference
     # .schema.json) — ``{sourceId, role, ...}``. Precedence:
     #   1. JSON-LD ``sourceReferences`` (page-level + section-level) copied
-    #      verbatim (full shape when Courseforge is Wave 9+).
+    #      verbatim (the full shape, when Courseforge emitted one).
     #   2. ``data-cf-source-ids`` HTML attributes (stringified sourceId
     #      only) synthesised as ``{sourceId, role: 'contributing'}`` when
     #      the sourceId isn't already represented in the JSON-LD set.
@@ -209,7 +208,7 @@ class HTMLTextExtractor(HTMLParser):
     Skips:
       - ``<script>`` and ``<style>`` subtrees (always).
       - Any subtree rooted at an element carrying ``data-cf-role="template-chrome"``
-        (Worker Q). Courseforge marks repeated page chrome — header, footer,
+        Courseforge marks repeated page chrome — header, footer,
         skip link — with that attribute so the chunk text field doesn't
         contain boilerplate that every page duplicates. The n-gram boilerplate
         detector in ``Trainforge/rag/boilerplate_detector.py`` stays as
@@ -236,7 +235,7 @@ class HTMLTextExtractor(HTMLParser):
         self.current_tag = None
         self.in_script = False
         self.in_style = False
-        # Worker Q: count of currently-open template-chrome ancestors. When
+        # Count of currently-open template-chrome ancestors. When
         # nonzero, text data is discarded.
         self._template_chrome_depth = 0
         # Count of currently-open ``data-cf-curie`` ancestors. When nonzero,
@@ -479,7 +478,7 @@ class HTMLContentParser:
 
     # Bloom's taxonomy verbs by level.
     # Source of truth: schemas/taxonomies/bloom_verbs.json (loaded via
-    # lib.ontology.bloom). Migrated in Wave 1.2 / Worker H (REC-BL-01).
+    # lib.ontology.bloom).
     BLOOM_VERBS = _get_canonical_verbs_list()
 
     # Interactive component patterns
@@ -519,7 +518,7 @@ class HTMLContentParser:
         # Extract sections (with data-cf-* attribute support)
         sections = self._extract_sections(html_content)
 
-        # Phase 2 Subtask 30: prefer JSON-LD ``blocks[]`` when present.
+        # prefer JSON-LD ``blocks[]`` when present.
         # The Courseforge emitter (gated behind ``COURSEFORGE_EMIT_BLOCKS=true``)
         # publishes a Phase-2 canonical ``blocks[]`` projection of the
         # page's renderer output. When present, project section-typed
@@ -561,12 +560,12 @@ class HTMLContentParser:
         # Extract page-level fields from JSON-LD
         page_id = json_ld.get("pageId") if json_ld else None
         raw_misconceptions = json_ld.get("misconceptions", []) if json_ld else []
-        # Wave 60 (Courseforge emit) / Wave 69 (Trainforge consume): normalize
+        # normalize
         # Misconception dicts from JSON-LD camelCase (bloomLevel /
         # cognitiveDomain) to Trainforge snake_case (bloom_level /
         # cognitive_domain) and lowercase the bloom level. Only the canonical
         # required pair (misconception + correction) is mandatory; bloom /
-        # domain are optional and silently absent on pre-Wave-60 corpora.
+        # domain are optional and silently absent on legacy corpora.
         misconceptions: List[Dict[str, Any]] = []
         for mc in raw_misconceptions:
             if not isinstance(mc, dict):
@@ -593,17 +592,17 @@ class HTMLContentParser:
             domain = mc.get("cognitiveDomain") or mc.get("cognitive_domain")
             if isinstance(domain, str) and domain:
                 entry["cognitive_domain"] = domain
-            # GPT Feedback (May 12) item 5: observable cognitive task verb,
+            # observable cognitive task verb,
             # axis orthogonal to bloom_level. Mirrors the bloomLevel /
             # cognitiveDomain camelCase → snake_case normalization. Optional;
-            # silently absent on legacy / pre-Wave-cognitive-task corpora.
+            # silently absent on legacy corpora.
             task_type = mc.get("cognitiveTaskType") or mc.get("cognitive_task_type")
             if isinstance(task_type, str) and task_type:
                 entry["cognitive_task_type"] = task_type.lower()
             misconceptions.append(entry)
 
-        # Wave 81 (Worker C): bridging fallback for HTML-attr-only emit.
-        # Wave 79 content-generator subagents tag the misconception
+        # bridging fallback for HTML-attr-only emit.
+        # Content-generator subagents tag the misconception
         # paragraph with ``data-cf-misconception="true"`` but don't always
         # populate JSON-LD ``misconceptions[]``. Forward fix: the
         # ``Courseforge/templates/chunk_templates.md`` Template 3 spec now
@@ -621,7 +620,7 @@ class HTMLContentParser:
         prerequisite_pages = json_ld.get("prerequisitePages", []) if json_ld else []
         suggested_assessments = json_ld.get("suggestedAssessmentTypes", []) if json_ld else []
 
-        # REC-JSL-03 (Wave 3, Worker M): page-level union of every distinct
+        # page-level union of every distinct
         # data-cf-objective-ref in the raw HTML. Covers activities/self-checks
         # that live outside any section (e.g., pages without headings) so the
         # no-sections chunk code path in process_course still materializes
@@ -639,7 +638,7 @@ class HTMLContentParser:
             {r for r in (page_obj_ref_matches + page_obj_id_matches) if r}
         )
 
-        # Wave 10: page-level source_references aggregated with precedence
+        # page-level source_references aggregated with precedence
         # JSON-LD (full shape) > data-cf-source-ids (sourceId strings
         # auto-roled as 'contributing'). First-seen wins on sourceId
         # collision so JSON-LD's authoritative role is preserved.
@@ -669,7 +668,7 @@ class HTMLContentParser:
         sections: List[ContentSection],
         html_content: str,
     ) -> List[Dict[str, Any]]:
-        """Wave 10: Aggregate page-level source_references with precedence.
+        """Aggregate page-level source_references with precedence.
 
         Precedence:
           1. JSON-LD page-level ``sourceReferences`` (full SourceReference
@@ -683,7 +682,7 @@ class HTMLContentParser:
 
         First-seen wins on sourceId collision so JSON-LD's authoritative
         role survives over the HTML-attr fallback. Returns an empty list
-        when no refs are found (pre-Wave-9 corpus) — consumers treat
+        when no refs are found (legacy corpus) — consumers treat
         absence as "unknown", never an error.
         """
         refs: List[Dict[str, Any]] = []
@@ -736,13 +735,13 @@ class HTMLContentParser:
                 continue
         return None
 
-    # Phase 2 (Subtask 30): the subset of canonical Phase-2 ``block_type``
+    # the subset of canonical Phase-2 ``block_type``
     # values that map onto a ``ContentSection`` heading on the consumer
     # side. The Block dataclass at ``Courseforge/scripts/blocks.py``
     # constrains ``block_type`` to a 16-value enum; the values below are
     # the ones the existing legacy ``_extract_sections`` regex DOM walk
     # also produces sections for. ``content_type_label`` on the Block
-    # carries the finer-grained classification (Worker F's 8-value
+    # carries the finer-grained classification (the 8-value
     # ``SectionContentType`` enum: ``definition`` / ``example`` /
     # ``procedure`` / ``comparison`` / ``exercise`` / ``overview`` /
     # ``summary`` / ``explanation``) and is what the Trainforge consumer
@@ -761,7 +760,7 @@ class HTMLContentParser:
     def _extract_blocks_from_jsonld(
         self, json_ld: Dict[str, Any]
     ) -> List[Dict[str, Any]]:
-        """Phase 2 Subtask 30: surface JSON-LD ``blocks[]`` for direct
+        """surface JSON-LD ``blocks[]`` for direct
         consumption.
 
         When ``json_ld`` carries a ``blocks`` list (Courseforge emit
@@ -779,7 +778,7 @@ class HTMLContentParser:
           - ``blockType`` — one of the 16 canonical Phase-2 block types.
           - ``sequence`` — 0/1-indexed position within the page.
           - ``contentTypeLabel`` — finer-grained content classification
-            (subset of Worker F's ``SectionContentType`` enum).
+            (subset of the ``SectionContentType`` enum).
           - ``keyTerms`` — slugified key terms attached to the block.
           - ``templateType`` — Courseforge template variant name.
 
@@ -794,13 +793,13 @@ class HTMLContentParser:
             return []
         # Filter to dict entries — defensive against malformed payloads
         # that slip past schema validation (e.g. legacy corpora that
-        # predate the Wave 67 schema tightening).
+        # predate the schema tightening).
         return [b for b in blocks if isinstance(b, dict)]
 
     def _content_sections_from_blocks(
         self, blocks: List[Dict[str, Any]]
     ) -> List[ContentSection]:
-        """Phase 2 Subtask 30: build ``ContentSection`` entries from
+        """build ``ContentSection`` entries from
         Phase-2 ``blocks[]`` JSON-LD entries.
 
         Only emits a ``ContentSection`` for blocks whose ``blockType``
@@ -835,7 +834,7 @@ class HTMLContentParser:
             template_type = block.get("templateType")
             if not isinstance(template_type, str) or not template_type:
                 template_type = None
-            # Wave 5 (W5.A): project the W1.5 ``keyClaims`` and W1.7
+            # project the W1.5 ``keyClaims`` and W1.7
             # ``objectiveAlignment`` audit arrays. camelCase ↔ snake_case
             # translation: JSON-LD wire keys are camelCase; Python attrs
             # are snake_case. Filter to dict entries — defensive against
@@ -871,7 +870,7 @@ class HTMLContentParser:
         html: str,
         existing: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
-        """Wave 81 bridging fallback: harvest misconceptions tagged with
+        """Bridging fallback: harvest misconceptions tagged with
         ``data-cf-misconception="true"`` on the paragraph itself.
 
         Used when JSON-LD ``misconceptions[]`` is absent or partial. The
@@ -907,7 +906,7 @@ class HTMLContentParser:
         for e in existing:
             if not isinstance(e, dict):
                 continue
-            # Some legacy chunks (pre-Wave-81) store the misconception
+            # Some legacy chunks store the misconception
             # under ``statement`` rather than the canonical
             # ``misconception``. Honor both to keep dedupe symmetrical
             # across the field-name boundary.
@@ -1005,7 +1004,7 @@ class HTMLContentParser:
 
         return "Untitled Module"
 
-    # Wave 81: regex to walk back from a heading to its enclosing
+    # regex to walk back from a heading to its enclosing
     # ``<section ...>`` open tag and read ``data-cf-template-type``.
     # Courseforge content-generator emits one attribute per section root; the
     # value is the canonical template label that the chunker should honor.
@@ -1071,7 +1070,7 @@ class HTMLContentParser:
             if 'data-semantik-box-title' not in (m.group(2) or '').lower()
         ]
 
-        # Wave 81: pre-compute every <section ...> open-tag position so we can
+        # pre-compute every <section ...> open-tag position so we can
         # walk back from each heading to its nearest enclosing section root and
         # read the data-cf-template-type attribute. Courseforge emits exactly
         # one section root per page (sections do not nest in our content
@@ -1089,7 +1088,7 @@ class HTMLContentParser:
             end = headings[i + 1].start() if i + 1 < len(headings) else len(html)
             section_html = html[start:end]
 
-            # Wave 81: derive template_type from the nearest enclosing
+            # derive template_type from the nearest enclosing
             # <section ...> root. Falls back to heading-attr / section-body
             # scan when the section root predates the heading by a wide
             # margin (rare). When no data-cf-template-type is found anywhere,
@@ -1137,7 +1136,7 @@ class HTMLContentParser:
             # A7: harvest the ``data-dart-opener`` role the SemantiK adapter
             # stamps on a promoted pedagogical-opener heading. The adapter puts
             # it on the enclosing ``<section>`` wrapper (which PRECEDES the
-            # <h4>), so resolve it the same way ``template_type`` is (Wave 81):
+            # <h4>), so resolve it the same way ``template_type`` is:
             # walk back to the nearest enclosing ``<section>`` root and read the
             # attribute there; belt-and-braces, also accept it on the heading
             # tag itself. Marks a soft sub-boundary for the hard-break chunker.
@@ -1155,7 +1154,7 @@ class HTMLContentParser:
                 if op_attr and op_attr.group(1).strip():
                     data_dart_opener = op_attr.group(1).strip()
 
-            # Wave #22 Tier-2: harvest the ``data-dart-unit`` type off the
+            # Harvest the ``data-dart-unit`` type off the
             # ``<section class="dart-unit">`` wrapper that encloses this heading's
             # block. The wrapper is the SECTION open immediately PRECEDING the
             # block's own enclosing ``<section>`` (a callout-group ``<div>`` in
@@ -1198,7 +1197,7 @@ class HTMLContentParser:
                         if sub and sub.group(1).strip():
                             data_dart_subclass = sub.group(1).strip()
 
-            # Wave #22 quick-wins: harvest the distinct ``data-dart-flow`` role
+            # Harvest the distinct ``data-dart-flow`` role
             # values off the BLOCKS in this section's body (the SemantiK adapter
             # stamps ``statement`` / ``solution-steps`` / ``procedure-steps`` on
             # worked-example / solution / how-to body blocks). A section body may
@@ -1216,7 +1215,7 @@ class HTMLContentParser:
                 }
             )
 
-            # REC-VOC-02 (Wave 2, Worker K): scan section body for
+            # scan section body for
             # data-cf-teaching-role attributes on flip-card/self-check/
             # activity components. Courseforge emits these deterministically
             # from (component, purpose) pairs via lib.ontology.teaching_roles.
@@ -1226,7 +1225,7 @@ class HTMLContentParser:
             distinct_roles = sorted({r for r in tr_matches if r})
             teaching_role = distinct_roles[0] if len(distinct_roles) == 1 else None
 
-            # REC-JSL-03 (Wave 3, Worker M): scan section body for
+            # scan section body for
             # data-cf-objective-ref attributes on .activity-card and
             # .self-check elements. Courseforge emits these from
             # generate_course.py:378,491 when a curriculum JSON entry
@@ -1249,7 +1248,7 @@ class HTMLContentParser:
             # which precedes the heading — so a body slice (heading→next
             # heading) would cross into the NEXT section's open tag and
             # mis-attribute the id. Resolve it the same way ``template_type``
-            # is resolved (Wave 81): walk back to the nearest enclosing
+            # is resolved: walk back to the nearest enclosing
             # ``<section>`` root and read the attribute there. Belt-and-
             # braces: also accept the attribute directly on the heading.
             # Validation against the canonical LO pattern happens downstream
@@ -1271,9 +1270,9 @@ class HTMLContentParser:
                 {r for r in (obj_ref_matches + obj_id_matches) if r}
             )
 
-            # Wave 10: scan section body + heading attrs for
+            # scan section body + heading attrs for
             # ``data-cf-source-ids`` (comma-separated list of DART
-            # sourceIds). Courseforge Wave 9 emits these on <section>,
+            # sourceIds). Courseforge emits these on <section>,
             # headings, and component wrappers (.flip-card, .self-check,
             # .activity-card, .discussion-prompt, .objectives) per the P2
             # scope decision. Each attribute value can list multiple ids
@@ -1326,7 +1325,7 @@ class HTMLContentParser:
         # Strategy 1: JSON-LD (highest fidelity — authoritative Bloom's data)
         if json_ld and json_ld.get("learningObjectives"):
             for lo in json_ld["learningObjectives"]:
-                # Wave 69: surface Wave 57 targetedConcepts[] + Wave 59
+                # surface targetedConcepts[] +
                 # hierarchyLevel/parentObjectiveId so downstream consumers
                 # (process_course → build_semantic_graph, inference_rules/
                 # targets_concept_from_lo) can materialize the typed LO→
@@ -1335,7 +1334,7 @@ class HTMLContentParser:
                 # courseforge_jsonld_v1.schema.json) → snake_case (Trainforge
                 # internal convention). Bloom levels lowercased to match
                 # Trainforge's case-insensitive ref resolution used by the
-                # Wave 66 rule.
+                # edge rule.
                 raw_targets = lo.get("targetedConcepts") or []
                 targeted: List[Dict[str, str]] = []
                 for entry in raw_targets:
@@ -1432,10 +1431,10 @@ class HTMLContentParser:
     def _detect_bloom_level(self, text: str) -> tuple:
         """Detect Bloom's taxonomy level and verb from objective text.
 
-        Wave 55: delegates to ``lib.ontology.bloom.detect_bloom_level``.
-        The pre-Wave-55 local loop used ``startswith() + f" {verb} "`` which
-        missed verbs at end-of-text and diverged from the canonical matcher
-        on verb-length tie-breaking.
+        Delegates to ``lib.ontology.bloom.detect_bloom_level`` — do NOT
+        re-implement locally. A naive ``startswith() + f" {verb} "`` scan
+        misses verbs at end-of-text and diverges from the canonical matcher's
+        verb-length tie-breaking.
         """
         return _canonical_detect_bloom_level(text)
 

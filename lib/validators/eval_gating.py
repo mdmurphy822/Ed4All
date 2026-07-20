@@ -1,4 +1,4 @@
-"""Wave 108 / Phase B — EvalGatingValidator.
+"""EvalGatingValidator.
 
 Reads ``<model_dir>/eval/eval_report.json`` (the artifact emitted by
 :class:`Trainforge.eval.slm_eval_harness.SLMEvalHarness`) and decides
@@ -18,10 +18,9 @@ Warning-severity advisories (logged, never block):
 * ``metrics.hallucination_rate > max_hallucination_rate``         -> EVAL_HALLUCINATION_HIGH
 * ``calibration_ece > max_calibration_ece`` (when present)        -> EVAL_CALIBRATION_HIGH
 
-Per the root CLAUDE.md mandate, every validator that participates in a
-load-bearing decision MUST log to a ``DecisionCapture`` when one is
-provided. The rationale interpolates the actual metric values so a
-post-hoc audit can see why the gate fired.
+Logs to a ``DecisionCapture`` when one is supplied. The rationale interpolates
+the actual metric values so a post-hoc audit can see why the gate fired without
+re-reading the report.
 """
 from __future__ import annotations
 
@@ -43,18 +42,14 @@ _DEFAULT_THRESHOLDS = {
     "max_yes_rate": 0.85,
     "max_hallucination_rate": 0.50,
     "max_calibration_ece": 0.30,
-    # Wave 109 / Phase C: per-property accuracy floor.
+    # Per-property accuracy floor.
     "min_per_property_accuracy": 0.40,
-    # Wave 138a / W3: content_type_role_alignment_rate floor. Tier-2
-    # corpus-derived check (no LLM dispatch). Warning-severity for v1
-    # per operator; promote to critical after two clean rebuilds.
+    # content_type_role_alignment_rate floor. Corpus-derived check, no LLM
+    # dispatch. Warning-severity pending calibration.
     "min_content_type_role_alignment_rate": 0.70,
-    # Wave 7 W7.D: per-type warning floors. Mirrors the corpus-wide
-    # floors above but applies per question_type bucket emitted by
-    # the W7.A/B per-question-type segmentation. Day-1 warning;
-    # calibration-deferred per plan §5 — flip to critical in a
-    # follow-up micro-wave once corpus rebuild produces stable
-    # per-bucket warning-fire rates.
+    # Per-type floors. Mirror the corpus-wide floors above but apply per
+    # question_type bucket. Warning-severity pending calibration: per-bucket
+    # fire rates are not yet stable enough to block promotion.
     "min_per_type_answerable_rate": 0.30,
     "min_per_type_single_correct_rate": 0.85,  # MC + TF only
     "min_per_type_distractor_entropy": 0.50,    # MC only
@@ -64,12 +59,11 @@ _DEFAULT_THRESHOLDS = {
 }
 
 
-# Wave 7 W7.D: per-question-type warning surface configuration.
+# Per-question-type warning surface configuration.
 # Each tuple is (metric_name, threshold_key, value_field, code, direction).
 # `metric_name` keys ``report[<metric>]``; `value_field` reads each bucket's
 # scalar; `direction` is "below" (score < threshold fires) or "above"
-# (score > threshold fires). Codes match the W7.C documentation row in
-# ``Trainforge/CLAUDE.md``.
+# (score > threshold fires). Codes are documented in ``Trainforge/CLAUDE.md``.
 PER_TYPE_METRIC_CONFIG: List[tuple] = [
     (
         "answerable_rate",
@@ -176,12 +170,12 @@ class EvalGatingValidator:
                 )],
             )
 
-        # 2026-04-30 smoke mode: refuse to gate on a smoke report.
-        # Smoke runs cap each evaluator at N=3 so the metrics are
-        # statistically meaningless for promotion gating. The harness
-        # writes smoke runs to smoke_eval_report.json, but a defensive
-        # check on the in-report `smoke_mode` field protects against
-        # operators copying / renaming a smoke report into eval_report.json.
+        # Refuse to gate on a smoke report: smoke runs cap each evaluator at
+        # N=3, so the metrics are statistically meaningless for promotion.
+        # The harness writes smoke runs to smoke_eval_report.json, so relying
+        # on the filename alone would seem sufficient — it is not. Checking
+        # the in-report `smoke_mode` field also catches a smoke report copied
+        # or renamed into eval_report.json.
         if bool(report.get("smoke_mode")):
             return GateResult(
                 gate_id=gate_id,
@@ -262,9 +256,8 @@ class EvalGatingValidator:
                 location=str(report_path),
             ))
 
-        # Wave 109 / Phase C: per-property accuracy gate. Skip
-        # properties with None accuracy (unscored — no probes matched
-        # the surface forms).
+        # Per-property accuracy gate. Skip properties with None accuracy
+        # (unscored — no probes matched the surface forms).
         per_property = report.get("per_property_accuracy") or {}
         min_pp = thresholds["min_per_property_accuracy"]
         below_pp = []
@@ -289,19 +282,19 @@ class EvalGatingValidator:
                 location=str(report_path),
             ))
 
-        # Wave 7 W7.D: per-question-type warning surface. Walks each
-        # W3.F evaluator's ``per_question_type`` block (W7.A + W7.B
-        # emit) and emits warning-severity GateIssues per below-floor
-        # bucket. Day-1 warning per plan §5 — calibration-deferred so
-        # it never blocks promotion until per-bucket fire rates
-        # stabilise across two clean rebuilds. Skips silently when:
-        #   * the evaluator did not emit a per-type block (legacy
-        #     report or pre-W7.A schema);
-        #   * ``per_question_type is None`` (deps_missing path —
-        #     evaluator dependency unavailable); or
-        #   * the bucket carries ``relevant=False`` (the metric is
-        #     structurally meaningless for that question_type — see
-        #     ``Trainforge/eval/_per_type_helpers.py::RELEVANT_QUESTION_TYPES``).
+        # Per-question-type warning surface. Walks each evaluator's
+        # ``per_question_type`` block and emits warning-severity GateIssues
+        # per below-floor bucket; warning-only so it never blocks promotion
+        # while per-bucket fire rates are still uncalibrated. Skips silently
+        # when:
+        #   * the evaluator did not emit a per-type block (legacy report);
+        #   * ``per_question_type is None`` (evaluator dependency
+        #     unavailable); or
+        #   * the bucket carries ``relevant=False`` — the metric is
+        #     structurally meaningless for that question_type (e.g.
+        #     distractor entropy on a non-MC item), so scoring it would
+        #     manufacture a false below-floor warning. See
+        #     ``Trainforge/eval/_per_type_helpers.py::RELEVANT_QUESTION_TYPES``.
         per_type_below: List[tuple] = []
         for (
             metric_name,
@@ -371,13 +364,12 @@ class EvalGatingValidator:
                 location=str(report_path),
             ))
 
-        # Wave 138a / W3: teaching-role alignment advisory. Tier-2
-        # corpus-derived signal — the harness emits a per-content-type
-        # `content_type_role_alignment` block plus a sibling
+        # Teaching-role alignment advisory. The harness emits a
+        # per-content-type `content_type_role_alignment` block plus a sibling
         # `content_type_role_alignment_summary` carrying the aggregate
-        # `alignment_rate` and the list of mismatched content types.
-        # Skip silently when the report does not carry the field
-        # (legacy / pre-Wave-138 reports).
+        # `alignment_rate` and the mismatched content types. Requires BOTH
+        # keys before scoring. Skips silently on legacy reports that lack
+        # them.
         ctra_summary = report.get("content_type_role_alignment_summary")
         ctra_alignment_rate: Optional[float] = None
         ctra_mismatched: List[str] = []
@@ -402,14 +394,14 @@ class EvalGatingValidator:
         passed = critical_count == 0
         score = max(0.0, 1.0 - len(issues) * 0.1) if issues else 1.0
 
-        # CLAUDE.md mandate: emit a decision capture so the gating
-        # decision is replayable post-hoc.
+        # Emit a decision capture so the gating decision is replayable
+        # post-hoc.
         capture = inputs.get("capture")
         if capture is not None:
             try:
-                # Wave 7 W7.D: surface per-type warning detail so a
-                # post-hoc audit can see which buckets fell below their
-                # floor without re-parsing eval_report.json.
+                # Surface per-type warning detail so a post-hoc audit can see
+                # which buckets fell below their floor without re-parsing
+                # eval_report.json.
                 if per_type_below:
                     per_type_summary = "; ".join(
                         f"{m}.{qt}.{vf}={s:.3f} {d} {t}"
@@ -439,12 +431,11 @@ class EvalGatingValidator:
             except Exception as exc:  # noqa: BLE001 - capture is advisory
                 logger.warning("eval_gating_decision capture failed: %s", exc)
 
-        # Wave 137d-2: emit a form_data coverage checkpoint row to
-        # ``LibV2/courses/<slug>/eval/form_data_coverage_checkpoint.jsonl``.
-        # Advisory metric — the checkpoint is wrapped in try/except so
-        # any I/O / loader failure NEVER breaks the gate result. This
-        # gives operators a per-promotion-attempt audit trail of
-        # backfill coverage progress alongside the eval gating decision.
+        # Emit a form_data coverage checkpoint row to
+        # ``LibV2/courses/<slug>/eval/form_data_coverage_checkpoint.jsonl`` —
+        # a per-promotion-attempt audit trail of backfill coverage. Advisory
+        # only, so it is wrapped in try/except: an I/O or loader failure here
+        # must NEVER change the gate result.
         try:
             self._emit_coverage_checkpoint(
                 model_dir=model_dir,
@@ -465,9 +456,6 @@ class EvalGatingValidator:
             issues=issues,
         )
 
-    # Wave 137d-2: helper that locates the LibV2 course root from the
-    # model_dir, resolves the family via property_manifest, computes
-    # coverage metrics, and atomic-appends a JSONL row.
     def _emit_coverage_checkpoint(
         self,
         *,

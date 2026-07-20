@@ -6,7 +6,7 @@ Synthesizes SFT-style (prompt, completion) training pairs from an enriched
 Trainforge chunk. This is the mock-provider path: deterministic templates,
 no LLM call, no network.
 
-Design constraints (see Worker C plan):
+Design constraints:
 - One function = one pair. The stage composes many calls.
 - Only chunks with non-empty ``learning_outcome_refs`` produce pairs.
 - The prompt MUST NOT contain any 50+-char verbatim span from ``chunk.text``.
@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 
 # Maximum allowed verbatim span (in chars) from chunk.text that may appear
-# in the prompt. Hard limit from plan's quality gates.
+# in the prompt. Hard limit — the pair is gated out above this span.
 MAX_VERBATIM_SPAN = 50
 
 # Prompt and completion length gates (chars).
@@ -56,11 +56,10 @@ COMPLETION_MIN, COMPLETION_MAX = 50, 600
 # Unknown combinations fall back to the ``_default`` row for the bloom level
 # and finally to ``("understand", "_default")``.
 #
-# Wave 133e: tailored cells now cover 10 content_type axes × 6 Bloom levels.
-# The 5 Wave 132b axes (``explanation``, ``example``, ``procedure``,
-# ``comparison``, plus a ``_default`` row) are joined by 5 high-frequency
-# axes surfaced in the RDF/SHACL calibration corpus chunk distribution: ``definition``,
-# ``summary``, ``overview``, ``real_world_scenario``, ``common_pitfall``.
+# Tailored cells cover 10 content_type axes × 6 Bloom levels:
+# ``explanation``, ``example``, ``procedure``, ``comparison``,
+# ``definition``, ``summary``, ``overview``, ``real_world_scenario``,
+# ``common_pitfall``, plus a ``_default`` row per Bloom level.
 #
 # **Deliberate ``_default`` fallback set** (the chunk_v4 ChunkType enum
 # values that intentionally do NOT have tailored cells):
@@ -85,8 +84,8 @@ COMPLETION_MIN, COMPLETION_MAX = 50, 600
 #   * ``problem_solution``  — low frequency; semantic overlap with
 #                             ``procedure`` (apply) + ``example`` cells.
 
-# Wave 132b: aliased to the canonical lib.ontology.bloom.BLOOM_LEVELS so
-# future canonical changes propagate without touching this factory.
+# Aliased to the canonical lib.ontology.bloom.BLOOM_LEVELS so canonical
+# changes propagate without touching this factory.
 from lib.ontology.bloom import BLOOM_LEVELS as _BLOOM_LEVELS
 
 TEMPLATE_CATALOG: Dict[Tuple[str, str], str] = {
@@ -132,7 +131,6 @@ TEMPLATE_CATALOG: Dict[Tuple[str, str], str] = {
     ("create", "comparison"):  "Create a new axis of comparison that would be useful when discussing {topic}.",
     ("create", "_default"):    "Design a short activity that teaches {topic} to a learner new to the material.",
 
-    # Wave 133e: tailored cells for the 5 high-frequency missing content types.
     # definition
     ("remember", "definition"):   "State the precise definition of {topic}.",
     ("understand", "definition"): "In your own words, define {topic} and explain what it means.",
@@ -224,13 +222,11 @@ def _trim_completion(text: str, max_len: int = COMPLETION_MAX) -> str:
     return hard.rstrip() + "..."
 
 
-# Wave 122: assessment-outline scaffolding patterns. chunk_00066 in the
-# 2026-04-29 smoke run leaked a "Question 1 (CO-07, Bloom: Understand).
-# Question 2 (CO-07, Bloom: Apply)..." sequence into both instruction
-# and preference pairs. This is structural contamination — the model
-# would learn to emit quiz-outline debris in normal explanations. The
-# pattern is regex-detectable; reject any pair where the completion /
-# chosen field carries it.
+# Assessment-outline scaffolding patterns, e.g. "Question 1 (CO-07,
+# Bloom: Understand). Question 2 (CO-07, Bloom: Apply)...". Quiz-outline
+# source content leaking into a pair is structural contamination — the
+# model would learn to emit quiz-outline debris inside normal
+# explanations — so reject any pair whose completion / chosen carries it.
 _ASSESSMENT_SCAFFOLD_PATTERNS = [
     re.compile(r'\bQuestion\s+\d+\s*\(\s*[A-Z]+-\d+\s*,?\s*Bloom\s*:', re.IGNORECASE),
     re.compile(r'\b(?:Q|Item)\s*\d+\s*\(\s*[A-Z]+-\d+\b'),
@@ -283,10 +279,10 @@ def _derive_topic(chunk: Dict[str, Any]) -> str:
     if tags:
         t = str(tags[0]).strip()
         if t:
-            # Wave 130d: deslugify_concept strips a trailing
-            # ``-(co|to)-NN`` LO-ref suffix before the hyphen-to-space
-            # transform so ``property-paths-co-15`` -> ``property paths``
-            # instead of ``property paths co 15``.
+            # deslugify_concept strips a trailing ``-(co|to)-NN`` LO-ref
+            # suffix before the hyphen-to-space transform, so
+            # ``property-paths-co-15`` -> ``property paths`` rather than
+            # ``property paths co 15``.
             return deslugify_concept(t)
     key_terms = chunk.get("key_terms") or []
     if key_terms and isinstance(key_terms[0], dict):
@@ -338,12 +334,11 @@ def _build_completion(
     Draws its content from structured chunk metadata (key_terms, misconceptions,
     concept_tags) so the completion is grounded but paraphrased.
 
-    Wave 121: ``disallow_summary=True`` skips the ``chunk.summary`` path
-    entirely. The audit found 11/20 smoke pairs leaked ≥50-char verbatim
-    spans because ``chunk.summary`` itself is often a near-verbatim
-    extract from chunk text. Caller retries with this flag set when the
-    first build leaks; the key_terms / concept_tags / bloom_tail path
-    that remains is already paraphrased and gate-clean.
+    ``disallow_summary=True`` skips the ``chunk.summary`` path entirely:
+    ``chunk.summary`` is often a near-verbatim extract of chunk text, so
+    it is the dominant source of ≥50-char verbatim leakage. The caller
+    retries with this flag set when the first build leaks; the remaining
+    key_terms / concept_tags / bloom_tail path is already paraphrased.
     """
     parts: List[str] = []
 
@@ -364,14 +359,10 @@ def _build_completion(
     tags = [str(t).replace("-", " ") for t in (chunk.get("concept_tags") or []) if t]
     if tags and not parts:
         joined = ", ".join(tags[:3])
-        # Wave 122: rotate the concept_tags-branch scaffolding across 4
-        # phrasings keyed by chunk_id hash. The 2026-04-29 audit found
-        # 7/8 fallback instruction completions shared the single rigid
-        # "should be explained through the concrete RDF/SHACL role"
-        # template — Wave 121's leak-retry path forces this branch more
-        # often, so saturation went from rare to dominant. Rotating
-        # phrasings spreads the boilerplate so no single string can
-        # dominate the training distribution.
+        # Rotate the concept_tags-branch scaffolding across 4 phrasings
+        # keyed by chunk_id hash. The leak-retry path above forces this
+        # branch often, so a single fixed phrasing would dominate the
+        # training distribution; rotation spreads the boilerplate.
         scaffolds = [
             f"{topic} is best understood by tying {joined} to the underlying schema, not by listing labels.",
             f"A learner working on {topic} should ground each idea in {joined} rather than memorising surface terms.",
@@ -412,12 +403,11 @@ def _build_completion(
     return completion
 
 
-# Wave 121: rotate the force-inject phrasing across pairs so the model
-# doesn't learn a single rigid suffix. Wave 135b: these phrasings are
-# the LEGACY token-stuffing path, used only when the chunk's CURIE has
-# no anchored FORM_DATA entry (degraded_placeholder OR non-manifest).
-# The PRIMARY anchored-injection path embeds an actual definition
-# sentence drawn from FORM_DATA — see ``_anchor_inject_in_instruction``.
+# Force-inject phrasings rotated across pairs so the model doesn't learn
+# a single rigid suffix. This is the LEGACY token-stuffing path, used
+# only when the chunk's CURIE has no anchored FORM_DATA entry
+# (degraded_placeholder OR non-manifest). The PRIMARY path embeds an
+# actual definition sentence drawn from FORM_DATA instead.
 _PROMPT_REFERENCE_PHRASINGS: List[str] = [
     " (Reference: {tokens}.)",
     " (Relevant terms: {tokens}.)",
@@ -451,11 +441,11 @@ def _append_anchored_to_prompt(prompt: str, anchor_definition: str) -> str:
     """Append a recall-style hook to the prompt that embeds the anchored
     definition. Length-clamped against ``PROMPT_MAX``.
 
-    Wave 135b: replaces token-stuffing for ``"complete"`` FORM_DATA
-    entries — instead of ``"(Reference: sh:datatype.)"`` the prompt
-    now carries a brief recall sentence built around the actual
-    definition, so the trained adapter sees natural-language ↔ CURIE
-    anchoring rather than a tag-list pattern.
+    Used instead of token-stuffing for ``"complete"`` FORM_DATA entries:
+    a brief recall sentence built around the actual definition teaches
+    the adapter natural-language ↔ CURIE anchoring, where a bare
+    ``"(Reference: sh:datatype.)"`` suffix would only teach a tag-list
+    pattern.
     """
     suffix = f" Recall how {anchor_definition}"
     if not suffix.endswith("."):
@@ -496,10 +486,10 @@ def _emit_degraded_capture(
     chunk_id: str,
     side: str,
 ) -> None:
-    """Wave 135b — emit a ``form_data_degraded_placeholder_skipped``
-    decision-capture event so operators see which CURIEs fell back to
-    the legacy token-stuffing path. Silently no-ops when no capture is
-    wired (factories may be invoked without one in tests / smoke runs).
+    """Emit a ``form_data_degraded_placeholder_skipped`` decision-capture
+    event so operators see which CURIEs fell back to the legacy
+    token-stuffing path. Silently no-ops when no capture is wired
+    (factories may be invoked without one in tests / smoke runs).
     """
     if capture is None:
         return
@@ -537,7 +527,7 @@ def _enforce_preserve_tokens_in_instruction(
     *,
     capture: Optional[Any] = None,
 ) -> Dict[str, Any]:
-    """Wave 135b — anchored force-injection.
+    """Anchored force-injection.
 
     For each preserve_token missing from prompt / completion:
 
@@ -546,9 +536,8 @@ def _enforce_preserve_tokens_in_instruction(
        sentence (rotated across the entry's ``definitions`` list via
        chunk_id-hash). The completion-side anchor IS the definition;
        the prompt-side anchor is a brief "Recall how <def>." hook.
-    3. If ``anchored_status="degraded_placeholder"`` (Wave 135a stub) OR
-       the CURIE isn't in FORM_DATA at all (non-manifest CURIE that
-       Wave 135b's full-CURIE-set extension surfaced — see
+    3. If ``anchored_status="degraded_placeholder"`` OR the CURIE isn't
+       in FORM_DATA at all (a non-manifest CURIE — see
        ``synthesize_training.py``'s ``extra_anchor_tokens`` cap), fall
        back to the legacy 4-template token-stuffing path AND emit a
        ``form_data_degraded_placeholder_skipped`` decision-capture event
@@ -609,7 +598,7 @@ def _enforce_preserve_tokens_in_instruction(
         )
 
     if degraded_prompt:
-        # Legacy token-stuffing path (Wave 121).
+        # Legacy token-stuffing path.
         template = _select_phrasing(_PROMPT_REFERENCE_PHRASINGS, chunk_id)
         prompt_add = template.format(tokens=", ".join(degraded_prompt))
         new_prompt = prompt.rstrip() + prompt_add
@@ -697,11 +686,10 @@ def synthesize_instruction_pair(
         chunk: Enriched chunk dict from corpus/chunks.jsonl. Must have
             ``learning_outcome_refs`` (enforced by caller).
         seed: Deterministic seed. Same chunk + same seed -> same pair.
-        provider: ``"mock"`` (deterministic templates), ``"anthropic"``
-            (Wave 91: paraphrase the mock draft via Claude SDK),
-            ``"claude_session"`` (Wave 107: paraphrase via the running
-            Claude Code session through LocalDispatcher), ``"together"``,
-            or ``"local"``.
+        provider: ``"mock"`` (deterministic templates), ``"anthropic"``,
+            ``"claude_session"`` (paraphrase via the running Claude Code
+            session through LocalDispatcher), ``"together"``, or
+            ``"local"``.
         paraphrase_provider: Optional provider instance with a
             ``paraphrase_instruction(draft, chunk) -> dict`` method.
             Used when ``provider`` is ``"anthropic"``,
@@ -760,14 +748,12 @@ def synthesize_instruction_pair(
 
     completion = _build_completion(chunk, topic, bloom, content_type, rng)
 
-    # Wave 121: completion-side verbatim-leakage gate. The 2026-04-29
-    # smoke audit found 11/20 instruction completions contained ≥50-char
-    # verbatim spans from chunk.text — the prompt-side gate above didn't
-    # cover this surface, and chunk.summary (the dominant input to
-    # _build_completion) often is a near-verbatim chunk extract. Retry
+    # Completion-side verbatim-leakage gate — the prompt-side gate above
+    # does not cover this surface, and chunk.summary (the dominant input
+    # to _build_completion) is often a near-verbatim chunk extract. Retry
     # once with disallow_summary=True; if the key_terms / concept_tags
     # path is also leaky (e.g. a key_term.definition copied from chunk
-    # text) we mark the gate failed and the pair gets dropped below.
+    # text) the gate fails and the pair is dropped below.
     completion_leaked = _contains_verbatim_span(completion, chunk_text)
     if completion_leaked:
         completion = _build_completion(
@@ -775,10 +761,10 @@ def synthesize_instruction_pair(
         )
         completion_leaked = _contains_verbatim_span(completion, chunk_text)
 
-    # Wave 122: assessment-scaffolding contamination check. Same retry
-    # pattern as the leak gate — if the first build leaked an outline
-    # like "Question 1 (CO-07, Bloom: Understand)...", retry without
-    # the summary path which is the typical carrier.
+    # Assessment-scaffolding contamination check. Same retry pattern as
+    # the leak gate — if the first build leaked an outline like
+    # "Question 1 (CO-07, Bloom: Understand)...", retry without the
+    # summary path, which is the typical carrier.
     completion_has_assessment = _contains_assessment_scaffolding(completion)
     if completion_has_assessment:
         completion = _build_completion(
@@ -834,19 +820,19 @@ def synthesize_instruction_pair(
     # Paraphrase the mock draft through the selected LLM seat. The mock pair
     # already passed every length / leakage / grounding gate above; the LLM
     # step is anchored against the chunk text and only paraphrases — it must
-    # not introduce new facts. Phase 4: ``anthropic`` is NOT in the dispatch
-    # set — the Anthropic-SDK training path was removed (run_synthesis fails
-    # closed on it before reaching here), so a ``provider="anthropic"`` call
-    # falls through unparaphrased, mirroring how ``mock`` / ``nvidia`` skip
-    # the paraphrase block.
+    # not introduce new facts. ``anthropic`` is deliberately NOT in the
+    # dispatch set: the Anthropic-SDK training path was removed and
+    # run_synthesis fails closed on it before reaching here, so a
+    # ``provider="anthropic"`` call falls through unparaphrased, mirroring
+    # how ``mock`` / ``nvidia`` skip the paraphrase block.
     if provider in ("claude_session", "together", "local"):
         provider_instance = paraphrase_provider
         if provider_instance is None:
             if provider == "together":
-                # Phase 3: agnostic cutover (default ON) — route the
-                # hosted OpenAI-wire seat through the leaf-exact builder
-                # (verbose prompts, preserve disabled, hard 60s timeout).
-                # The leaf is the rollback path.
+                # Route the hosted OpenAI-wire seat through the
+                # leaf-exact builder (verbose prompts, preserve disabled,
+                # hard 60s timeout). The leaf class is the rollback path
+                # when the agnostic builder is disabled.
                 from Trainforge.generators._synthesis_provider import (
                     agnostic_synthesis_enabled,
                 )
@@ -861,10 +847,10 @@ def synthesize_instruction_pair(
                     )
                     provider_instance = TogetherSynthesisProvider()
             elif provider == "local":
-                # Phase 3: agnostic cutover (default ON) — route the
-                # local OpenAI-wire seat through the leaf-exact builder
-                # (terse prompts, preserve enabled, hard 60s timeout). The
-                # leaf is the rollback path.
+                # Route the local OpenAI-wire seat through the leaf-exact
+                # builder (terse prompts, preserve enabled, hard 60s
+                # timeout). The leaf class is the rollback path when the
+                # agnostic builder is disabled.
                 from Trainforge.generators._synthesis_provider import (
                     agnostic_synthesis_enabled,
                 )
@@ -884,12 +870,10 @@ def synthesize_instruction_pair(
                     "to be supplied; no lazy fallback because the provider "
                     "needs a LocalDispatcher injected by the caller."
                 )
-        # Wave 120: pass preserve_tokens through to providers that
-        # support it. Save the deterministic draft so the caller can
-        # fall back if the paraphrase pass drops a required surface
-        # form. Providers that don't accept the kwarg (together /
-        # claude_session pre-Wave-120) fall through to the legacy 2-arg
-        # call.
+        # Pass preserve_tokens through to providers that support it.
+        # Save the deterministic draft so we can fall back if the
+        # paraphrase pass drops a required surface form. Providers whose
+        # signature lacks the kwarg fall through to the 2-arg call.
         deterministic_draft = dict(pair)
         try:
             try:
@@ -909,13 +893,12 @@ def synthesize_instruction_pair(
             else:
                 raise
 
-    # Wave 120 -> Wave 135b: force-inject preserve_tokens missing from
-    # prompt OR completion. Wave 135b dispatches per-token on the
-    # FORM_DATA ``anchored_status`` discriminator: ``"complete"`` ->
-    # embed an actual definition sentence; ``"degraded_placeholder"`` /
-    # absent -> fall back to legacy token-stuffing AND emit a
-    # ``form_data_degraded_placeholder_skipped`` decision-capture event
-    # via ``capture`` (when supplied).
+    # Force-inject preserve_tokens missing from prompt OR completion,
+    # dispatching per-token on the FORM_DATA ``anchored_status``
+    # discriminator: ``"complete"`` -> embed an actual definition
+    # sentence; ``"degraded_placeholder"`` / absent -> legacy
+    # token-stuffing plus a ``form_data_degraded_placeholder_skipped``
+    # decision-capture event via ``capture`` (when supplied).
     if preserve_tokens:
         pair = _enforce_preserve_tokens_in_instruction(
             pair, preserve_tokens, capture=capture,

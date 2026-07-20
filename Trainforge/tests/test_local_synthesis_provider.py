@@ -1,24 +1,25 @@
-"""Wave 113: tests for LocalSynthesisProvider.
+"""Tests for LocalSynthesisProvider (the local-server HTTP path).
 
-Mirrors :mod:`Trainforge.tests.test_together_synthesis_provider` but
-exercises the local-server HTTP path. Covers:
+Covers:
 
-- Default base URL is the Ollama default (no env set).
-- ``LOCAL_SYNTHESIS_BASE_URL`` env override is picked up.
-- ``LOCAL_SYNTHESIS_MODEL`` env override is picked up.
-- ``LOCAL_SYNTHESIS_API_KEY`` is OPTIONAL — instantiation succeeds
-  with no env / no kwarg / no client (the local server typically
-  ignores the auth header).
-- Happy path instruction + preference paraphrase set
-  ``provider="local"`` (NOT ``"together"``).
-- Length-clamp invariant (Wave 112): too-short paraphrase raises
-  ``SynthesisProviderError``; over-max output gets truncated.
-- Transient HTTP 503 is retried once and succeeds.
-- Decision-capture fires once per call with ``base_url``, ``model``,
-  ``chunk_id`` interpolated in the rationale.
+- Default base URL is the Ollama default when no env is set.
+- ``LOCAL_SYNTHESIS_BASE_URL`` / ``LOCAL_SYNTHESIS_MODEL`` env
+  overrides are picked up at construction; an explicit kwarg wins.
+- ``LOCAL_SYNTHESIS_API_KEY`` is OPTIONAL — construction succeeds with
+  no env, no kwarg and no client, because most local servers ignore the
+  auth header.
+- Instruction + preference paraphrases tag ``provider="local"``, NOT
+  ``"together"`` — this provider composes the same client as the peer
+  ``TogetherSynthesisProvider``, so a missed provider-tag override would
+  mislabel every emitted pair.
+- Length-clamp invariant: a too-short paraphrase retries and then
+  raises; no sentinel filler is ever injected.
+- Transient HTTP 503 is retried and succeeds.
+- Decision-capture fires once per call with ``base_url``, ``model`` and
+  ``chunk_id`` interpolated into the rationale.
 
-All tests use ``httpx.MockTransport`` so no real network calls fire —
-no real Ollama / vLLM / llama.cpp server is required to run them.
+All tests use ``httpx.MockTransport``, so no real Ollama / vLLM /
+llama.cpp server is required and no network call fires.
 """
 
 from __future__ import annotations
@@ -313,23 +314,21 @@ def test_explicit_api_key_kwarg_used_in_authorization_header(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Length-clamp / Wave 112 invariant
+# Length-clamp invariant
 # ---------------------------------------------------------------------------
 
 
 def test_too_short_completion_retries_then_raises(monkeypatch):
-    """Wave 114: below-min completion now triggers a length-retry
-    inside ``_call_with_parse``. After ``MAX_PARSE_RETRIES`` exhausted
-    short responses the provider raises ``paraphrase_invalid_after_retry``
-    (replacing the prior single-shot ``completion_below_minimum``
-    raise). No sentinel filler is ever injected."""
+    """A below-min completion length-retries and, after
+    ``MAX_PARSE_RETRIES`` short responses, raises
+    ``paraphrase_invalid_after_retry``. No sentinel filler is ever
+    injected."""
     monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
     paraphrased = json.dumps({
         "prompt": "Recall the foundational concept introduced for topic X in chapter one.",
         # Far below COMPLETION_MIN (50 chars). Repeated MAX_PARSE_RETRIES
-        # times to exhaust the length-retry budget. Sized off the
-        # production constant so a budget bump (Wave 130c: 3 -> 10)
-        # auto-flows without test churn.
+        # times — sized off the production constant so a budget change
+        # flows through without editing the test.
         "completion": "too short",
     })
     client = _client_yielding(
@@ -344,10 +343,9 @@ def test_too_short_completion_retries_then_raises(monkeypatch):
 
 
 def test_too_short_prompt_retries_then_raises(monkeypatch):
-    """Wave 114 + Wave 122 follow-up: below-min prompt triggers a
-    length-retry. Local floor is now realigned to the schema's 40-char
-    PROMPT_MIN; a 9-char prompt trips it. Three exhausted retries ->
-    paraphrase_invalid_after_retry."""
+    """A below-min prompt length-retries and, after exhausting the
+    budget, raises ``paraphrase_invalid_after_retry``. The local floor
+    is the schema's 40-char PROMPT_MIN, so a 9-char prompt trips it."""
     monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
     paraphrased = json.dumps({
         "prompt": "too short",  # below DEFAULT_LOCAL_KIND_BOUNDS prompt floor (40).
@@ -356,8 +354,8 @@ def test_too_short_prompt_retries_then_raises(monkeypatch):
             "definition before attempting application questions."
         ),
     })
-    # Sized off the production constant so a budget bump (Wave 130c:
-    # 3 -> 10) auto-flows without test churn.
+    # Sized off the production constant so a budget change flows through
+    # without editing the test.
     client = _client_yielding(
         *[httpx.Response(200, json=_success_body(paraphrased)) for _ in range(MAX_PARSE_RETRIES)]
     )
@@ -456,20 +454,20 @@ def test_decision_capture_fires_with_base_url_and_chunk_id_in_rationale(
     assert "chunk_001" in decision
     assert "http_retries=" in decision
     assert "http://my-rig:11434/v1" in decision
-    # Wave 115: rationale interpolates per-chunk pedagogical signals
+    # Rationale interpolates per-chunk pedagogical signals.
     assert "bloom_level=" in rationale
     assert "concept_tags=" in rationale
 
 
 # ---------------------------------------------------------------------------
-# Wave 113 hardening: json_mode + lenient JSON parse + strict directive
+# json_mode + lenient JSON parse + strict directive
 # ---------------------------------------------------------------------------
 
 
 def test_local_provider_passes_json_mode_to_client(monkeypatch):
-    """Critical for 7B-class models: ``json_mode=True`` must flow into
-    the embedded client's request payload so Ollama's
-    JSON-grammar-constrained decoding fires on every call."""
+    """``json_mode=True`` must flow into the embedded client's request
+    payload so Ollama's JSON-grammar-constrained decoding fires on every
+    call — 7B-class models drift off JSON without it."""
     monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
     paraphrased = json.dumps({
         "prompt": (
@@ -500,9 +498,9 @@ def test_local_provider_passes_json_mode_to_client(monkeypatch):
 
 
 def test_local_provider_recovers_from_markdown_fence_response(monkeypatch):
-    """Happy-path drift recovery: 7B model wraps its JSON in
-    ```json ... ``` despite the strict directive. Lenient extractor
-    strips the fence and the paraphrase succeeds."""
+    """Drift recovery: a model that wraps its JSON in a ```json fence
+    despite the strict directive must still parse — the lenient
+    extractor strips the fence and the paraphrase succeeds."""
     monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
     inner = json.dumps({
         "prompt": (
@@ -525,8 +523,9 @@ def test_local_provider_recovers_from_markdown_fence_response(monkeypatch):
 
 
 def test_local_provider_recovers_from_prose_drift(monkeypatch):
-    """Drift recovery: 7B model adds prose around the JSON despite
-    the directive. Lenient extractor finds the first balanced object."""
+    """Drift recovery: a model that adds prose around the JSON must
+    still parse — the lenient extractor finds the first balanced
+    object."""
     monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
     inner = json.dumps({
         "prompt": (
@@ -550,17 +549,17 @@ def test_local_provider_recovers_from_prose_drift(monkeypatch):
 def test_local_provider_raises_after_lenient_retry_exhaustion(monkeypatch):
     """After ``MAX_PARSE_RETRIES`` unrecoverable responses, raise
     SynthesisProviderError with ``code='paraphrase_invalid_after_retry'``
-    (Wave 114 unified the parse-failure and length-failure exhaustion
-    paths under one error code) and a truncated tail of the last
-    response in the message — postmortem visibility. Sized off the
-    production constant so a budget bump (Wave 130c: 3 -> 10)
-    auto-flows without test churn."""
+    (parse-failure and length-failure exhaustion share one error code)
+    and a truncated tail of the last response in the message, for
+    postmortem visibility."""
     monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
     bad_response = (
         "I cannot help with that request, but here is some other "
         "text that drifts off into natural language and does not "
         "contain a JSON object at all. " * 4
     ) + "DISTINCTIVE_TAIL_MARKER"
+    # MAX_PARSE_RETRIES responses, sized off the production constant so
+    # a budget change flows through without editing the test.
     client = _client_yielding(
         *[httpx.Response(200, json=_success_body(bad_response)) for _ in range(MAX_PARSE_RETRIES)]
     )
@@ -635,17 +634,16 @@ def test_decision_capture_fires_on_preference_call(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Wave 114: per-provider kind_bounds + length-retry + slim system prompts
+# Per-provider kind_bounds + length-retry + slim system prompts
 # ---------------------------------------------------------------------------
 
 
 def test_local_provider_default_prompt_floor_matches_schema(monkeypatch):
-    """Wave 122 follow-up: ``DEFAULT_LOCAL_KIND_BOUNDS["prompt"]`` is
-    realigned to the schema floor (``PROMPT_MIN`` = 40) after the
-    14B-Q4 uncapped run on the RDF/SHACL calibration corpus emitted 5/263 schema-invalid
-    short prompts the previous 25-char floor admitted. 7B-Q4 callers
-    that need a lower floor can still pass ``kind_bounds={"prompt":
-    (25, PROMPT_MAX), ...}`` to the constructor."""
+    """``DEFAULT_LOCAL_KIND_BOUNDS["prompt"]`` is the schema floor
+    (``PROMPT_MIN`` = 40); a lower floor admits schema-invalid short
+    prompts. Callers needing a lower floor pass an explicit
+    ``kind_bounds={"prompt": (25, PROMPT_MAX), ...}`` to the
+    constructor."""
     from Trainforge.generators._local_provider import (  # noqa: E402
         DEFAULT_LOCAL_KIND_BOUNDS,
     )
@@ -663,10 +661,10 @@ def test_local_provider_default_prompt_floor_matches_schema(monkeypatch):
 
 
 def test_local_provider_kind_bounds_constructor_override(monkeypatch):
-    """Wave 114: ``kind_bounds=`` constructor kwarg overrides the
-    module default. Constructor wraps the input in ``dict(kind_bounds)``
-    so post-construction mutation of the caller's dict does not leak
-    into the provider's internal state."""
+    """A ``kind_bounds=`` constructor kwarg overrides the module
+    default, and the constructor copies it (``dict(kind_bounds)``) so
+    post-construction mutation of the caller's dict cannot leak into the
+    provider's internal state."""
     monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
     custom_bounds = {
         "prompt": (15, 200),
@@ -687,10 +685,9 @@ def test_local_provider_kind_bounds_constructor_override(monkeypatch):
 
 
 def test_local_provider_retries_on_short_field_then_succeeds(monkeypatch):
-    """Wave 114: a short ``prompt`` field triggers a length-retry
-    (parallel to the JSON-parse retry path). On retry success, the
-    final paraphrase carries the LONG prompt — proving the retry path
-    accepted the second response and discarded the first."""
+    """A short ``prompt`` field triggers a length-retry. The final
+    paraphrase carries the LONG prompt, proving the retry accepted the
+    second response and discarded the first."""
     monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
     short_response = json.dumps({
         "prompt": "short",  # 5 chars — far below the 40-char floor.
@@ -726,11 +723,11 @@ def test_local_provider_retries_on_short_field_then_succeeds(monkeypatch):
 
 
 def test_local_provider_uses_slim_local_system_prompts():
-    """Wave 114: the local path uses module-level slim system prompts
-    (<50 words each) instead of the verbose Together / Anthropic
-    prompts. 7B-Q4 instruction models attend less reliably to long
-    behavioral preambles; the inlined JSON shape directive in the user
-    message is the most-respected part of the prompt."""
+    """The local path uses slim system prompts (<50 words each) instead
+    of the verbose Together / Anthropic prompts: 7B-Q4 instruction
+    models attend less reliably to long behavioral preambles, so the
+    inlined JSON-shape directive in the user message carries the
+    contract."""
     from Trainforge.generators._local_provider import (  # noqa: E402
         _LOCAL_INSTRUCTION_SYSTEM_PROMPT,
         _LOCAL_PREFERENCE_SYSTEM_PROMPT,
@@ -757,8 +754,8 @@ def test_local_provider_uses_slim_local_system_prompts():
 
 
 def test_rationale_interpolates_chunk_bloom_and_concept_tags(monkeypatch):
-    """Wave 115: rationale string varies per-chunk so the decision
-    capture validator scores it 'proficient' rather than 'developing'."""
+    """The rationale string varies per-chunk so the decision-capture
+    validator scores it 'proficient' rather than 'developing'."""
     monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
     paraphrased = json.dumps({
         "prompt": "Recall the foundational concept introduced for topic X in chapter one.",
@@ -799,17 +796,17 @@ def test_rationale_interpolates_chunk_bloom_and_concept_tags(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Wave 120: surface-form preservation
+# Surface-form preservation
 # ---------------------------------------------------------------------------
 
 
 def test_paraphrase_instruction_includes_preserve_directive_in_user_prompt(
     monkeypatch,
 ):
-    """When ``preserve_tokens`` is non-empty, the user prompt sent to the
-    model carries an explicit 'PRESERVE THESE TOKENS VERBATIM' directive
-    naming each token. 14B-class local models silently rewrite
-    ``sh:NodeShape`` to 'node shape' without this directive."""
+    """When ``preserve_tokens`` is non-empty, the user prompt carries an
+    explicit 'PRESERVE THESE TOKENS VERBATIM' directive naming each
+    token. Without it, local models silently rewrite ``sh:NodeShape``
+    to 'node shape'."""
     monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
     paraphrased = json.dumps({
         "prompt": "Explain how sh:NodeShape applies to topic X.",
@@ -840,12 +837,10 @@ def test_paraphrase_instruction_includes_preserve_directive_in_user_prompt(
 
 
 def test_paraphrase_instruction_retries_on_preserve_miss(monkeypatch):
-    """Wave 135b: the per-call preserve gate is now opt-in (default
-    floor 0.0 means anchored force-injection at the factory layer
-    handles canonical anchoring). Operators can still pin the strict
-    Wave-120 retry gate by passing ``min_preserve_rate=1.0`` — this
-    test covers that opt-in path: bad first response triggers retry,
-    good second response is accepted."""
+    """The per-call preserve gate is opt-in (default floor 0.0, because
+    force-injection at the factory layer owns canonical anchoring).
+    Passing ``min_preserve_rate=1.0`` restores the strict retry gate:
+    a bad first response triggers retry, a good second is accepted."""
     monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
     bad_paraphrase = json.dumps({
         "prompt": "Explain how the node shape concept applies to topic X.",
@@ -879,9 +874,8 @@ def test_paraphrase_instruction_retries_on_preserve_miss(monkeypatch):
 def test_paraphrase_instruction_raises_preservation_failed_after_retry(
     monkeypatch,
 ):
-    """Wave 135b: opt-in strict mode (``min_preserve_rate=1.0``)
-    preserves the Wave-120 retry-then-raise behavior. When all retries
-    drop the required token, the provider raises with code
+    """In strict mode (``min_preserve_rate=1.0``), when every retry
+    drops the required token, the provider raises with code
     ``surface_form_preservation_failed``."""
     monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
     bad_paraphrase = json.dumps({
@@ -892,9 +886,9 @@ def test_paraphrase_instruction_raises_preservation_failed_after_retry(
             "declared constraint and the per-property type rule."
         ),
     })
-    # Over-provision relative to ``MAX_PARSE_RETRIES`` to guard against
-    # off-by-one. Bound off the production constant so a budget bump
-    # (Wave 130c: 3 -> 10) auto-flows without test churn.
+    # Over-provision past ``MAX_PARSE_RETRIES`` to guard against
+    # off-by-one; sized off the production constant so a budget change
+    # flows through without editing the test.
     client = _client_yielding(*[
         httpx.Response(200, json=_success_body(bad_paraphrase)) for _ in range(MAX_PARSE_RETRIES + 2)
     ])
@@ -908,14 +902,9 @@ def test_paraphrase_instruction_raises_preservation_failed_after_retry(
 
 
 def test_paraphrase_accepts_soft_floor_when_80pct_preserved(monkeypatch):
-    """Wave 134 + Wave 135b — soft preservation contract still works
-    when an operator pins ``min_preserve_rate=0.80`` explicitly. Wave
-    135b lowered the module default to 0.0 (force-injection at the
-    factory layer is the canonical-anchor authority); operators
-    wanting Wave 134's 80% retry semantics opt in via the constructor
-    kwarg. With 5 tokens and 1 dropped, retention is 4/5 = 0.80 — at
-    the floor — and the paraphrase is accepted on the first attempt
-    without retry."""
+    """With an explicit ``min_preserve_rate=0.80`` soft floor, a
+    paraphrase that drops 1 of 5 tokens (retention 4/5 = 0.80, exactly
+    at the floor) is accepted on the first attempt without retry."""
     monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
     # Paraphrase drops `sh:pattern` but keeps the other 4 tokens. 4/5 = 0.80.
     paraphrase = json.dumps({
@@ -946,10 +935,9 @@ def test_paraphrase_accepts_soft_floor_when_80pct_preserved(monkeypatch):
 
 
 def test_paraphrase_soft_floor_retries_below_threshold(monkeypatch):
-    """Wave 134 + Wave 135b — soft preservation contract opt-in:
-    operator pins ``min_preserve_rate=0.80``. With 5 preserve_tokens,
-    dropping 2 yields 3/5 = 0.60 BELOW the 0.80 floor; the gate fires
-    retry. A subsequent response that meets the floor is accepted."""
+    """With ``min_preserve_rate=0.80``, dropping 2 of 5 tokens
+    (3/5 = 0.60, below the floor) fires a retry; a subsequent response
+    that meets the floor is accepted."""
     monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
     # First: drops 2 tokens (3/5 = 0.60 < 0.80) -> retry.
     bad = json.dumps({
@@ -993,9 +981,9 @@ def test_paraphrase_soft_floor_retries_below_threshold(monkeypatch):
 
 
 def test_paraphrase_strict_mode_via_min_preserve_rate_one(monkeypatch):
-    """Wave 134 — passing ``min_preserve_rate=1.0`` restores Wave 120's
-    strict 100% contract. A paraphrase missing any single token fails
-    closed even with the wider manifest."""
+    """``min_preserve_rate=1.0`` is the strict 100% contract: a
+    paraphrase missing any single token fails closed even with a wide
+    preserve manifest."""
     monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
     # 5 tokens; paraphrase drops 1 (4/5 = 0.80). Default soft floor would
     # accept; with min_preserve_rate=1.0 it must fail.
@@ -1035,11 +1023,11 @@ def test_min_preserve_rate_validates_range(monkeypatch):
 
 
 def test_default_min_preserve_rate_is_zero(monkeypatch):
-    """Wave 135b — module default is 0.0. Force-injection at the
-    factory layer is the canonical-anchor authority; the LLM provider's
-    job is natural-language paraphrase variety only. A paraphrase that
-    drops tokens is accepted on first try without retry under the
-    default config."""
+    """The module default floor is 0.0: force-injection at the factory
+    layer owns canonical anchoring, so the provider's job is
+    natural-language variety only. Under the default a paraphrase that
+    drops every preserve_token is accepted on the first try — no retry,
+    no fallback."""
     monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
     from Trainforge.generators._local_provider import (
         DEFAULT_MIN_PRESERVE_RATE,
@@ -1075,11 +1063,10 @@ def test_default_min_preserve_rate_is_zero(monkeypatch):
 
 
 def test_max_parse_retries_constructor_kwarg_caps_retry_budget(monkeypatch):
-    """Wave 120 smoke-mode fix: ``max_parse_retries=1`` caps the parse-
-    retry loop at a single attempt so a property-heavy stratified
-    sample doesn't compound retry cost. With cap=1 a single bad
-    response immediately raises (no retry), and the error message
-    reports the runtime budget — not the module default."""
+    """``max_parse_retries=1`` caps the parse-retry loop at a single
+    attempt, so a single bad response immediately raises (no retry) and
+    the error message reports the runtime budget, not the module
+    default."""
     monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
     bad_paraphrase = json.dumps({
         "prompt": "Explain how the node shape applies to topic X.",
@@ -1092,8 +1079,8 @@ def test_max_parse_retries_constructor_kwarg_caps_retry_budget(monkeypatch):
     client = _client_yielding(*[
         httpx.Response(200, json=_success_body(bad_paraphrase)) for _ in range(5)
     ])
-    # Wave 135b: opt into the strict per-call gate so the retry budget
-    # is exercised; default 0.0 floor would accept the bad paraphrase.
+    # Opt into the strict per-call gate so the retry budget is
+    # exercised; the default 0.0 floor would accept the bad paraphrase.
     p = LocalSynthesisProvider(
         client=client, max_parse_retries=1, min_preserve_rate=1.0,
     )
@@ -1103,7 +1090,7 @@ def test_max_parse_retries_constructor_kwarg_caps_retry_budget(monkeypatch):
             preserve_tokens=["sh:NodeShape"],
         )
     assert excinfo.value.code == "surface_form_preservation_failed"
-    # Error message reports the runtime budget (1), not the module default (3).
+    # Error message reports the runtime budget, not the module default.
     assert "after 1 attempts" in str(excinfo.value)
 
 

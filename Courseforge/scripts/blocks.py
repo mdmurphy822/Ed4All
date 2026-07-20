@@ -52,33 +52,31 @@ def _emit_blocks_enabled() -> bool:
     """Read ``COURSEFORGE_EMIT_BLOCKS`` each call so tests can toggle it.
 
     Default off — the new ``data-cf-block-id`` attribute is purely additive
-    and must not break byte-stable emit until the Phase 2 migration window
-    closes (per pre-resolved decision #8).
+    and must not break byte-stable emit.
     """
     return os.environ.get(_EMIT_BLOCKS_ENV, "").strip().lower() in _EMIT_BLOCKS_TRUTHY
 
 
-# IB1 — six-slot anatomy contract emit flag (framework pp.13-17, QA-4). Default
+# Six-slot anatomy contract emit flag (framework pp.13-17, QA-4). Default
 # OFF: with this unset the JSON-LD ``blocks[]`` entry carries NO ``anatomy``
 # key, so every existing snapshot / ``contentHash`` stays byte-identical. The
-# five new ``Block`` slot fields, the hash exclusion, the derivation helper, and
-# the lifecycle helpers are all flag-INDEPENDENT (pure additive API surface) —
-# only the JSON-LD *emit* is gated, mirroring the ``COURSEFORGE_EMIT_BLOCKS``
-# posture. Reuses ``_EMIT_BLOCKS_TRUTHY`` for the truthy parse.
+# five ``Block`` slot fields, the hash exclusion, the derivation helper, and the
+# lifecycle helpers are all flag-INDEPENDENT (pure additive API surface) — only
+# the JSON-LD *emit* is gated. Reuses ``_EMIT_BLOCKS_TRUTHY`` for the parse.
 _ANATOMY_EMIT_ENV = "ED4ALL_BLOCK_ANATOMY"
 
 
 def _anatomy_emit_enabled() -> bool:
     """Read ``ED4ALL_BLOCK_ANATOMY`` each call so tests can toggle it.
 
-    Default off — the IB1 ``anatomy`` JSON-LD sub-object is purely additive
+    Default off — the ``anatomy`` JSON-LD sub-object is purely additive
     and must not break byte-stable emit. Falsey / garbage values → off
     (parse-with-fallback, mirroring :func:`_emit_blocks_enabled`).
     """
     return os.environ.get(_ANATOMY_EMIT_ENV, "").strip().lower() in _EMIT_BLOCKS_TRUTHY
 
 
-# IB4 — per-block WCAG 2.2 AA + UDL emit flag (ED4ALL_BLOCK_A11Y). Default OFF:
+# Per-block WCAG 2.2 AA + UDL emit flag (ED4ALL_BLOCK_A11Y). Default OFF:
 # with this unset the UDL coverage fields are NOT emitted to HTML / JSON-LD
 # (byte-stable) and the per-block a11y sub-check in RewriteHtmlShapeValidator is
 # a no-op. The canonical resolver lives in lib/generation/block_a11y.py; this
@@ -90,7 +88,7 @@ _BLOCK_A11Y_EMIT_ENV = "ED4ALL_BLOCK_A11Y"
 def _block_a11y_emit_enabled() -> bool:
     """Read ``ED4ALL_BLOCK_A11Y`` each call so tests can toggle it.
 
-    Default off — the IB4 UDL fields (``n_representations`` /
+    Default off — the UDL fields (``n_representations`` /
     ``response_formats`` / ``engagement_affordance``) are purely additive and
     must not break byte-stable emit. Falsey / garbage values → off
     (parse-with-fallback, mirroring :func:`_anatomy_emit_enabled`).
@@ -98,20 +96,20 @@ def _block_a11y_emit_enabled() -> bool:
     return os.environ.get(_BLOCK_A11Y_EMIT_ENV, "").strip().lower() in _EMIT_BLOCKS_TRUTHY
 
 
-# IB5 — new-block-types emit flag (ED4ALL_NEW_BLOCK_TYPES). Default OFF: with
-# this unset the IB5 type-specific fields (``fade_state`` / ``long_description``
+# New-block-types emit flag (ED4ALL_NEW_BLOCK_TYPES). Default OFF: with
+# this unset the type-specific fields (``fade_state`` / ``long_description``
 # / ``media_a11y``) are NOT projected to HTML / JSON-LD (byte-stable). The four
 # new tokens are unconditionally valid BLOCK_TYPES members (the dataclass stays
-# permissive — gating lives in the planner / renderer / emit), mirroring the I6
-# table/acronym/key_idea posture. Canonical resolver: lib/generation/
-# new_block_types.py; this module-level reader keeps blocks.py dependency-light.
+# permissive — gating lives in the planner / renderer / emit). Canonical
+# resolver: lib/generation/new_block_types.py; this module-level reader keeps
+# blocks.py dependency-light.
 _NEW_BLOCK_TYPES_EMIT_ENV = "ED4ALL_NEW_BLOCK_TYPES"
 
 
 def _new_block_types_emit_enabled() -> bool:
     """Read ``ED4ALL_NEW_BLOCK_TYPES`` each call so tests can toggle it.
 
-    Default off — the IB5 type-specific fields (``fade_state`` /
+    Default off — the type-specific fields (``fade_state`` /
     ``long_description`` / ``media_a11y``) are purely additive and must not break
     byte-stable emit. Falsey / garbage values → off (parse-with-fallback,
     mirroring :func:`_block_a11y_emit_enabled`).
@@ -119,7 +117,7 @@ def _new_block_types_emit_enabled() -> bool:
     return os.environ.get(_NEW_BLOCK_TYPES_EMIT_ENV, "").strip().lower() in _EMIT_BLOCKS_TRUTHY
 
 
-# FR-INT-03 — B11 reflection predict-then-reveal calibration emit flag
+# B11 reflection predict-then-reveal calibration emit flag
 # (ED4ALL_REFLECTION_CALIBRATION). Default OFF: with this unset the three B11
 # calibration fields (``prediction_prompt`` / ``reveal_content`` /
 # ``calibration_feedback``) are NOT projected to the <details> render scaffold
@@ -133,7 +131,7 @@ _REFLECTION_CALIBRATION_EMIT_ENV = "ED4ALL_REFLECTION_CALIBRATION"
 def _reflection_calibration_emit_enabled() -> bool:
     """Read ``ED4ALL_REFLECTION_CALIBRATION`` each call so tests can toggle it.
 
-    Default off — the three FR-INT-03 calibration fields are purely additive and
+    Default off — the three calibration fields are purely additive and
     must not break byte-stable emit. Falsey / garbage values → off
     (parse-with-fallback, mirroring :func:`_new_block_types_emit_enabled`).
     """
@@ -178,8 +176,8 @@ def _misconception_rich_emit_enabled() -> bool:
     return os.environ.get(_MISCONCEPTION_RICH_EMIT_ENV, "").strip().lower() in _EMIT_BLOCKS_TRUTHY
 
 
-# IB6.5 — universal (verb · level · knowledge-type) triple chip emit flag
-# (ED4ALL_BLOCK_QUALITY_RUBRIC, the IB6 keystone). Default OFF: with this unset
+# Universal (verb · level · knowledge-type) triple chip emit flag
+# (ED4ALL_BLOCK_QUALITY_RUBRIC). Default OFF: with this unset
 # the cognitive-domain chip stays objectives-only (``_objective_attrs``) and no
 # ``data-cf-bloom-triple`` attr is emitted, so every existing snapshot stays
 # byte-identical. When on, every pedagogical block that carries a resolvable
@@ -192,7 +190,7 @@ _BLOCK_QUALITY_RUBRIC_EMIT_ENV = "ED4ALL_BLOCK_QUALITY_RUBRIC"
 def _block_quality_rubric_emit_enabled() -> bool:
     """Read ``ED4ALL_BLOCK_QUALITY_RUBRIC`` each call so tests can toggle it.
 
-    Default off — the IB6.5 universal cognitive-domain + bloom-triple chips are
+    Default off — the universal cognitive-domain + bloom-triple chips are
     purely additive and must not break byte-stable emit. Falsey / garbage →
     off (parse-with-fallback, mirroring :func:`_new_block_types_emit_enabled`).
     """
@@ -211,11 +209,11 @@ def _source_attr_string(
     source_ids: Tuple[str, ...],
     source_primary: Optional[str],
 ) -> str:
-    """Wave 9 source attribute string — mirrors ``generate_course._source_attr_string``.
+    """Render the ``data-cf-source-*`` attribute string for a block.
 
-    Inlined here so :meth:`Block.to_html_attrs` does not need to import the
-    renderer module (avoids a cyclic import once Round 3 lands the renderer
-    migration).
+    Mirrors ``generate_course._source_attr_string``; inlined so
+    :meth:`Block.to_html_attrs` need not import the renderer module (which
+    would be a cyclic import).
     """
     if not source_ids:
         return ""
@@ -244,14 +242,14 @@ BLOCK_TYPES: frozenset = frozenset(
         "discussion_prompt",
         "chrome",
         "recap",
-        # Wave-2 block-variety additions (snake_case canonical tokens).
+        # Block-variety additions (snake_case canonical tokens).
         "scenario",
         "problem",
         "vocab_card",
         "formula",
         "checklist",
-        # Issue I6 instruction-palette-v2 additions (snake_case canonical
-        # tokens). WCAG-correct structural block types: ``table`` (a real
+        # Instruction-palette-v2 additions (snake_case canonical tokens).
+        # WCAG-correct structural block types: ``table`` (a real
         # ``<table>`` with ``<caption>`` + scoped ``<th>``), ``acronym`` (a
         # ``<dl>`` mapping each letter to its expansion term), and
         # ``key_idea`` (an ``<aside>`` promoted from the generic callout).
@@ -261,8 +259,8 @@ BLOCK_TYPES: frozenset = frozenset(
         "table",
         "acronym",
         "key_idea",
-        # IB5 framework-aligned pedagogical block types (snake_case canonical
-        # tokens). The four genuine catalog gaps the framework reserves:
+        # Framework-aligned pedagogical block types (snake_case canonical
+        # tokens). The four catalog gaps the framework reserves:
         # ``hook`` (B02 activation — gain attention / surface prior knowledge),
         # ``multimedia`` (B04 — the ONLY time-based block carrying the full
         # caption / audio-description / transcript / controls a11y stack),
@@ -273,24 +271,23 @@ BLOCK_TYPES: frozenset = frozenset(
         # equivalent). Emitted ONLY via the dynamic block planner path behind
         # ``ED4ALL_NEW_BLOCK_TYPES`` (default OFF); the fixed-plan / legacy
         # paths never select them, so every existing snapshot stays
-        # byte-stable (mirrors the I6 table/acronym/key_idea posture).
+        # byte-stable.
         "hook",
         "multimedia",
         "worked_example",
         "diagram",
-        # B15 framework-aligned addition (snake_case canonical token). The last
-        # remaining catalog gap: ``resources`` (B15 Resources / Further Reading
+        # Framework-aligned addition (snake_case canonical token).
+        # ``resources`` (B15 Resources / Further Reading
         # — an accessible list of curated external links / references each with
         # DESCRIPTIVE link text, never a bare URL or "click here"). DISTINCT
         # from ``callout`` (a single inline highlight) and ``summary_takeaway``
         # (the section's own key points, not outbound links). Emitted ONLY via
         # the dynamic block planner path behind ``ED4ALL_NEW_BLOCK_TYPES``
         # (default OFF); the fixed-plan / legacy paths never select it, so every
-        # existing snapshot stays byte-stable (mirrors the IB5 hook/multimedia/
-        # worked_example/diagram posture). The 2.4.4 link-purpose contract is
-        # gated by ``lib/validators/resource_link_purpose.py``.
+        # existing snapshot stays byte-stable. The 2.4.4 link-purpose contract
+        # is gated by ``lib/validators/resource_link_purpose.py``.
         "resources",
-        # FR-INT-02 framework-aligned addition (snake_case canonical token).
+        # Framework-aligned addition (snake_case canonical token).
         # ``guided_practice`` (B08 Guided Practice) — a FIRST-CLASS practice
         # scaffold DISTINCT from ``self_check_question`` (B07, a single low-stakes
         # knowledge check) and ``problem``/``activity`` (also B08 siblings but
@@ -299,8 +296,7 @@ BLOCK_TYPES: frozenset = frozenset(
         # | completion | independent) marking the gradual-release stage. Emitted
         # ONLY via the dynamic block planner path behind ``ED4ALL_NEW_BLOCK_TYPES``
         # (default OFF); the fixed-plan / legacy paths never select it, so every
-        # existing snapshot stays byte-stable (mirrors the IB5 hook/multimedia/
-        # worked_example/diagram + B15 resources posture). REUSES the existing
+        # existing snapshot stays byte-stable. REUSES the existing
         # ``fade_state`` field (no new fading field). The follow-a-worked-example
         # + carry-a-fade-state contract is gated by
         # ``lib/validators/b08_sequence.py``.
@@ -309,12 +305,9 @@ BLOCK_TYPES: frozenset = frozenset(
 )
 
 
-# IB2.3 — 8-dimension quality-rubric DATA MODEL (empty scaffold). The eight
-# orthogonal quality dimensions the framework scores per block on an anchored
-# 0–3 scale (framework §6.2-6.3). ORDERED tuple — verbatim dimension names.
-# Dims 1,2,7,8 (alignment / cognitive_load / accessibility / coherence) are the
-# "load-bearing core applying to every block" per the framework. This wave
-# stands up the SHAPE only — NO scoring, NO mean/rollup, NO gate (IB6 fills it).
+# The eight orthogonal quality dimensions the framework scores per block on
+# an anchored 0-3 scale (framework §6.2-6.3). ORDERED tuple — the dimension
+# names are verbatim from the framework and order is part of the contract.
 QUALITY_DIMENSIONS: Tuple[str, ...] = (
     "alignment",
     "cognitive_load",
@@ -327,8 +320,8 @@ QUALITY_DIMENSIONS: Tuple[str, ...] = (
 )
 
 # Framework dims 1,2,7,8 — the load-bearing core that applies to EVERY block
-# (the other four are applicable-when-relevant). Used by IB6's mean = applicable
-# dims; declared here so the constant has one home alongside QUALITY_DIMENSIONS.
+# (the other four are applicable-when-relevant). The quality mean is taken over
+# APPLICABLE dims only, so this subset defines the always-scored floor.
 CORE_QUALITY_DIMENSIONS: frozenset = frozenset(
     {"alignment", "cognitive_load", "accessibility", "coherence"}
 )
@@ -337,17 +330,11 @@ CORE_QUALITY_DIMENSIONS: frozenset = frozenset(
 _QUALITY_SCORE_VALUES: frozenset = frozenset({None, 0, 1, 2, 3})
 
 
-# Phase 3.5 Subtask 14: extend the canonical Touch.tier enum with
-# the post-validation tier labels ``outline_val`` and ``rewrite_val``.
-# These mark a Touch emitted by the inter-tier validation seam (after
-# the outline-tier draft) and the post-rewrite validation seam (after
-# the rewrite-tier emit) respectively, distinguishing audit entries
-# the validators append from the upstream authoring tier touches
-# (``outline`` / ``rewrite``). The legacy ``validation`` value is
-# retained for backwards compatibility with pre-Phase-3.5 captures.
-#
-# Plan refers to this constant as ``_TIER_VALUES``; the canonical
-# in-tree name has always been ``_TOUCH_TIERS`` (Phase 2 introduction).
+# Canonical Touch.tier enum. ``outline_val`` / ``rewrite_val`` mark a
+# Touch appended by the inter-tier and post-rewrite VALIDATION seams,
+# distinguishing validator audit entries from the authoring-tier touches
+# (``outline`` / ``rewrite``). The bare ``validation`` value is legacy —
+# retained so older captures still deserialize.
 _TOUCH_TIERS: frozenset = frozenset(
     {"outline", "validation", "rewrite", "outline_val", "rewrite_val"}
 )
@@ -370,29 +357,26 @@ _ESCALATION_MARKERS: frozenset = frozenset(
         "outline_budget_exhausted",
         "structural_unfixable",
         "validator_consensus_fail",
-        # C2 silent-degradation fix: dedicated markers for per-block
-        # dispatch errors (network failure / provider raise / unhandled
-        # exception inside ``CourseforgeRouter.route_all``). Previously
-        # such errors were silently logged and the block was DROPPED
-        # from the output, so the W5 packager-side filter
-        # (``escalation_marker is not None``) never saw the block and
-        # the IMSCC shipped without it. Stamping with one of these two
-        # markers keeps the block in the return list AND triggers the
-        # W5 filter / ESCALATED_BLOCK_IN_IMSCC gate.
+        # Per-block dispatch errors (network failure / provider raise /
+        # unhandled exception inside ``CourseforgeRouter.route_all``). A
+        # dispatch error must STAMP the block rather than drop it: the
+        # packager-side filter keys on ``escalation_marker is not None``,
+        # so a dropped block ships silently missing from the IMSCC
+        # instead of tripping the ESCALATED_BLOCK_IN_IMSCC gate.
         "outline_dispatch_error",
         "rewrite_dispatch_error",
-        # Wave 1.5 W1.5.C: per-claim attribution unfixable. Fires when
-        # the outline-tier regen budget is exhausted PURELY on per-
-        # claim source-attribution misses (the ``BlockSourceRefValidator``
+        # Per-claim attribution unfixable. Fires when the outline-tier
+        # regen budget is exhausted PURELY on per-claim
+        # source-attribution misses (the ``BlockSourceRefValidator``
         # ``OUTLINE_CLAIM_SOURCE_NOT_IN_BLOCK_REFS`` warning code) with
         # no block-level structural miss across the regen chain. The
         # rewrite-tier prompt-builder reads this marker via
         # ``_ESCALATION_MARKER_CONTEXT`` and treats the per-claim
         # citation map as advisory rather than authoritative.
         "per_claim_attribution_unfixable",
-        # Wave 1.7 W1.7.D: block-objective delivery unfixable. Fires
-        # when the rewrite-tier regen budget is exhausted PURELY on
-        # Wave-1.7 block-objective delivery misses (the
+        # Block-objective delivery unfixable. Fires when the rewrite-tier
+        # regen budget is exhausted PURELY on block-objective delivery
+        # misses (the
         # ``BlockObjectiveDeliveryValidator`` warning codes
         # ``BLOCK_OBJECTIVE_STATEMENT_UNDERSUPPORTED`` /
         # ``BLOCK_OBJECTIVE_BLOOM_UNDERMET`` /
@@ -404,15 +388,14 @@ _ESCALATION_MARKERS: frozenset = frozenset(
         # ``objective_alignment[*].status="unverifiable"`` so the
         # JSON-LD audit trail records the unverifiable delivery state.
         "block_objective_undelivered",
-        # W5 best-of-N: no candidate cleared BOTH objective-coverage AND
+        # Best-of-N: no candidate cleared BOTH objective-coverage AND
         # zero-contradiction among the validator-passing samples, so the
         # entailment-argmax selector fell back to the highest-entailment
         # passing candidate and stamped this marker (never fabricates a clean
         # winner). The block still ships (it passed the validator chain); the
         # marker tells a postmortem the NLI-selection had no clean pick.
         "best_of_n_no_clean_candidate",
-        # rewrite-overflow-fix-2026-06: the rewrite-tier input-truncation
-        # tripwire detected the served context window silently truncated the
+        # The rewrite-tier input-truncation tripwire detected the served context window silently truncated the
         # prompt HEAD (the system-prompt authoring CONTRACT was dropped so
         # the model authored with source but no rules). HARD, NON-RETRYABLE —
         # the block is stamped + short-circuited rather than re-dispatched
@@ -420,8 +403,7 @@ _ESCALATION_MARKERS: frozenset = frozenset(
         # Surfaces as ``escalated`` and routes through the W5 packager-side
         # escalation filter.
         "input_prompt_truncated",
-        # rewrite-overflow-fix-2026-07: the rewrite-tier whole-prompt budget
-        # (ED4ALL_REWRITE_FIT_WINDOW) found the NON-CHUNK scaffold alone (the
+        # The whole-prompt budget (ED4ALL_REWRITE_FIT_WINDOW) found the NON-CHUNK scaffold alone (the
         # trimmed system prompt + the outline dict + per-claim + objectives +
         # contract) already exceeds the served window, so NO grounding chunk
         # could fit and the prompt cannot be authored without silent head-
@@ -453,10 +435,10 @@ def _slugify(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Provider HTML parser (Phase 2 Subtask 35: moved from
+# Provider HTML parser. Lives here rather than in
 # ``MCP/tools/_content_gen_helpers.py`` so :class:`ContentGeneratorProvider`
 # can build a Block from the LLM's rendered HTML without importing the
-# MCP-side helper module).
+# MCP-side helper module.
 # ---------------------------------------------------------------------------
 
 _PROV_HEADING_RE = re.compile(r"(?is)<h(?:1|2|3)[^>]*>(.*?)</h(?:1|2|3)>")
@@ -499,15 +481,15 @@ def _parse_provider_page_html(
 
 
 # ---------------------------------------------------------------------------
-# IB1 — six-slot anatomy contract + five-stage micro-lifecycle (framework
-# pp.13-17, QA-4, p.138). Representation only — addressable + validatable; NO
-# behavior change here. The malformed-block (slot-presence) JUDGEMENT is IB6's
-# validator; these helpers expose presence DATA only.
+# Six-slot anatomy contract + five-stage micro-lifecycle (framework
+# pp.13-17, QA-4, p.138). Representation only: these helpers expose slot
+# presence DATA. Whether a missing slot makes the block malformed is the
+# quality validator's judgement, not theirs.
 # ---------------------------------------------------------------------------
 
-# The six anatomy slots. BODY is the existing ``Block.content`` (NOT a new
-# field — IB1.2); the other five are new Optional ``Block`` fields (IB1.1).
-_BODY_SLOT = "content"  # explicit anchor for IB1.2 / tests
+# The six anatomy slots. BODY is the existing ``Block.content`` — NOT a
+# separate field; the other five are Optional ``Block`` fields.
+_BODY_SLOT = "content"  # explicit anchor for the BODY slot
 _ANATOMY_SLOTS: Tuple[str, ...] = (
     "heading",
     "purpose_tag",
@@ -662,11 +644,11 @@ def derive_anatomy_slots(block: "Block") -> "Block":
 
 
 # ---------------------------------------------------------------------------
-# IB4 — UDL multiple-means coverage detector (QA-13 / D7). DETERMINISTIC,
+# UDL multiple-means coverage detector (QA-13 / D7). DETERMINISTIC,
 # pure string/HTML inspection — NO LLM, NO embeddings. Anti-fabrication: derive
 # only from what is present; leave empty / None when nothing resolves. Feeds
-# IB4.5's UdlCoverageValidator (which derives on read when these fields are
-# empty) and IB6's Engagement + Accessibility/UDL quality dimensions.
+# UdlCoverageValidator (which derives on read when these fields are empty) and
+# the Engagement + Accessibility/UDL quality dimensions.
 # ---------------------------------------------------------------------------
 
 # Representation-mode HTML markers (count of DISTINCT modes present). REUSE of
@@ -682,9 +664,9 @@ def derive_anatomy_slots(block: "Block") -> "Block":
 # A literal <p> is an explicit prose container and ALWAYS counts (preserves the
 # original byte-stable behaviour where any <p> registered prose). A
 # <div>/<section> is a generic structural container, so it counts as prose only
-# when it carries non-trivial visible text (the IB4 detection-artifact fix:
-# <div>-wrapped prose with no literal <p>) — this keeps a <div>-wrapping a
-# table/empty container from over-counting prose.
+# when it carries non-trivial visible text (<div>-wrapped prose with no
+# literal <p>) — this keeps a <div> wrapping a table or an empty container
+# from over-counting prose.
 _UDL_PROSE_P_RE = re.compile(r"(?is)<p[\s>]")
 _UDL_PROSE_BLOCK_CONTAINER_RE = re.compile(r"(?is)<(?:div|section)[\s>]")
 
@@ -966,7 +948,7 @@ class Block:
     block_type: str
     page_id: str
     sequence: int
-    # IB1 — the canonical BODY slot of the six-slot anatomy (framework
+    # the canonical BODY slot of the six-slot anatomy (framework
     # pp.13-17). NO separate ``body`` field is minted: ``content`` IS the body.
     content: Union[str, Dict[str, Any]]
     template_type: Optional[str] = None
@@ -989,24 +971,22 @@ class Block:
     content_hash: Optional[str] = None
     validation_attempts: int = 0
     escalation_marker: Optional[str] = None
-    # GPT Feedback v2 Wave 1 / W1.A — observed Bloom level as classified
-    # by the BERT ensemble at validation time, plus the boolean alignment
-    # signal (``observed_bloom_level == bloom_level``). Both stay default
-    # ``None`` for blocks emitted before the BERT classifier wires in
-    # (Wave 2 router work). Audit-only — INTENTIONALLY excluded from
-    # ``compute_content_hash()`` so a classifier retro-fit doesn't drift
-    # every existing block hash on rebuild.
+    # Observed Bloom level as classified by the BERT ensemble at validation
+    # time, plus the boolean alignment signal
+    # (``observed_bloom_level == bloom_level``). Both default ``None`` when no
+    # classifier ran. Audit-only — INTENTIONALLY excluded from
+    # ``compute_content_hash()`` so classifying an existing block does not
+    # drift its hash on rebuild.
     observed_bloom_level: Optional[str] = None
     bloom_alignment: Optional[bool] = None
-    # GPT Feedback v2 Wave 1.7 / W1.7.A — per-objective-ref delivery
-    # alignment, populated by the BlockObjectiveDeliveryValidator at the
-    # inter_tier_validation + post_rewrite_validation seams. Stays default
-    # empty tuple for blocks emitted before Wave 1.7 wires in. Audit-only
-    # — INTENTIONALLY excluded from ``compute_content_hash()`` so a
-    # validator retro-fit doesn't drift every existing block hash.
+    # Per-objective-ref delivery alignment, populated by the
+    # BlockObjectiveDeliveryValidator at the inter_tier_validation +
+    # post_rewrite_validation seams. Audit-only — INTENTIONALLY excluded from
+    # ``compute_content_hash()`` so running the validator over an existing
+    # block does not drift its hash.
     objective_alignment: Tuple[Dict[str, Any], ...] = ()
-    # Bloom-diversity fix — DETERMINISTIC per-template target Bloom level
-    # carried from the page block plan (``_PAGE_BLOCK_PLAN`` in
+    # DETERMINISTIC per-template target Bloom level carried from the page
+    # block plan (``_PAGE_BLOCK_PLAN`` in
     # ``MCP/tools/pipeline_tools.py``) onto each outline-tier Block stub.
     # The outline provider surfaces this as a per-block "author at
     # bloom_level=<target>" directive AND enforces it as a FLOOR after the
@@ -1015,36 +995,31 @@ class Block:
     # INTENTIONALLY excluded from ``compute_content_hash()`` (a template
     # re-target must not drift every existing block hash) and from the
     # JSON-LD / HTML projections (the resolved ``bloom_level`` is what the
-    # renderer stamps, not this declared target). Stays default ``None``
-    # for blocks emitted before the diversity fix wires in / by callers
-    # that don't carry a target.
+    # renderer stamps, not this declared target). Default ``None`` for callers
+    # that carry no target.
     target_bloom: Optional[str] = None
-    # IB1 — six-slot anatomy contract (framework pp.13-17, QA-4). FIVE new
-    # Optional slots; the sixth slot (BODY) is already ``content`` (above) — do
-    # NOT duplicate it. heading/purpose_tag are deterministically back-derivable
+    # Six-slot anatomy contract (framework pp.13-17, QA-4). FIVE Optional
+    # slots; the sixth slot (BODY) is already ``content`` above — do NOT
+    # duplicate it. heading/purpose_tag are deterministically back-derivable
     # (derive_anatomy_slots); interaction/feedback/transition default None and
-    # are populated only where deterministically inferrable or by a later
-    # authoring wave. Representation only — addressable + validatable; NO
-    # behavior change here. INTENTIONALLY excluded from compute_content_hash()
-    # and emitted only-when-set + only-when-flag-on (ED4ALL_BLOCK_ANATOMY) so
-    # existing hashes / snapshots stay byte-identical (mirrors
-    # observed_bloom_level / objective_alignment).
+    # are populated only where deterministically inferrable. Representation
+    # only — INTENTIONALLY excluded from compute_content_hash() and emitted
+    # only-when-set + only-when-flag-on (ED4ALL_BLOCK_ANATOMY) so existing
+    # hashes / snapshots stay byte-identical.
     heading: Optional[str] = None
     purpose_tag: Optional[str] = None
     interaction: Optional[str] = None
     feedback: Optional[str] = None
     transition: Optional[str] = None
-    # IB2.3 — 8-dimension quality-rubric DATA MODEL (empty scaffold). A tuple of
-    # per-dimension QualityScore cells (alignment / cognitive_load / multimedia /
-    # retrieval / feedback / engagement / accessibility / coherence on an
-    # anchored 0–3 scale; framework §6.2-6.3). ALWAYS ``()`` after this wave — no
-    # code populates it (IB6's scoring pass does). Audit/scoring metadata only —
-    # INTENTIONALLY excluded from compute_content_hash() (a scoring retro-fit
-    # must not drift every existing block hash) and JSON-LD-projected
-    # only-when-non-empty (so emit stays byte-identical until IB6 populates),
-    # mirroring observed_bloom_level / objective_alignment.
+    # 8-dimension quality rubric: a tuple of per-dimension QualityScore cells
+    # (alignment / cognitive_load / multimedia / retrieval / feedback /
+    # engagement / accessibility / coherence on an anchored 0-3 scale;
+    # framework §6.2-6.3). Populated only by the block-quality scoring pass.
+    # Audit/scoring metadata only — INTENTIONALLY excluded from
+    # compute_content_hash() (scoring an existing block must not drift its
+    # hash) and JSON-LD-projected only-when-non-empty.
     quality_rubric: Tuple[QualityScore, ...] = ()
-    # IB3.4 — anchored-rubric for Evaluate/Create scored blocks (framework
+    # Anchored rubric for Evaluate/Create scored blocks (framework
     # pp.26-33, 5.2, B14, B11). An exemplar-anchored rubric (criteria bands +
     # exemplar anchors) published BEFORE the task — required for valid scoring
     # of the highest-Bloom work. Shape:
@@ -1056,41 +1031,39 @@ class Block:
     # (mirrors objective_alignment / quality_rubric) so a rubric retro-fit does
     # not drift any existing block hash. JSON-LD-projected as ``anchoredRubric``
     # only-when-non-None (additive; emit stays byte-identical until a block sets
-    # it under ED4ALL_ALIGNMENT_VERB_TRIPLE). Populated only by an authoring
-    # wave / operator; nothing in IB3 emits it (IB3.4's validator only READS it).
+    # it under ED4ALL_ALIGNMENT_VERB_TRIPLE). Author/operator-populated — no
+    # code writes it; the alignment validator only READS it.
     anchored_rubric: Optional[Dict[str, Any]] = None
-    # IB4 — UDL multiple-means coverage (QA-13 / D7). Audit-only, populated by
-    # the deterministic UDL detector (see :func:`_derive_udl_coverage`);
-    # EXCLUDED from compute_content_hash() (mirrors target_bloom / quality_rubric)
-    # so a retro-fit never drifts an existing block hash. Empty defaults =>
-    # legacy / flag-off blocks are byte-identical. Emitted to HTML/JSON-LD only
-    # when ED4ALL_BLOCK_A11Y is set (default OFF). Feeds IB6's Engagement +
-    # Accessibility/UDL quality dimensions.
+    # UDL multiple-means coverage (QA-13 / D7). Audit-only, populated by the
+    # deterministic UDL detector (see :func:`_derive_udl_coverage`); EXCLUDED
+    # from compute_content_hash() so populating it never drifts an existing
+    # block hash. Empty defaults => legacy / flag-off blocks are byte-identical.
+    # Emitted to HTML/JSON-LD only when ED4ALL_BLOCK_A11Y is set (default OFF).
+    # Feeds the Engagement + Accessibility/UDL quality dimensions.
     n_representations: int = 0          # count of distinct representation modes (prose, table, image, formula, list, ...)
     response_formats: Tuple[str, ...] = ()   # learner action/expression modes the block affords (recall, construct, select, reflect, discuss, ...)
     engagement_affordance: Optional[str] = None  # autonomy/engagement hook (choice, real_world, self_pace, reflection, tiered_resource)
-    # IB5 — type-specific fields for the four framework-aligned pedagogical
-    # block types (hook / multimedia / worked_example / diagram). All three are
+    # Type-specific fields for the four framework-aligned pedagogical block
+    # types (hook / multimedia / worked_example / diagram). All three are
     # additive Optional/empty defaults and INTENTIONALLY excluded from
-    # compute_content_hash() (mirrors target_bloom / n_representations) so a
-    # retro-fit never drifts an existing block hash; empty defaults => legacy /
-    # flag-off blocks are byte-identical. Emitted to HTML/JSON-LD only when
-    # ED4ALL_NEW_BLOCK_TYPES is set (default OFF). Reused (NOT redeclared): the
-    # IB4 UDL fields above carry the multiple-means coverage for the new types.
+    # compute_content_hash() so populating them never drifts an existing block
+    # hash; empty defaults => legacy / flag-off blocks are byte-identical.
+    # Emitted to HTML/JSON-LD only when ED4ALL_NEW_BLOCK_TYPES is set (default
+    # OFF). The UDL fields above carry multiple-means coverage for these types
+    # — do NOT redeclare them here.
     fade_state: Optional[str] = None     # B05 worked_example fade stage: worked | completion | independent
     long_description: Optional[str] = None  # B06 diagram structured long-description text
     media_a11y: Tuple[str, ...] = ()     # B04 present time-based-media track tokens (captions, audio_description, transcript, controls)
-    # IB7.4 — slot-edit escalation annotation (framework p.139 Step 4: differentiate
-    # by DEMAND — change slot weights / verb — NOT by ornament / type-swap). When the
-    # planner's lifecycle pass faces an over-escalated block it FIRST stamps a heavier
-    # interaction/feedback slot weight here (e.g. {"interaction": "heavy"}) before any
-    # IB7.6 type re-route. Additive Optional/None default and INTENTIONALLY excluded
-    # from compute_content_hash() (mirrors target_bloom / quality_rubric / the IB5
-    # fields) so a slot-weight retro-fit never drifts an existing block hash; the
-    # default-None state keeps legacy / flag-off blocks byte-identical. Read by the
-    # planner reasoning only; not projected to HTML/JSON-LD.
+    # Slot-edit escalation annotation (framework p.139 Step 4: differentiate by
+    # DEMAND — change slot weights / verb — NOT by ornament / type-swap). When
+    # the planner's lifecycle pass faces an over-escalated block it FIRST stamps
+    # a heavier interaction/feedback slot weight here (e.g.
+    # {"interaction": "heavy"}) before any type re-route. INTENTIONALLY excluded
+    # from compute_content_hash() so stamping a weight never drifts an existing
+    # block hash; default None keeps legacy / flag-off blocks byte-identical.
+    # Read by the planner only; not projected to HTML/JSON-LD.
     anatomy_slot_weights: Optional[Dict[str, Any]] = None
-    # FR-INT-05 — per-distractor misconception feedback (B07 knowledge-check /
+    # Per-distractor misconception feedback (B07 knowledge-check /
     # B14 graded assessment). A mapping of option key/text -> the misconception-
     # targeted "why this is wrong" feedback string the framework's Feedback
     # dimension (D5 / QA-8) requires for an interaction's distractors. Additive
@@ -1102,7 +1075,7 @@ class Block:
     # Validator's _check_misconception_targeting arm (gated by
     # ED4ALL_BLOCK_QUALITY_RUBRIC). Not projected to HTML/JSON-LD here.
     option_feedback: Optional[Dict[str, str]] = None
-    # FR-A11Y-03 — typed B12 callout kind (note / tip / warning / example /
+    # typed B12 callout kind (note / tip / warning / example /
     # key-idea). Drives the redundant non-color coding (visible LABEL + icon +
     # border) in the generate_course callout renderer behind ED4ALL_CALLOUT_TYPED
     # (default OFF; byte-stable when unset). Additive Optional/None default and
@@ -1126,7 +1099,7 @@ class Block:
     # fields) so an interaction-type retro-fit never drifts an existing block
     # hash; the default-None state keeps legacy / flag-off blocks byte-identical.
     interaction_type: Optional[str] = None
-    # FR-INT-04 — B10 three-move discussion protocol (post -> respond ->
+    # B10 three-move discussion protocol (post -> respond ->
     # synthesize). A real graded discussion is not a single prompt; the
     # framework's B10 contract is a three-move protocol: an initial POST, a
     # required RESPOND to peers, and a SYNTHESIZE move that consolidates the
@@ -1144,7 +1117,7 @@ class Block:
     # HTML/JSON-LD here.
     discussion_protocol: Optional[Dict[str, Any]] = None
     discussion_bloom_verb: Optional[str] = None
-    # FR-INT-03 — B11 reflection predict-then-reveal calibration. A real
+    # B11 reflection predict-then-reveal calibration. A real
     # reflection does not merely ASK; it captures the learner's PREDICTION /
     # judgment, then REVEALS the benchmark / expert answer, then gives
     # CALIBRATION feedback comparing the two (the predict-then-reveal pattern
@@ -1199,7 +1172,7 @@ class Block:
     # same flag the six-slot anatomy rides). Not projected to HTML/JSON-LD here.
     self_rating_prompt: Optional[str] = None
     objective_assessment_thread: Optional[Dict[str, Any]] = None
-    # FR-INT-06 — B09 case/scenario authoring MODE. A real B09 block is one of
+    # B09 case/scenario authoring MODE. A real B09 block is one of
     # three escalating forms: ``case`` (a static worked situation the learner
     # analyzes), ``scenario`` (a situated decision the learner makes), or
     # ``branching`` (a multi-step decision tree whose paths diverge by choice).
@@ -1434,7 +1407,7 @@ class Block:
             # Wrapper-only blocks (the inline `<section>` wrappers in
             # `generate_week`). Source-id attrs only.
             attrs = _source_attr_string(self.source_ids, self.source_primary)
-            # IB5 — worked_example carries an additional data-cf-fade-state attr
+            # worked_example carries an additional data-cf-fade-state attr
             # when the fade stage is set. DOUBLE-gated behind
             # ED4ALL_NEW_BLOCK_TYPES (default OFF) AND only-when-set, so default-
             # off emit is byte-identical (mirrors the IB4 UDL attr posture).
@@ -1458,7 +1431,7 @@ class Block:
 
         if _emit_blocks_enabled() and self.block_id:
             attrs += f' data-cf-block-id="{_esc(self.block_id)}"'
-        # IB4 — UDL multiple-means coverage attrs. DOUBLE-gated: behind
+        # UDL multiple-means coverage attrs. DOUBLE-gated: behind
         # ED4ALL_BLOCK_A11Y (default OFF) AND only-when-set, so default-off emit
         # is byte-identical. Mirrors the anatomy / observed-bloom emit posture.
         if _block_a11y_emit_enabled():
@@ -1472,7 +1445,7 @@ class Block:
                 attrs += (
                     f' data-cf-udl-engagement="{_esc(self.engagement_affordance)}"'
                 )
-        # IB6.5 — universal (verb · level · knowledge-type) triple chip. Behind
+        # universal (verb · level · knowledge-type) triple chip. Behind
         # ED4ALL_BLOCK_QUALITY_RUBRIC (default OFF) so legacy snapshots stay
         # byte-identical. Only emitted on pedagogical blocks (chrome has no
         # framework B-code) and only-when the triple resolves. The existing
@@ -1786,7 +1759,7 @@ class Block:
             entry["touchedBy"] = self._render_touched_by()
         if self.content_hash:
             entry["contentHash"] = self.content_hash
-        # GPT Feedback v2 Wave 1 / W1.A — emit observed Bloom + alignment
+        # emit observed Bloom + alignment
         # signals only when non-None so legacy emits stay byte-stable.
         # camelCase keys mirror schemas/knowledge/courseforge_jsonld_v1
         # .schema.json::$defs.Block.properties.{observedBloomLevel,
@@ -1795,32 +1768,31 @@ class Block:
             entry["observedBloomLevel"] = self.observed_bloom_level
         if self.bloom_alignment is not None:
             entry["bloomAlignment"] = self.bloom_alignment
-        # GPT Feedback v2 Wave 1.7 / W1.7.A — emit per-objective-ref
+        # emit per-objective-ref
         # delivery alignment only when non-empty so legacy emits stay
         # byte-stable. camelCase keys mirror schemas/knowledge/
         # courseforge_jsonld_v1.schema.json::$defs.Block.properties.
         # objectiveAlignment + $defs.ObjectiveAlignment.
         if self.objective_alignment:
             entry["objectiveAlignment"] = [dict(a) for a in self.objective_alignment]
-        # IB2.4 — 8-dimension quality rubric (framework §6.2-6.3). Emit a
+        # 8-dimension quality rubric (framework §6.2-6.3). Emit a
         # ``qualityRubric`` array ONLY when non-empty (mirrors the
-        # objectiveAlignment / anatomy only-when-set guards). The field is
-        # ALWAYS ``()`` this wave (nothing populates it — IB6 does), so this
-        # projection NEVER fires on a real run and emit stays byte-identical.
-        # camelCase keys mirror schemas/knowledge/courseforge_jsonld_v1
+        # objectiveAlignment / anatomy only-when-set guards) — the field is
+        # empty unless the block-quality scoring pass populated it, so emit
+        # stays byte-identical otherwise. camelCase keys mirror schemas/knowledge/courseforge_jsonld_v1
         # .schema.json::$defs.QualityScore.
         if self.quality_rubric:
             entry["qualityRubric"] = [qs.to_jsonld() for qs in self.quality_rubric]
-        # IB3.4 — anchored rubric (framework pp.26-33, 5.2, B14, B11). Emit the
+        # anchored rubric (framework pp.26-33, 5.2, B14, B11). Emit the
         # ``anchoredRubric`` object ONLY when non-None (mirrors the
-        # qualityRubric / objectiveAlignment only-when-set guards). Nothing in
-        # IB3 sets the field (the validator only reads it), so this projection
-        # NEVER fires on a default run and emit stays byte-identical. camelCase
+        # qualityRubric / objectiveAlignment only-when-set guards). No code
+        # sets the field (the validator only reads it), so emit stays
+        # byte-identical unless an author populated it. camelCase
         # key mirrors schemas/knowledge/courseforge_jsonld_v1.schema.json::
         # $defs.Block.properties.anchoredRubric.
         if self.anchored_rubric is not None:
             entry["anchoredRubric"] = dict(self.anchored_rubric)
-        # IB1 — six-slot anatomy contract (framework pp.13-17, QA-4). Emit a
+        # six-slot anatomy contract (framework pp.13-17, QA-4). Emit a
         # nested ``anatomy`` sub-object carrying ONLY the non-None slots,
         # DOUBLE-gated: behind BOTH ``_anatomy_emit_enabled()`` (the new
         # ED4ALL_BLOCK_ANATOMY flag, default OFF) AND only-when-set. Default-OFF
@@ -1860,7 +1832,7 @@ class Block:
             fb_code = framework_block_for(self.block_type)
             if fb_code is not None:
                 entry["frameworkBlock"] = fb_code
-        # IB4 — UDL multiple-means coverage (QA-13 / D7). Emit a ``udlCoverage``
+        # UDL multiple-means coverage (QA-13 / D7). Emit a ``udlCoverage``
         # sub-object DOUBLE-gated: behind BOTH ``_block_a11y_emit_enabled()``
         # (the new ED4ALL_BLOCK_A11Y flag, default OFF) AND only-when-set.
         # Default-OFF flag ⇒ no ``udlCoverage`` key ⇒ byte-identical JSON-LD.
@@ -1875,7 +1847,7 @@ class Block:
                 udl["engagementAffordance"] = self.engagement_affordance
             if udl:
                 entry["udlCoverage"] = udl
-        # IB5 — type-specific fields for the four framework-aligned pedagogical
+        # type-specific fields for the four framework-aligned pedagogical
         # block types (worked_example fadeState / diagram longDescription).
         # DOUBLE-gated: behind BOTH ``_new_block_types_emit_enabled()`` (the new
         # ED4ALL_NEW_BLOCK_TYPES flag, default OFF) AND only-when-set. Default-

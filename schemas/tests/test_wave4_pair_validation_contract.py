@@ -1,89 +1,26 @@
-"""GPT Feedback v2 — Wave 4 end-of-wave pair-validation contract gate.
+"""Wave 4 end-of-wave contract gate: per-pair validation.
 
-Authored 2026-05-07 against the closing 6-test gate enumerated in
-``plans/trainforge-symmetric-validation-investigation-2026-05-06.md`` § 6.
+Pins the two per-pair validators and the pair-schema fields they populate:
 
-Predecessors landed:
+* :class:`lib.validators.pair_claim_support.PairClaimSupportValidator` —
+  per-pair-per-claim NLI entailment audit against the cited chunk text.
+* :class:`lib.validators.pair_lo_refs.PairLearningOutcomeRefsValidator` —
+  per-pair LO-refs subset gate against the cited chunk's
+  ``learning_outcome_refs[]``.
+* The pair schemas' optional ``per_claim_support`` / ``claim_support_rate``
+  / ``claim_contradicted_rate`` / ``pair_lo_resolution`` fields. Optional
+  rather than required so corpora predating the validators still validate.
 
-* W4.A — :class:`lib.validators.pair_claim_support.PairClaimSupportValidator`
-  (per-pair-per-claim NLI entailment audit on the cited chunk text).
-* W4.B — :class:`lib.validators.pair_lo_refs.PairLearningOutcomeRefsValidator`
-  (per-pair LO-refs subset gate against the cited chunk's
-  ``learning_outcome_refs[]``).
-* W4.D (this gate's sibling) — pair-schema migrations on
-  ``schemas/knowledge/instruction_pair{,.strict}.schema.json`` and
-  ``schemas/knowledge/preference_pair.schema.json`` adding the four
-  new optional fields ``per_claim_support`` / ``claim_support_rate``
-  / ``claim_contradicted_rate`` / ``pair_lo_resolution``. Mirrors the
-  W2.E ``promotion_status`` migration shape (optional day-1, may
-  upgrade to required-conditional once the validator has rolled
-  across every active corpus).
+Every fixture is inlined locally rather than imported from a per-worker test
+module, so renaming any of those modules cannot silently disable this gate.
 
-This file is a SELF-CONTAINED contract test mirroring the Wave 1.5,
-1.6, 1.7 predecessor gates (``test_wave15_per_claim_attribution_contract.py``,
-``test_wave16_per_objective_attribution_contract.py``,
-``test_wave17_block_against_objective_contract.py``). Every fixture is
-inlined locally so a future rename of a per-worker test file cannot
-silently disable this wave-end gate.
+Note on the reject-precedence tests: the contradicted-rate ceiling fires
+BEFORE the unsupported-rate ceiling, so a fixture that trips both must assert
+``contradicted_claim``.
 
-Tests:
-
-* ``test_pair_claim_support_validator_entails_passes`` — feed a
-  3-sentence completion where every sentence is verbatim-supported
-  by the chunk. Stub NLI returning entailment=0.85 / contradiction=0.05
-  for every pair. Assert ``(status, reason) == ("validated", None)``.
-  Assert ``new_fields["claim_support_rate"] == 1.0``.
-* ``test_pair_claim_support_validator_rejects_unsupported_claim`` —
-  feed a 4-sentence completion where 1 sentence is hallucinated.
-  Stub NLI returns entailment=0.20 / contradiction=0.10 for the
-  hallucinated one, entailment=0.85 / contradiction=0.05 for the
-  others. With ``max_unsupported_claim_rate=0.20`` (default), assert
-  ``(status, reason) == ("rejected", "unsupported_claim")``
-  (1/4 = 0.25 > 0.20).
-* ``test_pair_claim_support_validator_rejects_contradicted_claim`` —
-  feed 3 sentences with 1 contradicted (entailment=0.10 /
-  contradiction=0.80). Assert ``(status, reason) ==
-  ("rejected", "contradicted_claim")`` — contradicted-rate ceiling
-  fires before unsupported-rate ceiling.
-* ``test_pair_lo_refs_validator_subset_passes`` — pair carries
-  ``learning_outcome_refs=["TO-02"]``, chunk carries
-  ``["TO-02", "TO-07"]``. Assert ``(status, reason) ==
-  ("validated", None)``. Assert
-  ``new_fields["pair_lo_resolution"]["phantom_los"] == []``.
-* ``test_pair_lo_refs_validator_phantom_rejects`` — pair carries
-  ``["TO-05"]``, chunk carries ``["TO-02", "TO-07"]``. Assert
-  ``(status, reason) == ("rejected", "phantom_pair_lo_refs")``.
-  Assert
-  ``new_fields["pair_lo_resolution"]["phantom_los"] == ["TO-05"]``
-  (preserving emit case).
-* ``test_wave4_decision_capture_wiring`` — instantiate both
-  validators with a stub :class:`DecisionCapture`, run one pass +
-  one fail per validator, assert exactly 4 events (2 per validator),
-  assert each event's ``decision_type`` is one of
-  ``{"pair_claim_support_check", "pair_lo_refs_check"}``, assert each
-  rationale is ≥20 chars + interpolates ``chunk_id`` (W4.A) /
-  ``pair_id`` (W4.B; falls back to chunk_id when no pair_id minted)
-  AND ``pair_kind`` / ``kind`` AND the dynamic per-call values that
-  drove the verdict.
-
-Optional Test 7 (recommended, not part of the 6-test contract):
-
-* ``test_wave4_strict_pair_schema_round_trip`` — emit a pair through
-  ``PairClaimSupportValidator.validate_pair`` + the strict-schema
-  validator, assert no schema error on the resulting pair.
-
-Drift notes vs plan §6:
-
-* Plan §6 suggests writing the test file at
-  ``lib/validators/tests/test_wave4_pair_validation_contract.py`` but
-  this file lives at ``schemas/tests/`` for consistency with the
-  Wave 1.5 / 1.6 / 1.7 predecessor gates. Same import topology and
-  ratchet semantics.
-* The W4.A validator's rationale string interpolates ``pair_kind``;
-  the W4.B validator's rationale string interpolates ``kind``. The
-  decision-capture wiring test (Test 6) accepts either token because
-  both surface the dynamic per-call kind value as the plan §6 contract
-  requires.
+The claim-support validator interpolates ``pair_kind`` into its rationale
+while the LO-refs validator interpolates ``kind``; the decision-capture
+wiring test accepts either, since both surface the dynamic per-call value.
 """
 from __future__ import annotations
 
@@ -102,9 +39,11 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 def _build_pair_validator(schema):
-    """W-D4 — Draft202012 validator wired to resolve cross-schema $refs
-    against every sibling under schemas/knowledge/. Mirrors
-    ``schemas/tests/test_wave1_additive_contract.py::_build_registry``.
+    """Draft202012 validator that resolves cross-schema $refs against every
+    sibling under schemas/knowledge/.
+
+    A bare ``jsonschema.validate(pair, schema)`` would try to HTTP-fetch each
+    referenced ``$id``; the registry keeps resolution offline.
     """
     import jsonschema  # noqa: F401 — pytest.importorskip is upstream
     from referencing import Registry, Resource
@@ -135,12 +74,10 @@ def _build_pair_validator(schema):
 
 class _StubNliScore:
     """Minimal NliScore-shaped object exposing the three probability
-    attributes the W4.A consumer reads.
+    attributes the claim-support validator reads.
 
-    Inlined so the test file doesn't import the production
-    :class:`NliScore` (which would couple the gate to that class's
-    evolution). Mirrors the Wave 2 W2.F precedent of stubbing the NLI
-    surface for tests.
+    Inlined rather than importing the production :class:`NliScore`, which
+    would couple this gate to that class's evolution.
     """
 
     def __init__(
@@ -156,15 +93,12 @@ class _StubNliScore:
 
 
 class _StubNliClassifier:
-    """Stub :class:`NliClassifier` that returns canned per-pair scores.
+    """Stub :class:`NliClassifier` returning canned per-pair scores.
 
-    Constructor accepts a callable ``score_fn(premise, hypothesis) ->
-    (entailment, neutral, contradiction)`` so every test can shape the
-    NLI verdict without instantiating the real DeBERTa-v3 model.
-
-    The W4.A validator calls ``nli.score_batch(pairs=[...])`` exactly
-    once per :meth:`validate_pair` invocation; the stub honours that
-    surface contract.
+    ``score_fn(premise, hypothesis) -> (entailment, neutral, contradiction)``
+    lets each test shape the verdict without loading the real DeBERTa model.
+    The validator calls ``score_batch(pairs=[...])`` once per
+    :meth:`validate_pair`; the stub honours that surface contract.
     """
 
     def __init__(self, *, score_fn) -> None:
@@ -188,10 +122,9 @@ class _StubNliClassifier:
 class _RecordingCapture:
     """Minimal capture stub recording every ``log_decision`` payload.
 
-    Inlined so a rename of any per-worker capture helper can't silently
-    break this gate. Mirrors the
-    ``test_wave15_per_claim_attribution_contract.py::_RecordingCapture``
-    pattern (attribute name preserved for cross-wave grep symmetry).
+    Inlined so a rename of any per-worker capture helper can't silently break
+    this gate. Name kept identical across the sibling wave gates so they stay
+    greppable as one family.
     """
 
     def __init__(self) -> None:
@@ -206,10 +139,9 @@ class _RecordingCapture:
 # --------------------------------------------------------------------------- #
 
 
-# Three-sentence chunk text — premise body for NLI scoring. The
-# completion sentences in the support-passes test are verbatim-derived
-# from this text so the canned NLI stub (which doesn't actually look at
-# content) returns its canned entailment scores against a real chunk.
+# Premise body for NLI scoring. The completion sentences in the
+# support-passes test are verbatim-derived from this text so the canned NLI
+# stub scores against a genuinely-supporting chunk rather than a fake one.
 _CHUNK_TEXT_THREE_FACT = (
     "RDF triples are the smallest unit of structured knowledge. "
     "Each triple links a subject to an object via a predicate. "
@@ -240,11 +172,10 @@ def _instruction_pair(
 ) -> Dict[str, Any]:
     """Build a minimally-valid instruction pair dict.
 
-    Includes only the fields the W4.A / W4.B per-pair filter actually
-    reads (``completion``, ``chunk_id``, ``learning_outcome_refs``).
-    Other schema-required fields like ``prompt`` / ``seed`` /
-    ``decision_capture_id`` are not under test here — the per-pair
-    filter doesn't read them.
+    Carries only the fields the per-pair filters read (``completion``,
+    ``chunk_id``, ``learning_outcome_refs``). Schema-required fields the
+    filters ignore (``prompt`` / ``seed`` / ``decision_capture_id``) are
+    omitted deliberately — they are not under test here.
     """
     pair: Dict[str, Any] = {
         "completion": completion,
@@ -260,7 +191,7 @@ def _chunk_payload(
     text: str,
     learning_outcome_refs: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
-    """Build a minimally-valid chunk dict (the W4.A / W4.B chunk arg)."""
+    """Build a minimally-valid chunk dict (the validators' ``chunk`` arg)."""
     chunk: Dict[str, Any] = {"text": text}
     if learning_outcome_refs is not None:
         chunk["learning_outcome_refs"] = list(learning_outcome_refs)
@@ -273,9 +204,8 @@ def _chunk_payload(
 
 
 def test_pair_claim_support_validator_entails_passes() -> None:
-    """Plan §6 Test 1 — 3 sentences, every one entailed (≥0.70)
-    against the chunk, MUST pass with claim_support_rate == 1.0.
-    """
+    """3 sentences, every one entailed (>= 0.70) against the chunk, must pass
+    with claim_support_rate == 1.0."""
     from lib.validators.pair_claim_support import PairClaimSupportValidator
 
     completion = (
@@ -326,9 +256,8 @@ def test_pair_claim_support_validator_entails_passes() -> None:
 
 
 def test_pair_claim_support_validator_rejects_unsupported_claim() -> None:
-    """Plan §6 Test 2 — 4 sentences, 1 hallucinated → unsupported_rate
-    = 1/4 = 0.25 > 0.20 ceiling → reject with 'unsupported_claim'.
-    """
+    """4 sentences, 1 hallucinated: unsupported_rate 1/4 = 0.25 clears the
+    0.20 ceiling, so the pair is rejected as 'unsupported_claim'."""
     from lib.validators.pair_claim_support import PairClaimSupportValidator
 
     # Marker-string for the hallucinated sentence — the stub keys off
@@ -391,10 +320,11 @@ def test_pair_claim_support_validator_rejects_unsupported_claim() -> None:
 
 
 def test_pair_claim_support_validator_rejects_contradicted_claim() -> None:
-    """Plan §6 Test 3 — 3 sentences, 1 contradicted (con=0.80 ≥ 0.50)
-    → contradicted_rate = 1/3 = 0.33 > 0.05 ceiling → reject with
-    'contradicted_claim'. Contradicted-rate ceiling fires BEFORE
-    unsupported-rate ceiling per the W4.A reject precedence.
+    """3 sentences, 1 contradicted (contradiction 0.80 >= 0.50):
+    contradicted_rate 1/3 clears the 0.05 ceiling, so the pair is rejected as
+    'contradicted_claim'. The contradicted-rate ceiling is checked BEFORE the
+    unsupported-rate ceiling, which is why this fixture is not an
+    'unsupported_claim' rejection.
     """
     from lib.validators.pair_claim_support import PairClaimSupportValidator
 
@@ -449,8 +379,8 @@ def test_pair_claim_support_validator_rejects_contradicted_claim() -> None:
 
 
 def test_pair_lo_refs_validator_subset_passes() -> None:
-    """Plan §6 Test 4 — pair LO ⊂ chunk LO under case-insensitive
-    comparison MUST pass with empty phantom_los[]."""
+    """Pair LO subset of chunk LO (compared case-insensitively) must pass with
+    an empty phantom_los[]."""
     from lib.validators.pair_lo_refs import PairLearningOutcomeRefsValidator
 
     pair = _instruction_pair(
@@ -478,7 +408,7 @@ def test_pair_lo_refs_validator_subset_passes() -> None:
         f"got {resolution['phantom_los']!r}"
     )
     # Defence-in-depth — declared/chunk lists carry the original emit
-    # case (preservation contract from W4.B brief).
+    # case (the emit-case preservation contract).
     assert resolution["declared_los"] == ["TO-02"], (
         f"expected declared_los=['TO-02']; got {resolution['declared_los']!r}"
     )
@@ -494,9 +424,8 @@ def test_pair_lo_refs_validator_subset_passes() -> None:
 
 
 def test_pair_lo_refs_validator_phantom_rejects() -> None:
-    """Plan §6 Test 5 — pair carries an LO the chunk doesn't carry →
-    reject with 'phantom_pair_lo_refs'; phantom_los preserves emit case.
-    """
+    """A pair carrying an LO the chunk does not is rejected as
+    'phantom_pair_lo_refs'. phantom_los preserves the original emit case."""
     from lib.validators.pair_lo_refs import PairLearningOutcomeRefsValidator
 
     pair = _instruction_pair(
@@ -540,26 +469,26 @@ def test_pair_lo_refs_validator_phantom_rejects() -> None:
 
 
 def test_wave4_decision_capture_wiring() -> None:
-    """Plan §6 Test 6 — decision-capture wiring contract.
+    """Decision-capture wiring contract for both validators.
 
-    Run one pass + one fail per validator with a stub
-    :class:`DecisionCapture`. Assert:
+    Runs one pass + one fail per validator against a stub
+    :class:`DecisionCapture` and asserts:
 
     1. Exactly 4 events total (2 per validator).
     2. Every event's ``decision_type`` is one of
        ``{"pair_claim_support_check", "pair_lo_refs_check"}``.
     3. Every rationale ≥20 chars.
     4. Every rationale interpolates the per-call dynamic signals — for
-       W4.A the chunk_id + pair_kind + per-pair rate values; for W4.B
-       the pair_id (falls through to chunk_id when no pair_id minted)
-       + kind + the declared / chunk / phantom LO sets.
+       claim-support the chunk_id + pair_kind + per-pair rate values; for
+       LO-refs the pair_id (falling through to chunk_id when no pair_id is
+       minted) + kind + the declared / chunk / phantom LO sets.
     """
     from lib.validators.pair_claim_support import PairClaimSupportValidator
     from lib.validators.pair_lo_refs import PairLearningOutcomeRefsValidator
 
     capture = _RecordingCapture()
 
-    # ---- W4.A pass + fail ---- #
+    # ---- claim-support: pass + fail ---- #
     pass_pair = _instruction_pair(
         completion=(
             "RDF triples are the smallest unit of structured knowledge. "
@@ -594,7 +523,7 @@ def test_wave4_decision_capture_wiring() -> None:
         chunk=fail_chunk, decision_capture=capture,
     )
 
-    # ---- W4.B pass + fail ---- #
+    # ---- LO-refs: pass + fail ---- #
     PairLearningOutcomeRefsValidator().validate_pair(
         _instruction_pair(
             completion=(
@@ -659,7 +588,7 @@ def test_wave4_decision_capture_wiring() -> None:
         )
 
     # ---- Sub-clause 4 — rationale interpolates dynamic signals. ---- #
-    # W4.A events: rationale interpolates chunk_id + pair_kind + the
+    # Claim-support events: rationale interpolates chunk_id + pair_kind + the
     # per-call rate values that drove the verdict.
     claim_events = [
         e for e in capture.events
@@ -700,9 +629,9 @@ def test_wave4_decision_capture_wiring() -> None:
         f"the pass + fail invocations; got {chunk_ids_seen!r}"
     )
 
-    # W4.B events: rationale interpolates pair_id (falls through to
-    # chunk_id when pair_id is unminted) + kind + the declared / chunk
-    # / phantom LO sets that drove the verdict.
+    # LO-refs events: rationale interpolates pair_id (falling through to
+    # chunk_id when pair_id is unminted) + kind + the declared / chunk /
+    # phantom LO sets that drove the verdict.
     lo_events = [
         e for e in capture.events
         if e["decision_type"] == "pair_lo_refs_check"
@@ -752,15 +681,13 @@ def test_wave4_decision_capture_wiring() -> None:
 
 
 def test_wave4_strict_pair_schema_round_trip() -> None:
-    """Plan §6 optional Test 7 — emit a pair through
-    :meth:`PairClaimSupportValidator.validate_pair` then validate the
-    resulting pair against ``instruction_pair.strict.schema.json``.
-    Asserts no schema error on the populated Wave 4 fields.
+    """Round-trip: a real validator emit still validates against both pair
+    schemas.
 
-    Defence-in-depth on the W4.D pair-schema migration: catches the
-    regression class where a future schema author tightens the
-    Wave 4 field shapes without re-validating against a real
-    validator emit.
+    Runs a pair through both validators, then validates the resulting dict
+    against the lenient and strict instruction-pair schemas. Catches the
+    regression class where a schema author tightens the per-pair audit field
+    shapes without re-validating against an actual validator emit.
     """
     jsonschema = pytest.importorskip("jsonschema")
     from lib.validators.pair_claim_support import PairClaimSupportValidator
@@ -777,7 +704,7 @@ def test_wave4_strict_pair_schema_round_trip() -> None:
         ),
         "chunk_id": "ch1#sec1",
         "lo_refs": ["TO-02"],
-        "learning_outcome_refs": ["TO-02"],  # W4.B reads this
+        "learning_outcome_refs": ["TO-02"],  # the LO-refs validator reads this
         "bloom_level": "understand",
         "content_type": "overview",
         "seed": 42,
@@ -788,7 +715,7 @@ def test_wave4_strict_pair_schema_round_trip() -> None:
         learning_outcome_refs=["TO-02", "TO-07"],
     )
 
-    # W4.A populates per_claim_support / claim_support_rate /
+    # Claim-support populates per_claim_support / claim_support_rate /
     # claim_contradicted_rate.
     stub = _StubNliClassifier(
         score_fn=lambda p, h: (0.85, 0.10, 0.05),
@@ -798,16 +725,14 @@ def test_wave4_strict_pair_schema_round_trip() -> None:
     )
     base_pair.update(claim_fields)
 
-    # W4.B populates pair_lo_resolution.
+    # LO-refs populates pair_lo_resolution.
     _, _, lo_fields = PairLearningOutcomeRefsValidator().validate_pair(
         base_pair, kind="instruction", chunk=chunk,
     )
     base_pair.update(lo_fields)
 
-    # The W4.A new_fields carry a ``deps_missing`` debug field that is
-    # NOT part of the canonical pair schema (it's per-call metadata
-    # the caller can drop before write). Strip it for the round-trip
-    # assertion.
+    # ``deps_missing`` is per-call debug metadata, NOT part of the canonical
+    # pair schema — the caller drops it before write, so strip it here too.
     base_pair.pop("deps_missing", None)
 
     # Round-trip against both schemas.
@@ -825,7 +750,7 @@ def test_wave4_strict_pair_schema_round_trip() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# W4.C.2 schema-migration tests — pair_objective_alignment shape
+# Schema-migration tests — pair_objective_alignment shape
 # --------------------------------------------------------------------------- #
 
 
@@ -884,12 +809,10 @@ def _w4c_assert_invalid(pair: Dict[str, Any], schema_rel_path: str) -> None:
 
 
 def test_pair_objective_alignment_populated_passes_all_three_schemas() -> None:
-    """W4.C.2 positive — a fully-populated pair_objective_alignment[]
-    array passes Draft-07 validation against all three pair schemas
-    (instruction, strict instruction, preference).
+    """A fully-populated pair_objective_alignment[] array validates against
+    all three pair schemas (instruction, strict instruction, preference).
 
-    Mirrors the W4.A / W4.B day-1 contract: the audit field is
-    optional, but a well-formed populated array MUST validate so
+    The field is optional, but a well-formed populated array must validate so
     downstream emitters can ship the surface without schema drift.
     """
     populated_alignment = [
@@ -937,10 +860,9 @@ def test_pair_objective_alignment_populated_passes_all_three_schemas() -> None:
 
 
 def test_pair_objective_alignment_rejects_malformed_status_enum() -> None:
-    """W4.C.2 negative #1 — an entry with an unknown ``status`` enum
-    value MUST fail Draft-07 validation against all three pair schemas.
-    Closes the regression class where a future emitter ships a
-    typo'd / out-of-spec status string.
+    """An entry with an unknown ``status`` enum value must fail validation
+    against all three pair schemas. Closes the regression class where an
+    emitter ships a typo'd / out-of-spec status string.
     """
     bad_alignment = [
         {
@@ -968,14 +890,12 @@ def test_pair_objective_alignment_rejects_malformed_status_enum() -> None:
 
 
 def test_pair_objective_alignment_rejects_missing_objective_id() -> None:
-    """W4.C.2 negative #2 — an entry missing the required
-    ``objective_id`` field MUST fail Draft-07 validation against all
-    three pair schemas. Closes the regression class where a future
-    emitter ships an alignment entry without the canonical LO id.
+    """An entry missing the required ``objective_id`` field must fail
+    validation against all three pair schemas.
 
-    Defence-in-depth on the ``additionalProperties: false`` discipline
-    by also asserting that an entry with an unminted extra property
-    (mistyped key) fails alongside the missing-required-field case.
+    Also asserts that an entry with an unminted extra property fails, pinning
+    the ``additionalProperties: false`` discipline so a mistyped key is caught
+    rather than silently accepted.
     """
     missing_objective_id = [
         {
@@ -1025,7 +945,7 @@ def test_pair_objective_alignment_rejects_missing_objective_id() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Wave 5 W5.D — pair-side per-claim attribution scoping
+# Pair-side per-claim attribution scoping
 # --------------------------------------------------------------------------- #
 
 
@@ -1078,10 +998,10 @@ def _patch_embedder(monkeypatch, embedder) -> None:
 def test_pair_claim_support_uses_per_claim_attribution_when_chunk_carries_key_claims(
     monkeypatch,
 ) -> None:
-    """Wave 5 W5.D — when the cited chunk carries the W1.5 / W5.A
-    structured ``key_claims=[{claim, source_chunk_ids[]}]`` shape AND
-    a ``chunk_id_to_text_map`` is threaded, the validator MUST scope
-    its NLI premise per-claim.
+    """When the cited chunk carries the structured
+    ``key_claims=[{claim, source_chunk_ids[]}]`` shape AND a
+    ``chunk_id_to_text_map`` is threaded, the validator scopes its NLI
+    premise per-claim instead of using the whole chunk body.
 
     Assertions:
 
@@ -1191,7 +1111,7 @@ def test_pair_claim_support_uses_per_claim_attribution_when_chunk_carries_key_cl
         f"mirror the matched key_claims entries; got {attribution!r}"
     )
 
-    # ---- Sub-clause 2: decision-capture interpolates W5.D signals. ---- #
+    # ---- Sub-clause 2: decision-capture interpolates the scoping signals. ---- #
     assert len(capture.events) == 1, (
         f"expected exactly 1 pair_claim_support_check event; "
         f"got {len(capture.events)}"
@@ -1227,9 +1147,8 @@ def test_pair_claim_support_uses_per_claim_attribution_when_chunk_carries_key_cl
 def test_pair_claim_support_falls_back_to_whole_chunk_text_without_structured_key_claims(
     monkeypatch,
 ) -> None:
-    """Wave 5 W5.D negative — same pair + chunk WITHOUT a structured
-    ``key_claims`` field MUST fall back to whole-chunk-text NLI
-    scoring (byte-identical to the W4.A pre-W5.D path).
+    """Negative case: the same pair + a chunk WITHOUT a structured
+    ``key_claims`` field falls back to whole-chunk-text NLI scoring.
 
     Assertions:
 
@@ -1342,16 +1261,13 @@ def test_pair_claim_support_falls_back_to_whole_chunk_text_without_structured_ke
 def test_pair_claim_support_falls_back_to_whole_chunk_text_when_no_chunk_id_to_text_map(
     monkeypatch,
 ) -> None:
-    """Wave 5 W5.D second negative — chunk DOES carry structured
-    ``key_claims`` BUT the call site did not thread a
-    ``chunk_id_to_text_map`` lookup. Validator MUST graceful-degrade
-    to whole-chunk-text scoring (back-compat day-1 — the
-    ``chunks_by_id`` map can be empty in legacy synthesize_training
-    code paths).
+    """Second negative: the chunk DOES carry structured ``key_claims`` but the
+    call site threaded no ``chunk_id_to_text_map``.
 
-    Assertions: identical shape to the no-structured-key_claims case
-    (source_chunk_ids=None, structured_attribution_used=False,
-    per_claim_match_count=0).
+    The validator must graceful-degrade to whole-chunk-text scoring — the
+    lookup map is legitimately empty on legacy synthesize_training code paths,
+    so an absent map must not be treated as an attribution failure. Result
+    shape is identical to the no-structured-key_claims case.
     """
     from lib.validators.pair_claim_support import (
         PairClaimSupportValidator,
@@ -1386,8 +1302,8 @@ def test_pair_claim_support_falls_back_to_whole_chunk_text_when_no_chunk_id_to_t
         pair,
         kind="instruction",
         chunk=chunk,
-        # Note: chunk_id_to_text_map intentionally omitted (defaults
-        # to None) — the back-compat-no-map arm.
+        # chunk_id_to_text_map intentionally omitted (defaults to None) —
+        # this is the no-map arm under test.
         decision_capture=capture,
     )
 
@@ -1405,11 +1321,11 @@ def test_pair_claim_support_falls_back_to_whole_chunk_text_when_no_chunk_id_to_t
 
 
 def test_resolve_chunk_key_claims_with_attribution_helper() -> None:
-    """Wave 5 W5.D unit — the resolution helper distinguishes the
-    structured / legacy / malformed shapes per the W5.A migration
-    contract. Closes the regression class where a future schema
-    author tightens or loosens the chunk-side key_claims shape
-    without re-validating against the validator's resolution helper.
+    """The resolution helper distinguishes structured / legacy / malformed
+    chunk-side ``key_claims`` shapes.
+
+    Closes the regression class where a schema author tightens or loosens the
+    chunk-side key_claims shape without re-validating the resolution helper.
     """
     from lib.validators.pair_claim_support import (
         _resolve_chunk_key_claims_with_attribution,
@@ -1484,7 +1400,7 @@ def test_resolve_chunk_key_claims_with_attribution_helper() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Wave 9 TIGHT — dual-source DART cross-check (chunker-drift slice)
+# Dual-source cross-check (chunker-drift slice)
 # --------------------------------------------------------------------------- #
 
 
@@ -1494,9 +1410,9 @@ def _w9_chunk_with_source_refs(
     source_ids: List[str],
     role: str = "primary",
 ) -> Dict[str, Any]:
-    """Build a chunk dict carrying ``source.source_references[]`` so
-    the Wave 9 dual-source check resolves DART block texts via the
-    canonical ``sourceId`` chain.
+    """Build a chunk dict carrying ``source.source_references[]`` so the
+    dual-source check resolves source block texts via the canonical
+    ``sourceId`` chain.
     """
     return {
         "text": text,
@@ -1509,11 +1425,9 @@ def _w9_chunk_with_source_refs(
 
 
 def test_pair_claim_support_dual_source_off_by_default() -> None:
-    """Wave 9 TIGHT — legacy call site without the new kwargs MUST
-    skip the DART cross-check. Validates back-compat: the W4.A / W5.D
-    surface contract is preserved byte-for-byte for callers that
-    haven't yet wired ``dart_block_text_map`` / ``dual_source_severity``
-    through.
+    """A call site that passes neither ``dart_block_text_map`` nor
+    ``dual_source_severity`` skips the dual-source cross-check entirely, so
+    callers that have not wired those kwargs keep the prior behavior.
     """
     from lib.validators.pair_claim_support import PairClaimSupportValidator
 
@@ -1544,7 +1458,7 @@ def test_pair_claim_support_dual_source_off_by_default() -> None:
     assert (status, reason) == ("validated", None)
     pcs = new_fields["per_claim_support"]
     assert isinstance(pcs, list) and len(pcs) == 2
-    # Wave 9 audit field MUST NOT be stamped on legacy callers.
+    # The dual-source audit field MUST NOT be stamped for these callers.
     for entry in pcs:
         assert "dart_source_check" not in entry, (
             "Legacy call without dual-source kwargs MUST NOT stamp "
@@ -1556,7 +1470,7 @@ def test_pair_claim_support_dual_source_off_by_default() -> None:
         f"legacy outcome set MUST stay 3-value; got {outcomes!r}"
     )
     # No NLI premise was the DART block text — the only premise was
-    # the IMSCC chunk text (W4.A path).
+    # the IMSCC chunk text (the default premise path).
     assert all(p == _CHUNK_TEXT_THREE_FACT for p in seen_premises), (
         f"legacy path MUST score against the IMSCC chunk text only; "
         f"got premises={seen_premises!r}"
@@ -1564,8 +1478,8 @@ def test_pair_claim_support_dual_source_off_by_default() -> None:
 
 
 def test_pair_claim_support_dual_source_passes_when_dart_entails() -> None:
-    """Wave 9 TIGHT positive — IMSCC entails AND DART entails; the
-    audit field is stamped, outcome stays ``"entailed"``.
+    """Dual-source positive: IMSCC entails AND the source block entails, so the
+    audit field is stamped and the outcome stays ``"entailed"``.
 
     Asserts:
 
@@ -1648,9 +1562,9 @@ def test_pair_claim_support_dual_source_passes_when_dart_entails() -> None:
 
 
 def test_pair_claim_support_dual_source_stamps_dart_disagreement_on_contradiction() -> None:
-    """Wave 9 TIGHT negative — IMSCC entails BUT DART contradicts at
-    >= 0.50; outcome bumps to ``"dart_disagreement"`` and the pair is
-    NOT rejected (warning severity).
+    """Dual-source negative: IMSCC entails but the source block contradicts at
+    >= 0.50, so the outcome bumps to ``"dart_disagreement"`` while the pair is
+    NOT rejected (the check is warning severity).
 
     Asserts:
 
@@ -1736,16 +1650,13 @@ def test_pair_claim_support_dual_source_stamps_dart_disagreement_on_contradictio
 
 
 def test_pair_claim_support_dual_source_skips_deterministic_pairs() -> None:
-    """Wave 9 TIGHT × W8 precedence — pairs carrying
-    ``pair_lo_resolution.skipped == "deterministic_template"`` (W8
-    Worker A audit-stamp helper) MUST NOT trigger the dual-source
-    check.
+    """Pairs stamped ``pair_lo_resolution.skipped == "deterministic_template"``
+    must NOT trigger the dual-source check.
 
-    Deterministic pairs don't go through the LLM paraphrase path so a
-    DART / IMSCC drift signal is meaningless on them. Skipping cleanly
-    (no ``dart_source_check`` field, no ``dart_disagreement`` outcome
-    bump) preserves the W8 audit stamp as the only resolution stamped
-    on the pair.
+    Deterministic pairs never go through the LLM paraphrase path, so a
+    source-vs-IMSCC drift signal is meaningless on them. Skipping cleanly (no
+    ``dart_source_check`` field, no outcome bump) leaves the existing audit
+    stamp as the only resolution recorded on the pair.
     """
     from lib.validators.pair_claim_support import PairClaimSupportValidator
 
@@ -1825,14 +1736,13 @@ def test_pair_claim_support_dual_source_skips_deterministic_pairs() -> None:
 def test_validate_walk_emits_dart_disagreement_rate_high_warning(
     tmp_path,
 ) -> None:
-    """Wave 9 TIGHT gate-runner walk — when > 5% of pairs on disk
-    carry a per-claim ``"dart_disagreement"`` outcome, the validator
-    MUST emit a warning-severity ``DART_DISAGREEMENT_RATE_HIGH``
-    GateIssue with the rate + total count interpolated into the
-    message.
+    """Gate-runner walk: when the share of pairs carrying a per-claim
+    ``"dart_disagreement"`` outcome clears the warn ceiling, the validator
+    emits a ``DART_DISAGREEMENT_RATE_HIGH`` GateIssue with the rate and total
+    interpolated into the message.
 
-    Day-1 contract: warning severity does not block the gate; the
-    overall ``passed`` flag stays True so promotion is unaffected.
+    The issue is warning severity, so ``passed`` stays True and promotion is
+    unaffected.
     """
     from lib.validators.pair_claim_support import (
         PairClaimSupportValidator,

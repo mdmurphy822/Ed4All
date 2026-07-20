@@ -1,13 +1,10 @@
-"""Schema-to-English translation SFT pair generator (Wave 124,
-audit 2026-04-30 fix; Wave 125b expansion; Wave 133d loader pattern).
+"""Schema-to-English translation SFT pair generator.
 
-The cc07cc76 SLM adapter scored hallucination_rate=0.63 / faithfulness=0.37
-in part because the corpus had no pairs that taught the model to map
-formal SHACL/RDF/OWL surface forms (``sh:datatype``,
-``rdfs:subClassOf``, ``owl:sameAs``, ...) to plain-English meanings.
-The eval harness probes via property-aware questions; without a
-schema-to-English bridge the adapter either parrots the surface form
-back or hallucinates an unrelated paraphrase.
+Teaches the model to map formal SHACL/RDF/OWL surface forms
+(``sh:datatype``, ``rdfs:subClassOf``, ``owl:sameAs``, ...) to plain-English
+meanings. The eval harness probes via property-aware questions; without a
+schema-to-English bridge an adapter either parrots the surface form back or
+hallucinates an unrelated paraphrase.
 
 This generator is driven by ``lib/ontology/property_manifest.py``: it
 loads the family manifest (e.g. ``property_manifest.rdf_shacl.yaml``),
@@ -133,9 +130,9 @@ class SchemaTranslationStats:
 
 
 _VALID_ANCHORED_STATUS: Tuple[str, ...] = ("complete", "degraded_placeholder")
-# Wave 135a placeholder strings (must be searchable via the literal
-# "[degraded:" prefix so operators / Codex / Qwen can grep all 34 stub
-# entries trivially).
+# Placeholder strings for unauthored anchored content. Every stub MUST keep
+# the literal "[degraded:" prefix — operators grep on it and the content
+# validator rejects any complete entry containing it as a leak marker.
 _DEGRADED_DEFINITION_STUB = (
     "[degraded: anchored definition not yet authored — see Wave 135a contract]"
 )
@@ -149,7 +146,7 @@ _DEGRADED_USAGE_COMPLETION_STUB = (
 
 @dataclass(frozen=True)
 class Provenance:
-    """Wave 137c — operator/Codex/Qwen attribution + ToS audit trail.
+    """operator/Codex/Qwen attribution + ToS audit trail.
 
     Required for anchored_status="complete" entries (Plan A's validator
     enforces). Optional for "degraded_placeholder" entries (no content
@@ -175,16 +172,14 @@ class SurfaceFormData:
     CURIE in the off-axis fields) so ``preserve_tokens`` recognises
     the surface form.
 
-    Wave 135a: ``anchored_status`` discriminator. ``"complete"`` entries
-    carry real anchored content (their definitions / usage_examples
-    are fit to be embedded in training pairs); ``"degraded_placeholder"``
-    entries satisfy the structural contract via stub strings but MUST
-    fall back to token-stuffing during force-injection (Wave 135b)
-    with a WARN log + decision-capture event so operators see the
-    degraded coverage. The 34 placeholder entries shipped in Wave 135a
-    flip to ``"complete"`` over time as operator / Codex / Qwen backfills
-    the anchored content per the project's "Claude does not generate
-    training-data corpus content" operating principle.
+    ``anchored_status`` discriminates the two shapes. ``"complete"`` entries
+    carry real anchored content (their definitions / usage_examples are fit to
+    be embedded in training pairs); ``"degraded_placeholder"`` entries satisfy
+    the structural contract via stub strings but MUST fall back to
+    token-stuffing during force-injection, with a WARN log + decision-capture
+    event so operators see the degraded coverage. Placeholders flip to
+    ``"complete"`` as an operator backfills the anchored content — Claude never
+    generates training-data corpus content.
     """
 
     curie: str
@@ -199,10 +194,10 @@ class SurfaceFormData:
     pitfalls: List[Tuple[str, str]] = field(default_factory=list)
     # (other_curie, composition_explanation including both CURIEs)
     combinations: List[Tuple[str, str]] = field(default_factory=list)
-    # Wave 135a: discriminator. Default "complete" preserves the
+    # discriminator. Default "complete" preserves the
     # six pre-Wave-135a entries' shape without reauthoring.
     anchored_status: Literal["complete", "degraded_placeholder"] = "complete"
-    # Wave 137c: optional operator/Codex/Qwen provenance block.
+    # optional operator/Codex/Qwen provenance block.
     # Populated only by the YAML loader (when overlay carries a
     # provenance block); the in-Python fallback dict's entries leave
     # this None, and Plan A's validator enforces presence on
@@ -214,7 +209,7 @@ class SurfaceFormData:
 # Hand-curated catalog. ~7 entries per family per surface form.
 # -----------------------------------------------------------------------------
 #
-# Authoring rules (Wave 125b):
+# Authoring rules:
 #   * Every prompt probes a meaningfully different angle from its
 #     siblings. No "what is X?" / "tell me about X" / "describe X"
 #     thesaurus chains.
@@ -1220,7 +1215,7 @@ _RDF_SHACL_FALLBACK_FORM_DATA: Dict[str, SurfaceFormData] = {
         anchored_status="complete",
     ),
     # ---------------------------------------------------------------------
-    # Wave 135a: 34 degraded-placeholder entries covering the remainder of
+    # 34 degraded-placeholder entries covering the remainder of
     # the rdf-shacl property manifest. Each carries one stub definition +
     # one stub usage_example so it satisfies the structural contract
     # (>=1 def + >=1 usage_example) but is explicitly tagged
@@ -1228,7 +1223,7 @@ _RDF_SHACL_FALLBACK_FORM_DATA: Dict[str, SurfaceFormData] = {
     #   1. validate_form_data_contract can count degraded vs complete.
     #   2. generate_schema_translation_pairs() skips it (no "[degraded:"
     #      strings ever land in instruction_pairs.jsonl).
-    #   3. Wave 135b's force-injection path can dispatch on the status
+    #   3. the force-injection path can dispatch on the status
     #      field and emit a WARN log + decision-capture event.
     #
     # Operator / Codex / Qwen backfills the anchored content over time
@@ -1551,7 +1546,7 @@ _RDF_SHACL_FALLBACK_FORM_DATA: Dict[str, SurfaceFormData] = {
 
 
 # -----------------------------------------------------------------------------
-# Wave 135b: anchored-injection helpers consumed by the SFT / DPO
+# anchored-injection helpers consumed by the SFT / DPO
 # factories. ``resolve_anchor_text_for_curie`` is the shared dispatcher:
 # given a CURIE + chunk_id_hash, it either returns a real anchored
 # definition sentence (``status="anchored"``) drawn from the FORM_DATA
@@ -1566,7 +1561,7 @@ def resolve_anchor_text_for_curie(
     form_data: Dict[str, SurfaceFormData],
     chunk_id_hash: int,
 ) -> Tuple[Optional[str], Optional[str], str]:
-    """Wave 135b — pick anchored prompt + completion text for ``curie``.
+    """pick anchored prompt + completion text for ``curie``.
 
     Args:
         curie: The CURIE (e.g. ``"sh:datatype"``) the factory wants to
@@ -1622,8 +1617,8 @@ def resolve_anchor_text_for_curie(
     ]
     if not prompt_candidates:
         # Defensive: every authored 'complete' entry should literally
-        # contain the CURIE per the Wave 135a contract, but if a
-        # future YAML drops it we fall back to degraded rather than
+        # contain the CURIE by contract, but if a future YAML entry
+        # drops it we fall back to degraded rather than
         # emitting a definition without the canonical anchor.
         return (None, None, "degraded")
     prompt_anchor = min(prompt_candidates, key=len)
@@ -1631,28 +1626,28 @@ def resolve_anchor_text_for_curie(
 
 
 # -----------------------------------------------------------------------------
-# Wave 135a: FORM_DATA coverage contract validator.
-# Wave 136b: extended with content-quality rejection rules.
+# FORM_DATA coverage contract validator.
+# extended with content-quality rejection rules.
 # -----------------------------------------------------------------------------
 
 
-# Wave 136b: forbidden definition prefixes (the Wave 121 token-stuffing
-# template patterns the FORM_DATA contract is designed to replace).
+# Forbidden definition prefixes — the token-stuffing template patterns the
+# FORM_DATA contract is designed to replace.
 # Anchored at the start of the string via ``re.match``.
 _OLD_SUFFIX_TEMPLATE_RE = re.compile(
     r"^(Canonical terms:|Required terms:|Reference:|Relevant terms:"
     r"|Key vocabulary:|The relevant terms are|This concerns)"
 )
 
-# Wave 136b: leak markers that must NEVER appear in a complete entry's
-# content. ``"[degraded:"`` is the Wave 135a stub prefix; ``"not yet
-# authored"`` is the Wave 135a stub-text suffix.
+# Leak markers that must NEVER appear in a complete entry's content —
+# ``"[degraded:"`` is the stub prefix and ``"not yet authored"`` the stub-text
+# suffix, so either one means an unauthored stub was marked complete.
 _PLACEHOLDER_LEAK_TOKENS: Tuple[str, ...] = (
     "[degraded:",
     "not yet authored",
 )
 
-# Wave 137a — content-quality rule constants
+# content-quality rule constants
 
 # Rule 1: per-entry pairwise definitions diversity (Jaccard).
 # Calibrated against the 6 ground-truth complete entries: max
@@ -1690,7 +1685,7 @@ def _word_anchor_re(allowlist: frozenset) -> re.Pattern:
 _DEF_ANCHOR_RE = _word_anchor_re(_DEF_ANCHOR_VERBS)
 _USAGE_ANCHOR_RE = _word_anchor_re(_USAGE_ACTION_VERBS)
 
-# Wave 137a Rule 4: provenance presence (depends on Wave 137c-1 schema field).
+# Rule 4: provenance presence — the keys the Provenance dataclass declares.
 _PROVENANCE_REQUIRED_KEYS = (
     "provider",
     "generated_by",
@@ -1699,7 +1694,7 @@ _PROVENANCE_REQUIRED_KEYS = (
     "timestamp",
 )
 
-# Wave 137a Rule 2: style consistency score thresholds + signal regexes.
+# style consistency score thresholds + signal regexes.
 #
 # CALIBRATION FINDING: brief proposed `_STYLE_CONSISTENCY_MIN = 0.85`
 # with a "ground truth all >=0.95" claim. Empirical probe of the 6
@@ -1738,7 +1733,7 @@ _CONVERSATIONAL_RE = re.compile(
 
 
 def _compute_style_score(entry: "SurfaceFormData") -> Tuple[float, List[str]]:
-    """Wave 137a Rule 2: weighted entry-level style score in [0, 1].
+    """weighted entry-level style score in [0, 1].
 
     Returns ``(score, list_of_failing_signal_names)``.
 
@@ -1749,7 +1744,7 @@ def _compute_style_score(entry: "SurfaceFormData") -> Tuple[float, List[str]]:
       * +0.15 — at least one usage answer contains an action verb
       * +0.10 — present-tense declarative dominant (>=80% of defs)
       * +0.10 — no conversational phrasing in definitions
-      * +0.05 — no Wave 121 suffix-template prefix in definitions
+      * +0.05 — no suffix-template prefix in definitions
       * +0.10 — no excessive hedging (hedge tokens < 2 in defs)
       * +0.10 — no repeated openings (first 4 words of each def unique)
 
@@ -1813,8 +1808,8 @@ def _compute_style_score(entry: "SurfaceFormData") -> Tuple[float, List[str]]:
     else:
         failed.append("no_conversational")
 
-    # +0.05 — no suffix-template leak (already critical in Wave 136b;
-    # included as positive signal for the aggregate score).
+    # +0.05 — no suffix-template leak (also a critical content rule;
+    # counted here as a positive signal for the aggregate score).
     if not any(_OLD_SUFFIX_TEMPLATE_RE.match(d) for d in entry.definitions):
         score += 0.05
     else:
@@ -1844,7 +1839,7 @@ def _compute_style_score(entry: "SurfaceFormData") -> Tuple[float, List[str]]:
 
     return (score, failed)
 
-# Wave 136b: extracts CURIE-shaped tokens (``prefix:LocalName``) from a
+# extracts CURIE-shaped tokens (``prefix:LocalName``) from a
 # definition string for the WRONG_CURIE_ONLY_MENTION rule.
 _CURIE_TOKEN_RE = re.compile(r"\b[a-z]+:[A-Za-z][A-Za-z0-9_]*")
 
@@ -1856,14 +1851,13 @@ def validate_form_data_contract(
     base_form_data: Optional[Dict[str, SurfaceFormData]] = None,
     semantic_profile: Optional[Any] = None,
 ) -> Dict[str, Any]:
-    """Wave 135a / Wave 136b — enforce the FORM_DATA coverage contract.
+    """Enforce the FORM_DATA coverage contract.
 
-    Wave 135a established the structural contract (every manifest CURIE
-    has >=1 def + >=1 usage_example, every entry's ``anchored_status``
-    is in the canonical set). Wave 136b extends the validator with
-    nine content-quality rejection rules that fire ONLY against entries
-    with ``anchored_status="complete"`` — degraded entries skip every
-    content rule because their stub strings are intentionally
+    Structural contract: every manifest CURIE has >=1 def + >=1
+    usage_example, and every entry's ``anchored_status`` is in the canonical
+    set. On top of that, nine content-quality rejection rules fire ONLY
+    against entries with ``anchored_status="complete"`` — degraded entries
+    skip every content rule because their stub strings are intentionally
     out-of-bounds.
 
     Args:
@@ -1872,7 +1866,7 @@ def validate_form_data_contract(
         manifest_curies: Iterable of CURIEs declared by the property
             manifest. Each one must have an entry in ``form_data`` with
             >=1 definition AND >=1 usage_example.
-        base_form_data: Optional Wave 136a base form_data dict (the
+        base_form_data: Optional base form_data dict (the
             Python-fallback catalog before the YAML overlay merged).
             When passed, the validator emits an
             ``OVERLAY_LOAD_REGRESSION`` warning for any CURIE whose
@@ -1894,11 +1888,11 @@ def validate_form_data_contract(
             ``anchored_status="complete"``.
           * ``invalid_status_curies``: list[str] — entries whose
             ``anchored_status`` is not in the canonical set (sorted).
-          * ``content_violations``: list[dict] — Wave 136b critical
+          * ``content_violations``: list[dict] — critical
             content-quality rule violations. Each entry has shape
             ``{curie, code, detail}``. Only entries with
             ``anchored_status="complete"`` are checked.
-          * ``warnings``: list[dict] — Wave 136b non-blocking warning
+          * ``warnings``: list[dict] — non-blocking warning
             signals (currently ``OVERLAY_LOAD_REGRESSION``). Each entry
             has shape ``{curie, code, detail}``.
     """
@@ -1906,14 +1900,14 @@ def validate_form_data_contract(
     # synthesis-provider module so this validator stays consistent with
     # the runtime length checks the providers enforce. Imported inside
     # the function to keep the module-level import graph minimal — the
-    # constants are referenced ONLY by Wave 136b's content rules.
+    # constants are referenced ONLY by the content rules.
     from Trainforge.generators._synthesis_common import (
         COMPLETION_MAX,
         COMPLETION_MIN,
         PROMPT_MAX,
         PROMPT_MIN,
     )
-    # Wave 137a: Jaccard helper for Rule 1 (diversity gate). Reuses
+    # Jaccard helper for Rule 1 (diversity gate). Reuses
     # the canonical tokenizer + Jaccard implementation already in use
     # by the eval pipeline so this validator and key-term-precision
     # eval share one tokenization contract.
@@ -1950,12 +1944,12 @@ def validate_form_data_contract(
         else:
             invalid_status.append(curie)
 
-    # Wave 136b: content-quality rules. Iterate ONLY over complete
+    # content-quality rules. Iterate ONLY over complete
     # entries — degraded entries skip every content check by design
     # (their stub strings violate length bounds and contain "[degraded:"
     # by construction).
     content_violations: List[Dict[str, str]] = []
-    # Wave 137a Rule 2: style-consistency warnings collected per-entry
+    # style-consistency warnings collected per-entry
     # in the same loop as the critical rules; merged into warnings_list
     # at the validator's return.
     wave_137a_style_warnings: List[Dict[str, str]] = []
@@ -2144,7 +2138,7 @@ def validate_form_data_contract(
                 }
             )
 
-        # Wave 137a Rule 1: pairwise definitions diversity.
+        # pairwise definitions diversity.
         if len(entry.definitions) >= 2:
             max_sim = 0.0
             max_pair = (0, 0)
@@ -2165,7 +2159,7 @@ def validate_form_data_contract(
                     ),
                 })
 
-        # Wave 137a Rule 3: anchor-verb capacity (entry-level, scoped).
+        # anchor-verb capacity (entry-level, scoped).
         if entry.definitions and not any(
             _DEF_ANCHOR_RE.search(d) for d in entry.definitions
         ):
@@ -2191,12 +2185,11 @@ def validate_form_data_contract(
                 ),
             })
 
-        # Wave 137a Rule 4: provenance presence (complete entries MUST
+        # provenance presence (complete entries MUST
         # carry an operator/Codex/Qwen attribution + ToS audit trail).
-        # Closes the Wave 137 contract: every complete FORM_DATA entry
-        # carries provenance metadata. Wave 137c-2 sets reviewed_by to
-        # "PENDING_REVIEW" as a sentinel that operators must replace
-        # before commit; this rule rejects the sentinel.
+        # Every complete FORM_DATA entry carries provenance metadata. The
+        # drafting flow sets reviewed_by to "PENDING_REVIEW" as a sentinel
+        # an operator must replace before commit; this rule rejects it.
         prov = getattr(entry, "provenance", None)
         if prov is None:
             content_violations.append({
@@ -2232,7 +2225,7 @@ def validate_form_data_contract(
                     ),
                 })
 
-        # Wave 137a Rule 2: style consistency (warning-severity).
+        # style consistency (warning-severity).
         # Aggregates 9 signals; warning fires below threshold. Distinct
         # from Rule 1 (diversity) + Rule 3 (anchor verbs) — those rules
         # are critical because they catch single hard failure modes;
@@ -2248,7 +2241,7 @@ def validate_form_data_contract(
                 ),
             })
 
-    # Wave 136b: warning rule — OVERLAY_LOAD_REGRESSION.
+    # warning rule — OVERLAY_LOAD_REGRESSION.
     # Surfaces the complete -> degraded_placeholder transition Wave
     # 136a's loader logger.warning's. Visibility-only (non-blocking).
     warnings_list: List[Dict[str, str]] = []
@@ -2272,13 +2265,13 @@ def validate_form_data_contract(
                     }
                 )
 
-    # Wave 137a Rule 2: merge style-consistency warnings collected
+    # merge style-consistency warnings collected
     # in the per-entry loop above. Distinct from OVERLAY_LOAD_REGRESSION
     # — both are non-blocking, but Rule 2 covers entry style drift while
     # OVERLAY surfaces structural regressions.
     warnings_list.extend(wave_137a_style_warnings)
 
-    # Wave 137 followup: semantic profile gating. When a profile is
+    # semantic profile gating. When a profile is
     # supplied and the entry for ``profile.target_curie`` is complete,
     # run the profile's bad/good signal checks and append violations
     # to ``content_violations`` (critical-severity, same shape as the
@@ -2320,7 +2313,7 @@ def _last_event_id(capture: Any) -> str:
     """Return the event_id of the most recent decision logged via `capture`.
 
     Mirrors `synthesize_training._last_event_id` so the emitted pairs
-    carry valid `decision_capture_id` strings (Wave 112 invariant).
+    carry valid `decision_capture_id` strings.
     """
     decisions = getattr(capture, "decisions", None) or []
     if not decisions:
@@ -2507,7 +2500,7 @@ _FAMILY_FACTORIES: Dict[
 
 
 def _python_fallback_for_family(family: str) -> Dict[str, SurfaceFormData]:
-    """Wave 136a: returns the in-Python fallback dict for the family.
+    """returns the in-Python fallback dict for the family.
 
     Today only ``rdf_shacl`` ships with an in-Python fallback — Wave
     125b's hand-curated 40-entry catalog. Other families return an
@@ -2519,7 +2512,7 @@ def _python_fallback_for_family(family: str) -> Dict[str, SurfaceFormData]:
 
 
 def _coerce_provenance(raw: Any) -> Optional[Provenance]:
-    """Wave 137c: project a YAML-loaded provenance dict into a
+    """project a YAML-loaded provenance dict into a
     :class:`Provenance` instance, or return ``None`` when absent /
     malformed.
 
@@ -2549,7 +2542,7 @@ def _coerce_provenance(raw: Any) -> Optional[Provenance]:
 
 
 def _load_yaml_catalog(family: str) -> Dict[str, SurfaceFormData]:
-    """Wave 136a: read the per-family YAML overlay and project into
+    """read the per-family YAML overlay and project into
     ``SurfaceFormData`` instances.
 
     Returns ``{}`` when the YAML file is absent — that's the steady
@@ -2653,7 +2646,7 @@ def _deep_merge_by_curie(
     base: Dict[str, SurfaceFormData],
     overlay: Dict[str, SurfaceFormData],
 ) -> Dict[str, SurfaceFormData]:
-    """Wave 136a: per-CURIE overlay merge.
+    """per-CURIE overlay merge.
 
     YAML wins per-CURIE: an overlay entry replaces the Python entry
     for the same CURIE; YAML CURIEs not in Python are added; Python
@@ -2667,7 +2660,7 @@ def _deep_merge_by_curie(
         CURIE under-revision).
       * If an overlay entry claims ``anchored_status="complete"`` but
         carries no non-stub definitions, raise ``ValueError`` at
-        load time — overlay-level safety distinct from Wave 136b's
+        load time — overlay-level safety, distinct from the
         content-quality validator.
 
     Determinism: iterates the overlay in sorted-CURIE order so the
@@ -2689,9 +2682,8 @@ def _deep_merge_by_curie(
                 curie,
             )
         # Hard reject: complete with empty definitions is a contract
-        # violation. Wave 136b's content validator will widen this to
-        # cover stub-string content as well; here we only enforce the
-        # structural floor.
+        # violation. The content validator also rejects stub-string
+        # content; here we only enforce the structural floor.
         if entry.anchored_status == "complete" and not entry.definitions:
             raise ValueError(
                 f"YAML overlay entry {curie} claims complete but has "
@@ -2703,7 +2695,7 @@ def _deep_merge_by_curie(
 
 @functools.lru_cache(maxsize=8)
 def _load_form_data(family: str) -> Dict[str, SurfaceFormData]:
-    """Wave 136a — per-CURIE overlay merge.
+    """per-CURIE overlay merge.
 
     Loads the in-Python fallback dict for the family (today: only
     rdf_shacl has one), then overlays the YAML catalog at
@@ -2714,13 +2706,13 @@ def _load_form_data(family: str) -> Dict[str, SurfaceFormData]:
     CURIEs not in YAML are preserved. Critically, a partial YAML
     cannot erase the in-Python fallback's complete entries.
 
-    Wave 133d's whole-family-swap behavior is replaced. Operators
-    backfilling one CURIE at a time (Wave 136d's flow) no longer
-    risk erasing the existing 6 complete entries.
+    Merging per-CURIE rather than swapping the whole family is what keeps an
+    operator backfilling one CURIE at a time from erasing the existing
+    complete entries.
 
-    Cached via ``functools.lru_cache`` keyed on ``family``; Wave 136d
-    will call ``_invalidate_form_data_cache()`` after appending to
-    the YAML so the next read picks up the new content.
+    Cached via ``functools.lru_cache`` keyed on ``family``; a caller that
+    appends to the YAML must call ``_invalidate_form_data_cache()`` so the
+    next read picks up the new content.
     """
     base = _python_fallback_for_family(family)
     overlay = _load_yaml_catalog(family)
@@ -2730,10 +2722,10 @@ def _load_form_data(family: str) -> Dict[str, SurfaceFormData]:
 def _invalidate_form_data_cache() -> None:
     """Clear the ``_load_form_data`` lru_cache.
 
-    Wave 136d's operator-paused backfill flow appends entries to the
-    YAML overlay between paraphrase passes; calling this between
-    appends forces the next ``_load_form_data`` call to re-read the
-    YAML from disk so the freshly-authored CURIE is visible.
+    The operator-paused backfill flow appends entries to the YAML overlay
+    between paraphrase passes; calling this between appends forces the next
+    ``_load_form_data`` call to re-read the YAML from disk so the
+    freshly-authored CURIE is visible.
     """
     _load_form_data.cache_clear()
 
@@ -2750,10 +2742,10 @@ def _build_catalog_in_order(
     capped run sees a balanced sample across all 6 families before
     exhausting any single one.
 
-    Wave 133d: ``form_data`` is now passed in by ``_load_form_data``
-    (dispatched on ``manifest.family``) instead of read from a
-    module-level constant, so non-rdf_shacl families can ship their
-    own per-family YAML catalogs without editing this module.
+    ``form_data`` is passed in by ``_load_form_data`` (dispatched on
+    ``manifest.family``) rather than read from a module-level constant, so a
+    new family ships its own per-family YAML catalog without editing this
+    module.
     """
     # First, build per-form per-family lists in deterministic order.
     per_form_per_family: Dict[str, Dict[str, List[Tuple[str, str, str, Optional[List[str]]]]]] = {}
@@ -2852,7 +2844,7 @@ def generate_schema_translation_pairs(
     for family in _FAMILIES:
         stats.per_family[family] = 0
 
-    # Wave 133d: dispatch the catalog load on manifest.family. Falls
+    # dispatch the catalog load on manifest.family. Falls
     # back to the in-Python rdf_shacl table when family == "rdf_shacl"
     # AND no per-family YAML is on disk; returns empty + warns for any
     # other family with no on-disk YAML so the run continues but emits
@@ -2860,11 +2852,11 @@ def generate_schema_translation_pairs(
     # using the rdf_shacl catalog for non-RDF families).
     form_data = _load_form_data(manifest.family)
 
-    # Wave 135a: filter out degraded-placeholder entries BEFORE catalog
+    # filter out degraded-placeholder entries BEFORE catalog
     # walk so no pair body ever contains the literal "[degraded:" stub
     # text. Degraded entries are structural-contract scaffolding only;
     # the schema_translation generator emits pairs for ``"complete"``
-    # entries exclusively. Wave 135b's force-injection path hooks the
+    # entries exclusively. The force-injection path hooks the
     # same status field to know which CURIEs need token-stuffing fallback.
     degraded_skipped: List[str] = [
         curie
@@ -2972,7 +2964,7 @@ def generate_schema_translation_pairs(
 
     stats.surface_forms_used = len(seen_curies)
 
-    # Wave 135a: end-of-run summary warning when one or more
+    # end-of-run summary warning when one or more
     # degraded-placeholder entries were skipped. Operator action
     # (manifest backfill) flips them to ``"complete"`` over time.
     if degraded_skipped:
@@ -2993,19 +2985,19 @@ __all__ = [
     "DEFAULT_MAX_PAIRS",
     "SchemaTranslationStats",
     "SurfaceFormData",
-    # Wave 137c: provenance dataclass + coercion helper.
+    # provenance dataclass + coercion helper.
     "Provenance",
     "generate_schema_translation_pairs",
-    # Wave 135a contract surface.
+    # FORM_DATA contract surface.
     "validate_form_data_contract",
-    # Wave 135b anchored-injection helper for the SFT / DPO factories.
+    # Anchored-injection helper for the SFT / DPO factories.
     "resolve_anchor_text_for_curie",
-    # Wave 133d loader-pattern surface — exported so tests can verify
+    # Loader-pattern surface — exported so tests can verify
     # the rdf_shacl fallback and so future per-family YAML callers
     # can re-use the loader without touching internals.
     "_RDF_SHACL_FALLBACK_FORM_DATA",
     "_load_form_data",
-    # Wave 136a overlay-merge surface — Wave 136d's backfill loop
+    # Overlay-merge surface — the backfill loop
     # invalidates the cache between YAML appends so each round-trip
     # picks up freshly-authored CURIEs.
     "_invalidate_form_data_cache",

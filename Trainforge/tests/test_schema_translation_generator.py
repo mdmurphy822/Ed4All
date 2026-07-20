@@ -1,19 +1,19 @@
-"""Tests for the schema-to-English translation SFT pair generator
-(Wave 124 / Wave 125b expansion).
+"""Tests for the schema-to-English translation SFT pair generator.
 
-Mirrors the structure of `test_kg_metadata_generator.py` /
-`test_abstention_generator.py`. Covers:
+Covers:
 
-* Catalog size targets: total in [250, 300]; per-form floor 35; per-family floor 30.
+* Catalog size targets: total in [250, 300]; per-form floor 35; per-family
+  floor 30.
 * Each emitted pair validates against `instruction_pair.schema.json`.
 * Every completion contains the literal primary CURIE so the
-  ``preserve_tokens`` plumbing in synthesize_training.py recognises
-  the surface form.
+  ``preserve_tokens`` plumbing in synthesize_training.py recognises the
+  surface form.
 * Same manifest + same seed -> byte-identical pair list.
 * `max_pairs` cap is honored and preserves family balance.
-* DecisionCapture fires per-emit with rationale interpolating dynamic
-  signals.
+* DecisionCapture fires per-emit with rationale interpolating dynamic signals.
 * All 6 surface forms emit pairs across all 6 template families.
+* The per-CURIE YAML overlay merge over the in-Python fallback catalog.
+* The FORM_DATA structural + content-quality contract rules.
 """
 from __future__ import annotations
 
@@ -81,9 +81,8 @@ class _FakeCapture:
 def _rdf_shacl_manifest() -> PropertyManifest:
     """The 6-property RDF/SHACL manifest the rdf-shacl-* family uses.
 
-    Mirrors `schemas/training/property_manifest.rdf_shacl.yaml`. We
-    construct it in-process rather than load from disk so the test
-    doesn't depend on the file's continued presence.
+    Mirrors `schemas/training/property_manifest.rdf_shacl.yaml`, but built
+    in-process so the test does not depend on that file's continued presence.
     """
     return PropertyManifest(
         family="rdf_shacl",
@@ -143,10 +142,9 @@ def _rdf_shacl_manifest() -> PropertyManifest:
 def _validate_pair(pair: Dict[str, Any]) -> None:
     """Validate a single pair against `instruction_pair.schema.json`.
 
-    W-D4 follow-up: the pair schema $refs the canonical
-    `pair_audit_fields.schema.json`. The bare `jsonschema.validate(pair,
-    schema)` form would HTTP-fetch the canonical $id; route through the
-    registry-aware helper so cross-schema $ref resolution stays offline.
+    The pair schema $refs `pair_audit_fields.schema.json`, and a bare
+    `jsonschema.validate(pair, schema)` would HTTP-fetch that canonical $id —
+    route through the registry-aware helper so $ref resolution stays offline.
     """
     from lib.utils.jsonschema import validate_pair_record
 
@@ -154,12 +152,12 @@ def _validate_pair(pair: Dict[str, Any]) -> None:
 
 
 # -----------------------------------------------------------------------------
-# Catalog volume + balance assertions (Wave 125b targets).
+# Catalog volume + balance assertions.
 # -----------------------------------------------------------------------------
 
 
 def test_catalog_emits_at_least_250_pairs() -> None:
-    """Wave 125b expansion: catalog has ~250 pairs total."""
+    """catalog has ~250 pairs total."""
     capture = _FakeCapture()
     pairs, stats = generate_schema_translation_pairs(
         _rdf_shacl_manifest(),
@@ -298,7 +296,7 @@ def test_max_pairs_respected_with_balanced_families() -> None:
 
 
 # -----------------------------------------------------------------------------
-# Schema + integrity assertions (preserved from Wave 124).
+# Schema + integrity assertions.
 # -----------------------------------------------------------------------------
 
 
@@ -396,9 +394,9 @@ def test_decision_capture_fires_per_emit() -> None:
         assert len(rationale) >= 20
         assert "seed=" in rationale
         assert "manifest_family=" in rationale
-        # Wave 125b: family identifier interpolated for audit replay.
+        # Family identifier interpolated so an audit can replay the emit.
         assert "family=" in rationale
-        # Wave 22 alternatives_considered convention.
+        # alternatives_considered entries carry option + reason_rejected.
         alts = event.get("alternatives_considered") or []
         for alt in alts:
             assert isinstance(alt, dict)
@@ -407,7 +405,7 @@ def test_decision_capture_fires_per_emit() -> None:
 
 
 def test_capture_required() -> None:
-    """A None capture is rejected (Wave 112 invariant)."""
+    """A None capture is rejected — every emit must be auditable."""
     with pytest.raises(ValueError, match="capture"):
         generate_schema_translation_pairs(
             _rdf_shacl_manifest(),
@@ -421,12 +419,9 @@ def test_unknown_curie_skipped_silently() -> None:
     table should skip that surface form (with a warning) rather than
     crash. The known CURIE still emits its full per-form catalog.
 
-    Wave 133d update: the loader now dispatches the catalog on
-    ``manifest.family`` (was: a single global module-level table).
-    To test "known family + unknown CURIE", the manifest uses
-    family='rdf_shacl' so the loader falls back to the in-Python
-    rdf_shacl catalog, then verifies the unknown CURIE is skipped
-    gracefully within that catalog.
+    The loader dispatches the catalog on ``manifest.family``, so the manifest
+    uses family='rdf_shacl' to fall back to the in-Python rdf_shacl catalog;
+    the test then verifies the unknown CURIE is skipped gracefully within it.
     """
     capture = _FakeCapture()
     manifest = PropertyManifest(
@@ -485,14 +480,13 @@ def test_pair_carries_marker_fields() -> None:
 
 
 def test_schema_translation_pair_carries_question_type_short_answer() -> None:
-    """Wave 8 Worker B — every schema_translation pair stamps the canonical
-    `question_type="short_answer"` so the W6.B / W7.A-C per-question-type
-    segmentation buckets the 1-3 sentence definition / usage / pitfall /
-    comparison / reasoning paragraphs into the `short_answer` bucket
-    instead of the empty-string bucket. Conservative mapping: deterministic
-    completions are NOT MCQs (no distractor list, no single_correct_marker),
-    and the schema_translation family emits paragraph-shaped completions
-    rather than binary verdicts."""
+    """Every schema_translation pair stamps `question_type="short_answer"`.
+
+    Without the stamp, per-question-type segmentation drops these pairs into
+    the empty-string bucket. `short_answer` is the correct bucket because the
+    completions are 1-3 sentence paragraphs, not MCQs — there is no distractor
+    list and no single_correct_marker to segment on.
+    """
     capture = _FakeCapture()
     pairs, _ = generate_schema_translation_pairs(
         _rdf_shacl_manifest(),
@@ -508,22 +502,21 @@ def test_schema_translation_pair_carries_question_type_short_answer() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Wave 133d: loader-pattern + RDF/SHACL fallback (Plan-2 P1#7)
+# Loader pattern + in-Python RDF/SHACL fallback
 # ---------------------------------------------------------------------------
 
 
 def test_schema_translation_loader_falls_back_for_rdf_shacl(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Wave 136a contract (replaces Wave 133d identity check): when no
-    per-family YAML catalog exists on disk for ``family == "rdf_shacl"``,
-    ``_load_form_data`` must return the in-Python
-    ``_RDF_SHACL_FALLBACK_FORM_DATA`` dict content unchanged so the
-    RDF/SHACL calibration corpus rebuild keeps emitting the same pairs byte-
-    identically (no eval-score drift). Wave 136a replaced the Wave
-    133d whole-family-swap with a per-CURIE overlay merge — under the
-    new contract the returned dict is a fresh merged copy whose
-    content equals the base, NOT the same object."""
+    """With no per-family YAML on disk, ``_load_form_data("rdf_shacl")``
+    returns content equal to the in-Python ``_RDF_SHACL_FALLBACK_FORM_DATA``,
+    so a corpus rebuild keeps emitting the same pairs and eval scores don't
+    drift.
+
+    Content equality, NOT object identity: the overlay merge always returns a
+    fresh merged copy, even when the overlay is empty.
+    """
     from Trainforge.generators import schema_translation_generator as stg
 
     # Force the YAML lookup to fail — even if a future commit lands a
@@ -536,13 +529,13 @@ def test_schema_translation_loader_falls_back_for_rdf_shacl(
         return real_read_text(self, *args, **kwargs)
 
     monkeypatch.setattr(Path, "read_text", _no_yaml)
-    # Wave 136a: lru_cache means a previously-loaded entry would mask
-    # the no-YAML branch under test. Invalidate before reading.
+    # lru_cache would serve a previously-loaded entry and mask the no-YAML
+    # branch under test — invalidate before reading.
     stg._invalidate_form_data_cache()
 
     form_data = stg._load_form_data("rdf_shacl")
-    # Wave 136a: content equality with the in-Python base — the
-    # overlay is empty (no YAML) so the merge returns a base copy.
+    # Content equality with the in-Python base: with no YAML the overlay is
+    # empty, so the merge returns a copy of the base.
     assert form_data == stg._RDF_SHACL_FALLBACK_FORM_DATA, (
         "Wave 136a: rdf_shacl family with no on-disk YAML must return "
         "the in-Python fallback dict content (per-CURIE overlay merge "
@@ -564,15 +557,14 @@ def test_schema_translation_loader_falls_back_for_rdf_shacl(
 def test_schema_translation_returns_empty_for_unknown_family_with_warning(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Wave 136a contract (replaces Wave 133d): an unknown family name
-    (no YAML on disk AND no in-Python fallback) must return an empty
-    dict. Wave 133d emitted a "no schema-translation catalog" warning
-    here; Wave 136a's overlay merge no longer warns at this layer
-    because the surrounding generator (``generate_schema_translation_pairs``)
-    already surfaces the empty-catalog case via its own per-form
-    warnings, and double-warning was noisy. The downstream-generator
-    behavior — empty dict -> zero pairs emitted with form-level
-    warnings -> no crash — is unchanged."""
+    """An unknown family (no YAML on disk AND no in-Python fallback) returns
+    an empty dict.
+
+    No warning is emitted at this layer: ``generate_schema_translation_pairs``
+    already surfaces the empty-catalog case through its own per-form warnings,
+    so warning here would double-report. Downstream behavior is empty dict ->
+    zero pairs emitted with form-level warnings -> no crash.
+    """
     from Trainforge.generators import schema_translation_generator as stg
 
     import logging
@@ -590,12 +582,10 @@ def test_schema_translation_returns_empty_for_unknown_family_with_warning(
 
 
 def test_existing_rdf_shacl_pairs_byte_identical() -> None:
-    """Wave 133d byte-identity assertion: the loader-pattern rename of
-    ``_FORM_DATA -> _RDF_SHACL_FALLBACK_FORM_DATA`` plus the
-    ``_load_form_data`` dispatch MUST NOT change the pair list shape
-    or content for the rdf_shacl family. This is the regression net
-    that lets the in-flight RDF/SHACL calibration corpus rebuild proceed without
-    re-validating eval scores."""
+    """The loader dispatch must not change the pair list shape or content for
+    the rdf_shacl family. Pins pair count + determinism so a corpus rebuild can
+    proceed without re-validating eval scores.
+    """
     capture_a = _FakeCapture()
     capture_b = _FakeCapture()
     pairs_a, stats_a = generate_schema_translation_pairs(
@@ -615,8 +605,7 @@ def test_existing_rdf_shacl_pairs_byte_identical() -> None:
     assert stats_a.pairs_emitted == stats_b.pairs_emitted
     assert len(pairs_a) == len(pairs_b)
 
-    # Wave 125b ships 250 pairs; loader-pattern preserves that exact
-    # number for the rdf_shacl family.
+    # The rdf_shacl catalog is pinned at exactly 250 pairs.
     assert stats_a.pairs_emitted == 250, (
         f"Wave 133d byte-identity: rdf_shacl pair count drifted from "
         f"the Wave 125b 250 baseline. Got {stats_a.pairs_emitted}."
@@ -637,10 +626,9 @@ def test_existing_rdf_shacl_pairs_byte_identical() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Wave 135a: FORM_DATA contract scaffolding tests.
+# FORM_DATA structural-contract tests.
 #
-# Pin the user-stipulated safety contract for Wave 135b's anchored
-# force-injection path:
+# The safety contract the anchored force-injection path depends on:
 #   1. Every manifest CURIE has >=1 definition entry.
 #   2. Every manifest CURIE has >=1 usage_example entry.
 #   3. No CURIE falls back to token-stuffing UNLESS its anchored_status
@@ -657,12 +645,10 @@ def _load_rdf_shacl_manifest_curies() -> List[str]:
 
 
 def test_form_data_covers_all_manifest_curies() -> None:
-    """Wave 135b MERGE GATE: every manifest CURIE has a FORM_DATA entry.
+    """Every manifest CURIE has a FORM_DATA entry.
 
-    This is the structural contract that Wave 135b's anchored
-    force-injection path requires. Without this every-CURIE coverage,
-    a force-inject call against an unmapped CURIE has no entry to
-    dispatch on, which is what Wave 135a closes.
+    The anchored force-injection path dispatches on that entry, so a CURIE
+    with no entry leaves force-injection with nothing to inject.
     """
     from Trainforge.generators.schema_translation_generator import (
         _RDF_SHACL_FALLBACK_FORM_DATA,
@@ -732,12 +718,13 @@ def test_anchored_status_is_valid_enum() -> None:
 
 
 def test_existing_six_curies_remain_complete() -> None:
-    """Regression-pin: the 6 pre-Wave-135a entries (sh:datatype,
-    sh:class, sh:NodeShape, sh:PropertyShape, rdfs:subClassOf,
-    owl:sameAs) MUST keep ``anchored_status="complete"``. An accidental
-    degradation would silently drop their pairs from the schema-
-    translation generator output and tank the Wave 125b 250-pair
-    catalog volume."""
+    """The 6 hand-curated gold-set entries must keep
+    ``anchored_status="complete"``.
+
+    Degrading one silently drops its pairs from the generator output and cuts
+    the catalog below its pinned volume. Backfill flips degraded -> complete,
+    never the reverse.
+    """
     from Trainforge.generators.schema_translation_generator import (
         _RDF_SHACL_FALLBACK_FORM_DATA,
     )
@@ -765,10 +752,10 @@ def test_existing_six_curies_remain_complete() -> None:
 
 
 def test_thirty_four_new_curies_are_degraded_placeholder() -> None:
-    """Wave 135a ships 34 new entries (40 manifest CURIEs - 6 existing).
-    Every one of them must be tagged ``anchored_status=
-    "degraded_placeholder"`` so Wave 135b's force-injection path knows
-    where to stub-fill / WARN.
+    """The 34 not-yet-authored entries (40 manifest CURIEs minus the 6
+    gold-set ones) must all be tagged ``anchored_status=
+    "degraded_placeholder"`` so force-injection knows where to stub-fill and
+    warn instead of injecting placeholder prose.
     """
     from Trainforge.generators.schema_translation_generator import (
         _RDF_SHACL_FALLBACK_FORM_DATA,
@@ -787,16 +774,14 @@ def test_thirty_four_new_curies_are_degraded_placeholder() -> None:
 
 
 def test_validate_form_data_contract_passes_on_full_set() -> None:
-    """Positive case: the shipped FORM_DATA + the rdf-shacl manifest
-    together must satisfy the Wave 135a structural contract.
+    """The shipped FORM_DATA + the rdf-shacl manifest satisfy the structural
+    contract, but not Rule 4.
 
-    Wave 137a-3 update: the in-Python fallback dict's 6 complete
-    entries do NOT carry provenance (Wave 137c-1's design — the YAML
-    overlay carries it; the bare fallback predates the contract).
-    Rule 4 (MISSING_PROVENANCE) fires on each of those entries, so
-    ``passed=False`` is now expected on the bare fallback. The
-    structural contract (no missing / incomplete / invalid_status)
-    still holds; only Rule 4 critical violations gate ``passed``.
+    Provenance lives on the YAML overlay, not on the bare in-Python fallback,
+    so Rule 4 (MISSING_PROVENANCE) fires once per complete entry and
+    ``passed`` is False here by design. The structural contract (no missing /
+    incomplete / invalid_status entries) still holds — only Rule 4 critical
+    violations gate ``passed``.
     """
     from Trainforge.generators.schema_translation_generator import (
         _RDF_SHACL_FALLBACK_FORM_DATA,
@@ -807,8 +792,8 @@ def test_validate_form_data_contract_passes_on_full_set() -> None:
     result = validate_form_data_contract(
         _RDF_SHACL_FALLBACK_FORM_DATA, manifest_curies
     )
-    # Wave 137a-3: passed=False because Rule 4 (MISSING_PROVENANCE)
-    # fires on the 6 bare-fallback complete entries.
+    # passed=False because Rule 4 (MISSING_PROVENANCE) fires once per
+    # complete entry on the bare fallback.
     assert result["passed"] is False
     # Structural contract still holds:
     assert result["missing_curies"] == []
@@ -862,8 +847,8 @@ def test_validate_form_data_contract_fails_on_missing_curie() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Wave 135a: schema_translation generator must skip degraded entries
-# so no pair body ever contains the literal "[degraded:" stub text.
+# The generator must skip degraded entries so no pair body ever contains
+# the literal "[degraded:" stub text.
 # ---------------------------------------------------------------------------
 
 
@@ -961,26 +946,24 @@ def test_schema_translation_skips_degraded_placeholder_entries(
 
 
 # ---------------------------------------------------------------------------
-# Wave 136a: per-CURIE overlay merge contract.
+# Per-CURIE overlay merge contract.
 #
-# Tests that the new ``_load_form_data`` dispatches through
-# ``_python_fallback_for_family`` + ``_load_yaml_catalog`` +
-# ``_deep_merge_by_curie`` correctly:
+# ``_load_form_data`` dispatches through ``_python_fallback_for_family`` +
+# ``_load_yaml_catalog`` + ``_deep_merge_by_curie``:
 #   - Partial YAML cannot erase the in-Python fallback's complete entries.
 #   - Per-CURIE swap: YAML wins for CURIEs it defines.
 #   - Per-CURIE add: YAML CURIEs not in Python are added.
 #   - complete -> degraded regression in YAML emits a warning (not block).
 #   - complete with empty definitions raises ValueError at load.
 #   - Malformed YAML returns the Python base (no erasure).
-#   - No YAML -> byte-identical to Wave 133d's pair output.
+#   - No YAML -> pair output unchanged from the in-Python base.
 #   - lru_cache identity + invalidation helper.
 # ---------------------------------------------------------------------------
 
 
-# Synthetic test-fixture markers — clearly NOT corpus content. The
-# Wave 136a test surface MUST not contain real-looking definitions
-# that could accidentally seed training data on a downstream pipeline
-# run picking up these synthetic CURIEs / strings.
+# Synthetic fixture markers, deliberately NOT corpus-shaped: this file must
+# not contain real-looking definitions that a downstream pipeline run could
+# pick up and seed into training data.
 _TEST_FIXTURE_DEF = (
     "[TEST FIXTURE: synthetic definition for Wave 136a regression test]"
 )
@@ -1008,15 +991,13 @@ def _patch_yaml_overlay(
 def test_overlay_loader_partial_yaml_does_not_erase_complete_entries(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Wave 136a regression-pin: a partial YAML overlay (one CURIE
+    """Regression-pin: a partial YAML overlay (one CURIE
     defined, rest absent) must NOT erase the in-Python fallback's
     other complete entries.
 
-    This is the load-bearing safety property — Wave 136d's operator-
-    paused backfill flow lands one CURIE at a time, and a YAML with
-    only sh:minCount filled in must leave the existing 6 complete
-    entries (sh:datatype, sh:class, sh:NodeShape, sh:PropertyShape,
-    rdfs:subClassOf, owl:sameAs) intact and complete.
+    This is the load-bearing safety property: the operator backfill flow
+    lands one CURIE at a time, so a YAML with only sh:minCount filled in must
+    leave the existing 6 complete entries intact and complete.
     """
     from Trainforge.generators import schema_translation_generator as stg
     from Trainforge.generators.schema_translation_generator import (
@@ -1067,7 +1048,7 @@ def test_overlay_loader_partial_yaml_does_not_erase_complete_entries(
 def test_overlay_loader_yaml_swaps_curie(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Wave 136a per-CURIE swap: a YAML overlay entry replaces the
+    """Per-CURIE swap: a YAML overlay entry replaces the
     Python entry for the same CURIE."""
     from Trainforge.generators import schema_translation_generator as stg
     from Trainforge.generators.schema_translation_generator import (
@@ -1106,7 +1087,7 @@ def test_overlay_loader_yaml_swaps_curie(
 def test_overlay_loader_extension_curie_added(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Wave 136a per-CURIE add: a YAML overlay entry whose CURIE is
+    """Per-CURIE add: a YAML overlay entry whose CURIE is
     NOT in the Python base is added to the merged dict, and the
     Python base entries remain unchanged."""
     from Trainforge.generators import schema_translation_generator as stg
@@ -1157,7 +1138,7 @@ def test_overlay_loader_warns_on_complete_to_degraded_regression(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Wave 136a: a YAML overlay that regresses a complete base entry
+    """a YAML overlay that regresses a complete base entry
     to ``degraded_placeholder`` must emit a logger.warning (mid-edit
     signal) but NOT block the load.
 
@@ -1213,11 +1194,11 @@ def test_overlay_loader_warns_on_complete_to_degraded_regression(
 def test_overlay_loader_rejects_empty_definitions_when_complete(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Wave 136a: an overlay entry with ``anchored_status="complete"``
+    """an overlay entry with ``anchored_status="complete"``
     but empty ``definitions`` must raise ``ValueError`` at load time.
 
-    This is the overlay-level structural reject — Wave 136b will
-    widen this to cover stub-string content quality.
+    This is the overlay-level structural reject — content-quality rules cover
+    stub-string quality separately.
     """
     from Trainforge.generators import schema_translation_generator as stg
     from Trainforge.generators.schema_translation_generator import (
@@ -1248,7 +1229,7 @@ def test_overlay_loader_malformed_yaml_returns_base(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Wave 136a: malformed YAML on disk must return the in-Python
+    """malformed YAML on disk must return the in-Python
     base unchanged (no erasure) and emit a logger.error.
 
     Load-bearing ToS-mitigation: a corrupted YAML must NEVER be
@@ -1305,15 +1286,13 @@ def test_overlay_loader_malformed_yaml_returns_base(
 def test_overlay_loader_byte_identical_when_no_yaml(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Wave 136a byte-identity assertion (preserves Wave 133d's pin):
-    with no YAML overlay file present, ``_load_form_data`` returns a
-    merged dict whose content equals the in-Python base exactly, AND
-    ``generate_schema_translation_pairs`` produces the same 250 pairs
-    with the same first-3 prompts as the Wave 125b baseline.
+    """Byte-identity assertion: with no YAML overlay file present,
+    ``_load_form_data`` returns a merged dict whose content equals the
+    in-Python base exactly, AND ``generate_schema_translation_pairs`` produces
+    the same 250 pairs with the same first-3 prompts as the pinned baseline.
 
-    This is the regression net that confirms the YAML transcription
-    path is bit-identical to the in-Python fallback for the rdf_shacl
-    family.
+    Regression net confirming the YAML transcription path is bit-identical to
+    the in-Python fallback for the rdf_shacl family.
     """
     from Trainforge.generators import schema_translation_generator as stg
 
@@ -1331,8 +1310,8 @@ def test_overlay_loader_byte_identical_when_no_yaml(
     merged = stg._load_form_data("rdf_shacl")
     assert merged == stg._RDF_SHACL_FALLBACK_FORM_DATA
 
-    # Pair output byte-identity: same 250 pairs as the Wave 125b
-    # baseline. We compute against the exact same baseline shape as
+    # Pair output byte-identity: same 250 pairs as the pinned baseline,
+    # computed against the same shape as
     # ``test_existing_rdf_shacl_pairs_byte_identical``.
     capture = _FakeCapture()
     pairs, stats = generate_schema_translation_pairs(
@@ -1356,7 +1335,7 @@ def test_overlay_loader_byte_identical_when_no_yaml(
 
 
 def test_overlay_loader_caches() -> None:
-    """Wave 136a: ``_load_form_data`` is wrapped in
+    """``_load_form_data`` is wrapped in
     ``functools.lru_cache``. Two consecutive calls return the same
     object identity (cached). After ``_invalidate_form_data_cache()``,
     the next call returns a fresh dict object."""
@@ -1386,7 +1365,7 @@ def test_overlay_loader_caches() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Wave 136b: content-quality rejection rules.
+# Content-quality rejection rules.
 #
 # Each test mutates ONE field of an otherwise-valid synthetic
 # ``anchored_status="complete"`` entry to trip exactly ONE rule, then
@@ -1412,15 +1391,12 @@ def _synthetic_complete_entry(
         "ex:value .` — test:Foo is the synthetic predicate under test."
     ),
 ):
-    """Build a single ``SurfaceFormData`` entry that satisfies every
-    Wave 136b + Wave 137a content-quality rule out of the box, so
-    test cases can mutate ONE field at a time and trip exactly the
+    """Build a ``SurfaceFormData`` entry that satisfies every content-quality
+    rule out of the box, so a test can mutate ONE field and trip exactly the
     rule under test.
 
-    Wave 137a-3: include a valid Provenance block so Rule 4
-    (MISSING_PROVENANCE) does NOT fire on the default synthetic
-    entry. Tests targeting Rule 4 explicitly drop or mutate the
-    ``provenance`` field after construction.
+    Includes a valid Provenance block so Rule 4 (MISSING_PROVENANCE) does not
+    fire by default; Rule 4 tests drop or mutate ``provenance`` explicitly.
     """
     from Trainforge.generators.schema_translation_generator import (
         Provenance,
@@ -1493,7 +1469,7 @@ def test_validator_rejects_usage_answer_without_verbatim_curie() -> None:
 
 def test_validator_rejects_old_suffix_template_leak() -> None:
     """Rule: OLD_SUFFIX_TEMPLATE_LEAK — definition starting with one of
-    the Wave 121 token-stuffing template prefixes is rejected."""
+    the legacy token-stuffing template prefixes is rejected."""
     from Trainforge.generators.schema_translation_generator import (
         validate_form_data_contract,
     )
@@ -1744,8 +1720,8 @@ def test_validator_skips_content_rules_for_degraded_placeholder_entries() -> Non
     )
 
     # Entry has placeholder text, sub-floor length, and no CURIE in
-    # the definition — every Wave 136b content rule would fire if the
-    # entry were marked complete.
+    # the definition — every content rule would fire if the entry were
+    # marked complete.
     entry = SurfaceFormData(
         curie="test:Bar",
         short_name="Bar",
@@ -1778,12 +1754,12 @@ def test_validator_skips_content_rules_for_degraded_placeholder_entries() -> Non
 
 
 # -----------------------------------------------------------------------------
-# Wave 137c — Provenance dataclass + JSON schema + YAML loader coercion.
+# Provenance dataclass + YAML loader coercion.
 # -----------------------------------------------------------------------------
 
 
 def test_provenance_dataclass_is_frozen() -> None:
-    """Wave 137c: ``Provenance`` must be a frozen dataclass so an
+    """``Provenance`` must be a frozen dataclass so an
     audit trail captured at backfill time cannot be mutated later by
     downstream code paths."""
     from Trainforge.generators.schema_translation_generator import Provenance
@@ -1795,7 +1771,7 @@ def test_yaml_loader_round_trips_provenance(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Any,
 ) -> None:
-    """Wave 137c: a YAML overlay carrying a full provenance block must
+    """a YAML overlay carrying a full provenance block must
     round-trip into the loaded ``SurfaceFormData.provenance`` field."""
     from Trainforge.generators import schema_translation_generator as stg
 
@@ -1841,7 +1817,7 @@ def test_yaml_loader_returns_none_provenance_when_absent(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Any,
 ) -> None:
-    """Wave 137c: a YAML overlay entry that omits ``provenance``
+    """a YAML overlay entry that omits ``provenance``
     entirely must yield ``SurfaceFormData.provenance is None`` (no
     coercion failure, no implicit defaulting)."""
     from Trainforge.generators import schema_translation_generator as stg
@@ -1878,7 +1854,7 @@ def test_yaml_loader_returns_none_provenance_when_keys_missing(
     tmp_path: Any,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Wave 137c: a YAML overlay entry with a malformed provenance dict
+    """a YAML overlay entry with a malformed provenance dict
     (missing required key) must coerce to ``None`` and emit a
     ``logger.error`` so the operator sees the parse failure.
 
@@ -1937,7 +1913,7 @@ def test_yaml_loader_returns_none_provenance_when_keys_missing(
 
 
 # -----------------------------------------------------------------------------
-# Wave 137a-1 — Rule 1 (diversity gate) + Rule 3 (anchor-verb capacity).
+# Rule 1 (diversity gate) + Rule 3 (anchor-verb capacity).
 # -----------------------------------------------------------------------------
 
 
@@ -1953,9 +1929,9 @@ _GROUND_TRUTH_CURIES = (
 
 def _ground_truth_form_data() -> Dict[str, Any]:
     """Return the dict of the 6 pre-Wave-135a complete entries from the
-    in-Python fallback. The Wave 137c-3 gold-set fixture is the YAML
-    canonical reference; the fallback dict carries identical content
-    by Wave 135a's mechanical-transcription guarantee."""
+    in-Python fallback. The gold-set YAML fixture is the canonical reference;
+    the fallback dict carries identical content by the mechanical-transcription
+    guarantee."""
     from Trainforge.generators.schema_translation_generator import (
         _RDF_SHACL_FALLBACK_FORM_DATA,
     )
@@ -1963,7 +1939,7 @@ def _ground_truth_form_data() -> Dict[str, Any]:
 
 
 def test_diversity_gate_passes_on_six_ground_truth() -> None:
-    """Wave 137a Rule 1: the 6 pre-Wave-135a complete entries must all
+    """Rule 1: the 6 pre-Wave-135a complete entries must all
     pass the pairwise-diversity Jaccard floor. Calibrated against this
     fixture — any future drift here is a calibration discovery."""
     from Trainforge.generators.schema_translation_generator import (
@@ -1985,7 +1961,7 @@ def test_diversity_gate_passes_on_six_ground_truth() -> None:
 
 
 def test_diversity_gate_fires_on_synthetic_thesaurus_clones() -> None:
-    """Wave 137a Rule 1: 3 near-duplicate definitions trip the floor."""
+    """Rule 1: 3 near-duplicate definitions trip the floor."""
     import dataclasses
     from Trainforge.generators.schema_translation_generator import (
         _DIVERSITY_JACCARD_MAX,
@@ -2030,7 +2006,7 @@ def test_diversity_gate_fires_on_synthetic_thesaurus_clones() -> None:
 
 
 def test_diversity_gate_calibration_boundary_at_threshold() -> None:
-    """Wave 137a Rule 1: an entry tuned to ~0.46 fires; one tuned to
+    """Rule 1: an entry tuned to ~0.46 fires; one tuned to
     ~0.44 passes. Locks the boundary so a future _tokenize change can't
     drift the threshold."""
     from Trainforge.generators.schema_translation_generator import (
@@ -2084,7 +2060,7 @@ def test_diversity_gate_calibration_boundary_at_threshold() -> None:
 
 
 def test_diversity_gate_skips_single_definition_entry() -> None:
-    """Wave 137a Rule 1: only fires on len(definitions) >= 2."""
+    """Rule 1: only fires on len(definitions) >= 2."""
     from Trainforge.generators.schema_translation_generator import (
         validate_form_data_contract,
     )
@@ -2099,7 +2075,7 @@ def test_diversity_gate_skips_single_definition_entry() -> None:
 
 
 def test_anchor_verb_capacity_passes_on_six_ground_truth() -> None:
-    """Wave 137a Rule 3: every gold-set entry has >=1 anchor verb in
+    """Rule 3: every gold-set entry has >=1 anchor verb in
     its definitions AND >=1 action verb in its usage answers."""
     from Trainforge.generators.schema_translation_generator import (
         validate_form_data_contract,
@@ -2123,7 +2099,7 @@ def test_anchor_verb_capacity_passes_on_six_ground_truth() -> None:
 
 
 def test_missing_def_anchor_verb_fires() -> None:
-    """Wave 137a Rule 3: definitions made of pure noun phrases (no
+    """Rule 3: definitions made of pure noun phrases (no
     verb from the anchor allowlist) trip MISSING_ANCHOR_VERB_DEFINITION."""
     from Trainforge.generators.schema_translation_generator import (
         SurfaceFormData,
@@ -2154,7 +2130,7 @@ def test_missing_def_anchor_verb_fires() -> None:
 
 
 def test_missing_usage_action_verb_fires() -> None:
-    """Wave 137a Rule 3: usage answers made of nouns + CURIE only
+    """Rule 3: usage answers made of nouns + CURIE only
     (no allowlisted action verb) trip MISSING_ANCHOR_VERB_USAGE."""
     from Trainforge.generators.schema_translation_generator import (
         SurfaceFormData,
@@ -2185,7 +2161,7 @@ def test_missing_usage_action_verb_fires() -> None:
 
 
 def test_anchor_verb_does_not_fire_on_comparison_or_pitfall_only_gaps() -> None:
-    """Wave 137a Rule 3 calibration finding: scoped to definitions +
+    """Rule 3 is deliberately scoped to definitions +
     usage_examples ONLY. Verb-rich defs/usage but verb-bare comparisons
     and pitfalls must pass — the gold truth uses ;-separated parallel
     constructions and rhetorical Q-side framing in those categories."""
@@ -2229,7 +2205,7 @@ def test_anchor_verb_does_not_fire_on_comparison_or_pitfall_only_gaps() -> None:
 
 
 # -----------------------------------------------------------------------------
-# Wave 137a-2 — Rule 2 (style consistency score, warning-severity).
+# Rule 2 (style consistency score, warning-severity).
 # -----------------------------------------------------------------------------
 
 
@@ -2239,7 +2215,7 @@ def _warning_codes(result: Dict[str, Any]) -> List[str]:
 
 
 def test_style_consistency_passes_on_six_ground_truth() -> None:
-    """Wave 137a Rule 2: every gold-set complete entry scores at or
+    """Rule 2: every gold-set complete entry scores at or
     above _STYLE_CONSISTENCY_MIN. Threshold is calibrated to the worst
     observed gold-set score (sh:class @ 0.80 due to its `you've` token
     + 5/7 present-tense ratio); the other 5 entries land at 1.00.
@@ -2266,7 +2242,7 @@ def test_style_consistency_passes_on_six_ground_truth() -> None:
 
 
 def test_style_consistency_fires_on_conversational_definitions() -> None:
-    """Wave 137a Rule 2: a definition starting with `You can use ...`
+    """Rule 2: a definition starting with `You can use ...`
     + a hedging-heavy second def drops the entry below the threshold.
     Warning fires; passed remains True (warning-severity, non-blocking).
     """
@@ -2296,8 +2272,8 @@ def test_style_consistency_fires_on_conversational_definitions() -> None:
             "ex:value .` — test:Foo applies to validation here.",
         )],
         anchored_status="complete",
-        # Wave 137a-3: include valid provenance so Rule 4 doesn't fire;
-        # this test is targeted at Rule 2 only.
+        # Include valid provenance so Rule 4 doesn't fire; this test targets
+        # Rule 2 only.
         provenance=Provenance(
             provider="operator_hand_curated",
             generated_by="operator",
@@ -2323,7 +2299,7 @@ def test_style_consistency_fires_on_conversational_definitions() -> None:
 
 
 def test_style_consistency_calibration_boundary() -> None:
-    """Wave 137a Rule 2 calibration boundary: an entry losing 0.20
+    """Rule 2 boundary: an entry losing 0.20
     weight (conversational + hedging) lands at 0.80 and DOES fire (the
     threshold is a strict ``< _STYLE_CONSISTENCY_MIN`` floor). An entry
     losing only 0.10 lands at 0.90 and does NOT fire.
@@ -2403,7 +2379,7 @@ def test_style_consistency_calibration_boundary() -> None:
 
 
 # -----------------------------------------------------------------------------
-# Wave 137a-3 — Rule 4 (provenance presence, critical).
+# Rule 4 (provenance presence, critical).
 # -----------------------------------------------------------------------------
 
 
@@ -2420,7 +2396,7 @@ def _operator_provenance():
 
 
 def test_provenance_required_on_complete_entries() -> None:
-    """Wave 137a Rule 4: complete entry with provenance=None triggers
+    """Rule 4: complete entry with provenance=None triggers
     MISSING_PROVENANCE."""
     from Trainforge.generators.schema_translation_generator import (
         validate_form_data_contract,
@@ -2442,7 +2418,7 @@ def test_provenance_required_on_complete_entries() -> None:
 
 
 def test_provenance_passes_on_complete_entries_with_full_dict() -> None:
-    """Wave 137a Rule 4: synthetic complete entry with all 5 required
+    """Rule 4: synthetic complete entry with all 5 required
     provenance keys passes Rule 4 (no MISSING_PROVENANCE / INCOMPLETE
     _PROVENANCE)."""
     from Trainforge.generators.schema_translation_generator import (
@@ -2460,7 +2436,7 @@ def test_provenance_passes_on_complete_entries_with_full_dict() -> None:
 
 
 def test_provenance_incomplete_keys_fires() -> None:
-    """Wave 137a Rule 4: provenance present but reviewed_by="" fires
+    """Rule 4: provenance present but reviewed_by="" fires
     INCOMPLETE_PROVENANCE; the empty key name appears in the detail."""
     from Trainforge.generators.schema_translation_generator import (
         Provenance,
@@ -2488,9 +2464,9 @@ def test_provenance_incomplete_keys_fires() -> None:
 
 
 def test_provenance_pending_review_sentinel_fires() -> None:
-    """Wave 137a Rule 4: reviewed_by="PENDING_REVIEW" (the Wave 137c-2
-    drafting-CLI sentinel) fires INCOMPLETE_PROVENANCE — operators
-    must replace the sentinel before commit."""
+    """Rule 4: reviewed_by="PENDING_REVIEW" (the drafting-CLI sentinel) fires
+    INCOMPLETE_PROVENANCE — operators must replace the sentinel before
+    commit."""
     from Trainforge.generators.schema_translation_generator import (
         Provenance,
         validate_form_data_contract,
@@ -2516,9 +2492,8 @@ def test_provenance_pending_review_sentinel_fires() -> None:
 
 
 def test_provenance_skipped_on_degraded_entries() -> None:
-    """Wave 137a Rule 4: degraded_placeholder entry without provenance
-    must NOT trigger Rule 4 (content rules skip degraded entries by
-    Wave 136b's design)."""
+    """Rule 4: a degraded_placeholder entry without provenance must NOT fire
+    Rule 4, because content rules skip degraded entries."""
     from Trainforge.generators.schema_translation_generator import (
         SurfaceFormData,
         validate_form_data_contract,
@@ -2543,13 +2518,13 @@ def test_provenance_skipped_on_degraded_entries() -> None:
 
 
 def test_six_gold_set_entries_pass_provenance() -> None:
-    """Wave 137a Rule 4: synthesize 6 entries from the in-Python
+    """Rule 4: synthesize 6 entries from the in-Python
     fallback dict with operator-authored provenance attached and
     assert no Rule 4 violations fire.
 
-    The Wave 137c-3 gold-set YAML fixture carries operator-authored
-    provenance blocks per CURIE; this test asserts that the validator
-    accepts the same pattern when applied programmatically."""
+    The gold-set YAML fixture carries operator-authored provenance blocks per
+    CURIE; this asserts the validator accepts the same pattern programmatically.
+    """
     import dataclasses
     from Trainforge.generators.schema_translation_generator import (
         _RDF_SHACL_FALLBACK_FORM_DATA,

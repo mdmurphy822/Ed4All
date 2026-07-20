@@ -1,11 +1,10 @@
-"""End-to-end tests for the grounded-answer pipeline + citation gate (E6b).
+"""End-to-end tests for the grounded-answer pipeline + citation gate.
 
 Deterministic, CI-safe: no model, no server, no network. The LLM call site is
-driven by the shared ``FakeAnswerClient`` (published by E5 in
-``test_answer_composer``); retrieval runs the REAL lexical BM25 path over the
-mini-course fixture materialised into a tmp LibV2 layout (the WS1/WS2 fixture
-pattern). The offline-guard arm proves the whole query path needs nothing
-beyond loopback.
+driven by the shared ``FakeAnswerClient`` from ``test_answer_composer``;
+retrieval runs the REAL lexical BM25 path over the mini-course fixture
+materialised into a tmp LibV2 layout. The offline-guard arm proves the whole
+query path needs nothing beyond loopback.
 """
 from __future__ import annotations
 
@@ -35,8 +34,8 @@ from lib.retrieval.refusal import (
     RefusalPolicy,
 )
 
-# A permissive semantic policy: cosine floor 0 so the citation gate (the E6/E7
-# surface under test) is reached regardless of the fake embedder's cosine.
+# A permissive semantic policy: cosine floor 0 so the citation gate under test
+# is reached regardless of the fake embedder's cosine.
 _PERMISSIVE_SEMANTIC = RefusalPolicy(
     engine="semantic",
     min_top_score=-1.0,
@@ -46,7 +45,7 @@ _PERMISSIVE_SEMANTIC = RefusalPolicy(
 )
 from lib.testing.no_network import no_network
 
-# Shared test doubles published by E5.
+# Shared test doubles.
 from lib.tests.test_answer_composer import FakeAnswerClient, SpyCapture
 
 FIXTURE_ROOT = (
@@ -109,12 +108,11 @@ _STRICT_LEXICAL = RefusalPolicy(
     policy_version="test-strict",
 )
 
-# A permissive lexical policy. The pipeline now resolves the MEASURED (lexical,
-# None) pin by default (min_top_score=4.455352, calibrated on a different
-# corpus); the mini-course fixture's BM25 scores fall below it, so the
-# citation-gate / answer-shape tests below — which exercise the post-confidence
-# surfaces, not the threshold — pass this permissive policy explicitly to clear
-# confidence regardless of the fixture's corpus-specific scores.
+# A permissive lexical policy. By default the pipeline resolves the calibrated
+# (lexical, None) pin, whose min_top_score sits above this small fixture's BM25
+# scores. Tests exercising the POST-confidence surfaces (citation gate, answer
+# shape) pass this policy explicitly so they clear confidence regardless of the
+# fixture's corpus-specific scores.
 _PERMISSIVE_LEXICAL = RefusalPolicy(
     engine="lexical",
     min_top_score=0.0,
@@ -172,7 +170,7 @@ def test_resolved_normalized_citation_passes_without_char_span(mini_libv2: Path)
 
 
 # --------------------------------------------------------------------------- #
-# B4 provenance chain: source_references → citation.source_block + pdf_pages
+# Provenance chain: source_references → citation.source_block + pdf_pages
 # --------------------------------------------------------------------------- #
 
 
@@ -488,7 +486,7 @@ def test_validate_citations_false_bypasses_gate(mini_libv2: Path):
 
 
 # --------------------------------------------------------------------------- #
-# Attribution-driven citation prune + add (2026-06 extension)
+# Attribution-driven citation prune + add
 # --------------------------------------------------------------------------- #
 #
 # The pipeline runs claim-attribution over ALL gate-eligible passages strictly
@@ -544,7 +542,8 @@ def test_prune_drops_claimless_cited_citation(mini_libv2: Path):
 
 
 def test_prune_all_claimless_empties_sources_with_advisory(mini_libv2: Path):
-    """USER POLICY (2026-06-11): "no sources rather than a misleading one."
+    """Policy: no sources beats a misleading one.
+
     When EVERY cited citation is claim-less and no uncited supporter rescues
     the answer, ALL citations are pruned; the answer ships with zero sources
     and flips to answered_with_warnings (the unverified-support advisory).
@@ -819,7 +818,7 @@ def test_pipeline_has_no_hidden_non_loopback_dependency(mini_libv2: Path):
 
 
 # --------------------------------------------------------------------------- #
-# WS4 contract shape (to_dict keys frozen)
+# Contract shape (to_dict keys frozen)
 # --------------------------------------------------------------------------- #
 
 
@@ -847,7 +846,7 @@ def test_grounded_answer_to_dict_keys_frozen(mini_libv2: Path):
     assert set(cit.keys()) == {
         "chunk_id", "item_path", "section_heading", "module_id", "page_label",
         "anchor_status", "source_path", "text_quote", "link_target",
-        # B4 provenance-chain fields (additive, optional).
+        # Provenance-chain fields (additive, optional).
         "source_block", "pdf_pages",
         # Display title (additive, optional): renderers prefer it over the
         # filename-stem module_id, which repeats across weeks.
@@ -901,7 +900,7 @@ def test_page_label_empty_source():
 
 
 # --------------------------------------------------------------------------- #
-# task #26: source PDF page surfaced in the citation label (attr-free win)
+# Source PDF page surfaced in the citation label
 # --------------------------------------------------------------------------- #
 
 
@@ -960,13 +959,13 @@ def test_page_label_no_pages_is_byte_identical():
 
 
 # --------------------------------------------------------------------------- #
-# E6/E7 fix: semantic engine + chunkset_kind=None aligns the citation gate
-# with the vector index's manifest (NOT the directory-presence heuristic).
+# Semantic engine + chunkset_kind=None aligns the citation gate with the vector
+# index's manifest (NOT the directory-presence heuristic).
 # --------------------------------------------------------------------------- #
 
 
-# Heading + body of the imscc chunk. The query in the E6/E7 tests is the
-# index's exact text+heading projection so the deterministic fake embedder
+# Heading + body of the imscc chunk. The query below is the index's exact
+# text+heading projection so the deterministic fake embedder
 # yields cosine ~1.0 (clearing the default min_similarity floor) — isolating
 # the chunkset-kind/citation-gate behavior from fake-cosine luck.
 _IMSCC_CHUNK_HEADING = "Vector Stores and Embeddings"
@@ -1036,10 +1035,10 @@ def test_semantic_engine_chunkset_kind_from_index_manifest(
     index manifest, so the citation gate resolves against imscc (the index's
     kind) even though dart_chunks/ is also present.
 
-    Fail-without-fix: the pre-fix pipeline inferred chunkset_kind from
-    directory presence (dart_chunks/ wins) and the gate resolved against dart
-    -> source_page_missing -> blocked_citation_gate, despite the answer +
-    citation being correct against the imscc-built index.
+    Inferring chunkset_kind from directory presence instead would pick dart
+    (dart_chunks/ wins) and resolve the gate against dart -> source_page_missing
+    -> blocked_citation_gate, despite the answer + citation being correct
+    against the imscc-built index.
     """
     pytest.importorskip("numpy")  # builds a real vector index (needs [embedding])
     monkeypatch.setenv("ED4ALL_EMBEDDING_ALLOW_FAKE", "true")
@@ -1065,8 +1064,8 @@ def test_semantic_engine_directory_heuristic_would_misroute(
     mini_libv2: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """Pin the misalignment: the directory heuristic returns 'dart' (so an
-    explicit chunkset_kind='dart' BLOCKS), proving the index-manifest read in
-    the previous test is what unblocks the correct answer."""
+    explicit chunkset_kind='dart' BLOCKS) — the index-manifest read in the
+    previous test is what unblocks the correct answer."""
     pytest.importorskip("numpy")  # builds a real vector index (needs [embedding])
     from lib.retrieval.grounded_answer import _infer_chunkset_kind
 
@@ -1091,7 +1090,7 @@ def test_semantic_engine_directory_heuristic_would_misroute(
 
 
 # --------------------------------------------------------------------------- #
-# Refusal-policy pins wired onto the answer path (Workstream 0)
+# Refusal-policy pins wired onto the answer path
 # --------------------------------------------------------------------------- #
 #
 # The pipeline resolves its refusal policy through resolve_policy((engine,
@@ -1205,13 +1204,12 @@ def test_answer_path_hybrid_rrf_reads_embedder_and_applies_bge_large_pin(
     mini_libv2: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """hybrid-rrf resolves the live index's embedder (its fused score depends on
-    the semantic arm) and, as of the 2026-06-12 single-course union-corpus
-    calibration, applies the measured (hybrid-rrf, bge-large) pin — a FUSED-RRF
-    threshold, NOT the (semantic, bge-large) cosine pin (no leak across engines).
+    the semantic arm) and applies the (hybrid-rrf, bge-large) pin — a FUSED-RRF
+    threshold, NOT the (semantic, bge-large) cosine pin. The two live on
+    different score scales, so a pin must never leak across engines.
 
-    The wiring reads the manifest embedder for hybrid-rrf; this test confirms it
-    is consulted (the embedder is keyed) AND that the engine-correct pin is
-    applied with the bge-large embedder recorded on the verdict."""
+    Asserts the embedder IS consulted for hybrid-rrf AND that the
+    engine-correct pin is applied with the embedder recorded on the verdict."""
     import lib.retrieval.grounded_answer as ga
     from lib.retrieval.refusal import PINNED_POLICIES
 
@@ -1250,7 +1248,7 @@ _BGE_LARGE = "BAAI/bge-large-en-v1.5"
 
 
 # --------------------------------------------------------------------------- #
-# Default-path NLI never imported (R10 — DeBERTa stays off the query path)
+# Default-path NLI never imported (DeBERTa stays off the query path)
 # --------------------------------------------------------------------------- #
 
 
@@ -1271,15 +1269,14 @@ def test_default_path_does_not_import_transformers(mini_libv2: Path):
 
 
 # --------------------------------------------------------------------------- #
-# Groundedness v2 — status-flip warning policy (_score_groundedness)
+# Groundedness — status-flip warning policy (_score_groundedness)
 #
 # The "contradicted_claim" warning is what flips an answer to
-# answered_with_warnings (answer_course_question step 7). Under scorer v2 the
-# contradiction is computed with whole-chunk false contradictions removed
-# (windowed / single-topic semantics), so the warning fires far less. These
-# tests drive _score_groundedness directly with a fake NLI (injected via the
-# process singleton) so the v2 contradiction/rescue semantics are exercised
-# without the heavy DeBERTa stack.
+# answered_with_warnings (answer_course_question step 7). The scorer computes
+# contradiction with whole-chunk false contradictions removed (windowed /
+# single-topic semantics). These tests drive _score_groundedness directly with a
+# fake NLI (injected via the process singleton) so the contradiction/rescue
+# semantics are exercised without the heavy DeBERTa stack.
 # --------------------------------------------------------------------------- #
 
 
@@ -1356,7 +1353,7 @@ def test_score_groundedness_no_warning_when_window_rescues(monkeypatch):
     _patch_singleton_nli(monkeypatch, _FlipFakeNli())
     # Glossary-style multi-topic chunk: the whole-chunk premise cannot resolve
     # the claim (over the char budget) but a 3-sentence window can → stage-2
-    # rescue entails it, so NO contradicted/unsupported claim and NO warning.
+    # rescue entails it, so no contradicted/unsupported claim and no warning.
     glossary = (
         "Embeddings are dense numerical vectors. "
         "A vector store indexes them for search. "
@@ -1380,7 +1377,7 @@ def test_score_groundedness_no_warning_when_window_rescues(monkeypatch):
 def test_status_flips_to_warnings_on_genuine_v2_contradiction(
     mini_libv2: Path, monkeypatch
 ):
-    # End-to-end through answer_course_question: a genuine v2 contradicted claim
+    # End-to-end through answer_course_question: a genuine contradicted claim
     # flips status to answered_with_warnings.
     _patch_singleton_nli(monkeypatch, _FlipFakeNli())
     client = FakeAnswerClient([
@@ -1402,7 +1399,7 @@ def test_status_flips_to_warnings_on_genuine_v2_contradiction(
 
 
 # =========================================================================== #
-# NLI-based citation ADD (2026-06-12 under-citing investigation; shadow-default)
+# NLI-based citation ADD (off by default; opt in to shadow|on)
 # =========================================================================== #
 #
 # These tests drive the NLI-ADD arm (ED4ALL_ANSWER_NLI_ADD) which derives ADD
@@ -1480,8 +1477,7 @@ def test_candidate_signals_composite_passes_all_legs():
 
 
 def test_candidate_signals_entailment_leg_rejects():
-    # ent 0.65 < the 0.70 floor (re-pinned from 0.75 against the full 62-row
-    # dataset): NLI leg fails even with perfect coverage.
+    # ent 0.65 < the 0.70 floor: the NLI leg fails even with perfect coverage.
     report = _FakeGroundReport(
         available=True,
         claims=[_FakeVerdict(_COVER_CLAIM, "entailed", 0.65, "u1", False)],
@@ -1505,8 +1501,9 @@ def test_candidate_signals_coverage_leg_rejects():
 
 
 def test_candidate_signals_numeric_leg_rejects():
-    # The hand-judged false add: "$1.50" entailed at 0.90 against a chunk with
-    # high token coverage but NO $1.50 → numeric leg fails.
+    # High entailment + high token coverage, but the claim's "$1.50" appears
+    # nowhere in the chunk → the numeric leg rejects. Entailment alone is
+    # number-agnostic, so without this leg the add would be a false credit.
     claim = "The price of one pen is $1.50 in the store."
     chunk = "The price of one pen is computed in the store exercise here."
     report = _FakeGroundReport(
@@ -1687,11 +1684,10 @@ def test_nli_shadow_without_groundedness_logs_skip_reason(mini_libv2, monkeypatc
 
 
 def test_apply_zero_citation_answer_exclusion_is_warning_class(monkeypatch):
-    """PRUNE-TO-EMPTY EXCLUSION (2026-06-12 under-citing investigation):
-    would-adds on a zero-citation (prune-to-empty) answer were hand-judged
-    3/3 question-induced false adds. Shadow surfaces them under the distinct
-    warning-class outcome/prefix; ON mode NEVER restores a citation to such
-    an answer ("no sources beats a misleading source")."""
+    """PRUNE-TO-EMPTY EXCLUSION: on a zero-citation (prune-to-empty) answer,
+    would-adds are treated as a distinct warning class — shadow surfaces them
+    under their own outcome/prefix, and ON mode NEVER restores a citation to
+    such an answer (no sources beats a misleading source)."""
     import lib.retrieval.grounded_answer as ga
     from lib.retrieval.citation_anchor import AnchorStatus, CitationAnchor
 
@@ -1730,7 +1726,7 @@ def test_apply_zero_citation_answer_exclusion_is_warning_class(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# Flip-gating guardrail invariants (nli-add-flip plan PR-1 §4): the apply path
+# Flip-gating guardrail invariants: the apply path
 # must (a) cap adds at NLI_ADD_MAX_ADDED_CITATIONS, (b) never add an
 # un-anchorable candidate (recorded anchor_resolved=False), and (c) never change
 # an answer's status/verdict (it only ever APPENDS to the citation list).
@@ -1867,7 +1863,7 @@ def test_on_mode_never_changes_answer_status(mini_libv2, monkeypatch):
 
 # --------------------------------------------------------------------------- #
 # Completeness recheck — a single bounded re-ask when a multi-part question
-# leaves a GROUNDED sub-question unanswered (a 7B-Q4 failure mode, 2026-06).
+# leaves a GROUNDED sub-question unanswered.
 # validate_citations=False isolates the recheck (it runs pre-gate) from the
 # anchor resolver, so these synthetic geo chunks need no backing HTML.
 # --------------------------------------------------------------------------- #
@@ -2007,7 +2003,7 @@ def test_completeness_recheck_noop_when_uncovered_part_ungrounded(mini_libv2: Pa
 
 
 # --------------------------------------------------------------------------- #
-# W1.8 — groundedness_computational_check capture threads through the
+# groundedness_computational_check capture threads through the
 # PRODUCTION grounded-answer path (not just the eval path). The capture is
 # threaded into ``_score_groundedness`` -> ``score_groundedness(capture=...)``.
 # --------------------------------------------------------------------------- #
@@ -2052,7 +2048,7 @@ def test_groundedness_capture_silent_when_flag_off(
     mini_libv2: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """Flag OFF ⇒ no groundedness_computational_check decision fires even though
-    groundedness scoring runs (byte-identical to the historical exemption)."""
+    groundedness scoring runs."""
     from lib.tests.test_groundedness import FakeNli
 
     monkeypatch.delenv("ED4ALL_GROUNDEDNESS_COMPUTATIONAL", raising=False)
@@ -2071,8 +2067,11 @@ def test_groundedness_capture_silent_when_flag_off(
 
 
 # --------------------------------------------------------------------------- #
-# FIX A/B — grounded-answer chunk_type exclusion filter + tunable citation-gate
-# anchor-containment floor (Owner alg-glm-02 blocked_citation_gate fix).
+# Grounded-answer chunk_type exclusion filter + tunable citation-gate
+# anchor-containment floor. Both exist for courses whose index carries
+# QTI-harvested assessment_item chunks: their text lives in QTI XML, not in any
+# archived HTML page, so they can never pass the anchor gate and a model
+# citation of one would withhold the whole answer.
 # --------------------------------------------------------------------------- #
 
 from lib.retrieval.answer_composer import ComposedAnswer  # noqa: E402

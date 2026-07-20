@@ -142,32 +142,29 @@ _CORPUS_GENERALIZATION_ENV_DEFAULTS: Dict[str, str] = {
     # cooccurrence fragments the graph; page-level connects it). Node frequency
     # + occurrences stay chunk-level. "chunk" byte-stable legacy when unset.
     "TRAINFORGE_COOCCURRENCE_GROUP_BY": "page",
-    # M4: degenerate-grouping guard for the PAGE aggregation above. When a DART
+    # Degenerate-grouping guard for the PAGE aggregation above. When a DART
     # converter collapses an entire multi-chapter PDF into ONE ``lesson_id``,
     # every chunk folds into a single page-group → every cooccurrence pair lands
     # weight==1 → the related_from_cooccurrence rule (weight>=3) emits ZERO
-    # edges and the KG backbone dies (measured 0 vs 556 on a full-course 7B
-    # build). On a degenerate (<3 real groups) page/section level the guard
-    # steps DOWN to a finer level (page→section→chunk) for pair-counting only —
-    # real co-occurrence at a valid window, nodes/occurrences unchanged. No-op
-    # (byte-stable) on any corpus that already resolves into ≥3 groups.
+    # edges and the KG backbone dies. On a degenerate (<3 real groups)
+    # page/section level the guard steps DOWN to a finer level
+    # (page→section→chunk) for pair-counting only — real co-occurrence at a
+    # valid window, nodes/occurrences unchanged. No-op (byte-stable) on any
+    # corpus that already resolves into ≥3 groups.
     "TRAINFORGE_COOCCURRENCE_GROUP_FALLBACK": "true",
     # Corpus-generalization recovery paths (general / non-RDF textbooks)
     "TRAINFORGE_LEXICAL_CONCEPT_SEEDS": "true",
     "TRAINFORGE_OBJECTIVE_QUALITY_GATE": "true",
-    # D1 (vendor-parity audit 2026-07-18): derive PAGE-LEVEL key_concepts for
-    # markup-less accessible-HTML pages (the SemantiK GLM-OCR lane emits no
-    # <strong>/<b>/<dt>, so HTMLContentParser harvests none → chunks emit
-    # empty concept_tags; measured 704/705 empty on a real GLM-OCR course).
-    # Fills EMPTY key_concepts only; page-level (not chunk-local, which
-    # fragments the KG). Byte-stable off. See
-    # lib/ontology/page_concept_fallback.py.
+    # Derive PAGE-LEVEL key_concepts for markup-less accessible-HTML pages: the
+    # SemantiK GLM-OCR lane emits no <strong>/<b>/<dt>, so HTMLContentParser
+    # harvests none and chunks emit empty concept_tags. Fills EMPTY
+    # key_concepts only, at page level — chunk-local derivation fragments the
+    # KG. Byte-stable off. See lib/ontology/page_concept_fallback.py.
     "TRAINFORGE_PAGE_CONCEPT_FALLBACK": "true",
-    # D4 (vendor-parity audit 2026-07-18): relocate stranded next-section
-    # heading tails (SemantiK GLM-OCR lane glues the next section's
-    # "N.M EXERCISES" opener onto the prior chunk's tail; measured 46/705 on a
-    # real GLM-OCR course). Text-only, deterministic, idempotent; byte-stable
-    # no-op outside a run. See Trainforge/chunker/stranded_heading_tails.py.
+    # Relocate stranded next-section heading tails: the SemantiK GLM-OCR lane
+    # glues the next section's "N.M EXERCISES" opener onto the prior chunk's
+    # tail. Text-only, deterministic, idempotent; byte-stable no-op outside a
+    # run. See Trainforge/chunker/stranded_heading_tails.py.
     "TRAINFORGE_RELOCATE_STRANDED_HEADINGS": "true",
     # Defensive heading-sanity filter: repair a chunk's section_heading to its
     # nearest clean ancestor heading when the upstream heading classifier
@@ -704,10 +701,9 @@ _LEGACY_PHASE_OUTPUT_KEYS: Dict[str, List[str]] = {
         "success", "html_length",
     ],
     "staging": ["staging_dir", "staged_files", "file_count"],
-    # Wave 24: objective_extraction no longer emits objective_ids; it
-    # now emits textbook_structure_path + chapter_count + source_file_count
-    # + duration_weeks (autoscaled when --weeks unset).
-    # Real objective_ids surface from course_planning's synthesize step.
+    # objective_extraction emits textbook_structure_path + chapter_count +
+    # source_file_count + duration_weeks (autoscaled when --weeks unset), NOT
+    # objective_ids — those surface from course_planning's synthesize step.
     "objective_extraction": [
         "project_id", "project_path", "textbook_structure_path",
         "chapter_count", "duration_weeks", "source_file_count",
@@ -2146,8 +2142,7 @@ class WorkflowRunner:
         # entirely when the flag is off.
         seat_state: Optional[set] = None
 
-        # Wave1-I8 (Finding 7 of plans/dispatch-7-execution-inspection-2026-05.md):
-        # emit one banner line per agent in ``AGENT_PROVIDER_ENV_MAP`` so
+        # Emit one banner line per agent in ``AGENT_PROVIDER_ENV_MAP`` so
         # operators can see at workflow start whether each agent will
         # route to (a) an in-process local provider, (b) the Claude Code
         # subagent, or (c) the in-process stub fallback. Pure
@@ -2556,18 +2551,16 @@ class WorkflowRunner:
                 )
                 break
 
-            # Bug A (partial-artifact resume trap): extend the anti-zombie
-            # contract above from "ZERO successful tasks" to "not EVERY
-            # dispatched task succeeded". A non-optional multi-task phase where
-            # SOME tasks COMPLETE-d but others failed / timed out / were
-            # poisoned MUST NOT be persisted as ``_completed=True``. The live
-            # motivating run: a 10-PDF ``dart_conversion`` batch where 1 PDF
-            # converted (ch09) and 9 hit the 24000s batch timeout. The 1
-            # success made ``any_task_succeeded`` True (so the guard above did
-            # not fire) and produced canonical output keys, so the loop stamped
-            # ``_completed=True, _gates_passed=True`` — and a subsequent
-            # ``--resume`` saw a satisfied phase and SKIPPED it whole, so the 9
-            # unfinished conversions never re-ran. Completeness is measured by
+            # Partial-artifact resume trap: extend the anti-zombie contract
+            # above from "ZERO successful tasks" to "not EVERY dispatched task
+            # succeeded". A non-optional multi-task phase where SOME tasks
+            # COMPLETE-d but others failed / timed out / were poisoned MUST NOT
+            # be persisted as ``_completed=True``. Gating on
+            # ``any_task_succeeded`` is NOT sufficient: one success out of N
+            # produces canonical output keys, so the phase stamps
+            # ``_completed=True, _gates_passed=True``, and a later ``--resume``
+            # then sees a satisfied phase and SKIPS it whole — the unfinished
+            # units never re-run. Completeness is therefore measured by
             # COMPLETE-count == dispatched-count (this also catches POISON_PILL,
             # which the ERROR/TIMEOUT/FAILED ``phase_failed`` check below
             # misses). Stamp ``_completed=False`` and fail the workflow here so
@@ -2863,8 +2856,7 @@ class WorkflowRunner:
             phase_outputs=phase_outputs,
         )
 
-        # NVIDIA-KG item 3 (GPT-fb-12-may item 2 mirror): post-loop
-        # edge-consensus aggregator. The ``concept_extraction`` phase
+        # Post-loop edge-consensus aggregator. The ``concept_extraction`` phase
         # stamps ``edge_status`` + ``consensus_signals[]`` at authoring
         # time (``_run_concept_extraction``), but semantic graphs that
         # land via OTHER routes (the process_course / IMSCC path writing
@@ -4476,15 +4468,15 @@ class WorkflowRunner:
         workflow_params: Dict[str, Any],
         phase_outputs: Dict[str, Dict],
     ) -> List[Path]:
-        """NVIDIA-KG item 3 helper — stamp edge consensus on landed graphs.
+        """Stamp edge consensus on graphs that landed outside concept_extraction.
 
         Mirror of the authoring-time wiring in
         ``MCP/tools/pipeline_tools.py::_run_concept_extraction`` for
         semantic graphs that exist on disk at workflow end but were NOT
-        authored by that phase (process_course / IMSCC path, pre-fix
+        authored by that phase (process_course / IMSCC path, legacy
         corpora). LibV2 courses carry the semantic graph under BOTH
         layouts — ``graph/concept_graph_semantic.json`` (process_course
-        route, e.g. the RDF/SHACL calibration corpus) and
+        route) and
         ``concept_graph/concept_graph_semantic.json``
         (``_run_concept_extraction`` route) — and some courses carry
         both, so every existing candidate is handled.
@@ -5097,11 +5089,11 @@ class WorkflowRunner:
         if phase.name in ("trainforge_assessment", "assessment_synthesis"):
             return not workflow_params.get("generate_assessments", True)
 
-        # Skip training_synthesis if --skip-training was passed. This is the
-        # canonical A/B audit posture: Qwen generates assessments (phase 14)
-        # but Claude must NOT generate training pairs (phase 16) because that
-        # would route synthesis through a non-license-clean provider. See
-        # plans/algebra-textbook-kg-test-2026-05.md and docs/LICENSING.md.
+        # Skip training_synthesis if --skip-training was passed. This is what
+        # lets a run generate assessments while refusing to generate training
+        # pairs — the pair corpus is what the SLM adapter derives from, so it
+        # must not be routed through a non-license-clean provider. See
+        # docs/LICENSING.md.
         if phase.name == "training_synthesis":
             return bool(workflow_params.get("skip_training", False))
 
@@ -6723,7 +6715,7 @@ class WorkflowRunner:
               ]
             }
 
-        Per-block ``issue_count`` attribution (schema v2 fix): a
+        Per-block ``issue_count`` attribution: a
         ``GateResult``'s ``issues[]`` each carry a ``location`` field
         whose meaning is gate-dependent — a BLOCK-level gate
         (``udl_coverage`` / ``qa_checklist`` / …) sets ``location`` to a
@@ -6734,15 +6726,14 @@ class WorkflowRunner:
         ``gate_id -> Counter(location)`` map from
         ``gate_results_list``, then each block's ``gate_results[].
         issue_count`` counts ONLY the issues whose ``location`` equals
-        THAT block's ``block_id``. Schema v1 (the bug this supersedes)
-        attached the same phase-level ``issue_count`` to every block,
-        smearing course-wide totals across all blocks and inflating the
-        calibration harness's per-gate fire-rates toward 100%. The
-        per-gate ``passed`` stays PHASE-level (a gate either passed or
-        failed for the whole phase); only ``issue_count`` is now
-        per-block.
+        THAT block's ``block_id``. Attaching the phase-level
+        ``issue_count`` to every block instead would smear course-wide
+        totals across all blocks and drive the calibration harness's
+        per-gate fire-rates toward 100%. The per-gate ``passed`` stays
+        PHASE-level (a gate either passed or failed for the whole
+        phase); only ``issue_count`` is per-block.
 
-        ``phase_level_gate_results`` (schema v2 addition): preserves the
+        ``phase_level_gate_results``: preserves the
         structural (objective / page / ``None``-location) issues that are
         NOT attributable to any single block. Per gate it carries the
         TOTAL ``issue_count`` plus ``unattributed_issue_count`` (issues
@@ -6784,9 +6775,8 @@ class WorkflowRunner:
         # inter_tier_validation) or ``04_rewrite/`` (rewrite-tier
         # post_rewrite_validation). The report dir is sibling to the
         # blocks file's stage dir for inter_tier_validation, and lives
-        # INSIDE the stage dir for post_rewrite_validation per plan §6
-        # ("rewrite writes its own equivalent under
-        # 04_rewrite/02_validation_report/report.json").
+        # INSIDE the stage dir for post_rewrite_validation, which writes its
+        # own report at 04_rewrite/02_validation_report/report.json.
         stage_dir = validated_path.parent
         if phase_name == "inter_tier_validation":
             report_dir = stage_dir.parent / "02_validation_report"
@@ -7025,9 +7015,9 @@ class WorkflowRunner:
             elif esc == "per_claim_attribution_unfixable":
                 key = "per_claim_attribution_unfixable"
             elif esc:
-                # Any other minted marker (escalate_immediately /
-                # custom future markers) falls under the canonical
-                # escalate_immediately key per plan §W3.H.
+                # Any other minted marker (escalate_immediately / custom
+                # future markers) folds into the canonical
+                # escalate_immediately key.
                 key = "escalate_immediately"
             else:
                 key = "validation_failed"
@@ -7041,7 +7031,7 @@ class WorkflowRunner:
             label=f"two_pass_{phase_name}",
         )
 
-        # Schema v2: the phase-level gate section preserves the
+        # The phase-level gate section preserves the
         # structural (objective / page / None-location) issues that are
         # NOT attributable to any single block. Per gate it carries the
         # TOTAL issue_count plus the count of issues whose ``location``

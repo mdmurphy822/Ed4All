@@ -51,14 +51,13 @@ class ChunkFilter:
     """Filter criteria for chunks.
 
     Fields up through ``bloom_level`` are the pre-v4 schema and preserved as-is
-    for back-compat with existing callers.  The ``teaching_role`` /
-    ``content_type_label`` / ``module_id`` / ``week_num`` fields were added in
-    Worker J to expose v4 chunk metadata as filter axes.
+    for back-compat with existing callers; the rest expose v4 chunk metadata as
+    filter axes.
 
-    REC-VOC-03 Phase 2 (Worker T): when ``TRAINFORGE_ENFORCE_CONTENT_TYPE=true``,
     ``content_type_label`` is validated against the ChunkType enum from
-    ``schemas/taxonomies/content_type.json``. Flag off: accept any string
-    (backward-compat).
+    ``schemas/taxonomies/content_type.json`` only when
+    ``TRAINFORGE_ENFORCE_CONTENT_TYPE=true``; otherwise any string is accepted
+    so legacy corpora still filter.
     """
     chunk_type: Optional[str] = None
     difficulty: Optional[str] = None
@@ -67,24 +66,21 @@ class ChunkFilter:
     max_tokens: Optional[int] = None
     learning_outcome_refs: Optional[list[str]] = None
     bloom_level: Optional[str] = None
-    # v4 additions (Worker J)
+    # v4 additions
     teaching_role: Optional[str] = None
     content_type_label: Optional[str] = None
     module_id: Optional[str] = None
     week_num: Optional[int] = None
-    # Wave 70 additions — RDF-aligned filter axes.
-    # ``cognitive_domain`` is expected on chunks directly (factual /
-    # conceptual / procedural / metacognitive per
-    # schemas/context/courseforge_v1.vocabulary.ttl). Dependent on Wave 69
-    # extension that lands the predicate on chunk emit.
-    # ``hierarchy_level`` is NOT on chunks; it's resolved via the chunk's
+    # RDF-aligned filter axes.
+    # ``cognitive_domain`` lives on the chunk directly (factual / conceptual /
+    # procedural / metacognitive per courseforge_v1.vocabulary.ttl).
+    # ``hierarchy_level`` is NOT on chunks — it is resolved via the chunk's
     # ``learning_outcome_refs[]`` against the course's outcomes list.
     # Value space: "terminal" or "chapter" (matches LO hierarchyLevel).
     cognitive_domain: Optional[str] = None
     hierarchy_level: Optional[str] = None
 
     def __post_init__(self) -> None:
-        # REC-VOC-03 Phase 2 (Worker T): opt-in content_type enforcement.
         # Import inside the method so module-import time stays free of the
         # lib.validators dependency (keeps LibV2 CLI startup cheap when the
         # flag is off, which is the default).
@@ -114,8 +110,9 @@ class RetrievalResult:
     """A single retrieval result with score and metadata.
 
     The ``rationale`` field is populated only when ``retrieve_chunks`` was
-    called with ``include_rationale=True``.  All existing fields are preserved
-    for back-compat with production callers in Trainforge/rag/libv2_bridge.py.
+    called with ``include_rationale=True``.  Every other field is part of the
+    back-compat contract with production callers (Trainforge/rag/libv2_bridge.py)
+    and must not be renamed or reordered away.
     """
     chunk_id: str
     text: str
@@ -129,7 +126,7 @@ class RetrievalResult:
     tokens_estimate: int = 0
     learning_outcome_refs: list[str] = field(default_factory=list)
     bloom_level: Optional[str] = None
-    rationale: Optional[dict] = None  # Worker J — None when include_rationale=False
+    rationale: Optional[dict] = None  # None unless include_rationale=True
 
     def to_dict(self) -> dict:
         base = {
@@ -156,7 +153,7 @@ class RetrievalResult:
         self,
         context_url: str = "https://ed4all.dev/ns/courseforge/v1",
     ) -> dict:
-        """Wave 70 — RDF-compatible JSON-LD projection.
+        """RDF-compatible JSON-LD projection.
 
         Additive wrapper over :meth:`to_dict` — the legacy dict shape is
         untouched. See :mod:`LibV2.tools.libv2.jsonld_emit` for the full
@@ -208,20 +205,13 @@ _STRUCTURED_TOKEN_RE = re.compile(
     r"|[a-z0-9]+"                         # bare alphanumeric fallback
 )
 
-# Wave 84: split CamelCase boundaries before lowercasing so RDF/SHACL URI
-# forms like ``NodeShape`` / ``PropertyShape`` / ``subClassOf`` produce
-# tokens that align with the prose form. The probe-set diagnosis showed
-# chunk_00147 ("Node Shapes and Property Shapes" — the definition chunk)
-# losing to chunk_00175 ("Logical Composition with sh:and, sh:or") for
-# the query "Define a SHACL NodeShape" because:
-#   - chunk body says "node shape" (tokens: node, shape)
-#   - URI form "sh:NodeShape" tokenizes to "sh", "nodeshape"
-#   - query "NodeShape" tokenizes to "nodeshape"
-# The query never matches the prose body; URI count alone drives ranking.
-# Solution: emit BOTH the joined form (``nodeshape``) and the split forms
-# (``node``, ``shape``) so a query in either style matches text in either
-# style. Pre-existing URI-exact probes still hit because the joined form
-# is preserved.
+# Split CamelCase boundaries before lowercasing so URI forms (``NodeShape``,
+# ``subClassOf``) tokenize compatibly with the prose form of the same concept.
+# Without this, a CamelCase query token (``nodeshape``) can never match a body
+# that spells the concept out ("node shape"), so ranking is driven by incidental
+# URI mention count rather than by the definition text. Emitting BOTH the joined
+# and split forms lets a query in either style match text in either style, and
+# keeps URI-exact matching working because the joined form is preserved.
 _CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z])(?=[A-Z])")
 
 
@@ -255,12 +245,12 @@ def tokenize(text: str, *, structured_tokens: bool = True) -> list[str]:
     When ``structured_tokens`` is True (default), hyphenated slugs and SC refs
     are preserved as single tokens so querying ``"aria-labelledby"`` matches
     a chunk tagged with the same slug instead of leaking into generic ``aria``
-    and ``labelledby`` tokens.  Set False to reproduce the pre-Worker-J
-    tokenization (used by back-compat regression tests).
+    and ``labelledby`` tokens.  Set False to reproduce the legacy bare
+    alphanumeric tokenization (used by back-compat regression tests).
 
-    Wave 84: CamelCase boundaries are split BEFORE lowercasing so URI forms
-    like ``NodeShape`` produce both ``nodeshape`` (joined) AND ``node`` +
-    ``shape`` (split). See ``_expand_camel_case`` for the rationale.
+    CamelCase boundaries are split BEFORE lowercasing so URI forms like
+    ``NodeShape`` produce both ``nodeshape`` (joined) AND ``node`` + ``shape``
+    (split). See ``_expand_camel_case`` for why.
     """
     if structured_tokens:
         text = _expand_camel_case(text)
@@ -315,12 +305,11 @@ def _char_trigrams(text: str) -> set[str]:
 
 
 class LazyBM25:
-    """BM25 index with character n-gram boosting.
+    """Okapi BM25 index with character n-gram boosting.
 
-    Replaces the previous LazyTFIDF implementation with Okapi BM25
-    for better term saturation and document length normalization.
-    Character trigram overlap provides lightweight fuzzy matching
-    for morphological variants and partial word matches.
+    BM25 gives term saturation and document-length normalization; character
+    trigram overlap adds lightweight fuzzy matching for morphological variants
+    and partial word matches.
 
     Args:
         chunks: List of chunk dicts with "text" field.
@@ -342,11 +331,10 @@ class LazyBM25:
         self.k1 = k1
         self.b = b
         self.ngram_weight = ngram_weight
-        # When use_retrieval_text is True, chunks that carry a non-empty
-        # `retrieval_text` (v4 schema addition, = summary + key_terms) are
-        # indexed against that shorter, higher-signal string instead of
-        # the full chunk text.  v3 chunks without retrieval_text fall back
-        # to chunk.text and behave identically to pre-Worker-J.
+        # When True, chunks carrying a non-empty `retrieval_text` (v4 schema,
+        # = summary + key_terms) are indexed against that shorter,
+        # higher-signal string instead of the full chunk text. v3 chunks
+        # without the field fall back to chunk.text.
         self.use_retrieval_text = use_retrieval_text
         self.structured_tokens = structured_tokens
         self.doc_freq: dict[str, int] = defaultdict(int)
@@ -355,25 +343,18 @@ class LazyBM25:
         self.avgdl: float = 0.0
         self._build_index()
 
-    # Wave 84: section_heading injection. The probe diagnosis showed the
-    # NodeShape definition chunk (heading "Node Shapes and Property Shapes")
-    # losing to a sh:and/or/not logical-composition chunk because the
-    # heading — the most signal-dense string in any chunk — was never
-    # indexed. Headings live at chunk.source.section_heading; they are
-    # injected at the front of the indexed string with 3× repetition so
-    # heading terms get a soft boost without overwhelming body text.
-    # Headings are capped at HEADING_TOKEN_CAP words to prevent very long
-    # headings on short chunks from dominating term frequency.
+    # The section heading is the most signal-dense string in a chunk, so it is
+    # prepended to the indexed text rather than left out. Repetition gives
+    # heading terms a soft boost without swamping the body; the word cap stops
+    # a verbose heading on a short chunk from dominating its term frequency.
     HEADING_REPETITIONS = 3
     HEADING_TOKEN_CAP = 8
 
     def _heading_for_indexing(self, chunk: dict) -> str:
         """Return the section heading repeated for indexing, or empty.
 
-        Reads from ``chunk.source.section_heading`` (v4 schema) with a
-        fallback to ``chunk.section_heading`` for any back-compat path.
-        Caps heading length so a verbose heading doesn't dominate the
-        chunk's term-frequency distribution.
+        Reads ``chunk.source.section_heading`` (v4 schema), falling back to a
+        top-level ``chunk.section_heading`` for legacy shapes.
         """
         source = chunk.get("source") or {}
         heading = source.get("section_heading") or chunk.get("section_heading") or ""
@@ -387,13 +368,11 @@ class LazyBM25:
 
     def _doc_text_for_indexing(self, chunk: dict) -> str:
         """Return the string to index for a chunk.  Prefers retrieval_text
-        when the chunk carries one and ``use_retrieval_text`` is on.
-
-        Wave 84: prepends ``section_heading`` (capped + repeated) so the
-        heading contributes term frequency to BM25. Headings are the most
-        signal-dense string per chunk; pre-Wave-84 they were invisible to
-        retrieval, which let same-topic chunks with denser body keyword
-        repetition outscore the actual definition chunk for the topic.
+        when the chunk carries one and ``use_retrieval_text`` is on, and
+        prepends the capped/repeated ``section_heading`` so the heading
+        contributes term frequency to BM25. Without the heading, a same-topic
+        chunk with denser body keyword repetition outscores the chunk that
+        actually defines the topic.
         """
         heading_block = self._heading_for_indexing(chunk)
         if self.use_retrieval_text:
@@ -445,7 +424,7 @@ class LazyBM25:
                 ``(chunk, blended_score, bm25_score, ngram_score)`` for each
                 result so callers (retrieve_chunks rationale) can separate
                 the BM25 contribution from the n-gram contribution.  Default
-                False keeps the pre-Worker-J 2-tuple shape for back-compat.
+                False keeps the legacy 2-tuple shape for back-compat.
 
         Returns:
             List of (chunk, score) tuples sorted by descending score, or 4-tuples
@@ -455,7 +434,7 @@ class LazyBM25:
             min_relevance = DEFAULT_MIN_RELEVANCE
 
         # Canonicalise SC refs so "Contrast Minimum" and "Contrast (Minimum)"
-        # tokenize identically to the chunk side (Worker J).
+        # tokenize identically to the chunk side.
         query_canonical = _canonicalize_query(query)
         query_tokens = tokenize(query_canonical, structured_tokens=self.structured_tokens)
         if not query_tokens:
@@ -537,7 +516,7 @@ def _matches_filter(
     """Check if a chunk matches the filter criteria.
 
     ``outcomes_by_id`` is an optional ``{lo_id_lower: outcome_dict}`` map
-    used to resolve the Wave 70 ``hierarchy_level`` filter — the
+    used to resolve the ``hierarchy_level`` filter — the
     hierarchy lives on the LO, not the chunk, so we fan out via
     ``learning_outcome_refs[]``. Callers that don't pass the map (e.g.
     direct unit-test invocation) get no hierarchy_level coverage, which
@@ -578,7 +557,7 @@ def _matches_filter(
         if chunk_bloom != chunk_filter.bloom_level:
             return False
 
-    # v4 additions (Worker J)
+    # v4 additions
     if chunk_filter.teaching_role:
         if chunk.get("teaching_role") != chunk_filter.teaching_role:
             return False
@@ -598,10 +577,10 @@ def _matches_filter(
         if chunk_week != chunk_filter.week_num:
             return False
 
-    # Wave 70 — RDF-aligned filters.
+    # RDF-aligned filters.
     if chunk_filter.cognitive_domain:
-        # Expected on the chunk directly (Wave 60 → Wave 69 emit). Match
-        # case-insensitively to be kind to corpora with mixed case.
+        # Lives on the chunk directly. Matched case-insensitively so
+        # corpora with mixed case still filter.
         chunk_cd = chunk.get("cognitive_domain")
         if not chunk_cd or str(chunk_cd).lower() != str(chunk_filter.cognitive_domain).lower():
             return False
@@ -681,9 +660,8 @@ def stream_chunks_from_course(
     if not chunks_path.exists():
         return
 
-    # Wave 70: build the outcomes lookup lazily — only the
-    # hierarchy_level filter needs it, so courses without course.json
-    # aren't penalized.
+    # Build the outcomes lookup lazily — only the hierarchy_level filter
+    # needs it, so courses without course.json aren't penalized.
     outcomes_by_id: Optional[dict] = None
     if chunk_filter and chunk_filter.hierarchy_level:
         outcomes_by_id = _build_outcomes_lookup(course_dir)
@@ -786,24 +764,24 @@ def retrieve_chunks(
     concept_tags: Optional[list[str]] = None,
     learning_outcome_refs: Optional[list[str]] = None,
     bloom_level: Optional[str] = None,
-    # v4 filters (Worker J)
+    # v4 filters
     teaching_role: Optional[str] = None,
     content_type_label: Optional[str] = None,
     module_id: Optional[str] = None,
     week_num: Optional[int] = None,
-    # Wave 70 RDF-aligned filters
+    # RDF-aligned filters
     cognitive_domain: Optional[str] = None,
     hierarchy_level: Optional[str] = None,
-    # Worker J additions — back-compat by default
+    # Rationale + metadata scoring — back-compat by default
     include_rationale: bool = False,
     metadata_scoring: bool = True,
     use_concept_graph_boost: bool = True,
     use_lo_match_boost: bool = True,
     prefer_self_contained: bool = False,  # prereq boost, off by default (niche)
-    use_targets_concept_boost: bool = True,  # Wave 71: typed LO→concept edges
-    query_bloom_level: Optional[str] = None,  # Wave 71: detected query Bloom for edge-level match bonus
-    # Wave 84 — additive signals (default off so existing callers see no
-    # behavior change). Opt in via ``method`` preset or explicit booleans.
+    use_targets_concept_boost: bool = True,  # typed LO→concept edges
+    query_bloom_level: Optional[str] = None,  # detected query Bloom for edge-level match bonus
+    # Additive signals (default off so existing callers see no behavior
+    # change). Opt in via a ``method`` preset or explicit booleans.
     use_tag_idf_boost: bool = False,
     use_chunk_type_intent_boost: bool = False,
     method: Optional[str] = None,  # preset selector — overrides individual flags above
@@ -814,23 +792,23 @@ def retrieve_chunks(
     limit: int = 10,
     sample_per_course: Optional[int] = None,
     min_relevance: Optional[float] = None,
-    # WS2 — additive engine axis (orthogonal to ``method`` boost presets).
-    # Default "lexical" => byte-identical to every pre-WS2 caller.
+    # Engine axis, orthogonal to the ``method`` boost presets.
+    # Default "lexical" => byte-identical to every legacy caller.
     engine: str = "lexical",
 ) -> list[RetrievalResult]:
     """Retrieve chunks matching query and filters.
 
     Back-compat contract:  when ``include_rationale=False`` (the default) the
     returned ``RetrievalResult.to_dict()`` output is byte-identical to the
-    pre-Worker-J shape — production callers (Trainforge/rag/libv2_bridge.py)
+    legacy shape — production callers (Trainforge/rag/libv2_bridge.py)
     are unaffected.  Opt into the rationale payload and metadata-aware
     scoring explicitly.
 
-    ``engine`` (WS2, additive — default ``"lexical"``) selects the retrieval
-    engine, orthogonal to the ``method`` boost presets:
+    ``engine`` (default ``"lexical"``) selects the retrieval engine,
+    orthogonal to the ``method`` boost presets:
 
     * ``"lexical"`` — the BM25 + boost path below; byte-identical to every
-      pre-WS2 caller (the back-compat contract above).
+      legacy caller (the back-compat contract above).
     * ``"semantic"`` — real nearest-neighbor over the on-device vector index
       (``semantic_retriever.semantic_retrieve_chunks``). Requires
       ``course_slug``; ``method=`` is rejected (boosts are N/A). Fail-closed
@@ -843,8 +821,8 @@ def retrieve_chunks(
     # API callers may pass a str; downstream uses ``repo_root / ...`` throughout.
     repo_root = Path(repo_root)
 
-    # WS2 engine dispatch (additive). The "lexical" path falls through to the
-    # unchanged BM25 body below so existing callers see no behavior change.
+    # Engine dispatch. The "lexical" path falls through to the BM25 body
+    # below so existing callers see no behavior change.
     if engine != "lexical":
         if engine not in ("semantic", "hybrid-rrf"):
             raise ValueError(
@@ -899,9 +877,9 @@ def retrieve_chunks(
             chunk_filter=chunk_filter,
             include_rationale=include_rationale,
         )
-    # Wave 84: ``method`` preset overrides individual boost flags so
-    # callers can A/B retrieval configurations without juggling 6 booleans.
-    # Unknown method names raise ValueError (fail loudly on typos).
+    # A ``method`` preset overrides the individual boost flags so callers can
+    # A/B retrieval configurations without juggling six booleans. Unknown
+    # method names raise ValueError (fail loudly on typos).
     if method is not None:
         preset = resolve_method_preset(method)
         if "metadata_scoring" in preset:
@@ -957,24 +935,19 @@ def retrieve_chunks(
         hierarchy_level=hierarchy_level,
     )
 
-    # Wave 84: previously ``candidate_budget = max(limit * 10, 100)`` —
-    # the budget capped at 100 by default for limit=10, so
-    # ``_collect_filtered_chunks`` returned the FIRST 100 chunks in
-    # file/stream order (which mirrors module/week order), then BM25
-    # scored only that subset. For any course with > 100 chunks, gold
-    # chunks past the first 100 (later weeks/modules) were invisible
-    # to retrieval — a candidate-collection bug, not a tokenization
-    # issue. The audit's RDF/SHACL calibration corpus probe revealed it
-    # as a 60% Hit@10 ceiling (6/15 queries' gold chunks lived past
-    # chunk_00100).
+    # The candidate budget must be large enough to cover the whole searchable
+    # set, because ``_collect_filtered_chunks`` collects in file/stream order
+    # (which mirrors module/week order) and BM25 only scores what it collected.
+    # A budget smaller than the course therefore makes every chunk past the
+    # cutoff — i.e. all the later weeks/modules — unreachable by retrieval
+    # regardless of relevance. Do not scale this off ``limit``.
     #
-    # Fix: for single-course queries (``course_slug`` set) the budget
-    # is effectively the whole course (10K hard cap, well above any
-    # realistic course size). For multi-course queries we still bound
-    # so cross-corpus searches don't index a million chunks; bumped
-    # the floor from 100 to 1000 so even small limits get a representative
-    # pool. ``sample_per_course`` still bounds per-course collection
-    # for diversity-shaping cross-corpus queries.
+    # Single-course queries get the whole course (10K hard cap, above any
+    # realistic course size). Multi-course queries stay bounded so a
+    # cross-corpus search doesn't index the entire library; the 1000 floor
+    # keeps the pool representative even for a small ``limit``.
+    # ``sample_per_course`` still bounds per-course collection for
+    # diversity-shaping cross-corpus queries.
     if course_slug:
         candidate_budget = 10000
     else:
@@ -1003,7 +976,7 @@ def retrieve_chunks(
     graph_nodes_by_slug: dict[str, set[str]] = {}
     outcomes_by_slug: dict[str, list[dict]] = {}
     pedagogy_by_slug: dict[str, dict] = {}
-    # Wave 71: typed LO→concept edges from concept_graph_semantic.json.
+    # Typed LO→concept edges from concept_graph_semantic.json.
     # Shape: {lo_id_lower: [(concept_id_lower, bloom_level_lower|None), ...]}
     targets_concept_by_slug: dict[str, dict] = {}
 
@@ -1026,11 +999,10 @@ def retrieve_chunks(
     # in the rationale payload.
     q_tokens_lower = _lower_tokens_for_rationale(query)
 
-    # Wave 84: pre-compute IDF over the candidate pool's tag distribution.
-    # Doing this once over candidates (not the global corpus) keeps the
-    # signal sensitive to the active filter — e.g. when narrowed to a
-    # single course/week, "rdf" becomes high-IDF if it's rare in that
-    # subset. Empty when no boost requested (cheap short-circuit).
+    # Pre-compute IDF over the CANDIDATE pool's tag distribution, not the
+    # global corpus, so the signal stays sensitive to the active filter — a
+    # tag that is common library-wide can still be high-IDF within one
+    # course/week. Empty when no boost was requested (cheap short-circuit).
     tag_idf_weights: dict[str, float] = (
         compute_tag_idf(c.get("concept_tags", []) for c, _, _, _ in scored_with_components)
         if metadata_scoring and use_tag_idf_boost
@@ -1051,7 +1023,7 @@ def retrieve_chunks(
 
         contributions = BoostContributions()
         # Compute query concepts once — the concept-graph overlap boost and
-        # the Wave 71 targets-concept boost both consume them, so caching
+        # the targets-concept boost both consume them, so caching
         # avoids re-tokenizing the query per chunk.
         q_concepts = (
             extract_query_concepts(_canonicalize_query(query), graph_nodes)
@@ -1066,9 +1038,9 @@ def retrieve_chunks(
             )
         if metadata_scoring and prefer_self_contained:
             contributions.prereq_coverage = prereq_coverage_boost(chunk, pedagogy_model)
-        # Wave 71: reward chunks whose referenced LOs explicitly target a
-        # query concept via the typed concept graph, with a Bloom-level
-        # match bonus when the caller supplies query_bloom_level.
+        # Reward chunks whose referenced LOs explicitly target a query
+        # concept via the typed concept graph, with a Bloom-level match
+        # bonus when the caller supplies query_bloom_level.
         if metadata_scoring and use_targets_concept_boost and targets_concept_edges:
             contributions.targets_concept = targets_concept_boost(
                 chunk,
@@ -1076,12 +1048,12 @@ def retrieve_chunks(
                 targets_concept_edges,
                 query_bloom_level=query_bloom_level,
             )
-        # Wave 84: separately-fused IDF-weighted tag overlap.
+        # Separately-fused IDF-weighted tag overlap.
         if metadata_scoring and use_tag_idf_boost and tag_idf_weights:
             contributions.tag_idf_overlap = tag_idf_overlap_score(
                 chunk, q_tokens_lower, tag_idf_weights,
             )
-        # Wave 84: chunk_type intent prior (define / explain / example / ...).
+        # chunk_type intent prior (define / explain / example / ...).
         if metadata_scoring and use_chunk_type_intent_boost and query_intents:
             contributions.chunk_type_intent = chunk_type_intent_prior(
                 chunk, query_intents,

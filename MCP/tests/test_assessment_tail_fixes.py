@@ -1,26 +1,21 @@
-"""Assessment-tail fixes (alg-glm-02 production run, 2026-07-19) — regression net.
+"""Assessment-tail regression net — three bug classes, one section each.
 
-Three bug classes from the overnight run, one test section each:
-
-1. **Gate-input mis-routing** — ``_locate`` iterated phase_outputs
-   PHASE-major, so ``semantik_conversion`` (first phase, emits
-   ``output_path`` = the accessible HTML) shadowed
-   ``trainforge_assessment``'s real ``assessments_path``; the
+1. **Gate-input routing is KEY-major, not PHASE-major.** Iterating
+   phase_outputs phase-major lets an earlier phase's generic ``output_path``
+   (e.g. ``semantik_conversion``, whose output_path is accessible HTML)
+   shadow a later phase's specific ``assessments_path``; the
    ``assessment_quality`` / ``assessment_objective_alignment`` gates then
-   json-parsed an HTML file and crashed with
-   "Expecting value: line 1 column 1". Now KEY-major.
+   json-parse an HTML file. ``_locate`` must try each key across all phases
+   before moving to the next key.
 
-2. **run_assessment_synthesis kwargs fallback** — the phase received
-   ``project_id=None`` (lost across a course_planning fail-open + resume)
-   and error-returned in <100ms WITHOUT creating ``06_assessments/``; the
-   ``{"error": ...}`` envelope carried no ``success`` key so the executor
-   marked the task COMPLETE (silent). Now: newest ``PROJ-<course>-*``
-   export fallback (the courseforge-rewrite subcommand precedent) + loud
-   logging + ``success: False`` fail-loud envelopes.
+2. **run_assessment_synthesis must resolve a project and fail loudly.**
+   ``project_id`` can arrive None (lost across a course_planning fail-open +
+   resume); the phase falls back to the newest ``PROJ-<course>-*`` export. An
+   ``{"error": ...}`` envelope with no ``success`` key is read by the executor
+   as COMPLETE, so error returns must carry ``success: False``.
 
-3. **generate_assessments (trainforge_assessment) silence** — error
-   returns now carry ``success: False`` + ``error_code`` so the executor
-   FAILS the task instead of treating the envelope as success.
+3. **generate_assessments error returns carry ``success: False`` +
+   ``error_code``** for the same reason.
 
 No course slugs / device paths hardcoded; all fixtures under tmp_path.
 """
@@ -79,8 +74,8 @@ def test_locate_falls_back_to_lower_priority_key():
 
 
 def _production_shaped_phase_outputs(tmp_path: Path):
-    """Mirror the alg-glm-02 run's phase_outputs shape: semantik first
-    (output_path = HTML), trainforge_assessment later (real JSON)."""
+    """Production phase_outputs shape: semantik first (output_path = HTML),
+    trainforge_assessment later (real JSON)."""
     html = tmp_path / "book_accessible.html"
     html.write_text("<html><body>not json</body></html>", encoding="utf-8")
     assessments = tmp_path / "trainforge" / "assessments.json"
@@ -228,8 +223,8 @@ async def test_generate_assessments_no_workspace_fails_loud(
 
 def test_packager_scaffolding_chunks_filtered_from_assessment_content():
     """The Learning Objectives Map navigation chunks (the packager's own
-    scaffolding) must never reach assessment content selection (the
-    alg-glm-02 verb-less-stem defect)."""
+    scaffolding) must never reach assessment content selection — items built
+    from them have no subject-matter verb in the stem."""
     import re
     src = open("MCP/tools/pipeline_tools.py", encoding="utf-8").read()
     i = src.index("def _is_packager_scaffolding_chunk")

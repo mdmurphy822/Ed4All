@@ -61,8 +61,7 @@ from Trainforge.rag.boilerplate_detector import (
 from Trainforge.rag.wcag_canonical_names import canonicalize_sc_references
 
 # Chunker logic lives at ``Trainforge/chunker/`` (a sibling module
-# within Trainforge — see ``plans/post-phase8-review-2026-05.md`` for
-# the re-merge rationale). The ``CourseProcessor._chunk_content`` /
+# within Trainforge). The ``CourseProcessor._chunk_content`` /
 # ``_chunk_text_block`` / ``_merge_small_sections`` methods below are
 # thin wrappers that bind self-state into the chunker's
 # ``ChunkerContext`` callback. Constants (MIN_CHUNK_SIZE / MAX_CHUNK_SIZE
@@ -114,8 +113,8 @@ METRICS_SEMANTIC_VERSION = 5
 CHUNK_SCHEMA_VERSION = "v4"
 
 
-# Wave 81 (Worker A): canonical ChunkType enum used to gate
-# ``data-cf-template-type`` propagation in ``_merge_small_sections``. When a
+# Canonical ChunkType enum gating ``data-cf-template-type`` propagation in
+# ``_merge_small_sections``. When a
 # Courseforge HTML section carries ``data-cf-template-type="<value>"`` and
 # ``<value>`` is in this set, the chunker uses it as the chunk_type instead of
 # the heading-keyword heuristic. Values outside the set fall back to the
@@ -1290,11 +1289,11 @@ class CourseProcessor:
         # Stage 2
         print("[2/6] Parsing HTML content...")
         parsed_items = self._parse_html(html_files)
-        # Wave 69: retain parsed_items so the semantic graph stage can
-        # reconstruct objectives_metadata (list of LO dicts shaped like
-        # JSON-LD learningObjectives[]) for the Wave 66 targets_concept_from_lo
-        # rule. Previously the call site passed objectives_metadata=None,
-        # leaving the rule to fire on empty input.
+        # Retain parsed_items so the semantic graph stage can reconstruct
+        # objectives_metadata (list of LO dicts shaped like JSON-LD
+        # learningObjectives[]) for the targets_concept_from_lo rule. Passing
+        # objectives_metadata=None here instead leaves that rule firing on
+        # empty input.
         self._parsed_items = parsed_items
 
         # Pre-chunking: detect corpus-wide boilerplate (footers / template chrome)
@@ -1701,7 +1700,7 @@ class CourseProcessor:
         ``self.TARGET_CHUNK_SIZE``. Kept for the direct test caller at
         ``Trainforge/tests/test_provenance.py``.
 
-        Wave 5 W5.F: passes ``merged_key_claims`` /
+        Passes ``merged_key_claims`` /
         ``merged_objective_alignment`` through to the chunker so chunks
         emitted from a merge boundary carry the union'd audit fields
         ``_create_chunk`` then stamps onto the chunk dict.
@@ -2046,7 +2045,7 @@ class CourseProcessor:
             if key_terms:
                 chunk["key_terms"] = key_terms
 
-        # Wave 5 (W5.B): stamp the per-block audit arrays harvested by
+        # Stamp the per-block audit arrays harvested by
         # ``_extract_section_metadata`` from the matched JSON-LD
         # ``blocks[]`` entry. Conditional on truthy — empty list / None
         # means absent, preserving the back-compat contract that legacy
@@ -2196,7 +2195,7 @@ class CourseProcessor:
             "misconceptions": "jsonld_page_misconceptions" if chunk.get("misconceptions") else (
                 "none_jsonld_parse_failed" if item.get("_jsonld_parse_failed") else "none"
             ),
-            # Wave 5 (W5.B): trace entries for the new audit fields.
+            # Trace entries for the audit fields.
             # Values: ``"jsonld_blocks_match"`` when the matched JSON-LD
             # block populated the field, ``"none"`` otherwise. Mirrors
             # the trace keys set in ``_extract_section_metadata``.
@@ -2601,7 +2600,7 @@ class CourseProcessor:
         bloom_level: Optional[str] = None
         content_type_label: Optional[str] = None
         key_terms: List[Dict[str, str]] = []
-        # Wave 5 (W5.B): per-block audit arrays harvested from the matched
+        # Per-block audit arrays harvested from the matched
         # JSON-LD block. Empty lists by default — populated below when a
         # ``blocks[]`` entry matches the section heading and carries the
         # field, or via the data-cf-* fallback path (no-op day-1 — see
@@ -2613,7 +2612,7 @@ class CourseProcessor:
         trace: Dict[str, str] = {
             "content_type_label": "none",
             "key_terms": "none",
-            # Wave 5 (W5.B): trace entries for the new audit fields.
+            # Trace entries for the audit fields.
             # Values: "jsonld_blocks_match" when the matched block populated
             # the field, "none" otherwise. data-cf-* fallback never sets
             # these (no current attribute carries them) — symmetric path
@@ -2701,7 +2700,7 @@ class CourseProcessor:
                     trace["key_terms"] = "jsonld_blocks_match"
                 elif content_type_label:
                     trace["key_terms"] = "jsonld_blocks_match"
-                # Wave 5 (W5.B): harvest the W1.5 ``keyClaims`` and W1.7
+                # Harvest the ``keyClaims`` and
                 # ``objectiveAlignment`` audit arrays from the matched
                 # block. camelCase ↔ snake_case translation: JSON-LD wire
                 # keys are camelCase, snake_case on the chunker side.
@@ -2781,7 +2780,7 @@ class CourseProcessor:
                 if matched_section.key_terms:
                     key_terms = [{"term": t, "definition": ""} for t in matched_section.key_terms]
                     trace["key_terms"] = "data_cf_fallback"
-                # Wave 5 (W5.B): symmetric data-cf-* fallback for the new
+                # Symmetric data-cf-* fallback for the
                 # audit arrays. Day-1 NO-OP — no current data-cf-*
                 # attribute carries ``key_claims`` / ``objective_alignment``
                 # so ``ContentSection.key_claims`` / ``.objective_alignment``
@@ -3005,11 +3004,9 @@ class CourseProcessor:
         refs pass through with their source casing (still stripped and
         week-prefix-folded — ``WEEK_PREFIX_RE`` has ``re.IGNORECASE``).
 
-        Default will flip in Wave 4's structural migration; until then
-        enabling case preservation means downstream ``valid_outcome_ids``
-        sites (at L2561/2569/2783/2792) and ``align_chunks.py`` still
-        lowercase, so cross-artifact joins need case-folded comparison.
-        See ``plans/kg-quality-review-2026-04/worker-m-subplan.md`` §2.3.
+        Enabling case preservation does NOT make the corpus case-consistent:
+        the downstream ``valid_outcome_ids`` sites and ``align_chunks.py``
+        still lowercase, so cross-artifact joins must compare case-folded.
         """
         preserve_case = (
             os.getenv("TRAINFORGE_PRESERVE_LO_CASE", "").lower() == "true"
@@ -3678,16 +3675,16 @@ class CourseProcessor:
 
         The ``misconceptions=`` and ``questions=`` kwargs are derived from
         the chunk corpus so the ``misconception-of`` and ``assesses`` rules
-        can fire. Both were previously always ``None`` at this call site,
-        leaving those rule emitters inert.
+        can fire. Passing ``None`` for either leaves those rule emitters
+        inert.
 
-        Wave 69: ``objectives_metadata`` is built from the parsed JSON-LD
-        ``learningObjectives[]`` across every page so the Wave 66
-        ``targets_concept_from_lo`` rule (which previously fired on empty
-        input) can materialize the Wave 57 ``targetedConcepts[]`` as
-        typed ``targets-concept`` edges.
+        ``objectives_metadata`` is built from the parsed JSON-LD
+        ``learningObjectives[]`` across every page so the
+        ``targets_concept_from_lo`` rule can materialize
+        ``targetedConcepts[]`` as typed ``targets-concept`` edges; it fires
+        on empty input otherwise.
 
-        Fix-2: upstream-consumption short-circuit. When
+        Upstream-consumption short-circuit: when
         ``self.concept_graph_path`` points at a ``kind == "concept_semantic"``
         file (the genuine semantic graph emitted by the
         ``textbook_to_course::concept_extraction`` workflow phase), load and
@@ -3782,8 +3779,7 @@ class CourseProcessor:
             parsed_items or []
         )
 
-        # Phase 3 (plans/rdf-shacl-enrichment-2026-04-26.md): when
-        # TRAINFORGE_EMIT_TRIG is on, additionally compose an
+        # When TRAINFORGE_EMIT_TRIG is on, additionally compose an
         # rdflib.Dataset of per-rule named graphs and write a sibling
         # concept_graph_semantic.trig file. JSON output is byte-identical
         # whether the flag is on or off — the named-graph emit is purely
@@ -3912,24 +3908,18 @@ class CourseProcessor:
         chunks: List[Dict[str, Any]],
         concept_graph: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Build the typed pedagogical graph (Wave 75/76/78).
+        """Build the typed pedagogical graph.
 
-        Wave 81 wires the post-hoc retroactive scripts into the normal
-        emit pipeline: previously this method emitted a stub
-        co-occurrence graph over pedagogy/logistics tags (1-node /
-        0-edge in practice on real corpora) and the rich
-        ``build_pedagogy_graph`` from
-        ``Trainforge.pedagogy_graph_builder`` was only invoked by
-        ``scripts/wave78_complete_pedagogy.py`` retroactively. Now the
-        same builder runs at emit time so fresh archives carry the
-        full Wave 78 relation set
-        (``derived_from_objective`` / ``concept_supports_outcome`` /
-        ``assessment_validates_outcome`` / ``chunk_at_difficulty``)
-        plus the existing Wave 75 edges
-        (``teaches`` / ``assesses`` / ``practices`` / ``exemplifies`` /
+        Runs ``Trainforge.pedagogy_graph_builder.build_pedagogy_graph`` at
+        emit time so fresh archives carry the full relation set —
+        ``derived_from_objective`` / ``concept_supports_outcome`` /
+        ``assessment_validates_outcome`` / ``chunk_at_difficulty``, plus
+        ``teaches`` / ``assesses`` / ``practices`` / ``exemplifies`` /
         ``prerequisite_of`` / ``interferes_with`` /
         ``belongs_to_module`` / ``supports_outcome`` /
-        ``at_bloom_level`` / ``follows``).
+        ``at_bloom_level`` / ``follows``. A bare co-occurrence graph over
+        pedagogy/logistics tags is not a substitute: on real corpora it
+        degenerates to 1 node / 0 edges.
 
         Inputs:
 
@@ -4489,12 +4479,10 @@ class CourseProcessor:
         """True iff ``html`` is balanced (every opened non-void tag closes in order).
 
         Wave 82 (Phase D3) reconciliation: empty / whitespace-only HTML
-        is now ``True`` (well-formed by vacuity) rather than ``False``.
-        Pre-Wave-82 the legacy False return conflated "no HTML to check"
-        with "balance violation", inflating the
-        ``html_balance_violations`` count in ``quality_report.json``.
-        The RDF/SHACL calibration corpus audit caught this: 205/295 reported vs 116/295
-        on independent HTMLParser recount. Empty-html (text-only chunks
+        is ``True`` (well-formed by vacuity) rather than ``False``.
+        Returning False here would conflate "no HTML to check" with
+        "balance violation" and inflate the ``html_balance_violations``
+        count in ``quality_report.json``. Empty-html (text-only chunks
         where the renderer dropped HTML) deserves its own metric, not
         miscategorization as unbalanced.
         """
@@ -4806,15 +4794,14 @@ class CourseProcessor:
         back to just the top-level keys when chunks aren't provided so
         older call sites don't break.
 
-        Wave 82 (REC-PEDAGOGY-CHAIN): when ``pedagogy_graph`` is
-        supplied, ``prerequisite_chain`` is populated from the graph's
-        ``prerequisite_of`` edges instead of (the often-empty)
-        chunk ``prereq_concepts`` field. The RDF/SHACL calibration corpus audit found
-        the model emitting ``prerequisite_chain: []`` while the graph
-        carried 404 prereq edges — same data, two computation paths
-        with no link between them. The graph-based path is more
-        accurate (uses chunk co-occurrence + strict-later-week filter)
-        and replaces the chunk-prereq_concepts logic when available.
+        When ``pedagogy_graph`` is supplied, ``prerequisite_chain`` is
+        populated from the graph's ``prerequisite_of`` edges instead of the
+        chunk ``prereq_concepts`` field. Those are two computation paths over
+        the same data with no link between them, and the chunk field is
+        frequently empty while the graph carries a full prereq edge set — so
+        reading the chunk field yields an empty chain on a healthy graph. The
+        graph path is also more accurate (chunk co-occurrence + strict
+        later-week filter). It replaces the chunk-field logic when available.
         """
         from lib.ontology.concept_id import strip_concept_prefix
         summary: Dict[str, Any] = {

@@ -12,14 +12,11 @@
 # zero weakening, and Studio's :8077 is published as a normal bridged port on
 # the namespace-owning service.
 #
-# This shape was chosen over `network_mode: host` deliberately: it behaves
-# identically on native Linux, Docker Desktop (Windows/WSL2), and macOS.
-# Docker Desktop's host networking gives containers the Desktop VM's
-# namespace, which has NO ingress path from the host at all (verified
-# empirically: a host-network service is unreachable from both Windows
-# localhost and the WSL distro), so the previous host-network default served
-# Studio nowhere user-visible on Desktop platforms. The shared-netns sidecar
-# keeps the loopback hop AND normal published-port ingress everywhere.
+# Do NOT replace this with `network_mode: host`. On Docker Desktop
+# (Windows/WSL2, macOS) host networking places containers in the Desktop VM's
+# namespace, which has no ingress path from the host, so Studio would be
+# reachable nowhere user-visible. The shared-netns sidecar keeps the loopback
+# hop AND normal published-port ingress on every platform.
 #
 # Note: published ports live on the `ollama` service because it owns the
 # shared namespace — Docker requires port mappings on the namespace owner.
@@ -60,43 +57,38 @@ services:
       # support story. Never changes an answer verdict; always keeps >= 1
       # citation. Knob: ED4ALL_ANSWER_PRUNE_MIN_OVERLAP (default 0.25).
       ED4ALL_ANSWER_CITATION_PRUNE: "on"
-      # Prune support threshold. The single-course union-corpus attribution
-      # calibration (2026-06-12, 77-question frozen gold v1.1, lexical arm)
-      # recommended 0.444444 under the precision-floored rule (precision 0.84 /
-      # recall 0.42 at this threshold) — a stricter, higher-precision keep bar
-      # than the code default 0.25. This deployment adopts the measured
-      # precision-floored recommendation; the code default (0.25) is unchanged.
+      # Prune support threshold — a stricter, higher-precision keep bar than the
+      # code default (0.25), from the precision-floored calibration rule. The
+      # code default is unchanged; this is a per-deployment choice.
       ED4ALL_ANSWER_PRUNE_MIN_OVERLAP: "0.444444"
-      # NLI-based citation ADD arm (entailment-driven successor to the shingle
-      # ADD arm, which the 2026-06-12 under-citing investigation measured
-      # unsalvageable — paraphrase answers never quote). Code default is `off`
-      # (the ~750 MB NLI model must not load on the default answer path); this
-      # deployment runs it in `shadow` — compute would-adds + emit the capture +
-      # eval diagnostics, MUTATE NOTHING — so the would-add counts accumulate
-      # where the NLI model is already resident (with_groundedness on). Flip to
-      # `on` only after the shadow counts validate the composite criterion
-      # (ent>=0.70 AND token-coverage>=0.80 AND every claim numeric present AND
-      # anchor resolves AND <=2 adds). Never changes an answer verdict.
+      # NLI-based citation ADD arm — entailment-driven, because the older
+      # shingle-overlap ADD arm cannot work on paraphrased answers (they never
+      # quote the source). Code default is `off`: the ~750 MB NLI model must not
+      # load on the default answer path. This deployment runs `shadow` — compute
+      # would-adds + emit the capture and eval diagnostics, MUTATE NOTHING — so
+      # counts accumulate where the NLI model is already resident
+      # (with_groundedness on). Flip to `on` only once the shadow counts
+      # validate the composite criterion (ent>=0.70 AND token-coverage>=0.80 AND
+      # every claim numeric present AND anchor resolves AND <=2 adds). Never
+      # changes an answer verdict.
       ED4ALL_ANSWER_NLI_ADD: "shadow"
-      # Serving window. The default 4096 evicts trailing retrieved passages on
-      # 8-passage answers (observed: 5/8 dropped — multi-part questions lost
-      # their later-ranked support before the model ever saw it). 8192 holds a
-      # full 8-passage prompt; MUST match the sidecar's OLLAMA_CONTEXT_LENGTH
-      # below. 7B q4 + 8k KV cache still fits an 8GB GPU fully resident.
+      # Serving window. The 4096 default evicts trailing retrieved passages on
+      # an 8-passage prompt, so multi-part questions lose their later-ranked
+      # support before the model ever sees it. 8192 holds a full 8-passage
+      # prompt and MUST match the sidecar's OLLAMA_CONTEXT_LENGTH below. 7B q4 +
+      # 8k KV cache still fits an 8GB GPU fully resident.
       ED4ALL_ANSWER_NUM_CTX: "8192"
-      # Answer-path candidate filter (2026-07-19 owner strictness report). The
-      # per-CO W10 coverage build harvests QTI assessment_item chunks into the
-      # chunkset; 800/810 can never pass the citation anchor gate (their text
-      # lives in QTI XML, not any archived HTML page), so a model citation of
-      # one withholds the whole answer. Exclude them from the grounded-answer
-      # candidate pool (over-fetch keeps top-k full). Code default: unset (no
-      # filtering).
+      # Answer-path candidate filter. A build that emits per-CO assessments
+      # harvests QTI assessment_item chunks into the chunkset; their text lives
+      # in QTI XML, not in any archived HTML page, so they can never pass the
+      # citation anchor gate and a model citation of one withholds the whole
+      # answer. Exclude them from the candidate pool (over-fetch keeps top-k
+      # full). Code default: unset (no filtering).
       ED4ALL_ANSWER_EXCLUDE_CHUNK_TYPES: "assessment_item"
-      # Anchor containment floor for the answer-path citation gate. Measured on
-      # alg-glm-02: instructional chunks anchor 192/197, and all 5 misses sit
-      # at 0.824-0.839 vs the 0.85 code default (next failure band <=0.70), so
-      # 0.80 admits every genuine chunk with no fabrication risk. Code default:
-      # 0.85.
+      # Anchor containment floor for the answer-path citation gate. Lowered from
+      # the 0.85 code default to admit genuine instructional chunks whose
+      # containment lands just under it; the next failure band sits far below
+      # (<=0.70), so 0.80 adds no fabrication risk.
       ED4ALL_ANSWER_ANCHOR_CONTAINMENT: "0.80"
     volumes:
       # Mutable state/training/upload data lives on a named volume mounted at

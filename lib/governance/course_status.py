@@ -1,42 +1,19 @@
-"""GPT Feedback v2 Wave 1 (W1.C) — course-level final-status helpers.
+"""Course-level final-status helpers.
 
-Wave 1 (this module's original scope):
+  * :func:`load_course_status_schema` — cached loader for
+    ``schemas/governance/course_status.schema.json``. Same single-shot cached
+    pattern as :func:`lib.ontology.taxonomy.load_taxonomy`.
 
-  * :func:`load_course_status_schema` — loads
-    ``schemas/governance/course_status.schema.json`` and returns the JSON-Schema
-    dict. Symmetric with :func:`lib.ontology.taxonomy.load_taxonomy` (same
-    cached single-shot loader pattern).
+  * :func:`compose_course_status` — partial composer over a
+    ``{arrow_name: promotion_decision}`` mapping. Implements only the ``failed``
+    and ``non_certified_archive`` branches; the three ``certified_*`` branches
+    raise :class:`NotImplementedError` because tier selection needs gate-by-gate
+    evidence that a bare per-arrow decision map does not carry. Callers wanting
+    full enum routing use :func:`derive_course_status` instead.
 
-  * :func:`compose_course_status` — placeholder decision-logic helper that takes
-    a mapping of ``{arrow_name: promotion_decision}`` and returns one of the
-    five GPT 5-value enum members. Wave 1 implements only the ``failed`` and
-    ``non_certified_archive`` branches; the three ``certified_*`` branches
-    raise :class:`NotImplementedError` (now bridged through to the Wave 3
-    helper below by callers that want full enum routing).
-
-Wave 3 W3.G addition:
-
-  * :func:`derive_course_status` — full 5-branch composer that walks the
-    9-arrow promotion-chain rows produced by
-    :class:`lib.aggregators.promotion_chain_report.PromotionChainAggregator`
-    and returns the canonical ``course_status`` enum value. Implements the
-    decision logic pinned in plan §"Worker W3.G":
-
-      - ``failed`` — any arrow ``promotion_decision == "fail"`` AND the
-        contributing gate set carries any critical-severity gate (the
-        Wave 1 G2 / G4 schema's ``critical`` flag).
-      - ``non_certified_archive`` — every arrow up to arrow 5 (IMSCC
-        chunks) landed cleanly, but arrow 6+ (assessment / training)
-        skipped or non-blocking-fail.
-      - ``certified_accessible`` — the WCAG arrow row passes; the
-        instructional + trainable cohorts may be partial.
-      - ``certified_instructional`` — WCAG passes AND every gate in the
-        instructional cohort (``claim_support`` / ``content_grounding`` /
-        ``oscqr_score`` / ``page_objectives`` / ``source_refs``) passes.
-      - ``certified_trainable`` — ``certified_instructional`` AND every
-        gate in the trainable cohort (``eval_gating`` /
-        ``family_completeness`` / ``min_edge_count`` /
-        ``pair_claim_support`` / ``synthesis_diversity``) passes.
+  * :func:`derive_course_status` — full 5-branch composer over the 9-arrow
+    promotion-chain rows produced by
+    :class:`lib.aggregators.promotion_chain_report.PromotionChainAggregator`.
 
 The enum values are the five members of
 ``schemas/governance/course_status.schema.json``:
@@ -47,10 +24,7 @@ The enum values are the five members of
     non_certified_archive
     failed
 
-See ``plans/gpt-feedback-2-wave1-schemas-2026-05.md`` § "Worker W1.C" and
-``plans/gpt-feedback-2-wave3-wiring-telemetry-2026-05.md`` § "Worker W3.G"
-for the authoring rationale; ``schemas/ONTOLOGY.md`` for the broader
-governance posture.
+``schemas/ONTOLOGY.md`` covers the broader governance posture.
 """
 
 from __future__ import annotations
@@ -117,19 +91,16 @@ def load_course_status_schema() -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Decision-logic stub
+# Partial composer over a per-arrow decision map
 # ---------------------------------------------------------------------------
 
-# Sentinel boundary between the "accessible+instructional" arrows (1-5) and the
-# "trainable" arrows (6+). Wave 1 only knows the 5-arrow boundary; the canonical
-# 9-arrow chain identifies arrows by name in Wave 3 when the promotion-chain
-# aggregator lands. For Wave 1 the helper accepts an arbitrary mapping and
-# treats arrows up to this index (inclusive) as the "accessible+instructional"
-# slice.
+# Boundary between the "accessible+instructional" arrows (1-5) and the
+# "trainable" arrows (6+). Arrows up to this index inclusive form the
+# "accessible+instructional" slice.
 _ACCESSIBLE_INSTRUCTIONAL_ARROW_BOUNDARY = 5
 
-# Promotion-decision values that count as a passing arrow. Wave 1 treats every
-# other value (including ``"missing"`` / absent / ``"fail"``) as not-passing.
+# Promotion-decision values that count as a passing arrow. Every other value
+# (including ``"missing"`` / absent / ``"fail"``) is not-passing.
 _PASSING_DECISIONS = frozenset({"pass", "warn"})
 
 # Promotion-decision values that count as a definite failure for the
@@ -141,7 +112,7 @@ _FAILING_DECISIONS = frozenset({"fail"})
 def compose_course_status(per_arrow_decisions: Mapping[str, str]) -> str:
     """Compose a course-level final-status enum from per-arrow decisions.
 
-    Wave 1 implements only the two simplest branches:
+    Implements only the two branches decidable from per-arrow decisions alone:
 
       * Returns ``"failed"`` when ANY arrow has
         ``promotion_decision == "fail"``.
@@ -149,20 +120,18 @@ def compose_course_status(per_arrow_decisions: Mapping[str, str]) -> str:
         5-arrow boundary passes (``"pass"`` or ``"warn"``) and arrows
         beyond that boundary are missing or non-passing.
 
-    The three ``certified_*`` branches require gate-by-gate compositional
-    logic against the live promotion-chain aggregator output (Wave 3 G1)
-    and are not implemented in Wave 1; calls that would route into those
-    branches raise :class:`NotImplementedError` with a message pointing at
-    Wave 3.
+    The three ``certified_*`` branches need gate-by-gate evidence from the
+    promotion-chain aggregator output, which this mapping does not carry, so
+    they raise :class:`NotImplementedError`. Use :func:`derive_course_status`
+    for full enum routing.
 
-    Arrow naming convention: keys are the per-arrow names (today informally
+    Arrow naming convention: keys are the per-arrow names (informally
     ``"arrow1"`` … ``"arrow9"``); values are the per-arrow promotion
     decisions, drawn from the same enum the PhaseOutput
     ``promotion_decision`` field carries (``"pass" | "warn" | "fail" |
-    "escalate"``) plus a Wave-1 sentinel ``"missing"`` for arrows that have
-    not yet emitted a decision. The mapping order does NOT matter; the
-    helper sorts keys by their numeric suffix when present and falls back
-    to lexicographic sort otherwise.
+    "escalate"``) plus a ``"missing"`` sentinel for arrows that have not yet
+    emitted a decision. Mapping order does NOT matter — keys are partitioned
+    by their numeric suffix, not by iteration order.
 
     Args:
         per_arrow_decisions: mapping of ``{arrow_name: promotion_decision}``.
@@ -173,8 +142,6 @@ def compose_course_status(per_arrow_decisions: Mapping[str, str]) -> str:
 
     Raises:
         NotImplementedError: for the three ``certified_*`` branches.
-            Message points at Wave 3 (where the gate-by-gate decision
-            logic lands alongside the promotion-chain aggregator).
     """
     # Defensive copy so callers can mutate the input afterward.
     decisions: Dict[str, str] = dict(per_arrow_decisions)
@@ -184,14 +151,12 @@ def compose_course_status(per_arrow_decisions: Mapping[str, str]) -> str:
         return "failed"
 
     # --- Branch 2: arrows 1-5 pass, arrows 6+ missing/failed ---------------
-    # Partition the arrow keys by their numeric suffix when discoverable.
-    # Keys without a numeric suffix are treated as "outside the 1-5 slice"
-    # so the helper degrades gracefully on non-canonical inputs.
     def _arrow_index(name: str) -> int:
-        # Strip the canonical "arrow" prefix when present and try to parse
-        # the trailing digits. Anything non-parseable sorts beyond the
-        # 1-5 boundary so it won't accidentally satisfy the
-        # "non_certified_archive" precondition.
+        # Strip the "arrow" prefix when present and parse the trailing digits.
+        # A non-parseable key lands BEYOND the 1-5 boundary on purpose: a
+        # non-canonical key must not accidentally satisfy the
+        # "non_certified_archive" precondition by counting as a passing
+        # in-slice arrow.
         suffix = name[len("arrow"):] if name.startswith("arrow") else name
         try:
             return int(suffix)
@@ -219,13 +184,13 @@ def compose_course_status(per_arrow_decisions: Mapping[str, str]) -> str:
     if accessible_all_pass and not trainable_any_pass:
         return "non_certified_archive"
 
-    # --- Branches 3-5: certified_* (Wave 3) -------------------------------
+    # --- Branches 3-5: certified_* ----------------------------------------
     # When arrows 1-5 pass AND any arrow 6+ also passes, the course is a
-    # candidate for one of the three certified_* tiers. The exact tier
-    # selection requires gate-by-gate compositional logic that depends on
-    # the Wave-3 promotion-chain aggregator output (e.g. arrow-6 alone =>
-    # certified_accessible vs arrows 6+7 => certified_instructional vs
-    # full chain => certified_trainable). Wave 1 deliberately stops here.
+    # candidate for one of the three certified_* tiers. Tier selection needs
+    # gate-by-gate evidence from the promotion-chain aggregator (arrow-6 alone
+    # => certified_accessible vs arrows 6+7 => certified_instructional vs full
+    # chain => certified_trainable), which a per-arrow decision map cannot
+    # supply. Raise rather than guess a tier.
     raise NotImplementedError(
         "compose_course_status: certified_* branch routing is deferred to "
         "Wave 3 (governance G1 — promotion-chain aggregator). Wave 1 only "
@@ -236,16 +201,14 @@ def compose_course_status(per_arrow_decisions: Mapping[str, str]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Wave 3 W3.G — full 5-branch composer wired against the promotion-chain
-# aggregator's per-arrow rows.
+# Full 5-branch composer over the promotion-chain aggregator's per-arrow rows.
 # ---------------------------------------------------------------------------
 
 
-# Canonical gate cohorts pinned by plan §"Worker W3.G". The composer walks
-# every arrow row's ``validator_set[]`` looking for these gate IDs to decide
-# the certified_* tier. Naming cohorts at the helper level (rather than
-# inline) gives test code a single import surface and makes drift between
-# the plan and code visible at edit time.
+# Canonical gate cohorts. The composer walks every arrow row's
+# ``validator_set[]`` looking for these gate IDs to decide the certified_*
+# tier. They are module constants rather than inline literals so test code has
+# a single import surface.
 
 #: Gates whose pass status promotes a course past arrow 5 (IMSCC chunks)
 #: into the ``certified_accessible`` tier. This is the WCAG / accessibility
@@ -261,14 +224,13 @@ ACCESSIBILITY_GATE_IDS: frozenset = frozenset({
 #: against cited chunks, source grounding, OSCQR course-quality scoring,
 #: per-page LO coverage, and per-emit source-ref integrity.
 #:
-#: ``claim_support`` (Wave W-D11.B) — block-side per-claim NLI entailment
-#: gate fired at the ``post_rewrite_validation`` phase (Arrow 3 cohort).
-#: Sibling to ``content_grounding`` and ``source_refs``. Currently
-#: warning-severity day-1 per the calibration-deferred contract; the
-#: cohort entry is dormant until operator calibration flips severity to
-#: critical, at which point a critical-fail must gate the instructional
-#: cohort rather than short-circuit to ``"failed"`` via the critical-cohort
-#: branch in :func:`derive_course_status`.
+#: ``claim_support`` — block-side per-claim NLI entailment gate fired at the
+#: ``post_rewrite_validation`` phase (Arrow 3 cohort). Sibling to
+#: ``content_grounding`` and ``source_refs``. Warning-severity until operator
+#: calibration, so this cohort entry is dormant; when severity flips to
+#: critical, a critical-fail must cap the instructional tier here rather than
+#: short-circuit to ``"failed"`` via the critical-cohort branch in
+#: :func:`derive_course_status`.
 INSTRUCTIONAL_GATE_IDS: frozenset = frozenset({
     "claim_support",
     "content_grounding",
@@ -283,14 +245,13 @@ INSTRUCTIONAL_GATE_IDS: frozenset = frozenset({
 #: post-training eval-gating thresholds, per-family CURIE-coverage
 #: symmetry, and per-pair per-claim NLI entailment.
 #:
-#: ``pair_claim_support`` (Wave W-D11.B) — pair-side per-claim NLI
-#: entailment gate fired at the ``training_synthesis`` phase (Arrow 7
-#: cohort). Sibling to ``synthesis_diversity`` and ``synthesis_leakage``.
-#: Currently warning-severity day-1 per the calibration-deferred
-#: contract; the cohort entry is dormant until operator calibration
-#: flips severity to critical, at which point a critical-fail must
-#: gate the trainable cohort rather than short-circuit to ``"failed"``
-#: via the critical-cohort branch in :func:`derive_course_status`.
+#: ``pair_claim_support`` — pair-side per-claim NLI entailment gate fired at
+#: the ``training_synthesis`` phase (Arrow 7 cohort). Sibling to
+#: ``synthesis_diversity`` and ``synthesis_leakage``. Warning-severity until
+#: operator calibration, so this cohort entry is dormant; when severity flips
+#: to critical, a critical-fail must cap the trainable tier here rather than
+#: short-circuit to ``"failed"`` via the critical-cohort branch in
+#: :func:`derive_course_status`.
 TRAINABLE_GATE_IDS: frozenset = frozenset({
     "eval_gating",
     "family_completeness",
@@ -299,15 +260,14 @@ TRAINABLE_GATE_IDS: frozenset = frozenset({
     "synthesis_diversity",
 })
 
-# Pre-arrow-5 boundary used by the ``failed`` / ``non_certified_archive``
-# decision branches (mirrors the canonical 9-arrow chain rather than the
-# Wave 1 5-arrow boundary).
+# Last arrow of the archivable core pipeline, used by the ``failed`` /
+# ``non_certified_archive`` decision branches.
 _NON_CERTIFIED_ARCHIVE_BOUNDARY_ARROW = 5
 
-# Canonical anti-silent-degradation sentinel gate ID. Kept as a module
-# constant so the non-training-run relaxation below can recognise a
-# legitimately-skipped stage (an arrow whose ONLY failure signal is the
-# missing-stage-report sentinel) without importing the aggregator.
+# Anti-silent-degradation sentinel gate ID. A module constant so the
+# non-training-run relaxation below can recognise a legitimately-skipped stage
+# (an arrow whose ONLY failure signal is this sentinel) without importing the
+# aggregator.
 _MISSING_STAGE_REPORT = "missing_stage_report"
 
 # First arrow of the assessment / training cohort. Arrows at or beyond this
@@ -315,7 +275,7 @@ _MISSING_STAGE_REPORT = "missing_stage_report"
 # run on a TRAINING build. On a non-training run (``--skip-training`` /
 # ``--stop-after imscc_chunking``) they are legitimately absent, so a
 # ``missing_stage_report`` sentinel on them must NOT short-circuit the whole
-# course to ``failed`` — see W8.5 and ``derive_course_status``.
+# course to ``failed``.
 _TRAINING_COHORT_MIN_ARROW = 6
 
 # Promotion-decision values that signal a hard failure at the arrow level.
@@ -403,13 +363,12 @@ def derive_course_status(
 ) -> str:
     """Walk the per-arrow rows and return the canonical course_status enum.
 
-    ``training_expected`` (W8.5): three-valued run-scope hint.
+    ``training_expected``: three-valued run-scope hint.
 
-      * ``None`` (default) — strict legacy behaviour: a ``missing_stage_report``
-        sentinel on ANY arrow (including the assessment/training cohort,
-        arrows 6-9) is treated as a critical failure and short-circuits to
-        ``failed``. This preserves the byte-identical Wave-3 contract for
-        every existing caller that does not pass the hint.
+      * ``None`` (default) — strict: a ``missing_stage_report`` sentinel on ANY
+        arrow (including the assessment/training cohort, arrows 6-9) is a
+        critical failure and short-circuits to ``failed``. This is the
+        behaviour every caller that omits the hint gets.
       * ``False`` — a NON-training run (``--skip-training`` /
         ``--stop-after imscc_chunking``): the assessment/training arrows
         (``arrow_id >= 6``) were never dispatched, so a
@@ -423,7 +382,7 @@ def derive_course_status(
         missing training report on a build that WAS supposed to train is a
         real regression).
 
-    Decision logic per plan §"Worker W3.G" (the 5-branch tree):
+    Decision logic (the 5-branch tree):
 
       1. ``failed`` — any arrow's ``promotion_decision == "fail"`` AND the
          arrow's failure attaches to a critical-cohort gate. Critical
@@ -466,7 +425,7 @@ def derive_course_status(
         if arrow.get("promotion_decision") not in _HARD_FAIL_DECISIONS:
             continue
         vs = _validator_set(arrow)
-        # W8.5 — non-training run relaxation: an assessment/training arrow
+        # Non-training run relaxation: an assessment/training arrow
         # (``arrow_id >= 6``) whose ONLY failure signal is the
         # missing-stage-report sentinel was legitimately skipped (the
         # training phases were never dispatched). It must NOT force the

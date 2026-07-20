@@ -117,7 +117,7 @@ __all__ = [
     "DECISION_TYPE_NLI_CITATION_ADD",
     "DECISION_TYPE_COMPLETENESS_RECHECK",
     "DECISION_TYPE_HEDGE",
-    # FIX A/B — grounded-answer retrieval filter + anchor-containment env knobs.
+    # Grounded-answer retrieval filter + anchor-containment env knobs.
     "resolve_anchor_containment",
     "resolve_exclude_chunk_types",
     "overfetch_for_exclude",
@@ -152,16 +152,15 @@ DECISION_TYPE_COMPLETENESS_RECHECK = "grounded_answer_completeness_recheck"
 DECISION_TYPE_HEDGE = "grounded_answer_hedge"
 DECISION_PHASE = "libv2-answer"
 
-# W5.5 — confidence-graded HEDGE tier env flag + margin (default OFF / 0.15).
+# Confidence-graded HEDGE tier env flag + margin (default OFF / 0.15).
 ENV_HEDGE_TIER = "ED4ALL_ANSWER_HEDGE_TIER"
 ENV_HEDGE_MARGIN = "ED4ALL_ANSWER_HEDGE_MARGIN"
 _DEFAULT_HEDGE_MARGIN = 0.15
 _HEDGE_WARNING = "low_confidence_hedge"
 
-# FIX A/B (Owner alg-glm-02 blocked_citation_gate) — grounded-answer retrieval
-# candidate chunk_type exclusion + a tunable citation-gate anchor-containment
-# floor. Both default to the legacy behavior (no filtering / 0.85) so an unset
-# environment is byte-identical.
+# Grounded-answer retrieval candidate chunk_type exclusion + a tunable
+# citation-gate anchor-containment floor. Both default to no filtering / 0.85,
+# so an unset environment is byte-identical to the unfiltered path.
 ENV_EXCLUDE_CHUNK_TYPES = "ED4ALL_ANSWER_EXCLUDE_CHUNK_TYPES"
 ENV_ANCHOR_CONTAINMENT = "ED4ALL_ANSWER_ANCHOR_CONTAINMENT"
 _DEFAULT_ANCHOR_CONTAINMENT = 0.85
@@ -179,7 +178,7 @@ _HEDGE_CAVEAT = (
     "against the cited sources.\n\n"
 )
 
-# Citation-prune/add outcomes (the capture `decision` suffix, plan §2.5).
+# Citation-prune/add outcomes (the capture `decision` suffix).
 _PRUNE_OUTCOME_PRUNED = "pruned"
 _PRUNE_OUTCOME_NOOP = "noop"
 _PRUNE_OUTCOME_PRUNED_ALL = "pruned_all_claimless"
@@ -852,7 +851,7 @@ def _emit_citation_prune(
     inline_vetoed_ids: Sequence[str],
     add_min_shingle: float = ADD_MIN_SHINGLE,
 ) -> None:
-    """One capture covering the whole prune+add decision (plan §2.5).
+    """One capture covering the whole prune+add decision.
 
     Rationale interpolates dynamic, replayable signals: query sha, course,
     engine, claim count, per-citation best-support ``[chunk_id@shingle/coverage
@@ -1105,7 +1104,7 @@ def _apply_citation_attribution(
         )
         return enriched, warnings
 
-    # Inline-marker defense (plan §2.4): a cited chunk_id appearing verbatim in
+    # Inline-marker defense: a cited chunk_id appearing verbatim in
     # the answer text is referenced inline — never prune it.
     answer_norm = (answer_text or "")
     claimless = report.cited_claimless_ids()
@@ -1113,15 +1112,13 @@ def _apply_citation_attribution(
     prunable = [cid for cid in claimless if cid not in inline_vetoed]
 
     n_cited = len(cited_ids)
-    # All cited citations claim-less: USER POLICY (2026-06-11) — "no sources
-    # rather than a misleading one". The original plan no-op'd here to avoid
-    # emitting zero citations; the operator chose display honesty instead:
-    # claim-less citations are pruned even when that empties the cited set
-    # (additions below may still repopulate from uncited supporters). The
-    # caller flips answered → answered_with_warnings when the final set is
-    # empty, so the learner sees the unverified-support advisory, never a
-    # citation that backs nothing. Verdict (answered-family) still never
-    # changes to a refusal/block.
+    # All cited citations claim-less. Policy is "no sources rather than a
+    # misleading one": prune them even when that empties the cited set, rather
+    # than no-op'ing to avoid zero citations. Additions below may still
+    # repopulate from uncited supporters, and the caller flips answered →
+    # answered_with_warnings on an empty final set, so the learner sees the
+    # unverified-support advisory instead of a citation that backs nothing. The
+    # verdict stays in the answered family — never a refusal/block.
     would_prune_all = bool(prunable) and len(prunable) >= n_cited
 
     # --- Additions (run over UNCITED gate-eligible passages) ---------------- #
@@ -1174,14 +1171,14 @@ def _apply_citation_attribution(
 
 
 # --------------------------------------------------------------------------- #
-# NLI-based citation ADD (2026-06-12 under-citing investigation; shadow-default)
+# NLI-based citation ADD (shadow by default)
 # --------------------------------------------------------------------------- #
 #
-# The lexical (shingle) ADD arm above is unsalvageable on paraphrase answers
-# (median cited shingle 0.000 — zero adds even at bar 0.10). This arm instead
-# derives ADD candidates from the groundedness scorer's per-claim NLI verdicts
-# (REUSED — NLI is never run twice) and gates them through a COMPOSITE criterion
-# the 2026-06-12 hand sample found separates 4/4 genuine from 3/3 false adds:
+# The lexical (shingle) ADD arm above cannot recover citations on paraphrase
+# answers — cited shingle overlap collapses toward zero, so it adds nothing at
+# any workable bar. This arm instead derives ADD candidates from the
+# groundedness scorer's per-claim NLI verdicts (REUSED — NLI is never run twice)
+# and gates them through a COMPOSITE criterion, all of which must hold:
 # entailment >= NLI_ADD_ENTAILMENT_FLOOR AND token_coverage >=
 # NLI_ADD_TOKEN_COVERAGE_FLOOR AND every claim numeric literal present in the
 # chunk AND the chunk anchors/resolves AND <= NLI_ADD_MAX_ADDED_CITATIONS adds.
@@ -1371,13 +1368,13 @@ def _apply_nli_citation_add(
     # signal reports what ON mode WOULD have done (not an unbounded count).
     capped_would_add = would_add_ids[:NLI_ADD_MAX_ADDED_CITATIONS]
 
-    # PRUNE-TO-EMPTY EXCLUSION (2026-06-12 under-citing investigation): on
-    # answers whose citation set is EMPTY (the lexical prune-to-empty policy —
-    # "no sources beats a misleading source"), the entailed-uncited claims were
-    # hand-judged 3/3 question-induced false adds. ON mode NEVER restores a
-    # citation to a zero-citation answer; shadow still computes the would-adds
-    # but classifies them as a warning-class signal (a distinct outcome +
-    # warning prefix) so eval aggregation reads them as suspect, not recovered.
+    # PRUNE-TO-EMPTY EXCLUSION: on an answer the lexical prune already emptied
+    # ("no sources beats a misleading source"), entailed-uncited claims are
+    # question-induced false adds — the question's own wording, not the course,
+    # is what they entail against. ON mode therefore NEVER restores a citation
+    # to a zero-citation answer; shadow still computes the would-adds but
+    # classifies them as a warning-class signal (distinct outcome + warning
+    # prefix) so eval aggregation reads them as suspect, not recovered.
     zero_citation_answer = not citations
     if zero_citation_answer:
         outcome = (
@@ -1780,22 +1777,19 @@ def _resolve_hedge_margin(default: float = _DEFAULT_HEDGE_MARGIN) -> float:
 
 
 def resolve_anchor_containment(explicit: Optional[float] = None) -> float:
-    """Resolve the citation-gate anchor **containment** threshold (FIX B).
+    """Resolve the citation-gate anchor **containment** threshold.
 
-    The answer path anchors every cited chunk via ``resolve_citation_anchor``;
-    on some corpora genuine instructional chunks anchor at containment
-    ~0.82-0.84 — a knife-edge under the hardcoded 0.85 default that blocks an
-    otherwise-correct answer at the all-or-nothing citation gate. This knob lets
-    an operator lower the answer-path floor (the measured-safe deployment floor
-    for alg-glm-02 is 0.80; the next failure band is <=0.70). It does NOT touch
-    :mod:`lib.retrieval.citation_anchor`'s own 0.85 default — only the gate calls
-    the answer pipeline makes.
+    The answer path anchors every cited chunk via ``resolve_citation_anchor``.
+    On some corpora genuine instructional chunks anchor just below the 0.85
+    default, which blocks an otherwise-correct answer at the all-or-nothing
+    citation gate; this knob lets an operator lower the answer-path floor. It
+    does NOT touch :mod:`lib.retrieval.citation_anchor`'s own 0.85 default —
+    only the gate calls the answer pipeline makes.
 
-    Style mirrors :func:`lib.retrieval.citation_attribution.resolve_min_overlap`.
     Precedence: explicit arg > ``ED4ALL_ANSWER_ANCHOR_CONTAINMENT`` env >
     :data:`_DEFAULT_ANCHOR_CONTAINMENT` (0.85). Garbage / out-of-range (not in
-    ``[0.5, 1.0]``) falls back to the 0.85 default (parse-with-fallback; a
-    misconfigured knob must never disable the anchor floor).
+    ``[0.5, 1.0]``) falls back to the 0.85 default: a misconfigured knob must
+    never disable the anchor floor.
     """
     import os
 
@@ -2063,9 +2057,9 @@ def answer_course_question(
     start = time.monotonic()
     query_sha = _query_sha(query)
 
-    # FIX B — resolve the citation-gate anchor-containment floor. An explicit
-    # caller value wins verbatim; unset (None) resolves the
-    # ED4ALL_ANSWER_ANCHOR_CONTAINMENT env (default 0.85 → byte-identical).
+    # Resolve the citation-gate anchor-containment floor. An explicit caller
+    # value wins verbatim; unset (None) resolves the
+    # ED4ALL_ANSWER_ANCHOR_CONTAINMENT env (default 0.85).
     containment_threshold = resolve_anchor_containment(containment_threshold)
 
     libv2_root = _libv2_root(repo_root)
@@ -2076,8 +2070,8 @@ def answer_course_question(
     # manifest and route through resolve_policy((engine, model)). hybrid-rrf's
     # fused RRF score is NOT a cosine, but its semantic arm — and therefore the
     # whole fused-score distribution the threshold is measured against — is a
-    # function of the embedder, so a hybrid pin measured on bge-large is no more
-    # valid for MiniLM than a semantic one. Keying both by the index model keeps
+    # function of the embedder, so a hybrid pin measured on one embedding model
+    # is no more valid for another than a semantic one would be. Keying by model
     # the pin honest. A pinned pair returns the measured threshold; an unknown
     # model falls back to the v0-uncalibrated default (never a stale threshold);
     # lexical is model-agnostic (model id None). An explicit refusal_policy
@@ -2142,11 +2136,11 @@ def answer_course_question(
     if rerank_provider is not None:
         retrieve_limit = max(limit, resolve_candidate_pool())
 
-    # FIX A — resolve the chunk_type exclusion set once. When empty the closure
-    # below is byte-identical to the legacy path (no over-fetch, no filter).
-    # `_exclude_audit` accumulates how many candidates were dropped across every
-    # retrieval (main + W5.2 union + decompose + HyDE + completeness re-retrieve)
-    # so the answer can carry an audit warning.
+    # Resolve the chunk_type exclusion set once. When empty the closure below is
+    # a plain retrieval (no over-fetch, no filter). `_exclude_audit` accumulates
+    # how many candidates were dropped across EVERY retrieval (main + multi-turn
+    # union + decompose + HyDE + completeness re-retrieve) so the answer can
+    # carry an audit warning.
     _exclude_types = resolve_exclude_chunk_types()
     _exclude_audit = {"excluded": 0}
 
@@ -2163,7 +2157,7 @@ def answer_course_question(
             p = RetrievedPassage.from_retrieval_result(r, engine=engine)
             if _intent_on:
                 # Fold the result's facet fields into the passage source so the
-                # W5.1 intent-bias reorder can read them (opt-in path only).
+                # intent-bias reorder can read them (opt-in path only).
                 p = enrich_passage_facets(p, r)
             out.append(p)
             # Truncate the over-fetched pool back to the requested `n`.
@@ -2254,8 +2248,8 @@ def answer_course_question(
             query_sha=query_sha,
         )
 
-    # FIX A audit trail — surface how many candidates the chunk_type exclusion
-    # filter dropped across ALL retrievals (empty on the default path). Rides the
+    # Audit trail — surface how many candidates the chunk_type exclusion
+    # filter dropped across ALL retrievals (empty when unset). Rides the
     # answered / bypass / blocked warnings so the support story is auditable.
     retrieval_warnings: List[str] = []
     if _exclude_audit["excluded"]:
@@ -2575,7 +2569,7 @@ def answer_course_question(
     #    included passages the model could have cited — and each claim's
     #    best_chunk_cited flags whether its supporting chunk was actually cited.
     #    A corpus supporter the model under-cited can still entail a claim
-    #    (v2 wider-pool semantics, plan §2.2 honesty-over-flattery).
+    #    (wider-pool semantics — honesty over flattery).
     groundedness_payload: Optional[Dict[str, Any]] = None
     groundedness_report: Optional[Any] = None
     status = STATUS_ANSWERED

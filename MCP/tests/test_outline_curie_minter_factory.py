@@ -168,14 +168,14 @@ def test_mint_block_no_fabrication(tmp_path):
 
 # --- Anchored-only minting (short/stopword-alias poisoning fix) --------------
 
-# A vocabulary that reproduces the live alg-glm-03 defect: ``slope`` carries a
-# single-character alias ``"m"`` (the slope letter) and ``y_intercept`` carries
-# ``"b"``. ``extract_concept_tags`` matches these 1-char aliases against
-# unrelated prose ("meters", a variable ``b``), but the inter-tier gate's
-# ``_surface_form_can_anchor`` rejects sub-2-char forms — so a raw match yields
-# an UNANCHORED CURIE the gate fails (OUTLINE_BLOCK_CURIE_NOT_ANCHORED).
+# A vocabulary with short aliases: ``slope`` carries the single-character
+# alias ``"m"`` and ``y_intercept`` carries ``"b"``. ``extract_concept_tags``
+# matches these 1-char aliases against unrelated prose ("meters", a variable
+# ``b``), but the inter-tier gate's ``_surface_form_can_anchor`` rejects
+# sub-2-char forms — so a raw match yields an UNANCHORED CURIE the gate fails
+# (OUTLINE_BLOCK_CURIE_NOT_ANCHORED).
 _ALIAS_VOCAB = {
-    "course_id": "algglm03",
+    "course_id": "shortaliascourse",
     "concepts": [
         {"canonical": "slope", "aliases": ["rise over run", "m", "slope"]},
         {"canonical": "y_intercept", "aliases": ["b", "y-intercept"]},
@@ -192,16 +192,15 @@ def _write_alias_vocab(tmp_path: Path) -> Path:
 def test_mint_block_drops_shortalias_only_match(tmp_path):
     """A block matched ONLY via a short/stopword alias mints NOTHING.
 
-    ROOT-CAUSE regression: the block is about mixed-unit measurement
-    arithmetic ("meters" → the ``slope`` alias ``"m"`` matches under
-    ``extract_concept_tags``), but neither ``slope`` nor ``rise over run``
-    appears — the gate would reject ``algglm03:slope``. The corrected minter
-    must therefore mint NOTHING (empty → re-minted downstream from the actual
-    rewritten prose), never guess the wrong concept.
+    The block is about mixed-unit measurement arithmetic ("meters" → the
+    ``slope`` alias ``"m"`` matches under ``extract_concept_tags``), but
+    neither ``slope`` nor ``rise over run`` appears, so the gate would reject
+    the minted CURIE. The minter must mint NOTHING (empty → re-minted
+    downstream from the actual rewritten prose), never guess the concept.
     """
     vocab_path = _write_alias_vocab(tmp_path)
     minter = _build_outline_curie_minter(
-        course_code="algglm03",
+        course_code="shortaliascourse",
         kwargs=_kwargs_with_vocab(vocab_path),
     )
     assert minter is not None
@@ -229,7 +228,7 @@ def test_mint_block_real_surface_form_still_anchors(tmp_path):
     """
     vocab_path = _write_alias_vocab(tmp_path)
     minter = _build_outline_curie_minter(
-        course_code="algglm03",
+        course_code="shortaliascourse",
         kwargs=_kwargs_with_vocab(vocab_path),
     )
     assert minter is not None
@@ -241,7 +240,7 @@ def test_mint_block_real_surface_form_still_anchors(tmp_path):
     new_block, meta = minter.mint_block(blk, None)
     assert new_block is not None
     minted = new_block.content["curies"]
-    assert minted == ["algglm03:slope"]
+    assert minted == ["shortaliascourse:slope"]
 
     result = BlockCurieAnchoringValidator().validate({
         "blocks": [new_block],

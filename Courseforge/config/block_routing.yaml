@@ -1,14 +1,13 @@
-# Courseforge two-pass router block-routing policy (Phase 3 + Qwen-7B
-# capability_tier rewrite).
+# Courseforge two-pass router block-routing policy.
 #
 # Schema: schemas/courseforge/block_routing.schema.json
 # Loader: Courseforge/router/policy.py::load_block_routing_policy
 # Consumer: Courseforge/router/router.py::CourseforgeRouter._resolve_spec
 #
-# Resolution priority (Phase 3 §3.3): per-call kwargs > this YAML >
-# tier-default env vars (COURSEFORGE_OUTLINE_PROVIDER /
-# COURSEFORGE_OUTLINE_MODEL / COURSEFORGE_REWRITE_PROVIDER /
-# COURSEFORGE_REWRITE_MODEL) > hardcoded defaults table.
+# Resolution priority: per-call kwargs > this YAML > tier-default env vars
+# (COURSEFORGE_OUTLINE_PROVIDER / COURSEFORGE_OUTLINE_MODEL /
+# COURSEFORGE_REWRITE_PROVIDER / COURSEFORGE_REWRITE_MODEL) > the hardcoded
+# defaults table.
 #
 # Override the path to this file via COURSEFORGE_BLOCK_ROUTING_PATH.
 # Deleting the file or pointing the env var at a missing path is the
@@ -17,14 +16,14 @@
 # hardcoded defaults.
 #
 # ----------------------------------------------------------------------
-# Capability-tier abstraction (Qwen-7B audit plan §2 / §4)
+# Capability-tier abstraction
 # ----------------------------------------------------------------------
 #
 # `capability_tiers` is an OPERATOR-OWNED table mapping symbolic tier
 # names to provider/model/sampling specs. Per-block-type entries below
 # reference these tiers via `capability_tier: <name>` instead of
 # pinning a vendor or model literal in the block-type entry. List form
-# (`capability_tier: [small, medium]`) enables cascading-regen:
+# (`capability_tier: [small, medium]`) enables cascading regeneration:
 # attempts at the lower tier exhaust the per-tier sub-budget, then the
 # router escalates to the next tier with no code change.
 #
@@ -36,7 +35,7 @@ version: 1
 
 capability_tiers:
   # Small tier — fast, cheap, structurally-shaped first-draft work.
-  # The 7B-class local model is the typical fit for outline tiers.
+  # A 7B-class local model is the typical fit for outline tiers.
   small:
     provider: local
     model: qwen2.5:7b-instruct-q4_K_M
@@ -45,9 +44,9 @@ capability_tiers:
     max_tokens: 1200
 
   # Medium tier — pedagogically-rich rewrite of structurally-shaped
-  # outlines. A 7B local model handles most rewrite-tier blocks at
-  # consistently acceptable quality; pedagogy-critical blocks
-  # (assessment_item) prefer the large tier below.
+  # outlines. A 7B local model handles most rewrite-tier blocks
+  # acceptably; pedagogy-critical blocks (assessment_item) prefer the
+  # large tier below.
   medium:
     provider: local
     model: qwen2.5:7b-instruct-q4_K_M
@@ -55,11 +54,10 @@ capability_tiers:
     temperature: 0.4
     max_tokens: 2400
 
-  # Large tier — multi-step-reasoning workloads where the higher-
-  # capability model noticeably improves emit quality (assessment-item
+  # Large tier — multi-step-reasoning workloads (assessment-item
   # distractors, prereq-chain reasoning). Operators who want a
-  # license-clean alternative swap this entry to a 32B local model
-  # or a Together OSS model — no code change needed.
+  # license-clean alternative swap this entry to a 32B local model or a
+  # Together OSS model — no code change needed.
   large:
     provider: anthropic
     model: claude-sonnet-4-6
@@ -74,7 +72,7 @@ defaults:
 
 blocks:
   # ----------------------------------------------------------------------
-  # Per-block-type validator matrix (GPT Feedback v2 Wave 3 W3.C)
+  # Per-block-type validator matrix
   # ----------------------------------------------------------------------
   #
   # Every entry in Courseforge/scripts/blocks.py::BLOCK_TYPES (canonical
@@ -94,14 +92,13 @@ blocks:
   #   - any global gate not listed in EITHER array is skipped silently
   #     for this block_type.
   # Backward-compat: a block_type without a ``validators`` block (e.g.
-  # an out-of-tree YAML file pre-Wave-3) falls through to the legacy
-  # "all gates run" behavior at the dispatcher layer.
+  # an out-of-tree YAML file) falls through to the legacy "all gates
+  # run" behavior at the dispatcher layer.
 
   # assessment_item: pedagogy-critical. Outline starts at small tier;
   # rewrite escalates from medium to large on per-tier sub-budget
-  # exhaustion (cascading-regen — plan §4). The list form is the
-  # operator-facing dial: a deployment running only Qwen variants
-  # rewrites the `large` tier above to point at qwen2.5:32b and the
+  # exhaustion. The list form is the operator-facing dial: a deployment
+  # running only Qwen variants repoints the `large` tier above and the
   # cascade still works.
   assessment_item:
     outline:
@@ -113,17 +110,17 @@ blocks:
         - objective_assessment_similarity
         - bloom_alignment
         - answerability
-        # W3 §3.3 — per-block synthesis-manifest RESOLUTION gate. Non-blocking
-        # day-1 (the gate ships severity: warning in config/workflows.yaml until
-        # a live run proves the emission); listed here so the router's per-type
-        # filter keeps the manifest gate in lockstep with the validator skip set.
+        # Per-block synthesis-manifest RESOLUTION gate. Ships severity:
+        # warning in config/workflows.yaml, so it does not block; listed here
+        # so the router's per-type filter keeps the manifest gate in lockstep
+        # with the validator skip set.
         - manifest_completeness
       optional:
         - distractor_entropy
       fail_action: escalate
 
   # concept: starts small for outline, lifts to medium for the
-  # pedagogically-richer rewrite. Plan §2.3 tested-block-type policy.
+  # pedagogically-richer rewrite.
   concept:
     outline:
       capability_tier: small
@@ -134,7 +131,7 @@ blocks:
         - source_ref
         - content_type
         - similarity
-        - manifest_completeness   # W3 §3.3 (non-blocking day-1; warning in workflows.yaml)
+        - manifest_completeness   # warning-severity in workflows.yaml
       optional:
         - curie_anchoring
       fail_action: regenerate
@@ -150,25 +147,21 @@ blocks:
       required:
         - concept_example_similarity
         - source_ref
-        # CB5 (content-block-quality-2026-06 §CB5a) — stub-example
-        # safety net. Without this entry the matrix filter
+        # Stub-example safety net. Without this entry the matrix filter
         # (_dispatch_validation_chain) silently DROPS
         # ExampleCompletenessValidator from the router's per-block
-        # remediation chain, so a stubbed example (problem statement,
-        # no worked solution) ships even though the validator returns
-        # action="regenerate". Listing it required (fail_action:
-        # regenerate) makes the router re-roll a stub example with the
-        # CB5 remediation directive appended. Scoped to example blocks
-        # only.
+        # remediation chain, so a stubbed example (problem statement, no
+        # worked solution) ships even though the validator returned
+        # action="regenerate". Listing it required makes the router
+        # re-roll the stub with the remediation directive appended.
         - example_completeness
-        - manifest_completeness   # W3 §3.3 (non-blocking day-1; warning in workflows.yaml)
+        - manifest_completeness   # warning-severity in workflows.yaml
       optional:
         - bloom_classifier_disagreement
       fail_action: regenerate
 
   # misconception: the misconception statement + correction structure
-  # benefits from the medium tier for nuanced authorial voice. Plan
-  # §3.5's contextual CURIE gate keeps the rewrite from token-stuffing.
+  # benefits from the medium tier for nuanced authorial voice.
   misconception:
     outline:
       capability_tier: small
@@ -178,7 +171,7 @@ blocks:
       required:
         - source_ref
         - distractor_misconception_alignment
-        - manifest_completeness   # W3 §3.3 (non-blocking day-1; warning in workflows.yaml)
+        - manifest_completeness   # warning-severity in workflows.yaml
       optional: []
       fail_action: regenerate
 
@@ -192,13 +185,12 @@ blocks:
     validators:
       required:
         - source_ref
-        - manifest_completeness   # W3 §3.3 (non-blocking day-1; warning in workflows.yaml)
+        - manifest_completeness   # warning-severity in workflows.yaml
       optional: []
       fail_action: regenerate
 
   # flip_card_grid: structurally simple (term/definition pairs); the
-  # local 7B model handles outline + rewrite at consistently acceptable
-  # quality. Wave NN: provider-agnostic capability-tier (plan §2.3).
+  # local 7B model handles outline + rewrite acceptably.
   flip_card_grid:
     outline:
       capability_tier: small
@@ -208,41 +200,36 @@ blocks:
       required:
         - source_ref
         - content_type
-        - manifest_completeness   # W3 §3.3 (non-blocking day-1; warning in workflows.yaml)
+        - manifest_completeness   # warning-severity in workflows.yaml
       optional: []
       fail_action: regenerate
 
   # prereq_set: the outline tier's structural contract (ordered list of
   # prereq concept refs) is something the 7B local model frequently
   # mis-shapes. Skip outline entirely and let rewrite author the block
-  # from scratch with the enriched prompt — see Subtask 42.
+  # from scratch with the enriched prompt.
   prereq_set:
     escalate_immediately: true
     validators:
       required:
         - source_ref
-        - manifest_completeness   # W3 §3.3 (non-blocking day-1; warning in workflows.yaml)
+        - manifest_completeness   # warning-severity in workflows.yaml
       optional: []
       fail_action: regenerate
 
   # objective: canonical TO-NN / CO-NN learning objective. Source
   # grounding + CURIE anchoring drive the audit trail.
   #
-  # Wave 7: skip outline tier — Qwen 7B (small tier) consistently fails
-  # the objective block's structured schema (block_id/block_type/
-  # content_type/bloom_level/objective_refs/curies/key_claims), collapsing
-  # the response to the inner key_claims array. On the 2026-05-13 dispatch
-  # run, 28/28 objective blocks exhausted the regen budget at outline
-  # tier; inter-tier validation correctly blocked rewrite. escalate_
-  # immediately skips outline and lets rewrite (claude_session / Sonnet
-  # per Wave 6) author the block from scratch — mirrors prereq_set above.
-  #
-  # 2026-05-14: Wave-7 policy reaffirmed. Tested Qwen 14B with both
-  # json_object and json_schema grammar modes; both collapse the
-  # objective block schema to the inner key_claims array (same failure
-  # mode as 7B). Wave-7's escalate_immediately is the correct design —
-  # let rewrite (Qwen 14B medium tier) author the block as HTML from
-  # scratch, where no strict JSON schema applies.
+  # Skips the outline tier. A local 7B or 14B model collapses the
+  # objective block's structured JSON schema (block_id / block_type /
+  # content_type / bloom_level / objective_refs / curies / key_claims)
+  # down to the inner key_claims array, in both json_object and
+  # json_schema grammar modes, so every objective block exhausts the
+  # regen budget and inter-tier validation blocks rewrite. Raising the
+  # regen budget does not help — the failure is the schema, not the
+  # sampling. escalate_immediately lets rewrite author the block as HTML
+  # from scratch, where no strict JSON schema applies (same reasoning as
+  # prereq_set above).
   objective:
     escalate_immediately: true
     validators:
@@ -260,7 +247,7 @@ blocks:
       required:
         - source_ref
         - content_type
-        - manifest_completeness   # W3 §3.3 (non-blocking day-1; warning in workflows.yaml)
+        - manifest_completeness   # warning-severity in workflows.yaml
       optional:
         - similarity
       fail_action: regenerate
@@ -273,7 +260,7 @@ blocks:
       required:
         - objective_ref
         - source_ref
-        - manifest_completeness   # W3 §3.3 (non-blocking day-1; warning in workflows.yaml)
+        - manifest_completeness   # warning-severity in workflows.yaml
       optional:
         - accessibility
       fail_action: regenerate
@@ -284,7 +271,7 @@ blocks:
     validators:
       required:
         - source_ref
-        - manifest_completeness   # W3 §3.3 (non-blocking day-1; warning in workflows.yaml)
+        - manifest_completeness   # warning-severity in workflows.yaml
       optional: []
       fail_action: regenerate
 
@@ -296,7 +283,7 @@ blocks:
       required:
         - objective_ref
         - answerability
-        - manifest_completeness   # W3 §3.3 (non-blocking day-1; warning in workflows.yaml)
+        - manifest_completeness   # warning-severity in workflows.yaml
       optional:
         - bloom_classifier_disagreement
       fail_action: escalate
@@ -308,7 +295,7 @@ blocks:
     validators:
       required:
         - objective_ref
-        - manifest_completeness   # W3 §3.3 (non-blocking day-1; warning in workflows.yaml)
+        - manifest_completeness   # warning-severity in workflows.yaml
       optional: []
       fail_action: regenerate
 
@@ -318,7 +305,7 @@ blocks:
     validators:
       required:
         - objective_ref
-        - manifest_completeness   # W3 §3.3 (non-blocking day-1; warning in workflows.yaml)
+        - manifest_completeness   # warning-severity in workflows.yaml
       optional: []
       fail_action: regenerate
 
@@ -341,10 +328,10 @@ blocks:
       fail_action: regenerate
 
   # ----------------------------------------------------------------------
-  # Wave-2 block-variety additions (scenario / problem / vocab_card /
-  # formula / checklist). Mirror Courseforge/router/policy.py
-  # ::DEFAULT_BLOCK_ROUTING for these five so the YAML matrix and the
-  # hardcoded fallback agree (test_block_type_gate_matrix Test 5).
+  # Block-variety additions (scenario / problem / vocab_card / formula /
+  # checklist). These must mirror Courseforge/router/policy.py
+  # ::DEFAULT_BLOCK_ROUTING so the YAML matrix and the hardcoded fallback
+  # agree (asserted by test_block_type_gate_matrix Test 5).
   # ----------------------------------------------------------------------
 
   # scenario: application / case scenario. Objective-anchored (the
@@ -397,10 +384,10 @@ blocks:
       fail_action: regenerate
 
   # ----------------------------------------------------------------------
-  # Issue I6 instruction-palette-v2 additions (table / acronym / key_idea).
-  # Mirror Courseforge/router/policy.py::DEFAULT_BLOCK_ROUTING for these
-  # three so the YAML matrix and the hardcoded fallback agree
-  # (test_block_type_gate_matrix Test 5).
+  # Instruction-palette additions (table / acronym / key_idea). These must
+  # mirror Courseforge/router/policy.py::DEFAULT_BLOCK_ROUTING so the YAML
+  # matrix and the hardcoded fallback agree (asserted by
+  # test_block_type_gate_matrix Test 5).
   # ----------------------------------------------------------------------
 
   # table: accessible comparison/tabular block. Source + content_type

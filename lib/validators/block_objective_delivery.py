@@ -1,4 +1,4 @@
-"""GPT Feedback v2 Wave 1.7 W1.7.C — `BlockObjectiveDeliveryValidator`.
+"""`BlockObjectiveDeliveryValidator`.
 
 Tri-axis per-block-per-objective check that fires across the
 ``inter_tier_validation`` and ``post_rewrite_validation`` seams.
@@ -20,9 +20,9 @@ axes:
    :data:`_CODE_BLOOM_UNDERMET`. ``gap == 1`` is tolerated scaffolding
    (concept-block at ``understand`` for an ``apply`` objective is the
    prerequisite-scaffolding pattern). When ``block.observed_bloom_level``
-   is None (legacy blocks pre-W1, or blocks outside the BERT ensemble's
-   audit set per Drift C), the axis silently skips for that block —
-   captured as ``unverifiable`` in the persisted alignment field.
+   is None (legacy blocks, or blocks outside the BERT ensemble's audit
+   set), the axis silently skips for that block — captured as
+   ``unverifiable`` in the persisted alignment field.
 
 3. **Action-verb cooccurrence**: search the block prose for any
    whole-word match against the FULL Bloom-level synonym set from
@@ -33,9 +33,9 @@ axes:
    objective.
 
 All three axes emit warning-severity GateIssues; ``action="regenerate"``
-fires when ANY axis misses. Day-1 the validator does NOT promote to
-critical — calibration of per-block-type entailment thresholds against
-the RDF/SHACL calibration corpus is a Wave 3 follow-up before promotion.
+fires when ANY axis misses. The validator does NOT promote to critical:
+the per-block-type entailment thresholds are day-1 starting points and
+must be calibrated against a real corpus before a severity flip.
 
 Graceful-degrade contract (mirrors
 :mod:`lib.validators.bloom_classifier_disagreement` and
@@ -64,14 +64,13 @@ pair so a postmortem reader sees per-objective delivery per block.
 
 Cross-references:
 
-* W1.7.A landed the ``Block.objective_alignment`` audit field +
-  JSON-LD emit (``schemas/knowledge/courseforge_jsonld_v1.schema.json::
-  $defs.Block``).
-* W1.7.B landed the outline / rewrite prompt directives surfacing the
-  Bloom triple ``[Bloom: <level>, verb: <verb>]`` and the behavioral
-  outcome statement.
-* W1.7.D lands the rewrite-tier remediation suffix (per-axis branch on
-  the GateIssue codes this validator emits).
+* The ``Block.objective_alignment`` audit field + JSON-LD emit live in
+  ``schemas/knowledge/courseforge_jsonld_v1.schema.json::$defs.Block``.
+* The outline / rewrite prompt directives surface the Bloom triple
+  ``[Bloom: <level>, verb: <verb>]`` and the behavioral outcome
+  statement.
+* The rewrite-tier remediation suffix branches per-axis on the GateIssue
+  codes this validator emits.
 """
 from __future__ import annotations
 
@@ -84,18 +83,16 @@ from lib.classifiers.nli_classifier import NliClassifier, NliScore
 from lib.ontology.bloom import BLOOM_LEVELS, get_verbs
 
 # Reuse the canonical text-extraction helper from the BERT-disagreement
-# validator. The plan calls this out explicitly: "REUSE, don't fork".
-# Underscore prefix is leading but Python doesn't enforce it; the
-# contract is documented in
-# ``bloom_classifier_disagreement.py:182-211``'s docstring and shared
-# across the two validator surfaces by design.
+# validator rather than forking it, so both validator surfaces extract
+# block text identically. The shared-use contract is documented in
+# ``classifier_disagreement._extract_text_for_classification``.
 from lib.validators.bloom.classifier_disagreement import (
     _extract_text_for_classification,
 )
 
-# W-D7 T7.8: route per-axis scoring through the shared
-# ``lib.utils.objective_delivery_axes`` package. Bodies of the three axes
-# now live in one module each, deduplicating the W4.C MEDIUM mirror in
+# Per-axis scoring routes through the shared
+# ``lib.utils.objective_delivery_axes`` package so the three axis bodies
+# live in one place and are shared with the mirror in
 # ``lib/validators/pair/objective_delivery.py``. The validator below
 # stamps surface-specific GateIssues + alignment_entries from the shared
 # axes' tuple outputs.
@@ -107,9 +104,9 @@ from lib.utils.objective_delivery_axes import (
     score_verb_cooccurrence_axis,
 )
 
-# IB3.2 — verb-triple EQUALITY axis (the framework keystone). Reuses the
-# single-source-of-truth verb-band resolver so the objective/interaction/
-# assessment triple is computed ONE way across every IB3 gate.
+# Verb-triple EQUALITY axis. Reuses the single-source-of-truth verb-band
+# resolver so the objective/interaction/assessment triple is computed ONE
+# way across every constructive-alignment gate.
 from lib.validators.alignment.verb_triple import (
     alignment_verb_triple_enabled,
     bloom_below,
@@ -122,12 +119,10 @@ logger = logging.getLogger(__name__)
 
 
 #: Block types whose declared ``objective_ids`` are pedagogically
-#: load-bearing AND whose surface text is rich enough to audit
-#: against the objective statement. 6 of 16 block_types — see plan
-#: §2 Fix 1.7.C "Per-block-type audited set" table for the rationale
-#: per-type. ``objective`` is intentionally excluded (cyclic — the
-#: objective IS the source of truth); ``misconception`` is intentionally
-#: excluded (antagonistic to the objective by design).
+#: load-bearing AND whose surface text is rich enough to audit against
+#: the objective statement. ``objective`` is intentionally excluded
+#: (cyclic — the objective IS the source of truth); ``misconception`` is
+#: intentionally excluded (antagonistic to the objective by design).
 _AUDITED_BLOCK_TYPES: frozenset = frozenset(
     {
         "concept",
@@ -146,9 +141,9 @@ _AUDITED_BLOCK_TYPES: frozenset = frozenset(
 _DEFAULT_ENTAILMENT_FLOOR: float = 0.40
 
 
-#: Per-block-type entailment thresholds (plan §6.1 calibration).
-#: Day-1 starting points; calibrate against the RDF/SHACL calibration corpus
-#: rebuild before promoting severity to critical (Wave 3 follow-up).
+#: Per-block-type entailment thresholds. Day-1 starting points;
+#: calibrate against a real corpus rebuild before promoting severity to
+#: critical.
 #:
 #: Rationale per type:
 #:   - concept: definitional surface; the concept-block legitimately
@@ -173,7 +168,7 @@ _PER_BLOCK_TYPE_ENTAILMENT_FLOOR: Dict[str, float] = {
 
 #: Contradiction floor — entailment misses only fire when contradiction
 #: is ALSO above this threshold. Filters surface-form variance from
-#: genuine misses; see plan §2 Fix 1.7.C step 1.
+#: genuine misses.
 _CONTRADICTION_FLOOR: float = 0.50
 
 
@@ -194,18 +189,18 @@ _CODE_NLI_DEPS_MISSING: str = "BLOCK_OBJECTIVE_NLI_DEPS_MISSING"
 _CODE_OBSERVED_BLOOM_UNAVAILABLE: str = "BLOCK_OBJECTIVE_OBSERVED_BLOOM_UNAVAILABLE"
 _CODE_STATEMENT_UNRESOLVED: str = "BLOCK_OBJECTIVE_STATEMENT_UNRESOLVED"
 _CODE_VERB_AXIS_UNAVAILABLE: str = "BLOCK_OBJECTIVE_VERB_AXIS_UNAVAILABLE"
-# IB3.2 — verb-triple EQUALITY mismatch (the framework keystone). Distinct
-# from _CODE_VERB_ABSENT (axis 3: any band-synonym PRESENT in prose); this
-# fires when the block's RESOLVED verb does not share the OBJECTIVE's Bloom
-# band — verb EQUALITY across the triple, not mere presence. Gated behind
-# ED4ALL_ALIGNMENT_VERB_TRIPLE (default OFF). Warning day-1.
+# Verb-triple EQUALITY mismatch. Distinct from _CODE_VERB_ABSENT (axis 3:
+# any band-synonym PRESENT in prose); this fires when the block's RESOLVED
+# verb does not share the OBJECTIVE's Bloom band — verb EQUALITY across
+# the triple, not mere presence. Gated behind
+# ED4ALL_ALIGNMENT_VERB_TRIPLE (default OFF). Warning-severity.
 _CODE_VERB_TRIPLE_MISMATCH: str = "BLOCK_OBJECTIVE_VERB_TRIPLE_MISMATCH"
 
-# IB3.2 — block types whose RESOLVED verb the framework's verb-triple
-# compares against the objective. Interaction/activity types (what the
-# learner practices) + the assessment type (what certifies). assessment_item
-# additionally carries the Alignment-cap-at-1 signal when its Bloom is below
-# the objective's.
+# Block types whose RESOLVED verb the verb-triple compares against the
+# objective. Interaction/activity types (what the learner practices) +
+# the assessment type (what certifies). assessment_item additionally
+# carries the alignment-cap-at-1 signal when its Bloom is below the
+# objective's.
 _VERB_TRIPLE_INTERACTION_TYPES: frozenset = frozenset(
     {"activity", "self_check_question", "scenario", "problem"}
 )
@@ -301,7 +296,7 @@ def _resolve_threshold_table(
     Operators can override per-gate via
     ``gate.config.thresholds.per_block_type_entailment_floor`` in
     ``config/workflows.yaml``; the executor merges ``gate.config`` into
-    the inputs dict at ``executor.py:1442`` per the existing pattern.
+    the inputs dict before calling the validator.
     """
     raw = inputs.get("per_block_type_entailment_floor")
     if isinstance(raw, dict):
@@ -375,8 +370,8 @@ def _emit_decision(
         f"status={status}, "
         f"failure_codes={','.join(failure_codes) or 'none'}."
     )
-    # IB3.2 — append the verb-triple signals to the rationale only when the
-    # axis ran (flag on). Keeps the flag-OFF rationale byte-identical.
+    # Append the verb-triple signals to the rationale only when the axis
+    # ran (flag on). Keeps the flag-OFF rationale byte-identical.
     if verb_triple_status is not None:
         rationale += (
             f" verb_triple_status={verb_triple_status}, "
@@ -406,10 +401,10 @@ def _resolve_status(
 ) -> str:
     """Map per-axis pass/skip flags to the canonical status enum.
 
-    W-D7 T7.8: thin wrapper around
+    Thin wrapper around
     :func:`lib.utils.objective_delivery_axes.resolve_status`. Kept as a
     back-compat shim for the cross-file import in
-    ``lib/validators/pair/objective_delivery.py:140``
+    ``lib/validators/pair/objective_delivery.py``
     (``from lib.validators.block_objective_delivery import _resolve_status``)
     AND any test that imports the private symbol directly.
     """
@@ -421,7 +416,7 @@ def _resolve_status(
 
 
 class BlockObjectiveDeliveryValidator:
-    """Wave 1.7 W1.7.C — tri-axis per-block-per-objective delivery gate.
+    """Tri-axis per-block-per-objective delivery gate.
 
     Validator-protocol-compatible class wired into both
     ``inter_tier_validation::outline_block_objective_delivery`` and
@@ -438,9 +433,8 @@ class BlockObjectiveDeliveryValidator:
         contradiction_floor: float = _CONTRADICTION_FLOOR,
     ) -> None:
         # Test injection point. When None, the validator calls
-        # ``NliClassifier.get_or_load()`` — which W1.7.C ships as a
-        # STUB returning None (graceful-degrade exercised on every run
-        # until W2.F lands the real loader).
+        # ``NliClassifier.get_or_load()``. If that returns None, the
+        # graceful-degrade path (entailment axis skipped) runs.
         self._nli_override = nli
         self._contradiction_floor = float(contradiction_floor)
 
@@ -495,13 +489,13 @@ class BlockObjectiveDeliveryValidator:
 
         verbs_by_level = get_verbs()  # Dict[str, Set[str]]
 
-        # IB3.2 — the verb-triple equality axis is gated behind
-        # ED4ALL_ALIGNMENT_VERB_TRIPLE (default OFF). When OFF the new axis is
-        # skipped entirely AND scenario/problem stay outside the audited set,
-        # so the three existing axes + the objective_alignment entry shape are
-        # BYTE-IDENTICAL to the pre-IB3 baseline. When ON, scenario/problem
-        # join the audited set so their RESOLVED verb is compared against the
-        # objective's Bloom band.
+        # The verb-triple equality axis is gated behind
+        # ED4ALL_ALIGNMENT_VERB_TRIPLE (default OFF). When OFF the axis is
+        # skipped AND scenario/problem stay outside the audited set, so
+        # the three base axes + the objective_alignment entry shape are
+        # byte-identical to the flag-off baseline. When ON,
+        # scenario/problem join the audited set so their RESOLVED verb is
+        # compared against the objective's Bloom band.
         verb_triple_on = alignment_verb_triple_enabled()
         if verb_triple_on:
             audited_types = _AUDITED_BLOCK_TYPES | _VERB_TRIPLE_INTERACTION_TYPES
@@ -837,7 +831,7 @@ class BlockObjectiveDeliveryValidator:
                         )
                         emitted_codes.add(_CODE_VERB_AXIS_UNAVAILABLE)
 
-                # ---------- Axis 4 (IB3.2): verb-triple EQUALITY ---- #
+                # ---------- Axis 4: verb-triple EQUALITY ------------ #
                 # Gated behind ED4ALL_ALIGNMENT_VERB_TRIPLE. Distinct from
                 # axis 3 (presence of ANY band-synonym): this asserts the
                 # block's RESOLVED verb shares the OBJECTIVE's Bloom band —
@@ -859,21 +853,16 @@ class BlockObjectiveDeliveryValidator:
                     blk_verb_for_entry = blk_verb
                     obj_level_for_entry = obj_level
                     blk_level_for_entry = blk_level
-                    # IB3 recalibration (2-corpus gap-map): the strict
-                    # band-EQUALITY fire (verbs_share_band-negation) tripped
-                    # ~32% mostly as FALSE POSITIVES — blocks resolving ABOVE
-                    # the objective band (the math-idiom prose inflation +
-                    # genuinely higher-order blocks that still serve the
-                    # objective). The mismatch fire is now ASYMMETRIC: ONLY a
-                    # block whose resolved Bloom is strictly BELOW the
-                    # objective band fires (genuine UNDER-delivery — the real
-                    # constructive-alignment defect: you cannot certify a
-                    # cognitive demand with evidence collected at a LOWER
-                    # demand). Over-shoot (block band >= objective band, equal
-                    # OR above) is ALIGNED — a higher-order block still serves
-                    # the objective and over-shoot never fraudulently
-                    # certifies. See verb_triple_misaligned() for the full
-                    # rationale.
+                    # The mismatch fire is ASYMMETRIC: ONLY a block whose
+                    # resolved Bloom is strictly BELOW the objective band
+                    # fires. That is the genuine constructive-alignment
+                    # defect — you cannot certify a cognitive demand with
+                    # evidence collected at a LOWER demand. Over-shoot
+                    # (block band >= objective band) is ALIGNED: a
+                    # higher-order block still serves the objective and
+                    # never fraudulently certifies, and a strict
+                    # band-EQUALITY check would false-positive on it. See
+                    # verb_triple_misaligned() for the full rationale.
                     if obj_level is None or blk_level is None:
                         verb_triple_status = "unverifiable"
                     elif not verb_triple_misaligned(obj_level, blk_level):
@@ -919,9 +908,10 @@ class BlockObjectiveDeliveryValidator:
                             )
                             emitted_codes.add(_CODE_VERB_TRIPLE_MISMATCH)
                         any_regenerate = True
-                    # Alignment-cap-at-1 signal — assessment Bloom below the
-                    # objective's invalidates certification (IB6 applies the
-                    # cap; IB3 records the signal). Only meaningful for the
+                    # Alignment-cap-at-1 signal — an assessment Bloom
+                    # below the objective's invalidates certification.
+                    # This gate only records the signal; the block-quality
+                    # rollup applies the cap. Only meaningful for the
                     # assessment type.
                     if (
                         block_type in _VERB_TRIPLE_ASSESSMENT_TYPES
@@ -972,10 +962,11 @@ class BlockObjectiveDeliveryValidator:
                     ),
                     "entailment_threshold": entailment_threshold,
                 }
-                # IB3.2 — stamp the verb-triple signals ONLY when the flag is
-                # on (and the axis ran). Flag-OFF → no new keys → entry shape
-                # byte-identical to the pre-IB3 baseline. ``alignment_cap_at_1``
-                # is added only when True (the IB6 rollup reads its presence).
+                # Stamp the verb-triple signals ONLY when the flag is on
+                # (and the axis ran). Flag-OFF → no new keys → entry shape
+                # byte-identical to the flag-off baseline.
+                # ``alignment_cap_at_1`` is added only when True (the
+                # block-quality rollup reads its presence).
                 if verb_triple_status is not None:
                     entry["verb_triple_status"] = verb_triple_status
                     entry["objective_verb"] = obj_verb_for_entry
@@ -1043,8 +1034,8 @@ class BlockObjectiveDeliveryValidator:
 
         # Action: regenerate when any axis fired a real miss; else None.
         # ``passed`` stays True because every issue is warning-severity
-        # by construction (Day-1 contract — promotion to critical
-        # deferred per plan §6.1).
+        # by construction — promotion to critical is deferred until the
+        # thresholds are calibrated.
         action: Optional[str] = "regenerate" if any_regenerate else None
 
         if return_touched:

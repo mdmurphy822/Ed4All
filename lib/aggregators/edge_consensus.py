@@ -1,25 +1,19 @@
-"""Cross-stratum edge consensus aggregator (GPT feedback 12-may, item 2).
+"""Cross-stratum edge consensus aggregator.
 
-The 12 inference rules under ``Trainforge/rag/inference_rules/`` (plus the
+The inference rules under ``Trainforge/rag/inference_rules/`` (plus the
 ``intra_chunk_link`` co-location pass in ``lib/ontology/intra_chunk_linker.py``)
-emit edges into ``concept_graph_semantic.json`` independently. GPT feedback
-item 2 asked for more than a per-rule ``confidence`` float:
+emit edges into ``concept_graph_semantic.json`` independently. This aggregator
+adds, per edge, whether another rule corroborated or contradicted it — a
+signal a per-rule ``confidence`` float cannot carry.
 
-    "Not just confidence, but whether another rule contradicted or
-     failed to confirm it."
-
-**Why the original same-pair design was near-degenerate.** The first cut of
-this aggregator looked for a DIFFERENT rule firing over the *same*
-``(source, target)`` node pair (a confirmation signal) or the opposite
-direction (a contradiction). On a real RAG-course graph this left
-1891 of 1892 edges ``pending``: same-pair co-fire evidence is structurally
-deleted upstream. ``typed_edge_inference._apply_precedence`` collapses
-multiple rules' edges on a colliding ``(source, target)`` down to one
-surviving edge (``is-a`` > tier-2 > ``related-to``), so by the time the graph
-reaches this aggregator the "two rules agreed on the same pair" evidence is
-already gone. The lone surviving same-pair confirmation in the measured graph
-was a ``defined_by``×``exemplifies`` pair — and even that only confirmed one
-of its two edges because the matrix was asymmetric.
+**Why same-pair confirmation alone is near-degenerate.** Looking for a
+DIFFERENT rule firing over the *same* ``(source, target)`` node pair leaves
+almost every edge ``pending``, because same-pair co-fire evidence is
+structurally deleted upstream: ``typed_edge_inference._apply_precedence``
+collapses multiple rules' edges on a colliding ``(source, target)`` down to
+one surviving edge (``is-a`` > tier-2 > ``related-to``), so by the time the
+graph reaches this aggregator the "two rules agreed on the same pair"
+evidence is already gone.
 
 **The recoverable signal is cross-stratum triangulation.** The persisted
 per-edge provenance still records the *endpoints* each rule fired over — LO
@@ -68,8 +62,7 @@ count).
 
 This module is intentionally pure aggregation — no LLM calls, no network I/O,
 no schema validation pass. The schema admits the new fields on legacy graphs
-(missing ``edge_status`` validates), and the NLI extension stays stubbed
-behind ``TRAINFORGE_EDGE_NLI`` for a follow-on wave.
+(missing ``edge_status`` validates).
 """
 
 from __future__ import annotations
@@ -89,9 +82,8 @@ logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = "1.0"
 
-#: Matrix version is interpolated into decision-capture rationales so
-#: a future tweak to the rule-pair map bumps the audit trail
-#: deterministically. v2: cross-stratum triangulation redesign.
+#: Interpolated into decision-capture rationales. Bump whenever the
+#: rule-pair map changes so the audit trail distinguishes matrix revisions.
 MATRIX_VERSION = "2026-06-09.v2"
 
 #: Edge types whose pair-equivalence-key is undirected — i.e. an edge
@@ -114,10 +106,10 @@ _CHUNK_ORD_RE = re.compile(r"chunk[_-]?(\d+)")
 #: Most same-pair confirmation entries are structurally unreachable on a
 #: real graph because ``typed_edge_inference._apply_precedence`` deletes
 #: colliding-pair edges upstream (see module docstring). They are retained
-#: for the rare surviving same-pair co-fire (the measured
-#: ``defined_by``×``exemplifies`` pair) and so the matrix stays a complete
-#: registry of every rule name (drift-test target). The recoverable signal
-#: is the cross-stratum triangulation in ``_compute_triangulation_signals``.
+#: for the rare surviving same-pair co-fire and so the matrix stays a
+#: complete registry of every rule name (drift-test target). The recoverable
+#: signal is the cross-stratum triangulation in
+#: ``_compute_triangulation_signals``.
 _RULE_PAIR_MATRIX: Dict[str, Tuple[FrozenSet[str], FrozenSet[str]]] = {
     "is_a_from_key_terms": (
         frozenset({"defined_by_from_first_mention", "targets_concept_from_lo"}),
@@ -147,11 +139,9 @@ _RULE_PAIR_MATRIX: Dict[str, Tuple[FrozenSet[str], FrozenSet[str]]] = {
         frozenset({"assesses_from_question_lo"}),
         frozenset(),
     ),
-    # Symmetry fix: the measured graph's one real same-pair co-fire was a
-    # defined_by × exemplifies pair, but the matrix only confirmed the
-    # exemplifies side. defined_by_from_first_mention must list exemplifies
-    # in its confirming set so BOTH edges of the surviving pair land
-    # confirmed.
+    # Confirmation must be declared symmetrically: defined_by lists
+    # exemplifies (and vice versa) so BOTH edges of a surviving same-pair
+    # co-fire land confirmed, not just one side.
     "defined_by_from_first_mention": (
         frozenset({"is_a_from_key_terms", "exemplifies_from_example_chunks"}),
         frozenset(),
@@ -160,9 +150,9 @@ _RULE_PAIR_MATRIX: Dict[str, Tuple[FrozenSet[str], FrozenSet[str]]] = {
         frozenset({"is_a_from_key_terms", "defined_by_from_first_mention"}),
         frozenset(),
     ),
-    # Completeness: the four remaining registered rules + the co-location
-    # pass had no matrix entry. They take no same-pair confirmation today;
-    # their cross-stratum signal (when any) lands via triangulation.
+    # Registered for completeness (the matrix must name every rule). These
+    # take no same-pair confirmation; their cross-stratum signal, when any,
+    # lands via triangulation.
     "corrected_by_from_chunk_misconception": (
         frozenset(),
         frozenset(),
@@ -197,7 +187,7 @@ _CYCLE_DETECTING_RULES: FrozenSet[str] = frozenset({
 #: DeBERTa singleton) against the cited chunk text. Only a strong
 #: CONTRADICTION (>= :data:`_NLI_CONTRADICTION_THRESHOLD`) emits a
 #: ``disagree`` signal (mapped to ``edge_status: retracted`` by
-#: :meth:`_status_from_signals`); entailment / neutral add no signal in v1
+#: :meth:`_status_from_signals`); entailment / neutral add no signal
 #: (conservative — the arm can only retract, never confirm). Default off →
 #: the aggregator runs cross-rule-matrix + triangulation consensus only.
 _NLI_FLAG_ENV: str = "TRAINFORGE_EDGE_NLI"
@@ -237,8 +227,7 @@ _NLI_EDGE_TEMPLATES: Dict[str, Dict[str, str]] = {
 #: Chunkset locations searched by :func:`load_chunk_text_lookup`, relative
 #: to a LibV2 course dir (first hit per id wins).
 _CHUNK_JSONL_CANDIDATES: Tuple[str, ...] = (
-    # DART->semantik purge Stage 3c: the ratified staged emit dir; try it
-    # before the legacy dart_chunks/ fallback.
+    # Current staged emit dir; must precede the legacy dart_chunks/ fallback.
     "semantik_chunks/chunks.jsonl",
     "dart_chunks/chunks.jsonl",
     "imscc_chunks/chunks.jsonl",
@@ -908,7 +897,7 @@ class EdgeConsensusAggregator:
             )
         )
 
-        # NLI extension hook — flag-gated, deferred per plan.
+        # NLI extension — flag-gated; never allowed to break aggregation.
         if _flag_is_true(_NLI_FLAG_ENV):
             try:
                 nli_signal = self._nli_extension_signal(
@@ -919,8 +908,7 @@ class EdgeConsensusAggregator:
                 )
             except Exception as exc:  # noqa: BLE001 — defensive
                 logger.debug(
-                    "EdgeConsensusAggregator NLI extension raised "
-                    "(stub path): %s",
+                    "EdgeConsensusAggregator NLI extension raised: %s",
                     exc,
                 )
                 nli_signal = None
@@ -1113,7 +1101,7 @@ class EdgeConsensusAggregator:
         text via the shared DeBERTa NLI singleton. Emits a single ``disagree``
         signal ONLY on a strong contradiction
         (``score.contradiction >= _NLI_CONTRADICTION_THRESHOLD``); entailment /
-        neutral verdicts add no signal in v1 (conservative — the arm can only
+        neutral verdicts add no signal (conservative — the arm can only
         retract, never confirm). Returns ``None`` (no signal) when the flag is
         off, no chunk-text lookup was supplied, the classifier is unavailable,
         the per-run budget is exhausted, the edge type is not chunk-anchored,
@@ -1324,7 +1312,7 @@ def load_chunk_text_lookup(course_dir: Optional[Any]) -> Optional[Dict[str, str]
             cid = obj.get("id") or obj.get("chunk_id")
             text = obj.get("text")
             if isinstance(cid, str) and cid and isinstance(text, str) and text:
-                # First chunkset wins per id (dart before imscc before corpus).
+                # First chunkset in _CHUNK_JSONL_CANDIDATES order wins per id.
                 lookup.setdefault(cid, text)
     return lookup or None
 
