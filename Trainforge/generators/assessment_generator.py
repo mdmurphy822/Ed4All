@@ -247,15 +247,30 @@ def _clamp_bloom(bloom_level: str, item_subtype: Optional[str]) -> str:
 # subtypes. Percentages per the approved plan.
 # --------------------------------------------------------------------------- #
 _TARGET_MIX = (
-    ("mc_multiple_response", 0.15),
-    ("error_analysis", 0.20),
-    ("fib_numeric", 0.20),
-    ("matching_mc", 0.15),
+    ("mc_multiple_response", 0.12),
+    ("error_analysis", 0.15),
+    ("fib_numeric", 0.15),
+    ("matching_mc", 0.12),
     ("ordering_mc", 0.05),
-    ("two_tier_answer", 0.10),
+    ("two_tier_answer", 0.08),
     ("tf_justified", 0.05),
+    # Written-response constructed-answer types (~15% of the diversified mix):
+    # the honest higher-Bloom vehicle (NO Bloom ceiling — see the ceiling table).
+    ("short_answer", 0.09),
+    ("extended_response", 0.06),
     # remainder → mc_single
 )
+
+
+#: Fixed 2/1/0 analytic score scale reused by every written-response criterion.
+#: The descriptors are generic scaffold labels; the specific expectation lives
+#: in the (source-derived) criterion text, so nothing content-specific is
+#: fabricated here.
+_WRITTEN_RUBRIC_LEVELS: List[Dict[str, Any]] = [
+    {"score": 2, "descriptor": "Fully and accurately addresses this criterion."},
+    {"score": 1, "descriptor": "Partially addresses this criterion."},
+    {"score": 0, "descriptor": "Does not address this criterion."},
+]
 
 
 def plan_item_mix(question_count: int) -> List[str]:
@@ -449,6 +464,17 @@ class QuestionData:
     # (Treagust misconception diagnosis) — the answer tier points at its
     # reason tier and vice versa. None → omitted.
     linked_item_id: Optional[str] = None
+    # ``rubric`` carries the PER-ITEM analytic rubric of a written-response item
+    # (``short_answer`` / ``extended_response``), grounded by construction: a
+    # ``{"criteria": [...], "deductions": [...]}`` dict where every criterion +
+    # deduction cites the source chunk id it was derived from. Additive +
+    # OPTIONAL: a non-written item leaves it None and to_dict() OMITS it, so the
+    # pre-feature serialized shape stays byte-identical. Shape:
+    #   {"criteria": [{"criterion": str, "cites": [chunk_id, ...],
+    #                  "levels": [{"score": int, "descriptor": str}, ...]}, ...],
+    #    "deductions": [{"error": str, "note": str, "points": float,
+    #                    "cites": [chunk_id, ...]}, ...]}
+    rubric: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {
@@ -476,6 +502,8 @@ class QuestionData:
             d["item_subtype"] = self.item_subtype
         if self.linked_item_id is not None:
             d["linked_item_id"] = self.linked_item_id
+        if self.rubric is not None:
+            d["rubric"] = self.rubric
         return d
 
 
@@ -2518,6 +2546,238 @@ class AssessmentGenerator:
                 question_id, "mc_single", bloom_level)
         return result
 
+    # ------------------------------------------------------------------ #
+    # Written-response constructed-answer tier (per-item analytic rubrics)
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _rubric_criterion(
+        criterion: str, cites: List[str]
+    ) -> Dict[str, Any]:
+        """One analytic-rubric criterion row citing its source chunk id(s)."""
+        return {
+            "criterion": criterion,
+            "cites": [c for c in cites if c],
+            "levels": [dict(lv) for lv in _WRITTEN_RUBRIC_LEVELS],
+        }
+
+    def _misconception_deductions(
+        self, texts: List[str], chunk_id: str
+    ) -> List[Dict[str, Any]]:
+        """Build 'common error' deduction rows from the misconception transforms
+        applicable to ``texts`` (each cites ``chunk_id``). Nothing is invented —
+        a transform fires only on structure it genuinely matches; a chunk-authored
+        misconception string is passed through verbatim when no transform applies.
+        """
+        deductions: List[Dict[str, Any]] = []
+        seen: set = set()
+        for t in texts:
+            out = _apply_first_misconception(t or "")
+            if out is None:
+                continue
+            _perturbed, err, note = out
+            if err in seen:
+                continue
+            seen.add(err)
+            deductions.append({
+                "error": err,
+                "note": note,
+                "points": -1.0,
+                "cites": [chunk_id] if chunk_id else [],
+            })
+            if len(deductions) >= 3:
+                break
+        return deductions
+
+    def build_short_answer(
+        self,
+        question_id: str,
+        objective_id: str,
+        bloom_level: str,
+        source_chunks: Optional[List[Dict[str, Any]]],
+    ):
+        """(h) SHORT-ANSWER — 2-4 sentence constructed response.
+
+        Drafted from explanation/concept chunks: a SPECIFIC ``Explain why <claim>``
+        stem grounded in a real factual statement (never a bare "discuss X").
+        Carries a per-item analytic rubric whose criteria are derived from the
+        source chunk's key concepts + the claim itself (each criterion cites the
+        chunk id); deductions are drawn from the item's misconception transforms.
+        NO Bloom ceiling (an honest higher-Bloom vehicle).
+        """
+        subtype = "short_answer"
+        if not source_chunks:
+            return SkippedItem(question_id, "essay", bloom_level,
+                               objective_id, "no_source_chunks")
+        statements = self._content_extractor.extract_factual_statements(source_chunks)
+        terms = self._content_extractor.extract_key_terms(source_chunks)
+        claim = None
+        claim_chunk = ""
+        if statements:
+            st = self._rotate_statement(statements)
+            claim = self._trim(st.statement, 220)
+            claim_chunk = st.source_chunk_id
+        elif terms:
+            t0 = self._rotate_term(terms)
+            claim = self._trim(
+                f"{t0.term} is {t0.definition}", 220)
+            claim_chunk = t0.source_chunk_id
+        if not claim or not claim.strip():
+            return SkippedItem(question_id, "essay", bloom_level,
+                               objective_id, "no_specific_claim")
+        # Rubric criteria: the claim itself + up to two source key concepts.
+        criteria: List[Dict[str, Any]] = [
+            self._rubric_criterion(
+                f"Correctly explains why the following holds: {claim}",
+                [claim_chunk]),
+        ]
+        cited: set = {claim_chunk} if claim_chunk else set()
+        for t in terms[:2]:
+            criteria.append(self._rubric_criterion(
+                f"Uses the concept '{t.term}' accurately "
+                f"({self._trim(t.definition, 120)})",
+                [t.source_chunk_id]))
+            if t.source_chunk_id:
+                cited.add(t.source_chunk_id)
+        criteria.append(self._rubric_criterion(
+            "Response is 2-4 sentences, clear, and free of major errors.",
+            [claim_chunk] if claim_chunk else sorted(cited)[:1]))
+        # Deductions from misconceptions relevant to this item's content.
+        mc_texts: List[str] = [claim]
+        for chunk in source_chunks:
+            for mc in (chunk.get("misconceptions") or []):
+                if isinstance(mc, dict) and mc.get("misconception"):
+                    mc_texts.append(str(mc["misconception"]))
+        deductions = self._misconception_deductions(
+            mc_texts, claim_chunk or (sorted(cited)[0] if cited else ""))
+        model_answer = claim
+        # NO Bloom ceiling for written types — assert the requested level.
+        return QuestionData(
+            question_id=question_id,
+            question_type="essay",
+            stem=(f"<p>In 2-4 sentences, explain <strong>why</strong> the "
+                  f"following is true, drawing on the reasoning in the course "
+                  f"material: <em>{claim}</em></p>"),
+            bloom_level=bloom_level,
+            objective_id=objective_id,
+            correct_answer=model_answer,
+            item_subtype=subtype,
+            points=5.0,
+            feedback=(f"<p>A strong response explains: {model_answer}</p>"),
+            source_chunks=sorted(cited) or ([claim_chunk] if claim_chunk else []),
+            rubric={"criteria": criteria, "deductions": deductions},
+            generation_rationale=(
+                f"Short-answer constructed response grounded in a specific "
+                f"claim from chunk {claim_chunk!r}; {len(criteria)}-criterion "
+                f"analytic rubric, {len(deductions)} misconception deduction(s)"
+            ),
+        )
+
+    def build_extended_response(
+        self,
+        question_id: str,
+        objective_id: str,
+        bloom_level: str,
+        source_chunks: Optional[List[Dict[str, Any]]],
+    ):
+        """(i) EXTENDED-RESPONSE — "solve and show your work" / "compare X and Y".
+
+        Prefers a worked-example chunk (>=2 steps) → a solve-and-justify prompt
+        whose rubric criteria are the real solution steps (each cites the chunk)
+        and whose deductions are the applicable misconception transforms;
+        falls back to a term-pair chunk → a compare/contrast prompt whose rubric
+        criteria are the two grounded definitions + a contrast criterion. NO
+        Bloom ceiling (an honest higher-Bloom vehicle).
+        """
+        subtype = "extended_response"
+        if not source_chunks:
+            return SkippedItem(question_id, "essay", bloom_level,
+                               objective_id, "no_source_chunks")
+        procedures = self._content_extractor.extract_procedures(source_chunks)
+        target = next((p for p in procedures if len(p.steps) >= 2), None)
+        if target is not None:
+            steps = [self._trim(s, 160) for s in target.steps if s.strip()]
+            criteria = [
+                self._rubric_criterion(
+                    f"Shows and justifies the step: {s}",
+                    [target.source_chunk_id])
+                for s in steps
+            ]
+            criteria.append(self._rubric_criterion(
+                "Presents the work in a clear, logically-ordered sequence.",
+                [target.source_chunk_id]))
+            deductions = self._misconception_deductions(
+                list(target.steps), target.source_chunk_id)
+            model_answer = "".join(f"<li>{self._trim(s, 200)}</li>"
+                                   for s in target.steps)
+            return QuestionData(
+                question_id=question_id,
+                question_type="essay",
+                stem=(f"<p>Solve <em>{self._trim(target.title.lower(), 90)}</em>. "
+                      f"<strong>Show your work</strong> step by step and justify "
+                      f"each step you take.</p>"),
+                bloom_level=bloom_level,
+                objective_id=objective_id,
+                item_subtype=subtype,
+                points=10.0,
+                feedback=(f"<p>A complete solution:</p><ol>{model_answer}</ol>"),
+                source_chunks=[target.source_chunk_id],
+                rubric={"criteria": criteria, "deductions": deductions},
+                generation_rationale=(
+                    f"Extended-response solve-and-show-work over "
+                    f"{len(steps)} real steps of '{target.title}'; "
+                    f"per-step analytic rubric, {len(deductions)} deduction(s)"
+                ),
+            )
+        # Fallback — compare/contrast a term pair from the same section.
+        terms = self._content_extractor.extract_key_terms(source_chunks)
+        if len(terms) < 2:
+            return SkippedItem(question_id, "essay", bloom_level,
+                               objective_id, "no_procedure_or_term_pair")
+        a = self._rotate_term(terms)
+        b = next((t for t in terms if t.term != a.term), None)
+        if b is None:
+            return SkippedItem(question_id, "essay", bloom_level,
+                               objective_id, "no_second_term")
+        cited = sorted({a.source_chunk_id, b.source_chunk_id} - {""})
+        criteria = [
+            self._rubric_criterion(
+                f"Correctly defines '{a.term}' "
+                f"({self._trim(a.definition, 120)}).", [a.source_chunk_id]),
+            self._rubric_criterion(
+                f"Correctly defines '{b.term}' "
+                f"({self._trim(b.definition, 120)}).", [b.source_chunk_id]),
+            self._rubric_criterion(
+                f"Identifies at least one substantive difference and one "
+                f"connection between '{a.term}' and '{b.term}'.", cited),
+        ]
+        mc_texts = [a.definition, b.definition]
+        for chunk in source_chunks:
+            for mc in (chunk.get("misconceptions") or []):
+                if isinstance(mc, dict) and mc.get("misconception"):
+                    mc_texts.append(str(mc["misconception"]))
+        deductions = self._misconception_deductions(
+            mc_texts, cited[0] if cited else "")
+        return QuestionData(
+            question_id=question_id,
+            question_type="essay",
+            stem=(f"<p><strong>Compare and contrast</strong> <em>{a.term}</em> "
+                  f"and <em>{b.term}</em>. Explain how they differ and where they "
+                  f"connect, using specific examples from the course material.</p>"),
+            bloom_level=bloom_level,
+            objective_id=objective_id,
+            item_subtype=subtype,
+            points=10.0,
+            feedback=(f"<p>{a.term}: {self._trim(a.definition)}</p>"
+                      f"<p>{b.term}: {self._trim(b.definition)}</p>"),
+            source_chunks=cited,
+            rubric={"criteria": criteria, "deductions": deductions},
+            generation_rationale=(
+                f"Extended-response compare/contrast of '{a.term}' vs "
+                f"'{b.term}'; grounded-definition analytic rubric, "
+                f"{len(deductions)} deduction(s)"
+            ),
+        )
+
     #: Subtype → builder-method name dispatch for the diversified tier.
     _SUBTYPE_BUILDERS = {
         "mc_multiple_response": "build_multiple_response",
@@ -2527,6 +2787,8 @@ class AssessmentGenerator:
         "ordering_mc": "build_ordering_mc",
         "two_tier_answer": "build_two_tier",
         "tf_justified": "build_tf_justified",
+        "short_answer": "build_short_answer",
+        "extended_response": "build_extended_response",
         "mc_single": "build_mc_single",
     }
 

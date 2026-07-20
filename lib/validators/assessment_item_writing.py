@@ -142,7 +142,15 @@ _CHOICE_PROFILES = frozenset({
 })
 _TRUE_FALSE_PROFILE = "cc.true_false.v0p1"
 _MULTIPLE_RESPONSE_PROFILE = "cc.multiple_response.v0p1"
+_ESSAY_PROFILE = "cc.essay.v0p1"
 _AUTO_GRADABLE_PROFILES = _CHOICE_PROFILES | frozenset({"cc.fib.v0p1"})
+
+# Question-type / item-subtype tokens that carry a WRITTEN constructed response
+# (an ungraded essay-profile item with a per-item analytic rubric instead of a
+# key). ``short_answer`` / ``extended_response`` are the assessment-quality
+# overhaul's written types; ``essay`` is the legacy essay path.
+_WRITTEN_QUESTION_TYPES = frozenset({"essay", "short_answer"})
+_WRITTEN_SUBTYPES = frozenset({"short_answer", "extended_response"})
 
 # Bloom order (low → high). Local copy so the module never needs the ontology
 # at import time; mirrors ``lib/ontology/bloom.py::BLOOM_LEVELS`` ordering.
@@ -184,6 +192,13 @@ _GENERIC_STEM_RE = re.compile(
 _NEGATIVE_RE = re.compile(r"\b(not|except|never|neither|none)\b", re.IGNORECASE)
 # Emphasis markup around/near the negative (any presence in the raw stem HTML).
 _EMPHASIS_TAG_RE = re.compile(r"<\s*(strong|em|b|u)\b", re.IGNORECASE)
+# Bare / generic written-response stem: an open verb followed by a single
+# short object and nothing else (e.g. "Discuss X.", "Describe photosynthesis").
+_BARE_WRITTEN_STEM_RE = re.compile(
+    r"^\s*(discuss|describe|explain|summarize|elaborate\s+on|"
+    r"write\s+about|talk\s+about)\s+[\w-]+[\s.?!]*$",
+    re.IGNORECASE,
+)
 # None/All-of-the-above option.
 _NONE_ALL_OF_ABOVE_RE = re.compile(
     r"\b(none|all|both)\s+of\s+the\s+(above|following)\b", re.IGNORECASE
@@ -322,6 +337,10 @@ def _item_from_xml(item: ET.Element) -> Dict[str, Any]:
         "is_auto_gradable": cc_profile in _AUTO_GRADABLE_PROFILES,
         "is_multiple_response": is_mr,
         "is_true_false": is_tf,
+        "is_written": cc_profile == _ESSAY_PROFILE,
+        "is_structured": False,
+        "rubric": None,
+        "source_chunks": [],
         "options": options,
         "correct_count": correct_count,
     }
@@ -381,6 +400,15 @@ def _item_from_dict(q: Dict[str, Any]) -> Dict[str, Any]:
         "is_auto_gradable": is_auto,
         "is_multiple_response": is_mr,
         "is_true_false": is_tf,
+        "is_written": (
+            qtype in _WRITTEN_QUESTION_TYPES
+            or (subtype in _WRITTEN_SUBTYPES if subtype else False)
+        ),
+        "is_structured": True,
+        "rubric": q.get("rubric") if isinstance(q.get("rubric"), dict) else None,
+        "source_chunks": [
+            str(c) for c in (q.get("source_chunks") or []) if c
+        ],
         "options": options,
         "correct_count": correct_count,
     }
@@ -536,6 +564,10 @@ class AssessmentItemWritingValidator:
                         ),
                     )
 
+        # --- Written-response (essay / short_answer / extended_response). --
+        if item.get("is_written"):
+            self._audit_written(item, _add)
+
         # Text rules below apply to CHOICE items with real options only.
         if not item.get("is_choice") or not opt_texts:
             self._audit_stem_negative(stem_text, stem_html, _add)
@@ -609,6 +641,87 @@ class AssessmentItemWritingValidator:
 
         # --- Article (a/an) agreement. ------------------------------------
         self._audit_article_agreement(stem_text, opt_texts, _add)
+
+    @staticmethod
+    def _audit_written(item: Dict[str, Any], _add) -> None:
+        """Written-response item-writing rules (essay / short_answer /
+        extended_response).
+
+        * ``ITEM_WRITTEN_STEM_NOT_SPECIFIC`` — the prompt is a bare open verb +
+          single object ("Discuss X.") or falls below a token floor
+          (``ED4ALL_ASSESSMENT_WRITTEN_MIN_TOKENS``, default 6). A written item
+          must pose a SPECIFIC task, not a one-word topic dump. Runs on both the
+          QTI and structured surfaces.
+        * ``ITEM_WRITTEN_RUBRIC_MISSING`` — a written item must carry a per-item
+          analytic rubric (structured surface only — the QTI XML carries none).
+        * ``ITEM_WRITTEN_RUBRIC_CRITERION_UNGROUNDED`` — every rubric criterion
+          must resolve at least one source chunk id, and each cited id must be in
+          the item's ``source_chunks`` (grounded-by-construction contract).
+        """
+        loc = item["id"]
+        stem_text = item["stem_text"]
+        min_tokens = int(_resolve_float_env(
+            "ED4ALL_ASSESSMENT_WRITTEN_MIN_TOKENS", 6.0))
+        token_count = len(_tokens(stem_text))
+        if _BARE_WRITTEN_STEM_RE.match(stem_text) or token_count < min_tokens:
+            _add(
+                "warning",
+                "ITEM_WRITTEN_STEM_NOT_SPECIFIC",
+                (
+                    f"written item {loc!r} prompt is not specific "
+                    f"({stem_text[:60]!r}, {token_count} tokens); a "
+                    f"constructed-response prompt must pose a specific task, "
+                    f"not a bare topic (e.g. 'Discuss X')."
+                ),
+                suggestion=(
+                    "Ground the prompt in a specific claim / procedure / term "
+                    "pair (e.g. 'Explain why <claim>' or 'Compare X and Y')."
+                ),
+            )
+
+        # Rubric rules — structured surface only (QTI carries no rubric).
+        if not item.get("is_structured"):
+            return
+        rubric = item.get("rubric")
+        criteria = (rubric or {}).get("criteria") if isinstance(rubric, dict) else None
+        if not criteria:
+            _add(
+                "warning",
+                "ITEM_WRITTEN_RUBRIC_MISSING",
+                (
+                    f"written item {loc!r} carries no per-item analytic rubric; "
+                    f"a constructed-response item must ship a rubric so it can "
+                    f"be graded consistently."
+                ),
+                suggestion=(
+                    "Attach a rubric with criteria (each citing a source chunk) "
+                    "and score levels."
+                ),
+            )
+            return
+        source_ids = set(item.get("source_chunks") or [])
+        for row in criteria:
+            if not isinstance(row, dict):
+                continue
+            cites = [str(c) for c in (row.get("cites") or []) if c]
+            grounded = bool(cites) and (
+                not source_ids or all(c in source_ids for c in cites)
+            )
+            if not grounded:
+                crit = str(row.get("criterion") or "")[:60]
+                _add(
+                    "warning",
+                    "ITEM_WRITTEN_RUBRIC_CRITERION_UNGROUNDED",
+                    (
+                        f"written item {loc!r} rubric criterion {crit!r} does "
+                        f"not resolve a source chunk id (cites={cites!r}); every "
+                        f"criterion must cite a chunk the item is grounded in."
+                    ),
+                    suggestion=(
+                        "Derive each criterion from the item's source chunks and "
+                        "cite the chunk id it came from."
+                    ),
+                )
 
     @staticmethod
     def _audit_stem_negative(stem_text: str, stem_html: str, _add) -> None:

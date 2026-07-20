@@ -546,6 +546,44 @@ def _mc_with_feedback(qid: str = "q-mc-fb") -> dict:
     }
 
 
+def _written_item(qid: str = "q-written", subtype: str = "short_answer") -> dict:
+    """A generator-shaped WRITTEN constructed-response item (essay profile)."""
+    return {
+        "question_id": qid,
+        "question_type": "essay",
+        "stem": "<p>In 2-4 sentences, explain why a coefficient scales its "
+                "variable.</p>",
+        "bloom_level": "evaluate",
+        "objective_id": "TO-02",
+        "item_subtype": subtype,
+        "feedback": "<p>A coefficient multiplies the variable it precedes.</p>",
+        "points": 5.0,
+    }
+
+
+def test_written_subtype_emits_essay_profile_and_subtype_metadata():
+    item = question_to_qti_item(_written_item(subtype="extended_response"))
+    # cc_profile + item_subtype ride through as qtimetadata provenance.
+    fields = {}
+    for f in _iter_local(item, "qtimetadatafield"):
+        label = next(_iter_local(f, "fieldlabel")).text
+        entry = next(_iter_local(f, "fieldentry")).text
+        fields[label] = entry
+    assert fields.get("cc_profile") == "cc.essay.v0p1"
+    assert fields.get("item_subtype") == "extended_response"
+    # The model answer travels as a Solution-type <itemfeedback>.
+    solutions = [fb for fb in _iter_local(item, "itemfeedback")
+                 if list(_iter_local(fb, "solution"))]
+    assert len(solutions) == 1
+
+
+def test_written_subtype_xsd_valid_and_roundtrips():
+    xml_str = assessment_to_qti(_assessment([_written_item()]))
+    _assert_xsd_valid(xml_str, _QTI_XSD)
+    parsed = QTIParser().parse_string(xml_str)
+    assert parsed.questions[0].type == "essay"
+
+
 def test_itemfeedback_default_on_emits_solution_and_response():
     item = question_to_qti_item(_mc_with_feedback())
     feedbacks = list(_iter_local(item, "itemfeedback"))

@@ -304,5 +304,87 @@ def test_qti_surface_mr_exempt_from_single_key():
     assert "ITEM_NON_MR_MULTIPLE_KEYS" not in _codes(result)
 
 
+# --------------------------------------------------------------------------- #
+# Written-response rules (short_answer / extended_response)
+# --------------------------------------------------------------------------- #
+def _written(qid="w1", stem=None, subtype="short_answer", rubric="default",
+             source_chunks=("c1",)):
+    if stem is None:
+        stem = ("In 2-4 sentences, explain why a coefficient multiplies "
+                "the variable it precedes.")
+    if rubric == "default":
+        rubric = {
+            "criteria": [
+                {"criterion": "Correctly explains the role of a coefficient.",
+                 "cites": ["c1"],
+                 "levels": [{"score": 2, "descriptor": "Full."},
+                            {"score": 0, "descriptor": "None."}]},
+            ],
+            "deductions": [],
+        }
+    q = {
+        "question_id": qid,
+        "question_type": "essay",
+        "stem": stem,
+        "item_subtype": subtype,
+        "source_chunks": list(source_chunks),
+    }
+    if rubric is not None:
+        q["rubric"] = rubric
+    return q
+
+
+def test_written_good_item_passes_clean():
+    result = _run(items=[_written()])
+    codes = _codes(result)
+    assert not any(c.startswith("ITEM_WRITTEN_") for c in codes), codes
+    assert result.passed is True
+
+
+def test_written_bare_discuss_stem_flagged():
+    result = _run(items=[_written(stem="Discuss photosynthesis.")])
+    assert "ITEM_WRITTEN_STEM_NOT_SPECIFIC" in _codes(result)
+    assert result.passed is True  # warning-severity day-1
+
+
+def test_written_short_stem_flagged():
+    result = _run(items=[_written(stem="Explain it.")])
+    assert "ITEM_WRITTEN_STEM_NOT_SPECIFIC" in _codes(result)
+
+
+def test_written_missing_rubric_flagged():
+    result = _run(items=[_written(rubric=None)])
+    assert "ITEM_WRITTEN_RUBRIC_MISSING" in _codes(result)
+
+
+def test_written_empty_criteria_flagged():
+    result = _run(items=[_written(rubric={"criteria": [], "deductions": []})])
+    assert "ITEM_WRITTEN_RUBRIC_MISSING" in _codes(result)
+
+
+def test_written_ungrounded_criterion_flagged():
+    bad = {
+        "criteria": [
+            {"criterion": "Ungrounded criterion.", "cites": [],
+             "levels": [{"score": 2, "descriptor": "x"}]},
+        ],
+        "deductions": [],
+    }
+    result = _run(items=[_written(rubric=bad)])
+    assert "ITEM_WRITTEN_RUBRIC_CRITERION_UNGROUNDED" in _codes(result)
+
+
+def test_written_criterion_cite_not_in_source_flagged():
+    bad = {
+        "criteria": [
+            {"criterion": "Cites a foreign chunk.", "cites": ["c_other"],
+             "levels": [{"score": 2, "descriptor": "x"}]},
+        ],
+        "deductions": [],
+    }
+    result = _run(items=[_written(rubric=bad, source_chunks=("c1",))])
+    assert "ITEM_WRITTEN_RUBRIC_CRITERION_UNGROUNDED" in _codes(result)
+
+
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-v"]))

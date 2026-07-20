@@ -242,12 +242,53 @@ def _build_quiz_item(q: Any) -> Dict[str, Any]:
     # carries no portable answer tolerance).
     if (subtype and str(subtype) in _NUMERIC_SUBTYPES) or q_type == "fill_in_blank":
         record["instructor_note"] = _NUMERIC_TOLERANCE_NOTE
-    # Essay quiz items are hand-graded — attach a Bloom-derived rubric scaffold.
-    if q_type == "essay":
+    # Written-response items (short_answer / extended_response) carry their OWN
+    # grounded, per-item analytic rubric (criteria + deductions, each citing a
+    # source chunk). Render THAT verbatim; a legacy essay with no structured
+    # rubric falls back to the deterministic Bloom-derived scaffold.
+    structured = _get(q, "rubric")
+    if isinstance(structured, dict) and (
+        structured.get("criteria") or structured.get("deductions")
+    ):
+        record["rubric"] = _normalize_written_rubric(structured)
+    elif q_type in ("essay", "short_answer"):
         record["rubric"] = _bloom_rubric(
             _get(q, "bloom_level"), ""  # objective text lives on rubric_items
         )
     return record
+
+
+def _normalize_written_rubric(rubric: Dict[str, Any]) -> Dict[str, Any]:
+    """Sanitise a written-response rubric dict for the answer key (no invention).
+
+    Strips HTML from every criterion / descriptor / note and coerces ``cites``
+    to a plain string list, preserving the ``{criteria, deductions}`` shape so
+    both the JSON and the HTML surfaces carry the full grounded rubric.
+    """
+    criteria_out: List[Dict[str, Any]] = []
+    for row in rubric.get("criteria") or []:
+        if not isinstance(row, dict):
+            continue
+        levels = [
+            {"score": lv.get("score"), "descriptor": _strip_html(lv.get("descriptor"))}
+            for lv in (row.get("levels") or []) if isinstance(lv, dict)
+        ]
+        criteria_out.append({
+            "criterion": _strip_html(row.get("criterion")),
+            "cites": _as_str_list(row.get("cites")),
+            "levels": levels,
+        })
+    deductions_out: List[Dict[str, Any]] = []
+    for row in rubric.get("deductions") or []:
+        if not isinstance(row, dict):
+            continue
+        deductions_out.append({
+            "error": _strip_html(row.get("error")),
+            "note": _strip_html(row.get("note")),
+            "points": row.get("points"),
+            "cites": _as_str_list(row.get("cites")),
+        })
+    return {"criteria": criteria_out, "deductions": deductions_out}
 
 
 # --------------------------------------------------------------------------- #
@@ -368,6 +409,68 @@ def _render_rubric_table(rubric: List[Dict[str, Any]]) -> str:
     return "".join(parts)
 
 
+def _render_written_rubric_table(rubric: Dict[str, Any]) -> str:
+    """Render a written-response ``{criteria, deductions}`` rubric.
+
+    Criteria table columns: Criterion · each score level · Source chunk(s).
+    A separate deductions table lists the common-error point deductions. Every
+    signal carries a text label (no color-only signaling); all content escaped.
+    """
+    criteria = rubric.get("criteria") or []
+    deductions = rubric.get("deductions") or []
+    if not criteria and not deductions:
+        return "<p><em>No rubric recorded.</em></p>"
+    parts: List[str] = []
+    if criteria:
+        # Column order for the score levels is taken from the first row.
+        level_scores = [lv.get("score") for lv in (criteria[0].get("levels") or [])]
+        header_cells = "".join(
+            f'<th scope="col">Score {_e(s)}</th>' for s in level_scores
+        )
+        parts.append('<table class="rubric">')
+        parts.append(
+            "<thead><tr>"
+            '<th scope="col">Criterion</th>'
+            f"{header_cells}"
+            '<th scope="col">Source chunk(s)</th>'
+            "</tr></thead><tbody>"
+        )
+        for row in criteria:
+            crit = _e(row.get("criterion"))
+            level_cells = "".join(
+                f"<td>{_e(lv.get('descriptor'))}</td>"
+                for lv in (row.get("levels") or [])
+            )
+            cites = row.get("cites") or []
+            cite_cell = _e(", ".join(str(c) for c in cites)) if cites else "—"
+            parts.append(
+                f'<tr><th scope="row">{crit}</th>{level_cells}'
+                f"<td>{cite_cell}</td></tr>"
+            )
+        parts.append("</tbody></table>")
+    if deductions:
+        parts.append('<table class="deductions">')
+        parts.append(
+            "<thead><tr>"
+            '<th scope="col">Common error</th>'
+            '<th scope="col">Point deduction</th>'
+            '<th scope="col">Source chunk(s)</th>'
+            "</tr></thead><tbody>"
+        )
+        for row in deductions:
+            label = row.get("note") or row.get("error") or "Common error"
+            pts = row.get("points")
+            pts_txt = _e(pts) if pts is not None else "—"
+            cites = row.get("cites") or []
+            cite_cell = _e(", ".join(str(c) for c in cites)) if cites else "—"
+            parts.append(
+                f'<tr><th scope="row">{_e(label)}</th>'
+                f"<td>{pts_txt}</td><td>{cite_cell}</td></tr>"
+            )
+        parts.append("</tbody></table>")
+    return "".join(parts)
+
+
 def _render_quiz_item(item: Dict[str, Any], idx: int) -> str:
     parts: List[str] = ['<article class="answer-item">']
     subtype = item.get("item_subtype")
@@ -432,10 +535,15 @@ def _render_quiz_item(item: Dict[str, Any], idx: int) -> str:
             )
         parts.append("</tbody></table>")
 
-    # Per-item rubric (essay).
-    if item.get("rubric"):
+    # Per-item rubric — structured written-response rubric (dict) or the
+    # legacy Bloom-scaffold list.
+    rubric = item.get("rubric")
+    if rubric:
         parts.append("<h4>Rubric</h4>")
-        parts.append(_render_rubric_table(item["rubric"]))
+        if isinstance(rubric, dict):
+            parts.append(_render_written_rubric_table(rubric))
+        else:
+            parts.append(_render_rubric_table(rubric))
 
     # Source grounding.
     chunks = item.get("source_chunk_ids") or []

@@ -364,5 +364,115 @@ def test_generate_diversified_per_co_coverage():
     assert covered == set(objs), f"per-CO coverage broken: {covered}"
 
 
+# --------------------- written-response constructed items ----------------- #
+
+def _all_criterion_cites(rubric):
+    cites = set()
+    for row in (rubric or {}).get("criteria", []):
+        cites.update(row.get("cites") or [])
+    return cites
+
+
+def test_build_short_answer_specific_stem_and_grounded_rubric():
+    q = _gen().build_short_answer("Q1", "LO-01", "understand", [ROTATION_CHUNK])
+    assert isinstance(q, QuestionData)
+    assert q.item_subtype == "short_answer"
+    assert q.question_type == "essay"  # travels as cc.essay.v0p1
+    # SPECIFIC stem — never a bare "discuss X".
+    assert "explain" in q.stem.lower()
+    assert len(q.stem.split()) > 6
+    # Per-item analytic rubric present + grounded by construction.
+    assert q.rubric and q.rubric["criteria"]
+    for row in q.rubric["criteria"]:
+        assert row["cites"], f"criterion not grounded: {row['criterion']!r}"
+        assert row["levels"] and row["levels"][0]["score"] == 2
+    # Every criterion cite resolves a chunk the item is grounded in.
+    assert _all_criterion_cites(q.rubric) <= set(q.source_chunks)
+
+
+def test_build_extended_response_solve_shows_work():
+    q = _gen().build_extended_response("Q1", "LO-01", "apply", [PROC_CHUNK])
+    assert isinstance(q, QuestionData)
+    assert q.item_subtype == "extended_response"
+    assert q.question_type == "essay"
+    assert "show your work" in q.stem.lower()
+    # One criterion per real solution step, each citing the source chunk.
+    assert len(q.rubric["criteria"]) >= 3
+    assert _all_criterion_cites(q.rubric) <= set(q.source_chunks)
+    # Misconception-derived deduction rows carry a signed point penalty.
+    for d in q.rubric["deductions"]:
+        assert d["points"] < 0 and d["cites"]
+
+
+def test_build_extended_response_compare_fallback():
+    # No procedures in a terms-only chunk → compare/contrast fallback.
+    q = _gen().build_extended_response("Q1", "LO-01", "analyze", [TERMS_CHUNK])
+    assert isinstance(q, QuestionData)
+    assert q.item_subtype == "extended_response"
+    assert "compare and contrast" in q.stem.lower()
+    assert len(q.rubric["criteria"]) == 3
+    assert _all_criterion_cites(q.rubric) <= set(q.source_chunks)
+
+
+def test_written_types_have_no_bloom_ceiling():
+    # short_answer / extended_response are the honest higher-Bloom vehicle:
+    # an 'evaluate' claim is NOT clamped down (unlike mc_single → understand).
+    sa = _gen().build_short_answer("Q1", "LO-01", "evaluate", [ROTATION_CHUNK])
+    er = _gen().build_extended_response("Q2", "LO-01", "evaluate", [PROC_CHUNK])
+    assert sa.bloom_level == "evaluate"
+    assert er.bloom_level == "evaluate"
+
+
+def test_written_builders_skip_without_chunks():
+    g = _gen()
+    for method in ("build_short_answer", "build_extended_response"):
+        r = getattr(g, method)("Q1", "LO-01", "apply", None)
+        assert type(r).__name__ == "SkippedItem"
+        assert r.reason == "no_source_chunks"
+
+
+def test_question_data_rubric_roundtrips_and_omits_when_unset():
+    plain = QuestionData(
+        question_id="Q1", question_type="multiple_choice", stem="<p>s</p>",
+        bloom_level="understand", objective_id="LO-01",
+    )
+    assert "rubric" not in plain.to_dict()
+    with_rubric = QuestionData(
+        question_id="Q2", question_type="essay", stem="<p>s</p>",
+        bloom_level="apply", objective_id="LO-01",
+        rubric={"criteria": [{"criterion": "c", "cites": ["x"], "levels": []}],
+                "deductions": []},
+    )
+    assert with_rubric.to_dict()["rubric"]["criteria"][0]["cites"] == ["x"]
+
+
+def test_plan_item_mix_includes_written_types():
+    plan = plan_item_mix(40)
+    assert "short_answer" in plan
+    assert "extended_response" in plan
+    # written share is a bounded ~10-15% of the mix
+    written = plan.count("short_answer") + plan.count("extended_response")
+    assert 2 <= written <= 8
+
+
+def test_generate_diversified_can_emit_written_types():
+    gen = _gen()
+    chunks = [PROC_CHUNK, TERMS_CHUNK, ROTATION_CHUNK]
+    asm = gen.generate_diversified(
+        course_code="TEST_101",
+        objective_ids=["LO-01", "LO-02", "LO-03"],
+        bloom_levels=["apply", "analyze", "evaluate"],
+        question_count=40,
+        source_chunks=chunks,
+    )
+    subtypes = {q.item_subtype for q in asm.questions}
+    assert subtypes & {"short_answer", "extended_response"}, subtypes
+    # Every written item carries a grounded rubric.
+    for q in asm.questions:
+        if q.item_subtype in {"short_answer", "extended_response"}:
+            assert q.rubric and q.rubric["criteria"]
+            assert _all_criterion_cites(q.rubric) <= set(q.source_chunks)
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))

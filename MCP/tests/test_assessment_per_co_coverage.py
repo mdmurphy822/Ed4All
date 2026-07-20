@@ -290,6 +290,54 @@ def test_quiz_tier_emits_item_per_co(registry, tmp_path, monkeypatch):
     assert len(quiz_entries) == 2
 
 
+def _emitted_xml_blob(assessments_dir: Path) -> str:
+    return "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in sorted(assessments_dir.glob("*.xml"))
+    )
+
+
+def test_diversified_flag_off_is_byte_identical_legacy(
+    registry, tmp_path, monkeypatch
+):
+    """ED4ALL_ASSESSMENT_DIVERSIFIED unset → the legacy generate() MC/TF path;
+    no item carries the diversified-tier ``item_subtype`` qtimetadata."""
+    monkeypatch.delenv("ED4ALL_ASSESSMENT_DIVERSIFIED", raising=False)
+    assessments_dir = _run_assessment_synthesis_fixture(
+        registry, tmp_path, monkeypatch, "DIVOFF"
+    )
+    blob = _emitted_xml_blob(assessments_dir)
+    assert "item_subtype" not in blob, (
+        "legacy generate() must not stamp item_subtype metadata"
+    )
+
+
+def test_diversified_flag_on_wires_generate_diversified(
+    registry, tmp_path, monkeypatch
+):
+    """ED4ALL_ASSESSMENT_DIVERSIFIED on → generate_diversified() populates the
+    W10 quiz tier: every emitted item carries an ``item_subtype`` (the
+    discriminator the legacy path never sets), and per-CO coverage still holds.
+    """
+    monkeypatch.setenv("ED4ALL_ASSESSMENT_DIVERSIFIED", "1")
+    assessments_dir = _run_assessment_synthesis_fixture(
+        registry, tmp_path, monkeypatch, "DIVON"
+    )
+    blob = _emitted_xml_blob(assessments_dir)
+    assert "item_subtype" in blob, (
+        "generate_diversified() must stamp item_subtype metadata on every item"
+    )
+    # Per-CO coverage contract still holds on the diversified path.
+    titles = _emitted_quiz_item_titles(assessments_dir)
+    missing = _ALL_OBJECTIVE_IDS - titles
+    assert not missing, f"objectives without an emitted quiz item: {missing}"
+    # The instructor answer key is emitted alongside the diversified quizzes.
+    manifest = json.loads(
+        (assessments_dir / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert any(e.get("type") == "answer_key" for e in manifest["assessments"])
+
+
 # ---------------------------------------------------------------------------
 # 3. imscc_chunking QTI harvest -> assessment_item chunks.
 # ---------------------------------------------------------------------------

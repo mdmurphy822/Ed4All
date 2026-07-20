@@ -249,6 +249,62 @@ def test_every_item_subtype_reshapes():
     assert doc["item_count"] == 10
 
 
+def _q_written(subtype="extended_response"):
+    return {
+        "question_id": "q_written", "question_type": "essay",
+        "stem": "<p>Solve <em>the linear system</em>. Show your work.</p>",
+        "bloom_level": "apply", "objective_id": "TO-01",
+        "item_subtype": subtype,
+        "feedback": "<ol><li>Isolate x</li><li>Substitute</li></ol>",
+        "source_chunks": ["c_proc"],
+        "rubric": {
+            "criteria": [
+                {"criterion": "Shows and justifies isolating x.",
+                 "cites": ["c_proc"],
+                 "levels": [{"score": 2, "descriptor": "Full."},
+                            {"score": 1, "descriptor": "Partial."},
+                            {"score": 0, "descriptor": "None."}]},
+                {"criterion": "Shows the substitution step.",
+                 "cites": ["c_proc"],
+                 "levels": [{"score": 2, "descriptor": "Full."},
+                            {"score": 0, "descriptor": "None."}]},
+            ],
+            "deductions": [
+                {"error": "sign_drop", "note": "Dropped a negative sign.",
+                 "points": -1.0, "cites": ["c_proc"]},
+            ],
+        },
+    }
+
+
+def test_written_item_structured_rubric_in_json():
+    doc = build_answer_key(assessments=[_assessment([_q_written()])],
+                           generated_at="t")
+    item = doc["items"][0]
+    assert item["item_subtype"] == "extended_response"
+    rub = item["rubric"]
+    assert isinstance(rub, dict)
+    assert len(rub["criteria"]) == 2
+    # Every criterion cites its source chunk (grounded by construction).
+    for row in rub["criteria"]:
+        assert row["cites"] == ["c_proc"]
+        assert row["levels"][0]["score"] == 2
+    assert rub["deductions"][0]["points"] == -1.0
+    # Model answer travels as worked-solution steps citing the chunk.
+    assert item["worked_solution_steps"]
+    assert item["worked_solution_steps"][0]["cites"] == ["c_proc"]
+
+
+def test_written_item_structured_rubric_in_html():
+    doc = build_answer_key(assessments=[_assessment([_q_written()])],
+                           generated_at="t")
+    html = render_answer_key_html(doc)
+    assert "Score 2" in html
+    assert "Common error" in html
+    assert "Dropped a negative sign." in html
+    assert "c_proc" in html  # source citation rendered
+
+
 def test_two_tier_linked_item_id_preserved():
     doc = build_answer_key(
         assessments=[_assessment(_all_quiz_questions())],

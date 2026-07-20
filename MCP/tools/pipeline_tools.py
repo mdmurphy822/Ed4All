@@ -29328,6 +29328,20 @@ def _build_tool_registry() -> dict:
         generator = AssessmentGenerator(capture=capture, check_leaks=False)
         built_assessments: List[Any] = []
 
+        # Assessment-quality overhaul (ITEM 2): the deterministic DIVERSIFIED
+        # tier (multiple-response / error-analysis / numeric-FIB / matching /
+        # ordering / two-tier / written short_answer + extended_response, each
+        # with per-item chunk-grounded rubrics) is opt-in behind
+        # ED4ALL_ASSESSMENT_DIVERSIFIED. Default OFF → the byte-identical legacy
+        # ``generate()`` MC/TF path. When ON the W10 quiz population comes from
+        # ``generate_diversified()`` (item_subtype + per-distractor misconception
+        # notes flow through to the emitter + answer key); per-CO coverage still
+        # holds (``ensure_objective_coverage=True``). Folded into the quiz-unit
+        # fingerprint knobs so a mid-run flip invalidates the resume sidecars.
+        _diversified_on = os.environ.get(
+            "ED4ALL_ASSESSMENT_DIVERSIFIED", ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
+
         # Per-CO coverage support (owner-directed 2026-07-19): index the
         # loaded chunks by id once so each objective's cited
         # ``source_chunk_ids`` can scope its item's grounding. Anti-
@@ -29382,6 +29396,7 @@ def _build_tool_registry() -> dict:
                 knobs=(
                     f"bloom={','.join(bloom_levels)};qc={question_count};"
                     f"cov=per_co_v1"
+                    + (";div=1" if _diversified_on else "")
                 ),
             )
             _q_key = _assessment_unit_key("quiz", tid)
@@ -29398,7 +29413,12 @@ def _build_tool_registry() -> dict:
                     _assessment_units_done += 1
                 continue
             try:
-                assessment = generator.generate(
+                _gen_fn = (
+                    generator.generate_diversified
+                    if _diversified_on
+                    else generator.generate
+                )
+                assessment = _gen_fn(
                     course_code=str(course_code),
                     objective_ids=obj_ids,
                     bloom_levels=bloom_levels,
