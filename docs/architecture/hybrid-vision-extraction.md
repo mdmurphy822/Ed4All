@@ -1,9 +1,12 @@
 # Hybrid vision extraction for scanned corpora
 
-**Status:** design / proposal (2026-07-11)
-**Owner workstream:** scan-fidelity (folds into pipeline-dev)
+**Status:** **SUPERSEDED (2026-07-20)** — this was a design proposal (2026-07-11). The problem analysis in
+§ 1 remains the canonical statement of why OCR is the quality ceiling, and § 1.3 (fidelity-blind gates) is
+still true. The *solution* in §§ 2–8 was not built as described; a different architecture was adopted
+instead. **See § 9 — What actually shipped** at the end of this file before acting on anything above it.
+**Workstream:** scan-fidelity
 **Measurement harness:** `scripts/integration/vision_ocr_probe.py`
-**Relates to:** SemantiK 13-stage cascade (`SemantiK/semantik_structure/cascade.py`),
+**Relates to:** SemantiK cascade (`SemantiK/semantik_structure/cascade.py`),
 `docs/LICENSING.md`, `docs/operations/nemotron-spark-serving.md`
 
 ## 1. Problem: Tesseract is the quality ceiling
@@ -40,8 +43,10 @@ separate block ~22 lines later —
 ```
 
 The number↔content binding is destroyed *before the council runs*, so no
-downstream structure decision can restore it. (This is the "multi-column SALAD
-is EXTRACTION-level" finding from `project_semantik_cross_genre_eval`.)
+downstream structure decision can restore it. Multi-column salad is an
+extraction-level defect: it is not recoverable by any later stage, because the
+information needed to re-pair a number with its content (spatial adjacency on
+the page) is gone from the text stream by the time structure typing begins.
 
 **B. Math corruption that silently yields wrong answers.**
 
@@ -52,16 +57,16 @@ is EXTRACTION-level" finding from `project_semantik_cross_genre_eval`.)
 | `−|a|` | `—lal` | abs-value bars → letters |
 | `−105 − (−68)` | `—105 — (68)` | negative sign dropped |
 
-Answer keys synthesized from this are wrong by construction — the origin of the
-"wk-03 answer keys wrong / ~43 math defects" signature
-(`plans-pointer-course-quality-improvement`). **The defect is in extraction, not
-generation**, so no amount of generation-side fixing can close it.
+Answer keys synthesized from this are wrong by construction — the origin of a
+recurring "wrong answer key" defect class on scanned math corpora. **The defect
+is in extraction, not generation**, so no amount of generation-side fixing can
+close it.
 
 ### 1.2 Empirical confirmation: the corruption already shipped
 
-Scanning the previously-delivered `LibV2/courses/alg-scan-01/dart_chunks/chunks.jsonl`
-(525 chunks) finds the corruption **in shipped downstream artifacts**, not just
-the raw page:
+Scanning the `dart_chunks/chunks.jsonl` of a previously-delivered scanned
+algebra course (525 chunks) finds the corruption **in shipped downstream
+artifacts**, not just the raw page:
 - **7 chunks** with symbol-injected math in factor-pair tables —
   `\(-1 + 5 = 4*\)`, `\(1 + (-5) = -4*\)`, `\(1 + (-9) = -8*\)` (spurious `*`).
 - Running-text garbage — `Chapter 1 Foundations lll Decimals` (a rule / `|||`
@@ -95,8 +100,8 @@ gate.
 
 ### 1.4 Scope (do not over-attribute)
 
-This is **scan-specific**. Born-digital PDFs and vendor-HTML corpora
-(`alg-vendor-rag`) carry a text layer and bypass Tesseract, so they are clean of
+This is **scan-specific**. Born-digital PDFs and vendor-HTML corpora carry a
+text layer and bypass Tesseract, so they are clean of
 *this* defect. And some downstream problems have unrelated roots — e.g. limited
 block-type variety is a Courseforge **static-plan** issue, generation-side, not
 extraction. Attribute to this root cause only: math corruption, multi-column
@@ -238,3 +243,76 @@ the delta; the **decisive read is visual** — page image vs Tesseract text vs
 Omni transcription. Decision criterion for P2: Omni must recover reading order
 and math on the hostile pages **without** introducing hallucinated text the
 Tesseract second-witness can't corroborate.
+
+---
+
+## 9. What actually shipped (2026-07-20)
+
+The P0 measurement ran and its conclusion held: **extraction is the ceiling.** But the P1/P2 design above —
+keep Tesseract authoritative, bolt vision on as a corrector — was **not** what was built. A bake-off replaced
+it with a stronger architecture, and the difference matters enough that §§ 2–8 should be read as a rejected
+alternative rather than as a plan.
+
+### 9.1 The adopted architecture
+
+Vision does not *correct* Tesseract; it *replaces* the extractor outright. The GLM-OCR lane
+(`SEMANTIK_GLMOCR_LANE`, opt-in, default off) is a whole-document converter that owns structure end to end:
+
+```
+PDF ──▶ 300-DPI pdftoppm page renders
+    ──▶ GLM-OCR SDK  (PP-DocLayoutV3 layout model + per-region OCR on a seat)
+    ──▶ DETERMINISTIC transform  (glmocr/transform.py)
+    ──▶ region_provenance  ──▶ existing lib/semantik adapter ──▶ accessible HTML
+```
+
+Code lives at `SemantiK/semantik_structure/glmocr/` (`lane.py`, `transform.py`, `sdk_client.py`,
+`math_normalize.py`, `heading_judge.py`, `alttext.py`), branching from `cascade.py::run_pipeline_v2` via
+`_run_glmocr_lane_v2`. Default off means the branch never imports the lane, so the legacy cascade stays
+byte-identical.
+
+### 9.2 How this differs from the proposal above — and why
+
+| § above | Proposed | Shipped |
+|---|---|---|
+| §2.2 "council needs Tesseract geometry" | Retain Tesseract for bboxes; vision supplies text only | **Council bypassed entirely.** The lane skips the council BERTs, cross-reranker, `structure_graph`, Stage-5d/5e, and theta. The layout model supplies regions + bboxes; the deterministic transform supplies typing. Learned heads are narrow candidate generators; auditable code beat them on the structural decisions. |
+| §4.1 "P1: image-grounded Stage-5d reviewer" | Page image → the existing 5d reviewer | **Not built as such.** The reviewer stage the lane bypasses is the one this would have improved. The reasoning-model role instead landed as the **heading-level judge** (`SEMANTIK_HEADING_JUDGE`), which re-levels `heading_level_pending` headings over a chapter's ordered heading skeleton — text is never touched, only levels, under a deterministic clamp and a fail-open keep-current on any transport or parse failure. |
+| §4.2 "P2: Stage-1.5 per-region Omni correction, Tesseract retained" | Hybrid two-source lane | **Rejected.** Single-source extraction from a purpose-built OCR stack, no Tesseract in the lane at all. |
+| §5.2 "second witness" | Tesseract as an independent corroborating witness against vision hallucination | **Moot in the lane** — there is no Tesseract text to corroborate against. The faithfulness posture rests instead on (a) the extractor being a dedicated OCR model rather than a general VLM asked to transcribe, and (b) explicit escalation records: an unreachable alt-text seat leaves a placeholder and records a loud escalation, never fabricated text. |
+
+The §5.2 concern was legitimate and is worth restating plainly: **the lane has no independent second witness on
+extracted text.** That is a real, accepted residual risk, not a solved problem. The §1.3 fidelity-blind-gates
+critique therefore still applies to the lane — no downstream gate compares the lane's output against page
+pixels.
+
+### 9.3 Contract dispositions
+
+- **§5.1 provenance** — honored. The lane writes `{stem}.glmocr_layout.json` (per-page region layout, the
+  provenance backbone) and `{stem}.glmocr_escalations.jsonl`. The existing `data-semantik-*` /
+  `{slug}#{block_id}` wire contract is rendered unchanged by the existing adapter.
+- **§5.1 decision-capture** — honored on the LLM surface. The heading judge emits one `structure_review`
+  capture per chapter with a `heading_level_judge` metadata discriminator and a dynamic rationale (model,
+  pending count, applied/clamped/dropped/kept tallies, `max_tokens`, `finish_reason`, cache hit/miss). The
+  deterministic transform makes no model call and correctly wires no capture.
+- **§5.3 licensing** — honored, and the posture came out *better* than the proposal feared. The proposal
+  worried that model-derived extraction makes the corpus a model derivative. The adopted stack is
+  permissively licensed throughout: GLM-OCR weights MIT, the `glmocr` SDK Apache-2.0, PP-DocLayoutV3
+  Apache-2.0, and the alt-text seat (Qwen3-VL-30B-A3B-Instruct) Apache-2.0. Each model-selecting flag carries
+  its `docs/LICENSING.md` row per the maintenance contract. The lane remains opt-in and default off.
+
+### 9.4 Pipeline position
+
+The heading judge is now a permanent `textbook_to_course` phase named `heading_judge`, sitting between
+`semantik_conversion` and `staging` (`MCP/tools/pipeline_tools.py::_run_heading_judge`, routed by phase name
+through `_PHASE_TOOL_MAPPING`). It runs the standalone judge with `--apply` per layout sidecar as a
+subprocess, copies judged HTML and corrected escalations back over the conversion output (keeping `.prejudge.bak`
+/ `.bak`; the layout sidecar is never overwritten), and **fail-opens per chapter** — a judge failure never
+blocks a build. With the flag off, or on a born-digital corpus, the phase is skip-with-pass.
+
+### 9.5 Still open
+
+- **No pixel-level fidelity gate.** §7's P0.5 proposal — sample extracted text, diff it against the page
+  image, report a per-corpus corruption rate — was not built. It remains the only design in this document
+  that would make §1.3's laundering visible, and it is independent of which extractor wins. Worth building.
+- **`region_kind` vs. the L1 block ontology.** The transform carries its own 25-class layout vocabulary,
+  unreconciled with `schemas/taxonomies/block_kinds.json`. See `docs/architecture/block-ontology.md`
+  § Adoption status.

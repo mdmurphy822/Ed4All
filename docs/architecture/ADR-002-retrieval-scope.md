@@ -2,7 +2,9 @@
 
 ## Status
 
-Proposed (Worker J, 2026-04-17).
+Proposed (Worker J, 2026-04-17). **The scope line moved — see § Status update (2026-07-20)** at the end of
+this file. The sections below are preserved as the historical record; the "explicitly out of scope" list in
+particular no longer describes the tree.
 
 ## Context
 
@@ -72,3 +74,47 @@ LibV2's reference retrieval is intentionally bounded. Anything more sophisticate
 - `FOLLOWUP-ADR002-2` — Metadata-aware scoring weight tuning. The default 0.3/0.3/0.2 split is reasonable but unvalidated against a large gold set. When more courses carry gold queries, run a small sweep and commit the resulting weights.
 - `FOLLOWUP-ADR002-3` — Cross-course rationale. When `retrieve_chunks` is called without `course_slug`, the rationale's per-course metadata (graph, pedagogy) is loaded per candidate, which is fine but inefficient for very large catalogs. A `MultiCourseScorer` cache would help at scale; not needed today.
 - `FOLLOWUP-ADR002-4` — Dense-embedding optional module. Deliberately out of scope for this ADR; if the project ever decides to ship one it should go in `LibV2/tools/libv2/retriever_dense.py` as a *separate* module, with its own opt-in flag — not folded into `retriever.py`.
+
+---
+
+## Status update (2026-07-20)
+
+Verified against the tree at this date.
+
+**The dense-embedding scope line was crossed deliberately, and the ADR's own separation discipline was
+honored.** `FOLLOWUP-ADR002-4` anticipated this and prescribed "a *separate* module, its own opt-in flag, not
+folded into `retriever.py`". That is what shipped, under different filenames than the follow-up guessed:
+
+- `LibV2/tools/libv2/vector_index.py` — per-course on-device vector index (exact cosine over L2-normalized
+  float32 in numpy; no FAISS, no sqlite-vec). Artifacts live at `LibV2/courses/<slug>/vector_index/`
+  (`embeddings.npy`, `id_map.json`, `manifest.json`).
+- `LibV2/tools/libv2/semantic_retriever.py` — query-side semantic retrieval, hydrating results back into the
+  same `RetrievalResult` shape the lexical retriever emits.
+- `LibV2/tools/libv2/result_fusion.py` — Reciprocal Rank Fusion, backing the `hybrid-rrf` engine.
+
+`MultiQueryRetriever` now takes an `engine` argument with three values: `"lexical"` (the default, unchanged
+BM25 path), `"semantic"`, and `"hybrid-rrf"`. Backend selection is env-driven (`ED4ALL_EMBEDDING_PROVIDER` and
+its satellites — see the root `CLAUDE.md` cross-cutting flag index). `retriever.py` was **not** modified to
+absorb any of this, so Contract 1 (byte-identical `to_dict()` for `include_rationale=False` callers) is
+structurally intact.
+
+Two properties of the landed design are worth naming because they are stronger than what the ADR asked for:
+
+1. **Anti-silent-degradation.** `semantic_retriever` has no BM25 fallback anywhere. Every failure mode is a
+   typed exception that propagates — `SemanticIndexMissing`, `SemanticIndexStale`, `FakeIndexRefused`,
+   `EmbeddingBackendUnavailable`. A missing or stale index is an operator error, never a quiet downgrade to
+   lexical results the caller cannot distinguish from a real semantic hit.
+2. **Determinism contract.** Same machine, venv, provider, model, `device=cpu`, and batch size produce
+   byte-identical `embeddings.npy` and `id_map.json`; `manifest.json` is identical modulo `generated_at`,
+   which is excluded from every content hash.
+
+**Scope lines that did hold.** Cross-encoder reranking stayed out of LibV2: it lives at
+`lib/retrieval/reranker.py` behind `ED4ALL_RERANK_PROVIDER`, on the Ed4All grounded-answer path, not in the
+LibV2 package surface. Likewise there is still no HTTP retrieval service in LibV2 — the control-plane GUI is a
+separate opt-in extra, not a LibV2 API. The ADR's core claim ("LibV2 stores packages and exposes reference
+retrieval; production serving belongs downstream") survives; only the "reference retrieval is sparse-only"
+boundary moved.
+
+**What this means for the ADR text above.** In § "What's explicitly out of scope", the *Dense embeddings*
+bullet is obsolete — read it as history. The *Cross-encoder rerankers*, *Online query APIs*, and
+*Domain-specific scoring* bullets remain accurate.

@@ -1,7 +1,9 @@
 # The universal block-label ontology
 
-**Status:** landed (2026-07-13) — data promoted to `schemas/taxonomies/`
-**Owner directive:** "universal label ontology for a wide range of documents" (2026-07-13)
+**Status:** data landed (2026-07-13) in `schemas/taxonomies/`; **not yet read by any production code path**
+— see § Adoption status (2026-07-20).
+**Goal:** one label vocabulary that structures a wide range of document genres, rather than a
+textbook-shaped enum that degrades silently off-domain.
 **Data files:** `schemas/taxonomies/block_kinds.json`, `schemas/taxonomies/block_relations.json`,
 `schemas/taxonomies/genre_profile_*.json` (8), `schemas/taxonomies/*_lexicon.json` (the four block-ontology lexicons: `openstax_lexicon.json`, `generic_instructional_lexicon.json`, `federal_register_lexicon.json`, `ansi_z535_lexicon.json`)
 **Loader:** `lib/ontology/taxonomy.py::load_taxonomy(name)` (generic `schemas/taxonomies/<name>.json` read)
@@ -55,8 +57,11 @@ new corpus invents labels (a form has `checkbox_item`, a statute has `holding`).
 If L2/L3 were closed, every new document genre would be a code change. So L2/L3
 are **data** (`genre_profile_*.json` / `*_lexicon.json`) — onboarding a genre or
 a publisher adds a JSON file, never a code edit. This is the direct realization
-of the standing **wide-net rule** (owner 2026-07-04: "gates domain-agnostic;
-publisher vocab = data-driven lexicon profiles, never code").
+of the standing **wide-net rule**: structural gates stay domain-agnostic, and
+publisher-specific vocabulary lives in data-driven lexicon profiles rather than
+in code. A publisher marker compiled into a Python module is a corpus-specific
+gate wearing a general-purpose disguise — it passes on the corpus it was written
+against and silently under-labels every other one.
 
 This cadence mirrors the live SemantiK lexicon system
 (`lib/ontology/taxonomy.py::load_semantik_lexicon` over
@@ -131,26 +136,33 @@ Enforced mechanically:
 
 | Change | Layer | Gate | Blast radius |
 |--------|-------|------|--------------|
-| Add/remove/rename a **kind** | L1 | **owner sign-off** (schema change) | new classifier head class, new DocLayNet gap, re-train, conservation-contract review |
+| Add/remove/rename a **kind** | L1 | **schema-change sign-off** (maintainer-gated, not a data PR) | new classifier head class, new DocLayNet gap, re-train, conservation-contract review |
 | Add a **role** to a profile | L2 | maintainer (data PR) — must declare `attaches_to` ≥1 kind, map to a `teaching_role`/framework block where instructional | additive; no head change (roles are a separate, open head) |
 | Add a **genre profile** | L2 | maintainer (data PR) + a § B source-mapping row | additive |
 | Add a **lexicon entry / file** | L3 | maintainer (data PR) — pure vocab | additive; zero code |
-| Add/rename a **relation** | relations | owner sign-off if it becomes a trained head class; else maintainer | may add a BERT-v2 class |
+| Add/rename a **relation** | relations | schema-change sign-off if it becomes a trained head class; else maintainer | may add a BERT-v2 class |
 
-**Invariants any change must preserve** (mechanically checkable — see
-`schemas/tests/test_block_ontology.py`):
+**Invariants any change must preserve.** Four of the five are mechanically
+enforced by `schemas/tests/test_block_ontology.py`; the fifth is review-time
+only, and the table says which is which so nobody assumes CI is watching a
+door it is not.
 
-1. Every L2 role `attaches_to` ≥1 L1 kind.
-2. Every current arranger `TYPE_ENUM` value + every onboarding-aligner
-   `SOURCE_TYPE_MAPS` output has a `(kind[, role])` home.
-3. No publisher marker string outside the lexicons.
-4. Every L1 kind declares its DocLayNet mapping (or an explicit `null` + gap
-   note).
-5. Every profile relation names ≥1 real L2 role.
+| # | Invariant | Enforced by |
+|---|---|---|
+| 1 | Every L2 role `attaches_to` ≥1 L1 kind. | `test_roles_attach_to_valid_l1_kinds` |
+| 2 | Every current arranger `TYPE_ENUM` value + every onboarding-aligner `SOURCE_TYPE_MAPS` output has a `(kind[, role])` home. | **Review only — no test.** `SOURCE_TYPE_MAPS` lives in the out-of-tree BERT-v2 workspace, so CI here cannot see it. |
+| 3 | No publisher marker string outside the lexicons. | `test_lexicon_is_marker_to_role_only` |
+| 4 | Every L1 kind declares its DocLayNet mapping (or an explicit `null` + gap note). | `test_block_kinds_declare_doclaynet_key` |
+| 5 | Every profile relation names ≥1 real L2 role. | `test_profile_relations_name_real_roles` |
 
-**Owner-gated L1 additions (2026-07-13).** Two kinds landed under the owner
-sign-off gate (owner directive: close cross-genre accessibility gaps), growing
-the closed set from 14 to 16: `aside` (aside/sidebar — renders as
+The suite additionally pins the L1 enum against a snapshot
+(`test_l1_kind_enum_matches_expected_snapshot`), which is what makes "closed
+L1" a mechanical fact rather than a convention: adding a kind fails CI until
+the snapshot is deliberately updated.
+
+**L1 additions under the schema-change gate (2026-07-13).** Two kinds landed
+through the L1 gate to close cross-genre accessibility gaps, growing the closed
+set from 14 to 16: `aside` (aside/sidebar — renders as
 role=complementary, excluded from the main reading sequence) and `chart`
 (chart/graph). `chart` is deliberately distinct from `figure`: its
 accessibility contract is a structured **data description** (`data_description`,
@@ -172,12 +184,51 @@ a model authority to apply it.
 ## Promotion history
 
 These files were drafted in the BERT-v2 workspace and promoted into
-`schemas/taxonomies/` on 2026-07-13 (owner-authorized). They are shaped for
+`schemas/taxonomies/` on 2026-07-13. They are shaped for
 `lib/ontology/taxonomy.py::load_taxonomy(name)` (a generic
-`schemas/taxonomies/<name>.json` read). Remaining follow-up (separate, gated):
-add typed loaders in `lib/ontology/` (mirroring `teaching_roles.py` /
-`taxonomy.py`), and wire the onboarding aligner + the arranger contract to read
-these files instead of their in-code tables (§ C).
+`schemas/taxonomies/<name>.json` read).
+
+## Adoption status (2026-07-20)
+
+Read this before treating any of § B or § C as describing live behavior.
+
+**What is real today.** All the data exists and is verified: `block_kinds.json`
+declares 16 kinds, there are 8 `genre_profile_*.json` files
+(`encyclopedic`, `forms`, `instructional`, `legal_regulatory`, `literary`,
+`scholarly`, `statistical`, `technical_manual`) and the 4 block-ontology
+lexicons named in the header. `load_taxonomy(name)` reads them, and
+`schemas/tests/test_block_ontology.py` enforces the invariant table above.
+
+**What is not yet real.** **No production code path reads `block_kinds.json`,
+`block_relations.json`, or any `genre_profile_*.json`.** Grepping for
+`load_taxonomy` finds only the schema tests plus unrelated callers reading
+*other* taxonomies (`taxonomy.json`, the objective filler lexicon, the course-status
+cohort table). The ontology is a ratified vocabulary with a validated data
+layer and no consumer.
+
+Concretely, that means:
+
+- `SemantiK/semantik_structure/page_arranger_contract.py::TYPE_ENUM` is still
+  the live 9-value flat enum (verified: `definition_box`, `example`,
+  `exercise_list`, `figure_caption`, `furniture`, `heading`, `paragraph`,
+  `solution`, `table`). The § C migration to `(kind, role)` tuples has **not**
+  happened.
+- The GLM-OCR extraction lane, which now owns document structure for the
+  conversion path, carries its own `region_kind` vocabulary in
+  `SemantiK/semantik_structure/glmocr/transform.py` (a 25-class layout-model
+  mapping) rather than consuming L1. Reconciling `region_kind` with L1 is
+  unscheduled work and is the single largest gap between this document and the
+  shipping converter.
+- `SOURCE_TYPE_MAPS` and `PRACTICE_MARKER_LEXICON`, referenced throughout § B
+  and § C as "the current map", exist only in the out-of-tree BERT-v2 workspace.
+  They are **not** in this repository. Statements about what they "currently"
+  do are unverifiable from this tree and should be read as a snapshot of that
+  workspace on 2026-07-13.
+
+Remaining follow-up: add typed loaders in `lib/ontology/` (mirroring
+`teaching_roles.py`), reconcile the GLM-OCR `region_kind` set against L1, and
+only then wire the arranger contract to read these files instead of its in-code
+enum (§ C).
 
 ---
 

@@ -2,7 +2,10 @@
 
 ## Status
 
-Proposed.
+Proposed (original). **Partially superseded by implementation — see § Status update (2026-07-20)** at the
+end of this file. The Context / Decision / Rationale sections below are preserved verbatim as the historical
+record of the decision; several line numbers, constant values, and follow-up states they cite have since
+moved. Do not read them as current facts — read the status update for what the tree does today.
 
 ## Context
 
@@ -151,3 +154,49 @@ The Courseforge-side template-chrome work tracked in `VERSIONING.md §4b` is not
 | Date | PR | What | Owner |
 |---|---|---|---|
 | (pending) | (Worker B PR) | `METRICS_SEMANTIC_VERSION` 3 → 4 (adds five flow metrics) | Worker B |
+
+---
+
+## Status update (2026-07-20)
+
+Verified against the tree at this date. The ADR's **architecture** (two writers, disjoint keys) still holds
+and no merge happened. Its **cited facts** have moved:
+
+### Constants — moved
+
+| Symbol | ADR text | Verified today |
+|---|---|---|
+| `METRICS_SEMANTIC_VERSION` | `= 3`, at `process_course.py:58` | `= 5`, at `Trainforge/process_course.py:102`. The v3→v4 bump in the decision log landed (the flow metrics are present and commented as `METRICS_SEMANTIC_VERSION 4`); a subsequent v4→v5 bump landed undocumented in the log below. |
+| `CHUNK_SCHEMA_VERSION` | Contract 1: "not yet declared", starts `"v3"`, first toucher bumps to `"v4"` | Declared and at `"v4"` (`Trainforge/process_course.py:114`). Contract 1 is **discharged**. It is stamped on chunks as `schema_version` and on the manifest as `chunk_schema_version`, exactly as Contract 1 specified. |
+
+### Contract 3 (decision-capture event types) — superseded
+
+The ADR's premise ("there is no central enum to touch") is no longer true, and the resolution differs from
+what Contract 3 sketched. `lib/decision_capture.py` now defines `ALLOWED_DECISION_TYPES` as a tuple loaded
+**at module-import time from `schemas/events/decision_event.schema.json`**, not as a hand-maintained tuple
+literal. The schema — not a Python constant — is the single source of truth, so adding a `decision_type` is a
+schema change plus its first use site. `DECISION_VALIDATION_STRICT` fails closed on an unknown type. Contract
+3's "Worker C creates the tuple" and "PRs rebase through each other on a tuple constant" mechanics are dead
+letters; the invariant they protected (a type name must be referenced from a production call site, not only a
+test) survives as review protocol.
+
+### Contract 4 (fixtures) — discharged
+
+All six named fixture dirs exist under `Trainforge/tests/fixtures/`: `mini_course_clean`,
+`mini_course_defective`, `mini_course_edge`, `mini_course_summaries`, `mini_course_training`,
+`mini_course_typed_graph` (plus `form_data_gold_set`, added later and outside the `mini_course_*` naming
+pattern). The naming pattern and the per-fixture `README.md` requirement stand.
+
+### Follow-up status
+
+| Follow-up | State |
+|---|---|
+| `FOLLOWUP-ADR001-1` — LibV2 importer OSCQR `quality_report.json` filename collision | **Open.** `LibV2/tools/libv2/importer.py` still writes the OSCQR-flavored stub (`oscqr_score`, …) to `quality/quality_report.json` when the imported source has none. Same filename, different schema. |
+| `FOLLOWUP-ADR001-2` — `run_summarizer` reads a dead key | **Fixed.** `cli/reporters/run_summarizer.py` now reads `overall_quality_score` first, with the legacy `quality_score` / `score` keys retained as fallbacks. |
+| `FOLLOWUP-ADR001-3` — stale `METRICS_SEMANTIC_VERSION=2` docstring | **Open, and now more stale.** `Trainforge/align_chunks.py::update_quality_report`'s docstring still cites `METRICS_SEMANTIC_VERSION=2`; the base pass is at 5. |
+| `FOLLOWUP-ADR001-4` — enforce the additive-only contract in code | **Open. This is the live gap.** `align_chunks.update_quality_report` still does both things the ADR forbids: it appends to `integrity["broken_refs"]` and it overwrites `report["overall_quality_score"]` with the `0.6·base + 0.4·alignment` blend. The ADR's Decision is therefore **prose-only today** — the hazard table in § Field-level picture still describes live behavior, not history. Neither `alignment.alignment_quality_score` nor `alignment.base_metrics_semantic_version` (Contract 2) is written. |
+
+**Net:** the ADR chose "two writers, disjoint keys" but the disjointness was never enforced in code. Anyone
+reading `overall_quality_score` out of `quality_report.json` is reading a blended number whose blend factor is
+invisible in the artifact — exactly the silent hazard the ADR named. Treat `FOLLOWUP-ADR001-4` as the
+outstanding work, not as a stylistic nicety.
