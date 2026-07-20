@@ -243,6 +243,23 @@ def _resolve_float_env(name: str, default: float) -> float:
     return val
 
 
+# A2 — Bloom-trivote seam (flag-gated, default OFF). The structural ceiling
+# check above is ALWAYS the default. When ``ED4ALL_ASSESSMENT_ITEM_TRIVOTE`` is
+# truthy this validator ADDITIONALLY runs the interpretable trivote — the
+# item's asserted bloom_level vs the deterministic verb-ontology voter (+ an
+# injected zero-shot voter when a GPU-present caller supplies one via
+# ``inputs['zero_shot_bloom_fn']``) — and flags ``ITEM_BLOOM_TRIVOTE_UNSUPPORTED``
+# (WARNING) when the generator's own Bloom claim is NOT backed by ≥1 independent
+# voter. Off → the trivote arm never runs (byte-identical).
+_ITEM_TRIVOTE_ENV = "ED4ALL_ASSESSMENT_ITEM_TRIVOTE"
+_TRUTHY_TOKENS = frozenset({"1", "true", "yes", "on"})
+
+
+def _item_trivote_enabled() -> bool:
+    """Return True when ED4ALL_ASSESSMENT_ITEM_TRIVOTE is truthy (default off)."""
+    return os.environ.get(_ITEM_TRIVOTE_ENV, "").strip().lower() in _TRUTHY_TOKENS
+
+
 def _subtype_bloom_ceiling() -> Dict[str, str]:
     """Return the live ``_SUBTYPE_BLOOM_CEILING`` (generator) or the fallback.
 
@@ -471,6 +488,14 @@ class AssessmentItemWritingValidator:
         )
         ceiling = _subtype_bloom_ceiling()
 
+        # A2 — Bloom-trivote seam (flag-gated). The zero-shot voter is GPU-gated,
+        # so it is supplied by the caller via inputs (default None → the trivote
+        # runs on the deterministic asserted + verb voters only, fully offline).
+        trivote_on = _item_trivote_enabled()
+        zero_shot_fn = (
+            inputs.get("zero_shot_bloom_fn") if trivote_on else None
+        )
+
         items_audited = 0
         items_flagged = 0
         for item in items:
@@ -483,6 +508,8 @@ class AssessmentItemWritingValidator:
                 overlap_floor=overlap_floor,
                 longest_margin=longest_margin,
                 ceiling=ceiling,
+                trivote_on=trivote_on,
+                zero_shot_fn=zero_shot_fn,
             )
             if len(issues) > before:
                 items_flagged += 1
@@ -500,6 +527,8 @@ class AssessmentItemWritingValidator:
         overlap_floor: float,
         longest_margin: float,
         ceiling: Dict[str, str],
+        trivote_on: bool = False,
+        zero_shot_fn: Optional[Any] = None,
     ) -> None:
         loc = item["id"]
 
@@ -544,6 +573,23 @@ class AssessmentItemWritingValidator:
                         "(numeric-solve / ordering / error-analysis)."
                     ),
                 )
+
+        # --- A2 Bloom-trivote arm (flag-gated). ---------------------------
+        # Independent of the structural ceiling above: does the generator's OWN
+        # Bloom claim survive the interpretable trivote? Runs only when
+        # ED4ALL_ASSESSMENT_ITEM_TRIVOTE is on AND the item carries an asserted
+        # bloom_level. The verb voter is deterministic + offline; the zero-shot
+        # voter is supplied by a GPU-present caller (else the trivote runs on
+        # asserted + verb, and a single present voter structured-skips —
+        # never fabricating a verdict).
+        if trivote_on and bloom:
+            self._audit_bloom_trivote(
+                loc=loc,
+                stem_text=item.get("stem_text") or "",
+                asserted=bloom,
+                zero_shot_fn=zero_shot_fn,
+                _add=_add,
+            )
 
         # --- Single-key rule (all auto-gradable items). -------------------
         if item.get("is_auto_gradable") and item.get("is_choice"):
@@ -641,6 +687,67 @@ class AssessmentItemWritingValidator:
 
         # --- Article (a/an) agreement. ------------------------------------
         self._audit_article_agreement(stem_text, opt_texts, _add)
+
+    @staticmethod
+    def _audit_bloom_trivote(
+        *,
+        loc: str,
+        stem_text: str,
+        asserted: str,
+        zero_shot_fn: Optional[Any],
+        _add,
+    ) -> None:
+        """A2 — flag-gated Bloom-trivote arm.
+
+        Consumes the interpretable trivote voters from
+        ``lib.classifiers.bloom_zero_shot``: the generator's OWN asserted level,
+        the deterministic verb-ontology voter over the stem, and — when a
+        GPU-present caller injects one — a zero-shot voter. Flags
+        ``ITEM_BLOOM_TRIVOTE_UNSUPPORTED`` (WARNING) only when the asserted level
+        is present, ≥1 independent voter is present, and NONE of the independent
+        voters agree (the ``asserted_unsupported`` signal). A single-present-
+        voter case structured-skips (never a fabricated verdict), and the
+        structural ceiling check remains the always-on default.
+        """
+        try:
+            from lib.classifiers.bloom_zero_shot import (
+                verb_vote, trivote_disagreement,
+            )
+        except Exception as exc:  # noqa: BLE001 — offline / slim install
+            logger.debug(
+                "assessment_item_writing: trivote import failed (%s); skipped.",
+                exc,
+            )
+            return
+        verb = verb_vote(stem_text)[0]
+        zshot = None
+        if zero_shot_fn is not None:
+            try:
+                zshot = zero_shot_fn(stem_text)
+            except Exception as exc:  # noqa: BLE001 — GPU voter best-effort
+                logger.debug(
+                    "assessment_item_writing: zero-shot voter raised (%s); "
+                    "trivote runs on asserted + verb only.", exc,
+                )
+        td = trivote_disagreement(asserted, zshot, verb)
+        if td.get("asserted_unsupported"):
+            independent = td.get("independent_levels") or []
+            _add(
+                "warning",
+                "ITEM_BLOOM_TRIVOTE_UNSUPPORTED",
+                (
+                    f"item {loc!r} asserts bloom_level={asserted!r} but the "
+                    f"independent Bloom voters {independent!r} do not agree "
+                    f"(trivote disagreement_score="
+                    f"{td.get('disagreement_score')}); the generator's own "
+                    f"Bloom claim is not backed by an interpretable check."
+                ),
+                suggestion=(
+                    "Relabel the item to the majority independent level "
+                    f"({td.get('majority_level')!r}), or rewrite the stem so its "
+                    "verb genuinely signals the claimed level."
+                ),
+            )
 
     @staticmethod
     def _audit_written(item: Dict[str, Any], _add) -> None:

@@ -7,9 +7,10 @@ Sits between retrieval and question generation to provide structured
 content that each question type can consume.
 """
 
+import os
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from lib.ontology.slugs import deslugify_concept
 
@@ -47,6 +48,112 @@ def _is_apparatus_text(text: str) -> bool:
     (alg-glm-02 production defect: apparatus-dense worked-example corpora
     leak 'Solution: r Check: ...' through EVERY harvest path)."""
     return bool(_APPARATUS_RE.search(text or ""))
+
+
+# --------------------------------------------------------------------------- #
+# A3 — apparatus-guard numeric-recovery (flag-gated, default OFF).
+#
+# The apparatus guard above strips Solution/Check/Step-N worked-example content
+# from EVERY harvest path (key terms, factual statements, misconception
+# corrections) because that pedagogical-label vocabulary poisons those answer
+# surfaces. But a worked example's Solution/Check region is *also the richest
+# source of a clean, single-variable, sympy-verifiable equation* — exactly what
+# the numeric-FIB item builder needs. On a GLM-OCR scan corpus the equations
+# arrive as PLAIN TEXT ("3x + 5 = 20") with no LaTeX / <code> markup, so the
+# marked-math harvester (``worked_example_math._iter_fragments``) finds nothing
+# and zero numeric items ship.
+#
+# ``ED4ALL_ASSESSMENT_NUMERIC_RECOVERY`` (default off) re-admits those apparatus
+# regions FOR THE NUMERIC-FIB EXTRACTION PATH ONLY. The recovered candidates are
+# still fully sympy-verified downstream (solve → substitute → residual == 0), so
+# this only widens candidate SUPPLY; unverifiable candidates are dropped. The
+# apparatus guard stays intact for every other harvest path, and the recovery
+# helper returns ``[]`` when the flag is off → byte-identical.
+# --------------------------------------------------------------------------- #
+_NUMERIC_RECOVERY_ENV = "ED4ALL_ASSESSMENT_NUMERIC_RECOVERY"
+
+#: Apparatus markers whose FOLLOWING window carries the worked computation.
+_RECOVERY_MARKER_RE = re.compile(
+    r"(?:Solution\s*:|Check\s*:|Step\s+\d+\s*[:.])",
+    re.IGNORECASE,
+)
+
+#: How far past an apparatus marker to scan for a plain-text equation.
+_RECOVERY_WINDOW = 240
+
+#: A single, non-relational ``=`` (not ``==`` / ``<=`` / ``>=`` / ``!=``).
+_BARE_EQUALS_RE = re.compile(r"(?<![<>=!])=(?![=])")
+#: The character class a compact algebraic side is built from (digits, single-
+#: letter variables, operators, parens, whitespace). A multi-letter alphabetic
+#: run inside a side is NATURAL LANGUAGE ("dollars" / "so" / "find"), not math,
+#: so a side is TRIMMED at the word nearest the ``=``.
+_MATH_SIDE_CHAR_RE = re.compile(r"[0-9A-Za-z+\-*/^().\s]")
+_WORD_RUN_RE = re.compile(r"[A-Za-z]{2,}")
+
+
+def _trim_equation_side(raw: str, *, keep_suffix: bool) -> str:
+    """Trim a raw equation side to its compact math core.
+
+    ``keep_suffix=True`` (LEFT side): keep the substring AFTER the last
+    multi-letter word — the math nearest the ``=``. ``keep_suffix=False``
+    (RIGHT side): keep the substring BEFORE the first multi-letter word. A side
+    with no word run passes through stripped.
+    """
+    words = list(_WORD_RUN_RE.finditer(raw))
+    if not words:
+        return raw.strip()
+    if keep_suffix:
+        return raw[words[-1].end():].strip()
+    return raw[: words[0].start()].strip()
+
+
+def extract_plaintext_equations(text: str) -> List[str]:
+    """Harvest compact plain-text ``LHS = RHS`` algebraic equations from prose.
+
+    A worked-example sentence embeds its equation as prose ("...for a total of
+    3x = 12 dollars; find x."), so a naive grid regex sweeps the surrounding
+    natural-language words into the equation sides and defeats the sympy parse.
+    This helper anchors on each bare ``=``, expands each side over the math
+    character class, then trims the natural-language words nearest the ``=`` so
+    only the compact ``3x = 12`` core survives. Returns candidates in
+    left-to-right order; each is still fully sympy-VERIFIED downstream, so a
+    false candidate is dropped, never shipped.
+    """
+    text = text or ""
+    n = len(text)
+    out: List[str] = []
+    for m in _BARE_EQUALS_RE.finditer(text):
+        # Expand left over math chars up to (not across) the previous '='.
+        li = m.start()
+        while li > 0 and _MATH_SIDE_CHAR_RE.fullmatch(text[li - 1]):
+            li -= 1
+        left = _trim_equation_side(text[li:m.start()], keep_suffix=True)
+        # Expand right over math chars up to (not across) the next '='.
+        ri = m.end()
+        while ri < n and _MATH_SIDE_CHAR_RE.fullmatch(text[ri]):
+            ri += 1
+        right = _trim_equation_side(text[m.end():ri], keep_suffix=False)
+        if (
+            left and right
+            and re.search(r"[0-9A-Za-z]", left)
+            and re.search(r"[0-9A-Za-z]", right)
+        ):
+            out.append(f"{left} = {right}")
+    return out
+
+
+def _numeric_recovery_enabled() -> bool:
+    """Parse-with-fallback resolver for ``ED4ALL_ASSESSMENT_NUMERIC_RECOVERY``.
+
+    Truthy tokens (``1`` / ``true`` / ``yes`` / ``on``, case-insensitive) → on;
+    unset / empty / garbage → off (byte-identical default).
+    """
+    return str(os.environ.get(_NUMERIC_RECOVERY_ENV, "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def _is_toc_fragment(term_text: str) -> bool:
@@ -572,6 +679,44 @@ class ContentExtractor:
                     ))
 
         return examples
+
+    def recover_numeric_equation_candidates(
+        self, chunks: List[Dict[str, Any]]
+    ) -> List[Tuple[str, str]]:
+        """A3 — flag-gated recovery of plain-text equation candidates.
+
+        Scans each chunk's text for apparatus markers (``Solution:`` /
+        ``Check:`` / ``Step N:``) and, within the window that FOLLOWS each
+        marker, harvests plain-text ``LHS = RHS`` equation fragments the
+        marked-math harvester misses on scan corpora. Returns a list of
+        ``(equation_fragment, chunk_id)`` tuples in chunk-then-position order,
+        each fragment a candidate the numeric-FIB builder then sympy-VERIFIES
+        before shipping.
+
+        Gated by ``ED4ALL_ASSESSMENT_NUMERIC_RECOVERY``: returns ``[]`` when the
+        flag is off (byte-identical) so no apparatus content is re-admitted on
+        any legacy run. This is the ONLY path that lifts the apparatus guard,
+        and only to SUPPLY sympy-verifiable candidates — never to write an
+        answer/definition/statement (the guard stays everywhere else).
+        """
+        if not _numeric_recovery_enabled():
+            return []
+        out: List[Tuple[str, str]] = []
+        seen: set = set()
+        for chunk in chunks or []:
+            chunk_id = chunk.get("id", chunk.get("chunk_id", ""))
+            text = _strip_html(chunk.get("text", "") or "")
+            if not text:
+                continue
+            for marker in _RECOVERY_MARKER_RE.finditer(text):
+                window = text[marker.end(): marker.end() + _RECOVERY_WINDOW]
+                for frag in extract_plaintext_equations(window):
+                    key = (str(chunk_id), frag)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    out.append((frag, str(chunk_id)))
+        return out
 
     def extract_all(
         self, chunks: List[Dict[str, Any]]

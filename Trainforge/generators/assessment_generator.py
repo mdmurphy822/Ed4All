@@ -20,7 +20,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 # Add project path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]  # → Ed4All/
@@ -84,6 +84,75 @@ def _resolve_option_count() -> int:
     if val < 3 or val > 6:
         return 3
     return val
+
+
+# --------------------------------------------------------------------------- #
+# A1 — bounded LLM apply-arm (flag-gated, default OFF).
+#
+# Route apply word-problems + per-distractor misconception prose through the
+# in-tree ``AssessmentGeneratorProvider.generate_assessments`` (local registry
+# seats only), then run a MANDATORY three-stage verify chain before an
+# LLM-drafted item ships:
+#   (1) sympy re-check on numeric stems/keys — FAIL-CLOSED (a declared numeric
+#       key that cannot be verified is dropped);
+#   (2) score_groundedness entailment of stem+key vs the item's cited chunks —
+#       require ENTAILED, drop unsupported/contradicted;
+#   (3) Bloom trivote agreement before an apply/analyze claim stands — GPU-gated:
+#       when the trivote is unavailable (< 2 independent voters) the item's
+#       bloom CLAMPS to its structural ceiling instead of shipping unverified.
+# The deterministic tier stays the offline fallback; this arm only ADDS a
+# bounded count of triple-verified items. Default off → byte-identical.
+# --------------------------------------------------------------------------- #
+_APPLY_ARM_ENV = "ED4ALL_ASSESSMENT_APPLY_ARM"
+_APPLY_ARM_MAX_ENV = "ED4ALL_ASSESSMENT_APPLY_ARM_MAX"
+#: Providers the apply-arm refuses (ToS-restricted for the assessment corpus,
+#: which feeds the SLM training surface — license-clean local seats only).
+_APPLY_ARM_BARRED_PROVIDERS = frozenset({"anthropic", "claude_session"})
+#: item_subtype for an LLM-drafted apply word-problem; its structural ceiling is
+#: ``apply`` (the arm is designed to genuinely assess apply — a higher CLAIM is
+#: clamped here when the trivote can't back it).
+_APPLY_ARM_SUBTYPE = "apply_word_problem"
+
+
+def _apply_arm_enabled() -> bool:
+    """Return True when ED4ALL_ASSESSMENT_APPLY_ARM is truthy (default off)."""
+    return os.environ.get(_APPLY_ARM_ENV, "").strip().lower() in _TRUTHY
+
+
+def _apply_arm_max() -> int:
+    """Bounded per-quiz apply-arm draft count; default 4 (parse-with-fallback).
+
+    Any non-integer / non-positive override falls back to 4 so a partly-garbage
+    value never yields an unbounded (or zero) LLM draft budget.
+    """
+    raw = os.environ.get(_APPLY_ARM_MAX_ENV, "").strip()
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return 4
+    return val if val > 0 else 4
+
+
+def _apply_arm_provider_allowed(provider_name: str, roster: Any = None) -> bool:
+    """License guard for the apply-arm provider seat.
+
+    Refuses the ToS-restricted Anthropic seats outright. When a ``roster``
+    (endpoint-registry-shaped mapping of ``provider -> {license verdict ...}``)
+    is supplied AND carries a ``verdict`` of ``barred`` for this provider, the
+    seat is refused too (S6 multi-teacher roster license flow-down). Absent a
+    roster / license field, a non-Anthropic local seat is allowed.
+    """
+    name = (provider_name or "").strip().lower()
+    if not name or name in _APPLY_ARM_BARRED_PROVIDERS:
+        return False
+    if isinstance(roster, dict):
+        entry = roster.get(name) or {}
+        if isinstance(entry, dict):
+            verdict = str(entry.get("verdict") or entry.get("license_verdict")
+                          or "").strip().lower()
+            if verdict == "barred":
+                return False
+    return True
 
 
 #: Banned option surface forms (Haladyna–Downing–Rodriguez guidelines): the
@@ -218,6 +287,9 @@ _SUBTYPE_BLOOM_CEILING: Dict[str, str] = {
     "two_tier_answer": "analyze",
     "two_tier_reason": "analyze",
     "error_analysis": "analyze",
+    # A1 — LLM-drafted apply word-problem: genuinely assesses apply, so a
+    # higher CLAIM (analyze+) that the trivote can't back clamps down to here.
+    "apply_word_problem": "apply",
 }
 
 
@@ -609,6 +681,11 @@ class AssessmentGenerator:
         capture: Optional["DecisionCapture"] = None,
         check_leaks: bool = True,
         rag: Optional[Any] = None,
+        *,
+        assessment_provider: Optional[Any] = None,
+        groundedness_scorer: Optional[Callable[..., Any]] = None,
+        bloom_zero_shot_fn: Optional[Callable[[str], Optional[str]]] = None,
+        teacher_roster: Optional[Dict[str, Any]] = None,
     ):
         """
         Initialize the assessment generator.
@@ -619,8 +696,28 @@ class AssessmentGenerator:
             rag: Optional TrainforgeRAG instance for self-serving retrieval.
                  If provided and source_chunks is None during generation,
                  chunks will be retrieved automatically.
+            assessment_provider: Optional pre-built ``AssessmentGeneratorProvider``
+                for the A1 apply-arm. Test seam — when None and the apply-arm
+                is enabled, one is constructed from the environment.
+            groundedness_scorer: Optional ``score_groundedness``-shaped callable
+                ``(answer_text, cited_passages, *, split_claims=...) -> report``
+                for the apply-arm verify chain. Test seam — when None the
+                production ``lib.retrieval.groundedness.score_groundedness`` is
+                lazy-imported at call time.
+            bloom_zero_shot_fn: Optional zero-shot Bloom voter
+                ``(text) -> Optional[level]`` for the apply-arm trivote. Test
+                seam / GPU-gated — when None the trivote runs on the deterministic
+                asserted + verb voters only (no model load).
+            teacher_roster: Optional endpoint-registry-shaped license roster
+                consulted by the apply-arm provider license guard (S6).
         """
         self.capture = capture
+        # A1 apply-arm injection seams (test-overridable; production defaults
+        # lazy-resolve). None until first use.
+        self._assessment_provider = assessment_provider
+        self._groundedness_scorer = groundedness_scorer
+        self._bloom_zero_shot_fn = bloom_zero_shot_fn
+        self._teacher_roster = teacher_roster
         self.check_leaks = check_leaks and LEAK_CHECKER_AVAILABLE
         self._leak_checker = LeakChecker(strict_mode=False) if self.check_leaks else None
         # Diversity rotation (alg-glm-02 production defect: terms[0] /
@@ -2207,70 +2304,85 @@ class AssessmentGenerator:
             return SkippedItem(question_id, "fill_in_blank", bloom_level,
                                objective_id, "sympy_missing")
 
+        # Assemble candidate (fragment, chunk_id) pairs in a stable order:
+        # first the marked-math harvest per chunk (byte-identical to the legacy
+        # loop), THEN — only when ED4ALL_ASSESSMENT_NUMERIC_RECOVERY is on — the
+        # plain-text equations recovered from Solution/Check/Step-N apparatus
+        # regions (A3). Appending recovery AFTER the marked-math candidates keeps
+        # the flag-off path bitwise-identical (recovery returns []).
+        candidates: List[Tuple[str, str]] = []
         for chunk in source_chunks:
             chunk_id = chunk.get("id", chunk.get("chunk_id", ""))
             html = chunk.get("text", "") or ""
             for frag, _ctx in _iter_fragments(html):
-                sides = _split_equation_sides(frag)
-                if sides is None or len(sides) != 2:
-                    continue
-                lhs = _parse_side(sides[0])
-                rhs = _parse_side(sides[1])
-                if lhs is None or rhs is None:
-                    continue
-                free = (lhs.free_symbols | rhs.free_symbols)
-                if len(free) != 1:
-                    continue
-                var = next(iter(free))
-                # Skip a trivial ``var = number`` restatement (nothing to solve).
-                expr = sympy.simplify(lhs - rhs)
-                if expr == 0:
-                    continue
-                try:
-                    sols = sympy.solve(sympy.Eq(lhs, rhs), var)
-                except Exception:  # noqa: BLE001
-                    continue
-                numeric_sols = [s for s in sols
-                                if getattr(s, "free_symbols", set()) == set()
-                                and getattr(s, "is_real", None) is not False]
-                if len(numeric_sols) != 1:
-                    continue
-                sol = numeric_sols[0]
-                # VERIFY by substitution — ship only if it checks out.
-                try:
-                    residual = sympy.simplify(expr.subs(var, sol))
-                except Exception:  # noqa: BLE001
-                    continue
-                if residual != 0:
-                    continue
-                # Render a clean numeric key.
-                try:
-                    fval = float(sol)
-                    key = str(int(fval)) if fval == int(fval) else str(fval)
-                except Exception:  # noqa: BLE001
-                    key = str(sol)
-                clamped = self._clamp_and_record(question_id, subtype, bloom_level)
-                eq_disp = f"{sides[0].strip()} = {sides[1].strip()}"
-                return QuestionData(
-                    question_id=question_id,
-                    question_type="fill_in_blank",
-                    stem=(f"<p>Solve for <em>{var}</em>: "
-                          f"<code>{eq_disp}</code>. Enter the value of "
-                          f"<em>{var}</em>.</p>"),
-                    bloom_level=clamped,
-                    objective_id=objective_id,
-                    correct_answer=key,
-                    item_subtype=subtype,
-                    points=2.0,
-                    feedback=(f"<p>{var} = {key} (verified by substitution). "
-                              f"Set the accepted-answer tolerance in the LMS "
-                              f"editor.</p>"),
-                    source_chunks=[chunk_id],
-                    generation_rationale=(
-                        f"Numeric FIB; sympy-solved {eq_disp} → {var}={key}, "
-                        f"verified residual=0"
-                    ),
-                )
+                candidates.append((frag, chunk_id))
+        candidates.extend(
+            self._content_extractor.recover_numeric_equation_candidates(
+                source_chunks
+            )
+        )
+
+        for frag, chunk_id in candidates:
+            sides = _split_equation_sides(frag)
+            if sides is None or len(sides) != 2:
+                continue
+            lhs = _parse_side(sides[0])
+            rhs = _parse_side(sides[1])
+            if lhs is None or rhs is None:
+                continue
+            free = (lhs.free_symbols | rhs.free_symbols)
+            if len(free) != 1:
+                continue
+            var = next(iter(free))
+            # Skip a trivial ``var = number`` restatement (nothing to solve).
+            expr = sympy.simplify(lhs - rhs)
+            if expr == 0:
+                continue
+            try:
+                sols = sympy.solve(sympy.Eq(lhs, rhs), var)
+            except Exception:  # noqa: BLE001
+                continue
+            numeric_sols = [s for s in sols
+                            if getattr(s, "free_symbols", set()) == set()
+                            and getattr(s, "is_real", None) is not False]
+            if len(numeric_sols) != 1:
+                continue
+            sol = numeric_sols[0]
+            # VERIFY by substitution — ship only if it checks out.
+            try:
+                residual = sympy.simplify(expr.subs(var, sol))
+            except Exception:  # noqa: BLE001
+                continue
+            if residual != 0:
+                continue
+            # Render a clean numeric key.
+            try:
+                fval = float(sol)
+                key = str(int(fval)) if fval == int(fval) else str(fval)
+            except Exception:  # noqa: BLE001
+                key = str(sol)
+            clamped = self._clamp_and_record(question_id, subtype, bloom_level)
+            eq_disp = f"{sides[0].strip()} = {sides[1].strip()}"
+            return QuestionData(
+                question_id=question_id,
+                question_type="fill_in_blank",
+                stem=(f"<p>Solve for <em>{var}</em>: "
+                      f"<code>{eq_disp}</code>. Enter the value of "
+                      f"<em>{var}</em>.</p>"),
+                bloom_level=clamped,
+                objective_id=objective_id,
+                correct_answer=key,
+                item_subtype=subtype,
+                points=2.0,
+                feedback=(f"<p>{var} = {key} (verified by substitution). "
+                          f"Set the accepted-answer tolerance in the LMS "
+                          f"editor.</p>"),
+                source_chunks=[chunk_id],
+                generation_rationale=(
+                    f"Numeric FIB; sympy-solved {eq_disp} → {var}={key}, "
+                    f"verified residual=0"
+                ),
+            )
         if self._stats is not None:
             self._stats.record_skip(subtype, "numeric_unverifiable")
         return SkippedItem(question_id, "fill_in_blank", bloom_level,
@@ -2883,6 +2995,21 @@ class AssessmentGenerator:
         if len(questions) > question_count:
             questions = questions[:question_count]
 
+        # A1 — bounded LLM apply-arm (flag-gated, default OFF). Additive on top
+        # of the deterministic tier; every drafted item passes the sympy /
+        # groundedness / trivote verify chain before it ships.
+        if _apply_arm_enabled():
+            apply_items = self._run_apply_arm(
+                course_code=course_code,
+                objective_ids=objective_ids,
+                bloom_levels=bloom_levels,
+                source_chunks=source_chunks,
+                chunks_by_objective=chunks_by_objective,
+            )
+            for it in apply_items:
+                questions.append(it)
+                self._stats.record_item(it.item_subtype or _APPLY_ARM_SUBTYPE)
+
         if self.capture:
             self.capture.log_decision(
                 decision_type="assessment_generation",
@@ -2908,6 +3035,427 @@ class AssessmentGenerator:
             bloom_levels=bloom_levels,
             skipped_items=skipped,
         )
+
+    # ------------------------------------------------------------------ #
+    # A1 — bounded LLM apply-arm (verify-gated). All methods below are only
+    # reached when ED4ALL_ASSESSMENT_APPLY_ARM is on (checked in
+    # generate_diversified), so the default path never touches them.
+    # ------------------------------------------------------------------ #
+
+    def _resolve_apply_arm_provider(self) -> Optional[Any]:
+        """Resolve the apply-arm provider seat (injected or env-built), or None.
+
+        License-gated: refuses Anthropic seats + roster-barred teachers, so the
+        LLM-drafted assessment corpus (which feeds the SLM training surface)
+        stays license-clean by construction. Returns None (arm skipped) on any
+        resolution / license failure — the arm is ADDITIVE, never fatal.
+        """
+        if self._assessment_provider is not None:
+            return self._assessment_provider
+        provider_name = (
+            os.environ.get("TRAINFORGE_ASSESSMENT_PROVIDER") or "local"
+        ).strip().lower()
+        if not _apply_arm_provider_allowed(provider_name, self._teacher_roster):
+            logger.warning(
+                "apply-arm: provider %r is license-barred (Anthropic / "
+                "roster-barred teacher); skipping the arm — the assessment "
+                "corpus stays license-clean.", provider_name,
+            )
+            return None
+        try:
+            from Trainforge.generators._assessment_provider import (
+                AssessmentGeneratorProvider,
+            )
+            return AssessmentGeneratorProvider(
+                provider=provider_name, capture=self.capture,
+            )
+        except Exception as exc:  # noqa: BLE001 — arm is best-effort
+            logger.warning(
+                "apply-arm: provider construction failed (%s); skipping arm.",
+                exc,
+            )
+            return None
+
+    def _run_apply_arm(
+        self,
+        *,
+        course_code: str,
+        objective_ids: List[str],
+        bloom_levels: List[str],
+        source_chunks: Optional[List[Dict[str, Any]]],
+        chunks_by_objective: Optional[Dict[str, List[Dict[str, Any]]]],
+    ) -> List[QuestionData]:
+        """Draft a bounded count of apply items via the provider, verify each.
+
+        Every drafted item runs the mandatory three-stage verify chain
+        (sympy → groundedness → trivote-clamp) before it ships. Emits ONE
+        ``assessment_generation`` DecisionCapture event per provider draft call
+        whose rationale interpolates the runtime provider/model + the verify
+        outcome counts. Returns the surviving (verified) ``QuestionData`` list;
+        an empty list on any failure (the arm is additive).
+        """
+        provider = self._resolve_apply_arm_provider()
+        if provider is None:
+            return []
+        max_items = _apply_arm_max()
+
+        # Index every available chunk by id for cited-passage resolution.
+        chunk_by_id: Dict[str, Dict[str, Any]] = {}
+        pools: List[List[Dict[str, Any]]] = [source_chunks or []]
+        pools += list((chunks_by_objective or {}).values())
+        provider_chunks: List[Dict[str, Any]] = []
+        seen_ids: set = set()
+        for pool in pools:
+            for c in pool or []:
+                cid = c.get("id") or c.get("chunk_id")
+                if isinstance(cid, str) and cid.strip():
+                    cid = cid.strip()
+                    chunk_by_id.setdefault(cid, c)
+                    if cid not in seen_ids:
+                        seen_ids.add(cid)
+                        provider_chunks.append(c)
+
+        objectives = [
+            {"id": oid, "statement": oid}
+            for oid in objective_ids
+            if isinstance(oid, str) and oid.strip()
+        ]
+        if not provider_chunks or not objectives:
+            return []
+
+        provider_name = getattr(provider, "_provider", "?")
+        provider_model = getattr(provider, "_model", None)
+        try:
+            result = provider.generate_assessments(
+                chunks=provider_chunks,
+                objectives=objectives,
+                target_count=max_items,
+                course_code=str(course_code),
+                bloom_levels=["apply"],
+            )
+        except Exception as exc:  # noqa: BLE001 — provider is best-effort
+            logger.warning(
+                "apply-arm: provider dispatch failed (%s); 0 items.", exc,
+            )
+            self._emit_apply_arm_decision(
+                course_code=course_code, provider=provider_name,
+                model=provider_model, drafted=0, shipped=0, dropped_sympy=0,
+                dropped_grounding=0, dropped_other=0, clamped=0,
+                error=str(exc)[:120],
+            )
+            return []
+
+        drafted = result.get("questions") or []
+        shipped: List[QuestionData] = []
+        d_sympy = d_ground = d_other = clamped = 0
+        for idx, q in enumerate(drafted[:max_items], start=1):
+            qd, reason, was_clamped = self._verify_apply_item(
+                q, idx, chunk_by_id,
+            )
+            if qd is None:
+                if reason == "sympy_unverified":
+                    d_sympy += 1
+                elif reason and reason.startswith("grounding"):
+                    d_ground += 1
+                else:
+                    d_other += 1
+                if self._stats is not None:
+                    self._stats.record_skip(_APPLY_ARM_SUBTYPE, reason or "dropped")
+                continue
+            if was_clamped:
+                clamped += 1
+            shipped.append(qd)
+
+        self._emit_apply_arm_decision(
+            course_code=course_code, provider=provider_name,
+            model=provider_model, drafted=len(drafted), shipped=len(shipped),
+            dropped_sympy=d_sympy, dropped_grounding=d_ground,
+            dropped_other=d_other, clamped=clamped, error=None,
+        )
+        return shipped
+
+    def _verify_apply_item(
+        self,
+        q: Dict[str, Any],
+        idx: int,
+        chunk_by_id: Dict[str, Dict[str, Any]],
+    ) -> Tuple[Optional[QuestionData], Optional[str], bool]:
+        """Run the mandatory verify chain on one drafted item.
+
+        Returns ``(QuestionData|None, drop_reason|None, was_bloom_clamped)``.
+        Order: (1) sympy re-check on numeric stems/keys — FAIL-CLOSED;
+        (2) groundedness entailment — require entailed; (3) Bloom trivote clamp.
+        """
+        stem = str(q.get("stem") or "").strip()
+        oid = str(q.get("objective_id") or "").strip()
+        claimed_bloom = str(q.get("bloom_level") or "apply").strip().lower()
+        correct = q.get("correct_answer")
+        src_ids = [
+            s.strip() for s in (q.get("source_chunks") or [])
+            if isinstance(s, str) and s.strip()
+        ]
+        if not stem or not oid:
+            return None, "missing_stem_or_objective", False
+
+        cited = [chunk_by_id[s] for s in src_ids if s in chunk_by_id]
+
+        # (1) sympy re-check on numeric stems/keys — fail-closed.
+        if self._answer_is_numeric(correct):
+            if not self._sympy_verify_numeric(stem, cited, str(correct)):
+                return None, "sympy_unverified", False
+
+        # (2) groundedness entailment — require entailed.
+        if not cited:
+            return None, "grounding_no_cited_chunks", False
+        verdict = self._groundedness_entailed(stem, correct, cited, src_ids)
+        if verdict is not True:
+            return None, f"grounding_{verdict}", False
+
+        # (3) Bloom trivote clamp.
+        final_bloom, was_clamped = self._trivote_bloom(stem, claimed_bloom)
+
+        choices = q.get("choices")
+        norm_choices: List[Dict[str, Any]] = []
+        if isinstance(choices, list):
+            for c in choices:
+                if isinstance(c, dict):
+                    norm_choices.append({
+                        "text": str(c.get("text") or ""),
+                        "is_correct": bool(c.get("is_correct")),
+                    })
+        qtype = str(q.get("question_type") or "multiple_choice").strip().lower()
+        feedback = q.get("feedback")
+        # A choice item's key lives in ``choices``; only a keyed non-choice item
+        # (FIB / numeric) carries the scalar ``correct_answer``.
+        scalar_key = (
+            str(correct) if (correct is not None and not norm_choices) else None
+        )
+        return (
+            QuestionData(
+                question_id=f"Q-APPLY-{str(uuid.uuid4())[:8]}",
+                question_type=qtype,
+                stem=stem,
+                bloom_level=final_bloom,
+                objective_id=oid,
+                choices=norm_choices,
+                correct_answer=scalar_key,
+                points=2.0,
+                feedback=str(feedback) if isinstance(feedback, str) else None,
+                item_subtype=_APPLY_ARM_SUBTYPE,
+                source_chunks=src_ids,
+                generation_rationale=(
+                    f"LLM apply-arm item {idx}: sympy-"
+                    f"{'verified' if self._answer_is_numeric(correct) else 'na'}, "
+                    f"groundedness entailed vs {len(cited)} cited chunk(s), "
+                    f"bloom {'clamped→'+final_bloom if was_clamped else final_bloom}"
+                    f" (trivote)"
+                ),
+            ),
+            None,
+            was_clamped,
+        )
+
+    @staticmethod
+    def _answer_is_numeric(val: Any) -> bool:
+        """True when ``val`` reads as a number / simple fraction."""
+        if val is None:
+            return False
+        s = str(val).strip()
+        if not s:
+            return False
+        if re.fullmatch(r"-?\d+(?:\.\d+)?(?:\s*/\s*-?\d+)?", s):
+            return True
+        try:
+            float(s)
+            return True
+        except (TypeError, ValueError):
+            return False
+
+    def _sympy_verify_numeric(
+        self,
+        stem: str,
+        cited: List[Dict[str, Any]],
+        key: str,
+    ) -> bool:
+        """Fail-closed sympy re-check of a declared numeric key.
+
+        Harvests equation candidates from the stem + cited chunk texts, solves
+        each single-variable equation, and returns True iff SOME solved value
+        equals the declared numeric ``key``. No equation / no match → False
+        (the anti-hallucination contract: an unverifiable numeric claim is
+        dropped, never shipped).
+        """
+        try:
+            import sympy  # type: ignore
+            from lib.validators.worked_example_math import (
+                _iter_fragments, _split_equation_sides, _parse_side,
+            )
+            from Trainforge.generators.content_extractor import (
+                extract_plaintext_equations,
+                _strip_html as _cx_strip_html,
+            )
+        except Exception:  # noqa: BLE001 — sympy is an optional extra
+            return False
+        try:
+            target = sympy.Rational(str(key).strip())
+        except Exception:  # noqa: BLE001
+            try:
+                target = sympy.nsimplify(float(str(key).strip()))
+            except Exception:  # noqa: BLE001
+                return False
+
+        texts = [stem] + [str(c.get("text") or "") for c in (cited or [])]
+        frags: List[str] = []
+        for text in texts:
+            if not text:
+                continue
+            for frag, _ctx in _iter_fragments(text):
+                frags.append(frag)
+            # Plain-text (prose-embedded) equations — the word-problem shape.
+            frags.extend(extract_plaintext_equations(_cx_strip_html(text)))
+
+        for frag in frags:
+            sides = _split_equation_sides(frag)
+            if sides is None or len(sides) != 2:
+                continue
+            lhs = _parse_side(sides[0])
+            rhs = _parse_side(sides[1])
+            if lhs is None or rhs is None:
+                continue
+            free = lhs.free_symbols | rhs.free_symbols
+            if len(free) != 1:
+                continue
+            var = next(iter(free))
+            try:
+                sols = sympy.solve(sympy.Eq(lhs, rhs), var)
+            except Exception:  # noqa: BLE001
+                continue
+            for s in sols:
+                if getattr(s, "free_symbols", set()):
+                    continue
+                try:
+                    if sympy.simplify(s - target) == 0:
+                        return True
+                except Exception:  # noqa: BLE001
+                    continue
+        return False
+
+    def _groundedness_entailed(
+        self,
+        stem: str,
+        correct: Any,
+        cited: List[Dict[str, Any]],
+        src_ids: List[str],
+    ) -> Any:
+        """Return True when stem+key is ENTAILED by the cited chunks.
+
+        Otherwise returns a short reason token (``unavailable`` / ``no_passages``
+        / ``contradicted`` / ``unsupported`` / ``error``). Uses the injected
+        ``groundedness_scorer`` when present (test seam); else lazy-imports the
+        production ``score_groundedness``. GPU-gated: an unavailable scorer
+        drops the item (we cannot confirm ``entailed``).
+        """
+        scorer = self._groundedness_scorer
+        if scorer is None:
+            try:
+                from lib.retrieval.groundedness import score_groundedness
+                scorer = score_groundedness
+            except Exception:  # noqa: BLE001
+                return "unavailable"
+        passages = [
+            str(c.get("text") or "") for c in cited
+            if str(c.get("text") or "").strip()
+        ]
+        if not passages:
+            return "no_passages"
+        answer = stem + (f" Answer: {correct}" if correct is not None else "")
+        try:
+            report = scorer(answer, passages, split_claims=False)
+        except TypeError:
+            # Lenient signature for an injected fake scorer.
+            report = scorer(answer, passages)
+        except Exception:  # noqa: BLE001
+            return "error"
+        if not getattr(report, "available", True):
+            return "unavailable"
+        if int(getattr(report, "contradicted_count", 0) or 0) > 0:
+            return "contradicted"
+        rate = float(getattr(report, "groundedness_rate", 0.0) or 0.0)
+        return True if rate >= 1.0 else "unsupported"
+
+    def _trivote_bloom(self, stem: str, claimed_bloom: str) -> Tuple[str, bool]:
+        """Bloom trivote clamp for an apply/analyze claim.
+
+        Returns ``(final_bloom, was_clamped)``. A claim at understand or below
+        is untouched. For a higher-order claim, the trivote runs over
+        asserted + verb (+ injected zero-shot when GPU-present); when the
+        asserted level is supported by ≥1 independent voter it stands, otherwise
+        (disagreement OR fewer than 2 voters present — trivote unavailable) the
+        item's bloom CLAMPS to its structural ceiling instead of shipping an
+        unverified claim.
+        """
+        asserted = (claimed_bloom or "").strip().lower()
+        if _BLOOM_ORDER.get(asserted, 0) <= _BLOOM_ORDER.get("understand", 1):
+            return asserted or "apply", False
+        try:
+            from lib.classifiers.bloom_zero_shot import (
+                verb_vote, trivote_disagreement,
+            )
+        except Exception:  # noqa: BLE001
+            clamped = _clamp_bloom(asserted, _APPLY_ARM_SUBTYPE)
+            return clamped, clamped != asserted
+        verb = verb_vote(stem)[0]
+        zshot = (
+            self._bloom_zero_shot_fn(stem) if self._bloom_zero_shot_fn else None
+        )
+        td = trivote_disagreement(asserted, zshot, verb)
+        if td.get("asserted_supported"):
+            return asserted, False
+        # Unavailable (skipped, <2 voters) OR disagreement → clamp to ceiling.
+        clamped = _clamp_bloom(asserted, _APPLY_ARM_SUBTYPE)
+        return clamped, clamped != asserted
+
+    def _emit_apply_arm_decision(
+        self,
+        *,
+        course_code: str,
+        provider: str,
+        model: Optional[str],
+        drafted: int,
+        shipped: int,
+        dropped_sympy: int,
+        dropped_grounding: int,
+        dropped_other: int,
+        clamped: int,
+        error: Optional[str],
+    ) -> None:
+        """Emit one DecisionCapture event per apply-arm draft call.
+
+        Rationale interpolates dynamic per-call signals (runtime provider/model,
+        drafted/shipped counts, per-stage drop counts, bloom clamps) so a
+        post-hoc audit can replay WHY each LLM-drafted apply item did / didn't
+        ship — per the LLM call-site instrumentation contract.
+        """
+        if not self.capture:
+            return
+        rationale = (
+            f"apply-arm draft call course={course_code} provider={provider} "
+            f"model={model}: drafted={drafted}, shipped={shipped}, "
+            f"dropped_sympy={dropped_sympy}, dropped_grounding={dropped_grounding}, "
+            f"dropped_other={dropped_other}, bloom_clamped={clamped}; every "
+            f"shipped item passed sympy(numeric)+groundedness-entailment+trivote"
+            + (f"; error={error}" if error else "")
+        )
+        try:
+            self.capture.log_decision(
+                decision_type="assessment_generation",
+                decision=(
+                    f"apply_arm:{course_code}:shipped={shipped}/{drafted}"
+                ),
+                rationale=rationale,
+            )
+        except Exception as exc:  # noqa: BLE001 — audit emit is best-effort
+            logger.debug("apply-arm decision emit failed: %s", exc)
 
     def generate_for_objective(
         self,

@@ -33,7 +33,10 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from Courseforge.scripts.blocks import BLOCK_TYPES  # noqa: E402
 from lib.ontology.bloom import BLOOM_LEVELS  # noqa: E402
-from MCP.tools.pipeline_tools import _PAGE_BLOCK_PLAN  # noqa: E402
+from MCP.tools.pipeline_tools import (  # noqa: E402
+    _PAGE_BLOCK_PLAN,
+    _PAGE_TYPE_BLOCK_PLAN,
+)
 from Courseforge.generators._outline_provider import (  # noqa: E402
     _max_bloom_level,
 )
@@ -64,11 +67,29 @@ def test_page_block_plan_widened_beyond_objective_prose() -> None:
     """The plan widens past the original objective/explanation/example trio.
 
     Guards against a silent regression to the pre-fix narrow plan (which is
-    what produced the Bloom skew) and asserts the objective stub remains
-    first (it carries the page LO statement).
+    what produced the Bloom skew).
+
+    Re-pinned 2026-07-19 (drift from 6bc16dc76): ``_PAGE_BLOCK_PLAN`` is now
+    the back-compat alias for the ``content`` entry of the page-type-keyed
+    ``_PAGE_TYPE_BLOCK_PLAN``. The objective STUB (which carries the page LO
+    statement) migrated to the ``overview`` page type in that split, so the
+    ``content`` plan now LEADS with ``concept`` — the objective-first
+    invariant is asserted against the ``overview`` plan below, and the
+    content plan is asserted to lead with ``concept``. The widening guard
+    (at least one higher-order Bloom target) is preserved.
     """
     block_types = [bt for bt, _ in _PAGE_BLOCK_PLAN]
-    assert block_types[0] == "objective"
+    # Content pages open with the concept block post-split (was "objective"
+    # pre-6bc16dc76, before the objective stub moved to the overview page).
+    assert block_types[0] == "concept", (
+        f"content plan no longer leads with 'concept' (got {block_types[0]!r}); "
+        "re-pin this assertion to the current _PAGE_TYPE_BLOCK_PLAN['content'] "
+        "shape if the split changed again"
+    )
+    # The objective stub now lives on the overview page type — assert it
+    # remains first there so the LO-statement-carrying stub isn't lost.
+    overview_types = [bt for bt, _ in _PAGE_TYPE_BLOCK_PLAN["overview"]]
+    assert overview_types[0] == "objective"
     # Bloom diversity requires at least one above-``apply`` target so the
     # plan can't collapse back to a two-level distribution.
     targets = {tb for _, tb in _PAGE_BLOCK_PLAN}

@@ -942,6 +942,14 @@ def _harvest_qti_assessment_chunks(
                 )
                 continue
             if isinstance(chunk, dict):
+                # D1 (owner directive 2026-07-19): the harvested end-of-section
+                # assessment_item chunks are verbatim OpenStax content DEMOTED
+                # to an internal practice bank. They stay in the chunkset so
+                # archival coverage stands, but are tagged so the graded-QTI /
+                # SFT-source / answer paths exclude them by default (the
+                # assessment_sft_generator's grounding filter refuses to source
+                # any chunk carrying this marker).
+                chunk["practice_bank"] = True
                 out.append(chunk)
                 next_idx += 1
         if skipped_unanchored:
@@ -24721,6 +24729,33 @@ def _build_tool_registry() -> dict:
             logger.warning(
                 "archive_to_libv2: no Trainforge output dir located for "
                 f"course {course_name} — features flags will default to false."
+            )
+
+        # SFT-D B3/B4: normalize course_dir/graph/ so training provenance +
+        # HoldoutBuilder + LibV2 retrieval all find the graphs. The modern
+        # concept_extraction phase writes concept_graph_semantic.json under
+        # concept_graph/ (not graph/) and never emits pedagogy_graph.json;
+        # this deterministically (no LLM) copies the concept graph into
+        # graph/ and re-emits pedagogy_graph.json from the chunkset. Idempotent
+        # + fail-soft: a course already carrying both artifacts is untouched.
+        try:
+            from Trainforge.training.graph_layout import ensure_graph_layout
+
+            _graph_report = ensure_graph_layout(course_dir)
+            if _graph_report.get("concept_graph_copied") or _graph_report.get(
+                "pedagogy_graph_emitted"
+            ):
+                logger.info(
+                    "archive_to_libv2: graph-layout normalized for %s "
+                    "(concept_graph_copied=%s, pedagogy_graph_emitted=%s).",
+                    slug,
+                    _graph_report.get("concept_graph_copied"),
+                    _graph_report.get("pedagogy_graph_emitted"),
+                )
+        except Exception as _graph_exc:  # noqa: BLE001 - best-effort normalize
+            logger.warning(
+                "archive_to_libv2: graph-layout normalization failed for %s "
+                "(%s); continuing.", slug, _graph_exc,
             )
 
         # --- Objectives plumbing: emit canonical objectives.json ----------

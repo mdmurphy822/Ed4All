@@ -103,6 +103,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -113,6 +114,26 @@ logger = logging.getLogger(__name__)
 
 _CODE_DISCUSSION_UNGROUNDED = "DISCUSSION_UNGROUNDED"
 _CODE_ASSIGNMENT_UNGROUNDED = "ASSIGNMENT_UNGROUNDED"
+
+# A5 — flag-gated NLI TEXT-grounding arm (default OFF → legacy refs-only path).
+# The legacy grounding check resolves an item purely by REFERENCE — its
+# objective_id appears in some chunk's learning_outcome_refs, or its
+# source_chunk_ids resolve to real chunks. That confirms the item POINTS at a
+# real chunk, not that its prompt TEXT is actually supported by it. When
+# ``ED4ALL_DISCUSSION_GROUNDING_NLI`` is truthy AND an item carries prompt text +
+# resolvable cited chunk TEXTS + an NLI scorer is available, the arm makes the
+# text-entailment verdict authoritative for that item (grounded iff the prompt
+# is entailed by its cited chunks). Any item that can't run the NLI check
+# (no text / no resolvable chunk text / scorer unavailable) falls back to the
+# legacy refs-only verdict, so the arm only ever TIGHTENS a resolvable item and
+# never fabricates a verdict. Off → byte-identical legacy path.
+_GROUNDING_NLI_ENV = "ED4ALL_DISCUSSION_GROUNDING_NLI"
+_TRUTHY_TOKENS = frozenset({"1", "true", "yes", "on"})
+
+
+def _grounding_nli_enabled() -> bool:
+    """Return True when ED4ALL_DISCUSSION_GROUNDING_NLI is truthy (default off)."""
+    return os.environ.get(_GROUNDING_NLI_ENV, "").strip().lower() in _TRUTHY_TOKENS
 
 # Extract an objective id (canonical TO-NN / CO-NN, or {COURSE}_OBJ_N legacy)
 # from a reconstructed item title / identifier when the persisted manifest
@@ -206,6 +227,52 @@ def _collect_chunk_grounding(
                 )
 
     return grounded, chunk_ids
+
+
+def _collect_chunk_texts(
+    chunks_path: Optional[str],
+) -> Tuple[Dict[str, str], Dict[str, List[str]]]:
+    """Return ``(chunk_text_by_id, obj_to_chunk_ids)`` for the A5 NLI arm.
+
+    ``chunk_text_by_id`` maps a lower-cased chunk id → its text; ``obj_to_chunk_ids``
+    maps a lower-cased objective id → the ids of chunks whose
+    ``learning_outcome_refs[]`` contain it. Both empty when the chunks file is
+    missing / unreadable (the NLI arm then degrades to the legacy path).
+    """
+    text_by_id: Dict[str, str] = {}
+    obj_to_chunks: Dict[str, List[str]] = {}
+    p = Path(chunks_path) if chunks_path else None
+    if p is None or not p.exists() or not p.is_file():
+        return text_by_id, obj_to_chunks
+    try:
+        with open(p, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    chunk = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(chunk, dict):
+                    continue
+                cid = chunk.get("id") or chunk.get("chunk_id")
+                if not (isinstance(cid, str) and cid.strip()):
+                    continue
+                cid_l = cid.strip().lower()
+                text = chunk.get("text")
+                if isinstance(text, str) and text.strip():
+                    text_by_id[cid_l] = text
+                los = chunk.get("learning_outcome_refs") or []
+                if isinstance(los, list):
+                    for lo in los:
+                        if isinstance(lo, str) and lo.strip():
+                            obj_to_chunks.setdefault(
+                                lo.strip().lower(), []
+                            ).append(cid_l)
+    except OSError:
+        return {}, {}
+    return text_by_id, obj_to_chunks
 
 
 # ---------------------------------------------------------------------------
@@ -479,6 +546,26 @@ class DiscussionAssignmentGroundingValidator:
 
         grounded_objectives, chunk_ids = grounding
 
+        # A5 — flag-gated NLI text-grounding arm. Only load the chunk TEXTS +
+        # objective→chunk map (and resolve the scorer) when the arm is on; off →
+        # these stay empty / None and the audit runs the legacy refs-only path.
+        nli_on = _grounding_nli_enabled()
+        chunk_text_by_id: Dict[str, str] = {}
+        obj_to_chunk_ids: Dict[str, List[str]] = {}
+        nli_scorer = None
+        if nli_on:
+            chunk_text_by_id, obj_to_chunk_ids = _collect_chunk_texts(chunks_path)
+            nli_scorer = inputs.get("groundedness_scorer")
+            if nli_scorer is None:
+                try:
+                    from lib.retrieval.groundedness import score_groundedness
+                    nli_scorer = score_groundedness
+                except Exception as exc:  # noqa: BLE001 — degrade to legacy
+                    logger.debug(
+                        "discussion_assignment_grounding: NLI scorer "
+                        "unavailable (%s); arm degrades to refs-only.", exc,
+                    )
+
         # 3. Per-item grounding audit.
         issues: List[GateIssue] = []
         n_disc_ungrounded = self._audit_items(
@@ -489,6 +576,10 @@ class DiscussionAssignmentGroundingValidator:
             chunk_ids=chunk_ids,
             location=str(chunks_path or ""),
             issues=issues,
+            nli_on=nli_on,
+            nli_scorer=nli_scorer,
+            chunk_text_by_id=chunk_text_by_id,
+            obj_to_chunk_ids=obj_to_chunk_ids,
         )
         n_asgn_ungrounded = self._audit_items(
             items=assignments,
@@ -498,6 +589,10 @@ class DiscussionAssignmentGroundingValidator:
             chunk_ids=chunk_ids,
             location=str(chunks_path or ""),
             issues=issues,
+            nli_on=nli_on,
+            nli_scorer=nli_scorer,
+            chunk_text_by_id=chunk_text_by_id,
+            obj_to_chunk_ids=obj_to_chunk_ids,
         )
 
         total = max(1, n_disc + n_asgn)
@@ -532,6 +627,54 @@ class DiscussionAssignmentGroundingValidator:
     # ----------------------------------------------------------------- helper
 
     @staticmethod
+    def _nli_grounded(
+        *,
+        item: Dict[str, Any],
+        src_ids: List[str],
+        oid: str,
+        scorer: Any,
+        chunk_text_by_id: Dict[str, str],
+        obj_to_chunk_ids: Dict[str, List[str]],
+    ) -> Optional[bool]:
+        """A5 NLI verdict for one item.
+
+        Returns True (prompt text ENTAILED by cited chunks), False (not
+        entailed / contradicted), or None when the check cannot run (no prompt
+        text, no resolvable cited chunk texts, or the scorer degraded). None
+        makes the caller fall back to the legacy refs-only verdict.
+        """
+        prompt = item.get("text") or item.get("prompt")
+        if not (isinstance(prompt, str) and prompt.strip()):
+            return None
+        # Resolve cited chunk texts: explicit source_chunk_ids first, else the
+        # item's objective_id → chunk-id map.
+        cited_ids: List[str] = [c.lower() for c in src_ids]
+        if not cited_ids and oid:
+            cited_ids = list(obj_to_chunk_ids.get(oid.lower(), []))
+        passages = [
+            chunk_text_by_id[c] for c in cited_ids
+            if c in chunk_text_by_id and chunk_text_by_id[c].strip()
+        ]
+        if not passages:
+            return None
+        try:
+            report = scorer(prompt, passages, split_claims=False)
+        except TypeError:
+            report = scorer(prompt, passages)
+        except Exception as exc:  # noqa: BLE001 — degrade to legacy
+            logger.debug(
+                "discussion_assignment_grounding: NLI scorer raised (%s); "
+                "falling back to refs-only for this item.", exc,
+            )
+            return None
+        if not getattr(report, "available", True):
+            return None
+        if int(getattr(report, "contradicted_count", 0) or 0) > 0:
+            return False
+        rate = float(getattr(report, "groundedness_rate", 0.0) or 0.0)
+        return rate >= 1.0
+
+    @staticmethod
     def _audit_items(
         *,
         items: List[Dict[str, Any]],
@@ -541,24 +684,68 @@ class DiscussionAssignmentGroundingValidator:
         chunk_ids: Set[str],
         location: str,
         issues: List[GateIssue],
+        nli_on: bool = False,
+        nli_scorer: Optional[Any] = None,
+        chunk_text_by_id: Optional[Dict[str, str]] = None,
+        obj_to_chunk_ids: Optional[Dict[str, List[str]]] = None,
     ) -> int:
         """Audit one item-type; append a WARNING per ungrounded item.
 
-        Returns the count of ungrounded items. An item is grounded iff its
-        explicit ``source_chunk_ids`` resolve to real chunks OR its
-        ``objective_id`` is present in the chunk-grounded objective set.
+        Returns the count of ungrounded items. Legacy (refs-only) path: an item
+        is grounded iff its explicit ``source_chunk_ids`` resolve to real chunks
+        OR its ``objective_id`` is present in the chunk-grounded objective set.
+
+        A5 NLI arm (``nli_on``): when the item carries prompt TEXT + resolvable
+        cited chunk TEXTS + a scorer, the text-entailment verdict is
+        authoritative for that item (grounded iff entailed). An item that can't
+        run NLI falls back to the legacy verdict below.
         """
+        chunk_text_by_id = chunk_text_by_id or {}
+        obj_to_chunk_ids = obj_to_chunk_ids or {}
         n_ungrounded = 0
         for idx, item in enumerate(items):
             label = _item_label(item, kind, idx)
+            src_ids = _item_source_chunk_ids(item)
+            oid = _item_objective_id(item)
+
+            # A5 — NLI text-grounding arm (authoritative when it can run).
+            if nli_on and nli_scorer is not None:
+                nli_verdict = DiscussionAssignmentGroundingValidator._nli_grounded(
+                    item=item,
+                    src_ids=src_ids,
+                    oid=oid,
+                    scorer=nli_scorer,
+                    chunk_text_by_id=chunk_text_by_id,
+                    obj_to_chunk_ids=obj_to_chunk_ids,
+                )
+                if nli_verdict is True:
+                    continue  # text entailed by cited chunks → grounded.
+                if nli_verdict is False:
+                    n_ungrounded += 1
+                    issues.append(
+                        GateIssue(
+                            severity="warning",
+                            code=code,
+                            message=(
+                                f"{kind} item {label!r} is ungrounded (NLI): its "
+                                f"prompt text is not entailed by its cited source "
+                                f"chunks."
+                            ),
+                            location=location,
+                            suggestion=(
+                                f"Re-author the {kind} so its prompt is supported "
+                                f"by the cited source chunk text."
+                            ),
+                        )
+                    )
+                    continue
+                # nli_verdict is None → could not run NLI; fall through to legacy.
 
             # (a) explicit source_chunk_ids resolving to real chunks.
-            src_ids = _item_source_chunk_ids(item)
             if src_ids and any(c.lower() in chunk_ids for c in src_ids):
                 continue
 
             # (b) objective_id resolves to >= 1 source chunk.
-            oid = _item_objective_id(item)
             if oid and oid.lower() in grounded_objectives:
                 continue
 
