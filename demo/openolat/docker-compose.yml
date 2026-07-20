@@ -1,0 +1,61 @@
+# Ed4All retrieval-demo LMS shell: OpenOLAT (Tomcat+webapp) + Postgres.
+#
+# This is a SEPARATE stack from the repo-root docker-compose.yml (gui+ollama).
+# Bring both up side by side per RUNBOOK.md. Ports are chosen to not collide:
+#   * OpenOLAT  : 8080  (this stack)
+#   * Ed4All GUI: 8077  (root stack)  — the embedded ask widget
+#   * Ollama    : 11434/11435 loopback (root stack)
+#
+# The OpenOLAT admin login is the product default (administrator / openolat),
+# auto-created on first boot. CHANGE IT before any exposure — see RUNBOOK.md.
+# Host-specific ports/secrets go in a gitignored docker-compose.override.yml
+# (auto-merged by `docker compose up`); a template ships as
+# docker-compose.override.yml.example.
+
+services:
+  openolat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ed4all-openolat:19.1.6
+    depends_on:
+      openolat-db:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    volumes:
+      # OpenOLAT user data (uploaded files, course runtime data, search index).
+      - openolat-data:/opt/openolat/olatdata
+      - openolat-logs:/opt/openolat/logs
+    restart: unless-stopped
+    healthcheck:
+      # OpenOLAT answers its login page at /openolat/dmz once booted.
+      test: ["CMD", "sh", "-c", "curl -fsS http://127.0.0.1:8080/openolat/dmz/ >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 180s
+
+  openolat-db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: oodb
+      POSTGRES_USER: oodbu
+      POSTGRES_PASSWORD: oodbpasswd
+      # UTF-8 template; OpenOLAT requires a UTF-8 database.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8"
+    volumes:
+      - openolat-db-data:/var/lib/postgresql/data
+    # Not published: only the openolat service needs it, over the compose network.
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U oodbu -d oodb"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+volumes:
+  openolat-data:
+  openolat-logs:
+  openolat-db-data:

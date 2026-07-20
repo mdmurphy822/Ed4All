@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Per-context descriptor for the /openolat webapp.
+     File name (openolat.xml) => context path /openolat.
+     docBase points at the exploded webapp copied OUTSIDE appBase so Tomcat
+     does not also auto-deploy it from webapps/. -->
+<Context docBase="/opt/openolat/webapp"
+         path="/openolat"
+         reloadable="false"
+         allowLinking="true"
+         useHttpOnly="true">
+
+  <!-- Postgres JNDI DataSource resolved by OpenOLAT via db.jndi.
+       Host "openolat-db" is the compose service name on the private network.
+       Driver (postgresql.jar) is on ${catalina.home}/lib per the Dockerfile. -->
+  <Resource name="jdbc/openolatDS"
+            auth="Container"
+            type="javax.sql.DataSource"
+            factory="org.apache.tomcat.jdbc.pool.DataSourceFactory"
+            driverClassName="org.postgresql.Driver"
+            url="jdbc:postgresql://openolat-db:5432/oodb?characterEncoding=UTF-8"
+            username="oodbu"
+            password="oodbpasswd"
+            maxTotal="16"
+            maxIdle="4"
+            maxWaitMillis="60000"
+            validationQuery="SELECT 1"
+            testOnBorrow="true"
+            testOnReturn="false"
+            removeAbandonedOnBorrow="true"
+            removeAbandonedTimeout="600"/>
+</Context>
