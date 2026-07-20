@@ -21,10 +21,11 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from gui.routers import http_query
 from gui.services import retrieval_service
 
 router = APIRouter()
@@ -110,9 +111,13 @@ async def get_courses() -> Any:
         return _error(500, "list_courses_failed", str(exc))
 
 
-@router.post("/query")
-async def query(req: QueryRequest) -> Any:
+@router.api_route("/query", methods=http_query.QUERY_METHODS)
+async def query(req: QueryRequest, request: Request) -> Any:
     """Run a retrieval query, routed by ``mode`` (bm25 / multi / llm_rerank).
+
+    Reachable via **QUERY** (canonical — the safe+idempotent body-carrying method,
+    RFC 10008) and **POST** (deprecated back-compat alias, tagged with a
+    ``Deprecation`` response header). Both share ``_run_query`` byte-for-byte.
 
     * ``bm25`` → ``{results}``.
     * ``multi`` → ``{results, decomposition}``.
@@ -120,6 +125,11 @@ async def query(req: QueryRequest) -> Any:
       with a per-item ``rationale``. A rerank backend / auth / parse failure
       surfaces as a typed error (not a fabricated order).
     """
+    return http_query.apply_deprecation_if_post(request, _run_query(req))
+
+
+def _run_query(req: QueryRequest) -> Any:
+    """Method-agnostic retrieval query core shared by the QUERY + POST routes."""
     mode = (req.mode or "bm25").lower()
     if not req.query or not req.query.strip():
         return _error(422, "invalid_query", "query must be non-empty")

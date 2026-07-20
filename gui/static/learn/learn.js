@@ -41,6 +41,44 @@ var ABORT_MS = 150000; // > backend 120s timeout (ED4ALL_ANSWER_TIMEOUT_SECONDS)
     "Please tell the session facilitator.</p>" +
     "</section>";
 
+  // HTTP QUERY method for the safe + idempotent, body-carrying ask request.
+  // QUERY is standardized as RFC 10008 ("The HTTP QUERY Method", Standards Track,
+  // June 2026 — graduated from draft-ietf-httpbis-safe-method-w-body). The server
+  // keeps POST as a deprecated alias; we send QUERY and downgrade ONCE to POST for
+  // the session if a client/proxy rejects the method (405/501, or a network-layer
+  // method block that throws). An intentional abort (the 150s timeout) is never
+  // treated as a rejection — it bubbles unchanged.
+  var _queryMethodOk = true;
+  async function askFetch(payload, signal) {
+    var methods = _queryMethodOk ? ["QUERY", "POST"] : ["POST"];
+    for (var i = 0; i < methods.length; i++) {
+      var method = methods[i];
+      try {
+        var res = await fetch("/api/learn/ask", {
+          method: method,
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify(payload),
+          signal: signal,
+        });
+        if (method === "QUERY" && (res.status === 405 || res.status === 501)) {
+          _queryMethodOk = false; // proxy/server rejects QUERY → downgrade + retry
+          continue;
+        }
+        return res;
+      } catch (err) {
+        if (err && err.name === "AbortError") throw err; // intentional timeout
+        if (method === "QUERY") {
+          _queryMethodOk = false; // network-layer method block → downgrade + retry
+          continue;
+        }
+        throw err;
+      }
+    }
+  }
+
   function $(id) {
     return document.getElementById(id);
   }
@@ -172,15 +210,10 @@ var ABORT_MS = 150000; // > backend 120s timeout (ED4ALL_ANSWER_TIMEOUT_SECONDS)
     }, ABORT_MS);
 
     try {
-      var res = await fetch("/api/learn/ask", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: JSON.stringify({ slug: slug, query: query, engine: "auto" }),
-        signal: controller.signal,
-      });
+      var res = await askFetch(
+        { slug: slug, query: query, engine: "auto" },
+        controller.signal
+      );
 
       var body = null;
       try {

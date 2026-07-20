@@ -326,7 +326,7 @@ the canonical `TO-NN` / `CO-NN` pattern via `lib.ontology.learning_objectives`.
 | Method | Path | Request | Response |
 |--------|------|---------|----------|
 | GET | `/api/retrieval/courses` | — | `[{slug, chunk_count}]` (LibV2 courses) |
-| POST | `/api/retrieval/query` | `{slug, query, top_k=5, filters{}, mode}` (`mode` ∈ `bm25` / `multi` / `llm_rerank`) | `{results}` (bm25 / llm_rerank) or `{results, decomposition}` (multi) |
+| QUERY / POST | `/api/retrieval/query` | `{slug, query, top_k=5, filters{}, mode}` (`mode` ∈ `bm25` / `multi` / `llm_rerank`) | `{results}` (bm25 / llm_rerank) or `{results, decomposition}` (multi) |
 | GET | `/api/retrieval/{slug}/adapters` | — | `[{model_id, base_model?, eval?}]` |
 | POST | `/api/retrieval/{slug}/infer` | `{model_id, prompt, max_new_tokens=256}` | `{generation, base_model}` (503 `training_deps_missing` when ML deps absent) |
 
@@ -335,6 +335,18 @@ the active settings provider/model, returning a reranked order with per-item
 `rationale`. `top_k` is capped at 50. Adapter inference lazy-imports the
 training stack; a missing-deps state returns a typed 503, never a fabricated
 generation.
+
+**HTTP method — QUERY (canonical) + POST (deprecated alias).** The retrieval
+query is *safe and idempotent* yet needs a request body, so its canonical method
+is the IETF **QUERY** method ([RFC 10008](https://www.rfc-editor.org/rfc/rfc10008),
+"The HTTP QUERY Method", Standards Track, June 2026). **POST** remains a
+back-compat alias that returns a `Deprecation: true` response header (plus a
+`Link; rel="successor-version"` pointing at the QUERY method); QUERY responses
+carry neither. The GUI SPA sends QUERY and transparently downgrades **once** to
+POST for the session if a client/proxy rejects the method. QUERY is a
+non-safelisted method, so a **cross-origin** caller incurs a CORS preflight (the
+open `allow_methods=["*"]` policy already permits it); the **same-origin** SPA is
+unaffected. `GET`/other methods on this path return 405.
 
 ### Activity bridge — `/api/activity`
 
@@ -464,7 +476,7 @@ API keys, run launching, or the Claude bridge.
 |--------|------|---------|
 | GET | `/learn/` | The learner page (static shell; auto-served by the existing `StaticFiles` mount). In `--learner` mode it is also served at `/`. |
 | GET | `/api/learn/courses` | List answerable courses (`[{slug, chunk_count}]`). |
-| POST | `/api/learn/ask` | `{slug, query, engine="auto"}` → `{answer, html}`. Returns **200 for all answer outcomes** (answered / answered-with-warnings / both refusal states / both blocked states); typed backend failures map to 503/502/500. The `html` field is the server-rendered answer fragment the page swaps in (single rendering path — no client-side re-render). |
+| QUERY / POST | `/api/learn/ask` | `{slug, query, engine="auto"}` → `{answer, html}`. Returns **200 for all answer outcomes** (answered / answered-with-warnings / both refusal states / both blocked states); typed backend failures map to 503/502/500. The `html` field is the server-rendered answer fragment the page swaps in (single rendering path — no client-side re-render). **Canonical method: QUERY** ([RFC 10008](https://www.rfc-editor.org/rfc/rfc10008)); **POST** is a deprecated alias carrying a `Deprecation` header. The learner page sends QUERY and downgrades once to POST if a client/proxy rejects the method. |
 | GET | `/api/learn/source/{slug}?item_path=…[&fragment=…]` | Serve the archived source page a citation links to, sanitized and wrapped, with a restrictive CSP. Path-traversal attempts are rejected (422) before any filesystem access. |
 | POST | `/api/learn/ask-jobs` | Enqueue a **durable async** ask (L4); returns `{ask_id, status, queue_position}`. Survives a refresh — the job record persists retrieved passages onto the running record so the drawer can disclose them **passages-first** during the compose window. |
 | GET | `/api/learn/ask-jobs/{ask_id}` | Poll one async ask job. While running it can already carry `passages` (+ `passages_refused`) for passages-first disclosure; on completion it carries the rendered answer. |

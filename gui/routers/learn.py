@@ -40,6 +40,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from gui import shared_state
+from gui.routers import http_query
 from gui.services import answer_render, answer_service
 
 router = APIRouter()
@@ -139,15 +140,24 @@ async def get_courses() -> Any:
         return _error(500, "list_courses_failed", str(exc))
 
 
-@router.post("/ask")
-async def ask(req: AskRequest) -> Any:
+@router.api_route("/ask", methods=http_query.QUERY_METHODS)
+async def ask(req: AskRequest, request: Request) -> Any:
     """Answer a learner question; 200 + rendered fragment for all six statuses.
+
+    Reachable via **QUERY** (canonical — the safe+idempotent body-carrying method,
+    RFC 10008) and **POST** (deprecated back-compat alias, tagged with a
+    ``Deprecation`` response header). Both share ``_run_ask`` byte-for-byte.
 
     Refusals and citation-gate blocks are 200s (the pipeline succeeded; the
     *answer* outcome is data). Typed backend errors map per ``_TYPED_ERROR_MAP``
     to 503/502, anything else to 500 — each error response still carries a
     rendered learner-safe ``html`` fragment.
     """
+    return http_query.apply_deprecation_if_post(request, _run_ask(req))
+
+
+def _run_ask(req: AskRequest) -> Any:
+    """Method-agnostic learner-ask core shared by the QUERY + POST routes."""
     if not req.query or not req.query.strip():
         return _error_with_fragment(
             422, "invalid_query", "error_generic", "query must be non-empty"

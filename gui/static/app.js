@@ -201,6 +201,31 @@ async function api(path, opts = {}) {
 const apiJSON = (path, method, body) =>
   api(path, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 
+/* HTTP QUERY method for retrieval-shaped endpoints (safe + idempotent, carries a
+ * body). QUERY is standardized as RFC 10008 ("The HTTP QUERY Method", Standards
+ * Track, June 2026 — graduated from draft-ietf-httpbis-safe-method-w-body). The
+ * server keeps POST as a deprecated alias; we send QUERY and downgrade ONCE to
+ * POST for the rest of the session if a client/proxy rejects the method (some
+ * corporate proxies 405/501 an unknown method, or the network blocks it → the
+ * fetch surfaces as ApiError status 0). The downgrade is remembered so a rejected
+ * QUERY is never re-attempted twice in one session. */
+let _queryMethodOk = true;
+async function queryJSON(path, body) {
+  if (_queryMethodOk) {
+    try {
+      return await apiJSON(path, 'QUERY', body);
+    } catch (err) {
+      const status = err && err.status;
+      if (status === 0 || status === 405 || status === 501) {
+        _queryMethodOk = false; // method rejected by client/proxy → downgrade
+      } else {
+        throw err; // a real handler error (4xx/5xx) — surface it, don't retry
+      }
+    }
+  }
+  return apiJSON(path, 'POST', body);
+}
+
 /* Live Ollama model discovery (GET /api/settings/ollama-models). Returns the
  * service shape {available, models, detail, host}; never throws — a network /
  * offline failure degrades to {available:false, models:[]} so callers fall
@@ -1589,7 +1614,7 @@ async function renderRetrieval(view) {
     clear(resultsWrap).appendChild(el('div', { class: 'loading', text: 'Retrieving…' }));
     queryBtn.disabled = true;
     try {
-      const data = await apiJSON('/api/retrieval/query', 'POST', {
+      const data = await queryJSON('/api/retrieval/query', {
         slug, query: q, top_k: Number(topK.value) || 5, filters: {}, mode,
       });
       const results = Array.isArray(data) ? data : (data.results || []);
