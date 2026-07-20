@@ -219,10 +219,14 @@ semantik = [
 # the field's ContextPrecision convention (eval-expansion plan §A, item E6) —
 # it is NOT a runtime dependency and is NEVER imported in the eval run loop or
 # any gate (our harness owns the metrics; the local-judge stays on our own
-# loopback seat). Install ONLY during a declared fetch window
-# (`pip install -e '.[eval-calibration]'`), run the one-time denominator
-# cross-check, then keep offline. Exact pin so the calibration basis is
-# reproducible; bump deliberately, never via a resolver float. Apache-2.0.
+# loopback seat). MUST install into a THROWAWAY VENV, never the shared
+# site-packages: every ragas release requires the langchain-0.3 line while
+# this box's resident stack needs langchain-core >=1.4 — measured
+# incompatible both directions (2026-07-19 fetch window). Recipe:
+#   python3 -m venv /tmp/ragas-cal && /tmp/ragas-cal/bin/pip install \
+#     'ragas==0.2.10' && <run the denominator cross-check> && rm -rf /tmp/ragas-cal
+# Exact pin so the calibration basis is reproducible; bump deliberately,
+# never via a resolver float. Apache-2.0.
 eval-calibration = [
     "ragas==0.2.10",
 ]
