@@ -17,6 +17,14 @@ synthesizes instruction + preference training pairs from the generated chunks +
 assessments. A `pedagogy-graph-builder` agent spec also ships under this
 directory for the pedagogy/concept-graph build phase.
 
+Most agent specs live beside this file as `<agent-name>.md` and are resolved
+through a `source:` entry in `config/agents.yaml` (capabilities, `type`,
+`max_instances`). Two exceptions matter when enumerating the registry:
+`training-synthesizer`'s `source:` points at `Trainforge/synthesize_training.py`
+rather than a spec file, and `pedagogy-graph-builder` has **no**
+`config/agents.yaml` entry at all — it is declared only in
+`config/workflows.yaml`, so a registry walk will not see it.
+
 ### Execution Rules
 
 1. **ONE course = ONE pipeline run**
@@ -32,6 +40,7 @@ directory for the pedagogy/concept-graph build phase.
 | `assessment-generator` | Chunks + RAG context | Questions with rationale |
 | `assessment-validator` | Generated assessment | Validation scores + feedback |
 | `training-synthesizer` | Chunks + assessments | Instruction + preference training pairs |
+| `pedagogy-graph-builder` | Chunks + objectives | Typed pedagogy / concept graph |
 
 ## Agent-to-Orchestrator Protocol
 
@@ -43,9 +52,17 @@ directory for the pedagogy/concept-graph build phase.
 
 ## Quality Gates
 
-| Gate | Agent | Threshold |
-|------|-------|-----------|
-| Coverage | assessment-extractor | 90% LO coverage required |
+These are aspirational **targets recorded only in this file** — they are not
+written into the agent specs, not read from config at runtime, and nothing
+enforces them. Treat them as intent, not as a contract. The
+authoritative, machine-enforced gate set (gate_id, validator class, thresholds,
+severity, owning phase) lives in `config/workflows.yaml::validation_gates`, with
+per-gate prose in `docs/validation/gates.md`. Where the two disagree,
+`config/workflows.yaml` wins.
+
+| Target | Agent | Aim |
+|--------|-------|-----|
+| Coverage | assessment-extractor | 90% LO coverage |
 | Bloom Alignment | assessment-generator | 100% questions aligned |
 | Question Quality | assessment-validator | 0.75+ quality score |
 | Overall | assessment-validator | 0.90+ overall score |
