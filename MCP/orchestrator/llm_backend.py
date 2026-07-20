@@ -777,6 +777,18 @@ OPENAI_COMPATIBLE_VISION_MESSAGE = (
 #     set to a truthy value (``true`` / ``1`` / ``yes`` / ``on``,
 #     case-insensitive), the resolved entry's ``vision_capable``
 #     flips to ``True`` regardless of the registry default.
+#   - LICENSE fields (optional, SFT-C S6): a registry entry MAY carry
+#     ``license_spdx`` / ``license_url`` /
+#     ``license_verdict`` (``safe`` | ``conditional`` | ``barred``) /
+#     ``license_obligations`` (list). They are the per-seat licensing
+#     posture consumed by the training-data export-time fail-closed
+#     filter + the per-checkpoint LICENSE assertion (backlog SFT-C;
+#     ``lib/licensing/teacher_roster.py`` is the machine-readable source
+#     of truth). Entries WITHOUT these fields behave EXACTLY as today —
+#     the projection never invents them, and
+#     :func:`license_metadata_for_provider` falls back to the roster
+#     (keyed by the endpoint's ``provenance_provider`` value). Reading
+#     the fields NEVER changes transport / resolution behaviour.
 # Built ONCE at import as a PROJECTION of the ``openai_compatible`` rows in
 # ``config/endpoints.yaml`` (loader ``lib/llm/endpoints.py``) — NOT a
 # hand-maintained literal. The YAML is the single source of truth; adding a
@@ -1151,6 +1163,66 @@ def resolve_openai_compatible_backend(
         vision_capable=vision_capable,
         extra_body=extra_body,
     )
+
+
+def license_metadata_for_provider(
+    provider_name: str,
+) -> Optional[Dict[str, Any]]:
+    """Return the licensing posture for a registry provider (or ``None``).
+
+    SFT-C S6 accessor. Non-mutating — it NEVER touches the module-level
+    ``_OPENAI_COMPATIBLE_PROVIDERS`` dict (which stays byte-equal to the
+    ``config/endpoints.yaml`` projection), so a drift guard comparing the
+    two is unaffected.
+
+    Resolution:
+
+    1. Inline license fields on the registry entry win when present
+       (``license_spdx`` / ``license_url`` / ``license_verdict`` /
+       ``license_obligations``) — forward-compat for an operator who
+       declares them on a YAML row.
+    2. Otherwise fall back to the roster in
+       ``lib/licensing/teacher_roster.py`` via the entry's resolved default
+       model (fine-grained) or the coarse provenance provider value.
+
+    Returns a plain ``dict`` (``{license_spdx, license_url,
+    license_verdict, license_obligations}``) or ``None`` when the provider
+    is unknown / unresolvable. Reading this never changes backend
+    behaviour; callers use it for the export-time license filter + audit.
+    """
+    entry = _OPENAI_COMPATIBLE_PROVIDERS.get(provider_name)
+    if entry is None:
+        return None
+
+    # 1. Inline fields on the registry entry (forward-compat).
+    if any(
+        k in entry
+        for k in ("license_spdx", "license_url", "license_verdict", "license_obligations")
+    ):
+        return {
+            "license_spdx": entry.get("license_spdx"),
+            "license_url": entry.get("license_url"),
+            "license_verdict": entry.get("license_verdict"),
+            "license_obligations": list(entry.get("license_obligations") or []),
+        }
+
+    # 2. Fall back to the machine-readable roster.
+    try:
+        from lib.licensing.teacher_roster import (  # noqa: PLC0415 — lazy, anti-cycle
+            license_for_model as _license_for_model,
+        )
+    except Exception:  # noqa: BLE001 — roster unavailable → no metadata
+        return None
+
+    rec = _license_for_model(entry.get("model_default"))
+    if rec is None:
+        return None
+    return {
+        "license_spdx": rec.license_spdx,
+        "license_url": rec.license_url,
+        "license_verdict": rec.verdict,
+        "license_obligations": list(rec.obligations),
+    }
 
 
 # =============================================================================

@@ -111,6 +111,68 @@ These are the providers that actually produce paraphrased training pairs. Each r
 
 **Local self-hosted Nemotron ≠ the hosted `nvidia` API seat.** The three rows immediately above are self-hosted Nemotron 3 weights running on the DGX Spark. Under the NVIDIA Open Model License their outputs are training-clean, so they are deliberately **NOT** in the license-restricted synthesis set (`MCP/core/workflow_runner.py::_LICENSE_RESTRICTED_SYNTHESIS` / `lib/diagnostics/provider.py::_LICENSE_RESTRICTED`, both `{"anthropic", "nvidia"}`) — those constants key on the hosted-provider name `nvidia`, and the Spark seats carry `local` provenance. The hosted `nvidia` provider (the `NVIDIA_*` cloud-API seat used by `block_routing.nvidia_large.yaml` / `SEMANTIK_SPECIALIST_PROVIDER`) **stays license-restricted and gated OFF for training data**; its exposure is the hosted-API ToS layer, not the underlying model license. Do not conflate the two: `nvidia` (hosted API, restricted) and `spark-super` / `spark-nano` / the local Nemotron-Omni VLM (self-hosted weights, training-clean) are distinct seats.
 
+---
+
+## SFT teacher roster (course-pinned 1.5B adapter)
+
+This section governs which model **outputs** may become instruction / preference training pairs for the commercially-shipped course-pinned SLM adapter (Qwen2.5-1.5B + LoRA), and which model **weights** may be ingested as a base checkpoint. It is the prose half of the machine-readable roster at `lib/licensing/teacher_roster.py`; the two must stay consistent (maintenance contract at the bottom of this file).
+
+**Machine-readable source of truth + build invariants.** `lib/licensing/teacher_roster.py` encodes every row below as a `LicenseRecord` (`{name, license_spdx, license_url, verdict, obligations[], commercial_use}`) and exposes three fail-closed guards, all wired into the training preflight (`Trainforge/training/runner.py::_assert_licensing_preflight`):
+
+1. **Export-time teacher filter** — `assert_export_licenses(pairs)` refuses to export/train a corpus if **any** pair's teacher is `barred`, unregistered, or claude/anthropic-tagged, naming the offending pair + teacher. A pair carrying no teacher signal at all (legacy shape) or a license-clean `local` / `together` provenance passes (registry-defaults-byte-identical).
+2. **Per-checkpoint LICENSE assertion at ingest** — `assert_checkpoint_license(model, role="base_model")` verifies the *actual* base-weight license (Qwen 3B/72B ≠ 7-32B; GLM-4-9B ≠ 4.5; DeepSeek distills inherit their base), barring non-commercial weights for a shipped adapter.
+3. **Nemotron license-pin / FAIL-BUILD-ON-RE-PIN guard** — see the Nemotron subsection below.
+
+Per-pair provenance: synthesis stamps every pair with `generating_seat` (model id) + a `license` tag (`stamp_pair_license`), additive on the pairs' `additionalProperties:true` schemas — the coarse closed-enum `provider` field is untouched. The registry accessor `MCP/orchestrator/llm_backend.py::license_metadata_for_provider` surfaces the same posture per endpoint (inline YAML `license_*` fields win; else the roster is consulted by the endpoint's default model / provenance).
+
+| Model | License (SPDX / ref) | Verdict | Obligations | Recommended role |
+|---|---|---|---|---|
+| **Qwen2.5-7B / 14B / 32B** | Apache-2.0 | **SAFE** | none | Drafter (primary) |
+| **Qwen2.5-72B** | Qwen License | **CONDITIONAL** | Emit *"Built with Qwen" / "Improved using Qwen"* in shipped docs; flag 100M-MAU trigger | Drafter (capability tier) |
+| **Qwen2.5-3B** | Qwen RESEARCH | **BARRED** | non-commercial only | — |
+| **Nemotron-3-Super-120B** | NVIDIA Nemotron OML (Dec 15 2025) | **SAFE (Case B)** | none on the shipped output-trained adapter; voluntary attribution | Drafter / verifier-judge (high tier) |
+| **Mistral-NeMo-12B, Mixtral-8x7B/8x22B, Mistral-Small-3-24B, Mistral-7B** | Apache-2.0 | **SAFE** | none | Drafter / paraphraser |
+| **Mistral Large / Medium / Pixtral / Ministral / Codestral** | MRL / MNPL | **BARRED** | non-commercial | — |
+| **Phi-3 / Phi-4 (mini)** | MIT | **SAFE** | retain MIT notice on weights only | Paraphraser / verifier |
+| **GLM-4.5 / 4.6 / GLM-OCR** | MIT (verify per-repo; legacy GLM-4-9B is custom) | **SAFE** | retain MIT notice | Drafter |
+| **OLMo-2-7B / 13B / 32B** | Apache-2.0 (data ODC-BY) | **SAFE** — most-defensible provenance | none | Anchor / verifier-judge |
+| **DeepSeek-V3-0324 / R1** | MIT (distillation explicitly permitted) | **SAFE** | avoid the *Llama*-based R1-distill checkpoints | Drafter (frontier tier) |
+| **Llama 3.x family** | Llama Community | **BARRED (as teacher)** | forces leading *"Llama-"* name on the adapter + AUP flow-down + 700M-MAU. NB: commercial use of the *weights* is permitted (with attribution), so a Llama *base checkpoint* is ingest-allowed — barred only as a teacher, whose outputs force the naming flow-down onto the corpus | — (teacher only if owner accepts the prefix) |
+| **Gemma** | Gemma Terms | **CONDITIONAL / investigate** | PUP flow-down; internal Output-vs-Model-Derivative interpretation contradiction | defer — capability already covered |
+
+Recommendation for a license-clean corpus: **Qwen2.5-32B (Apache-2.0) as the sole LLM drafting teacher**, with deterministic templating from course artifacts as the primary source. Nemotron is a SAFE Case-B alternative once the pin below is honored.
+
+### NVIDIA Nemotron Open Model License (Dec 15 2025) — SAFE Case-B + license pin
+
+The shipped adapter is **Case B**: a Qwen2.5-1.5B adapter trained on Nemotron-drafted pairs is NOT a *Derivative Work of the Work* (the weights) — the license's redistribution conditions trigger only on distributing *"the Work or Derivative Works of the Work,"* and NVIDIA *"does not claim ownership to any outputs generated using the Works."* There is **no distillation / synthetic-data / "train another model" restriction** anywhere in the Nemotron license (verified NOT PRESENT), and NVIDIA itself publishes *Nemotron-Post-Training-Dataset-v1/v2* (synthetic Nemotron outputs) under CC-BY-4.0 *"to train and evaluate"* other models. So no NOTICE and no attribution string is *legally required* on the shipped adapter (we carry attribution voluntarily as provenance hygiene).
+
+**License-pin + FAIL-BUILD-ON-RE-PIN guard.** The roster pins the exact identity string `"NVIDIA Nemotron Open Model License, Dec 15 2025"`. `lib/licensing.assert_nemotron_pin()` (wired into the training preflight) **fails the build** if that identity ever drifts — in particular a re-pin to the general *NVIDIA Open Model License* (Oct 24 2025), which carries the Trustworthy-AI use-restriction, guardrail-circumvention auto-termination, and a *revocable* grant that the Nemotron license lacks. Do not update the pin without re-reading the signed license PDF and obtaining procurement sign-off on any termination / compliance hooks. Use-time hygiene: don't circumvent Nemotron guardrails during synthesis; suing NVIDIA on patent/copyright forfeits the (otherwise irrevocable) grant.
+
+Internal classification: tag Nemotron **"source-available / NVIDIA-permissive (Apache-2.0-shaped)"**, never *"OSI open source"* (the NVIDIA license family fails the Open Source Definition).
+
+### Anthropic / Claude outputs — PROHIBITED as training data (ToS finding, not a preference)
+
+Claude / Anthropic outputs may **not** become training pairs. This is a Terms-of-Service finding under a conservative read, backed by three independent, current, operative sources:
+
+- **Commercial Terms, Restrictions (§D.4, eff. 2025-06-17):** *"Customer may not… (a) access the Services to build a competing product or service, including to train competing AI models… except as expressly approved by Anthropic."* "Competing" is undefined and the only escape is Anthropic's express approval.
+- **Usage Policy (eff. 2025-09-15):** prohibits *"Utilization of inputs and outputs to train an AI model (e.g., 'model scraping' or 'model distillation') without prior authorization from Anthropic."* Broader than the competition test — it bars training on outputs at all without prior auth, and names distillation.
+- **Help Center, "Can I use my Outputs to train an AI model?" (2026-03-16):** the PERMITTED lane is narrow discriminative/extractive tools (sentiment, categorization, summarization); PROHIBITED is *"General purpose chatbots, Models designed for open-ended text generation, Using Outputs as training targets for models."* **There is no small-model carve-out; size is irrelevant.**
+
+A course-pinned tutor is a generative conversational model — the prohibited "open-ended text generation" bucket — and SFT literally *is* "using Outputs as training targets." Enforcement is active (OpenAI API cutoff Aug 2025; public China-distillation accusations Feb 2026; published detection tooling). The only compliant path to revisit is **express written authorization / a bespoke enterprise agreement obtained from Anthropic BEFORE any synthesis** — never a self-serve reading; same bar the project uses to exclude GPT outputs. The `assert_export_licenses` filter fail-closes on any `provider="anthropic"` / `provider="claude_session"` / claude-tagged `generating_seat` pair. Dev tooling (Claude Code writing pipeline code) remains fine and out of scope (see "Tooling" above).
+
+### Replay set (general-instruction mix, ~15%)
+
+The SFT mix interleaves ~15% license-clean general instruction data to preserve instruction-following / format / refusal. Replay must be 100% permissive — no copyleft, no upstream-model-output terms.
+
+| Dataset | License | Provenance | Status |
+|---|---|---|---|
+| **OASST1 / OASST2** (primary anchor) | Apache-2.0 | human-generated — cleanest possible | **ACCEPTED** |
+| **FLAN-v2** | Apache-2.0 | aggregate of ~1,800 permissive academic sets (aggregate-inherited cleanliness) | **ACCEPTED** |
+| **NuminaMath-TIR** | Apache-2.0 | clean math replay | **ACCEPTED** |
+| **Dolly-15k** | CC-BY-SA-3.0 | Databricks human-authored | **REJECTED** — whether model weights are a derivative work of CC-BY-SA training data is legally unsettled; the conservative read would force a BY-SA-trained shipped model to itself be CC-BY-SA (share-alike), incompatible with a proprietary commercial adapter. Wrong bet for a procurement-defensible corpus. |
+| **Tulu-3-SFT** | ODC-BY (top-level) | contains **No-Robots CC-BY-NC** + GPT-derived rows | **SUBSET-FILTER-ONLY** — admit only affirmatively-permissive rows (OASST/Guanaco Apache, NuminaMath Apache, FLAN-v2); drop CC-BY-NC + GPT-output rows. A dataset-level label is NOT sufficient provenance. |
+| **SmolTalk** | Apache-2.0 (label) | masks a **400K Llama-3.1-405B Magpie core** | **SUBSET-FILTER-ONLY** — drop the Llama-Magpie rows; per-row provenance filtering required. |
+
 ## Embedding providers (retrieval-index embeddings)
 
 The `ED4ALL_EMBEDDING_*` family ([`docs/operations/behavior-flags.md`](operations/behavior-flags.md))
