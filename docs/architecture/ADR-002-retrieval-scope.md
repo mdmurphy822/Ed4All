@@ -2,9 +2,14 @@
 
 ## Status
 
-Proposed (Worker J, 2026-04-17). **The scope line moved — see § Status update (2026-07-20)** at the end of
-this file. The sections below are preserved as the historical record; the "explicitly out of scope" list in
-particular no longer describes the tree.
+**Proposed (2026-04-17) — partially superseded; not superseded by another ADR.**
+
+The core claim (LibV2 stores packages and exposes *reference* retrieval; production serving belongs
+downstream) still holds. One boundary moved: dense embeddings shipped. See § Subsequent developments
+(2026-07-20) at the end of this file.
+
+The sections below are preserved as the historical record. The "explicitly out of scope" list in particular
+no longer describes the tree — read it as the state of the decision in April, not as current fact.
 
 ## Context
 
@@ -77,9 +82,10 @@ LibV2's reference retrieval is intentionally bounded. Anything more sophisticate
 
 ---
 
-## Status update (2026-07-20)
+## Subsequent developments (2026-07-20)
 
-Verified against the tree at this date.
+> This section is an **annotation**, not part of the decision. Nothing above this line has been altered.
+> Every claim below was re-checked against the working tree on 2026-07-20.
 
 **The dense-embedding scope line was crossed deliberately, and the ADR's own separation discipline was
 honored.** `FOLLOWUP-ADR002-4` anticipated this and prescribed "a *separate* module, its own opt-in flag, not
@@ -92,18 +98,29 @@ folded into `retriever.py`". That is what shipped, under different filenames tha
   same `RetrievalResult` shape the lexical retriever emits.
 - `LibV2/tools/libv2/result_fusion.py` — Reciprocal Rank Fusion, backing the `hybrid-rrf` engine.
 
-`MultiQueryRetriever` now takes an `engine` argument with three values: `"lexical"` (the default, unchanged
-BM25 path), `"semantic"`, and `"hybrid-rrf"`. Backend selection is env-driven (`ED4ALL_EMBEDDING_PROVIDER` and
-its satellites — see the root `CLAUDE.md` cross-cutting flag index). `retriever.py` was **not** modified to
-absorb any of this, so Contract 1 (byte-identical `to_dict()` for `include_rationale=False` callers) is
-structurally intact.
+Both `retriever.py::retrieve_chunks` and `MultiQueryRetriever.__init__` (`multi_retriever.py:111`) now take an
+`engine` argument with three values: `"lexical"` (the default), `"semantic"`, and `"hybrid-rrf"`. Backend
+selection is env-driven (`ED4ALL_EMBEDDING_PROVIDER` and its satellites — see the root `CLAUDE.md`
+cross-cutting flag index).
+
+Note precisely what "not folded into `retriever.py`" means here, because the follow-up's wording invites an
+overclaim: the dense *implementation* is entirely in the three new modules above, but `retriever.py` was
+modified — `retrieve_chunks` gained the `engine` parameter and a dispatch block that, for a non-lexical
+engine, validates arguments (`course_slug` required; `method=` rejected) and delegates to
+`semantic_retriever.semantic_retrieve_chunks` / `hybrid_rrf_retrieve` via a function-local import
+(parameter at `retriever.py:819`, dispatch block `:848-901`). The dispatch is additive and returns before the BM25 body, so a default
+(`engine="lexical"`, `include_rationale=False`) caller still traverses the unchanged path and Contract 1
+(byte-identical `to_dict()`) holds — but it holds because the new branch is a guarded early return, not
+because `retriever.py` is untouched.
 
 Two properties of the landed design are worth naming because they are stronger than what the ADR asked for:
 
 1. **Anti-silent-degradation.** `semantic_retriever` has no BM25 fallback anywhere. Every failure mode is a
-   typed exception that propagates — `SemanticIndexMissing`, `SemanticIndexStale`, `FakeIndexRefused`,
-   `EmbeddingBackendUnavailable`. A missing or stale index is an operator error, never a quiet downgrade to
-   lexical results the caller cannot distinguish from a real semantic hit.
+   typed exception that propagates. Four subclasses of `SemanticIndexError` live in `vector_index.py`
+   (`SemanticIndexMissing`, `SemanticIndexStale`, `FakeIndexRefused`, `SemanticModelMismatch`); the backend
+   raises `EmbeddingBackendUnavailable` from `lib/embedding/providers.py`. A missing, stale, or
+   wrong-model index is an operator error, never a quiet downgrade to lexical results the caller cannot
+   distinguish from a real semantic hit.
 2. **Determinism contract.** Same machine, venv, provider, model, `device=cpu`, and batch size produce
    byte-identical `embeddings.npy` and `id_map.json`; `manifest.json` is identical modulo `generated_at`,
    which is excluded from every content hash.

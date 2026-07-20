@@ -1,30 +1,64 @@
-# Decision Capture — long-form notes
+# Decision capture
 
-> Canonical decision-event shape: `schemas/events/decision_event.schema.json`. Helper: `lib/decision_capture.py::DecisionCapture`. Root `CLAUDE.md § Decision Capture` carries the rule sentences; this file carries call-site precedents and example output paths.
+> Canonical event shape: `schemas/events/decision_event.schema.json`. Helper: `lib/decision_capture.py::DecisionCapture`. Root `CLAUDE.md § Decision Capture` carries the rule sentences; this file carries the contract detail, the storage layout, and the real call-site precedents with their regression tests.
 
-## Output Locations
+## The contract
 
-Captures land under `training-captures/<tool>/<COURSE_CODE>/phase_<phase>/decisions_*.jsonl`, where `<tool>`
-and `<phase>` are the `DecisionCapture` constructor arguments. The root is overridable via
-`ED4ALL_TRAINING_CAPTURES_DIR`.
+Every LLM decision in the pipeline is logged as one JSONL event. The schema declares six **required** fields:
 
-```
-training-captures/
-├── semantik/{COURSE_CODE}/                 # SemantiK conversion captures
-│   └── phase_semantik_conversion/
-├── courseforge/{COURSE_CODE}/
-│   ├── phase_input-research/
-│   ├── phase_content-generator/
-│   └── phase_brightspace-packager/
-└── trainforge/{COURSE_CODE}/
-    ├── phase_content-analysis/
-    ├── phase_question-generation/
-    └── phase_validation/
-```
+| Field | Source |
+|---|---|
+| `run_id` | `DecisionCapture` instance state |
+| `timestamp` | stamped at `log_decision` time |
+| `operation` | passed in, or inferred from `decision_type` via `lib/constants.py` |
+| `decision_type` | caller — validated against the schema enum (see below) |
+| `decision` | caller — the choice actually made |
+| `rationale` | caller — **minimum 20 characters** |
 
-Other `<tool>` roots appear as their call sites fire (`libv2`, `orchestrator`, `pipeline`,
-`textbook-pipeline`, and a legacy `dart` root left by captures written before the SemantiK rename). The set is
-not closed — `<tool>` is a free constructor argument, not an enum.
+`_build_record` (`lib/decision_capture.py`) fills a wider envelope around those six: `event_id`, `seq`, `course_id`, `module_id`, `artifact_id`, `task_id`, `tool`, `phase`, `alternatives_considered`, `context`, `confidence`, `is_default`, `ml_features`, `inputs_ref`, `prompt_ref`, `outputs`, `outcome`, and a `metadata` block carrying `rationale_length`, `quality_level`, and the quality-gate verdict.
+
+### Rationale minimum and quality tiers
+
+The 20-character floor is enforced in `lib/validation.py::validate_decision` (`if len(rationale) < 20: issues.append(…)`). Separately, `lib/quality.py::assess_decision_quality` grades every record against `QUALITY_THRESHOLDS` in `lib/constants.py`:
+
+| Tier | Rationale min length | Also requires |
+|---|---:|---|
+| `exemplary` | 100 | `inputs_ref` **and** `alternatives_considered` |
+| `proficient` | 50 | `inputs_ref` **or** `alternatives_considered` |
+| `developing` | 20 | — |
+| `inadequate` | 0 | — |
+
+`_build_record` then calls `check_quality_acceptable(quality_level, minimum_level="proficient")`. A record below `proficient` is still written, but is stamped `metadata.quality_gate_passed = false` with a reason and logged as a warning — the mechanism that keeps thin rationales out of the training corpus without losing the audit row.
+
+### Where `decision_type` is validated
+
+`decision_type` is **not** a free string. `lib/decision_capture.py` builds `ALLOWED_DECISION_TYPES` at module-import time by reading the `decision_type` enum out of `schemas/events/decision_event.schema.json` — **243 values** at the time of writing — with a small hardcoded tuple as fallback if the schema cannot be loaded. The schema, not a Python constant, is the single source of truth. **Adding a decision type is a schema edit plus its first production use site, in the same change.**
+
+Two environment variables govern what happens to an invalid record, and they compose:
+
+| `VALIDATE_DECISIONS` | `DECISION_VALIDATION_STRICT` | Behavior |
+|---|---|---|
+| unset / falsey | (any) | validation is a no-op |
+| **default (`"true"`)** | unset | warn-only: issues attach to `metadata.validation_issues`, record IS written |
+| truthy | `"true"` | fail-closed: `ValueError` raised, record NOT written |
+
+Note the default: `VALIDATE_DECISIONS` defaults to `"true"` in `lib/constants.py`, so validation runs on every capture out of the box — it just does not block. Ship a new type in the schema *before* the code that emits it, or a strict-mode run will drop the event.
+
+## Storage layout
+
+A single `DecisionCapture` writes the same rows to up to three sinks:
+
+1. **Canonical LibV2 catalog store** — `LibV2/catalog/<COURSE_CODE>/training/<tool>/phase_<phase>/decisions_<session_id>.jsonl`, resolved by `lib/libv2_storage.py::LibV2Storage.get_training_capture_path`. Honors `ED4ALL_LIBV2_ROOT`.
+2. **Legacy mirror** — `training-captures/<tool>/<COURSE_CODE>/phase_<phase>/decisions_<session_id>.jsonl`. Root overridable via `ED4ALL_TRAINING_CAPTURES_DIR` (which does **not** follow `ED4ALL_LIBV2_ROOT` — the mirror lives at the project root, so it needs its own knob; the test-isolation autouse fixture points it at a tmp dir so a pytest run does not grow the real tree).
+3. **Run-scoped stream** — `<run_context.decisions_path>/decisions_<tool>_<session_id>.jsonl`, written only when a hardening run context is active. `lib/replay_engine.py` reads this sink back from `state/runs/<RUN_ID>/decisions/`.
+
+**Phase names are normalized:** `phase.replace("_", "-")`, and `phase=None` routes to `phase_unknown/` rather than crashing (tool-level captures such as the orchestrator's `phase_start` fire before a phase has been selected). So a capture constructed with `phase="semantik_conversion"` lands in a directory named `phase_semantik-conversion`.
+
+Observed `<tool>` roots under `training-captures/`: `courseforge`, `libv2`, `orchestrator`, `pipeline`, `semantik`, `textbook-pipeline`, `trainforge`, plus a legacy `dart` root left by captures written before the SemantiK rename. The set is **not closed** — `tool` is a free constructor argument, not an enum. (A `training-captures/decisions/` directory also exists but is **not** a `<tool>` root: it holds loose JSONL files directly, not the `<tool>/<COURSE_CODE>/phase_<phase>/` shape this layout describes.)
+
+### Write buffering
+
+`ED4ALL_CAPTURE_BUFFER` (default off) coalesces the per-decision write+flush+fsync across the mirrors into one batched write every `ED4ALL_CAPTURE_BUFFER_ROWS` rows (default 50; garbage or ≤0 → 50). The buffer drains on flush, close, and `atexit`. The worst case is losing the last N buffered *telemetry* rows on a hard kill — captures are advisory records, not pipeline state.
 
 ## Example wiring
 
@@ -49,32 +83,46 @@ capture.log_decision(
 )
 ```
 
-## Where `decision_type` is validated
-
-`decision_type` is **not** a free string. `lib/decision_capture.py` builds `ALLOWED_DECISION_TYPES` at
-module-import time by reading the `decision_type` enum out of `schemas/events/decision_event.schema.json`
-(243 values as of 2026-07-20), with a small hardcoded tuple as the fallback if the schema cannot be loaded.
-The schema — not a Python constant — is the single source of truth, so **adding a decision type is a schema
-edit plus its first production use site**, in the same change.
-
-`DECISION_VALIDATION_STRICT` governs what happens on an unknown type: unset, the event is warned about;
-truthy, the capture fails closed. Ship a new type in the schema before the code that emits it, or a strict-mode
-run will drop the event.
-
 ## LLM call-site instrumentation contract
 
-Every LLM call site MUST wire up a `DecisionCapture` instance and emit at least one decision per call (per-batch when batched). Static boilerplate rationales are forbidden — rationale must interpolate dynamic signals specific to the call (block IDs, image hashes, page numbers, model + max_tokens, confidence distributions, etc.) so captures are replayable post-hoc. A regression test MUST assert that the capture fires on the call path.
+Every LLM call site MUST wire a `DecisionCapture` and emit at least one decision per call (per-batch when batched). **Static boilerplate rationales are forbidden** — the rationale must interpolate dynamic signals specific to that call (block ids, page numbers, model + `max_tokens`, `finish_reason`, confidence distributions, tallies) so the capture is replayable post-hoc. `tests/decision_capture/test_boilerplate_rationale_detector.py` exists to police exactly this. **A regression test MUST assert the capture fires on the call path.**
 
-### Precedent call sites + regression tests
+The contract applies to *new model calls*. A module that only reads a report the harness already wrote correctly wires no capture — `lib/governance/procurement_evidence.py` and `lib/aggregators/build_cost.py` are the documented examples.
 
-- Conversion structure / alt-text captures: `lib/decision_capture.py::SemantiKDecisionCapture` (factory `create_semantik_capture`) → one `structure_detection` capture per structure decision and one `alt_text_generation` capture per figure. It labels captures with tool `semantik` and phase `semantik_conversion`. `DARTDecisionCapture` / `create_dart_capture` survive as **deprecated module-level aliases** of the same class and factory (scheduled for removal); new call sites must use the SemantiK names. Note the asymmetry that trips readers: the *capture* naming was migrated, but the `data-dart-*` HTML provenance attributes and the `dart:{slug}#{block_id}` CURIE form remain the **preserved wire contract** — SemantiK is the engine that emits them now, and renaming them would break every downstream resolver.
-- SemantiK Stage-5d structure-reviewer bridge: `MCP/tools/pipeline_tools.py::_emit_structure_review_capture` (hooked in the `_run_semantik_v2_conversion` conversion seam) → one `structure_review` capture per converted doc, best-effort (a capture failure logs a warning, never breaks conversion). Regression coverage: `lib/semantik/tests/test_structure_review_bridge.py`.
-- SemantiK Stage-5e block-resegment bridge: `MCP/tools/pipeline_tools.py::_emit_block_resegment_capture` (same conversion seam, section 2c) → one `block_resegment` capture per converted doc when the Stage-5e re-partition pass fired, best-effort. It resolves the audit rows off BOTH cascade arms — the in-process result-dict top-level `block_resegment` key AND the cross-venv bridge (`SemantiK/scripts/run_cascade_json.py::_build_bridge_dict` now forwards it via `_resolve_block_resegment`, with the same-touch `second_pass_verify` arm forwarded alongside). Deterministic-pass capture (the resegment ops are deterministic-first, so it fires even with no LLM op-proposal layer); dynamic rationale interpolates the merge / split / regroup op tallies, the fused-title-split count, the folded-region tally, the merged-unit `semantic_class` set, a bounded `source_ids` sample, and `conservation_verified`. Regression coverage: `lib/semantik/tests/test_structure_review_bridge.py` § 3c (`test_block_resegment_capture_row_emitted_dynamic_rationale`; flag-off skip asserted by `test_block_resegment_capture_skips_cleanly_when_off`).
-- Grounded-answer computational-groundedness check (`ED4ALL_GROUNDEDNESS_COMPUTATIONAL`): `lib/retrieval/groundedness.py::score_groundedness` → one `groundedness_computational_check` capture per answer with ≥1 computational claim WHEN a capture is threaded. The capture is now threaded on BOTH surfaces — the eval path (`lib/retrieval/grounded_eval.py`) AND the production answer path (`lib/retrieval/grounded_answer.py::_score_groundedness` forwards `capture=capture` into `score_groundedness(...)`). Best-effort: a capture failure never aborts scoring. Regression coverage: `lib/tests/test_groundedness.py::test_capture_fires_when_flag_on` (+ `test_computational_check_absent_when_flag_off` for the default-off byte-identical contract).
-- Trainforge cognitive-task-type detection (`TRAINFORGE_COGNITIVE_TASK_TYPE`): `Trainforge/generators/assessment_generator.py` → one `cognitive_task_type_detection` capture per tagged question, emitted only when the flag is on and `lib/ontology/cognitive_task.py::detect_cognitive_task_type` matched a canonical task verb on the stem (no match → no field, no capture). Rationale interpolates the detected verb, the stem prefix, `question_id`, the objective, and `bloom_level`. Regression coverage: `Trainforge/tests/test_assessment_generator_capture_wiring.py::test_cognitive_task_type_flag_on_tags_and_captures` (+ `test_cognitive_task_type_flag_off_byte_identical` for the default-off no-capture / byte-identical `to_dict()` contract).
-- LibV2 fresh-eval bridge: `LibV2/tools/libv2/model_eval_bridge.py::run_fresh_eval` → one `fresh_eval_invocation` capture per fresh adapter eval (`libv2 models eval <slug> <model_id> --fresh` / `libv2 eval run <slug> <model_id>`), best-effort (a capture failure logs a warning, never fails the eval). Rationale interpolates `model_id`, `course_slug`, the base repo, the eval profile, `smoke`, the gen knobs, `replace`, and the output report name. Regression coverage: `LibV2/tools/libv2/tests/test_model_eval_bridge.py::test_fresh_eval_capture_fires` (+ `test_fresh_eval_capture_failure_never_fails_eval`). The `fresh_eval_invocation` value is now present in `schemas/events/decision_event.schema.json`'s `decision_type` enum, so it survives `DECISION_VALIDATION_STRICT=true` (the earlier schema gap is closed).
-- Trainforge synthesis provider: `Trainforge/generators/_anthropic_provider.py` → one `synthesis_provider_call` capture per call (see `Trainforge/tests/test_anthropic_synthesis_provider.py`).
-- Trainforge curriculum-alignment provider: `Trainforge/generators/_curriculum_provider.py` (consumed by `Trainforge/align_chunks.py::classify_teaching_roles`) → one `curriculum_alignment_call` capture per teaching-role classification (see `Trainforge/tests/test_curriculum_alignment_provider.py`).
-- Trainforge OpenAI-compatible HTTP client: `Trainforge/generators/_openai_compatible_client.py` → one `llm_chat_call` capture per call when wired with a capture; surface used by future task providers that compose the client directly (see `Trainforge/tests/test_openai_compatible_client.py`).
-- Orchestrator generic OpenAI-compatible backend (Wave W-D12): `MCP/orchestrator/llm_backend.py::OpenAICompatibleBackend` → one `llm_chat_call` capture per call, with the dynamic `provider_name` constructor arg interpolated into the rationale (`provider=<name>`) and the decision string (`provider_name=<name>`, host-only `base_url`). The backend is a single class wrapping `Trainforge.generators._openai_compatible_client.OpenAICompatibleClient`; new providers (Together, Groq, Fireworks, DeepSeek, Mistral, hosted Gemini-via-OpenAI-shim, ...) plug in by appending a registry entry to `_OPENAI_COMPATIBLE_PROVIDERS` — adding a provider is a registry-entry change, NOT a new call site or subclass. Regression coverage: `lib/tests/test_llm_backend.py::TestDecisionCaptureProviderName::test_decision_capture_emits_provider_name` (interpolated provider name) and `lib/tests/test_llm_backend.py::TestProviderRegistry::test_provider_registry_extension_pattern` (load-bearing dynamic-extension contract).
-- Orchestrator vision-mode OpenAI-compatible backend (Wave W-D13): `MCP/orchestrator/llm_backend.py::OpenAICompatibleBackend.complete_sync(images=...)` → same `llm_chat_call` capture as above, with the `images_count` extra threaded into the decision-string `extras` so the audit trail distinguishes vision calls from text-only calls without the rationale branching on the value. The vision-content-block translation lives ONE layer down at `Trainforge/generators/_openai_compatible_client.py::OpenAICompatibleClient._attach_vision_blocks`; the backend just forwards `images=` through after a vision-capability gate (`RuntimeError` when the provider entry's `vision_capable` flag is `False`). This generic vision backend remains available for any OpenAI-compatible vision consumer; the figure alt-text path for the conversion stage is now owned by SemantiK's local Stage-6b figure captioner (SmolVLM2) rather than the retired DART vision converter. Regression coverage: `MCP/tests/test_llm_backend_vision.py` (vision-capable forwarding + non-vision-capable RuntimeError), `Trainforge/tests/test_openai_compatible_client_vision.py` (content-block payload shape).
+### Precedent call sites
+
+Each row below was verified: the emitting module exists, emits the named `decision_type`, and the named test file exists.
+
+| Call site | `decision_type` | Regression coverage |
+|---|---|---|
+| `lib/decision_capture.py::SemantiKDecisionCapture` (factory `create_semantik_capture`) | `structure_detection` (per structure decision), `alt_text_generation` (per figure) | — (base helper) |
+| `SemantiK/semantik_structure/figure_captioner.py` — the omni cascade's Stage-6b SmolVLM2 captioner | `alt_text_generation` | `SemantiK/semantik_structure/tests/test_figure_captioner_capture.py` |
+| `SemantiK/semantik_structure/glmocr/heading_judge.py` — the GLM-OCR lane's heading-level judge | `structure_review` with a `heading_level_judge=True` discriminator | `SemantiK/semantik_structure/tests/test_heading_judge.py::test_decision_capture_fires_with_dynamic_rationale`, `::test_capture_failure_never_breaks_judge` |
+| `MCP/tools/pipeline_tools.py::_emit_structure_review_capture` (conversion seam, called at the `_run_semantik_v2_conversion` site) | `structure_review`, one per converted doc | `lib/semantik/tests/test_structure_review_bridge.py` |
+| `MCP/tools/pipeline_tools.py::_emit_block_resegment_capture` (same seam) | `block_resegment`, one per converted doc when the re-partition pass fired | `lib/semantik/tests/test_structure_review_bridge.py` |
+| `lib/retrieval/groundedness.py::score_groundedness` (`ED4ALL_GROUNDEDNESS_COMPUTATIONAL`) | `groundedness_computational_check` | `lib/tests/test_groundedness.py` |
+| `Trainforge/generators/assessment_generator.py` (`TRAINFORGE_COGNITIVE_TASK_TYPE`) | `cognitive_task_type_detection` | `Trainforge/tests/test_assessment_generator_capture_wiring.py` |
+| `LibV2/tools/libv2/model_eval_bridge.py::run_fresh_eval` | `fresh_eval_invocation` | `LibV2/tools/libv2/tests/test_model_eval_bridge.py` |
+| `Trainforge/generators/_curriculum_provider.py` (consumed by `Trainforge/align_chunks.py::classify_teaching_roles`) | `curriculum_alignment_call` | `Trainforge/tests/test_curriculum_alignment_provider.py` |
+| `Trainforge/generators/_local_provider.py`, `_together_provider.py`, `_claude_session_provider.py` (all over `_base_synthesis_provider.py`) | `synthesis_provider_call` | `Trainforge/tests/test_local_synthesis_provider.py`, `test_together_synthesis_provider.py`, `test_claude_session_provider.py`, `test_base_synthesis_provider.py`, `test_synthesis_provider.py` |
+| `Trainforge/generators/_openai_compatible_client.py::OpenAICompatibleClient` | `llm_chat_call`, one per call when wired with a capture | `Trainforge/tests/test_openai_compatible_client.py` |
+| `MCP/orchestrator/llm_backend.py::OpenAICompatibleBackend` | `llm_chat_call`, with the dynamic `provider_name` interpolated into rationale and decision string | `lib/tests/test_llm_backend.py` |
+| `MCP/orchestrator/llm_backend.py::OpenAICompatibleBackend.complete_sync(images=…)` | `llm_chat_call` with an `images_count` extra distinguishing vision calls | `MCP/tests/test_llm_backend_vision.py`, `Trainforge/tests/test_openai_compatible_client_vision.py` |
+
+### Notes on individual rows
+
+**SemantiK naming asymmetry.** `DARTDecisionCapture` and `create_dart_capture` survive as deprecated module-level aliases of `SemantiKDecisionCapture` / `create_semantik_capture`; new call sites must use the SemantiK names. The asymmetry that trips readers: the *capture* naming migrated, but the HTML wire contract did not migrate identically. `lib/semantik/adapter.py` emits `data-semantik-*` attributes (`data-semantik-block-id`, `data-semantik-source`, `data-semantik-pages`, …), while the **CURIE** source-id form is still minted as `dart:{slug}#{block_id}` — `lib/validators/source_refs.py` deliberately yields **both** `dart:` and `semantik:` prefixes for every id so freshly-emitted and legacy corpora both resolve.
+
+**Block-resegment capture.** It resolves audit rows off *both* cascade arms — the in-process result dict's top-level `block_resegment` key and the cross-venv bridge (`SemantiK/scripts/run_cascade_json.py`). It is a deterministic-pass capture (the resegment ops are deterministic-first), so it fires even with no LLM op-proposal layer; the rationale interpolates merge/split/regroup tallies, the fused-title-split count, the folded-region tally, the merged-unit semantic-class set, a bounded source-id sample, and `conservation_verified`.
+
+**Groundedness capture threading.** The capture is threaded on **both** surfaces — the eval path (`lib/retrieval/grounded_eval.py`) and the production answer path (`lib/retrieval/grounded_answer.py`, which forwards `capture=capture` into `score_groundedness`). Best-effort: a capture failure never aborts scoring.
+
+**Provider registry, not subclasses.** `OpenAICompatibleBackend` is a single class wrapping `Trainforge.generators._openai_compatible_client.OpenAICompatibleClient`. New providers plug in by appending a row to `config/endpoints.yaml`; `MCP/orchestrator/llm_backend.py::_OPENAI_COMPATIBLE_PROVIDERS` is a legacy-shaped projection of that YAML registry, resolved by name. Adding a provider is a registry-entry change, **not** a new call site or a subclass. `lib/tests/test_llm_backend.py::TestProviderRegistry::test_provider_registry_extension_pattern` pins that contract.
+
+**Vision path ownership.** The vision content-block translation lives one layer below the backend, at `OpenAICompatibleClient._attach_vision_blocks`; the backend forwards `images=` after a `vision_capable` gate that raises `RuntimeError` for a non-vision provider entry. The generic vision backend remains available to any OpenAI-compatible vision consumer, but the conversion stage's figure alt-text is owned by SemantiK's own captioner paths, not by this backend.
+
+**Anthropic synthesis is not a live precedent.** `Trainforge/generators/_anthropic_provider.py` exists and emits `synthesis_provider_call`, but `Trainforge/synthesize_training.py` carries `_REMOVED_SYNTHESIS_PROVIDERS = frozenset({"anthropic"})` and fails closed on it unconditionally for training-pair synthesis. Do not cite it as the pattern to copy; use the local / together / claude-session providers above.
+
+## Known instrumentation gap
+
+`SemantiK/semantik_structure/glmocr/alttext.py` — the GLM-OCR lane's Qwen3-VL alt-text seat — is an LLM call site that wires **no** `DecisionCapture`. `heading_judge.py` is the only module in `SemantiK/semantik_structure/glmocr/` that references `DecisionCapture`. The equivalent call site on the legacy omni cascade (`figure_captioner.py`) *is* instrumented and has a regression test, so the contract is satisfied on that path but not on the lane. This is a real gap against the instrumentation law, recorded here rather than papered over.

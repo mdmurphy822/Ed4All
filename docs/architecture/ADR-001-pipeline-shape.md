@@ -2,10 +2,15 @@
 
 ## Status
 
-Proposed (original). **Partially superseded by implementation — see § Status update (2026-07-20)** at the
-end of this file. The Context / Decision / Rationale sections below are preserved verbatim as the historical
-record of the decision; several line numbers, constant values, and follow-up states they cite have since
-moved. Do not read them as current facts — read the status update for what the tree does today.
+**Proposed (2026-04-17) — partially superseded in practice; not superseded by another ADR.**
+
+The decision below was never enforced in code, so the tree today follows the ADR's *architecture* (two
+passes, two writers) but not its *contract* (disjoint keys). See § Subsequent developments (2026-07-20) at
+the end of this file for the verified current state.
+
+The Context / Decision / Rationale / Contracts sections below are preserved verbatim as the historical
+record. Several line numbers, constant values, and follow-up states they cite have since moved. Do not read
+them as current facts.
 
 ## Context
 
@@ -157,10 +162,14 @@ The Courseforge-side template-chrome work tracked in `VERSIONING.md §4b` is not
 
 ---
 
-## Status update (2026-07-20)
+## Subsequent developments (2026-07-20)
 
-Verified against the tree at this date. The ADR's **architecture** (two writers, disjoint keys) still holds
-and no merge happened. Its **cited facts** have moved:
+> This section is an **annotation**, not part of the decision. Nothing above this line has been altered.
+> Every claim below was re-checked against the working tree on 2026-07-20; the file/line citations in this
+> section are from that check, not from the original ADR.
+
+The ADR's **architecture** (two passes, two writers) still holds and no merge happened. Its **cited facts**
+have moved:
 
 ### Constants — moved
 
@@ -191,10 +200,10 @@ pattern). The naming pattern and the per-fixture `README.md` requirement stand.
 
 | Follow-up | State |
 |---|---|
-| `FOLLOWUP-ADR001-1` — LibV2 importer OSCQR `quality_report.json` filename collision | **Open.** `LibV2/tools/libv2/importer.py` still writes the OSCQR-flavored stub (`oscqr_score`, …) to `quality/quality_report.json` when the imported source has none. Same filename, different schema. |
-| `FOLLOWUP-ADR001-2` — `run_summarizer` reads a dead key | **Fixed.** `cli/reporters/run_summarizer.py` now reads `overall_quality_score` first, with the legacy `quality_score` / `score` keys retained as fallbacks. |
-| `FOLLOWUP-ADR001-3` — stale `METRICS_SEMANTIC_VERSION=2` docstring | **Open, and now more stale.** `Trainforge/align_chunks.py::update_quality_report`'s docstring still cites `METRICS_SEMANTIC_VERSION=2`; the base pass is at 5. |
-| `FOLLOWUP-ADR001-4` — enforce the additive-only contract in code | **Open. This is the live gap.** `align_chunks.update_quality_report` still does both things the ADR forbids: it appends to `integrity["broken_refs"]` and it overwrites `report["overall_quality_score"]` with the `0.6·base + 0.4·alignment` blend. The ADR's Decision is therefore **prose-only today** — the hazard table in § Field-level picture still describes live behavior, not history. Neither `alignment.alignment_quality_score` nor `alignment.base_metrics_semantic_version` (Contract 2) is written. |
+| `FOLLOWUP-ADR001-1` — LibV2 importer OSCQR `quality_report.json` filename collision | **Open.** `LibV2/tools/libv2/importer.py:453-461` still writes the OSCQR-flavored stub (`oscqr_score`, …) to `quality/quality_report.json` when the imported source has none. Same filename, different schema. |
+| `FOLLOWUP-ADR001-2` — `run_summarizer` reads a dead key | **Fixed.** `cli/reporters/run_summarizer.py:253-258` now reads `overall_quality_score` first, with the legacy `quality_score` / `score` keys retained as fallbacks. The fix carries a `FOLLOWUP-ADR001-2` code comment. |
+| `FOLLOWUP-ADR001-3` — stale `METRICS_SEMANTIC_VERSION=2` docstring | **Open, and now more stale.** The `update_quality_report` docstring (`Trainforge/align_chunks.py:1157-1163`, the `METRICS_SEMANTIC_VERSION=2` mention on `:1160`) still cites v2 semantics; the base pass is at 5. |
+| `FOLLOWUP-ADR001-4` — enforce the additive-only contract in code | **Open. This is the live gap.** `align_chunks.update_quality_report` (now at `Trainforge/align_chunks.py:1151`, not the `:678` the ADR cites) still does both things the ADR forbids: it appends to `integrity["broken_refs"]` (`:1216-1217`) and it overwrites `report["overall_quality_score"]` with the `0.6·base + 0.4·alignment` blend (`:1221-1224`). The ADR's Decision is therefore **prose-only today** — the hazard table in § Field-level picture still describes live behavior, not history. Neither `alignment.alignment_quality_score` nor `alignment.base_metrics_semantic_version` (Contract 2) is written anywhere in the tree. |
 
 **Net:** the ADR chose "two writers, disjoint keys" but the disjointness was never enforced in code. Anyone
 reading `overall_quality_score` out of `quality_report.json` is reading a blended number whose blend factor is

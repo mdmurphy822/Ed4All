@@ -1,550 +1,310 @@
 # The universal block-label ontology
 
-**Status:** data landed (2026-07-13) in `schemas/taxonomies/`; **not yet read by any production code path**
-— see § Adoption status (2026-07-20).
-**Goal:** one label vocabulary that structures a wide range of document genres, rather than a
-textbook-shaped enum that degrades silently off-domain.
-**Data files:** `schemas/taxonomies/block_kinds.json`, `schemas/taxonomies/block_relations.json`,
-`schemas/taxonomies/genre_profile_*.json` (8), `schemas/taxonomies/*_lexicon.json` (the four block-ontology lexicons: `openstax_lexicon.json`, `generic_instructional_lexicon.json`, `federal_register_lexicon.json`, `ansi_z535_lexicon.json`)
-**Loader:** `lib/ontology/taxonomy.py::load_taxonomy(name)` (generic `schemas/taxonomies/<name>.json` read)
-**Relates to:** `SemantiK/semantik_structure/page_arranger_contract.py`, `schemas/ONTOLOGY.md`,
-`lib/ontology/teaching_roles.py`, `lib/ontology/framework_blocks.py`
+**What it is:** a three-layer label vocabulary for structuring documents of many genres, with one
+closed structural core and open, data-driven functional overlays.
+**Where it lives:** entirely in **data files** under `schemas/taxonomies/` — there is no Python module
+that owns this vocabulary. The only code is a generic loader and a test suite.
+**Loader:** `lib/ontology/taxonomy.py::load_taxonomy(name)` — a generic cached
+`schemas/taxonomies/<name>.json` read.
+**Invariant tests:** `schemas/tests/test_block_ontology.py`.
+**Relates to:** `docs/architecture/hybrid-vision-extraction.md`, `schemas/ONTOLOGY.md`,
+`lib/ontology/teaching_roles.py`, `lib/ontology/framework_blocks.py`.
 
-A three-layer label ontology so SemantiK can structure a **wide range of
-documents** (textbooks, statutes, papers, forms, encyclopedias, literary prose,
-infographics) with one closed structural core and open, data-driven functional
-overlays.
-
-This document merges three references: **§ A Design** (the layer model and its
-governance), **§ B Source mappings** (how each inventoried gold source maps onto
-the ontology), and **§ C Migration** (how the current SemantiK page-arranger
-9-value enum projects onto the universal `(kind, role)` tuples).
+> **Read § Adoption status before treating any of this as live behavior.** The data is real, verified,
+> and test-enforced. Its consumption by the shipping converter is partial and precisely bounded.
 
 ---
 
-# § A — Design
-
-## The three layers
+## 1. The three layers
 
 ```
-  L1  block_kinds       CLOSED    ~16 structural kinds     DocLayNet-compatible
+  L1  block_kinds       CLOSED     16 structural kinds     DocLayNet-mapped
        │  (a block ALWAYS has exactly one kind)
-  L2  genre_profiles    OPEN(data) functional roles         attach to L1 kinds
+  L2  genre_profiles    OPEN(data) functional roles        attach to L1 kinds
        │  (a block has AT MOST ONE role; only when a profile resolves)
-  L3  lexicons          OPEN(data) marker-string → role      publisher vocab
+  L3  lexicons          OPEN(data) marker string → role    publisher vocabulary
        (the ONLY place publisher-specific strings live)
 ```
 
-- **L1 is what a block *is*** (heading, table, figure, math_block, …) — a
-  document-agnostic structural fact readable from geometry + light markup, the
-  same for a tax form and a physics textbook.
-- **L2 is what a block *does*** in its genre (worked_example, holding, theorem,
-  field_label). A role is meaningful only inside a genre; it is optional.
-- **L3 is how you *recognize* an L2 role** from a specific publisher's marker
-  vocabulary ("AGENCY:", the OpenStax practice markers). Pure data.
+- **L1 is what a block *is*** (heading, table, figure, math_block, …) — a document-agnostic structural
+  fact readable from geometry plus light markup, identical for a tax form and a physics textbook.
+- **L2 is what a block *does*** in its genre (worked_example, holding, theorem, field_label). A role is
+  meaningful only inside a genre, and is optional.
+- **L3 is how you *recognize*** an L2 role from a specific publisher's marker vocabulary. Pure data.
 
-### Why closed L1 + open L2/L3 (the closed-vs-open cadence)
+### Why closed L1, open L2/L3
 
-The structural vocabulary of documents is **small and stable** — DocLayNet
-covers the world with 11 classes; we extend to 16 (code/forms/quotes/asides/charts). Closing
-L1 buys: a fixed classifier head, DocLayNet weak-supervision, cross-eval
-numbers, and a hard conservation contract (every unit gets exactly one kind).
-Adding an L1 kind is a real schema change (new head class, new DocLayNet gap) —
-so it is **owner-gated**.
+The structural vocabulary of documents is small and stable — DocLayNet covers the world with 11
+classes; L1 extends to 16. Closing L1 buys a fixed classifier head, DocLayNet weak supervision,
+cross-eval numbers, and a hard conservation contract (every unit gets exactly one kind). Adding an L1
+kind is a real schema change and is maintainer-gated.
 
-The *functional* vocabulary is **large, genre-specific, and unbounded** — every
-new corpus invents labels (a form has `checkbox_item`, a statute has `holding`).
-If L2/L3 were closed, every new document genre would be a code change. So L2/L3
-are **data** (`genre_profile_*.json` / `*_lexicon.json`) — onboarding a genre or
-a publisher adds a JSON file, never a code edit. This is the direct realization
-of the standing **wide-net rule**: structural gates stay domain-agnostic, and
-publisher-specific vocabulary lives in data-driven lexicon profiles rather than
-in code. A publisher marker compiled into a Python module is a corpus-specific
-gate wearing a general-purpose disguise — it passes on the corpus it was written
-against and silently under-labels every other one.
+The *functional* vocabulary is large, genre-specific, and unbounded — a form invents `checkbox_item`, a
+statute invents `holding`. If L2/L3 were closed, every new genre would be a code change. So they are
+data: onboarding a genre or a publisher adds a JSON file, never a code edit.
 
-This cadence mirrors the live SemantiK lexicon system
-(`lib/ontology/taxonomy.py::load_semantik_lexicon` over
-`schemas/taxonomies/semantik_lexicon.json`, profile-merged, env-selected) — the
-same "profiles are data" posture, generalized from the pedagogical-opener
-vocabulary to the whole functional layer.
+This is the direct realization of the standing **wide-net rule**: structural gates stay domain-agnostic,
+and publisher-specific vocabulary lives in data-driven lexicons rather than in code. A publisher marker
+compiled into a Python module is a corpus-specific gate wearing a general-purpose disguise — it passes
+on the corpus it was written against and silently under-labels every other one.
 
-## Graceful degradation (no profile → Layer-1 only)
+The cadence mirrors the already-live SemantiK lexicon system
+(`lib/ontology/taxonomy.py::load_semantik_lexicon` over `schemas/taxonomies/semantik_lexicon.json`,
+profile-merged, env-selected), generalized from pedagogical-opener vocabulary to the whole functional
+layer.
 
-A document with **no matching genre profile still gets a complete labeling** —
-every block resolves an L1 kind, the roles are simply absent. `infographics`
-(figure-dominant) degrades to clean L1-only output; `nces_digest` (statistical
-tables) and `gutenberg` (literary prose) now have profiles (`statistical` /
-`literary`) but no class map yet, so in practice they too resolve L1-complete
-output with roles filled in only heuristically (§ B §§ 8, 9, +). This is
-a feature: the wide net catches the structural skeleton of *any* document;
-profiles enrich the ones we understand. A brand-new genre ships useful (L1)
-output on day one and gets richer when someone writes its profile.
+---
 
-Degradation is also **per-block**, not just per-document: inside an
-instructional textbook, a plain body paragraph that matches no role stays
-L1-`paragraph` while the worked example beside it carries the role. There is no
-"unknown role" bucket — absence of a role is the honest signal.
+## 2. The data, as it exists on disk
 
-## Multi-label policy: kind + at most one role
+### L1 — `schemas/taxonomies/block_kinds.json`
 
-A block carries **exactly one L1 kind and at most one L2 role**. Rationale:
+`version: 0.2.0-draft`, `layer: 1`, `closed: true`. The `$defs.BlockKind.enum` has **16** values, and
+`x-block-kinds` carries one descriptor entry per kind:
 
-- **One kind** — the coverage/conservation invariant (every unit typed exactly
-  once) is what lets SemantiK assert no content is lost; a multi-kind block
-  breaks it.
-- **At most one role** — roles are mutually exclusive *within a resolved
-  profile* (a block is a `worked_example` **or** a `solution`, not both). If two
-  markers match, the more specific / earliest-anchored wins (L3 precedence:
-  source-specific lexicon before generic; longest-match before shortest). Cross-
-  profile ambiguity does not arise because a document resolves ONE profile
-  (§ B binds source → profile).
+```
+heading   paragraph   list_item   table   figure   chart   caption   math_block
+code_block   blockquote   aside   footnote   form_field   title_block   separator   furniture
+```
 
-Relations (`schemas/taxonomies/block_relations.json`) are the escape valve for
-genuinely n-ary structure: a `worked_example` block does not *contain* its
-solution as a second label — it is `solution_of`-linked to a separate `solution`
-block. Structure that is not a single block's identity is an EDGE, not a second
-label.
+Each `x-block-kinds` entry carries `kind`, `label`, `description`, `attributes[]`, `subkinds[]`, a
+`doclaynet` key (the DocLayNet class it folds onto, or `null`), and a `doclaynet_note` explaining the
+fold. A top-level `x-doclaynet-coverage` block carries the inverse `map` (all 11 DocLayNet classes →
+an L1 home) plus an explicit `ours_without_doclaynet_parent` list.
 
-Two edges carry cross-block structure that no single block's identity could
-represent. **Multi-story pages** (newspapers, magazines) are handled by the
-`same_story` STRUCTURAL relation plus a `story_id` grouping — an EDGE, per the
-"structure that is not a block's identity is an edge" doctrine — that ties the
-blocks of one content thread together even when they interleave with other
-stories on the page; it composes with `continues` for a story that jumps across
-pages. And **in-text numbered cross-references** ("see Figure 3", "Table 2")
-get a first-class edge via `refers_to`, binding the citing block to its cited
-figure/chart/table/heading/math_block target.
+`chart` is deliberately distinct from `figure`: its accessibility contract is a structured **data
+description**, not merely alt text, so a graph's underlying data survives for a screen-reader user
+rather than collapsing to a one-line label. `aside` renders as `role=complementary` and is excluded from
+the main reading sequence. Both fold lossily onto DocLayNet (`aside`→`text`, `chart`→`picture`) since
+DocLayNet has no native parent for either.
 
-## The wide-net rule (profiles/lexicons = data, never code)
+**DocLayNet-compat leverage and its documented limit.** Two distinct facts are easy to conflate here,
+so state them separately.
 
-Enforced mechanically:
+- **Only two kinds declare `doclaynet: null`** — `form_field` and `separator`. The other 14 name a
+  DocLayNet class.
+- **`x-doclaynet-coverage.ours_without_doclaynet_parent` lists seven entries** — `code_block`,
+  `blockquote`, `aside`, `chart`, `form_field`, `separator`, and `furniture[subkind=watermark]`. That
+  list is broader than the `null` count because it also names kinds that *do* declare a parent but
+  share it **many-to-one**: `code_block` / `blockquote` / `aside` all fold onto `text` alongside
+  `paragraph`, and `chart` folds onto `picture` alongside `figure`. The last entry is a *subkind*, not
+  a kind — `furniture` itself maps to `page-header | page-footer`.
 
-- **No publisher-specific marker string appears outside the lexicons.**
-  Verified: the OpenStax + Federal Register marker sets (`Try It`, `AGENCY:`, …)
-  appear in no L1/L2 file. Generic English role labels ("guided practice") are
-  role *names*, not publisher markers, and are allowed at L2.
-- **A new publisher** → a new `<pub>_lexicon.json` (marker → role).
-- **A new genre** → a new `genre_profile_<genre>.json` (roles + their
-  `attaches_to` kinds).
-- **The onboarding aligner's in-code `PRACTICE_MARKER_LEXICON` + `SOURCE_TYPE_MAPS`
-  migrate to data** (§ C): the code reads the JSON, the vocab lives in the JSON.
-  The class maps (`ltx_*` → kind) are structural, not publisher vocab, so they may
-  stay as source-adapter code — but the *role* triggers move to lexicons.
+The consequence for weak supervision: a DocLayNet label can never *discriminate* those five from the
+sibling kind they share a parent with, and supplies nothing at all for the two `null` kinds. It is a
+head start, not a complete teacher.
 
-## Governance — who may add what
+### L2 — `schemas/taxonomies/genre_profile_*.json` (8 files)
+
+Each declares `layer`, `closed`, a `profile` object (`id` + `label`), and an `x-roles` array:
+
+| Profile id | Roles |
+|---|---:|
+| `instructional` | 10 |
+| `legal_regulatory` | 7 |
+| `literary` | 7 |
+| `scholarly` | 7 |
+| `forms` | 4 |
+| `statistical` | 5 |
+| `technical_manual` | 5 |
+| `encyclopedic` | 3 |
+
+An `x-roles` entry carries `role`, `label`, `description`, `attaches_to[]` (the L1 kinds it may sit on),
+and — where instructional — `maps_to_teaching_role` and `framework_block`, binding the role back to
+`lib/ontology/teaching_roles.py` and `lib/ontology/framework_blocks.py`. Entries may also declare
+`profile_edges[]`. The `instructional` profile additionally declares a `grounds_in` list naming exactly
+those two modules plus `schemas/ONTOLOGY.md`.
+
+### L3 — the four block-ontology lexicons
+
+Each is a flat marker table: `x-markers` is an array of `{marker, role, notes}`. Nothing else.
+
+| File | Markers | Roles it triggers |
+|---|---:|---|
+| `openstax_lexicon.json` | 6 | `guided_practice`, `worked_example`, `exercise_item` |
+| `generic_instructional_lexicon.json` | 10 | `guided_practice`, `exercise_item` |
+| `federal_register_lexicon.json` | 4 | `agency_header`, `docket_line`, `enacting_clause` |
+| `ansi_z535_lexicon.json` | 9 | `safety_notice`, `procedure_step`, `prerequisite`, `materials_list`, `troubleshooting_entry` |
+
+The ANSI file is named for the Z535.6 severity words it opens with, but it is **not** a
+`safety_notice`-only lexicon — it carries the `technical_manual` profile's procedural vocabulary too.
+
+`exercise_apparatus_lexicon.json`, `objective_filler_lexicon.json`, and `semantik_lexicon.json` also
+live under `schemas/taxonomies/` but belong to other subsystems, not to this ontology.
+
+### Relations — `schemas/taxonomies/block_relations.json`
+
+`x-relations` carries **14** entries across two families (`structural`, `profile`):
+
+```
+same_unit  continues  caption_of  adjacent  same_section  footnote_of  refers_to
+same_story  solution_of  practice_of  answers  cites  defines  references
+```
+
+Relations are the escape valve for genuinely n-ary structure. A `worked_example` block does not
+*contain* its solution as a second label — it is `solution_of`-linked to a separate `solution` block.
+**Structure that is not a single block's identity is an EDGE, not a second label.** Two edges exist
+specifically because no block identity could carry them: `same_story` (plus a `story_id` grouping) ties
+the blocks of one content thread on a multi-story page, composing with `continues` for a story that
+jumps pages; and `refers_to` binds a citing block to the figure/chart/table/heading/math_block target of
+an in-text numbered cross-reference.
+
+---
+
+## 3. Policies the data encodes
+
+### Multi-label policy: one kind, at most one role
+
+- **One kind** — the coverage/conservation invariant (every unit typed exactly once) is what lets a
+  converter assert no content was lost. A multi-kind block breaks it.
+- **At most one role** — roles are mutually exclusive *within a resolved profile*: a block is a
+  `worked_example` **or** a `solution`, not both. If two markers match, the more specific / earliest-
+  anchored wins (source-specific lexicon before generic; longest match before shortest). Cross-profile
+  ambiguity does not arise because a document resolves one profile.
+
+### Graceful degradation: no profile → Layer-1 only
+
+A document with no matching genre profile still gets a **complete labeling** — every block resolves an
+L1 kind, roles are simply absent. Degradation is also **per-block**: inside an instructional textbook, a
+plain body paragraph that matches no role stays L1-`paragraph` while the worked example beside it
+carries a role. There is no "unknown role" bucket — **absence of a role is the honest signal**. A
+brand-new genre ships useful L1 output on day one and gets richer when someone writes its profile.
+
+### Authority ladder: labels earn trust
+
+A label produced by a *learned* head (rather than deterministic markup) starts as a **hint** (a `data-*`
+breadcrumb), graduates to a **validator** (proposes; deterministic code disposes) once calibrated across
+≥2 corpora, and only then joins the bulk path — always under fail-closed conservation invariants. The
+ontology defines the label space; it does not grant a model authority to apply it.
+
+---
+
+## 4. Governance
 
 | Change | Layer | Gate | Blast radius |
-|--------|-------|------|--------------|
-| Add/remove/rename a **kind** | L1 | **schema-change sign-off** (maintainer-gated, not a data PR) | new classifier head class, new DocLayNet gap, re-train, conservation-contract review |
-| Add a **role** to a profile | L2 | maintainer (data PR) — must declare `attaches_to` ≥1 kind, map to a `teaching_role`/framework block where instructional | additive; no head change (roles are a separate, open head) |
-| Add a **genre profile** | L2 | maintainer (data PR) + a § B source-mapping row | additive |
-| Add a **lexicon entry / file** | L3 | maintainer (data PR) — pure vocab | additive; zero code |
-| Add/rename a **relation** | relations | schema-change sign-off if it becomes a trained head class; else maintainer | may add a BERT-v2 class |
+|---|---|---|---|
+| Add / remove / rename a **kind** | L1 | schema-change sign-off (maintainer-gated, not a data PR) | new classifier head class, new DocLayNet gap, re-train, conservation-contract review |
+| Add a **role** to a profile | L2 | maintainer (data PR) — must declare `attaches_to` ≥1 kind | additive; no head change |
+| Add a **genre profile** | L2 | maintainer (data PR) | additive |
+| Add a **lexicon entry / file** | L3 | maintainer (data PR) — pure vocabulary | additive; zero code |
+| Add / rename a **relation** | relations | schema-change sign-off if it becomes a trained head class; else maintainer | may add a head class |
 
-**Invariants any change must preserve.** Four of the five are mechanically
-enforced by `schemas/tests/test_block_ontology.py`; the fifth is review-time
-only, and the table says which is which so nobody assumes CI is watching a
-door it is not.
+### Mechanically enforced invariants
 
-| # | Invariant | Enforced by |
-|---|---|---|
-| 1 | Every L2 role `attaches_to` ≥1 L1 kind. | `test_roles_attach_to_valid_l1_kinds` |
-| 2 | Every current arranger `TYPE_ENUM` value + every onboarding-aligner `SOURCE_TYPE_MAPS` output has a `(kind[, role])` home. | **Review only — no test.** `SOURCE_TYPE_MAPS` lives in the out-of-tree BERT-v2 workspace, so CI here cannot see it. |
-| 3 | No publisher marker string outside the lexicons. | `test_lexicon_is_marker_to_role_only` |
-| 4 | Every L1 kind declares its DocLayNet mapping (or an explicit `null` + gap note). | `test_block_kinds_declare_doclaynet_key` |
-| 5 | Every profile relation names ≥1 real L2 role. | `test_profile_relations_name_real_roles` |
+`schemas/tests/test_block_ontology.py` contains seven test functions. What each actually guards:
 
-The suite additionally pins the L1 enum against a snapshot
-(`test_l1_kind_enum_matches_expected_snapshot`), which is what makes "closed
-L1" a mechanical fact rather than a convention: adding a kind fails CI until
-the snapshot is deliberately updated.
+| Test | Guards |
+|---|---|
+| `test_ontology_file_loads` | every ontology file loads through `load_taxonomy` |
+| `test_block_kinds_declare_doclaynet_key` | every L1 kind declares a `doclaynet` key (explicit `null` permitted, with a gap note) |
+| `test_l1_kind_enum_matches_expected_snapshot` | the L1 enum matches the in-test `EXPECTED_L1_KINDS` snapshot |
+| `test_roles_attach_to_valid_l1_kinds` | every L2 role's `attaches_to` names only real L1 kinds |
+| `test_lexicon_is_marker_to_role_only` | no lexicon carries anything but marker→role rows — i.e. no publisher marker escapes L3 |
+| `test_profile_relations_name_real_roles` | every profile relation names ≥1 real L2 role |
+| `test_relation_enums_match_entries_by_family` | the relation enums agree with `x-relations` entries, per family |
 
-**L1 additions under the schema-change gate (2026-07-13).** Two kinds landed
-through the L1 gate to close cross-genre accessibility gaps, growing the closed
-set from 14 to 16: `aside` (aside/sidebar — renders as
-role=complementary, excluded from the main reading sequence) and `chart`
-(chart/graph). `chart` is deliberately distinct from `figure`: its
-accessibility contract is a structured **data description** (`data_description`,
-`chart_type`), not merely alt text, so a graph's underlying data survives for a
-screen-reader user rather than collapsing to a one-line label. Both fold lossily
-onto DocLayNet (`aside`→`text`, `chart`→`picture`) since DocLayNet has no native
-parent for either.
+The snapshot test is what makes "closed L1" a mechanical fact rather than a convention: adding a kind
+fails CI until the snapshot is deliberately updated.
 
-## Authority ladder (labels earn trust)
-
-Consistent with the BERT-v2 deployment ladder and the house `shadow → on` flag
-posture: an ontology label produced by a *learned* head (vs. deterministic
-markup) starts as a **hint** (a `data-*` breadcrumb), graduates to a
-**validator** (proposes; deterministic code disposes) once calibrated over ≥2
-corpora, and only then joins the **bulk path** — always under the fail-closed
-conservation invariants. The ontology defines the label space; it does not grant
-a model authority to apply it.
-
-## Promotion history
-
-These files were drafted in the BERT-v2 workspace and promoted into
-`schemas/taxonomies/` on 2026-07-13. They are shaped for
-`lib/ontology/taxonomy.py::load_taxonomy(name)` (a generic
-`schemas/taxonomies/<name>.json` read).
-
-## Adoption status (2026-07-20)
-
-Read this before treating any of § B or § C as describing live behavior.
-
-**What is real today.** All the data exists and is verified: `block_kinds.json`
-declares 16 kinds, there are 8 `genre_profile_*.json` files
-(`encyclopedic`, `forms`, `instructional`, `legal_regulatory`, `literary`,
-`scholarly`, `statistical`, `technical_manual`) and the 4 block-ontology
-lexicons named in the header. `load_taxonomy(name)` reads them, and
-`schemas/tests/test_block_ontology.py` enforces the invariant table above.
-
-**What is not yet real.** **No production code path reads `block_kinds.json`,
-`block_relations.json`, or any `genre_profile_*.json`.** Grepping for
-`load_taxonomy` finds only the schema tests plus unrelated callers reading
-*other* taxonomies (`taxonomy.json`, the objective filler lexicon, the course-status
-cohort table). The ontology is a ratified vocabulary with a validated data
-layer and no consumer.
-
-Concretely, that means:
-
-- `SemantiK/semantik_structure/page_arranger_contract.py::TYPE_ENUM` is still
-  the live 9-value flat enum (verified: `definition_box`, `example`,
-  `exercise_list`, `figure_caption`, `furniture`, `heading`, `paragraph`,
-  `solution`, `table`). The § C migration to `(kind, role)` tuples has **not**
-  happened.
-- The GLM-OCR extraction lane, which now owns document structure for the
-  conversion path, carries its own `region_kind` vocabulary in
-  `SemantiK/semantik_structure/glmocr/transform.py` (a 25-class layout-model
-  mapping) rather than consuming L1. Reconciling `region_kind` with L1 is
-  unscheduled work and is the single largest gap between this document and the
-  shipping converter.
-- `SOURCE_TYPE_MAPS` and `PRACTICE_MARKER_LEXICON`, referenced throughout § B
-  and § C as "the current map", exist only in the out-of-tree BERT-v2 workspace.
-  They are **not** in this repository. Statements about what they "currently"
-  do are unverifiable from this tree and should be read as a snapshot of that
-  workspace on 2026-07-13.
-
-Remaining follow-up: add typed loaders in `lib/ontology/` (mirroring
-`teaching_roles.py`), reconcile the GLM-OCR `region_kind` set against L1, and
-only then wire the arranger contract to read these files instead of its in-code
-enum (§ C).
+**One invariant is review-only, with no test.** The intended rule "every current arranger `TYPE_ENUM`
+value and every onboarding-aligner `SOURCE_TYPE_MAPS` output has a `(kind[, role])` home" cannot be
+tested here, because `SOURCE_TYPE_MAPS` lives in an out-of-tree workspace that CI in this repository
+cannot see. Do not assume CI is watching that door.
 
 ---
 
-# § B — Source mappings (gold sources → ontology)
+## 5. Adoption status
 
-For each inventoried gold source: which **Layer-2 genre profile** applies, how
-its native markup maps onto **Layer-1 kinds**, and the **gaps** (what the
-current onboarding-aligner `SOURCE_TYPE_MAPS` / lexicons do NOT yet resolve).
+This is the section to read before citing anything above as shipping behavior.
 
-Ontology layers referenced:
+### What is consumed today
 
-- **L1** = `schemas/taxonomies/block_kinds.json` (16 closed structural kinds).
-- **L2** = `schemas/taxonomies/genre_profile_*.json` (functional roles).
-- **L3** = `schemas/taxonomies/*_lexicon.json` (marker → role tables).
+**The L3 lexicon layer has one production consumer.**
+`SemantiK/semantik_structure/glmocr/region_map.py` — part of the GLM-OCR extraction lane — reads
+`schemas/taxonomies/openstax_lexicon.json`, walking its `x-markers` rows to build the
+`(marker, pedagogy_css_class)` table that drives apparatus classification. It maps L2 role names
+(`guided_practice`, `worked_example`, `exercise_item`) onto pedagogy CSS classes via an in-module
+`_ROLE_TO_CSS` dict, unions the schema markers with a frozen in-module fallback (so a bare SemantiK
+checkout still works), and sorts longest-first so a specific marker beats a generic prefix.
 
-"Currently" = the state of the BERT-v2 onboarding aligner's `SOURCE_TYPE_MAPS` +
-`PRACTICE_MARKER_LEXICON` today.
+Two properties of that reader matter for anyone changing the lexicons:
 
-| # | Source | L2 profile | Native structure signal | Status of current map |
-|---|--------|-----------|------------------------|-----------------------|
-| 1 | arxiv | scholarly | LaTeXML `ltx_*` classes | has class map |
-| 2 | wikipedia | encyclopedic | Parsoid tag+class | has class map |
-| 3 | openstax | instructional | `data-type` + `os-*` | has class + datatype + fine map |
-| 4 | pmc | scholarly | JATS-derived HTML tags | generic-tag fallback only |
-| 5 | cfr | legal_regulatory | eCFR HTML tags | generic-tag fallback only |
-| 6 | federal_register | legal_regulatory | field-label lines | generic + **L3 lexicon** (new) |
-| 7 | courtlistener | legal_regulatory | opinion HTML tags | generic-tag fallback only |
-| 8 | nces_digest | statistical | statistical tables | generic-tag fallback only |
-| 9 | gutenberg | literary | literary prose | generic-tag fallback only |
-| 10 | forms | forms | field/label layout | generic-tag fallback only |
-| + | mkdocs-site | instructional | clean mkdocs HTML | (import-docs path) |
-| + | infographics | *(none → L1)* | figure-dominant | (figure path) |
-| + | manuals | technical_manual | ANSI Z535 signal words + step numbering | profile + L3 `ansi_z535_lexicon` (new); no gold source inventoried yet |
+- It does **not** go through `load_taxonomy`. It locates `schemas/taxonomies` by walking up parent
+  directories from its own file, and returns `None` when the tree is unreachable. This is deliberate:
+  the SemantiK runtime may execute in a separate venv without the Ed4All schema tree on the path.
+- Failures are silent by design (`except (OSError, ValueError, TypeError): pass` → frozen fallback).
+  A malformed lexicon degrades to the fallback rather than failing the conversion, so a bad data PR will
+  not announce itself loudly. Validate lexicon edits with the schema test suite.
 
----
+The same module separately reads `semantik_lexicon.json`'s per-profile `apparatus_sections` display
+lists for end-matter section headings — deliberately *not* the broader `apparatus_whitelist`, because
+promoting bare worked-example body labels or callout labels to section headings is exactly the
+over-segmentation the furniture constraint fights.
 
-## 1. arxiv — profile: `scholarly`
+### What is not consumed
 
-**L1 mapping (from the arxiv class map):** `ltx_title*` → `heading` (document
-title → `title_block`); `ltx_p`/`ltx_para` → `paragraph`; `ltx_caption` →
-`caption`; `ltx_table`/`ltx_tabular` → `table`; `ltx_itemize`/`ltx_enumerate`/
-`ltx_item` → `list_item`.
+**No production code path reads `block_kinds.json`, `block_relations.json`, or any
+`genre_profile_*.json`.** Grepping the tree for those filenames finds only
+`schemas/tests/test_block_ontology.py`. The L1 and L2 layers are a ratified, test-enforced vocabulary
+with no consumer.
 
-**L2 roles:** `ltx_theorem*` → `(paragraph|math_block, theorem)`; `ltx_proof`
-→ `(paragraph, proof)`. `abstract`, `lemma`, `reference_entry`,
-`author_block`, `affiliation` are declared in the scholarly profile but not yet
-mapped from `ltx_*`.
+**Three of the four L3 lexicons have no consumer either.** `generic_instructional_lexicon.json`,
+`federal_register_lexicon.json`, and `ansi_z535_lexicon.json` are read by nothing outside the schema
+tests. Only `openstax_lexicon.json` is live.
 
-**Gaps:** (a) `ltx_equation`/`ltx_equationgroup` currently coerce to
-`paragraph` — should be **L1 `math_block`** (the whole point of the formula
-kind + the `SEMANTIK_MATH_RECONSTRUCT` MathML path). (b) `ltx_theorem` currently
-coerces to `definition_box` — under the new ontology it is L1 `paragraph` + L2
-role `theorem` (scholarly), not the instructional `definition_box`. (c) abstract
-/ author / affiliation / bibliography containers unmapped.
+### The two concrete gaps
 
-## 2. wikipedia — profile: `encyclopedic`
+1. **The page-arranger contract still uses its own flat enum.**
+   `SemantiK/semantik_structure/page_arranger_contract.py` carries `CONTRACT_VERSION = 2` and a
+   `TYPE_ENUM` frozenset of 9 values — `heading`, `paragraph`, `table`, `figure_caption`, `example`,
+   `solution`, `exercise_list`, `definition_box`, `furniture` — plus a `TYPE_ALIASES` read-compat map.
+   It conflates structural kind with pedagogical role. The § 6 migration to `(kind, role)` tuples has
+   not happened.
 
-**L1 mapping (from the wikipedia class map):** `infobox`/`wikitable` → `table`;
-`thumbcaption`/`gallerytext` → `caption`; body via generic-tag fallback
-(`p`→paragraph, `hN`→heading, `li`→list_item, …).
+2. **The extraction lane carries a parallel vocabulary.** `region_map.py` maps the layout model's
+   25-class `native_label` (the PP-DocLayoutV3 taxonomy — the *input*) onto its own `region_kind` set:
+   `heading`, `paragraph`, `figure`, `table`, `math`, `caption`, `footnote`, `aside`, `metadata_drop`
+   (plus `list` per its docstring). That set is neither L1 nor the arranger enum. Reconciling it with
+   L1 is unscheduled and is the single largest gap between this document and the shipping converter.
 
-**L2 roles:** `infobox_row` (on `table`/`list_item`), `hatnote`,
-`see_also_entry`.
+**A caveat on the source mappings below.** `SOURCE_TYPE_MAPS` and `PRACTICE_MARKER_LEXICON`, referenced
+throughout § 6 as "the current map", exist only in an out-of-tree workspace. They are **not** in this
+repository, and statements about what they "currently" do are unverifiable from this tree.
 
-**Gaps:** `hatnote` + `see_also_entry` have no class/tag detector yet (they are
-plain `<p>`/`<li>` in Parsoid, distinguished only by position/leading-text — a
-future L3 encyclopedic lexicon or a structural heuristic). `infobox_row` is not
-emitted (the infobox is captured whole as one `table`).
+### Sequenced follow-up
 
-## 3. openstax — profile: `instructional`
-
-**L1 mapping (from the openstax datatype + class maps):**
-`title`/`document-title` → `heading`; `os-caption` → `caption`; `equation` →
-(currently `paragraph`; should be `math_block` — same gap as arxiv).
-
-**L2 roles:** `example` → `worked_example`; `solution`/`solution-title` →
-`solution`; `note`/`term`/`os-note-body` → `definition_box`;
-`problem`/`exercise`/`os-problem-container` → `exercise_item`; `try`/os fine →
-`guided_practice`. **L3:** `openstax_lexicon.json` triggers
-`guided_practice` / `worked_example` / `exercise_item` from the OpenStax marker
-strings (confined to that lexicon).
-
-**Gaps:** `answer_item`, `learning_objectives`, `summary`, `review`,
-`key_terms` roles are declared but resolved today only if a heading/lexicon
-marker names them — no `data-type` for them in the class map. The `equation` →
-`math_block` fix applies here too.
-
-## 4. pmc — profile: `scholarly`
-
-**L1 mapping:** generic-tag fallback only (`p`/`hN`/`table`/`figcaption`/`li`).
-
-**L2 roles:** none resolved yet — PMC's JATS→HTML keeps section semantics in
-`sec-type`/`article-*` attributes the current map ignores.
-
-**Gaps:** no PMC class map. `abstract` (JATS `<abstract>`), `reference_entry`
-(`<ref>`), `author_block`/`affiliation` (`<contrib>`) are all reachable from
-JATS-derived attributes — a PMC class map (or an `sec-type` datatype map) is
-the onboarding step. Reuse the scholarly profile's roles.
-
-## 5. cfr — profile: `legal_regulatory`
-
-**L1 mapping:** generic-tag fallback (`p`→paragraph, `hN`→heading, `table`).
-
-**L2 roles:** `section_number` (the `§ N.M` heading), `citation`,
-`enacting_clause` — resolved today only via heading text, not markup.
-
-**Gaps:** no CFR class map; eCFR HTML carries `data-*`/`class` hooks
-(section wrappers, authority notes) that a CFR class map could bind to
-`section_number` / `citation`. A future L3 CFR lexicon can catch leading
-`Authority:` / `Source:` label lines the way the Federal Register lexicon does.
-
-## 6. federal_register — profile: `legal_regulatory`
-
-**L1 mapping:** generic-tag fallback for body.
-
-**L2 roles + L3 lexicon:** `federal_register_lexicon.json` maps the
-leading field labels → roles: `agency_header`, `docket_line` (action/dates),
-`enacting_clause` (summary). This is the seed L3 lexicon for the legal profile.
-
-**Gaps:** the label lexicon covers the front-matter block; the numbered
-regulatory body (amendatory instructions, section-by-section) still degrades to
-`paragraph`/`heading` with no `section_number`/`citation` role. A body-level
-CFR-style map (shared with source 5) would extend coverage.
-
-## 7. courtlistener — profile: `legal_regulatory`
-
-**L1 mapping:** generic-tag fallback.
-
-**L2 roles:** `holding`, `syllabus`, `citation`.
-
-**Gaps:** no class map and no reliable markup signal — court opinions are
-mostly undifferentiated `<p>`. `holding`/`syllabus`/`citation` need a
-structural/positional heuristic or an L3 lexicon (e.g. a leading `Syllabus`
-/ `Held:` marker), the same pattern as the Federal Register lexicon.
-
-## 8. nces_digest — profile: `statistical`
-
-**L1 mapping:** table-dominant statistical digest — `table` (the load-bearing
-kind), `chart` (the new L1 kind for the digest's data graphs), `heading`,
-`paragraph`, `caption`, `furniture` (running page furniture).
-
-**L2 roles:** the `statistical` profile
-(`genre_profile_statistical.json`) models the statistical-digest semantics:
-`table_title` (a `caption`/`heading`, `caption_of` a table), `source_note`,
-`methodology_note`, `data_highlight` (on the new `aside` kind), and
-`data_description` (`caption_of` the new `chart` kind — the structured data
-description that makes a graph accessible).
-
-**Gaps:** the profile now names the roles, but there is **no class/tag map yet**
-— an NCES digest still arrives via the generic-tag fallback, so the roles resolve
-only when a heading/marker heuristic (table-title text, a leading `SOURCE:` /
-`NOTE:` label line) names them. A future L3 statistical lexicon or an NCES class
-map would bind them from markup.
-
-## 9. gutenberg — profile: `literary`
-
-**L1 mapping:** literary prose — `title_block`, `heading` (chapter headings),
-`paragraph`, `blockquote` (verse / quoted passages), `aside` (letter blocks /
-sidebars), `separator` (thematic breaks), `furniture` (Project Gutenberg
-boilerplate header/footer).
-
-**L2 roles:** the `literary` profile (`genre_profile_literary.json`) models the
-prose/drama/verse structure — `epigraph`, `verse`, `dialogue_line`,
-`speaker_label`, `stage_direction`, `scene_break`, and `letter_block` (on the
-new `aside` kind).
-
-**Gaps:** the profile names the roles, but there is **no class/tag map yet** —
-Gutenberg's plaintext-derived HTML has no markup signal for verse vs. prose or
-speaker vs. dialogue, so the roles resolve only via marker/positional heuristics
-(indentation, all-caps speaker labels, `* * *` scene breaks). The license
-boilerplate is still caught as `furniture` (candidate for the cross-course
-boilerplate-dedup pass).
-
-## 10. forms — profile: `forms`
-
-**L1 mapping:** the natural host is L1 `form_field`; layout text is
-`paragraph`/`heading`; instructions are `list_item`/`paragraph`.
-
-**L2 roles:** `field_label`, `field_value`, `instruction`, `checkbox_item`.
-
-**Gaps:** the onboarding aligner has no `forms` class map — it uses the
-generic-tag fallback, so `form_field` is never minted (fields arrive as
-`paragraph`). Form detection needs a geometry/layout signal (label-value
-adjacency, checkbox glyphs) that the HTML-truth aligner cannot see; this is a
-**VLM/geometry** onboarding step, and `form_field` is the one L1 kind with **no
-DocLayNet parent** (so DocLayNet weak-supervision can't bootstrap it).
-
-## + mkdocs-site — profile: `instructional`
-
-**L1 mapping:** clean mkdocs HTML (via `ed4all import-docs`) → `heading`,
-`paragraph`, `list_item`, `code_block` (heavy — tutorial docs), `table`,
-`figure`/`caption`.
-
-**L2 roles:** instructional roles via headings + `generic_instructional_lexicon.json`
-(guided_practice markers). `summary` / `key_terms` from section headings.
-
-**Gaps:** `code_block` is prominent here and folds to DocLayNet `text` (documented
-L1↔DocLayNet gap — see below). Otherwise the cleanest source: no OCR, real HTML
-structure, so alignment is near-lossless.
-
-## + infographics — profile: **none → Layer-1 only** (graceful degradation)
-
-**L1 mapping:** figure-dominant — `figure` (the payload), `caption`, `heading`,
-short `paragraph`, `furniture`.
-
-**L2 roles:** none.
-
-**Gaps:** the semantic content lives *inside* the image, so **VLM alt-text /
-extended description** (`SEMANTIK_FIGURE_CAPTION`) is load-bearing — the block
-ontology only labels the figure envelope, not the infographic's internal
-structure. A DocLayNet `picture` label bootstraps the envelope detection.
+1. Add typed loaders under `lib/ontology/` (mirroring `teaching_roles.py`) so consumers get a checked
+   surface instead of raw dicts.
+2. Reconcile the lane's `region_kind` set against L1.
+3. Only then wire the arranger contract to read these files instead of its in-code enum.
 
 ---
 
-# § C — Migration (arranger 9-kind enum → universal tuples)
+## 6. Planned mapping (not yet implemented)
 
-How the current SemantiK page-arranger contract (`TYPE_ENUM`, 9 values) and the
-BERT-v2 dataset migrate onto the 3-layer universal ontology **without breaking
-byte-compatibility** for existing arranger output.
+Everything in this section describes intended future behavior. None of it runs.
 
-## 1. Arranger `TYPE_ENUM` → (Layer-1 kind, Layer-2 role)
+### 6.1 Arranger `TYPE_ENUM` → `(L1 kind, L2 role)`
 
-`SemantiK/semantik_structure/page_arranger_contract.py::TYPE_ENUM` conflates
-structural KIND and pedagogical ROLE into one flat 9-value enum. The universal
-ontology splits them: every arranger value has a home as a **kind** plus an
-optional **role**. This is byte-compatible on READ — the projection below is a
-pure relabeling, no arrangement is invalidated.
+The projection is total (every enum value has a home) and is a pure relabeling — byte-compatible on
+read.
 
-| arranger `TYPE_ENUM` | L1 kind | L2 role (profile) | Notes |
-|----------------------|---------|-------------------|-------|
+| arranger `TYPE_ENUM` | L1 kind | L2 role (profile) | Note |
+|---|---|---|---|
 | `heading` | `heading` | — | `level` attr preserved; document title → `title_block` |
 | `paragraph` | `paragraph` | — | the fallback kind |
 | `table` | `table` | — | 1:1 |
-| `figure_caption` | `caption` | — | (splits: a real image becomes L1 `figure` + `caption`) |
+| `figure_caption` | `caption` | — | splits: a real image becomes `figure` + `caption` |
 | `example` | `paragraph` | `worked_example` (instructional) | kind is prose; role names the pedagogy |
 | `solution` | `paragraph` | `solution` (instructional) | " |
 | `exercise_list` | `list_item` | `exercise_item` (instructional) | list granularity is per-item in L1 |
 | `definition_box` | `paragraph` | `definition_box` (instructional) | also valid on `blockquote` |
-| `furniture` | `furniture` | — | `subkind` attr (running_header/page_number/…) |
+| `furniture` | `furniture` | — | `subkind` attr (running_header / page_number / …) |
 
-**Byte-compat rule:** an arranger consumer that only knows the 9-value enum can
-keep reading the flat value; a `(kind, role)`-aware consumer reads the tuple.
-The projection is total (every enum value maps) and lossless for the 4 pure-kind
-values; the 4 pedagogical values GAIN a role but their kind is unambiguous. The
-2 relabels that change the surface value are `figure_caption`→`caption` (a rename
-+ the `figure` split) and the pedagogical values acquiring a role — both are
-additive to a v3 contract, see § 4.
+Four values are pure kinds and map losslessly; four pedagogical values *gain* a role while their kind
+stays unambiguous; `figure_caption` is the one rename, and it comes with a split.
 
-## 2. Onboarding-aligner `SOURCE_TYPE_MAPS` changes
-
-Today the maps target the flat 9-value `TYPE_ENUM`. Under the universal
-ontology they target `(kind, role)`:
-
-- **arxiv class map:** `ltx_equation`/`ltx_equationgroup` → **`math_block`**
-  (was `paragraph`); `ltx_theorem*` → `(paragraph, theorem[scholarly])`
-  (was `definition_box`); `ltx_proof` → `(paragraph, proof)`; keep
-  `ltx_caption` → `caption`, `ltx_table` → `table`, `ltx_item*` → `list_item`.
-- **openstax datatype map:** `example` → `(paragraph, worked_example)`;
-  `solution*` → `(paragraph, solution)`; `note`/`term` →
-  `(paragraph, definition_box)`; `problem`/`exercise` →
-  `(list_item, exercise_item)`; `equation` → `math_block` (was `paragraph`).
-  The fine-class `try → guided_practice` becomes a first-class role, not a
-  side-channel.
-- **wikipedia class map:** `infobox`/`wikitable` → `(table, infobox_row?)`;
-  captions → `caption`.
-- **New maps** for pmc / cfr / courtlistener / forms (today generic-tag
-  fallback) as described in § B.
-- **`PRACTICE_MARKER_LEXICON`** (the in-file dict) **moves out of code** into
-  `openstax_lexicon.json` + `generic_instructional_lexicon.json`. The aligner's
-  practice-marker fine-typer reads the lexicon files instead of the hardcoded
-  dict — enforcing the wide-net rule (publisher vocab = data).
-
-**Generic-tag fallback is unchanged** — it already emits L1 kinds
-(`hN`→heading, `table`→table, `figcaption`→caption, `dt`/`dd`→
-definition_box→now `(paragraph, definition_box)`, `li`→list_item/paragraph).
-
-## 3. BERT-v2 dataset class mapping
-
-The BERT-v2 heads train on arranger label-factory records. Their class spaces
-map to the universal ontology's relations
-(`schemas/taxonomies/block_relations.json`) and kinds:
-
-**RELATION head** (currently binary `none|same_unit`; 5-class target):
-
-| BERT-v2 class | universal relation | family |
-|---------------|--------------------|--------|
-| `none` | (no edge) | — |
-| `same_unit` | `same_unit` | structural |
-| `caption_of` | `caption_of` | structural |
-| `solution_of` | `solution_of` | profile (needs `solution`/`worked_example` roles) |
-| `continues` | `continues` | structural |
-
-**Co-occurrence classes** (kept as training signal; from the co-occurrence
-deriver):
-
-| co-occurrence edge | universal relation | family |
-|--------------------|--------------------|--------|
-| `adjacency` | `adjacent` | structural |
-| `section_comembership` | `same_section` | structural |
-| `practice_of` | `practice_of` | profile (needs `guided_practice`/`worked_example`) |
-
-**FURNITURE head** (binary `content|furniture`): maps directly to L1
-`furniture` (a KIND, not a relation) — a block's kind IS the label. The
-supply-blocker (the arranger *drops* furniture instead of labeling it) is fixed
-by the L1 rule that furniture is **listed, never dropped** — see § 4.
-
-**Provenance note:** the relation head's minority classes (`caption_of`,
-`solution_of`, `continues`) are supply-blocked today (5-class is unevaluable on
-the v2 corpus). The universal `practice_of` / `same_section` / `adjacent`
-classes are *dense* (derived from every page), so they are the trainable
-co-occurrence signal even before the arranger supplies more minority relations.
-
-## 4. Arranger contract v3 (what it would emit)
-
-A v3 arrangement block would carry the tuple explicitly instead of the flat
-enum:
+### 6.2 What a v3 arrangement block would carry
 
 ```json
 {"ids": ["p3_u12", "p3_u13"],
@@ -556,44 +316,65 @@ enum:
  "continues_prev_page": false}
 ```
 
-Changes from v2 (`CONTRACT_VERSION = 2`):
+Changes from `CONTRACT_VERSION = 2`:
 
-1. **`type` → `kind` + `role` + `profile`.** `kind` is a closed L1 value;
-   `role`/`profile` are optional (absent ⇒ Layer-1-only, the graceful-degrade
-   path). A v2 `type` value maps in via the § 1 table (accepted on read).
-2. **Furniture is LABELED, never dropped.** The v2 contract lets the teacher
-   omit furniture units; v3 REQUIRES every furniture unit in a `furniture`
-   block with a `subkind` — this is exactly the fix the BERT-v2 FURNITURE head
-   is supply-blocked on (16/894 positives because the teacher drops them). The
-   coverage invariant (every unit id exactly once) already enforces "no dropped
-   id"; v3 makes furniture a first-class LABELED kind.
-3. **`figure_caption` splits** into L1 `figure` (the image) + `caption` (its
-   text), bound by `caption_of` — v2 collapsed both into one value.
-4. **`math_block` / `code_block` / `blockquote` / `footnote` / `form_field` /
-   `title_block` / `separator` / `aside` / `chart`** become expressible (v2's 9
-   values could not name display math, code, form fields, asides, or charts —
-   they all fell to `paragraph` or `figure`).
-5. **`CONTRACT_VERSION` bump 2 → 3.** The v2 alias table (`TYPE_ALIASES`) is
-   preserved as the read-compat shim: `text→paragraph`, `worked_example→
-   (paragraph, worked_example)`, `section→heading`, etc.
+1. **`type` → `kind` + `role` + `profile`.** `kind` is a closed L1 value; `role`/`profile` are optional
+   (absent ⇒ Layer-1-only, the graceful-degrade path). A v2 `type` value maps in via § 6.1 on read.
+2. **Furniture is LABELED, never dropped.** v2 lets the teacher omit furniture units; v3 would require
+   every furniture unit in a `furniture` block with a `subkind`. The coverage invariant already forbids
+   dropped ids; this makes furniture a first-class labeled kind.
+3. **`figure_caption` splits** into `figure` + `caption`, bound by `caption_of`.
+4. **Nine kinds become expressible** that v2's 9 values could not name: `math_block`, `code_block`,
+   `blockquote`, `footnote`, `form_field`, `title_block`, `separator`, `aside`, `chart` — all of which
+   currently fall to `paragraph` or `figure`.
+5. **`CONTRACT_VERSION` 2 → 3**, with the existing `TYPE_ALIASES` table preserved as the read-compat
+   shim.
 
-## 5. DocLayNet-compat note (public-dataset leverage)
+### 6.3 Source-genre mappings
 
-Layer-1 is DocLayNet-v1-compatible **by construction**
-(`schemas/taxonomies/block_kinds.json::x-doclaynet`), which buys three things:
+Which L2 profile applies to each inventoried gold source, and what its native markup gives L1. The
+"current map" column describes the out-of-tree aligner and is unverifiable from this tree.
 
-- **Pre-training / weak supervision.** DocLayNet (~80k human-labeled pages, 11
-  classes, CDLA-Permissive-ish) can be ingested directly as L1 labels — its 11
-  classes each have an L1 home, so a DocLayNet page is a labeled example for the
-  structural head with zero re-annotation.
-- **Cross-eval.** A SemantiK L1 labeling can be scored against DocLayNet ground
-  truth by collapsing to the 11-class projection (`x-doclaynet` map), giving a
-  public benchmark number.
-- **Honest gaps.** 7 L1 kinds have **no DocLayNet parent**: `code_block`,
-  `blockquote`, `aside` (all fold to DocLayNet `text` — lossy but ingestible),
-  `chart` (folds to DocLayNet `picture` — lossy, no native chart class),
-  `form_field`, `separator`, and `furniture[watermark]` (no DocLayNet class at
-  all). DocLayNet supervision therefore bootstraps 9 of 16 kinds; the other 7
-  need SemantiK's own labels (or geometry, for `form_field`). This is the
-  documented limit of the public-dataset leverage — it is a head start, not a
-  complete teacher.
+| Source | L2 profile | Native structure signal | Current map state |
+|---|---|---|---|
+| arxiv | `scholarly` | LaTeXML `ltx_*` classes | has class map |
+| wikipedia | `encyclopedic` | Parsoid tag + class | has class map |
+| openstax | `instructional` | `data-type` + `os-*` | class + datatype + fine map; **L3 lexicon live** |
+| pmc | `scholarly` | JATS-derived HTML tags | generic-tag fallback only |
+| cfr | `legal_regulatory` | eCFR HTML tags | generic-tag fallback only |
+| federal_register | `legal_regulatory` | field-label lines | generic + L3 lexicon |
+| courtlistener | `legal_regulatory` | opinion HTML tags | generic-tag fallback only |
+| nces_digest | `statistical` | statistical tables | generic-tag fallback only |
+| gutenberg | `literary` | literary prose | generic-tag fallback only |
+| forms | `forms` | field / label layout | generic-tag fallback only |
+| mkdocs-site | `instructional` | clean mkdocs HTML | via `ed4all import-docs` |
+| manuals | `technical_manual` | ANSI Z535 signal words + step numbering | profile + L3 lexicon; no gold source inventoried |
+| infographics | *(none → L1 only)* | figure-dominant | figure path |
+
+Recurring gaps across sources, in rough priority order:
+
+- **`equation` → `math_block`.** Both the arxiv (`ltx_equation`, `ltx_equationgroup`) and openstax
+  (`equation`) maps currently coerce display math to `paragraph`. This is the single most-repeated
+  mapping defect and defeats the point of having a `math_block` kind at all.
+- **`ltx_theorem` → `(paragraph, theorem[scholarly])`**, not the instructional `definition_box` it
+  currently coerces to. Same shape, different genre.
+- **No class map at all** for pmc, cfr, courtlistener, nces_digest, gutenberg, and forms — all six fall
+  through to the generic-tag fallback, so their declared L2 roles resolve only when a heading or marker
+  heuristic happens to name them. For pmc the signal exists and is unused (JATS `sec-type` /
+  `article-*` attributes); for courtlistener and gutenberg there is genuinely no markup signal, and the
+  roles need positional heuristics or an L3 lexicon.
+- **`form_field` is never minted.** Form detection needs a geometry/layout signal (label-value
+  adjacency, checkbox glyphs) that an HTML-truth aligner cannot see. It is also the one L1 kind with no
+  DocLayNet parent, so weak supervision cannot bootstrap it either. This is a vision/geometry
+  onboarding step.
+- **`PRACTICE_MARKER_LEXICON` must move out of code** into `openstax_lexicon.json` +
+  `generic_instructional_lexicon.json`. The aligner's practice-marker fine-typer should read the lexicon
+  files rather than a hardcoded dict — the wide-net rule applied to the aligner. The class maps
+  (`ltx_*` → kind) are structural, not publisher vocabulary, so those may remain source-adapter code.
+
+The generic-tag fallback itself needs no change: it already emits L1 kinds (`hN`→heading,
+`table`→table, `figcaption`→caption, `li`→list_item, `dt`/`dd`→`(paragraph, definition_box)`).
+
+For `infographics`, note that the semantic content lives *inside* the image, so VLM alt-text and
+extended description are load-bearing. The block ontology labels the figure envelope, not the
+infographic's internal structure.
