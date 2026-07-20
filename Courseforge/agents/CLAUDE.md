@@ -74,8 +74,10 @@ AGENTS NOW RESPONSIBLE FOR:
 ### **CRITICAL EXECUTION PROTOCOLS**
 
 **BATCH SIZE LIMITATIONS:**
-- Maximum 5-10 simultaneous Task calls per execution block
-- For 84 files: Execute in 8-17 batches of 5-10 agents each
+- Maximum **10** simultaneous Task calls per execution block (the project-wide
+  ceiling in the root `CLAUDE.md`); 5 is a reasonable floor when each task is
+  large
+- At 10 per batch, 84 files is 9 batches; at 5 per batch it is 17
 - Wait for batch completion before starting next batch (MANDATORY)
 - This prevents system rejection while maintaining optimal parallelism
 
@@ -131,8 +133,14 @@ templates/
 ├── activity/                             # Activity templates
 ├── assessment/                           # Assessment templates
 ├── accessibility/                        # Accessibility templates
-└── examples/                             # Example implementations
+├── examples/                             # Example implementations
+├── component/                            # Layout components (accordion, tabs, …)
+├── interactive/                          # Self-check, reveal, inline quiz
+├── theme/                                # High-contrast + dyslexia-friendly CSS
+└── _base/                                # variables.css (CSS custom properties)
 ```
+
+The per-component file table lives in `../CLAUDE.md` § Template Components.
 
 ### **Required Interactive Components**
 Content agents MUST incorporate these elements where pedagogically appropriate:
@@ -141,7 +149,10 @@ Content agents MUST incorporate these elements where pedagogically appropriate:
 - **Progress Indicators**: Visual progress bars and completion tracking
 - **Call-out Boxes**: Info, warning, success, danger variants
 - **Tabbed Content**: For organizing module sections
-- **Working Accordions**: With proper Bootstrap collapse attributes
+- **Working Accordions**: `Courseforge/templates/component/accordion_template.html` uses
+  native `<details>` / `<summary>` disclosure elements, not Bootstrap collapse —
+  keyboard and screen-reader behavior comes from the elements themselves, so do
+  not swap in `data-toggle`-driven markup
 - **Activity Cards**: Visual representation of learning activities
 - **Timeline Layouts**: For sequential content presentation
 

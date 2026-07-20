@@ -2,7 +2,7 @@
 
 ## Repository Purpose
 
-LibV2 is a large-scale repository (1000+ entries) for SLM (Small Language Model) model graphs. It stores processed educational content with semantic categorization across STEM and Arts domains.
+LibV2 is the course library for SLM (Small Language Model) training and retrieval. It stores processed educational content with semantic categorization across STEM and Arts domains, and is designed for flat storage at library scale (one directory per course, navigation via derived catalog indexes rather than directory nesting).
 
 ## Pipeline Position
 
@@ -52,8 +52,10 @@ python -m LibV2.tools.libv2.cli retrieve "query" \
 ### NEVER Do These
 
 1. **NEVER** read `chunks.jsonl` files directly via Read tool
-2. **NEVER** iterate through `courses/*/imscc_chunks/` (or legacy `corpus/`) directories
-3. **NEVER** use the `load_all_chunks()` function from `rag_poc.py`
+2. **NEVER** iterate through `courses/*/semantik_chunks/`, `courses/*/imscc_chunks/`
+   (or the legacy `dart_chunks/` / `corpus/` aliases) directories
+3. **NEVER** write an ad-hoc "load every chunk" helper — the whole retrieval
+   surface exists so no caller ever materializes a full chunkset in context
 4. **NEVER** request "all content" or "entire corpus"
 5. **NEVER** exceed 50 results in any single retrieval
 
@@ -191,16 +193,25 @@ Division (STEM/ARTS)
 | `../schemas/taxonomies/` | Classification taxonomy + pedagogy framework — unified at project root |
 
 Each course directory (`courses/[slug]/`) contains:
-- `dart_chunks/` — DART-derived chunkset. `chunks.jsonl` (one canonical v4 chunk per line, JSONL) + sibling `manifest.json` (chunkset sidecar). Anchored to the textbook PDF via `manifest.source_dart_html_sha256` (aggregate Merkle of the staged DART HTML inputs). Emit path: the `chunking` workflow phase between `staging` and `objective_extraction` (see `_run_dart_chunking` below). Hash recorded at the course-manifest scope as `manifest.json::dart_chunks_sha256` — **required**.
-- `imscc_chunks/` — IMSCC-derived chunkset. Symmetric sibling to `dart_chunks/`: same JSONL + manifest pair, but anchored to the packaged `.imscc` archive via `manifest.source_imscc_sha256`. Emit path: the `imscc_chunking` workflow phase between `packaging` and `training_synthesis` (see `_run_imscc_chunking` below). Hash recorded at the course-manifest scope as `manifest.json::imscc_chunks_sha256` — **required**. Read shim: `lib/libv2_storage.py::resolve_imscc_chunks_dir` (with the `resolve_imscc_chunks_path` filename-joining wrapper) accepts the legacy `corpus/` directory name with a deprecation warning so pre-rename archives still resolve at consumer call sites.
-- `concept_graph/` — Pedagogy concept graph. `concept_graph_semantic.json` produced by the `concept_extraction` workflow phase. Hash recorded at `manifest.json::concept_graph_sha256` — **required + critical**. The three-hash triangle pins DART chunks ↔ IMSCC chunks ↔ concept graph to the same course manifest revision.
+- `semantik_chunks/` — staged-conversion chunkset (SemantiK-derived). `chunks.jsonl` (one canonical v4 chunk per line, JSONL) + sibling `manifest.json` (chunkset sidecar, `chunkset_kind: "semantik"`), anchored to the staged accessible HTML via `manifest.source_semantik_html_sha256`. Emit path: the `chunking` workflow phase between `staging` and `objective_extraction` (`_run_dart_chunking` — the function kept its legacy name; see below). **This is the ACTIVE emit directory** (DART→semantik naming purge, Stage 3c). Hash recorded at the course-manifest scope as `manifest.json::semantik_chunks_sha256`.
+- `dart_chunks/` — legacy pre-Stage-3c name for the same staged chunkset (`chunkset_kind: "dart"`, `source_dart_html_sha256`, `manifest.json::dart_chunks_sha256`). **Read-only fallback** — no emitter writes it. Resolving here does NOT warn (the deprecation warning is deliberately deferred until on-disk corpora migrate). The operator backfill/rename path is `LibV2/tools/libv2/scripts/backfill_dart_chunks.py`.
+- `imscc_chunks/` — IMSCC-derived chunkset. Symmetric sibling: same JSONL + manifest pair, but `chunkset_kind: "imscc"`, anchored to the packaged `.imscc` archive via `manifest.source_imscc_sha256`. Emit path: the `imscc_chunking` workflow phase between `packaging` and `training_synthesis` (see `_run_imscc_chunking` below). Hash recorded at the course-manifest scope as `manifest.json::imscc_chunks_sha256` — **required by the manifest schema**.
+- `corpus/` — legacy pre-Phase-7c name for the IMSCC chunkset. Read-only fallback; resolving here DOES emit a `DeprecationWarning` naming the migration script.
+- `concept_graph/` — Pedagogy concept graph. `concept_graph_semantic.json` produced by the `concept_extraction` workflow phase. Hash recorded at `manifest.json::concept_graph_sha256` — **required by the manifest schema**. The three-hash triangle pins the staged chunkset ↔ IMSCC chunkset ↔ concept graph to the same course manifest revision.
 - `course.json` — Course-level learning outcomes and metadata.
+- `objectives.json` — Archived projection of the run's synthesized objectives (`lib/libv2_storage.py::project_objectives_for_archive`, filename constant `OBJECTIVES_ARCHIVE_FILENAME`).
 - `graph/` — Concept co-occurrence graph (legacy / advisory; distinct from `concept_graph/`).
-- `manifest.json` — Course metadata and classification. Carries the three required SHA-256 fields above plus `chunker_version`, source artifacts, classification, and feature flags.
+- `manifest.json` — Course metadata and classification. Carries the chunkset + concept-graph SHA-256 fields above plus `chunker_version`, source artifacts, classification, and feature flags.
+- `models/` — Trained adapters, one subdir per `model_id`, plus the `_pointers.json` promotion ledger.
 - `pedagogy/` — Pedagogical model metadata.
 - `quality/` — Quality metrics and assessment reports.
-- `source/` — Source artifacts (IMSCC, PDF, HTML).
+- `queries/` — Persistent Q&A log written by `libv2 ask` / `answer` / `answer-grounded --log` (one `<query_id>.json` per record). Cross-course records land in `catalog/queries/` instead.
+- `source/` — Source artifacts, split `source/pdf`, `source/html`, `source/imscc`.
 - `training_specs/` — Training specification files.
+
+Resolution shims (single source of truth `lib/libv2_storage.py`): `resolve_imscc_chunks_dir` / `resolve_imscc_chunks_path` walk `imscc_chunks/` → `semantik_chunks/` → `dart_chunks/` → `corpus/`; `resolve_staged_chunks_dir` / `resolve_staged_chunks_path` cover the staged side; `resolve_chunks_path_for_query` is the query-path entry point. The dirname ↔ `chunkset_kind` map (`DIRNAME_TO_CHUNKSET_KIND` / `CHUNKSET_KIND_TO_DIRNAME`) lives there too, so the build path (`vector_index.py`) and the query path cannot drift.
+
+The LibV2 gate's scaffold-completeness advisory (`_EXPECTED_SUBDIRS` in `lib/validators/libv2/manifest.py`) currently expects `dart_chunks`, `imscc_chunks`, `graph`, `training_specs`, `quality`, `source/pdf`, `source/html`, `source/imscc` — a missing one is a warning-severity `MISSING_SCAFFOLD_SUBDIR`, never a block.
 - `vector_index/` — On-device semantic vector index (built by `libv2 vector-index build`). Three artifacts: `embeddings.npy` (float32 `[N, dim]`, C-order, L2-normalized rows; row `i` ↔ `id_map[i]`), `id_map.json` (load-bearing chunk-id order), and `manifest.json` (provenance manifest per `schemas/library/vector_index_manifest.schema.json` — embedding provider/kind/model/dim, `source_chunks_sha256`, `embeddings_sha256`, `id_map_sha256`, `chunkset_kind`, `text_field_policy`, and the asymmetric-retrieval `document_prefix` / `query_prefix` recorded for replay — passages are embedded with `document_prefix` prepended at build time, queries get `query_prefix` at search time; both empty for symmetric models). Pure-numpy exact cosine search; backs `libv2 retrieve --engine semantic` / `--engine hybrid-rrf`. The query path is fail-closed: a missing index raises `SemanticIndexMissing`, a chunkset-sha drift raises `SemanticIndexStale`, and a `provider="fake"` manifest is refused unless `ED4ALL_EMBEDDING_ALLOW_FAKE=true` — never a silent BM25 fallback. Verified by `lib/validators/vector_index_manifest.py::VectorIndexManifestValidator` (`libv2 vector-index verify`).
 - `retrieval_eval/` — Retrieval gold sets + benchmark reports. `gold_set.json` (WS1-authored; `schemas/retrieval/gold_set.schema.json`) and `benchmark_<ts>.json` siblings emitted by `libv2 retrieval-benchmark` (BM25 vs semantic vs hybrid-rrf Recall@{1,3,5,10} + MRR + latency + per-engine deltas vs the BM25 baseline). Distinct from the SLM-eval `eval/` dir.
 
@@ -212,7 +223,12 @@ The semantic retrieval path is fail-closed end to end (no lexical fallback ever 
 # Build (or rebuild) the per-course on-device vector index. Downloads happen
 # here (provision-time) unless --offline; the query path is always offline.
 libv2 vector-index build --course <slug> [--provider st] [--model <id>] \
-  [--chunkset imscc|dart] [--device cpu|cuda] [--batch-size N] [--offline] [--force]
+  [--chunkset imscc|dart|corpus-legacy] [--device cpu|cuda] [--batch-size N] \
+  [--offline] [--force]
+# --chunkset pins one chunkset; default precedence follows
+# resolve_imscc_chunks_dir: imscc_chunks -> semantik_chunks -> dart_chunks
+# -> legacy corpus. (The --chunkset choice list is still the pre-purge
+# imscc|dart|corpus-legacy triple.)
 libv2 vector-index status --course <slug>     # manifest summary + staleness check
 libv2 vector-index verify --course <slug>     # full sha re-verification (exit 1 on drift)
 
@@ -284,11 +300,11 @@ artifacts owned by this surface: `refusal_probes.json`, `refusal_calibration.jso
 
 #### Chunkset architecture cross-links
 
-- `schemas/library/chunkset_manifest.schema.json` — single canonical sidecar schema for the staged-conversion (`semantik_chunks/manifest.json`, legacy `dart_chunks/manifest.json`) and `imscc_chunks/manifest.json` chunksets. Discriminator field `chunkset_kind: "semantik" | "dart" (legacy, dual-read) | "imscc"` plus a conditional source-SHA branch (`source_semantik_html_sha256` for `semantik` — the live emit as of task #19; `source_dart_html_sha256` for legacy `dart`; `source_imscc_sha256` for `imscc`) anchors each chunkset to its upstream source artifact. Required fields: `chunks_sha256`, `chunker_version`, `chunkset_kind`, plus the conditional source SHA. Optional: `chunks_count`, `generated_at`.
-- `MCP/tools/pipeline_tools.py::_run_dart_chunking` — async helper registered as `registry["run_dart_chunking"]` for the `chunking` phase. Walks `staging_dir` for DART HTML files, parses via `Trainforge/parsers/html_content_parser.py::HTMLContentParser`, threads sections into `Trainforge.chunker.chunk_content`, persists `chunks.jsonl` + `manifest.json` to `LibV2/courses/<slug>/dart_chunks/`, surfaces `dart_chunks_path` + `dart_chunks_sha256` through phase outputs.
+- `schemas/library/chunkset_manifest.schema.json` — single canonical sidecar schema for the staged-conversion (`semantik_chunks/manifest.json`, legacy `dart_chunks/manifest.json`) and `imscc_chunks/manifest.json` chunksets. Discriminator field `chunkset_kind: "semantik" | "dart" (legacy, dual-read) | "imscc"` plus a conditional source-SHA branch (`source_semantik_html_sha256` for `semantik` — the live emit as of task #19; `source_dart_html_sha256` for legacy `dart`; `source_imscc_sha256` for `imscc`) anchors each chunkset to its upstream source artifact. Required fields: `chunks_sha256`, `chunker_version`, `chunkset_kind`, plus the conditional source SHA. Optional (non-exhaustive): `extraction_contract`, `chunks_count`, `generated_at`, `overlap_words`, `lo_linkage`, `source_coverage`.
+- `MCP/tools/pipeline_tools.py::_run_dart_chunking` — async helper registered as `registry["run_dart_chunking"]` for the `chunking` phase. (The helper + registry key keep their legacy `dart` names; the ARTIFACTS they write are `semantik`.) Walks `staging_dir` for staged HTML files, parses via `Trainforge/parsers/html_content_parser.py::HTMLContentParser`, threads sections into `Trainforge.chunker.chunk_content`, persists `chunks.jsonl` + `manifest.json` (`chunkset_kind="semantik"`, `source_semantik_html_sha256`) to `LibV2/courses/<slug>/semantik_chunks/`, and surfaces `semantik_chunks_path` + `semantik_chunks_sha256` through phase outputs (the legacy `dart_chunks_*` keys stay dual-read for resume-checkpoint compatibility).
 - `MCP/tools/pipeline_tools.py::_run_imscc_chunking` — async helper registered as `registry["run_imscc_chunking"]` for the `imscc_chunking` phase. Mirrors `_run_dart_chunking`'s template but reads HTML entries in-memory from the packaged `.imscc` zip via `zipfile.ZipFile` and emits `chunkset_kind="imscc"` + `source_imscc_sha256` (SHA-256 of the archive bytes).
 - `lib/validators/chunkset_manifest.py::ChunksetManifestValidator` — warning-severity gate wired at both chunking phases. Verifies the sidecar manifest exists, parses, conforms to the schema, its `chunks_sha256` matches the on-disk JSONL bytes, and `chunker_version` matches `Trainforge.chunker.CHUNKER_SCHEMA_VERSION`.
-- `lib/validators/libv2_manifest.py::LibV2ManifestValidator` — critical-severity gate at the `libv2_archival` phase. Three check methods (`_check_dart_chunks_sha256`, `_check_imscc_chunks_sha256`, `_check_concept_graph_sha256`) each fire a `MISSING_*` / `INVALID_*` / `*_HASH_MISMATCH` GateIssue triplet against the matching course-manifest field — fail-closed when any of the three required hashes is absent or diverges from the on-disk artifact bytes.
+- `lib/validators/libv2/manifest.py::LibV2ManifestValidator` — critical-severity gate at the `libv2_archival` phase (this is the path wired in `config/workflows.yaml`; `lib/validators/libv2_manifest.py` is a deprecated back-compat shim that re-exports it with a `PendingDeprecationWarning`). Three check methods (`_check_dart_chunks_sha256`, `_check_imscc_chunks_sha256`, `_check_concept_graph_sha256`) each fire a `MISSING_*` / `INVALID_*` / `*_HASH_MISMATCH` GateIssue triplet against the matching course-manifest field — fail-closed when any of the three hashes is absent or diverges from the on-disk artifact bytes. `_check_dart_chunks_sha256` dual-reads BOTH sides of the naming purge: it prefers `semantik_chunks/chunks.jsonl` over `dart_chunks/chunks.jsonl` on disk, and reads `dart_chunks_sha256` then `semantik_chunks_sha256` from the manifest (its issue codes still carry the legacy `DART_` prefix).
 - `LibV2/tools/libv2/scripts/backfill_dart_chunks.py` — script for archives that lack `dart_chunks/`. Walks `LibV2/courses/<slug>/source/html/`, runs the chunker, writes `dart_chunks/{chunks.jsonl, manifest.json}`, computes the chunkset SHA, and updates `manifest.json::dart_chunks_sha256`. Idempotent by default (skips when the chunkset already exists); `--force` re-emits over an existing chunkset; `--dry-run` plans without writing. Supports `--course-slug <slug>` for single-course backfill or scans every course under `--libv2-root` when omitted.
 
 ## Common Tasks
@@ -314,10 +330,13 @@ libv2 catalog list --division STEM
 ```
 
 ### Validating Structure
+`validate` is a command GROUP with three subcommands (not flags). All three
+exit 1 on failure:
+
 ```bash
-libv2 validate --all
-libv2 validate --course [slug]
-libv2 validate indexes
+libv2 validate all             # every course under courses/
+libv2 validate course <slug>   # one course
+libv2 validate indexes         # catalog/index consistency
 ```
 
 ### Rebuilding Indexes
@@ -350,7 +369,53 @@ libv2 cross-discover "<query>"                           # Route a topic query t
 libv2 migrate <slug>                                     # OP4 — dry-run plan a course's library_format_version migration
 libv2 migrate <slug> --apply                             # Apply the migration (backup manifest + validate + rollback on failure)
 libv2 migrate --all [--apply]                            # Plan (or apply) across every discovered course
+libv2 remove <slug>                                      # Permanently delete a course from the library
+libv2 backup                                             # Snapshot the LibV2 metadata spine (catalog + manifests)
+libv2 restore <path>                                     # Verify + restore a LibV2 metadata backup
+libv2 export-rdf <slug>                                  # Export a course's JSON artifacts as RDF
+libv2 import-model <dir>                                 # Import a TrainingRunner output dir as a course adapter
+libv2 models list <slug>                                 # List adapters attached to a course
+libv2 models promote <slug> <model_id>                   # Update the models/_pointers.json promotion ledger
+libv2 catalog backfill                                   # Backfill catalog entries
+libv2 eval init | validate                               # Scaffold / validate an eval set
+libv2 retrieval-eval                                     # Run hand-curated gold queries
+libv2 retrieval-compare                                  # A/B compare retrieval-method presets
+libv2 answer-eval-diff <a.json> <b.json>                 # Diff two grounded_answer_eval reports
+libv2 attribution-calibrate --course <slug>              # Calibrate the citation-attribution support threshold
+libv2 probe-candidates --course <slug>                   # Build refusal-probe candidates + per-engine scores
+libv2 gold-validate | gold-repin | gold-candidates | gold-promote
+libv2 gold-metadata-backfill | gold-key-points | gold-difficulty-regrade
+libv2 gold-parts | gold-enrich-passages                  # Gold-set authoring / maintenance family
 ```
+
+`libv2 backup` / `libv2 restore` snapshot the LibV2 **metadata spine** (catalog +
+manifests) only. That is a different surface from the top-level
+`ed4all backup` / `ed4all backup --verify`, which archives the whole Ed4All data
+dir. Do not treat one as a substitute for the other.
+
+### Integrity check (fsck)
+
+Storage-integrity checking lives at the Ed4All level, not under `libv2`:
+
+```bash
+ed4all fsck [--fix] [--verbose] [--json]
+```
+
+Backed by `lib/libv2_fsck.py::LibV2Fsck.check_all` (convenience wrapper
+`run_fsck`). Six checks run in order: blob hash integrity, catalog consistency,
+run manifests (incl. lockfile verification), symlink targets, orphaned files,
+and cross-package concept-index freshness
+(`check_cross_package_index_freshness`). Issues carry `severity`
+(`error` / `warning` / `info`), `category`, `path`, and a `fixable` flag;
+`--fix` attempts only the fixable ones. `result.passed` is `error_count == 0`,
+and the command exits 1 when it fails.
+
+The LibV2 root is resolved to an **absolute** path up front (honoring
+`ED4ALL_LIBV2_ROOT` / `ED4ALL_HOME` via `lib/paths.py::libv2_path` when no root
+is passed). This is load-bearing, not cosmetic: `course_index.json` stores
+course paths RELATIVE to that root, so a cwd-relative root would make a `--fix`
+run from another working directory resolve every entry against the caller's cwd
+and wipe the index.
 
 OP4 (stage 2): `libv2 migrate [<slug>|--all] [--apply]` is the on-disk `library_format_version` migration framework (`LibV2/tools/libv2/migrate.py`). Dry-run by default (`plan_course_migration` never writes); `--apply` backs up `manifest.json` to a timestamped `.bak` sibling BEFORE writing, re-runs the LibV2 validate check on the migrated course, and **rolls the manifest back** on validation failure (never a silent half-migrated course). A manifest with no `library_format_version` is the pre-1.0 `legacy` baseline; the baseline step registered is `legacy -> 1.0` (stamp-only, no directory-layout change). An already-current course plans as the empty "already current" plan.
 
@@ -365,11 +430,30 @@ W4.5: the cross-package concept index (`catalog/cross_package_concepts.json`, wr
 ## File Formats
 
 ### Course Manifest (`manifest.json`)
-Extended metadata including:
-- `slug`: URL-safe identifier
+
+Canonical shape: `schemas/library/course_manifest.schema.json`.
+
+Schema-**required** fields: `libv2_version`, `slug`, `import_timestamp`,
+`sourceforge_manifest`, `classification`, `content_profile`,
+`imscc_chunks_sha256`, `concept_graph_sha256`. Note the staged-chunkset hash
+(`semantik_chunks_sha256` / legacy `dart_chunks_sha256`) is **schema-optional
+but gate-required** — `LibV2ManifestValidator` raises a critical
+`MISSING_DART_CHUNKS_SHA256` when neither is present, so a pipeline-built
+archive still fails closed without it.
+
+Notable fields:
+- `slug`: URL-safe identifier. Immutable.
 - `classification`: division, domain, subdomains, topics
 - `ontology_mappings`: ACM CCS and LCSH codes
 - `content_profile`: chunk counts, token counts, difficulty distribution
+- `semantik_chunks_sha256`: SHA-256 of the staged chunkset `chunks.jsonl`. Written by the archival step (the `_archive_to_libv2` kwarg is still named `dart_chunks_sha256`; the manifest KEY it stamps is `semantik_chunks_sha256`).
+- `dart_chunks_sha256`: legacy pre-purge name for the same digest. Read-only.
+- `imscc_chunks_sha256` / `concept_graph_sha256`: the other two legs of the hash triangle.
+- `chunker_version`: version of the chunker that produced the archived chunks — the chunk-EMIT-SHAPE contract, resolved at archive time via `MCP/tools/pipeline_tools.py::_resolve_chunker_version` (which mirrors `Trainforge.chunker.CHUNKER_SCHEMA_VERSION`). Both the course-manifest and chunkset-manifest schemas accept the old `MAJOR.MINOR.PATCH` form alongside the current one.
+- `extraction_contract` (optional, integer): chunk-TEXT extraction-contract version — ORTHOGONAL to `chunker_version` (that is the emit SHAPE; this versions WHAT TEXT lands in a chunk's `text`).
+- `course_package_version` / `rulepack_version` / `graph_build_hash` (optional): mirrors of the same-named `concept_graph_semantic.json` fields, copied onto the manifest at archive time so an auditor reads one file.
+- `source_documents_sha256_index` (optional, array): SHA-256 of every upstream source document (PDFs, IMSCC archive) that contributed to the archive.
+- `eval_profile` (optional): explicit Trainforge eval-harness profile; when set it overrides the harness's default-profile resolution.
 - `features.source_provenance`: advisory bool — true when any archived chunk carries `source.source_references[]`. Lets retrieval callers fast-skip source-grounded queries on pre-provenance corpora.
 - `features.evidence_source_provenance`: advisory bool — true when any concept-graph edge carries `provenance.evidence.source_references[]`.
 - `attestation` (optional): I5 human-review sign-off — `{reviewed_by, reviewed_at (server-stamped when omitted), scope: objectives|content|full, note?}`. Stamped via the GUI PATCH `/api/courses/{id}/attestation` (`gui.services.course_service.save_attestation`); records that a person reviewed the course. Absent on legacy manifests (still validate).
@@ -377,7 +461,7 @@ Extended metadata including:
 - `attribution` (optional): B3 source-attribution declaration — `{statement, ...}`. Threaded from the `--attribution` run flag (`_normalize_attribution_field`); the `statement` is mirrored into the `NOTICE` file at archive time. Absent = byte-identical legacy manifest.
 - `library_format_version` (optional): OP4 on-disk LibV2 course-layout contract version (starts `1.0`, pattern `^\d+\.\d+$`), distinct from `libv2_version` (manifest-document schema) and `chunker_version` (chunk-emit contract). Stamped `LIBRARY_FORMAT_VERSION` at archive time. A missing field is treated as the pre-1.0 `legacy` baseline (serve read-only + warn, never silent). The in-place upgrader has SHIPPED (OP4 stage 2) as the `libv2 migrate` command (`LibV2/tools/libv2/migrate.py`) — dry-run-by-default with backup + validate + rollback on `--apply`; the baseline step is `legacy -> 1.0`. Contract: `docs/operations/library-versioning.md`.
 
-Gated by `lib/validators/libv2_manifest.py::LibV2ManifestValidator` as the `libv2_manifest` gate on the `textbook_to_course` pipeline's `libv2_archival` phase. The validator runs critical-severity checks (JSON parse, schema match, on-disk artifact hash/size agreement) and warning-severity advisories (scaffold completeness, `source_provenance=false` gap flag).
+Gated by `lib/validators/libv2/manifest.py::LibV2ManifestValidator` as the `libv2_manifest` gate on the `textbook_to_course` pipeline's `libv2_archival` phase (`severity: critical`, `on_fail: block`, `on_error: fail_closed`, `max_critical_issues: 0`). The validator runs critical-severity checks (JSON parse, schema match, on-disk artifact hash agreement) and warning-severity advisories (scaffold completeness, `source_provenance=false` gap flag).
 
 ### Course Metadata (`course.json`)
 
@@ -433,8 +517,24 @@ These are stored in `<project-root>/schemas/taxonomies/` and referenced in cours
 
 ## Code Locations
 
-- CLI entry point: `tools/libv2/cli.py`
-- Import logic: `tools/libv2/importer.py`
-- Validation: `tools/libv2/validator.py`
-- Catalog generation: `tools/libv2/catalog.py`
-- Index building: `tools/libv2/indexer.py`
+`tools/libv2/` (the `python -m LibV2.tools.libv2.cli` package):
+
+- CLI entry point (click group, one command per surface): `cli.py`
+- Import / removal: `importer.py`, `remove.py`, `backup.py`
+- Validation: `validator.py`; SHACL shapes: `_shacl_validator.py`
+- Catalog + indexes: `catalog.py`, `indexer.py`, `models/catalog.py`, `models/course.py`
+- Retrieval: `retriever.py`, `semantic_retriever.py`, `multi_retriever.py`, `result_fusion.py`, `retrieval_scoring.py`, `vector_index.py`
+- Query decomposition: `query_decomposer.py`, `query_decomposition.py`; Q&A log: `query_log.py`
+- Eval: `eval_generator.py`, `eval_harness.py`, `model_eval_bridge.py`
+- Concepts / outcomes: `concept_vocabulary.py`, `outcome_linker.py`, `_bloom_verbs.py`
+- Cross-package: `cross_package_indexer.py` (writer), `cross_package_discovery.py` (reader)
+- Export: `rdf_export.py`, `jsonld_emit.py`
+- Format migration: `migrate.py`
+- Operator scripts: `scripts/backfill_dart_chunks.py`
+
+Standalone modules directly under `tools/` (not part of the `libv2` CLI package):
+`chunk_query.py`, `intent_router.py`, `study_pack_renderer.py`.
+
+Outside `LibV2/`: the archival gate is `lib/validators/libv2/manifest.py`,
+storage/path resolution is `lib/libv2_storage.py`, and integrity checking is
+`lib/libv2_fsck.py`.

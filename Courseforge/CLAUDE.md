@@ -40,7 +40,7 @@ Textbooks ────────┘         │                │            
 ```
 INPUT                         PROCESSING                                    OUTPUT
 ─────                         ──────────                                    ──────
-Any IMSCC Package ──► imscc-intake-parser ──► content-analyzer ──┬──► dart-automation-coordinator
+Any IMSCC Package ──► imscc-intake-parser ──► content-analyzer ──┬──► semantik-automation-coordinator
 (Canvas, Blackboard,          │                   │               │           (PDF/Office → HTML)
  Moodle, Brightspace)         │                   │               │
                               │                   │               ├──► accessibility-remediation
@@ -104,10 +104,11 @@ USER REQUEST →
 |-------|---------|-------------|
 | `imscc-intake-parser` | Universal IMSCC package parsing | Importing existing courses |
 | `content-analyzer` | Accessibility/quality gap detection | Analyzing imported content |
-| `dart-automation-coordinator` | Orchestrates the SemantiK v2 conversion cascade | Converting PDFs/Office docs to accessible HTML |
+| `semantik-automation-coordinator` | Orchestrates the SemantiK v2 conversion cascade (routes to `extract_and_convert_pdf`). Renamed from `dart-automation-coordinator`, which survives only as a read-compat dispatch alias in `MCP/core/executor.py::AGENT_TOOL_MAPPING` so old resume states still route. | Converting PDFs/Office docs to accessible HTML |
 | `accessibility-remediation` | Automatic WCAG fixes | Fixing accessibility issues |
 | `content-quality-remediation` | Educational depth enhancement | Improving thin content |
 | `intelligent-design-mapper` | AI-driven component selection | Applying interactive styling |
+| `remediation-validator` | Final remediation QA (routes to `get_courseforge_status`; WCAG verification itself runs as the `wcag_compliance` gate, not as an agent tool) | Post-remediation validation |
 
 ---
 
@@ -141,18 +142,25 @@ Task(content-generator, "Create all Week 1 content")  # NEVER DO THIS
 ├── docs/                        # Documentation
 │   ├── troubleshooting.md       # Error patterns and solutions
 │   ├── workflow-reference.md    # Detailed workflow protocols
-│   └── getting-started.md       # Quick start guide
+│   ├── getting-started.md       # Quick start guide
+│   ├── per-week-learning-objectives.md
+│   └── template-chrome-roles.md
 ├── agents/                      # Agent specifications
+├── config/                      # block_routing.yaml, block_catalog.yaml
+├── generators/                  # Outline / rewrite / synthesis LLM providers
+├── router/                      # Two-pass router, policy, inter-tier gates
 ├── inputs/                      # Input files
 │   ├── exam-objectives/         # Certification exam PDFs/docs
 │   ├── textbooks/               # SemantiK-converted accessible HTML textbooks
-│   └── existing-packages/       # IMSCC packages for intake
+│   ├── existing-packages/       # IMSCC packages for intake
+│   └── course-data/             # Per-course input data
 ├── templates/                   # HTML templates and components
 ├── schemas/                     # IMSCC and content schemas
 ├── imscc-standards/             # Brightspace/IMSCC technical specs
 ├── scripts/                     # Automation scripts
 │   ├── imscc-extractor/         # Universal IMSCC extraction
 │   ├── component-applier/       # Interactive component application
+│   ├── accessibility-validator/ # Accessibility checks
 │   └── remediation-validator/   # Final quality validation
 ├── exports/                     # Generated course packages
 │   └── YYYYMMDD_HHMMSS_name/    # Timestamped project folders
@@ -163,13 +171,17 @@ Task(content-generator, "Create all Week 1 content")  # NEVER DO THIS
 ```
 exports/YYYYMMDD_HHMMSS_coursename/
 ├── 00_template_analysis/
-├── 01_learning_objectives/
+├── 01_learning_objectives/      # synthesized_objectives.json
+├── 01_outline/                  # two-pass outline tier: blocks*.jsonl
 ├── 02_course_planning/
+├── 02_validation_report/        # inter_tier_validation report.json
 ├── 03_content_development/
 │   ├── week_01/
 │   └── week_XX/
 ├── 04_quality_validation/
+├── 04_rewrite/                  # two-pass rewrite tier + its report.json
 ├── 05_final_package/
+├── 06_assessments/              # W10 QTI / imsdt / assignment XML + manifest
 ├── agent_workspaces/
 ├── project_log.md
 └── coursename.imscc              # Final deliverable
@@ -181,15 +193,20 @@ exports/YYYYMMDD_HHMMSS_coursename/
 
 Textbooks must be pre-processed to accessible HTML before use. Conversion runs
 in-process via the `[semantik]` extra through the `semantik_conversion` workflow
-phase (renamed from `dart_conversion`, task #19 Stage 3d; the `dart-converter`
-agent drives the SemantiK v2 cascade) — there is no standalone converter CLI:
+phase (renamed from `dart_conversion`; the `semantik-converter` agent drives the
+SemantiK v2 cascade — `dart-converter` survives only as a read-compat dispatch
+alias in `MCP/core/executor.py::AGENT_TOOL_MAPPING`):
 
 1. Run the `semantik_conversion` phase (e.g. via `ed4all run textbook-to-course`),
    which converts the textbook PDF to accessible HTML and stages it for
    Courseforge.
 2. The SemantiK v2 cascade produces WCAG 2.2 AA accessible HTML.
-3. Staged output lands in `inputs/textbooks/`.
+3. Staged output lands under `Courseforge/inputs/textbooks/{run_id}/`.
 4. Reference in course generation.
+
+For a conversion-only slice with no course scaffolding, `ed4all convert`
+(`cli/commands/convert.py`) runs the same cascade standalone and emits
+`{stem}_accessible.html` plus sidecars. See `docs/operations/convert-verb.md`.
 
 ---
 
@@ -203,10 +220,15 @@ See `docs/troubleshooting.md` for complete pattern list. Critical patterns:
 - Organization hierarchy (no empty structures)
 
 ### OSCQR Evaluation
-Automatic quality assessment after course outline completion:
-- 70% threshold for pre-development
-- 90% threshold for pre-production
-- 100% accessibility compliance required
+
+Shipped gate: `oscqr_score` in `config/workflows.yaml`, validator
+`lib.validators.oscqr.OSCQRValidator`, `threshold.min_score: 0.7`, severity
+**warning** (`on_fail: warn` / `on_error: warn`) — it reports below-threshold
+courses, it does not block them. The threshold is applied by the gate manager,
+not inside the validator.
+
+A higher pre-production bar and a blocking severity flip are aspirations, not
+shipped behavior; do not document them as enforced until the gate config says so.
 
 ---
 
@@ -237,14 +259,14 @@ Border Gray: #e0e0e0
 
 ## Opt-In Behavior Flags
 
-Courseforge-owned env-var toggles. Every `COURSEFORGE_*_*` flag is no-op when `COURSEFORGE_TWO_PASS` is unset, **except** `COURSEFORGE_ALLOW_TEMPLATE_EMITTER` (the anti-silent-template guard escape hatch, which applies to every content_generation run), `COURSEFORGE_RUN_ID` (a provenance label, read on every emit), and `COURSEFORGE_PAGE_MATHJAX` (a page-render include, applied on every `_wrap_page` emit — single-pass and two-pass alike). Long-form rationale also lives in `schemas/ONTOLOGY.md` § 12.
+Courseforge-owned env-var toggles. Every `COURSEFORGE_*_*` flag is no-op when `COURSEFORGE_TWO_PASS` is unset, **except** `COURSEFORGE_ALLOW_TEMPLATE_EMITTER` (the anti-silent-template guard escape hatch, which applies to every content_generation run), `COURSEFORGE_RUN_ID` (a provenance label, read on every emit), and `COURSEFORGE_PAGE_MATHJAX` (a page-render include, applied on every `_wrap_page` emit — single-pass and two-pass alike). This table is the authority for the `COURSEFORGE_*` / `COURSEPLANNER_*` / `TEXTBOOK_SYNTHESIS_*` prefixes — `schemas/ONTOLOGY.md` § 12 and `docs/operations/behavior-flags.md` both point back here rather than restating the rows. The three `ED4ALL_REWRITE_*` rows below are rewrite-tier flags owned by this file by the same convention.
 
 | Flag | When on |
 |------|---------|
 | `COURSEFORGE_ALLOW_TEMPLATE_EMITTER` | Escape hatch for the anti-silent-template guard (`lib/validators/content_authorship.py::ContentAuthorshipValidator`). When unset (default), the `content_authorship` gate **blocks** any `content_generation` run where the deterministic `generate_week` template emitter produced the pages AND LLM authoring was intended (`COURSEFORGE_PROVIDER` / `COURSEFORGE_TWO_PASS` / `ED4ALL_AGENT_DISPATCH` set, or a constructed provider/router that degraded to the template floor on every page at runtime). Set to `1`/`true` to permit the template emitter anyway — for offline / no-LLM smoke runs where templated pages are acceptable. `_generate_course_content` records the decision (plus `generator_mode`, `template_fallback_fired`, `llm_authored_pages`/`template_fallback_pages`) in `<export>/content_generation_provenance.json`; the gate reads it. NOT gated by `COURSEFORGE_TWO_PASS`. |
 | `COURSEFORGE_RUN_ID` | Provenance label stamped into the JSON-LD `blocks[]` `provenance.runId` field by `Courseforge/scripts/generate_course.py::_build_page_metadata` (read via `os.environ.get("COURSEFORGE_RUN_ID", "")`). Default empty string — no run identifier in the emitted metadata. Purely a provenance tag (lets a `blocks[]`-emitting run be traced back to its orchestrator run); selects no provider/model and gates no behavior. NOT gated by `COURSEFORGE_TWO_PASS` — read on every `blocks[]` emit (which is itself gated by `COURSEFORGE_EMIT_BLOCKS`). |
-| `COURSEFORGE_BLOCK_ROUTING_PATH` | Absolute or repo-relative path to the `block_routing.yaml` policy file consumed by `Courseforge/router/policy.py::load_block_routing_policy` and `Courseforge/router/router.py::CourseforgeRouter._resolve_spec`. Default `Courseforge/config/block_routing.yaml`; setting this var overrides the default location for ops topologies that ship the policy out-of-tree (e.g. mounted ConfigMap in containerised runs). The file itself is optional — when missing, the loader returns an empty policy and the router falls through to tier-default env vars (`COURSEFORGE_OUTLINE_*` / `COURSEFORGE_REWRITE_*`) plus the hardcoded defaults table at `policy.py::DEFAULT_BLOCK_ROUTING`. Schema (Draft 2020-12, `additionalProperties: false`): `schemas/courseforge/block_routing.schema.json`. Resolution priority (high → low): per-call kwargs > YAML > tier env vars > hardcoded defaults. **GPT Feedback v2 Wave 3 W3.C** (active): the YAML now carries a per-block-type `validators` matrix (`{required[], optional[], fail_action}`) for every entry in `Courseforge/scripts/blocks.py::BLOCK_TYPES`. `CourseforgeRouter._dispatch_validation_chain` filters the global `validation_gates` list down to the per-block_type allowed set; required-gate failures stamp `fail_action` (`regenerate`/`escalate`/`block`) onto the resulting `GateResult`, optional-gate failures emit warning-only (`GateResult.action` coerced to `pass`, issues preserved), and gates not in either array are skipped silently. Resolution priority for the validator matrix mirrors the provider/model chain: per-block-id override (YAML `overrides[]`) > per-block-type `validators` block (YAML `blocks.<type>.validators`) > tier env defaults > hardcoded `DEFAULT_BLOCK_ROUTING` table. Backward-compat: a block_type with no validators block falls through to the legacy "all gates run" behavior. No-op when `COURSEFORGE_TWO_PASS` is unset (default off). |
-| `COURSEFORGE_PAGE_MATHJAX` | Page-render MathJax v3 include: **DEFAULT ON** — a documented deviation from the Courseforge default-off convention (mirrors how `ED4ALL_GPU_LIFECYCLE` documents its default-ON deviation). Rendered course pages carry inline `\( … \)` / display `\[ … \]` LaTeX math (e.g. 415/659 blocks on a representative math corpus) but ship no math renderer, so a standalone / preview page shows raw LaTeX source and LMSes vary in whether they inject their own MathJax. When on, `Courseforge/scripts/generate_course.py::_wrap_page` injects — before `</head>` — an inline config (`inlineMath: [['\(','\)']]`, `displayMath: [['\[','\]']]`, `options.enableAssistiveMml: true` for screen-reader-accessible math) plus the combined `tex-chtml` loader `<script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js">`. **Presentation-only** — no LLM / output-content change beyond the two script tags — which is why default-ON is safe (the owner-requested deviation). Applies to BOTH the legacy single-pass emit and the two-pass rewrite path (the rewrite phase routes its per-page shell through `_wrap_page` in `MCP/tools/pipeline_tools.py`), and the include survives IMSCC packaging byte-for-byte (`package_multifile_imscc.py` `zf.write`s page bytes as-is; no re-render/strip) and adds no WCAG issue (`lib/validators/wcag.py` does not flag script tags). Read each call so tests can `setenv`-toggle. Parse-with-fallback (mirrors the default-ON rewrite-tier resolvers): explicit falsey `0`/`false`/`no`/`off` (case-insensitive) omits the include **byte-identically**; unset / garbage / truthy → on. **CDN / offline caveat:** the loader is a jsDelivr CDN URL, so an offline / CSP-locked-down / air-gapped LMS install will NOT fetch it and math stays as raw source there — acceptable, since an LMS that hosts its own MathJax still renders the LaTeX; disable via `=off` for a fully self-contained offline deliverable. Selects no provider/model → no `docs/LICENSING.md` row. NOT gated by `COURSEFORGE_TWO_PASS`. |
+| `COURSEFORGE_BLOCK_ROUTING_PATH` | Absolute or repo-relative path to the `block_routing.yaml` policy file consumed by `Courseforge/router/policy.py::load_block_routing_policy` and `Courseforge/router/router.py::CourseforgeRouter._resolve_spec`. Default `Courseforge/config/block_routing.yaml`; setting this var overrides the default location for ops topologies that ship the policy out-of-tree (e.g. mounted ConfigMap in containerised runs). The file itself is optional — when missing, the loader returns an empty policy and the router falls through to tier-default env vars (`COURSEFORGE_OUTLINE_*` / `COURSEFORGE_REWRITE_*`) plus the hardcoded defaults table at `policy.py::DEFAULT_BLOCK_ROUTING`. Schema (Draft 2020-12, `additionalProperties: false`): `schemas/courseforge/block_routing.schema.json`. Resolution priority (high → low): per-call kwargs > YAML > tier env vars > hardcoded defaults. **Per-block-type validator matrix** (active): the YAML now carries a per-block-type `validators` matrix (`{required[], optional[], fail_action}`) for every entry in `Courseforge/scripts/blocks.py::BLOCK_TYPES`. `CourseforgeRouter._dispatch_validation_chain` filters the global `validation_gates` list down to the per-block_type allowed set; required-gate failures stamp `fail_action` (`regenerate`/`escalate`/`block`) onto the resulting `GateResult`, optional-gate failures emit warning-only (`GateResult.action` coerced to `pass`, issues preserved), and gates not in either array are skipped silently. Resolution priority for the validator matrix mirrors the provider/model chain: per-block-id override (YAML `overrides[]`) > per-block-type `validators` block (YAML `blocks.<type>.validators`) > tier env defaults > hardcoded `DEFAULT_BLOCK_ROUTING` table. Backward-compat: a block_type with no validators block falls through to the legacy "all gates run" behavior. No-op when `COURSEFORGE_TWO_PASS` is unset (default off). |
+| `COURSEFORGE_PAGE_MATHJAX` | Page-render MathJax v3 include: **DEFAULT ON** — a documented deviation from the Courseforge default-off convention (mirrors how `ED4ALL_GPU_LIFECYCLE` documents its default-ON deviation). Rendered course pages carry inline `\( … \)` / display `\[ … \]` LaTeX math (e.g. 415/659 blocks on a representative math corpus) but ship no math renderer, so a standalone / preview page shows raw LaTeX source and LMSes vary in whether they inject their own MathJax. When on, `Courseforge/scripts/generate_course.py::_wrap_page` injects — before `</head>` — an inline config (`inlineMath: [['\(','\)']]`, `displayMath: [['\[','\]']]`, `options.enableAssistiveMml: true` for screen-reader-accessible math) plus the combined `tex-chtml` loader `<script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js">`. **Presentation-only** — no LLM / output-content change beyond the two script tags — which is why default-ON is safe (the include cannot change authored content, only how it renders). Applies to BOTH the legacy single-pass emit and the two-pass rewrite path (the rewrite phase routes its per-page shell through `_wrap_page` in `MCP/tools/pipeline_tools.py`), and the include survives IMSCC packaging byte-for-byte (`package_multifile_imscc.py` `zf.write`s page bytes as-is; no re-render/strip) and adds no WCAG issue (`lib/validators/wcag.py` does not flag script tags). Read each call so tests can `setenv`-toggle. Parse-with-fallback (mirrors the default-ON rewrite-tier resolvers): explicit falsey `0`/`false`/`no`/`off` (case-insensitive) omits the include **byte-identically**; unset / garbage / truthy → on. **CDN / offline caveat:** the loader is a jsDelivr CDN URL, so an offline / CSP-locked-down / air-gapped LMS install will NOT fetch it and math stays as raw source there — acceptable, since an LMS that hosts its own MathJax still renders the LaTeX; disable via `=off` for a fully self-contained offline deliverable. Selects no provider/model → no `docs/LICENSING.md` row. NOT gated by `COURSEFORGE_TWO_PASS`. |
 | `COURSEFORGE_EMIT_BLOCKS` | Intermediate Block format: `true` / `false`, default `false`. When truthy, `Courseforge/scripts/generate_course.py::_build_page_metadata` emits the new top-level JSON-LD `blocks[]` (canonical projection of the `Block` dataclass via `Block.to_jsonld_entry()`) plus `provenance` (`{runId, pipelineVersion: "phase2", tiers[]}`) and `contentHash` (SHA-256 of the canonicalised meta payload before the hash field is added) — and stamps `data-cf-block-id="{page_id}#{block_type}_{slug}_{idx}"` on every block-bearing wrapper (`<section>` / heading / component wrapper). Default off keeps emit byte-stable for the legacy snapshot regression suite under `Courseforge/scripts/tests/`, and Trainforge's `process_course._extract_section_metadata` falls back to the existing `data-cf-*` attribute chain so legacy corpora (and corpora rebuilt with the flag off) extract identically. Cross-link: canonical schema shape at `schemas/knowledge/courseforge_jsonld_v1.schema.json` (`$defs.Block`, `$defs.Touch`, top-level optional `blocks[]` / `provenance` / `contentHash`); dataclass + emitters at `Courseforge/scripts/blocks.py` (`Block` dataclass + the 30-value `BLOCK_TYPES` enum, mapped onto the framework's canonical 15 B-codes via the per-entry `framework_block` field in `Courseforge/config/block_catalog.yaml` — see the IB2 reconciliation map under § "Block format"). Rolls forward to `true` after byte-stable confirmation across a clean run; the flag drops once the two-pass pipeline depends on the new fields unconditionally. |
 | `COURSEFORGE_OUTLINE_GRAMMAR_MODE` | Selects the constrained-decoding payload `Courseforge/generators/_outline_provider.py::OutlineProvider._build_grammar_payload` injects into the wire body via `OpenAICompatibleClient.chat_completion(extra_payload=...)`. Values: `gbnf` (llama.cpp `grammar: <gbnf-string>`), `json_schema` (Ollama 0.5+ full-schema `format: <json-schema-dict>` and Together AI `response_format: {type: "json_schema", json_schema: {...}}`), `json_object` (default — Ollama legacy `format: "json"` + OpenAI `response_format: {"type": "json_object"}`), `none` (no grammar payload; falls back to JSON-mode-only + lenient parse). Unset → autodetect from the resolved outline provider (local → `json_object`; vLLM → `gbnf`; Together → `json_schema`; Anthropic → `none`). The Anthropic outline tier (rare; not the default) does not support sample-time grammar and always falls back to JSON-mode + lenient parse + remediation retry. No-op when `COURSEFORGE_TWO_PASS` is unset. On Qwen-2.5-7B-Q4 + Ollama 0.5+, attempt-2 convergence is expected; `COURSEFORGE_OUTLINE_REGEN_BUDGET` default of 10 leaves ample headroom. |
 | `COURSEFORGE_OUTLINE_MODEL` | Model identifier the outline-tier provider expects (e.g. `qwen2.5:7b-instruct-q4_K_M` for Ollama, `Qwen/Qwen2.5-7B-Instruct` for vLLM, `meta-llama/Llama-3.1-8B-Instruct-Turbo` for Together). Default `qwen2.5:7b-instruct-q4_K_M` — matches the smaller `LOCAL_SYNTHESIS_MODEL` default so an out-of-box Ollama install on an 8 GB GPU runs the outline tier with no further tuning. Captured per call in the `block_outline_call` decision event so the audit trail records which 7B-class model produced each block draft. Reuses the same `LOCAL_SYNTHESIS_BASE_URL` / `LOCAL_SYNTHESIS_API_KEY` connection plumbing when the outline provider resolves to `local`. (License: model-specific — Qwen2.5-7B/14B/32B are Apache 2.0 and training-permitted; see `docs/LICENSING.md`.) No-op when `COURSEFORGE_TWO_PASS` is unset. |
@@ -496,12 +518,14 @@ blocks:
   - `per_claim_attribution_unfixable` — Wave 1.5 W1.5.C: outline-tier regen budget exhausted purely on per-claim source-attribution misses (`OUTLINE_CLAIM_SOURCE_NOT_IN_BLOCK_REFS`) with no block-level structural miss across the regen chain. The rewrite-tier prompt-builder reads this marker via `_ESCALATION_MARKER_CONTEXT` and treats the per-claim citation map as advisory rather than authoritative; preserve block-level `source_refs[]` grounding instead.
   - `input_prompt_truncated` — rewrite-overflow-fix-2026-06: the rewrite-tier input-truncation tripwire (`ED4ALL_REWRITE_TRUNCATION_TRIPWIRE`, default ON) detected the served context window silently truncated the prompt HEAD (the server-reported `usage.prompt_tokens` fell far below the local estimate), so the system-prompt authoring CONTRACT was dropped and the model authored ungrounded. HARD, NON-RETRYABLE — the block is stamped + short-circuited (re-dispatching the same over-window prompt re-truncates) rather than retried. Surfaces as `escalated`; routes through the W5 packager-side escalation filter. Operator fix: raise the served window / `ED4ALL_REWRITE_NUM_CTX`, or enable `ED4ALL_REWRITE_FIT_WINDOW` to shrink the prompt to fit.
   - `rewrite_scaffold_overflow` — rewrite-overflow-fix-2026-07: the whole-prompt fit-window budget (`ED4ALL_REWRITE_FIT_WINDOW` on) found the NON-CHUNK scaffold alone (trimmed system prompt + outline dict + per-claim + objectives + contract) already exceeds the served window (`sys + scaffold + reserve ≥ ED4ALL_REWRITE_NUM_CTX`), so no grounding chunk could fit. HARD, NON-RETRYABLE — the block is stamped + NEVER dispatched (authoring an over-window prompt would silently head-truncate the CONTRACT). Surfaces as `escalated`; routes through the W5 packager-side escalation filter. Operator fix: raise the served window / `ED4ALL_REWRITE_NUM_CTX`, or shrink the upstream outline payload.
+  - `block_objective_undelivered` — the regen budget exhausted PURELY on block-objective delivery misses (the most recent `BlockObjectiveDeliveryValidator` chain carried only `BLOCK_OBJECTIVE_*` codes, with no upstream structural miss), so the router stamps this instead of the generic `validator_consensus_fail`. The surviving best-effort candidate is additionally stamped `objective_alignment[*].status="unverifiable"` so the JSON-LD audit trail records the unverifiable delivery state for every declared `objective_id`; the rewrite-tier prompt-builder reads the marker via `_ESCALATION_MARKER_CONTEXT`.
+  - `best_of_n_no_clean_candidate` — best-of-N selection: no candidate cleared BOTH objective-coverage AND zero-contradiction among the validator-passing samples, so the entailment-argmax selector took the highest-entailment passing candidate and stamped this marker rather than fabricating a clean winner. The block still ships (it passed the validator chain); the marker tells a postmortem the NLI selection had no clean pick.
 
 Legacy validators returning `action=None, passed=False` retain regenerate-loop semantics; only EXPLICIT `action="block"` / `action="escalate"` triggers a short-circuit.
 
 ### Touch chain
 
-`_TOUCH_TIERS` includes `outline`, `outline_val`, `rewrite`, `rewrite_val`. The canonical post-validation Touch chain on a clean two-pass run is `outline → outline_val → rewrite → rewrite_val`. JSON-LD + SHACL Touch.tier enums carry the same values so downstream consumers (Trainforge chunk extraction, training-data export) can filter on tier without string matching.
+`_TOUCH_TIERS` is `{outline, validation, rewrite, outline_val, rewrite_val}` (`validation` is the legacy validator-driven retouch value). The canonical post-validation Touch chain on a clean two-pass run is `outline → outline_val → rewrite → rewrite_val`. JSON-LD + SHACL Touch.tier enums carry the same five values so downstream consumers (Trainforge chunk extraction, training-data export) can filter on tier without string matching.
 
 ### Statistical-tier validators
 
@@ -511,7 +535,7 @@ Layered on top of the structural seam (CURIE / content_type / page_objectives / 
 - `lib/validators/concept_example_similarity.py::ConceptExampleSimilarityValidator` — cosine-similarity floor between concept definition and illustrating example.
 - `lib/validators/objective_roundtrip_similarity.py::ObjectiveRoundtripSimilarityValidator` — cosine-similarity floor between rewrite-tier LO paraphrase and source objective.
 - `lib/validators/courseforge_outline_shacl.py::CourseforgeOutlineShaclValidator` — wrapper around `schemas/context/courseforge_v1.shacl-rules.ttl` shape constraints, applied to outline-tier Block emit.
-- `lib/validators/bloom_classifier_disagreement.py::BloomClassifierDisagreementValidator` — wraps `lib/classifiers/bloom_bert_ensemble.py::BloomBertEnsemble` (three SHA-pinned HuggingFace classifiers vote on Bloom level). Fires `action="regenerate"` on (a) ensemble majority disagrees with declared `bloomLevel` (`bert_ensemble_disagreement` event) or (b) ensemble dispersion above `_DISPERSION_THRESHOLD = 0.7` (`bert_ensemble_dispersion_high` event). See `docs/validation/validators.md` for the BERT ensemble member list.
+- `lib/validators/bloom/classifier_disagreement.py::BloomClassifierDisagreementValidator` (the old `lib/validators/bloom_classifier_disagreement.py` path is a back-compat re-export shim that emits a `PendingDeprecationWarning`) — wraps `lib/classifiers/bloom_bert_ensemble.py::BloomBertEnsemble`, three SHA-pinned HuggingFace classifiers voting on Bloom level. Fires `action="regenerate"` on (a) ensemble majority disagrees with declared `bloomLevel` (`bert_ensemble_disagreement` event) or (b) ensemble dispersion above `_DISPERSION_THRESHOLD = 0.7` (`bert_ensemble_dispersion_high` event). Under `ED4ALL_BLOOM_TRIVOTE` (default off) the gate is re-founded on three interpretable voters instead — the generator's own asserted `bloom_level`, zero-shot DeBERTa entailment, and the deterministic verb level from `lib/ontology/bloom.py` — and the ensemble's first two members are never loaded. See `docs/validation/validators.md` for the ensemble member list and `docs/operations/behavior-flags.md` for the trivote flag.
 
 The embedding wrapper at `lib/embedding/` degrades gracefully when the optional `[embedding]` extras are absent (warning-severity `EMBEDDING_DEPS_MISSING` GateIssue, `passed=True, action=None`); set `TRAINFORGE_REQUIRE_EMBEDDINGS=true` to fail-closed in production.
 
@@ -613,32 +637,49 @@ The `_run_inter_tier_validation` and `_run_post_rewrite_validation` phase helper
 - `<project_root>/02_validation_report/report.json` for the outline tier's `inter_tier_validation` phase emit.
 - `<project_root>/04_rewrite/02_validation_report/report.json` for the rewrite tier's `post_rewrite_validation` phase emit.
 
-The writer fires automatically after each validation phase completes inside `WorkflowRunner.run_workflow` (best-effort — filesystem failures are warning-logged and don't abort the run). Schema (`_VALIDATION_REPORT_SCHEMA_VERSION = "v1"`):
+The writer fires automatically after each validation phase completes inside `WorkflowRunner.run_workflow` (best-effort — filesystem failures are warning-logged and don't abort the run). Schema (`MCP/core/workflow_runner.py::WorkflowRunner._VALIDATION_REPORT_SCHEMA_VERSION = "v2"`, emitted by `_write_validation_report`):
 
 ```json
 {
-  "run_id": "WF-...",
+  "run_id": "<workflow_id>",
   "phase": "inter_tier_validation",
-  "schema_version": "v1",
-  "total_blocks": 247,
-  "passed": 210,
-  "failed": 30,
-  "escalated": 7,
+  "schema_version": "v2",
+  "total_blocks": 0,
+  "passed": 0,
+  "failed": 0,
+  "escalated": 0,
+  "curie_force_injected": 0,
   "per_block": [
     {
-      "block_id": "...",
+      "block_id": "<id>",
       "block_type": "assessment_item",
-      "page": "...",
+      "page": "<page_id|null>",
       "week": 4,
       "status": "passed|failed|escalated",
       "gate_results": [
-        {"gate_id": "...", "action": "...", "passed": false, "issue_count": 2}
+        {"gate_id": "<id>", "action": "<action|null>", "passed": false, "issue_count": 2}
       ],
-      "escalation_marker": "outline_budget_exhausted | null"
+      "escalation_marker": "<marker|null>",
+      "curie_force_injected": true
+    }
+  ],
+  "phase_level_gate_results": [
+    {
+      "gate_id": "<id>",
+      "action": "<action|null>",
+      "passed": false,
+      "issue_count": 0,
+      "unattributed_issue_count": 0
     }
   ]
 }
 ```
+
+Field semantics that are load-bearing for downstream readers (the calibration harness in particular):
+
+- **Per-block `issue_count` is per-block** (the v2 fix). Each `GateResult.issues[]` carries a `location`; the writer builds a `gate_id -> Counter(location)` map once, then a block's `gate_results[].issue_count` counts ONLY the issues whose `location` equals THAT `block_id`. Schema v1 attached the same phase-level count to every block, smearing course-wide totals and inflating per-gate fire-rates toward 100%. The per-gate `passed` stays PHASE-level — a gate either passed or failed for the whole phase.
+- **`phase_level_gate_results` (v2 addition)** preserves the structural issues that belong to no single block. `location` for these is an objective id (`triangle_completeness` → `CO-01`), a module/page id (`retrieval_presence` → a `page_id`), or `None`. Per gate it carries the TOTAL `issue_count` plus `unattributed_issue_count` (issues whose `location` matched no `block_id`).
+- **`curie_force_injected`** — the top-level count plus a per-block boolean marks blocks that passed `rewrite_curie_anchoring` only because `RewriteProvider` force-injected their CURIE anchoring after the rewrite LLM exhausted its remediation budget. `status` stays `passed` (the appended hidden span legitimately anchors them); the flag exists so operators can quantify that class instead of reading those blocks as clean rewrites. The per-block flag is emitted only when `true`, so clean entries stay byte-stable.
 
 Blocks with non-null `escalation_marker` count as `escalated` rather than `failed`.
 
@@ -699,7 +740,7 @@ Courseforge can import and remediate IMSCC packages from:
 3. Agent extracts, detects source LMS, inventories content
 4. content-analyzer identifies remediation needs
 5. Parallel remediation:
-   - dart-automation-coordinator: PDFs/Office → accessible HTML
+   - semantik-automation-coordinator: PDFs/Office → accessible HTML
    - accessibility-remediation: WCAG 2.2 AA fixes
    - content-quality-remediation: Educational enhancements
    - intelligent-design-mapper: Interactive component styling
@@ -730,11 +771,23 @@ Courseforge can import and remediate IMSCC packages from:
 ### Scripts for Intake
 | Script | Location | Purpose |
 |--------|----------|---------|
-| `imscc_extractor.py` | `scripts/imscc-extractor/` | Universal IMSCC parsing |
+| `imscc_extractor.py` | `scripts/imscc-extractor/` | Universal IMSCC parsing + source-LMS detection |
 | `component_applier.py` | `scripts/component-applier/` | Interactive component application |
-| `remediation_validator.py` | `scripts/remediation-validator/` | Final quality validation |
+| `accessibility_validator.py` | `scripts/accessibility-validator/` | Accessibility checks over remediated HTML |
+| `remediation_validator.py` | `scripts/remediation-validator/` | Final quality validation (`RemediationValidator` / `ValidationReport` / `ValidationSeverity`) |
+
+These are library modules invoked by the remediation agents, not the gate suite.
+Blocking quality enforcement lives in `config/workflows.yaml::validation_gates`
+(`wcag_compliance`, `cartridge_conformance`, and the rest); the
+`remediation-validator` *agent* itself routes to `get_courseforge_status`.
 
 ### Success Metrics
+
+Design targets for the intake/remediation surface. These are goals used to scope
+the work — they are **not** measurements, and no harness in this repo currently
+reports against them. Treat any figure below as unvalidated until a named eval
+produces it.
+
 | Metric | Target |
 |--------|--------|
 | IMSCC import success | 95%+ (any source LMS) |

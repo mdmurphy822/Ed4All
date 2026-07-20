@@ -20,7 +20,7 @@ See `/schemas/README.md` for the unified schema index and conventions.
 ```
 schemas/
 ├── README.md                           # This file
-├── Claude.md                           # Historical schema overview
+├── CLAUDE.md                           # Orientation map for this directory
 ├── template-integration/               # Template integration patterns
 │   └── educational_template_schema.json
 ├── content-display/                    # Content display standards

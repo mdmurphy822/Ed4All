@@ -430,7 +430,7 @@ tracker.update_status("content_generator", "IN_PROGRESS",
 
 ### Course Generation Workflow
 
-`planning → content_generation (batches of 10) → assessment_synthesis (W10, optional QTI/discussion/assignment emit) → packaging (IMSCC) → validation (QA + WCAG) → finalization`. Full phase shapes: `config/workflows.yaml::course_generation`.
+`planning → content_generation (batches of 10) → assessment_synthesis (W10, optional QTI/discussion/assignment emit) → packaging (IMSCC) → validation (QA + WCAG) → finalization`. Like `textbook_to_course`, this workflow also declares the four `COURSEFORGE_TWO_PASS=true` tiers (`content_generation_outline` → `inter_tier_validation` → `content_generation_rewrite` → `post_rewrite_validation`) between `content_generation` and `packaging`; `content_generation` itself is `enabled_when_env: COURSEFORGE_TWO_PASS!=true`, so exactly one of the two paths runs. Full phase shapes: `config/workflows.yaml::course_generation`.
 
 ### Other workflows
 
@@ -457,28 +457,60 @@ tracker.update_status("content_generator", "IN_PROGRESS",
 3. staging
    └── Stage DART outputs to Courseforge inputs
 
-4. objective_extraction
+4. chunking
+   └── Emit the DART chunkset from the staged HTML via the
+       `semantik-chunker` agent (deterministic, no LLM dispatch).
+       Outputs: semantik_chunks_path + semantik_chunks_sha256. Gated on
+       chunkset_manifest + chunk_wcag_status.
+
+5. objective_extraction
    └── Parse staged DART HTML into textbook_structure.json (chapters,
        sections, content blocks); auto-scales duration_weeks to max(8,
        chapters) when --weeks is unset.
 
-5. source_mapping
+6. source_mapping
    └── Map DART source blocks to Courseforge module pages; emits
        source_module_map.json consumed by content_generation.
 
-6. course_planning
+7. course_planning
    └── Synthesize canonical TO-NN / CO-NN learning objectives from
        textbook_structure; emits synthesized_objectives.json. Re-scales
        duration_weeks to the TO-driven max(8, num_tos) when --weeks is
        unset (WS5 §3.2 pacing — see docs/operations/pipeline-invocation.md
        § 2.1; skipped for --weeks / --reuse-objectives).
 
-7. content_generation
+8. concept_extraction
+   └── Build the pedagogy/concept graph from the staged output + chunkset
+       via the `pedagogy-graph-builder` agent. Depends on course_planning
+       + chunking; emits concept_graph_path, concept_graph_sha256, and
+       domain_concept_vocabulary_path. Gated on concept_graph +
+       domain_concept_vocabulary.
+
+9. content_generation
    └── Generate course content modules (parallel batches of 10). Every
        emitted sourceId must resolve against the DART staging manifest
-       (source_refs gate).
+       (source_refs gate). SINGLE-PASS path only — declares
+       `enabled_when_env: COURSEFORGE_TWO_PASS!=true`, so it is skipped
+       whenever the two-pass tiers (10-12, 14) are active.
 
-8. assessment_synthesis (optional)
+10. content_generation_outline (COURSEFORGE_TWO_PASS=true)
+   └── Two-pass Phase 3 — outline-tier Block emit (terse provider, no HTML
+       body). Routed by phase NAME to run_content_generation_outline via
+       _PHASE_TOOL_MAPPING. Emits blocks_outline_path.
+
+11. inter_tier_validation (COURSEFORGE_TWO_PASS=true)
+   └── Two-pass Phase 3 — validator-only phase (`agents: []`) running the
+       structural validators over the outline tier; routed by phase NAME
+       to run_inter_tier_validation. Emits blocks_validated_path +
+       blocks_failed_path.
+
+12. content_generation_rewrite (COURSEFORGE_TWO_PASS=true)
+   └── Two-pass Phase 3 — rewrite-tier HTML emit consuming the validated
+       Block outlines; routed by phase NAME to
+       run_content_generation_rewrite. Emits blocks_final_path +
+       content_paths; gated on content_grounding.
+
+13. assessment_synthesis (optional)
    └── W10 — synthesize grounded quizzes, short assignments, and
        discussion prompts from the DART chunkset and emit QTI 1.2 /
        imsdt / assignment XML + manifest.json into <export>/06_assessments/
@@ -487,15 +519,32 @@ tracker.update_status("content_generator", "IN_PROGRESS",
        gated critical on qti_well_formed + assessment_objective_alignment.
        Runs before packaging; skipped via generate_assessments=false.
 
-9. packaging
+14. post_rewrite_validation (COURSEFORGE_TWO_PASS=true)
+   └── Two-pass Phase 3.5 — validator-only phase (`agents: []`) re-running
+       the inter-tier validators against the rewrite-tier blocks; routed
+       by phase NAME to run_post_rewrite_validation. Under
+       COURSEFORGE_TWO_PASS it additionally depends on
+       assessment_synthesis (depends_on_when_env), so it observes the
+       emitted assessments. Carries the largest gate set of any phase
+       (including block_prose_entailment, claim_support, and the
+       block-quality rollup).
+
+15. packaging
    └── Package course as IMSCC via the mature multi-file packager.
 
-10. trainforge_assessment (optional)
+16. imscc_chunking
+   └── Emit the post-packaging IMSCC chunkset from the packaged course via
+       the `semantik-chunker` agent. Outputs imscc_chunks_path +
+       imscc_chunks_sha256; gated on chunkset_manifest +
+       chunk_wcag_status. This is the phase `--stop-after imscc_chunking`
+       names for the "retrieval-ready course, no training synthesis" slice.
+
+17. trainforge_assessment (optional)
    └── Generate assessments from the IMSCC package. Fails closed if any
        assessment objective_id isn't covered by a chunk's
        learning_outcome_refs.
 
-11. training_synthesis (optional)
+18. training_synthesis (optional)
    └── Synthesize instruction + preference training pairs from the
        generated chunks + assessments. Routes via the
        `training-synthesizer` agent (tool: `synthesize_training`).
@@ -504,11 +553,11 @@ tracker.update_status("content_generator", "IN_PROGRESS",
        `training_specs/.synthesis_pairs_checkpoint.jsonl` (opt out via
        `--no-checkpoint`).
 
-12. libv2_archival
+19. libv2_archival
    └── Archive course artifacts to LibV2 (raw PDFs, DART HTML, IMSCC,
        RAG corpus). Gated by libv2_manifest integrity checks.
 
-13. vector_indexing (optional)
+20. vector_indexing (optional)
    └── Build the per-course on-device vector index from the LibV2-archived
        chunkset so a freshly-built course is askable. Routes via the
        `rag-indexer` agent (tool: `run_vector_indexing`). Runs by default;
@@ -516,7 +565,7 @@ tracker.update_status("content_generator", "IN_PROGRESS",
        `TRAINFORGE_REQUIRE_EMBEDDINGS` is set (then fails closed on a
        broken embedding backend).
 
-14. finalization
+21. finalization
    └── Final validation and training data export.
 ```
 
@@ -539,15 +588,15 @@ tracker.update_status("content_generator", "IN_PROGRESS",
 
 | Agent | Purpose |
 |-------|---------|
-| `dart-automation-coordinator` | Orchestrate PDF conversion |
-| `dart-converter` | Drives the SemantiK v2 cascade for the `semantik_conversion` phase (renamed from `dart_conversion`; PDF → accessible HTML + source provenance) |
+| `semantik-automation-coordinator` | Orchestrate PDF conversion |
+| `semantik-converter` | Drives the SemantiK v2 cascade for the `semantik_conversion` phase (renamed from `dart_conversion`; PDF → accessible HTML + source provenance). Renamed from `dart-converter`; the legacy name still resolves as an `AGENT_TOOL_MAPPING` dispatch alias (read-compat only). |
 | `imscc-intake-parser` | Extract & inventory IMSCC packages |
 | `content-analyzer` | Detect accessibility & quality gaps |
 | `accessibility-remediation` | WCAG fixes, alt text, headings |
 | `content-quality-remediation` | Educational depth & enhancement |
 | `intelligent-design-mapper` | Component selection & styling |
 | `remediation-validator` | Final QA & WCAG verification |
-| `dart-chunker` | Emit `LibV2/courses/<slug>/dart_chunks/chunks.jsonl` from staged DART HTML via `Trainforge.chunker.chunk_content`; deterministic transformation (no LLM dispatch). Backed by `_run_dart_chunking` registered in `MCP/tools/pipeline_tools.py::_build_tool_registry`. |
+| `semantik-chunker` | Emit `LibV2/courses/<slug>/dart_chunks/chunks.jsonl` from staged DART HTML via `Trainforge.chunker.chunk_content`; deterministic transformation (no LLM dispatch). Backed by `_run_dart_chunking` registered in `MCP/tools/pipeline_tools.py::_build_tool_registry`. Canonical agent name for both the `chunking` and `imscc_chunking` phases in `config/workflows.yaml`; renamed from `dart-chunker`, which survives only as an `AGENT_TOOL_MAPPING` dispatch alias (read-compat). |
 
 ### Textbook Pipeline Agents
 
@@ -556,6 +605,7 @@ tracker.update_status("content_generator", "IN_PROGRESS",
 | `textbook-stager` | Stage DART outputs for Courseforge |
 | `textbook-ingestor` | Parse DART HTML & extract objectives |
 | `source-router` | Bind DART source blocks to Courseforge module pages (TF-IDF + confidence scoring) |
+| `pedagogy-graph-builder` | Build the pedagogy/concept graph backing the `concept_extraction` phase; routes to `run_concept_extraction` via `MCP/core/executor.py::AGENT_TOOL_MAPPING`. Declared in `config/workflows.yaml` only (no `config/agents.yaml` entry). |
 | `libv2-archivist` | Archive course artifacts to LibV2 |
 
 ### Trainforge Agents
@@ -908,7 +958,7 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `ED4ALL_OBJECTIVE_LIBRARY_EXEMPLAR_MIN_OVERLAP` | `0.05` | W4.3 Jaccard floor for an exemplar to be surfaced |
 | `ED4ALL_OBJECTIVE_MAX_CHUNKS_PER_OBJECTIVE` | `5` | Fix 1A top-K cap on cited chunks per MERGED objective |
 | `ED4ALL_OBJECTIVE_SYNTHESIS_CHECKPOINT` | `on` | Site override for the stage-2 window + cluster resume sidecars (beats `ED4ALL_GENERATION_CHECKPOINT`). |
-| `ED4ALL_PLANNING_GATE_RETRIES` | `0` (off) | Owner directive 2026-07-17 — graceful course_planning gate-failure retry budget (per attempt: evict the cluster sidecar, keep the window/CO cache, salted TO re-roll); after exhaustion the phase FAIL-OPENS complete-with-warning (`PLANNING_GATE_RETRIES_EXHAUSTED`) and the workflow continues. |
+| `ED4ALL_PLANNING_GATE_RETRIES` | `0` (off) | Graceful course_planning gate-failure retry budget — bounds how many times a nondeterministic TO/CO synthesis re-roll may be attempted before the phase stops blocking the build (per attempt: evict the cluster sidecar, keep the window/CO cache, salted TO re-roll); after exhaustion the phase FAIL-OPENS complete-with-warning (`PLANNING_GATE_RETRIES_EXHAUSTED`) and the workflow continues. |
 | `ED4ALL_PLANNING_REROLL_SALT` | unset (runner-managed) | Per-attempt `attempt-N` re-roll salt the gate-retry loop sets (not operator-set); folded into the synthesis system prompt + the cluster sidecar fingerprint so each retry attempt genuinely differs. |
 | `ED4ALL_REQUIRE_ARCHIVED_OBJECTIVES` | unset (off) | W2.3 fail-closed for the archive_to_libv2 objectives→objectives.json plumbing. |
 | `ED4ALL_PRODUCTION` | `0` | When `1`, enables production-mode FastMCP server settings. |

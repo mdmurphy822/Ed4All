@@ -15,8 +15,12 @@ Brightspace D2L-specific extensions, schemas, and implementation details
 ### `imscc-variables-reference.md`
 Reference catalog of IMSCC manifest/resource variables and namespaces.
 
-IMSCC XSD files (assignment, discussion, QTI) live under the sibling
-`../schemas/imscc/` directory.
+The IMSCC XSD files live under the sibling `../schemas/imscc/` directory (CC 1.3
+manifest profile + imports, assignment, discussion topic, QTI 1.2).
+
+**Courseforge emits IMS CC 1.3.** The 1.1 / 1.2 sections below are reference
+material for cartridges the intake path may receive; every package this project
+produces is 1.3.
 
 ## Key IMSCC Specifications
 
@@ -173,6 +177,16 @@ IMSCC XSD files (assignment, discussion, QTI) live under the sibling
 
 ## Brightspace D2L Specific Extensions
 
+**Reference only — Courseforge does not emit D2L extension XML.** The packager
+writes standard IMS CC resource types (see the version-alignment table below);
+the fragments in this section describe cartridges authored *by* Brightspace, and
+exist so the intake path can be read against them.
+`Courseforge/scripts/imscc-extractor/imscc_extractor.py` detects such cartridges
+by the `http://desire2learn.com/xsd/d2l_2p0` namespace, and
+`Trainforge/parsers/imscc_parser.py` maps the `d2l_2p0` token to the
+`brightspace` source LMS. Namespace strings in the fragments below are
+illustrative and are not asserted against a live D2L export.
+
 ### D2L Assignment Schema
 ```xml
 <assignment xmlns="http://www.imsglobal.org/xsd/imsccv1p1/d2l_2p0">
@@ -327,10 +341,18 @@ When manifest declares one IMSCC version but content XMLs use different version 
 | Discussion resource type | `imsdt_xmlv1p3` |
 | Discussion XML namespace | `http://www.imsglobal.org/xsd/imsccv1p3/imsdt_v1p3` |
 | Quiz resource type | `imsqti_xmlv1p2/imscc_xmlv1p3/assessment` |
-| Assignment resource type | `assignment_xmlv1p0` |
+| Assignment resource type | `associatedcontent/imscc_xmlv1p3/learning-application-resource` |
 | Assignment XML namespace | `http://www.imsglobal.org/xsd/imscc_extensions/assignment` |
 
-**IMPORTANT**: Do NOT use `associatedcontent/imscc_xmlv1p3/learning-application-resource` for assignments - this causes Brightspace to import assignments as raw XML files instead of native assignment tools.
+**Resource types are set in code, not by hand.** The three assessment resource
+types above are the literal values in
+`Courseforge/scripts/package_multifile_imscc.py::_ASSESSMENT_RES_TYPE`, and
+`lib/validators/cartridge_conformance.py` accepts them via
+`_CC_RESOURCE_TYPES_LITERAL` + `_CC_RESOURCE_TYPE_PATTERNS`. Changing a type
+string in a hand-edited manifest without changing both of those will fail the
+`cartridge_conformance` gate. Note in particular that `assignment_xmlv1p0` is
+**not** in the conformance allowlist — the shipped assignment type is the
+`associatedcontent/…/learning-application-resource` form above.
 
 **Validation Command**:
 ```bash
@@ -347,20 +369,29 @@ grep -r "imsccv1p3" *.xml  # Should find all IMSCC references
 
 ## Tools and Utilities
 
-### Validation Scripts
-- XML schema validators
-- IMSCC package validators
-- Brightspace compatibility checkers
+### Validation
 
-### Generation Templates
-- Manifest file templates
-- Resource definition templates
-- Assessment XML templates
+- `lib/validators/cartridge_conformance.py` — the shipped conformance gate.
+  Resolves the manifest's CC profile namespace to a version via `_CC_MANIFEST_NS`
+  (1.1 / 1.2 / 1.3, plus a plain IMS CP manifest accepted as `"cp"`), checks each
+  resource `type` against `_CC_RESOURCE_TYPES_LITERAL` and the versioned
+  `_CC_RESOURCE_TYPE_PATTERNS` families, and XSD-validates against the schemas
+  auto-discovered by `targetNamespace` from `../schemas/imscc/`.
 
-### Testing Frameworks
-- LMS import testing
-- Content display validation
-- Assessment functionality verification
+### Generation
+
+- `Courseforge/scripts/package_multifile_imscc.py` — writes `imsmanifest.xml`
+  (CC 1.3: namespace `http://www.imsglobal.org/xsd/imsccv1p3/imscp_v1p1`,
+  `<schemaversion>1.3.0</schemaversion>`) and assigns resource types from
+  `_ASSESSMENT_RES_TYPE`.
+- `Courseforge/scripts/qti_emitter.py` — writes the QTI 1.2 assessment,
+  discussion-topic, and assignment learning-application-resource XML.
+
+### Testing
+
+- `tests/integration/test_moodle_cc_import_smoke.py` — cross-LMS import smoke.
+- `tests/test_w10_assessment_e2e.py` — end-to-end assessment emission, pinning
+  the assignment resource-type string.
 
 ## Best Practices
 
@@ -389,7 +420,8 @@ grep -r "imsccv1p3" *.xml  # Should find all IMSCC references
 
 ## Related Documentation
 
-- `../schemas/imscc/`: IMSCC XSD definitions (assignment, discussion, QTI)
+- `../schemas/imscc/`: IMSCC XSD definitions — the CC 1.3 manifest profile plus
+  its five imports, and the assignment / discussion-topic / QTI 1.2 schemas
 - `brightspace-specific/`: Brightspace D2L extensions and protocols
 - `../docs/troubleshooting.md`: Error pattern prevention guidance
 - `../CLAUDE.md`: Course generation guidelines
