@@ -43,6 +43,78 @@ class _NoCacheStaticFiles(StaticFiles):
 
 logger = logging.getLogger("gui.app")
 
+#: Env var carrying the iframe-embed allowlist for the learner/Studio surfaces.
+#: Its value is the *source list* of a CSP ``frame-ancestors`` directive — one or
+#: more space-separated origins (e.g. ``http://lms.example:8080`` or
+#: ``'self' http://lms.example:8080``). When UNSET/blank the GUI sends NO
+#: ``frame-ancestors`` header at all (today's byte-identical, framed-by-anyone
+#: posture the cookieless ask surface was designed for); when set, only the
+#: listed origins may frame the GUI. Parse-with-fallback: garbage/blank → unset.
+FRAME_ANCESTORS_ENV = "ED4ALL_GUI_FRAME_ANCESTORS"
+
+
+def resolve_frame_ancestors() -> str | None:
+    """Resolve the ``Content-Security-Policy: frame-ancestors ...`` value, or None.
+
+    Reads ``ED4ALL_GUI_FRAME_ANCESTORS``. Returns the full CSP directive value
+    (``"frame-ancestors <sources>"``) when the env is set to a non-blank value,
+    else ``None`` (no header emitted → byte-identical to today's open-framing
+    default). Header-injection safety: CR/LF are scrubbed and interior
+    whitespace collapsed to single spaces, so a hostile value can't smuggle a
+    second header line. A value that scrubs to empty resolves to ``None``.
+    """
+    raw = os.environ.get(FRAME_ANCESTORS_ENV)
+    if not raw or not raw.strip():
+        return None
+    cleaned = " ".join(raw.replace("\r", " ").replace("\n", " ").split())
+    if not cleaned:
+        return None
+    return "frame-ancestors " + cleaned
+
+
+class FrameAncestorsMiddleware:
+    """Pure-ASGI middleware that stamps a ``frame-ancestors`` CSP on HTTP responses.
+
+    Opt-in via ``ED4ALL_GUI_FRAME_ANCESTORS`` (resolved PER-REQUEST so an operator
+    edit takes effect without a restart). When the env is unset the middleware is
+    a transparent pass-through — no header is added, so the response is
+    byte-identical to today's open-framing behaviour. When set, the resolved
+    ``Content-Security-Policy: frame-ancestors <allowlist>`` header is appended to
+    every HTTP response that does NOT already carry a ``Content-Security-Policy``
+    (so the archived-source viewer's own restrictive CSP is never clobbered).
+
+    Installed in ALL serve modes (learner / studio / full) so the embeddable ask
+    widget — served from any of them — honours the allowlist. Header-only, so it
+    ignores non-HTTP (websocket / lifespan) scopes.
+    """
+
+    def __init__(self, app, value_provider=None) -> None:  # noqa: ANN001
+        self.app = app
+        # Injectable for tests; defaults to the env resolver (per-request).
+        self._value_provider = value_provider or resolve_frame_ancestors
+
+    async def __call__(self, scope, receive, send) -> None:  # noqa: ANN001
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        value = self._value_provider()
+        if not value:
+            await self.app(scope, receive, send)
+            return
+        header_value = value.encode("latin-1")
+
+        async def send_wrapper(message):  # noqa: ANN001, ANN202
+            if message.get("type") == "http.response.start":
+                headers = message.setdefault("headers", [])
+                has_csp = any(
+                    name.lower() == b"content-security-policy" for name, _ in headers
+                )
+                if not has_csp:
+                    headers.append((b"content-security-policy", header_value))
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
 # (module attribute name, mount prefix) for each router. The attribute is the
 # ``router`` object exported by ``gui.routers.<name>``.
 _ROUTER_MOUNTS = [
@@ -237,6 +309,13 @@ def create_app(learner_only: bool = False, mode: str | None = None) -> FastAPI:
         allow_headers=["*"],
     )
 
+    # Opt-in iframe-embed allowlist (ED4ALL_GUI_FRAME_ANCESTORS). Installed in
+    # EVERY serve mode so the embeddable ask widget honours the allowlist
+    # regardless of which shell serves it. Transparent pass-through (no header,
+    # byte-identical) when the env is unset — the ask surface stays framed-by-
+    # anyone by default, matching the cookieless embed design.
+    app.add_middleware(FrameAncestorsMiddleware)
+
     @app.get("/api/health")
     async def health() -> dict:  # noqa: D401 — simple liveness probe
         """Liveness probe."""
@@ -380,4 +459,9 @@ def create_app(learner_only: bool = False, mode: str | None = None) -> FastAPI:
     return app
 
 
-__all__ = ["create_app"]
+__all__ = [
+    "create_app",
+    "FRAME_ANCESTORS_ENV",
+    "FrameAncestorsMiddleware",
+    "resolve_frame_ancestors",
+]

@@ -83,6 +83,54 @@ var ABORT_MS = 150000; // > backend 120s timeout (ED4ALL_ANSWER_TIMEOUT_SECONDS)
     return document.getElementById(id);
   }
 
+  // --- iframe-embed widget wiring (LMS embed contract) ----------------------
+  // The learner page doubles as an embeddable "Ask the Course" widget. The host
+  // page (e.g. an OpenOLAT course element) frames `/learn/?course=<slug>&embed=1`:
+  //   - `?course=<slug>` pins the widget to ONE course: the course <select> is
+  //     pre-selected + disabled (a learner can't switch it), so the widget shows
+  //     a single-course ask view. The pinned slug is passed to /api/learn/ask as
+  //     AskRequest.slug exactly as a manual pick would be.
+  //   - `?embed=1` (truthy) is COMPACT widget mode: the course picker field and
+  //     the Quizzes panel are hidden (CSS), leaving a pure ask box for the frame.
+  // Both are additive + presentational; with neither param the page is
+  // byte-identical to the standalone learner surface.
+  function getParam(name) {
+    try {
+      return new URLSearchParams(window.location.search).get(name);
+    } catch (_e) {
+      return null;
+    }
+  }
+  function isTruthy(v) {
+    if (!v) return false;
+    return ["1", "true", "yes", "on"].indexOf(String(v).toLowerCase()) !== -1;
+  }
+
+  // Pin the course <select> to `slug`: ensure the option exists, select it, and
+  // disable the control so the widget stays single-course. Runs AFTER loadCourses
+  // resolves so it wins over the fetched option list (and over the empty/error
+  // placeholder) — the server still validates the slug on /ask, so a stale pin
+  // surfaces an honest 404 fragment rather than a silently-wrong course.
+  function applyCoursePin(slug) {
+    var sel = $("course-sel");
+    if (!sel) return;
+    var found = false;
+    for (var i = 0; i < sel.options.length; i++) {
+      if (sel.options[i].value === slug) {
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      var opt = document.createElement("option");
+      opt.value = slug;
+      opt.textContent = slug;
+      sel.appendChild(opt);
+    }
+    sel.value = slug;
+    sel.disabled = true;
+  }
+
   function setStatus(text) {
     // Write ONE message to the polite live region.
     $("status").textContent = text;
@@ -244,6 +292,14 @@ var ABORT_MS = 150000; // > backend 120s timeout (ED4ALL_ANSWER_TIMEOUT_SECONDS)
   }
 
   document.addEventListener("DOMContentLoaded", function () {
-    loadCourses();
+    var pinnedSlug = getParam("course");
+    if (isTruthy(getParam("embed"))) {
+      document.body.classList.add("embed"); // compact widget: hides picker + quizzes
+    }
+    // loadCourses() is async; apply the course pin only after it resolves so the
+    // pinned selection wins over the fetched option list.
+    Promise.resolve(loadCourses()).then(function () {
+      if (pinnedSlug) applyCoursePin(pinnedSlug);
+    });
     $("ask-form").addEventListener("submit", onSubmit);
   });

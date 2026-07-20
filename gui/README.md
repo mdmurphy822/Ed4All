@@ -521,6 +521,74 @@ Without `--learner`, the full app serves both surfaces: the facilitator uses the
 operator SPA while a participant opens `/learn/` — appropriate for dev/demo on a
 trusted machine, not for a shared/exposed deployment.
 
+### Embedding the ask widget in an LMS (`iframe`)
+
+The learner page doubles as an **embeddable "Ask the Course" widget** so a
+grounded ask box can live *inside* an LMS course page (the OpenOLAT retrieval
+demo frames it from an OpenOLAT *External Page* / *LTI Page* course element). The
+surface is **cookieless** (the anonymous `X-Learner-Id` lives in the framed
+origin's `localStorage`, not a cookie — no `SameSite` third-party-cookie
+breakage) and needs no server-side session, so an `iframe` embed works with zero
+new auth plumbing.
+
+**Widget URL shape** (this is the exact contract a host LMS configures):
+
+```
+http://<gui-host>:8077/learn/?course=<slug>&embed=1
+```
+
+| Query param | Effect |
+|-------------|--------|
+| `course=<slug>` | Pins the widget to ONE course: the course `<select>` is pre-selected and **disabled** (a learner can't switch it). The slug is passed to `/api/learn/ask` exactly as a manual pick would be; the server still validates it (an unknown slug returns an honest 404 fragment, never a wrong course). |
+| `embed=1` | **Compact widget mode** (truthy: `1`/`true`/`yes`/`on`): hides the course-picker field and the Quizzes panel, leaving a pure ask box that sits flush in its frame. Presentational only — the ask form, live region, and answer surface are untouched. |
+
+With neither param the page is **byte-identical** to the standalone learner
+surface.
+
+**Frame-ancestors allowlist (`ED4ALL_GUI_FRAME_ANCESTORS`)** — opt-in control
+over *who may frame the GUI*:
+
+```bash
+# Only this OpenOLAT origin may iframe the ask widget:
+ED4ALL_GUI_FRAME_ANCESTORS='http://lms.example:8080' ed4all gui
+# Multiple origins / 'self' are space-separated (a CSP frame-ancestors source list):
+ED4ALL_GUI_FRAME_ANCESTORS="'self' http://lms.example:8080 https://lms.example"
+```
+
+- **Unset (default):** the GUI sends **no** `frame-ancestors` header — the ask
+  surface stays framable by any origin, matching the cookieless embed design.
+  This is the byte-identical, zero-regression default.
+- **Set:** every HTTP response that does not already carry a
+  `Content-Security-Policy` gains
+  `Content-Security-Policy: frame-ancestors <allowlist>`, so only the listed
+  origins can frame the GUI. The archived-source viewer's own restrictive CSP is
+  never clobbered. The value is resolved per-request (an edit takes effect
+  without a restart); CR/LF are scrubbed and interior whitespace collapsed so a
+  hostile value can't smuggle a second header. Applies in **all** serve modes
+  (`full` / `studio` / `learner`) since the widget can be served from any of
+  them.
+
+Modern browsers honour CSP `frame-ancestors`; it supersedes the legacy
+`X-Frame-Options` header (which cannot express a multi-origin allowlist), so the
+GUI emits **only** the CSP form.
+
+**Auth scoping (structural, no embed token needed).** The ask surface
+(`/api/learn/*`) is **open by design** — a learner never presents a token. In
+`full` mode the operator token gate (`ED4ALL_GUI_TOKEN`) covers the operator
+surface only; `/api/learn/*` is deliberately un-gated, so the embed widget keeps
+working with the token armed. In `studio` / `learner` mode the operator routers
+are not mounted at all. There is therefore no separate "embed-scope" token to
+issue.
+
+**CORS fallback (no server change).** The primary route is the `iframe` embed
+above (CORS is irrelevant inside an iframe). A host that would rather render
+answers in its **own** LMS-themed DOM can instead call `/api/learn/ask`
+cross-origin directly — the GUI already sends a wildcard `Access-Control-Allow-Origin`
+and the ask surface is unauthenticated, so no new CORS env is required. (LTI 1.3
+is intentionally **not** implemented — the iframe route needs none of its
+OIDC/JWKS/launch-JWT machinery; the seam is noted for a future signed-context
+handoff if a customer ever requires it.)
+
 ## Studio surface (`/studio/`)
 
 The **Studio** is the end-user surface for *browsing archived courses* — a

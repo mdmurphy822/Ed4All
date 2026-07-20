@@ -372,6 +372,20 @@ ul.quiz-result-list {
   margin: 0;
 }
 
+/* Compact iframe-embed widget (`/learn/?embed=1`). The host LMS page owns the
+ * chrome, so hide the course picker (pinned via `?course=`) and the Quizzes
+ * panel, leaving a pure "Ask the Course" box. Presentational only — the ask
+ * form, live region, and answer surface are untouched. */
+body.embed #course-field,
+body.embed #quizzes {
+  display: none;
+}
+body.embed header {
+  /* Trim the standalone-page banner so the widget sits flush in its frame. */
+  padding-top: 0.5rem;
+  padding-bottom: 0.5rem;
+}
+
 /* Respect reduced-motion (no animated busy state used, but guard anyway). */
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
