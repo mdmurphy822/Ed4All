@@ -57,10 +57,17 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pyyaml jsonschema
+          pip install pyyaml jsonschema pytest
 
       - name: Run integrity checks
         run: python ci/integrity_check.py --verbose
+
+      # The integrity run above already ENFORCES the course-slug guard
+      # (registered as check_course_slug_leak). This step exercises the
+      # guard's own unit tests, which live under ci/tests/ (outside the
+      # pytest.ini testpaths the main `test` job scans).
+      - name: Test course-slug guard
+        run: python -m pytest ci/tests -q
 
   # The GUI suite (~494 tests under gui/tests/) imports FastAPI's TestClient.
   # The default `test` job installs only `.[dev]` (no fastapi), so those tests

@@ -884,6 +884,55 @@ def check_libv2_vendor_sync(verbose: bool = False) -> CheckResult:
     return result
 
 
+def check_course_slug_leak(verbose: bool = False) -> CheckResult:
+    """Fail when a built-course slug is hardcoded in a tracked file.
+
+    Courses this pipeline produces are working data, not product; their
+    slugs must not appear in tracked code/tests/config/docs. Detection and
+    the allowlist live in ``ci/course_slug_guard.py`` (scheme regexes, not a
+    literal blocklist, so future members of a family are caught). Scans
+    ``git ls-files`` only. An unscannable tree (no git) is a warning + pass,
+    not a silent skip; any violation fails the check with file:line:token.
+    """
+    start_time = time.time()
+    result = CheckResult(name="course_slug_leak", passed=False, message="")
+
+    try:
+        from ci import course_slug_guard
+    except ImportError as e:
+        result.errors.append(f"course_slug_guard import failed: {e}")
+        result.message = "Course-slug guard unavailable"
+        result.duration_seconds = time.time() - start_time
+        return result
+
+    try:
+        violations = course_slug_guard.scan_repository(PROJECT_ROOT)
+    except RuntimeError as e:
+        result.message = f"Course-slug scan skipped: {e}"
+        result.warnings.append(result.message)
+        result.passed = True
+        result.duration_seconds = time.time() - start_time
+        return result
+
+    result.details["violation_count"] = len(violations)
+    if violations:
+        for v in violations:
+            result.errors.append(v.format())
+        result.passed = False
+        result.message = f"{len(violations)} built-course slug(s) in tracked files"
+    else:
+        result.passed = True
+        result.message = "No built-course slugs in tracked files"
+
+    if verbose:
+        logger.info(f"  {result.message}")
+        for v in violations:
+            logger.warning(f"    {v.format()}")
+
+    result.duration_seconds = time.time() - start_time
+    return result
+
+
 def check_provenance_enum_sync(verbose: bool = False) -> CheckResult:
     """Verify the closed Touch.provider enum is in sync across all sites.
 
@@ -986,6 +1035,7 @@ def run_integrity_checks(
         ("Hash Chains", lambda: check_hash_chains(runs_path, verbose)),
         ("Sample Finalization", lambda: check_sample_finalization(runs_path, verbose)),
         ("LibV2 Vendor Sync", lambda: check_libv2_vendor_sync(verbose)),
+        ("Course Slug Leak", lambda: check_course_slug_leak(verbose)),
         ("Provenance Enum Sync", lambda: check_provenance_enum_sync(verbose)),
         (
             "Validator Test Coverage",

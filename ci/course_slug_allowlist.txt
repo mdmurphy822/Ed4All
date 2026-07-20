@@ -1,0 +1,16 @@
+# Course-slug guard allowlist (ci/course_slug_guard.py).
+#
+# The guard fails when a slug naming a course built by this pipeline is
+# hardcoded in a tracked file. This file records the NARROW, deliberate
+# exceptions. Keep it near-empty — an entry here is a promise that the hit
+# is not a real leak.
+#
+# Format (one per line, '#' starts a comment):
+#   <repo-relative-path>            allow every slug match in that file
+#   <repo-relative-path><TAB><tok>  allow exactly one token in that file
+#
+# The guard's own module and test are always allowed in code (they hold the
+# patterns and planted fixtures) and need no entry here. Synthetic doc
+# placeholders (PHYS_101, WF-20260420-abc12345, course-a) never match the
+# scheme patterns and need no entry either. Prefer marking a single doc line
+# with the inline 'slug-guard: allow' comment over allowlisting a whole file.
