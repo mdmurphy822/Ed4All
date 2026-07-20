@@ -11,6 +11,29 @@ Unified orchestration system for SemantiK, Courseforge, Trainforge, and LibV2.
 > the batch/mailbox ones), the **outline-vs-rewrite naming trap**, and the **pure-local
 > constrained-VRAM env recipe**: see [`docs/operations/pipeline-invocation.md`](docs/operations/pipeline-invocation.md).
 
+> **Full production run** (the end-to-end multi-hour build: seat topology and
+> ordering, per-phase artifacts, gate-failure triage, resume/stop procedure,
+> what to check between phases): see
+> [`docs/operations/full-run-playbook.md`](docs/operations/full-run-playbook.md).
+> Its environment template is [`run-env.example.sh`](run-env.example.sh) —
+> sanitized, sectioned into PORTABLE / HARDWARE-PROFILE / VALIDATED
+> MEASUREMENTS. The hardware-profile values (concurrency, NLI batch sizes,
+> `ED4ALL_GPU_LIFECYCLE=0`, `ED4ALL_NLI_EVICT_FOR_CUDA=0`) are tuned for a
+> single-GPU large-unified-memory host and will OOM a small card unedited.
+> Canonical full-run invocation:
+>
+> ```bash
+> # _SEAT_MAIN_MODEL must match your seat's --served-model-name; the template
+> # warns loudly at source time if it is unset. Edit §2 for your hardware first.
+> _SEAT_MAIN_MODEL=<served-model-name> source ./run-env.example.sh
+> ed4all run textbook-to-course --corpus ./inputs/<DIR> --course-name <NAME> \
+>   --skip-training
+> ```
+>
+> Pipeline-owned vLLM seat lifecycle is configured separately — source
+> [`docs/operations/seat-schedule.env.example`](docs/operations/seat-schedule.env.example)
+> alongside the run env (never enable it mid-build).
+
 ```bash
 # Primary: run any workflow end-to-end via the unified CLI
 ed4all run <workflow_name> --corpus <PATH> --course-name <NAME> [--mode local|api]

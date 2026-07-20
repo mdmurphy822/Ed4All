@@ -98,8 +98,22 @@ Other useful commands:
 ed4all run --help                                     # List workflows and flags
 ed4all run textbook-to-course --dry-run ...           # Plan only, no execution
 ed4all run textbook-to-course --resume <run_id>       # Resume an interrupted run
+ed4all stop <run_id>                                  # Checkpoint and pause at the next unit boundary
 ed4all list-runs                                      # Show recent runs
 ```
+
+### Running a full production build
+
+The quick-start command above is the happy path and needs no configuration. A
+full multi-hour build against local model seats — seat topology, the phase
+sequence and what each phase produces, how to read gate outcomes, and the
+resume/stop procedure — is covered in one place:
+[`docs/operations/full-run-playbook.md`](docs/operations/full-run-playbook.md).
+
+Environment for such a run starts from [`run-env.example.sh`](run-env.example.sh).
+Read its hardware-profile section before copying any concurrency, batch-size, or
+GPU-lifecycle setting: those values are tuned for a single-GPU large-memory host
+and will exhaust VRAM on a small card unedited.
 
 ## What's inside
 
