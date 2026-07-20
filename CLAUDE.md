@@ -750,7 +750,7 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `NVIDIA_*` (vendor endpoint-registry row for the hosted large-model seat — `NVIDIA_API_KEY` / `NVIDIA_BASE_URL` / `NVIDIA_LARGE_MODEL`) | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 3 |
 | `SEMANTIK_*` (DART replacement — SemantiK semantic-cascade converter; also honors the legacy `DART_THETA_DEVICE` compat env) | [`SemantiK/CLAUDE.md § Opt-In Behavior Flags`](SemantiK/CLAUDE.md) | 163 |
 | `COURSEFORGE_*` / `COURSEPLANNER_*` / `TEXTBOOK_SYNTHESIS_*` | [`Courseforge/CLAUDE.md § Opt-In Behavior Flags`](Courseforge/CLAUDE.md) | 45 |
-| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root index (below) + [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 221 |
+| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root index (below) + [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 230 |
 
 ### Cross-cutting flags (root-owned)
 
@@ -978,6 +978,15 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `ED4ALL_CHUNK_SUBSECTION_MIN_WORDS` | `250` | W-satellite — accumulation floor (words) a buffer must reach before a sub-section heading may flush it under `ED4ALL_CHUNK_SUBSECTION_BREAK`. |
 | `ED4ALL_CHUNK_LO_HEURISTIC` | unset (off) | W1b.5 heuristic LO-backfill arm |
 | `ED4ALL_CROSS_COURSE_DEDUP` | unset (off) | W1b.1 cross-course boilerplate dedup for multi-course batch imports |
+| `ED4ALL_WITH_ASSESSMENT_SFT` | unset (off) | SFT program S1 — appends deterministic open-book assessment→SFT pairs to `instruction_pairs.jsonl` (OR'd with the `with_assessment_sft` kwarg). |
+| `ED4ALL_WITH_GRAPH_SFT` | unset (off) | SFT program S5 — appends deterministic open-book concept-graph→SFT pairs from the holdout-reduced consensus-filtered graph (OR'd with `with_graph_sft`). |
+| `ED4ALL_ASSESSMENT_APPLY_ARM` | unset (off) | A1 LLM apply-arm — routes apply word-problems + misconception prose through a roster-license-filtered local seat behind a mandatory sympy→groundedness→trivote verify chain. |
+| `ED4ALL_ASSESSMENT_APPLY_ARM_MAX` | `4` | Satellite of `ED4ALL_ASSESSMENT_APPLY_ARM` — bounded per-quiz LLM draft budget (garbage / non-positive → 4). |
+| `ED4ALL_ASSESSMENT_ITEM_TRIVOTE` | unset (off) | A2 Bloom-trivote seam in the item-writing linter (asserted vs verb-ontology + injected zero-shot voter; `ITEM_BLOOM_TRIVOTE_UNSUPPORTED` warning). |
+| `ED4ALL_ASSESSMENT_NUMERIC_RECOVERY` | unset (off) | A3 apparatus-guard numeric-recovery — re-admits Solution/Check/Step-N regions for the numeric-FIB extractor ONLY (still sympy-verified); guard intact elsewhere. |
+| `ED4ALL_DISCUSSION_GROUNDING_NLI` | unset (off) | A5 text-grounded NLI arm for `discussion_assignment_grounded` — flips refs-only Jaccard to authoritative text-entailment where runnable (only tightens; legacy fallback). |
+| `ED4ALL_EVAL_COMPOSER_PROVIDER` | unset (absent) | E7a diagnostic-composer arm — composes eval answers on a stronger local seat while retrieval + gates stay byte-identical (separates retrieval vs composition failures). |
+| `ED4ALL_EVAL_COMPOSER_MODEL` | per-provider | Satellite of `ED4ALL_EVAL_COMPOSER_PROVIDER` — model-ID override for the diagnostic composer seat. |
 
 The `LLM_*` env vars (`LLM_MODE`, `LLM_PROVIDER`, `LLM_MODEL`) are CLI runtime knobs documented in § Quick Start above. Other `ED4ALL_*` vars kept out of this index — the GUI server vars (`ED4ALL_GUI_HOST` / `_PORT` / `_LEARNER` / `_MODE` / `_TOKEN`), the test-only fixture/gating overrides (incl. `ED4ALL_NLI_VALIDATORS_FACTORY`, the picklable-factory dotted-path seam the `ED4ALL_NLI_MICROBATCH_VALIDATORS` process pool uses to build each worker's NLI — default the production singleton loader), and the three rewrite-tier `ED4ALL_REWRITE_*` + the W10 `ED4ALL_ASSESSMENT_PROSE_PROVIDER` flags owned by subsystem files — are enumerated verbatim in [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md).
 
@@ -1009,6 +1018,7 @@ Single-source-of-truth loaders (`lib/ontology/`):
 - `lib/ontology/teaching_roles.py` — `(component, purpose) → role` mapper.
 - `lib/ontology/taxonomy.py::load_taxonomy(name)` — generic JSON-taxonomy loader (reads `schemas/taxonomies/`).
 - `lib/ontology/learning_objectives.py` — single source of truth for LO identity (`mint_lo_id`, `validate_lo_id`, `hierarchy_from_id`, `split_terminal_chapter`). Pattern `^[A-Z]{2,}-\\d{2,}$` mirrors `schemas/knowledge/courseforge_jsonld_v1.schema.json`.
+- `lib/licensing/teacher_roster.py` — machine-readable SFT teacher-license roster + fail-closed export/ingest/Nemotron-pin guards (`assert_export_licenses` / `assert_checkpoint_license` / `assert_nemotron_pin` / `stamp_pair_license` / `provider_verdict_roster`); canonical prose posture in `docs/LICENSING.md § SFT teacher roster`.
 
 Validators (`lib/validators/`) — wiring in `docs/validation/gates.md`. Load-bearing thresholds:
 
