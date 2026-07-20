@@ -363,3 +363,4 @@ state/qa/
 # Repo-root working scratch (rendered chapter iterations)
 scratchpad/
 scripts/shots/
+state/replay_data/
