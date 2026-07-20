@@ -230,8 +230,8 @@ A release is cut by pushing an annotated git tag matching `v*` to `main`:
 ```bash
 git checkout main && git pull
 # pyproject.toml version already bumped and merged
-git tag -a v0.3.0 -m "v0.3.0"
-git push origin v0.3.0
+git tag -a v0.4.0 -m "v0.4.0"
+git push origin v0.4.0
 ```
 
 The tag push triggers `.github/workflows/release.yml`, which:
