@@ -375,3 +375,6 @@ run-env.*.sh
 *.bak
 # Regenerable derived caches (content-addressed embeddings; ~10MB, no corpus text)
 state/embedding_cache*.jsonl
+
+# Operator-local demo LMS deployment (OpenOLAT stack: compose, config, provisioning)
+demo/
