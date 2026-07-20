@@ -360,16 +360,48 @@ def test_moodle_cc_import_smoke(tmp_path):
     else:
         cartridge = _build_fixture_cartridge(tmp_path)
 
-    container = f"ed4all-moodle-smoke-{uuid.uuid4().hex[:8]}"
+    suffix = uuid.uuid4().hex[:8]
+    container = f"ed4all-moodle-smoke-{suffix}"
+    db_container = f"ed4all-moodle-db-{suffix}"
+    network = f"ed4all-moodle-net-{suffix}"
     boot_deadline = time.time() + int(os.environ.get("ED4ALL_MOODLE_BOOT_TIMEOUT", "900"))
 
+    # The Bitnami Moodle image has NO embedded database — without a reachable
+    # MariaDB it waits forever at "Trying to connect to the database server"
+    # and the boot deadline reads as an install hang (root-caused 2026-07-20
+    # after three timeout skips). Provision a companion MariaDB on a private
+    # network; both are torn down in finally.
+    db_image = os.environ.get("ED4ALL_MOODLE_DB_IMAGE", "bitnamilegacy/mariadb:latest").strip()
+
     try:
+        net = _run_docker(prefix, ["network", "create", network], timeout=60)
+        if net.returncode != 0:
+            pytest.skip(f"could not create docker network: {net.stderr.strip()[:200]}")
+        db = _run_docker(
+            prefix,
+            [
+                "run", "-d", "--name", db_container, "--network", network,
+                "--network-alias", "mariadb",
+                "-e", "ALLOW_EMPTY_PASSWORD=yes",
+                "-e", "MARIADB_DATABASE=bitnami_moodle",
+                "-e", "MARIADB_USER=bn_moodle",
+                db_image,
+            ],
+            timeout=120,
+        )
+        if db.returncode != 0:
+            pytest.skip(f"could not start MariaDB companion: {db.stderr.strip()[:300]}")
         run = _run_docker(
             prefix,
             [
-                "run", "-d", "--name", container,
+                "run", "-d", "--name", container, "--network", network,
                 "-e", "MOODLE_SKIP_BOOTSTRAP=no",
                 "-e", "ALLOW_EMPTY_PASSWORD=yes",
+                "-e", "MOODLE_DATABASE_TYPE=mariadb",
+                "-e", "MOODLE_DATABASE_HOST=mariadb",
+                "-e", "MOODLE_DATABASE_PORT_NUMBER=3306",
+                "-e", "MOODLE_DATABASE_NAME=bitnami_moodle",
+                "-e", "MOODLE_DATABASE_USER=bn_moodle",
                 image,
             ],
             timeout=120,
@@ -436,3 +468,5 @@ def test_moodle_cc_import_smoke(tmp_path):
 
     finally:
         _run_docker(prefix, ["rm", "-f", container], timeout=120)
+        _run_docker(prefix, ["rm", "-f", db_container], timeout=120)
+        _run_docker(prefix, ["network", "rm", network], timeout=60)
