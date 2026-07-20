@@ -364,3 +364,14 @@ state/qa/
 scratchpad/
 scripts/shots/
 state/replay_data/
+
+# --- pre-push sanitization (2026-07-20) ---
+# Per-run operator env stacks: carry real API keys (e.g. SPARK_API_KEY) + endpoint URLs.
+run-env.*.sh
+# Tracked, secret-free stack templates (verified: no real key values)
+!run-env.glm-stack.sh
+!run-env.example.sh
+# Editor/operator backups
+*.bak
+# Regenerable derived caches (content-addressed embeddings; ~10MB, no corpus text)
+state/embedding_cache*.jsonl
