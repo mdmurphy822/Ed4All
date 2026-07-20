@@ -180,3 +180,82 @@ def test_env_flag_drives_assessment_sft(tmp_path, monkeypatch):
         # kwarg left False — env must drive it on.
     )
     assert stats.assessment_sft_pairs_emitted > 0
+
+
+def test_assessment_sft_pairs_carry_license_stamp(tmp_path):
+    """SFT-C stitch: stamp_pair_license() runs on emit, so every assessment->SFT
+    pair carries a fine-grained ``license`` tag (in addition to the coarse
+    ``seat_license`` / ``provider``)."""
+    course = _make_working_copy(tmp_path)
+    _write_assessments(course)
+
+    run_synthesis(
+        corpus_dir=course,
+        course_code="MINI_TRAINING_101",
+        provider="mock",
+        with_assessment_sft=True,
+    )
+
+    asft = [
+        p for p in _instruction_pairs(course)
+        if str(p.get("template_id", "")).startswith("assessment_sft.")
+    ]
+    assert asft, "expected at least one assessment->SFT pair"
+    for p in asft:
+        assert p.get("license"), (
+            "stamp_pair_license must add a non-empty license tag on emit"
+        )
+        # generating_seat is preserved byte-identical (the local template seat).
+        assert p.get("generating_seat") == "local"
+
+
+def _write_memorization_holdout(course: Path, item_ids) -> None:
+    (course / "training_specs").mkdir(parents=True, exist_ok=True)
+    (course / "training_specs" / ".memorization_holdout.json").write_text(
+        json.dumps({
+            "schema_version": "v1",
+            "purpose": "memorization_probe_holdout",
+            "seed": 42,
+            "fraction": 1.0,
+            "held_out_item_ids": sorted(item_ids),
+        }),
+        encoding="utf-8",
+    )
+
+
+def test_memorization_holdout_excludes_assessment_sft_pairs(tmp_path):
+    """SFT-C/S8 stitch: run_synthesis loads training_specs/.memorization_holdout
+    .json and threads held-out item ids into the assessment->SFT generator, so a
+    reserved item never produces a training pair (the probe's slice stays
+    genuinely unseen)."""
+    course = _make_working_copy(tmp_path)
+    _write_assessments(course)
+    # Reserve BOTH assessment items (question_id == item_id) → zero pairs.
+    _write_memorization_holdout(course, ["q-001", "q-002"])
+
+    stats = run_synthesis(
+        corpus_dir=course,
+        course_code="MINI_TRAINING_101",
+        provider="mock",
+        with_assessment_sft=True,
+    )
+    assert stats.assessment_sft_pairs_emitted == 0
+    assert not any(
+        str(p.get("template_id", "")).startswith("assessment_sft.")
+        for p in _instruction_pairs(course)
+    )
+
+
+def test_no_memorization_holdout_is_byte_identical_default(tmp_path):
+    """Absent .memorization_holdout.json → empty set → every item is
+    pair-eligible (byte-identical legacy behaviour)."""
+    course = _make_working_copy(tmp_path)
+    _write_assessments(course)
+
+    stats = run_synthesis(
+        corpus_dir=course,
+        course_code="MINI_TRAINING_101",
+        provider="mock",
+        with_assessment_sft=True,
+    )
+    assert stats.assessment_sft_pairs_emitted > 0

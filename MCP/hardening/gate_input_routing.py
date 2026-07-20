@@ -2911,6 +2911,16 @@ def default_router() -> GateInputRouter:
         "lib.validators.imscc.IMSCCParseValidator",
         _build_imscc,
     )
+    # Track-L (L2) CartridgeConformanceValidator — full-cartridge strict
+    # CC/QTI conformance over the BUILT ``.imscc`` (post-packaging). Reuses
+    # the ``_build_imscc`` builder, which surfaces ``inputs["imscc_path"]``
+    # (packaging ``package_path`` / ``imscc_path``) exactly as the
+    # validator's input contract expects. Wired warning day-1 after the
+    # packaging phase in course_generation + textbook_to_course.
+    r.register(
+        "lib.validators.cartridge_conformance.CartridgeConformanceValidator",
+        _build_imscc,
+    )
     r.register(
         "lib.validators.wcag.WCAGValidator",
         _build_wcag,

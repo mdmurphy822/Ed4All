@@ -672,6 +672,7 @@ Top-level workflow aggregators run post-loop in `WorkflowRunner.run_workflow` an
 | `AccessibilityConformanceAggregator` (roadmap T3) | `<libv2_course>/quality/accessibility_conformance.json` (falls back to `<trainforge_dir>/quality/...`) — inverts the gate WCAG issue stream into a per-success-criterion VPAT/WCAG-EM conformance table (`supports` / `partially_supports` / `does_not_support` / `not_evaluated`, with explicit `not_evaluated` rows for criteria outside automated static-HTML reach). | `schemas/aggregators/accessibility_conformance.schema.json` |
 | `BuildCostAggregator` (roadmap OP2) | `<libv2_course>/build_cost_report.json` (falls back to `<trainforge_dir>/...`) — pure metering (no LLM): per-phase wall-clock (checkpoints), GPU residency (`vram_trajectory.jsonl`, section omitted when absent), and LLM calls/tokens (`llm_usage.jsonl` from the OP2 usage tap, section omitted when absent). | `schemas/aggregators/build_cost.schema.json` |
 | `ProvenanceResolutionAggregator` | `<libv2_course>/quality/provenance_resolution_report.json` (falls back to `<project_path>/provenance_resolution_report.json`) | `schemas/aggregators/provenance_resolution.schema.json` |
+| `procurement_evidence` exporter (`lib/governance/procurement_evidence.py`, backlog E4/E5/D5; wired post-loop in `workflow_runner._maybe_write_procurement_evidence`) | `<libv2_course>/retrieval_eval/procurement_evidence_bundle.json` — rolls the newest `grounded_answer_eval_*.json` into a versioned ADVISORY evidence bundle (pinned headline + phrasing/abstention/refusal breakdowns + flag-config stamp + Wilson/PPI CIs + blocking-flip readiness). Keyed to the promotion-chain report by `chain_hash`; never mutates it or `course_status`. Missing report → explicit `not_evaluated`. Best-effort (never alters `final_status`). | in-module `EVIDENCE_SCHEMA_VERSION` 1.0 |
 | `lib/governance/course_status.py::derive_course_status` | composes `course_status` enum on chain report | (helper, no separate file) |
 
 `PromotionChainAggregator` supersedes the per-aggregator `final_promotion_decision` heuristics. `derive_course_status` returns the canonical 5-value enum (`failed | non_certified_archive | certified_accessible | certified_instructional | certified_trainable`); a missing per-stage report shorts to `course_status: failed` (anti-silent-degradation contract).
@@ -709,11 +710,11 @@ Summary by workflow (counts derived from `config/workflows.yaml`):
 
 | Workflow | Critical | Warning | Total |
 |----------|---------:|--------:|------:|
-| `course_generation` | 34 | 28 | 62 |
+| `course_generation` | 34 | 29 | 63 |
 | `rag_training` | 4 | 3 | 7 |
-| `textbook_to_course` | 64 | 71 | 135 |
+| `textbook_to_course` | 64 | 72 | 136 |
 | `trainforge_train` | 2 | 0 | 2 |
-| **Total** | **104** | **102** | **206** |
+| **Total** | **104** | **104** | **208** |
 
 Per-wave gate-landing history (additions, demotions, deferred severity flips, with the intermediate running subtotals at each wave): `docs/validation/gate-history.md`. The table above is the current authoritative count; the history file's per-wave subtotals are provenance-only and do not sum to the current total.
 

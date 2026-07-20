@@ -23948,7 +23948,21 @@ def _build_tool_registry() -> dict:
             except Exception:
                 gen_capture = None
 
-            generator = AssessmentGenerator(capture=gen_capture, check_leaks=True)
+            # SFT-C S6 license flow-down: thread the endpoint-registry-shaped
+            # teacher-license roster into the generator so the apply-arm's
+            # provider license guard refuses a barred teacher. Inert by default
+            # (the guard is only consulted on the opt-in apply-arm path);
+            # best-effort — a missing lib.licensing leaves teacher_roster=None,
+            # byte-identical to the prior construction.
+            try:
+                from lib.licensing import provider_verdict_roster as _pvr
+                _teacher_roster = _pvr()
+            except Exception:  # noqa: BLE001 — roster is best-effort
+                _teacher_roster = None
+            generator = AssessmentGenerator(
+                capture=gen_capture, check_leaks=True,
+                teacher_roster=_teacher_roster,
+            )
             try:
                 assessment = generator.generate(
                     course_code=course_id,
@@ -29360,7 +29374,18 @@ def _build_tool_registry() -> dict:
                 "error": f"AssessmentGenerator import failed: {exc}",
             })
 
-        generator = AssessmentGenerator(capture=capture, check_leaks=False)
+        # SFT-C S6 license flow-down (see the trainforge_assessment site above):
+        # thread the teacher-license roster so the apply-arm's provider license
+        # guard refuses a barred teacher. Inert by default (apply-arm opt-in);
+        # best-effort → teacher_roster=None is byte-identical to the prior call.
+        try:
+            from lib.licensing import provider_verdict_roster as _pvr
+            _teacher_roster = _pvr()
+        except Exception:  # noqa: BLE001 — roster is best-effort
+            _teacher_roster = None
+        generator = AssessmentGenerator(
+            capture=capture, check_leaks=False, teacher_roster=_teacher_roster,
+        )
         built_assessments: List[Any] = []
 
         # Assessment-quality overhaul (ITEM 2): the deterministic DIVERSIFIED

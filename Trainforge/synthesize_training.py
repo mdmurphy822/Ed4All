@@ -2038,6 +2038,19 @@ def run_synthesis(
         _withheld_edge_index = _load_withheld_edge_index(
             corpus_dir, holdout_split_path,
         )
+        # SFT program S8/S9 (memorization probe): the held-out assessment-item id
+        # set. Empty when no probe is configured (no
+        # ``training_specs/.memorization_holdout.json``) -> byte-identical legacy
+        # behaviour (no item withheld). Passed to the assessment->SFT generator so
+        # a withheld item never trains, making the probe's held-out slice genuinely
+        # unseen. Best-effort: a missing helper / unreadable file -> empty set.
+        try:
+            from Trainforge.training.memorization_probe import (
+                load_holdout_exclusion as _load_holdout_exclusion,
+            )
+            _holdout_item_ids = _load_holdout_exclusion(corpus_dir)
+        except Exception:  # noqa: BLE001 — holdout is best-effort; empty = no withholding
+            _holdout_item_ids = set()
 
         # SFT data program S1/Phase-1: append assessment->SFT pairs (open-book,
         # rationale-augmented; solve+steps / error-diagnosis / explain-why /
@@ -2066,6 +2079,7 @@ def run_synthesis(
                     capture,
                     answer_key_doc=_ak_doc,
                     max_pairs=assessment_sft_max_pairs,
+                    holdout_item_ids=_holdout_item_ids,
                 ):
                     # Stamp the deterministic-template audit fields so the
                     # post-emit W2.E + W4.A/B/C gate-runner walks recognise

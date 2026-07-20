@@ -575,3 +575,29 @@ warning→critical reclassification (no gates added/removed), +13 critical / −
 warning overall: `course_generation` 30→36 critical / 27→21 warning (57 total,
 unchanged); `textbook_to_course` 58→65 critical / 71→64 warning (129 total,
 unchanged); Total 94→107 critical / 101→88 warning / 195 total (unchanged).
+
+### Track-L (L2) — `cartridge_conformance` post-packaging gate wired — 2026-07-19
+
+Wired the previously-unwired `CartridgeConformanceValidator`
+(`lib/validators/cartridge_conformance.py`, landed `ed8d1c32`) as a gate after
+the `packaging` phase in BOTH `course_generation` and `textbook_to_course`. It is
+the full-cartridge strict CC/QTI conformance guarantee on the BUILT `.imscc`
+(opens the assembled ZIP: manifest well-formedness + CC-version, namespace-routed
+XSD conformance, resource-type enumeration, in-zip href integrity, answer_key
+resource presence) — the LMS-agnostic portability contract that complements
+`qti_well_formed` (which validates only the loose `06_assessments/*.xml`
+PRE-packaging). Builder reuses `_build_imscc` (`inputs["imscc_path"]`), registered
+in `MCP/hardening/gate_input_routing.py`.
+
+Warning day-1 (`severity: warning` / `on_fail: warn` / `on_error: fail_closed`,
+per the `qti_well_formed` precedent) — the validator's own GateIssue severities
+stay honest (critical for `CARTRIDGE_XSD_INVALID` / `_RESOURCE_TYPE_UNKNOWN` /
+`_HREF_UNRESOLVED` / `_ANSWER_KEY_UNREFERENCED`; warning for the lxml/XSD-missing
+graceful-degrade codes), so a later critical-flip is a config-only change. Until
+the L1 IMS/QTI XSD pack is vendored (a fetch-window item), the XSD arm
+graceful-degrades to `CARTRIDGE_XSD_MISSING`/`_LXML_MISSING` warnings while the
+programmatic checks still run.
+
+> The count table is re-derived from `config/workflows.yaml` (+1 warning gate per
+> workflow): `course_generation` 28→29 warning / 62→63 total, `textbook_to_course`
+> 71→72 warning / 135→136 total, Total 102→104 warning / 206→208 total.

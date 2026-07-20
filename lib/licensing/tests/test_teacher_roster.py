@@ -35,6 +35,32 @@ def test_provider_verdict_roster_shape_for_apply_arm():
     assert roster["together"]["verdict"] == "conditional"
 
 
+def test_provider_verdict_roster_integrates_with_apply_arm_guard():
+    """SFT-C flow-down: the roster shape feeds the assessment apply-arm license
+    guard, which refuses a barred teacher and admits a safe one."""
+    from Trainforge.generators.assessment_generator import (
+        _apply_arm_provider_allowed,
+    )
+
+    roster = provider_verdict_roster()
+    assert _apply_arm_provider_allowed("local", roster) is True
+    assert _apply_arm_provider_allowed("nvidia", roster) is False
+    assert _apply_arm_provider_allowed("anthropic", roster) is False
+
+
+def test_pipeline_tools_wires_provider_verdict_roster():
+    """SFT-C stitch: BOTH AssessmentGenerator construction sites in
+    pipeline_tools thread the S6 teacher-license roster so the apply-arm license
+    guard activates. Source-level regression against silent removal."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[3]
+    src = (root / "MCP" / "tools" / "pipeline_tools.py").read_text(encoding="utf-8")
+    assert "provider_verdict_roster" in src
+    # Both construction sites pass the resolved roster.
+    assert src.count("teacher_roster=_teacher_roster") == 2
+
+
 # --------------------------------------------------------------------------- #
 # Roster resolution                                                            #
 # --------------------------------------------------------------------------- #

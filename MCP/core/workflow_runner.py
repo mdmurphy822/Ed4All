@@ -2869,6 +2869,18 @@ class WorkflowRunner:
             phase_outputs=phase_outputs,
         )
 
+        # Eval-expansion Phase 4 (E4/D5): ADVISORY procurement evidence bundle.
+        # Rolls the newest grounded_answer_eval_*.json into
+        # <libv2_course>/retrieval_eval/procurement_evidence_bundle.json, keyed
+        # to the promotion-chain report by chain_hash. ADVISORY only — never
+        # mutates course_status or the (schema-closed) chain report. Best-effort.
+        procurement_evidence_path = self._maybe_write_procurement_evidence(
+            workflow_id=workflow_id,
+            workflow_params=workflow_params,
+            phase_outputs=phase_outputs,
+            promotion_chain_path=promotion_chain_path,
+        )
+
         # Wave 4 (W4.1): post-loop concept-coverage aggregator. Concept-
         # graph analogue of coverage_map — per concept node, tallies which
         # pedagogical surfaces touch it (explained / defined-in-glossary /
@@ -3008,6 +3020,10 @@ class WorkflowRunner:
             ),
             "promotion_chain_report_path": (
                 str(promotion_chain_path) if promotion_chain_path else None
+            ),
+            "procurement_evidence_path": (
+                str(procurement_evidence_path)
+                if procurement_evidence_path else None
             ),
             "concept_coverage_path": (
                 str(concept_coverage_path) if concept_coverage_path else None
@@ -4039,6 +4055,38 @@ class WorkflowRunner:
             logger.warning(
                 "intelligence_level aggregator failed (non-fatal, "
                 "run_id=%s): %s",
+                workflow_id, exc,
+            )
+            return None
+
+    def _maybe_write_procurement_evidence(
+        self,
+        *,
+        workflow_id: str,
+        workflow_params: Dict[str, Any],
+        phase_outputs: Dict[str, Dict],
+        promotion_chain_path: Optional[Path],
+    ) -> Optional[Path]:
+        """Eval-expansion Phase 4 — write the ADVISORY procurement evidence
+        bundle if a LibV2 course dir is resolvable. Best-effort; failure logs a
+        warning and never alters final_status."""
+        try:
+            from lib.governance.procurement_evidence import write_evidence_bundle
+            archival = phase_outputs.get("libv2_archival") or {}
+            course_dir_str = archival.get("course_dir")
+            if not course_dir_str:
+                return None
+            course_dir = Path(course_dir_str)
+            return write_evidence_bundle(
+                course_dir,
+                course_code=(workflow_params or {}).get("course_name") or "",
+                course_slug=course_dir.name,
+                run_id=workflow_id,
+                promotion_chain_path=promotion_chain_path,
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            logger.warning(
+                "procurement_evidence bundle failed (non-fatal, run_id=%s): %s",
                 workflow_id, exc,
             )
             return None

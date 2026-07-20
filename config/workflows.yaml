@@ -1234,6 +1234,26 @@ workflows:
               on_error: warn
             description: "Phase 4 PoC SHACL parallel of page_objectives. Informational; Python gate remains authoritative."
 
+          # Track-L (L2) — full-cartridge strict CC/QTI conformance on the
+          # BUILT .imscc (post-packaging). Complements qti_well_formed (which
+          # validates the loose 06_assessments/*.xml PRE-packaging); this opens
+          # the assembled ZIP and audits manifest well-formedness,
+          # namespace-routed XSD conformance, resource-type enumeration, in-zip
+          # href integrity, and answer_key resource presence. Warning day-1
+          # (on_fail: warn / on_error: fail_closed per the qti_well_formed
+          # precedent); the validator's own issue severities stay honest so a
+          # later critical-flip is a config-only change. Builder: _build_imscc
+          # (inputs["imscc_path"]).
+          - gate_id: cartridge_conformance
+            validator: lib.validators.cartridge_conformance.CartridgeConformanceValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: fail_closed
+            description: "Track-L — full-cartridge strict CC/QTI conformance on the built .imscc (manifest / namespace-routed XSD / resource-type / href integrity / answer_key). Warning day-1; deferred critical-flip."
+
       - name: validation
         agents: [oscqr-course-evaluator, quality-assurance]
         parallel: true
@@ -4358,6 +4378,26 @@ workflows:
               on_fail: warn
               on_error: warn
             description: IB4.3 — per-page WCAG 2.2 AA compliance on the packaged textbook_to_course pages. Warning day-1; deferred critical-flip after a >=2-corpus FP measurement.
+
+          # Track-L (L2) — full-cartridge strict CC/QTI conformance on the
+          # BUILT .imscc (post-packaging). Complements qti_well_formed (which
+          # validates the loose 06_assessments/*.xml PRE-packaging); this opens
+          # the assembled ZIP and audits manifest well-formedness,
+          # namespace-routed XSD conformance, resource-type enumeration, in-zip
+          # href integrity, and answer_key resource presence. Warning day-1
+          # (on_fail: warn / on_error: fail_closed per the qti_well_formed
+          # precedent); the validator's own issue severities stay honest so a
+          # later critical-flip is a config-only change. Builder: _build_imscc
+          # (inputs["imscc_path"]).
+          - gate_id: cartridge_conformance
+            validator: lib.validators.cartridge_conformance.CartridgeConformanceValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: fail_closed
+            description: "Track-L — full-cartridge strict CC/QTI conformance on the built .imscc (manifest / namespace-routed XSD / resource-type / href integrity / answer_key). Warning day-1; deferred critical-flip."
 
       # Phase 7c ST 16: post-packaging IMSCC chunkset emit. Runs the
       # canonical ``Trainforge.chunker.chunk_content`` over the HTML files

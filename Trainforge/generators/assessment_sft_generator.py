@@ -625,6 +625,17 @@ def _build_pair(
         pair["rubric_cites"] = list(item["rubric_cites"])
     if "dpo_metadata" in extra:
         pair["dpo_metadata"] = extra["dpo_metadata"]
+    # SFT-C fine-grained teacher-license stamp: sets pair["license"] (+ normalizes
+    # generating_seat) so the fail-closed export filter can attribute the precise
+    # teacher instead of falling back to coarse `provider` provenance. Additive —
+    # the pair already carries generating_seat/seat_license, and the pair schema is
+    # additionalProperties:true. Best-effort: a missing lib.licensing never breaks
+    # deterministic emit, and `generating_seat` keeps its byte-identical value.
+    try:
+        from lib.licensing import stamp_pair_license as _stamp_pair_license
+        _stamp_pair_license(pair, generating_seat=generating_seat, provider=_PROVIDER)
+    except Exception:  # noqa: BLE001 — provenance stamp is best-effort
+        pass
     return pair
 
 
