@@ -164,3 +164,88 @@ def test_mint_block_no_fabrication(tmp_path):
     new_block, meta = minter.mint_block(blk, None)
     assert new_block is None
     assert meta is None
+
+
+# --- Anchored-only minting (short/stopword-alias poisoning fix) --------------
+
+# A vocabulary that reproduces the live alg-glm-03 defect: ``slope`` carries a
+# single-character alias ``"m"`` (the slope letter) and ``y_intercept`` carries
+# ``"b"``. ``extract_concept_tags`` matches these 1-char aliases against
+# unrelated prose ("meters", a variable ``b``), but the inter-tier gate's
+# ``_surface_form_can_anchor`` rejects sub-2-char forms — so a raw match yields
+# an UNANCHORED CURIE the gate fails (OUTLINE_BLOCK_CURIE_NOT_ANCHORED).
+_ALIAS_VOCAB = {
+    "course_id": "algglm03",
+    "concepts": [
+        {"canonical": "slope", "aliases": ["rise over run", "m", "slope"]},
+        {"canonical": "y_intercept", "aliases": ["b", "y-intercept"]},
+    ],
+}
+
+
+def _write_alias_vocab(tmp_path: Path) -> Path:
+    p = tmp_path / "domain_concept_vocabulary.json"
+    p.write_text(json.dumps(_ALIAS_VOCAB), encoding="utf-8")
+    return p
+
+
+def test_mint_block_drops_shortalias_only_match(tmp_path):
+    """A block matched ONLY via a short/stopword alias mints NOTHING.
+
+    ROOT-CAUSE regression: the block is about mixed-unit measurement
+    arithmetic ("meters" → the ``slope`` alias ``"m"`` matches under
+    ``extract_concept_tags``), but neither ``slope`` nor ``rise over run``
+    appears — the gate would reject ``algglm03:slope``. The corrected minter
+    must therefore mint NOTHING (empty → re-minted downstream from the actual
+    rewritten prose), never guess the wrong concept.
+    """
+    vocab_path = _write_alias_vocab(tmp_path)
+    minter = _build_outline_curie_minter(
+        course_code="algglm03",
+        kwargs=_kwargs_with_vocab(vocab_path),
+    )
+    assert minter is not None
+
+    blk = _prose_block(
+        curies=[],
+        key_claims=[
+            "Ryland is 1.6 meters tall and his brother is 85 centimeters "
+            "tall; 1.60 m - 0.85 m = 0.75 m.",
+            "Subtracting an integer is equivalent to adding its opposite: "
+            "a - b = a + (-b).",
+        ],
+    )
+    new_block, meta = minter.mint_block(blk, None)
+    # Wrong concepts (slope via "m", y_intercept via "b") are NOT minted.
+    assert new_block is None
+    assert meta is None
+
+
+def test_mint_block_real_surface_form_still_anchors(tmp_path):
+    """A block whose prose contains the real surface form still mints + anchors.
+
+    Same short-alias vocabulary, but the text literally discusses "slope" —
+    the corrected minter keeps it and it passes the real gate.
+    """
+    vocab_path = _write_alias_vocab(tmp_path)
+    minter = _build_outline_curie_minter(
+        course_code="algglm03",
+        kwargs=_kwargs_with_vocab(vocab_path),
+    )
+    assert minter is not None
+
+    blk = _prose_block(
+        curies=[],
+        key_claims=["The slope of a line is its rate of vertical change."],
+    )
+    new_block, meta = minter.mint_block(blk, None)
+    assert new_block is not None
+    minted = new_block.content["curies"]
+    assert minted == ["algglm03:slope"]
+
+    result = BlockCurieAnchoringValidator().validate({
+        "blocks": [new_block],
+        "minted_curie_map": minter.minted_map,
+    })
+    assert result.passed is True
+    assert result.action is None

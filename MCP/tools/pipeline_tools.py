@@ -13396,6 +13396,12 @@ def _build_outline_curie_minter(
     )
     from lib.ontology.concept_tagging import extract_concept_tags
     from Trainforge.process_course import compile_domain_concept_seeds
+    # Lazy import (inter_tier_gates lazily imports pipeline_tools, so keep
+    # this off the module top level). This is the EXACT anchoring predicate
+    # the inter-tier BlockCurieAnchoringValidator uses — the minter verifies
+    # every candidate CURIE against it so "minted ⇒ passes the gate" holds by
+    # construction (no divergent matching heuristic).
+    from Courseforge.router.inter_tier_gates import _curie_anchored
 
     minted_map = build_minted_curie_map(vocabulary, course_id=course_code)
     if not minted_map:
@@ -13464,53 +13470,82 @@ def _build_outline_curie_minter(
                 if isinstance(claim_text, str):
                     text_parts.append(claim_text)
         claims_text = "\n".join(text_parts)
+        # The block's OTHER two anchoring surfaces — computed up front so the
+        # anchor-verification below sees the SAME union the inter-tier gate
+        # evaluates (key_claims + grounded source-chunk text + declared-
+        # objective statement text). source_chunks: the block's real
+        # provenance, tagged with the domain vocabulary. objective_refs: the
+        # statements of the objectives the block declares.
+        source_text = _block_source_chunk_text(block, chunks_lookup)
+        objective_text = _block_objective_statement_text(
+            block, _objective_statements
+        )
 
-        # First match against the block's key_claims text.
-        # ``extract_concept_tags`` returns the canonical slugs of the
-        # concepts the block discusses.
+        def _resolve_anchored(canonicals: List[str]) -> List[str]:
+            """Resolve canonicals → minted CURIEs, KEEPING only those that
+            verifiably anchor under the gate's own ``_curie_anchored``
+            predicate over the block's three block-local surfaces.
+
+            ANTI-POISONING ROOT FIX: ``extract_concept_tags`` matches a
+            concept via ANY compiled alias — including single-character /
+            stopword aliases (e.g. ``slope`` alias ``"m"`` matching "meters",
+            ``y_intercept`` alias ``"b"`` matching a variable ``b``) that the
+            gate's ``_surface_form_can_anchor`` filters OUT. Such a raw match
+            yields an UNANCHORED CURIE the gate rejects
+            (``OUTLINE_BLOCK_CURIE_NOT_ANCHORED``) — and, if the gate were
+            demoted, the rewrite tier would stamp the WRONG concept into
+            ``data-cf-curie`` → ``concept_tags[]`` → training data. Filtering
+            against the exact gate predicate makes an unanchorable match mint
+            NOTHING (empty → correctly re-minted downstream from the actual
+            rewritten prose) instead of guessing a wrong concept.
+            """
+            out: List[str] = []
+            for canonical in canonicals:
+                curie = by_canonical.get(canonical)
+                if not curie or curie in out:
+                    continue
+                if _curie_anchored(
+                    curie,
+                    set(),
+                    claims_text,
+                    minted_map,
+                    source_chunk_text=source_text,
+                    objective_statement_text=objective_text,
+                ):
+                    out.append(curie)
+            return out
+
+        # Priority-order surface matching (key_claims → source_chunks →
+        # objective_refs); the FIRST surface yielding ≥1 gate-ANCHORED CURIE
+        # wins. A surface whose only ``extract_concept_tags`` matches are
+        # unanchorable (short/stopword-alias hits) is treated as a MISS and
+        # the search falls through — so a block that anchors nothing on any
+        # surface mints nothing (fails closed; no fabrication). Preserves
+        # byte-identical output for blocks that already anchor a concept on
+        # key_claims (their anchored CURIE is kept, unchanged).
         matched_canonicals: List[str] = []
         matched_surface = "key_claims"
-        if claims_text.strip():
-            matched_canonicals = extract_concept_tags(
-                claims_text, {}, domain_concept_seeds
-            )
-        # Fallback: when key_claims yields no vocab concept, match against
-        # the block's grounded SOURCE-CHUNK text — its real provenance,
-        # tagged with the domain vocabulary. Rigorous, not a relaxation.
-        if not matched_canonicals:
-            source_text = _block_source_chunk_text(block, chunks_lookup)
-            if source_text.strip():
-                matched_canonicals = extract_concept_tags(
-                    source_text, {}, domain_concept_seeds
-                )
-                matched_surface = "source_chunks"
-        # Final fallback: objective-refs-concept anchoring. When neither
-        # key_claims nor the grounded source-chunk text yields a vocab
-        # concept, match the vocabulary over the STATEMENT text of the
-        # objectives the block DECLARES (``objective_refs``). A block is
-        # legitimately about the concepts its objectives name, so a
-        # concept whose surface form genuinely appears (word-boundary, via
-        # extract_concept_tags) in an objective statement is a legitimate
-        # anchor. ANTI-FABRICATION: still mints nothing when no vocab
-        # surface form appears in any objective statement either.
-        if not matched_canonicals:
-            objective_text = _block_objective_statement_text(
-                block, _objective_statements
-            )
-            if objective_text.strip():
-                matched_canonicals = extract_concept_tags(
-                    objective_text, {}, domain_concept_seeds
-                )
-                matched_surface = "objective_refs"
-
         minted_curies: List[str] = []
-        for canonical in matched_canonicals:
-            curie = by_canonical.get(canonical)
-            if curie and curie not in minted_curies:
-                minted_curies.append(curie)
+        for _surface_name, _surface_text in (
+            ("key_claims", claims_text),
+            ("source_chunks", source_text),
+            ("objective_refs", objective_text),
+        ):
+            if not _surface_text.strip():
+                continue
+            _cands = extract_concept_tags(
+                _surface_text, {}, domain_concept_seeds
+            )
+            _anchored = _resolve_anchored(_cands)
+            if _anchored:
+                matched_canonicals = _cands
+                matched_surface = _surface_name
+                minted_curies = _anchored
+                break
         if not minted_curies:
-            # Ungrounded / no-match block — mint nothing. It fails closed
-            # downstream (no fabrication).
+            # No vocab concept's surface form verifiably anchors in the
+            # block's own text — mint nothing. It fails closed downstream
+            # (no fabrication; empties are re-minted from the rewrite prose).
             return None, None
 
         # Append the minted domain CURIE(s) to any existing generic curies
@@ -14105,9 +14140,12 @@ def _emit_curie_minting_capture(
             f"content['curies']={existing!r}; its {matched_surface} "
             f"text matched {len(matched_canonicals)} of the "
             f"{minted_map_size} domain-concept-vocabulary "
-            f"concepts, minting {minted_curies} from the "
-            f"per-course CURIE map so the anchoring gate has a "
-            f"prose-corpus-valid CURIE to anchor against."
+            f"concepts, of which the gate-ANCHORED subset {minted_curies} "
+            f"was minted from the per-course CURIE map (candidates whose "
+            f"only surface form is a short/stopword alias the gate's "
+            f"_surface_form_can_anchor rejects are dropped, never minted) so "
+            f"every stamped CURIE passes BlockCurieAnchoringValidator by "
+            f"construction and no wrong concept can poison concept_tags."
         )
     ml_features = {
         "block_id": block.block_id,
