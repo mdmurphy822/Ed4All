@@ -45,6 +45,7 @@ def _emit_decision(
     rate_threshold: float,
     assessment_threshold: float,
     span_threshold: int,
+    assessment_exempt_count: int = 0,
 ) -> None:
     """Emit one ``synthesis_leakage_check`` decision per validate() call.
 
@@ -70,12 +71,15 @@ def _emit_decision(
         f"({scaffold_rate:.4f} rate); thresholds=("
         f"verbatim_rate={rate_threshold:.4f}, "
         f"assessment_rate={assessment_threshold:.4f}, "
-        f"span_chars={span_threshold}); failure_code={code or 'none'}."
+        f"span_chars={span_threshold}); "
+        f"assessment_sft_scaffold_exempt={assessment_exempt_count}; "
+        f"failure_code={code or 'none'}."
     )
     metrics: Dict[str, Any] = {
         "n_pairs_audited": int(n_pairs_audited),
         "verbatim_leak_count": int(verbatim_leak_count),
         "assessment_scaffold_count": int(assessment_scaffold_count),
+        "assessment_sft_scaffold_exempt": int(assessment_exempt_count),
         "verbatim_leak_rate": float(verbatim_rate),
         "assessment_scaffold_rate": float(scaffold_rate),
         "rate_threshold": float(rate_threshold),
@@ -265,6 +269,7 @@ class SynthesisLeakageValidator:
         total = 0
         leaked: List[Dict[str, Any]] = []
         scaffolded: List[Dict[str, Any]] = []
+        assessment_exempt = 0
         with inst_path.open("r", encoding="utf-8") as fh:
             for line in fh:
                 line = line.strip()
@@ -276,20 +281,32 @@ class SynthesisLeakageValidator:
                     continue
                 total += 1
                 cid = str(row.get("chunk_id") or "")
-                # Wave 122: assessment-scaffolding check runs even when
-                # chunk_text isn't available (the contamination doesn't
-                # require comparison against chunk source).
-                for field in ("prompt", "completion"):
-                    fragment = _contains_assessment_scaffolding(
-                        str(row.get(field) or "")
-                    )
-                    if fragment:
-                        scaffolded.append({
-                            "chunk_id": cid,
-                            "field": field,
-                            "fragment": fragment[:80],
-                        })
-                        break
+                # SFT-program S2 — marker-scoped scaffold carve-out (owner
+                # APPROVED, never a global disable). The assessment->SFT pairs
+                # (assessment_sft_generator, ``source="assessment_item"``)
+                # legitimately carry assessment-shaped text — they TEACH
+                # solving / grading / error-diagnosis. Exempt ONLY these rows
+                # from the assessment-scaffolding pattern check; every other
+                # source (paraphrase pairs, kg/violation/abstention/schema
+                # deterministic pairs) is still gated at 0% tolerance, and the
+                # verbatim-span check below runs for assessment_item rows too.
+                if str(row.get("source") or "") == "assessment_item":
+                    assessment_exempt += 1
+                else:
+                    # Wave 122: assessment-scaffolding check runs even when
+                    # chunk_text isn't available (the contamination doesn't
+                    # require comparison against chunk source).
+                    for field in ("prompt", "completion"):
+                        fragment = _contains_assessment_scaffolding(
+                            str(row.get(field) or "")
+                        )
+                        if fragment:
+                            scaffolded.append({
+                                "chunk_id": cid,
+                                "field": field,
+                                "fragment": fragment[:80],
+                            })
+                            break
                 chunk_text = chunks_by_id.get(cid, "")
                 if not chunk_text:
                     continue
@@ -385,6 +402,7 @@ class SynthesisLeakageValidator:
             rate_threshold=rate_threshold,
             assessment_threshold=assessment_threshold,
             span_threshold=span_threshold,
+            assessment_exempt_count=assessment_exempt,
         )
 
         return GateResult(

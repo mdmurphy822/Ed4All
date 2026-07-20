@@ -176,9 +176,20 @@ class AuditReport:
 def _check_assessment_scaffolding(
     inst: List[Dict], pref: List[Dict],
 ) -> Dimension:
-    """Wave 122 zero-tolerance gate."""
+    """Wave 122 zero-tolerance gate.
+
+    SFT-program S2 — marker-scoped carve-out (owner APPROVED): rows explicitly
+    marked ``source="assessment_item"`` (assessment->SFT pairs) legitimately
+    carry assessment-shaped text and are EXEMPT from the scaffold pattern
+    check, mirroring the runtime ``SynthesisLeakageValidator`` exemption. Never
+    a global disable — every other source stays 0-tolerance.
+    """
     inst_hits = []
+    exempt = 0
     for p in inst:
+        if str(p.get("source") or "") == "assessment_item":
+            exempt += 1
+            continue
         text = f"{p.get('prompt','')} {p.get('completion','')}"
         for pat in _ASSESSMENT_SCAFFOLD_PATTERNS:
             m = pat.search(text)
@@ -202,7 +213,8 @@ def _check_assessment_scaffolding(
             f"{len(inst_hits)}/{len(inst)} instruction + "
             f"{len(pref_hits)}/{len(pref)} preference pairs carry "
             f"assessment-outline patterns (Question N (XX-NN, Bloom: ...)). "
-            f"Target: 0/0."
+            f"Target: 0/0. ({exempt} assessment_sft rows exempt via "
+            f"source='assessment_item' marker scope.)"
         ),
         sample=inst_hits[:3] + pref_hits[:3],
     )
@@ -637,6 +649,211 @@ def _check_paraphrase_quality(inst: List[Dict]) -> Dimension:
 
 
 # ---------------------------------------------------------------------------
+# SFT-program S10 — pre-train diversity additions
+# ---------------------------------------------------------------------------
+
+def _pair_format(p: Dict[str, Any]) -> str:
+    """Resolve a pair's coarse FORMAT for the distribution audit.
+
+    Prefers the explicit ``pair_format`` (assessment->SFT), else the
+    ``template_id`` prefix (``kg_metadata`` / ``violation_detection`` /
+    ``abstention`` / ``schema_translation`` / ``assessment_sft``), else the
+    ``content_type``, else ``paraphrase`` (the default synthesis path)."""
+    fmt = p.get("pair_format")
+    if fmt:
+        return str(fmt)
+    tid = str(p.get("template_id") or "")
+    if "." in tid:
+        return tid.split(".", 1)[0]
+    ct = str(p.get("content_type") or "").strip()
+    if ct and ct not in ("chunk", "text"):
+        return ct
+    return "paraphrase"
+
+
+def _check_pair_format_distribution(inst: List[Dict]) -> Dimension:
+    """S10 per-format distribution guard (diversity-over-volume).
+
+    Warns when any single format dominates (>50% share) — the degeneracy the
+    SFT program's format-diversity axis exists to prevent."""
+    if not inst:
+        return Dimension(
+            name="pair_format_distribution", passed=True, severity="info",
+            detail="No instruction pairs.",
+        )
+    dist = Counter(_pair_format(p) for p in inst)
+    top_fmt, top_n = dist.most_common(1)[0]
+    share = top_n / len(inst)
+    passed = share <= 0.50 or len(dist) == 1
+    return Dimension(
+        name="pair_format_distribution",
+        passed=passed,
+        severity="warning",
+        detail=(
+            f"{len(dist)} distinct formats; top format '{top_fmt}' "
+            f"{100*share:.0f}% (warn >50% with >1 format). "
+            f"Distribution: {dict(dist)}"
+        ),
+    )
+
+
+def _check_rubric_citation_resolution(
+    inst: List[Dict], chunks: Dict[str, str],
+) -> Dimension:
+    """S10 rubric-citation-resolution rate for grade-against-rubric pairs.
+
+    Every ``rubric_cites`` id on a grade_rubric pair must resolve against the
+    corpus chunkset — an unresolved rubric citation is an ungrounded key."""
+    cited_pairs = [p for p in inst if p.get("rubric_cites")]
+    if not cited_pairs:
+        return Dimension(
+            name="rubric_citation_resolution", passed=True, severity="info",
+            detail="No pairs carry rubric_cites (no grade-against-rubric pairs).",
+        )
+    total = 0
+    resolved = 0
+    unresolved: List[str] = []
+    for p in cited_pairs:
+        for cid in p.get("rubric_cites") or []:
+            total += 1
+            if str(cid) in chunks:
+                resolved += 1
+            elif len(unresolved) < 3:
+                unresolved.append(f"{p.get('template_id','?')}:{cid}")
+    rate = resolved / total if total else 1.0
+    return Dimension(
+        name="rubric_citation_resolution",
+        passed=rate >= 1.0,
+        severity="warning",
+        detail=(
+            f"{resolved}/{total} rubric citations resolve against the "
+            f"chunkset ({100*rate:.1f}%). Target 100%."
+        ),
+        sample=unresolved or None,
+    )
+
+
+def _check_sympy_key_presence(inst: List[Dict]) -> Dimension:
+    """S10 sympy-key presence for numeric solve-steps pairs.
+
+    A silently-dropped numeric key can't ship: every solve_steps pair whose
+    verifier flags a numeric key must actually carry it. Warns when numeric
+    solve_steps pairs exist but none record a sympy key."""
+    solve = [p for p in inst if _pair_format(p) == "assessment_sft.solve_steps"
+             or p.get("pair_format") == "solve_steps"]
+    if not solve:
+        return Dimension(
+            name="sympy_key_presence", passed=True, severity="info",
+            detail="No solve_steps assessment_sft pairs.",
+        )
+    with_key = 0
+    numeric = 0
+    for p in solve:
+        vr = p.get("verifier_results") or {}
+        if vr.get("sympy_key_present"):
+            numeric += 1
+            if vr.get("sympy_verified") is True or vr.get("sympy_key_present"):
+                with_key += 1
+    passed = numeric == 0 or with_key == numeric
+    return Dimension(
+        name="sympy_key_presence",
+        passed=passed,
+        severity="warning",
+        detail=(
+            f"{with_key}/{numeric} numeric solve_steps pairs record a sympy "
+            f"key ({len(solve)} solve_steps pairs total). A numeric pair with "
+            f"no recorded key indicates a dropped verification."
+        ),
+    )
+
+
+def _check_unique_opening_rate(inst: List[Dict]) -> Dimension:
+    """S10 unique-opening-rate diversity guard (template-collapse detector).
+
+    Fraction of DISTINCT prompt openings (first 6 words). A low rate means the
+    corpus opens nearly every prompt the same way — the memorization risk the
+    diversity audit exists to catch."""
+    if not inst:
+        return Dimension(
+            name="unique_opening_rate", passed=True, severity="info",
+            detail="No instruction pairs.",
+        )
+    openings = Counter(
+        " ".join(str(p.get("prompt", "")).split()[:6]).lower() for p in inst
+    )
+    distinct = len(openings)
+    rate = distinct / len(inst)
+    top_open, top_n = openings.most_common(1)[0]
+    # A diverse corpus keeps distinct openings high; templated formats share an
+    # opening by design, so the floor is lenient (0.10) — this catches TOTAL
+    # collapse, not intentional per-format template stems.
+    return Dimension(
+        name="unique_opening_rate",
+        passed=rate >= 0.10,
+        severity="warning",
+        detail=(
+            f"{distinct}/{len(inst)} distinct prompt openings "
+            f"({100*rate:.1f}%); most-common opening x{top_n}. Warn <10%."
+        ),
+    )
+
+
+def _check_promotion_ladder_invariants(course_dir: Path) -> Dimension:
+    """S10 promotion-ladder invariants preserved.
+
+    Reads ``training_specs/dataset_config.json::statistics.promotion_ladder``
+    and asserts the two ledger invariants
+    (``candidate == validated + rejected_promotion`` and
+    ``rejected_promotion == sum(rejection_reasons)``). Absent block → legacy
+    corpus, info-pass. Present-but-violated → critical (a broken ledger means
+    silently-dropped pairs)."""
+    cfg_path = course_dir / "training_specs" / "dataset_config.json"
+    if not cfg_path.exists():
+        return Dimension(
+            name="promotion_ladder_invariants", passed=True, severity="info",
+            detail=f"No dataset_config.json at {cfg_path} (legacy corpus).",
+        )
+    try:
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return Dimension(
+            name="promotion_ladder_invariants", passed=True, severity="info",
+            detail=f"dataset_config.json unreadable ({exc}); skipped.",
+        )
+    ladder = ((cfg.get("statistics") or {}).get("promotion_ladder")) or {}
+    if not ladder:
+        return Dimension(
+            name="promotion_ladder_invariants", passed=True, severity="info",
+            detail="No statistics.promotion_ladder block (legacy corpus).",
+        )
+    cand = int(ladder.get("candidate_pairs_total", 0) or 0)
+    valid = int(ladder.get("validated_pairs_total", 0) or 0)
+    rej = int(ladder.get("rejected_promotion_pairs", 0) or 0)
+    reasons = ladder.get("promotion_rejection_reasons") or {}
+    reasons_sum = sum(int(v or 0) for v in reasons.values())
+    problems: List[str] = []
+    if cand != valid + rej:
+        problems.append(
+            f"candidate({cand}) != validated({valid}) + rejected({rej})"
+        )
+    if rej != reasons_sum:
+        problems.append(
+            f"rejected({rej}) != sum(reasons)({reasons_sum})"
+        )
+    return Dimension(
+        name="promotion_ladder_invariants",
+        passed=not problems,
+        severity="critical",
+        detail=(
+            f"candidate={cand}, validated={valid}, rejected={rej}, "
+            f"reasons_sum={reasons_sum}. "
+            + ("; ".join(problems) if problems else "invariants hold.")
+        ),
+        sample=problems or None,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
 
@@ -689,6 +906,12 @@ def run_audit(
         _check_abstention_coverage(inst),
         _check_schema_translation_coverage(inst),
         _check_citation_coverage(inst),
+        # SFT-program S10 — pre-train diversity additions.
+        _check_pair_format_distribution(inst),
+        _check_rubric_citation_resolution(inst, chunks),
+        _check_sympy_key_presence(inst),
+        _check_unique_opening_rate(inst),
+        _check_promotion_ladder_invariants(course_dir),
     ]
     return report
 

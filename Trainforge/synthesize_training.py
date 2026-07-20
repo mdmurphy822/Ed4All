@@ -43,7 +43,7 @@ import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 # Make project root importable when run as a script.
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -239,6 +239,13 @@ class SynthesisStats:
     lo_refs_rejected: int = 0
     objective_delivery_rejected: int = 0
     pair_validation_passed: int = 0
+    # SFT data program (S3/S4/S5): assessment->SFT + concept-graph->SFT
+    # generator cohorts, holdout-reduced-graph exclusions, and the layered
+    # gold-set decontamination drop count.
+    assessment_sft_pairs_emitted: int = 0
+    graph_sft_pairs_emitted: int = 0
+    holdout_edges_excluded: int = 0
+    decontam_quarantined: int = 0
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -292,6 +299,11 @@ class SynthesisStats:
             "lo_refs_rejected": self.lo_refs_rejected,
             "objective_delivery_rejected": self.objective_delivery_rejected,
             "pair_validation_passed": self.pair_validation_passed,
+            # SFT data program (S3/S4/S5).
+            "assessment_sft_pairs_emitted": self.assessment_sft_pairs_emitted,
+            "graph_sft_pairs_emitted": self.graph_sft_pairs_emitted,
+            "holdout_edges_excluded": self.holdout_edges_excluded,
+            "decontam_quarantined": self.decontam_quarantined,
         }
 
 
@@ -1093,6 +1105,156 @@ def _stamp_deterministic_pair_audit_fields(
 # Stage entry point
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# SFT data program (S3/S4/S5): env-flag resolvers + holdout-reduced-graph +
+# assessment / concept-graph artifact resolution.
+# ---------------------------------------------------------------------------
+
+def _resolve_bool_env(name: str, kwarg_value: bool) -> bool:
+    """Parse-with-fallback OR of a kwarg and an env flag.
+
+    The kwarg wins when truthy; otherwise the env var (``1``/``true``/``yes``/
+    ``on``, case-insensitive) enables the behavior. Garbage / unset -> kwarg.
+    This lets the ``textbook_to_course`` pipeline drive the assessment/graph
+    SFT arms via environment (the ``_synthesize_training`` seam passes no
+    ``with_*`` kwarg for them) with byte-identical default-off behavior.
+    """
+    if bool(kwarg_value):
+        return True
+    raw = os.environ.get(name, "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def _normalize_holdout_rel(rel: Any) -> str:
+    """Normalize a relation label so pedagogy (``relation_type``) and concept
+    (``type``) edge naming compare equal (``prerequisite_of`` -> ``prerequisite``,
+    ``related_to`` -> ``related-to``)."""
+    r = str(rel or "").strip().lower()
+    for suf in ("_of", "-of"):
+        if r.endswith(suf):
+            r = r[: -len(suf)]
+            break
+    return r.replace("_", "-")
+
+
+def _load_withheld_edge_index(
+    corpus_dir: Path,
+    holdout_path: Optional[Path] = None,
+) -> Set[Tuple[str, str, str]]:
+    """Load the pedagogy-graph holdout split's withheld edges as a normalized
+    identity set ``{(source, target, rel_norm)}``.
+
+    Returns an empty set when no ``eval/holdout_split.json`` exists (legacy /
+    pre-holdout corpus) or it can't be parsed — reduction then no-ops
+    (byte-identical). This is the pair-side enforcement of the S4 design rule:
+    every graph->pair generator consumes the holdout-REDUCED graph.
+    """
+    p = Path(holdout_path) if holdout_path is not None else (
+        Path(corpus_dir) / "eval" / "holdout_split.json"
+    )
+    if not p.exists():
+        return set()
+    try:
+        payload = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("holdout-reduced-graph: failed to read %s: %s", p, exc)
+        return set()
+    index: Set[Tuple[str, str, str]] = set()
+    for e in payload.get("withheld_edges", []) or []:
+        if not isinstance(e, dict):
+            continue
+        s = e.get("source")
+        t = e.get("target")
+        if s is None or t is None:
+            continue
+        index.add((str(s), str(t), _normalize_holdout_rel(e.get("relation_type"))))
+    return index
+
+
+def _reduce_graph_by_holdout(
+    graph: Dict[str, Any],
+    withheld_index: Set[Tuple[str, str, str]],
+) -> Tuple[Dict[str, Any], int]:
+    """Return a shallow-copied graph with every withheld edge removed.
+
+    Matches an edge by normalized ``(source, target, relation)`` identity,
+    reading ``relation_type`` (pedagogy) OR ``type`` (concept). Byte-identical
+    (returns the input object) when the index is empty or nothing matches.
+    Guarantees a withheld edge can never reach a downstream pair generator.
+    """
+    if not withheld_index or not isinstance(graph, dict):
+        return graph, 0
+    edges = graph.get("edges")
+    if not isinstance(edges, list):
+        return graph, 0
+    kept: List[Any] = []
+    removed = 0
+    for e in edges:
+        if isinstance(e, dict):
+            rel = e.get("relation_type")
+            if rel is None:
+                rel = e.get("type")
+            identity = (
+                str(e.get("source")),
+                str(e.get("target")),
+                _normalize_holdout_rel(rel),
+            )
+            if identity in withheld_index:
+                removed += 1
+                continue
+        kept.append(e)
+    if removed == 0:
+        return graph, 0
+    reduced = dict(graph)
+    reduced["edges"] = kept
+    return reduced, removed
+
+
+def _resolve_assessment_docs(
+    corpus_dir: Path,
+) -> Tuple[Optional[Any], Optional[Dict[str, Any]]]:
+    """Locate the W10 ``assessments.json`` + instructor ``answer_key.json`` for
+    the assessment->SFT emitter. Returns ``(assessments_doc, answer_key_doc)``;
+    either may be ``None`` when absent."""
+    def _load(cands: Sequence[Path]) -> Optional[Any]:
+        for c in cands:
+            if c.exists() and c.is_file():
+                try:
+                    return json.loads(c.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError) as exc:
+                    logger.warning("assessment_sft: failed to read %s: %s", c, exc)
+        return None
+
+    corpus_dir = Path(corpus_dir)
+    assessments = _load([
+        corpus_dir / "training_specs" / "assessments.json",
+        corpus_dir / "assessments.json",
+        corpus_dir / "06_assessments" / "assessments.json",
+    ])
+    answer_key = _load([
+        corpus_dir / "training_specs" / "answer_key.json",
+        corpus_dir / "answer_key.json",
+        corpus_dir / "06_assessments" / "answer_key.json",
+    ])
+    answer_key = answer_key if isinstance(answer_key, dict) else None
+    return assessments, answer_key
+
+
+def _resolve_concept_graph_path(corpus_dir: Path) -> Optional[Path]:
+    """Locate ``concept_graph_semantic.json`` for the concept-graph->SFT
+    generator (LibV2 archive ``graph/`` layout first)."""
+    corpus_dir = Path(corpus_dir)
+    for rel in (
+        "graph/concept_graph_semantic.json",
+        "concept_graph_semantic.json",
+        "pedagogy/concept_graph_semantic.json",
+    ):
+        p = corpus_dir / rel
+        if p.exists():
+            return p
+    return None
+
+
 def _resolve_pedagogy_graph_path(
     corpus_dir: Path,
     explicit: Optional[Path] = None,
@@ -1259,6 +1421,11 @@ def run_synthesis(
     abstention_max_pairs: int = 1000,
     with_schema_translation: bool = False,
     schema_translation_max_pairs: int = 50,
+    with_assessment_sft: bool = False,
+    assessment_sft_max_pairs: Optional[int] = None,
+    with_graph_sft: bool = False,
+    graph_sft_max_pairs: Optional[int] = None,
+    holdout_split_path: Optional[Path] = None,
     staging_dir: Optional[Path] = None,
 ) -> SynthesisStats:
     """Run the full synthesis stage for one course output directory.
@@ -1856,6 +2023,115 @@ def run_synthesis(
         # loop to finish. A killed run mid-paraphrase preserves the
         # deterministic output in the sidecar instead of losing it.
 
+        # SFT data program (S3/S4/S5): resolve the assessment/graph arms
+        # (kwarg OR env, so the ``_synthesize_training`` pipeline seam can
+        # drive them without a pipeline_tools edit) and load the pedagogy-
+        # graph holdout split ONCE. The withheld-edge index is the S4 design
+        # rule enforcement: every graph->pair generator below consumes the
+        # holdout-REDUCED graph so a withheld edge can never train.
+        _with_assessment_sft = _resolve_bool_env(
+            "ED4ALL_WITH_ASSESSMENT_SFT", with_assessment_sft,
+        )
+        _with_graph_sft = _resolve_bool_env(
+            "ED4ALL_WITH_GRAPH_SFT", with_graph_sft,
+        )
+        _withheld_edge_index = _load_withheld_edge_index(
+            corpus_dir, holdout_split_path,
+        )
+
+        # SFT data program S1/Phase-1: append assessment->SFT pairs (open-book,
+        # rationale-augmented; solve+steps / error-diagnosis / explain-why /
+        # grade-rubric / hint-no-reveal / verify-answer). Hoisted here so the
+        # deterministic cohort lands in the .in_progress sidecar up front.
+        if _with_assessment_sft:
+            from Trainforge.generators.assessment_sft_generator import (
+                generate_assessment_sft_pairs,
+            )
+            _assess_doc, _ak_doc = _resolve_assessment_docs(corpus_dir)
+            if _assess_doc is None:
+                logger.warning(
+                    "with_assessment_sft=True but no assessments.json under "
+                    "%s; skipping assessment->SFT generator.", corpus_dir,
+                )
+            else:
+                _chunks_by_id = {
+                    str(c.get("chunk_id") or c.get("id")): c
+                    for c in chunks
+                    if isinstance(c, dict) and (c.get("chunk_id") or c.get("id"))
+                }
+                _asft_count = 0
+                for _pair in generate_assessment_sft_pairs(
+                    _assess_doc,
+                    _chunks_by_id,
+                    capture,
+                    answer_key_doc=_ak_doc,
+                    max_pairs=assessment_sft_max_pairs,
+                ):
+                    # Stamp the deterministic-template audit fields so the
+                    # post-emit W2.E + W4.A/B/C gate-runner walks recognise
+                    # these open-book pairs as legitimately-bypassed.
+                    _stamp_deterministic_pair_audit_fields(_pair, capture=capture)
+                    instruction_records.append(_pair)
+                    _utils_append_jsonl(inst_progress_fh, _pair, flush=False)
+                    _asft_count += 1
+                inst_progress_fh.flush()
+                stats.assessment_sft_pairs_emitted = _asft_count
+                stats.instruction_pairs_emitted += _asft_count
+                logger.info(
+                    "SFT data program S1: appended %d assessment->SFT pairs.",
+                    _asft_count,
+                )
+
+        # SFT data program S5/Phase-2: append concept-graph->SFT pairs
+        # (relation-QA / prereq study-path / concept verbalization), over the
+        # holdout-REDUCED concept graph, consensus-filtered.
+        if _with_graph_sft:
+            from Trainforge.generators.graph_sft_generator import (
+                generate_graph_sft_pairs,
+            )
+            _cg_path = _resolve_concept_graph_path(corpus_dir)
+            if _cg_path is None:
+                logger.warning(
+                    "with_graph_sft=True but no concept_graph_semantic.json "
+                    "under %s; skipping concept-graph->SFT generator.",
+                    corpus_dir,
+                )
+            else:
+                try:
+                    _cg_payload = json.loads(_cg_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError) as _cg_exc:
+                    logger.warning(
+                        "with_graph_sft: failed to read %s (%s); skipping.",
+                        _cg_path, _cg_exc,
+                    )
+                    _cg_payload = None
+                if isinstance(_cg_payload, dict):
+                    _cg_reduced, _cg_removed = _reduce_graph_by_holdout(
+                        _cg_payload, _withheld_edge_index,
+                    )
+                    stats.holdout_edges_excluded += _cg_removed
+                    _gsft_count = 0
+                    for _pair in generate_graph_sft_pairs(
+                        _cg_reduced,
+                        capture,
+                        max_pairs=graph_sft_max_pairs,
+                        seed=seed,
+                    ):
+                        _stamp_deterministic_pair_audit_fields(
+                            _pair, capture=capture,
+                        )
+                        instruction_records.append(_pair)
+                        _utils_append_jsonl(inst_progress_fh, _pair, flush=False)
+                        _gsft_count += 1
+                    inst_progress_fh.flush()
+                    stats.graph_sft_pairs_emitted = _gsft_count
+                    stats.instruction_pairs_emitted += _gsft_count
+                    logger.info(
+                        "SFT data program S5: appended %d concept-graph->SFT "
+                        "pairs (holdout-excluded %d edges).",
+                        _gsft_count, _cg_removed,
+                    )
+
         # Audit 2026-04-30: append KG-metadata pairs (yes/no membership
         # probes mirroring faithfulness._RELATION_TEMPLATES). Closes the
         # zero-KG-metadata-recall regression in the cc07cc76 corpus —
@@ -1877,6 +2153,13 @@ def run_synthesis(
                 ped_payload = json.loads(
                     ped_path.read_text(encoding="utf-8"),
                 )
+                # SFT data program S4: feed kg_metadata the holdout-REDUCED
+                # pedagogy graph so a withheld edge can never become a
+                # positive training pair (the exact leak the eval holds out).
+                ped_payload, _ped_removed = _reduce_graph_by_holdout(
+                    ped_payload, _withheld_edge_index,
+                )
+                stats.holdout_edges_excluded += _ped_removed
                 kg_pairs, kg_stats = generate_kg_metadata_pairs(
                     ped_payload,
                     capture=capture,
@@ -3375,6 +3658,59 @@ def run_synthesis(
         # for the multi-hour paraphrase loop to finish. See the hoisted
         # blocks just above the `for idx, chunk in iter_chunks:` line.
 
+        # SFT data program S3: layered gold-set decontamination pre-train
+        # gate. Freeze/load the course's retrieval_eval gold_set.json and
+        # screen EVERY emitted pair (exact -> sliding 8-gram -> optional
+        # embedding top-k -> optional paraphrase hook). Hits are dropped +
+        # quarantined; survivors carry decontam_checked=true. Fully offline
+        # by default (layers 1-2 only) — the embedding/paraphrase seams are
+        # injectable and off unless supplied. No-op (no drops) when the
+        # course has no gold set, but survivors are still stamped so the
+        # provenance field is honest.
+        try:
+            from Trainforge.generators.pair_decontamination import (
+                decontaminate_pairs,
+                load_gold_questions,
+            )
+            _gold_questions, _ = load_gold_questions(corpus_dir)
+            instruction_records, _quarantined_inst = decontaminate_pairs(
+                instruction_records, _gold_questions, capture=capture,
+            )
+            preference_records, _quarantined_pref = decontaminate_pairs(
+                preference_records, _gold_questions,
+            )
+            _quarantined_total = len(_quarantined_inst) + len(_quarantined_pref)
+            stats.decontam_quarantined = _quarantined_total
+            if _quarantined_total:
+                # Recount emitted totals so downstream stats reflect the drop.
+                stats.instruction_pairs_emitted = max(
+                    0, stats.instruction_pairs_emitted - len(_quarantined_inst),
+                )
+                stats.preference_pairs_emitted = max(
+                    0, stats.preference_pairs_emitted - len(_quarantined_pref),
+                )
+                _quar_path = training_specs_dir / "decontam_quarantine.jsonl"
+                try:
+                    _write_jsonl(
+                        _quar_path, _quarantined_inst + _quarantined_pref,
+                    )
+                except Exception as _q_exc:  # noqa: BLE001 — best-effort
+                    logger.warning(
+                        "S3 decontam: quarantine sidecar emit failed: %s", _q_exc,
+                    )
+                logger.warning(
+                    "SFT data program S3: gold-set decontamination quarantined "
+                    "%d pair(s) (instruction=%d, preference=%d) against %d gold "
+                    "questions.",
+                    _quarantined_total, len(_quarantined_inst),
+                    len(_quarantined_pref), len(_gold_questions),
+                )
+        except Exception as _decontam_exc:  # noqa: BLE001 — never abort emit
+            logger.warning(
+                "SFT data program S3: decontamination pass skipped (%s).",
+                _decontam_exc,
+            )
+
         _write_jsonl(instruction_out, instruction_records)
         _write_jsonl(preference_out, preference_records)
         _update_dataset_config(dataset_config_path, stats)
@@ -3508,6 +3844,11 @@ def run_synthesis_from_libv2(
     abstention_max_pairs: int = 1000,
     with_schema_translation: bool = False,
     schema_translation_max_pairs: int = 50,
+    with_assessment_sft: bool = False,
+    assessment_sft_max_pairs: Optional[int] = None,
+    with_graph_sft: bool = False,
+    graph_sft_max_pairs: Optional[int] = None,
+    holdout_split_path: Optional[Path] = None,
     synthesis_pairs_checkpoint_path: Optional[Path] = None,
     staging_dir: Optional[Path] = None,
 ) -> SynthesisStats:
@@ -3577,6 +3918,11 @@ def run_synthesis_from_libv2(
         abstention_max_pairs=abstention_max_pairs,
         with_schema_translation=with_schema_translation,
         schema_translation_max_pairs=schema_translation_max_pairs,
+        with_assessment_sft=with_assessment_sft,
+        assessment_sft_max_pairs=assessment_sft_max_pairs,
+        with_graph_sft=with_graph_sft,
+        graph_sft_max_pairs=graph_sft_max_pairs,
+        holdout_split_path=holdout_split_path,
         synthesis_pairs_checkpoint_path=synthesis_pairs_checkpoint_path,
         staging_dir=staging_dir,
     )
@@ -3978,6 +4324,45 @@ def build_parser() -> argparse.ArgumentParser:
             "for future variant expansion under the same cap."
         ),
     )
+    # SFT data program (S1/S5): assessment->SFT + concept-graph->SFT arms.
+    # Off by default (byte-identical); also drivable via env
+    # ED4ALL_WITH_ASSESSMENT_SFT / ED4ALL_WITH_GRAPH_SFT for the pipeline seam.
+    p.add_argument(
+        "--with-assessment-sft",
+        dest="with_assessment_sft",
+        action="store_true",
+        default=False,
+        help=(
+            "SFT data program S1: append open-book assessment->SFT pairs "
+            "(solve+steps / error-diagnosis / explain-why / grade-rubric / "
+            "hint-no-reveal / verify-answer) from assessments.json + "
+            "answer_key.json to instruction_pairs.jsonl. Deterministic, no LLM."
+        ),
+    )
+    p.add_argument(
+        "--assessment-sft-max-pairs",
+        type=int,
+        default=None,
+        help="Optional global cap on assessment->SFT pairs (default: unlimited).",
+    )
+    p.add_argument(
+        "--with-graph-sft",
+        dest="with_graph_sft",
+        action="store_true",
+        default=False,
+        help=(
+            "SFT data program S5: append open-book concept-graph->SFT pairs "
+            "(relation-QA / prereq study-path / concept verbalization) from "
+            "the holdout-REDUCED concept_graph_semantic.json, consensus-"
+            "filtered. Deterministic, no LLM."
+        ),
+    )
+    p.add_argument(
+        "--graph-sft-max-pairs",
+        type=int,
+        default=None,
+        help="Optional global cap on concept-graph->SFT pairs (default: unlimited).",
+    )
     return p
 
 
@@ -4041,6 +4426,11 @@ def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
     schema_translation_max_pairs = int(
         getattr(args, "schema_translation_max_pairs", 50)
     )
+    # SFT data program (S1/S5): assessment->SFT + concept-graph->SFT arms.
+    with_assessment_sft = bool(getattr(args, "with_assessment_sft", False))
+    assessment_sft_max_pairs = getattr(args, "assessment_sft_max_pairs", None)
+    with_graph_sft = bool(getattr(args, "with_graph_sft", False))
+    graph_sft_max_pairs = getattr(args, "graph_sft_max_pairs", None)
 
     # Worker A: --no-checkpoint opts out of the per-pair resume cache.
     # Default behaviour (flag absent) leaves
@@ -4081,6 +4471,10 @@ def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
             abstention_max_pairs=abstention_max_pairs,
             with_schema_translation=with_schema_translation,
             schema_translation_max_pairs=schema_translation_max_pairs,
+            with_assessment_sft=with_assessment_sft,
+            assessment_sft_max_pairs=assessment_sft_max_pairs,
+            with_graph_sft=with_graph_sft,
+            graph_sft_max_pairs=graph_sft_max_pairs,
             synthesis_pairs_checkpoint_path=checkpoint_arg,
         )
     else:
@@ -4116,6 +4510,10 @@ def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
             abstention_max_pairs=abstention_max_pairs,
             with_schema_translation=with_schema_translation,
             schema_translation_max_pairs=schema_translation_max_pairs,
+            with_assessment_sft=with_assessment_sft,
+            assessment_sft_max_pairs=assessment_sft_max_pairs,
+            with_graph_sft=with_graph_sft,
+            graph_sft_max_pairs=graph_sft_max_pairs,
             synthesis_pairs_checkpoint_path=checkpoint_arg,
         )
 
