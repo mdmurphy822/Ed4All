@@ -156,7 +156,7 @@ sequence and what each phase produces, how to read gate outcomes, and the
 resume/stop procedure — is covered in one place:
 [`docs/operations/full-run-playbook.md`](docs/operations/full-run-playbook.md).
 
-Environment for such a run starts from [`run-env.example.sh`](run-env.example.sh).
+Environment for such a run starts from [`run-env.example.sh`](docs/operations/run-env.example.sh).
 Read its hardware-profile section before copying any concurrency, batch-size, or
 GPU-lifecycle setting: those values are tuned for a single-GPU large-memory host
 and will exhaust VRAM on a small card unedited.

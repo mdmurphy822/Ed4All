@@ -381,3 +381,7 @@ demo/
 # Catch-all hardening (2026-07-21): ANY capture tool dir not enumerated above
 # stays out of git (tracked .gitkeep files are unaffected by ignore rules).
 training-captures/*
+
+# No env-detail shell profiles tracked at project root (operator stacks live
+# untracked; the sanitized template is docs/operations/run-env.example.sh)
+/run-env*.sh
