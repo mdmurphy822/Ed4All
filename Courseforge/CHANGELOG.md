@@ -33,7 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### Intake & Remediation Agents
 - `imscc-intake-parser` - Universal IMSCC parsing
 - `content-analyzer` - Accessibility/quality gap detection
-- `dart-automation-coordinator` - PDF/Office to accessible HTML
+- `semantik-automation-coordinator` - PDF/Office to accessible HTML
 - `accessibility-remediation` - Automatic WCAG 2.2 fixes
 - `content-quality-remediation` - Educational depth enhancement
 

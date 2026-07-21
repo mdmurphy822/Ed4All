@@ -230,7 +230,7 @@ Trainforge emits and consumes the following schemas. Source of truth for all is 
 | Chunk v4 | `schemas/knowledge/chunk_v4.schema.json` | `process_course.py` | `align_chunks.py`, `synthesize_training.py`, `eval/`, `lib/validators/*` |
 | Concept graph | `schemas/knowledge/concept_graph_semantic.schema.json` | `process_course.py` | `eval/`, `lib/validators/kg_quality.py` |
 | Misconception | `schemas/knowledge/misconception.schema.json` | `process_course.py` (concept-graph build) | concept graph edges, instruction pairs |
-| Source reference | `schemas/knowledge/source_reference.schema.json` | DART (originally) -> chunk + edge evidence arms | provenance audit |
+| Source reference | `schemas/knowledge/source_reference.schema.json` | SemantiK conversion -> chunk + edge evidence arms | provenance audit |
 | Courseforge JSON-LD | `schemas/knowledge/courseforge_jsonld_v1.schema.json` | Courseforge | Trainforge metadata extractor |
 | Course | `schemas/knowledge/course.schema.json` | `process_course.py` (course.json) | LibV2 import |
 | Objectives v1 | `schemas/knowledge/objectives_v1.schema.json` | upstream of `process_course.py` | `align_chunks.py` (LO refs) |
@@ -454,4 +454,4 @@ libv2 models eval <course-slug> <model_id>
 - Licensing posture (per provider, per model): `docs/LICENSING.md`
 - LibV2 import / model-pointers contract: `LibV2/CLAUDE.md`
 - Courseforge JSON-LD output (Trainforge metadata input): `Courseforge/CLAUDE.md`
-- DART source provenance (chunk `source.source_references[]` ancestry): `SemantiK/CLAUDE.md`
+- SemantiK source provenance (chunk `source.source_references[]` ancestry): `SemantiK/CLAUDE.md`

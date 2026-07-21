@@ -114,7 +114,7 @@ that patch the persisted params before the resumed phase runs.
 |------|---------|
 | 0 | Completed (no gate failure). |
 | 1 | Failed / a critical validation gate blocked. |
-| 2 | Usage error — unknown workflow, bad flag combination, invalid `--skip-dart` inputs, malformed `--reuse-objectives`. |
+| 2 | Usage error — unknown workflow, bad flag combination, invalid `--skip-conversion` inputs, malformed `--reuse-objectives`. |
 | 3 | **Paused** at a checkpoint (graceful stop). `_paused_exit_code` returns 3 and prints a resume hint. A paused resume that pauses again is 3 again, never a failure. |
 
 Exit 3 wins over the gate/status collapse — a graceful stop is not a failure.
@@ -144,12 +144,15 @@ staleness heuristic and the resume path see the truth.
   `page_id` or a module prefix). All three unset → byte-identical failure-driven
   cache reuse. An unknown id / unmatched page fails the rewrite phase **loudly** —
   never a silent no-op.
-- **Fail-fast validation before state creation** — `--skip-dart` inputs
-  (`_validate_skip_dart_inputs`) and `--reuse-objectives`
-  (`_validate_reuse_objectives_file`) are checked at parse time so a typo does
-  not leave orphaned workflow state on disk.
-- **`--dart-output-dir`** is a `hidden=True` back-compat alias of
-  `--semantik-output-dir`; both coalesce into the same param, canonical wins.
+- **Fail-fast validation before state creation** — the `--skip-conversion`
+  inputs and `--reuse-objectives` (`_validate_reuse_objectives_file`) are
+  checked at parse time so a typo does not leave orphaned workflow state on
+  disk. `--skip-conversion` keeps a `hidden=True` deprecated back-compat alias;
+  the persisted skip run-param key is read-normalized so a run paused under the
+  old flag name still `--resume`s.
+- **`--semantik-output-dir`** is the canonical staged-HTML directory flag; a
+  `hidden=True` deprecated back-compat alias is retained. Both coalesce into the
+  same param — the canonical flag wins if both are somehow passed.
 
 ---
 

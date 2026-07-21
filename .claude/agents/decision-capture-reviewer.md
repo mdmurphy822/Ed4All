@@ -18,16 +18,21 @@ call path.
 
 ## Precedents (canonical reference implementations)
 
-- **DART LLM classifier** — `DART/converter/llm_classifier.py` emits one
-  `structure_detection` capture per batch. Regression test:
-  `DART/tests/test_llm_classifier_capture_wiring.py`.
-- **DART alt-text generator** — `DART/pdf_converter/alt_text_generator.py`
-  emits one `alt_text_generation` capture per figure. Regression test:
-  `DART/tests/test_alt_text_generator_capture_wiring.py`.
-- **DART pipeline entry point** —
-  `MCP/tools/pipeline_tools.py::_raw_text_to_accessible_html` emits one
-  `pipeline_run_attribution` capture per run. Regression test:
-  `DART/tests/test_pipeline_run_attribution.py`.
+- **SemantiK VLM structure extraction** —
+  `SemantiK/semantik_structure/vlm_extract.py` emits one
+  `structure_detection` capture per batch (`log_decision` near line 614).
+  Regression test:
+  `SemantiK/semantik_structure/tests/test_vlm_extract_capture.py`.
+- **SemantiK figure captioner** —
+  `SemantiK/semantik_structure/figure_captioner.py` emits one
+  `alt_text_generation` capture per figure (`log_decision` near line 294).
+  Regression test:
+  `SemantiK/semantik_structure/tests/test_figure_captioner_capture.py`.
+- **SemantiK reasoning-QC pass** —
+  `SemantiK/semantik_structure/reasoning_qc.py` emits one
+  `structure_detection` capture per QC decision (`log_decision` near line
+  1304). Regression test:
+  `SemantiK/semantik_structure/tests/test_reasoning_qc_capture.py`.
 
 When auditing a new call site, compare against the closest precedent above.
 

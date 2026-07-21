@@ -3,8 +3,8 @@
 ## Overview
 
 The `source-router` is a single-file-at-a-time subagent responsible for
-binding Wave 8 DART source blocks to Courseforge module pages. It reads
-the staging manifest produced by `stage_dart_outputs`, the textbook
+binding Wave 8 SemantiK source blocks to Courseforge module pages. It reads
+the staging manifest produced by the `staging` phase, the textbook
 structure JSON produced by `textbook-ingestor`, and the course outline
 produced by `course-outliner`, then emits one artifact:
 
@@ -15,13 +15,13 @@ produced by `course-outliner`, then emits one artifact:
 ## Agent Type Classification
 
 - **Agent Type**: `source-attribution-router`
-- **Primary Function**: Deterministic mapping of DART source blocks to
+- **Primary Function**: Deterministic mapping of SemantiK source blocks to
   Courseforge module pages for downstream citation.
 - **Workflow Position**: Phase 4 (`source_mapping`) of the
   `textbook_to_course` workflow, between `objective_extraction` and
   `course_planning`. Sequential (`parallel: false`, `max_concurrent: 1`).
 - **Integration**:
-  - Consumes: Wave 8 DART staging (role-tagged manifest +
+  - Consumes: Wave 8 SemantiK staging (role-tagged manifest +
     `*_synthesized.json` provenance sidecars) and Courseforge outline
     (weeks, pages, objectives).
   - Produces: `source_module_map.json` keyed by `week_XX` → `page_id`.
@@ -58,7 +58,7 @@ All three are routed via `config/workflows.yaml` explicit `inputs_from`.
 - `{project_path}/02_course_planning/source_module_map.json` — shape
   described below.
 - `source_chunk_ids` (string, comma-separated) — flat list of every
-  DART block ID referenced by the map, for downstream validator
+  SemantiK block ID referenced by the map, for downstream validator
   harvesting.
 
 ## Output Shape (`source_module_map.json`)
@@ -67,13 +67,13 @@ All three are routed via `config/workflows.yaml` explicit `inputs_from`.
 {
   "week_03": {
     "week_03_content_01_visual_perception": {
-      "primary":      ["dart:science_of_learning#s5_p2"],
-      "contributing": ["dart:science_of_learning#s4_p0",
-                       "dart:science_of_learning#s6_p1"],
+      "primary":      ["semantik:science_of_learning#s5_p2"],
+      "contributing": ["semantik:science_of_learning#s4_p0",
+                       "semantik:science_of_learning#s6_p1"],
       "confidence":   0.85
     },
     "week_03_application": {
-      "primary":      ["dart:science_of_learning#s7_p0"],
+      "primary":      ["semantik:science_of_learning#s7_p0"],
       "contributing": [],
       "confidence":   0.72
     }
@@ -85,7 +85,7 @@ All three are routed via `config/workflows.yaml` explicit `inputs_from`.
 Rules enforced by `lib/validators/source_refs.py`:
 
 1. Every `sourceId` MUST match the canonical
-   `^dart:[a-z0-9_-]+#[a-z0-9_-]+$` pattern
+   `^semantik:[a-z0-9_-]+#[a-z0-9_-]+$` pattern
    (`schemas/knowledge/source_reference.schema.json`).
 2. Every `sourceId` MUST resolve against the staging manifest — i.e.
    a provenance-sidecar `*_synthesized.json` lists a `section_id` or a
@@ -108,7 +108,8 @@ block_id, text)` tuples to build the candidate pool.
 
 Document slug resolution: prefer an explicit `document_slug` field on
 the sidecar; fall back to lower-cased, slugified `campus_code` (matches
-`DART.multi_source_interpreter._document_slug`).
+the SemantiK converter-side slug contract — lowercase + space-to-hyphen
+normalization; see `SemantiK/CLAUDE.md`).
 
 ### 2. Enumerate pages to route to
 
@@ -171,21 +172,21 @@ Before writing `source_module_map.json`:
 Emit the `source_chunk_ids` CSV output as the flat union of every
 `sourceId` referenced across the map.
 
-## Example Routing (Deans for Impact fixture)
+## Example Routing (sample fixture)
 
 ```jsonc
 {
   "week_02": {
     "week_02_content_01_how_we_learn": {
-      "primary":      ["dart:science_of_learning#s2_p0"],
-      "contributing": ["dart:science_of_learning#s2_p1",
-                       "dart:science_of_learning#s3_p0"],
+      "primary":      ["semantik:science_of_learning#s2_p0"],
+      "contributing": ["semantik:science_of_learning#s2_p1",
+                       "semantik:science_of_learning#s3_p0"],
       "confidence":   0.91
     },
     "week_02_self_check": {
       "primary":      [],
-      "contributing": ["dart:science_of_learning#s2_p0",
-                       "dart:science_of_learning#s2_p1"],
+      "contributing": ["semantik:science_of_learning#s2_p0",
+                       "semantik:science_of_learning#s2_p1"],
       "confidence":   0.55
     }
   }
@@ -200,7 +201,7 @@ override) is logged via `lib.decision_capture.DecisionCapture`:
 ```python
 capture.log_decision(
     decision_type="source_routing",
-    decision="dart:science_of_learning#s5_p2 -> week_03_content_01_visual_perception",
+    decision="semantik:science_of_learning#s5_p2 -> week_03_content_01_visual_perception",
     rationale="TF-IDF score 0.87 vs. second-best 0.51; objective CO-03 keyword 'color contrast' co-occurs 7x in block",
     alternatives_considered=[
         "s4_p0: score 0.51 — also mentions contrast but focuses on typography",
@@ -216,7 +217,7 @@ include `source_routing` explicitly (future wave), the flag
 
 ## Failure Modes + Graceful Fallback
 
-- **Empty staging dir** (no DART source, non-textbook workflow): emit
+- **Empty staging dir** (no SemantiK source, non-textbook workflow): emit
   `source_module_map.json = {}`. Downstream validator passes because
   the map-is-empty branch triggers the backward-compat path.
 - **Malformed staging manifest**: log a critical decision event and
@@ -224,7 +225,7 @@ include `source_routing` explicitly (future wave), the flag
   `PageSourceRefValidator` will block packaging if any emit happens.
 - **Multi-document staging** (several PDFs per course): the agent MUST
   union all candidate blocks across all documents. Document slug stays
-  per-block (each entry carries its own `dart:{slug}#` prefix).
+  per-block (each entry carries its own `semantik:{slug}#` prefix).
 
 ## Never
 

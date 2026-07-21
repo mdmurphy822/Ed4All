@@ -1,6 +1,6 @@
 ---
 name: pytest-targeted
-description: Run the targeted pytest suite for Ed4All subprojects. Use when verifying changes scoped to one or more subprojects (DART, Courseforge, Trainforge, LibV2, lib, MCP, schemas) without running the full 3616-test suite.
+description: Run the targeted pytest suite for Ed4All subprojects. Use when verifying changes scoped to one or more subprojects (SemantiK, Courseforge, Trainforge, LibV2, lib, MCP, schemas) without running the full 3616-test suite.
 disable-model-invocation: true
 ---
 
@@ -13,7 +13,7 @@ combination), instead of the full ~3600-test repo suite.
 
 | Subproject | Command |
 |------------|---------|
-| `dart` | `pytest DART/tests/` |
+| `semantik` | `pytest SemantiK/tests/ lib/semantik/tests/` |
 | `courseforge` | `pytest Courseforge/tests/` *(verify directory exists first — Courseforge tests may live elsewhere; run `ls Courseforge/` to confirm)* |
 | `trainforge` | `pytest Trainforge/tests/` |
 | `libv2` | `pytest LibV2/tools/libv2/tests/` |
@@ -38,8 +38,8 @@ Default flags: `-x --tb=short`
 Example invocations:
 
 ```bash
-# DART only
-pytest DART/tests/ -x --tb=short
+# SemantiK only
+pytest SemantiK/tests/ lib/semantik/tests/ -x --tb=short
 
 # lib (three subdirs)
 pytest lib/tests/ lib/validators/tests/ lib/ontology/tests/ -x --tb=short

@@ -43,8 +43,8 @@ pip install -e '.[embedding,server]'
 ed4all --help          # confirms the CLI is on PATH
 ```
 
-If you also reuse the host's existing accessible HTML (the `--skip-dart`
-path), no `[semantik]` extra is needed — SemantiK only runs for fresh PDF
+If you reuse the host's existing accessible HTML instead of converting
+fresh, no `[semantik]` extra is needed — SemantiK only runs for fresh PDF
 conversion.
 
 ---
@@ -214,12 +214,13 @@ which runs the canonical invocation the doc lands on:
 ed4all run textbook-to-course \
   --provider local --mode local \
   --corpus "$CORPUS_DIR" --course-name "$COURSE_NAME" \
-  --skip-dart --dart-output-dir "$CORPUS_DIR" \
+  --skip-conversion --semantik-output-dir "$CORPUS_DIR" \
   --skip-training --stop-after imscc_chunking
 ```
 
-- `--skip-dart --dart-output-dir` — reuse existing accessible HTML (no SemantiK
-  rerun). Omit both to convert PDFs fresh (needs the `[semantik]` extra).
+- `--skip-conversion --semantik-output-dir` — reuse existing accessible HTML (no
+  SemantiK rerun). Omit both to convert PDFs fresh (needs the `[semantik]`
+  extra).
 - `--skip-training --stop-after imscc_chunking` — stop at a **retrieval-ready**
   course (askable, no training synthesis → licensing-safe; see
   `docs/LICENSING.md`). Drop both to run through `libv2_archival` +

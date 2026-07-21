@@ -54,7 +54,7 @@ A single `DecisionCapture` writes the same rows to up to three sinks:
 
 **Phase names are normalized:** `phase.replace("_", "-")`, and `phase=None` routes to `phase_unknown/` rather than crashing (tool-level captures such as the orchestrator's `phase_start` fire before a phase has been selected). So a capture constructed with `phase="semantik_conversion"` lands in a directory named `phase_semantik-conversion`.
 
-Observed `<tool>` roots under `training-captures/`: `courseforge`, `libv2`, `orchestrator`, `pipeline`, `semantik`, `textbook-pipeline`, `trainforge`, plus a legacy `dart` root left by captures written before the SemantiK rename. The set is **not closed** — `tool` is a free constructor argument, not an enum. (A `training-captures/decisions/` directory also exists but is **not** a `<tool>` root: it holds loose JSONL files directly, not the `<tool>/<COURSE_CODE>/phase_<phase>/` shape this layout describes.)
+Observed `<tool>` roots under `training-captures/`: `courseforge`, `libv2`, `orchestrator`, `pipeline`, `semantik`, `textbook-pipeline`, `trainforge`. The set is **not closed** — `tool` is a free constructor argument, not an enum. (A `training-captures/decisions/` directory also exists but is **not** a `<tool>` root: it holds loose JSONL files directly, not the `<tool>/<COURSE_CODE>/phase_<phase>/` shape this layout describes.)
 
 ### Write buffering
 
@@ -111,7 +111,7 @@ Each row below was verified: the emitting module exists, emits the named `decisi
 
 ### Notes on individual rows
 
-**SemantiK naming asymmetry.** `DARTDecisionCapture` and `create_dart_capture` survive as deprecated module-level aliases of `SemantiKDecisionCapture` / `create_semantik_capture`; new call sites must use the SemantiK names. The asymmetry that trips readers: the *capture* naming migrated, but the HTML wire contract did not migrate identically. `lib/semantik/adapter.py` emits `data-semantik-*` attributes (`data-semantik-block-id`, `data-semantik-source`, `data-semantik-pages`, …), while the **CURIE** source-id form is still minted as `dart:{slug}#{block_id}` — `lib/validators/source_refs.py` deliberately yields **both** `dart:` and `semantik:` prefixes for every id so freshly-emitted and legacy corpora both resolve.
+**HTML wire contract.** The SemantiK path is the source of the capture factory named in the table (`SemantiKDecisionCapture` / `create_semantik_capture`). `lib/semantik/adapter.py` emits `data-semantik-*` attributes (`data-semantik-block-id`, `data-semantik-source`, `data-semantik-pages`, …), and the **CURIE** source-id form is minted as `semantik:{slug}#{block_id}`. `lib/validators/source_refs.py` additionally yields the legacy prefix for every id on the READ side, so freshly-emitted and unmigrated corpora both resolve against the staging manifest.
 
 **Block-resegment capture.** It resolves audit rows off *both* cascade arms — the in-process result dict's top-level `block_resegment` key and the cross-venv bridge (`SemantiK/scripts/run_cascade_json.py`). It is a deterministic-pass capture (the resegment ops are deterministic-first), so it fires even with no LLM op-proposal layer; the rationale interpolates merge/split/regroup tallies, the fused-title-split count, the folded-region tally, the merged-unit semantic-class set, a bounded source-id sample, and `conservation_verified`.
 

@@ -69,7 +69,7 @@ ed4all run textbook-to-course --corpus pdfs/ --course-name PHYS_101 \
 # docs/operations/pipeline-invocation.md § 3.1. Run --dry-run first.
 export COURSEFORGE_TWO_PASS=true
 ed4all run textbook-to-course --provider nvidia --course-name PHYS_101 \
-  --corpus slice.pdf --skip-dart --skip-training \
+  --corpus slice.pdf --skip-conversion --skip-training \
   --stop-after imscc_chunking --dry-run   # preflight: resolve+assert, NO dispatch
 
 # --reuse-objectives: pin a prior objectives JSON instead of re-dispatching
@@ -238,7 +238,7 @@ Fixtures live with the code they exercise. A fixture that exercises only one
 project lives under `<Project>/tests/fixtures/` (Trainforge mini-courses,
 Courseforge sample HTML, schema-validation snapshots). A fixture that exercises
 two or more projects (e.g. an end-to-end pipeline fixture that flows
-DART → Courseforge → Trainforge → LibV2) lives under the top-level
+SemantiK → Courseforge → Trainforge → LibV2) lives under the top-level
 `tests/fixtures/`. Schema-validation fixtures (snapshots that exist solely to
 confirm a JSON Schema or SHACL shape accepts/rejects a known shape) live under
 `schemas/tests/fixtures/<wave>/` and are wave-namespaced. Fixtures must NOT
@@ -357,7 +357,7 @@ for i in range(50):
 | `write_file` | Write to files (RESTRICTED sandbox: runtime/, state/) |
 | `file_info` | Get file/directory metadata (READ_ONLY sandbox) |
 
-**SemantiK tools** — see `SemantiK/CLAUDE.md` (PDF→accessible-HTML conversion; emits the Source-Provenance `data-dart-*` / `dart:{slug}#{block_id}` contract).
+**SemantiK tools** — see `SemantiK/CLAUDE.md` (PDF→accessible-HTML conversion; emits the Source-Provenance `data-semantik-*` / `semantik:{slug}#{block_id}` contract).
 
 **Courseforge tools** — see `Courseforge/CLAUDE.md § MCP Tools` (includes Metadata Output contract: `data-cf-*` + JSON-LD).
 
@@ -399,17 +399,17 @@ and the GUI stay in sync. Full detail: `gui/README.md § Claude Code integration
 
 | Tool | Description |
 |------|-------------|
-| `stage_dart_outputs` | Stage DART outputs for Courseforge |
+| `stage_semantik_outputs` | Stage SemantiK outputs for Courseforge |
 | `get_pipeline_status` | Check pipeline progress |
-| `validate_dart_markers` | Validate DART output markers |
+| `validate_semantik_markers` | Validate SemantiK output markers |
 | `archive_to_libv2` | Archive course artifacts to LibV2. Emits a top-level `chunker_version` field in `course_manifest.json` (resolved via `Trainforge.chunker.CHUNKER_SCHEMA_VERSION`) so LibV2 audits know which chunker shipped the corpus. |
 
 **Pipeline-internal registry-only tools** (wired into `MCP/tools/pipeline_tools.py::_build_tool_registry` for workflow-phase dispatch; intentionally **not** decorated with `@mcp.tool()` — not reachable from external MCP clients):
 
 | Tool | Phase | Purpose |
 |------|-------|---------|
-| `build_source_module_map` | `source_mapping` | TF-IDF-driven router that maps DART source blocks to Courseforge module pages. Output: `source_module_map.json`. |
-| `extract_textbook_structure` | `objective_extraction` | Runs `SemanticStructureExtractor` over every staged DART HTML file and merges per-file chapter/section hierarchies into a single `textbook_structure.json`. |
+| `build_source_module_map` | `source_mapping` | TF-IDF-driven router that maps SemantiK source blocks to Courseforge module pages. Output: `source_module_map.json`. |
+| `extract_textbook_structure` | `objective_extraction` | Runs `SemanticStructureExtractor` over every staged SemantiK HTML file and merges per-file chapter/section hierarchies into a single `textbook_structure.json`. |
 | `plan_course_structure` | `course_planning` | Synthesizes canonical `TO-NN` / `CO-NN` learning objectives from the textbook structure and publishes `synthesized_objectives.json`. |
 
 **Phase-name dispatch override** (`MCP/core/executor.py::_PHASE_TOOL_MAPPING`): seven phases route by phase name, not agent name — `content_generation_outline` → `run_content_generation_outline`; `inter_tier_validation` → `run_inter_tier_validation`; `content_generation_rewrite` → `run_content_generation_rewrite`; `post_rewrite_validation` → `run_post_rewrite_validation`; `imscc_chunking` → `run_imscc_chunking`; `assessment_synthesis` → `run_assessment_synthesis`; `heading_judge` → `run_heading_judge` (the SEMANTIK_HEADING_JUDGE post-conversion Super heading-level judge — skip-with-pass when off / born-digital, per-chapter fail-open copy-back). Validator-only phases declare `agents: []` in `config/workflows.yaml`; `workflow_runner._create_phase_tasks` synthesizes a virtual `phase-handler` task only when the phase appears in this map. The mapping cannot be inferred from YAML.
@@ -464,9 +464,9 @@ tracker.update_status("content_generator", "IN_PROGRESS",
 ```
 1. semantik_conversion
    └── Convert PDF textbooks to accessible HTML (multi-source synthesis).
-       Renamed from `dart_conversion` (task #19 Stage 3d); the legacy name
-       is accepted on READ (checkpoint alias + phase_outputs resume-
-       normalization) so old paused runs still `--resume`.
+       The legacy phase name is accepted on READ (checkpoint alias +
+       phase_outputs resume-normalization) so old paused runs still
+       `--resume`.
 
 2. heading_judge (optional, SEMANTIK_HEADING_JUDGE)
    └── Super heading-level judge over the GLM-OCR lane's
@@ -478,21 +478,21 @@ tracker.update_status("content_generator", "IN_PROGRESS",
        corpus is born-digital; per-chapter FAIL-OPEN (never blocks a build).
 
 3. staging
-   └── Stage DART outputs to Courseforge inputs
+   └── Stage SemantiK outputs to Courseforge inputs
 
 4. chunking
-   └── Emit the DART chunkset from the staged HTML via the
+   └── Emit the SemantiK chunkset from the staged HTML via the
        `semantik-chunker` agent (deterministic, no LLM dispatch).
        Outputs: semantik_chunks_path + semantik_chunks_sha256. Gated on
        chunkset_manifest + chunk_wcag_status.
 
 5. objective_extraction
-   └── Parse staged DART HTML into textbook_structure.json (chapters,
+   └── Parse staged SemantiK HTML into textbook_structure.json (chapters,
        sections, content blocks); auto-scales duration_weeks to max(8,
        chapters) when --weeks is unset.
 
 6. source_mapping
-   └── Map DART source blocks to Courseforge module pages; emits
+   └── Map SemantiK source blocks to Courseforge module pages; emits
        source_module_map.json consumed by content_generation.
 
 7. course_planning
@@ -511,7 +511,7 @@ tracker.update_status("content_generator", "IN_PROGRESS",
 
 9. content_generation
    └── Generate course content modules (parallel batches of 10). Every
-       emitted sourceId must resolve against the DART staging manifest
+       emitted sourceId must resolve against the SemantiK staging manifest
        (source_refs gate). SINGLE-PASS path only — declares
        `enabled_when_env: COURSEFORGE_TWO_PASS!=true`, so it is skipped
        whenever the two-pass tiers (10-12, 14) are active.
@@ -535,7 +535,7 @@ tracker.update_status("content_generator", "IN_PROGRESS",
 
 13. assessment_synthesis (optional)
    └── W10 — synthesize grounded quizzes, short assignments, and
-       discussion prompts from the DART chunkset and emit QTI 1.2 /
+       discussion prompts from the SemantiK chunkset and emit QTI 1.2 /
        imsdt / assignment XML + manifest.json into <export>/06_assessments/
        (canonical IMS CC resource types). Validator-only phase routed by
        phase NAME to run_assessment_synthesis via _PHASE_TOOL_MAPPING;
@@ -577,7 +577,7 @@ tracker.update_status("content_generator", "IN_PROGRESS",
        `--no-checkpoint`).
 
 19. libv2_archival
-   └── Archive course artifacts to LibV2 (raw PDFs, DART HTML, IMSCC,
+   └── Archive course artifacts to LibV2 (raw PDFs, SemantiK HTML, IMSCC,
        RAG corpus). Gated by libv2_manifest integrity checks.
 
 20. vector_indexing (optional)
@@ -612,22 +612,22 @@ tracker.update_status("content_generator", "IN_PROGRESS",
 | Agent | Purpose |
 |-------|---------|
 | `semantik-automation-coordinator` | Orchestrate PDF conversion |
-| `semantik-converter` | Drives the SemantiK v2 cascade for the `semantik_conversion` phase (renamed from `dart_conversion`; PDF → accessible HTML + source provenance). Renamed from `dart-converter`; the legacy name still resolves as an `AGENT_TOOL_MAPPING` dispatch alias (read-compat only). |
+| `semantik-converter` | Drives the SemantiK v2 cascade for the `semantik_conversion` phase (PDF → accessible HTML + source provenance). The legacy agent name still resolves as an `AGENT_TOOL_MAPPING` dispatch alias (read-compat only). |
 | `imscc-intake-parser` | Extract & inventory IMSCC packages |
 | `content-analyzer` | Detect accessibility & quality gaps |
 | `accessibility-remediation` | WCAG fixes, alt text, headings |
 | `content-quality-remediation` | Educational depth & enhancement |
 | `intelligent-design-mapper` | Component selection & styling |
 | `remediation-validator` | Final QA & WCAG verification |
-| `semantik-chunker` | Emit `LibV2/courses/<slug>/dart_chunks/chunks.jsonl` from staged DART HTML via `Trainforge.chunker.chunk_content`; deterministic transformation (no LLM dispatch). Backed by `_run_dart_chunking` registered in `MCP/tools/pipeline_tools.py::_build_tool_registry`. Canonical agent name for both the `chunking` and `imscc_chunking` phases in `config/workflows.yaml`; renamed from `dart-chunker`, which survives only as an `AGENT_TOOL_MAPPING` dispatch alias (read-compat). |
+| `semantik-chunker` | Emit `LibV2/courses/<slug>/semantik_chunks/chunks.jsonl` from staged SemantiK HTML via `Trainforge.chunker.chunk_content`; deterministic transformation (no LLM dispatch). Backed by `_run_dart_chunking` registered in `MCP/tools/pipeline_tools.py::_build_tool_registry` (the registry key keeps its legacy DART name for checkpoint/read-compat). Canonical agent name for both the `chunking` and `imscc_chunking` phases in `config/workflows.yaml`; the legacy agent name survives only as an `AGENT_TOOL_MAPPING` dispatch alias (read-compat). | <!-- legacy-token: allow -->
 
 ### Textbook Pipeline Agents
 
 | Agent | Purpose |
 |-------|---------|
-| `textbook-stager` | Stage DART outputs for Courseforge |
-| `textbook-ingestor` | Parse DART HTML & extract objectives |
-| `source-router` | Bind DART source blocks to Courseforge module pages (TF-IDF + confidence scoring) |
+| `textbook-stager` | Stage SemantiK outputs for Courseforge |
+| `textbook-ingestor` | Parse SemantiK HTML & extract objectives |
+| `source-router` | Bind SemantiK source blocks to Courseforge module pages (TF-IDF + confidence scoring) |
 | `pedagogy-graph-builder` | Build the pedagogy/concept graph backing the `concept_extraction` phase; routes to `run_concept_extraction` via `MCP/core/executor.py::AGENT_TOOL_MAPPING`. Declared in `config/workflows.yaml` only (no `config/agents.yaml` entry). |
 | `libv2-archivist` | Archive course artifacts to LibV2 |
 
@@ -822,9 +822,9 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 |--------|-------|-----------:|
 | `TRAINFORGE_*` / `LOCAL_SYNTHESIS_*` / `TOGETHER_*` / `ANTHROPIC_SYNTHESIS_*` / `CURRICULUM_ALIGNMENT_*` / `WAVE18_*` | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 58 |
 | `NVIDIA_*` (vendor endpoint-registry row for the hosted large-model seat — `NVIDIA_API_KEY` / `NVIDIA_BASE_URL` / `NVIDIA_LARGE_MODEL`) | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 3 |
-| `SEMANTIK_*` (DART replacement — SemantiK semantic-cascade converter; also honors the legacy `DART_THETA_DEVICE` compat env) | [`SemantiK/CLAUDE.md § Opt-In Behavior Flags`](SemantiK/CLAUDE.md) | 163 |
+| `SEMANTIK_*` (SemantiK semantic-cascade converter; also honors the single legacy `DART_THETA_DEVICE` compat env, aliased to `SEMANTIK_THETA_DEVICE`) <!-- legacy-token: allow --> | [`SemantiK/CLAUDE.md § Opt-In Behavior Flags`](SemantiK/CLAUDE.md) | 163 |
 | `COURSEFORGE_*` / `COURSEPLANNER_*` / `TEXTBOOK_SYNTHESIS_*` | [`Courseforge/CLAUDE.md § Opt-In Behavior Flags`](Courseforge/CLAUDE.md) | 45 |
-| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root index (below) + [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 233 |
+| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root index (below) + [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 238 |
 
 ### Cross-cutting flags (root-owned)
 
@@ -991,7 +991,7 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `ED4ALL_ROOT` | auto-detect | Absolute path to the Ed4All project root. |
 | `ED4ALL_RUN_ID` | generated | Per-run identifier consumed by every artifact emitter. |
 | `ED4ALL_SKIP_ABLATION` | unset | When set, skips the post-training ablation pass. |
-| `ED4ALL_STAGE_MODE` | `symlink` | How `stage_dart_outputs` materialises DART HTML (copy / symlink / hardlink). |
+| `ED4ALL_STAGE_MODE` | `symlink` | How `stage_semantik_outputs` materialises SemantiK HTML (copy / symlink / hardlink). |
 | `ED4ALL_STATE_RUNS_DIR` | `<repo>/state/runs/` | State-runs directory |
 | `ED4ALL_STRUCTURE_EXTRACT_GUARDS` | unset (off) | SemantiK structure-fidelity Package 1+3 — DPUB-ARIA article-path continuation-merge / headingless-wrapper grouping / noncontent+numbered-apparatus heading filter / structureDiagnostics sanity on the extractor (byte-identical off). |
 | `ED4ALL_STRUCTURE_OUTLINE_ANCHOR` | on-when-guards-on | SemantiK extractor outline-anchored section alignment (`lib/semantic_structure_extractor/semantic_structure_extractor.py`): aligns built sections to the chapter-outline / ToC `N.M` declarations with an ordinal-union harvest so scan-split sections re-fuse to their declared section. Opt-out: inert unless `ED4ALL_STRUCTURE_EXTRACT_GUARDS` is on (only the guarded path reaches it), then default ON → set falsey for byte-identical Package-1 chapters. |
@@ -1008,7 +1008,7 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `ED4ALL_TO_ALLOW_SINGLETON_TO` | unset (off → singleton TOs dissolved) | Anti-hallucinated-TO backstop — the OPT-OUT for the unconditional `dissolve_singletons` pass |
 | `ED4ALL_TO_MIN_CLUSTERS` | `3` | Tiny-course floor for the `dissolve_singletons` backstop |
 | `ED4ALL_TO_SOURCE_GROUNDING` | unset (off) | W7.5 opt-in gate for the TERMINAL-objective source-grounding validator |
-| `ED4ALL_TO_CHAPTER_ANCHOR` | unset (off) | W3 Defect A master gate — chapter-anchored TO derivation (one DART module → one terminal objective by cited-chunk plurality) instead of bottom-up statement clustering. Default off → bottom-up path unchanged. |
+| `ED4ALL_TO_CHAPTER_ANCHOR` | unset (off) | W3 Defect A master gate — chapter-anchored TO derivation (one SemantiK module → one terminal objective by cited-chunk plurality) instead of bottom-up statement clustering. Default off → bottom-up path unchanged. |
 | `ED4ALL_TO_CHAPTER_ANCHOR_REORDER` | on-when-master-on | W3 Defect A §6 satellite — stable book-order CO re-sort (by module order + in-module position) BEFORE the week slice, so ceil-stride weeks are chapter-contiguous even without `ED4ALL_WEEK_TO_GROUPS`. Only the falsey tokens disable it. |
 | `ED4ALL_TO_CHAPTER_MIN_MODULES` | `2` | W3 Defect A satellite — module-count floor below which anchor mode degrades to bottom-up (a monolithic single-HTML corpus can't be anchored). |
 | `ED4ALL_TO_CHAPTER_MIN_CO_COVERAGE` | `0.80` | W3 Defect A satellite — min fraction of COs that must resolve ≥1 module from their own cited chunks for anchor mode to fire (else degrade to bottom-up). |

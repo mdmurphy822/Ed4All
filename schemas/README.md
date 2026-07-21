@@ -1,6 +1,6 @@
 # `/schemas/` — Unified Schema Home
 
-Single project-root home for all domain-shared JSON Schemas, taxonomies, and event contracts used across DART, Courseforge, Trainforge, and LibV2.
+Single project-root home for all domain-shared JSON Schemas, taxonomies, and event contracts used across SemantiK, Courseforge, Trainforge, and LibV2.
 
 For the full current-state ontology map (classes, relations, taxonomies, provenance, identity, constraints, versioning), see **[`ONTOLOGY.md`](./ONTOLOGY.md)**.
 
@@ -16,7 +16,7 @@ schemas/
 │   ├── course_metadata.schema.json          full course (MIT OCW shape)
 │   ├── courseforge_page_types.schema.json   page-level type enum
 │   ├── learning_objectives.schema.json      extracted LOs + hierarchy
-│   └── textbook_structure.schema.json       DART-processed HTML structure
+│   └── textbook_structure.schema.json       SemantiK-processed HTML structure
 │
 ├── aggregators/                             post-loop aggregator output shapes
 │   ├── coverage_map.schema.json             objective→chunk→question→pair map (Wave 3 G1)
@@ -74,7 +74,7 @@ schemas/
 │
 ├── library/                                 LibV2 course repository
 │   ├── catalog_entry.schema.json            course entry in master catalog
-│   ├── chunkset_drift_report.schema.json    DART vs IMSCC drift sidecar
+│   ├── chunkset_drift_report.schema.json    SemantiK vs IMSCC chunkset drift sidecar
 │   ├── chunkset_manifest.schema.json        per-*_chunks/ manifest
 │   ├── course_manifest.schema.json          extended course metadata
 │   └── packaging_report.schema.json         IMSCC packaging report sidecar

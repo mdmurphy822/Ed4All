@@ -32,7 +32,7 @@ sign-off. Level AAA observations are recorded as notes, not blockers.
 
 2. Seed at least one answerable course so the ask flow returns real data,
    including at least one course whose citations resolve to **both** a converted
-   HTML source page (the SemantiK `dart:` provenance source) and an IMSCC member
+   HTML source page (the SemantiK `semantik:` provenance source) and an IMSCC member
    page (so the source-viewer route is exercised on both resolution paths).
 
 3. Have ready a set of queries that deterministically drive each answer status
@@ -165,7 +165,7 @@ record the violation count (the bar is **zero** Level A/AA violations):
 | Refused | A `refused_*` result rendered. |
 | Blocked | A `blocked_*` result rendered (or note as gate-only this cycle). |
 | Error | An error result rendered (e.g. backend down). |
-| Source viewer | A source page opened from a citation (both `dart:`-provenance SemantiK HTML and IMSCC sources). |
+| Source viewer | A source page opened from a citation (both `semantik:`-provenance SemantiK HTML and IMSCC sources). |
 
 ---
 

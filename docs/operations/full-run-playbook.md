@@ -291,7 +291,7 @@ Verified `ed4all run` options (`cli/commands/run.py`): `--corpus`,
 `--course-name`, `--mode {local,api}`, `--api-provider/--provider
 {anthropic,openai,nvidia}`, `--model`, `--weeks`, `--no-assessments`,
 `--assessment-count` (default 50), `--bloom-levels`, `--priority`,
-`--objectives`, `--resume`, `--skip-dart`, `--semantik-output-dir`,
+`--objectives`, `--resume`, `--skip-conversion`, `--semantik-output-dir`,
 `--reuse-objectives`, `--reuse-conversion`, `--blocks`, `--block-ids`,
 `--pages`, `--force`, `--libv2-root`, `--skip-training`, `--stop-after`,
 `--license-note`, `--attribution`, `--dry-run`, `--watch`, `--json`.

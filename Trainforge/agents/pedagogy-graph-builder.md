@@ -2,8 +2,8 @@
 
 ## Purpose
 
-Build a typed pedagogical / concept graph from chunked DART HTML output
-during the Phase 6 `concept_extraction` workflow phase, BEFORE objective
+Build a typed pedagogical / concept graph from the chunked SemantiK HTML
+chunkset during the Phase 6 `concept_extraction` workflow phase, BEFORE objective
 synthesis runs. Wraps the deterministic
 `Trainforge/pedagogy_graph_builder.py::build_pedagogy_graph` helper and
 persists the result to the LibV2 course tree as
@@ -22,11 +22,11 @@ synthesis lands.
 
 | Field | Source | Required |
 |-------|--------|----------|
-| `dart_chunks_path` | `chunking` phase output (Phase 7a `ed4all-chunker` package) — JSONL of v4 chunks emitted from staged DART HTML | yes |
+| `semantik_chunks_path` | `chunking` phase output (`semantik-chunker` agent) — JSONL of v4 chunks emitted from staged SemantiK HTML | yes |
 | `course_id` | Workflow context (`course_code`, uppercased to match `manifest.json` convention) | yes |
 | `concept_classes` | Optional mapping of concept slug -> class label sourced from `concept_graph.json` (Worker B's classifier, Wave 76) | no |
 
-The phase deliberately reads ONLY `dart_chunks_path` — NOT
+The phase deliberately reads ONLY `semantik_chunks_path` — NOT
 `objectives_path` — because objective synthesis runs AFTER this phase.
 That ordering is what makes the two-stage decoupling possible per
 roadmap §6.6.
@@ -52,7 +52,7 @@ roadmap §6.1 recommendation.
 
 ## Workflow
 
-1. Receive `dart_chunks_path` from the `chunking` phase output. Load the
+1. Receive `semantik_chunks_path` from the `chunking` phase output. Load the
    JSONL into `List[Dict]` chunks.
 2. Resolve `course_id` from workflow context. The builder's Wave 82
    fallback derives it from chunk-ID prefix when caller passes empty,
@@ -102,8 +102,8 @@ Subtask 14). Floors:
 
 Works upstream with:
 
-- `chunking` phase (Phase 7a `ed4all-chunker` package) — receives
-  chunks JSONL via `dart_chunks_path`.
+- `chunking` phase (`semantik-chunker` agent) — receives
+  chunks JSONL via `semantik_chunks_path`.
 
 Works downstream with:
 

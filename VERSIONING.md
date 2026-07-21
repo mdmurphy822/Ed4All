@@ -6,13 +6,13 @@ The branch that shipped this file (`claude/fix-package-quality-FyMue`) moved Ed4
 
 **v0.2.0 status (development branch `dev-v0.2.0`):** the workers-A-through-K cohort on `dev-v0.2.0` delivers a substantial chunk of the v1.0 roadmap ahead of the formal v1.0 release. See §5a below for the mapping from v1.0 promises to the v0.2.0 artifacts that fulfilled them. v1.0 itself remains defined by the §6 exit criteria, all of which must hold before the version number moves.
 
-**v0.3.0 status (promoted from `dev-v0.3.0`, 2026-06-11):** the marketable-v1 cohort ships the end-user product surface: Docker-deployable Studio GUI (shared-netns compose, course library + IMSCC viewer, in-context Ask drawer with durable ask jobs), grounded Q&A over union corpora (generated course pages + the original source content, both chunked and indexed) with provenance-citing answers (per-chunk DART block references with PDF pages, exact-block deep links into the original document, attribution-driven citation pruning/crediting/ordering), a deterministic Learning Objectives Map page in every packaged IMSCC, the turnkey local-provider authoring route with fail-fast guardrails, strict decision-validation fixes, and an Apache-2.0 relicense (prior MIT history preserved on the `v0.2.0` branch). v1.0 remains defined by the §6 exit criteria.
+**v0.3.0 status (promoted from `dev-v0.3.0`, 2026-06-11):** the marketable-v1 cohort ships the end-user product surface: Docker-deployable Studio GUI (shared-netns compose, course library + IMSCC viewer, in-context Ask drawer with durable ask jobs), grounded Q&A over union corpora (generated course pages + the original source content, both chunked and indexed) with provenance-citing answers (per-chunk SemantiK block references with PDF pages, exact-block deep links into the original document, attribution-driven citation pruning/crediting/ordering), a deterministic Learning Objectives Map page in every packaged IMSCC, the turnkey local-provider authoring route with fail-fast guardrails, strict decision-validation fixes, and an Apache-2.0 relicense (prior MIT history preserved on the `v0.2.0` branch). v1.0 remains defined by the §6 exit criteria.
 
 ---
 
 ## §1 What v0.1.0 delivers
 
-End-to-end pipeline: **DART → Courseforge → Trainforge → LibV2**.
+End-to-end pipeline: **SemantiK → Courseforge → Trainforge → LibV2**.
 
 - **Accessible HTML** — semantic structure, proper heading hierarchy, WCAG 2.2 AA target, alt text on all images.
 - **Structured courses** — IMSCC packages with course/terminal/chapter objectives, Bloom-level metadata on every learning objective, JSON-LD metadata on every HTML page.
@@ -97,7 +97,7 @@ This branch ships **only the Trainforge half of both decisions.** The Courseforg
 | Footer ownership | n-gram detector strips repeated spans; metric reports contamination rate | Move copyright out of page body into `<footer data-cf-role="template-chrome">`; add a selector-based skip in Trainforge so role-tagged chrome is dropped before n-gram detection runs |
 | Outcome-ID contract | `learning_outcome_refs` holds course-level IDs; `pedagogical_scope_refs` holds week-scoped IDs with `parent_id` (orphans preserved with `parent_id: null`) | Emit both forms in `course.json` with explicit parent links so orphan counts stay zero on healthy content |
 
-**Follow-up branch:** the v1.0 work that completes both halves is owned by the same maintainer (`mdmurphy822`) and lives on a branch named `claude/courseforge-template-chrome-and-dual-ids` (to be created). Until that branch ships:
+**Follow-up branch:** the v1.0 work that completes both halves is owned by the maintainer and tracked on a dedicated follow-up branch (to be created). Until that branch ships:
 
 - The "ownership: both" entry in the v0 plan's decision table is *partially fulfilled*, not retracted.
 - The Trainforge defensive layer is **load-bearing**: on a small corpus or against novel template chrome, the n-gram threshold may not fire and footer contamination will leak through. The metric will surface the leak; nothing will refuse to write it. This is acceptable for v0.1.x but is the principal reason `strict_mode=True` is not on by default.

@@ -179,8 +179,8 @@ heading skeleton. It never touches text.
 The lane writes `{stem}.glmocr_layout.json` and `{stem}.glmocr_escalations.jsonl`. The existing
 `lib/semantik/adapter.py` renders the wire contract unchanged: `data-semantik-*` HTML attributes
 (`data-semantik-block-id`, `data-semantik-source`, `data-semantik-pages`, `data-semantik-page-kind`, …).
-The **CURIE** source-id form is still minted as `dart:{slug}#{block_id}`; `lib/validators/source_refs.py`
-deliberately accepts both `dart:` and `semantik:` prefixes so current and legacy corpora both resolve.
+The **CURIE** source-id form is minted as `semantik:{slug}#{block_id}`; `lib/validators/source_refs.py`
+additionally accepts the legacy prefix on the READ side so current and unmigrated corpora both resolve.
 
 ### 3.2 Decision capture — partially honored
 

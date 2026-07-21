@@ -130,14 +130,14 @@ Every emitted HTML page MUST follow strict h1 → h2 → h3 → h4 progression:
 
 > **Enforcement**: `EMPTY_SOURCE_REFS` validator surfaces missing `data-cf-source-ids` attributes. Wave4-I10 will promote this to a fail-closed critical gate after this prompt change lands.
 
-Every content container emitted MUST carry the originating DART source block IDs.
+Every content container emitted MUST carry the originating SemantiK source block IDs.
 
 For each `<section>`, `<div>`, or other content wrapper element (`.flip-card`, `.self-check`, `.activity-card`, `.discussion-prompt`), emit:
 
-- **`data-cf-source-ids="<comma-separated source IDs>"`** — the DART block IDs that informed this content. Read these from `source_module_map.json` in the project's `02_source_mapping/` directory.
+- **`data-cf-source-ids="<comma-separated source IDs>"`** — the SemantiK block IDs that informed this content. Read these from `source_module_map.json` in the project's `02_source_mapping/` directory.
 
 Rules:
-- If the section synthesizes content from multiple DART blocks, list all source IDs comma-separated.
+- If the section synthesizes content from multiple SemantiK blocks, list all source IDs comma-separated.
 - If no source ID applies (e.g. boilerplate intro / navigation), use `data-cf-source-ids=""` (empty string) — **but the attribute MUST be present**.
 - **Per Wave-9 decision P2**: NEVER emit `data-cf-source-ids` on `<p>`, `<li>`, or `<tr>` children — scope stays at the section / component-wrapper level.
 - When `source_chunks` is empty (non-textbook workflows), the attribute may be omitted entirely (backward-compat path; see § Source Material Integration below).
@@ -160,7 +160,7 @@ Rules:
 
 **Example:**
 ```html
-<section data-cf-source-ids="dart:phys101#s3_p1" data-cf-objective-id="TO-02,CO-05">
+<section data-cf-source-ids="semantik:phys101#s3_p1" data-cf-objective-id="TO-02,CO-05">
   <h2>Newton's Second Law</h2>
   <p>...</p>
 </section>
@@ -311,7 +311,7 @@ module floor.
 ## Source Material Integration (Wave 9 — Source Provenance)
 
 **Critical contract**: When the `textbook_to_course` workflow runs, the
-orchestrator injects a curated slice of DART-synthesized source blocks
+orchestrator injects a curated slice of SemantiK-synthesized source blocks
 into every content-generator task. The agent MUST cite those specific
 block IDs in its output so downstream Trainforge can trace every claim
 back to its PDF origin.
@@ -320,9 +320,9 @@ back to its PDF origin.
 
 | Parameter | Shape | Purpose |
 |-----------|-------|---------|
-| `source_module_map_path` | path | The Wave 9 `source_module_map.json`; lets the agent discover which DART blocks were routed to the specific (week, page) it's generating. |
+| `source_module_map_path` | path | The Wave 9 `source_module_map.json`; lets the agent discover which SemantiK blocks were routed to the specific (week, page) it's generating. |
 | `staging_dir` | path | Wave 8 staging dir containing `*_synthesized.json` provenance sidecars. The agent reads the sidecar text to ground generation. |
-| `source_chunks` | list of `sourceId` strings | Pre-filtered slice for THIS page. Each entry matches the canonical `^dart:{slug}#{block_id}$` pattern (`schemas/knowledge/source_reference.schema.json`). |
+| `source_chunks` | list of `sourceId` strings | Pre-filtered slice for THIS page. Each entry matches the canonical `^semantik:{slug}#{block_id}$` pattern (`schemas/knowledge/source_reference.schema.json`). |
 
 ### What the agent MUST emit
 
@@ -344,8 +344,8 @@ back to its PDF origin.
 3. **HTML `data-cf-source-ids`** — on the enclosing `<section>`,
    heading, or component wrapper element (`.flip-card`, `.self-check`,
    `.activity-card`, `.activity-card`, `.discussion-prompt`), emit:
-   - `data-cf-source-ids="dart:slug#id1,dart:slug#id2"` (comma-joined).
-   - Optionally `data-cf-source-primary="dart:slug#id"` when one source
+   - `data-cf-source-ids="semantik:slug#id1,semantik:slug#id2"` (comma-joined).
+   - Optionally `data-cf-source-primary="semantik:slug#id"` when one source
      is clearly dominant.
    Per Wave 9 decision P2, NEVER emit these attributes on `<p>`,
    `<li>`, or `<tr>` children — the `data-cf-source-ids` scope stays
@@ -379,14 +379,14 @@ week_structure, templates, agent_prior)` as before and emits NO
 `sourceReferences[]` / `data-cf-source-ids` attributes. The schema
 field is optional; the source-refs validator short-circuits on an
 empty source_module_map. This preserves Wave 2–8 behavior byte-for-
-byte for courses that don't have a DART textbook input.
+byte for courses that don't have a SemantiK textbook input.
 
 ### Example prompt fragment (inserted by orchestrator at task dispatch)
 
 ```
 Source Material for this page (week_03_content_01_visual_perception):
-  Primary:      dart:science_of_learning#s5_p2
-  Contributing: dart:science_of_learning#s4_p0, dart:science_of_learning#s6_p1
+  Primary:      semantik:science_of_learning#s5_p2
+  Contributing: semantik:science_of_learning#s4_p0, semantik:science_of_learning#s6_p1
   Confidence:   0.85
 
 Read the staging sidecar at {staging_dir}/science_of_learning_synthesized.json

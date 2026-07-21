@@ -25,7 +25,7 @@ Place your course content in the `inputs/` directory:
 inputs/
 ├── exam-objectives/               # Certification exam objectives (PDF/text)
 │   └── your_exam_objectives.pdf
-├── textbooks/                     # DART-processed accessible HTML textbooks
+├── textbooks/                     # SemantiK-processed accessible HTML textbooks
 │   └── chapter_accessible.html
 └── existing-packages/             # IMSCC packages for intake/remediation
 ```

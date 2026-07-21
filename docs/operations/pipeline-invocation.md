@@ -77,9 +77,9 @@ Paths are relative to the Courseforge **export root**
 
 | # | Phase | Writes (inspect this) | LLM seat | Stop-after / re-run / reuse |
 |---|---|---|---|---|
-| 1 | `semantik_conversion` | staged `*_accessible.html` (out of tree) | SemantiK cascade (local) | `--stop-after semantik_conversion`; skip via `--reuse-conversion` or `--skip-dart --dart-output-dir <dir>`. Phase renamed from `dart_conversion` (task #19 Stage 3d); NEW runs use the new name, old paused runs still `--resume` via the checkpoint/phase_outputs read-alias. |
-| 2 | `staging` | `Courseforge/inputs/textbooks/<…>/` | deterministic | `--stop-after staging`; implied by `--skip-dart` |
-| 3 | `chunking` | **LibV2** `dart_chunks/chunks.jsonl` + `manifest.json` | deterministic | `--stop-after chunking` |
+| 1 | `semantik_conversion` | staged `*_accessible.html` (out of tree) | SemantiK cascade (local) | `--stop-after semantik_conversion`; skip via `--reuse-conversion` or `--skip-conversion --semantik-output-dir <dir>`. Old paused runs still `--resume` via the legacy conversion-phase read-alias. |
+| 2 | `staging` | `Courseforge/inputs/textbooks/<…>/` | deterministic | `--stop-after staging`; implied by `--skip-conversion` |
+| 3 | `chunking` | **LibV2** `semantik_chunks/chunks.jsonl` + `manifest.json` | deterministic | `--stop-after chunking` |
 | 4 | `objective_extraction` | `01_learning_objectives/textbook_structure.json` | `TEXTBOOK_SYNTHESIS_PROVIDER` | `--stop-after objective_extraction` |
 | 5 | `source_mapping` | `source_module_map.json` (export root) | deterministic (TF-IDF) | `--stop-after source_mapping` |
 | 6 | `course_planning` | `01_learning_objectives/synthesized_objectives.json` | `COURSEPLANNER_PROVIDER` (+ `TEXTBOOK_SYNTHESIS_PROVIDER` for Stage-2) | `--stop-after course_planning`; skip synthesis via `--reuse-objectives <path>` |
@@ -143,7 +143,7 @@ COURSEFORGE_TWO_PASS=true ed4all run textbook-to-course --corpus book.pdf \
   prior `{stem}_accessible.html` + sidecars exist at the conversion output path, the
   cascade is skipped and the prior artifacts reused — the re-run model-nondeterminism
   guarantee; mirrors the `ED4ALL_REUSE_CONVERSION` env var, and the flag wins when both
-  are set; see `SemantiK/CLAUDE.md §3.3a`), `--skip-dart --dart-output-dir <dir>` (feed
+  are set; see `SemantiK/CLAUDE.md §3.3a`), `--skip-conversion --semantik-output-dir <dir>` (feed
   pre-converted HTML), `--reuse-objectives <path>` (pin a prior objectives JSON, skip
   the course-outliner re-dispatch — removes LLM nondeterminism drift across re-runs that
   breaks chunk `learning_outcome_refs` continuity). `--reuse-objectives` accepts **both**
@@ -210,7 +210,7 @@ preflight (resolve + assert, no dispatch):
 ```bash
 export COURSEFORGE_TWO_PASS=true
 ed4all run textbook-to-course --provider nvidia --course-name PHYS_101 \
-  --corpus slice.pdf --skip-dart --skip-training \
+  --corpus slice.pdf --skip-conversion --skip-training \
   --stop-after imscc_chunking --dry-run   # preflight: resolve+assert, NO dispatch
 ```
 
@@ -312,8 +312,8 @@ for the licensing rationale behind each seat and the Together fallback for large
   `01_learning_objectives/textbook_structure.json` early: an implausibly high
   chapter/section count (e.g. 11 "chapters" / 141 "sections" for 3 real chapters) is the
   tell.
-- **Skip re-conversion when iterating.** `--reuse-conversion` (or `--skip-dart
-  --dart-output-dir <dir>` pointing at a dir with `*_accessible.html`) reuses a prior
+- **Skip re-conversion when iterating.** `--reuse-conversion` (or `--skip-conversion
+  --semantik-output-dir <dir>` pointing at a dir with `*_accessible.html`) reuses a prior
   SemantiK conversion so you can iterate on synthesis/authoring without re-running the
   (slow, model-nondeterministic) PDF cascade.
 
@@ -357,19 +357,19 @@ prepare HTML:
 
 When the source is already a set of **per-page accessible HTML** (a vendor/web export, or
 one JSON-per-page corpus) rather than a PDF, you don't need the SemantiK cascade —
-concatenate the pages into one `*_accessible.html` and feed it via `--skip-dart
---dart-output-dir <dir>`. Rules that make the assembled doc extract cleanly:
+concatenate the pages into one `*_accessible.html` and feed it via `--skip-conversion
+--semantik-output-dir <dir>`. Rules that make the assembled doc extract cleanly:
 
 - Group pages into chapters; wrap each chapter under a single `h2`; demote page-body
   headings so section titles land at `h3` (the §6.1 contract).
 - **Exclude non-content pages** — chapter-level answer-key / "Try It" exercise dumps,
   term `index`, `preface`. Their aggregated or duplicated headings corrupt the structure
   (and the answer-key text contaminates `chapter_text`).
-- Staging accepts **plain accessible HTML**; the `data-dart-*` provenance markers are
-  **optional** (the `stage_dart_outputs` sidecars `_synthesized.json` / `.quality.json`
+- Staging accepts **plain accessible HTML**; the `data-semantik-*` provenance markers are
+  **optional** (the `stage_semantik_outputs` sidecars `_synthesized.json` / `.quality.json`
   are `if …exists()`), needed only for the post-`course_planning` `source_refs` gate.
 - Precedent importers live under gitignored `inputs/*-import/` (co-located with their
-  source materials; each reuses the tracked `scripts/nvidia_corpus_to_dart.py` helpers).
+  source materials; each reuses the tracked `scripts/nvidia_corpus_to_semantik.py` helpers).
   Keep the importer and its outputs under `inputs/` — never commit source-corpus content
   or hard-coded course slugs.
 
@@ -383,7 +383,7 @@ Before a long synthesis, confirm the two real Stage inputs are clean:
   chrome). Front-matter bleed is what turns a real chapter into a garbage terminal
   objective.
 - **Chunks** (Stage-2 grounding) — `--stop-after chunking`, then read **LibV2**
-  `courses/<slug>/dart_chunks/chunks.jsonl`. Confirm the chunk count is *book-scale* and
+  `courses/<slug>/semantik_chunks/chunks.jsonl`. Confirm the chunk count is *book-scale* and
   that chunks are attributed across **all** chapters (a book-wide corpus siloed onto ch1
   is a structure-attribution bug). Stage-2 groups these chunks per chapter into
   `num_ctx`-sized windows and synthesizes candidate objectives against them, so a wrong
@@ -608,7 +608,7 @@ export SEMANTIK_PROMOTE_SECTION_HEADINGS=1
 export SEMANTIK_SPLIT_FUSED_SECTION_TITLES=1
 export SEMANTIK_OCR_CONFUSABLE_REPAIR=1
 export SEMANTIK_STAGE6_PROSE_PASSTHROUGH=1
-export DART_ALLOW_THETA_STUB=1
+export SEMANTIK_ALLOW_THETA_STUB=1
 
 # --- chunk-input fixes (apply at chunking; harmless for convert-only) ---
 export TRAINFORGE_DROP_FRONTMATTER=true

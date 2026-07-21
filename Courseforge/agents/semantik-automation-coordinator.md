@@ -2,19 +2,19 @@
 
 ## Overview
 
-The `semantik-automation-coordinator` (formerly `dart-automation-coordinator`) is a specialized subagent that orchestrates automatic SemantiK conversion of all non-accessible content. It manages the conversion pipeline for PDFs, Office documents, and other non-HTML content, ensuring 100% accessible course materials. The legacy `dart-automation-coordinator` name still resolves at dispatch time via the read-compat alias in `MCP/core/executor.py::AGENT_TOOL_MAPPING`.
+The `semantik-automation-coordinator` is a specialized subagent that orchestrates automatic SemantiK conversion of all non-accessible content. It manages the conversion pipeline for PDFs, Office documents, and other non-HTML content, ensuring 100% accessible course materials. A read-compat dispatch alias in `MCP/core/executor.py::AGENT_TOOL_MAPPING` covers legacy pre-SemantiK resume states.
 
 ## Agent Type Classification
 
 - **Agent Type**: `semantik-automation-coordinator` (specialized conversion orchestrator)
 - **Primary Function**: Coordinate batch document conversion to accessible HTML
 - **Workflow Position**: Post-analysis phase (after content-analyzer, before accessibility-remediation)
-- **Integration**: Uses dart_batch_processor.py script, feeds to accessibility-remediation agent
+- **Integration**: Routes to the `extract_and_convert_pdf` SemantiK cascade tool; feeds to accessibility-remediation agent
 
 ## Core Capabilities
 
 ### 1. Conversion Queue Management
-Manages prioritized queue of documents requiring DART conversion:
+Manages prioritized queue of documents requiring SemantiK conversion:
 
 | Priority | Document Type | Reason |
 |----------|--------------|--------|
@@ -51,7 +51,7 @@ Manages automatic replacement of original documents:
 ```
 Input: Remediation manifest from content-analyzer
 Process:
-  1. Parse remediation queue for DART candidates
+  1. Parse remediation queue for SemantiK candidates
   2. Prioritize by document type and course position
   3. Validate file accessibility
   4. Create ordered conversion queue
@@ -62,7 +62,7 @@ Output: Prioritized conversion task list
 ```
 Input: Conversion task queue
 Process:
-  1. Initialize dart_batch_processor
+  1. Initialize the SemantiK conversion cascade
   2. Execute parallel conversions
   3. Monitor progress and handle failures
   4. Retry failed conversions (max 2 attempts)
@@ -97,11 +97,11 @@ Output: Updated course package with accessible content
 ### Documents Requiring Conversion
 | File Type | Extension | Conversion Method |
 |-----------|-----------|-------------------|
-| PDF | `.pdf` | Direct DART conversion |
-| Word | `.doc`, `.docx` | LibreOffice → PDF → DART |
-| PowerPoint | `.ppt`, `.pptx` | LibreOffice → PDF → DART |
-| Excel | `.xls`, `.xlsx` | LibreOffice → PDF → DART |
-| OpenDocument | `.odt`, `.odp`, `.ods` | LibreOffice → PDF → DART |
+| PDF | `.pdf` | Direct SemantiK conversion |
+| Word | `.doc`, `.docx` | LibreOffice → PDF → SemantiK |
+| PowerPoint | `.ppt`, `.pptx` | LibreOffice → PDF → SemantiK |
+| Excel | `.xls`, `.xlsx` | LibreOffice → PDF → SemantiK |
+| OpenDocument | `.odt`, `.odp`, `.ods` | LibreOffice → PDF → SemantiK |
 
 ### Conversion Output Standards
 All converted content must meet:
@@ -110,40 +110,31 @@ All converted content must meet:
 - **Responsive Design** - Mobile-friendly layout
 - **Brightspace Compatible** - D2L import ready
 
-## Script Integration
+## Cascade Integration
 
-### Primary Script
+### Invocation
+The coordinator dispatches to the `extract_and_convert_pdf` tool, which drives
+the SemantiK v2 conversion cascade (PDF/Office → accessible HTML). Standalone,
+the same conversion runs via the `ed4all convert` CLI verb:
+
 ```bash
-python scripts/dart-batch-processor/dart_batch_processor.py \
-    --input-manifest remediation_queue.json \
-    --output-dir /path/to/converted/ \
-    --max-workers 4
+ed4all convert <input.pdf-or-dir> --output /path/to/converted/
 ```
 
-### DART Configuration
-```python
-import os
-DART_CONFIG = {
-    "dart_path": os.environ.get("DART_PATH", "/path/to/DART"),  # Set DART_PATH env var
-    "timeout_seconds": 300,
-    "max_retries": 2,
-    "retry_delay": 5,
-    "output_format": "html",
-    "enable_ocr": True,
-    "ocr_dpi": 300,
-    "ocr_language": "eng"
-}
-```
+### Configuration
+Conversion behavior (OCR lane, structure guards, VLM alt text, retries) is
+governed by the `SEMANTIK_*` behavior flags. See `SemantiK/CLAUDE.md` for the
+full flag table.
 
 ## Agent Invocation
 
 ### From Orchestrator
 ```python
 Task(
-    subagent_type="dart-automation-coordinator",
+    subagent_type="semantik-automation-coordinator",
     description="Convert all non-HTML content",
     prompt="""
-    Process all documents requiring DART conversion.
+    Process all documents requiring SemantiK conversion.
 
     Input: Remediation queue at /workspace/remediation_queue.json
     Output: /workspace/converted_content/
@@ -198,7 +189,7 @@ Task(
 ### Conversion Failures
 | Error Type | Recovery Action |
 |------------|-----------------|
-| DART timeout | Retry with extended timeout |
+| Conversion timeout | Retry with extended timeout |
 | OCR failure | Create placeholder with download link |
 | LibreOffice error | Skip Office conversion, flag for manual |
 | Validation failure | Log issues, pass to accessibility-remediation |
@@ -213,7 +204,7 @@ Task(
 ### Pre-Conversion
 - [ ] All source files accessible and readable
 - [ ] Sufficient disk space for conversion output
-- [ ] DART installation validated
+- [ ] SemantiK `[semantik]` extra installed
 - [ ] LibreOffice available for Office documents
 
 ### Post-Conversion
@@ -221,7 +212,7 @@ Task(
 - [ ] Semantic structure present (headings, landmarks)
 - [ ] No broken links or missing resources
 - [ ] Content matches original (text comparison)
-- [ ] Images have alt text (generated by DART OCR)
+- [ ] Images have alt text (generated by SemantiK)
 
 ## Performance Targets
 
@@ -244,4 +235,4 @@ Task(
 
 ---
 
-*This agent ensures 100% accessible course content through automated DART conversion, supporting Courseforge's goal of fully accessible educational materials.*
+*This agent ensures 100% accessible course content through automated SemantiK conversion, supporting Courseforge's goal of fully accessible educational materials.*

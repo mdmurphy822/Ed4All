@@ -94,15 +94,15 @@ flowchart TD
     class P8,P17 skipped
 ```
 
-### 1.1 What changed from the historical shape
+### 1.1 Non-obvious facts about the current shape
 
-* **`semantik_conversion`** is the current phase name. It was renamed from
-  `dart_conversion`. The legacy name survives as **read-only compat** so a run
-  paused under the old name still resumes: `MCP/hardening/checkpoint.py`
-  carries a bidirectional alias map (`dart_conversion` ↔ `semantik_conversion`,
-  `checkpoint.py:113-114`) and `MCP/core/workflow_runner.py` normalizes the
+* **`semantik_conversion`** is the conversion phase name. A run paused under an
+  older persisted phase key still resumes: `MCP/hardening/checkpoint.py` carries
+  a bidirectional `_PHASE_NAME_ALIASES` map so a checkpoint written under either
+  key is found under the other, and `MCP/core/workflow_runner.py` normalizes the
   legacy key in persisted `phase_outputs` (`_LEGACY_CONVERSION_PHASE`,
-  `workflow_runner.py:375`). Nothing *writes* the legacy name.
+  `workflow_runner.py:372`). Nothing *writes* the legacy name — it is a
+  read-only resume-compat alias.
 
 * **`heading_judge`** is a real phase between conversion and staging, not an
   optional add-on. It is declared non-optional with `agents: []`, so the runner
@@ -274,7 +274,7 @@ force the in-process path even when the flag is on.
 | `content_generation_rewrite` | `run_content_generation_rewrite` | `["content-generator"]` | same agent, different tier |
 | `assessment_synthesis` | `run_assessment_synthesis` | `[]` | only route |
 | `post_rewrite_validation` | `run_post_rewrite_validation` | `[]` | only route |
-| `imscc_chunking` | `run_imscc_chunking` | `["semantik-chunker"]` | that agent maps to `run_dart_chunking`; the override is what selects the IMSCC-side chunker |
+| `imscc_chunking` | `run_imscc_chunking` | `["semantik-chunker"]` | that agent otherwise maps to the staged-HTML chunking tool; the override is what selects the IMSCC-side chunker |
 
 Two consequences that are not obvious from the YAML:
 
@@ -285,16 +285,17 @@ Two consequences that are not obvious from the YAML:
   rather than erroring.
 
 * **`chunking` and `imscc_chunking` share one agent** (`semantik-chunker`) and
-  differ only by the phase-name override. `chunking` falls through to
-  `run_dart_chunking` and emits the staged-HTML chunkset; `imscc_chunking` is
-  overridden to `run_imscc_chunking` and emits the packaged-IMSCC chunkset with
+  differ only by the phase-name override. `chunking` falls through to the
+  staged-HTML chunking tool and emits the staged-HTML chunkset with
+  `chunkset_kind="semantik"`; `imscc_chunking` is overridden to
+  `run_imscc_chunking` and emits the packaged-IMSCC chunkset with
   `chunkset_kind="imscc"`. The two chunksets are later compared by the
   `chunkset_drift` gate at `libv2_archival`.
 
-The remaining phases route by agent name through `AGENT_TOOL_MAPPING`.
-`dart-chunker`, `dart-converter`, and `dart-automation-coordinator` are live
-read-compat aliases in that map, reached by string from older persisted state —
-there is no import edge to them.
+The remaining phases route by agent name through `AGENT_TOOL_MAPPING`. That map
+also carries a few live read-compat aliases — legacy agent names from before the
+SemantiK rename that point at the current conversion and chunking tools — reached
+by string from older persisted state, with no import edge to them.
 
 ---
 

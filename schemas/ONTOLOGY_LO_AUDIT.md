@@ -74,7 +74,7 @@ Wave 79:     /tmp/wave79_smoke/instruction_pairs.jsonl
 - **Path glob:** `Courseforge/exports/PROJ-*/03_content_development/week_*/*.html`
 - **Emitter:** `Courseforge/scripts/generate_course.py`.
 - **Reader(s):** Trainforge `assessment-extractor` (JSON-LD >
-  `data-cf-*` > `data-dart-*` > regex).
+  `data-cf-*` > `data-semantik-*` > regex).
 - **Schema:** `<script type="application/ld+json">` with `@context:
   https://ed4all.dev/ns/courseforge/v1`, `@type: CourseModule`.
   `learningObjectives[]` entries are **camelCase**: `{id, statement,
@@ -208,7 +208,7 @@ Recommended canonical shape, lifted from
   "cognitive_domain": "conceptual",
   "weeks": [1, 2],                    // terminal only
   "week": null,                       // chapter only
-  "source_refs": ["dart:owl2_primer_accessible#s1"],  // optional
+  "source_refs": ["semantik:sample_textbook#s1"],  // optional
   "version_hash": "sha256:...",       // content-addressable LO id
   "created_at": "2026-04-24T13:55:00Z"
 }

@@ -7,8 +7,8 @@
 > entirely on permissively-licensed PDF tooling (pypdfium2 + pdfplumber +
 > pikepdf + Tesseract); no cloud LLM required at runtime (a hosted 70B endpoint
 > is an opt-in seat, not a dependency); no human in the loop. SemantiK emits a
-> stable source-provenance **wire contract** — the `data-dart-*` HTML block
-> attributes and the `dart:{slug}#{block_id}` sourceId — so Ed4All consumers
+> stable source-provenance **wire contract** — the `data-semantik-*` HTML block
+> attributes and the `semantik:{slug}#{block_id}` sourceId — so Ed4All consumers
 > thread block-level provenance through the pipeline unchanged (see §12).
 >
 > This file is the cascade deep-dive. The subsystem guide (`CLAUDE.md`)
@@ -235,8 +235,8 @@ PDF
 │    · offline-Qwen lane     (gate or theta-low → one retry, same      │
 │                             Qwen 3 4B + K=8 + temp 0.9)              │
 │    · non-certified stamp   (gate failed both lanes → ship HTML +     │
-│                             <meta dart-certification-status=         │
-│                             "not-certified"> + visible <aside        │
+│                             the `non_certified_stamp` exit label +   │
+│                             a visible not-certified <aside           │
 │                             role="note"> at top of <main>)           │
 │  No human escalation. theta is omitted on non-certified exit.        │
 └──────────────────────────────────────────────────────────────────────┘
@@ -644,7 +644,7 @@ remains**:
 
 * **`semantic_preservation` is LIVE (v8, 2026-06-08).** The full-FT
   DeBERTa-v3-small cross-encoder (cls pooling, BCE) shipped and loads
-  without `DART_ALLOW_THETA_STUB`; it replaced the mode-collapsed v1.
+  without `SEMANTIK_ALLOW_THETA_STUB`; it replaced the mode-collapsed v1.
   The `stub_v1` 0.7 fallback remains in code only as the documented
   loud-fail path when the model directory is absent.
 * **Composite weights are CALIBRATED (Plan 12 A3, 2026-06-11).** The
@@ -684,7 +684,7 @@ The tau values are calibrated and loaded from `theta/config.yaml`
 | **fail** | fast | n/a | n/a | `offline_qwen_lane` (existing) |
 | **fail** | offline | n/a | n/a | `non_certified_stamp` (theta omitted) |
 
-When theta is in **stub mode** (the `DART_ALLOW_THETA_STUB=1` mode-collapse
+When theta is in **stub mode** (the `SEMANTIK_ALLOW_THETA_STUB=1` mode-collapse
 fallback substitutes a flat 0.7 placeholder), the placeholder is meaningless and
 must NOT decide the exit. `theta_is_stubbed(report)` keys off the
 `semantic_preservation` dimension's `method == "stub_v1"` (self-describing, no
@@ -698,8 +698,8 @@ offline retry / non-certified path. Byte-stable when theta is real
 ### 7.1 ship-with-confidence
 
 The chosen assembled HTML, byte-for-byte, plus a sidecar JSON with
-`{document_id, exit, gate_results, theta_report}`. The HTML carries
-`<meta name="dart-certification-status" content="certified">`.
+`{document_id, exit, gate_results, theta_report}`. The HTML is stamped with a
+machine-readable `certified` certification-status marker in the document head.
 
 **v1 ships no scalar confidence number.** The closest equivalent is
 `theta_report.theta_score` (Stage 12), which is the only quality number on
@@ -729,15 +729,13 @@ non-certified stamp.
 
 Two parts — both always emitted on this exit:
 
-**Machine-readable.**
-```html
-<meta name="dart-certification-status" content="not-certified">
-```
-plus a sidecar JSON `{document_id, exit, failed_checks}`. Theta is omitted on this exit (`theta_score: null`).
+**Machine-readable.** A `not-certified` certification-status marker in the
+document head, plus a sidecar JSON `{document_id, exit, failed_checks}`. Theta is
+omitted on this exit (`theta_score: null`).
 
 **Human-visible** — first child of `<main>`:
 ```html
-<aside role="note" class="dart-uncertified-banner"
+<aside role="note"
        aria-label="Accessibility certification status">
   <p><strong>Accessibility notice:</strong> This document failed automated
   WCAG 2.2 AA validation and is <em>not certified accessible</em>. Some
@@ -827,10 +825,10 @@ into all five.
 |---|---|---|
 | **MathSpecialist** | ar5iv | Only source with rich MathML supervision |
 | **MergeOrSplit** | all sources, weighted toward Internet Archive scans | OCR-noisy sources are the hard cases |
-| **Structure** | all five (ar5iv + OpenStax + govinfo + IRS forms + IA) | Cross-domain heading/list patterns; OpenStax is calibration gold |
+| **Structure** | all five (ar5iv + open-textbook + govinfo + IRS forms + IA) | Cross-domain heading/list patterns; the open-textbook corpus is calibration gold |
 | **Semantic** | govinfo + IRS + arXiv | Legal/boilerplate signal concentrated in regulatory corpus; arXiv contributes abstract / citation / author |
 | ~~**TableDetector**~~ | *(retired 2026-05-05; gating signal now lives on Structure's `table_region` head — corpus mix inherited from Structure's row in this table)* | — |
-| **TableSpecialist** | ar5iv + OpenStax + govinfo + IRS forms | Diverse table styles required — academic, educational, regulatory, form-style |
+| **TableSpecialist** | ar5iv + open-textbook + govinfo + IRS forms | Diverse table styles required — academic, educational, regulatory, form-style |
 | **MathDetector** *(deferred)* | ar5iv + Internet Archive | Hard cases live in scanned scientific papers |
 
 ### 8.5 Cost asymmetry — detector vs. specialist
@@ -989,31 +987,30 @@ emits, and the way Ed4All references blocks inside it, are fixed so everything
 downstream (Courseforge staging, source-mapping, the chunker, the Ask path)
 reads one consistent shape across runs and versions.
 
-### 12.1 The wire contract — block-provenance attributes + `dart:{slug}#{block_id}`
+### 12.1 The wire contract — block-provenance attributes + `semantik:{slug}#{block_id}`
 
 The cascade emits HTML; the **adapter seam** (`lib/semantik/adapter.py`,
 `lib/semantik/cascade_ir.py`) normalizes that HTML into Ed4All's chapter IR,
-wrapping each content block in a `<section class="dart-section">` carrying
+wrapping each content block in a provenance-stamped `<section>` carrying
 the source-provenance attribute set (`adapter.py::_render_section`):
 
 ```html
-<section class="dart-section"
-         aria-labelledby="{sid}"
-         data-dart-block-id="{sid}"          <!-- the sourceId block_id -->
-         data-dart-source="synthesized"      <!-- or "vendor" via vendor_ingest -->
-         data-dart-pages="1,3-5"             <!-- physical PDF pages -->
-         data-dart-page-kind="physical"      <!-- honest; never "printed" -->
-         data-dart-confidence="0.80"         <!-- 5-point band -->
-         data-dart-block-role="section"
-         data-dart-wcag="passed">            <!-- per-region Stage-7 verdict -->
+<section aria-labelledby="{sid}"
+         data-semantik-block-id="{sid}"          <!-- the sourceId block_id -->
+         data-semantik-source="synthesized"      <!-- or "vendor" via vendor_ingest -->
+         data-semantik-pages="1,3-5"             <!-- physical PDF pages -->
+         data-semantik-page-kind="physical"      <!-- honest; never "printed" -->
+         data-semantik-confidence="0.80"         <!-- 5-point band -->
+         data-semantik-block-role="section"
+         data-semantik-wcag="passed">            <!-- per-region Stage-7 verdict -->
   <h3 id="{sid}">…</h3>
   …content…
 </section>
 ```
 
-The **sourceId** is `dart:{slug}#{block_id}`:
+The **sourceId** is `semantik:{slug}#{block_id}`:
 
-- `{slug}` = the document slug (file stem, via `dart_slug_from_filename`).
+- `{slug}` = the document slug (derived from the file stem).
 - `{block_id}` (`sid`) = a **deterministic** block key minted by
   `adapter.py::_mint_sid`. Default key is the block's **first raw
   FeatureBlock index** (`b{raw_block_index}`) — never the post-model region
@@ -1025,10 +1022,10 @@ This is the determinism contract Ed4All depends on:
 **same PDF in → same sourceIds out**, so chunk `learning_outcome_refs[]`,
 `source_module_map.json`, and citation deep-links resolve across re-runs.
 
-Provenance honesty markers worth knowing: `data-dart-mock="true"` (only on
-MockRuntime output — a real run never carries it), `data-dart-cell-roles=
+Provenance honesty markers worth knowing: `data-semantik-mock="true"` (only on
+MockRuntime output — a real run never carries it), `data-semantik-cell-roles=
 "qwen-inferred"` (table cell roles guessed by the Qwen specialist, not
-verified by BERT-TableSpecialist), and `data-dart-fabricated="title"` (a
+verified by BERT-TableSpecialist), and `data-semantik-fabricated="title"` (a
 Stage-9c gap-filled missing title — synthetic, not extracted).
 
 ### 12.2 `region_provenance`
@@ -1131,8 +1128,8 @@ interface.
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  lib/semantik/adapter.py + cascade_ir.py  (Ed4All venv — pure transform) │
 │   · drop phantom-TOC / front-matter (toc_frontmatter_detector.py)        │
-│   · wrap blocks in <section class="dart-section" data-dart-*=…>          │
-│   · mint sourceIds  dart:{slug}#{block_id}                               │
+│   · wrap blocks in <section data-semantik-*=…>                          │
+│   · mint sourceIds  semantik:{slug}#{block_id}                          │
 └─────────────────────────────────────────────────────────────────────────┘
     │
     ▼

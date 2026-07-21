@@ -23,9 +23,9 @@ gitignore + trash cleanup list.
 
 ## SemantiK — PDF → accessible-HTML conversion engine
 
-The sole conversion path (replaced DART). `semantik_structure/` is the live v2
-semantic cascade; `data/ training/ scripts/ eval/` are the model-training +
-evaluation harness that produces its LoRA adapters and classifiers.
+The sole PDF → accessible-HTML conversion path. `semantik_structure/` is the
+live v2 semantic cascade; `data/ training/ scripts/ eval/` are the model-training
++ evaluation harness that produces its LoRA adapters and classifiers.
 
 | Kind | Paths |
 |------|-------|
@@ -41,7 +41,7 @@ evaluation harness that produces its LoRA adapters and classifiers.
 
 ## Courseforge — course content generation & packaging
 
-Turns staged DART/SemantiK HTML into modules, blocks, learning-objective pages,
+Turns staged SemantiK HTML into modules, blocks, learning-objective pages,
 and IMSCC packages.
 
 | Kind | Paths |
@@ -49,11 +49,11 @@ and IMSCC packages.
 | Productive core (230 tracked) | `generators/` (block emitters, providers), `scripts/` (`generate_course.py`, `package_multifile_imscc.py`, `qti_emitter.py`, `blocks.py`, accessibility-validator, imscc-extractor, component-applier), `router/`, `schemas/` (IMSCC XSDs, block schemas), `imscc-standards/`, `templates/`, `config/`, `agents/`, `docs/` |
 | Tests | `scripts/tests/` (real pytest suite + `fixtures/sample_html` + `sample_imscc`, all tracked) |
 | Docs | `CLAUDE.md`, `README`, `CHANGELOG` |
-| **DATA / RUNTIME (gitignored)** | `exports/*` (36 `PROJ-*` run dirs), `inputs/textbooks/*` (~89 corpora incl. PDFs), `inputs/course-data`, `inputs/exam-objectives`, `__pycache__/`, `.pytest_cache/`. Tracked `.gitkeep` sentinels keep the skeleton. |
+| **DATA / RUNTIME (gitignored)** | `exports/*` (per-run `PROJ-*` export dirs), `inputs/textbooks/*` (corpus PDFs), `inputs/course-data`, `inputs/exam-objectives`, `__pycache__/`, `.pytest_cache/`. Tracked `.gitkeep` sentinels keep the skeleton. |
 
 ## Trainforge — assessment/RAG training + canonical chunker
 
-Parses IMSCC/DART HTML into chunks, builds concept/pedagogy graphs, synthesizes
+Parses IMSCC / SemantiK HTML into chunks, builds concept/pedagogy graphs, synthesizes
 assessments and instruction/preference training pairs, runs PEFT/adapter training.
 
 | Kind | Paths |
@@ -61,7 +61,7 @@ assessments and instruction/preference training pairs, runs PEFT/adapter trainin
 | Pipeline core | `process_course.py`, `synthesize_training.py`, `instruction_pair_extractor.py`, `pedagogy_graph_builder.py`, `align_chunks.py`, `curriculum.py`, `retag_outcomes.py`, `train_course.py` (all referenced 3–27×) |
 | Subsystems | `chunker/` (canonical shared chunker), `generators/`, `parsers/`, `rag/`, `eval/`, `training/` (PEFT runner + `base_models` + `compute_backend`), `scripts/`, `agents/`, `tests/`, `examples/sample_assessment.json` |
 | Docs | `CLAUDE.md`, `architecture.md`, `README.md` |
-| **DATA / RUNTIME (gitignored)** | `output/` (course build artifacts: `digped_101/`, `wcag_201/` — chunks, graphs, manifests, quality reports), `**/__pycache__/`. Tracked `output/.gitkeep` placeholder. |
+| **DATA / RUNTIME (gitignored)** | `output/` (per-course build artifacts — chunks, graphs, manifests, quality reports), `**/__pycache__/`. Tracked `output/.gitkeep` placeholder. |
 
 ## LibV2 — course content repository / library layer
 
@@ -70,10 +70,10 @@ package.
 
 | Kind | Paths |
 |------|-------|
-| Tooling package (94 tracked) | `tools/libv2/`: `importer.py`, `indexer.py`, `retriever.py` (+ semantic/multi/result_fusion retrievers), `vector_index.py`, `catalog.py`, `eval_generator`/`eval_harness`, `backup.py`, `migrate.py`, `remove.py`, `jsonld_emit`/`rdf_export`, `models/`, `scripts/backfill_dart_chunks.py`, `cli.py` + `tests/` |
+| Tooling package (94 tracked) | `tools/libv2/`: `importer.py`, `indexer.py`, `retriever.py` (+ semantic/multi/result_fusion retrievers), `vector_index.py`, `catalog.py`, `eval_generator`/`eval_harness`, `backup.py`, `migrate.py`, `remove.py`, `jsonld_emit`/`rdf_export`, `models/`, `scripts/` (legacy-corpus chunk backfill tooling), `cli.py` + `tests/` |
 | Top-level helpers | `tools/chunk_query.py`, `intent_router.py`, `study_pack_renderer.py`; `LibV2/tests/` integration tests; `vendor/bloom_verbs.json` |
 | Docs | `CLAUDE.md`, `README.md`, `instructions.md`, `requirements.txt` |
-| **DATA / RUNTIME (gitignored)** | `courses/*` (21 archived courses), `catalog/*` (151 per-course metadata dirs), `tools/**/__pycache__`. Only two `.gitkeep` sentinels tracked under the data trees. |
+| **DATA / RUNTIME (gitignored)** | `courses/*` (archived per-course corpora), `catalog/*` (per-course metadata dirs), `tools/**/__pycache__`. Only two `.gitkeep` sentinels tracked under the data trees. |
 
 ## MCP — control-plane core (FastMCP server + orchestrator)
 
@@ -136,21 +136,21 @@ and tool registry.
 | Kind | Paths |
 |------|-------|
 | Test modules (38 tracked) | `test_pipeline_integration.py`, `test_w10_assessment_e2e.py`, `test_endpoint_registry_drift_guard.py`; `integration/` (5 tests + conftest); `offline/`; `decision_capture/` |
-| Fixtures | `fixtures/pipeline/` (`build_fixture_pdf.py`, `build_reference_week.py`, `fixture_corpus.pdf` 4591 B, `reference_week_01/`, `reference_libv2/`); `fixtures/retrieval/mini_course/` (`build_mini_course.py` + `dart_chunks/source/eval` + `mini.imscc` 1608 B) |
+| Fixtures | `fixtures/pipeline/` (`build_fixture_pdf.py`, `build_reference_week.py`, `fixture_corpus.pdf` 4591 B, `reference_week_01/`, `reference_libv2/`); `fixtures/retrieval/mini_course/` (`build_mini_course.py` + chunkset/source/eval subdirs + `mini.imscc` 1608 B) |
 | Note | Binary fixtures are well under the 1 MB threshold and each has a committed regenerable builder — satisfies the fixture-hygiene contract. |
 
-## inputs + DART — corpus data & conversion output (NOT source)
+## inputs — corpus data (NOT source)
 
 | Kind | Paths |
 |------|-------|
-| **DATA / OUTPUT (fully gitignored)** | `inputs/` (1.4 G: corpus PDFs, per-corpus src/build/import scratch — `dmccreary-*`, `infographics-*`, `openstax-*`, `calib`, `contentgen`), `DART/` (26 M: conversion output — accessible HTML + `cascade_ir`/`quality`/`synthesized` JSON) |
-| Only tracked item | `inputs/.gitkeep` (DART/ has zero tracked files) |
+| **DATA / OUTPUT (fully gitignored)** | `inputs/` (corpus PDFs + per-corpus src/build/import scratch + `calib` / `contentgen` working dirs). Conversion output (accessible HTML + `cascade_ir`/`quality`/`synthesized` JSON) is written under each corpus's own gitignored working tree. |
+| Only tracked item | `inputs/.gitkeep` |
 
 ## runtime + state + captures — pipeline scratch, run state, decision captures
 
 | Kind | Paths |
 |------|-------|
-| Tracked core | Exactly 14 `.gitkeep` placeholders preserving the dir skeleton (`state/{gui,locks,logs,progress,runs,status,workflows}`, `training-captures/{courseforge,dart,decisions,libv2,orchestrator,textbook-pipeline,trainforge}`) |
+| Tracked core | Exactly 14 `.gitkeep` placeholders preserving the dir skeleton (`state/{gui,locks,logs,progress,runs,status,workflows}`, `training-captures/{courseforge,semantik,decisions,libv2,orchestrator,textbook-pipeline,trainforge}`) |
 | **DATA / RUNTIME (gitignored)** | `runtime/` (pure scratch); `state/runs/` + `state/workflows/*.json` (live run state, actively written); `state/GENERATION_PROGRESS.md`; `state/gui/`; `state/{locks,status,progress}`; `state/benchmarks/`; `training-captures/**/*.jsonl` (15,802 decision-capture files — the mandated capture sink) |
 
 > The `.gitignore` here is exemplary: `runtime/` wholesale; `state/<dir>/*`

@@ -100,8 +100,8 @@ synthesis: `workflow_runner._create_phase_tasks` synthesizes a single
 still execute.
 
 `imscc_chunking` illustrates why the override exists: it reuses the same chunker
-agent as DART-side chunking, but must emit to `imscc_chunks/` with
-`chunkset_kind="imscc"` instead of `dart_chunks/` — a phase-name override picks
+agent as the content-side `chunking` phase, but must emit to `imscc_chunks/` with
+`chunkset_kind="imscc"` instead of `semantik_chunks/` — a phase-name override picks
 the right helper without forking the agent registry.
 
 **2. `AGENT_TOOL_MAPPING` (agent-name fallback, `core/executor.py`)**
@@ -109,7 +109,7 @@ the right helper without forking the agent registry.
 Maps agent names to registry tool names (`content-generator` →
 `generate_course_content`, `textbook-ingestor` → `extract_textbook_structure`,
 …). Renamed agents keep read-compat aliases here (e.g. the chunker agent is
-`semantik-chunker`; the legacy `dart-chunker` key is retained as a dispatch
+`semantik-chunker`; a legacy chunker-agent key is retained as a dispatch
 alias so old resume states still route).
 
 **3. Subagent fork (`AGENT_SUBAGENT_SET` + `ED4ALL_AGENT_DISPATCH`)**
@@ -156,7 +156,7 @@ capability registry and writes a snapshot.
 | `tools/orchestrator_tools.py` | `create_workflow`, `get_workflow_status`, `dispatch_agent_task`, `poll_task_completions`, `execute_workflow_task`, `complete_workflow_task`, `update_generation_progress`, `acquire_batch_lock`, `release_batch_lock` |
 | `tools/courseforge_tools.py` | `create_course_project`, `generate_course_content`, `get_courseforge_status`, `intake_imscc_package`, `package_imscc`, `remediate_course_content` |
 | `tools/trainforge_tools.py` | `analyze_imscc_content`, `generate_assessments`, `validate_assessment`, `export_training_data`, `get_trainforge_status`, `analyze_teaching_role_alignment` |
-| `tools/pipeline_tools.py` | `stage_dart_outputs`, `archive_to_libv2`, `get_pipeline_status`, `validate_dart_markers`, `synthesize_training` |
+| `tools/pipeline_tools.py` | `stage_semantik_outputs`, `archive_to_libv2`, `get_pipeline_status`, `validate_semantik_markers`, `synthesize_training` |
 | `tools/analysis_tools.py` | `analyze_training_data`, `get_quality_distribution`, `preview_export_filter` |
 | `tools/gui_tools.py` | the nine `gui_*` tools |
 
@@ -171,13 +171,14 @@ so they are unreachable from external MCP clients. Current keys:
 `intake_imscc_package`, `package_imscc`, `plan_course_structure`,
 `remediate_course_content`, `run_assessment_synthesis`, `run_concept_extraction`,
 `run_content_generation_outline`, `run_content_generation_rewrite`,
-`run_dart_chunking`, `run_heading_judge`, `run_imscc_chunking`,
+`run_heading_judge`, `run_imscc_chunking`,
 `run_inter_tier_validation`, `run_post_rewrite_validation`,
-`run_vector_indexing`, `stage_dart_outputs`, `synthesize_training`,
+`run_dart_chunking`, `run_vector_indexing`, `stage_semantik_outputs`, <!-- legacy-token: allow -->
+`synthesize_training`,
 `validate_assessment`.
 
 Several names appear in **both** surfaces (`archive_to_libv2`, `package_imscc`,
-`stage_dart_outputs`, `generate_assessments`, `synthesize_training`,
+`stage_semantik_outputs`, `generate_assessments`, `synthesize_training`,
 `generate_course_content`). They are separate implementations, and **parity
 between the two variants is a tested contract** — see
 `tests/test_archive_to_libv2_mcp_tool_parity.py`,
@@ -210,9 +211,9 @@ Nearly all of them are in `tools/pipeline_tools.py` as module-level
 `_run_semantik_bridge_subprocess` (the cross-venv SemantiK bridge).
 
 Conversion dispatch is **phase-scoped**: `extract_and_convert_pdf` only routes
-to the SemantiK cascade when `kwargs["phase"]` is `semantik_conversion` or the
-legacy `dart_conversion`; anything else fails closed with an explicit reason
-rather than falling through to the retired DART converter. Input type is
+to the SemantiK cascade when `kwargs["phase"]` is `semantik_conversion` (or the
+legacy conversion-phase name still accepted on read); anything else fails closed
+with an explicit reason rather than silently falling through. Input type is
 detected by `_detect_conversion_input_type` (PDF wins a mixed directory;
 unknown input fails closed).
 
@@ -271,10 +272,10 @@ dispatcher speaks: `PhaseInput`, `PhaseOutput`, `GateResult`. Note this
 `hardening/checkpoint.py::CheckpointManager` writes
 `state/runs/{run_id}/checkpoints/{phase}_checkpoint.json`
 (`start_phase` → `complete_task` → completion). `get_resume_point(run_path)` is
-the resume entry. Non-obvious: `_PHASE_NAME_ALIASES` maps `dart_conversion` ↔
-`semantik_conversion` both directions, so a checkpoint written under one phase
-name is still found under the other across the rename — a resume must not break
-on the rename.
+the resume entry. Non-obvious: `_PHASE_NAME_ALIASES` maps the conversion phase's
+legacy name ↔ `semantik_conversion` both directions, so a checkpoint written
+under one phase name is still found under the other across the rename — a resume
+must not break on the rename.
 
 Graceful stop is a filesystem sentinel polled at unit boundaries. The shared
 primitives live outside this package in `lib/generation/stop_control.py`
@@ -345,7 +346,7 @@ phase outside that surface is skipped entirely — pre-Courseforge state is
 instead pre-populated from disk by `_synthesize_outline_output`.
 
 Related synthesis-from-disk helpers on `WorkflowRunner`:
-`_synthesize_dart_skip_output` (`--skip-dart`),
+`_synthesize_conversion_skip_output` (`--skip-conversion`),
 `_synthesize_course_planning_reuse_output` (`--reuse-objectives`, with
 `_normalize_to_courseforge_form` accepting both the Courseforge and LibV2
 archive shapes), `_restore_resume_phase_outputs` / `_reconstruct_resume_outputs`
@@ -357,11 +358,11 @@ archive shapes), `_restore_resume_phase_outputs` / `_reconstruct_resume_outputs`
 
 - **Two `GateResult` classes.** `hardening/validation_gates.py` vs
   `orchestrator/worker_contracts.py`. Check the import.
-- **Phase renames are dual-READ, not rewrites.** `dart_conversion` →
-  `semantik_conversion` and `dart-chunker` → `semantik-chunker` both keep the
-  legacy name accepted on read (checkpoint aliases, `AGENT_TOOL_MAPPING` alias,
-  `_CONVERSION_PHASE_NAMES`) so paused runs resume across the rename. Don't
-  "clean up" a legacy key without checking the resume path.
+- **Legacy phase/agent names are dual-READ, not rewritten.** The conversion
+  phase and the chunker agent both keep their pre-SemantiK names accepted on read
+  (checkpoint aliases, `AGENT_TOOL_MAPPING` alias, `_CONVERSION_PHASE_NAMES`) so
+  paused runs resume across the rename. Don't "clean up" a legacy read-compat key
+  without checking the resume path.
 - **`server.py` is not in the pipeline path.** Debugging a phase means
   `workflow_runner` → `executor` → `pipeline_tools`, not the FastMCP server.
 - **Registry-only tools are invisible to MCP clients by design.** If you want a

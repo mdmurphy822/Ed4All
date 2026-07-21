@@ -14,7 +14,7 @@ The `accessibility-remediation` is a specialized subagent that automatically fix
 
 - **Agent Type**: `accessibility-remediation` (specialized auto-fix subagent)
 - **Primary Function**: Automatic WCAG 2.2 AA compliance remediation
-- **Workflow Position**: Post-analysis phase (after content-analyzer and dart-automation-coordinator)
+- **Workflow Position**: Post-analysis phase (after content-analyzer and semantik-automation-coordinator)
 - **Integration**: Receives issue manifests, outputs compliant HTML, feeds to intelligent-design-mapper
 
 ## Core Capabilities

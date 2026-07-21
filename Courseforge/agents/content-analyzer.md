@@ -49,8 +49,8 @@ Identifies content requiring format conversion:
 
 | Content Type | Detection Method | Remediation Path |
 |--------------|------------------|------------------|
-| PDF documents | File extension + MIME type | DART conversion |
-| Office documents | File extension analysis | LibreOffice → DART |
+| PDF documents | File extension + MIME type | SemantiK conversion |
+| Office documents | File extension analysis | LibreOffice → SemantiK |
 | Images with text | OCR text detection | Alt text generation |
 | Scanned documents | Image analysis + PDF structure | Enhanced OCR |
 
@@ -107,7 +107,7 @@ Input: Accessibility + Quality reports
 Process:
   1. Prioritize issues by severity and impact
   2. Assign issues to remediation agents
-  3. Create task queue for DART conversion
+  3. Create task queue for SemantiK conversion
   4. Generate accessibility fix list
   5. Create quality enhancement recommendations
 Output: Comprehensive remediation manifest
@@ -225,13 +225,13 @@ def check_color_contrast(element):
     }
   ],
   "conversion_queue": {
-    "dart_conversion": [
+    "semantik_conversion": [
       {"file": "resources/syllabus.pdf", "type": "pdf", "priority": "critical"},
       {"file": "resources/lecture.pptx", "type": "office", "priority": "high"}
     ]
   },
   "remediation_assignments": {
-    "dart-automation-coordinator": 28,
+    "semantik-automation-coordinator": 28,
     "accessibility-remediation": 156,
     "content-quality-remediation": 45,
     "intelligent-design-mapper": 89
@@ -255,7 +255,7 @@ Task(
     Requirements:
     1. Scan all HTML files for WCAG 2.2 AA violations
     2. Identify content quality gaps
-    3. Detect all non-HTML content requiring DART conversion
+    3. Detect all non-HTML content requiring SemantiK conversion
     4. Generate prioritized remediation queue
     5. Assign issues to appropriate remediation agents
 

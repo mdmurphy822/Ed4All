@@ -24,7 +24,7 @@ trusting them after a config change.
 
 ## 0. Relationship to the other inventory documents
 
-Four inventory docs already exist. This one does not replace them wholesale —
+Three inventory docs already exist. This one does not replace them wholesale —
 each retains authority over a different scope.
 
 | Document | Scope | Status relative to this doc |
@@ -32,7 +32,6 @@ each retains authority over a different scope.
 | [`docs/MANIFEST.md`](../MANIFEST.md) | One line per git-tracked file, whole repo, alphabetical | **Remains authoritative** for *file existence and purpose*. It is a complete index; this doc is a reachability judgement over a subset. It self-describes as "a convenience index, not an authority", and its header records a generation date well before the current phase set. **Do not use it to decide deletion.** |
 | [`docs/FILE_MANIFEST.md`](../FILE_MANIFEST.md) | Per-area "productive core vs. gitignored data/runtime" orientation map | **Remains authoritative** for the *tracked-vs-gitignored* distinction (which trees are regenerable working data). **Superseded by this doc** for any claim about whether a module is live. Its tracked-vs-gitignored statements were re-checked and hold (§7 items 5 and 10). |
 | [`docs/file-audit-cleanup.md`](../file-audit-cleanup.md) | Actionable gitignore + local-disk trash list | **Remains authoritative**, and is complementary — it covers *untracked, gitignored* scratch files. This doc covers *tracked* code. The two do not overlap. |
-| [`docs/dart-surface-inventory.md`](../dart-surface-inventory.md) | Every surviving `dart` naming token, classified by rename blast radius | **Remains authoritative** for the rename/purge plan. It is a *naming* inventory, not a reachability inventory. Its "legacy alias" findings agree with §1.2 here: the `dart-*` agent keys are live dispatch routes, not dead names. |
 
 **The parallel-mechanism risk is real.** To avoid it: this document owns
 "is it reachable in a full run". It does not restate file purposes (that is
@@ -67,7 +66,7 @@ registry: all 7 resolve.
 | `post_rewrite_validation` | `run_post_rewrite_validation` | `[]` | **Only route.** |
 | `content_generation_outline` | `run_content_generation_outline` | `["content-generator"]` | Overrides the agent (which maps to `generate_course_content`). |
 | `content_generation_rewrite` | `run_content_generation_rewrite` | `["content-generator"]` | Overrides the agent. |
-| `imscc_chunking` | `run_imscc_chunking` | `["semantik-chunker"]` | **Critical fork** — the same agent maps to `run_dart_chunking`. Only the phase-name override selects the IMSCC-side chunkset. Removing it silently emits the wrong chunkset kind. |
+| `imscc_chunking` | `run_imscc_chunking` | `["semantik-chunker"]` | **Critical fork** — the same agent maps to `run_dart_chunking`. Only the phase-name override selects the IMSCC-side chunkset. Removing it silently emits the wrong chunkset kind. | <!-- legacy-token: allow -->
 
 **The four `agents: []` phases are the sharpest edge.** For a phase with an
 empty agent list, `workflow_runner._create_phase_tasks` synthesizes a virtual
@@ -86,10 +85,10 @@ Protected because they are string keys, never imports:
 
 - All 28 mapping keys and their tool-name values.
 - **Legacy read-compat aliases that are live dispatch routes** —
-  `dart-chunker` → `run_dart_chunking`; `dart-converter` and
-  `dart-automation-coordinator` → `extract_and_convert_pdf`. These exist so
-  resumed runs and older persisted state still route. They look like dead
-  renames. They are not.
+  `dart-chunker` → `run_dart_chunking`; `dart-converter` and <!-- legacy-token: allow -->
+  `dart-automation-coordinator` → `extract_and_convert_pdf`. These agent-name <!-- legacy-token: allow -->
+  aliases exist so resumed runs and older persisted state still route. They look
+  like dead renames. They are not.
 - Agents wired for other workflows and for the remediation/IMSCC-intake path
   (`imscc-intake-parser`, `content-analyzer`, `accessibility-remediation`,
   `content-quality-remediation`, `intelligent-design-mapper`,
@@ -110,15 +109,15 @@ generate_assessments         generate_course_content      get_courseforge_status
 intake_imscc_package         package_imscc                plan_course_structure
 remediate_course_content     run_assessment_synthesis     run_concept_extraction
 run_content_generation_outline                            run_content_generation_rewrite
-run_dart_chunking            run_heading_judge            run_imscc_chunking
+run_dart_chunking            run_heading_judge            run_imscc_chunking  <!-- legacy-token: allow -->
 run_inter_tier_validation    run_post_rewrite_validation  run_vector_indexing
-stage_dart_outputs           synthesize_training          validate_assessment
+stage_semantik_outputs       synthesize_training          validate_assessment
 ```
 
 **Registry-only tools** (intentionally *not* decorated `@mcp.tool()`, so they
 are invisible to external MCP clients and reachable only through the two string
 tables above): `build_source_module_map`, `extract_textbook_structure`,
-`plan_course_structure`, `run_concept_extraction`, `run_dart_chunking`,
+`plan_course_structure`, `run_concept_extraction`, `run_dart_chunking`, <!-- legacy-token: allow -->
 `run_imscc_chunking`, `run_heading_judge`, `run_assessment_synthesis`,
 `run_content_generation_outline`, `run_content_generation_rewrite`,
 `run_inter_tier_validation`, `run_post_rewrite_validation`,
@@ -452,7 +451,7 @@ Reachable by ordinary imports, but load-bearing for every run.
 | `MCP/orchestrator/` (`local_dispatcher.py`, `api_dispatcher.py`, `llm_backend.py`, `task_mailbox.py`, `pipeline_orchestrator.py`, `worker_contracts.py`, `content_prompts.py`) | subagent dispatch + mailbox | all (mode-dependent) | `ED4ALL_AGENT_DISPATCH`, `ED4ALL_MAILBOX_BASE_DIR` |
 | `MCP/tools/pipeline_tools.py` | the tool registry and most phase bodies (~31k lines) | all | §1.3 |
 | `MCP/tools/_content_gen_helpers.py` | outline + course-planning helpers | 6, 9 | imported by `_run_content_generation_outline`, `_plan_course_structure` |
-| `MCP/tools/courseforge_tools.py` | `register_courseforge_tools` | 2 | used by `_stage_dart_outputs` |
+| `MCP/tools/courseforge_tools.py` | `register_courseforge_tools` | 2 | used by `_stage_semantik_outputs` |
 | `MCP/tools/trainforge_tools.py` | `register_trainforge_tools` | 16, 18 | imported by `pipeline_tools.py` |
 | `MCP/tools/gui_tools.py` | 9 `gui_*` MCP tools over `state/gui/` | none (GUI bridge) | `MCP/server.py:575` |
 | `MCP/tools/analysis_tools.py`, `orchestrator_tools.py` | MCP surfaces outside the pipeline path | none | `MCP/server.py:557,539` registration |
@@ -507,7 +506,7 @@ Agent `semantik-converter` → `extract_and_convert_pdf`.
   `structure_emit.py`, `table_structure.py`, `latex_mathml.py`, `math_fold.py`,
   `tikz_draw.py`, `toc_frontmatter_detector.py`.
 - Cross-venv subprocess fallback: §1.7.
-- Gate: `dart_markers` → `lib/validators/dart_markers.py`.
+- Gate: `semantik_markers` → `lib/validators/semantik_markers.py`.
 
 ### idx 1 — `heading_judge`
 
@@ -522,13 +521,13 @@ Agent `semantik-converter` → `extract_and_convert_pdf`.
 
 ### idx 2 — `staging`
 
-Agent `textbook-stager` → `stage_dart_outputs`.
+Agent `textbook-stager` → `stage_semantik_outputs`.
 `MCP/tools/courseforge_tools.py`. `ED4ALL_STAGE_MODE` selects
 copy/symlink/hardlink. Emits a role-tagged staging manifest. No gates.
 
 ### idx 3 — `chunking`
 
-Agent `semantik-chunker` → `run_dart_chunking`.
+Agent `semantik-chunker` → `run_dart_chunking`. <!-- legacy-token: allow -->
 
 - `Trainforge/chunker/` — `chunker.py`, `__init__.py`, `frontmatter.py`,
   `apparatus_dumps.py`, `helpers.py`, `boilerplate.py`,
@@ -674,7 +673,7 @@ Agent `brightspace-packager` → `package_imscc` (both phases).
 ### idx 15 — `imscc_chunking`
 
 Phase-name route → `run_imscc_chunking` (**not** the agent's
-`run_dart_chunking` — §1.1).
+`run_dart_chunking` — §1.1). <!-- legacy-token: allow -->
 
 - `Trainforge/parsers/html_content_parser.py` (and `imscc_parser.py`,
   `qti_parser.py`, `xpath_walker.py`).

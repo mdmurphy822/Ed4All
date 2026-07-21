@@ -12,9 +12,10 @@ The GUI lets a human:
   log stream + validation-gate results.
 - **Manage env / API keys** — every env knob the pipeline reads, rendered from a
   declarative catalog; secrets are write-only and masked on read.
-- **Route models per task** — set provider + model independently for DART,
-  Courseforge outline/rewrite, course planning, textbook synthesis, Trainforge
-  synthesis/assessment, plus a vision/VLM lane (incl. local Ollama).
+- **Route models per task** — set provider + model independently for the
+  SemantiK conversion lane, Courseforge outline/rewrite, course planning,
+  textbook synthesis, Trainforge synthesis/assessment, plus a vision/VLM lane
+  (incl. local Ollama).
 - **Author course topics / subjects / objectives** — edit terminal/chapter
   learning objectives and LibV2 classification; saved as a reuse-compatible
   `synthesized_objectives.json`.
@@ -108,8 +109,8 @@ It carries four sections:
 - `env` — raw env-var values (including secrets).
 - `model_routing` — per-task `{provider, model[, mode][, vision_provider]}`.
 - `retrieval` — `top_k`, `min_grounding_cosine`, `require_embeddings`.
-- `flags` — boolean behavior flags (`COURSEFORGE_TWO_PASS`,
-  `DART_LLM_CLASSIFICATION`, `TRAINFORGE_REQUIRE_EMBEDDINGS`).
+- `flags` — boolean behavior flags (e.g. `COURSEFORGE_TWO_PASS`,
+  `TRAINFORGE_REQUIRE_EMBEDDINGS`).
 
 `gui/settings_store.py` is the single source of truth: `load_settings()`
 overlays the on-disk doc onto catalog defaults; `save_settings()` /
@@ -194,15 +195,15 @@ mirrored in `env_catalog.PROVIDERS`. Current providers:
 `groq` / `fireworks` / `deepseek` are flagged `unverified` in the registry.
 
 Per-task routing slots (each → its canonical env var on render): `global`
-(`LLM_MODE` / `LLM_PROVIDER` / `LLM_MODEL`), `dart`, `vision`,
-`courseforge_outline`, `courseforge_rewrite`, `courseplanner`,
+(`LLM_MODE` / `LLM_PROVIDER` / `LLM_MODEL`), the SemantiK conversion lane,
+`vision`, `courseforge_outline`, `courseforge_rewrite`, `courseplanner`,
 `textbook_synthesis`, `trainforge_synthesis`, `trainforge_assessment`.
 
 ### Ollama = the `local` provider
 
 The `local` provider **is Ollama** by default: its base URL points at Ollama's
 OpenAI-compatible port (`http://localhost:11434/v1`). The registry name stays
-`local` because DART / Trainforge / the provider resolver all key on that
+`local` because SemantiK / Trainforge / the provider resolver all key on that
 literal; the GUI shows the human label "Ollama (local)". Point
 `LOCAL_SYNTHESIS_BASE_URL` at any OpenAI-compatible server (vLLM / llama.cpp /
 LM Studio) to use it instead.
@@ -216,8 +217,9 @@ Ollama is offline.
 
 ### Vision / VLM
 
-The vision lane drives DART's image / alt-text calls. The vision provider
-dropdown is filtered to vision-capable backends only: `anthropic`,
+The vision lane drives the SemantiK conversion engine's image / alt-text calls.
+The vision provider dropdown is filtered to vision-capable backends only:
+`anthropic`,
 `together-vision`, and `local` (Ollama with a vision model). Selecting a
 vision model:
 
@@ -225,11 +227,12 @@ vision model:
 - **`local` (Ollama)** — set `LOCAL_SYNTHESIS_MODEL` to a vision model (e.g.
   `llama3.2-vision`, `llava:13b`, `qwen2.5-vl`) **and** flip
   `LOCAL_VISION_CAPABLE=true`. There is no separate `LOCAL_VISION_MODEL` var.
-- **`anthropic`** — the model comes from `DART_CLAUDE_MODEL` / `LLM_MODEL`.
+- **`anthropic`** — the model comes from the SemantiK conversion lane's
+  Anthropic model env knob (falling through to `LLM_MODEL`).
 
-`vision.provider` maps to `DART_VISION_PROVIDER` (the real DART knob).
-`vision.model` is provider-conditional and only renders a dedicated env var for
-`together-vision`.
+`vision.provider` maps to the SemantiK conversion engine's vision-provider env
+knob (the real conversion-lane vision selector). `vision.model` is
+provider-conditional and only renders a dedicated env var for `together-vision`.
 
 ### Provider reachability test
 
@@ -440,9 +443,9 @@ code paths, so existing `DecisionCapture` wiring stays intact.
 - **Retrieval returns 0 BM25 hits (known data caveat).** An empty
   `imscc_chunks/` directory can *shadow* a legacy `corpus/chunks.jsonl`: the
   chunk-path resolver prefers `imscc_chunks/` and, if it exists but is empty,
-  retrieval finds nothing. Fix by either running the backfill —
-  `python LibV2/tools/libv2/scripts/backfill_dart_chunks.py` — or removing the
-  empty `imscc_chunks/` directory so the legacy `corpus/chunks.jsonl` resolves.
+  retrieval finds nothing. Fix by removing the empty `imscc_chunks/` directory
+  so the legacy `corpus/chunks.jsonl` resolves, or by running the legacy
+  chunk-backfill helper under `LibV2/tools/libv2/scripts/`.
 - **Local providers fail / Ollama models don't list.** Ollama (or whichever
   OpenAI-compatible server `LOCAL_SYNTHESIS_BASE_URL` names) must be running with
   the relevant model pulled. Use Settings → "Test" (`local`) for a live
@@ -719,8 +722,8 @@ served by `GET /api/settings/studio` (`settings_service.build_studio_settings_pa
 only the `credentials` / `global` / `answer` / `local` env-catalog categories
 (the AI provider + model, the grounded-answer backend, and cloud-provider API
 keys), plus a **read-only** GUI host/port echo. Secrets stay masked (`"set"` /
-`null`); the full operator catalog (DART / per-tier Courseforge / Trainforge /
-embedding knobs) is never returned here. Writes go through the existing
+`null`); the full operator catalog (SemantiK conversion / per-tier Courseforge /
+Trainforge / embedding knobs) is never returned here. Writes go through the existing
 `PATCH /api/settings` (deep-merge of `model_routing.*` dotted paths + `env`
 keys); a blank key field keeps the saved value. A **Test provider** button hits
 the existing `POST /api/settings/test-provider` (a cheap reachability check — no

@@ -5,7 +5,7 @@
 Builds the per-course on-device vector index that backs real semantic
 retrieval. The agent runs a **deterministic** index build — real embeddings +
 a numpy exact-search index — with **no LLM dispatch** and no decision-capture
-obligation (precedent: the `dart-chunker` agent).
+obligation (precedent: the `semantik-chunker` agent).
 
 This agent is backed by the `run_vector_indexing` registry tool
 (`MCP/tools/pipeline_tools.py`). It supersedes the prior behavior where the
@@ -30,7 +30,7 @@ without building anything.
 ## Inputs
 
 - The course (resolved to `LibV2/courses/<slug>/`) whose chunkset
-  (`imscc_chunks/` → `dart_chunks/` → legacy `corpus/`) is embedded.
+  (`imscc_chunks/` → `semantik_chunks/` → legacy `corpus/`) is embedded.
 - Embedding provider / model selection via the `ED4ALL_EMBEDDING_*` env family
   (or per-call `provider` / `model` kwargs).
 

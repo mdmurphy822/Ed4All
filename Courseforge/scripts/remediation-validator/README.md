@@ -117,7 +117,7 @@ Part of the remediation pipeline:
 
 1. **IMSCC Extractor** - Parse incoming course
 2. **Content Analyzer** - Identify remediation needs
-3. **DART Batch Processor** - Convert documents
+3. **SemantiK Converter** - Convert documents
 4. **Component Applier** - Enhance content
 5. **Remediation Validator** - Quality assurance ← This script
 6. **Brightspace Packager** - Final IMSCC creation

@@ -34,7 +34,7 @@
 
 ### 1. SemantiK (Semantic PDF → Accessible-HTML Conversion)
 
-**Purpose**: Ingest raw PDF/document inputs and convert them to semantically rich, WCAG 2.2 AA compliant HTML. SemantiK is the **license-clean conversion engine** that replaced the legacy DART converter — its extraction stack carries no PyMuPDF/MuPDF (AGPL-3) or Poppler (GPL-2), so the subsystem ships Apache-2.0. It runs **in-process** within Ed4All (via the `[semantik]` extra) and needs no cloud LLM at runtime; a hosted large-model endpoint is an opt-in quality seat, not a dependency.
+**Purpose**: Ingest raw PDF/document inputs and convert them to semantically rich, WCAG 2.2 AA compliant HTML. SemantiK is the **license-clean conversion engine** — its extraction stack carries no PyMuPDF/MuPDF (AGPL-3) or Poppler (GPL-2), so the subsystem ships Apache-2.0. It runs **in-process** within Ed4All (via the `[semantik]` extra) and needs no cloud LLM at runtime; a hosted large-model endpoint is an opt-in quality seat, not a dependency.
 
 **Pipeline Position**: First stage - raw material ingestion and conversion.
 
@@ -59,37 +59,26 @@ PDF / Office Doc --->|-> structure-graph -> Qwen specialists  +--> Accessible HT
 - Dark mode, reduced motion, and responsive design support
 - Quality report generation with confidence scoring and a per-document exit decision
 
-**Wire contract (preserved from DART)**:
+**Source-provenance contract**:
 
-SemantiK is a drop-in for the retired DART converter: it preserves DART's `data-dart-*` HTML markers and the `dart:{slug}#{block_id}` sourceId **wire contract** so every downstream Ed4All consumer (Courseforge staging, source-mapping, the chunker, the Ask path) is unchanged. The `data-dart-*` vocabulary is the **stable source-provenance contract**, not a live "DART runs the conversion" claim.
+Conversion output goes beyond generic heading tags: each region is emitted as content-type-specific semantic HTML and stamped with `data-semantik-*` provenance markers plus a `semantik:{slug}#{block_id}` sourceId. That vocabulary is the **stable source-provenance contract** every downstream Ed4All consumer (Courseforge staging, source-mapping, the chunker, the Ask path) binds to, so generated content can always be traced back to its exact source block. Downstream readers also accept the legacy pre-SemantiK provenance markers so un-migrated local corpora and paused runs still resolve.
 
-**Semantic HTML Subclassing**:
+The core provenance attributes carried on each block:
 
-Conversion output goes beyond generic heading tags. Each content type receives semantic CSS classes (part of the preserved wire contract) that downstream consumers (Courseforge, Trainforge) can use for targeted processing:
-
-| Section Type | CSS Class | HTML Pattern | Purpose |
-|---|---|---|---|
-| Document Title | `.dart-title` | `<header class="dart-title">` | Top-level document identity |
-| Chapter/Unit | `.dart-chapter` | `<section class="dart-chapter">` | Major structural divisions |
-| Subsection | `.dart-subsection` | `<section class="dart-subsection">` | Nested content groupings |
-| Campus Info | `.dart-section--campus-info` | `<section class="dart-section dart-section--campus-info">` | Key-value institutional data |
-| Credentials | `.dart-section--credentials` | `<section class="dart-section dart-section--credentials">` | Login/access information |
-| Contacts | `.dart-section--contacts` | `<section class="dart-section dart-section--contacts">` | Personnel contact cards |
-| Systems | `.dart-section--systems` | `<section class="dart-section dart-section--systems">` | Technology/platform tables |
-| Roster | `.dart-section--roster` | `<section class="dart-section dart-section--roster">` | Enrollment/roster data |
-| Prose/Overview | `.dart-section--prose` | `<section class="dart-section dart-section--prose">` | Narrative/descriptive content |
-| Definition List | `.dart-definition` | `<dl class="dart-definition">` | Term/definition pairs |
-| Data Table | `.dart-table` | `<table class="dart-table">` | Structured tabular data |
-| Info Table | `.dart-table--info` | `<table class="dart-table dart-table--info">` | Key-value pair tables |
-| Contact Card | `.dart-contact-card` | `<div class="dart-contact-card">` | Individual contact blocks |
-| Callout/Note | `.dart-callout` | `<aside class="dart-callout">` | Highlighted information |
-| Figure | `.dart-figure` | `<figure class="dart-figure">` | Images with captions |
-| Code Block | `.dart-code` | `<pre class="dart-code">` | Source code or formulas |
-| Blockquote | `.dart-blockquote` | `<blockquote class="dart-blockquote">` | Cited passages |
-| Learning Obj. | `.dart-objectives` | `<section class="dart-objectives">` | Extracted learning objectives |
+| Attribute | Purpose |
+|---|---|
+| `data-semantik-block-id` | Stable per-block identity — the target of the `semantik:{slug}#{block_id}` sourceId |
+| `data-semantik-block-role` | Semantic role of the block (heading, prose, table, figure, ...) |
+| `data-semantik-source` | Source reference binding the block to its origin page/region |
+| `data-semantik-page-kind` | Classified page kind for the source page |
+| `data-semantik-pages` | Source page number(s) the block was extracted from |
+| `data-semantik-wcag` | Per-block WCAG conformance annotation |
+| `data-semantik-cell-roles` | Table cell-role map (header/data) for accessible tables |
+| `data-semantik-demoted-role` | Records a role-demotion decision for auditability |
+| `data-semantik-fabricated` | Marks a deterministically fabricated region (e.g. a synthesized title) |
 
 **Output Artifacts**:
-- `{name}_synthesized.html` - Semantic, accessible HTML (carrying the `data-dart-*` provenance markers)
+- `{stem}_accessible.html` - Semantic, accessible HTML (carrying the `data-semantik-*` provenance markers)
 - `{name}.quality.json` - Quality report with confidence score, WCAG results, content profile
 
 **Entry Points**:
@@ -291,7 +280,7 @@ The primary unified workflow that chains all four components:
 Phase                    Component    Agent(s)                  Output
 =====                    =========    ========                  ======
 
-1. semantik_conversion   SemantiK     dart-converter            Accessible HTML + Quality JSON
+1. semantik_conversion   SemantiK     semantik-converter        Accessible HTML + Quality JSON
        |
        v
 2. staging               Pipeline     textbook-stager           Staged files in Courseforge/inputs/
@@ -318,13 +307,11 @@ Phase                    Component    Agent(s)                  Output
 9. finalization          Pipeline     brightspace-packager      Progress update + export
 ```
 
-> The `dart-converter` agent and the `dart_html_paths` / `data-dart-*`
-> identifiers are the **preserved source-provenance wire contract** — SemantiK
-> is the engine that backs them, kept for downstream-consumer continuity, not
-> because DART runs. The workflow PHASE was renamed `dart_conversion` →
-> `semantik_conversion` (task #19 Stage 3d); NEW runs emit the new name, and the
-> legacy name is accepted on READ (checkpoint + phase_outputs alias) so old
-> paused runs still `--resume`.
+> The `semantik-converter` agent drives the `semantik_conversion` phase and
+> emits the `data-semantik-*` / `semantik:{slug}#{block_id}` source-provenance
+> contract that every downstream consumer binds to. Legacy pre-SemantiK
+> provenance markers and phase names are still accepted on READ (checkpoint +
+> phase_outputs aliases) so old paused runs still `--resume`.
 
 ### Inter-Phase Data Routing
 
@@ -332,7 +319,7 @@ Each phase's outputs are automatically routed to the next phase's inputs:
 
 | Source Phase | Output Key | Target Phase | Input Parameter |
 |---|---|---|---|
-| `semantik_conversion` | `output_paths` | `staging` | `dart_html_paths` |
+| `semantik_conversion` | `output_paths` | `staging` | (staged HTML paths) |
 | `staging` | `staging_dir` | `objective_extraction` | (implicit) |
 | `objective_extraction` | `project_id`, `objective_ids` | `course_planning`, `content_generation` | `project_id` |
 | `content_generation` | `content_paths` | `packaging` | (implicit via project_id) |
@@ -381,7 +368,7 @@ The unified MCP server (`MCP/server.py`) exposes all component tools through a s
 | **Conversion** | `extract_and_convert_pdf` (registry-only seam → `_run_semantik_v2_conversion`) | SemantiK |
 | **Courseforge** | `create_course_project`, `generate_course_content`, `package_imscc`, `intake_imscc_package`, `remediate_course_content` | Courseforge |
 | **Trainforge** | `analyze_imscc_content`, `generate_assessments`, `validate_assessment`, `export_training_data` | Trainforge |
-| **Pipeline** | `create_textbook_pipeline`, `stage_dart_outputs`, `run_textbook_pipeline`, `get_pipeline_status`, `validate_dart_markers` | Pipeline |
+| **Pipeline** | `create_textbook_pipeline`, `stage_semantik_outputs`, `run_textbook_pipeline`, `get_pipeline_status`, `validate_semantik_markers` | Pipeline |
 | **LibV2** | `archive_to_libv2` | LibV2 |
 | **Orchestrator** | `create_workflow`, `get_workflow_status`, `dispatch_agent_task`, `poll_task_completions`, `execute_workflow_task` | Orchestrator |
 | **Analysis** | `analyze_training_data`, `get_quality_distribution`, `preview_export_filter` | Analysis |
@@ -405,7 +392,7 @@ Every pipeline decision is logged to `training-captures/` in JSONL format for mo
 
 ```
 training-captures/
-  dart/{COURSE_CODE}/                 # SemantiK conversion captures (path name preserved)
+  semantik/{COURSE_CODE}/             # SemantiK conversion captures
     decisions_{PDF_NAME}_{TIMESTAMP}.jsonl
   courseforge/{COURSE_CODE}/
     phase_input-research/

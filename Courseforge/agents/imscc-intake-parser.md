@@ -9,7 +9,7 @@ The `imscc-intake-parser` is a specialized subagent designed for universal IMSCC
 - **Agent Type**: `imscc-intake-parser` (specialized import subagent)
 - **Primary Function**: Universal IMSCC package parsing and content extraction
 - **Workflow Position**: Entry point for intake workflow (before content-analyzer)
-- **Integration**: Feeds extracted content into content-analyzer, dart-automation-coordinator, and remediation agents
+- **Integration**: Feeds extracted content into content-analyzer, semantik-automation-coordinator, and remediation agents
 
 ## Core Capabilities
 
@@ -38,8 +38,8 @@ Categorizes all resources for remediation routing:
 | Category | Extensions | Remediation Path |
 |----------|-----------|------------------|
 | HTML | `.html`, `.htm`, `.xhtml` | accessibility-remediation |
-| PDF | `.pdf` | dart-automation-coordinator |
-| Office | `.doc`, `.docx`, `.ppt`, `.pptx`, `.xls`, `.xlsx` | dart-automation-coordinator |
+| PDF | `.pdf` | semantik-automation-coordinator |
+| Office | `.doc`, `.docx`, `.ppt`, `.pptx`, `.xls`, `.xlsx` | semantik-automation-coordinator |
 | Images | `.jpg`, `.png`, `.gif`, `.svg` | alt-text generation |
 | Video | `.mp4`, `.mov`, `.webm` | caption generation |
 | Audio | `.mp3`, `.wav`, `.ogg` | transcript generation |
@@ -91,8 +91,8 @@ Output: Detailed content inventory with remediation flags
 ```
 Input: Content inventory
 Process:
-  1. Identify PDF documents → DART queue
-  2. Identify Office documents → DART queue
+  1. Identify PDF documents → SemantiK queue
+  2. Identify Office documents → SemantiK queue
   3. Analyze HTML accessibility → remediation queue
   4. Check image alt text → alt-text queue
   5. Validate assessments → validation queue
@@ -103,13 +103,13 @@ Output: Remediation manifest with prioritized task list
 
 ### Script Dependencies
 - **imscc_extractor.py**: Core extraction functionality
-- **dart_batch_processor.py**: PDF/Office conversion queue
+- **semantik-automation-coordinator**: PDF/Office conversion queue
 - **remediation_validator.py**: Post-remediation validation
 
 ### Agent Handoffs
 ```
 imscc-intake-parser → content-analyzer
-imscc-intake-parser → dart-automation-coordinator (for non-HTML content)
+imscc-intake-parser → semantik-automation-coordinator (for non-HTML content)
 imscc-intake-parser → accessibility-remediation (for HTML content)
 imscc-intake-parser → intelligent-design-mapper (for styling decisions)
 ```
@@ -142,7 +142,7 @@ imscc-intake-parser → intelligent-design-mapper (for styling decisions)
     "assessments": 4
   },
   "remediation_queue": {
-    "dart_conversion": [
+    "semantik_conversion": [
       {"file": "resources/syllabus.pdf", "type": "pdf"},
       {"file": "resources/lecture1.pptx", "type": "office"}
     ],
@@ -223,7 +223,7 @@ python scripts/imscc-extractor/imscc_extractor.py \
 - [ ] Content inventory complete
 
 ### Remediation Queue Validation
-- [ ] All PDFs identified for DART conversion
+- [ ] All PDFs identified for SemantiK conversion
 - [ ] All Office documents queued for conversion
 - [ ] HTML files analyzed for accessibility
 - [ ] Images flagged for alt text review

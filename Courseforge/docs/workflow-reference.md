@@ -13,7 +13,7 @@ Exam Objectives ──┐
 (PDF/text)        │
                   ├──► exam-research ──► course-outliner ──► content-generator ──► brightspace-packager ──► IMSCC
 Textbooks ────────┘         │                │                    │
-(DART HTML)           requirements-      oscqr-            quality-assurance
+(SemantiK HTML)       requirements-      oscqr-            quality-assurance
                       collector          evaluator              (per batch)
 ```
 

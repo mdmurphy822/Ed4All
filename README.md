@@ -26,6 +26,52 @@ Every chunk carries its Bloom's level, content type, key terms, misconceptions, 
 - **EdTech and ML teams** building AI tutors, RAG assistants, or domain-adapted language models that need pedagogically structured training data.
 - **Researchers** studying retrieval quality, assessment generation, or learning-science-aligned content representations.
 
+## How it works
+
+`textbook-to-course` runs up to 21 phases end-to-end. Each phase checkpoints on
+completion (a failed or stopped run resumes where it left off), quality gates
+validate the artifacts between phases, and GPU model seats are started and
+stopped automatically so only the models a phase needs are ever resident.
+
+| # | Phase | What it does | GPU workload |
+|---|-------|--------------|--------------|
+| 1 | `semantik_conversion` | PDF → accessible semantic HTML (layout extraction + image alt text) | OCR + vision models |
+| 2 | `heading_judge` | Re-levels ambiguous heading levels via a large-model judge *(optional)* | Large model |
+| 3 | `staging` | Stages converted HTML for course generation | — |
+| 4 | `chunking` | Emits the deterministic source chunkset | — |
+| 5 | `objective_extraction` | Parses staged HTML into the textbook structure (chapters, sections, blocks) | — |
+| 6 | `source_mapping` | Maps source blocks to course module pages | — |
+| 7 | `course_planning` | Synthesizes terminal + component learning objectives from the structure | Large model |
+| 8 | `concept_extraction` | Builds the typed concept / knowledge graph | Large model |
+| 9 | `content_generation` | Single-pass content authoring *(alternative to 10–12)* | Large model |
+| 10 | `content_generation_outline` | Two-pass tier 1: terse per-block outlines | Large model |
+| 11 | `inter_tier_validation` | Structural validators over the outline tier (no LLM) | — |
+| 12 | `content_generation_rewrite` | Two-pass tier 2: full HTML block bodies | Large model |
+| 13 | `assessment_synthesis` | Grounded quizzes, assignments, and discussions as QTI/IMS XML *(optional)* | Large model |
+| 14 | `post_rewrite_validation` | The largest gate set: prose entailment, claim support, block quality | Local validators (NLI + embeddings) |
+| 15 | `packaging` | Packages the course as IMSCC | — |
+| 16 | `imscc_chunking` | Emits the post-packaging retrieval chunkset | — |
+| 17 | `trainforge_assessment` | Generates assessments from the packaged course *(optional)* | — |
+| 18 | `training_synthesis` | Synthesizes instruction + preference training pairs *(optional)* | Large model |
+| 19 | `libv2_archival` | Archives all artifacts to the local course library | — |
+| 20 | `vector_indexing` | Builds the per-course vector index so the course is immediately askable | Local embeddings |
+| 21 | `finalization` | Final validation and training-data export | — |
+
+Once a course is archived, an optional follow-on workflow trains a
+course-pinned adapter from the synthesized pairs (`ed4all run trainforge_train
+--course-code <slug> --base-model <name>`):
+
+| # | Phase | What it does | GPU workload |
+|---|-------|--------------|--------------|
+| 22 | `trainforge_train` | LoRA fine-tune of a small language model on the course's instruction + preference pairs (bf16 PEFT, licensing preflight, full provenance card) | Training (exclusive — all serving seats stopped) |
+| 23 | post-training evaluation | 5-layer × 3-tier eval matrix vs the base model, adapter audit, promote / hold / reject decision | Local eval models |
+
+**GPU workload** legend: *OCR + vision models* — the lightweight extraction and
+alt-text seats; *Large model* — the main authoring/judging model seat; *Local
+validators / embeddings* — in-process models (no serving seat); *—* —
+deterministic CPU work. Seats in different groups are swapped at phase
+boundaries automatically, with health and coherence checks at every start.
+
 ## Quick start
 
 Requires Python 3.10+. Optional system tools (`tesseract-ocr`, `poppler-utils`) improve extraction on scanned or image-heavy PDFs.
@@ -114,6 +160,37 @@ Environment for such a run starts from [`run-env.example.sh`](run-env.example.sh
 Read its hardware-profile section before copying any concurrency, batch-size, or
 GPU-lifecycle setting: those values are tuned for a single-GPU large-memory host
 and will exhaust VRAM on a small card unedited.
+
+## The built-in assistant
+
+Ed4All ships a local AI assistant for operating the pipeline — ask it what a
+run is doing, why a gate failed, or have it start the next build:
+
+```bash
+ed4all assistant                          # interactive chat
+ed4all assistant --once "why did my last run fail?"
+ed4all assistant --debug                  # open a session pre-loaded with the
+                                          # most recent failure's diagnostics
+```
+
+It speaks through a fixed set of typed tools — run status and gate reports,
+bounded log tails, `ed4all doctor` diagnostics, build-cost and quality reports,
+course library inspection, grounded Q&A against any built course's index, and a
+small set of guarded actions (start / resume / stop runs, seat start/stop,
+support bundles). It can also walk you through **model-seat setup**: it audits
+your seat-swap environment variables, discovers running model containers, and
+generates a ready-to-source configuration block. It never gets shell access or
+free-form file access — everything flows through validated tools, so it can
+help without being able to hurt.
+
+The assistant is **model-agnostic**: it talks to any OpenAI-compatible local
+endpoint (`ED4ALL_ASSISTANT_BASE_URL` / `ED4ALL_ASSISTANT_MODEL`), restricted
+to localhost by design. The reference deployment — what it is tuned and tested
+against — is NVIDIA's **Nemotron Nano** (the NeMo model family) served with
+vLLM; set `ED4ALL_ASSISTANT_AUTOSTART=1` to let the CLI bring that seat up on
+demand, and `ED4ALL_ASSISTANT_DEBUG_ON_FAILURE=1` to have failed pipeline runs
+print the exact debug command to investigate them. The same assistant is
+available as a chat panel in the GUI.
 
 ## What's inside
 

@@ -19,7 +19,7 @@ That model has no answer for two shapes the pipeline grew:
    (ADR-003) both belong to the `content-generator` agent, but the outline tier and the rewrite tier are
    different code. Likewise, the same chunker agent (`semantik-chunker`) runs at two points in the graph:
    once over staged HTML, once over the packaged IMSCC. The two emit different chunkset kinds
-   (`chunkset_kind="dart"` with a source-HTML hash, versus `chunkset_kind="imscc"` with
+   (`chunkset_kind="semantik"` with `source_semantik_html_sha256`, versus `chunkset_kind="imscc"` with
    `source_imscc_sha256`) into different directories. Under agent-keyed dispatch there is exactly one
    destination per agent, so one of the two is always wrong.
 2. **Phases with no agent at all.** Validator-only phases run a gate chain and a deterministic handler; there
@@ -98,8 +98,8 @@ This is the sharpest consequence and it is worth stating bluntly:
   creates *no task at all*. The phase does not error — it produces nothing and the workflow continues to the
   next phase. A defect introduced this way surfaces far downstream as missing artifacts.
 - **For `imscc_chunking`, deleting the row is worse than a no-op: it silently does the wrong thing.** The
-  agent falls back to `run_dart_chunking`, which emits the staged-HTML chunkset kind into the staged-HTML
-  directory. The phase reports success. The `chunkset_drift` gate that compares the two chunksets then
+  agent falls back to the staged-HTML chunking tool, which emits the staged-HTML chunkset kind into the
+  staged-HTML directory. The phase reports success. The `chunkset_drift` gate that compares the two chunksets then
   compares a chunkset against itself.
 
 There is no test that fails on removal of a `_PHASE_TOOL_MAPPING` row (`FOLLOWUP-ADR004-1`).
@@ -107,17 +107,18 @@ There is no test that fails on removal of a `_PHASE_TOOL_MAPPING` row (`FOLLOWUP
 ### Two mappings must be read together
 
 Neither table alone answers "what runs for this phase". `AGENT_TOOL_MAPPING` also carries live read-compat
-aliases that exist only to keep older persisted state resumable — `dart-chunker` → `run_dart_chunking`,
-and `dart-converter` / `dart-automation-coordinator` → `extract_and_convert_pdf`. They are reached by string
-comparison from a resumed workflow's state file, never by an import, so static analysis reads them as dead.
+aliases that exist only to keep older persisted state resumable — legacy agent names from before the
+SemantiK rename that point at the current staged-HTML chunking tool and at `extract_and_convert_pdf`. They
+are reached by string comparison from a resumed workflow's state file, never by an import, so static
+analysis reads them as dead.
 
 ### Registry-only tools are invisible to external MCP clients
 
 The tools reached through these mappings are registered in `_build_tool_registry` but deliberately not
 decorated with `@mcp.tool()`. They are pipeline-internal: `run_heading_judge`,
 `run_content_generation_outline`, `run_content_generation_rewrite`, `run_inter_tier_validation`,
-`run_post_rewrite_validation`, `run_assessment_synthesis`, `run_imscc_chunking`, `run_dart_chunking`,
-`run_concept_extraction`, `run_vector_indexing`, `build_source_module_map`, `extract_textbook_structure`,
+`run_post_rewrite_validation`, `run_assessment_synthesis`, `run_imscc_chunking`, the staged-HTML chunking
+tool, `run_concept_extraction`, `run_vector_indexing`, `build_source_module_map`, `extract_textbook_structure`,
 `plan_course_structure`. An external MCP client cannot invoke them, and grepping for `@mcp.tool` will not
 find them.
 

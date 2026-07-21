@@ -17,7 +17,7 @@ context-size reasons; root keeps a one-line index) — and the actual
 | Prefix | Owner doc |
 |--------|-----------|
 | `TRAINFORGE_*` / `LOCAL_SYNTHESIS_*` / `TOGETHER_*` / `ANTHROPIC_SYNTHESIS_*` / `CURRICULUM_ALIGNMENT_*` / `WAVE18_*` / `NVIDIA_*` | `Trainforge/CLAUDE.md` |
-| `SEMANTIK_*` (also the legacy `DART_THETA_DEVICE` compat env — DART itself is retired) | `SemantiK/CLAUDE.md` |
+| `SEMANTIK_*` (plus the single allowlisted `DART_THETA_DEVICE` legacy-compat env, documented in `SemantiK/CLAUDE.md` as the `SEMANTIK_THETA_DEVICE` fallback) <!-- legacy-token: allow --> | `SemantiK/CLAUDE.md` |
 | `COURSEFORGE_*` / `COURSEPLANNER_*` / `TEXTBOOK_SYNTHESIS_*` | `Courseforge/CLAUDE.md` |
 | `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | `docs/operations/behavior-flags.md` (canonical per-flag detail; root `CLAUDE.md` keeps a one-line index) |
 
@@ -29,14 +29,14 @@ context-size reasons; root keeps a one-line index) — and the actual
    `\K` trick works for clean extraction:
 
    ```bash
-   rg -nP --no-heading 'os\.environ(?:\.get)?\(["\x27](TRAINFORGE_|LOCAL_SYNTHESIS_|TOGETHER_|ANTHROPIC_SYNTHESIS_|CURRICULUM_ALIGNMENT_|WAVE18_|NVIDIA_|SEMANTIK_|DART_|COURSEFORGE_|COURSEPLANNER_|TEXTBOOK_SYNTHESIS_|DECISION_|ED4ALL_|LOCAL_DISPATCHER_|MCP_ORCHESTRATOR_|LLM_)\w+' \
+   rg -nP --no-heading 'os\.environ(?:\.get)?\(["\x27](TRAINFORGE_|LOCAL_SYNTHESIS_|TOGETHER_|ANTHROPIC_SYNTHESIS_|CURRICULUM_ALIGNMENT_|WAVE18_|NVIDIA_|SEMANTIK_|COURSEFORGE_|COURSEPLANNER_|TEXTBOOK_SYNTHESIS_|DECISION_|ED4ALL_|LOCAL_DISPATCHER_|MCP_ORCHESTRATOR_|LLM_)\w+' \
      lib/ MCP/ cli/ Trainforge/ LibV2/ Courseforge/ SemantiK/
    ```
 
    Also check `os.getenv(...)`:
 
    ```bash
-   rg -nP --no-heading 'os\.getenv\(["\x27](TRAINFORGE_|LOCAL_SYNTHESIS_|TOGETHER_|ANTHROPIC_SYNTHESIS_|CURRICULUM_ALIGNMENT_|WAVE18_|NVIDIA_|SEMANTIK_|DART_|COURSEFORGE_|COURSEPLANNER_|TEXTBOOK_SYNTHESIS_|DECISION_|ED4ALL_|LOCAL_DISPATCHER_|MCP_ORCHESTRATOR_|LLM_)\w+' \
+   rg -nP --no-heading 'os\.getenv\(["\x27](TRAINFORGE_|LOCAL_SYNTHESIS_|TOGETHER_|ANTHROPIC_SYNTHESIS_|CURRICULUM_ALIGNMENT_|WAVE18_|NVIDIA_|SEMANTIK_|COURSEFORGE_|COURSEPLANNER_|TEXTBOOK_SYNTHESIS_|DECISION_|ED4ALL_|LOCAL_DISPATCHER_|MCP_ORCHESTRATOR_|LLM_)\w+' \
      lib/ MCP/ cli/ Trainforge/ LibV2/ Courseforge/ SemantiK/
    ```
 
@@ -55,7 +55,7 @@ context-size reasons; root keeps a one-line index) — and the actual
      # subsystem tables (awk-scoped to the Opt-In section) + root index
      for f in CLAUDE.md SemantiK/CLAUDE.md Courseforge/CLAUDE.md Trainforge/CLAUDE.md; do
        awk '/^## Opt-In Behavior Flags/,/^## [^O]/' "$f" \
-         | grep -oP '`\K(TRAINFORGE_|LOCAL_SYNTHESIS_|TOGETHER_|ANTHROPIC_SYNTHESIS_|CURRICULUM_ALIGNMENT_|WAVE18_|NVIDIA_|SEMANTIK_|DART_|COURSEFORGE_|COURSEPLANNER_|TEXTBOOK_SYNTHESIS_|DECISION_|ED4ALL_|LOCAL_DISPATCHER_|MCP_ORCHESTRATOR_|LLM_)\w+'
+         | grep -oP '`\K(TRAINFORGE_|LOCAL_SYNTHESIS_|TOGETHER_|ANTHROPIC_SYNTHESIS_|CURRICULUM_ALIGNMENT_|WAVE18_|NVIDIA_|SEMANTIK_|COURSEFORGE_|COURSEPLANNER_|TEXTBOOK_SYNTHESIS_|DECISION_|ED4ALL_|LOCAL_DISPATCHER_|MCP_ORCHESTRATOR_|LLM_)\w+'
      done
      # root-owned cross-cutting canonical doc (whole-file table)
      grep -oP '`\K(DECISION_|ED4ALL_|LOCAL_DISPATCHER_|MCP_ORCHESTRATOR_|LLM_)\w+' docs/operations/behavior-flags.md
@@ -78,7 +78,7 @@ context-size reasons; root keeps a one-line index) — and the actual
 
    ```bash
    awk '/^### Opt-in flags/,/^### [^O]/' schemas/ONTOLOGY.md \
-     | grep -oP '`\K(TRAINFORGE_|LOCAL_SYNTHESIS_|TOGETHER_|ANTHROPIC_SYNTHESIS_|CURRICULUM_ALIGNMENT_|WAVE18_|NVIDIA_|SEMANTIK_|DART_|COURSEFORGE_|COURSEPLANNER_|TEXTBOOK_SYNTHESIS_|DECISION_|ED4ALL_|LOCAL_DISPATCHER_|MCP_ORCHESTRATOR_|LLM_)\w+'
+     | grep -oP '`\K(TRAINFORGE_|LOCAL_SYNTHESIS_|TOGETHER_|ANTHROPIC_SYNTHESIS_|CURRICULUM_ALIGNMENT_|WAVE18_|NVIDIA_|SEMANTIK_|COURSEFORGE_|COURSEPLANNER_|TEXTBOOK_SYNTHESIS_|DECISION_|ED4ALL_|LOCAL_DISPATCHER_|MCP_ORCHESTRATOR_|LLM_)\w+'
    ```
 
 5. **Report**

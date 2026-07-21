@@ -13,13 +13,13 @@ it. You report; you never edit, fix, or commit.
 
 ## Inputs you accept (any subset)
 
-- A directory of converted accessible HTML files (typically
-  `<staging>/dart_in/*_accessible.html` or a Courseforge project's staged
-  DART HTML). Filenames usually carry a `chNN` chapter marker.
+- A directory of converted accessible HTML files (typically the staged
+  `*_accessible.html` conversion outputs under a Courseforge project's staged
+  inputs). Filenames usually carry a `chNN` chapter marker.
 - A `chunks.jsonl` (chunk_v4 schema — see
   `schemas/knowledge/chunk_v4.schema.json`) produced by
   `Trainforge.chunker.chunk_content` over that HTML, typically at
-  `LibV2/courses/<slug>/dart_chunks/chunks.jsonl`.
+  `LibV2/courses/<slug>/semantik_chunks/chunks.jsonl`.
 - Optionally a GOLD reference chunkset of the same source text for
   differential scoring. When one exists, run
   `.venv/bin/python scripts/gold_compare.py --gold <gold chunks.jsonl>

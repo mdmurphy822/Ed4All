@@ -192,8 +192,8 @@ focused on the current authoritative counts.
 > `course_generation` (+2 warning) and `textbook_to_course` (+2 warning);
 > `chunk_wcag_status` (`lib.validators.chunk_wcag_status.ChunkWcagStatusValidator`)
 > at `chunking` + `imscc_chunking` in `textbook_to_course` (+2 warning); and
-> `wcag_compliance` (`DART.pdf_converter.wcag_validator.WCAGValidator`, reused
-> as-is) at `textbook_to_course` `packaging` (+1 warning). The IB4.1 per-block
+> `wcag_compliance` (reusing an existing WCAG validator) at
+> `textbook_to_course` `packaging` (+1 warning). The IB4.1 per-block
 > WCAG sub-check (`REWRITE_BLOCK_A11Y_CONTRACT`) is a WARNING sub-issue of the
 > existing critical `rewrite_html_shape` gate (NOT a new gate → no count
 > change) and no-ops when `ED4ALL_BLOCK_A11Y` is unset; the per-block
@@ -561,8 +561,8 @@ exercised — needs ≥2 flag-on / assessment-emitting runs): `course_completene
 + `co_terminal_alignment` at a single corpus.
 
 **WCAG dead-ref repair.** The `textbook_to_course` `packaging` `wcag_compliance`
-gate pointed at `DART.pdf_converter.wcag_validator.WCAGValidator`, a module
-retired in the SemantiK migration; under `on_error: warn` the gate silently
+gate pointed at a WCAG validator module retired in the SemantiK migration;
+under `on_error: warn` the gate silently
 degraded to a warning every run and the validator never executed. Repaired to
 the live `lib.validators.wcag.WCAGValidator` (the class `course_generation`
 packaging already uses); a new regression test

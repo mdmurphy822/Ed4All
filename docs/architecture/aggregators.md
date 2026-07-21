@@ -199,6 +199,6 @@ Three ratios, each with its raw counts:
 
 1. `chunks_with_provenance` — chunks carrying ≥1 non-empty token, over total chunks.
 2. `source_ids_anchor_resolved` — distinct tokens whose anchor exists as a block-id attribute in the staged accessible HTML, over distinct tokens. The staged-HTML root resolves from `phase_outputs.staging.staging_dir`; when that is absent the metric is **skipped** (the field becomes `{"skipped": "no_staging_dir"}`) rather than fabricated as zeros.
-3. `source_ids_book_chunk_resolved` — distinct tokens carried by ≥1 book-side chunk's `source.source_references[].sourceId`, over distinct tokens. The book-side chunkset dir is resolved through `lib/libv2_storage.py::resolve_staged_chunks_path`, which dual-reads `semantik_chunks/` → `dart_chunks/` → `corpus/` so provenance resolves on both current and un-migrated archives.
+3. `source_ids_book_chunk_resolved` — distinct tokens carried by ≥1 book-side chunk's `source.source_references[].sourceId`, over distinct tokens. The book-side chunkset dir is resolved through `lib/libv2_storage.py::resolve_staged_chunks_path`, which reads the active `semantik_chunks/` dir first, then falls back to the legacy chunkset directory and `corpus/`, so provenance resolves on both current and un-migrated archives.
 
 Also emits capped (≤25) `unresolved[]` token samples per ratio, a per-`module_id` `provenance_free_by_module` counter, `distinct_source_id_count`, and run/slug/timestamp metadata.

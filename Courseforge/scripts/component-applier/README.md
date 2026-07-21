@@ -87,7 +87,7 @@ Component Distribution:
 ## Integration
 
 Works with other Courseforge scripts:
-- **DART Batch Processor** - Apply components after accessibility conversion
+- **SemantiK Converter** - Apply components after accessibility conversion
 - **Remediation Validator** - Validate component accessibility
 - **Brightspace Packager** - Include enhanced content in IMSCC
 

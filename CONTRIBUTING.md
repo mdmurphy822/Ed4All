@@ -10,16 +10,19 @@ source venv/bin/activate
 pip install -e ".[full]"
 ```
 
-### Optional System Dependencies (for DART)
+The `[full]` extra pulls in the server, GUI, and dev tooling. Working on the
+SemantiK PDF→HTML conversion cascade additionally needs the `[semantik]` extra
+(`pip install -e ".[full,semantik]"`), which installs its license-clean
+extraction stack (pikepdf, pypdfium2, pdfplumber, pytesseract).
 
-DART's PDF conversion pipeline uses external tools. These are only needed if you work on DART:
+### Optional System Dependencies (for SemantiK conversion)
+
+SemantiK's PDF conversion cascade uses Tesseract for OCR-based text extraction
+of scanned pages. It is only needed if you work on SemantiK:
 
 ```bash
-# Tesseract OCR — used for OCR-based PDF text extraction
+# Tesseract OCR — used for OCR-based extraction of scanned/image PDFs
 sudo apt install tesseract-ocr
-
-# poppler-utils — provides pdftotext, pdfinfo, etc.
-sudo apt install poppler-utils
 ```
 
 ## Running Tests
@@ -75,12 +78,11 @@ Keep the subject under 72 characters. Use the body for context if the change isn
 
 ```
 Ed4All/
-├── DART/           # PDF to accessible HTML conversion
+├── SemantiK/        # PDF to accessible HTML conversion (license-clean cascade)
 ├── Courseforge/     # Course content generation and IMSCC packaging
 ├── Trainforge/     # Assessment generation via RAG training
 ├── LibV2/          # Course content repository and retrieval engine
-├── MCP/            # FastMCP server exposing tool endpoints
-├── orchestrator/   # Workflow execution and agent coordination
+├── MCP/            # FastMCP server, orchestrator, executor, and pipeline tools
 ├── cli/            # CLI entry point (ed4all command)
 ├── lib/            # Shared libraries, validators, decision capture
 ├── config/         # Workflow and agent configuration (YAML)
@@ -93,7 +95,7 @@ Ed4All/
 
 Each component maintains its own `CLAUDE.md` with component-specific guidance:
 
-- `DART/CLAUDE.md` — conversion pipeline, WCAG requirements
+- `SemantiK/CLAUDE.md` — conversion cascade, WCAG requirements
 - `Courseforge/CLAUDE.md` — content generation, IMSCC packaging
 - `Trainforge/CLAUDE.md` — assessment generation, Bloom's alignment
 - `LibV2/CLAUDE.md` — repository structure, retrieval engine
@@ -115,5 +117,5 @@ If your change involves AI-driven decisions (content generation, assessment crea
 
 1. Define phases and concurrency limits in `config/workflows.yaml`.
 2. Register agents in `config/agents.yaml`.
-3. Implement phase handlers in `orchestrator/`.
+3. Implement phase handlers under `MCP/tools/` and wire their routing in `MCP/core/executor.py`.
 4. Add validation gates if the workflow produces artifacts that need quality checks.

@@ -392,7 +392,7 @@ what feeds Wave 79 Worker A's task-oriented training-pair budget.
 - [ ] All template-specific required attributes are present.
 - [ ] The section also carries the existing wave-stable attributes:
       `data-cf-objective-id`, `data-cf-bloom-level`,
-      `data-cf-content-type`, and (when DART source material is
+      `data-cf-content-type`, and (when SemantiK source material is
       available) `data-cf-source-ids` per `Courseforge/CLAUDE.md` §
       "HTML Data Attributes".
 - [ ] Counter-example / misconception paragraphs (Templates 2 and 3)

@@ -62,7 +62,7 @@ exit-decision table.
 
 ## Quick start
 
-SemantiK runs inside Ed4All as the `dart_conversion` conversion backend (via
+SemantiK runs inside Ed4All as the `semantik_conversion` conversion backend (via
 the bridge in `MCP/tools/pipeline_tools.py`) — no dedicated CLI of its own.
 To provision the runtime in-process, install the deps into a venv that
 already carries the heavy ML stack (Ed4All's `[training]`+`[embedding]`
@@ -120,9 +120,9 @@ consistent interface across runs and versions. Full detail:
 
 - **Source-provenance block attributes.** The adapter seam
   (`lib/semantik/adapter.py`, `cascade_ir.py`) wraps each content block in a
-  `<section class="dart-section">` carrying provenance attributes
-  (`data-dart-block-id`, `data-dart-source`, `data-dart-pages`,
-  `data-dart-confidence`, `data-dart-wcag`, …) — the stable block id, the
+  provenance-stamped `<section>` carrying `data-semantik-*` attributes
+  (`data-semantik-block-id`, `data-semantik-source`, `data-semantik-pages`,
+  `data-semantik-confidence`, `data-semantik-wcag`, …) — the stable block id, the
   `synthesized`/`vendor` provenance, the physical PDF page span, and the
   per-region gate verdict.
 - **A deterministic sourceId**, `{prefix}:{slug}#{block_id}`, where the

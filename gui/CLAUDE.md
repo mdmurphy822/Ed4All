@@ -181,7 +181,7 @@ restrictive CSP is never clobbered. CR/LF are scrubbed and whitespace collapsed
 
 ## Tests
 
-`gui/tests/` (45 `test_*.py`). Every module that needs the web stack starts with
+`gui/tests/` (46 `test_*.py`). Every module that needs the web stack starts with
 `pytest.importorskip("fastapi")` so the suite is a clean skip on a default install
 without the `gui` extra. The suite includes per-surface a11y gates
 (`test_studio_a11y_gate.py`, `test_learner_a11y_gate.py`,

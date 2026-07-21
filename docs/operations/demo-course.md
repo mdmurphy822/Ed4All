@@ -46,7 +46,7 @@ The full run mints the course under `LibV2/courses/demo-photosynthesis/` with:
   `library_format_version` stamp;
 * a human-readable `NOTICE` file (generated from the manifest license +
   attribution) to redistribute with the bundle;
-* the standard course scaffold (`dart_chunks/`, `imscc_chunks/`,
+* the standard course scaffold (`semantik_chunks/`, `imscc_chunks/`,
   `concept_graph/`, `course.json`, `vector_index/`, …).
 
 ### Flags the builder pins

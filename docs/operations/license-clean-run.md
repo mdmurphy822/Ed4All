@@ -120,9 +120,8 @@ The five-env-var recipe above closes the largest training-data exposure paths in
 
 ## Conversion (SemantiK) — PDF → HTML license-clean by construction
 
-The PDF → accessible-HTML conversion stage is **SemantiK**, the license-clean
-replacement for the retired DART converter. There is no longer an Anthropic
-default to flip on the conversion path: SemantiK's extraction stack carries no
+The PDF → accessible-HTML conversion stage is **SemantiK**. There is no
+Anthropic default to flip on the conversion path: SemantiK's extraction stack carries no
 PyMuPDF/MuPDF (AGPL-3) or Poppler (GPL-2) and ships Apache-2.0, and its runtime
 runs **fully offline** by default — the BERT council, OCR, theta, and the
 Stage-6 Qwen specialists are all local. The conversion output (which is later

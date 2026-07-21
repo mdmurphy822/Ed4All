@@ -9,7 +9,7 @@ The IMSCC Extractor is the core infrastructure component that enables Courseforg
 - **Universal LMS Detection**: Automatically identifies source LMS from manifest namespaces and file patterns
 - **Multi-Version Support**: Handles IMS Common Cartridge 1.0, 1.1, 1.2, and 1.3
 - **Content Classification**: Categorizes all resources by type (HTML, PDF, Office docs, images, assessments)
-- **Remediation Analysis**: Identifies content requiring DART conversion or accessibility fixes
+- **Remediation Analysis**: Identifies content requiring SemantiK conversion or accessibility fixes
 - **Structured Output**: Generates comprehensive JSON manifest for downstream processing
 
 ## Usage
@@ -132,7 +132,7 @@ The extractor output feeds directly into the remediation workflow:
 
 ```
 IMSCC Package → IMSCCExtractor → ExtractedCourse →
-  → dart-batch-processor (PDFs)
+  → semantik-automation-coordinator (PDFs)
   → accessibility-remediation (HTML)
   → content-quality-remediation (educational depth)
   → intelligent-design-mapper (component selection)
@@ -144,8 +144,8 @@ IMSCC Package → IMSCCExtractor → ExtractedCourse →
 | Type | Description | Remediation |
 |------|-------------|-------------|
 | `html` | HTML web content | Accessibility fixes |
-| `pdf` | PDF documents | DART conversion |
-| `office_doc` | Word, PowerPoint, Excel | DART conversion |
+| `pdf` | PDF documents | SemantiK conversion |
+| `office_doc` | Word, PowerPoint, Excel | SemantiK conversion |
 | `image` | Images | Alt text generation |
 | `video` | Video files | Captions/transcripts |
 | `audio` | Audio files | Transcripts |

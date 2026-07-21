@@ -30,14 +30,14 @@ tracked tree unless the operator scopes you to specific files.
 ### 1. No inputs/outputs on GitHub
 These data dirs must hold only `.gitkeep` (or be fully gitignored):
 `inputs/`, `Courseforge/exports/`, `LibV2/courses/`, `training-captures/`,
-`state/`, `dart-output/`, `SemantiK/output/` + `SemantiK/outputs/`,
+`state/`, `SemantiK/output/` + `SemantiK/outputs/`,
 `examples/`, `plans/`, `testruns/`.
 
 Catch any **NEW** tracked non-`.gitkeep` data file under these roots:
 
 ```bash
 git ls-files inputs/ Courseforge/exports/ LibV2/courses/ training-captures/ \
-  state/ dart-output/ SemantiK/output SemantiK/outputs examples/ plans/ testruns/ \
+  state/ SemantiK/output SemantiK/outputs examples/ plans/ testruns/ \
   | grep -v '/\.gitkeep$' | grep -v '^\.gitkeep$'
 ```
 
@@ -55,7 +55,7 @@ does not prove the rest of the dir is ignored):
 
 ```bash
 for d in inputs Courseforge/exports LibV2/courses training-captures state \
-  dart-output SemantiK/output SemantiK/outputs examples plans testruns; do
+  SemantiK/output SemantiK/outputs examples plans testruns; do
   printf '%s -> ' "$d"; git check-ignore -v "$d/__probe__" 2>/dev/null || echo "NOT IGNORED"
 done
 ```
@@ -86,7 +86,8 @@ appearing as literals in tracked files.
 
 A tier-2 test that hardcodes a slug/path (even with a `pytest.skip` fallback) is
 a violation when that literal is the ONLY input tried — it must glob-discover
-under `inputs/*/dart_in/...` (or the relevant data root) and skip when empty.
+under the relevant gitignored corpus data root (e.g. `inputs/*/...`) and skip
+when empty.
 Watch for a docstring that *claims* dynamic discovery while the code pins a path.
 
 ### 3. Docs accurate to the code
@@ -144,9 +145,11 @@ tracked `*.md` must resolve in the live tree.
    - CLI flags: `git grep -n -- '--<flag>' cli/`.
    - env defaults: read the resolver/read-site and confirm the documented
      default matches the code default.
-   - stale-surface: flag any doc describing DART/PyMuPDF as the live converter
-     (SemantiK fully replaced DART — DART mentions are stale unless clearly
-     historical).
+   - stale-surface: flag any doc naming PyMuPDF (or any other retired engine)
+     as the live converter — SemantiK is the sole PDF→accessible-HTML
+     converter. A stray legacy retired-engine token in tracked prose is stale
+     surface unless it sits inside an allowlisted compat shim.
+     The retired engine's name is `dart`. <!-- legacy-token: allow — this line names the token as a forbidden example -->
 
 ## False-positive traps (do NOT flag these)
 

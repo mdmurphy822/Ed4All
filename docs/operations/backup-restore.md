@@ -27,7 +27,7 @@ paths are never hardcoded:
 | `libv2/` | `lib.paths.libv2_path()` | `ED4ALL_LIBV2_ROOT` → `ED4ALL_HOME` |
 | `exports/` | `lib.paths.courseforge_exports_dir()` | `ED4ALL_HOME` |
 | `training-captures/` | `lib.paths.get_training_captures_dir()` | `ED4ALL_TRAINING_CAPTURES_DIR` → `ED4ALL_HOME` |
-| `semantik-output/` | `lib.paths.semantik_output_dir()` | `ED4ALL_HOME` (dual-reads a legacy `dart-output/` on a pre-task-#19 box; old backups whose manifest carries the `dart-output` key still restore — restore iterates the manifest keys generically) |
+| `semantik-output/` | `lib.paths.semantik_output_dir()` | `ED4ALL_HOME` (dual-reads a legacy `dart-output/` basename from a pre-SemantiK layout; old backups whose manifest carries the `dart-output` key still restore — restore iterates the manifest keys generically) <!-- legacy-token: allow --> |
 | `state-runs/` | `lib.paths.get_state_runs_dir()` | `ED4ALL_STATE_RUNS_DIR` — added **only** when the runs subtree is relocated OUTSIDE the state root (scattered layout) |
 
 A missing directory is reported (`missing_dirs`) and skipped — not fatal.

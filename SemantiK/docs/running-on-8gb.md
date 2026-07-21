@@ -41,7 +41,7 @@ provider value routes to the OpenAI-compatible runtime at
 ```bash
 cd SemantiK
 ../.venv/bin/python -m data.build_structure_data --aligner global \
-  --pair-dirs data/pairs/openstax data/pairs/arxiv data/pairs/wikipedia \
+  --pair-dirs data/pairs/textbook data/pairs/arxiv data/pairs/wikipedia \
   --workers 4
 # emits data/structure_dataset_v3/{train,val,test}.jsonl + coverage_report.json
 ```
