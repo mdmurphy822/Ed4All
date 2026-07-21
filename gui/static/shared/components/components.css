@@ -243,6 +243,105 @@ a.card:hover { border-color: var(--accent); }
 .run-cancel-btn { margin-left: auto; }
 .kit .run-cancel-btn:disabled { opacity: 0.7; cursor: default; }
 
+/* ---- stage-tracker rail + live stats band (stage-rail.js) ----
+ * A horizontal connected rail of phase nodes, grouped by pipeline stage.
+ * Wraps on narrow widths (flex-wrap at BOTH levels). The current node pulses
+ * (CSS-only, guarded below: reduced motion → static highlight). Every state
+ * pairs its color with a glyph + visually-hidden text (never color-only). */
+.stage-rail-groups {
+  list-style: none;
+  margin: 0; padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+}
+.stage-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border-left: 2px solid var(--border);
+}
+.stage-group-label {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.stage-group-list {
+  list-style: none;
+  margin: 0; padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-1) 0;
+}
+.stage-node {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-width: 5.5rem;
+  max-width: 8rem;
+  padding: 0 var(--space-1);
+  position: relative;
+  text-align: center;
+  font-size: 12px;
+  color: var(--fg);
+}
+/* Connector line between sibling nodes (skipped for the first in a group). */
+.stage-node + .stage-node::before {
+  content: "";
+  position: absolute;
+  left: calc(-50% + 12px);
+  right: calc(50% + 12px);
+  top: 11px;
+  border-top: 2px solid var(--border);
+}
+.stage-node-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px; height: 22px;
+  border-radius: var(--radius-pill);
+  border: 2px solid var(--phase-pending);
+  background: var(--bg);
+  color: var(--phase-pending);
+  font-weight: 700;
+  font-size: 12px;
+  line-height: 1;
+  position: relative;
+  z-index: 1;
+}
+.stage-node-name { color: var(--muted); overflow-wrap: anywhere; }
+.stage-node-time { color: var(--muted); font-size: 11px; min-height: 1em; }
+.stage-node.is-done .stage-node-dot   { border-color: var(--phase-done); color: var(--phase-done); }
+.stage-node.is-done .stage-node-name  { color: var(--fg); }
+.stage-node.is-failed .stage-node-dot { border-color: var(--phase-failed); color: var(--phase-failed); }
+.stage-node.is-failed .stage-node-name { color: var(--phase-failed); }
+.stage-node.is-skipped { opacity: 0.55; }
+/* The current node's dot also carries the `stage-pulse` MOTION utility class
+ * (set in stage-rail.js). The animation itself lives in tokens.css — the single
+ * motion layer — where prefers-reduced-motion swaps it for a static highlight
+ * ring. Only static styling here (the kit no-local-keyframes contract). */
+.stage-node.is-current .stage-node-dot {
+  border-color: var(--phase-running);
+  color: var(--phase-running);
+}
+.stage-node.is-current .stage-node-name { color: var(--phase-running); font-weight: 600; }
+
+.stage-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2) 0 0;
+  border-top: 1px solid var(--border);
+}
+.stage-stat { display: flex; align-items: baseline; gap: var(--space-1); }
+.stage-stat dt { font-size: 12px; color: var(--muted); }
+.stage-stat dd { margin: 0; font-size: 13px; color: var(--fg); }
+
 /* ---- run history (Studio #/runs) ---- */
 .run-history-list { list-style: none; margin: var(--space-3) 0 0; padding: 0; }
 .run-history-li { margin-bottom: var(--space-3); }

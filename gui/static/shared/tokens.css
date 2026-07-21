@@ -96,6 +96,18 @@
   to { transform: rotate(360deg); }
 }
 
+/* ---- Stage-rail pulse (the current pipeline node's dot). Motion lives HERE
+ * (the single motion layer): the utility class carries the animation, and the
+ * reduced-motion block below swaps it for a STATIC highlight ring. ---- */
+@keyframes stage-pulse {
+  0%   { box-shadow: 0 0 0 0 var(--phase-running, currentColor); }
+  70%  { box-shadow: 0 0 0 7px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+.stage-pulse {
+  animation: stage-pulse 1.6s ease-in-out infinite;
+}
+
 /* Tabular numerals so timers / ETAs / counts don't jitter as digits change.
  * Usage: add the .tabular-nums class to any element rendering live digits. */
 .tabular-nums {
@@ -109,4 +121,9 @@
     to { transform: none; }
   }
   .tabular-nums { /* no-op anchor; class kept stable under reduced motion */ }
+  /* The stage-rail pulse becomes a static highlight ring (no motion). */
+  .stage-pulse {
+    animation: none;
+    box-shadow: 0 0 0 3px var(--phase-running, currentColor);
+  }
 }

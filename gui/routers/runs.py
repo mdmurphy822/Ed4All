@@ -25,7 +25,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from gui import shared_state
-from gui.services import run_service
+from gui.services import progress_service, run_service
 
 logger = logging.getLogger("gui.routers.runs")
 
@@ -197,6 +197,26 @@ async def get_run_timeline(run_id: str) -> Any:
     if run_service.run_status(run_id) is None:
         return _error(404, "unknown_run", run_id)
     return run_service.derive_phase_timeline(run_id)
+
+
+@router.get("/runs/{run_id}/progress")
+async def get_run_progress(run_id: str) -> Any:
+    """Return the stage-tracker payload for a run (rail + live stats band).
+
+    Read-only merge of the run's ``config/workflows.yaml`` phase plan with its
+    orchestrator workflow state, checkpoint wall-clocks, a bounded tail of the
+    OP2 ``llm_usage.jsonl`` tap, and a TTL-cached seat probe — cheap enough for
+    a 2-5s poll (see ``gui.services.progress_service``). Accepts a GUI run id
+    or a bare orchestrator workflow id; typed 404 when neither resolves.
+    """
+    try:
+        payload = progress_service.run_progress(run_id)
+    except Exception as exc:  # noqa: BLE001 — surface the real error
+        logger.exception("run_progress failed for %s", run_id)
+        return _error(500, "run_progress_failed", str(exc))
+    if payload is None:
+        return _error(404, "unknown_run", run_id)
+    return payload
 
 
 @router.get("/runs/{run_id}/validation-report")

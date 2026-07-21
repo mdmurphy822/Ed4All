@@ -26,6 +26,7 @@ import { api, apiJSON } from '/shared/api.js';
 import { el, clear, uid } from '/shared/dom.js';
 import { toast, toastErr } from '/shared/toast.js';
 import { runProgressConsole } from '/shared/components/run-progress.js';
+import { stageRail } from '/shared/components/stage-rail.js';
 
 const WORKFLOW = 'textbook_to_course';
 const ACCEPT_EXT = ['.pdf'];
@@ -580,6 +581,29 @@ async function renderProgress(shell, runId) {
   );
   v.appendChild(progress.el);
 
+  // Stage-tracker rail + live stats band, fed by GET /api/runs/{id}/progress
+  // (config-driven phase list merged with the run's real state — see
+  // gui/services/progress_service.py). The rail is PURE PRESENTATION; this
+  // page owns the poll loop, which stops at a terminal state (a finished /
+  // failed run renders statically — no pulse, no further polling).
+  const rail = stageRail({ ariaLabel: `Pipeline progress for ${courseName || runId}` });
+  v.appendChild(rail.el);
+  const RAIL_POLL_MS = 3000;
+  let railTimer = null;
+  function stopRailPoll() {
+    if (railTimer != null) { clearInterval(railTimer); railTimer = null; }
+  }
+  async function pollRailOnce() {
+    try {
+      const p = await api(`/api/runs/${encodeURIComponent(runId)}/progress`);
+      rail.update(p);
+      const st = String((p && p.status) || '').toLowerCase();
+      if (['completed', 'failed', 'cancelled', 'canceled', 'interrupted', 'paused', 'timeout', 'error'].includes(st)) {
+        stopRailPoll();
+      }
+    } catch (_) { /* best-effort — the console remains the primary surface */ }
+  }
+
   // The failure panel + terminal CTAs render below the console.
   const finalBox = el('div', { class: 'final-box' });
   v.appendChild(finalBox);
@@ -590,6 +614,10 @@ async function renderProgress(shell, runId) {
   // the "last running" heuristic; the console tracks it for us.
   function finalize(status, errMsg) {
     clear(finalBox);
+    // Terminal: stop the rail poll and take one last snapshot so the rail
+    // freezes on the true final state (static render, no pulse).
+    stopRailPoll();
+    pollRailOnce();
     // I1 review flow: a PAUSED run halted at the objectives-review checkpoint —
     // NOT a failure. The console's onStatus() has no paused arm (its else-branch
     // reads as failed), so drive the paused presentation directly: freeze the
@@ -659,6 +687,8 @@ async function renderProgress(shell, runId) {
   // "[phase]"/"[progress]" lines, including Tier-1 timing) and a terminal
   // {type:status}.
   progress.startFirstRunning();
+  pollRailOnce();
+  railTimer = setInterval(pollRailOnce, RAIL_POLL_MS);
 
   const ws = openRunSocket(runId, {
     onLine: (line) => progress.onLine(line),
@@ -669,8 +699,8 @@ async function renderProgress(shell, runId) {
     },
   });
 
-  // Teardown: close the WS + stop the console timer when the route changes.
-  return () => { progress.destroy(); ws.close(); };
+  // Teardown: close the WS + stop the console timer + rail poll on route change.
+  return () => { progress.destroy(); ws.close(); stopRailPoll(); };
 }
 
 /* =============================================== A6 failure panel (UX) */
