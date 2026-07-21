@@ -181,7 +181,7 @@ _COHERENCE_PROMPT = "Reply with exactly this word and nothing else: SEATOK"
 
 #: Max completion tokens for the coherence probe (small — we only need enough to
 #: tell coherent text from degenerate output).
-_COHERENCE_MAX_TOKENS = 24
+_COHERENCE_MAX_TOKENS = 128
 
 
 def resolve_vllm_container_lifecycle_mode(value: Optional[str] = None) -> bool:
@@ -859,6 +859,12 @@ def coherence_probe(
             "max_tokens": int(max_tokens),
             "temperature": 0,
             "stream": False,
+            # Reasoning-parsed seats (e.g. nemotron_v3) route think-tokens into
+            # reasoning_content; without this a small probe budget is consumed
+            # by think-scaffolding and content comes back EMPTY, mis-declaring a
+            # healthy seat mode-collapsed. Templates that don't use the kwarg
+            # ignore it (plain Jinja context var).
+            "chat_template_kwargs": {"enable_thinking": False},
         }
     ).encode("utf-8")
     url = f"{base}/v1/chat/completions"
@@ -879,6 +885,13 @@ def coherence_probe(
         message = choices[0].get("message") if isinstance(choices[0], dict) else None
         content = message.get("content") if isinstance(message, dict) else None
         ok = _looks_coherent(content)
+        if not ok and isinstance(message, dict):
+            # A reasoning seat may spend the whole probe budget thinking (content
+            # empty, reasoning_content populated). Sane reasoning text is direct
+            # evidence AGAINST mode collapse (collapse = degenerate soup in any
+            # channel), so accept it rather than cold-recreating a healthy seat.
+            reasoning = message.get("reasoning_content")
+            ok = _looks_coherent(reasoning)
         if not ok:
             logger.warning(
                 "vllm_container_lifecycle: coherence probe at %s returned "

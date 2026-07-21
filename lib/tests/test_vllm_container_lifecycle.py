@@ -330,3 +330,64 @@ def test_record_load_event_writes_jsonl(monkeypatch, tmp_path):
 def test_record_load_event_none_run_dir_skips():
     # Must not raise.
     vcl.record_load_event(None, "http://localhost:8000", 1.0)
+
+
+# --------------------------------------------------------------------------
+# coherence_probe — reasoning-seat contract (2026-07-21 regression)
+#
+# A reasoning-parsed seat (e.g. nemotron_v3) routes think-tokens into
+# ``reasoning_content``; the probe must (a) request thinking OFF via
+# ``chat_template_kwargs`` and (b) accept coherent ``reasoning_content`` when
+# ``content`` is empty — otherwise a HEALTHY seat is declared mode-collapsed
+# and cold-recreated in a loop (observed live on the Super seat, 2026-07-21).
+
+
+class _FakeResp:
+    def __init__(self, payload: dict):
+        self._raw = json.dumps(payload).encode("utf-8")
+
+    def read(self):
+        return self._raw
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _probe_with(monkeypatch, message: dict, captured: dict):
+    def fake_urlopen(req, timeout=None):
+        url = req.full_url if hasattr(req, "full_url") else str(req)
+        if url.endswith("/v1/models"):
+            return _FakeResp({"data": [{"id": "m1"}]})
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return _FakeResp({"choices": [{"message": message}]})
+
+    monkeypatch.setattr(vcl.urllib.request, "urlopen", fake_urlopen)
+    return vcl.coherence_probe("http://localhost:9999")
+
+
+def test_coherence_probe_sends_thinking_off_kwargs(monkeypatch):
+    captured: dict = {}
+    ok = _probe_with(monkeypatch, {"content": "SEATOK"}, captured)
+    assert ok is True
+    assert captured["body"]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert captured["body"]["max_tokens"] >= 64  # 24 starved reasoning seats
+
+
+def test_coherence_probe_accepts_reasoning_only_content(monkeypatch):
+    captured: dict = {}
+    ok = _probe_with(
+        monkeypatch,
+        {"content": None,
+         "reasoning_content": "The user wants the word SEATOK, so I will reply."},
+        captured,
+    )
+    assert ok is True
+
+
+def test_coherence_probe_still_rejects_empty_both(monkeypatch):
+    captured: dict = {}
+    ok = _probe_with(monkeypatch, {"content": None, "reasoning_content": ""}, captured)
+    assert ok is False
