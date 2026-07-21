@@ -10,6 +10,7 @@ content that each question type can consume.
 import os
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, Dict, List, Tuple
 
 from lib.ontology.slugs import deslugify_concept
@@ -35,10 +36,52 @@ _TOC_TITLE_PREFIX = re.compile(
 _BARE_INTEGER_ONLY = re.compile(r"^\s*\d+\s*$")
 
 
+# Generic pedagogical-apparatus markers — domain-agnostic exercise/solution
+# scaffolding (a "Solution:" / "Check:" label, a "Try It" prompt, an "In the
+# following exercises" banner). These are the generic pedagogy-label vocabulary
+# class used generically, NOT publisher-specific vocabulary, so they stay in
+# code. Publisher-SPECIFIC exercise banners ("Practice Makes Perfect", …) are
+# DATA, loaded from the shared apparatus lexicon by ``_apparatus_banner_re``
+# (owner rule: publisher vocab = data-driven lexicons, never hardcoded).
 _APPARATUS_RE = re.compile(
     r"\b(?:Solution\s*:|Check\s*:|Show answer|Try It\b|"
-    r"In the following exercises|Answers? will vary|Practice Makes Perfect)"
+    r"In the following exercises|Answers? will vary)"
 )
+
+
+@lru_cache(maxsize=1)
+def _apparatus_banner_re() -> "re.Pattern[str]":
+    """Compile the publisher exercise-banner markers from the shared lexicon.
+
+    Publisher-specific apparatus banners (e.g. "Practice Makes Perfect",
+    "Section Exercises") are vocabulary, not code: they live in
+    ``schemas/taxonomies/exercise_apparatus_lexicon.json`` and are loaded via
+    the canonical taxonomy loader. Returns the union of every profile's
+    ``apparatus_banners`` group as one case-insensitive regex; word-internal
+    whitespace is treated as ``\\s+`` so an OCR-broken banner still matches. A
+    missing / malformed lexicon degrades to a never-matches sentinel (the
+    generic markers above still fire).
+    """
+    from lib.ontology.taxonomy import load_taxonomy
+
+    try:
+        lex = load_taxonomy("exercise_apparatus_lexicon")
+    except (FileNotFoundError, ValueError):
+        return re.compile(r"(?!x)x")
+    phrases: List[str] = []
+    seen: set = set()
+    for profile in (lex.get("profiles") or {}).values():
+        for phrase in profile.get("apparatus_banners") or []:
+            norm = str(phrase).strip().lower()
+            if norm and norm not in seen:
+                seen.add(norm)
+                phrases.append(str(phrase).strip())
+    if not phrases:
+        return re.compile(r"(?!x)x")
+    alts = "|".join(
+        r"\s+".join(re.escape(tok) for tok in p.split() if tok) for p in phrases
+    )
+    return re.compile(alts, re.IGNORECASE)
 
 
 def _is_apparatus_text(text: str) -> bool:
@@ -48,9 +91,11 @@ def _is_apparatus_text(text: str) -> bool:
     subject words. Such text must never become an assessment
     answer/definition/statement: on an apparatus-dense worked-example corpus
     it otherwise leaks (e.g. "Solution: r Check: ...") through every harvest
-    path.
+    path. Generic markers are matched in-code; publisher-specific exercise
+    banners are matched from the data-driven lexicon.
     """
-    return bool(_APPARATUS_RE.search(text or ""))
+    t = text or ""
+    return bool(_APPARATUS_RE.search(t) or _apparatus_banner_re().search(t))
 
 
 # --------------------------------------------------------------------------- #

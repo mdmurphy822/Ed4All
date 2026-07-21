@@ -47,7 +47,7 @@ def _seed_run(
     workflow: str = "textbook_to_course",
     gui_status: str = "running",
     wf_status: str = "RUNNING",
-    orch_run_id: str = "TTC_prog_20260101_000000",
+    orch_run_id: str = "TTC_prog_20260101_000000",  # synthetic run id, slug-guard: allow
     params: Optional[Dict[str, Any]] = None,
     phase_outputs: Optional[Dict[str, Any]] = None,
     failed_phase: Optional[str] = None,

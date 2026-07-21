@@ -91,9 +91,10 @@ _TAG_STRIP_RE = re.compile(r"<[^>]+>")
 # P4 leakage filter — reject a source-chunk sentence that is an EXERCISE /
 # HEADING / ANSWER-KEY run rather than a real definition. On the
 # exercise-dense textbook corpus the first sentence that merely MENTIONS the
-# term is very often junk ("TRY IT :: 1.35 Evaluate 8x − 3…", "EXAMPLE 1.1 In
-# the number 63,407,218…", "30 Chapter 1 Foundations Multiply.",
-# "Solution ⓐ…"). A candidate matching any of these patterns is NOT a usable
+# term is very often junk — e.g. a "TRY IT :: N.NN Evaluate …" exercise cue,
+# an "EXAMPLE N.N In the number NN,NNN,NNN…" worked-example opener, a running
+# "PP Chapter N <section title> Multiply." page header, or a "Solution ⓐ…"
+# answer-key run. A candidate matching any of these patterns is NOT a usable
 # definition and the resolver skips it (falling through to the next sentence,
 # then to the curated ``definition_hint``, then to OMISSION).
 _DEF_LEAK_RE = re.compile(

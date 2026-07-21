@@ -58,7 +58,7 @@ from lib.semantic_structure_extractor.semantic_structure_extractor import (
         "Charles Koch Foundation The Stuart Family Foundation",
         "Laura and John Arnold Foundation The Maxfield Foundation",
         # End-of-chapter exercise / review / drill section headings
-        # (OpenStax EOC family). Exact matches.
+        # (a scanned algebra textbook EOC family). Exact matches.
         "Practice Makes Perfect",
         "Section Exercises",
         "Review Exercises",
@@ -72,10 +72,10 @@ from lib.semantic_structure_extractor.semantic_structure_extractor import (
         "PRACTICE MAKES PERFECT",
         "  Review   Exercises  ",
         "Everyday Math:",
-        # Prefix form — OpenStax appends the section topic to the
-        # exercise-block phrases. Distinctive enough that a real title
+        # Prefix form — a scanned algebra textbook appends the section topic
+        # to the exercise-block phrases. Distinctive enough that a real title
         # never starts with them.
-        "Practice Makes Perfect: Add Whole Numbers",
+        "Practice Makes Perfect: Order Sample Widgets",
         "Review Exercises: Solve Linear Equations",
         "Chapter Review Exercises for Chapter 3",
         "Writing Exercises for This Section",
@@ -140,14 +140,14 @@ def test_content_headings_survive(text):
 # Heading-only HTML (no <section>/doc-chapter wrappers) so extraction
 # routes through the heading-hierarchy fallback. Mixes the all-caps math
 # chapter title FOUNDATIONS with answer-key rows, donor lines, and
-# Preface — exactly the OpenStax contamination shape.
+# Preface — exactly the scanned-algebra-textbook contamination shape.
 _CONTAMINATED_HTML = """
 <!DOCTYPE html>
 <html lang="en">
-<head><title>Elementary Algebra Shape</title></head>
+<head><title>Acme Algebra Shape</title></head>
 <body>
   <main>
-    <h1>Elementary Algebra</h1>
+    <h1>Acme Algebra</h1>
     <h2>Preface</h2>
     <p>Front matter prose.</p>
     <h3>Laura and John Arnold Foundation The Maxfield Foundation</h3>

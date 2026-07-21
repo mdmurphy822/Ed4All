@@ -82,8 +82,8 @@ _SCRIPT_STYLE_RE = re.compile(
 # a heading). Its text is a clean, usable topic summary.
 _FIRST_LI_RE = re.compile(r"<li\b[^>]*>(.*?)</li>", re.IGNORECASE | re.DOTALL)
 
-# Front-matter / acknowledgments / funder boilerplate that leaks from OpenStax
-# front pages (no heading, no instructional value). Conservative: only used to
+# Front-matter / acknowledgments / funder boilerplate that leaks from a
+# textbook's front pages (no heading, no instructional value). Conservative: only used to
 # DROP a block that ALSO has no heading and no usable label attribute.
 _FUNDER_RE = re.compile(
     r"\b(koch foundation|stuart family foundation|"

@@ -604,8 +604,8 @@ def _is_furniture_block(block: _AdapterBlock) -> bool:
     """Whether a block is ``metadata_drop`` page furniture suppressed from emit.
 
     A ``metadata_drop``-role block is page furniture — a running header/footer
-    ("Chapter 9 Roots and Radicals 1035"), a copyright line ("This OpenStax
-    book is available for free at …"), an OCR title-page fragment — that the
+    ("Chapter 9 Roots and Radicals 1035"), a copyright line (the scan's
+    "available for free at …" footer), an OCR title-page fragment — that the
     upstream deterministic passes (``structure_graph._detect_running_headers``
     +  ``deterministic_structure.clean_structure``) re-tagged out of the content
     stream. It carries NO teaching content and MUST NOT emit body HTML.
@@ -1750,7 +1750,7 @@ def _scrub_block_entity_artifacts(chapters: Sequence[_AdapterChapter]) -> None:
 # ---------------------------------------------------------------------------
 # Pedagogical-marker label-residue scrub (end-user-HTML audit, ch02, 2026-07-04)
 #
-# The OpenStax scan transcribes the exercise/opener MARKERS with a doubled-colon
+# The scanned algebra textbook transcribes the exercise/opener MARKERS with a doubled-colon
 # separator + stray OCR gutter glyphs — "TRY IT :: 2.1", "TRY IT : : 9.129 >",
 # ":: GENERAL STRATEGY FOR SOLVING LINEAR EQUATIONS." — so the visible label
 # reads "TRY IT :: 2.1" and, worse, the doubled colon severs the number from the
@@ -2199,7 +2199,7 @@ def _split_leading_apparatus_blocks(
 # ---------------------------------------------------------------------------
 # A7 — pedagogical-opener promotion (end-user-HTML audit, 2026-07-04).
 # ---------------------------------------------------------------------------
-# OpenStax scan chapters emit the pedagogical openers (Learning Objectives / Be
+# Scanned algebra textbook chapters emit the pedagogical openers (Learning Objectives / Be
 # Prepared / Try It / Example / How To / Solution) as flat <p> prose, so the
 # chunker never breaks a section on them and a single <p> fuses a worked
 # example, its solution, and the next example. This pass PROMOTES a standalone
@@ -2213,7 +2213,7 @@ def _split_leading_apparatus_blocks(
 def _objectives_body_html(text: str) -> str:
     r"""Render a Learning-Objectives remainder as ``<ul>`` when list-shaped.
 
-    The OpenStax objectives block reads "By the end of this section, you will
+    The scanned-textbook objectives block reads "By the end of this section, you will
     be able to: <item> <item> …". When the post-colon items are newline- or
     bullet-delimited they are emitted as ``<ul><li>…</li></ul>`` (the chunker
     harvests ``<li>`` bullets). When the items are FLAT run-on prose (no
@@ -3473,7 +3473,7 @@ _CHAPTER_N_TITLE_RE = re.compile(r"^\s*chapter\s+\d+\b", re.IGNORECASE)
 # exercise/review/outline SECTION, not the chapter title itself. "CHAPTER 9
 # REVIEW" matches ``_CHAPTER_N_TITLE_RE`` (it IS "Chapter 9 …") but is the
 # end-of-chapter review banner, so it must NOT be picked as the document title.
-# Matched case-insensitively anywhere in the heading (OpenStax emits "Chapter N
+# Matched case-insensitively anywhere in the heading (the scan emits "Chapter N
 # Review", "Chapter N Exercises", "Chapter N Key Terms", "Chapter N Practice
 # Test", and a front-matter "Chapter N Outline").
 _CHAPTER_APPARATUS_RE = re.compile(

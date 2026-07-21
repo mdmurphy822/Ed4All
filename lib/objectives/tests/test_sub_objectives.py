@@ -436,7 +436,7 @@ def test_decision_type_in_schema_enum():
 
 
 # ---------------------------------------------------------------------------
-# leak rejection: raw OpenStax exercise / callout / math fragments must NOT
+# leak rejection: raw scanned-algebra exercise / callout / math fragments must NOT
 # become sub-objective statements, and the "Understand:" template prefix must
 # never leak (regression for a real calibration course_planning review).
 # ---------------------------------------------------------------------------
@@ -446,7 +446,7 @@ def test_raw_exercise_and_callout_text_never_leaks_into_statements():
     co = {
         "id": "CO-LEAK",
         "statement": "Apply place value concepts to round whole numbers.",
-        # Every grounded chunk body is raw OpenStax chrome (callout labels,
+        # Every grounded chunk body is raw scanned-algebra chrome (callout labels,
         # exercise glyphs, bare math) — exactly the text that leaked verbatim
         # (incl. the hardcoded "Understand:" prefix) in the prior derivation.
         "source_chunk_ids": ["c1", "c2", "c3", "c4"],

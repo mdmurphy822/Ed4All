@@ -113,7 +113,7 @@ def _worked_example_chunks() -> List[Dict[str, Any]]:
     """A worked-example-driven workbook: mostly ``example`` chunks WITH worked
     solutions + a couple explanation chunks.
 
-    This mirrors the real OpenStax algebra shape (~80% example/exercise), where
+    This mirrors a scanned algebra textbook shape (~80% example/exercise), where
     the examples are genuine WORKED examples (they carry a solution / step /
     "Try It" marker). Under the corrected C2 definition — worked examples TEACH
     and count as instructional — this corpus is synthesis-ready and must PASS.

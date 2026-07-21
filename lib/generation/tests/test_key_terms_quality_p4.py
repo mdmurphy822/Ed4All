@@ -25,11 +25,11 @@ from lib.generation import block_planner as bp
     "leaky_text",
     [
         "TRY IT :: 1.35 Evaluate 8x minus 3, when x equals 2.",
-        "EXAMPLE 1.1 In the number 63,407,218 the place value is shown.",
+        "EXAMPLE 1.1 In the number 84,209,163 the place value is shown.",
         "Solution to the place value exercise is shown here below.",
         "Chapter 1 Foundations covers place value across the board.",
         "30 Chapter 1 Foundations Multiply the two place value numbers.",
-        "550 place value 47 22,335 place value 48 39,075 answer key run.",
+        "712 place value 47 18,446 place value 48 51,908 answer key run.",
     ],
 )
 def test_resolve_definition_rejects_leaky_source_sentence(leaky_text):

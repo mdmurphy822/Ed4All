@@ -26,6 +26,17 @@ NVIDIA RAG demo line (``nvidiarag-NN``), OpenStax-derived algebra
 mints around a slug: Courseforge export ids (``PROJ-<slug>-...``) and
 textbook run ids (``TTC_<course>_<timestamp>``).
 
+A second, non-slug class of leak is guarded too: concrete
+*publisher / corpus provenance* descriptors of the specific source
+corpora ingested — a publisher edition short-code (``ea2e`` /
+``elementary-algebra-2e``), the CNX distribution host (``cnx.org``), the
+scan-edition slug (``openstax-scan*``), and author surnames off the
+OpenStax algebra title (``marecek``, ``anthony-smith``, ``honeycutt``).
+Each is specific enough to have no legitimate neutral use. The bare token
+``openstax`` is deliberately NOT patterned: it legitimately names a
+lexicon / taxonomy / source-registry key in ~45 tracked files, so a
+blanket rule would fire on product code, not a leak.
+
 Each pattern below matches the SCHEME, not one literal, so a *new* index
 or descriptor within a family is caught (``alg-glm-04``, ``nvidiarag-202``,
 ``alg-vendor-html-02``) without editing this file. A brand-new *family*
@@ -103,6 +114,27 @@ _PATTERN_SOURCES: List[Tuple[str, str]] = [
     # embedded timestamp is what distinguishes a real id from the legit
     # format template ``TTC_{course_name}_{timestamp}``.
     ("TTC-runid", r"\bTTC_[A-Za-z0-9_]*\d{6,}[A-Za-z0-9_]*"),
+    # --- Publisher / corpus-provenance leaks -----------------------------
+    # These are not lane-indexed slugs but concrete identifiers of the
+    # specific source corpora this pipeline ingested — a publisher edition
+    # short-code (``ea2e`` = Elementary Algebra 2e), the CNX distribution
+    # host, author surnames off the OpenStax algebra title, and the two
+    # scan/edition slug forms. A build corpus is working data, not product,
+    # so its provenance descriptors must not be hardcoded either. Unlike
+    # ``openstax`` (a bare token that legitimately names a lexicon /
+    # taxonomy / source-registry key in ~45 files — too broad to guard
+    # without allowlisting most of them, so deliberately NOT patterned),
+    # each of these is specific enough to have no legitimate neutral use.
+    #
+    # ``ea2e`` is word-boundary + case-insensitive (it appears as EA2e /
+    # EA2E in citations); the rest are case-sensitive lowercase literals.
+    ("ea2e", r"(?i:\bea2e\b)"),
+    ("cnx-org", r"\bcnx\.org\b"),
+    ("marecek", r"\bmarecek\b"),
+    ("anthony-smith", r"\banthony-smith\b"),
+    ("honeycutt", r"\bhoneycutt\b"),
+    ("openstax-scan", r"\bopenstax-scan(?:-[a-z0-9]+)*"),
+    ("elementary-algebra-2e", r"\belementary-algebra-2e\b"),
 ]
 
 COURSE_SLUG_PATTERNS: List[Tuple[str, re.Pattern]] = [

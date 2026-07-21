@@ -1,10 +1,10 @@
 """Per-source example capping shared across the dataset builders.
 
-A freshly-scaled source (e.g. the OpenStax textbook corpus, which grew
+A freshly-scaled source (e.g. a large open-textbook corpus, which grew
 578 -> 7,669 pairs and carries ~48 blocks/pair) otherwise swamps the
 minor classes that only a few sources supply — see
 feedback_balance_dominant_category, where over-volume regressed the minor
-classes twice. Every builder that ingests data/pairs/openstax
+classes twice. Every builder that ingests such a dominant textbook source
 (build_structure_data, build_semantic_data, build_table_specialist_data)
 should apply the same cap so the imbalance can't sneak back in through a
 builder we forgot.

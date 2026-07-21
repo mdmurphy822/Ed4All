@@ -366,7 +366,7 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 2000,
-          "description": "The required attribution statement to reproduce (e.g. 'Access for free at openstax.org')."
+          "description": "The required attribution statement to reproduce (e.g. 'Access for free at example.org/textbook')."
         }
       }
     }

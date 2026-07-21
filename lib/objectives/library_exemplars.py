@@ -115,7 +115,7 @@ def _iter_component_objectives(raw: Any) -> Iterable[Dict[str, Any]]:
 
     Handles (a) a list of group dicts ``[{"objectives": [...]}, ...]``,
     (b) a flat list of objective dicts, and (c) a dict-of-lists
-    ``{"Chapter 1": [...]}`` (the OpenStax archive shape). Defensive: any
+    ``{"Chapter 1": [...]}`` (a chapter-keyed archive shape). Defensive: any
     non-dict entry is skipped.
     """
     if isinstance(raw, dict):

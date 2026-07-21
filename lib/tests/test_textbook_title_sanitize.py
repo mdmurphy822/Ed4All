@@ -1,6 +1,6 @@
 """Unit tests for the running-header / page-number title sanitizer.
 
-Fixtures model a real 3-chapter OpenStax Elementary Algebra SCAN whose
+Fixtures model a scanned 3-chapter algebra textbook whose
 converted ``<title>``/``<h1>`` fused the chapter title with the running header
 + page number + first content word:
 

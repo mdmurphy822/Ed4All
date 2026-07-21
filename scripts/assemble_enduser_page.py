@@ -37,7 +37,7 @@ Example
     python scripts/assemble_enduser_page.py \
         --content /tmp/rerender/foo-ch09_accessible.html \
         --template Courseforge/templates/accessibility/accessible_content_template.html \
-        --title "Roots and Radicals" --course-name "Elementary Algebra" \
+        --title "Roots and Radicals" --course-name "Intro Algebra" \
         --module-name "Chapter 9" --css-hooks \
         --output /tmp/enduser/foo-ch09_enduser.html
 """

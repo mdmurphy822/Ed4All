@@ -54,7 +54,7 @@ def _assemble(**kw):
         content_html=_CONTENT,
         template_html=template,
         title="Roots and Radicals",
-        course_name="Elementary Algebra",
+        course_name="Intro Algebra",
         module_name="Chapter 9",
         module_link="index.html",
         mathjax=True,
@@ -95,7 +95,7 @@ def test_injected_content_and_openers_present():
 def test_breadcrumb_not_broken():
     page = _assemble()
     # Placeholders filled; no dead "#" breadcrumb link; no raw {{...}} tokens.
-    assert "Elementary Algebra" in page
+    assert "Intro Algebra" in page
     assert "Chapter 9" in page
     assert "{{" not in page and "}}" not in page
 
@@ -139,10 +139,10 @@ def test_css_hooks_absent_by_default():
 def test_description_and_author_meta():
     page = _assemble(
         description="A chapter on roots & radicals.",
-        author="Elementary Algebra 2e",
+        author="Example University Press",
     )
     assert '<meta name="description" content="A chapter on roots &amp; radicals.">' in page
-    assert '<meta name="author" content="Elementary Algebra 2e">' in page
+    assert '<meta name="author" content="Example University Press">' in page
 
 
 def test_meta_absent_when_not_supplied():

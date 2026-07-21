@@ -2,9 +2,9 @@
 
 The synthetic ``test_cascade_ir.py`` / ``test_toc_frontmatter_detector.py``
 suites exercise hand-built ``region_provenance``. This suite validates the
-chapter-IR builder against a REAL captured SemantiK cascade bridge — 2911
-regions from a real full-book ch1-3 PDF capture (path via ``EA2E_BRIDGE_JSON``;
-default ``/tmp/semantik_p4/ea2e_bridge.json``).
+chapter-IR builder against a REAL captured SemantiK cascade bridge — a
+full-book ch1-3 PDF capture of a scanned algebra textbook (path via
+``SEMANTIK_REAL_BRIDGE_JSON``; the test SKIPS cleanly when unset).
 
 The defect this guards (root-caused 2026-06-22): the real bridge's
 ``region_provenance`` carries, in document order, (1) a metadata-drop front
@@ -20,13 +20,14 @@ The fix: Part A extends the TOC/index detector to drop the page-number-less
 chapter-index cluster; Part B derives chapters from ``N.M`` section numbers when
 content has section headings but no real L1 openers.
 
-The test SKIPS when the real bridge is absent (it is a /tmp capture, not a
-committed fixture — large + degraded mock-runtime data). Override the path with
-``EA2E_BRIDGE_JSON``.
+The test SKIPS when the real bridge is absent (it is a local capture, not a
+committed fixture — large + degraded mock-runtime data). Point the path at a
+captured bridge with ``SEMANTIK_REAL_BRIDGE_JSON``.
 
 Run:
   ED4ALL_NLI_DEVICE=cpu ED4ALL_EMBEDDING_DEVICE=cpu \
-    python -m pytest lib/semantik/tests/test_cascade_ir_real_ea2e.py -q
+    SEMANTIK_REAL_BRIDGE_JSON=/path/to/bridge.json \
+    python -m pytest lib/semantik/tests/test_cascade_ir_real_corpus.py -q
 """
 
 from __future__ import annotations
@@ -37,16 +38,14 @@ import re
 
 import pytest
 
-_BRIDGE_PATH = os.environ.get(
-    "EA2E_BRIDGE_JSON", "/tmp/semantik_p4/ea2e_bridge.json"
-)
+_BRIDGE_PATH = os.environ.get("SEMANTIK_REAL_BRIDGE_JSON")
 
 
 def _load_bridge() -> dict:
-    if not os.path.exists(_BRIDGE_PATH):
+    if not _BRIDGE_PATH or not os.path.exists(_BRIDGE_PATH):
         pytest.skip(
-            f"real EA2e bridge capture not present at {_BRIDGE_PATH} "
-            "(set EA2E_BRIDGE_JSON to a captured bridge to run)"
+            "real cascade-bridge capture not present "
+            "(set SEMANTIK_REAL_BRIDGE_JSON to a captured bridge to run)"
         )
     with open(_BRIDGE_PATH, "r", encoding="utf-8") as fh:
         return json.load(fh)
@@ -133,7 +132,7 @@ def _adapt(chapters):
 
     res = _Res()
     res.chapters = chapters
-    return normalize_cascade_to_ed4all(res, pdf_stem="ea2e_ch1_3")
+    return normalize_cascade_to_ed4all(res, pdf_stem="algebra_ch1_3")
 
 
 def test_real_chain_semantik_markers_validator_passes(real_chapters):

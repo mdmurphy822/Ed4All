@@ -1421,7 +1421,7 @@ from semantik_structure.vlm_fusion import (  # noqa: E402
 
 
 # The four live-fire evidence lines (unrescued tesseract-only OCR garbage that
-# shipped verbatim into an OpenStax Algebra ch01 scan conversion).
+# shipped verbatim into a scanned algebra textbook ch01 conversion).
 _GARBAGE_EVIDENCE = [
     "TRY Tiss ® ©",
     "©) obi Dom -19",

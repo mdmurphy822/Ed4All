@@ -1,14 +1,14 @@
 """Unit tests for the answer-key / ToC apparatus-dump chunk filter.
 
-Positive fixtures are lifted verbatim from a real 3-chapter OpenStax Elementary
-Algebra SCAN chunkset (``semantik_chunks/chunks.jsonl``):
+Positive fixtures are SYNTHETIC, modeling the two apparatus-dump families a
+scanned algebra textbook chunkset produces (invented numbers + invented section
+titles that preserve every discriminating shape the classifier keys on):
 
-  * ``_chunk_00008`` — an end-of-chapter answer-key run
-    ("46. 550 47. 22,335 48. 39,075 ...").
-  * ``_chunk_00001`` / ``_00080`` / ``_00121`` — chapter-outline / ToC chunks
-    ("Chapter Outline 1.2 Use the Language of Algebra 1.3 ...").
+  * an end-of-chapter answer-key run — a dominant bare "NN. NNNN" number soup.
+  * chapter-outline / Table-of-Contents chunks — a leading header corroborated
+    by several "N.M <Title>" section enumerations.
 
-Negative fixtures model real math-dense exercise/example prose that MUST NOT be
+Negative fixtures model math-dense exercise/example prose that MUST NOT be
 dropped (LaTeX + legitimate embedded numbers).
 """
 
@@ -22,31 +22,32 @@ from Trainforge.chunker.apparatus_dumps import (
 
 
 _ANSWER_KEY = (
-    "46. 550 47. 22,335 48. 39,075 37. 84 38. 9,696 39. 75 40. 78 41. 900 "
-    "42. 800 43. 986 44. 942 45. 350 100. 12 101. 44 102. 9 103. 7"
+    "12. 480 13. 1,024 14. 96 15. 7,205 16. 512 17. 88 18. 3,640 19. 275 "
+    "20. 6,018 21. 144 22. 909 23. 42 24. 1,360 25. 58 26. 704 27. 233"
 )
 _OUTLINE = (
-    "Chapter Outline 1.2 Use the Language of Algebra \n 1.3 Add and Subtract "
-    "Integers \n 1.4 Multiply and Divide Integers \n 1.5 Add and Subtract "
-    "Fractions"
+    "Chapter Outline 1.2 Reading Numeric Expressions \n 1.3 Combining Signed "
+    "Quantities \n 1.4 Scaling and Partitioning Values \n 1.5 Working with "
+    "Part-Whole Numbers"
 )
 _TOC = (
-    "Table of Contents 2.1 Solve Equations \n 2.2 Use a Formula \n 2.3 Solve "
-    "Applications \n 2.4 Model Real Life"
+    "Table of Contents 2.1 Building Simple Equations \n 2.2 Applying a Known "
+    "Formula \n 2.3 Translating Word Problems \n 2.4 Estimating Everyday "
+    "Quantities"
 )
-# Real math exercise prose — item numbers followed by LaTeX, NOT bare numbers.
+# Math exercise prose — item numbers followed by LaTeX, NOT bare numbers.
 _EXERCISE = (
     "In the following exercises, simplify using the distributive property. "
-    "$8(4y + 9)$ $9(3w + 7)$ $6(c - 13)$ $7(y - 4)$ 554. $\\frac{3}{4}$ "
-    "555. $\\frac{8}{5}$"
+    "$5(3x + 8)$ $7(2w + 4)$ $9(b - 12)$ $6(y - 5)$ 331. $\\frac{2}{7}$ "
+    "332. $\\frac{9}{4}$"
 )
 _EXAMPLE = (
-    "Round 23,658 to the nearest hundred. Solution Step 1. Locate the given "
-    "place value. Step 2. The digit to the right is 5, so round up to 23,700."
+    "Round 47,182 to the nearest hundred. Solution Step 1. Locate the given "
+    "place value. Step 2. The digit to the right is 8, so round up to 47,200."
 )
 _MENTION = (
     "This chapter outline is a useful planning tool, but the real work begins "
-    "in section 1.2 where we build the language of algebra from the ground up."
+    "in section 1.2 where we build core algebraic reasoning from the ground up."
 )
 
 

@@ -37,10 +37,10 @@ from lib.semantic_structure_extractor import SemanticStructureExtractor  # noqa:
 _MULTI_CHAPTER_HTML = """
 <!DOCTYPE html>
 <html lang="en">
-<head><title>Elementary Algebra</title></head>
+<head><title>Example Algebra Textbook</title></head>
 <body>
   <main>
-    <h1>Elementary Algebra</h1>
+    <h1>Example Algebra Textbook</h1>
     <h2 id="ch-found">Foundations</h2>
     <p>Foundations introduces whole numbers and the order of operations.</p>
     <p>It also covers prime factorization of integers in detail.</p>

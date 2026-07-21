@@ -30,6 +30,7 @@ from bs4 import BeautifulSoup, Tag
 
 from lib.ontology.taxonomy import (
     get_lexicon_apparatus_names,
+    load_taxonomy,
     strip_leading_ordinal,
 )
 
@@ -114,10 +115,10 @@ _NM_HEADING_RE = re.compile(r"^\s*(\d+\.\d+)\s+(\S.*)$")
 _NM_SPLIT_RE = re.compile(r"\b(\d+\.\d+)\b")
 
 # Review / answer-key furniture words. An article whose TITLE carries one of
-# these opens the document's trailing review/answer-key zone (OpenStax prints
-# the per-section openers as reprints there — see the plan's "1.2/1.3 opener"
-# forensics). Shape-based, publisher-neutral; the vocabulary is generic
-# academic-apparatus wording, not a publisher name.
+# these opens the document's trailing review/answer-key zone (a scanned algebra
+# textbook prints the per-section openers as reprints there — see the plan's
+# "1.2/1.3 opener" forensics). Shape-based, publisher-neutral; the vocabulary is
+# generic academic-apparatus wording, not a publisher name.
 _REVIEW_ZONE_RE = re.compile(
     r"\b(review|key terms|key concepts|practice test|cumulative)\b",
     re.IGNORECASE,
@@ -233,8 +234,8 @@ _FRONT_MATTER_HEADING_TEXTS = frozenset({
     "foreword",
 })
 
-# End-of-chapter (EOC) exercise / review / drill section headings that
-# OpenStax-style textbooks emit AFTER the teaching content of a section or
+# End-of-chapter (EOC) exercise / review / drill section headings that a
+# scanned algebra textbook emits AFTER the teaching content of a section or
 # chapter. These are practice/drill material, not primary content —
 # promoting one to a content page produced a spurious "Practice Makes
 # Perfect" course page (week_01_content_12) in a live run. Two match modes
@@ -245,11 +246,19 @@ _FRONT_MATTER_HEADING_TEXTS = frozenset({
 #     ("Practice Testing as a Study Strategy"), so a prefix rule would
 #     over-reject.
 #   * _EOC_PREFIX — matched as an exact heading OR as a "<phrase><sep>..."
-#     prefix (OpenStax appends the section topic, e.g. "Review Exercises:
-#     Add Whole Numbers"). Reserved for multi-word phrases so distinctive
-#     that a real content title never starts with them. "practice makes
-#     perfect" is NOT a prefix of "Practice Problems in Real Analysis", so
-#     genuine chapter titles survive.
+#     prefix (the banner is followed by the section topic, e.g. "Review
+#     Exercises: Add Whole Numbers"). Reserved for multi-word phrases so
+#     distinctive that a real content title never starts with them.
+#     "practice makes perfect" is NOT a prefix of "Practice Problems in
+#     Real Analysis", so genuine chapter titles survive.
+#
+# Publisher-specific banner names ("everyday math", "practice makes perfect",
+# "practice test") are DATA-DRIVEN from the ``x-eoc-banners`` group of
+# ``schemas/taxonomies/openstax_lexicon.json`` (wide-net rule: publisher
+# vocabulary is DATA, never code), loaded via ``load_taxonomy`` with a frozen
+# in-code fallback so a bare checkout still matches. The GENERIC academic
+# apparatus wording ("review exercises", "section exercises", "additional
+# practice", "writing exercises") stays in code — it is publisher-neutral.
 #
 # DELIBERATELY EXCLUDED — the glossary/summary/metacognition family
 # ("Self Check", "Key Terms", "Key Concepts", "Chapter Summary"). This
@@ -260,18 +269,56 @@ _FRONT_MATTER_HEADING_TEXTS = frozenset({
 # corrupt the chunk display heading (not just the topic→content-page list).
 # The EOC-exercise headings below are drill banners neither path wants and
 # are consistent with chunk_heading_sanity's existing exercise-banner rule.
-_EOC_EXACT = frozenset({
-    "practice test",       # OpenStax per-chapter practice test
-    "everyday math",       # OpenStax applied-exercise category
-})
-_EOC_PREFIX = (
-    "practice makes perfect",   # OpenStax per-section exercise block
+
+# Frozen fallback for the publisher-specific EOC banners; kept in sync with the
+# ``x-eoc-banners`` group of ``schemas/taxonomies/openstax_lexicon.json``.
+_FALLBACK_EOC_EXACT: Tuple[str, ...] = (
+    "practice test",       # per-chapter practice test
+    "everyday math",       # applied-exercise category
+)
+_FALLBACK_EOC_PREFIX: Tuple[str, ...] = (
+    "practice makes perfect",   # per-section exercise block
+)
+
+# GENERIC (publisher-neutral) EOC prefix banners kept in code.
+_EOC_PREFIX_GENERIC: Tuple[str, ...] = (
     "chapter review exercises", # (checked before "review exercises")
     "section exercises",
     "review exercises",
     "additional practice",
     "writing exercises",
 )
+
+
+def _load_publisher_eoc_banners() -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
+    """Return ``(exact, prefix)`` publisher EOC banners from the lexicon.
+
+    Reads the ``x-eoc-banners`` group of the OpenStax publisher lexicon via
+    :func:`lib.ontology.taxonomy.load_taxonomy`, falling back to the frozen
+    in-code lists when the schema tree is unreachable or the group is absent.
+    """
+    try:
+        group = load_taxonomy("openstax_lexicon").get("x-eoc-banners") or {}
+        exact = tuple(
+            str(p).strip().lower() for p in group.get("exact", []) if str(p).strip()
+        )
+        prefix = tuple(
+            str(p).strip().lower() for p in group.get("prefix", []) if str(p).strip()
+        )
+        if exact or prefix:
+            return exact or _FALLBACK_EOC_EXACT, prefix or _FALLBACK_EOC_PREFIX
+    except Exception:  # pragma: no cover - defensive; lexicon normally loads
+        pass
+    return _FALLBACK_EOC_EXACT, _FALLBACK_EOC_PREFIX
+
+
+_pub_eoc_exact, _pub_eoc_prefix = _load_publisher_eoc_banners()
+
+_EOC_EXACT = frozenset(_pub_eoc_exact)
+# Publisher banners first (so "practice makes perfect" leads), then the generic
+# academic apparatus banners ("chapter review exercises" before "review
+# exercises", per the core-match ordering note above).
+_EOC_PREFIX = tuple(_pub_eoc_prefix) + _EOC_PREFIX_GENERIC
 
 
 # Package 3 — bare per-section drill banners the numbered form ("1.4
@@ -354,9 +401,9 @@ def _is_eoc_section_heading(normalized: str) -> bool:
 
 
 # Circled-letter answer markers (U+24D0..U+24D4 = ⓐⓑⓒⓓⓔ) and the
-# circled-digit block (U+2460..U+2473 = ①..⑳). OpenStax answer-key tables
-# render exercise answers with these glyphs; a heading carrying one is an
-# answer-key fragment, never a content title.
+# circled-digit block (U+2460..U+2473 = ①..⑳). A scanned algebra textbook's
+# answer-key tables render exercise answers with these glyphs; a heading
+# carrying one is an answer-key fragment, never a content title.
 _CIRCLED_ANSWER_MARKERS = (
     "ⓐⓑⓒⓓⓔ"          # ⓐⓑⓒⓓⓔ
     "①②③④⑤"          # ①②③④⑤
@@ -403,7 +450,7 @@ def _is_noncontent_heading(text: Optional[str]) -> bool:
     """Whether a heading is non-content noise that must NOT become a
     chapter/section node.
 
-    Rejects three families of contamination observed in OpenStax-style
+    Rejects three families of contamination observed in scanned algebra
     textbook HTML:
 
     1. Answer-key / numeric-answer fragments — heading text that is
@@ -412,9 +459,10 @@ def _is_noncontent_heading(text: Optional[str]) -> bool:
        answer-sequence pattern several times.
     2. Front-matter / acknowledgments — exact-ish matches for "Preface",
        "Acknowledgments", "About the Authors", "Dedication", etc. Plus
-       end-of-chapter exercise/review/drill section headings (OpenStax
-       EOC family: "Practice Makes Perfect", "Review Exercises", "Practice
-       Test", "Everyday Math", ...) matched exact/prefix. The glossary/
+       end-of-chapter exercise/review/drill section headings (a scanned
+       algebra textbook EOC family: "Practice Makes Perfect", "Review
+       Exercises", "Practice Test", "Everyday Math", ...) matched
+       exact/prefix. The glossary/
        summary family ("Key Terms", "Chapter Summary", "Self Check") is
        deliberately NOT filtered — this predicate is shared with the
        chunk-heading-sanity path, which treats those as real headings.
@@ -458,9 +506,9 @@ def _is_noncontent_heading(text: Optional[str]) -> bool:
         return True
 
     # (2b) End-of-chapter exercise / review / summary section headings
-    # (OpenStax EOC family: "Practice Makes Perfect", "Review Exercises",
-    # "Key Terms", "Chapter Summary", ...). Drill/recap material, never a
-    # primary content page. High-precision exact/prefix match only.
+    # (a scanned algebra textbook EOC family: "Practice Makes Perfect",
+    # "Review Exercises", "Key Terms", "Chapter Summary", ...). Drill/recap
+    # material, never a primary content page. High-precision exact/prefix match.
     if _is_eoc_section_heading(normalized):
         return True
 
@@ -1441,7 +1489,7 @@ class SemanticStructureExtractor:
                 continue
             unfiltered_headings.append(tag)
             # Drop answer-key / front-matter / donor-list headings so they
-            # never become chapter/section nodes (the OpenStax
+            # never become chapter/section nodes (the scanned-textbook
             # contamination bug). Conservative predicate — see
             # ``_is_noncontent_heading``.
             if _is_noncontent_heading(text):
@@ -2307,9 +2355,9 @@ class SemanticStructureExtractor:
         Zones (document order, trailing-review latches): a section inside an
         outline-zone article is ``outline``; once an article TITLE trips the
         review/answer-key furniture predicate every following section is
-        ``answer_key`` (OpenStax reprints openers there); everything else is
-        ``body``. A match requires the ordinal AND a fuzzy title score >=
-        ``_OUTLINE_TITLE_MATCH_RATIO`` (OCR tolerance).
+        ``answer_key`` (a scanned algebra textbook reprints openers there);
+        everything else is ``body``. A match requires the ordinal AND a fuzzy
+        title score >= ``_OUTLINE_TITLE_MATCH_RATIO`` (OCR tolerance).
         """
         occurrences: Dict[str, List[Dict[str, Any]]] = {o: [] for o in entries}
         in_review = False

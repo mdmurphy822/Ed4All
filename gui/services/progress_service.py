@@ -133,7 +133,7 @@ def _workflows_config() -> Dict[str, Any]:
 # an imperfect bucket for a future phase is cosmetic, never functional.
 _EXACT_GROUPS: Dict[str, str] = {
     "semantik_conversion": "conversion",
-    "dart_conversion": "conversion",
+    "dart_conversion": "conversion",  # legacy phase alias read-compat, legacy-token: allow
     "heading_judge": "conversion",
     "staging": "conversion",
     "chunking": "conversion",

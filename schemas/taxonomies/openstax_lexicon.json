@@ -19,5 +19,34 @@
     { "marker": "Everyday Math", "role": "exercise_item", "notes": "applied real-world practice problem set" },
     { "marker": "Self Check", "role": "guided_practice", "notes": "formative self-assessment prompt" },
     { "marker": "Writing Exercises", "role": "exercise_item", "notes": "end-of-section writing practice items" }
-  ]
+  ],
+  "x-frontmatter": {
+    "$comment": "Publisher-specific colophon + marketing marker strings for the front-matter / donor / marketing chunk classifier (Trainforge/chunker/frontmatter.py). Wide-net rule: publisher vocabulary is DATA, never code. The GENERIC copyright tokens (creative commons, ISBN, all rights reserved, copyright, ©, trademark) and the hard math-content veto stay in code; only these publisher-named phrases live here. Matching is case-insensitive substring with internal-whitespace tolerance. Loaded via lib.ontology.taxonomy.load_taxonomy with a frozen code fallback (mirrors the region_map lexicon pattern).",
+    "colophon": [
+      "access for free at openstax",
+      "rice university",
+      "openstax logo",
+      "openstax cnx",
+      "connexions"
+    ],
+    "marketing": [
+      "study where you want",
+      "web view",
+      "our books are free",
+      "access. the future of education",
+      "note-taking features",
+      "online highlighting",
+      "get started at openstax"
+    ]
+  },
+  "x-eoc-banners": {
+    "$comment": "Publisher-specific end-of-chapter (EOC) exercise/drill banner names for the SemanticStructureExtractor noncontent-heading filter (lib/semantic_structure_extractor/semantic_structure_extractor.py). Generic academic apparatus wording ('review exercises','section exercises','additional practice','writing exercises') stays in code; only these publisher-named banners live here. 'exact' = whole-heading (normalized) match; 'prefix' = heading-opening match ('<phrase><separator>...section topic'). Loaded via load_taxonomy with a frozen code fallback.",
+    "exact": [
+      "practice test",
+      "everyday math"
+    ],
+    "prefix": [
+      "practice makes perfect"
+    ]
+  }
 }

@@ -241,8 +241,9 @@ _LIST_MAX_ITEM_CHARS = 120
 
 # ITEM 2 (round-2 audit) — bare single-letter alpha part markers (``a`` … ``b``
 # … ``c`` with NO parentheses), whitespace/math-placeholder bounded so a letter
-# glued inside a prose word never matches. Restricted to ``a``-``e`` (the OpenStax
-# exercise-part alphabet) to keep the false-positive surface tiny; the math /
+# glued inside a prose word never matches. Restricted to ``a``-``e`` (the
+# scanned-textbook answer-key sub-letter range) to keep the false-positive
+# surface tiny; the math /
 # short-content + cycle-structure guards below defeat the prose-article ``a``.
 _BARE_ALPHA_MARK_RE = re.compile(r"(?:(?<=[\s\x00])|^)([a-e])(?=[ \t]*\x00|\s)")
 _ALPHA_CYCLE_MAX_LEAD_FRACTION = 0.30  # >= 70% coverage (ITEM 2 spec)

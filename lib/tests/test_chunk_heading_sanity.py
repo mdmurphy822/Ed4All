@@ -42,13 +42,13 @@ from lib.chunk_heading_sanity import (
         # 5. Compact numeric/operator noise (canonical numeric ratio).
         "24a 32b 2",
         # 6. Textbook exercise banner + following-exercises prose (Layer 2a).
-        "EXERCISES Practice Makes Perfect Use Place Value with Whole Numbers "
+        "EXERCISES Practice Makes Perfect Order the Sample Widgets "
         "In the following exercises, find the place value of each digit in "
         "the given numbers.",
-        "EXERCISES Practice Makes Perfect Multiply Integers In the following "
+        "EXERCISES Practice Makes Perfect Combine Sample Values In the following "
         "exercises, multiply.",
-        "EXERCISES Practice Makes Perfect Simplify Expressions with Square "
-        "Roots In the following exercises, simplify.",
+        "EXERCISES Practice Makes Perfect Reduce Placeholder Terms "
+        "In the following exercises, simplify.",
         # 7. Math-prose mixed with >=2 embedded exercise number markers (Layer 2b).
         "3u 2 − 4u + 5 when u = −3 313. 9a − 2b − 8 when 314. 7m − 4n − 2 "
         "when a = −6 and b = −3 m = −4 and n = −9",
@@ -136,9 +136,9 @@ def test_empty_and_whitespace_not_flagged():
 
 def test_repair_uses_first_clean_merged_heading():
     res = repair_section_heading(
-        "EXERCISES Practice Makes Perfect Multiply Integers In the following "
+        "EXERCISES Practice Makes Perfect Combine Sample Values In the following "
         "exercises, multiply.",
-        item={"title": "Elementary Algebra", "module_title": "Elementary Algebra"},
+        item={"title": "Acme Algebra", "module_title": "Acme Algebra"},
         merged_headings=["1.3 Add and Subtract Integers", "Solution"],
     )
     assert res["suspect"] is True
@@ -151,7 +151,7 @@ def test_repair_skips_noisy_ancestor_and_uses_next_clean_one():
     # First merged heading is itself noise → must skip to the clean one.
     res = repair_section_heading(
         "24a 32b 2",
-        item={"title": "Elementary Algebra"},
+        item={"title": "Acme Algebra"},
         merged_headings=[
             "146,023 13. 5,846,103 14. 1,458,398",  # noise — must be skipped
             "Prime Factorization",  # clean — must win
@@ -164,11 +164,11 @@ def test_repair_skips_noisy_ancestor_and_uses_next_clean_one():
 def test_repair_falls_back_to_page_title_when_no_clean_merged():
     res = repair_section_heading(
         "24a 32b 2",
-        item={"title": "Elementary Algebra Foundations"},
+        item={"title": "Acme Algebra Foundations"},
         merged_headings=[],
     )
     assert res["repaired"] is True
-    assert res["heading"] == "Elementary Algebra Foundations"
+    assert res["heading"] == "Acme Algebra Foundations"
 
 
 def test_repair_no_clean_ancestor_leaves_as_is_and_flags_suspect():
@@ -186,7 +186,7 @@ def test_repair_no_clean_ancestor_leaves_as_is_and_flags_suspect():
 def test_repair_real_heading_is_passthrough():
     res = repair_section_heading(
         "Prime Factorization",
-        item={"title": "Elementary Algebra"},
+        item={"title": "Acme Algebra"},
         merged_headings=["Multiple of a Number"],
     )
     assert res["suspect"] is False
@@ -197,7 +197,7 @@ def test_repair_real_heading_is_passthrough():
 def test_repair_strips_part_suffix_from_chosen_ancestor():
     res = repair_section_heading(
         "EXERCISES Practice Makes Perfect In the following exercises, add.",
-        item={"title": "Elementary Algebra"},
+        item={"title": "Acme Algebra"},
         merged_headings=["1.6 Add and Subtract Fractions (part 2)"],
     )
     assert res["repaired"] is True

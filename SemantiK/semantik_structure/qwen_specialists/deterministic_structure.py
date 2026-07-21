@@ -18,7 +18,7 @@ harness (admission + token-conservation + fail-closed; re-tag via
       the early-page front-matter zone; never a real body chapter / section.
 
   (B) PEDAGOGICAL DEMOTION — regex-match heading regions whose text is an
-      OpenStax pedagogical label ("EXAMPLE N", "Solution", "Try It", "How To",
+      scanned-textbook pedagogical label ("EXAMPLE N", "Solution", "Try It", "How To",
       "Step N", "Learning Objectives", "Be Prepared", "Practice Makes
       Perfect") and demote the region kind heading -> paragraph (no pedagogical
       Region.kind exists yet; demotion removes the h4-h6 over-nesting while
@@ -163,8 +163,8 @@ def _is_heading(region: Region) -> bool:
 #
 # These mirror ``lib/semantik/toc_frontmatter_detector.py`` predicate-for-
 # predicate (the task forbids editing that module, so its logic is copied here
-# and re-pointed at Region objects). The text-shape regexes + the OpenStax
-# front-matter zone constants are byte-identical to the source.
+# and re-pointed at Region objects). The text-shape regexes + the scanned-
+# textbook front-matter zone constants are byte-identical to the source.
 # ---------------------------------------------------------------------------
 
 # A real chapter heading shape: "Chapter N[: Title]".
@@ -173,7 +173,7 @@ _CHAPTER_HEADING_RE = re.compile(r"^\s*chapter\s+(\d+)\b", re.IGNORECASE)
 # "Chapter 9 Roots and Radicals 1039". This is page furniture the
 # FB-position-based ``structure_graph._detect_running_headers`` MISSES when OCR
 # bbox noise pushes the recurring header out of the top/bottom margin band, so
-# it survives as a heading and is promoted to a bogus <h2> (39× on the EA2e
+# it survives as a heading and is promoted to a bogus <h2> (39× on the observed scanned-algebra
 # scan). Text-based backstop: a "Chapter N <words> <page>" heading is
 # furniture ANYWHERE in the document (not zone-confined).
 #
@@ -488,7 +488,7 @@ def _detect_front_matter_drops(
       1. PHANTOM chapter-index headings — a heading whose cluster signal is a
          same-level run with NO content following (``content_blocks_following
          == 0``) AND that is a chapter-pattern entry, OR a contiguous dense
-         page-window chapter cluster (the EA2e phantom "Chapter 5/7/8/9/10").
+         page-window chapter cluster (the observed scanned-textbook phantom "Chapter 5/7/8/9/10").
       2. TOC lines — a heading whose text is a "<title> <trailing-pagenum>"
          shape (a printed table-of-contents line).
       3. OCR title-page noise — a heading that is letter-spaced caps fragments.
@@ -611,8 +611,8 @@ def _detect_dense_chapter_cluster(
 # (B) Pedagogical-label demotion detection.
 # ---------------------------------------------------------------------------
 
-# OpenStax pedagogical labels that the council mis-fires as headings (deep
-# h4-h6 over-nesting). Matched at the START of the heading text. A real
+# Scanned-textbook pedagogical labels that the council mis-fires as headings
+# (deep h4-h6 over-nesting). Matched at the START of the heading text. A real
 # numbered section heading ("1.1 Introduction…", "Chapter 1") never matches.
 #
 # SINGLE SOURCE OF TRUTH: an ordered (per-label anchored-pattern, semantic
@@ -625,7 +625,7 @@ def _detect_dense_chapter_cluster(
 # this list so the match predicate and the class resolver never drift.
 #
 # Order matters: the first matching pattern wins (the patterns are mutually
-# exclusive on real OpenStax labels, but a defined order makes the resolution
+# exclusive on real scanned-textbook labels, but a defined order makes the resolution
 # deterministic and auditable).
 _PEDAGOGICAL_LABEL_CLASSES: tuple[tuple[re.Pattern[str], str], ...] = (
     # EXAMPLE / EXAMPLE 1 / EXAMPLE 1.2
@@ -637,7 +637,7 @@ _PEDAGOGICAL_LABEL_CLASSES: tuple[tuple[re.Pattern[str], str], ...] = (
     # (pipe / bracket / rule), with up to two stray alphanumeric chars mixed in —
     # then EXAMPLE. Requiring a symbol is the anti-FP guard: a clean multi-word
     # heading ("The Example Below", all letters) does NOT match, but a mangled
-    # label the council mis-promoted to <h2> (20× on the EA2e scan) does — and is
+    # label the council mis-promoted to <h2> (20× on the observed scanned-textbook) does — and is
     # routed to the paragraph/pedagogy-example path.
     (re.compile(
         r"^\s*[A-Za-z0-9]{0,2}[^A-Za-z0-9]+[A-Za-z0-9]{0,2}[^A-Za-z0-9]*EXAMPLE",
@@ -645,7 +645,7 @@ _PEDAGOGICAL_LABEL_CLASSES: tuple[tuple[re.Pattern[str], str], ...] = (
      "pedagogy-example"),
     # Defect 3(a) — a run-in "Solution" label, optionally OCR-decorated with up
     # to 3 leading gutter glyphs (") Solution", "™ Solution", "“ Solution"; 90×
-    # across the EA2e scan) so the mangled label demotes to pedagogy-solution
+    # across the observed scanned-textbook) so the mangled label demotes to pedagogy-solution
     # instead of surviving as a spurious <h3> section boundary. Anchored so a
     # real "Solution set of …" heading (trailing words) still matches the label
     # prefix — intentional: a "Solution" prefix IS the apparatus label.
@@ -712,7 +712,7 @@ def _pedagogical_class_for(text: str) -> str | None:
 
 
 def _is_pedagogical_label(region: Region) -> bool:
-    """Whether a heading region's text is an OpenStax pedagogical label.
+    """Whether a heading region's text is a scanned-textbook pedagogical label.
 
     A real numbered section/chapter heading ("Chapter 1", "1.1 Title") is
     explicitly NOT a pedagogical label (the patterns anchor on the label
@@ -791,7 +791,7 @@ def _dominant_chapter_ordinal(regions: list[Region]) -> int | None:
 
     Scans EVERY region's text (heading or paragraph) for the section-shape
     ``N.M Title``, tallies the ``N`` values, and returns the mode — the
-    document's dominant chapter number (9 for an EA2e ch9 scan). Returns None
+    document's dominant chapter number (9 for a scanned-algebra ch9 scan). Returns None
     when no section-shaped text exists or the winner is ambiguous (a tie), so
     the promotion pass anchors ONLY on an unambiguous single chapter.
     """

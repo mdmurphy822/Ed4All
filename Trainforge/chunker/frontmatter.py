@@ -50,7 +50,95 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Sequence, Tuple
+
+
+# ---------------------------------------------------------------------------
+# Publisher-specific colophon / marketing vocabulary — DATA-DRIVEN.
+#
+# Wide-net owner doctrine: publisher-named marker strings are DATA, never code.
+# The publisher colophon phrases ("access for free at <publisher>", the
+# publisher's home institution, its CNX/logo strings) and the marketing-page
+# slogans live in ``schemas/taxonomies/openstax_lexicon.json`` under the
+# ``x-frontmatter`` group and are loaded via ``lib.ontology.taxonomy``. A frozen
+# in-code fallback (mirroring the region_map lexicon pattern) keeps the
+# classifier working in a bare checkout where the schema tree is unreachable.
+#
+# ONLY the publisher-named phrases are externalized. The GENERIC copyright /
+# license tokens (creative commons, ISBN, all rights reserved, ©, copyright,
+# trademark) and the hard math-content veto stay in code below — they are
+# domain-agnostic academic-front-matter shapes, not a publisher lexicon.
+# ---------------------------------------------------------------------------
+
+# Frozen fallback used when the schema lexicon is unreachable. Kept in sync with
+# the ``x-frontmatter`` group of ``schemas/taxonomies/openstax_lexicon.json``.
+_FALLBACK_COLOPHON_PHRASES: Tuple[str, ...] = (
+    "access for free at openstax",
+    "rice university",
+    "openstax logo",
+    "openstax cnx",
+    "connexions",
+)
+_FALLBACK_MARKETING_PHRASES: Tuple[str, ...] = (
+    "study where you want",
+    "web view",
+    "our books are free",
+    "access. the future of education",
+    "note-taking features",
+    "online highlighting",
+    "get started at openstax",
+)
+
+
+def _load_frontmatter_phrases() -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
+    """Return ``(colophon_phrases, marketing_phrases)`` from the lexicon.
+
+    Reads the ``x-frontmatter`` marker group of the OpenStax publisher lexicon
+    through :func:`lib.ontology.taxonomy.load_taxonomy`. Falls back to the frozen
+    in-code lists when the schema tree is unreachable (bare checkout) or the
+    group is absent, so detection never silently empties.
+    """
+    try:
+        from lib.ontology.taxonomy import load_taxonomy  # noqa: PLC0415
+
+        group = load_taxonomy("openstax_lexicon").get("x-frontmatter") or {}
+        colophon = tuple(
+            str(p).strip() for p in group.get("colophon", []) if str(p).strip()
+        )
+        marketing = tuple(
+            str(p).strip() for p in group.get("marketing", []) if str(p).strip()
+        )
+        if colophon or marketing:
+            return (
+                colophon or _FALLBACK_COLOPHON_PHRASES,
+                marketing or _FALLBACK_MARKETING_PHRASES,
+            )
+    except Exception:  # pragma: no cover - defensive; lexicon normally loads
+        pass
+    return _FALLBACK_COLOPHON_PHRASES, _FALLBACK_MARKETING_PHRASES
+
+
+def _phrase_alternation(phrases: Sequence[str]) -> str:
+    """Compile a phrase list to a case-insensitive substring alternation.
+
+    Word-internal whitespace becomes ``\\s+`` (OCR line-break / doubled-space
+    tolerant); each token is ``re.escape``-d so punctuation ("note-taking",
+    "access.") matches literally. Deliberately NOT word-boundary-anchored —
+    the source patterns matched as bare ``.search`` substrings. An empty list
+    yields a never-match sentinel so ``a|b|<empty>`` never produces a stray
+    ``|`` that matches everything.
+    """
+    parts: List[str] = []
+    for phrase in phrases:
+        tokens = [re.escape(tok) for tok in str(phrase).split() if tok]
+        if tokens:
+            parts.append(r"\s+".join(tokens))
+    if not parts:
+        return r"(?!x)x"  # never-matches sentinel
+    return "|".join(parts)
+
+
+_COLOPHON_PHRASES, _MARKETING_PHRASES = _load_frontmatter_phrases()
 
 
 # ---------------------------------------------------------------------------
@@ -112,15 +200,19 @@ def _has_math_content(text: str) -> bool:
 # ---------------------------------------------------------------------------
 
 # --- copyright / license / publisher attribution -------------------------
-_COPYRIGHT_RE = re.compile(
-    r"access for free at openstax"
-    r"|creative commons"
+# GENERIC, domain-agnostic copyright / license / trademark tokens stay in code;
+# the publisher-specific colophon strings ("access for free at <publisher>", the
+# publisher home institution, its CNX/logo strings) are folded in from the
+# data-driven ``x-frontmatter.colophon`` lexicon group (with a frozen fallback).
+_GENERIC_COPYRIGHT_PATTERN = (
+    r"creative commons"
     r"|\bISBN[-\s]?(?:10|13)?\b|\bISBN\b"
     r"|all rights reserved"
     r"|©|\(c\)\s*\d{4}|copyright\s+\d{4}|copyright\s+©"
-    r"|rice university"
     r"|\btrademark(?:s)?\b"
-    r"|openstax logo|openstax cnx|connexions",
+)
+_COPYRIGHT_RE = re.compile(
+    _GENERIC_COPYRIGHT_PATTERN + "|" + _phrase_alternation(_COLOPHON_PHRASES),
     re.IGNORECASE,
 )
 
@@ -212,14 +304,11 @@ def _hit_donor(text: str) -> bool:
 
 
 # --- marketing / web-view / "access for free" ----------------------------
+# The marketing-page slogans are publisher-specific vocabulary, so they are
+# sourced from the data-driven ``x-frontmatter.marketing`` lexicon group (with a
+# frozen fallback) rather than hardcoded here.
 _MARKETING_RE = re.compile(
-    r"study where you want"
-    r"|web view"
-    r"|our books are free"
-    r"|access\.\s*the future of education"
-    r"|note-taking features"
-    r"|online highlighting"
-    r"|get started at openstax",
+    _phrase_alternation(_MARKETING_PHRASES),
     re.IGNORECASE,
 )
 

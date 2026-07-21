@@ -21,7 +21,7 @@ from lib.objectives.citation_reselect import (  # noqa: E402
 )
 
 # A text the conservative heuristic flags as exercise-like (leads with the
-# OpenStax "In the following exercises" instruction line).
+# textbook "In the following exercises" instruction line).
 _EXERCISE_TEXT = "In the following exercises, find the place value of the digit."
 # Plain instructional prose the heuristic does NOT flag.
 _PROSE_TEXT = "A radical expression is simplified by factoring perfect squares."

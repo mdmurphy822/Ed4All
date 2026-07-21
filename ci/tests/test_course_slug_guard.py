@@ -46,6 +46,50 @@ def test_catches_every_target_family():
         assert hits, f"guard failed to catch target slug: {slug}"
 
 
+def test_catches_publisher_provenance_leaks():
+    # Non-slug corpus-provenance descriptors of the ingested source corpus.
+    targets = [
+        "ea2e",
+        "cnx.org",
+        "marecek",
+        "anthony-smith",
+        "honeycutt",
+        "openstax-scan",
+        "openstax-scan-01",
+        "elementary-algebra-2e",
+    ]
+    for tok in targets:
+        hits = guard.find_course_slug_hits(f"source = '{tok}'")
+        assert hits, f"guard failed to catch provenance leak: {tok}"
+
+
+def test_ea2e_is_case_insensitive_word_bounded():
+    # ea2e is the one case-insensitive provenance pattern (cited as EA2e /
+    # EA2E), matched only as a whole word.
+    for tok in ("ea2e", "EA2e", "EA2E", "Ea2E"):
+        assert guard.find_course_slug_hits(tok), f"ea2e case missed: {tok}"
+    # Word-bounded: must not fire embedded in a longer alphanumeric run.
+    for tok in ("xea2ey", "area2endpoint", "myea2ekey"):
+        assert not guard.find_course_slug_hits(
+            tok
+        ), f"ea2e false positive (not word-bounded): {tok}"
+
+
+def test_provenance_patterns_do_not_flag_neutral_tokens():
+    # Author surnames / edition codes are specific; ordinary prose and the
+    # bare 'openstax' token (a legit lexicon/registry key) must not fire.
+    for tok in (
+        "openstax",                 # bare token: deliberately NOT patterned
+        "openstax_lexicon.json",    # source-registry / taxonomy key
+        "smith",                    # bare surname, not the hyphenated corpus id
+        "anthony",                  # ditto
+        "elementary-algebra",       # without the -2e edition suffix
+        "org",
+        "connexions",
+    ):
+        assert not guard.find_course_slug_hits(tok), f"false positive on: {tok}"
+
+
 def test_catches_future_index_within_family():
     # A brand-new index/descriptor within a known family must be caught
     # without editing the patterns — the point of scheme regexes.

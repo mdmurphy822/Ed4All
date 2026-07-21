@@ -33,8 +33,8 @@ Design contract (``scratchpad/sft_data_program.md`` §A / §D-Phase-1):
 
 * **D1 — never source harvested assessment_item chunks.** Any
   ``source_chunk_ids`` entry that resolves to a ``practice_bank=true`` /
-  ``chunk_type='assessment_item'`` chunk (the demoted-to-practice OpenStax
-  end-of-section bank) is dropped before it can ground a pair.
+  ``chunk_type='assessment_item'`` chunk (the demoted-to-practice
+  internal-only publisher end-of-section bank) is dropped before it can ground a pair.
 
 * **Per-pair provenance** (``§B``): ``generation_method``, ``generating_seat``
   + ``seat_license``, ``verifier_results``, ``source_chunk_ids``,

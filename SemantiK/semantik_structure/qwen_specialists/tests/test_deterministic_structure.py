@@ -584,7 +584,7 @@ def test_running_header_with_page_number_dropped_in_body():
     """A 'Chapter N <words> <3-4 digit page>' heading that escaped the
     FB-position running-header detector is page furniture ANYWHERE in the doc
     and is re-tagged metadata_drop (defect 3a — 39 such strings became bogus
-    <h2> on the EA2e scan)."""
+    <h2> on the observed scanned-algebra scan)."""
     regions, fbs = _build([
         ("heading", "9.1 Simplify Expressions with Roots", 30, 2),  # real anchor
         ("paragraph", "The nth root generalizes the square root.", 30),
@@ -616,7 +616,7 @@ def test_running_header_single_digit_page_dropped(header):
     """Defect 3(a) follow-up: a running header with a SINGLE-DIGIT trailing page
     number (early chapters, e.g. physical page 7/9) is page furniture and is
     re-tagged metadata_drop. The old ``\\d{2,4}`` backstop missed these so they
-    survived as bogus <h2> mid-body running headers on the EA2e ch01 scan."""
+    survived as bogus <h2> mid-body running headers on the observed scanned-algebra ch01 scan."""
     regions, fbs = _build([
         ("heading", "1.1 Introduction to Whole Numbers", 7, 2),  # real anchor
         ("paragraph", "Whole numbers are counting numbers.", 7),

@@ -348,7 +348,7 @@ def test_title_purity_folio_arm_catches_the_long_tail_the_sanitizer_refuses():
 
 
 def test_title_purity_silent_on_clean_title():
-    check = audit_affordances(_ir("x"), _page("<p>x</p>", title="Elementary Algebra 2e"))[
+    check = audit_affordances(_ir("x"), _page("<p>x</p>", title="Intro Algebra"))[
         "checks"
     ]["title_purity"]
     assert check["verdict"] == "pass"

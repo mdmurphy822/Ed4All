@@ -168,9 +168,9 @@ def test_adapter_neutralizes_watermark_chapter_title():
 
 def test_adapter_title_override_wins():
     ch = _AdapterChapter(title="188 Chapter 1 Foundations", blocks=[_heading_block("1.1 X", 1)])
-    out = _render([ch], title_override="Elementary Algebra 2e — Chapter 1")
-    assert "<h1>Elementary Algebra 2e — Chapter 1</h1>" in out["html"]
-    assert "<title>Elementary Algebra 2e — Chapter 1</title>" in out["html"]
+    out = _render([ch], title_override="Intro Algebra — Chapter 1")
+    assert "<h1>Intro Algebra — Chapter 1</h1>" in out["html"]
+    assert "<title>Intro Algebra — Chapter 1</title>" in out["html"]
 
 
 def test_adapter_real_section_heading_survives():

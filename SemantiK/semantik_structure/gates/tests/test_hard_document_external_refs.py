@@ -75,7 +75,7 @@ def test_prose_anchor_href_passes():
     # A prose attribution link is legitimate content, NOT a resource fetch.
     html = (
         '<main><p>This book is available at '
-        '<a href="http://cnx.org/content/abc">cnx.org</a>.</p></main>'
+        '<a href="http://example.com/content/abc">example.com</a>.</p></main>'
     )
     out = _check_no_external_refs(html)
     assert out.passed is True

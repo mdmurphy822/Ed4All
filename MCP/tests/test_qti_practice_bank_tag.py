@@ -2,8 +2,8 @@
 ``practice_bank=True``.
 
 Owner directive 2026-07-19: the harvested end-of-section assessment_item
-chunks are verbatim OpenStax content demoted to an internal practice bank.
-They stay in the chunkset (archival coverage stands) but must carry the
+chunks are verbatim internal-only publisher content demoted to an internal
+practice bank. They stay in the chunkset (archival coverage stands) but must carry the
 ``practice_bank`` marker so the graded-QTI / SFT-source / answer paths exclude
 them by default. This pins the tag on the harvest site.
 """

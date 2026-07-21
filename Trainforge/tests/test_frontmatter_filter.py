@@ -19,7 +19,8 @@ from Trainforge.chunker.frontmatter import (
 
 
 # ---------------------------------------------------------------------------
-# Real contaminated fixtures (verbatim head of the actual chunks).
+# Synthetic contaminated fixtures modeling the leading chunks of a
+# full-length textbook build (invented publisher / author / donor identity).
 # ---------------------------------------------------------------------------
 
 # First chunk — cover / contributing authors / copyright / trademark / CC.
@@ -43,12 +44,12 @@ CHUNK_00002_DONOR_TOC = (
     "access your book in our web view, you can use our new online highlighting "
     "and note-taking features to create your own study guides. Our books are "
     "free and flexible, forever. "
-    "Table of Contents Preface 1 1 Foundations 5 1.1 Introduction to Whole "
-    "Numbers 5 1.2 Use the Language of Algebra 21 1.3 Add and Subtract "
-    "Integers 41 1.4 Multiply and Divide Integers 64 1.5 Visualize Fractions "
-    "79 1.6 Add and Subtract Fractions 95 1.7 Decimals 111 1.8 The Real "
-    "Numbers 130 1.9 Properties of Real Numbers 146 1.10 Systems of "
-    "Measurement 165"
+    "Table of Contents Preface 1 1 Foundations 5 1.1 Reading and Writing "
+    "Whole Numbers 5 1.2 Reading Numeric Expressions 21 1.3 Combining Signed "
+    "Quantities 41 1.4 Scaling and Partitioning Values 64 1.5 Picturing "
+    "Fractional Parts 79 1.6 Combining Fractional Parts 95 1.7 Working with "
+    "Decimal Notation 111 1.8 Exploring the Number Line 130 1.9 Rules for "
+    "Number Operations 146 1.10 Units and Measurement Systems 165"
 )
 
 # Fourth chunk — "Key Features" preface (book features marketing).
@@ -62,7 +63,11 @@ CHUNK_00004_KEY_FEATURES = (
 
 
 # ---------------------------------------------------------------------------
-# Real / realistic negative fixtures — genuine algebra content.
+# Synthetic negative fixtures — genuine algebra content (invented numbers /
+# exercises; no publisher answer-key text). Each preserves the exact
+# math-veto trigger shapes the classifier keys on: numbered "EXAMPLE N.N"
+# markers, the "TRY IT : :" lead-in, the ÷/· arithmetic glyphs, and the
+# circled-letter sub-question markers.
 # ---------------------------------------------------------------------------
 
 # The critical false-positive trap: a real worked-math chunk whose running
@@ -70,26 +75,26 @@ CHUNK_00004_KEY_FEATURES = (
 # donor). MUST NOT be classified front-matter.
 CHUNK_FOUNDATIONS_HEADER_MATH = (
     "Chapter 1 Foundations 11 A number is a multiple of n if it is the "
-    "product of a counting number and n. Another way to say that 15 is a "
-    "multiple of 3 is to say that 15 is divisible by 3. That means that when "
-    "we divide 3 into 15, we get a counting number. In fact, 15 ÷ 3 is 5, "
-    "so 15 is 5 · 3. EXAMPLE 1.7 Find the prime factorization of 48."
+    "product of a counting number and n. Another way to say that 24 is a "
+    "multiple of 6 is to say that 24 is divisible by 6. That means that when "
+    "we divide 6 into 24, we get a counting number. In fact, 24 ÷ 6 is 4, "
+    "so 24 is 4 · 6. EXAMPLE 1.7 Find the prime factorization of 90."
 )
 
 # A worked example with circled sub-questions + numbered EXAMPLE marker.
 CHUNK_WORKED_EXAMPLE = (
-    "The digit 7 is in the ten-thousands place. The digit 8 is in the "
-    "thousands place. EXAMPLE 1.1 In the number 63,407,218, find the place "
-    "value of each digit: ⓐ7 ⓑ0 ⓒ1 ⓓ6 ⓔ3 "
-    "Solution The 7 is in the ten-thousands place."
+    "The digit 4 is in the ten-thousands place. The digit 5 is in the "
+    "thousands place. EXAMPLE 1.1 In the number 82,145,376, find the place "
+    "value of each digit: ⓐ4 ⓑ5 ⓒ1 ⓓ3 ⓔ7 "
+    "Solution The 4 is in the ten-thousands place."
 )
 
 # A TRY IT exercise block.
 CHUNK_TRY_IT = (
-    "Since 3 is less than 5, we leave the 0 as is, and then replace the "
-    "digits to the right with zeros. So, 100,000 is 103,978 rounded to the "
+    "Since 2 is less than 5, we leave the digit as is, and then replace the "
+    "digits to the right with zeros. So, 230,000 is 232,610 rounded to the "
     "nearest ten thousand. Chapter 1 Foundations 11 TRY IT : : 1.9 Round "
-    "206,981 to the nearest: ⓐ hundred ⓑ thousand ⓒ ten thousand."
+    "471,352 to the nearest: ⓐ hundred ⓑ thousand ⓒ ten thousand."
 )
 
 # Plain prose that happens to mention a few math vocabulary words but carries
@@ -239,9 +244,10 @@ def test_single_strong_signal_inside_cover_region_drops():
     chunk = {
         "id": "c_strong",
         "text": (
-            "Table of Contents Preface 1 1 Foundations 5 1.1 Introduction to "
-            "Whole Numbers 5 1.2 Use the Language of Algebra 21 1.3 Add and "
-            "Subtract Integers 41 1.4 Multiply and Divide Integers 64"
+            "Table of Contents Preface 1 1 Foundations 5 1.1 Reading and "
+            "Writing Whole Numbers 5 1.2 Reading Numeric Expressions 21 1.3 "
+            "Combining Signed Quantities 41 1.4 Scaling and Partitioning "
+            "Values 64"
         ),
     }
     verdict = classify_frontmatter(chunk, position=2)

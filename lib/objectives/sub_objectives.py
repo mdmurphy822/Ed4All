@@ -315,7 +315,7 @@ def _chunk_body(chunk: Any) -> str:
 # A "concept-ish" span: 2–5 capitalized-or-content words, or a math-ish term.
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 
-#: OpenStax / generic structural & pedagogical labels that lead a NON-concept
+#: Generic structural & pedagogical labels that lead a NON-concept
 #: line (a callout / exercise / answer-key header, not a teachable concept). A
 #: sentence whose first word is one of these is leaked source chrome, not an
 #: objective.
@@ -329,7 +329,7 @@ _NON_CONCEPT_LEAD = frozenset(
 )
 
 #: Substrings marking raw exercise / callout / answer-key / glyph fragments that
-#: leak verbatim from OpenStax-style source chunks (e.g. "BE PREPARED : : 1.1",
+#: leak verbatim from a scanned algebra textbook's source chunks (e.g. "BE PREPARED : : 1.1",
 #: "TRY IT : : 1.6", the circled-letter exercise glyphs). A sentence containing
 #: any of these is not a concept statement. ``_JUNK_MARKERS`` is imported from
 #: lib.objectives.apparatus_lexicon (byte-identical re-export).
