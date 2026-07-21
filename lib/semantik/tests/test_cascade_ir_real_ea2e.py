@@ -115,7 +115,7 @@ def test_real_sections_present_under_chapter_one(real_chapters):
 
 
 # ---------------------------------------------------------------------------
-# (2) Chain → adapter → DartMarkersValidator passes; phantom titles never
+# (2) Chain → adapter → SemantiKMarkersValidator passes; phantom titles never
 #     reach the HTML; the structure extractor sees the single REAL chapter.
 # ---------------------------------------------------------------------------
 
@@ -136,13 +136,13 @@ def _adapt(chapters):
     return normalize_cascade_to_ed4all(res, pdf_stem="ea2e_ch1_3")
 
 
-def test_real_chain_dart_markers_validator_passes(real_chapters):
-    from lib.validators.dart_markers import DartMarkersValidator
+def test_real_chain_semantik_markers_validator_passes(real_chapters):
+    from lib.validators.semantik_markers import SemantiKMarkersValidator
 
     out = _adapt(real_chapters)
-    vres = DartMarkersValidator().validate({"html_content": out["html"]})
+    vres = SemantiKMarkersValidator().validate({"html_content": out["html"]})
     critical = [i for i in vres.issues if i.severity == "critical"]
-    assert vres.passed, f"dart_markers failed: {[i.code for i in critical]}"
+    assert vres.passed, f"semantik_markers failed: {[i.code for i in critical]}"
     assert not critical
 
     # No phantom chapter-index titles leaked into the rendered HTML.

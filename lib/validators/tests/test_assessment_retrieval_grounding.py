@@ -95,7 +95,7 @@ def _outline_assessment_block(
     drop_answer_key: bool = False,
     question_type: Optional[str] = None,
     content_type: str = "assessment_item",
-    source_ids: tuple = ("dart:rdf_intro#blk_0",),
+    source_ids: tuple = ("semantik:rdf_intro#blk_0",),
     source_references: tuple = (),
     stem: str = "What is the primary purpose of an RDF triple?",
     feedback: Optional[str] = None,
@@ -148,7 +148,7 @@ def _rewrite_assessment_block(
         "An RDF triple is a subject-predicate-object statement expressing "
         "a fact in the resource description framework graph."
     ),
-    source_ids: tuple = ("dart:rdf_intro#blk_0",),
+    source_ids: tuple = ("semantik:rdf_intro#blk_0",),
     stem_html: str = "<p>What is the primary purpose of an RDF triple?</p>",
     feedback_html: str = "",
     answer_span_attr: str = "",
@@ -229,12 +229,12 @@ def test_outline_grounded_answer_passes():
     sub-check noise on ANSWER_SPAN_MISSING since the fixture omits it)."""
     blocks = [_outline_assessment_block(
         answer_span={
-            "source_chunk_id": "dart:rdf_intro#blk_0",
+            "source_chunk_id": "semantik:rdf_intro#blk_0",
             "char_start": 0,
             "char_end": 50,
         },
     )]
-    chunks_lookup = {"dart:rdf_intro#blk_0": _grounded_chunk_text()}
+    chunks_lookup = {"semantik:rdf_intro#blk_0": _grounded_chunk_text()}
     validator = AssessmentRetrievalGroundingValidator()
 
     result = validator.validate({
@@ -252,9 +252,9 @@ def test_rewrite_grounded_answer_passes():
     """Rewrite-tier assessment_item with <li data-cf-correct=\"true\">
     body that overlaps the source chunk → passed=True."""
     blocks = [_rewrite_assessment_block(
-        answer_span_attr="dart:rdf_intro#blk_0:0-50",
+        answer_span_attr="semantik:rdf_intro#blk_0:0-50",
     )]
-    chunks_lookup = {"dart:rdf_intro#blk_0": _grounded_chunk_text()}
+    chunks_lookup = {"semantik:rdf_intro#blk_0": _grounded_chunk_text()}
     validator = AssessmentRetrievalGroundingValidator()
 
     result = validator.validate({
@@ -275,7 +275,7 @@ def test_outline_ungrounded_answer_fails_critical():
     """Outline assessment_item whose answer talks about RDF but the
     source chunk discusses computer networks → ANSWER_NOT_GROUNDED."""
     blocks = [_outline_assessment_block()]
-    chunks_lookup = {"dart:rdf_intro#blk_0": _ungrounded_chunk_text()}
+    chunks_lookup = {"semantik:rdf_intro#blk_0": _ungrounded_chunk_text()}
     validator = AssessmentRetrievalGroundingValidator()
 
     result = validator.validate({
@@ -302,7 +302,7 @@ def test_rewrite_ungrounded_answer_fails_critical():
             "experiments and lattice simulations."
         )
     )]
-    chunks_lookup = {"dart:rdf_intro#blk_0": _grounded_chunk_text()}
+    chunks_lookup = {"semantik:rdf_intro#blk_0": _grounded_chunk_text()}
     validator = AssessmentRetrievalGroundingValidator()
 
     result = validator.validate({
@@ -317,7 +317,7 @@ def test_rewrite_ungrounded_answer_fails_critical():
 def test_threshold_override_via_inputs():
     """``inputs['min_overlap_jaccard']`` overrides the constructor floor."""
     blocks = [_outline_assessment_block()]
-    chunks_lookup = {"dart:rdf_intro#blk_0": _grounded_chunk_text()}
+    chunks_lookup = {"semantik:rdf_intro#blk_0": _grounded_chunk_text()}
     validator = AssessmentRetrievalGroundingValidator()
 
     result = validator.validate({
@@ -346,7 +346,7 @@ def test_outline_no_answer_text_fires_critical():
         ],
         correct_answer_index=0,
     )]
-    chunks_lookup = {"dart:rdf_intro#blk_0": _grounded_chunk_text()}
+    chunks_lookup = {"semantik:rdf_intro#blk_0": _grounded_chunk_text()}
     validator = AssessmentRetrievalGroundingValidator()
 
     result = validator.validate({
@@ -377,9 +377,9 @@ def test_rewrite_no_correct_li_fires_critical():
         sequence=0,
         content=html,
         objective_ids=("TO-01",),
-        source_ids=("dart:rdf_intro#blk_0",),
+        source_ids=("semantik:rdf_intro#blk_0",),
     )
-    chunks_lookup = {"dart:rdf_intro#blk_0": _grounded_chunk_text()}
+    chunks_lookup = {"semantik:rdf_intro#blk_0": _grounded_chunk_text()}
     validator = AssessmentRetrievalGroundingValidator()
 
     result = validator.validate({
@@ -404,8 +404,8 @@ def test_no_source_ids_emits_warning_no_fallback(monkeypatch, tmp_path):
     """
     blocks = [_outline_assessment_block(source_ids=(), source_references=())]
     chunks_lookup = {
-        "dart:rdf_intro#blk_0": _grounded_chunk_text(),
-        "dart:rdf_intro#blk_1": _grounded_chunk_text(),
+        "semantik:rdf_intro#blk_0": _grounded_chunk_text(),
+        "semantik:rdf_intro#blk_1": _grounded_chunk_text(),
     }
     validator = AssessmentRetrievalGroundingValidator(
         calibration_libv2_root=tmp_path,
@@ -447,7 +447,7 @@ def test_no_source_promoted_to_critical_when_flip_applied(tmp_path):
     block counts as a failure for the gate result."""
     _write_calibration_report(tmp_path, alignment_rate=0.92)
     blocks = [_outline_assessment_block(source_ids=(), source_references=())]
-    chunks_lookup = {"dart:rdf_intro#blk_0": _grounded_chunk_text()}
+    chunks_lookup = {"semantik:rdf_intro#blk_0": _grounded_chunk_text()}
     validator = AssessmentRetrievalGroundingValidator(
         calibration_libv2_root=tmp_path,
     )
@@ -477,7 +477,7 @@ def test_stem_not_self_contained_dangling_reference(tmp_path):
     blocks = [_outline_assessment_block(
         stem="See above and answer the following: what is RDF?",
     )]
-    chunks_lookup = {"dart:rdf_intro#blk_0": _grounded_chunk_text()}
+    chunks_lookup = {"semantik:rdf_intro#blk_0": _grounded_chunk_text()}
     validator = AssessmentRetrievalGroundingValidator(
         calibration_libv2_root=tmp_path,
     )
@@ -498,7 +498,7 @@ def test_stem_not_self_contained_unbound_pronoun(tmp_path):
     blocks = [_outline_assessment_block(
         stem="This is the primary purpose of an RDF triple, isn't it?",
     )]
-    chunks_lookup = {"dart:rdf_intro#blk_0": _grounded_chunk_text()}
+    chunks_lookup = {"semantik:rdf_intro#blk_0": _grounded_chunk_text()}
     validator = AssessmentRetrievalGroundingValidator(
         calibration_libv2_root=tmp_path,
     )
@@ -516,7 +516,7 @@ def test_stem_self_contained_does_not_fire(tmp_path):
     blocks = [_outline_assessment_block(
         stem="What is the primary purpose of an RDF triple?",
     )]
-    chunks_lookup = {"dart:rdf_intro#blk_0": _grounded_chunk_text()}
+    chunks_lookup = {"semantik:rdf_intro#blk_0": _grounded_chunk_text()}
     validator = AssessmentRetrievalGroundingValidator(
         calibration_libv2_root=tmp_path,
     )
@@ -546,7 +546,7 @@ def test_answer_leaked_in_stem_fires_warning(tmp_path):
             "expressing a fact."
         ),
     )]
-    chunks_lookup = {"dart:rdf_intro#blk_0": _grounded_chunk_text()}
+    chunks_lookup = {"semantik:rdf_intro#blk_0": _grounded_chunk_text()}
     validator = AssessmentRetrievalGroundingValidator(
         calibration_libv2_root=tmp_path,
     )
@@ -565,7 +565,7 @@ def test_answer_leaked_in_stem_fires_warning(tmp_path):
 def test_clean_stem_does_not_fire_answer_leak(tmp_path):
     """Disjoint stem and answer tokens MUST NOT fire ANSWER_LEAKED_IN_STEM."""
     blocks = [_outline_assessment_block()]
-    chunks_lookup = {"dart:rdf_intro#blk_0": _grounded_chunk_text()}
+    chunks_lookup = {"semantik:rdf_intro#blk_0": _grounded_chunk_text()}
     validator = AssessmentRetrievalGroundingValidator(
         calibration_libv2_root=tmp_path,
     )
@@ -592,7 +592,7 @@ def test_feedback_not_grounded_fires_warning(tmp_path):
             "experiments and lattice gauge simulations."
         ),
     )]
-    chunks_lookup = {"dart:rdf_intro#blk_0": _grounded_chunk_text()}
+    chunks_lookup = {"semantik:rdf_intro#blk_0": _grounded_chunk_text()}
     validator = AssessmentRetrievalGroundingValidator(
         calibration_libv2_root=tmp_path,
     )
@@ -616,7 +616,7 @@ def test_grounded_feedback_does_not_fire(tmp_path):
             "in the resource description framework graph."
         ),
     )]
-    chunks_lookup = {"dart:rdf_intro#blk_0": _grounded_chunk_text()}
+    chunks_lookup = {"semantik:rdf_intro#blk_0": _grounded_chunk_text()}
     validator = AssessmentRetrievalGroundingValidator(
         calibration_libv2_root=tmp_path,
     )
@@ -632,7 +632,7 @@ def test_grounded_feedback_does_not_fire(tmp_path):
 def test_no_feedback_surface_does_not_fire(tmp_path):
     """A block carrying no feedback at all does not fire FEEDBACK_NOT_GROUNDED."""
     blocks = [_outline_assessment_block()]  # no feedback kwarg
-    chunks_lookup = {"dart:rdf_intro#blk_0": _grounded_chunk_text()}
+    chunks_lookup = {"semantik:rdf_intro#blk_0": _grounded_chunk_text()}
     validator = AssessmentRetrievalGroundingValidator(
         calibration_libv2_root=tmp_path,
     )
@@ -653,7 +653,7 @@ def test_no_feedback_surface_does_not_fire(tmp_path):
 def test_answer_span_missing_outline_fires_warning(tmp_path):
     """Outline block without content['answer_span'] → warning."""
     blocks = [_outline_assessment_block()]  # no answer_span kwarg
-    chunks_lookup = {"dart:rdf_intro#blk_0": _grounded_chunk_text()}
+    chunks_lookup = {"semantik:rdf_intro#blk_0": _grounded_chunk_text()}
     validator = AssessmentRetrievalGroundingValidator(
         calibration_libv2_root=tmp_path,
     )
@@ -673,12 +673,12 @@ def test_answer_span_present_outline_does_not_fire(tmp_path):
     """A well-formed outline answer_span suppresses ANSWER_SPAN_MISSING."""
     blocks = [_outline_assessment_block(
         answer_span={
-            "source_chunk_id": "dart:rdf_intro#blk_0",
+            "source_chunk_id": "semantik:rdf_intro#blk_0",
             "char_start": 10,
             "char_end": 60,
         },
     )]
-    chunks_lookup = {"dart:rdf_intro#blk_0": _grounded_chunk_text()}
+    chunks_lookup = {"semantik:rdf_intro#blk_0": _grounded_chunk_text()}
     validator = AssessmentRetrievalGroundingValidator(
         calibration_libv2_root=tmp_path,
     )
@@ -694,9 +694,9 @@ def test_answer_span_present_outline_does_not_fire(tmp_path):
 def test_answer_span_present_rewrite_does_not_fire(tmp_path):
     """A rewrite block carrying data-cf-answer-span suppresses the warning."""
     blocks = [_rewrite_assessment_block(
-        answer_span_attr="dart:rdf_intro#blk_0:0-50",
+        answer_span_attr="semantik:rdf_intro#blk_0:0-50",
     )]
-    chunks_lookup = {"dart:rdf_intro#blk_0": _grounded_chunk_text()}
+    chunks_lookup = {"semantik:rdf_intro#blk_0": _grounded_chunk_text()}
     validator = AssessmentRetrievalGroundingValidator(
         calibration_libv2_root=tmp_path,
     )
@@ -714,7 +714,7 @@ def test_answer_span_stays_warning_after_flip(tmp_path):
     at warning severity (it's hygiene, not correctness)."""
     _write_calibration_report(tmp_path, alignment_rate=0.95)
     blocks = [_outline_assessment_block()]
-    chunks_lookup = {"dart:rdf_intro#blk_0": _grounded_chunk_text()}
+    chunks_lookup = {"semantik:rdf_intro#blk_0": _grounded_chunk_text()}
     validator = AssessmentRetrievalGroundingValidator(
         calibration_libv2_root=tmp_path,
     )
@@ -773,7 +773,7 @@ def test_non_assessment_blocks_silently_skipped():
 
     result = validator.validate({
         "blocks": blocks,
-        "chunks_lookup": {"dart:rdf_intro#blk_0": _grounded_chunk_text()},
+        "chunks_lookup": {"semantik:rdf_intro#blk_0": _grounded_chunk_text()},
     })
 
     assert result.passed is True
@@ -817,12 +817,12 @@ def test_capture_emit_per_validate_call(tmp_path):
     capture handle)."""
     blocks = [_outline_assessment_block(
         answer_span={
-            "source_chunk_id": "dart:rdf_intro#blk_0",
+            "source_chunk_id": "semantik:rdf_intro#blk_0",
             "char_start": 0,
             "char_end": 50,
         },
     )]
-    chunks_lookup = {"dart:rdf_intro#blk_0": _grounded_chunk_text()}
+    chunks_lookup = {"semantik:rdf_intro#blk_0": _grounded_chunk_text()}
     capture = _RecordingCapture()
     validator = AssessmentRetrievalGroundingValidator(
         calibration_libv2_root=tmp_path,
@@ -872,7 +872,7 @@ def test_capture_emit_per_validate_call(tmp_path):
 def test_capture_records_failure_verdict_for_ungrounded_block(tmp_path):
     """Capture verdict reflects the ungrounded outcome."""
     blocks = [_outline_assessment_block()]
-    chunks_lookup = {"dart:rdf_intro#blk_0": _ungrounded_chunk_text()}
+    chunks_lookup = {"semantik:rdf_intro#blk_0": _ungrounded_chunk_text()}
     capture = _RecordingCapture()
     validator = AssessmentRetrievalGroundingValidator(
         calibration_libv2_root=tmp_path,
@@ -916,7 +916,7 @@ def test_capture_records_per_sub_check_signals(tmp_path):
         ),  # FEEDBACK_NOT_GROUNDED
         # No answer_span → ANSWER_SPAN_MISSING
     )]
-    chunks_lookup = {"dart:rdf_intro#blk_0": _grounded_chunk_text()}
+    chunks_lookup = {"semantik:rdf_intro#blk_0": _grounded_chunk_text()}
     capture = _RecordingCapture()
     validator = AssessmentRetrievalGroundingValidator(
         calibration_libv2_root=tmp_path,
@@ -1023,7 +1023,7 @@ def test_calibration_report_missing_defers_flip(tmp_path):
     with ``calibration_report_missing`` reason."""
     # tmp_path has no LibV2/courses/<slug>/quality/... payload.
     blocks = [_outline_assessment_block(source_ids=(), source_references=())]
-    chunks_lookup = {"dart:rdf_intro#blk_0": _grounded_chunk_text()}
+    chunks_lookup = {"semantik:rdf_intro#blk_0": _grounded_chunk_text()}
     capture = _RecordingCapture()
     validator = AssessmentRetrievalGroundingValidator(
         calibration_libv2_root=tmp_path,
@@ -1073,7 +1073,7 @@ def test_calibration_signal_missing_defers_flip(tmp_path):
 
     validator.validate({
         "blocks": [_outline_assessment_block()],
-        "chunks_lookup": {"dart:rdf_intro#blk_0": _grounded_chunk_text()},
+        "chunks_lookup": {"semantik:rdf_intro#blk_0": _grounded_chunk_text()},
         "decision_capture": capture,
     })
 
@@ -1101,7 +1101,7 @@ def test_calibration_signal_below_floor_defers_flip(tmp_path):
 
     validator.validate({
         "blocks": [_outline_assessment_block()],
-        "chunks_lookup": {"dart:rdf_intro#blk_0": _grounded_chunk_text()},
+        "chunks_lookup": {"semantik:rdf_intro#blk_0": _grounded_chunk_text()},
         "decision_capture": capture,
     })
 
@@ -1129,7 +1129,7 @@ def test_calibration_signal_above_floor_emits_flip_applied(tmp_path):
 
     validator.validate({
         "blocks": [_outline_assessment_block()],
-        "chunks_lookup": {"dart:rdf_intro#blk_0": _grounded_chunk_text()},
+        "chunks_lookup": {"semantik:rdf_intro#blk_0": _grounded_chunk_text()},
         "decision_capture": capture,
     })
 

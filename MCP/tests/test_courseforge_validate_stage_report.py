@@ -98,7 +98,7 @@ def _scaffold_validate_export(tmp_path: Path) -> Path:
             "week": 1,
             "content": "<section><p>By the end you can do CO-01.</p></section>",
             "objective_ids": ["CO-01"],
-            "source_ids": ["dart:ch1#p1"],
+            "source_ids": ["semantik:ch1#p1"],
         },
         {
             "block_id": "w1-b2",
@@ -108,7 +108,7 @@ def _scaffold_validate_export(tmp_path: Path) -> Path:
             "week": 1,
             "content": "<section><p>The concept is explained here.</p></section>",
             "objective_ids": ["CO-01"],
-            "source_ids": ["dart:ch1#p2"],
+            "source_ids": ["semantik:ch1#p2"],
         },
     ]
     project.joinpath("04_rewrite", "blocks_final.jsonl").write_text(

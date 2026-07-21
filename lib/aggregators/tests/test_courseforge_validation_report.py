@@ -473,7 +473,7 @@ def test_post_loop_aggregator_returns_none_without_project_path(tmp_path):
     written = runner._maybe_write_courseforge_validation_report(
         workflow_id="WF-NOOP",
         workflow_params={"course_name": "NO_COURSEFORGE"},
-        phase_outputs={"dart_conversion": {"_completed": True}},
+        phase_outputs={"semantik_conversion": {"_completed": True}},
     )
     assert written is None
 

@@ -6,9 +6,9 @@ accessible HTML (block-anchored so a citation can deep-link to the exact source
 position) and the raw PDFs. It backs three routes on ``gui.routers.library``:
 
 * ``GET /api/courses/{id}/source-materials`` → the per-course inventory.
-* ``GET /api/courses/{id}/source-doc?doc=&ref=`` → one sanitized DART document,
-  with serve-time block-anchor injection (``id="dart-{block_id}"``) + figure-src
-  rewrite so a ``#dart-<block>`` fragment lands on the cited block.
+* ``GET /api/courses/{id}/source-doc?doc=&ref=`` → one sanitized source document,
+  with serve-time block-anchor injection (``id="semantik-{block_id}"``) +
+  figure-src rewrite so a ``#semantik-<block>`` fragment lands on the cited block.
 * ``GET /api/courses/{id}/source-doc-asset?doc=&path=`` → a figure asset from the
   doc's ``{stem}_figures/`` dir.
 
@@ -385,10 +385,11 @@ def _serve_time_transform(raw_html: str, *, slug: str, doc: str, ref: Optional[s
     Builds on the shared ``sanitize_soup`` scrub + heading-id injection (the
     ``imscc_service._sanitize_page`` shape) with two new serve-time passes:
 
-    * *block-anchor injection*: every element carrying ``data-dart-block-id`` and
-      no ``id`` gets ``id="dart-{block_id}"`` so a ``#dart-<block>`` fragment
-      lands on the cited block. Existing ids (``id="sec-…"`` etc.) pass through
-      untouched (never clobbered).
+    * *block-anchor injection*: every element carrying a block-id attribute
+      (``data-semantik-block-id``, legacy ``data-dart-block-id`` dual-read) and
+      no ``id`` gets ``id="semantik-{block_id}"`` so a ``#semantik-<block>``
+      fragment lands on the cited block. Existing ids (``id="sec-…"`` etc.) pass
+      through untouched (never clobbered).
     * *figure-src rewrite*: a relative ``src="{stem}_figures/…"`` is rewritten to
       the ``/source-doc-asset`` endpoint (a bare relative URL would otherwise
       resolve against the API path and 404). Absolute / data: srcs pass through.
@@ -426,33 +427,40 @@ def _serve_time_transform(raw_html: str, *, slug: str, doc: str, ref: Optional[s
                 heading["id"] = slug_id
             elif existing != slug_id and not soup.find(id=slug_id):
                 anchor = soup.new_tag("span", id=slug_id)
-                anchor["class"] = ["dart-heading-anchor"]
+                anchor["class"] = ["semantik-heading-anchor"]
                 heading.insert(0, anchor)
 
-    # 3) Block-anchor injection: every data-dart-block-id element must end up
-    #    reachable via the #dart-{block_id} fragment (the citation deep-link
-    #    contract). Free element → set the id; element with its OWN id
-    #    (sec-…, fn-… footnote anchors) → never clobber, plant an empty
-    #    inline anchor span as its first child instead.
-    for el in soup.find_all(attrs={"data-dart-block-id": True}):
-        block_id = el.get("data-dart-block-id")
+    # 3) Block-anchor injection: every block-id element must end up reachable
+    #    via the #semantik-{block_id} fragment (the citation deep-link contract).
+    #    The block-id attribute is ``data-semantik-block-id`` (legacy
+    #    ``data-dart-block-id`` dual-read for pre-migration archives). Free
+    #    element → set the id; element with its OWN id (sec-…, fn-… footnote
+    #    anchors) → never clobber, plant an empty inline anchor span as its first
+    #    child instead.
+    for el in soup.find_all(
+        lambda t: t.has_attr("data-semantik-block-id") or t.has_attr("data-dart-block-id")
+    ):
+        block_id = el.get("data-semantik-block-id")
+        if block_id is None:
+            block_id = el.get("data-dart-block-id")
         if isinstance(block_id, (list, tuple)):
             block_id = " ".join(block_id)
         block_id = str(block_id or "").strip()
         if not block_id:
             continue
-        dart_id = f"dart-{block_id}"
+        anchor_id = f"semantik-{block_id}"
         if not el.get("id"):
-            el["id"] = dart_id
-        elif el.get("id") != dart_id:
-            anchor = soup.new_tag("span", id=dart_id)
-            anchor["class"] = ["dart-block-anchor"]
+            el["id"] = anchor_id
+        elif el.get("id") != anchor_id:
+            anchor = soup.new_tag("span", id=anchor_id)
+            anchor["class"] = ["semantik-block-anchor"]
             el.insert(0, anchor)
 
     # 3b) Per-page anchor injection: the FIRST element carrying a given
-    #     ``data-dart-pages`` value gets ``id="page-{N}"`` so a ``#page-N``
-    #     fragment (built by the LO-map / "View in textbook" deep links from the
-    #     block's physical page) scrolls there. ``data-dart-pages`` carries the
+    #     pages attribute (``data-semantik-pages``, legacy ``data-dart-pages``
+    #     dual-read) value gets ``id="page-{N}"`` so a ``#page-N`` fragment
+    #     (built by the LO-map / "View in textbook" deep links from the block's
+    #     physical page) scrolls there. The attribute carries the
     #     "3" / "3-5" / "3,5,7" forms; a range/list anchors page-N on the FIRST
     #     element whose attribute STARTS at N (so #page-3 lands on the "3-5"
     #     block). Never clobbers an existing id — plant an inline anchor span as
@@ -464,8 +472,12 @@ def _serve_time_transform(raw_html: str, *, slug: str, doc: str, ref: Optional[s
         parse_dart_pages_attr = None  # type: ignore[assignment]
     if parse_dart_pages_attr is not None:
         seen_pages: set = set()
-        for el in soup.find_all(attrs={"data-dart-pages": True}):
-            attr = el.get("data-dart-pages")
+        for el in soup.find_all(
+            lambda t: t.has_attr("data-semantik-pages") or t.has_attr("data-dart-pages")
+        ):
+            attr = el.get("data-semantik-pages")
+            if attr is None:
+                attr = el.get("data-dart-pages")
             if isinstance(attr, (list, tuple)):
                 attr = " ".join(attr)
             el_pages = parse_dart_pages_attr(attr)
@@ -478,7 +490,7 @@ def _serve_time_transform(raw_html: str, *, slug: str, doc: str, ref: Optional[s
                     el["id"] = page_id
                 elif el.get("id") != page_id:
                     anchor = soup.new_tag("span", id=page_id)
-                    anchor["class"] = ["dart-page-anchor"]
+                    anchor["class"] = ["semantik-page-anchor"]
                     el.insert(0, anchor)
 
     # 4) Figure-src rewrite: relative {stem}_figures/… → /source-doc-asset.
@@ -523,8 +535,9 @@ def serve_source_doc(
     2. Toggle gate: 403 ``source_materials_disabled`` when disabled.
     3. Whitelist ``doc`` against the inventory stem listing (422 hostile, 404
        unknown), commonpath-contain the on-disk hit.
-    4. Sanitize + inject heading ids + inject ``id="dart-{block}"`` block anchors
-       + rewrite figure src; return the HTML with the ``source_page`` CSP headers.
+    4. Sanitize + inject heading ids + inject ``id="semantik-{block}"`` block
+       anchors + rewrite figure src; return the HTML with the ``source_page``
+       CSP headers.
 
     Raises ``SourceMaterialsError(status, code, detail)``.
     """

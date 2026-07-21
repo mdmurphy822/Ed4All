@@ -95,8 +95,8 @@ def test_merge_returns_4_tuples_with_source_ids():
     """
     processor = _make_processor()
     sections = [
-        _mk_section("Sec A", "short text A", ["dart:a#s0_p0"]),
-        _mk_section("Sec B", "short text B", ["dart:b#s0_p0"]),
+        _mk_section("Sec A", "short text A", ["semantik:a#s0_p0"]),
+        _mk_section("Sec B", "short text B", ["semantik:b#s0_p0"]),
     ]
     merged = processor._merge_small_sections(sections)
     assert merged, "expected at least one merged tuple"
@@ -114,17 +114,17 @@ def test_merge_unions_source_ids_across_sections():
     processor = _make_processor(max_size=1000)
     # Small sections so they merge into one chunk.
     sections = [
-        _mk_section("Intro", "short intro text", ["dart:a#s0_p0"]),
-        _mk_section("Body", "short body text", ["dart:b#s0_p0"]),
-        _mk_section("Outro", "short outro text", ["dart:c#s0_p0"]),
+        _mk_section("Intro", "short intro text", ["semantik:a#s0_p0"]),
+        _mk_section("Body", "short body text", ["semantik:b#s0_p0"]),
+        _mk_section("Outro", "short outro text", ["semantik:c#s0_p0"]),
     ]
     merged = processor._merge_small_sections(sections)
     assert len(merged) == 1, f"Expected 1 merged tuple, got {len(merged)}"
     _, _, _, source_ids, _ = merged[0]
     assert set(source_ids) == {
-        "dart:a#s0_p0",
-        "dart:b#s0_p0",
-        "dart:c#s0_p0",
+        "semantik:a#s0_p0",
+        "semantik:b#s0_p0",
+        "semantik:c#s0_p0",
     }
 
 
@@ -132,17 +132,17 @@ def test_merge_dedupes_duplicate_source_ids():
     """If adjacent sections share a sourceId, it's listed once."""
     processor = _make_processor(max_size=1000)
     sections = [
-        _mk_section("A", "sA text", ["dart:shared#s0_p0", "dart:a#s0_p0"]),
-        _mk_section("B", "sB text", ["dart:shared#s0_p0", "dart:b#s0_p0"]),
+        _mk_section("A", "sA text", ["semantik:shared#s0_p0", "semantik:a#s0_p0"]),
+        _mk_section("B", "sB text", ["semantik:shared#s0_p0", "semantik:b#s0_p0"]),
     ]
     merged = processor._merge_small_sections(sections)
     _, _, _, source_ids, _ = merged[0]
-    assert source_ids.count("dart:shared#s0_p0") == 1
+    assert source_ids.count("semantik:shared#s0_p0") == 1
     # All three unique IDs present.
     assert set(source_ids) == {
-        "dart:shared#s0_p0",
-        "dart:a#s0_p0",
-        "dart:b#s0_p0",
+        "semantik:shared#s0_p0",
+        "semantik:a#s0_p0",
+        "semantik:b#s0_p0",
     }
 
 
@@ -150,16 +150,16 @@ def test_merge_preserves_insertion_order():
     """Dedupe retains first-seen order so downstream diffs stay stable."""
     processor = _make_processor(max_size=1000)
     sections = [
-        _mk_section("A", "text a", ["dart:first#s0_p0"]),
-        _mk_section("B", "text b", ["dart:second#s0_p0"]),
-        _mk_section("C", "text c", ["dart:first#s0_p0", "dart:third#s0_p0"]),
+        _mk_section("A", "text a", ["semantik:first#s0_p0"]),
+        _mk_section("B", "text b", ["semantik:second#s0_p0"]),
+        _mk_section("C", "text c", ["semantik:first#s0_p0", "semantik:third#s0_p0"]),
     ]
     merged = processor._merge_small_sections(sections)
     _, _, _, source_ids, _ = merged[0]
     assert source_ids == [
-        "dart:first#s0_p0",
-        "dart:second#s0_p0",
-        "dart:third#s0_p0",
+        "semantik:first#s0_p0",
+        "semantik:second#s0_p0",
+        "semantik:third#s0_p0",
     ]
 
 
@@ -181,17 +181,17 @@ def test_merge_respects_max_chunk_size_boundary():
     processor = _make_processor(max_size=200)
     sections = [
         _mk_section(
-            "First", " ".join(["w"] * 150), ["dart:a#s0_p0"]
+            "First", " ".join(["w"] * 150), ["semantik:a#s0_p0"]
         ),
         _mk_section(
-            "Second", " ".join(["w"] * 150), ["dart:b#s0_p0"]
+            "Second", " ".join(["w"] * 150), ["semantik:b#s0_p0"]
         ),
     ]
     merged = processor._merge_small_sections(sections)
     # Two separate chunks → two separate source_ids lists.
     assert len(merged) == 2
-    assert merged[0][3] == ["dart:a#s0_p0"]
-    assert merged[1][3] == ["dart:b#s0_p0"]
+    assert merged[0][3] == ["semantik:a#s0_p0"]
+    assert merged[1][3] == ["semantik:b#s0_p0"]
 
 
 # --------------------------------------------------------------------- #
@@ -221,25 +221,25 @@ def test_merged_chunk_preserves_primary_role_from_page_jsonld():
         "learning_objectives": [],
         "courseforge_metadata": {
             "sourceReferences": [
-                {"sourceId": "dart:shared#s0_p0", "role": "primary"},
+                {"sourceId": "semantik:shared#s0_p0", "role": "primary"},
             ],
         },
         "sections": [],
         "misconceptions": [],
         "item_path": "m/l.html",
         "source_references": [
-            {"sourceId": "dart:shared#s0_p0", "role": "primary"},
+            {"sourceId": "semantik:shared#s0_p0", "role": "primary"},
         ],
     }
 
     refs = processor._resolve_chunk_source_references(
         item=item,
         section_heading="Some Section",
-        section_source_ids=["dart:shared#s0_p0"],  # also seen in HTML
+        section_source_ids=["semantik:shared#s0_p0"],  # also seen in HTML
     )
-    # dart:shared must appear once and keep 'primary'.
+    # semantik:shared must appear once and keep 'primary'.
     assert len(refs) == 1
-    assert refs[0]["sourceId"] == "dart:shared#s0_p0"
+    assert refs[0]["sourceId"] == "semantik:shared#s0_p0"
     assert refs[0]["role"] == "primary"
 
 
@@ -262,11 +262,11 @@ def test_merged_chunk_contributing_role_for_html_only_refs():
     refs = processor._resolve_chunk_source_references(
         item=item,
         section_heading="Section",
-        section_source_ids=["dart:html_only#s0_p0"],
+        section_source_ids=["semantik:html_only#s0_p0"],
     )
     assert len(refs) == 1
     assert refs[0]["role"] == "contributing"
-    assert refs[0]["sourceId"] == "dart:html_only#s0_p0"
+    assert refs[0]["sourceId"] == "semantik:html_only#s0_p0"
 
 
 def test_merged_chunk_multi_role_mix():
@@ -284,20 +284,20 @@ def test_merged_chunk_multi_role_mix():
         "misconceptions": [],
         "item_path": "m/l.html",
         "source_references": [
-            {"sourceId": "dart:primary_ref#s0_p0", "role": "primary"},
+            {"sourceId": "semantik:primary_ref#s0_p0", "role": "primary"},
         ],
     }
     refs = processor._resolve_chunk_source_references(
         item=item,
         section_heading="Section",
         section_source_ids=[
-            "dart:primary_ref#s0_p0",  # shared with JSON-LD
-            "dart:html_ref#s0_p0",     # HTML-only
+            "semantik:primary_ref#s0_p0",  # shared with JSON-LD
+            "semantik:html_ref#s0_p0",     # HTML-only
         ],
     )
     by_sid = {r["sourceId"]: r for r in refs}
-    assert by_sid["dart:primary_ref#s0_p0"]["role"] == "primary"
-    assert by_sid["dart:html_ref#s0_p0"]["role"] == "contributing"
+    assert by_sid["semantik:primary_ref#s0_p0"]["role"] == "primary"
+    assert by_sid["semantik:html_ref#s0_p0"]["role"] == "contributing"
 
 
 def test_section_jsonld_override_resolves():
@@ -316,7 +316,7 @@ def test_section_jsonld_override_resolves():
                     "heading": "Target Section",
                     "sourceReferences": [
                         {
-                            "sourceId": "dart:section_only#s0_p0",
+                            "sourceId": "semantik:section_only#s0_p0",
                             "role": "corroborating",
                         }
                     ],
@@ -334,7 +334,7 @@ def test_section_jsonld_override_resolves():
         section_source_ids=[],
     )
     assert len(refs) == 1
-    assert refs[0]["sourceId"] == "dart:section_only#s0_p0"
+    assert refs[0]["sourceId"] == "semantik:section_only#s0_p0"
     assert refs[0]["role"] == "corroborating"
 
 
@@ -353,7 +353,7 @@ def test_part_suffix_strips_when_matching_section_heading():
                 {
                     "heading": "Long Section",
                     "sourceReferences": [
-                        {"sourceId": "dart:long#s0_p0", "role": "primary"},
+                        {"sourceId": "semantik:long#s0_p0", "role": "primary"},
                     ],
                 }
             ],
@@ -369,4 +369,4 @@ def test_part_suffix_strips_when_matching_section_heading():
         section_source_ids=[],
     )
     assert len(refs) == 1
-    assert refs[0]["sourceId"] == "dart:long#s0_p0"
+    assert refs[0]["sourceId"] == "semantik:long#s0_p0"

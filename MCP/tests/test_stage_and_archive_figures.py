@@ -41,8 +41,8 @@ def _bootstrap_tools():
     return mcp.tools
 
 
-def _write_dart_bundle(base: Path, stem: str) -> tuple[Path, Path]:
-    """Create a minimal DART output bundle (html + figures dir)."""
+def _write_source_bundle(base: Path, stem: str) -> tuple[Path, Path]:
+    """Create a minimal SemantiK output bundle (html + figures dir)."""
     html_path = base / f"{stem}.html"
     html_path.write_text(
         f"<html><body><p>{stem}</p></body></html>", encoding="utf-8",
@@ -64,7 +64,7 @@ def test_stage_dart_outputs_copies_figures_dir(tmp_path, monkeypatch):
     into the staging dir alongside the HTML so Courseforge's
     ``<img src>`` paths resolve to real files."""
     # Redirect COURSEFORGE_INPUTS to a tempdir under the test's control.
-    src_dir = tmp_path / "dart_src"
+    src_dir = tmp_path / "source_src"
     src_dir.mkdir()
     cf_inputs = tmp_path / "cf_inputs"
     cf_inputs.mkdir()
@@ -72,7 +72,7 @@ def test_stage_dart_outputs_copies_figures_dir(tmp_path, monkeypatch):
     from MCP.tools import pipeline_tools
     monkeypatch.setattr(pipeline_tools, "COURSEFORGE_INPUTS", cf_inputs)
 
-    html_path, figures_dir = _write_dart_bundle(src_dir, "textbook")
+    html_path, figures_dir = _write_source_bundle(src_dir, "textbook")
 
     tools = _bootstrap_tools()
     stage = tools["stage_dart_outputs"]
@@ -98,7 +98,7 @@ def test_stage_dart_outputs_copies_figures_dir(tmp_path, monkeypatch):
 def test_stage_dart_outputs_missing_figures_dir_is_silent(tmp_path, monkeypatch):
     """Backward compat: bundles without a ``{stem}_figures/`` dir
     still stage successfully."""
-    src_dir = tmp_path / "dart_src"
+    src_dir = tmp_path / "source_src"
     src_dir.mkdir()
     cf_inputs = tmp_path / "cf_inputs"
     cf_inputs.mkdir()
@@ -135,7 +135,7 @@ def test_stage_dart_outputs_missing_figures_dir_is_silent(tmp_path, monkeypatch)
 def test_archive_to_libv2_copies_figures_dir(tmp_path, monkeypatch):
     """Wave 19: ``archive_to_libv2`` must copy ``{stem}_figures/`` into
     ``{course}/source/html/{stem}_figures/`` when present."""
-    src_dir = tmp_path / "dart_src"
+    src_dir = tmp_path / "source_src"
     src_dir.mkdir()
     libv2_root = tmp_path / "LibV2"
     libv2_root.mkdir()
@@ -146,7 +146,7 @@ def test_archive_to_libv2_copies_figures_dir(tmp_path, monkeypatch):
     original_root = pipeline_tools.PROJECT_ROOT
     monkeypatch.setattr(pipeline_tools, "PROJECT_ROOT", tmp_path)
     try:
-        html_path, figures_dir = _write_dart_bundle(src_dir, "textbook")
+        html_path, figures_dir = _write_source_bundle(src_dir, "textbook")
 
         tools = _bootstrap_tools()
         archive = tools["archive_to_libv2"]
@@ -173,7 +173,7 @@ def test_archive_to_libv2_copies_figures_dir(tmp_path, monkeypatch):
 
 def test_archive_to_libv2_missing_figures_dir_is_silent(tmp_path, monkeypatch):
     """HTML-only archival (no figures dir) still succeeds."""
-    src_dir = tmp_path / "dart_src"
+    src_dir = tmp_path / "source_src"
     src_dir.mkdir()
     from MCP.tools import pipeline_tools
 
@@ -213,13 +213,13 @@ def test_registry_stage_dart_outputs_copies_figures_dir(tmp_path, monkeypatch):
     already enforced parity; Wave 19 extends it to the figures dir)."""
     from MCP.tools import pipeline_tools
 
-    src_dir = tmp_path / "dart_src"
+    src_dir = tmp_path / "source_src"
     src_dir.mkdir()
     cf_inputs = tmp_path / "cf_inputs"
     cf_inputs.mkdir()
     monkeypatch.setattr(pipeline_tools, "COURSEFORGE_INPUTS", cf_inputs)
 
-    html_path, figures_dir = _write_dart_bundle(src_dir, "rich")
+    html_path, figures_dir = _write_source_bundle(src_dir, "rich")
 
     registry = pipeline_tools._build_tool_registry()
     stage = registry["stage_dart_outputs"]
@@ -244,11 +244,11 @@ def test_registry_archive_to_libv2_copies_figures_dir(tmp_path, monkeypatch):
     archived courses keep broken ``<img src>`` refs."""
     from MCP.tools import pipeline_tools
 
-    src_dir = tmp_path / "dart_src"
+    src_dir = tmp_path / "source_src"
     src_dir.mkdir()
     monkeypatch.setattr(pipeline_tools, "PROJECT_ROOT", tmp_path)
 
-    html_path, figures_dir = _write_dart_bundle(src_dir, "orchestrated")
+    html_path, figures_dir = _write_source_bundle(src_dir, "orchestrated")
 
     registry = pipeline_tools._build_tool_registry()
     archive = registry["archive_to_libv2"]
@@ -282,7 +282,7 @@ def test_registry_archive_to_libv2_missing_figures_dir_is_silent(
     (no figures dir) still succeeds."""
     from MCP.tools import pipeline_tools
 
-    src_dir = tmp_path / "dart_src"
+    src_dir = tmp_path / "source_src"
     src_dir.mkdir()
     monkeypatch.setattr(pipeline_tools, "PROJECT_ROOT", tmp_path)
 

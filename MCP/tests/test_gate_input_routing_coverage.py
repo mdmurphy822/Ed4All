@@ -4,7 +4,7 @@ The 5-persona SIM_RUN_01 run surfaced four gates with runtime issues:
 
 * ``libv2_manifest`` → skipped: missing inputs: manifest_path
 * ``assessment_objective_alignment`` → skipped: missing inputs: chunks_path
-* ``dart_markers`` → skipped: missing inputs: html_path
+* ``semantik_markers`` → skipped: missing inputs: html_path
 * ``assessment_quality`` → CRASH on ``json.loads`` of empty/absent file
 
 Wave 29 closes the coverage gaps:
@@ -12,7 +12,7 @@ Wave 29 closes the coverage gaps:
 * ``libv2_manifest`` derives ``manifest_path`` from ``course_dir``.
 * ``assessment_objective_alignment`` falls back to the LibV2-archived
   ``course_dir/corpus/chunks.jsonl``.
-* ``dart_markers`` picks up batch outputs from ``output_paths`` and
+* ``semantik_markers`` picks up batch outputs from ``output_paths`` and
   surfaces ``html_paths[]`` alongside a representative ``html_path``.
 * ``assessment_quality`` checks existence + non-empty before handing
   the path off, so a missing / truncated file yields a structured
@@ -26,7 +26,7 @@ from pathlib import Path
 from MCP.hardening.gate_input_routing import (
     _build_assessment_objective_alignment,
     _build_assessment_quality,
-    _build_dart_markers,
+    _build_semantik_markers,
     _build_libv2_manifest,
     default_router,
 )
@@ -186,23 +186,23 @@ def test_assessment_objective_alignment_omits_synthesized_when_unset(
 
 
 # --------------------------------------------------------------------- #
-# dart_markers — batch-aware html_paths
+# semantik_markers — batch-aware html_paths
 # --------------------------------------------------------------------- #
 
 
-def test_dart_markers_single_html(tmp_path: Path):
-    """Single-file DART output still returns a representative html_path."""
+def test_semantik_markers_single_html(tmp_path: Path):
+    """Single-file SemantiK output still returns a representative html_path."""
     html = tmp_path / "out.html"
     html.write_text("<html></html>", encoding="utf-8")
 
-    outputs = {"dart_conversion": {"output_path": str(html)}}
-    inputs, missing = _build_dart_markers(outputs, {})
+    outputs = {"semantik_conversion": {"output_path": str(html)}}
+    inputs, missing = _build_semantik_markers(outputs, {})
     assert missing == []
     assert inputs["html_path"] == str(html)
     assert inputs["html_paths"] == [str(html)]
 
 
-def test_dart_markers_batch_html(tmp_path: Path):
+def test_semantik_markers_batch_html(tmp_path: Path):
     """Comma-joined ``output_paths`` surfaces as a list under
     ``html_paths``."""
     a = tmp_path / "chapter1.html"
@@ -212,17 +212,17 @@ def test_dart_markers_batch_html(tmp_path: Path):
         p.write_text("<html></html>", encoding="utf-8")
 
     outputs = {
-        "dart_conversion": {"output_paths": f"{a},{b},{c}"},
+        "semantik_conversion": {"output_paths": f"{a},{b},{c}"},
     }
-    inputs, missing = _build_dart_markers(outputs, {})
+    inputs, missing = _build_semantik_markers(outputs, {})
     assert missing == []
     assert inputs["html_path"] == str(a)
     assert inputs["html_paths"] == [str(a), str(b), str(c)]
 
 
-def test_dart_markers_skipped_on_no_html():
-    """No DART outputs anywhere → structured skip, not a crash."""
-    inputs, missing = _build_dart_markers({}, {})
+def test_semantik_markers_skipped_on_no_html():
+    """No SemantiK outputs anywhere → structured skip, not a crash."""
+    inputs, missing = _build_semantik_markers({}, {})
     assert missing == ["html_path"]
 
 
@@ -285,7 +285,7 @@ def test_default_router_covers_all_defect2_gates():
     must_have = {
         "lib.validators.libv2_manifest.LibV2ManifestValidator",
         "lib.validators.assessment_objective_alignment.AssessmentObjectiveAlignmentValidator",
-        "lib.validators.dart_markers.DartMarkersValidator",
+        "lib.validators.semantik_markers.SemantiKMarkersValidator",
         "lib.validators.assessment.AssessmentQualityValidator",
     }
     missing = must_have - set(r.builders.keys())

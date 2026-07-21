@@ -115,7 +115,7 @@ class PageSourceRefValidator:
         page_paths: iterable of HTML file paths to scan.
         html_contents: list of ``{"path": ..., "html": ...}`` records.
         staging_dir: path to the run's staging directory produced by
-            ``stage_dart_outputs`` (Wave 8). When provided, valid block IDs
+            ``stage_semantik_outputs`` (Wave 8). When provided, valid block IDs
             are harvested from the role-tagged manifest + provenance
             sidecars.
         source_module_map_path: path to ``source_module_map.json`` (the
@@ -177,13 +177,13 @@ class PageSourceRefValidator:
                     f"staging_dir was provided ({staging_dir_loc}) but the "
                     f"DART staging manifest at {manifest_loc} produced zero "
                     "valid sourceIds (manifest missing, sidecars unreadable, "
-                    "or staging dir empty). Did the upstream stage_dart_outputs "
+                    "or staging dir empty). Did the upstream stage_semantik_outputs "
                     "phase run? Without a resolvable manifest the gate would "
                     "vacuously accept any emitted sourceId."
                 ),
                 location=manifest_loc,
                 suggestion=(
-                    "Re-run stage_dart_outputs to regenerate "
+                    "Re-run stage_semantik_outputs to regenerate "
                     "staging_manifest.json + *_synthesized.json sidecars, "
                     "or pass valid_source_ids explicitly when staging_dir "
                     "is intentionally absent."
@@ -327,7 +327,7 @@ class PageSourceRefValidator:
                     ),
                     location=page,
                     suggestion=(
-                        "Check that stage_dart_outputs produced a "
+                        "Check that stage_semantik_outputs produced a "
                         "provenance_sidecar entry declaring this block ID, "
                         "or that source_module_map.json points at a real block."
                     ),
@@ -586,18 +586,18 @@ def _iter_jsonld_source_ids(data: Any) -> Iterable[str]:
             yield from _iter_jsonld_source_ids(item)
 
 
-def dart_slug_from_filename(name: str) -> str:
-    """Derive the canonical ``dart:{slug}`` slug from a staged-HTML / sidecar filename.
+def semantik_slug_from_filename(name: str) -> str:
+    """Derive the canonical ``semantik:{slug}`` slug from a staged-HTML / sidecar filename.
 
     Single source of truth (mirrors
     ``MCP.tools.pipeline_tools._build_source_module_map`` and
     ``lib.validators.content_grounding._resolve_valid_block_ids``, and
-    consumed by ``MCP.tools.pipeline_tools._dart_block_source_references``
+    consumed by ``MCP.tools.pipeline_tools._semantik_block_source_references``
     when minting chunk ``sourceId`` values): strip the ``_synthesized``
     suffix from the filename stem, lowercase, and map spaces to hyphens.
     Underscores / hyphens / digits pass through unchanged — do NOT use
     ``canonical_slug`` here (it collapses underscores and the emitter's IDs
-    would not match). See DART/CLAUDE.md "dart:{slug} normalization".
+    would not match).
     """
     stem = Path(name).stem
     return stem.replace("_synthesized", "").lower().replace(" ", "-")
@@ -605,7 +605,7 @@ def dart_slug_from_filename(name: str) -> str:
 
 # Back-compat private alias (predates the public name; in-module call sites
 # and existing tests reference it).
-_slug_from_sidecar_name = dart_slug_from_filename
+_slug_from_sidecar_name = semantik_slug_from_filename
 
 
 def _iter_sidecar_block_ids(

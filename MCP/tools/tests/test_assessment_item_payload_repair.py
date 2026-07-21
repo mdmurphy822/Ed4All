@@ -76,12 +76,12 @@ def test_fallback_produces_gate_valid_assessment_item():
             ],
         },
         objective_ids=("CO-01",),
-        source_ids=("dart:slug#blk1",),
+        source_ids=("semantik:slug#blk1",),
     )
     fallback_html = _render_block_fallback_html(
         block,
         objective_statements={"CO-01": "Simplify fractions."},
-        source_ids=["dart:slug#blk1"],
+        source_ids=["semantik:slug#blk1"],
     )
     # The fallback HTML must NOT itself look structurally-empty (it carries
     # the canonical <li data-cf-distractor-index> siblings).
@@ -95,7 +95,7 @@ def test_fallback_produces_gate_valid_assessment_item():
         sequence=0,
         content=fallback_html,
         objective_ids=("CO-01",),
-        source_ids=("dart:slug#blk1",),
+        source_ids=("semantik:slug#blk1",),
     )
     validator = BlockAssessmentItemPayloadValidator()
     result = validator.validate({"blocks": [repaired]})

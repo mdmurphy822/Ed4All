@@ -117,7 +117,7 @@ Contract
   (byte-identical; the ``unit_coverage`` conditional-key precedent).
 * **Pure / deterministic → NO ``DecisionCapture``** (flagged loudly here).
 * **Pure READ pass** over artifacts that already exist. ``raw_text`` is never
-  touched → ``data-dart-block-id`` / ``dart:{slug}#{block_id}`` sourceIds are
+  touched → ``data-semantik-block-id`` / ``semantik:{slug}#{block_id}`` sourceIds are
   byte-stable. Zero sourceId / byte impact.
 * **Verdicts come from the PERSISTED artifacts only** (IR + HTML). The in-memory
   emitter self-report is corroboration, never a verdict basis — so an out-of-band

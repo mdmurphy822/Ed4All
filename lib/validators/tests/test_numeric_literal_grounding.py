@@ -53,7 +53,7 @@ from lib.validators.numeric_literal_grounding import (  # noqa: E402
     fraction_in_source,
 )
 
-_SID = "dart:slug#blk_0"
+_SID = "semantik:slug#blk_0"
 
 
 def _make_block(
@@ -364,7 +364,7 @@ def test_real_corpus_separates_fabrication_from_grounded() -> None:
     corpus = " ".join(
         json.loads(line)["text"] for line in _ALG_CHUNKS.read_text().splitlines() if line.strip()
     )
-    sid = "dart:corpus#all"
+    sid = "semantik:corpus#all"
     blocks = []
     for i, b in enumerate(blocks_raw):
         blocks.append(

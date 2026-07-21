@@ -227,7 +227,7 @@ def test_min_responses_garbage_falls_back(scaffold_on, tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# pipeline_tools DART / IMSCC chunk-emit difficulty_calibration event (Fix 2)
+# pipeline_tools SemantiK / IMSCC chunk-emit difficulty_calibration event (Fix 2)
 # --------------------------------------------------------------------------- #
 
 
@@ -257,7 +257,7 @@ def _all_calibration_events():
 def test_pipeline_tools_emit_helper_fires_exactly_once(monkeypatch):
     """The pipeline_tools chunk-emit helper emits exactly one
     difficulty_calibration event with a replayable, signal-interpolating
-    rationale (closing the doc-vs-code gap for the DART/IMSCC path)."""
+    rationale (closing the doc-vs-code gap for the SemantiK/IMSCC path)."""
     import lib.decision_capture as dc_mod
 
     _RecordingCapture.instances = []

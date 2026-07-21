@@ -142,7 +142,7 @@ def test_structured_key_claims_with_evidence_fields_validates():
     chunk["key_claims"] = [
         {
             "claim": "A SHACL node shape declares constraints on RDF nodes.",
-            "source_chunk_ids": ["dart:shacl-spec#sec1"],
+            "source_chunk_ids": ["semantik:shacl-spec#sec1"],
             "evidence_quote": "A SHACL node shape declares constraints",
             "evidence_char_span": [0, 39],
         },
@@ -166,7 +166,7 @@ def test_structured_key_claims_without_evidence_fields_validates():
     chunk["key_claims"] = [
         {
             "claim": "A SHACL node shape declares constraints on RDF nodes.",
-            "source_chunk_ids": ["dart:shacl-spec#sec1"],
+            "source_chunk_ids": ["semantik:shacl-spec#sec1"],
         },
     ]
     errors = list(validator.iter_errors(chunk))

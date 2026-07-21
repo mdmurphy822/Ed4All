@@ -44,11 +44,11 @@ def test_loader_preserves_canonical_content_type_label(tmp_path, ctype):
         "sequence": 0,
         "content": (
             f'<section data-cf-content-type="{ctype}" '
-            'data-cf-source-ids="dart:src#blk_1">'
+            'data-cf-source-ids="semantik:src#blk_1">'
             "<h2>Sample heading</h2><p>Grounded prose.</p></section>"
         ),
         "content_type_label": ctype,
-        "source_ids": ["dart:src#blk_1"],
+        "source_ids": ["semantik:src#blk_1"],
     }
     blocks_path.write_text(json.dumps(entry) + "\n", encoding="utf-8")
 
@@ -80,11 +80,11 @@ def test_loader_drops_genuinely_off_taxonomy_content_type_label(tmp_path):
         "sequence": 0,
         "content": (
             '<section data-cf-content-type="explanation" '
-            'data-cf-source-ids="dart:src#blk_1">'
+            'data-cf-source-ids="semantik:src#blk_1">'
             "<h2>Sample heading</h2><p>Grounded prose.</p></section>"
         ),
         "content_type_label": bogus,
-        "source_ids": ["dart:src#blk_1"],
+        "source_ids": ["semantik:src#blk_1"],
     }
     blocks_path.write_text(json.dumps(entry) + "\n", encoding="utf-8")
 

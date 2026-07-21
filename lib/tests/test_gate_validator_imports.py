@@ -5,9 +5,9 @@ qualified dotted path (``pkg.module.ClassName``). When the underlying module is
 renamed or retired, a stale dotted path does NOT fail loudly — the gate simply
 degrades to a warning at runtime (``on_error: warn``) or fails closed at
 dispatch, and in either case the validator that SHOULD run never runs. This
-exact defect shipped for the ``textbook_to_course`` packaging ``wcag_compliance``
-gate, which pointed at the retired ``DART.pdf_converter.wcag_validator`` module
-after the SemantiK migration and silently warn-degraded on every run.
+exact defect class shipped for the ``textbook_to_course`` packaging
+``wcag_compliance`` gate, whose validator dotted path pointed at a module that
+no longer existed and silently warn-degraded on every run.
 
 This test walks every ``validation_gates[].validator`` dotted path declared in
 ``config/workflows.yaml`` and asserts ``importlib`` can resolve both the module

@@ -125,7 +125,7 @@ def _outline_block(
         content={
             "key_claims": ["The central concept is X."],
             "curies": list(curies or []),
-            "source_refs": ["dart:slug#blk1"],
+            "source_refs": ["semantik:slug#blk1"],
             "objective_refs": ["TO-01"],
         },
         escalation_marker=escalation_marker,
@@ -212,7 +212,7 @@ def test_dispatch_calls_content_generator_agent(monkeypatch):
     monkeypatch.delenv(ENV_PROVIDER, raising=False)
 
     seen_html = (
-        "<section data-cf-source-ids=\"dart:slug#blk1\">"
+        "<section data-cf-source-ids=\"semantik:slug#blk1\">"
         "<h2 data-cf-content-type=\"concept\">Concept</h2>"
         "<p>The central concept is X.</p>"
         "</section>"
@@ -270,7 +270,7 @@ def test_response_parsing_assembles_block_with_rewrite_touch(monkeypatch):
     monkeypatch.delenv(ENV_PROVIDER, raising=False)
 
     html_body = (
-        "<section data-cf-source-ids=\"dart:slug#blk1\">"
+        "<section data-cf-source-ids=\"semantik:slug#blk1\">"
         "<h2 data-cf-content-type=\"concept\">Concept</h2>"
         "<p>Pedagogically rich prose.</p>"
         "</section>"

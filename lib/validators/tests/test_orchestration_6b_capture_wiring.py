@@ -25,9 +25,8 @@ Validators covered (8 files / 9 classes):
 - `lib.validators.concept_graph.ConceptGraphValidator` → `concept_graph_check`
 
 The `WCAGValidator.wcag_compliance_check` test lives under
-`lib/validators/tests/test_wcag_capture_wiring.py` (the validator was
-relocated to `lib/validators/wcag.py` in the SemantiK migration that
-retired DART).
+`lib/validators/tests/test_wcag_capture_wiring.py` (validator:
+`lib.validators.wcag.WCAGValidator`).
 """
 
 from __future__ import annotations

@@ -5,7 +5,7 @@ SYNTHETIC ``region_provenance`` (the distilled per-region provenance the
 cascade surfaces — see ``SemantiK/semantik_structure/cascade.py::
 _build_region_provenance``), then chains the produced IR through the REAL
 P2a adapter (``normalize_cascade_to_ed4all``) and the REAL Ed4All contract
-validators (``DartMarkersValidator``, ``source_refs``,
+validators (``SemantiKMarkersValidator``, ``source_refs``,
 ``SemanticStructureExtractor``).
 
 Run:
@@ -220,7 +220,7 @@ def test_a_first_raw_block_index_carried_verbatim():
 
 
 # ---------------------------------------------------------------------------
-# (b) Chain P3a → adapter → DartMarkersValidator (end-to-end on synthetic).
+# (b) Chain P3a → adapter → SemantiKMarkersValidator (end-to-end on synthetic).
 # ---------------------------------------------------------------------------
 
 
@@ -243,13 +243,13 @@ def chained_out():
     return normalize_cascade_to_ed4all(res, pdf_stem="sample_text_ch1")
 
 
-def test_b_dart_markers_validator_passes(chained_out):
-    from lib.validators.dart_markers import DartMarkersValidator
+def test_b_semantik_markers_validator_passes(chained_out):
+    from lib.validators.semantik_markers import SemantiKMarkersValidator
 
     out = chained_out
-    res = DartMarkersValidator().validate({"html_content": out["html"]})
+    res = SemantiKMarkersValidator().validate({"html_content": out["html"]})
     critical = [i for i in res.issues if i.severity == "critical"]
-    assert res.passed, f"dart_markers failed: {[i.code for i in critical]}"
+    assert res.passed, f"semantik_markers failed: {[i.code for i in critical]}"
     assert not critical
     assert 'data-semantik-source=""' not in out["html"]
     assert 'data-semantik-source="synthesized"' in out["html"]
@@ -731,7 +731,7 @@ def test_overflow_continuation_renders_without_heading_element():
     assert "(cont.)</h2>" not in html
     assert re.search(r"<h2>[^<]*\(cont\.\)", html) is None
     # The spills survive as aria-hidden presentation divs (content preserved).
-    assert 'class="dart-continuation"' in html
+    assert 'class="semantik-continuation"' in html
     assert 'aria-hidden="true"' in html
     assert "Chapter 9 Higher Roots (cont.)" in html  # inside the div, not an h2
     # No content was dropped: every prose sentence is still present.

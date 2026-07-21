@@ -110,8 +110,9 @@ def _find_real_chunks_jsonl() -> Optional[Path]:
     ``chunks.jsonl``. No course slug is hardcoded: the archives live under
     the gitignored ``LibV2/courses/`` tree (honors ``ED4ALL_LIBV2_ROOT``).
     Each course's chunks are resolved via ``resolve_imscc_chunks_path`` so
-    the ``imscc_chunks/`` → ``dart_chunks/`` → legacy ``corpus/`` layouts
-    are all found. Returns None if no corpus is present in the checkout.
+    the ``imscc_chunks/`` → ``semantik_chunks/`` → legacy ``dart_chunks/`` →
+    legacy ``corpus/`` layouts are all found. Returns None if no corpus is
+    present in the checkout.
     """
     courses_root = _libv2_courses_root()
     if not courses_root.is_dir():

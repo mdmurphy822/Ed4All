@@ -13,7 +13,7 @@ Point the council at a candidate head via the env override added to
     # shipped head (baseline)
     PYTHONPATH=. .venv/bin/python -m scripts._eval_legal_fragments
     # new legal head
-    DART_STRUCTURE_ADAPTER_DIR=models/council/structure_legal/final \
+    SEMANTIK_STRUCTURE_ADAPTER_DIR=models/council/structure_legal/final \
       PYTHONPATH=. .venv/bin/python -m scripts._eval_legal_fragments
 
 Deterministic council inference → run once per head and diff.
@@ -63,7 +63,7 @@ def _starts_lower(text: str) -> bool:
 def main() -> None:
     pdf_dir = Path("data/cache/courtlistener")
     stems = sys.argv[1:] or HOLDOUT
-    head = os.environ.get("DART_STRUCTURE_ADAPTER_DIR", "models/council/structure/final")
+    head = os.environ.get("SEMANTIK_STRUCTURE_ADAPTER_DIR", "models/council/structure/final")
     print(f"=== FRAGMENT A/B  head={head} ===")
     print(f"{'opinion':>20} {'regions':>8} {'headings':>9} {'FRAGMENTS':>10}")
     totals = {"regions": 0, "headings": 0, "frags": 0}

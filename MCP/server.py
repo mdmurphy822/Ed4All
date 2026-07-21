@@ -1,9 +1,9 @@
 """
 Ed4All MCP Server
 
-Unified MCP server for DART, Courseforge, Trainforge, and Orchestration operations.
+Unified MCP server for SemantiK, Courseforge, Trainforge, and Orchestration operations.
 Provides tools for:
-- PDF to accessible HTML conversion (DART)
+- PDF to accessible HTML conversion (SemantiK)
 - Course generation and IMSCC packaging (Courseforge)
 - Assessment-based RAG training (Trainforge)
 - Workflow orchestration and state management
@@ -520,7 +520,7 @@ def get_file_content(path: str) -> str:
         return f"Error reading file: {e}"
 
 # =============================================================================
-# REGISTER TOOL MODULES (Ed4All: DART + Courseforge + Trainforge only)
+# REGISTER TOOL MODULES (Ed4All: SemantiK + Courseforge + Trainforge only)
 # =============================================================================
 
 _loaded_modules = []
@@ -618,7 +618,7 @@ def startup_hardening() -> None:
 
 if __name__ == "__main__":
     logger.info("Starting Ed4All MCP Server")
-    logger.info("Available tool categories: file_ops, dart, courseforge, orchestrator, trainforge, analysis")
+    logger.info("Available tool categories: file_ops, semantik, courseforge, orchestrator, trainforge, analysis")
 
     # Phase 0 Hardening: Initialize security components
     startup_hardening()

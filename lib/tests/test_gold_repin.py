@@ -97,7 +97,7 @@ def _gold(*, with_content_sha=False, ambiguous=False, orphan=False, frozen=False
     return {
         "schema_version": "1.1",
         "course_slug": "demo",
-        "chunkset": {"kind": "dart", "chunks_path": "dart_chunks/chunks.jsonl",
+        "chunkset": {"kind": "semantik", "chunks_path": "semantik_chunks/chunks.jsonl",
                      "chunks_sha256": "f" * 64},
         "authored_at": "2026-06-11T00:00:00Z",
         "frozen": frozen,

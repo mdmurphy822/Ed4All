@@ -12,7 +12,7 @@ Two interlocked guards, both hard:
             from inside a process that itself owns GPU memory — useful
             for resume-from-checkpoint flows).
 
-    2. ``fcntl.flock`` on ``/tmp/dart_qwen_train.lock`` — a process-level
+    2. ``fcntl.flock`` on ``/tmp/semantik_qwen_train.lock`` — a process-level
        mutex. The flock is non-blocking; conflict raises immediately
        instead of stalling. Released on context exit (including SIGINT,
        because Python tears down the file descriptor in the signal
@@ -38,7 +38,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-_LOCK_PATH = Path("/tmp/dart_qwen_train.lock")
+_LOCK_PATH = Path("/tmp/semantik_qwen_train.lock")
 
 
 class TrainingSlotBusy(RuntimeError):

@@ -1171,8 +1171,8 @@ def run_grounded_eval(
     )
     # The gold set's chunkset.kind is the eval's source of truth for which
     # chunkset retrieval + the citation gate must resolve against; thread it
-    # into the pipeline so a course with multiple chunksets (e.g. dart_chunks/
-    # alongside an imscc-pinned index) is evaluated against the pinned kind
+    # into the pipeline so a course with multiple chunksets (e.g. a staged
+    # chunks dir alongside an imscc-pinned index) is evaluated against the pinned kind
     # rather than the pipeline's directory-presence guess.
     gold_chunkset_kind = chunkset.get("kind")
 

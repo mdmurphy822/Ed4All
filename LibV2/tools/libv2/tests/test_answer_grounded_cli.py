@@ -44,8 +44,8 @@ _SLUG = "mini-answer-101"
 
 def _make_course(repo_root: Path, *, with_index: bool = False) -> Path:
     cdir = repo_root / "courses" / _SLUG
-    (cdir / "dart_chunks").mkdir(parents=True)
-    (cdir / "dart_chunks" / "chunks.jsonl").write_text("{}\n")
+    (cdir / "semantik_chunks").mkdir(parents=True)
+    (cdir / "semantik_chunks" / "chunks.jsonl").write_text("{}\n")
     (cdir / "manifest.json").write_text(json.dumps({"classification": {}}))
     if with_index:
         from LibV2.tools.libv2.vector_index import (
@@ -55,7 +55,7 @@ def _make_course(repo_root: Path, *, with_index: bool = False) -> Path:
 
         idx = cdir / VECTOR_INDEX_DIRNAME
         idx.mkdir(parents=True)
-        (idx / MANIFEST_FILENAME).write_text(json.dumps({"chunkset_kind": "dart"}))
+        (idx / MANIFEST_FILENAME).write_text(json.dumps({"chunkset_kind": "semantik"}))
     return cdir
 
 

@@ -63,8 +63,8 @@ from .types import BertOutput, TypedSignal
 # (or a head-swap A/B) point the council at a candidate checkpoint WITHOUT
 # touching the shipped dir — read at import so it flows into ADAPTER_SPEC below.
 DEFAULT_ADAPTER_DIR = (
-    Path(os.environ["DART_STRUCTURE_ADAPTER_DIR"])
-    if os.environ.get("DART_STRUCTURE_ADAPTER_DIR", "").strip()
+    Path(os.environ["SEMANTIK_STRUCTURE_ADAPTER_DIR"])
+    if os.environ.get("SEMANTIK_STRUCTURE_ADAPTER_DIR", "").strip()
     else _semantik_paths.resolve_model("council/structure/final")
 )
 

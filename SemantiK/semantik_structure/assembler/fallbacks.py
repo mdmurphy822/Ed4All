@@ -398,10 +398,10 @@ def fallback_figure(region: Region, feature_blocks: Sequence[FeatureBlock]) -> s
             region.feature_block_indices[0]
             if region.feature_block_indices else 0
         )
-        desc_id = f"dart-figdesc-{first_fb}"
+        desc_id = f"semantik-figdesc-{first_fb}"
         img = f'<img src="{src_attr}" alt="{escape(alt)}" aria-describedby="{desc_id}">'
         desc = (
-            f'<p id="{desc_id}" class="dart-figure-desc">{escape(ext)}</p>'
+            f'<p id="{desc_id}" class="semantik-figure-desc">{escape(ext)}</p>'
         )
         return f"<figure>{img}{figcap}{desc}</figure>"
     return f'<figure><img src="{src_attr}" alt="{escape(alt)}">{figcap}</figure>'
@@ -411,8 +411,8 @@ def fallback_form(region: Region, feature_blocks: Sequence[FeatureBlock]) -> str
     # v1: emit a labelled placeholder field so axe label-rules pass.
     return (
         '<form><fieldset><legend>Form</legend>'
-        '<label for="dart-form-fallback">Field</label>'
-        '<input id="dart-form-fallback" type="text">'
+        '<label for="semantik-form-fallback">Field</label>'
+        '<input id="semantik-form-fallback" type="text">'
         '</fieldset></form>'
     )
 

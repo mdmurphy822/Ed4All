@@ -381,7 +381,7 @@ _CONSOLE_INNER = (
     '<span class="elapsed tabular-nums" aria-hidden="true">elapsed 0s</span></p>'
     + _overall_header("about 19m left")
     + '<ol class="phase-checklist" aria-label="Course build steps">'
-    + _phase_row("done").replace("phase_done", "dart_conversion").replace("Phase (done)", "Convert textbook to accessible HTML")
+    + _phase_row("done").replace("phase_done", "semantik_conversion").replace("Phase (done)", "Convert textbook to accessible HTML")
     + _phase_row("done").replace("phase_done", "staging").replace("Phase (done)", "Stage source files")
     + _phase_row("running", tasks="· 50/50 tasks").replace("phase_running", "content_generation").replace("Phase (running)", "Generate course content")
     + _phase_row("pending").replace("phase_pending", "packaging").replace("Phase (pending)", "Package course")

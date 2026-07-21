@@ -355,7 +355,7 @@ def _apply_h43_to_table_candidates(
             out[idx] = cand_list
             continue
         out[idx] = [
-            dataclasses.replace(c, text=apply_h43(c.text, id_prefix=f"dart-t{idx}"))
+            dataclasses.replace(c, text=apply_h43(c.text, id_prefix=f"semantik-t{idx}"))
             for c in cand_list
         ]
     return out
@@ -782,7 +782,7 @@ def _build_region_provenance(
         # repair pass NEVER mutates ``raw_text`` (the content-hash sourceId basis
         # stays verbatim); it carries the ADDITIVE ``repaired_text`` + ``ocr_repair``
         # edit map so the adapter substitutes the repaired string at render and
-        # stamps ``data-dart-repair``. Present ONLY for a region that GAINED >=1
+        # stamps ``data-semantik-repair``. Present ONLY for a region that GAINED >=1
         # gated edit — byte-stable to baseline (both keys absent) when the flag is
         # off or the region was untouched.
         if ocr_repair_edits:

@@ -71,16 +71,17 @@ _PAGE_HEADERS: Dict[str, str] = {
 }
 
 # Source-provenance id shape stamped on grounded content wrappers by the
-# Courseforge two-pass providers: ``data-cf-source-ids="dart:<doc>#<anchor>"``
+# Courseforge two-pass providers: ``data-cf-source-ids="semantik:<doc>#<anchor>"``
 # (comma-separated when a block is grounded by more than one source block). The
 # learner renderer turns each into a clickable link to the served accessible
-# passage (finding 3) via the existing ``/source-doc`` endpoint, which injects
-# ``id="dart-<anchor>"`` so the ``#dart-<anchor>`` fragment lands on the block.
+# passage via the existing ``/source-doc`` endpoint, which injects
+# ``id="semantik-<anchor>"`` so the ``#semantik-<anchor>`` fragment lands on the
+# block.
 _CF_SOURCE_ATTR = "data-cf-source-ids"
-# DART->semantik purge Stage 1 (dual-READ): accepts both ``dart:`` and
-# ``semantik:`` prefixes.
-_DART_SOURCE_ID_RE = re.compile(
-    r"^(?:dart|semantik):(?P<doc>[^#]+)#(?P<anchor>.+)$"
+# Source-id prefix (dual-READ): the canonical ``semantik:`` and the legacy
+# ``dart:`` (pre-migration corpora) are both accepted.
+_SOURCE_ID_RE = re.compile(
+    r"^(?:semantik|dart):(?P<doc>[^#]+)#(?P<anchor>.+)$"
 )
 
 # Cap on "View in textbook" links emitted per block. A grounded block can carry
@@ -585,15 +586,15 @@ def _source_doc_url(
 ) -> str:
     """Build the deep link to one archived DART block (mirrors answer_render).
 
-    ``/api/courses/{slug}/source-doc?doc=<doc>&ref=<anchor>#dart-<anchor>`` — the
-    same shape ``gui.services.answer_render.original_source_url`` mints from a
+    ``/api/courses/{slug}/source-doc?doc=<doc>&ref=<anchor>#semantik-<anchor>`` —
+    the same shape ``gui.services.answer_render.original_source_url`` mints from a
     citation, and the same one ``serve_source_doc`` resolves (it injects
-    ``id="dart-<anchor>"`` so the fragment lands on the cited block). The slug,
-    doc, and ref are URL-encoded; the fragment keeps ``-`` safe (block ids are
-    hyphenated slugs).
+    ``id="semantik-<anchor>"`` so the fragment lands on the cited block). The
+    slug, doc, and ref are URL-encoded; the fragment keeps ``-`` safe (block ids
+    are hyphenated slugs).
 
-    When ``page`` is a positive int (parsed from the wrapper's
-    ``data-dart-pages``), ``&page=N`` is appended before the ``#`` fragment so
+    When ``page`` is a positive int (parsed from the wrapper's pages attribute),
+    ``&page=N`` is appended before the ``#`` fragment so
     the serve-time ``id="page-N"`` anchor resolves (Phase 3). The page-less path
     is byte-identical to today.
     """
@@ -603,7 +604,7 @@ def _source_doc_url(
     if isinstance(page, int) and page > 0:
         page_param = "&page={}".format(page)
     return (
-        "/api/courses/{slug}/source-doc?doc={doc}&ref={ref}{page}#dart-{frag}".format(
+        "/api/courses/{slug}/source-doc?doc={doc}&ref={ref}{page}#semantik-{frag}".format(
             slug=quote(str(slug), safe=""),
             doc=quote(str(doc), safe=""),
             ref=quote(str(anchor), safe=""),
@@ -617,7 +618,7 @@ def _inject_source_links(soup, slug: str) -> None:  # noqa: ANN001 — bs4 soup
     """Surface ``data-cf-source-ids`` provenance as clickable source links (③).
 
     The Courseforge two-pass providers stamp grounded content wrappers (worked
-    examples, etc.) with ``data-cf-source-ids="dart:<doc>#<anchor>"`` (comma-
+    examples, etc.) with ``data-cf-source-ids="semantik:<doc>#<anchor>"`` (comma-
     separated for multi-source blocks). They are pure metadata — the served page
     carries 0 hrefs, so a learner can't reach the passage the block was built
     from. For every such wrapper that does not already carry a source link, append
@@ -628,7 +629,7 @@ def _inject_source_links(soup, slug: str) -> None:  # noqa: ANN001 — bs4 soup
     to the same source doc yields ONE link, not N (issue I4). The first token per
     target survives, preferring one carrying ``data-cf-source-primary`` so the
     surviving link still deep-links purposefully. Ids that don't parse as
-    ``dart:<doc>#<anchor>`` are skipped; a wrapper that already holds a
+    ``{semantik|dart}:<doc>#<anchor>`` are skipped; a wrapper that already holds a
     ``.cf-source-links`` nav (idempotent re-serve) is left untouched.
 
     Anchors only — no script, no handlers. The links inherit the same restrictive
@@ -637,7 +638,7 @@ def _inject_source_links(soup, slug: str) -> None:  # noqa: ANN001 — bs4 soup
     if not slug:
         return
     # Canonical parser for the "3" / "3-5" / "3,5,7" forms + the sibling
-    # ``data-dart-page-kind`` (reused, not re-implemented — same source of truth
+    # page-kind attribute (reused, not re-implemented — same source of truth
     # the chunker harvests from).
     from Trainforge.chunker.helpers import (  # noqa: PLC0415
         parse_dart_page_kind_attr,
@@ -651,13 +652,18 @@ def _inject_source_links(soup, slug: str) -> None:  # noqa: ANN001 — bs4 soup
         raw = el.get(_CF_SOURCE_ATTR)
         if isinstance(raw, (list, tuple)):
             raw = " ".join(raw)
-        # Source pages off the SAME wrapper (``data-dart-pages``) + the sibling
-        # ``data-dart-page-kind`` DART stamps on the same element.
-        pages_attr = el.get("data-dart-pages")
+        # Source pages off the SAME wrapper (``data-semantik-pages``, legacy
+        # ``data-dart-pages`` dual-read) + the sibling page-kind attribute
+        # stamped on the same element.
+        pages_attr = el.get("data-semantik-pages")
+        if pages_attr is None:
+            pages_attr = el.get("data-dart-pages")
         if isinstance(pages_attr, (list, tuple)):
             pages_attr = " ".join(pages_attr)
         el_pages = parse_dart_pages_attr(pages_attr)
-        kind_attr = el.get("data-dart-page-kind")
+        kind_attr = el.get("data-semantik-page-kind")
+        if kind_attr is None:
+            kind_attr = el.get("data-dart-page-kind")
         if isinstance(kind_attr, (list, tuple)):
             kind_attr = " ".join(kind_attr)
         el_pages_kind = parse_dart_page_kind_attr(kind_attr)
@@ -691,7 +697,7 @@ def _inject_source_links(soup, slug: str) -> None:  # noqa: ANN001 — bs4 soup
             token = token.strip()
             if not token:
                 continue
-            m = _DART_SOURCE_ID_RE.match(token)
+            m = _SOURCE_ID_RE.match(token)
             if not m:
                 continue
             doc = m.group("doc").strip()

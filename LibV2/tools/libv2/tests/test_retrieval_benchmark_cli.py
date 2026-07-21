@@ -44,7 +44,7 @@ _SLUG = "mini-retrieval-101"
 
 @pytest.fixture(autouse=True)
 def _require_fixture():
-    if not (_FIXTURE / "dart_chunks" / "chunks.jsonl").exists():
+    if not (_FIXTURE / "semantik_chunks" / "chunks.jsonl").exists():
         pytest.skip("mini_course fixture not present")
 
 
@@ -58,10 +58,10 @@ def _fake_provider(monkeypatch):
 def _materialize(repo_root: Path, *, with_gold: bool = True) -> Path:
     """Copy the mini_course chunkset (+ gold set) into ``repo_root``."""
     cdir = repo_root / "courses" / _SLUG
-    (cdir / "dart_chunks").mkdir(parents=True)
+    (cdir / "semantik_chunks").mkdir(parents=True)
     shutil.copy(
-        _FIXTURE / "dart_chunks" / "chunks.jsonl",
-        cdir / "dart_chunks" / "chunks.jsonl",
+        _FIXTURE / "semantik_chunks" / "chunks.jsonl",
+        cdir / "semantik_chunks" / "chunks.jsonl",
     )
     if with_gold:
         (cdir / "retrieval_eval").mkdir(parents=True)

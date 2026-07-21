@@ -20,7 +20,7 @@ declares.
 NOTE on ``libv2_archival`` + ``finalization``: the full ``libv2_archival``
 phase has three CRITICAL gates (``libv2_manifest``, ``packet_integrity_strict``,
 ``kg_quality_report``) that REQUIRE Trainforge-derived artifacts — a concept
-graph, ``objectives.json``, dart_chunks, and their sha256s — which a
+graph, ``objectives.json``, semantik_chunks, and their sha256s — which a
 Courseforge-only export does NOT have (archival ``depends_on`` trainforge
 phases in the DAG). Those gates fail-closed on absent inputs BY DESIGN
 (anti-silent-degradation). They are therefore NOT part of the "make the

@@ -2,7 +2,7 @@
 
 When the semantic-preservation cross-encoder is mode-collapsed / missing
 and the run substitutes the 0.7 ``stub_v1`` placeholder
-(``DART_ALLOW_THETA_STUB=1``), the composite ``theta_score`` is
+(``SEMANTIK_ALLOW_THETA_STUB=1``), the composite ``theta_score`` is
 meaningless. These tests pin the bypass:
 
   * ``theta_is_stubbed`` keys off the report's own

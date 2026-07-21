@@ -24,7 +24,7 @@ rendered PNGs + Tesseract text on disk (idempotent), so the usual flow is:
     # after the baseline finishes (fires the Omni calls):
     python scripts/integration/vision_ocr_probe.py --phase gpu
 
-Output tree (default ``inputs/openstax-scan/vision_probe/``):
+Output tree (default ``inputs/scan-corpus/vision_probe/``):
     <out>/<pdf_stem>/page_<NNN>/page.png          rendered page
                                /tesseract.txt      raw Tesseract text
                                /tesseract_conf.json  per-page conf stats
@@ -61,8 +61,8 @@ _DEFAULT_SCALE = float(os.environ.get("SEMANTIK_OCR_RENDER_SCALE", "3.0"))
 _DEFAULT_ENDPOINT = os.environ.get("SEMANTIK_SPECIALIST_BASE_URL", "http://localhost:8000/v1")
 _DEFAULT_MODEL = os.environ.get("SEMANTIK_SPECIALIST_MODEL", "nemotron-3-nano-omni")
 _DEFAULT_API_KEY = os.environ.get("SEMANTIK_SPECIALIST_API_KEY", "local")
-_DEFAULT_PDF = "inputs/openstax-scan/dart_in/elementary-algebra-2e-scan-ch01.pdf"
-_DEFAULT_OUT = "inputs/openstax-scan/vision_probe"
+_DEFAULT_PDF = "inputs/scan-corpus/pdf_in/sample-scan-ch01.pdf"
+_DEFAULT_OUT = "inputs/scan-corpus/vision_probe"
 
 # Faithful-transcription directive: we want a VERBATIM structured copy, not a
 # summary. Math -> LaTeX, tables -> Markdown, reading order preserved. This is

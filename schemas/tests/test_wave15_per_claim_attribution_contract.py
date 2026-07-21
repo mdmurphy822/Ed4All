@@ -141,7 +141,7 @@ def _outline_payload(
         "key_claims": key_claims,
         "section_skeleton": section_skeleton,
         "source_refs": [
-            {"sourceId": "dart:shacl-spec#sec1", "role": "primary"},
+            {"sourceId": "semantik:shacl-spec#sec1", "role": "primary"},
         ],
         "structural_warnings": [],
     }
@@ -213,36 +213,36 @@ _TEST_1_STRUCTURED_BY_TYPE: Dict[str, List[Dict[str, Any]]] = {
         {
             "claim": "A SHACL node shape declares constraints "
             "that fire on target nodes.",
-            "source_chunk_ids": ["dart:shacl-spec#sec1"],
+            "source_chunk_ids": ["semantik:shacl-spec#sec1"],
         },
         {
             "claim": "Each constraint references a property predicate.",
             "source_chunk_ids": [
-                "dart:shacl-spec#sec2",
-                "dart:shacl-spec#sec3",
+                "semantik:shacl-spec#sec2",
+                "semantik:shacl-spec#sec3",
             ],
         },
     ],
     "assessment_item": [
         {
             "claim": "Stem references the SHACL node shape concept.",
-            "source_chunk_ids": ["dart:shacl-spec#sec1"],
+            "source_chunk_ids": ["semantik:shacl-spec#sec1"],
         },
     ],
     "prereq_set": [
         {
             "claim": "Learners must know RDF triples before SHACL.",
-            "source_chunk_ids": ["dart:rdf-primer#triples"],
+            "source_chunk_ids": ["semantik:rdf-primer#triples"],
         },
     ],
     "summary_takeaway": [
         {
             "claim": "SHACL gates structural validity of an RDF graph.",
-            "source_chunk_ids": ["dart:shacl-spec#sec0"],
+            "source_chunk_ids": ["semantik:shacl-spec#sec0"],
         },
         {
             "claim": "Node shapes are composable with property shapes.",
-            "source_chunk_ids": ["dart:shacl-spec#sec5"],
+            "source_chunk_ids": ["semantik:shacl-spec#sec5"],
         },
     ],
 }
@@ -297,7 +297,7 @@ def test_1_schema_validity_both_shapes_and_mixed_rejection() -> None:
             "A bare-string legacy claim.",
             {
                 "claim": "A structured claim mixed in.",
-                "source_chunk_ids": ["dart:shacl-spec#sec1"],
+                "source_chunk_ids": ["semantik:shacl-spec#sec1"],
             },
         ],
     )
@@ -382,9 +382,9 @@ def test_2_anti_silent_degradation_chunk_id_consistency() -> None:
 
     Fixture mirrors the plan §4 Test 2 verbatim:
 
-      block.source_references = [{"sourceId": "dart:baz#qux"}]
+      block.source_references = [{"sourceId": "semantik:baz#qux"}]
       block.content["key_claims"] = [
-          {"claim": "foo", "source_chunk_ids": ["dart:foo#bar"]}
+          {"claim": "foo", "source_chunk_ids": ["semantik:foo#bar"]}
       ]
 
     Decision-capture event MUST surface ``claim_misses_count >= 1`` so
@@ -393,15 +393,15 @@ def test_2_anti_silent_degradation_chunk_id_consistency() -> None:
     from Courseforge.router.inter_tier_gates import BlockSourceRefValidator
 
     capture = _RecordingCapture()
-    valid_ids = {"dart:baz#qux"}
+    valid_ids = {"semantik:baz#qux"}
     blocks = [
         _outline_block(
             block_id="page_01#concept_5",
-            source_references=({"sourceId": "dart:baz#qux"},),
+            source_references=({"sourceId": "semantik:baz#qux"},),
             key_claims=[
                 {
                     "claim": "foo",
-                    "source_chunk_ids": ["dart:foo#bar"],
+                    "source_chunk_ids": ["semantik:foo#bar"],
                 },
             ],
         ),
@@ -579,8 +579,8 @@ def test_4_outline_prompt_golden_output_sanity(monkeypatch) -> None:
         content="",
     )
     chunks = [
-        {"id": "dart:slug-a#blk1", "body": "First chunk body."},
-        {"id": "dart:slug-b#blk2", "body": "Second chunk body."},
+        {"id": "semantik:slug-a#blk1", "body": "First chunk body."},
+        {"id": "semantik:slug-b#blk2", "body": "Second chunk body."},
     ]
     objectives = [
         {"id": "TO-01", "statement": "Define the central concept."},
@@ -648,13 +648,13 @@ def _structured_rewrite_block(
         claims = [
             {
                 "claim": "A SHACL node shape declares constraints on RDF nodes.",
-                "source_chunk_ids": ["dart:shacl-spec#sec1"],
+                "source_chunk_ids": ["semantik:shacl-spec#sec1"],
             },
             {
                 "claim": "Targets fire when a node fails a property predicate.",
                 "source_chunk_ids": [
-                    "dart:shacl-spec#sec2",
-                    "dart:shacl-spec#sec3",
+                    "semantik:shacl-spec#sec2",
+                    "semantik:shacl-spec#sec3",
                 ],
             },
         ]
@@ -667,9 +667,9 @@ def _structured_rewrite_block(
             "key_claims": claims,
             "curies": ["sh:NodeShape"],
             "source_refs": [
-                "dart:shacl-spec#sec1",
-                "dart:shacl-spec#sec2",
-                "dart:shacl-spec#sec3",
+                "semantik:shacl-spec#sec1",
+                "semantik:shacl-spec#sec2",
+                "semantik:shacl-spec#sec3",
             ],
             "objective_refs": ["TO-01"],
         },
@@ -697,7 +697,7 @@ def _legacy_rewrite_block(
         content={
             "key_claims": claims,
             "curies": ["sh:NodeShape"],
-            "source_refs": ["dart:shacl-spec#sec1"],
+            "source_refs": ["semantik:shacl-spec#sec1"],
             "objective_refs": ["TO-01"],
         },
     )
@@ -739,9 +739,9 @@ def test_5_rewrite_prompt_includes_per_claim_map(monkeypatch) -> None:
     assert "claim 1: " in rendered
     assert "claim 2: " in rendered
     # Single chunk_id verbatim.
-    assert "[dart:shacl-spec#sec1]" in rendered
+    assert "[semantik:shacl-spec#sec1]" in rendered
     # Multi-chunk list verbatim, comma-separated.
-    assert "[dart:shacl-spec#sec2, dart:shacl-spec#sec3]" in rendered
+    assert "[semantik:shacl-spec#sec2, semantik:shacl-spec#sec3]" in rendered
 
     # Sub-test 5b — escalated path symmetry.
     escalated_block = _structured_rewrite_block(
@@ -756,17 +756,20 @@ def test_5_rewrite_prompt_includes_per_claim_map(monkeypatch) -> None:
     assert "Per-claim source attribution" in escalated
     assert "claim 1: " in escalated
     assert "claim 2: " in escalated
-    assert "[dart:shacl-spec#sec1]" in escalated
-    assert "[dart:shacl-spec#sec2, dart:shacl-spec#sec3]" in escalated
+    assert "[semantik:shacl-spec#sec1]" in escalated
+    assert "[semantik:shacl-spec#sec2, semantik:shacl-spec#sec3]" in escalated
 
     # Sub-test 5c — prompt-size growth on a 5-claim block stays under
     # the §6.3 calibration ceiling (500 chars).
     structured_claims = [
         {
             "claim": f"Claim number {i} body — short prose statement.",
+            # Short synthetic ids keep this size fixture isolating the
+            # per-claim MAP overhead (headers / brackets / newlines) from
+            # incidental id length, holding the §6.3 calibration ceiling.
             "source_chunk_ids": [
-                f"dart:slug#chunk{i}",
-                f"dart:slug#chunk{i + 100}",
+                f"semantik:s#c{i}",
+                f"semantik:s#c{i + 100}",
             ][: 1 + (i % 3)],
         }
         for i in range(1, 6)

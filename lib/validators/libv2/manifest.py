@@ -570,7 +570,7 @@ class LibV2ManifestValidator:
                 suggestion=(
                     "Run the concept_extraction phase, or for legacy "
                     "archives use the operator backfill path (mirror "
-                    "of LibV2/tools/libv2/scripts/backfill_dart_chunks.py "
+                    "of LibV2/tools/libv2/scripts/backfill_legacy_chunks.py "
                     "for the concept graph)."
                 ),
             ))
@@ -673,7 +673,7 @@ class LibV2ManifestValidator:
                     "ST 17 promoted this to a required manifest key; "
                     "ensure the chunking workflow phase output is "
                     "threaded into archive_to_libv2 or use the operator "
-                    "backfill at LibV2/tools/libv2/scripts/backfill_dart_chunks.py."
+                    "backfill at LibV2/tools/libv2/scripts/backfill_legacy_chunks.py."
                 ),
                 location=location,
                 suggestion=(

@@ -154,7 +154,7 @@ class StreamingDecisionCapture:
         Args:
             course_code: Course code (e.g., "CIS_101")
             phase: Pipeline phase (e.g., "content-generator")
-            tool: "dart", "courseforge", or "trainforge"
+            tool: "semantik", "courseforge", or "trainforge"
             session_id: Optional session identifier (auto-generated if not provided)
             task_id: Phase 0: Orchestrator task ID for cross-linking (T-{8-hex})
             run_id: Phase 0: Explicit run ID (overrides env var and auto-generation)
@@ -872,7 +872,7 @@ def create_streaming_capture(
     Args:
         course_code: Course code (e.g., "CIS_101")
         phase: Pipeline phase (e.g., "content-generator")
-        tool: "dart", "courseforge", or "trainforge"
+        tool: "semantik", "courseforge", or "trainforge"
         session_id: Optional session identifier (auto-generated if not provided)
         task_id: Phase 0: Orchestrator task ID for cross-linking (T-{8-hex})
         run_id: Phase 0: Explicit run ID (overrides env var and auto-generation)

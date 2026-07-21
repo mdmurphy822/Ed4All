@@ -110,11 +110,11 @@ def test_content_type_gate_accepts_backstop_stamped_block(tmp_path):
         "sequence": 0,
         "content": (
             '<div class="reflection-prompt" data-cf-content-type="reflection" '
-            'data-cf-source-ids="dart:src#blk_1">'
+            'data-cf-source-ids="semantik:src#blk_1">'
             "<p>Reflect on how you would apply the order of operations.</p>"
             "</div>"
         ),
-        "source_ids": ["dart:src#blk_1"],
+        "source_ids": ["semantik:src#blk_1"],
     }
     blocks_path = tmp_path / "blocks_final.jsonl"
     blocks_path.write_text(json.dumps(entry) + "\n", encoding="utf-8")
@@ -137,10 +137,10 @@ def test_content_type_gate_fails_unstamped_reflection_block(tmp_path):
         "sequence": 0,
         "content": (
             '<div class="reflection-prompt" '
-            'data-cf-source-ids="dart:src#blk_1">'
+            'data-cf-source-ids="semantik:src#blk_1">'
             "<p>Reflect on the lesson.</p></div>"
         ),
-        "source_ids": ["dart:src#blk_1"],
+        "source_ids": ["semantik:src#blk_1"],
     }
     blocks_path = tmp_path / "blocks_final.jsonl"
     blocks_path.write_text(json.dumps(entry) + "\n", encoding="utf-8")
@@ -195,7 +195,7 @@ def test_restamp_stamps_content_type_and_mints_curie(tmp_path):
             "sequence": 0,
             "content": (
                 '<div class="reflection-prompt" '
-                'data-cf-source-ids="dart:src#blk_1">'
+                'data-cf-source-ids="semantik:src#blk_1">'
                 "<p>Reflect on how the order of operations guides you.</p>"
                 "</div>"
             ),

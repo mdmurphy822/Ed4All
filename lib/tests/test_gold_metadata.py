@@ -44,7 +44,7 @@ def _chunks():
     return {
         # source population (top-level *.html + source_references)
         "c_src": _chunk("c_src", _TEXT, item_path="textbook.html",
-                        source_refs=[{"sourceId": "dart:tb#1"}]),
+                        source_refs=[{"sourceId": "semantik:tb#1"}]),
         # course population (week_NN page, no source_refs)
         "c_crs": _chunk("c_crs", _TEXT, item_path="week_02/page.html"),
     }

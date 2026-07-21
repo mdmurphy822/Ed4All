@@ -1,4 +1,4 @@
-"""Cross-cutting utility helpers shared across DART, Courseforge, Trainforge, LibV2.
+"""Cross-cutting utility helpers shared across SemantiK, Courseforge, Trainforge, LibV2.
 
 These are pure-stdlib (or near-stdlib) helpers that previously lived inline
 in 20+ call sites under various spellings (``_sha256_file``, ``_write_jsonl``,

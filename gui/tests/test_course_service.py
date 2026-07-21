@@ -83,8 +83,8 @@ def test_save_objectives_preserves_citations_and_nested_extras(courseforge_expor
     # As the frontend now sends: the FULL object (extras verbatim) with the
     # editor's `text`, and NO server-derived stale `statement`.
     citations = [
-        {"chunk_id": "dart:phys-ch1#b07", "page": 12, "cosine": 0.83},
-        {"chunk_id": "dart:phys-ch1#b09", "page": 13, "cosine": 0.71},
+        {"chunk_id": "semantik:phys-ch1#b07", "page": 12, "cosine": 0.83},
+        {"chunk_id": "semantik:phys-ch1#b09", "page": 13, "cosine": 0.71},
     ]
     edited = {
         "terminal_objectives": [
@@ -94,9 +94,9 @@ def test_save_objectives_preserves_citations_and_nested_extras(courseforge_expor
                 "bloom_level": "analyze",
                 "cognitive_domain": "cognitive",
                 "citations": citations,
-                "chunk_ids": ["dart:phys-ch1#b07", "dart:phys-ch1#b09"],
+                "chunk_ids": ["semantik:phys-ch1#b07", "semantik:phys-ch1#b09"],
                 "sub_objectives": [
-                    {"id": "TO-01.1", "statement": "Define displacement.", "chunk_ids": ["dart:phys-ch1#b07"]},
+                    {"id": "TO-01.1", "statement": "Define displacement.", "chunk_ids": ["semantik:phys-ch1#b07"]},
                 ],
             },
         ],
@@ -105,7 +105,7 @@ def test_save_objectives_preserves_citations_and_nested_extras(courseforge_expor
                 "id": "CO-01",
                 "text": "Compute velocity.",  # unchanged text
                 "bloom_level": "apply",
-                "citations": [{"chunk_id": "dart:phys-ch1#b12", "page": 15}],
+                "citations": [{"chunk_id": "semantik:phys-ch1#b12", "page": 15}],
                 "source_refs": {"module": "M1", "confidence": 0.9},
             },
         ],
@@ -122,16 +122,16 @@ def test_save_objectives_preserves_citations_and_nested_extras(courseforge_expor
     assert to0["bloom_level"] == "analyze"
     assert to0["cognitive_domain"] == "cognitive"
     assert to0["citations"] == citations
-    assert to0["chunk_ids"] == ["dart:phys-ch1#b07", "dart:phys-ch1#b09"]
+    assert to0["chunk_ids"] == ["semantik:phys-ch1#b07", "semantik:phys-ch1#b09"]
     # Nested sub-objectives preserved verbatim (not flattened / re-shaped).
     assert to0["sub_objectives"] == [
-        {"id": "TO-01.1", "statement": "Define displacement.", "chunk_ids": ["dart:phys-ch1#b07"]},
+        {"id": "TO-01.1", "statement": "Define displacement.", "chunk_ids": ["semantik:phys-ch1#b07"]},
     ]
 
     co0 = on_disk["chapter_objectives"][0]
     assert co0["statement"] == "Compute velocity."
     assert co0["hierarchy_level"] == "chapter"
-    assert co0["citations"] == [{"chunk_id": "dart:phys-ch1#b12", "page": 15}]
+    assert co0["citations"] == [{"chunk_id": "semantik:phys-ch1#b12", "page": 15}]
     assert co0["source_refs"] == {"module": "M1", "confidence": 0.9}
 
     # Only the doc-level restamps changed relative to a reuse-compatible doc.

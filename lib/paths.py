@@ -56,9 +56,8 @@ PROJECT_ROOT = Path(os.environ.get(
 # training-captures/, SemantiK/output/). ``exports`` and ``semantik-output`` are
 # nested under their parent component dirs in-repo but flatten to a single level
 # under ED4ALL_HOME (an ED4ALL_HOME deployment ships no code, only data).
-# DART->semantik naming purge (task #19): the ``semantik-output`` basename
-# replaces the legacy ``dart-output``; ``semantik_output_dir`` dual-READs the
-# legacy basename on a pre-rename ED4ALL_HOME box (removal-scheduled for S4).
+# ``semantik_output_dir`` dual-READs the legacy ``dart-output`` basename on a
+# pre-rename ED4ALL_HOME box; the canonical basename is ``semantik-output``.
 _DATA_DIR_KEYS = ("state", "libv2", "exports", "training-captures", "semantik-output")
 
 
@@ -227,7 +226,7 @@ RUNS_PATH = STATE_PATH / "runs"
 
 
 # ============================================================================
-# COURSEFORGE EXPORTS / DART OUTPUT (data subdirs of code roots)
+# COURSEFORGE EXPORTS / SEMANTIK OUTPUT (data subdirs of code roots)
 # ============================================================================
 
 def courseforge_exports_dir() -> Path:
@@ -253,12 +252,10 @@ def semantik_output_dir() -> Path:
        canonical basename exists (or neither basename exists yet — the name a
        fresh relocated deploy should create).
     2. ``ED4ALL_HOME/dart-output`` (legacy, DeprecationWarning) when it exists
-       and the canonical ``semantik-output`` does NOT. The DART->semantik
-       naming purge (task #19) renamed the basename; a box provisioned before
-       the rename (e.g. the deployed DGX Spark) still carries ``dart-output/``,
+       and the canonical ``semantik-output`` does NOT. A box provisioned
+       before the rename still carries the legacy ``dart-output/`` basename,
        so this dual-READ fallback is load-bearing. Mirrors the
-       ``lib/libv2_storage.py::resolve_imscc_chunks_dir`` precedent; the
-       fallback is removal-scheduled for the S4 tighten.
+       ``lib/libv2_storage.py::resolve_imscc_chunks_dir`` precedent.
     3. ``SEMANTIK_PATH / "output"`` — the in-tree default (ED4ALL_HOME unset).
 
     Byte-stable to the in-tree path when ``ED4ALL_HOME`` is unset.
@@ -269,22 +266,15 @@ def semantik_output_dir() -> Path:
         legacy = home / "dart-output"
         if not canonical.exists() and legacy.exists():
             warnings.warn(
-                "DART->semantik purge (task #19): ED4ALL_HOME still carries the "
-                "legacy 'dart-output/' data dir; rename it to 'semantik-output/' "
-                "(the 'dart-output' read-fallback is removal-scheduled for S4).",
+                "ED4ALL_HOME still carries the legacy 'dart-output/' data dir; "
+                "rename it to 'semantik-output/' (the 'dart-output' read-fallback "
+                "is a compatibility shim for pre-rename boxes).",
                 DeprecationWarning,
                 stacklevel=2,
             )
             return legacy
         return canonical
     return SEMANTIK_PATH / "output"
-
-
-# DART->semantik naming purge (task #19): deprecated alias kept for the S4
-# tighten. This repo's blessed pattern is a dual-read shim (see
-# ``lib/libv2_storage.py::resolve_imscc_chunks_dir``); callers migrate to
-# ``semantik_output_dir()`` and this alias is removed in S4.
-dart_output_dir = semantik_output_dir
 
 
 def get_endpoints_path() -> Path:
@@ -502,7 +492,7 @@ def ensure_run_directories(run_path: Path) -> None:
     directories = [
         run_path,
         run_path / "config_snapshot",
-        run_path / "artifacts" / "dart",
+        run_path / "artifacts" / "semantik",
         run_path / "artifacts" / "courseforge",
         run_path / "artifacts" / "trainforge",
         run_path / "decisions",
@@ -630,7 +620,6 @@ __all__ = [
     "ensure_data_dir",
     "courseforge_exports_dir",
     "semantik_output_dir",
-    "dart_output_dir",  # DART->semantik purge (task #19): S4-removal alias
     "get_endpoints_path",
     "get_state_runs_dir",
 

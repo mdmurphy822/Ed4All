@@ -25,7 +25,8 @@ only if ALL hold:
 Per-block accepted-edit cap :data:`_MAX_EDITS_PER_BLOCK`; a per-doc runaway
 tripwire reverts the WHOLE pass if edited-tokens/total-tokens exceeds
 :data:`_RUNAWAY_TOKEN_FRACTION`. Every accepted edit is annotated
-(``data-dart-repair`` downstream) — provenance amended honestly, never faked —
+(the downstream adapter stamps ``data-semantik-repair``) — provenance
+amended honestly, never faked —
 and :func:`assert_repair_conservation` is the strict replay check the
 adapter/downstream seam runs before trusting a repaired block.
 
@@ -564,7 +565,7 @@ def assert_repair_conservation(
 
     Raises :class:`RepairConservationError` on ANY other drift — the downstream
     seam catches it and reverts the block to verbatim ``original`` (the block's
-    ``data-dart-repair`` exemption is honored ONLY when this check passes).
+    ``data-semantik-repair`` annotation is honored ONLY when this check passes).
     """
     replayed = apply_accepted_edits(original, accepted_edits)
     if replayed != repaired:
@@ -642,7 +643,7 @@ def _joined_region_text(region: Region, feature_blocks: list[FeatureBlock]) -> s
     text that ships. The confusable detector (:func:`region_text_is_garbled` +
     the frozen ``CONFUSABLE_MAP`` of √→V / l↔1 / O↔0) finds nothing to repair
     because the VLM already resolved those confusions at the source, so the pass
-    legitimately emits ZERO ``data-dart-repair`` annotations (``cascade.py``
+    legitimately emits ZERO ``data-semantik-repair`` annotations (``cascade.py``
     stamps only regions with >=1 gated edit). That is the expected outcome —
     "VLM text has no repairable confusables left" — not a mis-wired gate.
     """

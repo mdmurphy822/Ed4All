@@ -407,8 +407,25 @@ def test_math_mathml_present():
 
 
 # ---------------------------------------------------------------------------
-# Dimension 8: PEDAGOGY (report-only) -- data-dart-unit tally
+# Dimension 8: PEDAGOGY (report-only) -- pedagogical-unit tally
 # ---------------------------------------------------------------------------
+# LEGACY-COMPAT: these fixtures annotate with ``data-dart-unit`` to exercise the
+# scorecard's legacy dual-read fallback; live SemantiK output uses
+# ``data-semantik-unit`` (covered by test_pedagogy_counts_semantik_units below).
+def test_pedagogy_counts_semantik_units_primary():
+    body = (
+        '<h1 id="s1">T</h1>'
+        '<section data-semantik-unit="worked_example"><p>a</p></section>'
+        '<section data-semantik-unit="exercise_set"><p>b</p></section>'
+    )
+    d = _score(_doc(body)).dimensions["pedagogy"]
+    assert d.details["semantik_unit_total"] == 2
+    assert d.details["semantik_units_by_type"] == {
+        "exercise_set": 1,
+        "worked_example": 1,
+    }
+
+
 def test_pedagogy_counts_dart_units():
     body = (
         '<h1 id="s1">T</h1>'
@@ -422,15 +439,15 @@ def test_pedagogy_counts_dart_units():
     d = _score(_doc(body)).dimensions["pedagogy"]
     assert d.scored is False
     assert d.verdict == "REPORT"
-    assert d.details["dart_unit_total"] == 6
+    assert d.details["semantik_unit_total"] == 6
     assert d.details["distinct_unit_types"] == 3
-    assert d.details["dart_units_by_type"] == {
+    assert d.details["semantik_units_by_type"] == {
         "exercise_set": 1,
         "section_opener": 2,
         "worked_example": 3,
     }
     # by-type keys are emitted in sorted order for determinism.
-    assert list(d.details["dart_units_by_type"]) == sorted(d.details["dart_units_by_type"])
+    assert list(d.details["semantik_units_by_type"]) == sorted(d.details["semantik_units_by_type"])
 
 
 def test_pedagogy_empty_and_whitespace_units_skipped():
@@ -441,8 +458,8 @@ def test_pedagogy_empty_and_whitespace_units_skipped():
         '<section data-dart-unit="worked_example">kept</section>'
     )
     d = _score(_doc(body)).dimensions["pedagogy"]
-    assert d.details["dart_unit_total"] == 1
-    assert d.details["dart_units_by_type"] == {"worked_example": 1}
+    assert d.details["semantik_unit_total"] == 1
+    assert d.details["semantik_units_by_type"] == {"worked_example": 1}
 
 
 def test_pedagogy_no_units_is_noop_not_penalty():
@@ -453,8 +470,8 @@ def test_pedagogy_no_units_is_noop_not_penalty():
     d = r.dimensions["pedagogy"]
     assert d.scored is False
     assert d.verdict == "REPORT"
-    assert d.details["dart_unit_total"] == 0
-    assert d.details["dart_units_by_type"] == {}
+    assert d.details["semantik_unit_total"] == 0
+    assert d.details["semantik_units_by_type"] == {}
     assert d.details["distinct_unit_types"] == 0
     assert any("N/A" in n for n in d.notes)
 
@@ -479,7 +496,7 @@ def test_pedagogy_never_drags_composite_down():
     # is non-load-bearing.
     body = GOOD_BODY + '<section data-dart-unit="worked_example"><p>x</p></section>'
     r = _score(_doc(body))
-    assert r.dimensions["pedagogy"].details["dart_unit_total"] == 1
+    assert r.dimensions["pedagogy"].details["semantik_unit_total"] == 1
     assert r.verdict == "PASS"
     # The pedagogy dim is present but absent from the scored-weight config.
     assert "pedagogy" not in ss.CONFIG["weights"]

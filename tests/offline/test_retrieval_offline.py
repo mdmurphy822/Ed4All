@@ -42,7 +42,7 @@ def test_bm25_retrieval_end_to_end_offline(mini_course: Path, offline_guard):
     """BM25 over the mini-course fixture answers every gold query — offline."""
     from LibV2.tools.libv2.retriever import LazyBM25
 
-    chunks = _load_jsonl(mini_course / "dart_chunks" / "chunks.jsonl")
+    chunks = _load_jsonl(mini_course / "semantik_chunks" / "chunks.jsonl")
     bm25 = LazyBM25(chunks)
     questions = _gold_questions(mini_course)
     assert questions, "fixture gold set must carry questions"
@@ -60,7 +60,7 @@ def test_multi_retriever_offline(mini_course: Path, offline_guard):
         repo_root=libv2_root, course_slug="mini-retrieval-101"
     )
     # decompose=False keeps it to a single in-process BM25 pass (no fan-out
-    # threads opening anything); course-scoped so it resolves the dart chunkset.
+    # threads opening anything); course-scoped so it resolves the semantik chunkset.
     result = retriever.retrieve(
         "chunking strategies",
         limit=5,
@@ -75,9 +75,9 @@ def test_citation_anchor_offline(mini_course: Path, offline_guard):
     the query path and must be offline too)."""
     anchor_mod = pytest.importorskip("lib.retrieval.citation_anchor")
 
-    chunks_path = mini_course / "dart_chunks" / "chunks.jsonl"
+    chunks_path = mini_course / "semantik_chunks" / "chunks.jsonl"
     report = anchor_mod.anchor_report(
-        chunks_path, mini_course, chunkset_kind="dart"
+        chunks_path, mini_course, chunkset_kind="semantik"
     )
     assert report["total_chunks"] >= 1
     # The fixture deliberately includes one fabricated-span chunk, so the
@@ -106,7 +106,15 @@ def _discover_real_corpus_chunkset() -> Path | None:
     courses_root = _REPO_ROOT / "LibV2" / "courses"
     if not courses_root.is_dir():
         return None
-    rel_paths = ("corpus/chunks.jsonl", "dart_chunks/chunks.jsonl", "imscc_chunks/chunks.jsonl")
+    # Mirrors the production chunkset resolver precedence (imscc -> semantik ->
+    # legacy dart -> legacy corpus); dart_chunks/ + corpus/ stay as legacy
+    # dual-read coverage for un-migrated on-disk corpora.
+    rel_paths = (
+        "imscc_chunks/chunks.jsonl",
+        "semantik_chunks/chunks.jsonl",
+        "dart_chunks/chunks.jsonl",
+        "corpus/chunks.jsonl",
+    )
     for course_dir in sorted(courses_root.iterdir(), reverse=True):
         if not course_dir.is_dir():
             continue

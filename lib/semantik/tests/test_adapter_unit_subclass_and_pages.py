@@ -63,7 +63,7 @@ class _Result:
 # ---------------------------------------------------------------------------
 def test_unit_section_carries_page_rollup():
     html = _render_chapters([_worked_example_chapter()])
-    m = re.search(r'<section class="dart-unit dart-unit-worked_example"[^>]*>', html)
+    m = re.search(r'<section class="semantik-unit semantik-unit-worked_example"[^>]*>', html)
     assert m is not None
     tag = m.group(0)
     # Members span pages 3..5 → rollup "3-5".
@@ -89,7 +89,7 @@ def test_single_page_unit_rollup_is_single_value():
         ],
     )
     html = _render_chapters([ch])
-    m = re.search(r'<section class="dart-unit dart-unit-worked_example"[^>]*>', html)
+    m = re.search(r'<section class="semantik-unit semantik-unit-worked_example"[^>]*>', html)
     assert 'data-semantik-pages="7"' in m.group(0)
 
 

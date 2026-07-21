@@ -202,7 +202,7 @@ def test_provenance_marker_stale_skips_as_legacy(tmp_path):
 
 
 def test_tier1_mini_course_dart_all_honest_chunks_anchor():
-    chunks_path = MINI_COURSE / "dart_chunks" / "chunks.jsonl"
+    chunks_path = MINI_COURSE / "semantik_chunks" / "chunks.jsonl"
     assert chunks_path.is_file(), (
         "mini-course fixture missing; run "
         "tests/fixtures/retrieval/mini_course/build_mini_course.py"
@@ -240,7 +240,7 @@ def test_tier1_mini_course_fabricated_span_not_exact():
     resolver detects the chunker bug class without repairing the span."""
     from lib.retrieval.citation_anchor import resolve_citation_anchor
 
-    chunks_path = MINI_COURSE / "dart_chunks" / "chunks.jsonl"
+    chunks_path = MINI_COURSE / "semantik_chunks" / "chunks.jsonl"
     chunks = [
         json.loads(line)
         for line in chunks_path.read_text().splitlines()
@@ -253,8 +253,8 @@ def test_tier1_mini_course_fabricated_span_not_exact():
 
 def test_tier1_mini_course_imscc_resolves():
     """The mini cartridge member item_paths resolve via stdlib zipfile."""
-    chunks_path = MINI_COURSE / "dart_chunks" / "chunks.jsonl"
-    # The dart chunks use item_path "alpha.html"/"beta.html" which are also
+    chunks_path = MINI_COURSE / "semantik_chunks" / "chunks.jsonl"
+    # The chunks use item_path "alpha.html"/"beta.html" which are also
     # the imscc member names — so the same chunkset resolves under the imscc
     # axis against the mini cartridge.
     report = anchor_report(chunks_path, MINI_COURSE, chunkset_kind="imscc")

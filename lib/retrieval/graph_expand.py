@@ -61,7 +61,8 @@ DECISION_TYPE_GRAPH_EXPAND = "grounded_answer_graph_expand"
 _DEFAULT_MAX_ADD = 4
 
 #: chunkset_kind -> chunks.jsonl relative path (mirrors citation_anchor).
-#: DART->semantik purge Stage 1 (dual-READ): accept the ratified kind + dir.
+#: ``semantik`` is the current layout; the remaining kinds are dual-read
+#: fallbacks for legacy corpora.
 _CHUNKS_REL_BY_KIND: Dict[str, str] = {
     "semantik": "semantik_chunks/chunks.jsonl",
     "dart": "dart_chunks/chunks.jsonl",

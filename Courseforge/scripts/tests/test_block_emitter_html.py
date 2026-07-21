@@ -163,12 +163,12 @@ def test_self_check_question_attrs_with_source_ids() -> None:
         sequence=0,
         content={"question": "?", "options": []},
         bloom_level="understand",
-        source_ids=("dart:ch1#b1", "dart:ch1#b2"),
-        source_primary="dart:ch1#b1",
+        source_ids=("semantik:ch1#b1", "semantik:ch1#b2"),
+        source_primary="semantik:ch1#b1",
     )
     s = b.to_html_attrs()
-    assert ' data-cf-source-ids="dart:ch1#b1,dart:ch1#b2"' in s
-    assert ' data-cf-source-primary="dart:ch1#b1"' in s
+    assert ' data-cf-source-ids="semantik:ch1#b1,semantik:ch1#b2"' in s
+    assert ' data-cf-source-primary="semantik:ch1#b1"' in s
 
 
 def test_activity_attrs_shape() -> None:
@@ -243,13 +243,13 @@ def test_section_attrs_with_source_ids() -> None:
         sequence=0,
         content="Section heading",
         content_type_label="example",
-        source_ids=("dart:ch3#b9",),
-        source_primary="dart:ch3#b9",
+        source_ids=("semantik:ch3#b9",),
+        source_primary="semantik:ch3#b9",
     )
     s = b.to_html_attrs()
     assert ' data-cf-content-type="example"' in s
-    assert ' data-cf-source-ids="dart:ch3#b9"' in s
-    assert ' data-cf-source-primary="dart:ch3#b9"' in s
+    assert ' data-cf-source-ids="semantik:ch3#b9"' in s
+    assert ' data-cf-source-primary="semantik:ch3#b9"' in s
 
 
 def test_callout_attrs_shape() -> None:
@@ -294,11 +294,11 @@ def test_prereq_set_wrapper_only_source_attrs() -> None:
         page_id="p",
         sequence=0,
         content={"prerequisitePages": []},
-        source_ids=("dart:ch1#b1",),
-        source_primary="dart:ch1#b1",
+        source_ids=("semantik:ch1#b1",),
+        source_primary="semantik:ch1#b1",
     )
     s = b.to_html_attrs()
-    assert s == ' data-cf-source-ids="dart:ch1#b1" data-cf-source-primary="dart:ch1#b1"'
+    assert s == ' data-cf-source-ids="semantik:ch1#b1" data-cf-source-primary="semantik:ch1#b1"'
 
 
 def test_summary_takeaway_section_attrs() -> None:
@@ -309,11 +309,11 @@ def test_summary_takeaway_section_attrs() -> None:
         sequence=0,
         content="Recap text",
         content_type_label="summary",
-        source_ids=("dart:ch9#b1",),
+        source_ids=("semantik:ch9#b1",),
     )
     s = b.to_html_attrs()
     assert ' data-cf-content-type="summary"' in s
-    assert ' data-cf-source-ids="dart:ch9#b1"' in s
+    assert ' data-cf-source-ids="semantik:ch9#b1"' in s
 
 
 def test_reflection_prompt_wrapper_only() -> None:
@@ -323,10 +323,10 @@ def test_reflection_prompt_wrapper_only() -> None:
         page_id="p",
         sequence=0,
         content="Reflect on Y",
-        source_ids=("dart:ch2#b3",),
+        source_ids=("semantik:ch2#b3",),
     )
     s = b.to_html_attrs()
-    assert s == ' data-cf-source-ids="dart:ch2#b3"'
+    assert s == ' data-cf-source-ids="semantik:ch2#b3"'
 
 
 def test_discussion_prompt_wrapper_only() -> None:
@@ -349,12 +349,12 @@ def test_recap_wrapper_only_with_sources() -> None:
         page_id="p",
         sequence=0,
         content="Chapter recap text",
-        source_ids=("dart:ch5#b9", "dart:ch5#b10"),
-        source_primary="dart:ch5#b9",
+        source_ids=("semantik:ch5#b9", "semantik:ch5#b10"),
+        source_primary="semantik:ch5#b9",
     )
     assert (
         b.to_html_attrs()
-        == ' data-cf-source-ids="dart:ch5#b9,dart:ch5#b10" data-cf-source-primary="dart:ch5#b9"'
+        == ' data-cf-source-ids="semantik:ch5#b9,semantik:ch5#b10" data-cf-source-primary="semantik:ch5#b9"'
     )
 
 

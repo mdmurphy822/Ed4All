@@ -293,7 +293,7 @@ def test_html_parser_carries_key_claims_from_jsonld_blocks() -> None:
 
     key_claim = _structured_key_claim(
         claim="X is Y",
-        source_chunk_ids=["dart:rdf-primer-ch3#sec-2-rdf-graph"],
+        source_chunk_ids=["semantik:rdf-primer-ch3#sec-2-rdf-graph"],
     )
     objective_entry = _objective_alignment_entry(
         objective_id="TO-05",
@@ -389,7 +389,7 @@ def test_extract_section_metadata_returns_5_tuple_with_extras() -> None:
 
     key_claim = _structured_key_claim(
         claim="A is B",
-        source_chunk_ids=["dart:chunk_alpha"],
+        source_chunk_ids=["semantik:chunk_alpha"],
     )
     objective_entry = _objective_alignment_entry(
         objective_id="TO-07",
@@ -500,7 +500,7 @@ def test_create_chunk_stamps_key_claims_and_objective_alignment() -> None:
 
     key_claim = _structured_key_claim(
         claim="RDF triples link a subject to an object via a predicate",
-        source_chunk_ids=["dart:rdf-primer-ch3#sec-2-rdf-graph"],
+        source_chunk_ids=["semantik:rdf-primer-ch3#sec-2-rdf-graph"],
     )
     objective_entry = _objective_alignment_entry(
         objective_id="TO-05",
@@ -704,7 +704,7 @@ def test_chunk_v4_strict_validation_admits_new_optional_fields(
     # ---- (b) Structured chunk — passes. ---- #
     structured_chunk = _base_v4_chunk()
     structured_chunk["key_claims"] = [
-        {"claim": "X is Y", "source_chunk_ids": ["dart:chunk_A"]}
+        {"claim": "X is Y", "source_chunk_ids": ["semantik:chunk_A"]}
     ]
     structured_chunk["objective_alignment"] = [
         {
@@ -830,7 +830,7 @@ def test_pair_claim_support_uses_per_claim_attribution_when_chunk_carries_key_cl
         )
 
     # Two-sentence completion mapped 1-to-1 against two structured
-    # claim entries; each claim cites a distinct DART chunk ID. Each
+    # claim entries; each claim cites a distinct SemantiK chunk ID. Each
     # sentence MUST exceed the validator's ``_MIN_SENTENCE_TOKENS=4``
     # content-token floor (alphabetic-only tokens of >=2 chars) so the
     # decomposer doesn't drop them as too-short fragments before NLI
@@ -853,8 +853,8 @@ def test_pair_claim_support_uses_per_claim_attribution_when_chunk_carries_key_cl
         "definitions under the closed-world axiom."
     )
     chunk_id_to_text_map = {
-        "dart:chunk_A": chunk_a_text,
-        "dart:chunk_B": chunk_b_text,
+        "semantik:chunk_A": chunk_a_text,
+        "semantik:chunk_B": chunk_b_text,
     }
     chunk = {
         "text": "Parent chunk body text — not the per-claim attributed text.",
@@ -863,14 +863,14 @@ def test_pair_claim_support_uses_per_claim_attribution_when_chunk_carries_key_cl
                 "claim": (
                     "RDF triples link a subject to an object via a predicate"
                 ),
-                "source_chunk_ids": ["dart:chunk_A"],
+                "source_chunk_ids": ["semantik:chunk_A"],
             },
             {
                 "claim": (
                     "SHACL constraints validate RDF graphs against shape "
                     "definitions"
                 ),
-                "source_chunk_ids": ["dart:chunk_B"],
+                "source_chunk_ids": ["semantik:chunk_B"],
             },
         ],
     }
@@ -925,7 +925,7 @@ def test_pair_claim_support_uses_per_claim_attribution_when_chunk_carries_key_cl
         f"got {pcs!r}"
     )
     pcs_chunk_ids = [entry.get("source_chunk_ids") for entry in pcs]
-    assert pcs_chunk_ids == [["dart:chunk_A"], ["dart:chunk_B"]], (
+    assert pcs_chunk_ids == [["semantik:chunk_A"], ["semantik:chunk_B"]], (
         "per_claim_support[*].source_chunk_ids MUST be populated per "
         f"sentence from the matched structured claim; got {pcs_chunk_ids!r}"
     )
@@ -1059,7 +1059,7 @@ def test_assessment_objective_alignment_resolves_via_synthesized_objectives_sour
                 "id": "TO-05",
                 "text": "Apply RDF/SHACL constraints to validate a graph.",
                 "source_refs": [
-                    {"ref": "ch3", "chunk_ids": ["dart:chunk_A"]}
+                    {"ref": "ch3", "chunk_ids": ["semantik:chunk_A"]}
                 ],
             }
         ],
@@ -1188,11 +1188,11 @@ def test_merge_small_sections_unions_audit_fields_across_merge() -> None:
 
     sec_a_key_claim = _structured_key_claim(
         claim="A claim from section A",
-        source_chunk_ids=["dart:chunk_A1"],
+        source_chunk_ids=["semantik:chunk_A1"],
     )
     sec_b_key_claim = _structured_key_claim(
         claim="A claim from section B",
-        source_chunk_ids=["dart:chunk_B1"],
+        source_chunk_ids=["semantik:chunk_B1"],
     )
     # Overlapping objective_id ("TO-05") on both sections — first-seen
     # wins. Section A is emitted first, so its entry survives.

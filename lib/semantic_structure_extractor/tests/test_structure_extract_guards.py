@@ -6,7 +6,7 @@ model). Covers:
 
 - 1a continuation-article merge (a headless second article folds into the
   previous chapter instead of minting ``Chapter 2``).
-- 1b headingless ``<section class="dart-section">`` wrappers group as
+- 1b headingless ``<section class="semantik-section">`` wrappers group as
   contentBlocks under the preceding heading-bearing section.
 - 1c a noncontent / numbered-apparatus heading ("Preface", "1.4 Exercises")
   does not mint a section — its content regroups.
@@ -64,14 +64,14 @@ _TWO_ARTICLE_HTML = """
   <nav class="toc"><p>1.1 Whole Numbers</p><p>1.2 Integers</p></nav>
   <article role="doc-chapter" id="chap-1">
     <header><h2 id="c1">Foundations</h2></header>
-    <section class="dart-section"><h3>1.1 Whole Numbers</h3><p>Whole numbers intro.</p></section>
-    <section class="dart-section"><p>Stray paragraph one, no heading.</p></section>
-    <section class="dart-section"><p>Stray paragraph two, no heading.</p></section>
-    <section class="dart-section"><h3>1.4 Exercises</h3><p>Do problems 1-20.</p></section>
+    <section class="semantik-section"><h3>1.1 Whole Numbers</h3><p>Whole numbers intro.</p></section>
+    <section class="semantik-section"><p>Stray paragraph one, no heading.</p></section>
+    <section class="semantik-section"><p>Stray paragraph two, no heading.</p></section>
+    <section class="semantik-section"><h3>1.4 Exercises</h3><p>Do problems 1-20.</p></section>
   </article>
   <article role="doc-chapter" id="chap-2">
-    <section class="dart-section"><h3>1.2 Integers</h3><p>Integers continue here.</p></section>
-    <section class="dart-section"><p>Continuation body block.</p></section>
+    <section class="semantik-section"><h3>1.2 Integers</h3><p>Integers continue here.</p></section>
+    <section class="semantik-section"><p>Continuation body block.</p></section>
   </article>
 </main></body></html>
 """
@@ -101,7 +101,7 @@ def test_first_article_never_merges(monkeypatch):
     html = (
         '<html lang="en"><body><main>'
         '<article role="doc-chapter" id="chap-1">'
-        '<section class="dart-section"><p>Body with no chapter heading.</p></section>'
+        '<section class="semantik-section"><p>Body with no chapter heading.</p></section>'
         "</article></main></body></html>"
     )
     res = _extract(html)
@@ -117,14 +117,14 @@ def test_first_article_never_merges(monkeypatch):
 def test_headingless_wrappers_group_under_preceding_section(monkeypatch):
     monkeypatch.setenv(_GUARDS_ENV, "1")
     wrappers = "".join(
-        f'<section class="dart-section"><p>Body block {i}.</p></section>'
+        f'<section class="semantik-section"><p>Body block {i}.</p></section>'
         for i in range(5)
     )
     html = (
         '<html lang="en"><body><main>'
         '<article role="doc-chapter" id="chap-1">'
         '<header><h2>Foundations</h2></header>'
-        '<section class="dart-section"><h3>1.1 Whole Numbers</h3><p>Lead prose.</p></section>'
+        '<section class="semantik-section"><h3>1.1 Whole Numbers</h3><p>Lead prose.</p></section>'
         f"{wrappers}"
         "</article></main></body></html>"
     )
@@ -148,8 +148,8 @@ def test_headingless_wrappers_before_any_section_go_to_lead(monkeypatch):
         '<html lang="en"><body><main>'
         '<article role="doc-chapter" id="chap-1">'
         '<header><h2>Foundations</h2></header>'
-        '<section class="dart-section"><p>Orphan lead block.</p></section>'
-        '<section class="dart-section"><h3>1.1 Whole Numbers</h3><p>Real section.</p></section>'
+        '<section class="semantik-section"><p>Orphan lead block.</p></section>'
+        '<section class="semantik-section"><h3>1.1 Whole Numbers</h3><p>Real section.</p></section>'
         "</article></main></body></html>"
     )
     res = _extract(html)
@@ -186,8 +186,8 @@ def test_noncontent_heading_filtered_on_article_path(monkeypatch):
         '<html lang="en"><body><main>'
         '<article role="doc-chapter" id="chap-1">'
         '<header><h2>Foundations</h2></header>'
-        '<section class="dart-section"><h3>Preface</h3><p>Front matter prose.</p></section>'
-        '<section class="dart-section"><h3>1.1 Whole Numbers</h3><p>Real prose.</p></section>'
+        '<section class="semantik-section"><h3>Preface</h3><p>Front matter prose.</p></section>'
+        '<section class="semantik-section"><h3>1.1 Whole Numbers</h3><p>Real prose.</p></section>'
         "</article></main></body></html>"
     )
     res = _extract(html)
@@ -224,7 +224,7 @@ def test_diagnostics_fields_populated(monkeypatch):
 def test_overcount_warning_fires(monkeypatch, caplog):
     monkeypatch.setenv(_GUARDS_ENV, "1")
     secs = "".join(
-        f'<section class="dart-section"><h3>1.{i} Topic {i}</h3><p>x</p></section>'
+        f'<section class="semantik-section"><h3>1.{i} Topic {i}</h3><p>x</p></section>'
         for i in range(1, 10)
     )
     html = (

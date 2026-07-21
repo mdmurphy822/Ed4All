@@ -43,7 +43,7 @@ import requests
 
 PAIRS_ROOT = Path("data/pairs")
 ARXIV_CACHE = Path("data/ar5iv_html_cache")
-USER_AGENT = "dart-semantic/0.0.1"
+USER_AGENT = "semantik-structure/0.0.1"
 
 
 # ---------------------------------------------------------------------

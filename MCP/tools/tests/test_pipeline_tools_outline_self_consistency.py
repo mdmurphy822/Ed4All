@@ -417,8 +417,8 @@ def _seed_grounded_project(tmp_path: Path, project_id: str) -> Path:
 
 
 def _seed_chunkset(libv2_root: Path, course_slug: str) -> None:
-    """Write a tiny dart_chunks/chunks.jsonl whose ids match the objectives."""
-    chunks_dir = libv2_root / "courses" / course_slug / "dart_chunks"
+    """Write a tiny semantik_chunks/chunks.jsonl whose ids match the objectives."""
+    chunks_dir = libv2_root / "courses" / course_slug / "semantik_chunks"
     chunks_dir.mkdir(parents=True, exist_ok=True)
     lines = [
         {"id": "course_chunk_00001", "text": "Body of chunk one about concept A."},
@@ -760,12 +760,12 @@ def test_all_noncontent_week_does_not_seed_donor_block_id(
     _seed_chunkset(libv2_root, course_slug)
     monkeypatch.setenv("ED4ALL_LIBV2_ROOT", str(libv2_root))
 
-    # Stage a single DART HTML file whose only week-1 heading is a donor
+    # Stage a single SemantiK HTML file whose only week-1 heading is a donor
     # acknowledgments line (the live-run leak). The staging dir is passed
     # explicitly so collect_staged_html finds it.
     staging_dir = tmp_path / "staging"
     staging_dir.mkdir(parents=True, exist_ok=True)
-    # DART-shaped: a <section> wrapping the donor <h2> + a paragraph long
+    # SemantiK-shaped: a <section> wrapping the donor <h2> + a paragraph long
     # enough (>= 30 words) to survive parse_dart_html_files' min-signal
     # filter, so the donor topic actually reaches the week grouping (and
     # the non-content heading filter).
@@ -846,7 +846,7 @@ def test_outline_block_plan_emits_prose_blocks_topic_rich_week(
     _seed_chunkset(libv2_root, course_slug)
     monkeypatch.setenv("ED4ALL_LIBV2_ROOT", str(libv2_root))
 
-    # Stage a topic-rich DART file so week 1 has a real content topic
+    # Stage a topic-rich SemantiK file so week 1 has a real content topic
     # (page heading derived from the topic, not the week_NN fallback).
     staging_dir = tmp_path / "staging"
     staging_dir.mkdir(parents=True, exist_ok=True)
@@ -922,7 +922,7 @@ def test_outline_block_plan_emits_prose_blocks_topic_empty_week(
     """KEYSTONE regression: the topic-empty (week_NN) fallback page also
     emits prose block(s), not just an objective.
 
-    When a week has no usable content topic (no staged DART, or every
+    When a week has no usable content topic (no staged SemantiK, or every
     topic filtered as non-content noise), the builder falls through to the
     ``page_count = max(0, 1) = 1`` minimum with a neutral ``week_NN``
     heading. That fallback page MUST still carry the prose block plan —
@@ -1009,7 +1009,7 @@ def test_resolve_inter_tier_validators_imports_yaml_declared_chain():
 def _seed_two_co_one_week_project(tmp_path: Path, project_id: str) -> Path:
     """Scaffold: ONE week carrying TWO grounded COs, each with a focused
     chunk set (CO-01 → chunks 1-3, CO-02 → chunks 4-6, no overlap). Paired
-    with two staged DART topics so the week emits TWO pages — page 0 maps
+    with two staged SemantiK topics so the week emits TWO pages — page 0 maps
     positionally to CO-01, page 1 to CO-02.
     """
     exports_root = tmp_path / "Courseforge" / "exports"
@@ -1059,7 +1059,7 @@ def _seed_two_co_one_week_project(tmp_path: Path, project_id: str) -> Path:
 
 
 def _seed_six_chunk_set(libv2_root: Path, course_slug: str) -> None:
-    chunks_dir = libv2_root / "courses" / course_slug / "dart_chunks"
+    chunks_dir = libv2_root / "courses" / course_slug / "semantik_chunks"
     chunks_dir.mkdir(parents=True, exist_ok=True)
     lines = [
         {"id": f"course_chunk_{n:05d}", "text": f"Body of chunk {n}."}
@@ -1071,7 +1071,7 @@ def _seed_six_chunk_set(libv2_root: Path, course_slug: str) -> None:
 
 
 def _stage_two_topics(tmp_path: Path) -> Path:
-    """Two content-rich DART topics → week 1 emits two pages.
+    """Two content-rich SemantiK topics → week 1 emits two pages.
 
     The headings (``Photosynthesis in Plants`` / ``The Krebs Cycle``) are
     chosen to clear ``_content_gen_helpers._is_low_signal_heading`` so they
@@ -1225,7 +1225,7 @@ def test_outline_page_falls_back_to_week_union_when_co_below_floor(
     _patch_project_root(monkeypatch, tmp_path)
     libv2_root = tmp_path / "libv2"
     course_slug = project_id.lower().replace("_", "-").replace(" ", "-")
-    chunks_dir = libv2_root / "courses" / course_slug / "dart_chunks"
+    chunks_dir = libv2_root / "courses" / course_slug / "semantik_chunks"
     chunks_dir.mkdir(parents=True, exist_ok=True)
     (chunks_dir / "chunks.jsonl").write_text(
         "\n".join(json.dumps(

@@ -8,7 +8,7 @@ appearing in a ch1-3 extract).
 NO models / GPU. Exercises ``drop_toc_and_frontmatter`` on SYNTHETIC
 ``region_provenance`` mirroring the real EA2e case, then chains the post-detector
 IR through ``build_chapters_ir`` → ``normalize_cascade_to_ed4all`` →
-``DartMarkersValidator``.
+``SemantiKMarkersValidator``.
 
 Run:
   ED4ALL_NLI_DEVICE=cpu ED4ALL_EMBEDDING_DEVICE=cpu \
@@ -582,13 +582,13 @@ def test_zone_flag_default_on_when_unset(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# (4) Chain — post-detector IR → adapter → DartMarkersValidator.
+# (4) Chain — post-detector IR → adapter → SemantiKMarkersValidator.
 # ---------------------------------------------------------------------------
 
 
-def test_chain_ir_to_adapter_to_dart_markers():
+def test_chain_ir_to_adapter_to_semantik_markers():
     from lib.semantik.adapter import normalize_cascade_to_ed4all
-    from lib.validators.dart_markers import DartMarkersValidator
+    from lib.validators.semantik_markers import SemantiKMarkersValidator
 
     class _Res:
         region_provenance = _ea2e_case()
@@ -616,9 +616,9 @@ def test_chain_ir_to_adapter_to_dart_markers():
     res.chapters = chapters
     out = normalize_cascade_to_ed4all(res, pdf_stem="ea2e_ch1")
 
-    vres = DartMarkersValidator().validate({"html_content": out["html"]})
+    vres = SemantiKMarkersValidator().validate({"html_content": out["html"]})
     critical = [i for i in vres.issues if i.severity == "critical"]
-    assert vres.passed, f"dart_markers failed: {[i.code for i in critical]}"
+    assert vres.passed, f"semantik_markers failed: {[i.code for i in critical]}"
     assert not critical
 
     # The phantom chapter titles never reached the HTML.

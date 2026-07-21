@@ -84,7 +84,7 @@ def _rewrite_block_fixture(
         content={
             "key_claims": ["The central concept is X."],
             "curies": [],
-            "source_refs": source_refs or ["dart:slug#blk1"],
+            "source_refs": source_refs or ["semantik:slug#blk1"],
             "objective_refs": objective_refs or ["TO-01"],
         },
     )
@@ -97,7 +97,7 @@ def _rewrite_block_fixture(
 
 def test_outline_system_prompt_carries_wave27_source_refs_directive():
     """`source_refs[]` directive MUST be in the outline-tier system prompt
-    so the model populates the block dict with DART source-chunk IDs.
+    so the model populates the block dict with SemantiK source-chunk IDs.
     The rewrite tier reads `source_refs[]` to stamp the HTML
     `data-cf-source-ids` attribute (Wave4-I10 EMPTY_SOURCE_REFS critical
     gate)."""
@@ -135,7 +135,7 @@ def test_outline_user_prompt_carries_wave27_stamping_contract(monkeypatch):
     block = _outline_block_fixture()
     rendered = p._render_user_prompt(
         block=block,
-        source_chunks=[{"id": "dart:slug#blk1", "body": "Source body."}],
+        source_chunks=[{"id": "semantik:slug#blk1", "body": "Source body."}],
         objectives=[{"id": "TO-01", "statement": "Define X."}],
     )
 
@@ -212,15 +212,15 @@ def test_rewrite_user_prompt_surfaces_outline_source_refs_for_stamping(
 
     p = RewriteProvider(provider="local")
     block = _rewrite_block_fixture(
-        source_refs=["dart:phys101#s3_p1", "dart:phys101#s3_p2"],
+        source_refs=["semantik:phys101#s3_p1", "semantik:phys101#s3_p2"],
         objective_refs=["TO-02", "CO-05"],
     )
     rendered = p._render_user_prompt(block=block)
 
     # Outline source_refs are dumped via the JSON payload; the sourceId
     # values must appear so the model has the literal data to stamp.
-    assert "dart:phys101#s3_p1" in rendered
-    assert "dart:phys101#s3_p2" in rendered
+    assert "semantik:phys101#s3_p1" in rendered
+    assert "semantik:phys101#s3_p2" in rendered
     # objective_refs LO IDs likewise.
     assert "TO-02" in rendered
     assert "CO-05" in rendered

@@ -68,11 +68,11 @@
     "source_chunk_ids": {
       "type": "array",
       "items": {"type": "string", "minLength": 1},
-      "description": "Union of the outline source_refs[].sourceId resolved to DART chunk ids plus every key_claims[].source_chunk_ids[]. May be empty for scaffolding block_types; non-empty asserted only for substantive types by ManifestCompletenessValidator."
+      "description": "Union of the outline source_refs[].sourceId resolved to SemantiK chunk ids plus every key_claims[].source_chunk_ids[]. May be empty for scaffolding block_types; non-empty asserted only for substantive types by ManifestCompletenessValidator."
     },
     "source_refs": {
       "type": "array",
-      "description": "Verbatim copy of the outline source_refs[] (the DART sourceId list with roles). Unresolved sourceIds are preserved here even when omitted from source_chunk_ids.",
+      "description": "Verbatim copy of the outline source_refs[] (the SemantiK sourceId list with roles). Unresolved sourceIds are preserved here even when omitted from source_chunk_ids.",
       "items": {
         "type": "object",
         "additionalProperties": true,

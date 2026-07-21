@@ -84,7 +84,7 @@ def _choices_block(
     *,
     block_id: str = "page_01#assessment_item_q_0",
     choices: Optional[List[Dict[str, Any]]] = None,
-    source_ids: tuple = ("dart:rdf_intro#blk_0",),
+    source_ids: tuple = ("semantik:rdf_intro#blk_0",),
     block_type: str = "assessment_item",
 ) -> Block:
     """Trainforge-shape ``choices[]`` assessment_item Block fixture."""
@@ -125,7 +125,7 @@ def _legacy_split_block(
         "a fact in the graph."
     ),
     distractors: Optional[List[Dict[str, Any]]] = None,
-    source_ids: tuple = ("dart:rdf_intro#blk_0",),
+    source_ids: tuple = ("semantik:rdf_intro#blk_0",),
 ) -> Block:
     """Legacy ``distractors[] + answer_key`` shape fixture."""
     if distractors is None:
@@ -210,7 +210,7 @@ def test_happy_path_choices_shape_single_correct_no_entailment_passes():
     distractors that don't overlap source chunks above the floor →
     passed=True, action=None, no critical issues."""
     blocks = [_choices_block()]
-    chunks_lookup = {"dart:rdf_intro#blk_0": _GROUNDED_CHUNK_TEXT}
+    chunks_lookup = {"semantik:rdf_intro#blk_0": _GROUNDED_CHUNK_TEXT}
     validator = DistractorStructuralValidator()
 
     result = validator.validate({
@@ -233,7 +233,7 @@ def test_happy_path_legacy_split_shape_passes():
     # Source chunk talks about RDF triples; the legacy distractors talk
     # about XML / function calls / regex — no overlap above the 0.70
     # floor.
-    chunks_lookup = {"dart:rdf_intro#blk_0": _GROUNDED_CHUNK_TEXT}
+    chunks_lookup = {"semantik:rdf_intro#blk_0": _GROUNDED_CHUNK_TEXT}
     validator = DistractorStructuralValidator()
 
     result = validator.validate({
@@ -251,7 +251,7 @@ def test_non_assessment_blocks_silently_skipped():
         _non_assessment_block(block_id="page_01#concept_a", block_type="concept"),
         _non_assessment_block(block_id="page_01#example_b", block_type="example"),
     ]
-    chunks_lookup = {"dart:foo#blk_0": _GROUNDED_CHUNK_TEXT}
+    chunks_lookup = {"semantik:foo#blk_0": _GROUNDED_CHUNK_TEXT}
     validator = DistractorStructuralValidator()
 
     result = validator.validate({
@@ -282,7 +282,7 @@ def test_two_correct_answers_fails_multi_correct():
 
     result = validator.validate({
         "blocks": [block],
-        "source_chunks": {"dart:rdf_intro#blk_0": _GROUNDED_CHUNK_TEXT},
+        "source_chunks": {"semantik:rdf_intro#blk_0": _GROUNDED_CHUNK_TEXT},
     })
 
     assert result.passed is False
@@ -309,7 +309,7 @@ def test_zero_correct_answers_fails_no_correct():
 
     result = validator.validate({
         "blocks": [block],
-        "source_chunks": {"dart:rdf_intro#blk_0": _GROUNDED_CHUNK_TEXT},
+        "source_chunks": {"semantik:rdf_intro#blk_0": _GROUNDED_CHUNK_TEXT},
     })
 
     assert result.passed is False
@@ -350,7 +350,7 @@ def test_distractor_entailed_by_source_fails_critical():
 
     result = validator.validate({
         "blocks": [block],
-        "source_chunks": {"dart:rdf_intro#blk_0": source_text},
+        "source_chunks": {"semantik:rdf_intro#blk_0": source_text},
     })
 
     assert result.passed is False
@@ -385,7 +385,7 @@ def test_threshold_override_admits_high_overlap_distractor():
 
     result = validator.validate({
         "blocks": [block],
-        "source_chunks": {"dart:rdf_intro#blk_0": source_text},
+        "source_chunks": {"semantik:rdf_intro#blk_0": source_text},
         "max_source_overlap": 0.99,
     })
 
@@ -410,7 +410,7 @@ def test_block_missing_choices_emits_warning_and_skips():
 
     result = validator.validate({
         "blocks": [block],
-        "source_chunks": {"dart:rdf_intro#blk_0": _GROUNDED_CHUNK_TEXT},
+        "source_chunks": {"semantik:rdf_intro#blk_0": _GROUNDED_CHUNK_TEXT},
     })
 
     assert result.passed is True  # warning-only is non-blocking
@@ -485,7 +485,7 @@ def test_capture_emits_one_distractor_structural_check_per_block():
         _choices_block(block_id="page_01#assessment_item_q_0"),
         _choices_block(block_id="page_01#assessment_item_q_1"),
     ]
-    chunks_lookup = {"dart:rdf_intro#blk_0": _GROUNDED_CHUNK_TEXT}
+    chunks_lookup = {"semantik:rdf_intro#blk_0": _GROUNDED_CHUNK_TEXT}
     validator = DistractorStructuralValidator()
     capture = _RecordingCapture()
 
@@ -527,7 +527,7 @@ def test_capture_emits_failed_event_on_multi_correct():
 
     result = validator.validate({
         "blocks": [block],
-        "source_chunks": {"dart:rdf_intro#blk_0": _GROUNDED_CHUNK_TEXT},
+        "source_chunks": {"semantik:rdf_intro#blk_0": _GROUNDED_CHUNK_TEXT},
         "decision_capture": capture,
     })
 
@@ -547,7 +547,7 @@ def test_capture_emits_no_choices_event():
 
     validator.validate({
         "blocks": [block],
-        "source_chunks": {"dart:rdf_intro#blk_0": _GROUNDED_CHUNK_TEXT},
+        "source_chunks": {"semantik:rdf_intro#blk_0": _GROUNDED_CHUNK_TEXT},
         "decision_capture": capture,
     })
 
@@ -594,11 +594,11 @@ def test_chunks_lookup_alias_resolves_same_as_source_chunks():
 
     result_via_alias = validator.validate({
         "blocks": [block],
-        "chunks_lookup": {"dart:rdf_intro#blk_0": _GROUNDED_CHUNK_TEXT},
+        "chunks_lookup": {"semantik:rdf_intro#blk_0": _GROUNDED_CHUNK_TEXT},
     })
     result_via_canonical = validator.validate({
         "blocks": [block],
-        "source_chunks": {"dart:rdf_intro#blk_0": _GROUNDED_CHUNK_TEXT},
+        "source_chunks": {"semantik:rdf_intro#blk_0": _GROUNDED_CHUNK_TEXT},
     })
 
     assert result_via_alias.passed == result_via_canonical.passed

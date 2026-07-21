@@ -65,7 +65,7 @@ def planner_fixture(tmp_path, monkeypatch):
 
     staging = tmp_path / "staging"
     staging.mkdir()
-    _write_dart_html(
+    _write_semantik_html(
         staging / "book.html",
         ["Photosynthesis Basics", "Light Reactions", "The Calvin Cycle",
          "Factors Affecting Photosynthesis"],
@@ -77,7 +77,7 @@ def planner_fixture(tmp_path, monkeypatch):
     }
 
 
-def _write_dart_html(path: Path, headings: list) -> None:
+def _write_semantik_html(path: Path, headings: list) -> None:
     parts = ['<a class="skip-link" href="#main">Skip</a><main role="main">']
     for idx, h in enumerate(headings, start=1):
         parts.append(f'<section aria-labelledby="s{idx}"><h2 id="s{idx}">{h}</h2>')

@@ -80,7 +80,7 @@ _REMEDIATION_DIRECTIVES_BY_GATE_ID: Dict[str, str] = {
         "TO-NN / CO-NN learning objective ID."
     ),
     "outline_source_refs": (
-        "Populate 'source_refs' with at least one DART sourceId "
+        "Populate 'source_refs' with at least one SemantiK sourceId "
         "from the supplied source-chunk grounding list."
     ),
     # Rewrite-tier gates (consume Block.content as an HTML string).
@@ -101,7 +101,7 @@ _REMEDIATION_DIRECTIVES_BY_GATE_ID: Dict[str, str] = {
     ),
     "rewrite_source_refs": (
         "Stamp data-cf-source-ids on the section/heading wrapper "
-        "with at least one DART sourceId."
+        "with at least one SemantiK sourceId."
     ),
     # CB5 (content-block-quality-2026-06 §CB5a) — stub-example
     # remediation. ExampleCompletenessValidator fires

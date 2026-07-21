@@ -9,12 +9,11 @@ entry emitted by Courseforge.
 This test builds a minimal fixture:
 
   * A staging dir with two ``*_synthesized.json`` sidecars that carry
-    realistic ``sections[]`` entries (the Wave 8 shape documented in
-    ``DART/CLAUDE.md`` § Source provenance).
+    realistic ``sections[]`` entries (the SemantiK source-provenance shape).
   * A Courseforge project dir containing a ``project_config.json`` so
     the router can discover ``duration_weeks`` and ``course_name``.
   * No textbook_structure / objectives file — forces the fallback to
-    DART-driven topic bags, which is the worst-case path in the
+    source-driven topic bags, which is the worst-case path in the
     heuristic. If even this path produces populated refs, better inputs
     will too.
 
@@ -23,8 +22,8 @@ Assertions cover:
   * Output dict keys are ``week_NN`` strings.
   * Each week has at least one page entry with a ``primary`` ref list.
   * Refs conform to the ``semantik:{slug}#{block_id}`` shape (dual-read still
-    accepts the legacy ``dart:`` prefix until the Stage-4 tighten).
-  * ``routing_mode`` reports ``keyword_overlap_heuristic`` when DART
+    accepts the legacy ``dart:`` prefix on read — allowlisted legacy-compat).
+  * ``routing_mode`` reports ``keyword_overlap_heuristic`` when source
     blocks were indexed.
 """
 
@@ -46,7 +45,8 @@ from MCP.tools import pipeline_tools  # noqa: E402
 from MCP.tools.pipeline_tools import _build_tool_registry  # noqa: E402
 
 # SemantiK source-reference canonical shape: semantik:{slug}#{block_id}
-# (dual-read: the legacy dart: prefix is still accepted until the Stage-4 tighten).
+# (dual-read: the legacy dart: prefix is still accepted on read — allowlisted
+# legacy-compat).
 _SOURCE_ID_RE = re.compile(r"^(?:dart|semantik):[a-z0-9_\-]+#[A-Za-z0-9_]+$")
 
 
@@ -77,7 +77,7 @@ def _write_project_config(project_dir: Path, course_name: str,
 
 @pytest.fixture
 def source_router_fixture(tmp_path, monkeypatch):
-    """Build a minimal DART staging + Courseforge project dir."""
+    """Build a minimal SemantiK staging + Courseforge project dir."""
     # Redirect PROJECT_ROOT targets so we don't pollute the real repo.
     fake_root = tmp_path / "root"
     fake_root.mkdir()
@@ -200,15 +200,16 @@ class TestMapIsPopulated:
         doc = json.loads(map_path.read_text(encoding="utf-8"))
         assert doc, (
             "source_module_map.json is empty — heuristic failed to "
-            "route any DART blocks to Courseforge pages."
+            "route any source blocks to Courseforge pages."
         )
 
     def test_heuristic_routing_mode_reported(self, source_router_fixture):
         fx = source_router_fixture
         payload = _invoke_router(fx["project_id"], fx["staging_dir"])
         assert payload["routing_mode"] == "keyword_overlap_heuristic"
+        # ``dart_blocks_indexed`` is the router's live output key.
         assert payload["dart_blocks_indexed"] >= 5, (
-            "Expected at least 5 DART blocks indexed from the two "
+            "Expected at least 5 source blocks indexed from the two "
             "synthesized sidecars."
         )
         assert payload["weeks_routed"] >= 1
@@ -239,7 +240,7 @@ class TestMapShape:
             "No page had any primary refs — provenance chain broken."
         )
 
-    def test_refs_match_dart_source_id_shape(self, source_router_fixture):
+    def test_refs_match_source_id_shape(self, source_router_fixture):
         fx = source_router_fixture
         payload = _invoke_router(fx["project_id"], fx["staging_dir"])
         doc = json.loads(Path(payload["source_module_map_path"]).read_text())
@@ -252,7 +253,7 @@ class TestMapShape:
         for sid in all_ids:
             assert _SOURCE_ID_RE.match(sid), (
                 f"Source id {sid!r} does not match "
-                f"'dart:{{slug}}#{{block_id}}' shape."
+                f"'semantik:{{slug}}#{{block_id}}' shape."
             )
 
     def test_confidence_is_a_float_in_unit_interval(self, source_router_fixture):
@@ -366,7 +367,7 @@ class TestHeadingTextStructureRouting:
         # no headingText) must NOT silently collapse — but if it does fall
         # all the way through with no signal the guard reports it. Here we
         # give chapters with ONLY a legacy empty ``title`` and no sections,
-        # forcing the all-empty topic_pool fall-through to DART blocks
+        # forcing the all-empty topic_pool fall-through to source blocks
         # (which still yields primaries — i.e. the fix prevents collapse).
         fx = source_router_fixture
         struct = fx["staging_dir"].parent / "empty_structure.json"
@@ -377,6 +378,6 @@ class TestHeadingTextStructureRouting:
         payload = _invoke_router(
             fx["project_id"], fx["staging_dir"], textbook_structure_path=str(struct)
         )
-        # Fall-through to DART-block keyword bags keeps the router alive.
+        # Fall-through to source-block keyword bags keeps the router alive.
         assert payload["routing_collapsed"] is False
         assert payload["pages_with_primary"] > 0

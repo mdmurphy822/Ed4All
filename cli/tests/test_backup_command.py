@@ -91,7 +91,9 @@ def test_backup_includes_resolved_dirs_and_secrets(tmp_path: Path) -> None:
         "libv2": home / "libv2",
         "training-captures": home / "training-captures",
         "exports": home / "exports",  # missing on purpose
-        "dart-output": home / "dart-output",  # missing on purpose
+        # "dart-output" is the allowlisted legacy ED4ALL_HOME data-dir key,
+        # kept for dual-read backup of pre-SemantiK homes; missing on purpose.
+        "dart-output": home / "dart-output",
     }
     out = tmp_path / "backup.tar.gz"
     result = create_backup(out, dirs=dirs)

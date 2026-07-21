@@ -17,8 +17,8 @@ from lib.tests.test_answer_composer import SpyCapture
 
 def _write_course(libv2_root: Path, slug: str, *, domain: str, chunks):
     course_dir = libv2_root / "courses" / slug
-    (course_dir / "dart_chunks").mkdir(parents=True, exist_ok=True)
-    with (course_dir / "dart_chunks" / "chunks.jsonl").open("w", encoding="utf-8") as fh:
+    (course_dir / "semantik_chunks").mkdir(parents=True, exist_ok=True)
+    with (course_dir / "semantik_chunks" / "chunks.jsonl").open("w", encoding="utf-8") as fh:
         for c in chunks:
             fh.write(json.dumps(c) + "\n")
     (course_dir / "manifest.json").write_text(
@@ -99,7 +99,7 @@ def test_source_chunk_ids_are_real(library):
     # Every mined source id must exist in its source course's chunkset.
     for c in cands:
         slug = c["source_course_slug"]
-        path = library / "courses" / slug / "dart_chunks" / "chunks.jsonl"
+        path = library / "courses" / slug / "semantik_chunks" / "chunks.jsonl"
         ids = {json.loads(ln)["id"] for ln in path.read_text().splitlines() if ln.strip()}
         assert c["source_chunk_id"] in ids
 

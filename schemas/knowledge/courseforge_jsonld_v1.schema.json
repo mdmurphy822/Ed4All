@@ -63,7 +63,7 @@
     "sourceReferences": {
       "type": "array",
       "items": { "$ref": "https://ed4all.dev/schemas/knowledge/source_reference.schema.json" },
-      "description": "Wave 9: optional page-level source attribution. Each entry references a DART-synthesized source block (canonical shape: schemas/knowledge/source_reference.schema.json). Emitted by generate_course.py when source_module_map.json is populated; absent when no DART input (course_generation workflow) or when routing produced no mapping. Elided when empty so legacy callers stay schema-clean."
+      "description": "Wave 9: optional page-level source attribution. Each entry references a SemantiK-synthesized source block (canonical shape: schemas/knowledge/source_reference.schema.json). Emitted by generate_course.py when source_module_map.json is populated; absent when no SemantiK input (course_generation workflow) or when routing produced no mapping. Elided when empty so legacy callers stay schema-clean."
     },
     "bloomDistribution": {
       "$ref": "#/$defs/BloomDistribution",
@@ -599,7 +599,7 @@
         "sourceIds": {
           "type": "array",
           "items": { "type": "string" },
-          "description": "DART sourceId(s) that ground this block (shape: 'dart:{slug}#{block_id}')."
+          "description": "SemantiK sourceId(s) that ground this block (shape: 'semantik:{slug}#{block_id}')."
         },
         "sourcePrimary": {
           "type": "string",

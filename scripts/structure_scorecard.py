@@ -9,7 +9,7 @@ axis: **structural and presentation quality of the emitted HTML itself**, with
 no reference document required. It is deterministic and CPU-only -- stdlib +
 BeautifulSoup/lxml (already repo deps); no LLM, no GPU, no embeddings.
 
-The scorecard is calibrated on the DART flagship conversion examples (diverse
+The scorecard is calibrated on the SemantiK flagship conversion examples (diverse
 gold-quality source->accessible.html pairs). It is *domain-agnostic*: it never
 looks at subject-matter vocabulary, only at the self-referential contract of an
 accessible document -- "does the markup deliver the structure it declares, and
@@ -20,8 +20,9 @@ Dimensions (see DIMENSIONS below for the config):
   1. DELIVER-WHAT-YOU-DECLARE (scored, core / self-referential)
        Two arms, chosen per-document by whether the doc carries structural
        role annotations.
-       (a) Annotation arm: any element carrying ``data-dart-block-role`` (or an
-           ARIA ``role``) of ``list`` / ``table`` / ``definition_list`` /
+       (a) Annotation arm: any element carrying ``data-semantik-block-role``
+           (legacy corpora: ``data-dart-block-role``) or an ARIA ``role``
+           of ``list`` / ``table`` / ``definition_list`` /
            ``figure`` MUST contain the matching semantic element
            (``<ul>``/``<ol>`` / ``<table>`` / ``<dl>`` / ``<figure>``|``<img alt>``).
            Metric: delivery rate per declared role type.
@@ -82,7 +83,7 @@ except Exception as exc:  # pragma: no cover - dependency guard
 
 # ---------------------------------------------------------------------------
 # Configuration -- single source of truth for weights and thresholds.
-# Tuned so every DART exemplar PASSes every *scored* dimension (see the module
+# Tuned so every SemantiK exemplar PASSes every *scored* dimension (see the module
 # docstring / the plans doc for the calibration table). Change here, re-run the
 # calibration in scripts/tests to confirm the exemplars stay green.
 # ---------------------------------------------------------------------------
@@ -320,10 +321,12 @@ def _count_runs(lines: list[str], pred, min_run: int) -> int:
 # ---------------------------------------------------------------------------
 def _dim_deliver(soup, body, cfg) -> DimensionResult:
     notes: list[str] = []
-    # Gather declared-structure blocks from data-dart-block-role or ARIA role.
+    # Gather declared-structure blocks from the block-role annotation (live
+    # SemantiK ``data-semantik-block-role``; legacy corpora ``data-dart-block-role``)
+    # or an ARIA role.
     declared: dict[str, list] = {r: [] for r in _ROLE_MATCHERS}
     for el in body.find_all(True):
-        role = el.get("data-dart-block-role")
+        role = el.get("data-semantik-block-role") or el.get("data-dart-block-role")
         if role not in _ROLE_MATCHERS:
             role = None
         if role is None:
@@ -337,14 +340,15 @@ def _dim_deliver(soup, body, cfg) -> DimensionResult:
 
     # Blind-spot guard (report-only): a block whose declared list/table/
     # definition_list role was honestly reconciled to <p> by the adapter (no
-    # high-confidence shape delivered) carries ``data-dart-demoted-role``. That
-    # reconciliation drops the role from ``data-dart-block-role``, so it is
-    # INVISIBLE to the deliver metric above (deliver stays high even when a
-    # scrub eats every pipe row and mass-demotes real tables). Surfacing the
-    # demotion count here catches that regression class. Never enters the score.
+    # high-confidence shape delivered) carries ``data-semantik-demoted-role``
+    # (legacy corpora: ``data-dart-demoted-role``). That reconciliation drops the
+    # role from the block-role annotation, so it is INVISIBLE to the deliver
+    # metric above (deliver stays high even when a scrub eats every pipe row and
+    # mass-demotes real tables). Surfacing the demotion count here catches that
+    # regression class. Never enters the score.
     demoted_by_role: dict[str, int] = {}
-    for el in body.find_all(attrs={"data-dart-demoted-role": True}):
-        dr = el.get("data-dart-demoted-role")
+    for el in body.find_all(True):
+        dr = el.get("data-semantik-demoted-role") or el.get("data-dart-demoted-role")
         if dr in _ROLE_MATCHERS:
             demoted_by_role[dr] = demoted_by_role.get(dr, 0) + 1
     demoted_declarations = sum(demoted_by_role.values())
@@ -760,20 +764,22 @@ def _dim_language(soup, body, cfg) -> DimensionResult:
 
 
 # ---------------------------------------------------------------------------
-# Dimension 8: PEDAGOGY (report-only): tally of ``data-dart-unit`` annotations
+# Dimension 8: PEDAGOGY (report-only): tally of ``data-semantik-unit`` annotations
 # ---------------------------------------------------------------------------
 def _dim_pedagogy(soup, body, cfg) -> DimensionResult:
-    """Count ``data-dart-unit`` pedagogical-unit annotations per document.
+    """Count ``data-semantik-unit`` pedagogical-unit annotations per document.
 
-    Report-only: SemantiK-authored course pages carry ``data-dart-unit``
-    (e.g. ``worked_example`` / ``exercise_set`` / ``section_opener``) markers;
-    exemplars, fiction, and any non-SemantiK doc carry none. This facet simply
-    tallies them so the pedagogical shape is visible in the report. It is never
-    scored and never enters the composite (a doc with zero units is a no-op,
-    NEVER a penalty)."""
+    Report-only: SemantiK-authored course pages carry ``data-semantik-unit``
+    (legacy corpora: ``data-dart-unit``) markers (e.g. ``worked_example`` /
+    ``exercise_set`` / ``section_opener``); exemplars, fiction, and any
+    non-SemantiK doc carry none. This facet simply tallies them so the
+    pedagogical shape is visible in the report. It is never scored and never
+    enters the composite (a doc with zero units is a no-op, NEVER a penalty)."""
     by_type: dict[str, int] = {}
-    for el in body.find_all(attrs={"data-dart-unit": True}):
-        unit = (el.get("data-dart-unit") or "").strip()
+    for el in body.find_all(True):
+        unit = (
+            el.get("data-semantik-unit") or el.get("data-dart-unit") or ""
+        ).strip()
         if not unit:
             continue
         by_type[unit] = by_type.get(unit, 0) + 1
@@ -783,7 +789,7 @@ def _dim_pedagogy(soup, body, cfg) -> DimensionResult:
     notes: list[str] = []
     if total == 0:
         notes.append(
-            "no data-dart-unit annotations (exemplar/fiction/non-SemantiK) "
+            "no data-semantik-unit annotations (exemplar/fiction/non-SemantiK) "
             "-- pedagogy facet N/A"
         )
     else:
@@ -793,8 +799,8 @@ def _dim_pedagogy(soup, body, cfg) -> DimensionResult:
             f"{len(units_by_type)} type(s): {summary}"
         )
     details = {
-        "dart_unit_total": total,
-        "dart_units_by_type": units_by_type,
+        "semantik_unit_total": total,
+        "semantik_units_by_type": units_by_type,
         "distinct_unit_types": len(units_by_type),
     }
     # Report-only: informational placeholder score; never enters the composite.

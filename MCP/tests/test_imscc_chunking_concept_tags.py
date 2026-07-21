@@ -1,13 +1,13 @@
 """``_run_imscc_chunking`` populates ``concept_tags`` on emitted chunks.
 
 The canonical IMSCC chunkset path previously emitted ``concept_tags: []``
-on every chunk (hardcoded), while the sibling ``_run_dart_chunking`` tagged
+on every chunk (hardcoded), while the sibling SemantiK chunking callback tagged
 concepts via ``lib.ontology.concept_tagging.extract_concept_tags``. That
 asymmetry left ``LibV2/courses/<slug>/imscc_chunks/chunks.jsonl`` with an
 empty concept substrate, starving every downstream concept-graph + CURIE
 consumer that reads the IMSCC chunkset.
 
-``_run_imscc_chunking`` now mirrors the DART callback: it parses each IMSCC
+``_run_imscc_chunking`` now mirrors the SemantiK chunking callback: it parses each IMSCC
 HTML page with the SAME ``HTMLContentParser`` into a page-level ``item``
 carrying ``key_concepts``, then tags each chunk via the instance-free
 ``extract_concept_tags(text, item)`` helper (honoring the same flags). This
@@ -17,7 +17,7 @@ module pins:
 * ``TRAINFORGE_SEED_TECH_CONCEPTS=true``: tech anchors (LangGraph / RAGAS)
   surface as concept tags.
 
-Mirrors ``test_dart_chunking_concept_tags.py``'s structure.
+Mirrors the SemantiK chunking concept-tag test's structure.
 """
 
 from __future__ import annotations

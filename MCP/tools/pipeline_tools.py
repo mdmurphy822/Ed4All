@@ -3880,7 +3880,7 @@ def _resolve_chunk_difficulty(
 # malformed DART attribute can't poison a chunk's source_references[].
 from lib.validators.source_refs import (
     SOURCE_ID_RE as _DART_SOURCE_ID_RE,
-    dart_slug_from_filename as _dart_slug_from_filename,
+    semantik_slug_from_filename as _semantik_slug_from_filename,
 )
 
 
@@ -3989,37 +3989,39 @@ def _recover_figure_alt(html: str) -> Optional[str]:
     return None
 
 
-def _dart_block_source_references(
+def _semantik_block_source_references(
     dart_source_refs: Optional[List[Dict[str, Any]]],
     slug: str,
 ) -> List[Dict[str, Any]]:
-    """Mint canonical SourceReference dicts from harvested DART block refs.
+    """Mint canonical SourceReference dicts from harvested SemantiK block refs.
 
-    ``dart_source_refs`` is the chunker's harvest output — an ordered list
-    of ``{"block_id": str, "pages": List[int]}`` pairs read off
-    ``data-dart-block-id`` / ``data-dart-pages`` attributes (see
-    ``Trainforge.chunker.helpers.harvest_dart_source_refs``). ``slug`` is the
-    staged-HTML file stem (passed as ``item["item_id"]`` by
+    ``dart_source_refs`` (the load-bearing create_chunk callback kwarg name)
+    is the chunker's harvest output — an ordered list of
+    ``{"block_id": str, "pages": List[int]}`` pairs read off
+    ``data-semantik-block-id`` / ``data-semantik-pages`` attributes (legacy
+    corpora carry the ``data-dart-*`` spelling, dual-read; see
+    ``Trainforge.chunker.helpers.harvest_semantik_source_refs``). ``slug`` is
+    the staged-HTML file stem (passed as ``item["item_id"]`` by
     ``_run_dart_chunking``). We re-run the canonical
-    ``dart_slug_from_filename`` rule over it here — DART's multi-source
+    ``semantik_slug_from_filename`` rule over it here — the multi-source
     strategy emits ``{stem}_synthesized.html``, so ``item_id`` can carry a
     trailing ``_synthesized`` that the source_refs validator + source-router
-    strip when they key ``dart:{slug}#...``. Stripping only at mint time
+    strip when they key ``semantik:{slug}#...``. Stripping only at mint time
     keeps the sourceId join key resolvable WITHOUT mutating ``item_id``
     itself (it also flows into the chunk's ``module_id`` / ``lesson_id``,
     which must stay the literal file stem).
 
     Returns SourceReference dicts in the shape
     ``schemas/knowledge/source_reference.schema.json`` requires:
-    ``{"sourceId": "dart:{slug}#{block_id}", "role": "primary",
+    ``{"sourceId": "semantik:{slug}#{block_id}", "role": "primary",
     "extractor": "synthesized", "pages": [N, ...]}``. ``role`` is
-    ``primary`` — a chunk built from a DART block IS that source. ``pages``
+    ``primary`` — a chunk built from a SemantiK block IS that source. ``pages``
     is omitted when empty (schema requires ``pages`` items ``minimum: 1``).
     Any minted sourceId that fails the canonical pattern is dropped so a
     malformed attribute never produces an unresolvable ref.
 
     Returns ``[]`` when ``dart_source_refs`` or ``slug`` is empty — the
-    additive contract: chunks from HTML without ``data-dart-*`` attributes
+    additive contract: chunks from HTML without ``data-semantik-*`` attributes
     keep ``source.source_references`` unset (legacy corpora byte-stable).
     """
     if not dart_source_refs or not slug:
@@ -4027,7 +4029,7 @@ def _dart_block_source_references(
     # Canonicalize the slug (strip ``_synthesized``, lowercase, spaces→hyphens)
     # so minted sourceIds match the validator's / source-router's join keys on
     # real multi-source corpora; ``item_id`` itself is left untouched upstream.
-    slug = _dart_slug_from_filename(slug)
+    slug = _semantik_slug_from_filename(slug)
     if not slug:
         return []
     out: List[Dict[str, Any]] = []
@@ -4284,7 +4286,7 @@ def _backfill_dart_chunk_lo_refs(
     return result
 
 
-def _load_dart_chunkset_for_planning(
+def _load_semantik_chunkset_for_planning(
     *,
     course_slug: str,
     kwargs: Dict[str, Any],
@@ -7402,24 +7404,24 @@ def register_pipeline_tools(mcp):
     # internal callers (e.g. cli/commands/run.py).
 
     @mcp.tool()
-    async def stage_dart_outputs(
+    async def stage_semantik_outputs(
         run_id: str,
         dart_html_paths: str,
         course_name: str,
         stage_mode: Optional[str] = None,
     ) -> str:
         """
-        Stage DART outputs to Courseforge inputs directory.
+        Stage SemantiK outputs to Courseforge inputs directory.
 
-        Stages synthesized HTML and JSON files from DART output to the
-        Courseforge staging area for course generation. The default
-        ``stage_mode`` is ``symlink`` (zero-byte references back to DART
-        outputs) which avoids duplicating ~70MB per textbook-to-course run.
-        Set ``stage_mode="copy"`` for the legacy deep-copy behaviour.
+        Stages synthesized HTML and JSON files from the SemantiK conversion
+        output to the Courseforge staging area for course generation. The
+        default ``stage_mode`` is ``symlink`` (zero-byte references back to
+        the conversion outputs) which avoids duplicating ~70MB per
+        textbook-to-course run. Set ``stage_mode="copy"`` for a deep copy.
 
         Args:
             run_id: Pipeline run identifier
-            dart_html_paths: Comma-separated paths to DART HTML outputs
+            dart_html_paths: Comma-separated paths to SemantiK HTML outputs
             course_name: Course identifier for staging subdirectory
             stage_mode: One of ``"copy"``, ``"symlink"``, ``"hardlink"``.
                 Defaults to ``ED4ALL_STAGE_MODE`` env var, then ``"symlink"``.
@@ -7563,8 +7565,24 @@ def register_pipeline_tools(mcp):
             })
 
         except Exception as e:
-            logger.error(f"Failed to stage DART outputs: {e}")
+            logger.error(f"Failed to stage SemantiK outputs: {e}")
             return json.dumps({"error": str(e)})
+
+    @mcp.tool()
+    async def stage_dart_outputs(
+        run_id: str,
+        dart_html_paths: str,
+        course_name: str,
+        stage_mode: Optional[str] = None,
+    ) -> str:
+        """Legacy pre-SemantiK tool-name alias for ``stage_semantik_outputs``.
+
+        Kept registered so external MCP clients / paused runs that still
+        invoke the old tool name continue to resolve. Delegates verbatim.
+        """
+        return await stage_semantik_outputs(
+            run_id, dart_html_paths, course_name, stage_mode
+        )
 
     @mcp.tool()
     async def get_pipeline_status(workflow_id: str) -> str:
@@ -7621,11 +7639,11 @@ def register_pipeline_tools(mcp):
             return json.dumps({"error": str(e)})
 
     @mcp.tool()
-    async def validate_dart_markers(html_path: str) -> str:
+    async def validate_semantik_markers(html_path: str) -> str:
         """
-        Validate that an HTML file has required DART markers.
+        Validate that an HTML file has required SemantiK markers.
 
-        DART-processed HTML must have:
+        SemantiK-processed HTML must have:
         - Skip link (<a class="skip-link">)
         - Main content area (<main role="main">)
         - Semantic sections (<section aria-labelledby="...">)
@@ -7648,7 +7666,12 @@ def register_pipeline_tools(mcp):
                 "skip_link": 'class="skip' in content or "class='skip" in content,
                 "main_role": 'role="main"' in content or "role='main'" in content,
                 "aria_sections": 'aria-labelledby="' in content or "aria-labelledby='" in content,
-                "semantik_structure_classes": 'dart-section' in content or 'dart-document' in content
+                # Structural section classes: accept the legacy pre-SemantiK
+                # spelling too so already-packaged corpora still validate.
+                "semantik_structure_classes": (
+                    'semantik-section' in content or 'semantik-document' in content
+                    or 'dart-section' in content or 'dart-document' in content
+                ),
             }
 
             all_valid = all(markers.values())
@@ -7661,13 +7684,22 @@ def register_pipeline_tools(mcp):
             }
 
             if not all_valid:
-                result["message"] = f"Missing DART markers: {result['missing']}"
+                result["message"] = f"Missing SemantiK markers: {result['missing']}"
 
             return json.dumps(result)
 
         except Exception as e:
-            logger.error(f"Failed to validate DART markers: {e}")
+            logger.error(f"Failed to validate SemantiK markers: {e}")
             return json.dumps({"error": str(e)})
+
+    @mcp.tool()
+    async def validate_dart_markers(html_path: str) -> str:
+        """Legacy pre-SemantiK tool-name alias for ``validate_semantik_markers``.
+
+        Kept registered so external MCP clients / paused runs that still
+        invoke the old tool name continue to resolve. Delegates verbatim.
+        """
+        return await validate_semantik_markers(html_path)
 
 
     @mcp.tool()
@@ -10849,7 +10881,7 @@ def _run_vendor_ingest_conversion(
         "flags": list(adapter_out.get("flags") or []),
         "lane_used": adapter_out.get("lane_used"),
         "certification_status": adapter_out.get("certification_status"),
-        "data_dart_source": adapter_out.get("data_dart_source"),
+        "data_semantik_source": adapter_out.get("data_semantik_source"),
         "synthesized_sidecar_path": str(synth_path),
         "quality_sidecar_path": str(quality_path),
         "semantic_preservation_score": adapter_out.get("theta_score"),
@@ -14233,7 +14265,7 @@ def _align_outline_blocks_to_objectives(
     return aligned
 
 
-def _load_dart_chunkset_text_map(chunks_path: Path) -> Dict[str, str]:
+def _load_semantik_chunkset_text_map(chunks_path: Path) -> Dict[str, str]:
     """Load ``<…>/dart_chunks/chunks.jsonl`` into a ``{chunk_id: text}`` map.
 
     Each JSONL line is a chunk object carrying its id under ``id``
@@ -14273,7 +14305,7 @@ def _load_dart_chunkset_text_map(chunks_path: Path) -> Dict[str, str]:
     return text_map
 
 
-def _load_dart_chunkset_detail_map(
+def _load_semantik_chunkset_detail_map(
     chunks_path: Path,
 ) -> Dict[str, Dict[str, Any]]:
     """Load ``dart_chunks/chunks.jsonl`` into a per-chunk DETAIL map.
@@ -14282,7 +14314,7 @@ def _load_dart_chunkset_detail_map(
     each chunk's ``item_path`` + ``section_heading`` (to mint a source deep-link)
     and ``concept_tags`` (a term source). Returns
     ``{chunk_id: {text, item_path, heading, concept_tags}}``. Reads the same
-    JSONL as :func:`_load_dart_chunkset_text_map`; provenance fields live under
+    JSONL as :func:`_load_semantik_chunkset_text_map`; provenance fields live under
     the chunk's ``source`` block (chunk_v4 schema). Best-effort: malformed lines
     are skipped, and the map is empty when the file is absent.
     """
@@ -15018,7 +15050,7 @@ async def _run_content_generation_outline(**kwargs) -> str:
     chunkset_path = resolve_staged_chunks_path(
         _resolve_libv2_root(kwargs.get("libv2_root")) / "courses" / course_slug
     )
-    chunk_text_map = _load_dart_chunkset_text_map(chunkset_path)
+    chunk_text_map = _load_semantik_chunkset_text_map(chunkset_path)
     chunkset_present = bool(chunk_text_map)
     if not chunkset_present:
         logger.warning(
@@ -15037,7 +15069,7 @@ async def _run_content_generation_outline(**kwargs) -> str:
     _key_terms_vocab: Optional[Dict[str, Any]] = None
     _key_terms_blocks: List[Any] = []
     if _key_terms_on:
-        _chunk_detail_map = _load_dart_chunkset_detail_map(chunkset_path)
+        _chunk_detail_map = _load_semantik_chunkset_detail_map(chunkset_path)
         _vocab_path = _locate_domain_concept_vocabulary(course_code, kwargs)
         if _vocab_path is not None and Path(_vocab_path).exists():
             try:
@@ -15058,7 +15090,7 @@ async def _run_content_generation_outline(**kwargs) -> str:
     _faq_on = _faq_page_enabled()
     _faq_blocks: List[Any] = []
     if _faq_on and not _chunk_detail_map:
-        _chunk_detail_map = _load_dart_chunkset_detail_map(chunkset_path)
+        _chunk_detail_map = _load_semantik_chunkset_detail_map(chunkset_path)
 
     # ------------------------------------------------------------------ #
     # Prerequisite-DAG-driven TO sequencing (opt-in ED4ALL_PREREQ_SEQUENCING).
@@ -15415,7 +15447,7 @@ async def _run_content_generation_outline(**kwargs) -> str:
         _planner_detail_map = (
             _chunk_detail_map
             if _chunk_detail_map
-            else _load_dart_chunkset_detail_map(chunkset_path)
+            else _load_semantik_chunkset_detail_map(chunkset_path)
         )
 
     for week_num in range(1, duration_weeks + 1):
@@ -18608,14 +18640,14 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
     import dataclasses as _dc
 
     # Canonical DART slug for minting ``dart:{slug}#{chunk_id}`` source
-    # refs (mirrors lib.validators.source_refs.dart_slug_from_filename so
+    # refs (mirrors lib.validators.source_refs.semantik_slug_from_filename so
     # the minted ids match the staging-manifest join key + the dart_chunks
     # corpus prefix). The rewrite backstop OVERWRITES the 7B's CURIE-filled
     # ``data-cf-source-ids`` attribute with these canonical refs resolved
     # from each block's real source chunks.
     try:
         from lib.validators.source_refs import (
-            dart_slug_from_filename as _slug_for_refs,
+            semantik_slug_from_filename as _slug_for_refs,
         )
         _rewrite_source_slug = _slug_for_refs(course_code or project_id or "")
     except Exception:  # noqa: BLE001
@@ -20657,14 +20689,13 @@ def _build_tool_registry() -> dict:
 
     registry["extract_and_convert_pdf"] = _extract_and_convert_pdf
 
-    # Pipeline tools - stage_dart_outputs
+    # Pipeline tools - stage_semantik_outputs
     # Registry variant now has full Wave 8 parity with the @mcp.tool() variant
     # (role-tagging, .quality.json copy, role-tagged manifest entries). The
-    # MCP-tool variant at lines 316-451 remains the source of truth for the
-    # copy/role logic; this wrapper just adapts kwargs into the Wave 8
-    # staging pipeline.
-    async def _stage_dart_outputs(**kwargs):
-        """Stage DART outputs to Courseforge inputs with Wave 8 role-tagging.
+    # MCP-tool variant remains the source of truth for the copy/role logic;
+    # this wrapper just adapts kwargs into the Wave 8 staging pipeline.
+    async def _stage_semantik_outputs(**kwargs):
+        """Stage SemantiK outputs to Courseforge inputs with Wave 8 role-tagging.
 
         Stages HTML (role=content), *_synthesized.json provenance sidecars
         (role=provenance_sidecar), and *.quality.json confidence sidecars
@@ -20781,10 +20812,13 @@ def _build_tool_registry() -> dict:
                 "warnings": errors if errors else None,
             })
         except Exception as e:
-            logger.error(f"Registry _stage_dart_outputs failed: {e}")
+            logger.error(f"Registry _stage_semantik_outputs failed: {e}")
             return json.dumps({"error": str(e)})
 
-    registry["stage_dart_outputs"] = _stage_dart_outputs
+    registry["stage_semantik_outputs"] = _stage_semantik_outputs
+    # Legacy pre-SemantiK registry-key alias (read-compat: paused runs /
+    # resume states that dispatch the old key still route here).
+    registry["stage_dart_outputs"] = _stage_semantik_outputs
 
     # Courseforge tools
     try:
@@ -21452,7 +21486,7 @@ def _build_tool_registry() -> dict:
                             # gracefully (empty source_chunk_ids, Pass C
                             # pass-through-flags them).
                             _chunks_by_id, _all_chunks = (
-                                _load_dart_chunkset_for_planning(
+                                _load_semantik_chunkset_for_planning(
                                     course_slug=course_name,
                                     kwargs=kwargs,
                                 )
@@ -22078,7 +22112,7 @@ def _build_tool_registry() -> dict:
                 _so_chunks_by_id: Dict[str, Any] = {}
                 if _so_slug:
                     try:
-                        _so_chunks_by_id, _ = _load_dart_chunkset_for_planning(
+                        _so_chunks_by_id, _ = _load_semantik_chunkset_for_planning(
                             course_slug=_so_slug,
                             kwargs=kwargs,
                         )
@@ -22353,7 +22387,7 @@ def _build_tool_registry() -> dict:
                     _san_chunk_universe: set = set()
                     try:
                         _san_chunks_by_id, _san_all_chunks = (
-                            _load_dart_chunkset_for_planning(
+                            _load_semantik_chunkset_for_planning(
                                 course_slug=course_name, kwargs=kwargs,
                             )
                         )
@@ -28451,7 +28485,7 @@ def _build_tool_registry() -> dict:
             # ``primary`` (a DART block IS the source for a chunk built from
             # it). Empty/absent on HTML without ``data-dart-*`` attributes
             # (legacy corpora keep ``source_references`` unset, byte-stable).
-            dart_refs = _dart_block_source_references(
+            dart_refs = _semantik_block_source_references(
                 dart_source_refs, item.get("item_id") or ""
             )
             if dart_refs:
@@ -30388,7 +30422,7 @@ def _build_tool_registry() -> dict:
             # happens to carry DART provenance attributes, mint the same
             # canonical source_references[]. No-op for ordinary IMSCC /
             # Courseforge HTML (no ``data-dart-*`` attrs → harvest is empty).
-            dart_refs = _dart_block_source_references(
+            dart_refs = _semantik_block_source_references(
                 dart_source_refs, item.get("item_id") or ""
             )
             if dart_refs:

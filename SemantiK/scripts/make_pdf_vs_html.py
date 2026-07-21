@@ -1,4 +1,4 @@
-"""Run the full DART pipeline on a PDF and build a side-by-side viewer.
+"""Run the full SemantiK pipeline on a PDF and build a side-by-side viewer.
 
 Output folder under eval/side_by_side/<run>/ contains:
   - input.pdf          copy of the source PDF
@@ -33,7 +33,7 @@ INDEX_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>DART side-by-side — {name}</title>
+<title>SemantiK side-by-side — {name}</title>
 <style>
   html, body {{ margin: 0; padding: 0; height: 100%; font-family: system-ui, sans-serif; }}
   header {{ padding: .5rem 1rem; background: #222; color: #eee; display: flex; gap: 1rem; align-items: baseline; flex-wrap: wrap; }}

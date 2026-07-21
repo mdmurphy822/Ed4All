@@ -15,16 +15,16 @@ _WITH_BOX_TITLES = """
 <h1>Whole Numbers</h1>
 <article role="doc-chapter" id="chap-1">
 <h2>Whole Numbers</h2>
-<section class="dart-section" id="s0"><h3 id="s0h">1.1 Add Whole Numbers</h3></section>
-<section class="dart-section" id="s1" aria-labelledby="example-1-1-s1">
+<section class="semantik-section" id="s0"><h3 id="s0h">1.1 Add Whole Numbers</h3></section>
+<section class="semantik-section" id="s1" aria-labelledby="example-1-1-s1">
   <h4 data-semantik-box-title="1" id="example-1-1-s1">Example 1.1</h4>
   <p>Add 3 and 4.</p>
 </section>
-<section class="dart-section" id="s2" aria-labelledby="solution-s2">
+<section class="semantik-section" id="s2" aria-labelledby="solution-s2">
   <h5 data-semantik-box-title="1" id="solution-s2">Solution</h5>
   <p>The sum is 7.</p>
 </section>
-<section class="dart-section" id="s3"><h3 id="s3h">1.2 Subtract Whole Numbers</h3></section>
+<section class="semantik-section" id="s3"><h3 id="s3h">1.2 Subtract Whole Numbers</h3></section>
 </article>
 """
 
@@ -33,14 +33,14 @@ _WITHOUT_BOX_TITLES = """
 <h1>Whole Numbers</h1>
 <article role="doc-chapter" id="chap-1">
 <h2>Whole Numbers</h2>
-<section class="dart-section" id="s0"><h3 id="s0h">1.1 Add Whole Numbers</h3></section>
-<section class="dart-section" id="s1">
+<section class="semantik-section" id="s0"><h3 id="s0h">1.1 Add Whole Numbers</h3></section>
+<section class="semantik-section" id="s1">
   <p>Add 3 and 4.</p>
 </section>
-<section class="dart-section" id="s2">
+<section class="semantik-section" id="s2">
   <p>The sum is 7.</p>
 </section>
-<section class="dart-section" id="s3"><h3 id="s3h">1.2 Subtract Whole Numbers</h3></section>
+<section class="semantik-section" id="s3"><h3 id="s3h">1.2 Subtract Whole Numbers</h3></section>
 </article>
 """
 

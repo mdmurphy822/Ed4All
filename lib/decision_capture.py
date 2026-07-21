@@ -3,7 +3,7 @@
 Claude Decision Capture Utility for Ed4All
 
 Captures all Claude decision points during:
-- DART PDF conversion
+- SemantiK PDF conversion
 - CourseForge course generation
 - Trainforge assessment generation
 
@@ -153,15 +153,12 @@ def _resolve_capture_buffer_rows() -> int:
     return n if n > 0 else _DEFAULT_CAPTURE_BUFFER_ROWS
 
 
-# Wave 23 Sub-task B: ``normalize_course_code`` is the shared
-# course-code coercer introduced in Wave 22 DC4. It originally lived in
-# the (now-retired) DART tool module; Wave 23 promoted it to this shared
-# decision-capture module — the canonical home — so the orchestrator-level
-# ``PipelineOrchestrator._get_executor`` can use the same normalisation
-# without importing from a sibling MCP tool module (avoiding a dependency
-# inversion between ``lib/`` and ``MCP/tools/``). The DART tool module's
-# back-compat re-export was removed with the DART subsystem in the
-# SemantiK migration; import this name from ``lib.decision_capture``.
+# ``normalize_course_code`` is the shared course-code coercer. It lives in
+# this shared decision-capture module — the canonical home — so the
+# orchestrator-level ``PipelineOrchestrator._get_executor`` can use the same
+# normalisation without importing from a sibling MCP tool module (avoiding a
+# dependency inversion between ``lib/`` and ``MCP/tools/``). Import this name
+# from ``lib.decision_capture``.
 #
 # Canonical pattern: ``^[A-Z]{2,8}_[0-9]{3}$`` (2-8 uppercase letters,
 # underscore, 3 digits). Raw course-code strings without the required
@@ -322,7 +319,7 @@ class DecisionCapture:
         Args:
             course_code: Course code (e.g., "MTH_101")
             phase: Pipeline phase (e.g., "input-research", "content-generator")
-            tool: "dart", "courseforge", or "trainforge"
+            tool: "semantik", "courseforge", or "trainforge"
             streaming: If True, write decisions immediately to disk (crash-safe)
             task_id: Phase 0 - Orchestrator task ID for cross-linking
         """
@@ -330,7 +327,7 @@ class DecisionCapture:
         self.phase = phase
         self.tool = tool
         # Worker W6: 1-second granularity collides under multi-worker fanout
-        # (DART per-PDF max_concurrent=4, assessment_generation max_concurrent=5,
+        # (SemantiK per-PDF max_concurrent=4, assessment_generation max_concurrent=5,
         # etc.). Append PID + 6-char random hex suffix so two captures
         # initialized in the same wall-second from parallel workers (or even
         # the same process) get distinct session_ids, JSONL paths, and run_id
@@ -1196,10 +1193,8 @@ class DecisionCapture:
 class SemantiKDecisionCapture(DecisionCapture):
     """Specialized decision capture for SemantiK PDF->HTML conversions.
 
-    DART->semantik naming purge (task #19): renamed from
-    ``DARTDecisionCapture`` and now labels captures with the ratified
-    ``semantik`` tool / ``semantik_conversion`` phase. The old class name
-    survives as a module-level alias (see ``DARTDecisionCapture`` below).
+    Labels captures with the ``semantik`` tool / ``semantik_conversion``
+    phase.
     """
 
     def __init__(self, course_code: str, pdf_name: str):
@@ -1326,13 +1321,6 @@ class SemantiKDecisionCapture(DecisionCapture):
         return output_path
 
 
-# DART->semantik naming purge (task #19): deprecated alias kept for the S4
-# tighten. Same dual-read-shim pattern as ``lib.paths.dart_output_dir``;
-# callers migrate to ``SemantiKDecisionCapture`` and this alias is removed
-# in S4.
-DARTDecisionCapture = SemantiKDecisionCapture
-
-
 def create_capture(course_code: str, phase: str, tool: str = "courseforge") -> DecisionCapture:
     """Factory function to create a decision capture instance."""
     return DecisionCapture(course_code, phase, tool)
@@ -1341,8 +1329,3 @@ def create_capture(course_code: str, phase: str, tool: str = "courseforge") -> D
 def create_semantik_capture(course_code: str, pdf_name: str) -> SemantiKDecisionCapture:
     """Factory function to create a SemantiK conversion decision capture."""
     return SemantiKDecisionCapture(course_code, pdf_name)
-
-
-# DART->semantik naming purge (task #19): deprecated factory alias (S4-removal;
-# see the ``DARTDecisionCapture`` alias note above).
-create_dart_capture = create_semantik_capture

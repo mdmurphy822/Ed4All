@@ -43,7 +43,7 @@ def _make_course(repo_root: Path, *, kind="corpus", rel="corpus/chunks.jsonl",
          "source": {"item_path": "week_01/a.html"}, "learning_outcome_refs": ["to-01"]},
         {"id": "c002", "text": _TEXT_B,
          "source": {"item_path": "textbook.html",
-                    "source_references": [{"sourceId": "dart:tb#1"}]},
+                    "source_references": [{"sourceId": "semantik:tb#1"}]},
          "learning_outcome_refs": ["co-01"]},
     ]
     chunks_path = cdir / rel
@@ -132,7 +132,7 @@ def test_gold_validate_coverage_no_write(tmp_path: Path):
 # ---------------------------------------------------------------- gold-repin
 
 
-def test_gold_repin_dart_to_corpus(tmp_path: Path):
+def test_gold_repin_stale_pin_to_corpus(tmp_path: Path):
     # course pinned to a (stale) corpus already; repin to its own corpus.
     course = _make_course(tmp_path, stale_pin=True)
     res = _invoke(tmp_path, "gold-repin", "--course", _SLUG, "--kind", "corpus")

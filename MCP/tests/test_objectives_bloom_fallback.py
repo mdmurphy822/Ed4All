@@ -214,7 +214,7 @@ def test_flagged_run_preserves_targets_concept_edges_and_materializes(
     monkeypatch.setenv("TRAINFORGE_INTRA_CHUNK_LINKS", "true")
 
     chunks = _lo_tagged_chunkset()
-    chunks_path = tmp_path / "dart_chunks" / "chunks.jsonl"
+    chunks_path = tmp_path / "semantik_chunks" / "chunks.jsonl"
     _write_chunkset(chunks_path, chunks)
     obj_path = tmp_path / "synthesized_objectives.json"
     obj_path.write_text(json.dumps(_SYNTHESIZED_OBJECTIVES), encoding="utf-8")

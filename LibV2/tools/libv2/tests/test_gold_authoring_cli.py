@@ -49,7 +49,7 @@ def _make_course(repo_root: Path, *, frozen=False) -> Path:
     (cdir / "corpus").mkdir(parents=True)
     chunks = [
         {"id": "c001", "text": _TEXT_A, "source": {"item_path": "textbook.html",
-         "source_references": [{"sourceId": "dart:tb#1"}]},
+         "source_references": [{"sourceId": "semantik:tb#1"}]},
          "learning_outcome_refs": ["to-01", "co-01"],
          "concept_tags": ["vector-store", "embeddings"]},
         {"id": "c002", "text": _TEXT_B, "source": {"item_path": "week_01/p.html"},

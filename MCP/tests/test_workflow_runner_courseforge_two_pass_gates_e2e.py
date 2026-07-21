@@ -71,7 +71,7 @@ from MCP.core.workflow_runner import WorkflowRunner
 #       01_learning_objectives/
 #         synthesized_objectives.json
 #
-# DART staging is intentionally elided — the BlockSourceRefValidator's
+# SemantiK staging is intentionally elided — the BlockSourceRefValidator's
 # missing-manifest path emits a warning rather than failing closed, so
 # the test stays scoped to the curie / shape gates W1-W4 wired.
 #

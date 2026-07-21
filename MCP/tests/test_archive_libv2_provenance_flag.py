@@ -99,7 +99,7 @@ def test_detect_returns_true_when_chunk_carries_refs(tmp_path):
                 "module_id": "m",
                 "lesson_id": "l",
                 "source_references": [
-                    {"sourceId": "dart:a#s0_p0", "role": "primary"},
+                    {"sourceId": "semantik:a#s0_p0", "role": "primary"},
                 ],
             },
         }) + "\n")
@@ -142,7 +142,7 @@ def test_detect_skips_malformed_lines_safely(tmp_path):
                 "module_id": "m",
                 "lesson_id": "l",
                 "source_references": [
-                    {"sourceId": "dart:a#s0_p0", "role": "primary"},
+                    {"sourceId": "semantik:a#s0_p0", "role": "primary"},
                 ],
             },
         }) + "\n")
@@ -185,7 +185,7 @@ def test_detect_mixed_legacy_and_wave10_chunks_returns_true(tmp_path):
                 "module_id": "m",
                 "lesson_id": "l",
                 "source_references": [
-                    {"sourceId": "dart:a#s0_p0", "role": "contributing"},
+                    {"sourceId": "semantik:a#s0_p0", "role": "contributing"},
                 ],
             },
         }) + "\n")
@@ -230,7 +230,7 @@ def test_archive_manifest_flag_true_when_chunks_carry_refs(
                 "module_id": "m",
                 "lesson_id": "l",
                 "source_references": [
-                    {"sourceId": "dart:a#s0_p0", "role": "primary"},
+                    {"sourceId": "semantik:a#s0_p0", "role": "primary"},
                 ],
             },
         }) + "\n")

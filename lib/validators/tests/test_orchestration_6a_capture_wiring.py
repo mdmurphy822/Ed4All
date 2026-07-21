@@ -10,7 +10,7 @@ corpus-wide cardinality):
 * ``ContentGroundingValidator``       → ``content_grounding_check``
 * ``ContentFactValidator``            → ``content_fact_check``
 * ``LeakCheckValidator``              → ``leak_check_check``
-* ``DartMarkersValidator``            → ``dart_markers_check``
+* ``SemantiKMarkersValidator``            → ``semantik_markers_check``
 
 Per the H3 plan §5 contract:
 
@@ -44,7 +44,7 @@ if str(_REPO_ROOT) not in sys.path:
 from lib.validators.content import ContentStructureValidator  # noqa: E402
 from lib.validators.content_facts import ContentFactValidator  # noqa: E402
 from lib.validators.content_grounding import ContentGroundingValidator  # noqa: E402
-from lib.validators.dart_markers import DartMarkersValidator  # noqa: E402
+from lib.validators.semantik_markers import SemantiKMarkersValidator  # noqa: E402
 from lib.validators.leak_check import LeakCheckValidator  # noqa: E402
 from lib.validators.page_objectives import PageObjectivesValidator  # noqa: E402
 from lib.validators.source_refs import PageSourceRefValidator  # noqa: E402
@@ -95,7 +95,7 @@ def _build_leak_check_inputs() -> Dict[str, Any]:
     return {}
 
 
-def _build_dart_markers_inputs() -> Dict[str, Any]:
+def _build_semantik_markers_inputs() -> Dict[str, Any]:
     # Empty content → EMPTY_CONTENT branch + capture fires.
     return {"html_content": ""}
 
@@ -138,10 +138,10 @@ _VALIDATOR_MATRIX = [
         id="leak_check",
     ),
     pytest.param(
-        DartMarkersValidator,
-        _build_dart_markers_inputs,
-        "dart_markers_check",
-        id="dart_markers",
+        SemantiKMarkersValidator,
+        _build_semantik_markers_inputs,
+        "semantik_markers_check",
+        id="semantik_markers",
     ),
 ]
 

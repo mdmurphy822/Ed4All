@@ -10,7 +10,7 @@ which needs a ``kind: "concept"`` co-occurrence graph to feed
 
 The single source of truth for the co-occurrence build lives here;
 ``CourseProcessor._build_tag_graph`` delegates to ``build_cooccurrence_graph``
-so the IMSCC path and the DART ``concept_extraction`` path produce
+so the IMSCC path and the SemantiK ``concept_extraction`` path produce
 byte-equivalent graphs from the same chunk inputs.
 
 v0.1.0 semantics preserved verbatim from the original ``_build_tag_graph``:
@@ -43,7 +43,7 @@ _GROUP_BY_LEVELS = frozenset({"chunk", "page", "section"})
 # groups that the pair-weight signal collapses, every pair gets ``weight = 1``
 # (one group) — and the downstream ``related_from_cooccurrence`` rule
 # (``weight >= 3``) emits ZERO ``related-to`` edges, killing the KG backbone.
-# This is the real DART failure mode on a corpus whose converter stamps a single
+# This is the real failure mode on a corpus whose converter stamps a single
 # ``lesson_id`` over an entire multi-chapter PDF (all chunks fold into ONE
 # page-group). The guard re-runs pair-counting at the next-FINER grouping level
 # (``page`` -> ``section`` -> ``chunk``) when the coarse level's distinct
@@ -53,7 +53,7 @@ _GROUP_BY_LEVELS = frozenset({"chunk", "page", "section"})
 # Default-OFF at the bare-library level to preserve the W3 page-aggregation
 # contract byte-for-byte (a single page SHOULD connect its concepts — that is
 # the documented purpose of page grouping for a normal multi-chunk page). The
-# guard targets the DEGENERATE pipeline case where the DART converter collapses
+# guard targets the DEGENERATE pipeline case where the converter collapses
 # an entire multi-chapter PDF into ONE ``lesson_id``, so it is turned ON for
 # ``textbook_to_course`` / ``course_generation`` runs via
 # ``MCP/core/workflow_runner.py::_apply_corpus_generalization_defaults`` (the

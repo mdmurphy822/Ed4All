@@ -1,11 +1,11 @@
-"""Wave 19 semantic_structure_extractor ``doc-chapter`` path tests.
+"""semantic_structure_extractor ``doc-chapter`` path tests.
 
-DART's Wave 13+ converter emits every chapter as an
-``<article role="doc-chapter">`` wrapper. The pre-Wave-19 extractor
-only knew how to group chapters by heading hierarchy — fed the new
-shape, it emitted many chapters with ``title=None`` and 0 sections
-each on full-textbook corpora. These tests lock in the restored
-grouping path.
+The SemantiK converter emits every chapter as an
+``<article role="doc-chapter">`` wrapper. Fed that shape, the extractor
+must group each article into one chapter (with a real title) and pick up
+its sibling ``<section>`` blocks — rather than degrading to many
+title-less, section-less chapters on full-textbook corpora. These tests
+lock in that grouping path.
 """
 
 from __future__ import annotations
@@ -32,17 +32,17 @@ _DOC_CHAPTER_HTML = """
 <head><title>Test Doc</title></head>
 <body>
   <header><h1 id="main-content-heading">Test Doc</h1></header>
-  <main id="main-content" role="main" class="dart-document">
-    <article class="dart-section" role="doc-chapter" id="chap-1">
+  <main id="main-content" role="main" class="semantik-document">
+    <article class="semantik-section" role="doc-chapter" id="chap-1">
       <header><h2>Introduction to Biology</h2></header>
     </article>
     <p>Biology is the study of life.</p>
-    <section class="dart-section" role="region" aria-labelledby="sec-1-h"
-             data-dart-source="dart_converter" data-dart-block-id="s1">
+    <section class="semantik-section" role="region" aria-labelledby="sec-1-h"
+             data-semantik-source="semantik_converter" data-semantik-block-id="s1">
       <h2 id="sec-1-h">Cells</h2>
       <p>Cells are the basic unit of life.</p>
     </section>
-    <article class="dart-section" role="doc-chapter" id="chap-2">
+    <article class="semantik-section" role="doc-chapter" id="chap-2">
       <header><h2>Genetics</h2></header>
     </article>
     <p>Genetics is the study of heredity.</p>
@@ -103,7 +103,7 @@ def test_extractor_non_none_titles_on_doc_chapter_articles():
 
 
 def test_extractor_picks_up_sibling_sections_as_chapter_sections():
-    """Wave 13 DART emits sections as siblings of the chapter article
+    """SemantiK emits sections as siblings of the chapter article
     (not as children). The sibling-walk fallback must collect them
     until the next ``<article role="doc-chapter">``.
     """

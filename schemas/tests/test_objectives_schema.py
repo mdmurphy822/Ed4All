@@ -99,7 +99,7 @@ def test_schema_accepts_optional_fields():
         "bloom_level": "remember",
         "bloom_verb": "identify",
         "cognitive_domain": "factual",
-        "source_refs": ["dart:foo#s1"],
+        "source_refs": ["semantik:foo#s1"],
     })
     jsonschema.validate(doc, schema)
 

@@ -25,13 +25,13 @@ order. Each block becomes the SAME text-only record shape
 :func:`reasoning_qc._block_record`), plus its stable ``block_id`` kept alongside
 for the report.
 
-**Attribute contract (2026-07 rename):** the live adapter seam
+**Attribute contract:** the live adapter seam
 (``lib/semantik/adapter.py``) emits the ``data-semantik-*`` block attributes
-(``data-semantik-block-id`` / ``data-semantik-block-role`` / ``data-semantik-pages``);
-the historical ``data-dart-*`` spelling is accepted as a READ fallback so a
-legacy converter output still parses. The block id / role / pages are resolved
-via :data:`_BLOCK_ID_ATTRS` / :data:`_BLOCK_ROLE_ATTRS` / :data:`_PAGES_ATTRS`
-(current spelling first, legacy second).
+(``data-semantik-block-id`` / ``data-semantik-block-role`` / ``data-semantik-pages``).
+The block id / role / pages are resolved via :data:`_BLOCK_ID_ATTRS` /
+:data:`_BLOCK_ROLE_ATTRS` / :data:`_PAGES_ATTRS` (current spelling first, with
+the pre-SemantiK spelling accepted second as a READ fallback so a legacy
+converter output still parses).
 
 Type inference (coarse, documented) — from the block's FIRST significant
 descendant element (``lib/semantik/adapter``'s emitted markup):
@@ -44,9 +44,10 @@ descendant element (``lib/semantik/adapter``'s emitted markup):
   * ``blockquote``  → ``blockquote``
   * anything else (``p`` / bare text) → ``paragraph``
 
-``role`` is the emitted ``data-dart-block-role`` (falling back to the inferred
-type); ``page`` is the first integer of ``data-dart-pages`` (``None`` when
-absent) — matching the region-path's "first physical page" representative.
+``role`` is the emitted ``data-semantik-block-role`` (falling back to the
+inferred type); ``page`` is the first integer of ``data-semantik-pages``
+(``None`` when absent) — matching the region-path's "first physical page"
+representative.
 
 CLI
 ---
@@ -110,9 +111,9 @@ _TAG_TO_TYPE = {
     "p": "paragraph",
 }
 
-# Block-attribute spellings, current first then the legacy ``data-dart-*`` fallback
-# (the 2026-07 adapter rename data-dart-* -> data-semantik-*). Each resolver walks
-# these in order and returns the first present value.
+# Block-attribute spellings, current ``data-semantik-*`` first then the
+# pre-SemantiK ``data-dart-*`` spelling as a legacy READ fallback. Each resolver
+# walks these in order and returns the first present value.
 _BLOCK_ID_ATTRS = ("data-semantik-block-id", "data-dart-block-id")
 _BLOCK_ROLE_ATTRS = ("data-semantik-block-role", "data-dart-block-role")
 _PAGES_ATTRS = ("data-semantik-pages", "data-dart-pages")
@@ -131,7 +132,7 @@ def _first_attr(section: Any, names: tuple[str, ...]) -> str | None:
 # Parse — emitted accessible HTML → ordered block records (+ block ids).
 # ---------------------------------------------------------------------------
 def _first_page(pages_attr: str | None) -> int | None:
-    """First integer of a ``data-dart-pages`` value (``"1"`` / ``"3-5"``), or None."""
+    """First integer of a ``data-semantik-pages`` value (``"1"`` / ``"3-5"``), or None."""
     if not pages_attr:
         return None
     head = str(pages_attr).strip().replace("–", "-").split("-", 1)[0].strip()

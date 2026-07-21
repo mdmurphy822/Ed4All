@@ -294,11 +294,12 @@ def _all_html_paths(
     content-generation phase output carries no content paths.
     """
     # Prefer generated COURSE CONTENT pages when they exist. This must come
-    # BEFORE the DART-source arm: content-phase gates (source_refs,
+    # BEFORE the conversion-source arm: content-phase gates (source_refs,
     # content_grounding) need the content-generator pages (which carry
-    # ``data-cf-source-ids``), NOT the DART staged HTML (``data-dart-*``).
-    # At the dart_conversion phase no content dir resolves yet, so the DART
-    # arm below still serves the dart_markers gate — order is safe.
+    # ``data-cf-source-ids``), NOT the SemantiK staged HTML
+    # (``data-semantik-*``). At the semantik_conversion phase no content dir
+    # resolves yet, so the conversion arm below still serves the
+    # semantik_markers gate — order is safe.
     cg = phase_outputs.get("content_generation") or {}
     cps = cg.get("content_paths")
     if isinstance(cps, str) and cps:
@@ -310,12 +311,12 @@ def _all_html_paths(
         if walked:
             return walked
 
-    # Fallback: DART conversion outputs (serves the DART-phase dart_markers
-    # gate, and content-less workflows). DART->semantik purge Stage 1
-    # (dual-READ): accept the future ``semantik_conversion`` phase-output key.
+    # Fallback: SemantiK conversion outputs (serves the conversion-phase
+    # semantik_markers gate, and content-less workflows). Dual-READ: accept
+    # the legacy ``dart_conversion`` phase-output key for resumed runs.
     dc = (
-        phase_outputs.get("dart_conversion")
-        or phase_outputs.get("semantik_conversion")
+        phase_outputs.get("semantik_conversion")
+        or phase_outputs.get("dart_conversion")
         or {}
     )
     ops = dc.get("output_paths")
@@ -478,15 +479,16 @@ def _build_oscqr(
     return inputs, []
 
 
-def _build_dart_markers(
+def _build_semantik_markers(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
 ) -> BuilderResult:
-    """batch-aware DART markers resolution.
+    """batch-aware SemantiK markers resolution.
 
     Surfaces the full list as ``html_paths`` alongside a representative
     ``html_path``. Returning only ``html_path`` validates just the first
-    file when the DART phase emitted a batch corpus, so both are surfaced:
+    file when the conversion phase emitted a batch corpus, so both are
+    surfaced:
 
     * the validator's single-file entrypoint still works (back-compat)
     * an aggregating caller can walk ``html_paths`` to validate every
@@ -494,13 +496,13 @@ def _build_dart_markers(
 
     Reaches through a broader set of phase-output keys so staged copies
     (``staging.html_paths``) and batch emits
-    (``dart_conversion.output_paths``) both surface.
+    (``semantik_conversion.output_paths``) both surface.
     """
     all_paths = _all_html_paths(phase_outputs, workflow_params)
     existing = [Path(p) for p in all_paths if Path(p).exists()]
     if not existing:
         # One last fallback: try the single html_path helper (walks
-        # content_dir when DART outputs are absent).
+        # content_dir when conversion outputs are absent).
         single = _first_html_path(phase_outputs, workflow_params)
         if single and single.exists():
             existing = [single]
@@ -1014,7 +1016,7 @@ def _build_chunkset_drift(
       ``<course_dir>/imscc_chunks/chunks.jsonl``.
     * Fall back to the Phase-7c shim ``<course_dir>/corpus/chunks.jsonl``
       for the IMSCC side on legacy archives the
-      ``backfill_dart_chunks.py`` migration hasn't touched yet
+      ``backfill_legacy_chunks.py`` migration hasn't touched yet
       (lib.libv2_storage.resolve_imscc_chunks_path handles the
       shim warning + fallback).
 
@@ -2908,8 +2910,8 @@ def default_router() -> GateInputRouter:
         _build_oscqr,
     )
     r.register(
-        "lib.validators.dart_markers.DartMarkersValidator",
-        _build_dart_markers,
+        "lib.validators.semantik_markers.SemantiKMarkersValidator",
+        _build_semantik_markers,
     )
     r.register(
         "lib.validators.assessment.AssessmentQualityValidator",

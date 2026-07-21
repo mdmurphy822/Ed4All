@@ -1371,15 +1371,12 @@ def _emit_detect_capture(page_rows: "list[dict]", totals: dict, model: str) -> N
         )
         cap = DecisionCapture(
             course_code=_detect_course_code(),
-            # DART->semantik naming purge (task #19): ALL conversion captures
-            # now land under the ``semantik`` tool / ``semantik_conversion``
-            # phase — this package's five sites AND the siblings outside it
-            # (MCP/tools/pipeline_tools.py, lib/semantik/subclassifier.py,
-            # lib/decision_capture.SemantiKDecisionCapture) flipped together,
-            # so one run's capture stream stays in a single dir. The
-            # ``MIN_DECISIONS_PER_PHASE`` / ``PHASE_TIMEOUTS`` constants carry
-            # ``semantik_conversion`` alongside the legacy ``dart-conversion``
-            # key (dual-key, pre-purge trees still audit).
+            # Conversion captures land under the ``semantik`` tool /
+            # ``semantik_conversion`` phase — this package's capture sites and
+            # its siblings (MCP/tools/pipeline_tools.py,
+            # lib/semantik/subclassifier.py,
+            # lib/decision_capture.SemantiKDecisionCapture) all use it, so one
+            # run's capture stream stays in a single dir.
             phase="semantik_conversion",
             tool="semantik",
         )

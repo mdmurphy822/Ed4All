@@ -116,7 +116,7 @@ def test_expand_appends_real_neighbor_verdict_safe(mini_libv2: Path):
     flat = [_passage("mini_alpha_chunk_001", 3.0)]
     spy = SpyCapture()
     out = gx.expand_passages_via_graph(
-        flat, course_dir, "dart", engine="lexical", capture=spy,
+        flat, course_dir, "semantik", engine="lexical", capture=spy,
         course_slug=COURSE_SLUG, query_sha="deadbeef",
     )
     # Neighbor appended, real text loaded from the chunkset, score 0.0.
@@ -139,7 +139,7 @@ def test_expand_no_graph_is_fail_open(mini_libv2: Path):
     flat = [_passage("mini_alpha_chunk_001", 3.0)]
     spy = SpyCapture()
     out = gx.expand_passages_via_graph(
-        flat, course_dir, "dart", engine="lexical", capture=spy,
+        flat, course_dir, "semantik", engine="lexical", capture=spy,
         course_slug=COURSE_SLUG, query_sha="x",
     )
     assert [p.chunk_id for p in out] == ["mini_alpha_chunk_001"]
@@ -158,7 +158,7 @@ def test_expand_skips_unloadable_ids(mini_libv2: Path):
     )
     flat = [_passage("mini_alpha_chunk_001", 3.0)]
     out = gx.expand_passages_via_graph(
-        flat, course_dir, "dart", engine="lexical",
+        flat, course_dir, "semantik", engine="lexical",
     )
     # ghost id has no chunkset record → skipped (anti-fabrication), no crash.
     assert [p.chunk_id for p in out] == ["mini_alpha_chunk_001"]

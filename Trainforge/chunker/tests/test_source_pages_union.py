@@ -19,7 +19,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.chunker import harvest_dart_source_refs, union_source_pages
+from Trainforge.chunker import harvest_semantik_source_refs, union_source_pages
 
 
 def test_union_across_two_refs_dedups_and_sorts():
@@ -87,6 +87,6 @@ def test_integration_via_harvest_over_synthetic_html():
         "<p>Synthetic paragraph two.</p></section>"
         "</main>"
     )
-    refs = harvest_dart_source_refs(html)
+    refs = harvest_semantik_source_refs(html)
     assert [r["block_id"] for r in refs] == ["s1", "s2"]
     assert union_source_pages(refs) == [62, 63]

@@ -229,7 +229,7 @@ def test_short_circuit_conditional_in_pipeline_tools():
         == kt.DEFINITION_QUALITY_HIGH
     )
     # LOW (grounded bare mention) does NOT short-circuit → rewrite authors it.
-    low_blk = _mk("We mention the term here in passing only.", ("dart:s#c1",))
+    low_blk = _mk("We mention the term here in passing only.", ("semantik:s#c1",))
     assert (
         kt.block_definition_quality(
             content=low_blk.content,

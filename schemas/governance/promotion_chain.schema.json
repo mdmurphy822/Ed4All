@@ -78,7 +78,7 @@
         },
         "name": {
           "type": "string",
-          "description": "Canonical human-readable arrow name (e.g. 'dart_source_to_dart_html', 'imscc_chunks_to_assessment_items')."
+          "description": "Canonical human-readable arrow name (e.g. 'semantik_source_to_semantik_html', 'imscc_chunks_to_assessment_items')."
         },
         "input_hash": {
           "type": ["string", "null"],

@@ -123,7 +123,7 @@ def test_render_section_table_row_heading_demoted():
     html = _render_section(block, "sidTR")
     assert "<h3" not in html
     assert 'class="sr-only"' not in html  # B4 — no generic-landmark label
-    assert '<section class="dart-section" id="sidTR"' in html
+    assert '<section class="semantik-section" id="sidTR"' in html
     # Sanitized text is preserved as body so content isn't lost.
     assert "<p>14 ft amp;</p>" in html
     assert "\\hline" not in html

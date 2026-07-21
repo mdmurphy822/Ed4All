@@ -685,7 +685,7 @@ def _phase2_slot_texts_batched(
 
     **Envelope-miss fallback (#41).** A region STILL None after the batched pass
     (the nemotron-seat delimiter-envelope non-compliance — a 200 POST that parses
-    to zero ``<<<DART_REGION>>>`` blocks) is recovered by ONE per-region GENERATE
+    to zero ``<<<SEMANTIK_REGION>>>`` blocks) is recovered by ONE per-region GENERATE
     pass over just that subset (no envelope, no draft precondition; refine keeps
     ``_refine_prompt``). A genuinely-dead endpoint fails that fallback too,
     preserving the runner's degraded-skip + total-failure fail-loud."""
@@ -846,7 +846,7 @@ def _phase2_slot_texts_batched(
     if still_none and callable(getattr(rt, "generate_batch", None)):
         logger.warning(
             "Stage6 phase2 batched: %d region(s) unrecovered from the batched "
-            "envelope (200 POST parsed to zero DART_REGION blocks) — running a "
+            "envelope (200 POST parsed to zero SEMANTIK_REGION blocks) — running a "
             "single-pass per-region GENERATE fallback over just those regions",
             len(still_none),
         )

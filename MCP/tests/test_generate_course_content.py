@@ -5,7 +5,7 @@ Verifies the textbook-to-course content-generation tool produces the
 metadata per the Wave Pipeline contract
 (``plans/pipeline-execution-fixes/contracts.md`` §1).
 
-Uses a minimal staged DART HTML fixture so the test runs in the default
+Uses a minimal staged SemantiK HTML fixture so the test runs in the default
 suite (no network, no subprocess, no real pipeline). The tool is
 registered inside ``_build_tool_registry``; we reach it by calling that
 function directly.
@@ -30,13 +30,13 @@ from MCP.tools.pipeline_tools import _build_tool_registry  # noqa: E402
 
 COURSE_CODE = "TESTPIPE_101"
 
-# DART-shaped HTML fixture: multiple <section> blocks plus the
+# SemantiK-shaped HTML fixture: multiple <section> blocks plus the
 # structurally-recognizable Learning Objectives / Misconception /
 # Exercise markers that the source-extraction policy relies on. Every
 # piece of pedagogical content here is "real source material" — no
 # template-generated prose — so the content-generator emits the same
 # structure on the test fixture as it does on any production corpus.
-_DART_HTML = """<!DOCTYPE html>
+_SEMANTIK_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head><title>Photosynthesis Basics</title></head>
 <body>
@@ -129,10 +129,10 @@ def _make_project(tmp_path: Path, project_id: str, duration_weeks: int = 2):
     return project_path
 
 
-def _stage_dart(staging_root: Path, run_id: str):
+def _stage_semantik(staging_root: Path, run_id: str):
     staging_dir = staging_root / run_id
     staging_dir.mkdir(parents=True, exist_ok=True)
-    (staging_dir / "photosynthesis.html").write_text(_DART_HTML, encoding="utf-8")
+    (staging_dir / "photosynthesis.html").write_text(_SEMANTIK_HTML, encoding="utf-8")
     return staging_dir
 
 
@@ -146,7 +146,7 @@ class TestContentGenerationShape:
         tools, tmp_path, staging_root = pipeline_registry
         project_id = "PROJ-TESTPIPE-01"
         project_path = _make_project(tmp_path, project_id, duration_weeks=2)
-        staging_dir = _stage_dart(staging_root, "WF-01")
+        staging_dir = _stage_semantik(staging_root, "WF-01")
 
         result = asyncio.run(tools["generate_course_content"](
             project_id=project_id,
@@ -174,7 +174,7 @@ class TestContentGenerationShape:
         tools, tmp_path, staging_root = pipeline_registry
         project_id = "PROJ-TESTPIPE-02"
         project_path = _make_project(tmp_path, project_id, duration_weeks=2)
-        staging_dir = _stage_dart(staging_root, "WF-02")
+        staging_dir = _stage_semantik(staging_root, "WF-02")
 
         asyncio.run(tools["generate_course_content"](
             project_id=project_id,
@@ -200,7 +200,7 @@ class TestContentGenerationShape:
         tools, tmp_path, staging_root = pipeline_registry
         project_id = "PROJ-TESTPIPE-03"
         project_path = _make_project(tmp_path, project_id, duration_weeks=2)
-        staging_dir = _stage_dart(staging_root, "WF-03")
+        staging_dir = _stage_semantik(staging_root, "WF-03")
 
         asyncio.run(tools["generate_course_content"](
             project_id=project_id,
@@ -253,7 +253,7 @@ class TestContentGenerationShape:
         tools, tmp_path, staging_root = pipeline_registry
         project_id = "PROJ-TESTPIPE-04"
         project_path = _make_project(tmp_path, project_id, duration_weeks=1)
-        staging_dir = _stage_dart(staging_root, "WF-04")
+        staging_dir = _stage_semantik(staging_root, "WF-04")
 
         asyncio.run(tools["generate_course_content"](
             project_id=project_id,
@@ -274,7 +274,7 @@ class TestContentGenerationShape:
         meta = json.loads(match.group(1))
         assert meta["moduleType"] == "assessment"
 
-    def test_works_without_dart_staging(self, pipeline_registry):
+    def test_works_without_semantik_staging(self, pipeline_registry):
         """Missing staging dir must not crash. With the no-placeholder
         policy, a corpus-less run emits overview + 1 content + application
         + summary (the self_check page is skipped because there are no
@@ -314,11 +314,16 @@ class TestContentGenerationShape:
     def test_honors_source_module_map_when_populated(
         self, pipeline_registry,
     ):
-        """When source_module_map.json is non-empty, sourceReferences[] appears."""
+        """When source_module_map.json is non-empty, sourceReferences[] appears.
+
+        Legacy-compat: also pins the dual-read contract that a legacy
+        ``dart:`` source_module_map flows through verbatim (the emitter
+        only mints ``semantik:`` when it derives refs itself).
+        """
         tools, tmp_path, staging_root = pipeline_registry
         project_id = "PROJ-TESTPIPE-06"
         project_path = _make_project(tmp_path, project_id, duration_weeks=1)
-        staging_dir = _stage_dart(staging_root, "WF-06")
+        staging_dir = _stage_semantik(staging_root, "WF-06")
 
         # Write a populated source_module_map.json.
         map_path = project_path / "source_module_map.json"
@@ -367,7 +372,7 @@ class TestDurationWeeksPrecedence:
         tools, tmp_path, staging_root = pipeline_registry
         project_id = "PROJ-TESTPIPE-WAVE40-A"
         project_path = _make_project(tmp_path, project_id, duration_weeks=8)
-        staging_dir = _stage_dart(staging_root, "WF-WAVE40-A")
+        staging_dir = _stage_semantik(staging_root, "WF-WAVE40-A")
 
         result = asyncio.run(tools["generate_course_content"](
             project_id=project_id,
@@ -392,7 +397,7 @@ class TestDurationWeeksPrecedence:
         tools, tmp_path, staging_root = pipeline_registry
         project_id = "PROJ-TESTPIPE-WAVE40-B"
         project_path = _make_project(tmp_path, project_id, duration_weeks=8)
-        staging_dir = _stage_dart(staging_root, "WF-WAVE40-B")
+        staging_dir = _stage_semantik(staging_root, "WF-WAVE40-B")
 
         result = asyncio.run(tools["generate_course_content"](
             project_id=project_id,

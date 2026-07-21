@@ -1,7 +1,7 @@
 """Deterministic post-hoc CO citation RE-SELECTION (opt-in).
 
 The stage-2 7B window synthesis cites ``source_chunk_ids`` per candidate
-objective, but a real full-book audit measured ~40% of COs citing a
+objective, but an internal audit measured ~40% of COs citing a
 same-chapter NEIGHBOR chunk instead of the best supporter (7B citation
 sloppiness), most COs citing exactly 1 chunk, and only a small fraction of
 chunks cited at all. The existing Fix 1A machinery
@@ -58,15 +58,15 @@ active only on the ``TEXTBOOK_SYNTHESIS_PROVIDER`` path, like its siblings).
 Selects no provider/model → no ``docs/LICENSING.md`` row. Decision capture
 reuses the existing ``objective_chunk_prune`` event (no new decision_type).
 
-**Exercise-chunk demotion (ranking-quality bug fix).** A full-book audit
-(a real full-book course) found end-of-chapter EXERCISE chunks winning the
+**Exercise-chunk demotion (ranking-quality bug fix).** An internal audit
+found end-of-chapter EXERCISE chunks winning the
 pure-cosine rank because their instruction line nearly quotes the CO statement
-(e.g. a "In the following exercises, find the place value ... 1. 51,493 ⓐ …"
-answer-list chunk out-cosining a skill-phrased CO). The re-selection then cites
+(e.g. an "In the following exercises …" numbered answer-list chunk
+out-cosining a skill-phrased CO). The re-selection then cites
 an answer list instead of instructional prose, and downstream page-per-CO
 grounding degenerates to objective echoes. When a chunk carries the Wave #22 pedagogical metadata
 (``composite_unit`` / ``unit_roles``, harvested from the SemantiK
-data-dart-unit / -flow / -opener attributes), :func:`_is_exercise_like_chunk`
+data-semantik-unit / -flow / -opener attributes), :func:`_is_exercise_like_chunk`
 uses it as the PRIMARY signal (``composite_unit == "exercise_set"`` or a
 practice-dominant role → demote-class; ``worked_example`` / ``statement`` →
 instructional-class). Chunks without that metadata (legacy / non-SemantiK)
@@ -85,8 +85,8 @@ default **ON** whenever re-selection itself is on — this is a bug-fix of rank
 quality inside an already opt-in feature, so default-on is acceptable; opt out
 with ``0`` / ``false`` / ``no`` / ``off`` to restore the pure-cosine rank.
 
-**Keep-original guard (entailment-regression bug fix).** A full-book audit
-(a real full-book course) found the pure top-K REPLACE could STRIP the one
+**Keep-original guard (entailment-regression bug fix).** An internal audit
+found the pure top-K REPLACE could STRIP the one
 chunk that entails the CO statement. A chapter-level CO ("Solve linear
 inequalities using the Subtraction and Addition Properties of Inequality")
 cited the section chunk that literally states both *Inequality* properties, but
@@ -137,7 +137,7 @@ _TRUTHY = frozenset({"1", "true", "yes", "on"})
 _FALSEY = frozenset({"0", "false", "no", "off"})
 
 # ---- Exercise-likeness heuristic (conservative, high-precision) -----------
-# Signal A — the OpenStax "In the following exercises" instruction line, near
+# Signal A — the "In the following exercises" instruction line, near
 # the START of the chunk (an exercise block leads with it). Positional so a
 # passing mention deep inside prose does not trip it. ``_FOLLOWING_EXERCISES_RE``
 # is imported from lib.objectives.apparatus_lexicon (byte-identical).
@@ -149,9 +149,9 @@ _EARLY_WINDOW_CHARS = 200
 _CIRCLED_ANSWER_RE = re.compile("[ⓐ-ⓔ]")
 _CIRCLED_ANSWER_MIN = 3
 
-# Signal C — a DENSE run of >=3 "N." numbered answer-list markers ("1. 51,493
-# 2. 3,491 3. 812"). Whitespace after the period spares decimals ("3.5") and
-# section numbers ("1.1"); the negative-lookbehind spares thousands ("51,493").
+# Signal C — a DENSE run of >=3 "N." numbered answer-list markers ("1. 42
+# 2. 137 3. 88"). Whitespace after the period spares decimals ("3.5") and
+# section numbers ("1.1"); the negative-lookbehind spares thousands ("12,345").
 # "Dense" = >=3 markers within a short character span, so scattered legit
 # enumerations ("... step 1. ... much later ... 2. ...") do NOT trip.
 _NUMBERED_RUN_RE = re.compile(r"(?<!\d)\d{1,3}\.\s")
@@ -208,7 +208,7 @@ def _is_exercise_like(text: Optional[str]) -> bool:
 
 # ---- Pedagogical-metadata primary signal (Wave #22 quick-wins) ------------
 # When a chunk carries the additive ``composite_unit`` / ``unit_roles``
-# metadata (harvested from the SemantiK data-dart-unit / -flow / -opener
+# metadata (harvested from the SemantiK data-semantik-unit / -flow / -opener
 # attributes by the parser + chunker), it is a FAR more reliable exercise/
 # instructional signal than the text heuristic. It becomes the PRIMARY signal;
 # the text heuristic (:func:`_is_exercise_like`) is the fallback for legacy /

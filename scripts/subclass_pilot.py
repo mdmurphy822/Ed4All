@@ -6,7 +6,7 @@ one or more SemantiK chapters WITHOUT re-running the cascade — it re-renders e
 chapter from its persisted ``{stem}_accessible.cascade_ir.json`` sidecar (same
 lossless path as ``scripts/semantik_rerender.py``) and runs the subclass pass
 WITHIN the render seam, so the output is the fully-rendered chapter PLUS the
-payload-only ``data-dart-subclass`` / ``dart-sub-<label>`` attributes.
+payload-only ``data-semantik-subclass`` / ``semantik-sub-<label>`` attributes.
 
 Two modes
 ---------

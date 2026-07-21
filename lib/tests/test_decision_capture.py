@@ -638,41 +638,15 @@ class TestDecisionTypeReconciliation:
 
 
 # =============================================================================
-# DART->SEMANTIK NAMING PURGE (task #19) — capture-label flip + aliases
+# SemantiK conversion capture — label contract
 # =============================================================================
 
 class TestSemantiKCaptureRename:
     """The conversion capture surface emits the ratified semantik labels.
 
-    DART->semantik naming purge (task #19): ``SemantiKDecisionCapture``
-    replaces ``DARTDecisionCapture`` (kept as a deprecated S4-removal alias)
-    and labels captures ``tool="semantik"`` / ``phase="semantik_conversion"``.
+    ``SemantiKDecisionCapture`` labels captures ``tool="semantik"`` /
+    ``phase="semantik_conversion"``.
     """
-
-    @pytest.mark.unit
-    def test_dart_class_is_alias_of_semantik_class(self):
-        from lib.decision_capture import (
-            DARTDecisionCapture,
-            SemantiKDecisionCapture,
-        )
-
-        assert DARTDecisionCapture is SemantiKDecisionCapture
-
-    @pytest.mark.unit
-    def test_factory_alias(self):
-        from lib.decision_capture import (
-            create_dart_capture,
-            create_semantik_capture,
-        )
-
-        assert create_dart_capture is create_semantik_capture
-
-    @pytest.mark.unit
-    def test_lib_package_exports_both_names(self):
-        import lib
-
-        assert lib.DARTDecisionCapture is lib.SemantiKDecisionCapture
-        assert lib.create_dart_capture is lib.create_semantik_capture
 
     @pytest.mark.unit
     def test_instance_emits_semantik_labels(

@@ -3,7 +3,7 @@
 Motivation
 ==========
 
-A full-textbook PDF ingested through DART produces, as its FIRST chunks, the
+A full-textbook PDF ingested through the SemantiK conversion cascade produces, as its FIRST chunks, the
 book's *front matter*: the cover/title page, the contributing-author list, the
 copyright + ISBN + Creative-Commons attribution block, the donor /
 foundation acknowledgements, the marketing "web view" page, the Table of

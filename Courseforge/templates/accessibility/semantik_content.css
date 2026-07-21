@@ -1,5 +1,5 @@
 /*
- * dart_content.css — styling hooks for SemantiK/DART textbook semantics
+ * semantik_content.css — styling hooks for SemantiK textbook semantics
  * =====================================================================
  * End-user-HTML improvement plan (plans/enduser-html-improvements-2026-07.md
  * item B5). The SemantiK adapter emits accessible, provenance-correct HTML for
@@ -8,13 +8,15 @@
  * all render as undifferentiated black-on-white prose. This stylesheet gives
  * each a visual affordance.
  *
- * CONVENTIONS aligned with the DART standalone-export exemplars (linear-
- * algebra-textbook / nasa-nesc-2024 accessible.html): a semantic custom-property
- * layer (--bg-color / --text-color / --heading-color / --link-color /
- * --border-color / --code-bg) WITH a prefers-color-scheme: dark override, a
- * centered ~900px reading column, bordered h1/h2, figure/figcaption + table +
- * .toc blocks, and link focus outlines. Box fills flip to dark surfaces in dark
- * mode so text keeps its contrast in BOTH schemes.
+ * A semantic custom-property layer (--bg-color / --text-color / --heading-color
+ * / --link-color / --border-color / --code-bg) WITH a prefers-color-scheme: dark
+ * override, a centered ~900px reading column, bordered h1/h2, figure/figcaption
+ * + table + .toc blocks, and link focus outlines. Box fills flip to dark
+ * surfaces in dark mode so text keeps its contrast in BOTH schemes.
+ *
+ * LEGACY-COMPAT: the ``.dart-*`` class SELECTORS below are retained as
+ * read-compat styling for un-migrated legacy corpora whose HTML still carries
+ * those class names; live SemantiK output uses the ``.semantik-*`` classes.
  *
  * SELF-CONTAINED: the :root block below defines every token this file uses (the
  * exemplar semantic vars + the Courseforge accent hues from variables.css) so
@@ -40,20 +42,20 @@
     --code-bg: #f5f5f5;
 
     /* Box fills (light) — flipped to dark surfaces in the dark block below. */
-    --dart-box-example: #ebf8ff;
-    --dart-box-quiet: #f8f9fa;
-    --dart-box-tryit: #fff3cd;
-    --dart-box-prepared: #d1ecf1;
-    --dart-box-degraded: #f8d7da;
+    --semantik-box-example: #ebf8ff;
+    --semantik-box-quiet: #f8f9fa;
+    --semantik-box-tryit: #fff3cd;
+    --semantik-box-prepared: #d1ecf1;
+    --semantik-box-degraded: #f8d7da;
 
     /* Accent rails (scheme-stable mid-tones from the Courseforge palette). */
-    --dart-rail-example: #007bff;
-    --dart-rail-solution: #28a745;
-    --dart-rail-objectives: #2c5aa0;
-    --dart-rail-tryit: #b35900;
-    --dart-rail-prepared: #17a2b8;
-    --dart-rail-howto: #2c5aa0;
-    --dart-degraded-text: #721c24;
+    --semantik-rail-example: #007bff;
+    --semantik-rail-solution: #28a745;
+    --semantik-rail-objectives: #2c5aa0;
+    --semantik-rail-tryit: #b35900;
+    --semantik-rail-prepared: #17a2b8;
+    --semantik-rail-howto: #2c5aa0;
+    --semantik-degraded-text: #721c24;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -66,20 +68,20 @@
         --code-bg: #2d2d2d;
 
         /* Dark box surfaces — text (--text-color) keeps >= 9:1 on each. */
-        --dart-box-example: #14203a;
-        --dart-box-quiet: #262626;
-        --dart-box-tryit: #2b2410;
-        --dart-box-prepared: #12262b;
-        --dart-box-degraded: #3a1113;
+        --semantik-box-example: #14203a;
+        --semantik-box-quiet: #262626;
+        --semantik-box-tryit: #2b2410;
+        --semantik-box-prepared: #12262b;
+        --semantik-box-degraded: #3a1113;
 
         /* Brighter accent rails so they stay visible (>= 3:1) on the dark bg. */
-        --dart-rail-example: #4d9fff;
-        --dart-rail-solution: #4ade80;
-        --dart-rail-objectives: #7aa7e0;
-        --dart-rail-tryit: #f0a35a;
-        --dart-rail-prepared: #4dd0e1;
-        --dart-rail-howto: #7aa7e0;
-        --dart-degraded-text: #f5a8ad;
+        --semantik-rail-example: #4d9fff;
+        --semantik-rail-solution: #4ade80;
+        --semantik-rail-objectives: #7aa7e0;
+        --semantik-rail-tryit: #f0a35a;
+        --semantik-rail-prepared: #4dd0e1;
+        --semantik-rail-howto: #7aa7e0;
+        --semantik-degraded-text: #f5a8ad;
     }
 }
 
@@ -129,46 +131,46 @@ main[role="main"] a:focus {
 }
 
 /* ---- figure / figcaption (exemplar pattern; degraded work reuses it) ---- */
-.dart-document figure,
-.dart-section figure,
-.dart-figure {
+.semantik-document figure,
+.semantik-section figure,
+.semantik-figure {
     margin: 2rem 0;
     padding: 1rem;
     background: var(--code-bg);
     border-radius: 8px;
     text-align: center;
 }
-.dart-document figure img,
-.dart-section figure img {
+.semantik-document figure img,
+.semantik-section figure img {
     max-width: 100%;
     height: auto;
     border: 1px solid var(--border-color);
 }
-.dart-document figcaption,
-.dart-section figcaption {
+.semantik-document figcaption,
+.semantik-section figcaption {
     margin-top: 0.5rem;
     font-style: italic;
     color: var(--text-color);
 }
 
 /* ---- tables (exemplar pattern) ----------------------------------------- */
-.dart-section table,
-.dart-document table {
+.semantik-section table,
+.semantik-document table {
     width: 100%;
     border-collapse: collapse;
     margin: 1rem 0;
 }
-.dart-section th,
-.dart-section td,
-.dart-document th,
-.dart-document td {
+.semantik-section th,
+.semantik-section td,
+.semantik-document th,
+.semantik-document td {
     border: 1px solid var(--border-color);
     padding: 0.75rem;
     text-align: left;
     color: var(--text-color);
 }
-.dart-section th,
-.dart-document th {
+.semantik-section th,
+.semantik-document th {
     background: var(--code-bg);
 }
 /* Wide tables scroll inside their own container (1.4.10 Reflow). */
@@ -179,7 +181,7 @@ main[role="main"] a:focus {
 }
 
 /* ---- Base content section ---------------------------------------------- */
-.dart-section {
+.semantik-section {
     margin-block: 0.75rem;
     color: var(--text-color);
     overflow-x: auto; /* runaway display-math scrolls in-block, not the page */
@@ -187,11 +189,11 @@ main[role="main"] a:focus {
 
 /* ---- Worked EXAMPLE box (A2) ------------------------------------------- */
 .dart-example,
-.dart-section[data-semantik-opener="worked_example"],
-.dart-section[data-semantik-block-role="worked_example"],
+.semantik-section[data-semantik-opener="worked_example"],
+.semantik-section[data-semantik-block-role="worked_example"],
 [data-semantik-opener-group="worked_example"] {
-    border-left: 4px solid var(--dart-rail-example);
-    background: var(--dart-box-example);
+    border-left: 4px solid var(--semantik-rail-example);
+    background: var(--semantik-box-example);
     color: var(--text-color);
     padding: 1rem;
     border-radius: 0 4px 4px 0;
@@ -201,11 +203,11 @@ main[role="main"] a:focus {
 /* ---- SOLUTION region --------------------------------------------------- */
 .dart-solution,
 .pedagogy-solution,
-.dart-section[data-semantik-opener="solution"],
-.dart-section[data-semantik-block-role="solution"],
+.semantik-section[data-semantik-opener="solution"],
+.semantik-section[data-semantik-block-role="solution"],
 [data-semantik-opener-group="solution"] {
-    border-left: 4px solid var(--dart-rail-solution);
-    background: var(--dart-box-quiet);
+    border-left: 4px solid var(--semantik-rail-solution);
+    background: var(--semantik-box-quiet);
     color: var(--text-color);
     padding: 0.75rem;
     border-radius: 0 4px 4px 0;
@@ -213,10 +215,10 @@ main[role="main"] a:focus {
 }
 
 /* ---- Learning Objectives opener (A7) ----------------------------------- */
-.dart-section[data-semantik-opener="objectives"],
+.semantik-section[data-semantik-opener="objectives"],
 [data-semantik-opener-group="objectives"] {
-    border-left: 4px solid var(--dart-rail-objectives);
-    background: var(--dart-box-example);
+    border-left: 4px solid var(--semantik-rail-objectives);
+    background: var(--semantik-box-example);
     color: var(--text-color);
     padding: 0.75rem 1rem;
     border-radius: 0 4px 4px 0;
@@ -225,11 +227,11 @@ main[role="main"] a:focus {
 
 /* ---- TRY IT callout ----------------------------------------------------- */
 .dart-callout--try-it,
-.dart-section[data-semantik-opener="try_it"],
-.dart-section[data-semantik-block-role="try_it"],
+.semantik-section[data-semantik-opener="try_it"],
+.semantik-section[data-semantik-block-role="try_it"],
 [data-semantik-opener-group="try_it"] {
-    border-left: 4px solid var(--dart-rail-tryit);
-    background: var(--dart-box-tryit);
+    border-left: 4px solid var(--semantik-rail-tryit);
+    background: var(--semantik-box-tryit);
     color: var(--text-color);
     padding: 0.75rem 1rem;
     border-radius: 0 4px 4px 0;
@@ -238,11 +240,11 @@ main[role="main"] a:focus {
 
 /* ---- BE PREPARED readiness check --------------------------------------- */
 .dart-callout--be-prepared,
-.dart-section[data-semantik-opener="readiness_check"],
-.dart-section[data-semantik-block-role="readiness_check"],
+.semantik-section[data-semantik-opener="readiness_check"],
+.semantik-section[data-semantik-block-role="readiness_check"],
 [data-semantik-opener-group="readiness_check"] {
-    border-left: 4px solid var(--dart-rail-prepared);
-    background: var(--dart-box-prepared);
+    border-left: 4px solid var(--semantik-rail-prepared);
+    background: var(--semantik-box-prepared);
     color: var(--text-color);
     padding: 0.75rem 1rem;
     border-radius: 0 4px 4px 0;
@@ -251,11 +253,11 @@ main[role="main"] a:focus {
 
 /* ---- HOW TO procedure --------------------------------------------------- */
 .dart-callout--how-to,
-.dart-section[data-semantik-opener="how_to"],
-.dart-section[data-semantik-block-role="how_to"],
+.semantik-section[data-semantik-opener="how_to"],
+.semantik-section[data-semantik-block-role="how_to"],
 [data-semantik-opener-group="how_to"] {
-    border-left: 4px solid var(--dart-rail-howto);
-    background: var(--dart-box-quiet);
+    border-left: 4px solid var(--semantik-rail-howto);
+    background: var(--semantik-box-quiet);
     color: var(--text-color);
     padding: 0.75rem 1rem;
     border-radius: 0 4px 4px 0;
@@ -268,14 +270,14 @@ main[role="main"] a:focus {
    div, so the per-kind box rules above enclose the WHOLE pedagogical unit.
    The inner opener SECTION must then NOT re-draw its own box (double-box), and
    the inner content sections sit transparent on the group fill. */
-[data-semantik-opener-group] > .dart-section[data-semantik-opener] {
+[data-semantik-opener-group] > .semantik-section[data-semantik-opener] {
     border-left: 0;
     background: transparent;
     padding: 0;
     margin-block: 0;
     border-radius: 0;
 }
-[data-semantik-opener-group] > .dart-section {
+[data-semantik-opener-group] > .semantik-section {
     background: transparent;
 }
 
@@ -304,17 +306,17 @@ main[role="main"] a:focus {
 }
 
 /* ---- Degraded-figure notice (A8/B6) ------------------------------------ */
-.dart-section[data-semantik-wcag="failed"] figure,
+.semantik-section[data-semantik-wcag="failed"] figure,
 .dart-figure-degraded {
-    border: 1px dashed var(--dart-degraded-text);
-    background: var(--dart-box-degraded);
+    border: 1px dashed var(--semantik-degraded-text);
+    background: var(--semantik-box-degraded);
     padding: 0.75rem;
     border-radius: 4px;
-    color: var(--dart-degraded-text);
+    color: var(--semantik-degraded-text);
 }
-.dart-section[data-semantik-wcag="failed"] figcaption,
+.semantik-section[data-semantik-wcag="failed"] figcaption,
 .dart-figure-degraded figcaption {
-    color: var(--dart-degraded-text);
+    color: var(--semantik-degraded-text);
     font-size: 0.875rem;
 }
 
@@ -322,31 +324,31 @@ main[role="main"] a:focus {
 /* The VLM sometimes transcribes a coordinate-plane FIGURE as raw TikZ code
    inside math delimiters; MathJax cannot render it, so the adapter substitutes
    an accessible inline placeholder (role="img" + aria-label). It reads as a
-   quiet, italic, muted inline note in BOTH schemes — the --dart-degraded-text
+   quiet, italic, muted inline note in BOTH schemes — the --semantik-degraded-text
    token flips in the prefers-color-scheme: dark block above, so it keeps its
    contrast on light and dark surfaces alike. Non-text only-styling; the
    aria-label carries the meaning for assistive tech. */
-.dart-figure-notation {
+.semantik-figure-notation {
     font-style: italic;
-    color: var(--dart-degraded-text);
+    color: var(--semantik-degraded-text);
     font-size: 0.9375rem;
 }
 
 /* ---- Re-drawn figure (SEMANTIK_RENDER_TIKZ_FIGURES) -------------------- */
 /* When the opt-in re-draw pass parses the VLM's constrained TikZ notation, the
    coordinate-plane figure is emitted as a self-contained inline <svg role="img">
-   (accessible name on the <svg> + a <title>) inside a <figure class="dart-figure">
+   (accessible name on the <svg> + a <title>) inside a <figure class="semantik-figure">
    instead of the un-rendered placeholder. The SVG paints with currentColor, so
    binding the figure's color to the --text-color token (which flips in the
    prefers-color-scheme: dark block above) keeps every stroke / label legible on
    BOTH light and dark surfaces with no per-element scheme rules. The figure is a
    quiet, centered block that never overflows its column. */
-.dart-figure {
+.semantik-figure {
     margin: 1rem 0;
     text-align: center;
     color: var(--text-color);
 }
-.dart-figure-svg {
+.semantik-figure-svg {
     display: inline-block;
     max-width: 100%;
     height: auto;
@@ -357,7 +359,7 @@ main[role="main"] a:focus {
 /* Decorative page-break cue (role="presentation" aria-hidden="true"): kept
    off-screen so sighted learners don't see a duplicate "… (cont.)" and SR
    users never hear it. */
-.dart-continuation {
+.semantik-continuation {
     position: absolute;
     width: 1px;
     height: 1px;
@@ -370,7 +372,7 @@ main[role="main"] a:focus {
 }
 
 /* ---- Tier-2 composite units (Wave #22) --------------------------------- */
-/* A composite unit (<section class="dart-unit dart-unit-<type>" role="group">)
+/* A composite unit (<section class="semantik-unit semantik-unit-<type>" role="group">)
    coagulates the smaller sibling blocks that form one pedagogical whole — a
    worked example + its solution + practice, an objectives + readiness opener,
    an exercise set, a definition + its example, a figure group. The container is
@@ -380,21 +382,21 @@ main[role="main"] a:focus {
    tokens flip in the prefers-color-scheme: dark block above). The 3px rail is a
    non-text UI signal (>= 3:1) and never the sole meaning carrier — each unit
    carries an accessible group name (aria-labelledby / aria-label). */
-.dart-unit {
+.semantik-unit {
     border-inline-start: 3px solid var(--border-color);
     padding-inline-start: 0.75rem;
     margin-block: 1.25rem;
 }
-.dart-unit > .dart-callout-group,
-.dart-unit > .dart-section {
+.semantik-unit > .semantik-callout-group,
+.semantik-unit > .semantik-section {
     margin-block: 0.5rem;
 }
 /* Per-type rail tint — reuses the callout accent rails so a unit's start-rail
    echoes the pedagogy inside it (worked example -> example rail, section opener
    -> objectives rail, exercise set / definition / figure -> quiet neutrals). */
-.dart-unit-worked_example { border-inline-start-color: var(--dart-rail-example); }
-.dart-unit-section_opener { border-inline-start-color: var(--dart-rail-objectives); }
-.dart-unit-procedure { border-inline-start-color: var(--dart-rail-howto); }
-.dart-unit-exercise_set { border-inline-start-color: var(--dart-rail-tryit); }
-.dart-unit-definition_group { border-inline-start-color: var(--dart-rail-prepared); }
-.dart-unit-figure_group { border-inline-start-color: var(--border-color); }
+.semantik-unit-worked_example { border-inline-start-color: var(--semantik-rail-example); }
+.semantik-unit-section_opener { border-inline-start-color: var(--semantik-rail-objectives); }
+.semantik-unit-procedure { border-inline-start-color: var(--semantik-rail-howto); }
+.semantik-unit-exercise_set { border-inline-start-color: var(--semantik-rail-tryit); }
+.semantik-unit-definition_group { border-inline-start-color: var(--semantik-rail-prepared); }
+.semantik-unit-figure_group { border-inline-start-color: var(--border-color); }

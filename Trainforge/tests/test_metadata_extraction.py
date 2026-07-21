@@ -714,7 +714,7 @@ class TestCreateChunkW5BStamp:
 # Wave 5 W5.G — per-chunk learning_outcome_source_refs reverse map.
 # Builds a {lo_id: [source_chunk_id, ...]} projection from the page-level
 # JSON-LD ``learningObjectives[].sourceReferences[]`` so downstream
-# consumers can resolve "which DART/Courseforge chunk(s) source TO-05?"
+# consumers can resolve "which SemantiK/Courseforge chunk(s) source TO-05?"
 # without re-loading synthesized_objectives.json off disk.
 
 
@@ -769,7 +769,7 @@ class TestCreateChunkW5GLearningOutcomeSourceRefs:
                 {
                     "id": "TO-05",
                     "sourceReferences": [
-                        {"sourceId": "dart:rdf-primer-ch3#sec-2"},
+                        {"sourceId": "semantik:rdf-primer-ch3#sec-2"},
                     ],
                 },
             ],
@@ -787,7 +787,7 @@ class TestCreateChunkW5GLearningOutcomeSourceRefs:
             chunk_type="explanation",
         )
         assert chunk["learning_outcome_source_refs"] == {
-            "TO-05": ["dart:rdf-primer-ch3#sec-2"]
+            "TO-05": ["semantik:rdf-primer-ch3#sec-2"]
         }
 
     def test_create_chunk_omits_reverse_map_when_jsonld_lacks_sourceReferences(self):
@@ -828,8 +828,8 @@ class TestCreateChunkW5GLearningOutcomeSourceRefs:
                 {
                     "id": "TO-05",  # canonical-cased emit form
                     "sourceReferences": [
-                        {"sourceId": "dart:chunk_alpha"},
-                        {"sourceId": "dart:chunk_beta"},
+                        {"sourceId": "semantik:chunk_alpha"},
+                        {"sourceId": "semantik:chunk_beta"},
                     ],
                 },
             ],
@@ -853,7 +853,7 @@ class TestCreateChunkW5GLearningOutcomeSourceRefs:
         assert "to-05" in chunk["learning_outcome_refs"]
         # But the reverse-map output key preserves the JSON-LD emit case.
         assert chunk["learning_outcome_source_refs"] == {
-            "TO-05": ["dart:chunk_alpha", "dart:chunk_beta"],
+            "TO-05": ["semantik:chunk_alpha", "semantik:chunk_beta"],
         }
 
     def test_create_chunk_defensive_skips_malformed_jsonld_entries(self):
@@ -882,7 +882,7 @@ class TestCreateChunkW5GLearningOutcomeSourceRefs:
                     "sourceReferences": [
                         "not-a-dict-ref",
                         {"sourceId": ""},  # empty sourceId
-                        {"sourceId": "dart:valid_ref"},
+                        {"sourceId": "semantik:valid_ref"},
                         {"notSourceId": "ignored"},
                     ],
                 },
@@ -896,7 +896,7 @@ class TestCreateChunkW5GLearningOutcomeSourceRefs:
         )
         # TO-07 has a non-list sourceReferences -> entirely skipped.
         # TO-08 has one valid sourceId among the malformed items.
-        assert reverse_map == {"TO-08": ["dart:valid_ref"]}
+        assert reverse_map == {"TO-08": ["semantik:valid_ref"]}
 
         # Bonus contract: an empty lo_refs returns {} (NOT None) so the
         # call site's ``if reverse_map:`` gate elides the field cleanly.

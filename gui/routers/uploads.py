@@ -26,7 +26,7 @@ logger = logging.getLogger("gui.routers.uploads")
 
 router = APIRouter()
 
-# Accepted corpus extensions. PDFs (DART intake) + IMSCC (rag_training).
+# Accepted corpus extensions. PDFs (SemantiK conversion intake) + IMSCC (rag_training).
 # Lower-cased for comparison.
 _ALLOWED_EXTENSIONS = {".pdf", ".imscc"}
 

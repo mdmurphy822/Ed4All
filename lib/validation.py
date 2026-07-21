@@ -76,7 +76,7 @@ def validate_decision(
 
     Args:
         record: The decision record to validate
-        tool: "dart", "courseforge", "trainforge", or "orchestrator"
+        tool: "semantik", "courseforge", "trainforge", or "orchestrator"
         strict: If True, raise exception on validation failure
 
     Returns:
@@ -173,7 +173,7 @@ def validate_phase_completeness(
     Args:
         decisions: List of decision records for the phase
         phase: Phase name (e.g., "content-generator")
-        tool: "dart", "courseforge", or "trainforge"
+        tool: "semantik", "courseforge", or "trainforge"
 
     Returns:
         Validation result dictionary
@@ -234,7 +234,7 @@ def validate_capture_file(
 
     Args:
         filepath: Path to the .jsonl file
-        tool: "dart", "courseforge", or "trainforge"
+        tool: "semantik", "courseforge", or "trainforge"
 
     Returns:
         Validation result dictionary

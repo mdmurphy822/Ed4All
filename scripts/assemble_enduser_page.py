@@ -57,7 +57,7 @@ _DEFAULT_TEMPLATE = (
     _REPO_ROOT
     / "Courseforge/templates/accessibility/accessible_content_template.html"
 )
-_DEFAULT_DART_CSS = (
+_DEFAULT_SEMANTIK_CSS = (
     _REPO_ROOT / "Courseforge/templates/accessibility/semantik_content.css"
 )
 
@@ -96,7 +96,7 @@ window.MathJax = {
 # Dark-scheme overrides for the Bootstrap 4.3 utility classes that clothe the
 # template chrome (header/footer/breadcrumb/nav buttons) but read HARD-CODED
 # hues, not the template's --cf-* tokens. Injected AFTER the inlined
-# dart_content.css so it wins, and uses ``!important`` because Bootstrap's own
+# semantik_content.css so it wins, and uses ``!important`` because Bootstrap's own
 # ``.bg-light`` / ``.border-*`` utilities are ``!important``. Without this the
 # body/content flip dark (via the token layers) while the breadcrumb bar stays
 # white — the "dark mode shows white background" defect.
@@ -213,7 +213,7 @@ def assemble(
     module_link: str,
     mathjax: bool,
     css_hooks: bool,
-    dart_css_path: Optional[Path],
+    semantik_css_path: Optional[Path],
     description: str = "",
     author: str = "",
 ) -> str:
@@ -237,7 +237,7 @@ def assemble(
         module_link=module_link,
     )
 
-    # Head injections (meta + MathJax + dart-content CSS), before </head>.
+    # Head injections (meta + MathJax + semantik-content CSS), before </head>.
     head_extra = ""
     # Document metadata (exemplar convention — description + author).
     if description.strip():
@@ -249,18 +249,18 @@ def assemble(
             f'<meta name="author" content="{_esc_attr(author.strip())}">\n'
         )
     if css_hooks:
-        css_path = dart_css_path or _DEFAULT_DART_CSS
+        css_path = semantik_css_path or _DEFAULT_SEMANTIK_CSS
         try:
             css_text = Path(css_path).read_text(encoding="utf-8")
             head_extra += (
-                "<!-- dart-content textbook-semantics styling (B5) -->\n"
+                "<!-- semantik-content textbook-semantics styling (B5) -->\n"
                 f"<style>\n{css_text}\n</style>\n"
             )
         except OSError as exc:  # pragma: no cover - defensive
-            print(f"warning: could not read dart CSS {css_path}: {exc}",
+            print(f"warning: could not read semantik CSS {css_path}: {exc}",
                   file=sys.stderr)
-    # Dark-scheme Bootstrap-utility chrome overrides — injected AFTER the dart
-    # CSS so it wins the cascade, so the breadcrumb/header/footer flip dark in
+    # Dark-scheme Bootstrap-utility chrome overrides — injected AFTER the
+    # semantik CSS so it wins the cascade, so the breadcrumb/header/footer flip dark in
     # lockstep with the token-driven body + content.
     head_extra += _DARK_CHROME_OVERRIDE
     if mathjax:
@@ -306,10 +306,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     ap.add_argument(
         "--css-hooks", action="store_true",
-        help="Inline the dart-content textbook-semantics stylesheet.",
+        help="Inline the semantik-content textbook-semantics stylesheet.",
     )
     ap.add_argument(
-        "--dart-css", default=None,
+        "--semantik-css", default=None,
         help="Path to semantik_content.css (default: templates/accessibility/).",
     )
     ap.add_argument(
@@ -335,7 +335,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         module_link=args.module_link,
         mathjax=not args.no_mathjax,
         css_hooks=args.css_hooks,
-        dart_css_path=Path(args.dart_css) if args.dart_css else None,
+        semantik_css_path=Path(args.semantik_css) if args.semantik_css else None,
         description=args.description,
         author=args.author,
     )

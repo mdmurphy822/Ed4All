@@ -141,7 +141,7 @@ def project_root():
 def temp_project_dir(tmp_path):
     """Creates a temporary project directory structure for testing"""
     dirs = [
-        "DART",
+        "SemantiK",
         "Courseforge",
         "Trainforge",
         "LibV2/courses",

@@ -2,17 +2,17 @@
 
 The textbook-synthesis MAP unit drops from CHAPTER granularity (24 KB chapter
 prose → overflows a 4-8 K 7B window → silent head-truncation → fabrication) to a
-**chunk-window**: an ordered group of DART chunks whose combined rendered prompt
-fits the resolved serving window. The objective the model emits MUST cite
+**chunk-window**: an ordered group of SemantiK chunks whose combined rendered
+prompt fits the resolved serving window. The objective the model emits MUST cite
 ``source_chunk_ids`` that resolve against the chunkset, so feeding the model the
 chunks themselves (id + body) makes the allowed-id set explicit and the citation
 a copy, not an inference (the OUTLINE-tier discipline lifted onto LO synthesis).
 
 Two public symbols:
 
-- :func:`chunks_for_chapter` — the chapter → chunks join. Primary key is the DART
-  slug shared by the chapter's ``source_file`` basename and each chunk's
-  ``source.source_references[].sourceId`` (shape ``dart:{slug}#{block_id}``).
+- :func:`chunks_for_chapter` — the chapter → chunks join. Primary key is the
+  SemantiK slug shared by the chapter's ``source_file`` basename and each chunk's
+  ``source.source_references[].sourceId`` (shape ``semantik:{slug}#{block_id}``).
   Order-fallback (document order, proportional to ``chapter_text`` length) when
   no sourceId join resolves (legacy corpora). Records ``join_method``.
 - :func:`group_chunks_into_windows` — greedy-pack chunks (chapter document order)
@@ -64,7 +64,7 @@ MAX_CHUNK_BODY_CHARS = 1500
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class ChunkWindow:
-    """An ordered group of DART chunks sized to fit a 7B serving window.
+    """An ordered group of SemantiK chunks sized to fit a 7B serving window.
 
     A window never crosses a chapter boundary (so CO-NN hierarchy +
     ``ChapterObjectiveCoverageValidator`` still hold) and its chunks are
@@ -103,8 +103,9 @@ class ChunkWindow:
 # ---------------------------------------------------------------------------
 # Slug / sourceId helpers
 # ---------------------------------------------------------------------------
-#: ``{dart|semantik}:{slug}#{block_id}`` — capture the slug between the prefix
-#: and ``#``. DART->semantik purge Stage 1 (dual-READ): accepts both prefixes.
+#: ``semantik:{slug}#{block_id}`` — capture the slug between the prefix and
+#: ``#``. Dual-READ: accepts both the current ``semantik:`` prefix and the
+#: legacy pre-SemantiK ``dart:`` prefix.
 _SOURCE_ID_RE = re.compile(r"^(?:dart|semantik):(?P<slug>[^#]+)#")
 
 
@@ -129,14 +130,14 @@ def _basename_stem(path_str: str) -> str:
 
 
 def _chapter_slug_forms(chapter: Dict[str, Any]) -> List[str]:
-    """Candidate DART slugs for a chapter, derived from ``source_file``.
+    """Candidate SemantiK slugs for a chapter, derived from ``source_file``.
 
-    Spec §1.2 mandates ``canonical_slug`` on the basename. DART's own slug
-    normalization is ``lowercase + space-to-hyphen`` (per the project slug
-    contract), which differs from ``canonical_slug`` (which DELETES disallowed
-    chars and fuses digits). We compute BOTH forms and match a chunk whose
-    ``sourceId`` slug equals either — robust across the two normalizations
-    without guessing which the chunker emitted.
+    Spec §1.2 mandates ``canonical_slug`` on the basename. A ``lowercase +
+    space-to-hyphen`` normalization (per the project slug contract) differs from
+    ``canonical_slug`` (which DELETES disallowed chars and fuses digits). We
+    compute BOTH forms and match a chunk whose ``sourceId`` slug equals either —
+    robust across the two normalizations without guessing which the chunker
+    emitted.
     """
     src = str(chapter.get("source_file") or "")
     stem = _basename_stem(src)
@@ -146,10 +147,10 @@ def _chapter_slug_forms(chapter: Dict[str, Any]) -> List[str]:
     canon = canonical_slug(stem)
     if canon:
         forms.append(canon)
-    # DART-style: lowercase + non-alnum runs → single hyphen + strip hyphens.
-    dart_like = re.sub(r"[^a-z0-9]+", "-", stem.lower()).strip("-")
-    if dart_like and dart_like not in forms:
-        forms.append(dart_like)
+    # Hyphen style: lowercase + non-alnum runs → single hyphen + strip hyphens.
+    hyphen_slug = re.sub(r"[^a-z0-9]+", "-", stem.lower()).strip("-")
+    if hyphen_slug and hyphen_slug not in forms:
+        forms.append(hyphen_slug)
     # Raw lowercased stem (some chunkers slug the stem verbatim).
     low = stem.lower()
     if low and low not in forms:
@@ -158,7 +159,7 @@ def _chapter_slug_forms(chapter: Dict[str, Any]) -> List[str]:
 
 
 def _chunk_source_slugs(chunk: Dict[str, Any]) -> List[str]:
-    """Extract the DART slug(s) from a chunk's ``source.source_references``."""
+    """Extract the SemantiK slug(s) from a chunk's ``source.source_references``."""
     source = chunk.get("source")
     if not isinstance(source, dict):
         return []
@@ -197,8 +198,8 @@ def chunks_for_chapter(
 ) -> Tuple[List[Dict[str, Any]], str]:
     """Return ``(chapter_chunks, join_method)`` for one chapter.
 
-    Primary key: the DART slug shared by the chapter's ``source_file`` basename
-    and each chunk's ``source.source_references[].sourceId``. A chunk whose
+    Primary key: the SemantiK slug shared by the chapter's ``source_file``
+    basename and each chunk's ``source.source_references[].sourceId``. A chunk whose
     sourceId slug equals any candidate slug form of the chapter joins to it.
 
     Fallback (``join_method="order_fallback"``): when NO sourceId join resolves

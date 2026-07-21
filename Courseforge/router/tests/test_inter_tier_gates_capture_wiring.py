@@ -155,7 +155,7 @@ def _three_block_fixture_for_source_refs() -> Tuple[List[Block], Dict[str, Any]]
     blocks = [
         _outline_block(
             block_id="page_01#a_0",
-            source_ids=("dart:my-textbook#blk_42",),
+            source_ids=("semantik:my-textbook#blk_42",),
         ),
         _outline_block(
             block_id="page_01#b_1",
@@ -168,7 +168,7 @@ def _three_block_fixture_for_source_refs() -> Tuple[List[Block], Dict[str, Any]]
     ]
     inputs = {
         "blocks": blocks,
-        "valid_source_ids": {"dart:my-textbook#blk_42"},
+        "valid_source_ids": {"semantik:my-textbook#blk_42"},
     }
     return blocks, inputs
 

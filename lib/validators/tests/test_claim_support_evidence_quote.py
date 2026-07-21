@@ -107,7 +107,7 @@ def _make_block(
     page_id: str = "page_01",
     sequence: int = 0,
     key_claims: Optional[List[Any]] = None,
-    source_ids: Tuple[str, ...] = ("dart:slug#blk_0",),
+    source_ids: Tuple[str, ...] = ("semantik:slug#blk_0",),
 ) -> Block:
     content: Dict[str, Any] = {"statement": "Block intro statement."}
     if key_claims is not None:
@@ -142,17 +142,17 @@ def test_valid_quote_and_char_span_no_issue() -> None:
         key_claims=[
             {
                 "claim": "RDF is a graph data model.",
-                "source_chunk_ids": ["dart:slug#blk_0"],
+                "source_chunk_ids": ["semantik:slug#blk_0"],
                 "evidence_quote": quote,
                 "evidence_char_span": [start, end],
             }
         ],
-        source_ids=("dart:slug#blk_0",),
+        source_ids=("semantik:slug#blk_0",),
     )
     result = validator.validate(
         {
             "blocks": [block],
-            "source_chunks": {"dart:slug#blk_0": chunk_text},
+            "source_chunks": {"semantik:slug#blk_0": chunk_text},
         }
     )
 
@@ -193,16 +193,16 @@ def test_quote_not_in_chunk_emits_substring_fail_warning() -> None:
         key_claims=[
             {
                 "claim": "Some claim.",
-                "source_chunk_ids": ["dart:slug#blk_0"],
+                "source_chunk_ids": ["semantik:slug#blk_0"],
                 "evidence_quote": bogus_quote,
             }
         ],
-        source_ids=("dart:slug#blk_0",),
+        source_ids=("semantik:slug#blk_0",),
     )
     result = validator.validate(
         {
             "blocks": [block],
-            "source_chunks": {"dart:slug#blk_0": chunk_text},
+            "source_chunks": {"semantik:slug#blk_0": chunk_text},
         }
     )
 
@@ -240,17 +240,17 @@ def test_char_span_mismatch_emits_warning() -> None:
         key_claims=[
             {
                 "claim": "RDF is a graph data model.",
-                "source_chunk_ids": ["dart:slug#blk_0"],
+                "source_chunk_ids": ["semantik:slug#blk_0"],
                 "evidence_quote": quote,
                 "evidence_char_span": [bad_start, bad_end],
             }
         ],
-        source_ids=("dart:slug#blk_0",),
+        source_ids=("semantik:slug#blk_0",),
     )
     result = validator.validate(
         {
             "blocks": [block],
-            "source_chunks": {"dart:slug#blk_0": chunk_text},
+            "source_chunks": {"semantik:slug#blk_0": chunk_text},
         }
     )
 
@@ -289,17 +289,17 @@ def test_missing_quote_no_issue_counter_increments() -> None:
         key_claims=[
             {
                 "claim": "Some claim.",
-                "source_chunk_ids": ["dart:slug#blk_0"],
+                "source_chunk_ids": ["semantik:slug#blk_0"],
                 # No evidence_quote, no evidence_char_span (legacy /
                 # pre-W-D11 corpora).
             }
         ],
-        source_ids=("dart:slug#blk_0",),
+        source_ids=("semantik:slug#blk_0",),
     )
     result = validator.validate(
         {
             "blocks": [block],
-            "source_chunks": {"dart:slug#blk_0": chunk_text},
+            "source_chunks": {"semantik:slug#blk_0": chunk_text},
         }
     )
 
@@ -336,12 +336,12 @@ def test_legacy_list_str_arm_graceful_degrade() -> None:
 
     block = _make_block(
         key_claims=["A bare-string legacy claim.", "Another bare-string."],
-        source_ids=("dart:slug#blk_0",),
+        source_ids=("semantik:slug#blk_0",),
     )
     result = validator.validate(
         {
             "blocks": [block],
-            "source_chunks": {"dart:slug#blk_0": chunk_text},
+            "source_chunks": {"semantik:slug#blk_0": chunk_text},
         }
     )
 
@@ -395,35 +395,35 @@ def test_mixed_claims_counters_reflect_mix() -> None:
             # 1: Valid quote + valid char_span → counts as valid.
             {
                 "claim": "Claim about RDF.",
-                "source_chunk_ids": ["dart:slug#blk_0"],
+                "source_chunk_ids": ["semantik:slug#blk_0"],
                 "evidence_quote": quote_a,
                 "evidence_char_span": [start_a, end_a],
             },
             # 2: No quote at all → claims_without_quote.
             {
                 "claim": "Claim with no quote.",
-                "source_chunk_ids": ["dart:slug#blk_0"],
+                "source_chunk_ids": ["semantik:slug#blk_0"],
             },
             # 3: Bogus quote → substring fail.
             {
                 "claim": "Claim with bogus quote.",
-                "source_chunk_ids": ["dart:slug#blk_0"],
+                "source_chunk_ids": ["semantik:slug#blk_0"],
                 "evidence_quote": "Nowhere-in-chunk text.",
             },
             # 4: Valid quote but bad char_span → char_span mismatch.
             {
                 "claim": "Claim with bad span.",
-                "source_chunk_ids": ["dart:slug#blk_0"],
+                "source_chunk_ids": ["semantik:slug#blk_0"],
                 "evidence_quote": quote_a,
                 "evidence_char_span": [0, 5],
             },
         ],
-        source_ids=("dart:slug#blk_0",),
+        source_ids=("semantik:slug#blk_0",),
     )
     result = validator.validate(
         {
             "blocks": [block],
-            "source_chunks": {"dart:slug#blk_0": chunk_text},
+            "source_chunks": {"semantik:slug#blk_0": chunk_text},
         }
     )
 
@@ -478,16 +478,16 @@ def test_nli_outcome_passed_unchanged_by_evidence_quote_findings() -> None:
         key_claims=[
             {
                 "claim": "Claim entailed by source.",
-                "source_chunk_ids": ["dart:slug#blk_0"],
+                "source_chunk_ids": ["semantik:slug#blk_0"],
                 "evidence_quote": "Quote nowhere in the chunk.",
             }
         ],
-        source_ids=("dart:slug#blk_0",),
+        source_ids=("semantik:slug#blk_0",),
     )
     result = validator.validate(
         {
             "blocks": [block],
-            "source_chunks": {"dart:slug#blk_0": chunk_text},
+            "source_chunks": {"semantik:slug#blk_0": chunk_text},
         }
     )
 
@@ -560,17 +560,17 @@ def test_t11_4_rationale_carries_evidence_quote_signals_on_valid_quote() -> None
         key_claims=[
             {
                 "claim": "RDF is a graph data model.",
-                "source_chunk_ids": ["dart:slug#blk_0"],
+                "source_chunk_ids": ["semantik:slug#blk_0"],
                 "evidence_quote": quote,
                 "evidence_char_span": [start, end],
             }
         ],
-        source_ids=("dart:slug#blk_0",),
+        source_ids=("semantik:slug#blk_0",),
     )
     result = validator.validate(
         {
             "blocks": [block],
-            "source_chunks": {"dart:slug#blk_0": chunk_text},
+            "source_chunks": {"semantik:slug#blk_0": chunk_text},
             "decision_capture": capture,
         }
     )
@@ -612,16 +612,16 @@ def test_t11_4_rationale_records_substring_fail_above_zero() -> None:
         key_claims=[
             {
                 "claim": "Some claim.",
-                "source_chunk_ids": ["dart:slug#blk_0"],
+                "source_chunk_ids": ["semantik:slug#blk_0"],
                 "evidence_quote": bogus_quote,
             }
         ],
-        source_ids=("dart:slug#blk_0",),
+        source_ids=("semantik:slug#blk_0",),
     )
     result = validator.validate(
         {
             "blocks": [block],
-            "source_chunks": {"dart:slug#blk_0": chunk_text},
+            "source_chunks": {"semantik:slug#blk_0": chunk_text},
             "decision_capture": capture,
         }
     )
@@ -656,17 +656,17 @@ def test_t11_4_rationale_records_char_span_mismatch_above_zero() -> None:
         key_claims=[
             {
                 "claim": "RDF is a graph data model.",
-                "source_chunk_ids": ["dart:slug#blk_0"],
+                "source_chunk_ids": ["semantik:slug#blk_0"],
                 "evidence_quote": quote,
                 "evidence_char_span": [bad_start, bad_end],
             }
         ],
-        source_ids=("dart:slug#blk_0",),
+        source_ids=("semantik:slug#blk_0",),
     )
     result = validator.validate(
         {
             "blocks": [block],
-            "source_chunks": {"dart:slug#blk_0": chunk_text},
+            "source_chunks": {"semantik:slug#blk_0": chunk_text},
             "decision_capture": capture,
         }
     )
@@ -696,12 +696,12 @@ def test_t11_4_rationale_constructs_cleanly_on_legacy_no_quote_block() -> None:
             # Legacy List[str] entry — no evidence_quote at all.
             "A legacy bare-string claim.",
         ],
-        source_ids=("dart:slug#blk_0",),
+        source_ids=("semantik:slug#blk_0",),
     )
     result = validator.validate(
         {
             "blocks": [block],
-            "source_chunks": {"dart:slug#blk_0": chunk_text},
+            "source_chunks": {"semantik:slug#blk_0": chunk_text},
             "decision_capture": capture,
         }
     )
@@ -735,11 +735,11 @@ def test_t11_4_nli_deps_missing_branch_emits_no_decision_event() -> None:
         key_claims=[
             {
                 "claim": "Some claim.",
-                "source_chunk_ids": ["dart:slug#blk_0"],
+                "source_chunk_ids": ["semantik:slug#blk_0"],
                 "evidence_quote": "ignored on this branch",
             }
         ],
-        source_ids=("dart:slug#blk_0",),
+        source_ids=("semantik:slug#blk_0",),
     )
     # Without an NLI classifier, the validator short-circuits to the
     # graceful-degrade path: warning-severity NLI_DEPS_MISSING issue,
@@ -747,7 +747,7 @@ def test_t11_4_nli_deps_missing_branch_emits_no_decision_event() -> None:
     result = validator.validate(
         {
             "blocks": [block],
-            "source_chunks": {"dart:slug#blk_0": "Source."},
+            "source_chunks": {"semantik:slug#blk_0": "Source."},
             "decision_capture": capture,
         }
     )

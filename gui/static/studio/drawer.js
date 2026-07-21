@@ -409,10 +409,10 @@ export function createAskDrawer({ slug, loadCitation, loadSourceDoc }) {
         if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') onActivate(e);
       });
     });
-    // Source-side (DART) main citation links point at the anchored
+    // Source-side main citation links point at the anchored
     // source-doc URL (lands on the cited block). Route them into the
     // content pane like course-page citations — the iframe honours the
-    // #dart-<block> fragment — instead of letting the <a> navigate the SPA.
+    // #semantik-<block> fragment — instead of letting the <a> navigate the SPA.
     // Provenance links (target=_blank) are excluded: they keep opening in a
     // new tab.
     scope.querySelectorAll('a[href*="/source-doc?"]:not([target])').forEach((a) => {

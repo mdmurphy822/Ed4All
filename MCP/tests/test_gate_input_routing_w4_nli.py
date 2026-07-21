@@ -9,10 +9,10 @@ Locks in two things the W4 posture inversion depends on:
    ``objective_entailment``). Without this, promoting the NLI gates to critical
    would fail-close every run against an empty premise.
 
-2. The §3.5 authoritative chunk-body fallback: ``_build_source_chunks_from_dart_jsonl``
-   builds a non-empty id→TEXT premise map from the DART chunkset ``chunks.jsonl``
-   (the staging manifest's ``files[].text`` is best-effort and often absent), so
-   the NLI gates have a real premise to entail against.
+2. The §3.5 authoritative chunk-body fallback builds a non-empty id→TEXT
+   premise map from the SemantiK chunkset ``chunks.jsonl`` (the staging
+   manifest's ``files[].text`` is best-effort and often absent), so the NLI
+   gates have a real premise to entail against.
 """
 from __future__ import annotations
 
@@ -75,12 +75,12 @@ def test_objective_entailment_registered() -> None:
 
 
 # --------------------------------------------------------------------- #
-# §3.5 — authoritative source_chunks from DART chunks.jsonl (non-empty)
+# §3.5 — authoritative source_chunks from SemantiK chunks.jsonl (non-empty)
 # --------------------------------------------------------------------- #
 
 
-def _write_dart_chunks(tmp_path: Path, chunks: List[Dict[str, Any]]) -> str:
-    chunks_dir = tmp_path / "dart_chunks"
+def _write_semantik_chunks(tmp_path: Path, chunks: List[Dict[str, Any]]) -> str:
+    chunks_dir = tmp_path / "semantik_chunks"
     chunks_dir.mkdir(parents=True, exist_ok=True)
     chunks_jsonl = chunks_dir / "chunks.jsonl"
     with chunks_jsonl.open("w", encoding="utf-8") as fh:
@@ -89,25 +89,25 @@ def _write_dart_chunks(tmp_path: Path, chunks: List[Dict[str, Any]]) -> str:
     return str(chunks_jsonl)
 
 
-def test_source_chunks_from_dart_jsonl_non_empty(tmp_path: Path) -> None:
+def test_source_chunks_from_chunks_jsonl_non_empty(tmp_path: Path) -> None:
     """The premise map is populated from the chunkset, keyed on BOTH the
     chunk id AND each source_references[].sourceId."""
     body = "RDF triples are subject-predicate-object statements."
-    chunks_path = _write_dart_chunks(
+    chunks_path = _write_semantik_chunks(
         tmp_path,
         [{
             "id": "course_chunk_00001",
             "text": body,
-            "source": {"source_references": [{"sourceId": "dart:rdf#s1"}]},
+            "source": {"source_references": [{"sourceId": "semantik:rdf#s1"}]},
         }],
     )
-    phase_outputs = {"chunking": {"dart_chunks_path": chunks_path}}
+    phase_outputs = {"chunking": {"semantik_chunks_path": chunks_path}}
     text_map = _build_source_chunks_from_dart_jsonl(phase_outputs)
     assert text_map, "premise map must be non-empty (the §0.1/§3.5 precondition)"
     assert text_map.get("course_chunk_00001") == body
-    assert text_map.get("dart:rdf#s1") == body
+    assert text_map.get("semantik:rdf#s1") == body
 
 
-def test_source_chunks_from_dart_jsonl_empty_when_absent() -> None:
-    """No dart_chunks_path → empty map (graceful, validators degrade)."""
+def test_source_chunks_from_chunks_jsonl_empty_when_absent() -> None:
+    """No chunks path → empty map (graceful, validators degrade)."""
     assert _build_source_chunks_from_dart_jsonl({}) == {}

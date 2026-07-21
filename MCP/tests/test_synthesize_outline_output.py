@@ -89,14 +89,14 @@ def _make_staging(tmp_path: Path) -> Path:
 
 
 def _make_libv2(tmp_path: Path, course_slug: str) -> Path:
-    """Scaffold a LibV2 course dir with dart_chunks/ + concept_graph/.
+    """Scaffold a LibV2 course dir with semantik_chunks/ + concept_graph/.
 
     Patches ``PROJECT_ROOT`` so the synthesizer resolves
     ``LibV2/courses/<slug>/`` against tmp_path rather than the repo
     root.
     """
     libv2_root = tmp_path / "LibV2" / "courses" / course_slug
-    chunks_dir = libv2_root / "dart_chunks"
+    chunks_dir = libv2_root / "semantik_chunks"
     chunks_dir.mkdir(parents=True)
     chunks_path = chunks_dir / "chunks.jsonl"
     chunks_path.write_text(
@@ -108,8 +108,8 @@ def _make_libv2(tmp_path: Path, course_slug: str) -> Path:
         json.dumps({
             "chunks_sha256": "a" * 64,
             "chunker_version": "1.0",
-            "chunkset_kind": "dart",
-            "source_dart_html_sha256": "b" * 64,
+            "chunkset_kind": "semantik",
+            "source_semantik_html_sha256": "b" * 64,
             "chunks_count": 2,
             "generated_at": "2026-05-02T00:00:00Z",
         }),
@@ -282,8 +282,8 @@ class TestSynthesizeOutlineOutputHappyPath:
         synth = runner_stub._synthesize_outline_output(project_path)
 
         chk = synth["chunking"]
-        # DART->semantik purge Stage 3c: workflows.yaml::chunking.outputs:
-        # [semantik_chunks_path, semantik_chunks_sha256]
+        # workflows.yaml::chunking.outputs: [semantik_chunks_path,
+        # semantik_chunks_sha256]
         assert "semantik_chunks_path" in chk
         assert "semantik_chunks_sha256" in chk
         assert chk["semantik_chunks_sha256"] == "a" * 64
@@ -429,7 +429,7 @@ class TestSynthesizeOutlineOutputEdgeCases:
     def test_missing_artifact_skips_phase_with_warning(
         self, runner_stub, tmp_path, caplog, monkeypatch
     ):
-        """Missing dart_chunks/manifest.json => chunking phase omitted."""
+        """Missing chunks manifest => chunking phase omitted."""
         project_path = _make_project(tmp_path)
         # Don't make LibV2 dirs => chunking + concept_extraction
         # should be omitted.
@@ -494,7 +494,7 @@ class TestSynthesizeOutlineOutputEdgeCases:
 
         assert synth == {}
 
-    def test_dart_conversion_derived_from_staging(
+    def test_semantik_conversion_derived_from_staging(
         self, runner_stub, tmp_path, monkeypatch
     ):
         """When staging is reconstructed, semantik_conversion follows."""
@@ -512,7 +512,7 @@ class TestSynthesizeOutlineOutputEdgeCases:
         assert "chapter_01_accessible.html" in dc["output_paths"]
         assert "chapter_02_accessible.html" in dc["output_paths"]
 
-    def test_dart_conversion_omitted_when_staging_missing(
+    def test_semantik_conversion_omitted_when_staging_missing(
         self, runner_stub, tmp_path, monkeypatch
     ):
         """No staging => no semantik_conversion either."""

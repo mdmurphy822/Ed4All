@@ -52,7 +52,7 @@ def test_bad_kind_blocks(tmp_path):
 
 def test_mini_course_passes_default_floor():
     """The fixture anchors at 1.0, so it passes even the 0.95 default floor."""
-    chunks_path = MINI_COURSE / "dart_chunks" / "chunks.jsonl"
+    chunks_path = MINI_COURSE / "semantik_chunks" / "chunks.jsonl"
     result = CitationAnchorValidator().validate(
         {
             "chunks_path": str(chunks_path),

@@ -1,22 +1,20 @@
 """Wave 84 regression test for the source-router fallback-as-primary bug.
 
-The audit on the RDF/SHACL calibration corpus (2026-04-26) found every Week 1 chunk
-attributed primary=``dart:owl2_primer_accessible#s1`` at confidence
-0.3 — the alphabetically-first DART block. Other entries in the
-same chunk's ``source_references[]`` were the actually-relevant RDF
-Primer sections at confidence 0.95, but they were roled as
-``contributing`` while the low-confidence fallback held the
-``primary`` slot.
+A calibration audit found every Week 1 chunk attributed primary to the
+alphabetically-first source block at confidence 0.3. Other entries in the
+same chunk's ``source_references[]`` were the actually-relevant sections at
+confidence 0.95, but they were roled as ``contributing`` while the
+low-confidence fallback held the ``primary`` slot.
 
 Root cause: ``_build_source_module_map`` had two fallback branches that
-emitted a round-robin DART block as ``primary`` when keyword overlap
+emitted a round-robin source block as ``primary`` when keyword overlap
 was zero or below the scoring floor. Wave 84 relegates fallbacks to
 ``contributing`` so any genuine primary from the content-generator's
 ``data-cf-source-primary`` attribute (or higher-confidence ref from
 the same path) takes precedence.
 
 This test pins the fix: when a page has zero keyword overlap with
-every DART block, the source-router does NOT emit a fallback as
+every source block, the source-router does NOT emit a fallback as
 primary. Provenance breadth is preserved (the block lands in
 contributing), but the primary slot stays empty.
 """
@@ -56,7 +54,7 @@ def _write_project_config(project_dir: Path) -> None:
 
 @pytest.fixture
 def fallback_router_fixture(tmp_path, monkeypatch):
-    """Build a staging dir whose DART blocks share NO keyword overlap
+    """Build a staging dir whose source blocks share NO keyword overlap
     with any plausible course topic — forces every page through the
     fallback path."""
     fake_root = tmp_path / "root"
@@ -78,7 +76,7 @@ def fallback_router_fixture(tmp_path, monkeypatch):
     staging = tmp_path / "staging"
     staging.mkdir()
 
-    # Two unrelated DART blocks. The first will be picked by the
+    # Two unrelated source blocks. The first will be picked by the
     # round-robin fallback (alphabetically/iteration first).
     _write_synthesized(staging / "alpha_textbook_synthesized.json", "alpha_textbook", [
         {
@@ -121,9 +119,9 @@ class TestFallbackRoleNotPrimary:
 
     def test_zero_overlap_pages_have_empty_primary(self, fallback_router_fixture):
         # Every page falls through to the no-overlap fallback branch
-        # because the topic bag (DART block titles) has nothing in
+        # because the topic bag (source block titles) has nothing in
         # common with itself across the two unrelated textbooks…
-        # actually each DART block's keywords ARE its own topic bag,
+        # actually each source block's keywords ARE its own topic bag,
         # so each block matches itself. The relevant assertion: pages
         # whose topic bag carried zero overlap (the empty-target_bag
         # branch) should now emit primary=[].
@@ -158,17 +156,17 @@ class TestFallbackRoleNotPrimary:
     def test_no_alphabetically_first_block_promoted_to_primary(
         self, fallback_router_fixture
     ):
-        # Pre-Wave-84, the alphabetically-first DART block (`dart:alpha_textbook#s1`)
-        # got stamped as primary on every page through the round-robin
-        # fallback. Pin: it must NEVER appear as the SOLE primary on
-        # multiple pages with confidence < 0.5 — that pattern is the
-        # fingerprint of the round-robin fallback.
+        # Pre-Wave-84, the alphabetically-first source block
+        # (`semantik:alpha_textbook#s1`) got stamped as primary on every page
+        # through the round-robin fallback. Pin: it must NEVER appear as the
+        # SOLE primary on multiple pages with confidence < 0.5 — that pattern
+        # is the fingerprint of the round-robin fallback.
         fx = fallback_router_fixture
         payload = _invoke_router(fx["project_id"], fx["staging_dir"])
         map_path = Path(payload["source_module_map_path"])
         doc = json.loads(map_path.read_text(encoding="utf-8"))
 
-        suspect_id = "dart:alpha_textbook#s1"
+        suspect_id = "semantik:alpha_textbook#s1"
         suspect_count = 0
         for week_entries in doc.values():
             for entry in week_entries.values():

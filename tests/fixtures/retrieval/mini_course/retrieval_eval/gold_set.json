@@ -2,8 +2,8 @@
   "schema_version": "1.0",
   "course_slug": "mini-retrieval-101",
   "chunkset": {
-    "kind": "dart",
-    "chunks_path": "dart_chunks/chunks.jsonl",
+    "kind": "semantik",
+    "chunks_path": "semantik_chunks/chunks.jsonl",
     "chunks_sha256": "fc8a1c651e2cdf7eb6d5aecb57ddc7244f71eebf805d34a88684210685b03a0f"
   },
   "authored_at": "2026-06-09T00:00:00Z",

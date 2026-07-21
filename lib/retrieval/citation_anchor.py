@@ -279,7 +279,10 @@ def resolve_source_page(
         if hit:
             return hit
 
-    if chunkset_kind == "dart":
+    if chunkset_kind in ("semantik", "dart"):
+        # semantik is the canonical staged-conversion kind; ``dart`` is the
+        # legacy read-compat alias. Both resolve item_path against the HTML
+        # source roots (never the imscc fallthrough below).
         return _resolve_dart_page(course_dir, item_path, _DART_ROOTS)
     if chunkset_kind == "imscc":
         return _resolve_imscc_member(course_dir, item_path, _IMSCC_ROOTS)

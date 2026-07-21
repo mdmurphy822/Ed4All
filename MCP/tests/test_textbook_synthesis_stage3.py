@@ -4,7 +4,7 @@ Plan: ``plans/textbook-llm-synthesis-3stage-2026-05.md`` §4 + test-plan
 item 4. Wave C.
 
 This is the END-TO-END PAYOFF test. It regression-pins the real-corpus
-0-``DomainConcept``-node failure (plan §0): a fixture DART chunkset whose
+0-``DomainConcept``-node failure (plan §0): a fixture SemantiK chunkset whose
 chunks carry EMPTY ``concept_tags`` plus a ``textbook_structure.json``
 carrying per-chapter ``chapter_text``. With ``TEXTBOOK_SYNTHESIS_PROVIDER``
 set and a stub provider, ``_run_concept_extraction`` synthesizes a
@@ -18,7 +18,7 @@ Contract assertions:
    vocabulary re-tags the chunks.
 2. **``domain_concept_vocabulary.json`` persisted** as a sibling of
    ``concept_graph_semantic.json``.
-3. **``dart_chunks_sha256`` byte-stable** — the on-disk ``chunks.jsonl``
+3. **``semantik_chunks_sha256`` byte-stable** — the on-disk ``chunks.jsonl``
    is NOT rewritten by the in-memory re-tag (plan §4.2 Risk-6a).
 4. **Per-chapter failure isolation** — 1 of N chapter calls failing
    still succeeds the phase (plan §5.4).
@@ -65,7 +65,7 @@ _CONCEPT_TERMS = [
 
 
 def _empty_tag_chunkset() -> List[Dict[str, Any]]:
-    """A DART chunkset with EMPTY ``concept_tags`` — the general-textbook
+    """A SemantiK chunkset with EMPTY ``concept_tags`` — the general-textbook
     shape that produced 0 domain-concept nodes pre-Wave-C.
 
     Each concept TERM appears verbatim in the ``text`` of ≥2 chunks so
@@ -198,7 +198,7 @@ def _run(
     """Invoke ``_run_concept_extraction`` and return the parsed envelope
     plus the on-disk graph + chunkset bytes.
     """
-    chunks_path = tmp_path / "dart_chunks" / "chunks.jsonl"
+    chunks_path = tmp_path / "semantik_chunks" / "chunks.jsonl"
     _write_chunkset(chunks_path, chunks)
     chunks_sha_before = hashlib.sha256(chunks_path.read_bytes()).hexdigest()
 
@@ -226,6 +226,7 @@ def _run(
             project_id="",
             course_name="LINALG_STAGE3",
             staging_dir="",
+            # ``dart_chunks_path`` is the tool's live kwarg name.
             dart_chunks_path=str(chunks_path),
             textbook_structure_path=ts_path,
             libv2_root=str(custom_libv2),
@@ -327,11 +328,11 @@ def test_stage3_persists_vocabulary_artifact(
     assert payload["chunks_retagged"] >= 1
 
 
-def test_stage3_dart_chunks_sha_byte_stable(
+def test_stage3_chunks_sha_byte_stable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The in-memory re-tag must NOT rewrite ``chunks.jsonl`` on disk —
-    ``dart_chunks_sha256`` stays byte-stable (plan §4.2 Risk-6a).
+    ``semantik_chunks_sha256`` stays byte-stable (plan §4.2 Risk-6a).
     """
     payload = _run(
         tmp_path,
@@ -342,7 +343,7 @@ def test_stage3_dart_chunks_sha_byte_stable(
         monkeypatch=monkeypatch,
     )
     assert payload["_chunks_sha_before"] == payload["_chunks_sha_after"], (
-        "Stage-3 re-tag rewrote chunks.jsonl on disk — dart_chunks_sha256 "
+        "Stage-3 re-tag rewrote chunks.jsonl on disk — semantik_chunks_sha256 "
         "would diverge and break the chunkset / LibV2 manifest hash "
         "triangle. The re-tag MUST be in-memory only."
     )

@@ -1,12 +1,12 @@
-"""Phase 7c Subtask 18 — DART chunkset backfill operator script regression tests.
+"""Staged-chunkset backfill operator script regression tests.
 
-Smoke coverage for ``LibV2/tools/libv2/scripts/backfill_dart_chunks.py``.
+Smoke coverage for ``LibV2/tools/libv2/scripts/backfill_legacy_chunks.py``.
 Each test builds a tmp_path LibV2 fixture (one or more course
 directories with a minimal ``source/html/`` payload), invokes
 ``main(argv)`` directly, and asserts the post-run filesystem state.
 
 We deliberately bypass the subprocess launch path so the tests stay
-fast and synchronous; the ``backfill_dart_chunks.main`` function takes
+fast and synchronous; the ``backfill_legacy_chunks.main`` function takes
 ``argv`` as a parameter for exactly this reason.
 """
 
@@ -21,7 +21,7 @@ import pytest
 # Project root for imports (pytest may not have project root on path).
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from LibV2.tools.libv2.scripts import backfill_dart_chunks  # noqa: E402
+from LibV2.tools.libv2.scripts import backfill_legacy_chunks  # noqa: E402
 
 
 # Minimal HTML payload that ``HTMLContentParser`` will happily parse
@@ -68,7 +68,7 @@ def _build_course_fixture(
         html_dir.mkdir(parents=True, exist_ok=True)
         (html_dir / "page1.html").write_text(_SAMPLE_HTML, encoding="utf-8")
     if with_existing_chunkset:
-        chunkset_dir = course_dir / "dart_chunks"
+        chunkset_dir = course_dir / "semantik_chunks"
         chunkset_dir.mkdir(parents=True, exist_ok=True)
         # A pre-existing manifest blocks the default (idempotent)
         # backfill path. We keep it minimally schema-shaped so the
@@ -78,8 +78,8 @@ def _build_course_fixture(
                 {
                     "chunks_sha256": "0" * 64,
                     "chunker_version": "0.0.0+placeholder",
-                    "chunkset_kind": "dart",
-                    "source_dart_html_sha256": "0" * 64,
+                    "chunkset_kind": "semantik",
+                    "source_semantik_html_sha256": "0" * 64,
                     "chunks_count": 0,
                 }
             ),
@@ -94,7 +94,7 @@ class TestBackfillCLISurface:
     """Argparse surface-level checks — no chunker dispatch."""
 
     def test_argparser_has_expected_flags(self):
-        parser = backfill_dart_chunks.build_arg_parser()
+        parser = backfill_legacy_chunks.build_arg_parser()
         actions = {a.dest for a in parser._actions}
         # All six operator-facing knobs documented in the script
         # docstring + the optional --operator audit-trail flag.
@@ -111,7 +111,7 @@ class TestBackfillCLISurface:
 
     def test_libv2_root_missing_returns_exit_2(self, tmp_path: Path):
         nonexistent = tmp_path / "does-not-exist"
-        rc = backfill_dart_chunks.main(["--libv2-root", str(nonexistent)])
+        rc = backfill_legacy_chunks.main(["--libv2-root", str(nonexistent)])
         assert rc == 2
 
     def test_dry_run_against_empty_libv2_root_succeeds(self, tmp_path: Path):
@@ -120,7 +120,7 @@ class TestBackfillCLISurface:
         # empty summary.
         libv2_root = tmp_path / "courses"
         libv2_root.mkdir()
-        rc = backfill_dart_chunks.main(
+        rc = backfill_legacy_chunks.main(
             ["--libv2-root", str(libv2_root), "--dry-run"]
         )
         assert rc == 0
@@ -135,7 +135,7 @@ class TestBackfillBehavior:
         libv2_root.mkdir()
         course_dir = _build_course_fixture(libv2_root, "test-101")
 
-        rc = backfill_dart_chunks.main(
+        rc = backfill_legacy_chunks.main(
             [
                 "--libv2-root",
                 str(libv2_root),
@@ -146,7 +146,7 @@ class TestBackfillBehavior:
         )
 
         assert rc == 0
-        assert not (course_dir / "dart_chunks").exists()
+        assert not (course_dir / "semantik_chunks").exists()
 
     def test_skip_when_chunkset_already_present(self, tmp_path: Path):
         libv2_root = tmp_path / "courses"
@@ -154,16 +154,16 @@ class TestBackfillBehavior:
         course_dir = _build_course_fixture(
             libv2_root, "test-101", with_existing_chunkset=True
         )
-        original_manifest = (course_dir / "dart_chunks" / "manifest.json").read_text()
+        original_manifest = (course_dir / "semantik_chunks" / "manifest.json").read_text()
 
-        rc = backfill_dart_chunks.main(
+        rc = backfill_legacy_chunks.main(
             ["--libv2-root", str(libv2_root), "--course-slug", "test-101"]
         )
 
         assert rc == 0
         # Manifest unchanged: the script skipped the course.
         assert (
-            course_dir / "dart_chunks" / "manifest.json"
+            course_dir / "semantik_chunks" / "manifest.json"
         ).read_text() == original_manifest
 
     def test_skip_when_no_html_under_subdir(self, tmp_path: Path):
@@ -174,13 +174,13 @@ class TestBackfillBehavior:
             libv2_root, "empty-course", with_html=False
         )
 
-        rc = backfill_dart_chunks.main(
+        rc = backfill_legacy_chunks.main(
             ["--libv2-root", str(libv2_root), "--course-slug", "empty-course"]
         )
 
         # No HTML = skip (not failure). Exit 0.
         assert rc == 0
-        assert not (course_dir / "dart_chunks").exists()
+        assert not (course_dir / "semantik_chunks").exists()
 
     def test_backfill_emits_chunkset_for_real_course(self, tmp_path: Path):
         """End-to-end: real chunker dispatch against a tmp fixture.
@@ -195,12 +195,12 @@ class TestBackfillBehavior:
         libv2_root.mkdir()
         course_dir = _build_course_fixture(libv2_root, "smoke-101")
 
-        rc = backfill_dart_chunks.main(
+        rc = backfill_legacy_chunks.main(
             ["--libv2-root", str(libv2_root), "--course-slug", "smoke-101"]
         )
 
         assert rc == 0
-        chunkset_dir = course_dir / "dart_chunks"
+        chunkset_dir = course_dir / "semantik_chunks"
         assert chunkset_dir.is_dir(), f"missing chunkset dir: {chunkset_dir}"
         manifest_path = chunkset_dir / "manifest.json"
         chunks_path = chunkset_dir / "chunks.jsonl"
@@ -209,10 +209,10 @@ class TestBackfillBehavior:
 
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         # Schema-required keys.
-        assert manifest["chunkset_kind"] == "dart"
+        assert manifest["chunkset_kind"] == "semantik"
         assert "chunks_sha256" in manifest
         assert "chunker_version" in manifest
-        assert "source_dart_html_sha256" in manifest
+        assert "source_semantik_html_sha256" in manifest
 
     def test_backfill_handles_missing_course_dir_with_failure_exit(
         self, tmp_path: Path
@@ -221,7 +221,7 @@ class TestBackfillBehavior:
         libv2_root = tmp_path / "courses"
         libv2_root.mkdir()
         # Don't create any course dir.
-        rc = backfill_dart_chunks.main(
+        rc = backfill_legacy_chunks.main(
             [
                 "--libv2-root",
                 str(libv2_root),
@@ -247,11 +247,11 @@ class TestBackfillForceFlag:
         # Confirm the placeholder we wrote in the fixture has the
         # zero-hash sentinel.
         before = json.loads(
-            (course_dir / "dart_chunks" / "manifest.json").read_text()
+            (course_dir / "semantik_chunks" / "manifest.json").read_text()
         )
         assert before["chunks_sha256"] == "0" * 64
 
-        rc = backfill_dart_chunks.main(
+        rc = backfill_legacy_chunks.main(
             [
                 "--libv2-root",
                 str(libv2_root),
@@ -263,7 +263,7 @@ class TestBackfillForceFlag:
 
         assert rc == 0
         after = json.loads(
-            (course_dir / "dart_chunks" / "manifest.json").read_text()
+            (course_dir / "semantik_chunks" / "manifest.json").read_text()
         )
         # Sentinel hash was replaced by a real chunker emit. Even an
         # empty-input chunker run produces a real SHA-256 over empty

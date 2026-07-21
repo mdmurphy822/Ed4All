@@ -1,4 +1,4 @@
-"""Regression guards for nvidia_corpus_to_dart raw-HTML / MDX sanitization.
+"""Regression guards for nvidia_corpus_to_semantik raw-HTML / MDX sanitization.
 
 Bug #2: embedded raw HTML (the NVIDIA logo header) and multi-line JSX
 (``<Question choices={[ ... ]}/>``) leaked verbatim into the emitted
@@ -11,8 +11,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
-_SCRIPT = Path(__file__).resolve().parents[1] / "nvidia_corpus_to_dart.py"
-_spec = importlib.util.spec_from_file_location("nvidia_corpus_to_dart", _SCRIPT)
+_SCRIPT = Path(__file__).resolve().parents[1] / "nvidia_corpus_to_semantik.py"
+_spec = importlib.util.spec_from_file_location("nvidia_corpus_to_semantik", _SCRIPT)
 mod = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = mod
 _spec.loader.exec_module(mod)
@@ -35,7 +35,7 @@ _LOGO_HEADER = (
 def test_logo_header_no_escaped_markup_in_paragraphs():
     html = mod.md_to_html(_LOGO_HEADER)
     # No presentational markup leaks as escaped entities inside <p> bodies.
-    assert mod._scan_leaks(html) == []
+    assert mod.scan_leaks(html) == []
     # And nowhere in the page either, for these chrome markers.
     for marker in ("&lt;br", "&lt;div", "&lt;font", "&lt;img", "nvidia-logo.png"):
         assert marker not in html, f"leaked {marker!r}: {html!r}"

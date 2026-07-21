@@ -162,7 +162,7 @@ def test_legacy_completed_phase_without_gate_flag_skips(tmp_path, monkeypatch) -
 # ---------------------------------------------------------------------------
 # Bug A — partial-artifact multi-task phase must NOT be stamped _completed.
 #
-# A multi-task phase (e.g. dart_conversion, one task per corpus PDF) where SOME
+# A multi-task phase (e.g. semantik_conversion, one task per corpus PDF) where SOME
 # tasks COMPLETE and others TIME OUT must persist ``_completed=False`` so a
 # subsequent ``--resume`` re-runs it instead of skipping the whole phase (the
 # live-fire trap: 1 of 10 PDFs converted, 9 timed out, phase was stamped

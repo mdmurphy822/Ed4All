@@ -1,21 +1,19 @@
-"""Phase 7c Subtask 18 — DART chunkset backfill operator script.
+"""Staged-chunkset backfill operator script for pre-migration corpora.
 
 Operator-driven utility that scans existing LibV2 courses and emits a
-``dart_chunks/`` chunkset for every course that is missing one. The
-chunkset is the Phase 7b architectural contract:
-``LibV2/courses/<slug>/dart_chunks/chunks.jsonl`` plus a sibling
+``semantik_chunks/`` staged chunkset for every course that is missing
+one. The chunkset is the architectural contract:
+``LibV2/courses/<slug>/semantik_chunks/chunks.jsonl`` plus a sibling
 ``manifest.json`` validating against
 ``schemas/library/chunkset_manifest.schema.json``.
 
 The script targets two operator surfaces:
 
-1. **Bulk backfill** of legacy / pre-Phase-7b courses whose archive was
+1. **Bulk backfill** of legacy / pre-migration courses whose archive was
    produced before the ``chunking`` workflow phase landed. Those
-   courses today carry only the legacy ``corpus/`` directory (or the
-   imminent ``imscc_chunks/`` rename per Worker W15) and need a
-   ``dart_chunks/`` chunkset minted from the staged DART HTML so
-   Phase 7c's ``LibV2ManifestValidator`` extension (Subtask 17) doesn't
-   fail closed on them.
+   courses today carry only the legacy ``corpus/`` directory and need a
+   ``semantik_chunks/`` chunkset minted from the staged accessible HTML
+   so ``LibV2ManifestValidator`` doesn't fail closed on them.
 2. **Targeted re-chunking** of a single course (``--course-slug``)
    when a chunker upgrade lands and an operator wants to refresh one
    archive without invoking the full ``textbook_to_course``
@@ -23,49 +21,49 @@ The script targets two operator surfaces:
 
 Design decisions:
 
-- **Reuse over reimplementation.** The script delegates to
-  ``MCP/tools/pipeline_tools.py::_run_dart_chunking`` (Phase 7b
-  Subtask 11, commit ``5ccbf0c``) via the tool registry. That helper
-  is the single source of truth for DART chunkset emit; reimplementing
-  its parsing + ``Trainforge.chunker.chunk_content`` dispatch loop here
-  would create a drift surface where two backends could disagree on
-  the canonical chunkset shape. The helper is async, so we wrap the
-  call site in ``asyncio.run`` (sync CLI, no event loop required).
-- **Idempotency.** A course with an existing ``dart_chunks/manifest.json``
-  is skipped by default. ``--force`` bypasses the skip.
-- **Layout heuristics.** DART HTML on a real LibV2 course lives at
-  ``<slug>/source/html/`` (per ``MCP/tools/pipeline_tools.py::5371-5378``
-  and ``lib/validators/libv2/manifest.py::_EXPECTED_SUBDIRS`` —
-  moved from ``lib/validators/libv2_manifest.py`` in W-D10 T10.1). The
-  Phase 7b helper expects a ``staging_dir`` that contains the HTML
+- **Reuse over reimplementation.** The script delegates to the staged
+  chunkset emitter in ``MCP/tools/pipeline_tools.py`` via the tool
+  registry. That helper is the single source of truth for staged
+  chunkset emit; reimplementing its parsing +
+  ``Trainforge.chunker.chunk_content`` dispatch loop here would create a
+  drift surface where two backends could disagree on the canonical
+  chunkset shape. The helper is async, so we wrap the call site in
+  ``asyncio.run`` (sync CLI, no event loop required).
+- **Idempotency.** A course with an existing
+  ``semantik_chunks/manifest.json`` is skipped by default. ``--force``
+  bypasses the skip.
+- **Layout heuristics.** Staged accessible HTML on a real LibV2 course
+  lives at ``<slug>/source/html/`` (per
+  ``lib/validators/libv2/manifest.py::_EXPECTED_SUBDIRS``). The staged
+  chunkset helper expects a ``staging_dir`` that contains the HTML
   files; we point it at ``<slug>/source/html/`` directly.
 - **Fail-soft per course.** A chunker error (malformed HTML, parser
   exception, etc.) fails the affected course only — the script logs
   the error with the course slug and continues. The exit code is
   non-zero when any course fails so CI / cron callers see the
   regression.
-- **Decision capture.** Per the Phase 7b/c spec, each successful
-  backfill emits a ``decision_type="dart_chunks_backfill"`` event so
-  the audit trail records WHO ran the backfill, WHEN, and against
-  which course. Note: ``dart_chunks_backfill`` is not currently in
+- **Decision capture.** Each successful backfill emits a
+  ``decision_type="semantik_chunks_backfill"`` event so the audit trail
+  records WHO ran the backfill, WHEN, and against which course. Note:
+  ``semantik_chunks_backfill`` is not currently in
   ``schemas/events/decision_event.schema.json`` enum — under default
   (lenient) ``DECISION_VALIDATION_STRICT`` mode this emits a warning
   but does not fail. A schema-enum addition is a separate followup.
 
 Usage::
 
-    # Backfill every course missing dart_chunks/.
-    python -m LibV2.tools.libv2.scripts.backfill_dart_chunks
+    # Backfill every course missing semantik_chunks/.
+    python -m LibV2.tools.libv2.scripts.backfill_legacy_chunks
 
     # Backfill a single course.
-    python -m LibV2.tools.libv2.scripts.backfill_dart_chunks \\
+    python -m LibV2.tools.libv2.scripts.backfill_legacy_chunks \\
         --course-slug demo-course-1
 
     # Dry-run: log what would be done without writing anything.
-    python -m LibV2.tools.libv2.scripts.backfill_dart_chunks --dry-run
+    python -m LibV2.tools.libv2.scripts.backfill_legacy_chunks --dry-run
 
-    # Force re-chunk even if dart_chunks/ already exists.
-    python -m LibV2.tools.libv2.scripts.backfill_dart_chunks \\
+    # Force re-chunk even if semantik_chunks/ already exists.
+    python -m LibV2.tools.libv2.scripts.backfill_legacy_chunks \\
         --course-slug demo-course-1 --force
 
 Exit codes:
@@ -90,7 +88,7 @@ from typing import Any, Dict, List, Optional
 
 # Ensure project root is importable when invoked as a script (not just
 # via ``python -m``). Two parents up from the file location:
-# .../LibV2/tools/libv2/scripts/backfill_dart_chunks.py -> repo root
+# .../LibV2/tools/libv2/scripts/backfill_legacy_chunks.py -> repo root
 # is four parents up.
 _PROJECT_ROOT = Path(__file__).resolve().parents[4]
 if str(_PROJECT_ROOT) not in sys.path:
@@ -105,17 +103,15 @@ logger = logging.getLogger(__name__)
 # topology or a sandboxed test fixture.
 DEFAULT_LIBV2_COURSES_ROOT = _PROJECT_ROOT / "LibV2" / "courses"
 
-# DART HTML lives at ``source/html/`` on archived courses (see
-# ``MCP/tools/pipeline_tools.py::_archive_to_libv2`` line 5376 and
-# ``lib/validators/libv2/manifest.py::_EXPECTED_SUBDIRS`` — moved from
-# ``lib/validators/libv2_manifest.py`` in W-D10 T10.1).
+# Staged accessible HTML lives at ``source/html/`` on archived courses
+# (see ``lib/validators/libv2/manifest.py::_EXPECTED_SUBDIRS``).
 # Older courses with non-standard layouts can be supported by passing
-# ``--html-subdir`` directly (e.g. ``--html-subdir source/dart_html``).
+# ``--html-subdir`` directly (e.g. ``--html-subdir source/staged_html``).
 DEFAULT_HTML_SUBDIR = "source/html"
 
-# Sibling chunkset directory + manifest filename. Matches Phase 7b ST 11
-# emit at ``MCP/tools/pipeline_tools.py:6649-6679``.
-DART_CHUNKS_DIRNAME = "dart_chunks"
+# Sibling chunkset directory + manifest filename. Matches the staged
+# chunkset emit dir in ``MCP/tools/pipeline_tools.py``.
+SEMANTIK_CHUNKS_DIRNAME = "semantik_chunks"
 MANIFEST_FILENAME = "manifest.json"
 
 
@@ -171,7 +167,7 @@ def _enumerate_course_slugs(libv2_root: Path) -> List[str]:
 
 
 def _has_existing_chunkset(course_dir: Path) -> bool:
-    """True when ``dart_chunks/manifest.json`` exists on disk.
+    """True when ``semantik_chunks/manifest.json`` exists on disk.
 
     The presence check is deliberately shallow — we don't validate
     the manifest against the schema here. A malformed manifest is the
@@ -180,12 +176,12 @@ def _has_existing_chunkset(course_dir: Path) -> bool:
     to re-emit. The shallow check keeps this script's idempotency
     contract simple: "either there's a manifest or there isn't".
     """
-    manifest_path = course_dir / DART_CHUNKS_DIRNAME / MANIFEST_FILENAME
+    manifest_path = course_dir / SEMANTIK_CHUNKS_DIRNAME / MANIFEST_FILENAME
     return manifest_path.is_file()
 
 
 def _resolve_html_dir(course_dir: Path, html_subdir: str) -> Optional[Path]:
-    """Resolve the directory of staged DART HTML for a course.
+    """Resolve the directory of staged accessible HTML for a course.
 
     Returns ``None`` when the directory doesn't exist or contains no
     ``*.html`` files. The chunker helper is fail-soft on empty input,
@@ -290,8 +286,8 @@ def _relocate_chunkset_if_needed(
     target = libv2_root.resolve()
     if canonical == target:
         return
-    src = canonical / course_slug / DART_CHUNKS_DIRNAME
-    dst = target / course_slug / DART_CHUNKS_DIRNAME
+    src = canonical / course_slug / SEMANTIK_CHUNKS_DIRNAME
+    dst = target / course_slug / SEMANTIK_CHUNKS_DIRNAME
     if not src.is_dir():
         # Nothing to move (helper failed mid-emit; the
         # _backfill_one_course caller will surface the error path).
@@ -340,7 +336,7 @@ def _emit_decision_capture(
     response: Dict[str, Any],
     operator: str,
 ) -> None:
-    """Emit a ``dart_chunks_backfill`` decision-capture event.
+    """Emit a ``semantik_chunks_backfill`` decision-capture event.
 
     Operates in best-effort mode: a missing / unwriteable
     decision-capture surface logs a warning rather than failing the
@@ -374,18 +370,18 @@ def _emit_decision_capture(
     timestamp = datetime.now(timezone.utc).isoformat()
     chunks_count = response.get("chunks_count")
     chunker_version = response.get("chunker_version")
-    chunks_sha256 = response.get("dart_chunks_sha256")
+    chunks_sha256 = response.get("semantik_chunks_sha256")
     rationale = (
-        f"Backfilled DART chunkset for course '{course_slug}' on {timestamp} "
+        f"Backfilled staged chunkset for course '{course_slug}' on {timestamp} "
         f"by operator '{operator}'. Emitted {chunks_count} chunks via "
         f"Trainforge.chunker {chunker_version}; chunks_sha256={chunks_sha256!s}. "
         "Run scope: legacy / partially-migrated archive missing the Phase 7b "
-        "dart_chunks/ chunkset (Subtask 18 operator script)."
+        "semantik_chunks/ chunkset (operator script)."
     )
     try:
         capture.log_decision(
-            decision_type="dart_chunks_backfill",
-            decision=f"emit dart_chunks/ for {course_slug}",
+            decision_type="semantik_chunks_backfill",
+            decision=f"emit semantik_chunks/ for {course_slug}",
             rationale=rationale,
             context=json.dumps(
                 {
@@ -431,7 +427,7 @@ def _backfill_one_course(
     chunkset_present = _has_existing_chunkset(course_dir)
     if chunkset_present and not force:
         logger.info(
-            "[skip] %s — dart_chunks/ already present (pass --force to overwrite)",
+            "[skip] %s — semantik_chunks/ already present (pass --force to overwrite)",
             course_slug,
         )
         stats.skipped_already_complete.append(course_slug)
@@ -440,7 +436,7 @@ def _backfill_one_course(
     html_dir = _resolve_html_dir(course_dir, html_subdir)
     if html_dir is None:
         logger.info(
-            "[skip] %s — no DART HTML files under %s/%s",
+            "[skip] %s — no staged HTML files under %s/%s",
             course_slug,
             course_slug,
             html_subdir,
@@ -454,7 +450,7 @@ def _backfill_one_course(
             course_slug,
             html_dir,
             course_slug,
-            DART_CHUNKS_DIRNAME,
+            SEMANTIK_CHUNKS_DIRNAME,
         )
         stats.dry_run.append(course_slug)
         return
@@ -464,7 +460,7 @@ def _backfill_one_course(
     # doesn't carry stale sibling files (e.g. an extraneous old
     # chunks.jsonl with a different SHA from the manifest's).
     if chunkset_present and force:
-        chunks_dir = course_dir / DART_CHUNKS_DIRNAME
+        chunks_dir = course_dir / SEMANTIK_CHUNKS_DIRNAME
         try:
             shutil.rmtree(chunks_dir)
             logger.info(
@@ -545,7 +541,7 @@ def _print_summary(stats: BackfillStats) -> None:
     print(f"  Total courses considered:   {stats.total_attempted()}")
     print(f"  Backfilled:                 {len(stats.backfilled)}")
     print(f"  Skipped (already complete): {len(stats.skipped_already_complete)}")
-    print(f"  Skipped (no DART HTML):     {len(stats.skipped_no_html)}")
+    print(f"  Skipped (no staged HTML):     {len(stats.skipped_no_html)}")
     print(f"  Dry-run plan only:          {len(stats.dry_run)}")
     print(f"  Failed:                     {len(stats.failed)}")
     if stats.backfilled:
@@ -568,9 +564,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     introspect the supported flags without invoking ``main()``.
     """
     parser = argparse.ArgumentParser(
-        prog="backfill_dart_chunks",
+        prog="backfill_legacy_chunks",
         description=(
-            "Backfill DART chunksets (LibV2/courses/<slug>/dart_chunks/) "
+            "Backfill staged chunksets (LibV2/courses/<slug>/semantik_chunks/) "
             "for legacy / partially-migrated LibV2 courses. Phase 7c ST 18."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -598,7 +594,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=str,
         default=DEFAULT_HTML_SUBDIR,
         help=(
-            f"Subdirectory under each course holding the staged DART "
+            f"Subdirectory under each course holding the staged accessible "
             f"HTML files. Default: {DEFAULT_HTML_SUBDIR}"
         ),
     )
@@ -611,7 +607,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--force",
         action="store_true",
         help=(
-            "Re-emit dart_chunks/ even when manifest.json already "
+            "Re-emit semantik_chunks/ even when manifest.json already "
             "exists. Removes the existing chunkset directory first."
         ),
     )

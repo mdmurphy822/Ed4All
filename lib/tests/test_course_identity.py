@@ -12,7 +12,7 @@ from lib import course_identity as ci
 
 
 def _populate(libv2_root: Path, slug: str) -> Path:
-    d = libv2_root / "courses" / slug / "dart_chunks"
+    d = libv2_root / "courses" / slug / "semantik_chunks"
     d.mkdir(parents=True)
     (d / "chunks.jsonl").write_text('{"id": "x_chunk_00000"}\n')
     return libv2_root / "courses" / slug

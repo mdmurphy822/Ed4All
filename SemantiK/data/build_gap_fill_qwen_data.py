@@ -403,7 +403,7 @@ class CiteSample:
 
 
 def _slug_anchor(reference_kind: str, key: str) -> str:
-    """Canonical DART anchor id for a (kind, key) pair (matches pass_9a)."""
+    """Canonical SemantiK anchor id for a (kind, key) pair (matches pass_9a)."""
     if reference_kind == "section":
         return f"sec-{key.replace('.', '-')}"
     prefix = {

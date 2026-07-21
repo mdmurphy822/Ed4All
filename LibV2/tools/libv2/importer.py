@@ -302,7 +302,7 @@ def import_course(
         slm_version: Optional SLM version used for processing
         slm_specialists: Optional list of SLM specialists that processed this course
         pdf_path: Optional path to original PDF (stored in source/pdf/)
-        html_path: Optional path to DART accessible HTML (stored in source/html/)
+        html_path: Optional path to SemantiK accessible HTML (stored in source/html/)
         arxiv_id: Optional arxiv ID to load metadata from arxiv database
         arxiv_db_path: Optional path to arxiv papers.db SQLite database
         strict_validation: If True, run strict validation and fail on errors
@@ -399,7 +399,7 @@ def import_course(
                 added_timestamp=now_iso,
             )
 
-    # Handle HTML source (DART accessible output)
+    # Handle HTML source (SemantiK accessible output)
     if html_path:
         html_path = Path(html_path)
         if html_path.exists():

@@ -200,7 +200,7 @@ def test_empty_chunkset_pre_armed_no_index(tmp_path, _armed_env):
     """The zero-row path also honors the pre-encode stop (defensive: the
     ``if texts:`` branch is skipped but the check precedes it)."""
     course_dir = tmp_path / "courses" / "empty-101"
-    chunks_dir = course_dir / "dart_chunks"
+    chunks_dir = course_dir / "semantik_chunks"
     chunks_dir.mkdir(parents=True)
     (chunks_dir / "chunks.jsonl").write_text("", encoding="utf-8")
     stop_control.request_stop(scope="run", reason="test", source="test")

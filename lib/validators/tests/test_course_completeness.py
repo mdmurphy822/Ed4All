@@ -33,7 +33,7 @@ def _codes(result):
     return {i.code for i in result.issues}
 
 
-def _mkcourse(base, name, *, imscc=0, dart=0, index=None, provider="st",
+def _mkcourse(base, name, *, imscc=0, semantik=0, index=None, provider="st",
               vec_count=None, chunkset_kind="imscc", full=False):
     d = base / name
     d.mkdir(parents=True)
@@ -41,10 +41,10 @@ def _mkcourse(base, name, *, imscc=0, dart=0, index=None, provider="st",
         cd = d / "imscc_chunks"; cd.mkdir()
         (cd / "chunks.jsonl").write_text(
             "".join(json.dumps({"id": f"c{i}"}) + "\n" for i in range(imscc)))
-    if dart:
-        cd = d / "dart_chunks"; cd.mkdir()
+    if semantik:
+        cd = d / "semantik_chunks"; cd.mkdir()
         (cd / "chunks.jsonl").write_text(
-            "".join(json.dumps({"id": f"d{i}"}) + "\n" for i in range(dart)))
+            "".join(json.dumps({"id": f"d{i}"}) + "\n" for i in range(semantik)))
     if full:
         (d / "course.json").write_text("{}")
         (d / "concept_graph").mkdir()

@@ -140,7 +140,7 @@ def test_launch_pipeline_creation_error_persists_failed(state_dir, monkeypatch):
     import MCP.tools.pipeline_tools as pt
 
     async def fake_create(**kwargs):
-        return json.dumps({"error": "DART staging produced no HTML"})
+        return json.dumps({"error": "SemantiK staging produced no HTML"})
 
     monkeypatch.setattr(pt, "create_textbook_pipeline", fake_create)
 
@@ -151,7 +151,7 @@ def test_launch_pipeline_creation_error_persists_failed(state_dir, monkeypatch):
     }
     result = asyncio.run(run_service.launch_pipeline(req))
     assert result["status"] == "failed"
-    assert "DART staging produced no HTML" in result["error"]
+    assert "SemantiK staging produced no HTML" in result["error"]
     record = shared_state.read_run(result["run_id"])
     assert record["status"] == "failed"
 
@@ -593,7 +593,7 @@ def _write_workflow_state(state_dir, workflow_id, *, completed_phases):
 def test_reconcile_resumes_orphan_with_checkpoint(state_dir, monkeypatch):
     """A pipeline orphan with a checkpoint is auto-resumed, not failed."""
     workflow_id = "WF-RESUME-1"
-    _write_workflow_state(state_dir, workflow_id, completed_phases=["dart_conversion"])
+    _write_workflow_state(state_dir, workflow_id, completed_phases=["semantik_conversion"])
 
     driven = {}
 
@@ -780,7 +780,7 @@ def test_reconcile_missing_workflow_state_marks_interrupted(state_dir, monkeypat
 def test_reconcile_resume_cap_marks_failed(state_dir, monkeypatch):
     """A run already auto-resumed once is marked failed (crash-loop guard)."""
     workflow_id = "WF-CAP-1"
-    _write_workflow_state(state_dir, workflow_id, completed_phases=["dart_conversion"])
+    _write_workflow_state(state_dir, workflow_id, completed_phases=["semantik_conversion"])
 
     called = {"drive": False}
 
@@ -812,7 +812,7 @@ def test_reconcile_resume_cap_marks_failed(state_dir, monkeypatch):
 def test_reconcile_resumable_without_loop_marks_interrupted(state_dir, monkeypatch):
     """Called synchronously (no event loop), a resumable orphan is interrupted."""
     workflow_id = "WF-NOLOOP-1"
-    _write_workflow_state(state_dir, workflow_id, completed_phases=["dart_conversion"])
+    _write_workflow_state(state_dir, workflow_id, completed_phases=["semantik_conversion"])
 
     run_id = "GUI-20260101-100005"
     shared_state.register_run(
@@ -1502,7 +1502,7 @@ def test_emit_pipeline_gate_summary_only_on_all_pass(state_dir):
 def test_phase_gate_counts_reads_real_config(state_dir):
     """Declared per-phase gate counts come from the real workflows.yaml."""
     counts = run_service._phase_gate_counts("textbook_to_course")
-    # semantik_conversion declares at least its dart_markers gate.
+    # semantik_conversion declares at least its semantik_markers gate.
     assert counts.get("semantik_conversion", 0) >= 1
     # Stage aliases resolve through the textbook_to_course machine.
     assert run_service._phase_gate_counts("courseforge_validate") == counts

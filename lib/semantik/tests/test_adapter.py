@@ -2,7 +2,7 @@
 
 Built + run with NO models / GPU. Exercises the adapter against a SYNTHETIC
 cascade-result fixture and the REAL Ed4All contract validators
-(``DartMarkersValidator``, ``source_refs`` helpers, ``SemanticStructureExtractor``).
+(``SemantiKMarkersValidator``, ``source_refs`` helpers, ``SemanticStructureExtractor``).
 
 Run:
   ED4ALL_NLI_DEVICE=cpu ED4ALL_EMBEDDING_DEVICE=cpu \
@@ -271,17 +271,17 @@ def test_a_content_hash_mode_parity(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# (b) DartMarkersValidator passes on adapter HTML.
+# (b) SemantiKMarkersValidator passes on adapter HTML.
 # ---------------------------------------------------------------------------
 
 
-def test_b_dart_markers_validator_passes(result_html_and_sidecar):
-    from lib.validators.dart_markers import DartMarkersValidator
+def test_b_semantik_markers_validator_passes(result_html_and_sidecar):
+    from lib.validators.semantik_markers import SemantiKMarkersValidator
 
     out = result_html_and_sidecar
-    res = DartMarkersValidator().validate({"html_content": out["html"]})
+    res = SemantiKMarkersValidator().validate({"html_content": out["html"]})
     critical = [i for i in res.issues if i.severity == "critical"]
-    assert res.passed, f"dart_markers failed: {[i.code for i in critical]}"
+    assert res.passed, f"semantik_markers failed: {[i.code for i in critical]}"
     assert not critical
     # No empty data-semantik-source anywhere.
     assert 'data-semantik-source=""' not in out["html"]
@@ -455,11 +455,12 @@ def test_figure_and_page_provenance(result_html_and_sidecar):
 def test_metadata_drop_furniture_not_emitted_to_body():
     """A metadata_drop-role block (running header / footer / copyright line) is
     page furniture — its body text must NOT leak into the emitted HTML nor the
-    synthesized sidecar (defect: SemantiK furniture-emission — 198 metadata_drop
-    bodies leaked into <p>s on the EA2e OCR scan; the footer 61×, the running
-    header 136×). Mirrors the assembler pass_9a metadata_drop drop; filtered
-    from BOTH surfaces so block-id parity (source_refs gate) holds."""
-    footer = "This OpenStax book is available for free at http://cnx.org/x"
+    synthesized sidecar (defect: SemantiK furniture-emission — metadata_drop
+    bodies leaked into <p>s on an OCR scan corpus; a footer and running
+    header repeated many times per chapter). Mirrors the assembler pass_9a
+    metadata_drop drop; filtered from BOTH surfaces so block-id parity
+    (source_refs gate) holds."""
+    footer = "This sample book is available for free at http://example.org/x"
     running = "Chapter 9 Roots and Radicals 1035"
     result = type("R", (), {})()
     result.exit_action = "ship_with_confidence"
@@ -496,12 +497,12 @@ def test_metadata_drop_furniture_not_emitted_to_body():
             ],
         )
     ]
-    out = normalize_cascade_to_ed4all(result, pdf_stem="ea2e_ch9")
+    out = normalize_cascade_to_ed4all(result, pdf_stem="algebra_ch9")
     html = out["html"]
     # Real content survives; furniture bodies are gone.
     assert "The square root of 225 is 15." in html
     assert footer not in html
-    assert "cnx.org" not in html
+    assert "example.org" not in html
     assert running not in html
     assert 'data-semantik-block-role="metadata_drop"' not in html
     # Sidecar parity: no metadata_drop section survives either.
@@ -544,7 +545,7 @@ def test_h1_prefers_chapter_n_over_frontmatter_outline():
             ],
         ),
     ]
-    out = normalize_cascade_to_ed4all(result, pdf_stem="ea2e_ch9")
+    out = normalize_cascade_to_ed4all(result, pdf_stem="algebra_ch9")
     assert "<h1>Chapter 9 Roots and Radicals</h1>" in out["html"]
     assert "<title>Chapter 9 Roots and Radicals</title>" in out["html"]
     assert "<h1>Chapter Outline</h1>" not in out["html"]
@@ -580,7 +581,7 @@ def test_h1_excludes_chapter_n_review_banner():
         _one_block_chapter("CHAPTER 9 REVIEW", 1),
         _one_block_chapter("Chapter 9 Roots and Radicals", 2),
     ]
-    out = normalize_cascade_to_ed4all(result, pdf_stem="ea2e_ch9")
+    out = normalize_cascade_to_ed4all(result, pdf_stem="algebra_ch9")
     assert "<h1>Chapter 9 Roots and Radicals</h1>" in out["html"]
     assert "CHAPTER 9 REVIEW" not in re.findall(r"<h1>(.*?)</h1>", out["html"])[0]
 
@@ -609,7 +610,7 @@ def test_h1_excludes_apparatus_suffixes(apparatus: str):
         _one_block_chapter(apparatus, 0),
         _one_block_chapter("Chapter 9 Roots and Radicals", 1),
     ]
-    out = normalize_cascade_to_ed4all(result, pdf_stem="ea2e_ch9")
+    out = normalize_cascade_to_ed4all(result, pdf_stem="algebra_ch9")
     assert "<h1>Chapter 9 Roots and Radicals</h1>" in out["html"]
 
 
@@ -625,7 +626,7 @@ def test_h1_falls_back_when_no_qualifying_chapter_n():
         _one_block_chapter("Chapter Outline", 0),
         _one_block_chapter("CHAPTER 9 REVIEW", 1),
     ]
-    out = normalize_cascade_to_ed4all(result, pdf_stem="ea2e_ch9")
+    out = normalize_cascade_to_ed4all(result, pdf_stem="algebra_ch9")
     h1 = re.findall(r"<h1>(.*?)</h1>", out["html"])[0]
     assert h1 == "Chapter Outline"
 
@@ -655,7 +656,7 @@ def test_continuation_chapter_renders_no_heading_element():
         continuation=True,
     )
     result.chapters = [real, cont]
-    out = normalize_cascade_to_ed4all(result, pdf_stem="ea2e_ch9")
+    out = normalize_cascade_to_ed4all(result, pdf_stem="algebra_ch9")
     html = out["html"]
     # The real chapter's title is a visible <h2>; the continuation is NOT.
     assert "<h2>Higher Roots</h2>" in html
@@ -663,7 +664,7 @@ def test_continuation_chapter_renders_no_heading_element():
     assert re.search(r"<h2>[^<]*\(cont\.\)", html) is None
     # The continuation title survives as an aria-hidden presentation div.
     assert (
-        '<div class="dart-continuation" role="presentation" '
+        '<div class="semantik-continuation" role="presentation" '
         'aria-hidden="true">Higher Roots (cont.)</div>' in html
     )
     # No content lost.

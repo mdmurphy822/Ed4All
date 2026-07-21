@@ -1,7 +1,7 @@
 """Tests for _extract_textbook_structure (Wave 24).
 
 Covers the new textbook-ingestor dispatch target that runs
-SemanticStructureExtractor over staged DART HTML and emits
+SemanticStructureExtractor over staged SemantiK HTML and emits
 textbook_structure.json.
 """
 
@@ -22,8 +22,8 @@ from MCP.tools import pipeline_tools  # noqa: E402
 from MCP.tools.pipeline_tools import _build_tool_registry  # noqa: E402
 
 
-def _write_dart_html(path: Path, chapters: list) -> None:
-    """Write a minimal DART-like HTML with <article role="doc-chapter"> wrappers."""
+def _write_staged_html(path: Path, chapters: list) -> None:
+    """Write a minimal SemantiK-style HTML with <article role="doc-chapter"> wrappers."""
     body_parts = [
         '<a class="skip-link" href="#main">Skip</a>',
         '<main role="main">',
@@ -109,7 +109,7 @@ def test_no_html_produces_empty_structure(extractor_fixture):
 
 def test_single_chapter_extraction(extractor_fixture):
     fx = extractor_fixture
-    _write_dart_html(fx["staging"] / "textbook_a.html", [
+    _write_staged_html(fx["staging"] / "textbook_a.html", [
         {
             "title": "Chapter 1: Photosynthesis",
             "sections": [
@@ -135,7 +135,7 @@ def test_single_chapter_extraction(extractor_fixture):
 
 def test_multi_chapter_extraction(extractor_fixture):
     fx = extractor_fixture
-    _write_dart_html(fx["staging"] / "book.html", [
+    _write_staged_html(fx["staging"] / "book.html", [
         {
             "title": "Chapter 1: Kinematics",
             "sections": [
@@ -169,7 +169,7 @@ def test_multi_chapter_extraction(extractor_fixture):
 def test_persists_project_config(extractor_fixture):
     """After extraction, project_config.json carries course_name + duration_weeks."""
     fx = extractor_fixture
-    _write_dart_html(fx["staging"] / "book.html", [
+    _write_staged_html(fx["staging"] / "book.html", [
         {"title": "Chapter 1", "sections": [{"title": "S1", "paragraphs": ["Paragraph with enough words to pass the minimum word count filter for topic extraction."]}]},
     ])
     result = asyncio.run(_call(
@@ -188,7 +188,7 @@ def test_persists_project_config(extractor_fixture):
 def test_structure_path_location(extractor_fixture):
     """textbook_structure.json lands under 01_learning_objectives/."""
     fx = extractor_fixture
-    _write_dart_html(fx["staging"] / "book.html", [
+    _write_staged_html(fx["staging"] / "book.html", [
         {"title": "Chapter 1", "sections": [{"title": "S1", "paragraphs": ["A minimal paragraph with enough content to be recognized as a topic by the extractor heuristics."]}]},
     ])
     result = asyncio.run(_call(
@@ -204,7 +204,7 @@ def test_extraction_errors_logged_not_fatal(extractor_fixture):
     """Malformed HTML files are recorded in extraction_errors, not raised."""
     fx = extractor_fixture
     # Valid file.
-    _write_dart_html(fx["staging"] / "good.html", [
+    _write_staged_html(fx["staging"] / "good.html", [
         {"title": "Chapter 1", "sections": [{"title": "S1", "paragraphs": ["Paragraph with enough words to pass the minimum word count filter for topic extraction."]}]},
     ])
     # Bogus file (non-HTML but .html extension).
@@ -240,7 +240,7 @@ def test_autoscale_weeks_when_implicit(extractor_fixture):
         }
         for i in range(1, 11)  # 10 chapters
     ]
-    _write_dart_html(fx["staging"] / "book.html", chapters)
+    _write_staged_html(fx["staging"] / "book.html", chapters)
     result = asyncio.run(_call(
         course_name="AUTOSCALE",
         staging_dir=str(fx["staging"]),
@@ -256,7 +256,7 @@ def test_autoscale_weeks_when_implicit(extractor_fixture):
 def test_no_autoscale_when_explicit(extractor_fixture):
     """duration_weeks_explicit=True → weeks sticks to user-supplied value."""
     fx = extractor_fixture
-    _write_dart_html(fx["staging"] / "book.html", [
+    _write_staged_html(fx["staging"] / "book.html", [
         {"title": "Chapter 1", "sections": [{"title": "S1", "paragraphs": ["Paragraph with enough words to pass the minimum word count filter for topic extraction."]}]},
     ])
     result = asyncio.run(_call(
@@ -273,10 +273,10 @@ def test_no_autoscale_when_explicit(extractor_fixture):
 def test_deterministic_chapter_ids(extractor_fixture):
     """Chapter IDs deduplicated across multiple HTML files."""
     fx = extractor_fixture
-    _write_dart_html(fx["staging"] / "file1.html", [
+    _write_staged_html(fx["staging"] / "file1.html", [
         {"title": "Chapter A", "sections": [{"title": "S1", "paragraphs": ["Paragraph with enough words to pass the minimum word count filter for topic extraction."]}]},
     ])
-    _write_dart_html(fx["staging"] / "file2.html", [
+    _write_staged_html(fx["staging"] / "file2.html", [
         {"title": "Chapter A", "sections": [{"title": "S1", "paragraphs": ["Another paragraph with enough words to pass the minimum word count filter for topic extraction."]}]},
     ])
     result = asyncio.run(_call(

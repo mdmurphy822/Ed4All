@@ -42,11 +42,11 @@ def _model_cached() -> bool:
 
 def _materialize(repo_root: Path) -> Path:
     cdir = repo_root / "courses" / _SLUG
-    (cdir / "dart_chunks").mkdir(parents=True)
+    (cdir / "semantik_chunks").mkdir(parents=True)
     (cdir / "retrieval_eval").mkdir(parents=True)
     shutil.copy(
-        _FIXTURE / "dart_chunks" / "chunks.jsonl",
-        cdir / "dart_chunks" / "chunks.jsonl",
+        _FIXTURE / "semantik_chunks" / "chunks.jsonl",
+        cdir / "semantik_chunks" / "chunks.jsonl",
     )
     shutil.copy(
         _FIXTURE / "retrieval_eval" / "gold_set.json",
@@ -60,7 +60,7 @@ def _materialize(repo_root: Path) -> Path:
 
 @pytest.mark.real_models
 def test_real_minilm_retrieval_benchmark_end_to_end(tmp_path, monkeypatch):
-    if not (_FIXTURE / "dart_chunks" / "chunks.jsonl").exists():
+    if not (_FIXTURE / "semantik_chunks" / "chunks.jsonl").exists():
         pytest.skip("mini_course fixture not present")
     if not _model_cached():
         pytest.skip(f"{_MODEL} not in HF cache; skipping real-model smoke")

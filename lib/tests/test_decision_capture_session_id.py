@@ -4,7 +4,7 @@ Worker W6 regression tests for DecisionCapture.session_id uniqueness.
 Pre-W6, ``self.session_id`` was set via
 ``datetime.now().strftime("%Y%m%d_%H%M%S")`` — 1-second granularity, so two
 captures initialized within the same wall-second from parallel workers
-(DART per-PDF max_concurrent=4, assessment_generation max_concurrent=5,
+(SemantiK per-PDF max_concurrent=4, assessment_generation max_concurrent=5,
 etc.) shared a session_id, JSONL filename, and run_id fallback. W6 appends
 ``_{pid}_{6-hex}`` so concurrent inits get distinct ids while the leading
 15-char ``%Y%m%d_%H%M%S`` timestamp prefix is preserved (so glob patterns

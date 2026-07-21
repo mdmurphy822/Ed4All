@@ -53,8 +53,8 @@ def _discover_real_corpora() -> List[Path]:
     No course slug is hardcoded: archives live under the gitignored
     ``LibV2/courses/`` tree (honors ``ED4ALL_LIBV2_ROOT``). Each course's
     chunks are resolved via ``resolve_imscc_chunks_path`` so the
-    ``imscc_chunks/`` → ``dart_chunks/`` → legacy ``corpus/`` layouts are
-    all found. Returns the (sorted) list of existing chunks.jsonl paths;
+    ``imscc_chunks/`` → ``semantik_chunks/`` → legacy ``corpus/`` layouts
+    are all found. Returns the (sorted) list of existing chunks.jsonl paths;
     empty when none present → the parametrized case skips cleanly.
     """
     courses_root = _libv2_courses_root()
@@ -135,7 +135,7 @@ def _sample_chunk_with_source_references() -> Dict[str, Any]:
             "module_id": "m1",
             "lesson_id": "l1",
             "source_references": [
-                {"sourceId": "dart:slug#s0_c0", "role": "primary"},
+                {"sourceId": "semantik:slug#s0_c0", "role": "primary"},
             ],
         },
         "concept_tags": [],
@@ -227,7 +227,7 @@ def test_source_defs_ref_is_present_and_inline():
 def test_process_course_validate_chunk_does_not_raise_on_real_chunk():
     """Calls ``Trainforge.process_course._validate_chunk`` on a real
     chunk payload. Must NOT raise ``_RefResolutionError`` (the symptom
-    from today's RDF_SHACL_KG run).
+    from a production Trainforge assessment run).
     """
     _require_jsonschema()
     # Defer import so the test is robust when process_course's imports

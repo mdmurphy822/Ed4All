@@ -27,16 +27,15 @@ from html import escape
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
-# DART->semantik purge Stage 1 (dual-READ): a sourceId is ``{prefix}:{doc}#{block}``
-# where the prefix is the legacy ``dart`` OR the ratified ``semantik``. Emitters
-# still mint ``dart:`` this stage; the reader accepts both, byte-identically on
-# existing dart-form data.
-_SOURCE_ID_PREFIXES: Tuple[str, ...] = ("dart:", "semantik:")
+# A sourceId is ``{prefix}:{doc}#{block}`` where the prefix is the canonical
+# ``semantik`` OR the legacy ``dart`` (dual-READ compat: emitters mint
+# ``semantik:``; the reader still accepts ``dart:`` for pre-migration corpora).
+_SOURCE_ID_PREFIXES: Tuple[str, ...] = ("semantik:", "dart:")
 
 
 def _strip_source_prefix(source_id: str) -> Optional[str]:
-    """Return the ``{doc}#{block}`` remainder after a legacy ``dart:`` or new
-    ``semantik:`` prefix, or ``None`` when neither prefix is present."""
+    """Return the ``{doc}#{block}`` remainder after a canonical ``semantik:`` or
+    legacy ``dart:`` prefix, or ``None`` when neither prefix is present."""
     for prefix in _SOURCE_ID_PREFIXES:
         if source_id.startswith(prefix):
             return source_id[len(prefix):]
@@ -385,18 +384,21 @@ def source_pdf_page_url(citation: Dict[str, Any], slug: str, page: int) -> str:
 
 
 def original_source_url(citation: Dict[str, Any], slug: str) -> str:
-    """Build the deep link to the original archived DART document for one citation.
+    """Build the deep link to the original archived source document for a citation.
 
-    ``/api/courses/{slug}/source-doc?doc=<doc>&ref=<block>#dart-<block>`` from the
-    citation's ``source_block`` (``dart:{doc}#{block}``). The endpoint serves the
-    sanitized accessible HTML with a serve-time-injected ``id="dart-{block}"``, so
-    the ``#dart-<block>`` fragment lands on the exact cited block. Emit-then-
+    ``/api/courses/{slug}/source-doc?doc=<doc>&ref=<block>#semantik-<block>`` from
+    the citation's ``source_block`` (``semantik:{doc}#{block}``, legacy
+    ``dart:{doc}#{block}`` dual-read). The endpoint serves the sanitized
+    accessible HTML with a serve-time-injected ``id="semantik-{block}"``, so the
+    ``#semantik-<block>`` fragment lands on the exact cited block. Emit-then-
     resolve: the link is built whenever ``source_block`` parses; the endpoint
-    404s with an explanation when the DART doc isn't archived (provenance-without-
-    artifacts archives) — no per-render existence probe (the renderer is a pure
-    dict→str transform that must stay import-light, mirroring the source-pdf hop).
+    404s with an explanation when the source doc isn't archived
+    (provenance-without-artifacts archives) — no per-render existence probe (the
+    renderer is a pure dict→str transform that must stay import-light, mirroring
+    the source-pdf hop).
 
-    Returns ``""`` when ``source_block`` doesn't parse as ``dart:{doc}#{block}``.
+    Returns ``""`` when ``source_block`` doesn't parse as
+    ``{semantik|dart}:{doc}#{block}``.
     """
     source_id = str(citation.get("source_block") or "")
     _remainder = _strip_source_prefix(source_id)
@@ -414,7 +416,7 @@ def original_source_url(citation: Dict[str, Any], slug: str) -> str:
     # used — never invented.
     pages = [p for p in (citation.get("pdf_pages") or []) if isinstance(p, int)]
     page_param = "&page={}".format(min(pages)) if pages else ""
-    return "/api/courses/{slug}/source-doc?doc={doc}&ref={ref}{page}#dart-{frag}".format(
+    return "/api/courses/{slug}/source-doc?doc={doc}&ref={ref}{page}#semantik-{frag}".format(
         slug=quote(str(slug), safe=""),
         doc=quote(doc, safe=""),
         ref=quote(block, safe=""),
@@ -512,7 +514,7 @@ def _citation_li(
     """
     page_label = citation.get("page_label") or "Source"
     href = source_url_for(citation, slug)
-    # Source-side (DART) citations: the learner source endpoint serves the
+    # Source-document citations: the learner source endpoint serves the
     # whole original document with no block anchor, so the main link landed
     # at the top — the attribution front matter (user-reported). When the
     # citation carries a source_block and the deep-linkable source-doc URL
@@ -551,7 +553,7 @@ def _citation_li(
         )
     # No "(approximate location)" hedge: the Source link IS the direct hop to
     # the chunk's holder (course page for imscc chunks; the provenance block
-    # below adds the original-source deep link for DART chunks). A non-exact
+    # below adds the original-source deep link for source-document chunks). A non-exact
     # anchor only means the fragment may land at the section rather than the
     # sentence — the page itself is authoritative from the chunk's item_path.
     #

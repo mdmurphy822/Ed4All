@@ -7,7 +7,7 @@ a builder writes tiny DART HTML docs + figure assets + PDFs into
 isolates via the ``libv2_root`` fixture). Synthetic slugs only.
 
 Asserts the happy path AND the security contract: the active-content sanitiser
-(script/onclick/javascript: stripped), block-anchor injection (``id="dart-…"``
+(script/onclick/javascript: stripped), block-anchor injection (``id="semantik-…"``
 where missing, existing ids never clobbered), the three-form ``?ref=`` anchor
 shapes, figure-src rewrite, the full path-traversal negative matrix on ``doc``
 and ``path``, the exact CSP/nosniff headers, and the operator toggle (env off +
@@ -43,10 +43,12 @@ from build_fixture_pdf import build_pdf  # noqa: E402
 # Synthetic archive builder
 # --------------------------------------------------------------------------- #
 
-# A DART-shaped accessible HTML doc with: a block carrying data-dart-block-id and
-# NO id (block-anchor injection target), a block that ALREADY has an id (must not
-# be clobbered), a heading (heading-id injection), a relative figure src (rewrite
-# target), and hostile active content (script / onload / onclick / javascript:).
+# A SemantiK-shaped accessible HTML doc with: a block carrying
+# data-semantik-block-id and NO id (block-anchor injection target), a block that
+# ALREADY has an id (must not be clobbered) carrying the legacy
+# data-dart-block-id spelling (exercising the dual-read fallback), a heading
+# (heading-id injection), a relative figure src (rewrite target), and hostile
+# active content (script / onload / onclick / javascript:).
 _DART_HTML = """<!DOCTYPE html>
 <html><head><title>Chapter One — Foundations</title>
 <script>function boom(){alert('xss');}</script>
@@ -55,9 +57,9 @@ _DART_HTML = """<!DOCTYPE html>
   <h1>Chapter One</h1>
   <h2>Real Numbers</h2>
   <h3 id="sec-2570ef19b386cdac">Prime Factorization</h3>
-  <ul class="dart-section" data-dart-block-role="list_unordered"
-      data-dart-block-id="blk_target" data-dart-pages="4">
-    <li>An ordered list block (no id — gets id="dart-blk_target").</li>
+  <ul class="semantik-section" data-semantik-block-role="list_unordered"
+      data-semantik-block-id="blk_target" data-semantik-pages="4">
+    <li>An ordered list block (no id — gets id="semantik-blk_target").</li>
   </ul>
   <p id="sec-existing-h" data-dart-block-id="blk_keep">A block with an existing id.</p>
   <button onclick="boom()">Reveal</button>
@@ -207,8 +209,8 @@ def test_source_doc_injects_block_anchor(client, dart_course):
         f"/api/courses/{dart_course}/source-doc", params={"doc": "chapter-one"}
     )
     html = resp.text
-    # The block with data-dart-block-id and no id gets id="dart-{block}".
-    assert 'id="dart-blk_target"' in html
+    # The block with data-semantik-block-id and no id gets id="semantik-{block}".
+    assert 'id="semantik-blk_target"' in html
 
 
 def test_source_doc_never_clobbers_existing_id(client, dart_course):
@@ -217,16 +219,18 @@ def test_source_doc_never_clobbers_existing_id(client, dart_course):
     )
     html = resp.text
     # The block that already carried id="sec-existing-h" keeps it (never
-    # clobbered) — but the #dart-<block> fragment contract must still hold:
-    # an empty inline anchor span with the dart id is planted inside it.
+    # clobbered) — but the #semantik-<block> fragment contract must still hold:
+    # an empty inline anchor span with the semantik id is planted inside it.
+    # (This block carries the legacy data-dart-block-id spelling, so the anchor
+    # still resolves through the dual-read fallback.)
     assert 'id="sec-existing-h"' in html
-    assert '<span class="dart-block-anchor" id="dart-blk_keep"></span>' in html
+    assert '<span class="semantik-block-anchor" id="semantik-blk_keep"></span>' in html
 
 
 def test_source_doc_injects_page_anchor(client, dart_course):
-    """Phase 3: the block carrying data-dart-pages="4" yields a #page-4 anchor.
+    """Phase 3: the block carrying data-semantik-pages="4" yields a #page-4 anchor.
 
-    ``blk_target`` already received id="dart-blk_target" from the block-anchor
+    ``blk_target`` already received id="semantik-blk_target" from the block-anchor
     pass, so the page anchor is planted as an inline span (never clobbers).
     """
     resp = client.get(
@@ -234,7 +238,7 @@ def test_source_doc_injects_page_anchor(client, dart_course):
     )
     html = resp.text
     assert 'id="page-4"' in html
-    assert '<span class="dart-page-anchor" id="page-4"></span>' in html
+    assert '<span class="semantik-page-anchor" id="page-4"></span>' in html
 
 
 def test_source_doc_accepts_page_query_param(client, dart_course):
@@ -264,7 +268,7 @@ def test_source_doc_absent_page_byte_identical(client, dart_course):
 
 
 def test_source_doc_injects_heading_text_slug_when_hash_id_exists(client, dart_course):
-    # A heading that ALREADY carries a DART hash id (id="sec-<hash>") keeps it,
+    # A heading that ALREADY carries a hash id (id="sec-<hash>") keeps it,
     # but the Ask answer-path fragment is the SLUGGED heading text
     # (grounded_answer._fragment_for). So the text-slug id must ALSO resolve to
     # this heading — planted as an additional sibling anchor span (never
@@ -278,7 +282,7 @@ def test_source_doc_injects_heading_text_slug_when_hash_id_exists(client, dart_c
     assert 'id="sec-2570ef19b386cdac"' in html
     # Text-slug ("prime-factorization") planted as a sibling anchor so the
     # heading-slug fragment from the Ask citation resolves.
-    assert '<span class="dart-heading-anchor" id="prime-factorization"></span>' in html
+    assert '<span class="semantik-heading-anchor" id="prime-factorization"></span>' in html
 
 
 def test_source_doc_heading_no_id_still_gets_text_slug_directly(client, dart_course):
@@ -290,7 +294,7 @@ def test_source_doc_heading_no_id_still_gets_text_slug_directly(client, dart_cou
     html = resp.text
     assert 'id="real-numbers"' in html
     # No redundant sibling anchor for the no-id case.
-    assert '<span class="dart-heading-anchor" id="real-numbers">' not in html
+    assert '<span class="semantik-heading-anchor" id="real-numbers">' not in html
 
 
 def test_source_doc_rewrites_figure_src(client, dart_course):

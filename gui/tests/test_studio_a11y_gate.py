@@ -322,7 +322,7 @@ def _course_card(title: str, href: str, meta: str, ask_ready: bool = True) -> st
 _TIMELINE_BAR = """
 <figure class="timeline-bar">
   <div class="tl-bar-track" aria-hidden="true">
-    <span class="tl-seg tl-seg-done" data-phase="dart_conversion" style="width:60.00%" title="Convert textbook — 18m"></span>
+    <span class="tl-seg tl-seg-done" data-phase="semantik_conversion" style="width:60.00%" title="Convert textbook — 18m"></span>
     <span class="tl-seg tl-seg-done" data-phase="packaging" style="width:40.00%" title="Package course — 12m"></span>
   </div>
   <figcaption class="visually-hidden">Phase durations for Demo Course: total 30m</figcaption>
@@ -856,7 +856,7 @@ _WIZARD_PROGRESS_INNER = """
 <h1>Building PHYS_101</h1>
 <p class="muted"><span>Run GUI-x</span><span class="sep" aria-hidden="true"> · </span><span class="elapsed">elapsed 12s</span></p>
 <ol class="phase-checklist" aria-label="Course build steps">
-  <li class="phase-row is-done" data-phase="dart_conversion"><span class="phase-icon" aria-hidden="true">●</span><span class="phase-label">Convert textbook to accessible HTML</span><span class="phase-state">Done</span></li>
+  <li class="phase-row is-done" data-phase="semantik_conversion"><span class="phase-icon" aria-hidden="true">●</span><span class="phase-label">Convert textbook to accessible HTML</span><span class="phase-state">Done</span></li>
   <li class="phase-row is-running" data-phase="staging"><span class="phase-icon" aria-hidden="true">◐</span><span class="phase-label">Stage source files</span><span class="phase-state">Running…</span></li>
   <li class="phase-row is-pending" data-phase="packaging"><span class="phase-icon" aria-hidden="true">○</span><span class="phase-label">Package course</span><span class="phase-state">Pending</span></li>
   <li class="phase-row is-pending" data-phase="trainforge_assessment"><span class="phase-icon" aria-hidden="true">○</span><span class="phase-label">Generate assessments</span><span class="phase-state">Pending</span><span class="phase-opt">(optional)</span></li>
@@ -871,7 +871,7 @@ _WIZARD_PROGRESS_FAILED_INNER = """
 <h1>Building PHYS_101</h1>
 <p class="muted"><span>Run GUI-x</span><span class="sep" aria-hidden="true"> · </span><span class="elapsed">finished</span></p>
 <ol class="phase-checklist" aria-label="Course build steps">
-  <li class="phase-row is-done" data-phase="dart_conversion"><span class="phase-icon" aria-hidden="true">●</span><span class="phase-label">Convert textbook to accessible HTML</span><span class="phase-state">Done</span></li>
+  <li class="phase-row is-done" data-phase="semantik_conversion"><span class="phase-icon" aria-hidden="true">●</span><span class="phase-label">Convert textbook to accessible HTML</span><span class="phase-state">Done</span></li>
   <li class="phase-row is-failed" data-phase="staging"><span class="phase-icon" aria-hidden="true">✕</span><span class="phase-label">Stage source files</span><span class="phase-state">Failed</span></li>
 </ol>
 <div class="final-box" aria-live="polite">
@@ -1148,11 +1148,12 @@ def test_served_page_zero_aa_findings(tmp_path):
 
 
 def test_served_source_doc_zero_aa_findings(tmp_path):
-    """The sanitized + block-anchored source DART doc (served transform) passes.
+    """The sanitized + block-anchored served source doc passes the a11y gate.
 
-    DART HTML is WCAG-validated at conversion time, but the gate re-checks the
+    Source HTML is WCAG-validated at conversion time, but the gate re-checks the
     SERVED transform (active-content scrub + heading-id + block-anchor injection
-    + figure-src rewrite + lang preservation) over a synthetic DART doc fixture.
+    + figure-src rewrite + lang preservation). The fixture below carries legacy
+    ``data-dart-block-id`` markers to exercise the dual-READ anchor path.
     """
     from gui.services import source_materials  # noqa: PLC0415
 
@@ -1189,7 +1190,7 @@ def _drawer_answer_with_original_source() -> str:
     <li><a class="ask-cite" role="button" href="/api/learn/source/demo-101?item_path=ch01.html#velocity">Source: Velocity</a>
       <button type="button" class="src-detail-toggle" aria-expanded="true" aria-controls="src-detail-c1">Provenance</button>
       <ul id="src-detail-c1" class="src-detail">
-        <li class="src-block"><a href="/api/courses/demo-101/source-doc?doc=mini_alpha&amp;ref=s3_c0#dart-s3_c0" class="src-original-link" target="_blank" rel="noopener" aria-label="View original source (accessible HTML), opens in new tab">View original source (accessible HTML)</a> <code>dart:mini_alpha#s3_c0</code></li>
+        <li class="src-block"><a href="/api/courses/demo-101/source-doc?doc=mini_alpha&amp;ref=s3_c0#semantik-s3_c0" class="src-original-link" target="_blank" rel="noopener" aria-label="View original source (accessible HTML), opens in new tab">View original source (accessible HTML)</a> <code>dart:mini_alpha#s3_c0</code></li>
         <li class="src-pdf"><a href="/api/courses/demo-101/source-pdf?file=mini_alpha&amp;page=12" class="src-pdf-link" target="_blank" rel="noopener" aria-label="Open PDF page 12, opens in new tab">PDF page 12</a></li>
       </ul>
     </li>

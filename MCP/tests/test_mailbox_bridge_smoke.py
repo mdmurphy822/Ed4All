@@ -75,7 +75,7 @@ def _synthetic_html(week_n: int, page_kind: str, lo_id: str) -> str:
         f"<main data-cf-role='{page_kind}' "
         f"data-cf-objective-ids='{lo_id}' "
         f"data-cf-bloom-level='understand' "
-        f"data-cf-source-ids='dart-block-w{week_n}-01'>"
+        f"data-cf-source-ids='semantik-block-w{week_n}-01'>"
         f"<h1>Week {week_n} {page_kind.title()}</h1>"
         f"<p>Synthetic body for week {week_n} covering {lo_id}.</p>"
         f"</main>"
@@ -95,7 +95,7 @@ def _make_envelope_factory(run_id: str):
             {
                 "filename": f"week_{week_n}_{kind}.html",
                 "html": _synthetic_html(week_n, kind, lo_id),
-                "source_ids": [f"dart-block-w{week_n}-01"],
+                "source_ids": [f"semantik-block-w{week_n}-01"],
             }
             for kind in ("overview", "content", "application", "summary")
         ]

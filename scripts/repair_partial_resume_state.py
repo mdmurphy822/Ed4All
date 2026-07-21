@@ -172,7 +172,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         default="semantik_conversion",
         help=(
             "Multi-task phase to un-complete (default: semantik_conversion; "
-            "pass 'dart_conversion' for runs created before task #19 Stage 3d)."
+            "pre-migration runs used the legacy 'dart_conversion' phase key)."
         ),
     )
     ap.add_argument(

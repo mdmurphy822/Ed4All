@@ -333,11 +333,11 @@ def test_source_ref_dict_pass():
     """Dict-tier: block.source_references resolves against the
     valid_source_ids universe → pass."""
     blocks = [_outline_block(
-        source_references=({"sourceId": "dart:textbook_a#chap1_para3"},),
+        source_references=({"sourceId": "semantik:textbook_a#chap1_para3"},),
     )]
     result = BlockSourceRefValidator().validate({
         "blocks": blocks,
-        "valid_source_ids": ["dart:textbook_a#chap1_para3"],
+        "valid_source_ids": ["semantik:textbook_a#chap1_para3"],
     })
     assert result.passed is True
     assert result.action is None
@@ -347,11 +347,11 @@ def test_source_ref_dict_fail_unknown_sourceid():
     """Dict-tier: block.source_references includes an unknown sourceId →
     action='block'."""
     blocks = [_outline_block(
-        source_references=({"sourceId": "dart:textbook_a#nonexistent_block"},),
+        source_references=({"sourceId": "semantik:textbook_a#nonexistent_block"},),
     )]
     result = BlockSourceRefValidator().validate({
         "blocks": blocks,
-        "valid_source_ids": ["dart:textbook_a#chap1_para3"],
+        "valid_source_ids": ["semantik:textbook_a#chap1_para3"],
     })
     assert result.passed is False
     assert result.action == "block"
@@ -365,7 +365,7 @@ def test_source_ref_str_pass():
     with the structural field (deduplicated)."""
     blocks = [_rewrite_block(
         html=(
-            '<section data-cf-source-ids="dart:textbook_a#chap1_para3">'
+            '<section data-cf-source-ids="semantik:textbook_a#chap1_para3">'
             "<p>Body</p></section>"
         ),
         source_references=(),
@@ -373,7 +373,7 @@ def test_source_ref_str_pass():
     )]
     result = BlockSourceRefValidator().validate({
         "blocks": blocks,
-        "valid_source_ids": ["dart:textbook_a#chap1_para3"],
+        "valid_source_ids": ["semantik:textbook_a#chap1_para3"],
     })
     assert result.passed is True
     assert result.action is None
@@ -384,7 +384,7 @@ def test_source_ref_str_fail_unknown_sourceid():
     resolve against the manifest universe → action='block'."""
     blocks = [_rewrite_block(
         html=(
-            '<section data-cf-source-ids="dart:textbook_a#missing_block">'
+            '<section data-cf-source-ids="semantik:textbook_a#missing_block">'
             "<p>Body</p></section>"
         ),
         source_references=(),
@@ -392,7 +392,7 @@ def test_source_ref_str_fail_unknown_sourceid():
     )]
     result = BlockSourceRefValidator().validate({
         "blocks": blocks,
-        "valid_source_ids": ["dart:textbook_a#chap1_para3"],
+        "valid_source_ids": ["semantik:textbook_a#chap1_para3"],
     })
     assert result.passed is False
     assert result.action == "block"

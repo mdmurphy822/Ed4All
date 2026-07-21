@@ -193,11 +193,6 @@ def test_semantik_output_prefers_canonical_when_both_exist(monkeypatch, tmp_path
     assert paths.semantik_output_dir() == tmp_path / "semantik-output"
 
 
-def test_dart_output_dir_alias_points_at_semantik_output(monkeypatch):
-    """The deprecated dart_output_dir alias is the same callable (S4-removal)."""
-    assert paths.dart_output_dir is paths.semantik_output_dir
-
-
 def test_relocated_dirs_are_distinct_under_home(monkeypatch, tmp_path):
     """Every relocated data dir lands at a distinct path under one home root."""
     monkeypatch.setenv("ED4ALL_HOME", str(tmp_path))

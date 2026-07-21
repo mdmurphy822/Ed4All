@@ -44,7 +44,7 @@ def _run_sweep(course_dir: Path, *, overlaps=(0, 1)) -> dict:
     params = sweep.SweepParams(
         course_code=COURSE_CODE,
         course_slug=COURSE_SLUG,
-        source_kind="dart",
+        source_kind="semantik",
         max_chunk_sizes=(120, 200),
         target_chunk_sizes=(60,),
         overlap_sentences=tuple(overlaps),
@@ -72,7 +72,7 @@ def test_sweep_runs_on_mini_fixture(mini_course: Path):
             assert 0.0 <= v <= 1.0
         assert set(row["recall_at"].keys()) == {"1", "3", "5"}
     # Baseline from the canonical on-disk chunkset is present (fixture ships
-    # dart_chunks/chunks.jsonl).
+    # semantik_chunks/chunks.jsonl).
     assert report["baseline"] is not None
     assert report["baseline"]["params"] == "canonical-on-disk"
     # Two-consumer gate note is surfaced.
@@ -83,8 +83,8 @@ def test_sweep_runs_on_mini_fixture(mini_course: Path):
 # 2. Sweep never touches the canonical chunkset
 # --------------------------------------------------------------------------- #
 def test_sweep_never_touches_canonical_chunkset(mini_course: Path):
-    """sha256 of the fixture's dart_chunks/chunks.jsonl is identical before/after."""
-    chunks_path = mini_course / "dart_chunks" / "chunks.jsonl"
+    """sha256 of the fixture's semantik_chunks/chunks.jsonl is identical before/after."""
+    chunks_path = mini_course / "semantik_chunks" / "chunks.jsonl"
     before = hashlib.sha256(chunks_path.read_bytes()).hexdigest()
     _run_sweep(mini_course)
     after = hashlib.sha256(chunks_path.read_bytes()).hexdigest()
@@ -259,7 +259,7 @@ def test_cli_writes_report(mini_course: Path, tmp_path: Path):
             "--course-code",
             COURSE_CODE,
             "--source-kind",
-            "dart",
+            "semantik",
             "--max-chunk-sizes",
             "120,200",
             "--target-chunk-sizes",

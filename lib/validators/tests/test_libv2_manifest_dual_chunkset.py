@@ -15,7 +15,7 @@ coverage already landed in:
   - ``lib/validators/tests/test_chunkset_manifest.py`` (Phase 7b
     ST 13) — verify ``ChunksetManifestValidator``'s schema +
     on-disk hash agreement checks.
-  - ``LibV2/tests/test_backfill_dart_chunks.py`` (Phase 7c ST 18)
+  - ``LibV2/tests/test_backfill_legacy_chunks.py`` (Phase 7c ST 18)
     — verify the operator backfill script for legacy archives.
 
 What this test file adds beyond those is the **chain test**:
@@ -184,15 +184,18 @@ def chunkset_chain_fixture(tmp_path, monkeypatch):
 def _seal_manifest(
     course_dir: Path,
     *,
-    dart_chunks_sha256: str,
+    staged_chunks_sha256: str,
     imscc_chunks_sha256: str,
     concept_graph_sha256: str,
     pdf_bytes: bytes = b"%PDF-1.4 phase7c integration fixture",
+    legacy_staged_key: bool = False,
 ) -> Path:
-    """Write a minimal LibV2 ``manifest.json`` carrying all three
-    Phase 7c required hashes. Mirrors the shape ``_archive_to_libv2``
-    emits today (modulo the new chunkset hashes — which Phase 7d
-    threads in via ``inputs_from``; this helper anticipates that wiring).
+    """Write a minimal LibV2 ``manifest.json`` carrying all three required hashes.
+
+    The staged-chunkset hash is written under the canonical
+    ``semantik_chunks_sha256`` field by default; ``legacy_staged_key=True``
+    writes it under the pre-migration ``dart_chunks_sha256`` spelling instead so
+    a test can exercise the validator's dual-read of a legacy manifest.
     """
     # Source PDF artifact so source_artifacts integrity check has work.
     pdf_path = course_dir / "source" / "pdf" / "fixture.pdf"
@@ -234,10 +237,11 @@ def _seal_manifest(
             "source_provenance": True,
             "evidence_source_provenance": True,
         },
-        "dart_chunks_sha256": dart_chunks_sha256,
         "imscc_chunks_sha256": imscc_chunks_sha256,
         "concept_graph_sha256": concept_graph_sha256,
     }
+    staged_key = "dart_chunks_sha256" if legacy_staged_key else "semantik_chunks_sha256"
+    manifest[staged_key] = staged_chunks_sha256
     manifest_path = course_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return manifest_path
@@ -271,7 +275,7 @@ def sealed_archive(chunkset_chain_fixture):
 
     manifest_path = _seal_manifest(
         course_dir,
-        dart_chunks_sha256=fx["dart_payload"]["dart_chunks_sha256"],
+        staged_chunks_sha256=fx["dart_payload"]["semantik_chunks_sha256"],
         imscc_chunks_sha256=fx["imscc_payload"]["imscc_chunks_sha256"],
         concept_graph_sha256=cg_hash,
     )
@@ -293,8 +297,8 @@ class TestEndToEndChainEmits:
     def test_dart_chunks_artifacts_landed(self, chunkset_chain_fixture):
         fx = chunkset_chain_fixture
         course_dir = fx["course_dir"]
-        chunks_path = course_dir / "dart_chunks" / "chunks.jsonl"
-        manifest_path = course_dir / "dart_chunks" / "manifest.json"
+        chunks_path = course_dir / "semantik_chunks" / "chunks.jsonl"
+        manifest_path = course_dir / "semantik_chunks" / "manifest.json"
         assert chunks_path.is_file(), (
             f"Phase 7b chunkset missing at {chunks_path}"
         )
@@ -303,7 +307,7 @@ class TestEndToEndChainEmits:
         )
         # Round-trip: helper-returned hash matches on-disk bytes.
         on_disk = hashlib.sha256(chunks_path.read_bytes()).hexdigest()
-        assert on_disk == fx["dart_payload"]["dart_chunks_sha256"]
+        assert on_disk == fx["dart_payload"]["semantik_chunks_sha256"]
 
     def test_imscc_chunks_artifacts_landed(self, chunkset_chain_fixture):
         fx = chunkset_chain_fixture
@@ -324,13 +328,13 @@ class TestEndToEndChainEmits:
         fx = chunkset_chain_fixture
         course_dir = fx["course_dir"]
         dart_manifest = json.loads(
-            (course_dir / "dart_chunks" / "manifest.json").read_text(encoding="utf-8")
+            (course_dir / "semantik_chunks" / "manifest.json").read_text(encoding="utf-8")
         )
         imscc_manifest = json.loads(
             (course_dir / "imscc_chunks" / "manifest.json").read_text(encoding="utf-8")
         )
-        assert dart_manifest["chunkset_kind"] == "dart"
-        assert "source_dart_html_sha256" in dart_manifest
+        assert dart_manifest["chunkset_kind"] == "semantik"
+        assert "source_semantik_html_sha256" in dart_manifest
         assert imscc_manifest["chunkset_kind"] == "imscc"
         assert "source_imscc_sha256" in imscc_manifest
 
@@ -343,13 +347,56 @@ class TestSealedManifestPassesValidator:
             sealed_archive["manifest_path"].read_text(encoding="utf-8")
         )
         for field in (
-            "dart_chunks_sha256",
+            "semantik_chunks_sha256",
             "imscc_chunks_sha256",
             "concept_graph_sha256",
         ):
             assert field in manifest, f"missing required field: {field}"
             assert isinstance(manifest[field], str)
             assert len(manifest[field]) == 64
+
+    def test_validator_accepts_legacy_dart_chunks_key(self, chunkset_chain_fixture):
+        """Dual-read: a legacy manifest sealing the staged hash under the
+        pre-migration ``dart_chunks_sha256`` key still passes (the on-disk
+        chunkset is the canonical ``semantik_chunks/`` dir)."""
+        fx = chunkset_chain_fixture
+        course_dir = fx["course_dir"]
+
+        cg_payload = {"kind": "pedagogy", "course_id": fx["course_name"],
+                      "nodes": [], "edges": []}
+        cg_bytes = json.dumps(cg_payload, indent=2).encode("utf-8")
+        cg_hash = hashlib.sha256(cg_bytes).hexdigest()
+        cg_dir = course_dir / "concept_graph"
+        cg_dir.mkdir(parents=True, exist_ok=True)
+        (cg_dir / "concept_graph_semantic.json").write_bytes(cg_bytes)
+
+        manifest_path = _seal_manifest(
+            course_dir,
+            staged_chunks_sha256=fx["dart_payload"]["semantik_chunks_sha256"],
+            imscc_chunks_sha256=fx["imscc_payload"]["imscc_chunks_sha256"],
+            concept_graph_sha256=cg_hash,
+            legacy_staged_key=True,
+        )
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert "dart_chunks_sha256" in manifest
+        assert "semantik_chunks_sha256" not in manifest
+
+        result = LibV2ManifestValidator().validate({
+            "manifest_path": str(manifest_path),
+            "course_dir": str(course_dir),
+        })
+        staged_critical = [
+            i for i in result.issues
+            if i.severity == "critical" and i.code in {
+                "MISSING_DART_CHUNKS_SHA256",
+                "INVALID_DART_CHUNKS_SHA256",
+                "DART_CHUNKS_HASH_MISMATCH",
+            }
+        ]
+        assert not staged_critical, (
+            f"legacy dart_chunks_sha256 manifest key must dual-read clean; "
+            f"got: {[i.code for i in staged_critical]}"
+        )
 
     def test_validator_accepts_clean_archive(self, sealed_archive):
         """No critical issues from any of the three chunkset / graph
@@ -386,7 +433,7 @@ class TestTamperingFiresHashMismatch:
 
     def test_tampered_dart_chunks_jsonl_fires_mismatch(self, sealed_archive):
         chunks_path = (
-            sealed_archive["course_dir"] / "dart_chunks" / "chunks.jsonl"
+            sealed_archive["course_dir"] / "semantik_chunks" / "chunks.jsonl"
         )
         original = chunks_path.read_bytes()
         chunks_path.write_bytes(original + b'{"tampered": true}\n')
@@ -462,11 +509,14 @@ class TestTamperingFiresHashMismatch:
 class TestMissingChunksetFieldBlocks:
     """Stripping a required hash from the manifest fires MISSING_*."""
 
-    def test_missing_dart_chunks_sha256_fires_critical(self, sealed_archive):
+    def test_missing_staged_chunks_sha256_fires_critical(self, sealed_archive):
         manifest = json.loads(
             sealed_archive["manifest_path"].read_text(encoding="utf-8")
         )
-        manifest.pop("dart_chunks_sha256")
+        # Canonical seal uses the semantik key; drop it (and any legacy alias)
+        # so neither staged-hash spelling remains.
+        manifest.pop("semantik_chunks_sha256", None)
+        manifest.pop("dart_chunks_sha256", None)
         sealed_archive["manifest_path"].write_text(
             json.dumps(manifest), encoding="utf-8"
         )
@@ -480,7 +530,8 @@ class TestMissingChunksetFieldBlocks:
             if i.code == "MISSING_DART_CHUNKS_SHA256"
         ]
         assert missing, (
-            "MISSING_DART_CHUNKS_SHA256 must fire when field absent."
+            "MISSING_DART_CHUNKS_SHA256 must fire when the staged-chunks hash "
+            "is absent under either spelling."
         )
         assert missing[0].severity == "critical"
         assert not result.passed

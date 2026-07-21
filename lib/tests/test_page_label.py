@@ -95,6 +95,6 @@ def test_page_citation_empty_pages_returns_empty_regardless_of_kind():
 
 def test_page_citation_anti_fabrication_never_upgrades_physical():
     """A physical page is NEVER relabeled as a bare printed "p. N"."""
-    # Same numbers, different DART-asserted kinds → different honest labels.
+    # Same numbers, different SemantiK-asserted kinds → different honest labels.
     assert page_citation([47], "physical") == "PDF p. 47"
     assert page_citation([47], "printed") == "p. 47"

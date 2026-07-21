@@ -626,7 +626,7 @@ async def _amain(args: argparse.Namespace) -> int:
         raise SystemExit(f"chunkset not found: {chunks_path}")
 
     course_slug = args.course_slug
-    course_name = course_slug  # _load_dart_chunkset_for_planning keys on slug.
+    course_name = course_slug  # _load_semantik_chunkset_for_planning keys on slug.
 
     # --- Workspace: temp libv2 root + project export dir. ---
     out_root = Path(args.out_dir).resolve() if args.out_dir else Path(

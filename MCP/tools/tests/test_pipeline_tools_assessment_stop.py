@@ -18,7 +18,7 @@ Two axes are exercised against the SAME sidecar:
   NOT happen on a stop and the sidecar SURVIVES for the resume.
 
 Hermetic: a fake ``AssessmentGenerator`` (no LLM), no prose provider (the
-deterministic discussion/assignment prompt path), no dart chunks. Sentinel
+deterministic discussion/assignment prompt path), no SemantiK chunks. Sentinel
 isolation via ``state_runs_isolated`` (per-test ``ED4ALL_STATE_RUNS_DIR``) + a
 synthetic ``ED4ALL_RUN_ID``.
 """

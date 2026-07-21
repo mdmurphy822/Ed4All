@@ -43,10 +43,10 @@ from MCP.tools.pipeline_tools import _build_tool_registry  # noqa: E402
 COURSE_CODE = "LOTEST_101"
 
 
-# Minimal DART HTML so parse_dart_html_files produces topics for each
+# Minimal SemantiK HTML so the staging parser produces topics for each
 # week. The 4-week allocator splits topics round-robin; we supply 4
 # distinct section blocks so every week can bind to its own topic.
-_DART_HTML = """<!DOCTYPE html>
+_SEMANTIK_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head><title>Sample Textbook</title></head>
 <body>
@@ -152,7 +152,7 @@ def pipeline_registry(monkeypatch, tmp_path):
 
     staging_dir = staging_root / "WF-LOTEST-01"
     staging_dir.mkdir()
-    (staging_dir / "textbook.html").write_text(_DART_HTML, encoding="utf-8")
+    (staging_dir / "textbook.html").write_text(_SEMANTIK_HTML, encoding="utf-8")
 
     return {
         "tools": _build_tool_registry(),

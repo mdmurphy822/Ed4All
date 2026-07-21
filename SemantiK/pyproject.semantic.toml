@@ -1,7 +1,7 @@
 [project]
 name = "semantic"
 version = "0.0.1"
-description = "DART structure-understanding model — Tesseract OCR output to WCAG-compliant HTML."
+description = "SemantiK structure-understanding model — Tesseract OCR output to WCAG-compliant HTML."
 requires-python = ">=3.12"
 dependencies = [
     "beautifulsoup4>=4.12",

@@ -1,11 +1,11 @@
 """W1b.5 — opt-in heuristic learning-outcome linker (EXISTING ids only).
 
-The DART chunking phase emits chunks BEFORE course-planning mints the canonical
-``TO-NN`` / ``CO-NN`` id set, so the chunker's per-chunk
+The SemantiK chunking phase emits chunks BEFORE course-planning mints the
+canonical ``TO-NN`` / ``CO-NN`` id set, so the chunker's per-chunk
 ``learning_outcome_refs[]`` is empty on initial emit. The canonical back-fill
-(``MCP/tools/pipeline_tools.py::_backfill_dart_chunk_lo_refs``) re-scans the
+step in ``MCP/tools/pipeline_tools.py`` re-scans the
 on-disk chunks for LITERAL LO-id mentions via
-``lib.ontology.learning_objectives.scan_lo_refs`` — but a DART chunk almost
+``lib.ontology.learning_objectives.scan_lo_refs`` — but a SemantiK chunk almost
 never contains the literal string ``TO-03`` (those ids are minted downstream),
 so the exact scan links very few chunks.
 

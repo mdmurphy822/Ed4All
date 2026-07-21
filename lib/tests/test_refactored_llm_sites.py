@@ -4,10 +4,9 @@ Covers ``classify_teaching_roles`` (Trainforge/align_chunks.py) — it
 should accept an injected backend and avoid the direct
 ``anthropic.Anthropic()`` path.
 
-NOTE (SemantiK migration): the former ClaudeProcessor +
-AltTextGenerator coverage (``DART/pdf_converter/*``) was retired with
-the DART converter. SemantiK has its own LLM-backend tests under
-``lib/semantik/tests``.
+SemantiK's PDF-to-accessible-HTML conversion has its own LLM-backend
+tests under ``lib/semantik/tests``; this file covers only
+``classify_teaching_roles``.
 """
 from __future__ import annotations
 

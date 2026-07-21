@@ -16,7 +16,7 @@ Public surface:
       tokenizer + model + head + calibration + version info.
     * :func:`load(model_dir)` — returns the loaded model, or ``None``
       when the artifact directory is missing / incomplete (and
-      ``DART_REQUIRE_THETA_MODEL`` is unset). Performs a one-shot
+      ``SEMANTIK_REQUIRE_THETA_MODEL`` is unset). Performs a one-shot
       health check on a sentinel pair after load.
     * :func:`score(doc, *, feature_blocks, model)` — scores an
       :class:`AssembledDoc` end-to-end and returns
@@ -63,9 +63,8 @@ logger = logging.getLogger(__name__)
 # when explicitly requested AND available (fp16-cast to keep the footprint
 # small), with a graceful CPU fallback on a GPU-less box.
 #
-# This SUPERSEDES the legacy ``DART_THETA_DEVICE`` env (which defaulted to
-# ``cpu`` too but did no availability guard / fp16 cast). ``DART_THETA_DEVICE``
-# is still honored for backward compatibility as a lower-precedence fallback.
+# The legacy ``DART_THETA_DEVICE`` env is still honored as a lower-precedence
+# fallback so existing operator setups keep working.
 
 #: Env var selecting the torch device for the theta cross-encoder. Default
 #: ``"cpu"`` (avoids the GPU alloc entirely — theta is small, CPU only
@@ -73,7 +72,7 @@ logger = logging.getLogger(__name__)
 #: ``cuda:N``. Mirrors ``ED4ALL_NLI_DEVICE``.
 ENV_THETA_DEVICE = "SEMANTIK_THETA_DEVICE"
 
-#: Legacy env (pre-R7) — honored as a lower-precedence fallback so existing
+#: Legacy env — honored as a lower-precedence fallback so existing
 #: ``DART_THETA_DEVICE=cuda`` operator setups keep working.
 _LEGACY_ENV_THETA_DEVICE = "DART_THETA_DEVICE"
 
@@ -300,7 +299,7 @@ def load(model_dir: Path) -> SemanticPreservationModel | None:
     """Load the cross-encoder bundle from ``model_dir``.
 
     Returns ``None`` when the artifact directory is missing or doesn't
-    contain the expected files (and ``DART_REQUIRE_THETA_MODEL`` is
+    contain the expected files (and ``SEMANTIK_REQUIRE_THETA_MODEL`` is
     unset — strict-mode escalation lives in
     :mod:`semantik_structure.theta._module_state`, not here, so this loader
     stays single-purpose).

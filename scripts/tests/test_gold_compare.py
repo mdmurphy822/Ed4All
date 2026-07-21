@@ -30,7 +30,7 @@ def _chunk(cid, text, chapter, section, *, heading=""):
             "section_heading": heading,
             "source_references": [
                 {
-                    "sourceId": f"dart:synthetic-book-ch{chapter:02d}_accessible#{section}",
+                    "sourceId": f"semantik:synthetic-book-ch{chapter:02d}_accessible#{section}",
                     "role": "primary",
                     "extractor": "synthesized",
                 }
@@ -124,7 +124,7 @@ def test_chapter_from_text():
 
 
 def test_section_slug_and_title():
-    src = {"source_references": [{"sourceId": "dart:x#1-2-use-the-language", "role": "primary"}]}
+    src = {"source_references": [{"sourceId": "semantik:x#1-2-use-the-language", "role": "primary"}]}
     assert gc.section_slug_from_source(src) == "1-2-use-the-language"
     assert gc.section_title("1-2-use-the-language") == "use the language"
 
@@ -137,14 +137,14 @@ def _src_refs(*fragments, heading=""):
     """A source dict with one source_reference per given section fragment.
 
     ``None`` fragments produce a ref with no sourceId (skipped by the majority
-    function); non-None fragments become ``dart:algch1#<fragment>`` sourceIds.
+    function); non-None fragments become ``semantik:algch1#<fragment>`` sourceIds.
     """
     refs = []
     for frag in fragments:
         if frag is None:
             refs.append({"role": "supporting"})
         else:
-            refs.append({"sourceId": f"dart:algch1#{frag}", "role": "supporting"})
+            refs.append({"sourceId": f"semantik:algch1#{frag}", "role": "supporting"})
     return {"source_references": refs, "section_heading": heading}
 
 
@@ -176,8 +176,8 @@ def test_majority_section_falls_back_to_heading_slug():
 
 def test_majority_section_handles_sourceid_without_fragment():
     # a bare sourceId (no '#') uses the whole id as its fragment
-    src = {"source_references": [{"sourceId": "dart:algch1"}, {"sourceId": "dart:algch1"}]}
-    assert gc.majority_section_slug_from_source(src) == "dart:algch1"
+    src = {"source_references": [{"sourceId": "semantik:algch1"}, {"sourceId": "semantik:algch1"}]}
+    assert gc.majority_section_slug_from_source(src) == "semantik:algch1"
 
 
 def _multi_ref_chunk(cid, text, chapter, fragments):
@@ -192,7 +192,7 @@ def _multi_ref_chunk(cid, text, chapter, fragments):
             "section_heading": "",
             "source_references": [
                 {
-                    "sourceId": f"dart:synthetic-book-ch{chapter:02d}_accessible#{frag}",
+                    "sourceId": f"semantik:synthetic-book-ch{chapter:02d}_accessible#{frag}",
                     "role": "primary" if i == 0 else "supporting",
                     "extractor": "synthesized",
                 }
@@ -649,7 +649,7 @@ def test_normalization_block_present_in_report(tmp_path):
         "source": {
             "item_path": "book-ch01_accessible.html", "module_id": "book-ch01",
             "source_references": [
-                {"sourceId": "dart:book-ch01#1-1-radicals", "role": "primary"}
+                {"sourceId": "semantik:book-ch01#1-1-radicals", "role": "primary"}
             ],
         },
         "concept_tags": [],

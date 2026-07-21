@@ -131,12 +131,12 @@ def test_page_with_valid_source_refs_validates():
         **_base_page(),
         "sourceReferences": [
             {
-                "sourceId": "dart:science_of_learning#s3_c0",
+                "sourceId": "semantik:science_of_learning#s3_c0",
                 "role": "primary",
                 "confidence": 0.9,
             },
             {
-                "sourceId": "dart:science_of_learning#s4_p0",
+                "sourceId": "semantik:science_of_learning#s4_p0",
                 "role": "contributing",
             },
         ],
@@ -154,7 +154,7 @@ def test_section_with_valid_source_refs_validates():
                 "contentType": "definition",
                 "sourceReferences": [
                     {
-                        "sourceId": "dart:science_of_learning#s5_c1",
+                        "sourceId": "semantik:science_of_learning#s5_c1",
                         "role": "primary",
                     }
                 ],
@@ -171,7 +171,7 @@ def test_fully_populated_source_ref_validates():
         **_base_page(),
         "sourceReferences": [
             {
-                "sourceId": "dart:foo#a3f9d812ac04bbc1",
+                "sourceId": "semantik:foo#a3f9d812ac04bbc1",
                 "role": "primary",
                 "weight": 0.7,
                 "confidence": 0.85,
@@ -201,7 +201,7 @@ def test_source_ref_missing_source_id_fails():
 def test_source_ref_missing_role_fails():
     page = {
         **_base_page(),
-        "sourceReferences": [{"sourceId": "dart:slug#s0"}],
+        "sourceReferences": [{"sourceId": "semantik:slug#s0"}],
     }
     errors = list(_validator().iter_errors(page))
     assert errors, "Missing role must fail"
@@ -211,7 +211,7 @@ def test_source_ref_invalid_role_enum_fails():
     page = {
         **_base_page(),
         "sourceReferences": [
-            {"sourceId": "dart:slug#s0", "role": "supporting"}
+            {"sourceId": "semantik:slug#s0", "role": "supporting"}
         ],
     }
     errors = list(_validator().iter_errors(page))
@@ -233,7 +233,7 @@ def test_source_ref_additional_property_fails():
     page = {
         **_base_page(),
         "sourceReferences": [
-            {"sourceId": "dart:slug#s0", "role": "primary", "bogus": True}
+            {"sourceId": "semantik:slug#s0", "role": "primary", "bogus": True}
         ],
     }
     errors = list(_validator().iter_errors(page))
@@ -248,7 +248,7 @@ def test_section_source_ref_bad_weight_fails():
                 "heading": "T",
                 "contentType": "definition",
                 "sourceReferences": [
-                    {"sourceId": "dart:s#b", "role": "primary", "weight": 1.5}
+                    {"sourceId": "semantik:s#b", "role": "primary", "weight": 1.5}
                 ],
             }
         ],
@@ -259,7 +259,7 @@ def test_section_source_ref_bad_weight_fails():
 
 def test_source_references_wrong_type_fails():
     """sourceReferences must be an array, not a scalar."""
-    page = {**_base_page(), "sourceReferences": "dart:s#b"}
+    page = {**_base_page(), "sourceReferences": "semantik:s#b"}
     errors = list(_validator().iter_errors(page))
     assert errors
 
@@ -285,9 +285,9 @@ def test_mixed_roles_in_source_refs_validates():
     page = {
         **_base_page(),
         "sourceReferences": [
-            {"sourceId": "dart:slug#s0", "role": "primary"},
-            {"sourceId": "dart:slug#s1", "role": "contributing"},
-            {"sourceId": "dart:slug#s2", "role": "corroborating"},
+            {"sourceId": "semantik:slug#s0", "role": "primary"},
+            {"sourceId": "semantik:slug#s1", "role": "contributing"},
+            {"sourceId": "semantik:slug#s2", "role": "corroborating"},
         ],
     }
     errors = list(_validator().iter_errors(page))

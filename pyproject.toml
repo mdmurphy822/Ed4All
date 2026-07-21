@@ -25,10 +25,9 @@ dependencies = [
     # httpx is a RUNTIME dependency of the turnkey local-provider lattice
     # (Trainforge/generators/_openai_compatible_client.py + _local_provider +
     # _together_provider) and the local-openai embedding provider
-    # (lib/embedding/providers.py). It previously arrived transitively via
-    # the anthropic SDK (the retired [dart] extra), so a bare install
-    # collected 33 import errors on CI and could not run local authoring at
-    # all — hence the explicit base pin below.
+    # (lib/embedding/providers.py). No base dependency pulls it in, so
+    # without this explicit pin a bare install collected 33 import errors on
+    # CI and could not run local authoring at all — hence the base pin below.
     "httpx>=0.27,<1.0",
 ]
 # Note: the canonical chunker lives at ``Trainforge/chunker/`` (post-
@@ -39,13 +38,11 @@ dependencies = [
 # ``plans/post-phase8-review-2026-05.md`` for the rationale.
 
 [project.optional-dependencies]
-# The legacy ``[dart]`` extra (PyMuPDF/AGPL PDF-extraction stack + the
-# anthropic SDK) was retired with the DART subsystem in the SemantiK
-# migration. PDF processing now lives in the ``[semantik]`` extra (the
-# license-clean successor cascade); the anthropic SDK is an opt-in,
-# lazily-imported dependency of the api-mode LLM path (default posture is
-# local/Together providers — see docs/LICENSING.md), declared in
-# ``[anthropic]`` below for callers that explicitly want the cloud arm.
+# PDF processing lives in the ``[semantik]`` extra (the license-clean
+# conversion cascade). The anthropic SDK is an opt-in, lazily-imported
+# dependency of the api-mode LLM path (default posture is local/Together
+# providers — see docs/LICENSING.md), declared in ``[anthropic]`` below for
+# callers that explicitly want the cloud arm.
 anthropic = [
     "anthropic>=0.18.0,<1.0.0",
 ]
@@ -185,7 +182,7 @@ gui = [
 #   pip install -e '.[full,training]'    # + SLM fine-tuning (GPU)
 #   pip install -e '.[full,anthropic]'   # + api-mode cloud LLM arm
 full = ["ed4all[server,dev,gui]"]
-# SemantiK in-process conversion cascade (the license-clean DART successor).
+# SemantiK in-process conversion cascade (the license-clean PDF→HTML pipeline).
 # These are the deps MISSING from a venv that already carries the heavy ML
 # stack (torch>=2.2, transformers>=4.45, peft>=0.10, scikit-learn, scipy,
 # bitsandbytes, beautifulsoup4, lxml, pyyaml, pillow, requests, datasets —

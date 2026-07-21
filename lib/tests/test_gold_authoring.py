@@ -131,7 +131,7 @@ def _synthetic_chunkset(n=24):
             ch = _chunk(f"c{i:03d}", f"{_TEXT_A} Variation {i}.",
                         item_path="textbook.html", los=["to-01", "co-01"],
                         tags=["vector-store", "embeddings"], role=roles[i % 3],
-                        source_refs=[{"sourceId": f"dart:tb#{i}"}])
+                        source_refs=[{"sourceId": f"semantik:tb#{i}"}])
         else:
             ch = _chunk(f"c{i:03d}", f"{_TEXT_B} Variation {i}.",
                         item_path=f"week_{wk:02d}/p.html",
@@ -527,7 +527,7 @@ def test_mine_glossary_terms_skips_non_glossary():
 
 def test_draft_definition_candidates_shape_and_metadata():
     chunks = {"g001": _glossary_chunk(los=["to-03", "co-07"],
-                                      source_refs=[{"sourceId": "dart:tb#1"}])}
+                                      source_refs=[{"sourceId": "semantik:tb#1"}])}
     seeds = mine_glossary_terms(chunks)[:1]
     quote = "The distance between a number and zero on the number line, always non-negative"
     client = FakeDraftClient([_draft_json(
@@ -694,7 +694,7 @@ def _both_chunks():
         "In the original textbook, absolute value measures the distance from "
         "zero on the number line; worked integer examples follow this idea.",
         item_path="algebra-ch1.html", los=["to-01"],
-        source_refs=[{"sourceId": "dart:tb#1"}], section_heading="Absolute Value",
+        source_refs=[{"sourceId": "semantik:tb#1"}], section_heading="Absolute Value",
     )
     return {"crs1": course, "src1": source}
 

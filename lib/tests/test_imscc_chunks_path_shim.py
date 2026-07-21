@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 
 from lib.libv2_storage import (
-    DART_CHUNKS_DIRNAME,
+    LEGACY_CHUNKS_DIRNAME,
     IMSCC_CHUNKS_DIRNAME,
     LEGACY_CORPUS_DIRNAME,
     resolve_imscc_chunks_dir,
@@ -64,7 +64,7 @@ def test_legacy_archive_returns_corpus_with_deprecation(tmp_path: Path) -> None:
     msg = str(deprecation[0].message)
     assert "Phase 7c" in msg
     assert "course-bar" in msg
-    assert "backfill_dart_chunks.py" in msg, (
+    assert "backfill_legacy_chunks.py" in msg, (
         "Deprecation must name the migration script"
     )
 
@@ -156,14 +156,14 @@ def test_dart_chunks_only_returns_dart_silently(tmp_path: Path) -> None:
     the resolver never looked there.
     """
     course_dir = tmp_path / "course-dart"
-    (course_dir / DART_CHUNKS_DIRNAME).mkdir(parents=True)
-    (course_dir / DART_CHUNKS_DIRNAME / "chunks.jsonl").write_text("{}\n")
+    (course_dir / LEGACY_CHUNKS_DIRNAME).mkdir(parents=True)
+    (course_dir / LEGACY_CHUNKS_DIRNAME / "chunks.jsonl").write_text("{}\n")
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         result = resolve_imscc_chunks_path(course_dir, "chunks.jsonl")
 
-    assert result == course_dir / DART_CHUNKS_DIRNAME / "chunks.jsonl"
+    assert result == course_dir / LEGACY_CHUNKS_DIRNAME / "chunks.jsonl"
     assert result.is_file()
     deprecation = [w for w in caught if issubclass(w.category, DeprecationWarning)]
     assert deprecation == [], (
@@ -183,14 +183,14 @@ def test_scaffold_imscc_dir_without_file_falls_through_to_dart(tmp_path: Path) -
     (course_dir / IMSCC_CHUNKS_DIRNAME).mkdir(parents=True)
     # scaffold: imscc_chunks/ has only a manifest, no chunks.jsonl
     (course_dir / IMSCC_CHUNKS_DIRNAME / "manifest.json").write_text("{}\n")
-    (course_dir / DART_CHUNKS_DIRNAME).mkdir(parents=True)
-    (course_dir / DART_CHUNKS_DIRNAME / "chunks.jsonl").write_text("{}\n")
+    (course_dir / LEGACY_CHUNKS_DIRNAME).mkdir(parents=True)
+    (course_dir / LEGACY_CHUNKS_DIRNAME / "chunks.jsonl").write_text("{}\n")
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         result = resolve_imscc_chunks_path(course_dir, "chunks.jsonl")
 
-    assert result == course_dir / DART_CHUNKS_DIRNAME / "chunks.jsonl"
+    assert result == course_dir / LEGACY_CHUNKS_DIRNAME / "chunks.jsonl"
     assert result.is_file()
     deprecation = [w for w in caught if issubclass(w.category, DeprecationWarning)]
     assert deprecation == [], "dart_chunks fall-through must not warn"
@@ -203,8 +203,8 @@ def test_path_prefers_imscc_when_both_have_file(tmp_path: Path) -> None:
     course_dir = tmp_path / "course-both-files"
     (course_dir / IMSCC_CHUNKS_DIRNAME).mkdir(parents=True)
     (course_dir / IMSCC_CHUNKS_DIRNAME / "chunks.jsonl").write_text("{}\n")
-    (course_dir / DART_CHUNKS_DIRNAME).mkdir(parents=True)
-    (course_dir / DART_CHUNKS_DIRNAME / "chunks.jsonl").write_text("{}\n")
+    (course_dir / LEGACY_CHUNKS_DIRNAME).mkdir(parents=True)
+    (course_dir / LEGACY_CHUNKS_DIRNAME / "chunks.jsonl").write_text("{}\n")
 
     result = resolve_imscc_chunks_path(course_dir, "chunks.jsonl")
     assert result == course_dir / IMSCC_CHUNKS_DIRNAME / "chunks.jsonl"
@@ -235,13 +235,13 @@ def test_dir_mode_slots_dart_between_canonical_and_legacy(tmp_path: Path) -> Non
     deprecation), confirming dart_chunks slots between canonical and
     legacy in the bare-directory resolution chain too."""
     course_dir = tmp_path / "course-dartdir"
-    (course_dir / DART_CHUNKS_DIRNAME).mkdir(parents=True)
+    (course_dir / LEGACY_CHUNKS_DIRNAME).mkdir(parents=True)
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         result = resolve_imscc_chunks_dir(course_dir)
 
-    assert result == course_dir / DART_CHUNKS_DIRNAME
+    assert result == course_dir / LEGACY_CHUNKS_DIRNAME
     deprecation = [w for w in caught if issubclass(w.category, DeprecationWarning)]
     assert deprecation == []
 

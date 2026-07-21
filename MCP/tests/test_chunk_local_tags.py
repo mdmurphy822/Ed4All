@@ -1,4 +1,4 @@
-"""``_run_dart_chunking`` chunk-local concept_tags (FIX #3c).
+"""SemantiK chunking chunk-local concept_tags (FIX #3c).
 
 Page-level ``concept_tags`` were a known defect: every chunk on a page
 tagged from the SAME page-level ``item["key_concepts"]`` set, so two
@@ -34,8 +34,8 @@ from MCP.tools.pipeline_tools import _build_tool_registry  # noqa: E402
 
 
 @pytest.fixture
-def dart_chunking_tool(monkeypatch, tmp_path):
-    """Return the run_dart_chunking registry entry rooted at tmp_path."""
+def chunking_tool(monkeypatch, tmp_path):
+    """Return the chunking registry entry rooted at tmp_path."""
     libv2_root = tmp_path / "LibV2"
     libv2_root.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("ED4ALL_LIBV2_ROOT", str(libv2_root))
@@ -136,7 +136,7 @@ def _two_distinct_chunks(chunks):
     return sec_a, sec_b
 
 
-def test_flag_off_page_level_concept_leaks(dart_chunking_tool, tmp_path, monkeypatch):
+def test_flag_off_page_level_concept_leaks(chunking_tool, tmp_path, monkeypatch):
     """OFF (legacy): a page-level key concept tags a chunk lacking it.
 
     ``cognitive load`` is a page-level bold term harvested into
@@ -149,7 +149,7 @@ def test_flag_off_page_level_concept_leaks(dart_chunking_tool, tmp_path, monkeyp
     staging = tmp_path / "staging"
     _write_page(staging)
 
-    chunks = _emit_chunks(dart_chunking_tool, "OFF_LEAK", staging)
+    chunks = _emit_chunks(chunking_tool, "OFF_LEAK", staging)
     sec_a, sec_b = _two_distinct_chunks(chunks)
     assert sec_a is not None and sec_b is not None, (
         f"expected a section-A and a section-B chunk; got "
@@ -168,7 +168,7 @@ def test_flag_off_page_level_concept_leaks(dart_chunking_tool, tmp_path, monkeyp
     )
 
 
-def test_flag_on_chunk_tags_are_local(dart_chunking_tool, tmp_path, monkeypatch):
+def test_flag_on_chunk_tags_are_local(chunking_tool, tmp_path, monkeypatch):
     """ON: same-page chunks tag from their OWN text → tags diverge.
 
     The page-level ``cognitive load`` key concept no longer leaks onto
@@ -179,7 +179,7 @@ def test_flag_on_chunk_tags_are_local(dart_chunking_tool, tmp_path, monkeypatch)
     staging = tmp_path / "staging"
     _write_page(staging)
 
-    chunks = _emit_chunks(dart_chunking_tool, "ON_LOCAL", staging)
+    chunks = _emit_chunks(chunking_tool, "ON_LOCAL", staging)
     sec_a, sec_b = _two_distinct_chunks(chunks)
     assert sec_a is not None and sec_b is not None
 
@@ -211,17 +211,17 @@ def test_flag_on_chunk_tags_are_local(dart_chunking_tool, tmp_path, monkeypatch)
     )
 
 
-def test_flag_on_deterministic(dart_chunking_tool, tmp_path, monkeypatch):
+def test_flag_on_deterministic(chunking_tool, tmp_path, monkeypatch):
     """ON: same input → same tags across two independent runs."""
     monkeypatch.setenv("TRAINFORGE_CHUNK_LOCAL_TAGS", "true")
 
     staging1 = tmp_path / "s1"
     _write_page(staging1)
-    chunks1 = _emit_chunks(dart_chunking_tool, "DET_ONE", staging1)
+    chunks1 = _emit_chunks(chunking_tool, "DET_ONE", staging1)
 
     staging2 = tmp_path / "s2"
     _write_page(staging2)
-    chunks2 = _emit_chunks(dart_chunking_tool, "DET_TWO", staging2)
+    chunks2 = _emit_chunks(chunking_tool, "DET_TWO", staging2)
 
     tags1 = [c.get("concept_tags") for c in chunks1]
     tags2 = [c.get("concept_tags") for c in chunks2]
@@ -230,7 +230,7 @@ def test_flag_on_deterministic(dart_chunking_tool, tmp_path, monkeypatch):
     )
 
 
-def test_flag_off_byte_identical_to_legacy(dart_chunking_tool, tmp_path, monkeypatch):
+def test_flag_off_byte_identical_to_legacy(chunking_tool, tmp_path, monkeypatch):
     """OFF: emitted tags match the legacy unfiltered page-level extractor.
 
     Pins byte-stability: with the flag OFF, ``_create_chunk`` must route
@@ -244,7 +244,7 @@ def test_flag_off_byte_identical_to_legacy(dart_chunking_tool, tmp_path, monkeyp
     staging = tmp_path / "staging"
     _write_page(staging)
 
-    chunks = _emit_chunks(dart_chunking_tool, "OFF_BYTES", staging)
+    chunks = _emit_chunks(chunking_tool, "OFF_BYTES", staging)
 
     # Reconstruct the page-level item the chunker passed to _create_chunk:
     # the parser's whole-page key_concepts feed every chunk under legacy.
@@ -338,7 +338,7 @@ def _extract_section_chunks(chunks):
 
 
 def test_flag_on_extracts_chunk_local_domain_tags(
-    dart_chunking_tool, tmp_path, monkeypatch
+    chunking_tool, tmp_path, monkeypatch
 ):
     """ON: a content chunk gets tags EXTRACTED from its own text.
 
@@ -352,7 +352,7 @@ def test_flag_on_extracts_chunk_local_domain_tags(
     staging = tmp_path / "staging"
     _write_extract_page(staging)
 
-    chunks = _emit_chunks(dart_chunking_tool, "ON_EXTRACT", staging)
+    chunks = _emit_chunks(chunking_tool, "ON_EXTRACT", staging)
     sec_a, sec_b = _extract_section_chunks(chunks)
     assert sec_a is not None and sec_b is not None, (
         f"expected section-A and section-B chunks; got "
@@ -383,7 +383,7 @@ def test_flag_on_extracts_chunk_local_domain_tags(
 
 
 def test_flag_on_zero_tag_chunk_now_tagged(
-    dart_chunking_tool, tmp_path, monkeypatch
+    chunking_tool, tmp_path, monkeypatch
 ):
     """ON vs filter-only: a chunk that filtering leaves tag-thin gains
     ≥1 EXTRACTED tag from its own text.
@@ -400,7 +400,7 @@ def test_flag_on_zero_tag_chunk_now_tagged(
     staging = tmp_path / "staging"
     _write_extract_page(staging)
 
-    chunks = _emit_chunks(dart_chunking_tool, "ON_GROW", staging)
+    chunks = _emit_chunks(chunking_tool, "ON_GROW", staging)
     _, sec_b = _extract_section_chunks(chunks)
     assert sec_b is not None
 
@@ -431,7 +431,7 @@ def test_flag_on_zero_tag_chunk_now_tagged(
 
 
 def test_flag_on_extracted_tags_are_clean(
-    dart_chunking_tool, tmp_path, monkeypatch
+    chunking_tool, tmp_path, monkeypatch
 ):
     """ON: extracted tags carry no sentence fragments and no scaffolding
     noise (the canonical quality gates are applied to extractions)."""
@@ -442,7 +442,7 @@ def test_flag_on_extracted_tags_are_clean(
     staging = tmp_path / "staging"
     _write_extract_page(staging)
 
-    chunks = _emit_chunks(dart_chunking_tool, "ON_CLEAN", staging)
+    chunks = _emit_chunks(chunking_tool, "ON_CLEAN", staging)
 
     for chunk in chunks:
         tags = chunk["concept_tags"]
@@ -464,18 +464,18 @@ def test_flag_on_extracted_tags_are_clean(
 
 
 def test_flag_on_extract_deterministic(
-    dart_chunking_tool, tmp_path, monkeypatch
+    chunking_tool, tmp_path, monkeypatch
 ):
     """ON: the extract path is byte-deterministic across two runs."""
     monkeypatch.setenv("TRAINFORGE_CHUNK_LOCAL_TAGS", "true")
 
     staging1 = tmp_path / "e1"
     _write_extract_page(staging1)
-    chunks1 = _emit_chunks(dart_chunking_tool, "EXT_DET_ONE", staging1)
+    chunks1 = _emit_chunks(chunking_tool, "EXT_DET_ONE", staging1)
 
     staging2 = tmp_path / "e2"
     _write_extract_page(staging2)
-    chunks2 = _emit_chunks(dart_chunking_tool, "EXT_DET_TWO", staging2)
+    chunks2 = _emit_chunks(chunking_tool, "EXT_DET_TWO", staging2)
 
     tags1 = [c.get("concept_tags") for c in chunks1]
     tags2 = [c.get("concept_tags") for c in chunks2]

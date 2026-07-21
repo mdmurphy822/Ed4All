@@ -14,7 +14,7 @@ Gold schema fields consumed (introspected from a real ``chunk_v4`` file, not
 guessed):
   * ``text``                              -- reference text of the chunk
   * ``source.item_path``                  -- ``...chNN...`` -> chapter number
-  * ``source.source_references[].sourceId`` -- ``dart:...#<section-slug>``; the
+  * ``source.source_references[].sourceId`` -- ``semantik:...#<section-slug>``; the
         fragment after ``#`` is the canonical SECTION key (e.g.
         ``1-1-introduction-to-whole-numbers``). ~7-15 sections/chapter.
   * ``source.section_heading``            -- human sub-heading (fallback only)

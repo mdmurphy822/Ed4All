@@ -37,6 +37,7 @@ def _topic(heading: str, paragraph: str, chapter_id: str) -> dict:
         "source_file": "synth",
         "word_count": len(paragraph.split()),
         "chapter_id": chapter_id,
+        # ``dart_block_ids`` is the topic dict's live source-block field.
         "dart_block_ids": [],
         "extracted_lo_statements": [],
         "extracted_misconceptions": [],

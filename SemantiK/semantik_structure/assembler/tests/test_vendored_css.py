@@ -3,9 +3,9 @@
 These tests pin the data-only vendoring contract: the two new SemantiK-owned
 modules import, the CSS is the UNION of both gold vocabularies plus the two
 net-new rules, ``GOLD_DOC_OPEN`` keeps ``shell.DOC_OPEN``'s ``.format()``
-slot contract, neither module references the retired-DART worktree, and —
-because nothing consumes them yet — ``assemble_document`` output is
-unchanged. CPU-only, no model load.
+slot contract, neither module reaches into a worktree checkout or a
+cross-tree templates package, and — because nothing consumes them yet —
+``assemble_document`` output is unchanged. CPU-only, no model load.
 """
 
 from __future__ import annotations
@@ -163,9 +163,10 @@ def test_gold_doc_open_matches_doc_open_format_contract():
     assert field_names == {"lang", "title"}, f"unexpected format fields {field_names}"
 
 
-def test_no_dart_worktree_import():
-    # Self-containment: neither vendored module references the retired-DART
-    # worktree or a cross-tree DART.templates import.
+def test_no_cross_tree_template_import():
+    # Self-containment: neither vendored module reaches into a worktree
+    # checkout or imports a cross-tree templates package — the gold CSS is
+    # vendored in-repo, not pulled from an external template tree.
     sources = {
         "wcag22_css.py": Path(
             inspect.getsourcefile(__import__("semantik_structure.assembler.wcag22_css", fromlist=["x"]))
@@ -175,8 +176,8 @@ def test_no_dart_worktree_import():
         ).read_text(encoding="utf-8"),
     }
     for name, src in sources.items():
-        assert ".claude/worktrees" not in src, f"{name} references the DART worktree"
-        assert "DART.templates" not in src, f"{name} imports DART.templates"
+        assert ".claude/worktrees" not in src, f"{name} references a worktree checkout"
+        assert ".templates" not in src, f"{name} imports a cross-tree templates package"
 
 
 def test_assembler_output_unchanged():

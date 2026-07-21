@@ -1,6 +1,6 @@
-"""Regression: per-chunk DART provenance is char-span-scoped, not all-document.
+"""Regression: per-chunk source provenance is char-span-scoped, not all-document.
 
-The historical chunker scoped DART ``data-dart-block-id`` provenance per
+The historical chunker scoped ``data-semantik-block-id`` provenance per
 section, then fell back to harvesting the WHOLE DOCUMENT's block list whenever
 a heading-derived HTML slice carried no attribute (the common leaf-paragraph
 layout). That gave most chunks of a multi-block page every block in the file,
@@ -33,7 +33,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from Trainforge.chunker import ChunkerContext, chunk_content  # noqa: E402
 from Trainforge.chunker.helpers import (  # noqa: E402
-    build_dart_block_offset_index,
+    build_semantik_block_offset_index,
     resolve_dart_refs_for_chunk,
 )
 
@@ -60,18 +60,18 @@ def _recording_ctx(records: List[Dict[str, Any]]) -> ChunkerContext:
 
 
 def _multi_block_item() -> Dict[str, Any]:
-    """A synthetic DART page: three distinct headed blocks on different pages.
+    """A synthetic SemantiK page: three distinct headed blocks on different pages.
 
-    Each block is a flat sibling ``<section data-dart-block-id=...>`` with an
-    ``<hN>`` heading inside, mirroring the real DART leaf layout where the
+    Each block is a flat sibling ``<section data-semantik-block-id=...>`` with an
+    ``<hN>`` heading inside, mirroring the real SemantiK leaf layout where the
     block attribute lives on the wrapper, not the heading. The blocks teach
     distinct prose so char-span resolution can tell them apart.
     """
     def _block(bid: str, pages: str, heading: str, body_words: List[str]) -> str:
         body = " ".join(body_words)
         return (
-            f'<section class="dart-section" data-dart-block-id="{bid}" '
-            f'data-dart-pages="{pages}" data-dart-block-role="paragraph">'
+            f'<section class="semantik-section" data-semantik-block-id="{bid}" '
+            f'data-semantik-pages="{pages}" data-semantik-block-role="paragraph">'
             f"<h2>{heading}</h2><p>{body}</p></section>"
         )
 
@@ -116,12 +116,12 @@ def _multi_block_item() -> Dict[str, Any]:
 
 def test_build_probe_index_orders_blocks_by_document_order() -> None:
     raw_html = (
-        '<section data-dart-block-id="a" data-dart-pages="1"><p>'
+        '<section data-semantik-block-id="a" data-semantik-pages="1"><p>'
         "Alpha distinct opening prose here for locating purposes.</p></section>"
-        '<section data-dart-block-id="b" data-dart-pages="2"><p>'
+        '<section data-semantik-block-id="b" data-semantik-pages="2"><p>'
         "Beta separate opening prose here for locating purposes.</p></section>"
     )
-    index = build_dart_block_offset_index(raw_html)
+    index = build_semantik_block_offset_index(raw_html)
     assert [ref["block_id"] for _, ref, _ in index] == ["a", "b"]
     # doc_order is monotonic (a before b).
     assert index[0][0] < index[1][0]
@@ -131,12 +131,12 @@ def test_build_probe_index_orders_blocks_by_document_order() -> None:
 
 def test_resolve_refs_selects_only_blocks_present_in_chunk_text() -> None:
     raw_html = (
-        '<section data-dart-block-id="a" data-dart-pages="1"><p>'
+        '<section data-semantik-block-id="a" data-semantik-pages="1"><p>'
         "Alpha distinct opening prose here for locating purposes.</p></section>"
-        '<section data-dart-block-id="b" data-dart-pages="2"><p>'
+        '<section data-semantik-block-id="b" data-semantik-pages="2"><p>'
         "Beta separate opening prose here for locating purposes.</p></section>"
     )
-    index = build_dart_block_offset_index(raw_html)
+    index = build_semantik_block_offset_index(raw_html)
     # Chunk text containing only block a's prose.
     only_a = "Alpha distinct opening prose here for locating purposes."
     # ``pages_kind`` rides through additively (kind-less fixture → "physical").
@@ -154,6 +154,23 @@ def test_resolve_refs_selects_only_blocks_present_in_chunk_text() -> None:
     # Empty text / empty index -> [].
     assert resolve_dart_refs_for_chunk(index, "") == []
     assert resolve_dart_refs_for_chunk([], only_a) == []
+
+
+def test_legacy_data_dart_block_offset_index_dual_read() -> None:
+    """Legacy-compat: the offset index + char-span resolver still read the
+    pre-purge ``data-dart-*`` block-attr spelling (dual-read)."""
+    raw_html = (
+        '<section data-dart-block-id="a" data-dart-pages="1"><p>'
+        "Alpha distinct opening prose here for locating purposes.</p></section>"
+        '<section data-dart-block-id="b" data-dart-pages="2"><p>'
+        "Beta separate opening prose here for locating purposes.</p></section>"
+    )
+    index = build_semantik_block_offset_index(raw_html)
+    assert [ref["block_id"] for _, ref, _ in index] == ["a", "b"]
+    only_a = "Alpha distinct opening prose here for locating purposes."
+    assert resolve_dart_refs_for_chunk(index, only_a) == [
+        {"block_id": "a", "pages": [1], "pages_kind": "physical"}
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -204,7 +221,7 @@ def test_no_match_emits_at_most_one_section_ref() -> None:
     still gets at most ONE enclosing-section reference, never the document list.
 
     Construct a doc whose first heading sits OUTSIDE any block wrapper (so its
-    section slice is the bare heading, carrying no data-dart-block-id), with a
+    section slice is the bare heading, carrying no data-semantik-block-id), with a
     single block wrapping the prose. The chunk for that heading must carry at
     most one ref.
     """
@@ -212,8 +229,8 @@ def test_no_match_emits_at_most_one_section_ref() -> None:
     raw_html = (
         "<html><body><main>"
         "<h2>Bare Heading Outside Block</h2>"
-        '<section class="dart-section" data-dart-block-id="only_block" '
-        f'data-dart-pages="3"><p>{body}</p></section>'
+        '<section class="semantik-section" data-semantik-block-id="only_block" '
+        f'data-semantik-pages="3"><p>{body}</p></section>'
         "</main></body></html>"
     )
     from Trainforge.parsers.html_content_parser import HTMLContentParser

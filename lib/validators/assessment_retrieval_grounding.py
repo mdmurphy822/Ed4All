@@ -570,7 +570,7 @@ class AssessmentRetrievalGroundingValidator:
             validator filters internally to
             ``block.block_type == "assessment_item"``.
         chunks_lookup: Dict[str, str]
-            Mapping of canonical sourceId (e.g. ``dart:slug#blk_0``)
+            Mapping of canonical sourceId (e.g. ``semantik:slug#blk_0``)
             to the chunk's plain-text body. Alternatively spelled
             ``source_chunks`` for symmetry with sibling validators.
         min_overlap_jaccard: Optional[float]

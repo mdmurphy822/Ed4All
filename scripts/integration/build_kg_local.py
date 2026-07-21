@@ -4,7 +4,7 @@
 Standalone, reproducible reconstruction of the production
 ``MCP/tools/pipeline_tools.py::_run_concept_extraction`` graph-build
 sequence, with NO live LLM dispatch. Builds the semantic concept graph
-for a course from its on-disk ``dart_chunks/chunks.jsonl`` plus an
+for a course from its on-disk ``semantik_chunks/chunks.jsonl`` plus an
 optional ``synthesized_objectives.json``, runs the edge-consensus
 aggregator and the KG-quality reporter, and prints the four KG-quality
 dimension scores (completeness / consistency / accuracy / coverage)
@@ -36,7 +36,7 @@ The build path mirrors ``_run_concept_extraction`` faithfully:
 
 Usage:
     python -m scripts.integration.build_kg_local \
-        --chunks LibV2/courses/<slug>/dart_chunks/chunks.jsonl \
+        --chunks LibV2/courses/<slug>/semantik_chunks/chunks.jsonl \
         --course-slug <slug> \
         --objectives LibV2/courses/<slug>/sources/objectives/synthesized_objectives.json \
         --out-dir /tmp/kg-verify
@@ -310,13 +310,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Deterministically build a course concept knowledge graph from "
-            "on-disk dart_chunks + synthesized objectives and run the "
+            "on-disk semantik_chunks + synthesized objectives and run the "
             "KG-quality reporter/validator (no live LLM)."
         )
     )
     parser.add_argument(
         "--chunks", required=True,
-        help="Path to dart_chunks/chunks.jsonl",
+        help="Path to semantik_chunks/chunks.jsonl",
     )
     parser.add_argument(
         "--course-slug", required=True,

@@ -733,7 +733,7 @@ def test_scorecard_unknown_arm_raises(libv2_course):
 def test_scorecard_critical_gold_issue_raises(libv2_course):
     """A tampered (sha-mismatched) gold set fails closed BEFORE any arm runs."""
     repo_root, slug, course_dir = libv2_course
-    chunks = course_dir / "dart_chunks" / "chunks.jsonl"
+    chunks = course_dir / "semantik_chunks" / "chunks.jsonl"
     chunks.write_text(chunks.read_text() + '\n{"id":"x","text":"tamper"}\n')
     with pytest.raises(RuntimeError) as exc:
         run_scorecard(

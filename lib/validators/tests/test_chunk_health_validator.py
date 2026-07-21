@@ -289,12 +289,69 @@ def test_poisoned_corpus_blocks(monkeypatch, tmp_path) -> None:
     assert result.passed is False
     assert result.action == "block"
     crit = _crit_codes(result)
-    # The MC3-shape defect classes all fire critical.
+    # The MC3-shape defect classes all fire critical. (S3 section explosion
+    # deliberately absent: this fixture's 18 sections/chapter is NOT a
+    # per-chapter explosion — S3 scales by chapters since the 2026-07-21
+    # whole-book fix; its own defect shape is covered by
+    # test_section_explosion_per_chapter below.)
     assert "CHUNK_HEALTH_CHAPTER_EXPLOSION" in crit
     assert "CHUNK_HEALTH_ARBITRARY_RESEGMENT" in crit
-    assert "CHUNK_HEALTH_SECTION_EXPLOSION" in crit
     assert "CHUNK_HEALTH_INSTRUCTIONAL_STARVED" in crit
     assert "CHUNK_HEALTH_EMPTY_CHUNKS" in crit
+
+
+def test_section_explosion_per_chapter(monkeypatch, tmp_path) -> None:
+    """True S3 shape: few REAL chapters, each shattered into ~60 sections."""
+    monkeypatch.setenv("ED4ALL_CHUNK_HEALTH_GATE", "1")
+    chunks = _write(tmp_path, "chunks.jsonl", _healthy_chunks(), jsonl=True)
+    structure = {
+        "source_files": ["book.html"],
+        "chapters": [
+            {
+                "id": f"ch{c + 1}",
+                "headingText": f"Chapter {c + 1}",
+                "source_file": "book.html",
+                "sections": [
+                    {"id": f"s{c}_{s}", "headingText": f"Frag {s + 1}"}
+                    for s in range(62)
+                ],
+            }
+            for c in range(4)
+        ],
+    }
+    ts = _write(tmp_path, "structure.json", structure)
+    result = ChunkHealthValidator().validate(
+        {"chunks_path": chunks, "textbook_structure_path": ts}
+    )
+    assert "CHUNK_HEALTH_SECTION_EXPLOSION" in _crit_codes(result)
+
+
+def test_whole_book_single_pdf_structure_passes_s3(monkeypatch, tmp_path) -> None:
+    """2026-07-21 canary regression: ONE source file with 19 real chapters of
+    ~4 sections each must NOT trip S3 (the old source-file scale basis did)."""
+    monkeypatch.setenv("ED4ALL_CHUNK_HEALTH_GATE", "1")
+    chunks = _write(tmp_path, "chunks.jsonl", _healthy_chunks(), jsonl=True)
+    structure = {
+        "source_files": ["whole_book.html"],
+        "chapters": [
+            {
+                "id": f"ch{c + 1}",
+                "headingText": f"Chapter {c + 1}",
+                "source_file": "whole_book.html",
+                "sections": [
+                    {"id": f"s{c}_{s}", "headingText": f"{c + 1}.{s + 1} Topic"}
+                    for s in range(4)
+                ],
+            }
+            for c in range(19)
+        ],
+    }
+    ts = _write(tmp_path, "structure.json", structure)
+    result = ChunkHealthValidator().validate(
+        {"chunks_path": chunks, "textbook_structure_path": ts}
+    )
+    codes = {i.code for i in result.issues}
+    assert "CHUNK_HEALTH_SECTION_EXPLOSION" not in codes
 
 
 def test_healthy_corpus_passes(monkeypatch, tmp_path) -> None:

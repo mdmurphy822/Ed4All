@@ -1,16 +1,16 @@
 """Source-PDF serving — the final hop of the B4 provenance chain.
 
-A cited answer traces chunk → course page → DART source block → original PDF
+A cited answer traces chunk → course page → SemantiK source block → original PDF
 page. The first three hops already resolve (citation anchor + ``source_page`` /
 ``imscc_service``); this module serves the LAST hop: the archived raw PDF that a
-``dart:{slug}#{block_id}`` source block was synthesized from.
+``semantik:{slug}#{block_id}`` source block was synthesized from.
 
 Layout (set by ``MCP/tools/pipeline_tools.py::archive_to_libv2``): raw PDFs land
-under ``LibV2/courses/<slug>/source/pdf/<name>.pdf``. The conversion phase
-(SemantiK; the legacy DART converter was retired) writes a
-``{stem}_synthesized.json`` sidecar carrying a ``source_pdf`` field that records
-which PDF a staged HTML document (and therefore its ``dart:{slug}`` sourceId
-half) came from; those sidecars are archived alongside the course, so this module
+under ``LibV2/courses/<slug>/source/pdf/<name>.pdf``. The SemantiK conversion
+phase writes a ``{stem}_synthesized.json`` sidecar carrying a ``source_pdf``
+field that records which PDF a staged HTML document (and therefore its
+``semantik:{slug}`` sourceId half) came from; those sidecars are archived
+alongside the course, so this module
 resolves a sourceId-derived ``file`` hint to the real archived PDF basename via
 them when present.
 
@@ -25,7 +25,7 @@ Security posture (mirrors ``source_page`` / ``imscc_service``):
 
 Single-page extraction: when ``pypdf`` or ``PyMuPDF`` (``fitz``) is importable we
 extract just the requested page and serve it as a one-page ``application/pdf``.
-When neither is available (the ``[dart]`` PDF extras aren't installed) we fall
+When neither is available (the optional PDF libraries aren't installed) we fall
 back to serving the WHOLE PDF and let the browser deep-link to ``#page=N`` via
 the response — the acceptable degradation documented in the B4 brief. Either way
 the response is ``application/pdf``; the caller opens it in a new tab.
@@ -117,7 +117,7 @@ def _list_pdfs(pdf_dir: Path) -> List[Path]:
 
 
 def _slugify_pdf_name(name: str) -> str:
-    """Gentle slug of a PDF basename, mirroring DART's ``dart:{slug}`` rule.
+    """Gentle slug of a PDF basename, mirroring the canonical ``semantik:{slug}`` rule.
 
     ``path.stem.lower().replace(" ", "-")`` — underscores/hyphens/digits pass
     through unchanged so a sourceId slug can be matched against a PDF filename.
@@ -126,7 +126,7 @@ def _slugify_pdf_name(name: str) -> str:
 
 
 def _sidecar_source_pdf_map(course_dir: Path) -> Dict[str, str]:
-    """Map a DART document slug → archived PDF basename via archived sidecars.
+    """Map a source document slug → archived PDF basename via archived sidecars.
 
     Walks ``*_synthesized.json`` sidecars (archived under the course's source
     dirs) and keys their ``source_pdf`` basename by the sidecar's own ``slug``
@@ -165,7 +165,7 @@ def _resolve_pdf(
     """Resolve a ``file`` hint to an archived PDF path (whitelisted).
 
     ``file_hint`` is the basename or sourceId-slug carried by the citation's
-    ``source_block`` (``dart:{slug}#...`` → ``{slug}``). Resolution order:
+    ``source_block`` (``semantik:{slug}#...`` → ``{slug}``). Resolution order:
 
     1. exact basename match against the dir listing (``foo.pdf`` or ``foo``);
     2. the sidecar ``source_pdf`` map (sourceId slug → archived PDF basename);
@@ -233,8 +233,8 @@ def _resolve_pdf(
 def _extract_single_page(pdf_bytes: bytes, page: int) -> Optional[bytes]:
     """Return a one-page PDF for 1-indexed ``page``; ``None`` if no PDF lib.
 
-    Tries ``pypdf`` first (the lightest), then ``PyMuPDF`` (``fitz``, the
-    declared ``[dart]`` extra). A page index out of range raises
+    Tries ``pypdf`` first (the lightest), then ``PyMuPDF`` (``fitz``, an
+    optional PDF library). A page index out of range raises
     ``SourcePdfError`` (the citation pointed past the document). ``None`` signals
     the caller to fall back to serving the whole PDF.
     """

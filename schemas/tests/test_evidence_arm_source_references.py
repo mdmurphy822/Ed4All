@@ -94,7 +94,7 @@ def _base_graph(edges: List[Dict[str, Any]] = None) -> Dict[str, Any]:
 
 def _valid_ref(**overrides: Any) -> Dict[str, Any]:
     base = {
-        "sourceId": "dart:science_of_learning#s3_c0",
+        "sourceId": "semantik:science_of_learning#s3_c0",
         "role": "primary",
     }
     base.update(overrides)
@@ -383,9 +383,9 @@ def test_multiple_refs_per_arm_validates():
     """A chunk that merged multiple sections carries multiple refs."""
     validator = _build_validator()
     refs = [
-        _valid_ref(sourceId="dart:slug#s1_c0", role="primary"),
-        _valid_ref(sourceId="dart:slug#s2_c0", role="contributing"),
-        _valid_ref(sourceId="dart:slug#s3_c0", role="corroborating"),
+        _valid_ref(sourceId="semantik:slug#s1_c0", role="primary"),
+        _valid_ref(sourceId="semantik:slug#s2_c0", role="contributing"),
+        _valid_ref(sourceId="semantik:slug#s3_c0", role="corroborating"),
     ]
     edge = _is_a_edge({
         "chunk_id": "c1",
@@ -455,7 +455,7 @@ def test_each_arm_rejects_ref_missing_source_id(name, builder, base):
 def test_each_arm_rejects_ref_missing_role(name, builder, base):
     validator = _build_validator()
     ev = dict(base)
-    ev["source_references"] = [{"sourceId": "dart:slug#s0_c0"}]
+    ev["source_references"] = [{"sourceId": "semantik:slug#s0_c0"}]
     errors = list(validator.iter_errors(_base_graph([builder(ev)])))
     assert errors, f"{name} should reject ref missing role"
 
@@ -473,7 +473,7 @@ def test_each_arm_rejects_scalar_source_references(name, builder, base):
 def test_each_arm_rejects_bad_role(name, builder, base):
     validator = _build_validator()
     ev = dict(base)
-    ev["source_references"] = [{"sourceId": "dart:slug#s0_c0", "role": "SUPPORTING"}]
+    ev["source_references"] = [{"sourceId": "semantik:slug#s0_c0", "role": "SUPPORTING"}]
     errors = list(validator.iter_errors(_base_graph([builder(ev)])))
     assert errors, f"{name} should reject bad role"
 
@@ -482,7 +482,7 @@ def test_each_arm_rejects_bad_role(name, builder, base):
 def test_each_arm_rejects_malformed_source_id(name, builder, base):
     validator = _build_validator()
     ev = dict(base)
-    ev["source_references"] = [{"sourceId": "no-dart-prefix", "role": "primary"}]
+    ev["source_references"] = [{"sourceId": "no-semantik-prefix", "role": "primary"}]
     errors = list(validator.iter_errors(_base_graph([builder(ev)])))
     assert errors, f"{name} should reject malformed sourceId"
 

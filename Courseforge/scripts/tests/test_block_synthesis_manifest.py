@@ -52,8 +52,8 @@ def _rewrite_touch() -> Touch:
 def _concept_block(**overrides) -> Block:
     content = {
         "source_refs": [
-            {"sourceId": "dart:demo#b-12", "role": "primary"},
-            {"sourceId": "dart:demo#b-13", "role": "contributing"},
+            {"sourceId": "semantik:demo#b-12", "role": "primary"},
+            {"sourceId": "semantik:demo#b-13", "role": "contributing"},
         ],
         "key_claims": [
             {
@@ -91,12 +91,12 @@ def _resolver(mapping):
 def test_t1_projection_completeness():
     block = _concept_block()
     resolver = _resolver({
-        "dart:demo#b-12": {
+        "semantik:demo#b-12": {
             "id": "demo_chunk_00012",
             "char_span": [0, 1180],
             "html_xpath": "/html/body/section[2]",
         },
-        "dart:demo#b-13": {"id": "demo_chunk_00013"},
+        "semantik:demo#b-13": {"id": "demo_chunk_00013"},
     })
     manifest = block.to_synthesis_manifest(resolver)
 
@@ -159,8 +159,8 @@ def test_t3_single_pass_template_path():
     block = _concept_block(touched_by=(template_touch,))
     manifest = block.to_synthesis_manifest(
         _resolver({
-            "dart:demo#b-12": "demo_chunk_00012",
-            "dart:demo#b-13": "demo_chunk_00013",
+            "semantik:demo#b-12": "demo_chunk_00012",
+            "semantik:demo#b-13": "demo_chunk_00013",
         })
     )
     _validate(manifest)
@@ -191,12 +191,12 @@ def test_t4_jsonld_pointer(monkeypatch):
 def test_t5_char_spans_lift():
     block = _concept_block()
     resolver = _resolver({
-        "dart:demo#b-12": {
+        "semantik:demo#b-12": {
             "id": "demo_chunk_00012",
             "char_span": [40, 1180],
             "html_xpath": "/html/body/section[2]",
         },
-        "dart:demo#b-13": {"id": "demo_chunk_00013"},
+        "semantik:demo#b-13": {"id": "demo_chunk_00013"},
     })
     manifest = block.to_synthesis_manifest(resolver)
     _validate(manifest)
@@ -216,14 +216,14 @@ def test_t5_char_spans_lift():
 def test_t6_unresolved_id_preserved_in_refs_only():
     block = _concept_block()
     resolver = _resolver({
-        "dart:demo#b-12": {"id": "demo_chunk_00012"},
-        # dart:demo#b-13 returns None (unresolved)
+        "semantik:demo#b-12": {"id": "demo_chunk_00012"},
+        # semantik:demo#b-13 returns None (unresolved)
     })
     manifest = block.to_synthesis_manifest(resolver)
     _validate(manifest)
     # The unresolved sourceId is still present verbatim in source_refs[].
     ref_ids = {r["sourceId"] for r in manifest["source_refs"]}
-    assert "dart:demo#b-13" in ref_ids
+    assert "semantik:demo#b-13" in ref_ids
     # but it does NOT appear in source_chunk_ids (it didn't resolve).
-    assert "dart:demo#b-13" not in manifest["source_chunk_ids"]
+    assert "semantik:demo#b-13" not in manifest["source_chunk_ids"]
     assert "demo_chunk_00012" in manifest["source_chunk_ids"]

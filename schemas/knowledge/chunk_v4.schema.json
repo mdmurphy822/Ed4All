@@ -110,7 +110,7 @@
     },
     "source_block_role": {
       "type": "string",
-      "description": "SemantiK migration §4 (chunk-accompanying data): the council/Qwen role label of the source SemantiK region this chunk derives from (e.g. 'body' / 'figure' / 'heading'). Harvested from the data-semantik-block-role HTML attribute (Trainforge/chunker/helpers.py::_DATA_DART_BLOCK_ROLE_RE) on the same opening tag as data-semantik-block-id. Optional; absent on legacy / non-SemantiK corpora whose HTML carries no data-semantik-block-role attribute — those chunks validate unchanged (mirrors observed_bloom_level)."
+      "description": "The council/Qwen role label of the source SemantiK region this chunk derives from (e.g. 'body' / 'figure' / 'heading'). Harvested from the data-semantik-block-role HTML attribute on the same opening tag as data-semantik-block-id. Optional; absent on non-SemantiK corpora whose HTML carries no data-semantik-block-role attribute — those chunks validate unchanged (mirrors observed_bloom_level)."
     },
     "source_block_confidence": {
       "type": "number",
@@ -239,7 +239,7 @@
       "description": "Worker M1 (VERSIONING.md §4.4a) diagnostic — records the source path for each enrichment field. Removed by a later fix PR; schema permits its presence to keep diagnostic runs valid."
     },
     "key_claims": {
-      "description": "GPT Feedback v2 Wave 5 / W5.C — per-block per-claim attribution carried from Courseforge outline-tier emit (Wave 1.5 / W1.5.A migration contract). One entry per factual claim the originating block declared, with optional source_chunk_ids[] mapping each claim to specific DART/Courseforge chunk-ID(s). Legacy List[str] shape preserved as oneOf back-compat (Wave 1.5 W1.5.A migration contract — same shape declared at Courseforge/generators/_outline_provider.py per-block-type schema). Optional; absent on chunks built from sections without an emitting block (legacy / pre-Wave-1.5 corpora). Carried through merge_small_sections via concatenation (per-claim entries are independent).",
+      "description": "GPT Feedback v2 Wave 5 / W5.C — per-block per-claim attribution carried from Courseforge outline-tier emit (Wave 1.5 / W1.5.A migration contract). One entry per factual claim the originating block declared, with optional source_chunk_ids[] mapping each claim to specific SemantiK/Courseforge chunk-ID(s). Legacy List[str] shape preserved as oneOf back-compat (Wave 1.5 W1.5.A migration contract — same shape declared at Courseforge/generators/_outline_provider.py per-block-type schema). Optional; absent on chunks built from sections without an emitting block (legacy / pre-Wave-1.5 corpora). Carried through merge_small_sections via concatenation (per-claim entries are independent).",
       "oneOf": [
         {
           "type": "array",
@@ -283,7 +283,7 @@
       "items": {"$ref": "https://ed4all.dev/ns/courseforge/v1/CourseModule.schema.json#/$defs/ObjectiveAlignment"}
     },
     "learning_outcome_source_refs": {
-      "description": "GPT Feedback v2 Wave 5 W5.G — per-chunk reverse map from learning_outcome_refs[] to the DART/Courseforge chunk-IDs that source each LO. Built from item.courseforge_metadata.learningObjectives[].sourceReferences[] at chunk-emit time. Optional; absent on chunks where the page-level JSON-LD doesn't declare sourceReferences for any of the chunk's claimed LOs (legacy / pre-Wave-1.6 corpora). Keys preserve emit case (e.g. 'TO-05' not 'to-05').",
+      "description": "GPT Feedback v2 Wave 5 W5.G — per-chunk reverse map from learning_outcome_refs[] to the SemantiK/Courseforge chunk-IDs that source each LO. Built from item.courseforge_metadata.learningObjectives[].sourceReferences[] at chunk-emit time. Optional; absent on chunks where the page-level JSON-LD doesn't declare sourceReferences for any of the chunk's claimed LOs (legacy / pre-Wave-1.6 corpora). Keys preserve emit case (e.g. 'TO-05' not 'to-05').",
       "type": "object",
       "additionalProperties": {
         "type": "array",
@@ -303,7 +303,7 @@
       "type": "array",
       "items": { "type": "integer", "minimum": 1 },
       "minItems": 1,
-      "description": "Task #26: sorted, deduped union of source page numbers (data-semantik-pages / data-dart-pages block attrs) across the DART/SemantiK blocks composing this chunk. Emitted top-level (NOT inside source, whose $defs.Source is additionalProperties:false) by MCP/tools/pipeline_tools.py::_run_dart_chunking via Trainforge.chunker.union_source_pages. Omitted when no composing block carries a page attr (legacy corpora → byte-identical). For retrieval-citation display; the per-block pages remain on source.source_references[].pages. Derived from the RAW harvested source refs, not the minted source_references[] — so a chunk whose block_id failed sourceId minting can carry source_pages while source.source_references is absent."
+      "description": "Task #26: sorted, deduped union of source page numbers (data-semantik-pages block attrs) across the SemantiK blocks composing this chunk. Emitted top-level (NOT inside source, whose $defs.Source is additionalProperties:false) by MCP/tools/pipeline_tools.py::_run_semantik_chunking via Trainforge.chunker.union_source_pages. Omitted when no composing block carries a page attr (legacy corpora → byte-identical). For retrieval-citation display; the per-block pages remain on source.source_references[].pages. Derived from the RAW harvested source refs, not the minted source_references[] — so a chunk whose block_id failed sourceId minting can carry source_pages while source.source_references is absent."
     }
   },
   "$defs": {
@@ -311,7 +311,7 @@
       "type": "object",
       "required": ["course_id", "module_id", "lesson_id"],
       "additionalProperties": false,
-      "description": "Chunk provenance block. Per REC-CTR-01 course_id/module_id/lesson_id are the structural core and strictly required; additionalProperties=false prevents silent drift. Audit-trail fields (html_xpath, char_span, item_path) support the Section 508 / ADA Title II round-trip contract documented at docs/compliance/audit-trail.md. Wave 10 adds optional source_references[] threading DART/Courseforge provenance end-to-end; see schemas/knowledge/source_reference.schema.json for the canonical shape.",
+      "description": "Chunk provenance block. Per REC-CTR-01 course_id/module_id/lesson_id are the structural core and strictly required; additionalProperties=false prevents silent drift. Audit-trail fields (html_xpath, char_span, item_path) support the Section 508 / ADA Title II round-trip contract documented at docs/compliance/audit-trail.md. Wave 10 adds optional source_references[] threading SemantiK/Courseforge provenance end-to-end; see schemas/knowledge/source_reference.schema.json for the canonical shape.",
       "properties": {
         "course_id": {
           "type": "string",
@@ -363,12 +363,12 @@
         "source_document_sha256": {
           "type": "string",
           "pattern": "^[a-f0-9]{64}$",
-          "description": "GPT Feedback v2 (May 12 / item 3): SHA-256 of the upstream source document (the DART HTML aggregate or the IMSCC zip) the chunk was produced from. For DART-emitted chunks, value matches the sidecar manifest's source_dart_html_sha256; for IMSCC-emitted chunks, matches source_imscc_sha256. Same value across every chunk from the same chunking run — provides a byte-stable join key from chunk → source-document without a sidecar lookup. Optional: legacy chunks (pre-May-2026) lack this field and continue to validate. Threaded forward into concept-graph and LibV2 manifest lineage fields per `plans/gptfeedback-may12-item3-version-lineage-2026-05.md`."
+          "description": "GPT Feedback v2 (May 12 / item 3): SHA-256 of the upstream source document (the SemantiK HTML aggregate or the IMSCC zip) the chunk was produced from. For SemantiK-emitted chunks, value matches the sidecar manifest's source_semantik_html_sha256; for IMSCC-emitted chunks, matches source_imscc_sha256. Same value across every chunk from the same chunking run — provides a byte-stable join key from chunk → source-document without a sidecar lookup. Optional: legacy chunks (pre-May-2026) lack this field and continue to validate. Threaded forward into concept-graph and LibV2 manifest lineage fields per `plans/gptfeedback-may12-item3-version-lineage-2026-05.md`."
         },
         "source_references": {
           "type": "array",
           "items": { "$ref": "https://ed4all.dev/schemas/knowledge/source_reference.schema.json" },
-          "description": "Wave 10: optional array of DART/Courseforge source references threaded from Courseforge JSON-LD sourceReferences[] and data-cf-source-ids HTML attributes. Always an array because _merge_small_sections may collapse 2+ sections into one chunk, each potentially carrying its own refs. Absence = 'unknown' (pre-Wave-9 corpora) — never an error. Populated by process_course.py::_create_chunk; unioned with role-precedence (primary > contributing > corroborating) when sections merge."
+          "description": "Wave 10: optional array of SemantiK/Courseforge source references threaded from Courseforge JSON-LD sourceReferences[] and data-cf-source-ids HTML attributes. Always an array because _merge_small_sections may collapse 2+ sections into one chunk, each potentially carrying its own refs. Absence = 'unknown' (pre-Wave-9 corpora) — never an error. Populated by process_course.py::_create_chunk; unioned with role-precedence (primary > contributing > corroborating) when sections merge."
         }
       }
     },

@@ -20,7 +20,7 @@ paying for another nondeterministic course-planner dispatch.
 * **B annotate / drop** — each CO gets a ``vacuous`` flag from the shared
   content-residual floor (``objective_specificity._content_residual``); with
   ``drop_vacuous`` the V1 hard-fails are removed (keep-≥1 guard).
-* **A re-derivation** — COs are anchored to their DART module by cited-chunk
+* **A re-derivation** — COs are anchored to their SemantiK module by cited-chunk
   plurality (``chapter_anchor.assign_cos_to_modules``); one book-ordered terminal
   objective per module with a DETERMINISTIC module-titled statement (the 7B
   author is never called). TO ids are re-minted in book order; ``terminal_id`` is
@@ -381,7 +381,7 @@ def _derive_terminals_deterministic(
     capture: Optional[Any],
     run_id: Optional[str],
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    """Re-derive book-ordered terminal objectives, one per DART module.
+    """Re-derive book-ordered terminal objectives, one per SemantiK module.
 
     Assigns every CO to its module by cited-chunk plurality
     (``chapter_anchor.assign_cos_to_modules``), then authors one DETERMINISTIC
@@ -455,7 +455,7 @@ def _derive_terminals_deterministic(
             ),
             rationale=(
                 "Defect-A deterministic TO re-derivation (no 7B author): "
-                f"anchored {len(cos)} CO(s) to {report['modules']} DART "
+                f"anchored {len(cos)} CO(s) to {report['modules']} SemantiK "
                 f"module(s) by cited-chunk plurality (coverage="
                 f"{result.co_coverage:.3f}, {result.ties} tie(s), "
                 f"{result.multi_module_cos} multi-module, "

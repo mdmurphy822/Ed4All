@@ -53,11 +53,11 @@ def test_content_sections_from_blocks_carries_key_claims():
             "keyClaims": [
                 {
                     "claim": "X is Y",
-                    "source_chunk_ids": ["dart:chunk_A"],
+                    "source_chunk_ids": ["semantik:chunk_A"],
                 },
                 {
                     "claim": "Y implies Z",
-                    "source_chunk_ids": ["dart:chunk_A", "dart:chunk_B"],
+                    "source_chunk_ids": ["semantik:chunk_A", "semantik:chunk_B"],
                 },
             ],
         }
@@ -69,10 +69,10 @@ def test_content_sections_from_blocks_carries_key_claims():
     assert len(section.key_claims) == 2
     first = section.key_claims[0]
     assert first["claim"] == "X is Y"
-    assert first["source_chunk_ids"] == ["dart:chunk_A"]
+    assert first["source_chunk_ids"] == ["semantik:chunk_A"]
     second = section.key_claims[1]
     assert second["claim"] == "Y implies Z"
-    assert second["source_chunk_ids"] == ["dart:chunk_A", "dart:chunk_B"]
+    assert second["source_chunk_ids"] == ["semantik:chunk_A", "semantik:chunk_B"]
 
 
 def test_content_sections_from_blocks_filters_non_dict_key_claims():
@@ -86,7 +86,7 @@ def test_content_sections_from_blocks_filters_non_dict_key_claims():
             "blockId": "page_a#explanation_intro_0",
             "blockType": "explanation",
             "keyClaims": [
-                {"claim": "valid", "source_chunk_ids": ["dart:chunk_A"]},
+                {"claim": "valid", "source_chunk_ids": ["semantik:chunk_A"]},
                 "string-not-dict",
                 42,
                 None,
@@ -243,7 +243,7 @@ def test_content_sections_from_blocks_carries_both_audit_fields():
             "blockId": "page_combined#explanation_intro_0",
             "blockType": "explanation",
             "keyClaims": [
-                {"claim": "Foo", "source_chunk_ids": ["dart:chunk_X"]},
+                {"claim": "Foo", "source_chunk_ids": ["semantik:chunk_X"]},
             ],
             "objectiveAlignment": [
                 {

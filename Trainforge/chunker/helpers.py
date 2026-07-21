@@ -32,12 +32,12 @@ from Trainforge.parsers.html_content_parser import HTMLTextExtractor
 from lib.ontology.learning_objectives import LO_ID_PATTERN
 
 __all__ = [
-    "build_dart_block_offset_index",
+    "build_semantik_block_offset_index",
     "extract_learning_outcome_refs",
     "extract_plain_text",
     "extract_plain_text_with_curies",
     "extract_section_html",
-    "harvest_dart_source_refs",
+    "harvest_semantik_source_refs",
     "parse_dart_confidence_attr",
     "parse_dart_page_kind_attr",
     "parse_dart_pages_attr",
@@ -258,7 +258,7 @@ def union_source_pages(
     """Sorted, deduped union of the ``pages`` across a source-ref list.
 
     ``refs`` is a chunker source-ref list — the ``{block_id, pages, ...}``
-    dicts :func:`harvest_dart_source_refs` / :func:`resolve_dart_refs_for_chunk`
+    dicts :func:`harvest_semantik_source_refs` / :func:`resolve_dart_refs_for_chunk`
     produce off ``data-dart-pages`` / ``data-semantik-pages`` block attrs. This
     folds every ref's positive-int ``pages`` entries into one ascending,
     deduped list — the page-number union for a chunk composed of one or more
@@ -300,7 +300,7 @@ def union_source_pages(
     return sorted(pages)
 
 
-def harvest_dart_source_refs(html: str) -> List[Dict[str, Any]]:
+def harvest_semantik_source_refs(html: str) -> List[Dict[str, Any]]:
     """Harvest DART ``{block_id, pages}`` provenance pairs from ``html``.
 
     Scans every opening tag that carries a ``data-dart-block-id`` and
@@ -398,7 +398,7 @@ def _block_element_spans(html: str) -> List[Tuple[int, int, Dict[str, Any]]]:
     ``len(html)``) so ``html[html_start:html_next_start]`` brackets the block's
     own content (DART blocks are emitted as flat document-order siblings).
     ``ref`` is the ``{"block_id", "pages"}`` dict (same shape as
-    :func:`harvest_dart_source_refs`). Document order preserved; duplicate
+    :func:`harvest_semantik_source_refs`). Document order preserved; duplicate
     block-ids are kept here (offset disambiguation happens in
     :func:`resolve_dart_refs_for_chunk`) but the canonical dedupe still applies
     downstream.
@@ -438,7 +438,7 @@ def _block_element_spans(html: str) -> List[Tuple[int, int, Dict[str, Any]]]:
     return spans
 
 
-def build_dart_block_offset_index(
+def build_semantik_block_offset_index(
     html: str, container_text: str = ""
 ) -> List[Tuple[int, Dict[str, Any], str]]:
     """Build an ordered per-block probe index for char-span / text resolution.
@@ -510,7 +510,7 @@ def resolve_dart_refs_for_chunk(
     """Select the DART blocks whose content overlaps ``chunk_text``.
 
     ``block_probe_index`` is the output of
-    :func:`build_dart_block_offset_index` — ``(doc_order, ref, block_text)``
+    :func:`build_semantik_block_offset_index` — ``(doc_order, ref, block_text)``
     tuples in document order, where ``block_text`` is the block's
     whitespace-collapsed plain text. A block is attributed to the chunk when
     the block's leading-words probe (:func:`_block_probes` — its first

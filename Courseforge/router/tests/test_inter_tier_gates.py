@@ -861,20 +861,20 @@ def test_block_page_objectives_returns_block_action_when_objective_unmatched(
 def test_block_source_ref_returns_block_action_when_sourceid_unknown():
     """Outline-tier Block declaring a sourceId that doesn't resolve
     against the staging manifest fails closed with action='block'."""
-    valid_ids = {"dart:textbook_a#chap1_para3"}
+    valid_ids = {"semantik:textbook_a#chap1_para3"}
     blocks = [
         # Positive: sid resolves.
         _outline_block(
             block_id="page_01#good_0",
             source_references=(
-                {"sourceId": "dart:textbook_a#chap1_para3"},
+                {"sourceId": "semantik:textbook_a#chap1_para3"},
             ),
         ),
         # Negative: sid doesn't resolve against the manifest.
         _outline_block(
             block_id="page_01#bad_1",
             source_references=(
-                {"sourceId": "dart:textbook_a#nonexistent_block"},
+                {"sourceId": "semantik:textbook_a#nonexistent_block"},
             ),
         ),
     ]
@@ -906,17 +906,17 @@ class _RecordingCapture:
 def test_block_source_ref_per_claim_passes_when_chunk_ids_in_block_refs():
     """Structured key_claims shape — every source_chunk_id appears in
     the block's resolved source_refs[] → action=None, passed=True."""
-    valid_ids = {"dart:textbook_a#chap1_para3"}
+    valid_ids = {"semantik:textbook_a#chap1_para3"}
     blocks = [
         _outline_block(
             block_id="page_01#concept_0",
             source_references=(
-                {"sourceId": "dart:textbook_a#chap1_para3"},
+                {"sourceId": "semantik:textbook_a#chap1_para3"},
             ),
             key_claims=[
                 {
                     "claim": "An RDF graph carries node-level constraints.",
-                    "source_chunk_ids": ["dart:textbook_a#chap1_para3"],
+                    "source_chunk_ids": ["semantik:textbook_a#chap1_para3"],
                 },
             ],
         ),
@@ -939,24 +939,24 @@ def test_block_source_ref_per_claim_regenerates_when_chunk_id_missing():
     surfaces claim_misses_count >= 1.
 
     Mirrors Plan §4 Test 2 fixture verbatim:
-      block.source_references = [{"sourceId": "dart:baz#qux"}]
+      block.source_references = [{"sourceId": "semantik:baz#qux"}]
       block.content["key_claims"] = [
-        {"claim": "foo", "source_chunk_ids": ["dart:foo#bar"]}
+        {"claim": "foo", "source_chunk_ids": ["semantik:foo#bar"]}
       ]
     Expectation: passed=False, action="regenerate" (NOT "block" — per-
     claim only), per-claim miss code, capture event surfaces
     claim_misses_count >= 1.
     """
     capture = _RecordingCapture()
-    valid_ids = {"dart:baz#qux"}
+    valid_ids = {"semantik:baz#qux"}
     blocks = [
         _outline_block(
             block_id="page_01#concept_5",
-            source_references=({"sourceId": "dart:baz#qux"},),
+            source_references=({"sourceId": "semantik:baz#qux"},),
             key_claims=[
                 {
                     "claim": "foo",
-                    "source_chunk_ids": ["dart:foo#bar"],
+                    "source_chunk_ids": ["semantik:foo#bar"],
                 },
             ],
         ),
@@ -1006,17 +1006,17 @@ def test_block_source_ref_block_level_dominates_claim_level():
     """Both block-level structural miss AND per-claim attribution miss
     fire on the same block → action='block' (block-level dominates).
     Both issue codes appear in the issue list."""
-    valid_ids = {"dart:textbook_a#chap1_para3"}
+    valid_ids = {"semantik:textbook_a#chap1_para3"}
     blocks = [
         _outline_block(
             block_id="page_01#bad_block",
             # Block-level miss: sourceId not in valid_ids
-            source_references=({"sourceId": "dart:textbook_a#missing_block"},),
+            source_references=({"sourceId": "semantik:textbook_a#missing_block"},),
             key_claims=[
                 {
                     "claim": "A claim citing a chunk not in source_refs[].",
                     # Claim-level miss: chunk_id not in block.source_refs[]
-                    "source_chunk_ids": ["dart:textbook_a#unrelated_chunk"],
+                    "source_chunk_ids": ["semantik:textbook_a#unrelated_chunk"],
                 },
             ],
         ),
@@ -1038,12 +1038,12 @@ def test_block_source_ref_legacy_list_str_skips_per_claim_walk():
     """Legacy List[str] key_claims shape skips the per-claim walk —
     no new claim-level issues emitted (back-compat preserved per
     Wave 1.5 §6.1)."""
-    valid_ids = {"dart:textbook_a#chap1_para3"}
+    valid_ids = {"semantik:textbook_a#chap1_para3"}
     blocks = [
         _outline_block(
             block_id="page_01#legacy_0",
             source_references=(
-                {"sourceId": "dart:textbook_a#chap1_para3"},
+                {"sourceId": "semantik:textbook_a#chap1_para3"},
             ),
             # Legacy flat string list (the pre-Wave-1.5 shape every
             # existing fixture emits).
@@ -1069,12 +1069,12 @@ def test_block_source_ref_per_claim_mixed_shape_skips_string_entries():
     claim-level walk treats string entries as skip (defensive). The
     object entry is still walked — when its source_chunk_ids miss the
     block.source_refs[], the warning fires."""
-    valid_ids = {"dart:textbook_a#chap1_para3"}
+    valid_ids = {"semantik:textbook_a#chap1_para3"}
     blocks = [
         _outline_block(
             block_id="page_01#mixed_0",
             source_references=(
-                {"sourceId": "dart:textbook_a#chap1_para3"},
+                {"sourceId": "semantik:textbook_a#chap1_para3"},
             ),
             key_claims=[
                 # String entry — silently skipped by the per-claim walk.
@@ -1083,7 +1083,7 @@ def test_block_source_ref_per_claim_mixed_shape_skips_string_entries():
                 # surfaces the warning.
                 {
                     "claim": "An object claim citing an outside chunk.",
-                    "source_chunk_ids": ["dart:textbook_a#stranger_chunk"],
+                    "source_chunk_ids": ["semantik:textbook_a#stranger_chunk"],
                 },
             ],
         ),

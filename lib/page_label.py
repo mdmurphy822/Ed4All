@@ -10,30 +10,29 @@ formatter is hoisted HERE — a dependency-free ``lib/`` module all three can
 import — rather than letting each surface grow its own drifting formatter (the
 OQ-2 decision in ``plans/finegrain/page-number-deeplinks-2026-06.md``).
 
-RISK-A (physical page != printed page). ``data-dart-pages`` carries the
-fallback chain printed-label -> physical-PDF-page (see
-``DART/converter/block_templates._provenance_attrs``); on a book with
-front-matter offset the physical page is wrong-by-offset relative to the book's
-printed "p. 47". The attribute does NOT record which signal produced it, so the
+RISK-A (physical page != printed page). ``data-semantik-pages`` carries the
+fallback chain printed-label -> physical-PDF-page; on a book with front-matter
+offset the physical page is wrong-by-offset relative to the book's printed
+"p. 47". The attribute does NOT record which signal produced it, so the
 consuming surface cannot tell a printed label from a physical fallback. We
 therefore NEVER render a bare "p. N" that implies a *printed* page on the new
 surfaces. ``pdf_page_citation`` labels honestly as **"PDF p. N"** — matching the
 existing answer-render "PDF page N" convention (answer_render.py:457) — so a
-reader knows it is the PDF/physical page, not a claimed printed page. When the
-printed-label hit-rate is raised (Phase 4, needs a DART re-conversion), a
-``method`` discriminator can switch this to a confident "p. N (printed)".
+reader knows it is the PDF/physical page, not a claimed printed page. Once the
+printed-label hit-rate is high enough, a ``method`` discriminator can switch this
+to a confident "p. N (printed)".
 """
 
 from __future__ import annotations
 
 from typing import List, Optional
 
-#: The DART-asserted page-kind values (sibling ``data-dart-page-kind`` attribute,
-#: emitted on the SAME element as ``data-dart-pages``). ``printed`` /
+#: The asserted page-kind values (sibling ``data-semantik-page-kind`` attribute,
+#: emitted on the SAME element as ``data-semantik-pages``). ``printed`` /
 #: ``interpolated`` are genuine BOOK page labels; ``physical`` is the PDF/page
 #: index (front-matter offset → wrong-by-offset relative to the printed page).
-#: An ABSENT / unknown kind is treated as ``physical`` (back-compat: the whole
-#: existing corpus carries no kind attribute yet).
+#: An ABSENT / unknown kind is treated as ``physical`` (back-compat: a corpus
+#: that carries no kind attribute).
 _PRINTED_KINDS = frozenset({"printed", "interpolated"})
 
 
@@ -53,8 +52,8 @@ def pdf_page_citation(pages: List[int]) -> str:
     """Honest short citation for the LO-map + "View in textbook" link surfaces.
 
     Format: ``"PDF p. 12"`` (single) / ``"PDF pp. 3, 7"`` (multi). The "PDF"
-    qualifier is the RISK-A mitigation: ``data-dart-pages`` may be the physical
-    PDF page (front-matter offset) rather than the book's printed page, and the
+    qualifier is the RISK-A mitigation: ``data-semantik-pages`` may be the
+    physical PDF page (front-matter offset) rather than the book's printed page, and the
     attribute doesn't say which, so we never imply a printed "p. N". Returns
     ``""`` for an empty list so the caller omits the label entirely (page-less
     surfaces stay byte-identical to today).
@@ -70,8 +69,9 @@ def pdf_page_citation(pages: List[int]) -> str:
 def page_citation(pages: List[int], kind: Optional[str] = None) -> str:
     """Kind-aware short citation for the LO-map + "View in textbook" surfaces.
 
-    DART emits a sibling ``data-dart-page-kind`` attribute on the SAME element as
-    ``data-dart-pages``, with values ``printed`` | ``interpolated`` | ``physical``
+    SemantiK emits a sibling ``data-semantik-page-kind`` attribute on the SAME
+    element as ``data-semantik-pages``, with values
+    ``printed`` | ``interpolated`` | ``physical``
     (PINNED CONTRACT). When ``kind`` is one of the PRINTED kinds, the number IS
     the book's printed page, so the honest label is the bare **"p. 47"** /
     **"pp. 3, 4, 5"**. For ``physical`` — or an ABSENT / unknown / empty kind,
@@ -80,7 +80,7 @@ def page_citation(pages: List[int], kind: Optional[str] = None) -> str:
     ``pdf_page_citation`` already mints (**"PDF p. 47"**).
 
     Anti-fabrication: this NEVER upgrades a ``physical`` page to a bare "p. N" —
-    it only relabels based on the kind DART itself asserts. Returns ``""`` for an
+    it only relabels based on the kind SemantiK itself asserts. Returns ``""`` for an
     empty list so the caller omits the label entirely (page-less surfaces stay
     byte-identical to today).
 

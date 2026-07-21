@@ -96,8 +96,9 @@ def _discover_chunks_jsonl() -> Path | None:
     """First resolvable ``<course>/.../chunks.jsonl`` carrying source refs.
 
     Resolves each course's chunks via ``resolve_imscc_chunks_path`` so the
-    ``imscc_chunks/`` → ``dart_chunks/`` → legacy ``corpus/`` layouts are
-    all found, then selects the first course whose sampled chunks satisfy
+    ``imscc_chunks/`` → ``semantik_chunks/`` → legacy ``dart_chunks/`` →
+    legacy ``corpus/`` layouts are all found, then selects the first course
+    whose sampled chunks satisfy
     the test's load-bearing preconditions (source_references[] AND a
     concept_tag / learning_outcome_ref). Returns ``None`` when none
     qualifies → the round-trip tests skip cleanly.

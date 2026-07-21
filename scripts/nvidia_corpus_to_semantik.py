@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Convert the NVIDIA "Building RAG Agents" study materials into DART-style
+"""Convert the NVIDIA "Building RAG Agents" study materials into SemantiK-style
 ``*_accessible.html`` pages + ``*_accessible_synthesized.json`` provenance
-sidecars, so ``ed4all run textbook-to-course --skip-dart`` can ingest them.
+sidecars, so ``ed4all run textbook-to-course --skip-conversion`` can ingest them.
 
 The source materials are already clean digital text (Markdown, MDX, Jupyter
-notebooks, one nbconvert HTML), so there is no PDF / OCR step to run — DART's
+notebooks, one nbconvert HTML), so there is no PDF / OCR step to run — SemantiK's
 deterministic pdftotext/pymupdf extraction is exactly what we reproduce here:
 one ``<h1>`` chapter per source file, ``<h2>/<h3>`` sections, prose paragraphs
 and fenced code preserved. ``SemanticStructureExtractor`` keys off the heading
@@ -26,7 +26,7 @@ import json
 import sys
 from pathlib import Path
 
-# Standalone invocation (`python scripts/nvidia_corpus_to_dart.py`) needs the
+# Standalone invocation (`python scripts/nvidia_corpus_to_semantik.py`) needs the
 # repo root on sys.path to resolve the shared importer helpers.
 _REPO = Path(__file__).resolve().parents[1]
 if str(_REPO) not in sys.path:

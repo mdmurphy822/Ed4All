@@ -19,9 +19,12 @@ fix is twofold:
      ``chunks.jsonl``, fail-closed (raise) instead of emitting an
      empty-bytes stub.
 
-The three regression tests below pin both legs of the fix for the IMSCC
-helper plus the DART sibling, plus the fail-closed leg shared by both
-surfaces.
+The regression tests below pin both legs of the fix for the IMSCC helper
+plus the SemantiK-staged chunking sibling (``_run_dart_chunking`` — the helper
+and its ``run_dart_chunking`` registry key keep their legacy names; the
+artifacts it writes are ``semantik_chunks/``), plus the fail-closed leg shared
+by both surfaces. The preserve path dual-reads ``semantik_chunks/`` (current
+emit) then the legacy ``dart_chunks/`` fallback; both are covered below.
 """
 
 from __future__ import annotations
@@ -105,8 +108,9 @@ def _write_fixture_chunks(chunks_path: Path) -> bytes:
 
 def _write_fixture_manifest(manifest_path: Path, source_sha: str) -> None:
     """Write a minimal sibling manifest.json that round-trips with the
-    fixture chunks. The ``source_imscc_sha256`` / ``source_dart_html_sha256``
-    field lets the preserved-envelope path surface a real upstream SHA."""
+    fixture chunks. The conditional source-SHA field (here
+    ``source_imscc_sha256``) lets the preserved-envelope path surface a real
+    upstream SHA."""
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(
         json.dumps(
@@ -180,7 +184,7 @@ def test_imscc_chunking_preserves_existing_on_missing_input(tmp_path: Path) -> N
 
 
 # ---------------------------------------------------------------------------
-# Test 2 — DART preserve-on-missing-input
+# Test 2 — SemantiK-staged chunking preserve-on-missing-input (current emit dir)
 # ---------------------------------------------------------------------------
 
 
@@ -191,11 +195,12 @@ def test_dart_chunking_preserves_existing_on_missing_input(
     when no staging_dir resolves OR when staging_dir has zero HTML files.
 
     Same invariants as the IMSCC test — chunks.jsonl bytes must survive
-    a resume-call with an invalid staging_dir kwarg.
+    a resume-call with an invalid staging_dir kwarg. Uses the current
+    ``semantik_chunks/`` emit dir (the preserve path's primary location).
     """
     libv2_root = tmp_path / "LibV2"
     chunks_path = (
-        libv2_root / "courses" / "test-resume" / "dart_chunks" / "chunks.jsonl"
+        libv2_root / "courses" / "test-resume" / "semantik_chunks" / "chunks.jsonl"
     )
     original_bytes = _write_fixture_chunks(chunks_path)
     original_sha = hashlib.sha256(original_bytes).hexdigest()
@@ -311,6 +316,10 @@ def test_dart_chunking_ignores_foreign_courseforge_inputs_fallback(
     chunked over. This test pins that behaviour as a normal regression —
     even with COURSEFORGE_INPUTS pointed at a non-empty foreign-course dir,
     the helper must NOT walk it.
+
+    Uses the legacy ``dart_chunks/`` fixture location so this also pins the
+    preserve path's dual-read fallback (``semantik_chunks/`` -> ``dart_chunks/``)
+    for pre-purge on-disk corpora.
     """
     libv2_root = tmp_path / "LibV2"
     chunks_path = (

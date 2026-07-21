@@ -114,7 +114,7 @@ def _annotate_terminals_with_children(
             # audits, so it fired OBJECTIVE_SOURCE_NOT_IN_TEXTBOOK_STRUCTURE on
             # every terminal objective deterministically. The TO IS validly
             # grounded — its ``chunk_ids`` (the union of its child COs' cited
-            # chunks) all resolve against the DART chunkset — so we emit a
+            # chunks) all resolve against the SemantiK chunkset — so we emit a
             # structured ``{chunk_ids}`` entry with NO ``ref`` key. The
             # validator's structured-shape arm only resolves a ``ref`` when it
             # is a non-empty string, so omitting it skips the impossible

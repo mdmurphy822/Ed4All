@@ -65,7 +65,7 @@ def _run_one(pdf: Path, *, mode: str, runtime: str, python: str) -> dict[str, An
     """Run the cascade bridge on ONE pdf and return its ``geom_order`` audit."""
     env = dict(os.environ)
     env["SEMANTIK_REGION_ORDER"] = mode
-    env.setdefault("DART_ALLOW_THETA_STUB", "1")
+    env.setdefault("SEMANTIK_ALLOW_THETA_STUB", "1")
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
         out_json = Path(tf.name)
     try:

@@ -669,9 +669,9 @@ _OUTLINE_SYSTEM_PROMPT: str = (
     "Wave-27 source-grounding contract: `source_refs[]` MUST be "
     "populated with the source-chunk IDs supplied in the user prompt's "
     "Source chunks section. Each entry is a "
-    "`{\"sourceId\": \"dart:<slug>#<block_id>\", \"role\": \"<role>\"}` "
+    "`{\"sourceId\": \"semantik:<slug>#<block_id>\", \"role\": \"<role>\"}` "
     "object. Empty list (`[]`) is permitted ONLY for boilerplate / "
-    "navigational / template-chrome blocks with no DART source "
+    "navigational / template-chrome blocks with no SemantiK source "
     "grounding (Wave-27 carve-out). The rewrite tier stamps "
     "`data-cf-source-ids` on the rendered HTML from this list; missing "
     "entries surface at the post-rewrite EMPTY_SOURCE_REFS gate as a "
@@ -1623,7 +1623,7 @@ def _repair_outline_source_refs(candidate: Dict[str, Any]) -> Dict[str, Any]:
     ``{"sourceId": str(minLength 1), "role": str(minLength 1)}`` with BOTH
     keys required. A 7B model routinely emits the WRONG primitive shape
     here — a bare chunk-id string per item
-    (``source_refs: ["dart:slug#chunk_a", ...]``) or an object that names a
+    (``source_refs: ["semantik:slug#chunk_a", ...]``) or an object that names a
     ``sourceId`` but drops the required ``role`` — so the strict validator
     rejects the whole payload and the parse-retry budget is exhausted → the
     block escalates with no prose.

@@ -82,7 +82,7 @@ def mini_libv2(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def _append_chunk(libv2_root: Path, chunk: dict) -> None:
-    path = libv2_root / "courses" / COURSE_SLUG / "dart_chunks" / "chunks.jsonl"
+    path = libv2_root / "courses" / COURSE_SLUG / "semantik_chunks" / "chunks.jsonl"
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(chunk) + "\n")
 
@@ -175,7 +175,7 @@ def test_resolved_normalized_citation_passes_without_char_span(mini_libv2: Path)
 
 
 def _load_chunk(libv2_root: Path, chunk_id: str) -> dict:
-    path = libv2_root / "courses" / COURSE_SLUG / "dart_chunks" / "chunks.jsonl"
+    path = libv2_root / "courses" / COURSE_SLUG / "semantik_chunks" / "chunks.jsonl"
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
@@ -197,7 +197,7 @@ def test_source_references_thread_to_citation(mini_libv2: Path):
     src = dict(prov_chunk["source"])
     src["source_references"] = [
         {
-            "sourceId": "dart:mini_alpha#s3_c0",
+            "sourceId": "semantik:mini_alpha#s3_c0",
             "role": "primary",
             "extractor": "synthesized",
             "pages": [12, 12, 7],
@@ -217,11 +217,11 @@ def test_source_references_thread_to_citation(mini_libv2: Path):
     )
     assert result.status == STATUS_ANSWERED
     cit = result.citations[0]
-    assert cit.source_block == "dart:mini_alpha#s3_c0"
+    assert cit.source_block == "semantik:mini_alpha#s3_c0"
     # de-duplicated + sorted page list.
     assert cit.pdf_pages == [7, 12]
     d = cit.to_dict()
-    assert d["source_block"] == "dart:mini_alpha#s3_c0"
+    assert d["source_block"] == "semantik:mini_alpha#s3_c0"
     assert d["pdf_pages"] == [7, 12]
 
 
@@ -233,7 +233,7 @@ def test_contributing_role_used_when_no_primary(mini_libv2: Path):
     chunk["text"] = "Krypton contributing marker: embeddings power retrieval."
     src = dict(chunk["source"])
     src["source_references"] = [
-        {"sourceId": "dart:mini_alpha#s9_c2", "role": "contributing", "pages": [4]},
+        {"sourceId": "semantik:mini_alpha#s9_c2", "role": "contributing", "pages": [4]},
     ]
     chunk["source"] = src
     _append_chunk(mini_libv2, chunk)
@@ -247,7 +247,7 @@ def test_contributing_role_used_when_no_primary(mini_libv2: Path):
         validate_citations=False,
     )
     cit = result.citations[0]
-    assert cit.source_block == "dart:mini_alpha#s9_c2"
+    assert cit.source_block == "semantik:mini_alpha#s9_c2"
     assert cit.pdf_pages == [4]
 
 
@@ -911,7 +911,7 @@ def test_page_label_appends_pdf_page_from_source_references():
     source = {
         "section_heading": "Vector Stores",
         "source_references": [
-            {"sourceId": "dart:x#s1_c0", "role": "primary", "pages": [12]},
+            {"sourceId": "semantik:x#s1_c0", "role": "primary", "pages": [12]},
         ],
     }
     label = page_label_for_source(source)
@@ -928,8 +928,8 @@ def test_page_label_aggregates_pages_across_multiple_refs():
     source = {
         "item_path": "module/intro_to_chunking.html",
         "source_references": [
-            {"sourceId": "dart:x#s1_c0", "role": "primary", "pages": [7, 12, 7]},
-            {"sourceId": "dart:x#s2_c1", "role": "contributing", "pages": [3, 12]},
+            {"sourceId": "semantik:x#s1_c0", "role": "primary", "pages": [7, 12, 7]},
+            {"sourceId": "semantik:x#s2_c1", "role": "contributing", "pages": [3, 12]},
         ],
     }
     label = page_label_for_source(source)
@@ -949,7 +949,7 @@ def test_page_label_no_pages_is_byte_identical():
         {
             "section_heading": "Vector Stores",
             "source_references": [
-                {"sourceId": "dart:x#s1_c0", "role": "primary", "pages": []},
+                {"sourceId": "semantik:x#s1_c0", "role": "primary", "pages": []},
             ],
         }
     ) == "Vector Stores"
@@ -979,22 +979,22 @@ _IMSCC_INDEX_QUERY = f"{_IMSCC_CHUNK_HEADING}\n{_IMSCC_CHUNK_TEXT}"
 
 
 def _build_imscc_index_and_chunks(libv2_root: Path) -> str:
-    """Set up the multi-chunkset misalignment: dart_chunks/ present (from the
-    fixture) AND an imscc-pinned vector index over imscc_chunks/.
+    """Set up the multi-chunkset misalignment: semantik_chunks/ present (from
+    the fixture) AND an imscc-pinned vector index over imscc_chunks/.
 
     Returns the imscc chunk_id the model will cite. The imscc chunk's
     item_path (``alpha.html``) resolves as an imscc member but NOT under the
-    dart roots (we drop ``source/html`` so a dart-kind gate fails with
+    semantik roots (we drop ``source/html`` so a semantik-kind gate fails with
     source_page_missing). So:
-      * directory heuristic (_infer_chunkset_kind) -> "dart"  -> gate BLOCKS
-      * vector-index manifest (the fix)            -> "imscc" -> gate PASSES
+      * directory heuristic (_infer_chunkset_kind) -> "semantik" -> gate BLOCKS
+      * vector-index manifest (the fix)            -> "imscc"    -> gate PASSES
     """
     from lib.embedding.providers import build_embedding_client
     from LibV2.tools.libv2.vector_index import build_vector_index
 
     course_dir = libv2_root / "courses" / COURSE_SLUG
 
-    # Drop the dart HTML sources so a dart-kind anchor resolution fails. The
+    # Drop the semantik HTML sources so a semantik-kind anchor resolution fails. The
     # imscc archive (source/imscc/mini.imscc) still carries alpha.html.
     shutil.rmtree(course_dir / "source" / "html")
 
@@ -1033,12 +1033,12 @@ def test_semantic_engine_chunkset_kind_from_index_manifest(
 ):
     """semantic engine + chunkset_kind=None reads the chunkset from the vector
     index manifest, so the citation gate resolves against imscc (the index's
-    kind) even though dart_chunks/ is also present.
+    kind) even though semantik_chunks/ is also present.
 
-    Inferring chunkset_kind from directory presence instead would pick dart
-    (dart_chunks/ wins) and resolve the gate against dart -> source_page_missing
-    -> blocked_citation_gate, despite the answer + citation being correct
-    against the imscc-built index.
+    Inferring chunkset_kind from directory presence instead would pick semantik
+    (semantik_chunks/ wins) and resolve the gate against semantik ->
+    source_page_missing -> blocked_citation_gate, despite the answer + citation
+    being correct against the imscc-built index.
     """
     pytest.importorskip("numpy")  # builds a real vector index (needs [embedding])
     monkeypatch.setenv("ED4ALL_EMBEDDING_ALLOW_FAKE", "true")
@@ -1063,8 +1063,8 @@ def test_semantic_engine_chunkset_kind_from_index_manifest(
 def test_semantic_engine_directory_heuristic_would_misroute(
     mini_libv2: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """Pin the misalignment: the directory heuristic returns 'dart' (so an
-    explicit chunkset_kind='dart' BLOCKS) — the index-manifest read in the
+    """Pin the misalignment: the directory heuristic returns 'semantik' (so an
+    explicit chunkset_kind='semantik' BLOCKS) — the index-manifest read in the
     previous test is what unblocks the correct answer."""
     pytest.importorskip("numpy")  # builds a real vector index (needs [embedding])
     from lib.retrieval.grounded_answer import _infer_chunkset_kind
@@ -1073,17 +1073,17 @@ def test_semantic_engine_directory_heuristic_would_misroute(
     monkeypatch.setenv("ED4ALL_EMBEDDING_PROVIDER", "fake")
     imscc_chunk_id = _build_imscc_index_and_chunks(mini_libv2)
 
-    # The directory heuristic still picks dart (dart_chunks/ present).
-    assert _infer_chunkset_kind(mini_libv2, COURSE_SLUG) == "dart"
+    # The directory heuristic still picks semantik (semantik_chunks/ present).
+    assert _infer_chunkset_kind(mini_libv2, COURSE_SLUG) == "semantik"
 
     client = FakeAnswerClient([
         _envelope("A vector store indexes embedding vectors.", [imscc_chunk_id])
     ])
-    # Forcing chunkset_kind='dart' (what the heuristic would pick) BLOCKS,
-    # because the dart HTML source was dropped -> source_page_missing.
+    # Forcing chunkset_kind='semantik' (what the heuristic would pick) BLOCKS,
+    # because the semantik HTML source was dropped -> source_page_missing.
     result = answer_course_question(
         mini_libv2, COURSE_SLUG, _IMSCC_INDEX_QUERY,
-        engine="semantic", client=client, chunkset_kind="dart",
+        engine="semantic", client=client, chunkset_kind="semantik",
         refusal_policy=_PERMISSIVE_SEMANTIC,
     )
     assert result.status == STATUS_BLOCKED_CITATION_GATE
@@ -1222,7 +1222,7 @@ def test_answer_path_hybrid_rrf_reads_embedder_and_applies_bge_large_pin(
     monkeypatch.setattr(ga, "_vector_index_embedding_model_id", _fake_model)
     # Avoid the index-manifest chunkset read picking a wrong kind; pin it.
     monkeypatch.setattr(
-        ga, "_vector_index_chunkset_kind", lambda root, slug: "dart"
+        ga, "_vector_index_chunkset_kind", lambda root, slug: "semantik"
     )
     # Below the pinned hybrid-rrf min_top_score (0.029643 on the RRF scale)
     # → pre-LLM refusal, so the resolved policy surfaces.
@@ -1539,7 +1539,7 @@ def test_apply_off_mode_is_total_noop():
         citations=cits, groundedness_report=report, cited_chunk_ids={"a"},
         gate_eligible_passages=[_nli_passage("u1", _COVER_CHUNK)],
         answer_text=_COVER_CLAIM, course_dir=Path("/nonexistent"),
-        chunkset_kind="dart", containment_threshold=0.85, mode="off",
+        chunkset_kind="semantik", containment_threshold=0.85, mode="off",
         capture=None, course_slug="s", query_sha="qs", engine="lexical",
     )
     assert out is cits and warns == [] and diag is None
@@ -1551,7 +1551,7 @@ def test_apply_shadow_mode_unavailable_report_logs_reason():
         citations=[_cit("a")], groundedness_report=None, cited_chunk_ids={"a"},
         gate_eligible_passages=[_nli_passage("u1", _COVER_CHUNK)],
         answer_text=_COVER_CLAIM, course_dir=Path("/nonexistent"),
-        chunkset_kind="dart", containment_threshold=0.85, mode="shadow",
+        chunkset_kind="semantik", containment_threshold=0.85, mode="shadow",
         capture=spy, course_slug="s", query_sha="qs", engine="lexical",
     )
     assert diag["outcome"] == "skipped_no_nli"
@@ -1713,7 +1713,7 @@ def test_apply_zero_citation_answer_exclusion_is_warning_class(monkeypatch):
             citations=[], groundedness_report=report, cited_chunk_ids=set(),
             gate_eligible_passages=[_nli_passage("u1", _COVER_CHUNK)],
             answer_text=_COVER_CLAIM, course_dir=Path("/nonexistent"),
-            chunkset_kind="dart", containment_threshold=0.85, mode=mode,
+            chunkset_kind="semantik", containment_threshold=0.85, mode=mode,
             capture=None, course_slug="s", query_sha="qs", engine="lexical",
         )
         assert out == []  # never restores a citation, even in ON mode
@@ -1779,7 +1779,7 @@ def test_apply_on_mode_caps_added_citations_at_two(monkeypatch):
         citations=[_cit("seed")], groundedness_report=report,
         cited_chunk_ids={"seed"}, gate_eligible_passages=passages,
         answer_text=_COVER_CLAIM, course_dir=Path("/nonexistent"),
-        chunkset_kind="dart", containment_threshold=0.85, mode="on",
+        chunkset_kind="semantik", containment_threshold=0.85, mode="on",
         capture=None, course_slug="s", query_sha="qs", engine="lexical",
     )
     assert NLI_ADD_MAX_ADDED_CITATIONS == 2
@@ -1819,7 +1819,7 @@ def test_apply_on_mode_anchor_fail_records_false_and_never_adds(monkeypatch):
         citations=[_cit("seed")], groundedness_report=report,
         cited_chunk_ids={"seed"}, gate_eligible_passages=[_nli_passage("u1", _COVER_CHUNK)],
         answer_text=_COVER_CLAIM, course_dir=Path("/nonexistent"),
-        chunkset_kind="dart", containment_threshold=0.85, mode="on",
+        chunkset_kind="semantik", containment_threshold=0.85, mode="on",
         capture=None, course_slug="s", query_sha="qs", engine="lexical",
     )
     # Composite passed, but anchor failed → recorded False, not added.

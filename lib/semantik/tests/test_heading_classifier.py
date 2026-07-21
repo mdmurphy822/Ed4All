@@ -154,7 +154,7 @@ def test_adapter_neutralizes_repeated_chapter_titles():
     # The running-header title survives as an <h2> exactly ONCE (the first);
     # the rest are demoted out of the heading stream (presentation div).
     assert html.count("<h2>Chapter 4 Graphs</h2>") == 1
-    assert html.count("dart-continuation") == 4
+    assert html.count("semantik-continuation") == 4
 
 
 def test_adapter_neutralizes_watermark_chapter_title():

@@ -344,7 +344,10 @@ class TestSkipDartFlag:
         runner = CliRunner()
         result = runner.invoke(cli, ["run", "--help"])
         assert result.exit_code == 0
-        assert "--skip-dart" in result.output
+        # --skip-conversion is the canonical visible flag; --skip-dart is a
+        # hidden back-compat alias and must NOT appear in --help.
+        assert "--skip-conversion" in result.output
+        assert "--skip-dart" not in result.output
         # task #19 Stage 3: --semantik-output-dir is the canonical flag; the
         # legacy --dart-output-dir alias is hidden from --help (back-compat only).
         assert "--semantik-output-dir" in result.output
@@ -384,7 +387,7 @@ class TestSkipDartFlag:
         assert "dart_output_dir" not in params
 
     def test_dry_run_with_skip_dart_marks_phase_skipped(self, tmp_path):
-        # Create a fake DART output dir with one accessible HTML whose
+        # Create a fake SemantiK conversion output dir with one accessible HTML whose
         # basename matches the corpus PDF, so the CLI emits no warning
         # that would pollute the --json stream.
         (tmp_path / "book_accessible.html").write_text("<html></html>")
@@ -413,7 +416,7 @@ class TestSkipDartFlag:
             p for p in payload["phases"] if p["name"] == "semantik_conversion"
         )
         assert dart_phase.get("status") == "SKIPPED"
-        assert "skip-dart" in dart_phase.get("skip_reason", "").lower()
+        assert "skip-conversion" in dart_phase.get("skip_reason", "").lower()
         # staging should still be in the plan; the conversion chain now runs
         # through the heading_judge phase (semantik_conversion ->
         # heading_judge -> staging; SEMANTIK_HEADING_JUDGE permanent wiring).
@@ -507,7 +510,7 @@ class TestSkipDartFlag:
             ],
         )
         assert result.exit_code == 2
-        assert "skip-dart" in result.output.lower()
+        assert "skip-conversion" in result.output.lower()
         assert "textbook_to_course" in result.output
 
     def test_skip_dart_warns_on_corpus_html_mismatch(self, tmp_path):
@@ -563,8 +566,8 @@ class TestPhase5SupportedWorkflows:
             )
 
     def test_supported_workflows_size_matches_plan(self):
-        """Phase 5 §13 risk note: with the SemantiK migration retiring the
-        ``intake_remediation`` + ``batch_dart`` workflows, the canonical set
+        """Phase 5 §13 risk note: with the SemantiK migration retiring the two
+        legacy conversion + remediation workflows, the canonical set
         is 5 surviving (course_generation, rag_training, textbook_to_course,
         the ``textbook-to-course`` alias, ``trainforge_train``) + 4 new
         Phase 5 ``courseforge*`` stage subcommands = 9.

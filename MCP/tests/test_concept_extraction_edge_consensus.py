@@ -52,7 +52,7 @@ _VALID_STATUSES = {"confirmed", "supported", "contradicted", "pending", "retract
 
 
 def _tagged_chunkset() -> List[Dict[str, Any]]:
-    """A DART chunkset whose chunks carry populated ``concept_tags`` so the
+    """A SemantiK chunkset whose chunks carry populated ``concept_tags`` so the
     co-occurrence + typed-edge build produces a non-trivial edge set.
     """
     chunks: List[Dict[str, Any]] = []
@@ -85,7 +85,7 @@ def _write_chunkset(path: Path, chunks: List[Dict[str, Any]]) -> None:
 
 
 def _run(tmp_path: Path, chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
-    chunks_path = tmp_path / "dart_chunks" / "chunks.jsonl"
+    chunks_path = tmp_path / "semantik_chunks" / "chunks.jsonl"
     _write_chunkset(chunks_path, chunks)
     custom_libv2 = tmp_path / "libv2"
 

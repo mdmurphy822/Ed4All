@@ -71,8 +71,8 @@ def planner_fixture(tmp_path, monkeypatch):
     }
 
 
-def _write_dart_html(path: Path, headings: list, learning_objectives: list = None):
-    """Write minimal DART HTML with headings + paragraphs per section."""
+def _write_semantik_html(path: Path, headings: list, learning_objectives: list = None):
+    """Write minimal SemantiK HTML with headings + paragraphs per section."""
     parts = ['<a class="skip-link" href="#main">Skip</a><main role="main">']
     if learning_objectives:
         parts.append('<section aria-labelledby="lo-head"><h2 id="lo-head">Learning Objectives</h2><ul>')
@@ -116,7 +116,7 @@ def test_missing_project_returns_error(planner_fixture):
 def test_synthesizes_from_headings(planner_fixture):
     """No objectives file → synthesize from staged HTML headings."""
     fx = planner_fixture
-    _write_dart_html(
+    _write_semantik_html(
         fx["staging_dir"] / "book.html",
         ["Photosynthesis Basics", "Light-Dependent Reactions",
          "The Calvin Cycle", "Factors Affecting Photosynthesis"],
@@ -149,7 +149,7 @@ def test_concept_graph_path_kwarg_is_inert(planner_fixture):
     to a run without the kwarg (no key_concepts injected here).
     """
     fx = planner_fixture
-    _write_dart_html(
+    _write_semantik_html(
         fx["staging_dir"] / "book.html",
         ["Vector Spaces", "Eigenvalues", "Linear Maps", "Inner Products"],
     )
@@ -208,7 +208,7 @@ def test_concept_graph_path_kwarg_is_inert(planner_fixture):
 def test_populates_project_config_objectives_path(planner_fixture):
     """After planning, project_config.json carries synthesized_objectives_path."""
     fx = planner_fixture
-    _write_dart_html(
+    _write_semantik_html(
         fx["staging_dir"] / "book.html",
         ["Intro Topic One", "Intro Topic Two"],
     )
@@ -237,7 +237,7 @@ def test_objective_ids_are_list_of_canonical_ids(planner_fixture):
     checkpoint (dispatch-7 Finding 8).
     """
     fx = planner_fixture
-    _write_dart_html(
+    _write_semantik_html(
         fx["staging_dir"] / "book.html",
         ["Topic A", "Topic B", "Topic C"],
     )
@@ -274,7 +274,7 @@ def test_objective_ids_canonical_order_terminals_first(planner_fixture):
     families, chapter outcomes nest under them).
     """
     fx = planner_fixture
-    _write_dart_html(
+    _write_semantik_html(
         fx["staging_dir"] / "book.html",
         ["Topic Alpha", "Topic Beta", "Topic Gamma", "Topic Delta"],
     )
@@ -379,7 +379,7 @@ def test_empty_corpus_falls_back_gracefully(planner_fixture):
 def test_project_location_by_course_name(planner_fixture):
     """Lookup by course_name when project_id not passed."""
     fx = planner_fixture
-    _write_dart_html(
+    _write_semantik_html(
         fx["staging_dir"] / "book.html",
         ["Alpha", "Beta"],
     )
@@ -417,7 +417,7 @@ def test_autoscaled_config_wins_when_duration_not_explicit(planner_fixture):
     """Wave 40: duration_weeks_explicit=False → config's 8 wins over stale kwargs 12."""
     fx = planner_fixture
     _seed_autoscaled_config(fx["project_dir"], auto_weeks=8)
-    _write_dart_html(
+    _write_semantik_html(
         fx["staging_dir"] / "book.html",
         ["Topic One", "Topic Two"],
     )
@@ -446,7 +446,7 @@ def test_explicit_duration_kwargs_wins(planner_fixture):
     """Wave 40: duration_weeks_explicit=True → kwargs value still wins."""
     fx = planner_fixture
     _seed_autoscaled_config(fx["project_dir"], auto_weeks=8)
-    _write_dart_html(
+    _write_semantik_html(
         fx["staging_dir"] / "book.html",
         ["Topic One", "Topic Two"],
     )
@@ -492,7 +492,7 @@ def test_ws5_rescales_duration_weeks_from_terminal_count(planner_fixture):
     fx = planner_fixture
     _seed_autoscaled_config(fx["project_dir"], auto_weeks=8)
     headings = [f"Topic {i:02d}" for i in range(1, 31)]
-    _write_dart_html(fx["staging_dir"] / "book.html", headings)
+    _write_semantik_html(fx["staging_dir"] / "book.html", headings)
 
     result = asyncio.run(_call(
         project_id=fx["project_id"],
@@ -536,7 +536,7 @@ def test_wave18_preserves_8week_floor_for_short_courses(planner_fixture):
     _seed_autoscaled_config(fx["project_dir"], auto_weeks=8)
     # 6 headings → 6 chapter objectives → ceil(6/2) = 3, max(8, 3) = 8.
     headings = [f"Topic {i:02d}" for i in range(1, 7)]
-    _write_dart_html(fx["staging_dir"] / "book.html", headings)
+    _write_semantik_html(fx["staging_dir"] / "book.html", headings)
 
     result = asyncio.run(_call(
         project_id=fx["project_id"],
@@ -553,7 +553,7 @@ def test_wave18_explicit_kwargs_skips_rescale(planner_fixture):
     fx = planner_fixture
     _seed_autoscaled_config(fx["project_dir"], auto_weeks=8)
     headings = [f"Topic {i:02d}" for i in range(1, 19)]  # would re-scale to 9
-    _write_dart_html(fx["staging_dir"] / "book.html", headings)
+    _write_semantik_html(fx["staging_dir"] / "book.html", headings)
 
     result = asyncio.run(_call(
         project_id=fx["project_id"],

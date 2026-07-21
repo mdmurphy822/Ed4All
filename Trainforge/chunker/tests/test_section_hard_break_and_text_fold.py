@@ -116,8 +116,8 @@ def test_hard_break_splits_at_data_dart_opener_attr():
 
 
 def test_hard_break_splits_at_data_dart_unit_edge():
-    # Wave #22 Tier-2 — a section at a composite-unit EDGE (data-dart-unit
-    # harvested from the <section class="dart-unit"> wrapper) is a preferred
+    # Wave #22 Tier-2 — a section at a composite-unit EDGE (the unit type
+    # harvested from the composite-unit wrapper) is a preferred
     # boundary under the hard-break flag, so a chunk never straddles two units.
     # The lead heading here is not a legacy opener phrase and sits at h3, so only
     # the unit signal can force the break.

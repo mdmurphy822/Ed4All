@@ -48,7 +48,7 @@ WAVE9_HTML_FULL = """<!DOCTYPE html>
     "pageId": "week_03_content_01_cognitive_load",
     "sourceReferences": [
       {
-        "sourceId": "dart:science_of_learning#s5_p2",
+        "sourceId": "semantik:sample_source#s5_p2",
         "role": "primary",
         "weight": 0.8,
         "confidence": 0.92,
@@ -63,7 +63,7 @@ WAVE9_HTML_FULL = """<!DOCTYPE html>
         "bloomRange": ["understand"],
         "sourceReferences": [
           {
-            "sourceId": "dart:science_of_learning#s6_p1",
+            "sourceId": "semantik:sample_source#s6_p1",
             "role": "contributing"
           }
         ]
@@ -74,9 +74,9 @@ WAVE9_HTML_FULL = """<!DOCTYPE html>
 </head>
 <body>
 <main>
-<h1 data-cf-source-ids="dart:science_of_learning#s5_p2">Cognitive Load</h1>
-<section data-cf-source-ids="dart:science_of_learning#s5_p2,dart:new_source#s2_p0">
-<h2 data-cf-content-type="explanation" data-cf-source-ids="dart:science_of_learning#s6_p1">Cognitive Load Types</h2>
+<h1 data-cf-source-ids="semantik:sample_source#s5_p2">Cognitive Load</h1>
+<section data-cf-source-ids="semantik:sample_source#s5_p2,semantik:new_source#s2_p0">
+<h2 data-cf-content-type="explanation" data-cf-source-ids="semantik:sample_source#s6_p1">Cognitive Load Types</h2>
 <p>Cognitive load theory divides mental effort into three categories: intrinsic, extraneous, and germane load.</p>
 <p>Intrinsic load is determined by the inherent complexity of the material being learned.</p>
 <p>Extraneous load comes from poorly designed instruction that distracts from the learning objective.</p>
@@ -124,7 +124,7 @@ WAVE9_HTML_DATA_ATTR_ONLY = """<!DOCTYPE html>
 <body>
 <main>
 <h1>Data Attribute Only Page</h1>
-<section data-cf-source-ids="dart:slug_a#s0_p0">
+<section data-cf-source-ids="semantik:slug_a#s0_p0">
 <h2 data-cf-content-type="explanation">Attribute-Only Section</h2>
 <p>This page has no JSON-LD sourceReferences — only data-cf-source-ids.
 Cognitive load makes a concept tag here for the graph builder.
@@ -150,12 +150,12 @@ def test_parser_captures_page_level_jsonld_source_references():
     parsed = parser.parse(WAVE9_HTML_FULL)
 
     page_ids = [r["sourceId"] for r in parsed.source_references]
-    assert "dart:science_of_learning#s5_p2" in page_ids, page_ids
+    assert "semantik:sample_source#s5_p2" in page_ids, page_ids
     # Section-level JSON-LD ref should also aggregate up.
-    assert "dart:science_of_learning#s6_p1" in page_ids, page_ids
+    assert "semantik:sample_source#s6_p1" in page_ids, page_ids
     # data-cf-source-ids new block (not in JSON-LD) should also appear
     # via the HTML-attr fallback.
-    assert "dart:new_source#s2_p0" in page_ids, page_ids
+    assert "semantik:new_source#s2_p0" in page_ids, page_ids
 
 
 def test_parser_preserves_jsonld_role_over_html_attr_default():
@@ -167,9 +167,9 @@ def test_parser_preserves_jsonld_role_over_html_attr_default():
     by_sid = {r["sourceId"]: r for r in parsed.source_references}
     # JSON-LD said 'primary' for s5_p2 — must NOT be overridden to
     # contributing even though an HTML data-cf-source-ids also lists it.
-    assert by_sid["dart:science_of_learning#s5_p2"]["role"] == "primary"
+    assert by_sid["semantik:sample_source#s5_p2"]["role"] == "primary"
     # HTML-only refs default to 'contributing'.
-    assert by_sid["dart:new_source#s2_p0"]["role"] == "contributing"
+    assert by_sid["semantik:new_source#s2_p0"]["role"] == "contributing"
 
 
 def test_parser_captures_section_level_source_ids():
@@ -183,8 +183,8 @@ def test_parser_captures_section_level_source_ids():
     assert "Cognitive Load" in sections_by_heading
     assert "Cognitive Load Types" in sections_by_heading
     types_section = sections_by_heading["Cognitive Load Types"]
-    # The heading carried data-cf-source-ids="dart:science_of_learning#s6_p1"
-    assert "dart:science_of_learning#s6_p1" in types_section.source_references
+    # The heading carried data-cf-source-ids="semantik:sample_source#s6_p1"
+    assert "semantik:sample_source#s6_p1" in types_section.source_references
 
 
 def test_parser_legacy_html_empty_source_references():
@@ -206,8 +206,8 @@ def test_parser_data_attr_only_auto_roles_contributing():
     parsed = parser.parse(WAVE9_HTML_DATA_ATTR_ONLY)
 
     by_sid = {r["sourceId"]: r for r in parsed.source_references}
-    assert "dart:slug_a#s0_p0" in by_sid
-    assert by_sid["dart:slug_a#s0_p0"]["role"] == "contributing"
+    assert "semantik:slug_a#s0_p0" in by_sid
+    assert by_sid["semantik:slug_a#s0_p0"]["role"] == "contributing"
 
 
 def test_parser_dedupes_repeated_source_ids():
@@ -313,7 +313,7 @@ def test_chunker_preserves_authoritative_role_on_chunks():
     for chunk in chunks:
         refs = chunk["source"].get("source_references", [])
         for ref in refs:
-            if ref["sourceId"] == "dart:science_of_learning#s5_p2":
+            if ref["sourceId"] == "semantik:sample_source#s5_p2":
                 assert ref["role"] == "primary"
                 found = True
     assert found, "s5_p2 primary-roled ref never landed on a chunk"
@@ -326,7 +326,7 @@ def test_chunker_html_attr_refs_auto_role_contributing():
     for chunk in chunks:
         refs = chunk["source"].get("source_references", [])
         for ref in refs:
-            if ref["sourceId"] == "dart:slug_a#s0_p0":
+            if ref["sourceId"] == "semantik:slug_a#s0_p0":
                 assert ref["role"] == "contributing"
 
 
@@ -383,15 +383,15 @@ def test_node_source_refs_copied_from_first_occurrence(monkeypatch):
             "c_00001",
             ["cognitive-load"],
             refs=[
-                {"sourceId": "dart:a#s0_p0", "role": "primary"},
-                {"sourceId": "dart:a#s1_p0", "role": "contributing"},
+                {"sourceId": "semantik:a#s0_p0", "role": "primary"},
+                {"sourceId": "semantik:a#s1_p0", "role": "contributing"},
             ],
         ),
         _mk_chunk(
             "c_00002",
             ["cognitive-load"],
             refs=[
-                {"sourceId": "dart:b#s0_p0", "role": "primary"},
+                {"sourceId": "semantik:b#s0_p0", "role": "primary"},
             ],
         ),
     ]
@@ -402,7 +402,7 @@ def test_node_source_refs_copied_from_first_occurrence(monkeypatch):
     # occurrences[0] is c_00001 (sorted ASC). Its refs should be copied.
     assert node.get("source_refs")
     copied_sids = [r["sourceId"] for r in node["source_refs"]]
-    assert copied_sids == ["dart:a#s0_p0", "dart:a#s1_p0"]
+    assert copied_sids == ["semantik:a#s0_p0", "semantik:a#s1_p0"]
     # Role precedence preserved from the chunk.
     assert node["source_refs"][0]["role"] == "primary"
 
@@ -433,17 +433,17 @@ def test_node_source_refs_deterministic_sort_order(monkeypatch):
         _mk_chunk(
             "c_00003",
             ["cognitive-load"],
-            refs=[{"sourceId": "dart:c#s0_p0", "role": "primary"}],
+            refs=[{"sourceId": "semantik:c#s0_p0", "role": "primary"}],
         ),
         _mk_chunk(
             "c_00001",
             ["cognitive-load"],
-            refs=[{"sourceId": "dart:a#s0_p0", "role": "primary"}],
+            refs=[{"sourceId": "semantik:a#s0_p0", "role": "primary"}],
         ),
         _mk_chunk(
             "c_00002",
             ["cognitive-load"],
-            refs=[{"sourceId": "dart:b#s0_p0", "role": "primary"}],
+            refs=[{"sourceId": "semantik:b#s0_p0", "role": "primary"}],
         ),
     ]
     graph = _build_graph(chunks)
@@ -451,7 +451,7 @@ def test_node_source_refs_deterministic_sort_order(monkeypatch):
     node = by_id["cognitive-load"]
     # Occurrences sorted ASC → c_00001 first → its refs copied.
     assert node["occurrences"][0] == "c_00001"
-    assert node["source_refs"][0]["sourceId"] == "dart:a#s0_p0"
+    assert node["source_refs"][0]["sourceId"] == "semantik:a#s0_p0"
 
 
 def test_graph_node_source_refs_independent_of_chunk_mutation(monkeypatch):
@@ -460,7 +460,7 @@ def test_graph_node_source_refs_independent_of_chunk_mutation(monkeypatch):
 
     monkeypatch.setattr(typed_edge_inference, "SCOPE_CONCEPT_IDS", False)
 
-    ref_dict = {"sourceId": "dart:a#s0_p0", "role": "primary"}
+    ref_dict = {"sourceId": "semantik:a#s0_p0", "role": "primary"}
     chunks = [
         _mk_chunk("c_00001", ["cognitive-load"], refs=[ref_dict]),
         _mk_chunk("c_00002", ["cognitive-load"], refs=[ref_dict]),

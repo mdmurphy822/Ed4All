@@ -146,8 +146,8 @@ def test_new_type_block_projects(block_type):
         page_id="week_01_content_01",
         sequence=0,
         content="Sample body for the block.",
-        source_ids=("dart:sample#b1",),
-        source_primary="dart:sample#b1",
+        source_ids=("semantik:sample#b1",),
+        source_primary="semantik:sample#b1",
     )
     attrs = blk.to_html_attrs()
     assert isinstance(attrs, str)

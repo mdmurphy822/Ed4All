@@ -224,8 +224,8 @@ def test_no_double_nesting_on_stage6_lane(monkeypatch):
     ]
     # Region 0 (stage6 lane): the LLM already emitted the gold wrapper.
     prewrapped = (
-        '<div class="definition" role="region" aria-labelledby="dart-definition_region-0">'
-        '<h4 id="dart-definition_region-0">Definition</h4><p>already wrapped</p></div>'
+        '<div class="definition" role="region" aria-labelledby="semantik-definition_region-0">'
+        '<h4 id="semantik-definition_region-0">Definition</h4><p>already wrapped</p></div>'
     )
     top = {
         0: _stage6(prewrapped),
@@ -335,11 +335,11 @@ def test_title_slot_sentinel_preserved(monkeypatch):
     assert TITLE_SLOT_SENTINEL in off_open
     assert TITLE_SLOT_SENTINEL in on_open
     # The sentinel string itself is the literal pass_9c splice key.
-    assert TITLE_SLOT_SENTINEL == "<!-- DART_TITLE_SLOT -->\n"
+    assert TITLE_SLOT_SENTINEL == "<!-- SEMANTIK_TITLE_SLOT -->\n"
     # Round-trip the title splice on the gold shell.
     candidate = '<title>Real Title</title><h1>Real Title</h1>'
     spliced = _splice_missing_title(on_open, candidate)
-    assert "<!-- DART_TITLE_SLOT -->" not in spliced
+    assert "<!-- SEMANTIK_TITLE_SLOT -->" not in spliced
     assert "<h1" in spliced and "Real Title</h1>" in spliced
 
 
@@ -475,7 +475,7 @@ def test_container_label_id_unique(monkeypatch):
     regions = [_region(0, "definition_region"), _region(1, "definition_region")]
     top = {0: _stage6("<p>def one</p>"), 1: _stage6("<p>def two</p>")}
     doc = _assemble(top, regions, fbs)
-    ids = re.findall(r'aria-labelledby="(dart-definition_region[^"]*)"', doc.html)
+    ids = re.findall(r'aria-labelledby="(semantik-definition_region[^"]*)"', doc.html)
     assert len(ids) == 2
     assert len(set(ids)) == 2  # distinct
 

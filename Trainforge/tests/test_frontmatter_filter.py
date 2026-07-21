@@ -1,12 +1,11 @@
 """Unit tests for the front-matter / donor contamination classifier.
 
-Fixtures are lifted from (or faithfully model) a real OpenStax Elementary
-Algebra 7B build's contaminated chunkset
-(``LibV2/courses/<course-slug>/dart_chunks/chunks.jsonl`` —
-``_chunk_00001`` cover/authors/copyright, ``_chunk_00002`` donor list + TOC +
-marketing). The negative fixtures model real algebra content, INCLUDING the
-"Chapter 1 Foundations" running-header case that is the documented
-false-positive trap (68/72 real chunks contain "foundation").
+Fixtures faithfully model the contaminated leading chunks of a full-length
+textbook build: a cover / contributing-author / copyright chunk and a
+donor-list + table-of-contents + marketing chunk. The negative fixtures
+model genuine algebra content, INCLUDING the "Chapter 1 Foundations"
+running-header case that is the documented false-positive trap (the chapter
+title "Foundations" recurs across most real content chunks).
 """
 
 from __future__ import annotations
@@ -23,31 +22,27 @@ from Trainforge.chunker.frontmatter import (
 # Real contaminated fixtures (verbatim head of the actual chunks).
 # ---------------------------------------------------------------------------
 
-# ``_chunk_00001`` — cover / contributing authors / copyright / ISBN / CC.
+# First chunk — cover / contributing authors / copyright / trademark / CC.
 CHUNK_00001_COVER = (
-    "Elementary Algebra 2e SENIOR CONTRIBUTING AUTHORS LYNN MARECEK, SANTA "
-    "ANA COLLEGE MARYANNE ANTHONY-SMITH, SANTA ANA COLLEGE ANDREA HONEYCUTT "
-    "MATHIS, NORTHEAST MISSISSIPPI COMMUNITY COLLEGE OpenStax Rice University "
-    "6100 Main Street MS-375 Houston, Texas 77005 To learn more about "
-    "OpenStax, visit https://openstax.org. Individual print copies and bulk "
+    "Foundations of Algebra SENIOR CONTRIBUTING AUTHORS JAMIE RIVERA, "
+    "RIVERDALE COMMUNITY COLLEGE PRIYA NATARAJAN, LAKESHORE COLLEGE SAMUEL "
+    "OKAFOR, NORTHGATE COMMUNITY COLLEGE Published by the Open Learning "
+    "Press, 100 Campus Drive, Suite 200. Individual print copies and bulk "
     "orders can be purchased through our website. If you redistribute this "
     "textbook in a digital format (including but not limited to PDF and HTML), "
     "then you must retain on every page the following attribution: “Access "
-    "for free at openstax.org.” Trademarks The OpenStax name, OpenStax "
-    "logo, OpenStax book covers, OpenStax CNX name, OpenStax CNX logo, "
-    "Connexions name, Connexions logo, Rice University name, and Rice "
-    "University logo are not subject to the Creative Commons license."
+    "this material freely.” Trademarks The publisher name, publisher logo, "
+    "and book covers are not subject to the Creative Commons license."
 )
 
-# ``_chunk_00002`` — donor list ("Leon Lowenstein Foundation, Inc.", named
+# Second chunk — donor list ("Cedar Grove Foundation, Inc.", named
 # individual donors) + marketing web-view blurb + Table of Contents.
 CHUNK_00002_DONOR_TOC = (
-    "Leon Lowenstein Foundation, Inc. Tammy and Guillermo Treviño Study "
-    "where you want, what you want, when you want. When you access your book "
-    "in our web view, you can use our new online highlighting and note-taking "
-    "features to create your own study guides. Our books are free and "
-    "flexible, forever. Get started at openstax.org/details/books/"
-    "sample-algebra-2e Access. The future of education. openstax.org "
+    "Cedar Grove Foundation, Inc. and our generous supporters make this book "
+    "possible. Study where you want, what you want, when you want. When you "
+    "access your book in our web view, you can use our new online highlighting "
+    "and note-taking features to create your own study guides. Our books are "
+    "free and flexible, forever. "
     "Table of Contents Preface 1 1 Foundations 5 1.1 Introduction to Whole "
     "Numbers 5 1.2 Use the Language of Algebra 21 1.3 Add and Subtract "
     "Integers 41 1.4 Multiply and Divide Integers 64 1.5 Visualize Fractions "
@@ -56,7 +51,7 @@ CHUNK_00002_DONOR_TOC = (
     "Measurement 165"
 )
 
-# ``_chunk_00004`` — "Key Features" preface (book features marketing).
+# Fourth chunk — "Key Features" preface (book features marketing).
 CHUNK_00004_KEY_FEATURES = (
     "Key Features and Boxes Examples Each learning objective is supported by "
     "one or more worked examples that demonstrate the problem-solving "
@@ -143,7 +138,7 @@ def test_isbn_creative_commons_strong_signal_in_cover_region():
     chunk = {
         "id": "c_iso",
         "text": (
-            "Print ISBN-13: 978-1-947172-26-5 This work is licensed under a "
+            "Print ISBN-13: 978-0-00-000000-0 This work is licensed under a "
             "Creative Commons Attribution 4.0 International License."
         ),
     }

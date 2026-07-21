@@ -33,12 +33,12 @@ def _unit_html(
     body: str = "Solve 2x plus 3 equals 7 for x by isolating the variable.",
 ) -> str:
     members = "\n".join(
-        f'<section class="dart-section" data-semantik-block-id="s{i}" '
+        f'<section class="semantik-section" data-semantik-block-id="s{i}" '
         f'data-semantik-pages="{p}"><p>{body}</p></section>'
         for i, p in enumerate(member_pages)
     )
     return (
-        f'<section class="dart-unit dart-unit-{unit_type}" '
+        f'<section class="semantik-unit semantik-unit-{unit_type}" '
         f'data-semantik-unit="{unit_type}" role="group" aria-label="X" '
         f'data-semantik-pages="{pages}" data-semantik-page-kind="physical">\n'
         f"<h4>Example 1.1</h4>\n{members}\n</section>"
@@ -187,12 +187,12 @@ def test_payload_only_html_differs_by_two_attrs_only():
     # Stripping ONLY the two added tokens recovers the input byte-for-byte.
     recovered = out.replace(
         ' data-semantik-subclass="symbolic-manipulation"', ""
-    ).replace(" dart-sub-symbolic-manipulation", "")
+    ).replace(" semantik-sub-symbolic-manipulation", "")
     assert recovered == html
 
 
 def test_no_units_html_unchanged():
-    html = "<section class='dart-section'><p>Plain content, no unit.</p></section>"
+    html = "<section class='semantik-section'><p>Plain content, no unit.</p></section>"
     out, report = sc.annotate_html_subclasses(
         html, client=_fixed_client("drill"), capture=_Capture(),
     )
@@ -407,7 +407,7 @@ def test_annotate_threads_lexicon_glosses_into_prompt():
         return '{"subclass": "application-problem", "confidence": 0.9}'
 
     html = (
-        '<section class="dart-unit dart-unit-worked_example" '
+        '<section class="semantik-unit semantik-unit-worked_example" '
         'data-semantik-unit="worked_example" role="group" '
         'aria-labelledby="example-1-1">'
         "<h4 id=\"example-1-1\">Example 1.1</h4><p>A ball costs 3 dollars.</p>"

@@ -95,7 +95,7 @@ def _make_block(
     block_id: str = "page_01#concept_intro_0",
     block_type: str = "concept",
     content: Any = None,
-    source_ids: Tuple[str, ...] = ("dart:slug#blk_0",),
+    source_ids: Tuple[str, ...] = ("semantik:slug#blk_0",),
     source_references: Optional[Tuple[Dict[str, Any], ...]] = None,
 ) -> Block:
     refs = source_references if source_references is not None else tuple(
@@ -138,8 +138,8 @@ def test_keystone_fabricated_on_topic_prose_fails_nli() -> None:
         "encodes ancient memories into the surrounding cytoplasm of the cell "
         "for safekeeping.</p>"
     )
-    block = _make_block(content=prose, source_ids=("dart:slug#blk_0",))
-    source_chunks = {"dart:slug#blk_0": _CHUNK}
+    block = _make_block(content=prose, source_ids=("semantik:slug#blk_0",))
+    source_chunks = {"semantik:slug#blk_0": _CHUNK}
 
     result = validator.validate(
         {"blocks": [block], "source_chunks": source_chunks}
@@ -170,8 +170,8 @@ def test_faithful_paraphrase_passes() -> None:
         "[ENTAIL]. This energy production sustains the metabolic activity of "
         "the entire cell continuously [ENTAIL].</p>"
     )
-    block = _make_block(content=prose, source_ids=("dart:slug#blk_0",))
-    source_chunks = {"dart:slug#blk_0": _CHUNK}
+    block = _make_block(content=prose, source_ids=("semantik:slug#blk_0",))
+    source_chunks = {"semantik:slug#blk_0": _CHUNK}
 
     result = validator.validate(
         {"blocks": [block], "source_chunks": source_chunks}
@@ -202,8 +202,8 @@ def test_contradicted_block_fires_standalone() -> None:
         "mitochondrion actually destroys all cellular ATP and halts every "
         "metabolic process within the cell [CONTRA].</p>"
     )
-    block = _make_block(content=prose, source_ids=("dart:slug#blk_0",))
-    source_chunks = {"dart:slug#blk_0": _CHUNK}
+    block = _make_block(content=prose, source_ids=("semantik:slug#blk_0",))
+    source_chunks = {"semantik:slug#blk_0": _CHUNK}
 
     result = validator.validate(
         {"blocks": [block], "source_chunks": source_chunks}
@@ -236,10 +236,10 @@ def test_nli_deps_missing_emits_warning_passes(
     validator = BlockProseEntailmentValidator()  # nli=None → real loader
     block = _make_block(
         content="<p>Some on-topic prose about the cell here please.</p>",
-        source_ids=("dart:slug#blk_0",),
+        source_ids=("semantik:slug#blk_0",),
     )
     result = validator.validate(
-        {"blocks": [block], "source_chunks": {"dart:slug#blk_0": _CHUNK}}
+        {"blocks": [block], "source_chunks": {"semantik:slug#blk_0": _CHUNK}}
     )
 
     deps = [i for i in result.issues if i.code == _CODE_NLI_DEPS_MISSING]
@@ -262,11 +262,11 @@ def test_strict_mode_with_missing_deps_raises(
     validator = BlockProseEntailmentValidator()
     block = _make_block(
         content="<p>Some on-topic prose about the cell here please.</p>",
-        source_ids=("dart:slug#blk_0",),
+        source_ids=("semantik:slug#blk_0",),
     )
     with pytest.raises(RuntimeError) as excinfo:
         validator.validate(
-            {"blocks": [block], "source_chunks": {"dart:slug#blk_0": _CHUNK}}
+            {"blocks": [block], "source_chunks": {"semantik:slug#blk_0": _CHUNK}}
         )
     assert "TRAINFORGE_REQUIRE_EMBEDDINGS" in str(excinfo.value)
 
@@ -298,12 +298,12 @@ def test_shadow_computes_without_gating() -> None:
         "encodes ancient memories into the surrounding cytoplasm of the cell "
         "for safekeeping.</p>"
     )
-    block = _make_block(content=prose, source_ids=("dart:slug#blk_0",))
+    block = _make_block(content=prose, source_ids=("semantik:slug#blk_0",))
 
     result = validator.validate(
         {
             "blocks": [block],
-            "source_chunks": {"dart:slug#blk_0": _CHUNK},
+            "source_chunks": {"semantik:slug#blk_0": _CHUNK},
             "shadow": True,
             "decision_capture": capture,
         }
@@ -340,12 +340,12 @@ def test_decision_capture_dynamic_signals() -> None:
         "through oxidative phosphorylation across its inner membrane "
         "[ENTAIL].</p>"
     )
-    block = _make_block(content=prose, source_ids=("dart:slug#blk_0",))
+    block = _make_block(content=prose, source_ids=("semantik:slug#blk_0",))
 
     validator.validate(
         {
             "blocks": [block],
-            "source_chunks": {"dart:slug#blk_0": _CHUNK},
+            "source_chunks": {"semantik:slug#blk_0": _CHUNK},
             "decision_capture": capture,
         }
     )
@@ -382,7 +382,7 @@ def test_skip_set_skips_assessment_and_objective_scores_example() -> None:
     result = validator.validate(
         {
             "blocks": skipped + [example],
-            "source_chunks": {"dart:slug#blk_0": _CHUNK},
+            "source_chunks": {"semantik:slug#blk_0": _CHUNK},
             "decision_capture": capture,
         }
     )
@@ -404,10 +404,10 @@ def test_no_grounding_source_warns_passes() -> None:
 
     prose = "<p>On-topic prose about the cell and its inner membrane here.</p>"
     # source_ids resolve to nothing in source_chunks → no cited passages.
-    block = _make_block(content=prose, source_ids=("dart:slug#missing",))
+    block = _make_block(content=prose, source_ids=("semantik:slug#missing",))
 
     result = validator.validate(
-        {"blocks": [block], "source_chunks": {"dart:slug#blk_0": _CHUNK}}
+        {"blocks": [block], "source_chunks": {"semantik:slug#blk_0": _CHUNK}}
     )
 
     no_src = [
@@ -432,10 +432,10 @@ def test_computational_only_block_no_op_pass() -> None:
     # All sentences are derived-numeric (computational exemption); scored_count
     # is 0 so no failure is fabricated.
     prose = "<p>Therefore 3 + 10 = 13. The answer is 13. Also 25 * 4 = 100.</p>"
-    block = _make_block(content=prose, source_ids=("dart:slug#blk_0",))
+    block = _make_block(content=prose, source_ids=("semantik:slug#blk_0",))
 
     result = validator.validate(
-        {"blocks": [block], "source_chunks": {"dart:slug#blk_0": _CHUNK}}
+        {"blocks": [block], "source_chunks": {"semantik:slug#blk_0": _CHUNK}}
     )
 
     assert result.passed is True
@@ -477,7 +477,7 @@ def test_calibration_shadow_measures_without_mutating() -> None:
     result = validator.validate(
         {
             "blocks": blocks,
-            "source_chunks": {"dart:slug#blk_0": _CHUNK},
+            "source_chunks": {"semantik:slug#blk_0": _CHUNK},
             "shadow": True,
             "decision_capture": capture,
         }
@@ -513,7 +513,7 @@ def _semantik_block(content: Any) -> Block:
     """A rewrite-tier block citing a section-level ``semantik:...#anchor`` ref
     (NOT a ``{course}_chunk_NNNNN`` chunk id) — the exact provenance shape the
     gate cannot resolve through a chunk-id-keyed ``source_chunks`` map."""
-    ref = "semantik:elementary-algebra-2e-ch01_accessible#1-1-whole-numbers"
+    ref = "semantik:mini-course-ch01_accessible#1-1-topic"
     return _make_block(
         block_id="week_01_content_01#concept_intro_0",
         content=content,
@@ -544,7 +544,7 @@ def test_provenance_flag_off_byte_identical_no_grounding(
     # block's semantik ref does not resolve directly.
     source_chunks = {"alg_chunk_00002": _CHUNK}
     index = {
-        "semantik:elementary-algebra-2e-ch01_accessible#1-1-whole-numbers": [
+        "semantik:mini-course-ch01_accessible#1-1-topic": [
             "alg_chunk_00002",
         ]
     }
@@ -583,7 +583,7 @@ def test_provenance_flag_on_scores_previously_ungrounded_block(
         "alg_chunk_00004": _CHUNK,
     }
     index = {
-        "semantik:elementary-algebra-2e-ch01_accessible#1-1-whole-numbers": [
+        "semantik:mini-course-ch01_accessible#1-1-topic": [
             "alg_chunk_00002",
             "alg_chunk_00003",
             "alg_chunk_00004",
@@ -653,9 +653,9 @@ def test_provenance_flag_on_never_drops_direct_ids(
         "for safekeeping.</p>"
     )
     # Directly resolvable via source_chunks — provenance pass must not run/strip.
-    block = _make_block(content=fabricated, source_ids=("dart:slug#blk_0",))
-    source_chunks = {"dart:slug#blk_0": _CHUNK}
-    index = {"dart:slug#blk_0": ["some_other_chunk"]}
+    block = _make_block(content=fabricated, source_ids=("semantik:slug#blk_0",))
+    source_chunks = {"semantik:slug#blk_0": _CHUNK}
+    index = {"semantik:slug#blk_0": ["some_other_chunk"]}
 
     result = validator.validate(
         {

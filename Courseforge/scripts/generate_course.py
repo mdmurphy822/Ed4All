@@ -2191,7 +2191,7 @@ def _render_objectives(
     Wave 9: when ``source_ids`` is non-empty, the enclosing
     ``.objectives`` wrapper carries ``data-cf-source-ids`` (and optionally
     ``data-cf-source-primary``) so downstream consumers can tie the block
-    back to a DART source region.
+    back to a SemantiK source region.
 
     Phase 2 (Subtask 16): refactored to build ``List[Block]`` first, then
     emit using ``block.to_html_attrs()`` for the per-``<li>`` attribute
@@ -4575,8 +4575,8 @@ def _page_refs_for(
         {
           "week_03": {
             "content_01": {
-              "primary":      ["dart:slug#s5_p2"],
-              "contributing": ["dart:slug#s4_p0"],
+              "primary":      ["semantik:slug#s5_p2"],
+              "contributing": ["semantik:slug#s4_p0"],
               "confidence":   0.85
             },
             ...
@@ -4616,7 +4616,7 @@ def _page_refs_for(
                 entry = week_entries.get(slug_match.group(1))
         if entry is None and short_key.startswith("content_"):
             # Wave 35: router only emits a single ``content_01`` entry
-            # per week; content_02..10 share the same DART source
+            # per week; content_02..10 share the same SemantiK source
             # region. Fall back to content_01 so every generated
             # content page inherits the week's grounding.
             entry = week_entries.get("content_01")
@@ -5027,7 +5027,7 @@ def generate_week(
     # empty (preserves the test_no_map_no_emit back-compat contract).
     summary_body = ""
     # Prepend a "Chapter Recap" <section data-cf-source-ids="…"> carrying 1-3
-    # substantive paragraphs from the week's content_modules (same DART prose
+    # substantive paragraphs from the week's content_modules (same SemantiK prose
     # the content pages cite, so no new text synthesis). Without it a summary
     # page emits only Key Takeaways <li>s (5-15 words each) + reflection
     # prompts — zero paragraphs clearing ContentGroundingValidator's

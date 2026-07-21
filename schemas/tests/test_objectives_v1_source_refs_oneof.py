@@ -61,20 +61,20 @@ def _component_objective_schema() -> Dict[str, Any]:
 
 
 def _legacy_list_str_refs() -> List[str]:
-    return ["dart:owl2_primer#s1", "dart:owl2_primer#s2"]
+    return ["semantik:owl2_primer#s1", "semantik:owl2_primer#s2"]
 
 
 def _structured_refs() -> List[Dict[str, Any]]:
     return [
         {
             "ref": "ch7",
-            "chunk_ids": ["dart:shacl-spec_accessible#sec3-1-targets"],
+            "chunk_ids": ["semantik:shacl-spec_accessible#sec3-1-targets"],
         },
         {
             "ref": "ch8",
             "chunk_ids": [
-                "dart:shacl-spec_accessible#sec4-1-core-constraints",
-                "dart:shacl-spec_accessible#sec4-2-property-shapes",
+                "semantik:shacl-spec_accessible#sec4-1-core-constraints",
+                "semantik:shacl-spec_accessible#sec4-2-property-shapes",
             ],
         },
     ]
@@ -90,7 +90,7 @@ def test_legacy_list_str_source_refs_validates_on_terminal_outcome():
     """Legacy ``List[str]`` source_refs validates against TerminalOutcome.
 
     Back-compat with every existing LibV2 archive on disk (the RDF/SHACL
-    calibration corpus plus 60+ siblings) where COs carry ``source_refs: ["dart:foo#s1", ...]``
+    calibration corpus plus 60+ siblings) where COs carry ``source_refs: ["semantik:foo#s1", ...]``
     and TOs carry no ``source_refs`` at all. The bump ADDs ``source_refs``
     to TO; this test asserts the legacy shape is admitted there too.
     """
@@ -164,10 +164,10 @@ def test_mixed_shape_fails_on_terminal_outcome():
         "id": "to-04",
         "statement": "Develop SHACL shape graphs.",
         "source_refs": [
-            "dart:owl2_primer#s1",
+            "semantik:owl2_primer#s1",
             {
                 "ref": "ch7",
-                "chunk_ids": ["dart:shacl-spec#sec3"],
+                "chunk_ids": ["semantik:shacl-spec#sec3"],
             },
         ],
     }
@@ -185,9 +185,9 @@ def test_mixed_shape_fails_on_component_objective():
         "source_refs": [
             {
                 "ref": "ch7",
-                "chunk_ids": ["dart:shacl-spec#sec3"],
+                "chunk_ids": ["semantik:shacl-spec#sec3"],
             },
-            "dart:owl2_primer#s2",
+            "semantik:owl2_primer#s2",
         ],
     }
     with pytest.raises(jsonschema.ValidationError):
@@ -298,12 +298,12 @@ def test_build_objectives_json_round_trips_structured_shape(tmp_path):
     # Content preserved verbatim.
     assert refs[0]["ref"] == "ch7"
     assert refs[0]["chunk_ids"] == [
-        "dart:shacl-spec_accessible#sec3-1-targets"
+        "semantik:shacl-spec_accessible#sec3-1-targets"
     ]
     assert refs[1]["ref"] == "ch8"
     assert refs[1]["chunk_ids"] == [
-        "dart:shacl-spec_accessible#sec4-1-core-constraints",
-        "dart:shacl-spec_accessible#sec4-2-property-shapes",
+        "semantik:shacl-spec_accessible#sec4-1-core-constraints",
+        "semantik:shacl-spec_accessible#sec4-2-property-shapes",
     ]
 
     # The emit must validate against the bumped schema.
@@ -316,9 +316,9 @@ def test_build_objectives_json_round_trips_structured_shape(tmp_path):
     # is making a fresh dict + fresh inner list rather than aliasing.
     structured_input["chapter_objectives"][0]["source_refs"][0][
         "chunk_ids"
-    ].append("dart:shacl-spec#sec3-mutated")
+    ].append("semantik:shacl-spec#sec3-mutated")
     assert refs[0]["chunk_ids"] == [
-        "dart:shacl-spec_accessible#sec3-1-targets"
+        "semantik:shacl-spec_accessible#sec3-1-targets"
     ]
 
 
@@ -350,7 +350,7 @@ def test_build_objectives_json_round_trips_legacy_shape(tmp_path):
     assert doc is not None
     cos = doc["component_objectives"]
     refs = cos[0]["source_refs"]
-    assert refs == ["dart:owl2_primer#s1", "dart:owl2_primer#s2"]
+    assert refs == ["semantik:owl2_primer#s1", "semantik:owl2_primer#s2"]
     assert all(isinstance(r, str) for r in refs)
 
     # The emit must validate against the bumped schema.
@@ -385,8 +385,8 @@ def test_normalize_objective_entry_preserves_legacy_source_refs():
     assert entry is not None
     assert "source_refs" in entry
     assert entry["source_refs"] == [
-        "dart:owl2_primer#s1",
-        "dart:owl2_primer#s2",
+        "semantik:owl2_primer#s1",
+        "semantik:owl2_primer#s2",
     ]
     assert all(isinstance(r, str) for r in entry["source_refs"])
 
@@ -413,10 +413,10 @@ def test_normalize_objective_entry_preserves_structured_source_refs():
     assert all(isinstance(r, dict) for r in refs)
     assert refs[0]["ref"] == "ch7"
     assert refs[0]["chunk_ids"] == [
-        "dart:shacl-spec_accessible#sec3-1-targets"
+        "semantik:shacl-spec_accessible#sec3-1-targets"
     ]
     assert refs[1]["ref"] == "ch8"
     assert refs[1]["chunk_ids"] == [
-        "dart:shacl-spec_accessible#sec4-1-core-constraints",
-        "dart:shacl-spec_accessible#sec4-2-property-shapes",
+        "semantik:shacl-spec_accessible#sec4-1-core-constraints",
+        "semantik:shacl-spec_accessible#sec4-2-property-shapes",
     ]

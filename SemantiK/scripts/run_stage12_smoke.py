@@ -76,9 +76,9 @@ def main() -> int:
 
     # Theta strict-by-default banner (mirror eval driver — see
     # semantik_structure/theta/_module_state.py).
-    if os.environ.get("DART_ALLOW_THETA_STUB", "").strip() == "1":
+    if os.environ.get("SEMANTIK_ALLOW_THETA_STUB", "").strip() == "1":
         print(
-            "[smoke12] WARNING: DART_ALLOW_THETA_STUB=1 — semantic_preservation "
+            "[smoke12] WARNING: SEMANTIK_ALLOW_THETA_STUB=1 — semantic_preservation "
             "may fall back to 0.7 stub_v1; theta_score is NOT a real "
             "measurement when this flag is set AND the trained model is "
             "missing/broken.",

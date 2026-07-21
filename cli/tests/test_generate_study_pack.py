@@ -417,8 +417,8 @@ def test_renderer_aggregates_source_references(tmp_path):
                 text="ov",
                 word_count=50,
                 source_refs=[
-                    {"sourceId": "dart:foo#s1", "role": "primary"},
-                    {"sourceId": "dart:bar#s9", "role": "contributing"},
+                    {"sourceId": "semantik:foo#s1", "role": "primary"},
+                    {"sourceId": "semantik:bar#s9", "role": "contributing"},
                 ],
             ),
             _build_chunk(
@@ -430,16 +430,16 @@ def test_renderer_aggregates_source_references(tmp_path):
                 text="p1",
                 word_count=50,
                 source_refs=[
-                    # Duplicate of dart:foo#s1 — should dedupe.
-                    {"sourceId": "dart:foo#s1", "role": "secondary"},
-                    {"sourceId": "dart:baz#s2", "role": "contributing"},
+                    # Duplicate of semantik:foo#s1 — should dedupe.
+                    {"sourceId": "semantik:foo#s1", "role": "secondary"},
+                    {"sourceId": "semantik:baz#s2", "role": "contributing"},
                 ],
             ),
         ],
     )
     pack = render_study_pack(archive, weeks=[1], lesson_plan=True)
     ids = [r["sourceId"] for r in pack.aggregated_source_references]
-    assert ids == ["dart:bar#s9", "dart:baz#s2", "dart:foo#s1"]
+    assert ids == ["semantik:bar#s9", "semantik:baz#s2", "semantik:foo#s1"]
     assert len(set(ids)) == len(ids)
 
 

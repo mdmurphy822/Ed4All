@@ -1,15 +1,15 @@
-"""Regression: per-chunk DART provenance is SECTION-scoped, not whole-document.
+"""Regression: per-chunk source provenance is SECTION-scoped, not whole-document.
 
 Root cause (pre-fix): ``chunk_text_block`` built its block-probe index over the
-whole item / chapter HTML, so ``resolve_dart_refs_for_chunk``'s one-way
-containment match attributed a block to a chunk whenever the block's leading
-≤8-word probe appeared ANYWHERE in the chunk's text. Generic apparatus probes
-(``"Solution ..."``) and repeated instructional stems recur verbatim across a
-chapter, so a Section-1.1 chunk smeared refs across every distant section that
-shared the phrasing (median ~54 refs/chunk on the real corpus).
+whole item / chapter HTML, so the one-way containment match attributed a block
+to a chunk whenever the block's leading ≤8-word probe appeared ANYWHERE in the
+chunk's text. Generic apparatus probes (``"Solution ..."``) and repeated
+instructional stems recur verbatim across a chapter, so a Section-1.1 chunk
+smeared refs across every distant section that shared the phrasing (median ~54
+refs/chunk on the real corpus).
 
 The fix (THRESHOLD-FREE): the probe index is built over the section's OWN
-DART-block range (``_section_block_scope_html`` — heading → next-heading
+source-block range (``_section_block_scope_html`` — heading → next-heading
 boundary), so a chunk can only ever be attributed blocks that belong to its own
 synthesized section. No locality distance threshold: the scope is the
 structural section boundary.
@@ -23,7 +23,10 @@ Contract under test:
     preserved — only OUT-of-section blocks are dropped).
 
 Driven through ``Trainforge.chunker.chunk_content`` with a recording callback
-and a synthetic multi-section DART page (no real course identifiers).
+and a synthetic multi-section SemantiK page (no real course identifiers). The
+provenance harvest dual-reads both ``data-semantik-*`` (current emit) and the
+legacy ``data-dart-*`` block-attribute spellings; the main fixture uses the
+current spelling and one legacy-compat test pins the ``data-dart-*`` read.
 """
 
 from __future__ import annotations
@@ -38,7 +41,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from Trainforge.chunker import ChunkerContext, chunk_content  # noqa: E402
 from Trainforge.chunker.helpers import (  # noqa: E402
-    build_dart_block_offset_index,
+    build_semantik_block_offset_index,
     resolve_dart_refs_for_chunk,
 )
 
@@ -55,15 +58,16 @@ def _block(
     body: str,
     *,
     role: str = "paragraph",
+    attr: str = "semantik",
 ) -> str:
     return (
-        f'<section class="dart-section" data-dart-block-id="{bid}" '
-        f'data-dart-pages="{pages}" data-dart-block-role="{role}" '
-        f'data-dart-wcag="passed">{heading_html}<p>{body}</p></section>'
+        f'<section class="{attr}-section" data-{attr}-block-id="{bid}" '
+        f'data-{attr}-pages="{pages}" data-{attr}-block-role="{role}" '
+        f'data-{attr}-wcag="passed">{heading_html}<p>{body}</p></section>'
     )
 
 
-def _multi_section_item() -> Dict[str, Any]:
+def _multi_section_item(attr: str = "semantik") -> Dict[str, Any]:
     """Two well-separated headed sections, each with a short 'Solution' block.
 
     Each headed content block clears the ~100-word merge floor and any two
@@ -78,12 +82,12 @@ def _multi_section_item() -> Dict[str, Any]:
     beta_body = "Chloroplasts " + " ".join(f"beta{n}" for n in range(440)) + " " + _STEM
     raw_html = (
         "<html><body><main>"
-        + _block("blk_alpha", "2", "<h2>Cellular Respiration</h2>", alpha_body)
-        + _block("sol_alpha", "2", "", _SOLUTION, role="worked_solution")
-        + _block("stem_alpha", "3", "", _STEM)
-        + _block("blk_beta", "40", "<h2>Photosynthesis Overview</h2>", beta_body)
-        + _block("sol_beta", "41", "", _SOLUTION, role="worked_solution")
-        + _block("stem_beta", "41", "", _STEM)
+        + _block("blk_alpha", "2", "<h2>Cellular Respiration</h2>", alpha_body, attr=attr)
+        + _block("sol_alpha", "2", "", _SOLUTION, role="worked_solution", attr=attr)
+        + _block("stem_alpha", "3", "", _STEM, attr=attr)
+        + _block("blk_beta", "40", "<h2>Photosynthesis Overview</h2>", beta_body, attr=attr)
+        + _block("sol_beta", "41", "", _SOLUTION, role="worked_solution", attr=attr)
+        + _block("stem_beta", "41", "", _STEM, attr=attr)
         + "</main></body></html>"
     )
 
@@ -162,12 +166,26 @@ def test_out_of_section_apparatus_does_not_smear_into_unrelated_chunk() -> None:
     )
 
 
+def test_legacy_data_dart_attrs_section_scoped() -> None:
+    """Legacy-compat: the same section-scoping contract holds when the source
+    blocks carry the legacy ``data-dart-*`` attribute spelling (dual-read)."""
+    records: List[Dict[str, Any]] = []
+    chunk_content(
+        [_multi_section_item(attr="dart")], "TEST_101", ctx=_recording_ctx(records)
+    )
+    assert len(records) == 2, f"expected two section chunks, got {records}"
+    by_heading = {r["heading"]: r for r in records}
+    alpha = by_heading["Cellular Respiration"]
+    assert "sol_alpha" in alpha["block_ids"]
+    assert "sol_beta" not in alpha["block_ids"]
+
+
 def test_whole_document_index_would_have_smeared() -> None:
     """Pin the bug: over the WHOLE-document index the identical 'Solution' probe
     resolves to BOTH sections' apparatus, proving the section scope is what
     eliminates the smear (not the probe logic)."""
     item = _multi_section_item()
-    whole_doc_index = build_dart_block_offset_index(item["raw_html"])
+    whole_doc_index = build_semantik_block_offset_index(item["raw_html"])
     # Alpha's chunk text contains the shared 'Solution ...' phrase, so over the
     # whole-document index it matches sol_alpha AND the distant sol_beta.
     alpha_text = "Mitochondria alpha0 alpha1 " + _SOLUTION + " " + _STEM

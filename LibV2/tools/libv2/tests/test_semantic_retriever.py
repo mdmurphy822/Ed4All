@@ -57,9 +57,9 @@ def _fake_client():
 
 
 def _write_course(repo_root: Path, slug: str = "sem-101", n: int = 6) -> Path:
-    """Build a tmp LibV2 repo course with a dart_chunks/chunks.jsonl."""
+    """Build a tmp LibV2 repo course with a semantik_chunks/chunks.jsonl."""
     course_dir = repo_root / "courses" / slug
-    chunks_dir = course_dir / "dart_chunks"
+    chunks_dir = course_dir / "semantik_chunks"
     chunks_dir.mkdir(parents=True)
     lines = []
     for i in range(n):
@@ -182,7 +182,7 @@ def test_missing_index_raises_no_fallback(tmp_path):
 def test_stale_index_raises_no_fallback(tmp_path):
     course_dir = _build_index(tmp_path, n=4)
     # Mutate the chunkset so the index is stale.
-    chunks = course_dir / "dart_chunks" / "chunks.jsonl"
+    chunks = course_dir / "semantik_chunks" / "chunks.jsonl"
     chunks.write_text(
         chunks.read_text(encoding="utf-8") + '{"id":"x","text":"new"}\n',
         encoding="utf-8",

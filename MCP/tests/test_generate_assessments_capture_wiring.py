@@ -10,9 +10,9 @@ point the run's captures are already missing). This module pins the
 contract: on a successful run, at least one decision is emitted via
 the ``capture`` returned from ``create_trainforge_capture``.
 
-Follows the precedent set by
-``DART/tests/test_llm_classifier_capture_wiring.py`` and
-``DART/tests/test_alt_text_generator_capture_wiring.py``.
+Follows the LLM-call-site capture-wiring regression precedent — every
+LLM call site must emit at least one decision through its wired
+``DecisionCapture``.
 """
 
 from __future__ import annotations

@@ -2,7 +2,7 @@ r"""Deterministic, shape-driven structural-body emission (adapter-seam, model-fr
 
 Exemplar-parity wave (2026-07-04, ``plans/enduser-html-improvements-2026-07.md``
 §A1/§A4/§A5): the SemantiK cascade ships every block as a flat ``<p>`` body even
-when it declares ``data-dart-block-role="list"`` / ``"table"`` /
+when it declares ``data-semantik-block-role="list"`` / ``"table"`` /
 ``"definition_list"`` — so the emitted HTML never *delivers* the structure it
 *declares* (the structure-scorecard "deliver" dimension reads ~0). This module
 reconstructs the real semantic element from the block's deterministic text when —
@@ -329,7 +329,7 @@ def _parse_alpha_marked(
 
     ITEM 2 — handles BOTH the single-run case (``(a)…(b)…(c)`` → one
     ``<ol type="a">``) and the REPEATING case (``(a)…(b)…(a)…(b)…`` → a nested
-    ``<ol class="dart-exercise-list">`` of per-cycle ``<ol type="a">`` lists, one
+    ``<ol class="semantik-exercise-list">`` of per-cycle ``<ol type="a">`` lists, one
     numbered exercise per cycle). Guards (anti-fabrication): >= 3 total markers,
     a clean sequential-from-``a`` cycle decomposition, >= 70% text coverage, and
     every item is math-bearing OR short (no sentence break, <= 120 chars). For
@@ -381,7 +381,7 @@ def _parse_alpha_marked(
     # ``start`` attribute — the outer ``<ol>`` numbers its first exercise ``430``
     # — instead of shipping a bare ``<p>430</p>`` debris paragraph. STRICT guard:
     # only when the lead is EXACTLY a 1-4 digit number AND the list IS a numbered
-    # exercise list (>= 2 cycles → ``<ol class="dart-exercise-list">``); a
+    # exercise list (>= 2 cycles → ``<ol class="semantik-exercise-list">``); a
     # single-cycle ``<ol type="a">`` (alpha parts, no numeric wrapper) keeps its
     # lead as prose (a numeric ``start`` on an alpha list is nonsensical).
     lead_stripped = lead.strip(" :.")
@@ -394,7 +394,7 @@ def _parse_alpha_marked(
         body = f'<ol type="a">{lis}</ol>'
     else:
         start_attr = f' start="{exercise_start}"' if exercise_start else ""
-        parts: List[str] = [f'<ol class="dart-exercise-list"{start_attr}>']
+        parts: List[str] = [f'<ol class="semantik-exercise-list"{start_attr}>']
         for cyc in cycles:
             parts.append('<li><ol type="a">')
             parts.extend(f"<li>{_cell(items[i], spans)}</li>" for i in cyc)

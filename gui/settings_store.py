@@ -13,7 +13,7 @@ Settings doc schema (versioned) — see build spec §3:
       "version": 1,
       "updated_at": "<iso>",
       "env": { "ANTHROPIC_API_KEY": "...", "LLM_MODE": "api", ... },
-      "model_routing": { "global": {...}, "dart": {...}, ... },
+      "model_routing": { "global": {...}, "answer": {...}, ... },
       "retrieval": { "top_k": 5, "min_grounding_cosine": 0.45, ... },
       "flags": { "COURSEFORGE_TWO_PASS": false, ... }
     }

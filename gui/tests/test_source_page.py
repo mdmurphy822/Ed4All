@@ -39,13 +39,13 @@ def _make_course(libv2_root: Path, slug: str, *, kind: str) -> Path:
     """Copy the mini-course source tree into ``libv2_root/courses/<slug>``.
 
     ``kind`` controls which chunks dir is created so
-    ``_infer_chunkset_kind`` returns the kind under test (``dart`` ->
-    ``dart_chunks/``, ``imscc`` -> ``imscc_chunks/``).
+    ``_infer_chunkset_kind`` returns the kind under test (``semantik`` ->
+    ``semantik_chunks/``, ``imscc`` -> ``imscc_chunks/``).
     """
     course_dir = libv2_root / "courses" / slug
     course_dir.mkdir(parents=True, exist_ok=True)
     shutil.copytree(MINI_COURSE / "source", course_dir / "source")
-    chunks_dir = {"dart": "dart_chunks", "imscc": "imscc_chunks", "corpus": "corpus"}[kind]
+    chunks_dir = {"semantik": "semantik_chunks", "imscc": "imscc_chunks", "corpus": "corpus"}[kind]
     cdir = course_dir / chunks_dir
     cdir.mkdir(parents=True, exist_ok=True)
     (cdir / "chunks.jsonl").write_text("{}\n", encoding="utf-8")
@@ -53,9 +53,9 @@ def _make_course(libv2_root: Path, slug: str, *, kind: str) -> Path:
 
 
 @pytest.fixture
-def dart_course(libv2_root: Path) -> str:
-    slug = "mini-dart"
-    _make_course(libv2_root, slug, kind="dart")
+def semantik_course(libv2_root: Path) -> str:
+    slug = "mini-semantik"
+    _make_course(libv2_root, slug, kind="semantik")
     return slug
 
 
@@ -89,12 +89,12 @@ def test_heading_slug_matches_fragment_for():
 
 
 # --------------------------------------------------------------------------- #
-# Happy paths — DART file + imscc member
+# Happy paths — SemantiK file + imscc member
 # --------------------------------------------------------------------------- #
 
 
-def test_dart_page_resolves(dart_course, libv2_root):
-    res = render_source_page(dart_course, "alpha.html", libv2_root)
+def test_semantik_page_resolves(semantik_course, libv2_root):
+    res = render_source_page(semantik_course, "alpha.html", libv2_root)
     assert isinstance(res, SourcePageResult)
     assert "Vector Stores and Embeddings" in res.html
     assert res.media_type.startswith("text/html")
@@ -131,7 +131,7 @@ def test_imscc_member_resolves_in_memory(imscc_course, libv2_root):
         "",
     ],
 )
-def test_traversal_rejected_pre_resolution(dart_course, libv2_root, bad_path, monkeypatch):
+def test_traversal_rejected_pre_resolution(semantik_course, libv2_root, bad_path, monkeypatch):
     """Hostile item_paths are rejected 422 BEFORE the resolver runs.
 
     A sentinel patched over ``resolve_source_page`` proves no fs/zip access
@@ -148,17 +148,17 @@ def test_traversal_rejected_pre_resolution(dart_course, libv2_root, bad_path, mo
     )
 
     with pytest.raises(SourcePageError) as ei:
-        render_source_page(dart_course, bad_path, libv2_root)
+        render_source_page(semantik_course, bad_path, libv2_root)
     assert ei.value.status == 422
     assert ei.value.code == "invalid_item_path"
     assert called["hit"] is False
 
 
-def test_traversal_rejection_is_chdir_independent(dart_course, libv2_root, tmp_path, monkeypatch):
+def test_traversal_rejection_is_chdir_independent(semantik_course, libv2_root, tmp_path, monkeypatch):
     """The pre-rejection does not depend on the process cwd."""
     monkeypatch.chdir(tmp_path)
     with pytest.raises(SourcePageError) as ei:
-        render_source_page(dart_course, "../../../../etc/passwd", libv2_root)
+        render_source_page(semantik_course, "../../../../etc/passwd", libv2_root)
     assert ei.value.status == 422
 
 
@@ -167,14 +167,14 @@ def test_traversal_rejection_is_chdir_independent(dart_course, libv2_root, tmp_p
 # --------------------------------------------------------------------------- #
 
 
-def test_symlink_escape_rejected_by_containment(dart_course, libv2_root, tmp_path):
+def test_symlink_escape_rejected_by_containment(semantik_course, libv2_root, tmp_path):
     """A clean-looking item_path that resolves (via symlink/rglob) outside the
     course dir is rejected by the commonpath containment check."""
     # Plant a secret OUTSIDE any course dir.
     secret = tmp_path / "outside_secret.html"
     secret.write_text("<html><body><h1>TOP SECRET</h1></body></html>", encoding="utf-8")
 
-    course_dir = libv2_root / "courses" / dart_course
+    course_dir = libv2_root / "courses" / semantik_course
     html_root = course_dir / "source" / "html"
     link = html_root / "leak.html"
     try:
@@ -185,21 +185,21 @@ def test_symlink_escape_rejected_by_containment(dart_course, libv2_root, tmp_pat
     # "leak.html" is clean (no .., no abs) so it passes pre-rejection; the
     # resolver follows the symlink; containment must reject the escape.
     with pytest.raises(SourcePageError) as ei:
-        render_source_page(dart_course, "leak.html", libv2_root)
+        render_source_page(semantik_course, "leak.html", libv2_root)
     assert ei.value.status == 422
     assert ei.value.code == "invalid_item_path"
 
 
-def test_legal_path_inside_course_serves(dart_course, libv2_root):
+def test_legal_path_inside_course_serves(semantik_course, libv2_root):
     """A non-trivial-but-legal nested path under the source root still serves
     (containment must not reject in-bounds paths)."""
-    course_dir = libv2_root / "courses" / dart_course
+    course_dir = libv2_root / "courses" / semantik_course
     nested = course_dir / "source" / "html" / "ch1"
     nested.mkdir(parents=True, exist_ok=True)
     (nested / "page.html").write_text(
         "<html><body><h1>Nested Page</h1></body></html>", encoding="utf-8"
     )
-    res = render_source_page(dart_course, "ch1/page.html", libv2_root)
+    res = render_source_page(semantik_course, "ch1/page.html", libv2_root)
     assert "Nested Page" in res.html
 
 
@@ -222,9 +222,9 @@ def test_malformed_slug_422(libv2_root, bad_slug):
     assert ei.value.status == 422
 
 
-def test_missing_page_404(dart_course, libv2_root):
+def test_missing_page_404(semantik_course, libv2_root):
     with pytest.raises(SourcePageError) as ei:
-        render_source_page(dart_course, "does-not-exist.html", libv2_root)
+        render_source_page(semantik_course, "does-not-exist.html", libv2_root)
     assert ei.value.status == 404
     assert ei.value.code == "source_page_missing"
 
@@ -250,7 +250,7 @@ HOSTILE_HTML = (
 
 
 def _serve_hostile(libv2_root: Path, slug: str) -> str:
-    course_dir = _make_course(libv2_root, slug, kind="dart")
+    course_dir = _make_course(libv2_root, slug, kind="semantik")
     (course_dir / "source" / "html" / "hostile.html").write_text(
         HOSTILE_HTML, encoding="utf-8"
     )
@@ -297,9 +297,9 @@ def test_safe_image_data_uri_preserved(libv2_root):
 # --------------------------------------------------------------------------- #
 
 
-def test_heading_ids_injected(dart_course, libv2_root):
+def test_heading_ids_injected(semantik_course, libv2_root):
     """Headings without ids get the _fragment_for slug; #fragment lands."""
-    res = render_source_page(dart_course, "alpha.html", libv2_root)
+    res = render_source_page(semantik_course, "alpha.html", libv2_root)
     # alpha.html has "<h2>Retrieval Quality</h2>"
     assert 'id="retrieval-quality"' in res.html
     # h1 too.
@@ -307,7 +307,7 @@ def test_heading_ids_injected(dart_course, libv2_root):
 
 
 def test_existing_heading_ids_preserved(libv2_root):
-    course_dir = _make_course(libv2_root, "ids-stable", kind="dart")
+    course_dir = _make_course(libv2_root, "ids-stable", kind="semantik")
     (course_dir / "source" / "html" / "ided.html").write_text(
         '<html><body><h1 id="keep-me">Title</h1>'
         "<h2>Auto Slug Me</h2></body></html>",
@@ -319,12 +319,12 @@ def test_existing_heading_ids_preserved(libv2_root):
 
 
 def test_heading_text_slug_added_when_hash_id_present(libv2_root):
-    # DART stamps hash ids (id="sec-<hash>") on ~every heading. The Ask answer
-    # deep-link fragment is the SLUGGED heading text (grounded_answer.
+    # The converter stamps hash ids (id="sec-<hash>") on ~every heading. The Ask
+    # answer deep-link fragment is the SLUGGED heading text (grounded_answer.
     # _fragment_for), so the text-slug must ALSO resolve to the heading — planted
     # as a sibling anchor span — even though the heading already has a hash id.
     # Without this the "view in textbook" link lands at document TOP.
-    course_dir = _make_course(libv2_root, "hashids-1", kind="dart")
+    course_dir = _make_course(libv2_root, "hashids-1", kind="semantik")
     (course_dir / "source" / "html" / "hashed.html").write_text(
         '<html><body>'
         '<h2 id="sec-2570ef19b386cdac">Prime Factorization</h2>'
@@ -335,7 +335,9 @@ def test_heading_text_slug_added_when_hash_id_present(libv2_root):
     # Original hash id preserved.
     assert 'id="sec-2570ef19b386cdac"' in res.html
     # Text-slug planted as a sibling anchor so the heading-slug fragment resolves.
-    assert '<span class="dart-heading-anchor" id="prime-factorization"></span>' in res.html
+    # The ``semantik-heading-anchor`` class literal is the anchor class the viewer
+    # service (``source_page.py``) emits; this assertion pins that emitted markup.
+    assert '<span class="semantik-heading-anchor" id="prime-factorization"></span>' in res.html
 
 
 # --------------------------------------------------------------------------- #
@@ -343,11 +345,11 @@ def test_heading_text_slug_added_when_hash_id_present(libv2_root):
 # --------------------------------------------------------------------------- #
 
 
-def test_banner_has_no_heading_element(dart_course, libv2_root):
+def test_banner_has_no_heading_element(semantik_course, libv2_root):
     """The banner is nav+p only — the archived page keeps the unique h1."""
     from bs4 import BeautifulSoup
 
-    res = render_source_page(dart_course, "alpha.html", libv2_root)
+    res = render_source_page(semantik_course, "alpha.html", libv2_root)
     soup = BeautifulSoup(res.html, "html.parser")
     banner = soup.find("nav", attrs={"aria-label": "Source context"})
     assert banner is not None
@@ -357,15 +359,15 @@ def test_banner_has_no_heading_element(dart_course, libv2_root):
     assert len(soup.find_all("h1")) == 1
 
 
-def test_fragment_note_when_no_heading_fragment(dart_course, libv2_root):
+def test_fragment_note_when_no_heading_fragment(semantik_course, libv2_root):
     """fragment=None → banner adds the 'cited section is on this page' note."""
-    res = render_source_page(dart_course, "alpha.html", libv2_root, fragment=None)
+    res = render_source_page(semantik_course, "alpha.html", libv2_root, fragment=None)
     assert "The cited section is on this page." in res.html
 
 
-def test_no_fragment_note_when_heading_fragment(dart_course, libv2_root):
+def test_no_fragment_note_when_heading_fragment(semantik_course, libv2_root):
     res = render_source_page(
-        dart_course, "alpha.html", libv2_root, fragment="retrieval-quality"
+        semantik_course, "alpha.html", libv2_root, fragment="retrieval-quality"
     )
     assert "The cited section is on this page." not in res.html
 
@@ -375,8 +377,8 @@ def test_no_fragment_note_when_heading_fragment(dart_course, libv2_root):
 # --------------------------------------------------------------------------- #
 
 
-def test_csp_and_nosniff_headers_present(dart_course, libv2_root):
-    res = render_source_page(dart_course, "alpha.html", libv2_root)
+def test_csp_and_nosniff_headers_present(semantik_course, libv2_root):
+    res = render_source_page(semantik_course, "alpha.html", libv2_root)
     assert "Content-Security-Policy" in res.headers
     csp = res.headers["Content-Security-Policy"]
     assert "default-src 'none'" in csp

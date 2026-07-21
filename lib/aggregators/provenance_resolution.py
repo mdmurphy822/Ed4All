@@ -7,7 +7,7 @@ the corpus it claims to teach from?".
 The aggregator walks the LibV2 course's IMSCC chunkset
 (``<libv2_course>/imscc_chunks/chunks.jsonl``). For each chunk it extracts the
 ``data-cf-source-ids="..."`` attribute values from the chunk's ``html`` field
-(comma-separated ``dart:{stem}#{anchor}`` tokens). An **empty-string** attr is
+(comma-separated ``semantik:{stem}#{anchor}`` tokens). An **empty-string** attr is
 the sanctioned Wave-27 boilerplate contract (a fail-closed re-rolled block
 legitimately emits none) and counts as *no provenance* — never a resolution
 failure.
@@ -17,13 +17,13 @@ Three ratios are surfaced:
 * ``chunks_with_provenance`` — chunks carrying >=1 non-empty token / total
   chunks.
 * ``source_ids_anchor_resolved`` — distinct tokens whose ``{anchor}`` exists as
-  a ``data-dart-block-id`` attribute in the staged DART/vendor accessible HTML
+  a ``data-semantik-block-id`` attribute in the staged accessible HTML
   for ``{stem}`` / distinct tokens. Skipped (never fabricated as 0s) when no
   staging-HTML root resolves — the field becomes
   ``{"skipped": "no_staging_dir"}``.
 * ``source_ids_book_chunk_resolved`` — distinct tokens carried by >=1 book-side
-  dart chunk's ``source.source_references[].sourceId``
-  (``<libv2_course>/dart_chunks/chunks.jsonl``) / distinct tokens.
+  chunk's ``source.source_references[].sourceId``
+  (``<libv2_course>/semantik_chunks/chunks.jsonl``) / distinct tokens.
 
 Also emitted: the raw counts behind every ratio, capped (<=25) lists of
 unresolved tokens, a per-``module_id`` breakdown (Counter) of provenance-free
@@ -63,30 +63,30 @@ SCHEMA_VERSION = "1.0"
 _UNRESOLVED_CAP = 25
 
 _NOTES = (
-    "data-cf-source-ids tokens have the shape dart:{stem}#{anchor}. An "
+    "data-cf-source-ids tokens have the shape semantik:{stem}#{anchor}. An "
     "empty-string data-cf-source-ids attr is the sanctioned Wave-27 "
     "boilerplate contract (a fail-closed re-rolled block legitimately emits no "
     "provenance) and counts as no-provenance, never a resolution failure. "
-    "anchor resolution checks {anchor} against data-dart-block-id in the "
+    "anchor resolution checks {anchor} against data-semantik-block-id in the "
     "staged {stem}.html; book-chunk resolution checks the token against the "
-    "book-side dart_chunks source.source_references[].sourceId set."
+    "book-side semantik_chunks source.source_references[].sourceId set."
 )
 
 # ``data-cf-source-ids="..."`` — capture the raw (possibly empty) attr value.
 _ATTR_RE = re.compile(r'data-cf-source-ids="([^"]*)"')
-# ``data-dart-block-id="..."`` / ``data-semantik-block-id="..."`` in the staged
-# accessible HTML. DART->semantik purge Stage 1 (dual-READ): harvests both attr
-# spellings identically. Emitters still stamp ``data-dart-*`` this stage.
+# ``data-semantik-block-id="..."`` in the staged accessible HTML. Dual-READ:
+# harvests both the current ``data-semantik-*`` and legacy pre-SemantiK
+# ``data-dart-*`` attr spellings identically.
 _BLOCK_ID_RE = re.compile(r'data-(?:dart|semantik)-block-id="([^"]*)"')
 
 
 def _split_token(token: str) -> Optional[Tuple[str, str]]:
-    """Split a ``{dart|semantik}:{stem}#{anchor}`` token into ``(stem, anchor)``.
+    """Split a ``semantik:{stem}#{anchor}`` token into ``(stem, anchor)``.
 
     Returns ``None`` when the token is not a well-formed source token.
 
-    DART->semantik purge Stage 1 (dual-READ): accepts both the legacy ``dart:``
-    prefix and the ratified ``semantik:`` prefix.
+    Dual-READ: accepts both the current ``semantik:`` prefix and the legacy
+    pre-SemantiK ``dart:`` prefix.
     """
     for _prefix in ("dart:", "semantik:"):
         if token.startswith(_prefix):
@@ -273,7 +273,7 @@ class ProvenanceResolutionAggregator:
         return block
 
     def _book_chunk_resolution(self, tokens: List[str]) -> Dict[str, Any]:
-        """Resolve each distinct token against the book-side dart-chunk set."""
+        """Resolve each distinct token against the book-side chunk set."""
         book_tokens = self._book_chunk_source_ids()
         resolved = 0
         unresolved: List[str] = []
@@ -287,19 +287,19 @@ class ProvenanceResolutionAggregator:
         return block
 
     def _book_chunk_source_ids(self) -> Set[str]:
-        """Collect every ``source.source_references[].sourceId`` from dart_chunks."""
+        """Collect every ``source.source_references[].sourceId`` from the chunkset."""
         out: Set[str] = set()
         course_path = self._resolve_libv2_course_path()
         if course_path is None:
             return out
-        # DART->semantik purge Stage 3c: dual-read the staged chunkset dir
-        # (semantik_chunks/ -> dart_chunks/ -> corpus/) so provenance resolves
-        # on new-name courses AND un-migrated archives.
+        # Dual-read the staged chunkset dir (semantik_chunks/ -> legacy
+        # dart_chunks/ -> corpus/) so provenance resolves on current courses
+        # AND un-migrated archives.
         from lib.libv2_storage import resolve_staged_chunks_path
-        dart_path = resolve_staged_chunks_path(course_path)
-        if not dart_path.exists():
+        chunks_path = resolve_staged_chunks_path(course_path)
+        if not chunks_path.exists():
             return out
-        for chunk in self._read_jsonl(dart_path):
+        for chunk in self._read_jsonl(chunks_path):
             source = chunk.get("source") if isinstance(chunk, Mapping) else None
             refs = source.get("source_references") if isinstance(source, Mapping) else None
             if not isinstance(refs, list):
@@ -316,7 +316,7 @@ class ProvenanceResolutionAggregator:
     # ------------------------------------------------------------------
     @staticmethod
     def _chunk_tokens(chunk: Mapping[str, Any]) -> List[str]:
-        """Extract all non-empty dart source tokens from a chunk's html.
+        """Extract all non-empty source tokens from a chunk's html.
 
         An empty-string ``data-cf-source-ids`` attr contributes nothing (the
         Wave-27 boilerplate contract). Tokens are stripped + de-duped within

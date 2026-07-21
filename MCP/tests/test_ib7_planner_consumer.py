@@ -33,7 +33,7 @@ def test_detail_map_surfaces_heading(tmp_path):
         "concept_tags": ["fraction"],
     }
     chunks_path.write_text(json.dumps(line) + "\n", encoding="utf-8")
-    detail = pipeline_tools._load_dart_chunkset_detail_map(chunks_path)
+    detail = pipeline_tools._load_semantik_chunkset_detail_map(chunks_path)
     assert "c1" in detail
     assert detail["c1"]["heading"] == "Types of Fractions"
     assert detail["c1"]["text"].startswith("Compare proper")
@@ -43,7 +43,7 @@ def test_detail_map_heading_falls_back_to_empty(tmp_path):
     chunks_path = tmp_path / "chunks.jsonl"
     line = {"id": "c2", "text": "Body with no heading provenance."}
     chunks_path.write_text(json.dumps(line) + "\n", encoding="utf-8")
-    detail = pipeline_tools._load_dart_chunkset_detail_map(chunks_path)
+    detail = pipeline_tools._load_semantik_chunkset_detail_map(chunks_path)
     assert detail["c2"]["heading"] == ""
 
 

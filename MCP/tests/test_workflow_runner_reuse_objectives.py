@@ -165,11 +165,11 @@ class TestSynthesizeReuseOutput:
         assert config["status"] == "planned"
         assert config["course_name"] == "TEST_101"
 
-    def test_backfills_dart_chunk_lo_refs(
+    def test_backfills_semantik_chunk_lo_refs(
         self, runner_stub, project_dir, courseforge_reuse_file, tmp_path
     ):
         """Phase-ordering fix (Option A1) companion: a reuse run must
-        back-fill ``learning_outcome_refs`` onto the on-disk DART chunkset
+        back-fill ``learning_outcome_refs`` onto the on-disk SemantiK chunkset
         (the live course_planning path does this at its tail; the reuse
         path short-circuits that, so the synthesizer calls the backfill
         helper directly). Without it the reused chunks keep empty LO refs
@@ -179,7 +179,7 @@ class TestSynthesizeReuseOutput:
         # course_name.lower().replace("_","-") -> "test-101".
         libv2_root = tmp_path / "libv2"
         chunks_path = (
-            libv2_root / "courses" / "test-101" / "dart_chunks" / "chunks.jsonl"
+            libv2_root / "courses" / "test-101" / "semantik_chunks" / "chunks.jsonl"
         )
         chunks_path.parent.mkdir(parents=True, exist_ok=True)
         chunks_path.write_text(

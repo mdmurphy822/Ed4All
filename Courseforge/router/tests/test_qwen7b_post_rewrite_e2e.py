@@ -195,7 +195,7 @@ def _make_concept_block(content: str) -> Block:
         sequence=0,
         content=content,
         content_type_label="definition",
-        source_ids=("dart:rdf-primer#blk_3",),
+        source_ids=("semantik:rdf-primer#blk_3",),
     )
 
 
@@ -322,7 +322,7 @@ def test_paraphrase_of_source_rewrite_passes_post_rewrite_chain() -> None:
     every gate with ``passed=True, action=None``.
     """
     block = _make_concept_block(_PARAPHRASE_HTML)
-    source_chunks = {"dart:rdf-primer#blk_3": _RDF_SOURCE_CHUNK}
+    source_chunks = {"semantik:rdf-primer#blk_3": _RDF_SOURCE_CHUNK}
 
     shape_result = RewriteHtmlShapeValidator().validate({"blocks": [block]})
     grounding_result = RewriteSourceGroundingValidator(
@@ -364,7 +364,7 @@ def test_hallucinated_rewrite_rejected_by_source_grounding_gate() -> None:
     the grounding gate exists to catch.
     """
     block = _make_concept_block(_HALLUCINATED_HTML)
-    source_chunks = {"dart:rdf-primer#blk_3": _RDF_SOURCE_CHUNK}
+    source_chunks = {"semantik:rdf-primer#blk_3": _RDF_SOURCE_CHUNK}
 
     shape_result = RewriteHtmlShapeValidator().validate({"blocks": [block]})
     grounding_result = RewriteSourceGroundingValidator(

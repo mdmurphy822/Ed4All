@@ -1490,7 +1490,7 @@ workflows:
         # REC-CTR-05: Explicit output keys (was hardcoded in
         # MCP/core/workflow_runner.py::PHASE_OUTPUT_KEYS).
         # Wave 32 Deliverable B: surface html_path + html_paths
-        # (router canonical keys) so DartMarkersValidator gate
+        # (router canonical keys) so SemantiKMarkersValidator gate
         # builder stops reporting ``missing inputs: html_path``.
         outputs:
           - output_path
@@ -1500,17 +1500,17 @@ workflows:
           - success
           - html_length
 
-        # REC-CTR-06: DART markers gate on textbook pipeline first phase.
+        # REC-CTR-06: SemantiK markers gate on textbook pipeline first phase.
         validation_gates:
-          - gate_id: dart_markers
-            validator: lib.validators.dart_markers.DartMarkersValidator
+          - gate_id: semantik_markers
+            validator: lib.validators.semantik_markers.SemantiKMarkersValidator
             severity: critical
             threshold:
               max_critical_issues: 0
             behavior:
               on_fail: block
               on_error: fail_closed
-            description: Ensure DART HTML emits skip-link, role=main, aria-labelledby sections, and DART semantic classes
+            description: Ensure SemantiK HTML emits skip-link, role=main, aria-labelledby sections, and SemantiK semantic classes
 
       # SEMANTIK_HEADING_JUDGE permanent wiring — post-conversion Super
       # heading-level judge over the GLM-OCR lane's {stem}.glmocr_layout.json

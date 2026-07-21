@@ -24,8 +24,8 @@
       "properties": {
         "kind": {
           "type": "string",
-          "enum": ["dart", "imscc", "corpus"],
-          "description": "Chunkset kind. 'dart' -> dart_chunks/chunks.jsonl; 'imscc' -> imscc_chunks/chunks.jsonl; 'corpus' -> legacy corpus/chunks.jsonl retrieval fallback path."
+          "enum": ["semantik", "imscc", "dart", "corpus"],
+          "description": "Chunkset kind. 'semantik' -> semantik_chunks/chunks.jsonl (current staged-conversion layout); 'imscc' -> imscc_chunks/chunks.jsonl; 'dart' -> legacy dart_chunks/chunks.jsonl read-fallback; 'corpus' -> legacy corpus/chunks.jsonl retrieval fallback path."
         },
         "chunks_path": {
           "type": "string",

@@ -491,7 +491,7 @@ def load_chunk_provenance_index(chunks_jsonl_path: str) -> Dict[str, List[str]]:
 
     Each chunk record carries its source anchors on
     ``source.source_references[].sourceId`` (the ``semantik:{slug}#{anchor}``
-    / legacy ``dart:{slug}#{block_id}`` Source-Provenance contract) and its own
+    Source-Provenance contract) and its own
     canonical chunk id on the top-level ``id`` field
     (``{course}_chunk_NNNNN``). This inverts that: for every ``sourceId`` a
     chunk declares, the chunk's id is appended to that ref's list. Because a
@@ -779,9 +779,9 @@ class BlockProseEntailmentValidator:
     Inputs:
         blocks: List[Block]
         source_chunks: Dict[str, str]
-            Mapping of canonical sourceId (e.g. ``dart:slug#blk_0``) to the
+            Mapping of canonical sourceId (e.g. ``semantik:slug#blk_0``) to the
             chunk's plain-text body. The gate-input builder populates this
-            from the staging manifest + DART chunks.jsonl body fallback; tests
+            from the staging manifest + SemantiK chunks.jsonl body fallback; tests
             inject it directly.
         shadow: bool
             §4.3 shadow knob. When truthy, emitted ``BLOCK_PROSE_*`` issues are

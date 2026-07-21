@@ -291,8 +291,9 @@ def build_table_request(
     output). When ``cell_roles`` is absent or ``None``, every cell
     falls back to ``"data"`` and the user envelope carries
     ``cell_roles_source = "qwen_inferred"`` — a marker the trained
-    adapter's prompt template MUST surface as
-    ``data-dart-cell-roles="qwen-inferred"`` on the emitted ``<table>``
+    adapter's prompt template MUST surface as the legacy
+    ``data-dart-cell-roles="qwen-inferred"`` attribute (a pre-SemantiK
+    weights artifact) on the emitted ``<table>``
     so Stage 12 (theta) and any HTML consumer can see the table's
     header semantics were guessed without a verified upstream signal
     (no-silent-fallbacks policy; see
@@ -352,8 +353,9 @@ def build_table_request(
     # existed and always with verified ground-truth roles from ar5iv —
     # round-trip identically through the contract test. The trained
     # adapter's prompt template MUST treat the absence as "verified" and
-    # the presence of "qwen_inferred" as the trigger to emit
-    # ``data-dart-cell-roles="qwen-inferred"`` on the outer ``<table>``.
+    # the presence of "qwen_inferred" as the trigger to emit the legacy
+    # ``data-dart-cell-roles="qwen-inferred"`` attribute (a pre-SemantiK
+    # weights artifact) on the outer ``<table>``.
     if cell_roles is None:
         user["cell_roles_source"] = "qwen_inferred"
     # Stage 5b GLM-OCR enrichment, when present. The trained adapter

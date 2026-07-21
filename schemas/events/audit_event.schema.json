@@ -42,7 +42,7 @@
     },
     "component": {
       "type": "string",
-      "description": "Component that generated this event (dart, courseforge, trainforge, orchestrator)"
+      "description": "Component that generated this event (semantik, courseforge, trainforge, orchestrator)"
     },
     "worker_id": {
       "type": ["string", "null"],

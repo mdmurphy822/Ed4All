@@ -13,7 +13,7 @@ Splice contracts (per Plans/04 §4.1):
 
   * ``missing_title``: extract ``<title>...</title>`` and ``<h1>...</h1>``
     from the candidate; replace the doc shell ``<title>`` and inject
-    the ``<h1>`` at the ``<!-- DART_TITLE_SLOT -->`` sentinel.
+    the ``<h1>`` at the ``<!-- SEMANTIK_TITLE_SLOT -->`` sentinel.
   * ``author_block``: locate the original region's HTML in the body
     and replace it with the ``<address>...</address>`` candidate.
   * ``citation_unresolved``: replace the matched plain-text span (e.g.
@@ -227,10 +227,10 @@ def _score_candidate(candidate: Candidate, gap: GapSlot) -> float:
 
 def _splice_missing_title(html: str, candidate_text: str) -> str:
     """Replace doc <title> with the candidate's <title>, and inject <h1>
-    at the <!-- DART_TITLE_SLOT --> sentinel.
+    at the <!-- SEMANTIK_TITLE_SLOT --> sentinel.
 
     If the candidate's ``<title>`` opening tag carries
-    ``data-dart-fabricated="title"`` (i.e. came from the deterministic
+    ``data-semantik-fabricated="title"`` (i.e. came from the deterministic
     fallback in :func:`_fallback_for`), preserve that attribute on the
     spliced ``<title>`` so the marker survives into the final HTML.
     """
@@ -248,12 +248,8 @@ def _splice_missing_title(html: str, candidate_text: str) -> str:
         open_m = _TITLE_OPEN_RE.search(candidate_text)
         attrs = (open_m.group(1) or "").strip() if open_m else ""
         title_open = "<title>"
-        # DART->semantik purge Stage 3: emit the semantik marker, but dual-READ
-        # so a legacy dart-fabricated title (re-run over prior output) is honored.
-        if (
-            'data-semantik-fabricated="title"' in attrs
-            or 'data-dart-fabricated="title"' in attrs
-        ):
+        # Preserve the fabrication marker minted by :func:`_fallback_for`.
+        if 'data-semantik-fabricated="title"' in attrs:
             title_open = '<title data-semantik-fabricated="title">'
         html = _TITLE_RE.sub(
             f"{title_open}{safe_title}</title>",
@@ -265,7 +261,7 @@ def _splice_missing_title(html: str, candidate_text: str) -> str:
     if new_h1_m:
         h1_html = _ensure_h1_id(new_h1_m.group(0), html)
         html = html.replace(
-            "<!-- DART_TITLE_SLOT -->\n",
+            "<!-- SEMANTIK_TITLE_SLOT -->\n",
             f"{h1_html}\n",
             1,
         )
@@ -390,7 +386,7 @@ def _splice_legal_disclaimer(html: str, candidate_text: str, gap: GapSlot) -> st
 def _fallback_for(gap: GapSlot) -> str:
     """Default fallback HTML for a zero-survivor gap (Plans/04 §3.4).
 
-    For ``MISSING_TITLE`` we stamp ``data-dart-fabricated="title"`` on
+    For ``MISSING_TITLE`` we stamp ``data-semantik-fabricated="title"`` on
     BOTH the ``<title>`` and ``<h1>`` so the splice (which uses regex
     on this exact string) carries the marker through into the final
     HTML — making the fabrication self-identifying per the

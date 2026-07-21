@@ -8,7 +8,7 @@ delimiters (``$$\begin{tikzpicture}…\end{tikzpicture}$$`` — MathJax reds it
 sibling). ch04 shipped 12 such nodes.
 
 ``math_fold.strip_tikz_figures`` + the adapter ``_strip_tikz_figures`` pass
-replace a PURE-figure span with the accessible ``.dart-figure-notation``
+replace a PURE-figure span with the accessible ``.semantik-figure-notation``
 placeholder (no visible TikZ source) and keep the math of a MIXED span,
 conservatively: a span with no TikZ / pgfplots env (``\begin{aligned}`` etc.) is
 untouched. HTML-only — ``raw_text`` / the sidecar keep the plain fused text for
@@ -26,7 +26,7 @@ from lib.semantik.adapter import (
 from lib.semantik.math_fold import strip_tikz_figures
 
 _PLACEHOLDER = (
-    '<span class="dart-figure-notation" role="img" '
+    '<span class="semantik-figure-notation" role="img" '
     'aria-label="Coordinate-plane figure (notation could not be rendered)">'
     "[coordinate-plane figure]</span>"
 )
@@ -98,7 +98,7 @@ def test_mixed_span_strips_tikz_keeps_math():
     out = strip_tikz_figures(src)
     assert out == r"$x = 5$"
     assert "tikzpicture" not in out
-    assert "dart-figure-notation" not in out  # NOT a pure figure → no placeholder
+    assert "semantik-figure-notation" not in out  # NOT a pure figure → no placeholder
 
 
 def test_mixed_span_math_before_and_after_tikz():
@@ -165,7 +165,7 @@ def test_multiple_figure_spans_all_replaced():
     )
     out = strip_tikz_figures(src)
     assert out == f"139. {_PLACEHOLDER} 140. {_PLACEHOLDER}"
-    assert out.count("dart-figure-notation") == 2
+    assert out.count("semantik-figure-notation") == 2
 
 
 def test_empty_and_none():

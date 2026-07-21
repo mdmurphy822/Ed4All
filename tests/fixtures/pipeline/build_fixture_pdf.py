@@ -3,8 +3,8 @@ pipeline integration test.
 
 The fixture is a 3-page PDF about **photosynthesis basics**. Topic chosen to
 be generic and non-overlapping with any Ed4All research corpus. The PDF is
-laid out so ``pdftotext`` (used by DART) extracts clean paragraph text with
-the following structure:
+laid out so ``pdftotext`` (used by the SemantiK conversion path) extracts
+clean paragraph text with the following structure:
 
 Page 1 — "Introduction to Photosynthesis"
 Page 2 — "The Two Stages of Photosynthesis"
@@ -19,8 +19,8 @@ the builder is kept for transparency (and to let devs tweak the fixture).
 Why hand-crafted PDF rather than ``reportlab``?
 - ``reportlab`` is not in ``requirements.txt``.
 - ``PyMuPDF`` / ``fitz`` not present in the dev sandbox.
-- ``pdftotext`` is guaranteed (it's a hard dep of DART's
-  ``_extract_and_convert_pdf`` at ``MCP/tools/pipeline_tools.py:1053``).
+- ``pdftotext`` is guaranteed (it's a hard dep of the SemantiK PDF
+  extraction path in ``MCP/tools/pipeline_tools.py``).
 
 The PDF uses the standard ``Helvetica`` font and a single content stream per
 page. Text is tokenized into one ``Tj`` operator per line with ``T*`` for

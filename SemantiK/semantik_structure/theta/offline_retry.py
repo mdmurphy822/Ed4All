@@ -58,7 +58,7 @@ def _needs_retry(report: ThetaReport) -> bool:
 
     Theta-stub bypass: when the semantic-preservation cross-encoder is
     mode-collapsed and the run substituted the 0.7 placeholder
-    (``DART_ALLOW_THETA_STUB=1`` — detected via
+    (``SEMANTIK_ALLOW_THETA_STUB=1`` — detected via
     :func:`semantik_structure.theta.evaluator.theta_is_stubbed`), the
     composite ``theta_score`` is MEANINGLESS and must NOT trigger the
     offline retry — that would silently discard a clean fast-lane (e.g.

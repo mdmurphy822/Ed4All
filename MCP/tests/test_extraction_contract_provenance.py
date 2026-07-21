@@ -11,7 +11,7 @@ chunking`` slice was produced under the CURRENT extraction-text contract even
 though it never gets a course manifest.
 
 Covers:
-1. a freshly emitted dart chunkset manifest carries
+1. a freshly emitted SemantiK chunkset manifest carries
    ``extraction_contract == EXTRACTION_TEXT_CONTRACT_VERSION``;
 2. that manifest still validates against ``chunkset_manifest.schema.json``.
 """
@@ -39,8 +39,8 @@ _SCHEMA_PATH = (
 
 
 @pytest.fixture
-def dart_chunking_tool(monkeypatch, tmp_path):
-    """Return the _run_dart_chunking registry entry rooted at tmp_path."""
+def semantik_chunking_tool(monkeypatch, tmp_path):
+    """Return the SemantiK chunking registry entry rooted at tmp_path."""
     libv2_root = tmp_path / "LibV2"
     libv2_root.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("ED4ALL_LIBV2_ROOT", str(libv2_root))
@@ -69,13 +69,13 @@ def _write_simple_html(path: Path, title: str = "Intro") -> None:
     )
 
 
-def _emit_manifest(dart_chunking_tool, tmp_path) -> dict:
+def _emit_manifest(semantik_chunking_tool, tmp_path) -> dict:
     staging = tmp_path / "staging"
     staging.mkdir()
     _write_simple_html(staging / "lesson_01.html", title="Lesson 1")
     result = json.loads(
         asyncio.run(
-            dart_chunking_tool(
+            semantik_chunking_tool(
                 course_name="EXTRACTION_CONTRACT_TEST",
                 staging_dir=str(staging),
             )
@@ -86,12 +86,12 @@ def _emit_manifest(dart_chunking_tool, tmp_path) -> dict:
     return json.loads(manifest_path.read_text(encoding="utf-8"))
 
 
-def test_fresh_dart_manifest_carries_extraction_contract(
-    dart_chunking_tool, tmp_path
+def test_fresh_semantik_manifest_carries_extraction_contract(
+    semantik_chunking_tool, tmp_path
 ):
-    manifest = _emit_manifest(dart_chunking_tool, tmp_path)
+    manifest = _emit_manifest(semantik_chunking_tool, tmp_path)
     assert manifest.get("extraction_contract") == EXTRACTION_TEXT_CONTRACT_VERSION, (
-        "a freshly emitted dart chunkset manifest must stamp the CURRENT "
+        "a freshly emitted SemantiK chunkset manifest must stamp the CURRENT "
         f"extraction_contract={EXTRACTION_TEXT_CONTRACT_VERSION!r}; got "
         f"{manifest.get('extraction_contract')!r}"
     )
@@ -100,11 +100,11 @@ def test_fresh_dart_manifest_carries_extraction_contract(
     assert manifest.get("chunker_version") == "v4"
 
 
-def test_fresh_dart_manifest_validates_against_schema(
-    dart_chunking_tool, tmp_path
+def test_fresh_semantik_manifest_validates_against_schema(
+    semantik_chunking_tool, tmp_path
 ):
     jsonschema = pytest.importorskip("jsonschema")
-    manifest = _emit_manifest(dart_chunking_tool, tmp_path)
+    manifest = _emit_manifest(semantik_chunking_tool, tmp_path)
     schema = json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
     # additionalProperties:false on the chunkset schema means the new
     # extraction_contract field MUST be declared or this raises.

@@ -412,7 +412,7 @@ def _render_block_item(block: InstructionBlock) -> str:
     surfaced once as a badge. No ``"… that develops TO-NN"`` filler — the TO/CO
     parent already supplies that context (label form: ``"{topic} — {type}"``).
 
-    When the block carries source pages (``data-dart-pages`` → ``block.pages``),
+    When the block carries source pages (``block.pages``),
     the deep-link text appends an honest ``" (PDF p. N)"`` suffix via the shared
     ``lib/page_label`` formatter — the SAME label the "View in textbook" + answer
     surfaces use. RISK-A: the qualifier is "PDF p." (physical) not "p." so a

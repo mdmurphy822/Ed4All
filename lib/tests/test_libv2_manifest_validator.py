@@ -33,19 +33,18 @@ def good_archive(tmp_path: Path):
     Includes every required scaffold dir + course.json + a valid
     manifest with one PDF source artifact whose checksum + size match.
 
-    Phase 7c ST 17: scaffold dirs updated (``corpus`` → ``imscc_chunks``,
-    ``dart_chunks`` added). The manifest now carries the three
-    required SHA-256 fields (``concept_graph_sha256``,
-    ``dart_chunks_sha256``, ``imscc_chunks_sha256``) backed by
-    on-disk fixture bytes so the integrity recompute passes.
+    The scaffold dirs are ``semantik_chunks`` + ``imscc_chunks``. The
+    manifest carries the three required SHA-256 fields
+    (``concept_graph_sha256``, ``semantik_chunks_sha256``,
+    ``imscc_chunks_sha256``) backed by on-disk fixture bytes so the
+    integrity recompute passes.
     """
     slug = "test-course"
     course_dir = tmp_path / "courses" / slug
     course_dir.mkdir(parents=True)
 
-    # Scaffold dirs (Phase 7c ST 17 layout: dart_chunks + imscc_chunks
-    # replace corpus).
-    for sub in ("dart_chunks", "imscc_chunks", "graph", "training_specs",
+    # Scaffold dirs: semantik_chunks + imscc_chunks.
+    for sub in ("semantik_chunks", "imscc_chunks", "graph", "training_specs",
                 "quality", "source/pdf", "source/html", "source/imscc",
                 "pedagogy", "concept_graph"):
         (course_dir / sub).mkdir(parents=True)
@@ -55,10 +54,10 @@ def good_archive(tmp_path: Path):
     (course_dir / "pedagogy" / "model.json").write_text("{}", encoding="utf-8")
     (course_dir / "graph" / "nodes.json").write_text("[]", encoding="utf-8")
 
-    # Phase 7c ST 17: emit the three chunkset/graph artefacts so the
-    # validator's hash-mismatch checks have something to recompute.
-    dart_chunks_bytes = b'{"id":"dart-1","chunk_type":"section_paragraph","text":"x"}\n'
-    (course_dir / "dart_chunks" / "chunks.jsonl").write_bytes(dart_chunks_bytes)
+    # Emit the three chunkset/graph artefacts so the validator's
+    # hash-mismatch checks have something to recompute.
+    semantik_chunks_bytes = b'{"id":"semantik-1","chunk_type":"section_paragraph","text":"x"}\n'
+    (course_dir / "semantik_chunks" / "chunks.jsonl").write_bytes(semantik_chunks_bytes)
     imscc_chunks_bytes = b'{"id":"imscc-1","chunk_type":"section_paragraph","text":"y"}\n'
     (course_dir / "imscc_chunks" / "chunks.jsonl").write_bytes(imscc_chunks_bytes)
     concept_graph_bytes = b'{"kind":"pedagogy","nodes":[],"edges":[]}'
@@ -102,7 +101,7 @@ def good_archive(tmp_path: Path):
             "evidence_source_provenance": True,
         },
         "concept_graph_sha256": _sha256(concept_graph_bytes),
-        "dart_chunks_sha256": _sha256(dart_chunks_bytes),
+        "semantik_chunks_sha256": _sha256(semantik_chunks_bytes),
         "imscc_chunks_sha256": _sha256(imscc_chunks_bytes),
     }
     manifest_path = course_dir / "manifest.json"

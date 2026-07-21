@@ -84,7 +84,7 @@ Section 4(d) of that license, this NOTICE acknowledges their inclusion.
   - peft — Apache-2.0 ([training] extra)
   - safetensors — Apache-2.0 ([training] extra)
   - pyshacl — Apache-2.0
-  - anthropic (Python SDK) — Apache-2.0 ([dart] extra)
+  - anthropic (Python SDK) — Apache-2.0 ([anthropic] extra)
   - rich — MIT
   - bitsandbytes — MIT ([training] extra)
 

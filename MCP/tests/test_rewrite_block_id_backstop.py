@@ -63,8 +63,8 @@ def test_rendered_activity_carries_block_id_and_passes_gate(monkeypatch):
     html = _render_activities(
         [{"title": "Practice", "description": "Do the thing.",
           "bloom_level": "apply", "objective_ref": "CO-01"}],
-        source_ids=["dart:slug#abc123"],
-        source_primary="dart:slug#abc123",
+        source_ids=["semantik:slug#abc123"],
+        source_primary="semantik:slug#abc123",
         page_id="week_01_application",
     )
     assert "data-cf-block-id=" in html
@@ -89,8 +89,8 @@ def test_rendered_example_carries_block_id_and_passes_gate(monkeypatch):
     }]
     html = _render_content_sections(
         sections,
-        source_ids=["dart:slug#def456"],
-        source_primary="dart:slug#def456",
+        source_ids=["semantik:slug#def456"],
+        source_primary="semantik:slug#def456",
         page_id="week_02_content_02",
     )
     assert "data-cf-block-id=" in html
@@ -156,7 +156,7 @@ def test_backstop_injects_when_substring_present_but_not_attribute():
 def test_backstop_injects_on_example_section_root():
     block_id = "week_02_content_02#example_13-add_and_subtract_integers_8"
     raw = (
-        '<section data-cf-source-ids="dart:slug#abc" '
+        '<section data-cf-source-ids="semantik:slug#abc" '
         'data-cf-content-type="example">'
         "<h2>Example</h2><p>data-cf-block-id is mentioned here.</p></section>"
     )

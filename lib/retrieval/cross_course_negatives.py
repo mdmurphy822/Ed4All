@@ -120,9 +120,11 @@ def _course_primary_domain(course_dir: Path) -> str:
 
 
 def _resolve_chunks_path(course_dir: Path) -> Optional[Path]:
-    """The retrievable chunks.jsonl for a course (semantik → dart → imscc →
-    corpus). DART->semantik purge Stage 1 (dual-READ): ``semantik_chunks``
-    preferred over ``dart_chunks``."""
+    """The retrievable chunks.jsonl for a course, first hit wins.
+
+    ``semantik_chunks`` is the current layout; the remaining dirs are
+    dual-read fallbacks for legacy corpora.
+    """
     for sub in ("semantik_chunks", "dart_chunks", "imscc_chunks", "corpus"):
         cand = course_dir / sub / "chunks.jsonl"
         if cand.is_file():

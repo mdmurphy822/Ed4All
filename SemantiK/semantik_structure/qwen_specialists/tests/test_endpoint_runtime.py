@@ -378,7 +378,7 @@ def test_generate_batch_default_still_raises(monkeypatch):
 
 
 def _batch_block(rid: str, frag: str) -> str:
-    return f'<<<DART_REGION id="{rid}">>>\n{frag}\n<<<DART_REGION_END id="{rid}">>>'
+    return f'<<<SEMANTIK_REGION id="{rid}">>>\n{frag}\n<<<SEMANTIK_REGION_END id="{rid}">>>'
 
 
 def test_batch_regions_resolver_parse_with_fallback(monkeypatch):
@@ -407,7 +407,7 @@ def test_parse_batch_envelope_tolerates_fences_and_missing_end_tag():
         "```html\n"
         "Sure, here you go:\n"
         + _batch_block("r0", "<p>zero</p>")
-        + '\n<<<DART_REGION id="r1">>>\n<p>orphan, no end tag</p>\n'
+        + '\n<<<SEMANTIK_REGION id="r1">>>\n<p>orphan, no end tag</p>\n'
         + _batch_block("r2", "<math><mi>x</mi></math>")
         + "\n```"
     )
@@ -456,11 +456,11 @@ def test_generate_multi_packs_payloads_into_single_user_turn(monkeypatch):
     user = captured["json"]["messages"][1]["content"]
     # Grounding payload travels verbatim, wrapped in the region delimiters.
     assert "GROUNDING-PAYLOAD-VERBATIM" in user
-    assert '<<<DART_REGION id="r0">>>' in user
-    assert '<<<DART_REGION_END id="r0">>>' in user
+    assert '<<<SEMANTIK_REGION id="r0">>>' in user
+    assert '<<<SEMANTIK_REGION_END id="r0">>>' in user
     # System turn carries the batch envelope directive.
     sys_turn = captured["json"]["messages"][0]["content"]
-    assert "DART_REGION" in sys_turn
+    assert "SEMANTIK_REGION" in sys_turn
 
 
 def test_generate_multi_caps_max_tokens_at_ceiling(monkeypatch):
@@ -861,7 +861,7 @@ def test_generate_batch_no_sentinel_byte_stable(monkeypatch):
 
 
 def test_generate_multi_all_none_parse_logs_response_head(caplog):
-    """A 200 POST whose body parses to ZERO DART_REGION blocks logs a LOUD
+    """A 200 POST whose body parses to ZERO SEMANTIK_REGION blocks logs a LOUD
     warning carrying the response head (#41 diagnosability)."""
     import logging
 
@@ -870,7 +870,7 @@ def test_generate_multi_all_none_parse_logs_response_head(caplog):
     )
 
     def _fake_post(url, *, json, headers, timeout):
-        # Non-empty body with NO <<<DART_REGION>>> envelope → all regions None.
+        # Non-empty body with NO <<<SEMANTIK_REGION>>> envelope → all regions None.
         return _resp("I could not follow the envelope. Here is some prose.")
 
     items = [("r10", "payload-a"), ("r11", "payload-b")]

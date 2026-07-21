@@ -2,7 +2,7 @@
 
 Contract: the ``@mcp.tool()`` variant of ``archive_to_libv2`` at
 ``MCP/tools/pipeline_tools.py:1249-1503`` must accept the three Phase 6 +
-Phase 7c.5 SHA kwargs (``concept_graph_sha256``, ``dart_chunks_sha256``,
+Phase 7c.5 SHA kwargs (``concept_graph_sha256``, the chunks-SHA kwarg,
 ``imscc_chunks_sha256``) and persist each into the LibV2 manifest when the
 value matches the canonical 64-hex regex ``^[0-9a-f]{64}$``. Mirrors the
 registry variant emit pattern at ``:5667-5687, :5720-5727``.
@@ -40,10 +40,10 @@ from MCP.tools.pipeline_tools import register_pipeline_tools  # noqa: E402
 
 
 # Well-formed canonical 64-hex strings used as kwarg fixtures. Distinct
-# values per kwarg so a misrouted persist (e.g. dart kwarg landing in the
+# values per kwarg so a misrouted persist (e.g. the chunks kwarg landing in the
 # concept_graph slot) trips the value-equality assertion.
 _VALID_CONCEPT_GRAPH_SHA = "a" * 64
-_VALID_DART_CHUNKS_SHA = "b" * 64
+_VALID_SEMANTIK_CHUNKS_SHA = "b" * 64
 _VALID_IMSCC_CHUNKS_SHA = "c" * 64
 
 
@@ -83,7 +83,7 @@ def test_archive_persists_all_three_well_formed_sha_kwargs(archive_tool):
         course_name="TEST_PARITY_HAPPY",
         domain="test-domain",
         concept_graph_sha256=_VALID_CONCEPT_GRAPH_SHA,
-        dart_chunks_sha256=_VALID_DART_CHUNKS_SHA,
+        dart_chunks_sha256=_VALID_SEMANTIK_CHUNKS_SHA,
         imscc_chunks_sha256=_VALID_IMSCC_CHUNKS_SHA,
     ))
     result = json.loads(result_str)
@@ -95,8 +95,8 @@ def test_archive_persists_all_three_well_formed_sha_kwargs(archive_tool):
         "Phase 8 ST 1: well-formed concept_graph_sha256 kwarg must persist "
         f"into manifest. Got: {manifest.get('concept_graph_sha256')!r}"
     )
-    assert manifest.get("semantik_chunks_sha256") == _VALID_DART_CHUNKS_SHA, (
-        "Phase 8 ST 1: well-formed dart_chunks_sha256 kwarg must persist "
+    assert manifest.get("semantik_chunks_sha256") == _VALID_SEMANTIK_CHUNKS_SHA, (
+        "Phase 8 ST 1: well-formed chunks-SHA kwarg must persist "
         f"into manifest. Got: {manifest.get('semantik_chunks_sha256')!r}"
     )
     assert manifest.get("imscc_chunks_sha256") == _VALID_IMSCC_CHUNKS_SHA, (
@@ -137,10 +137,10 @@ def test_archive_drops_malformed_concept_graph_sha(
     )
 
 
-def test_archive_drops_malformed_dart_chunks_sha(archive_tool):
-    """Phase 8 ST 1: malformed dart_chunks_sha256 silently dropped."""
+def test_archive_drops_malformed_chunks_sha(archive_tool):
+    """Phase 8 ST 1: malformed chunks-SHA kwarg silently dropped."""
     result_str = asyncio.run(archive_tool(
-        course_name="TEST_MALFORMED_DART",
+        course_name="TEST_MALFORMED_CHUNKS",
         domain="test-domain",
         dart_chunks_sha256="zzz_not_hex_zzz",
     ))
@@ -148,7 +148,7 @@ def test_archive_drops_malformed_dart_chunks_sha(archive_tool):
         Path(json.loads(result_str)["manifest_path"]).read_text()
     )
     assert "semantik_chunks_sha256" not in manifest, (
-        "Phase 8 ST 1: malformed dart_chunks_sha256 must be silently "
+        "Phase 8 ST 1: malformed chunks-SHA kwarg must be silently "
         "dropped (mirrors registry variant's INVALID_* fall-through)."
     )
 
@@ -196,7 +196,7 @@ def test_archive_legacy_call_omits_all_three_sha_fields(archive_tool):
         "leave the manifest field absent."
     )
     assert "semantik_chunks_sha256" not in manifest, (
-        "Phase 8 ST 1 back-compat: absent dart_chunks_sha256 kwarg must "
+        "Phase 8 ST 1 back-compat: absent chunks-SHA kwarg must "
         "leave the manifest field absent."
     )
     assert "imscc_chunks_sha256" not in manifest, (

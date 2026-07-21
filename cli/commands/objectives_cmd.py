@@ -9,7 +9,7 @@ straight back into ``ed4all run ... --reuse-objectives <out>``.
 
 NO LLM anywhere. The whole pass is deterministic (``lib/objectives/restructure``);
 the ONLY external state it reads is the course's DART chunkset (resolved exactly
-like the planner's ``_load_dart_chunkset_for_planning``) for the chapter-anchor
+like the planner's ``_load_semantik_chunkset_for_planning``) for the chapter-anchor
 signal. A pending stop sentinel pauses the run at a per-CO boundary (exit code
 3); because the pass is LLM-free there is no resume sidecar — just re-run.
 """
@@ -107,10 +107,10 @@ def restructure_command(
         )
 
     # Chunkset resolution — reuse the planner's loader (one owner).
-    from MCP.tools.pipeline_tools import _load_dart_chunkset_for_planning
+    from MCP.tools.pipeline_tools import _load_semantik_chunkset_for_planning
 
     course_slug = canonical_slug(course_name)
-    chunks_by_id, all_chunks = _load_dart_chunkset_for_planning(
+    chunks_by_id, all_chunks = _load_semantik_chunkset_for_planning(
         course_slug=course_slug,
         kwargs={"libv2_root": libv2_root} if libv2_root else {},
     )

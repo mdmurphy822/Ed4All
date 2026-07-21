@@ -528,7 +528,7 @@ def register_courseforge_tools(mcp):
                             analysis["remediation_queue"].append({
                                 "file": str(f.relative_to(extract_dir)),
                                 "type": ext,
-                                "action": "dart_conversion"
+                                "action": "conversion"
                             })
 
             return json.dumps({
@@ -551,7 +551,7 @@ def register_courseforge_tools(mcp):
         Args:
             project_id: Project identifier
             remediation_types: Comma-separated types or None for all
-                             Options: dart_conversion, accessibility, quality, design
+                             Options: conversion, accessibility, quality, design
 
         Returns:
             Remediation report with before/after metrics
@@ -567,7 +567,7 @@ def register_courseforge_tools(mcp):
             if remediation_types:
                 types = [t.strip() for t in remediation_types.split(",")]
             else:
-                types = ["dart_conversion", "accessibility", "quality", "design"]
+                types = ["conversion", "accessibility", "quality", "design"]
 
             results = {
                 "project_id": project_id,

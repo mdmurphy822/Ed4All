@@ -111,7 +111,7 @@ def _assessment_block(
         sequence=0,
         content=content,
         objective_ids=("TO-01",),
-        source_ids=("dart:rdf_intro#blk_0",),
+        source_ids=("semantik:rdf_intro#blk_0",),
     )
 
 
@@ -144,7 +144,7 @@ def _legacy_distractors_block(
         sequence=0,
         content=content,
         objective_ids=("TO-01",),
-        source_ids=("dart:rdf_intro#blk_0",),
+        source_ids=("semantik:rdf_intro#blk_0",),
     )
 
 

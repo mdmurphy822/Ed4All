@@ -26,10 +26,10 @@ logger = logging.getLogger(__name__)
 # Quality level ordering for comparison
 QUALITY_ORDER = {"inadequate": 0, "developing": 1, "proficient": 2, "exemplary": 3}
 
-# Training output paths
+# Training output paths (one bucket per DecisionCapture ``tool`` name).
 TRAINING_OUTPUT = TRAINING_DIR / "trainforge"
 COURSEFORGE_OUTPUT = TRAINING_DIR / "courseforge"
-DART_OUTPUT = TRAINING_DIR / "dart"
+SEMANTIK_OUTPUT = TRAINING_DIR / "semantik"
 
 
 def _load_all_decision_records() -> List[Dict[str, Any]]:
@@ -37,7 +37,7 @@ def _load_all_decision_records() -> List[Dict[str, Any]]:
     records = []
 
     # Search all capture directories
-    for output_dir in [TRAINING_OUTPUT, COURSEFORGE_OUTPUT, DART_OUTPUT]:
+    for output_dir in [TRAINING_OUTPUT, COURSEFORGE_OUTPUT, SEMANTIK_OUTPUT]:
         if not output_dir.exists():
             continue
 
@@ -257,9 +257,9 @@ def register_analysis_tools(mcp):
                     f"Only {with_alternatives} records ({with_alternatives/total*100:.1f}%) have alternatives_considered - add alternative tracking"
                 )
 
-            if by_tool.get("dart", 0) == 0:
+            if by_tool.get("semantik", 0) == 0:
                 recommendations.append(
-                    "No DART captures found - integrate decision capture into PDF conversion"
+                    "No SemantiK captures found - integrate decision capture into PDF conversion"
                 )
 
             if duplicates > total * 0.05:

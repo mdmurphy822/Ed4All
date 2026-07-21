@@ -4,18 +4,18 @@ Run with NO models / GPU. We MOCK ``_run_semantik_v2_conversion`` at the
 ``MCP.tools.pipeline_tools`` module level so the dispatch wiring is exercised
 without touching SemantiK's heavy runtime deps.
 
-Covers (migration plan §5 step 1/2, §3.7 fail-closed; updated for the DART
-retirement that deleted the legacy ``_raw_text_to_accessible_html`` path):
-  * The ``dart_conversion`` phase (textbook_to_course / course_generation
+Covers:
+  * The ``semantik_conversion`` phase (textbook_to_course / course_generation
     PDF-ingest path) CALLS the SemantiK seam.
-  * A seam ``success=False`` propagates as a conversion failure — NO silent
-    fall-through to any legacy DART path (that path was retired).
+  * A seam ``success=False`` propagates as a conversion failure — the SemantiK
+    seam is the only converter, so there is nothing to fall back to.
   * The seam params (figures_dir / canonical_course_code / reuse_conversion)
     are threaded from the task kwargs into the seam.
-  * Scope: any non-``dart_conversion`` caller does NOT reach the SemantiK
-    seam — the dispatch is keyed strictly on ``phase == "dart_conversion"``;
-    every other phase fails CLOSED with ``method == "unsupported_phase"``
-    (the legacy DART converter is gone, so there is nothing to fall back to).
+  * Scope: any non-conversion caller does NOT reach the SemantiK seam — the
+    dispatch is keyed strictly on the conversion phase; every other phase fails
+    CLOSED with ``method == "unsupported_phase"``.
+  * Legacy-compat: the pre-SemantiK ``dart_conversion`` phase name is still
+    accepted on the dispatch (dual-read) so paused runs resume across the rename.
 
 Run:
   ED4ALL_NLI_DEVICE=cpu ED4ALL_EMBEDDING_DEVICE=cpu \
@@ -37,12 +37,12 @@ def _registry_tool():
 
 
 # ---------------------------------------------------------------------------
-# (a) dart_conversion phase → calls the SemantiK seam.
+# (a) semantik_conversion phase → calls the SemantiK seam.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_dart_conversion_phase_calls_semantik_seam(monkeypatch, tmp_path):
+async def test_semantik_conversion_phase_calls_semantik_seam(monkeypatch, tmp_path):
     import MCP.tools.pipeline_tools as pt
 
     seam_calls: list = []
@@ -66,7 +66,7 @@ async def test_dart_conversion_phase_calls_semantik_seam(monkeypatch, tmp_path):
     out = await tool(
         pdf_path="sample_text.pdf",
         course_code="ALG_9",
-        phase="dart_conversion",
+        phase="semantik_conversion",
         canonical_course_code="ALG_9",
         figures_dir=str(tmp_path / "figs"),
         reuse_conversion=True,
@@ -75,7 +75,7 @@ async def test_dart_conversion_phase_calls_semantik_seam(monkeypatch, tmp_path):
     payload = json.loads(out)
 
     # The SemantiK seam was called.
-    assert len(seam_calls) == 1, "SemantiK seam not invoked on dart_conversion"
+    assert len(seam_calls) == 1, "SemantiK seam not invoked on semantik_conversion"
     assert payload["success"] is True
     assert payload["method"] == "semantik_v2"
 
@@ -88,12 +88,12 @@ async def test_dart_conversion_phase_calls_semantik_seam(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# (b) seam success=False propagates — NO silent DART fallback.
+# (b) seam success=False propagates — no silent fallback.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_seam_failure_propagates_no_dart_fallback(monkeypatch, tmp_path):
+async def test_seam_failure_propagates_no_fallback(monkeypatch, tmp_path):
     import MCP.tools.pipeline_tools as pt
 
     def _fake_seam(pdf_path, output_path, **kwargs):
@@ -110,29 +110,28 @@ async def test_seam_failure_propagates_no_dart_fallback(monkeypatch, tmp_path):
     tool = _registry_tool()
     out = await tool(
         pdf_path="doc.pdf",
-        phase="dart_conversion",
+        phase="semantik_conversion",
         output_dir=str(tmp_path),
     )
     payload = json.loads(out)
 
-    # Conversion FAILS with the SemantiK reason; there is no legacy DART
-    # converter to fall back to.
+    # Conversion FAILS with the SemantiK reason; the seam is the only
+    # converter, so there is nothing to fall back to.
     assert payload["success"] is False
     assert "not provisioned" in payload["error"]
     assert payload["method"] == "semantik_v2"
 
 
 # ---------------------------------------------------------------------------
-# (c) scope — a non-dart_conversion phase fails closed (no legacy path).
+# (c) scope — a non-conversion phase fails closed (no legacy path).
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_non_conversion_phase_fails_closed(monkeypatch, tmp_path):
-    """A non-``dart_conversion`` phase must NOT reach the SemantiK seam — the
-    dispatch is keyed strictly on ``phase == "dart_conversion"``. The legacy
-    DART converter was retired, so any other phase fails CLOSED with
-    ``method == "unsupported_phase"`` rather than silently converting."""
+    """A non-conversion phase must NOT reach the SemantiK seam — the dispatch
+    is keyed strictly on the conversion phase, so any other phase fails CLOSED
+    with ``method == "unsupported_phase"`` rather than silently converting."""
     import MCP.tools.pipeline_tools as pt
 
     seam_calls: list = []
@@ -152,7 +151,7 @@ async def test_non_conversion_phase_fails_closed(monkeypatch, tmp_path):
     payload = json.loads(out)
 
     # SemantiK seam was NOT touched; the tool fails closed.
-    assert seam_calls == [], "SemantiK seam reached from a non-dart_conversion phase"
+    assert seam_calls == [], "SemantiK seam reached from a non-conversion phase"
     assert payload["success"] is False
     assert payload["method"] == "unsupported_phase"
 
@@ -160,7 +159,7 @@ async def test_non_conversion_phase_fails_closed(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_no_phase_kwarg_fails_closed(monkeypatch, tmp_path):
     """A caller with no ``phase`` kwarg (direct invocation) is unsupported —
-    only the explicit ``dart_conversion`` phase runs the SemantiK seam."""
+    only the explicit conversion phase runs the SemantiK seam."""
     import MCP.tools.pipeline_tools as pt
 
     seam_calls: list = []
@@ -173,6 +172,44 @@ async def test_no_phase_kwarg_fails_closed(monkeypatch, tmp_path):
     tool = _registry_tool()
     out = await tool(pdf_path="doc.pdf", output_dir=str(tmp_path))
     payload = json.loads(out)
-    assert seam_calls == [], "seam reached without a dart_conversion phase"
+    assert seam_calls == [], "seam reached without a conversion phase"
     assert payload["success"] is False
     assert payload["method"] == "unsupported_phase"
+
+
+# ---------------------------------------------------------------------------
+# (e) legacy-compat — the pre-SemantiK ``dart_conversion`` phase name is still
+#     accepted on the dispatch (dual-read) so paused runs resume across the
+#     rename.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_legacy_dart_conversion_phase_still_accepted(monkeypatch, tmp_path):
+    """Legacy-compat: the dispatch dual-reads the pre-SemantiK
+    ``dart_conversion`` phase name and still routes it to the SemantiK seam."""
+    import MCP.tools.pipeline_tools as pt
+
+    seam_calls: list = []
+
+    def _fake_seam(pdf_path, output_path, **kwargs):
+        seam_calls.append((pdf_path, output_path, kwargs))
+        return {
+            "success": True,
+            "output_path": output_path,
+            "html_path": output_path,
+            "method": "semantik_v2",
+        }
+
+    monkeypatch.setattr(pt, "_run_semantik_v2_conversion", _fake_seam)
+
+    tool = _registry_tool()
+    out = await tool(
+        pdf_path="sample_text.pdf",
+        phase="dart_conversion",  # legacy phase name — accepted on read
+        output_dir=str(tmp_path),
+    )
+    payload = json.loads(out)
+    assert len(seam_calls) == 1, "legacy dart_conversion phase did not route to the seam"
+    assert payload["success"] is True
+    assert payload["method"] == "semantik_v2"

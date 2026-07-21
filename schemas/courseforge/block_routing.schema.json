@@ -113,7 +113,7 @@
       "properties": {
         "provider": {
           "type": "string",
-          "enum": ["anthropic", "claude_session", "deepseek", "fireworks", "groq", "local", "nvidia", "nvidia-deepseek", "together", "together-vision", "openai_compatible"],
+          "enum": ["anthropic", "claude_session", "deepseek", "fireworks", "groq", "local", "nvidia", "nvidia-deepseek", "spark-nano", "spark-super", "together", "together-vision", "openai_compatible"],
           "description": "Backend selector. Mirrors BlockProviderSpec._ALLOWED_PROVIDERS. 'nvidia' routes to NVIDIA's hosted OpenAI-compatible inference API (base_url https://integrate.api.nvidia.com/v1, key from NVIDIA_API_KEY) — the rewrite LARGE / escalation tier seat in block_routing.license_clean.yaml."
         },
         "model": {

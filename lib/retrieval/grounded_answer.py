@@ -213,7 +213,7 @@ class Citation:
     text_quote: Optional[str]
     link_target: Dict[str, Any] = field(default_factory=dict)
     # B4 provenance chain (additive, optional). ``source_block`` is the cited
-    # chunk's primary DART block sourceId ("dart:{slug}#{block_id}");
+    # chunk's primary SemantiK block sourceId ("semantik:{slug}#{block_id}");
     # ``pdf_pages`` are the original PDF page numbers that block came from.
     # Both are ``None`` / ``[]`` for legacy corpora whose chunks carry no
     # ``source.source_references`` (the foundation degrades gracefully).
@@ -500,11 +500,11 @@ def _retrieve(
 def _infer_chunkset_kind(libv2_root: Path, course_slug: str) -> str:
     """Infer the chunkset kind from which chunks dir resolves for the course.
 
-    ``semantik_chunks/`` -> ``"semantik"``; ``dart_chunks/`` -> ``"dart"``;
+    ``semantik_chunks/`` -> ``"semantik"``; legacy ``dart_chunks/`` -> ``"dart"``;
     ``imscc_chunks/`` -> ``"imscc"``; legacy ``corpus/`` -> ``"corpus"``. Falls
-    back to ``"dart"`` (the common DART-staged pipeline shape) when nothing
-    resolves. DART->semantik purge Stage 1 (dual-READ): ``semantik_chunks``
-    preferred over ``dart_chunks``; no such dir exists yet, so byte-identical.
+    back to the legacy ``"dart"`` kind when nothing resolves. Dual-READ: the
+    canonical ``semantik_chunks`` dir is preferred over the legacy
+    ``dart_chunks`` fallback.
     """
     course_dir = libv2_root / "courses" / course_slug
     if (course_dir / "semantik_chunks" / "chunks.jsonl").is_file():
@@ -524,7 +524,7 @@ def _vector_index_chunkset_kind(libv2_root: Path, course_slug: str) -> Optional[
     For the semantic / hybrid-rrf engines the on-device vector index is the
     authoritative chunkset: retrieval, hydration, and the citation gate must
     all resolve against the SAME chunkset the index was built over. A course
-    can carry both ``dart_chunks/`` and an ``imscc``-pinned index at once, so
+    can carry both a staged chunks dir and an ``imscc``-pinned index at once, so
     the directory-presence heuristic (:func:`_infer_chunkset_kind`) can pick
     the wrong kind and route the citation gate at the wrong source — every
     citation then fails ``source_page_missing`` and a correct answer is
@@ -613,10 +613,10 @@ def _passage_chunk_record(passage: RetrievedPassage) -> Dict[str, Any]:
 def _provenance_from_source(
     source: Dict[str, Any]
 ) -> Tuple[Optional[str], List[int]]:
-    """Pull the cited chunk's primary DART block sourceId + PDF pages (B4).
+    """Pull the cited chunk's primary SemantiK block sourceId + PDF pages (B4).
 
     Reads ``source.source_references`` — the additive Wave-10 provenance the
-    chunker stamps as ``[{sourceId: "dart:{slug}#{block_id}", role, extractor,
+    chunker stamps as ``[{sourceId: "semantik:{slug}#{block_id}", role, extractor,
     pages[]}]``. Prefers the ``role == "primary"`` ref (the block a chunk IS
     synthesized from); falls back to the first ref otherwise. Pages are the
     union over the SAME chosen ref. Returns ``(None, [])`` when no references
@@ -2089,8 +2089,8 @@ def answer_course_question(
         # For the semantic / hybrid-rrf engines the vector index's manifest is
         # the authoritative chunkset — read it so retrieval, hydration, and the
         # citation gate all resolve against the chunkset the index was built
-        # over (a course may carry both dart_chunks/ and an imscc-pinned index;
-        # the directory heuristic would otherwise pick the wrong one and block
+        # over (a course may carry both a staged chunks dir and an imscc-pinned
+        # index; the directory heuristic would otherwise pick the wrong one and block
         # every citation as source_page_missing). The lexical engine keeps the
         # directory-presence inference.
         if engine in ("semantic", "hybrid-rrf"):

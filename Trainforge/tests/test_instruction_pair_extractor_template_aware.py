@@ -388,7 +388,8 @@ def _discover_corpus_chunks():
 
     Honors ``ED4ALL_LIBV2_ROOT``; resolves each course's chunks via
     ``resolve_imscc_chunks_path`` so the ``imscc_chunks/`` →
-    ``dart_chunks/`` → legacy ``corpus/`` layouts are all found, then
+    ``semantik_chunks/`` → legacy ``dart_chunks/`` → legacy ``corpus/``
+    layouts are all found, then
     selects the first course carrying Wave-79-C template chunk_types (the
     test's precondition). Returns ``None`` when none qualifies → the
     real-corpus test skips cleanly.

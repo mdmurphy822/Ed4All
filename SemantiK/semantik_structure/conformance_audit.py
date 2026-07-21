@@ -167,12 +167,12 @@ def _git_sha() -> str | None:
         return None
 
 
-def _data_dart_marker_census(html: str) -> dict[str, int]:
-    """Count ``data-dart-*`` provenance attributes in the product HTML."""
+def _data_semantik_marker_census(html: str) -> dict[str, int]:
+    """Count ``data-semantik-*`` provenance attributes in the product HTML."""
     import re
 
     counts: dict[str, int] = {}
-    for m in re.finditer(r"data-dart-[a-z0-9-]+", html):
+    for m in re.finditer(r"data-semantik-[a-z0-9-]+", html):
         counts[m.group(0)] = counts.get(m.group(0), 0) + 1
     return counts
 
@@ -303,7 +303,7 @@ def build_conformance_audit(
             "gaps_fallback": [_gap_slot_to_dict(g) for g in assembled.gaps_fallback],
             "n_headings": len(assembled.heading_tree),
             "landmarks": dict(assembled.landmarks),
-            "data_dart_markers": _data_dart_marker_census(assembled.html),
+            "data_semantik_markers": _data_semantik_marker_census(assembled.html),
             # Regions that fell back to deterministic emission while
             # being/adjoining a table/figure/math region — SC 1.3.2
             # risk surfaced per Plan 12 B3.

@@ -665,7 +665,7 @@ class IMSCCExtractor:
         """Check if a resource needs remediation"""
         # PDFs always need conversion to accessible HTML
         if res_type == ResourceType.PDF:
-            return True, "PDF requires DART conversion to accessible HTML"
+            return True, "PDF requires SemantiK conversion to accessible HTML"
 
         # Office documents need conversion
         if res_type == ResourceType.OFFICE_DOC:
@@ -804,7 +804,7 @@ class IMSCCExtractor:
 ║ REMEDIATION ANALYSIS                                              ║
 ╠══════════════════════════════════════════════════════════════════╣
 ║ Resources Needing Remediation: {ec.resources_needing_remediation:<33} ║
-║   - PDF Conversion (DART): {ec.remediation_summary.get('pdf_conversion', 0):<37} ║
+║   - PDF Conversion (SemantiK): {ec.remediation_summary.get('pdf_conversion', 0):<33} ║
 ║   - Office Conversion: {ec.remediation_summary.get('office_conversion', 0):<41} ║
 ║   - Image Alt Text: {ec.remediation_summary.get('image_alt_text', 0):<44} ║
 ║   - HTML Accessibility: {ec.remediation_summary.get('html_accessibility', 0):<40} ║

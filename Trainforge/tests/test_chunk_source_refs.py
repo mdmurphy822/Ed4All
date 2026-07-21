@@ -1,18 +1,21 @@
-"""B1 regression: the canonical chunker harvests ``data-dart-block-id`` /
-``data-dart-pages`` provenance off DART HTML and threads it to the
-``ctx.create_chunk`` callback as the additive ``dart_source_refs`` kwarg.
+"""B1 regression: the canonical chunker harvests ``data-semantik-block-id`` /
+``data-semantik-pages`` provenance off SemantiK HTML and threads it to the
+``ctx.create_chunk`` callback as the additive ``dart_source_refs`` kwarg (the
+kwarg + harvest helpers keep their legacy names; the helpers dual-read both the
+current ``data-semantik-*`` and legacy ``data-dart-*`` block-attr spellings).
 
 Contract under test:
-  - HTML carrying a ``<section data-dart-block-id="..." data-dart-pages="...">``
+  - HTML carrying a ``<section data-semantik-block-id="..." data-semantik-pages="...">``
     wrapper -> the chunk's callback receives ``dart_source_refs`` with the
     ``{block_id, pages}`` pair (pages parsed from the attribute's
     ``"3"`` / ``"3-5"`` / ``"3,5,7"`` forms).
-  - HTML WITHOUT any ``data-dart-*`` attribute -> the callback is invoked
+  - HTML WITHOUT any provenance attribute -> the callback is invoked
     WITHOUT a ``dart_source_refs`` kwarg (additive contract; legacy /
     IMSCC / Courseforge corpora stay byte-identical).
   - The pure parse helpers (``parse_dart_pages_attr`` /
-    ``harvest_dart_source_refs``) handle every emitted page form + the
-    empty-attribute / multi-wrapper cases.
+    ``harvest_semantik_source_refs``) handle every emitted page form + the
+    empty-attribute / multi-wrapper cases, dual-reading the legacy
+    ``data-dart-*`` spelling too.
 
 Driven through ``Trainforge.chunker.chunk_content`` with a recording
 callback (rather than CourseProcessor) so the B1 threading
@@ -33,7 +36,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from Trainforge.chunker import (  # noqa: E402
     ChunkerContext,
     chunk_content,
-    harvest_dart_source_refs,
+    harvest_semantik_source_refs,
     parse_dart_pages_attr,
 )
 
@@ -58,12 +61,12 @@ def test_parse_dart_pages_attr_forms() -> None:
 
 def test_harvest_pairs_block_id_with_same_element_pages() -> None:
     html = (
-        '<section data-dart-block-id="s1" data-dart-pages="2-4">a</section>'
-        '<section data-dart-block-id="s2" data-dart-pages="9">b</section>'
+        '<section data-semantik-block-id="s1" data-semantik-pages="2-4">a</section>'
+        '<section data-semantik-block-id="s2" data-semantik-pages="9">b</section>'
     )
-    refs = harvest_dart_source_refs(html)
+    refs = harvest_semantik_source_refs(html)
     # ``pages_kind`` is the additive back-compat field: kind-less fixtures
-    # (no ``data-dart-page-kind`` attr) normalize to "physical". The ``pages[]``
+    # (no ``data-semantik-page-kind`` attr) normalize to "physical". The ``pages[]``
     # shape is untouched.
     assert refs == [
         {"block_id": "s1", "pages": [2, 3, 4], "pages_kind": "physical"},
@@ -72,46 +75,46 @@ def test_harvest_pairs_block_id_with_same_element_pages() -> None:
 
 
 def test_harvest_block_without_pages_attr() -> None:
-    html = '<section data-dart-block-id="s3_c0">contact</section>'
-    assert harvest_dart_source_refs(html) == [
+    html = '<section data-semantik-block-id="s3_c0">contact</section>'
+    assert harvest_semantik_source_refs(html) == [
         {"block_id": "s3_c0", "pages": [], "pages_kind": "physical"}
     ]
 
 
 def test_harvest_empty_block_id_skipped() -> None:
-    html = '<section data-dart-block-id="" data-dart-pages="3">boilerplate</section>'
-    assert harvest_dart_source_refs(html) == []
+    html = '<section data-semantik-block-id="" data-semantik-pages="3">boilerplate</section>'
+    assert harvest_semantik_source_refs(html) == []
 
 
 def test_harvest_dedupes_repeated_block_id() -> None:
     html = (
-        '<section data-dart-block-id="s1" data-dart-pages="1">a</section>'
-        '<ul data-dart-block-id="s1" data-dart-pages="1">b</ul>'
+        '<section data-semantik-block-id="s1" data-semantik-pages="1">a</section>'
+        '<ul data-semantik-block-id="s1" data-semantik-pages="1">b</ul>'
     )
-    assert harvest_dart_source_refs(html) == [
+    assert harvest_semantik_source_refs(html) == [
         {"block_id": "s1", "pages": [1], "pages_kind": "physical"}
     ]
 
 
 def test_harvest_page_kind_printed() -> None:
-    """``data-dart-page-kind`` is harvested additively alongside ``pages[]``."""
+    """``data-semantik-page-kind`` is harvested additively alongside ``pages[]``."""
     html = (
-        '<section data-dart-block-id="s1" data-dart-pages="47" '
-        'data-dart-page-kind="printed">a</section>'
+        '<section data-semantik-block-id="s1" data-semantik-pages="47" '
+        'data-semantik-page-kind="printed">a</section>'
     )
-    assert harvest_dart_source_refs(html) == [
+    assert harvest_semantik_source_refs(html) == [
         {"block_id": "s1", "pages": [47], "pages_kind": "printed"}
     ]
 
 
 def test_harvest_page_kind_interpolated_and_physical() -> None:
     html = (
-        '<section data-dart-block-id="s1" data-dart-pages="3-5" '
-        'data-dart-page-kind="interpolated">a</section>'
-        '<section data-dart-block-id="s2" data-dart-pages="9" '
-        'data-dart-page-kind="physical">b</section>'
+        '<section data-semantik-block-id="s1" data-semantik-pages="3-5" '
+        'data-semantik-page-kind="interpolated">a</section>'
+        '<section data-semantik-block-id="s2" data-semantik-pages="9" '
+        'data-semantik-page-kind="physical">b</section>'
     )
-    assert harvest_dart_source_refs(html) == [
+    assert harvest_semantik_source_refs(html) == [
         {"block_id": "s1", "pages": [3, 4, 5], "pages_kind": "interpolated"},
         {"block_id": "s2", "pages": [9], "pages_kind": "physical"},
     ]
@@ -120,17 +123,32 @@ def test_harvest_page_kind_interpolated_and_physical() -> None:
 def test_harvest_page_kind_unknown_normalizes_to_physical() -> None:
     """A garbage / unknown kind normalizes to "physical" (anti-fabrication)."""
     html = (
-        '<section data-dart-block-id="s1" data-dart-pages="47" '
-        'data-dart-page-kind="bogus">a</section>'
+        '<section data-semantik-block-id="s1" data-semantik-pages="47" '
+        'data-semantik-page-kind="bogus">a</section>'
     )
-    assert harvest_dart_source_refs(html) == [
+    assert harvest_semantik_source_refs(html) == [
         {"block_id": "s1", "pages": [47], "pages_kind": "physical"}
     ]
 
 
-def test_harvest_non_dart_html_returns_empty() -> None:
+def test_harvest_legacy_data_dart_pairs() -> None:
+    """Legacy-compat read path: the harvester still reads the pre-purge
+    ``data-dart-*`` block-attr spelling (dual-read), yielding the same shape."""
+    html = (
+        '<section data-dart-block-id="s1" data-dart-pages="2-4">a</section>'
+        '<section data-dart-block-id="s2" data-dart-pages="9">b</section>'
+    )
+    assert harvest_semantik_source_refs(html) == [
+        {"block_id": "s1", "pages": [2, 3, 4], "pages_kind": "physical"},
+        {"block_id": "s2", "pages": [9], "pages_kind": "physical"},
+    ]
+
+
+def test_harvest_non_provenance_html_returns_empty() -> None:
+    # A Courseforge ``data-cf-source-ids`` attribute (carrying a legacy sourceId
+    # CURIE) is NOT a block-id provenance attr, so the harvester ignores it.
     html = '<section data-cf-source-ids="dart:doc#s1"><p>prose</p></section>'
-    assert harvest_dart_source_refs(html) == []
+    assert harvest_semantik_source_refs(html) == []
 
 
 # ---------------------------------------------------------------------------
@@ -175,8 +193,8 @@ def test_chunker_threads_dart_refs_no_sections_path() -> None:
     body = " ".join(f"word{n}" for n in range(60))
     raw_html = (
         "<html><body>"
-        '<section class="dart-section" data-dart-block-id="main-content" '
-        f'data-dart-pages="1-3"><p>Photosynthesis basics. {body}</p></section>'
+        '<section class="semantik-section" data-semantik-block-id="main-content" '
+        f'data-semantik-pages="1-3"><p>Photosynthesis basics. {body}</p></section>'
         "</body></html>"
     )
     records: List[Dict[str, Any]] = []
@@ -189,9 +207,10 @@ def test_chunker_threads_dart_refs_no_sections_path() -> None:
     ]
 
 
-def test_chunker_omits_kwarg_for_non_dart_html() -> None:
-    """Byte-stability: non-DART HTML -> the kwarg is never passed, so a
-    legacy callback that doesn't accept it keeps working unchanged."""
+def test_chunker_omits_kwarg_for_non_provenance_html() -> None:
+    """Byte-stability: HTML with no provenance attrs -> the kwarg is never
+    passed, so a legacy callback that doesn't accept it keeps working
+    unchanged."""
     body = " ".join(f"word{n}" for n in range(60))
     raw_html = f"<html><body><p>Ordinary prose. {body}</p></body></html>"
     records: List[Dict[str, Any]] = []
@@ -203,8 +222,8 @@ def test_chunker_omits_kwarg_for_non_dart_html() -> None:
 
 def test_legacy_callback_without_kwarg_still_works() -> None:
     """A create_chunk callback with NO ``dart_source_refs`` param (and no
-    **kwargs catch-all) keeps working on DART HTML via the chunker's
-    TypeError-fallback — the refs are simply not stamped."""
+    **kwargs catch-all) keeps working on provenance-tagged HTML via the
+    chunker's TypeError-fallback — the refs are simply not stamped."""
 
     def legacy_create_chunk(*, chunk_id, text, html, item, section_heading,
                             chunk_type, follows_chunk_id=None,
@@ -215,7 +234,7 @@ def test_legacy_callback_without_kwarg_still_works() -> None:
 
     raw_html = (
         "<html><body>"
-        '<section data-dart-block-id="s1" data-dart-pages="4">'
+        '<section data-semantik-block-id="s1" data-semantik-pages="4">'
         f'<p>{" ".join("w" + str(n) for n in range(60))}</p></section>'
         "</body></html>"
     )

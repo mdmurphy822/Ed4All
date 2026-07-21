@@ -126,35 +126,35 @@ def populated_source_map():
     return {
         "week_03": {
             "week_03_overview": {
-                "primary": ["dart:science_of_learning#s5_p0"],
-                "contributing": ["dart:science_of_learning#s4_p0"],
+                "primary": ["semantik:science_of_learning#s5_p0"],
+                "contributing": ["semantik:science_of_learning#s4_p0"],
                 "confidence": 0.82,
             },
             "week_03_content_01_pour_principles": {
-                "primary": ["dart:science_of_learning#s5_p2"],
+                "primary": ["semantik:science_of_learning#s5_p2"],
                 "contributing": [
-                    "dart:science_of_learning#s4_p0",
-                    "dart:science_of_learning#s6_p1",
+                    "semantik:science_of_learning#s4_p0",
+                    "semantik:science_of_learning#s6_p1",
                 ],
                 "confidence": 0.9,
             },
             "week_03_application": {
-                "primary": ["dart:science_of_learning#s7_p0"],
+                "primary": ["semantik:science_of_learning#s7_p0"],
                 "contributing": [],
                 "confidence": 0.75,
             },
             "week_03_self_check": {
                 "primary": [],
-                "contributing": ["dart:science_of_learning#s5_p2"],
+                "contributing": ["semantik:science_of_learning#s5_p2"],
                 "confidence": 0.5,
             },
             "week_03_summary": {
-                "primary": ["dart:science_of_learning#s5_p0"],
+                "primary": ["semantik:science_of_learning#s5_p0"],
                 "contributing": [],
                 "confidence": 0.7,
             },
             "week_03_discussion": {
-                "primary": ["dart:science_of_learning#s5_p0"],
+                "primary": ["semantik:science_of_learning#s5_p0"],
                 "contributing": [],
                 "confidence": 0.6,
             },
@@ -170,12 +170,12 @@ def populated_source_map():
 class TestHelpers:
     def test_refs_to_id_list_skips_malformed_entries(self):
         refs = [
-            {"sourceId": "dart:slug#s0", "role": "primary"},
+            {"sourceId": "semantik:slug#s0", "role": "primary"},
             {"role": "contributing"},
             "not-a-dict",
             {"sourceId": "", "role": "primary"},
         ]
-        assert _refs_to_id_list(refs) == ["dart:slug#s0"]
+        assert _refs_to_id_list(refs) == ["semantik:slug#s0"]
 
     def test_refs_to_id_list_empty_inputs(self):
         assert _refs_to_id_list(None) == []
@@ -183,27 +183,27 @@ class TestHelpers:
 
     def test_refs_primary_picks_single_primary(self):
         refs = [
-            {"sourceId": "dart:slug#s0", "role": "primary"},
-            {"sourceId": "dart:slug#s1", "role": "contributing"},
+            {"sourceId": "semantik:slug#s0", "role": "primary"},
+            {"sourceId": "semantik:slug#s1", "role": "contributing"},
         ]
-        assert _refs_primary(refs) == "dart:slug#s0"
+        assert _refs_primary(refs) == "semantik:slug#s0"
 
     def test_refs_primary_returns_none_when_multiple_primaries(self):
         refs = [
-            {"sourceId": "dart:slug#s0", "role": "primary"},
-            {"sourceId": "dart:slug#s1", "role": "primary"},
+            {"sourceId": "semantik:slug#s0", "role": "primary"},
+            {"sourceId": "semantik:slug#s1", "role": "primary"},
         ]
         assert _refs_primary(refs) is None
 
     def test_refs_primary_returns_none_when_no_primary(self):
-        refs = [{"sourceId": "dart:slug#s0", "role": "contributing"}]
+        refs = [{"sourceId": "semantik:slug#s0", "role": "contributing"}]
         assert _refs_primary(refs) is None
 
     def test_page_refs_for_populated(self, populated_source_map):
         refs = _page_refs_for(populated_source_map, 3, "week_03_content_01_pour_principles")
         assert refs is not None
         assert refs[0]["role"] == "primary"
-        assert refs[0]["sourceId"] == "dart:science_of_learning#s5_p2"
+        assert refs[0]["sourceId"] == "semantik:science_of_learning#s5_p2"
         # confidence propagates from the map entry to every ref.
         assert all(r["confidence"] == 0.9 for r in refs)
 
@@ -216,7 +216,7 @@ class TestHelpers:
         short_map = {
             "week_03": {
                 "content_01_pour_principles": {
-                    "primary": ["dart:x#y"],
+                    "primary": ["semantik:x#y"],
                     "contributing": [],
                     "confidence": 0.5,
                 }
@@ -224,20 +224,20 @@ class TestHelpers:
         }
         refs = _page_refs_for(short_map, 3, "week_03_content_01_pour_principles")
         assert refs is not None
-        assert refs[0]["sourceId"] == "dart:x#y"
+        assert refs[0]["sourceId"] == "semantik:x#y"
 
     def test_source_attr_string_empty(self):
         assert _source_attr_string(None) == ""
         assert _source_attr_string([]) == ""
 
     def test_source_attr_string_joined_with_primary(self):
-        out = _source_attr_string(["dart:slug#a", "dart:slug#b"], "dart:slug#a")
-        assert 'data-cf-source-ids="dart:slug#a,dart:slug#b"' in out
-        assert 'data-cf-source-primary="dart:slug#a"' in out
+        out = _source_attr_string(["semantik:slug#a", "semantik:slug#b"], "semantik:slug#a")
+        assert 'data-cf-source-ids="semantik:slug#a,semantik:slug#b"' in out
+        assert 'data-cf-source-primary="semantik:slug#a"' in out
 
     def test_source_attr_string_no_primary(self):
-        out = _source_attr_string(["dart:slug#a"])
-        assert 'data-cf-source-ids="dart:slug#a"' in out
+        out = _source_attr_string(["semantik:slug#a"])
+        assert 'data-cf-source-ids="semantik:slug#a"' in out
         assert "data-cf-source-primary" not in out
 
 
@@ -247,7 +247,7 @@ class TestBuildPageMetadata:
         assert "sourceReferences" not in meta
 
     def test_source_references_emitted_when_populated(self):
-        refs = [{"sourceId": "dart:x#y", "role": "primary"}]
+        refs = [{"sourceId": "semantik:x#y", "role": "primary"}]
         meta = _build_page_metadata(
             "SAMPLE_101", 3, "content", "p", source_references=refs,
         )
@@ -262,7 +262,7 @@ class TestBuildSectionsMetadata:
         assert "sourceReferences" not in sections[0]
 
     def test_section_source_refs_emitted_when_declared(self):
-        refs = [{"sourceId": "dart:x#y", "role": "primary"}]
+        refs = [{"sourceId": "semantik:x#y", "role": "primary"}]
         sections = _build_sections_metadata([
             {
                 "heading": "h",
@@ -308,7 +308,7 @@ class TestGenerateWeekWithSourceMap:
                 f"{name} sourceReferences must be non-empty"
             )
             for ref in meta["sourceReferences"]:
-                assert ref["sourceId"].startswith("dart:")
+                assert ref["sourceId"].startswith("semantik:")
                 assert ref["role"] in ("primary", "contributing", "corroborating")
 
     def test_html_wrappers_carry_data_cf_source_ids(
@@ -322,7 +322,7 @@ class TestGenerateWeekWithSourceMap:
         content_html = (out / "week_03" / "week_03_content_01_pour_principles.html").read_text()
         attrs = _all_source_id_attrs(content_html)
         assert attrs, "Content page must carry data-cf-source-ids attributes"
-        assert any("dart:science_of_learning#s5_p2" in a for a in attrs)
+        assert any("semantik:science_of_learning#s5_p2" in a for a in attrs)
 
     def test_data_cf_source_primary_emitted_when_unambiguous(
         self, tmp_path, week_data, populated_source_map
@@ -335,7 +335,7 @@ class TestGenerateWeekWithSourceMap:
         content_html = (out / "week_03" / "week_03_content_01_pour_principles.html").read_text()
         primaries = _all_source_primary_attrs(content_html)
         assert primaries
-        assert all(p == "dart:science_of_learning#s5_p2" for p in primaries)
+        assert all(p == "semantik:science_of_learning#s5_p2" for p in primaries)
 
     def test_self_check_wrapper_carries_source_ids(
         self, tmp_path, week_data, populated_source_map
@@ -348,7 +348,7 @@ class TestGenerateWeekWithSourceMap:
         sc_html = (out / "week_03" / "week_03_self_check.html").read_text()
         # self-check wrapper must carry data-cf-source-ids
         assert 'class="self-check"' in sc_html
-        assert 'data-cf-source-ids="dart:science_of_learning#s5_p2"' in sc_html
+        assert 'data-cf-source-ids="semantik:science_of_learning#s5_p2"' in sc_html
 
     def test_activity_card_carries_source_ids(
         self, tmp_path, week_data, populated_source_map
@@ -360,7 +360,7 @@ class TestGenerateWeekWithSourceMap:
         )
         app_html = (out / "week_03" / "week_03_application.html").read_text()
         assert 'class="activity-card"' in app_html
-        assert 'data-cf-source-ids="dart:science_of_learning#s7_p0"' in app_html
+        assert 'data-cf-source-ids="semantik:science_of_learning#s7_p0"' in app_html
 
     def test_no_source_attrs_on_p_or_li_elements(
         self, tmp_path, week_data, populated_source_map
@@ -419,7 +419,7 @@ class TestBackwardCompat:
         other_week_map = {
             "week_05": {
                 "week_05_overview": {
-                    "primary": ["dart:x#y"], "contributing": [], "confidence": 0.5
+                    "primary": ["semantik:x#y"], "contributing": [], "confidence": 0.5
                 }
             }
         }
@@ -455,7 +455,7 @@ class TestGenerateCourseRoundTrip:
             source_module_map_path=str(map_path),
         )
         content_html = (out / "week_03" / "week_03_content_01_pour_principles.html").read_text()
-        assert 'data-cf-source-ids="dart:science_of_learning#s5_p2' in content_html
+        assert 'data-cf-source-ids="semantik:science_of_learning#s5_p2' in content_html
 
     def test_generate_course_with_no_map_preserves_legacy_shape(
         self, tmp_path, week_data
@@ -561,7 +561,7 @@ class TestWave41OverviewBodyWrap:
                 f"Overview <{el.name}> {el.get_text()[:60]!r} must have "
                 "a data-cf-source-ids ancestor (Wave 41 grounding)."
             )
-            assert "dart:science_of_learning#s5_p0" in ids
+            assert "semantik:science_of_learning#s5_p0" in ids
 
     def test_overview_no_wrap_when_map_empty(
         self, tmp_path, week_with_long_overview
@@ -628,7 +628,7 @@ class TestWave41ApplicationBodyWrap:
                 f"Application <{el.name}> {el.get_text()[:60]!r} must "
                 "have a data-cf-source-ids ancestor (Wave 41 grounding)."
             )
-            assert "dart:science_of_learning#s7_p0" in ids
+            assert "semantik:science_of_learning#s7_p0" in ids
 
 
 class TestWave41SelfCheckBodyWrap:
@@ -666,7 +666,7 @@ class TestWave41SelfCheckBodyWrap:
         # empty primary list which would suppress the wrapper).
         sm = json.loads(json.dumps(populated_source_map))
         sm["week_03"]["week_03_self_check"] = {
-            "primary": ["dart:science_of_learning#s5_p2"],
+            "primary": ["semantik:science_of_learning#s5_p2"],
             "contributing": [],
             "confidence": 0.8,
         }
@@ -684,7 +684,7 @@ class TestWave41SelfCheckBodyWrap:
                 f"Self-check <{el.name}> {el.get_text()[:60]!r} must "
                 "have a data-cf-source-ids ancestor (Wave 41 grounding)."
             )
-            assert "dart:science_of_learning#s5_p2" in ids
+            assert "semantik:science_of_learning#s5_p2" in ids
 
 
 class TestWave41SummaryBodyWrap:
@@ -717,7 +717,7 @@ class TestWave41SummaryBodyWrap:
                 f"Summary <{el.name}> {el.get_text()[:60]!r} must "
                 "have a data-cf-source-ids ancestor (Wave 41 grounding)."
             )
-            assert "dart:science_of_learning#s5_p0" in ids
+            assert "semantik:science_of_learning#s5_p0" in ids
 
 
 # ---------------------------------------------------------------------- #
@@ -731,10 +731,10 @@ class TestWave41SummaryBodyWrap:
 # ---------------------------------------------------------------------- #
 
 
-# Long topic paragraph mirroring what DART produces — ≥30 words so the
+# Long topic paragraph mirroring what SemantiK produces — ≥30 words so the
 # validator's NON_TRIVIAL_WORD_FLOOR considers the rendered <p>, and ≥
 # a few distinctive phrases so the test can assert the recap is the
-# DART-sourced text rather than boilerplate.
+# SemantiK-sourced text rather than boilerplate.
 _RECAP_PARAGRAPH = (
     "Retrieval-Augmented Generation blends parametric language models "
     "with a non-parametric retrieval pass so the generator can ground "
@@ -1066,7 +1066,7 @@ class TestWave43SummaryRecapEmit:
                 "Wave 43 recap <p> must have a data-cf-source-ids "
                 "ancestor (AGGREGATE_EMPTY_PAGES fix)."
             )
-            assert "dart:science_of_learning#s5_p0" in ids
+            assert "semantik:science_of_learning#s5_p0" in ids
 
     def test_summary_page_no_recap_when_topics_empty(
         self, tmp_path, week_data, populated_source_map,

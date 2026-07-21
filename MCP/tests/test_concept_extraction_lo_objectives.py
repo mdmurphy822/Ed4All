@@ -170,7 +170,7 @@ def _run(
     synthesized_objectives_path: Optional[Path] = None,
     libv2_course_json: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    chunks_path = tmp_path / "dart_chunks" / "chunks.jsonl"
+    chunks_path = tmp_path / "semantik_chunks" / "chunks.jsonl"
     _write_chunkset(chunks_path, chunks)
     custom_libv2 = tmp_path / "libv2"
 

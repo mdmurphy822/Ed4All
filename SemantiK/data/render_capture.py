@@ -326,7 +326,7 @@ def render_with_boxes(
 class RenderCaptureSession:
     """Reusable Chromium browser + context for BATCHED box-capture renders.
 
-    Mirrors :class:`dart_semantik.validate.HtmlValidator`'s launch pattern (one
+    Mirrors :class:`semantik_structure.validate.HtmlValidator`'s launch pattern (one
     Chromium for the whole build) so :func:`render_with_boxes` is not
     relaunching a browser per pair — the deliverable-2 batch refactor. Usage::
 

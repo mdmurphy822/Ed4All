@@ -46,7 +46,7 @@ EXACT_ANCHOR = (
 
 
 def _write_html_course(tmp_path: Path, *, item_path: str = "indexing.html") -> Path:
-    """Build a minimal LibV2-style course dir with a DART source page."""
+    """Build a minimal LibV2-style course dir with a SemantiK source page."""
     course_dir = tmp_path / "course"
     html_dir = course_dir / "sources" / "textbooks"
     html_dir.mkdir(parents=True)
@@ -90,7 +90,7 @@ def _correct_span(item_path: str = "indexing.html"):
 def test_resolve_source_page_returns_html(tmp_path):
     course_dir = _write_html_course(tmp_path)
     chunk = _base_chunk("indexing.html", EXACT_ANCHOR, _correct_span())
-    resolved = resolve_source_page(chunk, course_dir, chunkset_kind="dart")
+    resolved = resolve_source_page(chunk, course_dir, chunkset_kind="semantik")
     assert resolved is not None
     path, html = resolved
     assert "inverted index" in html
@@ -100,7 +100,7 @@ def test_resolve_source_page_returns_html(tmp_path):
 def test_resolved_exact_on_clean_fixture(tmp_path):
     course_dir = _write_html_course(tmp_path)
     chunk = _base_chunk("indexing.html", EXACT_ANCHOR, _correct_span())
-    anchor = resolve_citation_anchor(chunk, course_dir, chunkset_kind="dart")
+    anchor = resolve_citation_anchor(chunk, course_dir, chunkset_kind="semantik")
     assert isinstance(anchor, CitationAnchor)
     assert anchor.status is AnchorStatus.RESOLVED_EXACT
     assert anchor.containment_rate == pytest.approx(1.0)
@@ -116,7 +116,7 @@ def test_normalized_fallback(tmp_path):
     # substring arm (the page plain text still contains the normalized text).
     text = "\n\n" + EXACT_ANCHOR.replace(" ", "  ") + "\n"
     chunk = _base_chunk("indexing.html", text, [0, 12])
-    anchor = resolve_citation_anchor(chunk, course_dir, chunkset_kind="dart")
+    anchor = resolve_citation_anchor(chunk, course_dir, chunkset_kind="semantik")
     assert anchor.status is AnchorStatus.RESOLVED_NORMALIZED
     assert anchor.normalized_match is True
 
@@ -138,7 +138,7 @@ def test_fabricated_span_detected(tmp_path):
     span = [10, 10 + len(needle)]  # plausible-looking but bogus
     chunk = _base_chunk("indexing.html", needle, span)
     anchor = resolve_citation_anchor(
-        chunk, course_dir=_write_html_course(tmp_path), chunkset_kind="dart"
+        chunk, course_dir=_write_html_course(tmp_path), chunkset_kind="semantik"
     )
     assert anchor.status is AnchorStatus.SPAN_FABRICATED
     # The page WAS found — this is a span/text problem, not a missing source.
@@ -148,7 +148,7 @@ def test_fabricated_span_detected(tmp_path):
 def test_missing_source_page(tmp_path):
     course_dir = _write_html_course(tmp_path)
     chunk = _base_chunk("does_not_exist.html", EXACT_ANCHOR, [0, 10])
-    anchor = resolve_citation_anchor(chunk, course_dir, chunkset_kind="dart")
+    anchor = resolve_citation_anchor(chunk, course_dir, chunkset_kind="semantik")
     assert anchor.status is AnchorStatus.SOURCE_PAGE_MISSING
     assert anchor.source_path is None
 
@@ -180,13 +180,13 @@ def test_imscc_member_resolution(tmp_path):
     }
 
 
-def test_corpus_kind_resolves_both_dart_and_imscc_chunks(tmp_path):
+def test_corpus_kind_resolves_both_semantik_and_imscc_chunks(tmp_path):
     """The union ``corpus`` chunkset carries BOTH imscc-member chunks AND
-    DART-page chunks. A regression: ``corpus`` formerly resolved every chunk as
-    an imscc member, stranding the DART-page chunks as ``source_page_missing``.
+    SemantiK-page chunks. A regression: ``corpus`` formerly resolved every chunk as
+    an imscc member, stranding the SemantiK-page chunks as ``source_page_missing``.
     Both axes must resolve per-chunk by item_path."""
     course_dir = tmp_path / "course"
-    # DART page on disk under source/html/.
+    # SemantiK page on disk under source/html/.
     html_dir = course_dir / "source" / "html"
     html_dir.mkdir(parents=True)
     (html_dir / "chapter.html").write_text(PAGE_HTML, encoding="utf-8")
@@ -198,20 +198,20 @@ def test_corpus_kind_resolves_both_dart_and_imscc_chunks(tmp_path):
         zf.writestr("week_01/intro.html", PAGE_HTML)
 
     span = _correct_span()
-    dart_chunk = _base_chunk("chapter.html", EXACT_ANCHOR, span)
+    semantik_chunk = _base_chunk("chapter.html", EXACT_ANCHOR, span)
     imscc_chunk = _base_chunk("week_01/intro.html", EXACT_ANCHOR, span)
 
-    # DART-page chunk resolves under corpus kind (the bug: it didn't).
-    dart_resolved = resolve_source_page(dart_chunk, course_dir, chunkset_kind="corpus")
-    assert dart_resolved is not None, "DART chunk stranded as source_page_missing"
-    assert Path(dart_resolved[0]).name == "chapter.html"
+    # SemantiK-page chunk resolves under corpus kind (the bug: it didn't).
+    semantik_resolved = resolve_source_page(semantik_chunk, course_dir, chunkset_kind="corpus")
+    assert semantik_resolved is not None, "SemantiK chunk stranded as source_page_missing"
+    assert Path(semantik_resolved[0]).name == "chapter.html"
 
     # imscc-member chunk still resolves under corpus kind.
     imscc_resolved = resolve_source_page(imscc_chunk, course_dir, chunkset_kind="corpus")
     assert imscc_resolved is not None
     assert "intro.html" in str(imscc_resolved[0])
 
-    for chunk in (dart_chunk, imscc_chunk):
+    for chunk in (semantik_chunk, imscc_chunk):
         anchor = resolve_citation_anchor(chunk, course_dir, chunkset_kind="corpus")
         assert anchor.status in {
             AnchorStatus.RESOLVED_EXACT,
@@ -232,13 +232,13 @@ def test_containment_threshold_boundary(tmp_path):
     chunk = _base_chunk("indexing.html", text, [0, 5])
 
     high = resolve_citation_anchor(
-        chunk, course_dir, chunkset_kind="dart", containment_threshold=0.85
+        chunk, course_dir, chunkset_kind="semantik", containment_threshold=0.85
     )
     assert high.status is AnchorStatus.RESOLVED_CONTAINMENT
     assert 0.85 <= high.containment_rate < 0.95
 
     strict = resolve_citation_anchor(
-        chunk, course_dir, chunkset_kind="dart", containment_threshold=0.95
+        chunk, course_dir, chunkset_kind="semantik", containment_threshold=0.95
     )
     assert strict.status is AnchorStatus.SPAN_FABRICATED
     assert strict.containment_rate < 0.95
@@ -286,7 +286,7 @@ def test_body_chrome_mark_does_not_swallow_page(tmp_path):
     # char_span deliberately bogus so resolution must come from the body text,
     # not the exact-span arm.
     chunk = _base_chunk("report.html", EXACT_ANCHOR, [0, 5])
-    anchor = resolve_citation_anchor(chunk, course_dir, chunkset_kind="dart")
+    anchor = resolve_citation_anchor(chunk, course_dir, chunkset_kind="semantik")
     assert anchor.status in {
         AnchorStatus.RESOLVED_NORMALIZED,
         AnchorStatus.RESOLVED_CONTAINMENT,
@@ -306,7 +306,7 @@ def test_genuine_chrome_still_skipped(tmp_path):
 
     footer_text = "Footer boilerplate that repeats on every page in the course."
     chunk = _base_chunk("report.html", footer_text, [0, 5])
-    anchor = resolve_citation_anchor(chunk, course_dir, chunkset_kind="dart")
+    anchor = resolve_citation_anchor(chunk, course_dir, chunkset_kind="semantik")
     # Footer chrome was skipped, so its text is absent from the page text.
     assert anchor.status is AnchorStatus.SPAN_FABRICATED
 
@@ -342,7 +342,7 @@ def test_entity_drift_normalized_match(tmp_path):
     (html_dir / "scenario.html").write_text(ENTITY_PAGE_HTML, encoding="utf-8")
 
     chunk = _base_chunk("scenario.html", ENTITY_CHUNK_TEXT, [0, 5])
-    anchor = resolve_citation_anchor(chunk, course_dir, chunkset_kind="dart")
+    anchor = resolve_citation_anchor(chunk, course_dir, chunkset_kind="semantik")
     assert anchor.status in {
         AnchorStatus.RESOLVED_NORMALIZED,
         AnchorStatus.RESOLVED_CONTAINMENT,
@@ -373,7 +373,7 @@ def test_normalization_fixes_compose(tmp_path):
     (html_dir / "combined.html").write_text(page, encoding="utf-8")
 
     chunk = _base_chunk("combined.html", chunk_text, [0, 5])
-    anchor = resolve_citation_anchor(chunk, course_dir, chunkset_kind="dart")
+    anchor = resolve_citation_anchor(chunk, course_dir, chunkset_kind="semantik")
     assert anchor.status in {
         AnchorStatus.RESOLVED_NORMALIZED,
         AnchorStatus.RESOLVED_CONTAINMENT,
@@ -391,8 +391,8 @@ def test_anchor_report_rollup_deterministic(tmp_path):
     chunks_path.write_text(
         "\n".join(json.dumps(c) for c in chunks) + "\n", encoding="utf-8"
     )
-    r1 = anchor_report(chunks_path, course_dir, chunkset_kind="dart")
-    r2 = anchor_report(chunks_path, course_dir, chunkset_kind="dart")
+    r1 = anchor_report(chunks_path, course_dir, chunkset_kind="semantik")
+    r2 = anchor_report(chunks_path, course_dir, chunkset_kind="semantik")
     assert r1 == r2
     assert r1["total_chunks"] == 2
     assert r1["status_counts"][AnchorStatus.SOURCE_PAGE_MISSING.value] == 1

@@ -97,8 +97,8 @@ def _objectives_doc() -> dict:
 
 def _page_html() -> str:
     """A fixture content page: 3 blocks bound to TO-01 with source ids."""
-    ref1 = f"dart:{SRC}#anchorAAA"
-    ref2 = f"dart:{SRC}#anchorBBB"
+    ref1 = f"semantik:{SRC}#anchorAAA"
+    ref2 = f"semantik:{SRC}#anchorBBB"
     return f"""<!DOCTYPE html><html><body>
 <section data-cf-block-id="week_01_content_01#concept_divisibility_0"
          data-cf-source-ids="{ref1},{ref2}"
@@ -154,15 +154,18 @@ def export_dir(tmp_path: Path) -> Path:
 # --------------------------------------------------------------------------- #
 
 
-def test_parse_dart_ref():
+def test_parse_source_ref():
+    # Main path: SemantiK provenance refs parse into (src, anchor).
+    assert parse_dart_ref(f"semantik:{SRC}#anchorAAA") == (SRC, "anchorAAA")
+    # Legacy read-compat: the pre-SemantiK prefix is still accepted on read.
     assert parse_dart_ref(f"dart:{SRC}#anchorAAA") == (SRC, "anchorAAA")
-    assert parse_dart_ref("not-a-dart-ref") is None
-    assert parse_dart_ref("dart:onlysrc") is None
+    assert parse_dart_ref("not-a-source-ref") is None
+    assert parse_dart_ref("semantik:onlysrc") is None
     assert parse_dart_ref("") is None
 
 
 def test_deep_link_form_mirrors_studio_route():
-    link = deep_link_for_ref(f"dart:{SRC}#anchorAAA", SLUG)
+    link = deep_link_for_ref(f"semantik:{SRC}#anchorAAA", SLUG)
     assert link == (
         f"/api/learn/source/{SLUG}?item_path={SRC}.html#anchorAAA"
     )
@@ -451,7 +454,7 @@ def _noisy_page_html() -> str:
     heading, and a number-only block with no heading. Only the heading block
     should survive extraction, carrying its heading as the topic.
     """
-    ref = f"dart:{SRC}#anchorAAA"
+    ref = f"semantik:{SRC}#anchorAAA"
     return f"""<!DOCTYPE html><html><body>
 <section data-cf-block-id="week_01_content_01#concept_real-topic_0"
          data-cf-source-ids="{ref}" data-cf-objective-id="TO-01">
@@ -495,7 +498,7 @@ def test_jsonld_and_frontmatter_blocks_dropped():
 
 def test_topic_falls_back_to_clean_summary_when_no_heading():
     """A no-heading block with usable prose gets a short clean summary topic."""
-    ref = f"dart:{SRC}#anchorAAA"
+    ref = f"semantik:{SRC}#anchorAAA"
     html = f"""<html><body>
 <section data-cf-block-id="week_01_content_01#concept_nohead_0"
          data-cf-source-ids="{ref}" data-cf-objective-id="TO-01">
@@ -525,7 +528,7 @@ def test_to_only_course_proxy_is_honest_not_fake_co():
     with tempfile.TemporaryDirectory() as td:
         content = Path(td) / "03_content_development"
         content.mkdir()
-        ref = f"dart:{SRC}#anchorAAA"
+        ref = f"semantik:{SRC}#anchorAAA"
         (content / "week_01_content_01.html").write_text(
             f"""<html><body>
 <section data-cf-block-id="week_01_content_01#concept_x_0"
@@ -591,7 +594,7 @@ def test_summarize_terminals_to_only_course_shows_zero_cos():
     with tempfile.TemporaryDirectory() as td:
         content = Path(td) / "03_content_development"
         content.mkdir()
-        ref = f"dart:{SRC}#anchorAAA"
+        ref = f"semantik:{SRC}#anchorAAA"
         (content / "week_01_content_01.html").write_text(
             f"""<html><body>
 <section data-cf-block-id="week_01_content_01#concept_x_0"
@@ -647,7 +650,7 @@ def _two_co_objectives_doc() -> dict:
 
 def _per_co_page_html() -> str:
     """Two blocks, each stamped a DISTINCT CO id (block A -> CO-01, B -> CO-02)."""
-    ref = f"dart:{SRC}#anchorAAA"
+    ref = f"semantik:{SRC}#anchorAAA"
     return f"""<!DOCTYPE html><html><body>
 <section data-cf-block-id="week_01_content_01#concept_div_0"
          data-cf-source-ids="{ref}" data-cf-objective-id="CO-01">
@@ -696,7 +699,7 @@ def test_co_without_direct_blocks_falls_back_to_to_blocks(tmp_path: Path):
     CO-01 has its own block; CO-02 has none of its own but the parent TO has a
     TO-stamped block → that TO block surfaces under CO-02 (fallback works).
     """
-    ref = f"dart:{SRC}#anchorAAA"
+    ref = f"semantik:{SRC}#anchorAAA"
     html = f"""<!DOCTYPE html><html><body>
 <section data-cf-block-id="week_01_content_01#concept_div_0"
          data-cf-source-ids="{ref}" data-cf-objective-id="CO-01">
@@ -734,7 +737,7 @@ def test_concept_label_uses_heading_not_block_id_slug(tmp_path: Path):
     The block-id slug would truncate to "what you will"; the cleaned heading
     "What You Will Learn Today" must win as the concept-group label.
     """
-    ref = f"dart:{SRC}#anchorAAA"
+    ref = f"semantik:{SRC}#anchorAAA"
     html = f"""<!DOCTYPE html><html><body>
 <section data-cf-block-id="week_01_content_01#concept_what-you-will_0"
          data-cf-source-ids="{ref}" data-cf-objective-id="CO-01">
@@ -778,7 +781,7 @@ def test_concept_label_uses_heading_not_block_id_slug(tmp_path: Path):
 
 def test_deep_link_appends_page_when_present():
     """A positive page appends ``&page=N`` BEFORE the ``#anchor`` fragment."""
-    link = deep_link_for_ref(f"dart:{SRC}#anchorAAA", SLUG, page=47)
+    link = deep_link_for_ref(f"semantik:{SRC}#anchorAAA", SLUG, page=47)
     assert link == (
         f"/api/learn/source/{SLUG}?item_path={SRC}.html&page=47#anchorAAA"
     )
@@ -788,16 +791,16 @@ def test_deep_link_appends_page_when_present():
 
 def test_deep_link_page_less_byte_identical():
     """No page (None / 0 / negative) → byte-identical to the page-less URL."""
-    base = deep_link_for_ref(f"dart:{SRC}#anchorAAA", SLUG)
-    assert deep_link_for_ref(f"dart:{SRC}#anchorAAA", SLUG, page=None) == base
-    assert deep_link_for_ref(f"dart:{SRC}#anchorAAA", SLUG, page=0) == base
-    assert deep_link_for_ref(f"dart:{SRC}#anchorAAA", SLUG, page=-3) == base
+    base = deep_link_for_ref(f"semantik:{SRC}#anchorAAA", SLUG)
+    assert deep_link_for_ref(f"semantik:{SRC}#anchorAAA", SLUG, page=None) == base
+    assert deep_link_for_ref(f"semantik:{SRC}#anchorAAA", SLUG, page=0) == base
+    assert deep_link_for_ref(f"semantik:{SRC}#anchorAAA", SLUG, page=-3) == base
     assert "&page=" not in base
 
 
 def _page_html_with_pages(pages_attr: str, kind_attr: str | None = None) -> str:
     """A single grounded block carrying ``data-dart-pages`` (+ optional kind)."""
-    ref = f"dart:{SRC}#anchorAAA"
+    ref = f"semantik:{SRC}#anchorAAA"
     kind_html = (
         f' data-dart-page-kind="{kind_attr}"' if kind_attr is not None else ""
     )
@@ -835,7 +838,7 @@ def test_block_pages_range_targets_first_page():
 
 def test_block_without_pages_deep_link_page_less():
     """No ``data-dart-pages`` → empty pages + page-less (byte-identical) href."""
-    ref = f"dart:{SRC}#anchorAAA"
+    ref = f"semantik:{SRC}#anchorAAA"
     html = f"""<!DOCTYPE html><html><body>
 <section data-cf-block-id="week_01_content_01#concept_x_0"
          data-cf-source-ids="{ref}"

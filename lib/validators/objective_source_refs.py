@@ -757,7 +757,7 @@ class ObjectiveSourceRefValidator:
                                         "``dart_block_ids`` map to real "
                                         "DART block IDs that survived "
                                         "the chunking phase, or re-run "
-                                        "stage_dart_outputs + chunking "
+                                        "stage_semantik_outputs + chunking "
                                         "to refresh the chunkset."
                                     ),
                                 ))

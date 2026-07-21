@@ -70,7 +70,7 @@ from lib.llm.endpoints import openai_compatible_legacy_registry
 _DERIVED_PROVIDER_META: List[Dict[str, Any]] = [
     # ``local`` IS Ollama by default (base_url points at the Ollama
     # OpenAI-compat port 11434). The registry name stays ``"local"`` because
-    # DART / Trainforge / the resolver all key on that literal. The GUI marks
+    # Trainforge and the resolver all key on that literal. The GUI marks
     # it vision-capable for the routing dropdown (overlay); the real enable is
     # LOCAL_VISION_CAPABLE + a vision LOCAL_SYNTHESIS_MODEL at resolve time.
     {"name": "local", "label": "Ollama (local)", "vision_capable": True},
@@ -197,8 +197,8 @@ def vision_provider_names() -> List[str]:
     Filters ``PROVIDERS`` on the ``vision_capable`` marker. These are the
     only providers a vision/VLM routing dropdown should offer:
     ``anthropic``, ``local`` (Ollama with LOCAL_VISION_CAPABLE=true), and
-    ``together-vision``. Mirrors DART's vision-capable opt-in set
-    (see ``DART/pdf_converter/claude_processor.py``).
+    ``together-vision``. These feed the SemantiK VLM seat selector
+    (``SEMANTIK_VLM_PROVIDER``).
     """
     return [p["name"] for p in PROVIDERS if p.get("vision_capable")]
 
@@ -385,24 +385,40 @@ def _build_catalog() -> List[Dict[str, Any]]:
         # TOGETHER_VISION_MODEL now lives in the ``vision`` category (single
         # canonical catalog entry) — see the vision block above.
         # --------------------------------------------------------------- vision
-        # Vision / VLM routing. ``DART_VISION_PROVIDER`` is the REAL knob DART
-        # consumes for alt-text generation (``claude_processor.py::
-        # _resolve_dart_vision_provider``). The enum is filtered to the
-        # vision-capable provider universe (anthropic / together-vision /
-        # local-as-Ollama) so the UI can't offer a text-only backend that
-        # would fail the "fail at startup, not mid-PDF" vision-capability gate.
+        # Vision / VLM routing. ``SEMANTIK_VLM_PROVIDER`` is the REAL knob the
+        # SemantiK cascade consumes to select its VLM seat for per-page
+        # extraction + figure alt-text (``semantik_structure/extract_shared.py
+        # ::resolve_vlm_provider``). The enum is filtered to the vision-capable
+        # provider universe (anthropic / together-vision / local-as-Ollama) so
+        # the UI can't offer a text-only backend that would fail the VLM
+        # seat's "fail at startup, not mid-page" readiness gate.
         {
-            "key": "DART_VISION_PROVIDER",
-            "label": "Vision Provider (DART alt-text / VLM)",
+            "key": "SEMANTIK_VLM_PROVIDER",
+            "label": "Vision Provider (SemantiK VLM / alt-text)",
             "category": "vision",
             "type": "enum",
             "default": None,
             "enum": vision_names,
             "help": (
-                "Vision-capable LLM backend for DART image / alt-text calls. "
-                "Falls through to DART_PROVIDER when unset. Vision-capable "
-                "options only: anthropic, together-vision, or local (Ollama "
-                "with a vision model + LOCAL_VISION_CAPABLE=true)."
+                "Vision-capable LLM backend for the SemantiK VLM seat "
+                "(per-page extraction + figure alt-text). Unset falls back to "
+                "the local Ollama VLM seat. Vision-capable options only: "
+                "anthropic, together-vision, or local (Ollama with a vision "
+                "model + LOCAL_VISION_CAPABLE=true)."
+            ),
+            "applies_to": "vision",
+        },
+        {
+            "key": "SEMANTIK_VLM_MODEL",
+            "label": "Vision Model (SemantiK VLM)",
+            "category": "vision",
+            "type": "string",
+            "default": "qwen2.5vl:7b",
+            "help": (
+                "Model id the SemantiK VLM seat requests "
+                "(semantik_structure/extract_shared.py::resolve_vlm_model). "
+                "Default qwen2.5vl:7b (Qwen2.5-VL-7B-Instruct, Apache-2.0) on "
+                "the local Ollama seat."
             ),
             "applies_to": "vision",
         },
@@ -433,35 +449,6 @@ def _build_catalog() -> List[Dict[str, Any]]:
                 "provider is together-vision."
             ),
             "applies_to": "together-vision",
-        },
-        # ------------------------------------------------------------------- dart
-        {
-            "key": "DART_PROVIDER",
-            "label": "DART Provider",
-            "category": "dart",
-            "type": "enum",
-            "default": None,
-            "enum": names,
-            "help": "LLM provider for DART text conversion.",
-            "applies_to": "dart",
-        },
-        {
-            "key": "DART_CLAUDE_MODEL",
-            "label": "DART Claude Model",
-            "category": "dart",
-            "type": "string",
-            "default": None,
-            "help": "Model override for DART's Anthropic call path.",
-            "applies_to": "dart",
-        },
-        {
-            "key": "DART_LLM_CLASSIFICATION",
-            "label": "DART LLM Classification",
-            "category": "dart",
-            "type": "bool",
-            "default": False,
-            "help": "Route DART block classification through an LLM instead of heuristics.",
-            "applies_to": "dart",
         },
         # ------------------------------------------------------------- courseforge
         {
@@ -830,25 +817,15 @@ ROUTING_ENV_MAP: Dict[str, Dict[str, str]] = {
         "provider": "LLM_PROVIDER",
         "model": "LLM_MODEL",
     },
-    "dart": {
-        "provider": "DART_PROVIDER",
-        "vision_provider": "DART_VISION_PROVIDER",
-        "model": "DART_CLAUDE_MODEL",
-    },
     # Canonical vision / VLM routing surface. ``vision.provider`` maps to
-    # DART_VISION_PROVIDER (the real DART vision knob). ``vision.model`` is
-    # provider-conditional and handled specially in ``routing_to_env``: it
-    # renders to TOGETHER_VISION_MODEL ONLY when the provider is
-    # together-vision (the only vision provider whose model is selected by a
-    # dedicated *_MODEL env var). For provider=local the operator picks the
-    # Ollama vision model via LOCAL_SYNTHESIS_MODEL + LOCAL_VISION_CAPABLE;
-    # for anthropic via DART_CLAUDE_MODEL — there is no DART_VISION_MODEL env
-    # in the code, so vision.model is intentionally NOT mapped flat here.
-    # ``dart.vision_provider`` (above) stays wired for back-compat; both
-    # render to the SAME DART_VISION_PROVIDER var, so callers should set one
-    # path — the GUI uses the ``vision`` task as the canonical surface.
+    # SEMANTIK_VLM_PROVIDER and ``vision.model`` to SEMANTIK_VLM_MODEL — the
+    # real knobs the SemantiK VLM seat reads (extract_shared.py::
+    # resolve_vlm_provider / resolve_vlm_model). The seat is provider-agnostic
+    # and OpenAI-compatible, so the model is always SEMANTIK_VLM_MODEL
+    # regardless of the selected provider.
     "vision": {
-        "provider": "DART_VISION_PROVIDER",
+        "provider": "SEMANTIK_VLM_PROVIDER",
+        "model": "SEMANTIK_VLM_MODEL",
     },
     "courseforge_outline": {
         "provider": "COURSEFORGE_OUTLINE_PROVIDER",
@@ -902,18 +879,6 @@ def routing_to_env(model_routing: Dict[str, Any]) -> Dict[str, str]:
             if not text:
                 continue
             out[env_key] = text
-
-    # Vision model is provider-conditional: only ``together-vision`` selects
-    # its model via a dedicated env var (TOGETHER_VISION_MODEL). For other
-    # vision providers the model lives in their own provider model env
-    # (LOCAL_SYNTHESIS_MODEL / DART_CLAUDE_MODEL), so we never blindly map
-    # vision.model → an invented DART_VISION_MODEL.
-    vision = model_routing.get("vision")
-    if isinstance(vision, dict):
-        v_provider = str(vision.get("provider") or "").strip()
-        v_model = str(vision.get("model") or "").strip()
-        if v_model and v_provider == "together-vision":
-            out["TOGETHER_VISION_MODEL"] = v_model
     return out
 
 
@@ -934,7 +899,6 @@ def default_settings() -> Dict[str, Any]:
             # and agrees with the LLM_MODE catalog default (also "local").
             # Using "api" here required ANTHROPIC_API_KEY and broke first run.
             "global": {"mode": "local", "provider": "anthropic", "model": None},
-            "dart": {"provider": None, "vision_provider": None, "model": None},
             "vision": {"provider": None, "model": None},
             "courseforge_outline": {"provider": None, "model": None},
             "courseforge_rewrite": {"provider": None, "model": None},
@@ -950,7 +914,6 @@ def default_settings() -> Dict[str, Any]:
         },
         "flags": {
             "COURSEFORGE_TWO_PASS": False,
-            "DART_LLM_CLASSIFICATION": False,
             "TRAINFORGE_REQUIRE_EMBEDDINGS": False,
         },
     }

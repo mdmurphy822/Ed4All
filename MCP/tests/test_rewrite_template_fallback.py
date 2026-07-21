@@ -56,13 +56,13 @@ def test_example_fallback_renders_worked_example_with_steps():
             "Divide numerator and denominator by the GCF 2.",
             "The simplified fraction is 3/4.",
         ],
-        source_ids=("dart:alg#blk_3",),
+        source_ids=("semantik:alg#blk_3",),
     )
     out = pt._render_block_fallback_html(
         blk,
         objective_statements={},
         minted_curie_map={},
-        source_ids=["dart:alg#blk_3"],
+        source_ids=["semantik:alg#blk_3"],
     )
     assert 'class="example-box"' in out
     assert 'class="worked-example"' in out

@@ -140,7 +140,7 @@ def test_fused_chapter_title_becomes_continuation_not_h2():
     html = out["html"]
     # The fused blob must not become a visible <h2> chapter heading.
     assert f"<h2>{fused_title}" not in html
-    assert 'class="dart-continuation"' in html
+    assert 'class="semantik-continuation"' in html
 
 
 # ---------------------------------------------------------------------------
@@ -605,7 +605,7 @@ def test_folio_chapter_running_header_h2_demoted_to_banner():
     out = normalize_cascade_to_ed4all(_Result(chapters), pdf_stem="ea_ch1")
     html = out["html"]
     assert "<h2>8 Chapter 1 Foundations</h2>" not in html
-    assert 'class="dart-continuation"' in html
+    assert 'class="semantik-continuation"' in html
     assert "Page-eight prose continues" in html  # blocks under it still render
     # the REAL chapter opener h2 survives
     assert "<h2>Chapter 1 Foundations</h2>" in html
@@ -629,7 +629,7 @@ def test_bare_chapter_running_header_demoted_with_title_knowledge():
     )
     html = out["html"]
     assert "<h2>Chapter 4 Graphs</h2>" not in html
-    assert html.count('class="dart-continuation"') == 2
+    assert html.count('class="semantik-continuation"') == 2
     # content under both survives; the h1 carries the honest title
     assert "First page prose" in html and "Later page prose" in html
     assert "<h1>Graphs</h1>" in html

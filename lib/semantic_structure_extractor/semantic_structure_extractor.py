@@ -6,7 +6,7 @@ Combines heading hierarchy parsing and content block classification to produce
 a structured representation of content suitable for presentation generation.
 
 Supports:
-- HTML input (DART-processed or generic)
+- HTML input (SemantiK-processed or generic)
 - Markdown input with YAML front matter
 - Content profiling (difficulty, concepts)
 - Concept graph building
@@ -195,7 +195,7 @@ def _split_fused_outline_entries(text: str) -> List[Tuple[str, str]]:
 
 
 # TOC-like heading texts that should NOT be promoted to chapter titles
-# on their own. DART's converter emits many "Contents" h2s when page
+# on their own. The SemantiK converter emits many "Contents" h2s when page
 # chrome wraps every printed page; if we hand one of those to the
 # course planner we end up with a chapter named "Contents" and every
 # real chapter demoted to a section. Case-insensitive exact match.
@@ -624,7 +624,7 @@ class ChapterStructure:
 
 class SemanticStructureExtractor:
     """
-    Extracts complete semantic structure from DART-processed HTML.
+    Extracts complete semantic structure from SemantiK-processed HTML.
 
     Uses HeadingParser and ContentBlockClassifier to build a hierarchical
     representation of textbook content suitable for learning objective extraction.
@@ -985,11 +985,11 @@ class SemanticStructureExtractor:
 
     def _detect_source_format(self, soup: BeautifulSoup) -> str:
         """Detect the source format of the HTML."""
-        # Check for DART markers
-        # DART adds skip-link, specific ARIA landmarks
+        # Check for SemantiK markers (skip-link + specific ARIA landmarks).
         if soup.find('a', class_='skip-link'):
             main = soup.find('main', attrs={'role': 'main'})
             if main:
+                # Legacy-compat source-format marker (persisted read value).
                 return 'dart_html'
 
         return 'generic_html'
@@ -1001,19 +1001,17 @@ class SemanticStructureExtractor:
     ) -> List[ChapterStructure]:
         """Build chapter structure from heading hierarchy.
 
-        Wave 19: first look for ``<article role="doc-chapter">`` wrappers
-        emitted by the Wave 13+ DART converter. When present, each
-        article becomes a chapter with its inner ``<h2>`` as the title
-        and inner ``<section>`` wrappers as sections. Falls back to the
-        legacy ``<h2>`` grouping heuristic when no doc-chapter articles
-        exist (pre-Wave-13 DART HTML, generic third-party HTML).
+        First look for ``<article role="doc-chapter">`` wrappers emitted by
+        the SemantiK converter. When present, each article becomes a chapter
+        with its inner ``<h2>`` as the title and inner ``<section>`` wrappers
+        as sections. Falls back to the plain ``<h2>`` grouping heuristic when
+        no doc-chapter articles exist (generic third-party HTML).
 
-        Wave 74 Session 3: when both primary paths produce trivial
-        output (0 chapters, or chapters that are all TOC artifacts, or
-        a single chapter with no sections but the DOM has many
-        ``<h2>``/``<h3>`` headings), synthesize chapters from the raw
-        heading hierarchy. This handles third-party DART HTML that
-        lacks ``<section>`` wrappers and doc-chapter articles but still
+        When both primary paths produce trivial output (0 chapters, or
+        chapters that are all TOC artifacts, or a single chapter with no
+        sections but the DOM has many ``<h2>``/``<h3>`` headings), synthesize
+        chapters from the raw heading hierarchy. This handles third-party HTML
+        that lacks ``<section>`` wrappers and doc-chapter articles but still
         carries a rich heading structure (W3C specs are the canonical
         example).
         """
@@ -1418,7 +1416,7 @@ class SemanticStructureExtractor:
            become chapters and h3s become sections.
         4. Content blocks between two consecutive headings attach to
            the most recent open heading's chapter/section.
-        5. ``data-dart-*`` attributes on individual content elements
+        5. ``data-semantik-*`` attributes on individual content elements
            carry through via ``ContentBlockClassifier._classify_element``.
         """
         container = soup.find('main') or soup.find('body') or soup
@@ -1694,8 +1692,8 @@ class SemanticStructureExtractor:
     ) -> ChapterStructure:
         """Build a chapter from a ``<article role="doc-chapter">`` wrapper.
 
-        Wave 19: DART's Wave 13+ converter emits every chapter as a
-        standalone article with the chapter heading inside a ``<header>``
+        The SemantiK converter emits every chapter as a standalone article
+        with the chapter heading inside a ``<header>``
         block. We prefer the ``id`` attribute on the article itself
         (``chap-{N}``) for the chapter id; falling back to a synthesized
         ``ch{N}`` identifier when the article lacks an explicit id.
@@ -2019,10 +2017,11 @@ class SemanticStructureExtractor:
     def _outline_zone_articles(self, soup: BeautifulSoup) -> List[Tag]:
         """Articles that CONTAIN a ``chapter-outline`` block (the outline zone).
 
-        The DART converter stamps the outline block with
-        ``data-dart-block-id="chapter-outline"``; its enclosing
-        ``<article role="doc-chapter">`` is the declared-structure zone whose
-        heading sections + fused paragraphs are the cleanest entry source.
+        The converter stamps the outline block with
+        ``data-dart-block-id="chapter-outline"`` (legacy read attribute); its
+        enclosing ``<article role="doc-chapter">`` is the declared-structure
+        zone whose heading sections + fused paragraphs are the cleanest entry
+        source.
         """
         articles: List[Tag] = []
         seen: set = set()
@@ -2545,7 +2544,7 @@ class SemanticStructureExtractor:
     ) -> SectionStructure:
         """Build a ``SectionStructure`` directly from a DOM ``<section>``.
 
-        Wave 19 DART output emits flat ``<section>`` wrappers rather
+        SemantiK output emits flat ``<section>`` wrappers rather
         than nesting them under article children, so we read heading
         info off the section itself.
 

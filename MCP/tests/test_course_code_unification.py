@@ -2,7 +2,7 @@
 
 The SIM_RUN_01 reproduction showed FOUR course codes in one run:
 
-* DART derived ``SAMPLE_540`` from the PDF filename,
+* the converter derived ``SAMPLE_540`` from the PDF filename,
 * orchestrator derived ``SIM_455`` from the workflow_id hash,
 * CF/TF used ``SIM_RUN_01`` from the CLI,
 * a phantom ``SIM_201`` surfaced in an intermediate capture.
@@ -212,12 +212,9 @@ def test_pipeline_orchestrator_falls_back_without_canonical_code(tmp_path, monke
 # Pipeline tools convert helper honours canonical_course_code
 # --------------------------------------------------------------------- #
 #
-# NOTE (SemantiK migration): the former
-# ``test_raw_text_to_accessible_html_accepts_canonical_course_code`` test
-# was retired with the legacy DART converter
-# (``_raw_text_to_accessible_html``). The ``canonical_course_code``
-# threading through the surviving ``extract_and_convert_pdf`` registry
-# entry (now routing to SemantiK) is still pinned below.
+# The ``canonical_course_code`` threading through the
+# ``extract_and_convert_pdf`` registry entry (routing to the SemantiK
+# cascade) is pinned below.
 
 
 def test_extract_and_convert_pdf_threads_canonical_course_code():

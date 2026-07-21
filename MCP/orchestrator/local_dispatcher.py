@@ -359,7 +359,7 @@ class LocalDispatcher:
            ``TaskMailbox.wait_for_completion``. An outer Claude Code
            operator dispatches the actual subagent via the MCP
            ``Agent`` tool (using the agent spec markdown at
-           ``{project}/{Courseforge|Trainforge|DART}/agents/{agent_type}.md``
+           ``{project}/{Courseforge|Trainforge|SemantiK}/agents/{agent_type}.md``
            to drive the prompt) and writes the completion envelope.
            Timeout → ``{"success": false, "error_code":
            "MAILBOX_TIMEOUT"}``.

@@ -36,10 +36,11 @@ if str(PROJECT_ROOT) not in sys.path:
 from MCP.tools.pipeline_tools import _build_tool_registry  # noqa: E402
 
 # Tools listed in the audit report as "mapped but missing from runtime
-# registry". The DART conversion tools (validate_wcag_compliance,
-# batch_convert_multi_source, convert_pdf_multi_source) were retired with the
-# DART subsystem in the SemantiK migration, so only the surviving
-# Courseforge/Trainforge-backed tools are asserted here.
+# registry". The retired multi-source conversion tools
+# (validate_wcag_compliance, batch_convert_multi_source,
+# convert_pdf_multi_source) are not part of the surviving SemantiK
+# registry, so only the surviving Courseforge/Trainforge-backed tools are
+# asserted here.
 EXPECTED_NEW_TOOLS = [
     "get_courseforge_status",
     "intake_imscc_package",

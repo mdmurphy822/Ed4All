@@ -813,6 +813,8 @@ def _retrieve_for_engine(
     course_slug: str,
     engine: str,
     limit: int,
+    embedding_client: Optional[Any] = None,
+    embedding_client_cache: Optional[Dict[str, Any]] = None,
 ) -> Tuple[List[str], float, Optional[float]]:
     """Run one query under ``engine``; return ``(chunk_ids, embed_ms, search_ms)``.
 
@@ -846,6 +848,16 @@ def _retrieve_for_engine(
             f"before benchmarking non-lexical engines. (No fake results are "
             f"emitted.)"
         )
+    if embedding_client is None and embedding_client_cache is not None:
+        embedding_client = embedding_client_cache.get("client")
+        if embedding_client is None:
+            from .semantic_retriever import _client_for_index
+            from .vector_index import load_vector_index
+
+            index = load_vector_index(repo_root / "courses" / course_slug)
+            embedding_client = _client_for_index(index)
+            embedding_client_cache["client"] = embedding_client
+
     t0 = time.perf_counter()
     results = retrieve_chunks(
         repo_root=repo_root,
@@ -853,6 +865,7 @@ def _retrieve_for_engine(
         course_slug=course_slug,
         limit=limit,
         engine=engine,
+        embedding_client=embedding_client,
     )
     wall_ms = (time.perf_counter() - t0) * 1000.0
     return [r.chunk_id for r in results], wall_ms, None
@@ -1110,6 +1123,12 @@ def benchmark_retrieval_engines(
     # aggregates in a parallel pass.
     engine_query_metrics: Dict[str, List[Dict[str, Any]]] = {e: [] for e in engines}
 
+    # A benchmark-scoped cache lets the first real semantic query construct
+    # the manifest-pinned client and every later semantic/hybrid query reuse it.
+    # Keeping initialization in the engine dispatcher preserves test and custom
+    # dispatch seams that deliberately replace the non-lexical implementation.
+    embedding_client_cache: Dict[str, Any] = {}
+
     for q in questions:
         qid = q["question_id"]
         qtext = q["question_text"]
@@ -1130,6 +1149,7 @@ def benchmark_retrieval_engines(
                 course_slug=course_slug,
                 engine=engine,
                 limit=retrieval_limit,
+                embedding_client_cache=embedding_client_cache,
             )
             primary_recall = {
                 k: _recall_at_k(retrieved, primary, k) for k in k_values

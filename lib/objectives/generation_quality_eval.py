@@ -467,7 +467,7 @@ def _resolve_to_chunk_id(source_id: str, source_resolver: Optional[Any]) -> str:
     """Map a block-cited source id to its chunk id via the manifest resolver.
 
     A block may cite by chunk id directly (W2 ``key_claims[].source_chunk_ids``)
-    OR by DART slug (``dart:{slug}#{block_id}``, the outline ``source_refs``
+    OR by SemantiK slug (``semantik:{slug}#{block_id}``, the outline ``source_refs``
     shape). The manifest projection resolves both to chunk ids, so the
     ``manifest ⊆ block_cited`` cross-check must compare in the SAME (chunk-id)
     namespace — otherwise a block that cited by slug while the manifest holds
@@ -533,7 +533,7 @@ def _score_provenance(
                 resolved_manifests += 1
             # Cross-check: manifest source set ⊆ block's actual cited set.
             # Resolve the block's cited ids to chunk-id space first so a block
-            # that cited by DART slug (while the manifest holds the resolved
+            # that cited by SemantiK slug (while the manifest holds the resolved
             # chunk id) is not a spurious namespace mismatch.
             block_cited = {
                 _resolve_to_chunk_id(sid, source_resolver)
@@ -997,8 +997,8 @@ def _load_chunks(repo_root: Path, course_slug: str) -> Dict[str, Any]:
     from lib.retrieval.gold_set import _load_chunks_by_id
 
     course_dir = _course_dir(repo_root, course_slug)
-    # DART->semantik purge Stage 3c: try the ratified semantik_chunks/ before
-    # the legacy dart_chunks/ fallback.
+    # Try the canonical semantik_chunks/ before the legacy dart_chunks/
+    # fallback dir.
     for sub in ("semantik_chunks", "dart_chunks", "imscc_chunks"):
         path = course_dir / sub / "chunks.jsonl"
         if path.exists():

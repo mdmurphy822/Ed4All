@@ -12,7 +12,7 @@ import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Any, Iterator, Optional
 
 from .catalog import load_master_catalog, search_catalog
 from .models.catalog import CatalogEntry
@@ -650,8 +650,9 @@ def stream_chunks_from_course(
     """
     # Query path: serve the chunkset the live vector index was built over
     # (manifest chunkset_kind authoritative), falling back to directory
-    # precedence (imscc_chunks/ -> dart_chunks/ -> legacy corpus/) when there
-    # is no index — so a union/corpus-legacy index's BM25 arm reads the same
+    # precedence (imscc_chunks/ -> semantik_chunks/ -> legacy dart_chunks/ ->
+    # legacy corpus/) when there is no index — so a union/corpus-legacy
+    # index's BM25 arm reads the same
     # superset chunkset the semantic arm hydrates.
     from lib.libv2_storage import resolve_chunks_path_for_query
     chunks_path, _resolution = resolve_chunks_path_for_query(
@@ -715,7 +716,8 @@ def _collect_filtered_chunks(
     for entry in courses:
         course_dir = repo_root / "courses" / entry.slug
         # Query path: honor the vector-index manifest's chunkset_kind, else
-        # directory precedence (imscc_chunks/ -> dart_chunks/ -> corpus/).
+        # directory precedence (imscc_chunks/ -> semantik_chunks/ ->
+        # legacy dart_chunks/ -> legacy corpus/).
         chunks_path, _resolution = resolve_chunks_path_for_query(
             course_dir, "chunks.jsonl"
         )
@@ -795,6 +797,7 @@ def retrieve_chunks(
     # Engine axis, orthogonal to the ``method`` boost presets.
     # Default "lexical" => byte-identical to every legacy caller.
     engine: str = "lexical",
+    embedding_client: Optional[Any] = None,
 ) -> list[RetrievalResult]:
     """Retrieve chunks matching query and filters.
 
@@ -868,6 +871,7 @@ def retrieve_chunks(
                 limit=limit,
                 chunk_filter=chunk_filter,
                 include_rationale=include_rationale,
+                client=embedding_client,
             )
         return hybrid_rrf_retrieve(
             repo_root,
@@ -876,6 +880,7 @@ def retrieve_chunks(
             limit=limit,
             chunk_filter=chunk_filter,
             include_rationale=include_rationale,
+            client=embedding_client,
         )
     # A ``method`` preset overrides the individual boost flags so callers can
     # A/B retrieval configurations without juggling six booleans. Unknown

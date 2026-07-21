@@ -62,7 +62,7 @@ _SAMPLE_HTML = """<!DOCTYPE html>
 <h1>188 Chapter 1 Foundations</h1>
 <article role="doc-chapter" id="chap-1">
 <h2>188 Chapter 1 Foundations</h2>
-<section class="dart-section" data-dart-block-id="s1" data-dart-source="synthesized">
+<section class="dart-section" data-semantik-block-id="s1" data-semantik-source="synthesized">
 <h3 id="s1">1.1 Introduction to Whole Numbers</h3>
 </section>
 </article>
@@ -90,8 +90,8 @@ def test_rerender_from_html_title_override(tmp_path):
 # ---------------------------------------------------------------------------
 # SEMANTIK_OCR_CONFUSABLE_REPAIR — re-render preservation (design test 15).
 #   --from-ir round-trips the additive repaired_text / ocr_repair keys onto the
-#   rendered body + data-dart-repair stamp; --from-html preserves the already-
-#   emitted data-dart-repair attributes across a reconstruction re-render.
+#   rendered body + data-semantik-repair stamp; --from-html preserves the already-
+#   emitted data-semantik-repair attributes across a reconstruction re-render.
 # ---------------------------------------------------------------------------
 
 
@@ -160,11 +160,11 @@ _REPAIR_HTML = """<!DOCTYPE html>
 <h1>Chapter 1 Foundations</h1>
 <article role="doc-chapter" id="chap-1">
 <h2>Chapter 1 Foundations</h2>
-<section class="dart-section" data-dart-block-id="s1" data-dart-source="synthesized">
+<section class="dart-section" data-semantik-block-id="s1" data-semantik-source="synthesized">
 <h3 id="s1">Chapter 1 Foundations</h3>
 </section>
-<section class="dart-section" data-dart-block-id="s2" data-dart-source="synthesized" \
-data-dart-block-role="paragraph" data-dart-repair="ocr-confusable" data-dart-repair-count="1">
+<section class="dart-section" data-semantik-block-id="s2" data-semantik-source="synthesized" \
+data-semantik-block-role="paragraph" data-semantik-repair="ocr-confusable" data-semantik-repair-count="1">
 <p id="s2" class="sr-only" hidden>paragraph</p>
 <p>Solve √x = 4 for the value.</p>
 </section>
@@ -202,7 +202,7 @@ def test_rerender_from_html_preserves_repair_attrs(tmp_path):
     ])
     assert rc == 0
     html = out.read_text(encoding="utf-8")
-    # The data-dart-repair marker survives the --from-html reconstruction.
+    # The data-semantik-repair marker survives the --from-html reconstruction.
     assert 'data-semantik-repair="ocr-confusable"' in html
     assert 'data-semantik-repair-count="1"' in html
     # The repaired body bytes are carried verbatim (not reverted to the garble).

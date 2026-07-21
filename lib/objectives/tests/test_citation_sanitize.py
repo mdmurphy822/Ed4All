@@ -381,7 +381,7 @@ def test_no_capture_when_nothing_dropped() -> None:
 # Integration: sanitizer unblocks ObjectiveSourceRefValidator.
 # --------------------------------------------------------------------------- #
 def _write_chunks(tmp_path: Path) -> Path:
-    chunks_dir = tmp_path / "dart_chunks"
+    chunks_dir = tmp_path / "semantik_chunks"
     chunks_dir.mkdir(parents=True, exist_ok=True)
     (chunks_dir / "chunks.jsonl").write_text(
         "\n".join(json.dumps(c) for c in _REAL_CHUNKS) + "\n",
@@ -392,7 +392,7 @@ def _write_chunks(tmp_path: Path) -> Path:
         json.dumps({
             "chunks_sha256": "0" * 64,
             "chunker_version": "v4",
-            "chunkset_kind": "dart",
+            "chunkset_kind": "semantik",
         }),
         encoding="utf-8",
     )

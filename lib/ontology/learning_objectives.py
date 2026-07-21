@@ -413,7 +413,7 @@ def scan_lo_refs(
 ) -> List[str]:
     """Whole-word scan ``text`` + ``html`` for canonical LO IDs.
 
-    Wave3-Anew3 (auditor finding F3): the DART chunker emits chunks
+    Wave3-Anew3 (auditor finding F3): the SemantiK chunker emits chunks
     BEFORE :func:`_plan_course_structure` mints TO-NN / CO-NN IDs, so the
     chunker's per-chunk ``learning_outcome_refs[]`` field is always empty
     on initial emit. After course planning publishes the canonical LO ID

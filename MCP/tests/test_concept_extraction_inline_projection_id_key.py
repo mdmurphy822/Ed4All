@@ -21,8 +21,8 @@ projection's emit shape, now exercised against the Fix-2 dispatch path.
 Test contract:
 
   1. Construct a fixture staging dir with one ``*_synthesized.json``.
-  2. Invoke ``_run_concept_extraction`` with ``dart_chunks_path=None``
-     (forces the inline-projection fallback path).
+  2. Invoke ``_run_concept_extraction`` with the upstream chunkset
+     path unset (forces the inline-projection fallback path).
   3. Assert the emitted graph file is ``kind: "concept_semantic"`` and
      the inline projection round-trips into a real graph (the on-disk
      artifact is structurally valid, not an empty shell).
@@ -51,7 +51,7 @@ from MCP.tools.pipeline_tools import _build_tool_registry  # noqa: E402
 
 
 def _write_synthesized(path: Path) -> None:
-    """Emit a minimal DART ``*_synthesized.json`` fixture sidecar.
+    """Emit a minimal ``*_synthesized.json`` fixture sidecar.
 
     Three sections so the inline projection emits three chunks — same
     shape as the Phase 7b ST 14.5 precedent fixture in
@@ -151,7 +151,7 @@ class TestInlineProjectionEmitsCanonicalIdKey:
                 project_id="",
                 course_name=fx["course_name"],
                 staging_dir=str(fx["staging_dir"]),
-                # dart_chunks_path intentionally omitted so the
+                # upstream chunkset path intentionally omitted so the
                 # inline-projection fallback path runs.
             )
         )

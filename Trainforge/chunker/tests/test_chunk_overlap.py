@@ -211,7 +211,20 @@ def _load_schema():
     return json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
 
 
-def _base_dart_manifest():
+def _base_manifest():
+    # The current SemantiK-emit sidecar shape (chunkset_kind "semantik" +
+    # source_semantik_html_sha256).
+    return {
+        "chunks_sha256": "a" * 64,
+        "chunker_version": "v4",
+        "chunkset_kind": "semantik",
+        "source_semantik_html_sha256": "b" * 64,
+    }
+
+
+def _base_legacy_manifest():
+    # Legacy-compat: the pre-purge chunkset_kind "dart" shape still accepted on
+    # read by the dual-read chunkset-manifest schema.
     return {
         "chunks_sha256": "a" * 64,
         "chunker_version": "v4",
@@ -228,7 +241,7 @@ def test_schema_declares_overlap_words():
 
 def test_schema_accepts_manifest_with_overlap_words():
     jsonschema = pytest.importorskip("jsonschema")
-    manifest = _base_dart_manifest()
+    manifest = _base_manifest()
     manifest["overlap_words"] = 16
     jsonschema.validate(manifest, _load_schema())
 
@@ -236,12 +249,19 @@ def test_schema_accepts_manifest_with_overlap_words():
 def test_schema_accepts_manifest_without_overlap_words():
     # The default-off shape (no overlap_words key) must still validate.
     jsonschema = pytest.importorskip("jsonschema")
-    jsonschema.validate(_base_dart_manifest(), _load_schema())
+    jsonschema.validate(_base_manifest(), _load_schema())
+
+
+def test_schema_accepts_legacy_manifest_without_overlap_words():
+    # Legacy-compat read path: the pre-purge chunkset_kind "dart" sidecar still
+    # validates (dual-read).
+    jsonschema = pytest.importorskip("jsonschema")
+    jsonschema.validate(_base_legacy_manifest(), _load_schema())
 
 
 def test_schema_rejects_nonpositive_overlap_words():
     jsonschema = pytest.importorskip("jsonschema")
-    manifest = _base_dart_manifest()
+    manifest = _base_manifest()
     manifest["overlap_words"] = 0  # off-state is OMISSION, not 0
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(manifest, _load_schema())

@@ -1,4 +1,4 @@
-"""Regression: ``_load_dart_chunkset_for_planning`` resolves a RAW course name.
+"""Regression: ``_load_semantik_chunkset_for_planning`` resolves a RAW course name.
 
 The ``course_planning`` chunkset loader is called by three sites that pass the
 RAW course name (e.g. ``UNIT_TEST_ALG_XYZ``) as ``course_slug``, but the LibV2
@@ -25,7 +25,7 @@ import json
 from pathlib import Path
 
 from lib.libv2_storage import LibV2Storage
-from MCP.tools.pipeline_tools import _load_dart_chunkset_for_planning
+from MCP.tools.pipeline_tools import _load_semantik_chunkset_for_planning
 
 _RAW_COURSE_NAME = "UNIT_TEST_ALG_XYZ"
 _CHUNKS = [
@@ -51,7 +51,7 @@ def test_raw_course_name_resolves_to_slugified_dir(tmp_path: Path) -> None:
     """A RAW course name must resolve to its slugified LibV2 course dir."""
     root = _build_libv2_root(tmp_path)
 
-    chunks_by_id, all_chunks = _load_dart_chunkset_for_planning(
+    chunks_by_id, all_chunks = _load_semantik_chunkset_for_planning(
         course_slug=_RAW_COURSE_NAME,
         kwargs={"libv2_root": str(root)},
     )
@@ -66,7 +66,7 @@ def test_already_slugified_name_still_resolves(tmp_path: Path) -> None:
     root = _build_libv2_root(tmp_path)
     slug = LibV2Storage._generate_slug(_RAW_COURSE_NAME)
 
-    chunks_by_id, all_chunks = _load_dart_chunkset_for_planning(
+    chunks_by_id, all_chunks = _load_semantik_chunkset_for_planning(
         course_slug=slug,
         kwargs={"libv2_root": str(root)},
     )
@@ -79,7 +79,7 @@ def test_missing_chunkset_degrades_to_empty(tmp_path: Path) -> None:
     """No chunkset on disk → ``({}, [])`` (chapter_fallback), never a crash."""
     (tmp_path / "courses").mkdir()
 
-    chunks_by_id, all_chunks = _load_dart_chunkset_for_planning(
+    chunks_by_id, all_chunks = _load_semantik_chunkset_for_planning(
         course_slug=_RAW_COURSE_NAME,
         kwargs={"libv2_root": str(tmp_path)},
     )

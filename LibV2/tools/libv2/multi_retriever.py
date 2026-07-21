@@ -66,7 +66,8 @@ class MultiQueryRetriever:
                 which bypasses the master catalog and resolves the chunkset
                 directly through the shared, file-aware
                 ``resolve_imscc_chunks_path`` (``imscc_chunks/`` →
-                ``dart_chunks/`` → legacy ``corpus/``). Without a course
+                ``semantik_chunks/`` → legacy ``dart_chunks/`` → legacy
+                ``corpus/``). Without a course
                 scope the retriever falls back to a catalog-filtered search,
                 which silently returns nothing for on-disk courses that the
                 master catalog hasn't indexed. Can be overridden per call in
@@ -137,7 +138,7 @@ class MultiQueryRetriever:
         # Resolve the effective course scope: an explicit per-call argument
         # wins over the instance default. When set, sub-queries bypass the
         # master catalog and resolve the chunkset directly (file-aware), so
-        # courses that aren't indexed in master_catalog.json (e.g. DART-only
+        # courses that aren't indexed in master_catalog.json (e.g. legacy
         # ``dart_chunks/`` corpora) are still reachable — matching the
         # behavior of the single-course BM25 path.
         effective_slug = course_slug if course_slug is not None else self.course_slug
@@ -448,7 +449,8 @@ class MultiQueryRetriever:
         # Execute retrieval with individual filter parameters. When a
         # ``course_slug`` is in scope, ``retrieve_chunks`` resolves that one
         # course's chunkset directly (file-aware: imscc_chunks/ →
-        # dart_chunks/ → corpus/) and bypasses the master catalog — the same
+        # semantik_chunks/ → legacy dart_chunks/ → legacy corpus/) and
+        # bypasses the master catalog — the same
         # path the single-course BM25 retriever uses. Without it, retrieval
         # falls back to a catalog-filtered search that misses on-disk
         # courses absent from master_catalog.json.

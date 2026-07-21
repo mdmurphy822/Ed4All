@@ -2,19 +2,19 @@
 
 Root cause covered here: ``MultiQueryRetriever`` previously called the base
 ``retrieve_chunks`` WITHOUT a ``course_slug``, which forces a master-catalog
-search. On-disk courses absent from ``master_catalog.json`` (e.g. DART-only
-corpora whose chunks live in ``dart_chunks/``) were therefore unreachable —
+search. On-disk courses absent from ``master_catalog.json`` (e.g. staged
+corpora whose chunks live in ``semantik_chunks/``) were therefore unreachable —
 ``retrieve_with_decomposition`` returned zero results for queries that the
 single-course BM25 path resolves fine.
 
 The fix threads a ``course_slug`` scope through the retriever so it routes
 through the same file-aware ``resolve_imscc_chunks_path`` resolver
-(``imscc_chunks/`` → ``dart_chunks/`` → legacy ``corpus/``) the single path
-uses. These tests assert:
+(``imscc_chunks/`` → ``semantik_chunks/`` → legacy ``dart_chunks/`` → legacy
+``corpus/``) the single path uses. These tests assert:
 
-* a ``dart_chunks/``-only course returns results when scoped (decompose
+* a ``semantik_chunks/``-only course returns results when scoped (decompose
   on AND off);
-* a legacy ``corpus/``-only course does not regress;
+* the legacy ``dart_chunks/`` and ``corpus/`` read-fallbacks do not regress;
 * the ``decompose=False`` branch returns the retrieved results (it used to
   drop them and always return an empty list).
 """
@@ -33,13 +33,13 @@ def _make_course(
     slug: str,
     chunks: List[dict],
     *,
-    chunkset_dir: str = "dart_chunks",
+    chunkset_dir: str = "semantik_chunks",
 ) -> Path:
     """Write a minimal course dir with chunks.jsonl in ``chunkset_dir``.
 
-    ``chunkset_dir`` defaults to ``dart_chunks`` so the fixture mirrors the
-    real DART-only corpora that exposed this bug; pass ``corpus`` to model a
-    legacy archive.
+    ``chunkset_dir`` defaults to ``semantik_chunks`` (the active staged
+    chunkset dir); pass ``dart_chunks`` or ``corpus`` to model a legacy
+    read-fallback archive.
     """
     course_dir = tmp_path / "courses" / slug
     (course_dir / chunkset_dir).mkdir(parents=True)
@@ -110,13 +110,13 @@ def _algebra_chunks() -> List[dict]:
     ]
 
 
-class TestDartChunksOnlyCourse:
-    """A course whose chunks live only in ``dart_chunks/`` (no catalog entry)."""
+class TestSemantikChunksOnlyCourse:
+    """A course whose chunks live only in ``semantik_chunks/`` (no catalog entry)."""
 
     def test_decompose_returns_results(self, tmp_path):
-        _make_course(tmp_path, "alg-dart", _algebra_chunks(), chunkset_dir="dart_chunks")
+        _make_course(tmp_path, "alg-semantik", _algebra_chunks(), chunkset_dir="semantik_chunks")
         retriever = MultiQueryRetriever(
-            repo_root=tmp_path, course_slug="alg-dart",
+            repo_root=tmp_path, course_slug="alg-semantik",
         )
         fusion, decomposed = retriever.retrieve_with_decomposition(
             query="linear equation", limit=5,
@@ -127,9 +127,9 @@ class TestDartChunksOnlyCourse:
     def test_decompose_false_returns_results(self, tmp_path):
         """The non-decomposed branch must surface results, not an empty list
         (the pre-fix branch dropped ``results`` on the floor)."""
-        _make_course(tmp_path, "alg-dart", _algebra_chunks(), chunkset_dir="dart_chunks")
+        _make_course(tmp_path, "alg-semantik", _algebra_chunks(), chunkset_dir="semantik_chunks")
         retriever = MultiQueryRetriever(
-            repo_root=tmp_path, course_slug="alg-dart",
+            repo_root=tmp_path, course_slug="alg-semantik",
         )
         fusion = retriever.retrieve(
             query="linear equation", limit=5, decompose=False,
@@ -138,11 +138,28 @@ class TestDartChunksOnlyCourse:
         assert fusion.query_coverage.get("original", 0) > 0
 
     def test_per_call_slug_overrides_instance_default(self, tmp_path):
-        _make_course(tmp_path, "alg-dart", _algebra_chunks(), chunkset_dir="dart_chunks")
+        _make_course(tmp_path, "alg-semantik", _algebra_chunks(), chunkset_dir="semantik_chunks")
         # No instance-level scope; supply it per call.
         retriever = MultiQueryRetriever(repo_root=tmp_path)
         fusion, _ = retriever.retrieve_with_decomposition(
-            query="linear equation", limit=5, course_slug="alg-dart",
+            query="linear equation", limit=5, course_slug="alg-semantik",
+        )
+        assert fusion.result_count > 0
+
+
+class TestLegacyChunksReadFallbackNoRegression:
+    """Legacy-compat: a course whose chunks live only in the pre-SemantiK
+    ``dart_chunks/`` read-fallback dir must still resolve when scoped."""
+
+    def test_legacy_staged_chunks_course_returns_results(self, tmp_path):
+        _make_course(
+            tmp_path, "alg-legacy-staged", _algebra_chunks(), chunkset_dir="dart_chunks"
+        )
+        retriever = MultiQueryRetriever(
+            repo_root=tmp_path, course_slug="alg-legacy-staged",
+        )
+        fusion, _ = retriever.retrieve_with_decomposition(
+            query="linear equation", limit=5,
         )
         assert fusion.result_count > 0
 

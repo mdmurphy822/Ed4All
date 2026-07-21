@@ -1,9 +1,9 @@
-"""Construct Structure-head training labels for legal opinions from DART's OWN
+"""Construct Structure-head training labels for legal opinions from SemantiK's OWN
 extraction (Plan 14).
 
 The courtlistener `output_html` ground truth is unusable: it is flat AND glues
 section headings into the following body paragraph ("II. STANDARD OF REVIEW In
-analyzing…"). DART's `extract_shared` DOES separate the heading line from the
+analyzing…"). SemantiK's `extract_shared` DOES separate the heading line from the
 body line into distinct blocks, so we pseudo-label those correctly-separated
 blocks with deterministic legal-structure rules, mirroring
 `build_structure_data.py`'s span extraction + layout vector so the output JSONL
@@ -34,7 +34,7 @@ from data.build_structure_data import (
 )
 from semantik_structure.extract_shared import extract_shared_cached
 
-# --- legal-heading text signals (run on DART-SEPARATED blocks) ---------------
+# --- legal-heading text signals (run on SemantiK-SEPARATED blocks) -----------
 _ROMAN = re.compile(r"^[IVXLC]{1,4}\.\s")
 _LETTER = re.compile(r"^[A-Z]\.\s")
 _NUM = re.compile(r"^\d{1,2}\.\s")
@@ -63,7 +63,7 @@ def _is_heading(text: str) -> bool:
     """A legal section/subsection heading on a CORRECTLY-SEPARATED block:
     a short, set-off line matching a roman/lettered/numbered/allcaps signal.
     Long lines (body that merely starts with a number) are rejected by the
-    word cap; a heading rarely ends mid-clause-then-runs-on because DART
+    word cap; a heading rarely ends mid-clause-then-runs-on because SemantiK
     separates the heading line from the body line."""
     t = text.strip()
     if not t or _words(t) > 12:

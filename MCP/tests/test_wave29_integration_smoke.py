@@ -2,8 +2,9 @@
 
 Verifies the six defects interlock correctly:
 
-1. DART article nesting — chapter body paragraphs sit inside the
-   ``<article role="doc-chapter">`` wrapper, not outside.
+1. SemantiK output nesting — chapter body paragraphs sit inside the
+   ``<article role="doc-chapter">`` wrapper (the conversion contract owns
+   its own nesting tests under ``lib/semantik/tests``).
 2. Gate input router — the four previously-skipped gates resolve
    their inputs when the relevant phase outputs are present.
 3. CLI exit code — a pipeline with a failed gate exits non-zero.
@@ -24,12 +25,11 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-# NOTE (SemantiK migration): the former smoke (1) "DART article nesting
-# end-to-end" test was retired with the DART converter
-# (``DART.converter.convert_pdftotext_to_html``). The SemantiK output
-# contract has its own nesting tests under ``lib/semantik/tests``. The
-# remaining smoke checks (gate router, CLI exit, decision-capture stderr
-# budget, course-code unification) are provider-agnostic and preserved.
+# NOTE: the smoke (1) SemantiK output-nesting end-to-end check lives under
+# ``lib/semantik/tests`` (the conversion contract owns its own nesting
+# tests). The remaining smoke checks (gate router, CLI exit,
+# decision-capture stderr budget, course-code unification) are
+# provider-agnostic and preserved here.
 
 # --------------------------------------------------------------------- #
 # (2) Gate router coverage — all 4 previously-skipped gates resolve
@@ -51,14 +51,14 @@ def test_smoke_all_defect2_gates_resolve(tmp_path: Path):
         '{"course_id": "TEST_042"}', encoding="utf-8"
     )
 
-    dart_html = tmp_path / "dart_chapter_1.html"
-    dart_html.write_text("<html><body></body></html>", encoding="utf-8")
+    conversion_html = tmp_path / "chapter_1_accessible.html"
+    conversion_html.write_text("<html><body></body></html>", encoding="utf-8")
 
     assessments = tmp_path / "assessments.json"
     assessments.write_text('{"questions": [{"id": "q1"}]}', encoding="utf-8")
 
     phase_outputs = {
-        "dart_conversion": {"output_paths": str(dart_html)},
+        "semantik_conversion": {"output_paths": str(conversion_html)},
         "libv2_archival": {"course_dir": str(course_dir)},
         "trainforge_assessment": {"output_path": str(assessments)},
     }
@@ -82,12 +82,12 @@ def test_smoke_all_defect2_gates_resolve(tmp_path: Path):
     assert "chunks_path" in inputs
     assert "assessments_path" in inputs
 
-    # dart_markers
+    # semantik_markers
     inputs, missing = router.build(
-        "lib.validators.dart_markers.DartMarkersValidator",
+        "lib.validators.semantik_markers.SemantiKMarkersValidator",
         phase_outputs, {},
     )
-    assert missing == [], f"dart_markers missing: {missing}"
+    assert missing == [], f"semantik_markers missing: {missing}"
     assert "html_path" in inputs
 
     # assessment_quality
@@ -361,18 +361,18 @@ async def test_smoke_single_canonical_course_code_across_captures(
     state = json.loads(Path(data["workflow_path"]).read_text())
     cc = state["params"]["canonical_course_code"]
 
-    # Simulating three capture sites (DART, CF, TF) all pulling from
+    # Simulating three capture sites (conversion, CF, TF) all pulling from
     # the canonical code — they should all agree.
     from lib.decision_capture import normalize_course_code
 
     # The canonical_course_code on params IS the single source of truth.
-    dart_cc = cc
+    conv_cc = cc
     cf_cc = cc
     tf_cc = cc
     # The orchestrator capture in _get_executor uses the same key.
     orch_cc = cc
 
-    codes = {dart_cc, cf_cc, tf_cc, orch_cc}
+    codes = {conv_cc, cf_cc, tf_cc, orch_cc}
     assert len(codes) == 1, (
         f"All captures in one run must share one course_code; got {codes}"
     )

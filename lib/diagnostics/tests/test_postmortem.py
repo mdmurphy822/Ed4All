@@ -117,7 +117,7 @@ def test_missing_run_dir_fails_not_found(runs_root):
 def test_failed_phase_names_phase_and_error(runs_root):
     run_dir = runs_root / "run-fail"
     run_dir.mkdir()
-    _write_checkpoint(run_dir, "dart_conversion", 0, status="completed")
+    _write_checkpoint(run_dir, "semantik_conversion", 0, status="completed")
     _write_checkpoint(
         run_dir,
         "concept_extraction",
@@ -202,7 +202,7 @@ def test_started_phase_with_low_vram_is_context_not_oom_fail(runs_root):
     never writes the after row, so a low sample is not proof)."""
     run_dir = runs_root / "run-started-lowvram"
     run_dir.mkdir()
-    _write_checkpoint(run_dir, "dart_conversion", 0, status="completed")
+    _write_checkpoint(run_dir, "semantik_conversion", 0, status="completed")
     _write_checkpoint(
         run_dir,
         "concept_extraction",
@@ -450,7 +450,7 @@ def test_unreadable_trajectory_warns_not_doctor_off(runs_root):
 def test_started_last_phase_is_ambiguous_warn(runs_root):
     run_dir = runs_root / "run-started"
     run_dir.mkdir()
-    _write_checkpoint(run_dir, "dart_conversion", 0, status="completed")
+    _write_checkpoint(run_dir, "semantik_conversion", 0, status="completed")
     _write_checkpoint(
         run_dir,
         "concept_extraction",
@@ -481,7 +481,7 @@ def test_started_last_phase_is_ambiguous_warn(runs_root):
 def test_all_completed_is_honest_not_terminal_claim(runs_root):
     run_dir = runs_root / "run-clean"
     run_dir.mkdir()
-    _write_checkpoint(run_dir, "dart_conversion", 0, status="completed")
+    _write_checkpoint(run_dir, "semantik_conversion", 0, status="completed")
     _write_checkpoint(run_dir, "staging", 1, status="completed")
     _write_checkpoint(run_dir, "packaging", 2, status="completed")
 
@@ -506,12 +506,12 @@ def test_all_completed_with_trajectory_gap_warns(runs_root):
     checkpoint surfaces that gap as a WARN (#2 OS-OOM-kill-in-the-gap)."""
     run_dir = runs_root / "run-gap"
     run_dir.mkdir()
-    _write_checkpoint(run_dir, "dart_conversion", 0, status="completed")
+    _write_checkpoint(run_dir, "semantik_conversion", 0, status="completed")
     _write_checkpoint(run_dir, "staging", 1, status="completed")
     _write_trajectory(
         run_dir,
         [
-            {"phase": "dart_conversion", "when": "before", "free_mib": 6000,
+            {"phase": "semantik_conversion", "when": "before", "free_mib": 6000,
              "resident_models": []},
             {"phase": "staging", "when": "before", "free_mib": 5800,
              "resident_models": []},

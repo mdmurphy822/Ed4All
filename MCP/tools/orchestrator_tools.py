@@ -68,7 +68,7 @@ async def create_workflow_impl(
 
         # Wave 29 Defect 5: pin a canonical course code onto the params
         # if one wasn't already supplied. The Trainforge / Courseforge
-        # / DART captures minted downstream read from this single
+        # / SemantiK captures minted downstream read from this single
         # source of truth so one run == one course code everywhere.
         if workflow_params.get("course_name") and not workflow_params.get(
             "canonical_course_code"
@@ -190,7 +190,7 @@ def register_orchestrator_tools(mcp):
         Args:
             workflow_id: Parent workflow ID
             agent_type: Agent type to dispatch
-                Options: content-generator, brightspace-packager, dart-automation-coordinator, etc.
+                Options: content-generator, brightspace-packager, semantik-automation-coordinator, etc.
             task_prompt: Task instructions for the agent
             dependencies: Optional comma-separated list of task IDs that must complete first
 
@@ -334,7 +334,7 @@ def register_orchestrator_tools(mcp):
         Update GENERATION_PROGRESS.md shared state.
 
         Args:
-            component: Component identifier (e.g., "DART_BATCH_1", "COURSE_MTH_301")
+            component: Component identifier (e.g., "SEMANTIK_BATCH_1", "COURSE_MTH_301")
             status: Status value ("PENDING", "IN_PROGRESS", "COMPLETE", "ERROR")
             details: Optional JSON string with additional status details
 

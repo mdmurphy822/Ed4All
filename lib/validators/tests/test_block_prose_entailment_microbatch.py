@@ -172,8 +172,8 @@ def _make_block(*, block_id: str, content: str) -> Block:
         page_id=block_id.split("#")[0],
         sequence=0,
         content=content,
-        source_ids=("dart:slug#blk_0",),
-        source_references=({"sourceId": "dart:slug#blk_0"},),
+        source_ids=("semantik:slug#blk_0",),
+        source_references=({"sourceId": "semantik:slug#blk_0"},),
     )
 
 
@@ -251,7 +251,7 @@ def test_procs_resolver_parse_with_fallback(monkeypatch: pytest.MonkeyPatch) -> 
 
 def _run_serial() -> Any:
     return BlockProseEntailmentValidator(nli=MarkerStubNli()).validate(
-        {"blocks": _fixture_blocks(), "source_chunks": {"dart:slug#blk_0": _CHUNK}}
+        {"blocks": _fixture_blocks(), "source_chunks": {"semantik:slug#blk_0": _CHUNK}}
     )
 
 
@@ -267,7 +267,7 @@ def test_pool_verdict_identical_to_serial(
     monkeypatch.setattr(m, "_make_scoring_pool", _InlineExecutor)
 
     on = BlockProseEntailmentValidator(nli=MarkerStubNli()).validate(
-        {"blocks": _fixture_blocks(), "source_chunks": {"dart:slug#blk_0": _CHUNK}}
+        {"blocks": _fixture_blocks(), "source_chunks": {"semantik:slug#blk_0": _CHUNK}}
     )
 
     assert _result_signature(on) == _result_signature(off)
@@ -286,7 +286,7 @@ def test_pool_decision_order_matches_serial(monkeypatch: pytest.MonkeyPatch) -> 
     BlockProseEntailmentValidator(nli=MarkerStubNli()).validate(
         {
             "blocks": _fixture_blocks(),
-            "source_chunks": {"dart:slug#blk_0": _CHUNK},
+            "source_chunks": {"semantik:slug#blk_0": _CHUNK},
             "decision_capture": off_cap,
         }
     )
@@ -298,7 +298,7 @@ def test_pool_decision_order_matches_serial(monkeypatch: pytest.MonkeyPatch) -> 
     BlockProseEntailmentValidator(nli=MarkerStubNli()).validate(
         {
             "blocks": _fixture_blocks(),
-            "source_chunks": {"dart:slug#blk_0": _CHUNK},
+            "source_chunks": {"semantik:slug#blk_0": _CHUNK},
             "decision_capture": on_cap,
         }
     )
@@ -331,7 +331,7 @@ def test_flag_off_never_builds_pool(monkeypatch: pytest.MonkeyPatch) -> None:
     nli = _CountingNli()
     validator = BlockProseEntailmentValidator(nli=nli)
     validator.validate(
-        {"blocks": _fixture_blocks(), "source_chunks": {"dart:slug#blk_0": _CHUNK}}
+        {"blocks": _fixture_blocks(), "source_chunks": {"semantik:slug#blk_0": _CHUNK}}
     )
     assert called["n"] == 0
     # Serial path: the injected nli was called directly (≥1 per scorable block).
@@ -354,7 +354,7 @@ def test_pool_failure_falls_back_to_serial(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setenv(_ENV_MICROBATCH_VALIDATORS, "1")
     monkeypatch.setattr(m, "_make_scoring_pool", _broken)
     on = BlockProseEntailmentValidator(nli=MarkerStubNli()).validate(
-        {"blocks": _fixture_blocks(), "source_chunks": {"dart:slug#blk_0": _CHUNK}}
+        {"blocks": _fixture_blocks(), "source_chunks": {"semantik:slug#blk_0": _CHUNK}}
     )
     assert _result_signature(on) == _result_signature(off)
 
@@ -410,7 +410,7 @@ def test_sidecar_write_then_hit_then_invalidate(tmp_path: Path) -> None:
     cache_dir = tmp_path / ".prose_entailment_cache"
     inputs = {
         "blocks": _fixture_blocks(),
-        "source_chunks": {"dart:slug#blk_0": _CHUNK},
+        "source_chunks": {"semantik:slug#blk_0": _CHUNK},
         "prose_entailment_cache_dir": str(cache_dir),
     }
 
@@ -439,7 +439,7 @@ def test_sidecar_write_then_hit_then_invalidate(tmp_path: Path) -> None:
     BlockProseEntailmentValidator(nli=nli3).validate(
         {
             "blocks": changed,
-            "source_chunks": {"dart:slug#blk_0": _CHUNK},
+            "source_chunks": {"semantik:slug#blk_0": _CHUNK},
             "prose_entailment_cache_dir": str(cache_dir),
         }
     )
@@ -454,7 +454,7 @@ def test_sidecar_disabled_when_flag_falsey(
     BlockProseEntailmentValidator(nli=_CountingNli()).validate(
         {
             "blocks": _fixture_blocks(),
-            "source_chunks": {"dart:slug#blk_0": _CHUNK},
+            "source_chunks": {"semantik:slug#blk_0": _CHUNK},
             "prose_entailment_cache_dir": str(cache_dir),
         }
     )
@@ -490,7 +490,7 @@ def test_never_caches_degraded_report(tmp_path: Path) -> None:
         BlockProseEntailmentValidator(nli=MarkerStubNli()).validate(
             {
                 "blocks": _fixture_blocks()[:1],
-                "source_chunks": {"dart:slug#blk_0": _CHUNK},
+                "source_chunks": {"semantik:slug#blk_0": _CHUNK},
                 "prose_entailment_cache_dir": str(cache_dir),
             }
         )
@@ -525,7 +525,7 @@ def test_stop_sentinel_pauses_between_blocks(
             BlockProseEntailmentValidator(nli=nli).validate(
                 {
                     "blocks": blocks,
-                    "source_chunks": {"dart:slug#blk_0": _CHUNK},
+                    "source_chunks": {"semantik:slug#blk_0": _CHUNK},
                     "prose_entailment_cache_dir": str(cache_dir),
                 }
             )
@@ -556,7 +556,7 @@ def test_real_spawn_pool_verdict_identity(
     monkeypatch.setenv("_PROSE_POOL_STUB_INITFILE", str(initfile))
 
     on = BlockProseEntailmentValidator(nli=MarkerStubNli()).validate(
-        {"blocks": _fixture_blocks(), "source_chunks": {"dart:slug#blk_0": _CHUNK}}
+        {"blocks": _fixture_blocks(), "source_chunks": {"semantik:slug#blk_0": _CHUNK}}
     )
     assert _result_signature(on) == _result_signature(off)
 

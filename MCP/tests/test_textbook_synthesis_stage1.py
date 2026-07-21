@@ -49,8 +49,8 @@ from lib.validators.textbook_structure import (  # noqa: E402
 # ---------------------------------------------------------------------------
 
 
-def _write_dart_html(path: Path, chapters: list) -> None:
-    """Write a minimal DART-like HTML with <article role="doc-chapter">."""
+def _write_source_html(path: Path, chapters: list) -> None:
+    """Write a minimal accessible HTML with <article role="doc-chapter">."""
     body_parts = [
         '<a class="skip-link" href="#main">Skip</a>',
         '<main role="main">',
@@ -103,7 +103,7 @@ def extractor_fixture(tmp_path, monkeypatch):
 
     staging = tmp_path / "staging"
     staging.mkdir()
-    _write_dart_html(staging / "book.html", [
+    _write_source_html(staging / "book.html", [
         {
             "title": "Chapter 1: Kinematics",
             "sections": [

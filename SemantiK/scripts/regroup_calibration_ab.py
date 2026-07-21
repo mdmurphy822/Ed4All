@@ -359,7 +359,7 @@ def _analyse_detector(doc: str, prov: list[dict[str, Any]]) -> dict[str, Any]:
 def _run_cascade(pdf: str, regroup: str, out: str) -> dict[str, Any]:
     env = dict(os.environ)
     env["SEMANTIK_UNIT_REGROUP"] = regroup
-    env.setdefault("DART_ALLOW_THETA_STUB", "1")
+    env.setdefault("SEMANTIK_ALLOW_THETA_STUB", "1")
     script = str(_SEMANTIK / "scripts" / "run_cascade_json.py")
     subprocess.run(
         [sys.executable, script, "--pdf", pdf, "--runtime", "mock", "--out-json", out],

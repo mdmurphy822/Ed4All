@@ -13,7 +13,7 @@ This module is a pure text predicate over an opener candidate's text, applied at
 the Ed4All adapter seam (:mod:`lib.semantik.adapter`) so BOTH the live-conversion
 render path AND the ``scripts/semantik_rerender.py`` re-render path promote the
 opener labels to real ``<h4>`` headings carrying a machine-readable
-``data-dart-opener`` role — no cascade re-run.
+``data-semantik-opener`` role — no cascade re-run.
 
 Conservative by design (mirrors :mod:`lib.semantik.heading_classifier`): the
 STANDALONE arm matches only a whole-line opener label (up to 3 leading OCR
@@ -42,7 +42,7 @@ from typing import Dict, Optional, Tuple
 from lib.ontology.taxonomy import get_lexicon_openers
 
 # ---------------------------------------------------------------------------
-# Canonical opener role slugs (the ``data-dart-opener`` / ``data-dart-block-role``
+# Canonical opener role slugs (the ``data-semantik-opener`` / ``data-semantik-block-role``
 # value stamped on the promoted heading block). Mirror the lexicon ``role`` keys.
 # ---------------------------------------------------------------------------
 ROLE_OBJECTIVES = "objectives"

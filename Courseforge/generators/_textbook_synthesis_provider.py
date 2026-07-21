@@ -4,7 +4,7 @@
 Plan reference: ``plans/textbook-llm-synthesis-3stage-2026-05.md``.
 
 The three-stage textbook-synthesis architecture maps a large LLM onto
-the three post-DART phases of ``config/workflows.yaml::textbook_to_course``:
+the three post-conversion phases of ``config/workflows.yaml::textbook_to_course``:
 
 - **Stage 1** (``objective_extraction``): whole-textbook skeleton →
   course-level **semantic outline** + **DRAFT TO-NN** terminal

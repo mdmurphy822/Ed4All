@@ -1,4 +1,4 @@
-"""DART semantic structure pipeline — shared library code.
+"""SemantiK semantic structure pipeline — shared library code.
 
 The 8-stage pipeline (see docs/refactor_plan.md):
 

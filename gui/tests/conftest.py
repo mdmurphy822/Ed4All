@@ -110,7 +110,7 @@ def sample_settings_doc() -> Dict[str, Any]:
             },
         },
         "retrieval": {"top_k": 5, "min_grounding_cosine": 0.45, "require_embeddings": True},
-        "flags": {"COURSEFORGE_TWO_PASS": True, "DART_LLM_CLASSIFICATION": False},
+        "flags": {"COURSEFORGE_TWO_PASS": True, "ED4ALL_ANSWER_LIBRARY_WIDE": False},
     }
 
 

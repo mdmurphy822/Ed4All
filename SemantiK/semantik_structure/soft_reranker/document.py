@@ -1,6 +1,6 @@
 """Stage 11 — document-level soft reranker (rule-based v1).
 
-DART's per-document analogue of Stage 8. Scores one (or more) assembled
+SemantiK's per-document analogue of Stage 8. Scores one (or more) assembled
 documents on the four DP-10.1 axes from ``architecture.md:179-192``:
 
     composite = 0.30 · heading_tree_balance

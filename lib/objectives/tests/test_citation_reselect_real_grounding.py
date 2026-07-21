@@ -168,10 +168,10 @@ def test_fabricated_no_pool_is_skipped_not_invented():
 # (d) INTEGRATION — the gate flips ORPHANED (block) -> pass with real grounding.
 # ---------------------------------------------------------------------------
 def _write_chunkset(tmp_path: Path, chunks: Dict[str, Dict[str, Any]]) -> Path:
-    d = tmp_path / "dart_chunks"
+    d = tmp_path / "semantik_chunks"
     d.mkdir(parents=True, exist_ok=True)
     (d / "manifest.json").write_text(
-        json.dumps({"chunkset_kind": "dart"}), encoding="utf-8"
+        json.dumps({"chunkset_kind": "semantik"}), encoding="utf-8"
     )
     with (d / "chunks.jsonl").open("w", encoding="utf-8") as fh:
         for c in chunks.values():

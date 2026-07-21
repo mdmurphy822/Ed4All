@@ -261,7 +261,7 @@ def _base_manifest() -> dict:
         },
         "classification": {"division": "STEM", "primary_domain": "general"},
         "content_profile": {"total_chunks": 0, "total_tokens": 0},
-        "dart_chunks_sha256": "a" * 64,
+        "semantik_chunks_sha256": "a" * 64,
         "imscc_chunks_sha256": "b" * 64,
         "concept_graph_sha256": "c" * 64,
     }

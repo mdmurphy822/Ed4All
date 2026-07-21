@@ -389,12 +389,12 @@ def test_legacy_fixtures_validate():
         )
 
     # Chunks.  Archived corpora keep the canonical chunks at corpus/chunks.jsonl
-    # (Phase-7c rename target); fall back to imscc_chunks/chunks.jsonl when
-    # only the post-rename layout is present.
+    # (Phase-7c rename target); fall back to imscc_chunks/chunks.jsonl or the
+    # staged semantik_chunks/chunks.jsonl when only that layout is present.
     chunks_path_candidates = [
         LEGACY_CORPUS_DIR / "corpus" / "chunks.jsonl",
         LEGACY_CORPUS_DIR / "imscc_chunks" / "chunks.jsonl",
-        LEGACY_CORPUS_DIR / "dart_chunks" / "chunks.jsonl",
+        LEGACY_CORPUS_DIR / "semantik_chunks" / "chunks.jsonl",
     ]
     chunks_path = next((p for p in chunks_path_candidates if p.exists()), None)
     if chunks_path is None:

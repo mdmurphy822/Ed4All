@@ -1,8 +1,8 @@
 """LO-anchoring regression — chunks carry ``learning_outcome_refs``.
 
 Root cause closed by this suite: the shared chunk-emit callbacks in
-``MCP/tools/pipeline_tools.py`` (``_run_dart_chunking`` /
-``_run_imscc_chunking``) hardcoded ``learning_outcome_refs: []`` and never
+``MCP/tools/pipeline_tools.py`` (the SemantiK-chunking and IMSCC-chunking
+phase handlers) hardcoded ``learning_outcome_refs: []`` and never
 harvested the learning-outcome (LO) ids the Courseforge content page
 carried. Empty LO refs failed the ``packet_integrity_strict`` gate
 (``UNANCHORED_ASSESSMENT``) and cascaded into an empty / unparseable
@@ -20,7 +20,7 @@ ids the page validator reads:
 Section-scoped refs win so a multi-LO page anchors each chunk to its own
 section's LO. Every ref is validated against the canonical LO pattern
 ``^[A-Z]{2,}-\\d{2,}$``. When the source HTML carries no LO metadata
-(legacy / DART corpora) the helper returns ``[]`` — byte-identical to the
+(legacy corpora) the helper returns ``[]`` — byte-identical to the
 prior hardcoded behaviour.
 
 Tests:
@@ -107,7 +107,7 @@ _PAGE_WITH_LOS = """<!DOCTYPE html>
 </main>
 </body></html>"""
 
-# Page with NO LO metadata at all (legacy / DART-style). No JSON-LD
+# Page with NO LO metadata at all (legacy-style). No JSON-LD
 # learningObjectives, no data-cf-objective-* attributes.
 _PAGE_WITHOUT_LOS = """<!DOCTYPE html>
 <html lang="en"><head><title>Plain Page</title></head><body>
@@ -115,8 +115,8 @@ _PAGE_WITHOUT_LOS = """<!DOCTYPE html>
   <section>
     <h2>Some Topic</h2>
     <p>This is plain prose content with no learning-objective metadata
-    whatsoever. A legacy corpus or a DART-converted textbook page looks
-    exactly like this — no JSON-LD block and no Courseforge data-cf
+    whatsoever. A legacy corpus or an accessibility-converted textbook page
+    looks exactly like this — no JSON-LD block and no Courseforge data-cf
     objective attributes anywhere in the markup at all.</p>
   </section>
 </main>
@@ -180,7 +180,7 @@ def test_extract_lo_refs_page_level_fallback():
 
 
 def test_no_lo_metadata_yields_empty():
-    """Legacy / DART page without LO metadata yields [] — no regression."""
+    """Legacy page without LO metadata yields [] — no regression."""
     item = _item_from_html(_PAGE_WITHOUT_LOS)
     assert extract_learning_outcome_refs(item, "Some Topic") == []
     assert extract_learning_outcome_refs(item, None) == []

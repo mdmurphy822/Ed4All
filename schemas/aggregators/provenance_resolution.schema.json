@@ -48,11 +48,11 @@
         { "$ref": "#/$defs/ResolutionBlock" },
         { "$ref": "#/$defs/SkippedBlock" }
       ],
-      "description": "count = distinct tokens whose {anchor} exists as a data-dart-block-id in the staged {stem}.html; total = distinct tokens. Skipped shape when no staging-HTML root resolves."
+      "description": "count = distinct tokens whose {anchor} exists as a data-semantik-block-id in the staged {stem}.html; total = distinct tokens. Skipped shape when no staging-HTML root resolves."
     },
     "source_ids_book_chunk_resolved": {
       "$ref": "#/$defs/ResolutionBlock",
-      "description": "count = distinct tokens carried by >=1 book-side dart chunk's source.source_references[].sourceId; total = distinct tokens."
+      "description": "count = distinct tokens carried by >=1 book-side SemantiK chunk's source.source_references[].sourceId; total = distinct tokens."
     },
     "provenance_free_by_module": {
       "type": "object",

@@ -173,7 +173,7 @@ def test_multiturn_offtopic_rewrite_retains_original_top_passage(monkeypatch):
     answer_course_question(
         Path("/nonexistent-root"), COURSE_SLUG, query,
         client=object(), refusal_policy=_PERMISSIVE_LEXICAL, capture=spy,
-        chunkset_kind="dart", prior_turns=prior_turns,
+        chunkset_kind="semantik", prior_turns=prior_turns,
     )
 
     # The rewrite actually fired (so the union path was exercised)...

@@ -83,13 +83,15 @@ def discover_real_archive() -> Tuple[
     missing.
 
     Selection: a course carrying a resolvable ``chunks.jsonl``
-    (``imscc_chunks/`` → ``dart_chunks/`` → legacy ``corpus/``) plus a
+    (``imscc_chunks/`` → ``semantik_chunks/`` → legacy ``dart_chunks/`` →
+    legacy ``corpus/``) plus a
     discoverable ``synthesized_objectives.json`` wins. The real-archive
     regression envelopes that consume this helper are calibrated against
     the original (pre-rename, legacy ``corpus/``-layout) calibration
     archive, so a legacy-``corpus/``-layout course is PREFERRED when one
-    is present; resolver-found ``imscc_chunks/`` / ``dart_chunks/``
-    archives serve as the fallback so the helper still discovers
+    is present; resolver-found ``imscc_chunks/`` / ``semantik_chunks/`` /
+    legacy ``dart_chunks/`` archives serve as the fallback so the helper
+    still discovers
     post-rename corpora when no legacy archive remains. An operator can
     pin a specific course directory name via ``ED4ALL_ARCHIVE_FIXTURE_SLUG``
     (the sanctioned slug-free escape hatch — the slug never lands in
@@ -126,7 +128,8 @@ def discover_real_archive() -> Tuple[
                 return tup
         return None, None, None, None
     # No legacy archive remains (fully migrated checkout): fall back to
-    # any resolver-found layout (``imscc_chunks/`` / ``dart_chunks/``).
+    # any resolver-found layout (``imscc_chunks/`` / ``semantik_chunks/`` /
+    # legacy ``dart_chunks/``).
     for course_dir in dirs:
         tup = _archive_tuple(course_dir)
         if tup is not None:

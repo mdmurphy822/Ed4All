@@ -58,7 +58,7 @@ def _conforming_manifest(slug: str, *, with_version: bool = False) -> dict:
         },
         "classification": {"division": "STEM", "primary_domain": "physics"},
         "content_profile": {"total_chunks": 1, "total_tokens": 10},
-        "dart_chunks_sha256": _SHA,
+        "semantik_chunks_sha256": _SHA,
         "imscc_chunks_sha256": _SHA,
         "concept_graph_sha256": _SHA,
     }

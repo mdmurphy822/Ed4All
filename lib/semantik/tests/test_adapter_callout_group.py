@@ -3,7 +3,7 @@ seam (end-user-HTML audit, ch02 shots). Synthetic block IR only.
 
   * A promoted opener heading (How To / Example / Solution / Try It / …) and the
     content blocks that FOLLOW it are wrapped in ONE ``data-semantik-opener-group``
-    box container, so ``dart_content.css`` encloses the whole unit (the "How To
+    box container, so ``semantik_content.css`` encloses the whole unit (the "How To
     box wraps only the label, steps spill outside" defect).
   * ":: " / ": : " colon-run + stray ">"/"|" gutter residue is folded out of
     block text before the opener split.
@@ -79,7 +79,7 @@ def test_opener_and_following_content_share_one_box():
     )
     html = _render_chapters([ch])
     m = re.search(
-        r'<div class="dart-callout-group" data-semantik-opener-group="how_to">'
+        r'<div class="semantik-callout-group" data-semantik-opener-group="how_to">'
         r"(.*?)</div>",
         html,
         re.DOTALL,
@@ -138,7 +138,7 @@ def test_new_opener_starts_a_fresh_group():
 def test_plain_prose_without_opener_is_not_wrapped():
     ch = _AdapterChapter(title="Prose", blocks=[_para("just prose", 0)])
     html = _render_chapters([ch])
-    assert "dart-callout-group" not in html
+    assert "semantik-callout-group" not in html
     assert "just prose" in html
 
 

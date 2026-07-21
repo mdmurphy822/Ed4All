@@ -6,11 +6,11 @@
 #
 # Data story: every mutable data dir resolves under ``ED4ALL_HOME`` (lib/paths.py),
 # so a single ``/data`` volume holds state, libv2, exports, training-captures and
-# dart-output. No code lives under /data — the image ships the code, the volume
-# ships the data.
+# conversion artifacts. No code lives under /data — the image ships the code, the
+# volume ships the data.
 FROM python:3.11-slim
 
-# DART PDF processing (uploaded textbooks) + curl for the HEALTHCHECK probe.
+# SemantiK PDF processing (uploaded textbooks) + curl for the HEALTHCHECK probe.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         tesseract-ocr \

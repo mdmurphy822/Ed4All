@@ -954,7 +954,7 @@ async function renderSettings(view) {
   // routing: the AI tier / category, not the raw catalog category slug). The
   // raw category slug stays available as a small secondary hint on the card so
   // a technical operator can still map a group back to the catalog.
-  const order = ['credentials', 'global', 'global routing', 'local', 'local backend', 'together', 'vision', 'dart', 'courseforge', 'trainforge', 'embedding', 'answer', 'base models (training)'];
+  const order = ['credentials', 'global', 'global routing', 'local', 'local backend', 'together', 'vision', 'courseforge', 'trainforge', 'embedding', 'answer', 'base models (training)'];
   // Friendly group headings keyed by catalog category. Anything not listed
   // falls back to a title-cased version of the slug (never a bare slug).
   const GROUP_TITLES = {
@@ -963,7 +963,6 @@ async function renderSettings(view) {
     local: 'Local model server (Ollama)',
     together: 'Together AI models',
     vision: 'Vision / image models',
-    dart: 'PDF conversion (DART)',
     courseforge: 'Course authoring (Courseforge)',
     trainforge: 'Training & assessments (Trainforge)',
     embedding: 'Search & embeddings',
@@ -1128,7 +1127,7 @@ async function renderRouting(view) {
   // ``vision`` is rendered in its own dedicated card below (provider list
   // filtered to vision-capable backends + live Ollama model discovery), so
   // it is excluded from the generic per-task table here.
-  const canonical = ['global', 'dart', 'courseforge_outline', 'courseforge_rewrite', 'courseplanner', 'textbook_synthesis', 'trainforge_synthesis', 'trainforge_assessment'];
+  const canonical = ['global', 'courseforge_outline', 'courseforge_rewrite', 'courseplanner', 'textbook_synthesis', 'trainforge_synthesis', 'trainforge_assessment'];
   const tasks = Array.from(new Set([...canonical, ...Object.keys(routing)])).filter((t) => t !== 'vision');
 
   const draft = JSON.parse(JSON.stringify(routing));
@@ -1164,7 +1163,7 @@ async function renderRouting(view) {
   tasks.forEach((task) => {
     const cur = routing[task] || {};
     const extra = [];
-    // global has a mode field; dart has vision_provider
+    // global has a mode field.
     if (task === 'global') {
       const sel = el('select');
       [['', 'inherit'], ['local', 'local'], ['api', 'api']].forEach(([v, t]) => {
@@ -1172,9 +1171,6 @@ async function renderRouting(view) {
       });
       sel.addEventListener('change', () => { ensure('global').mode = sel.value || null; });
       extra.push(el('div', {}, [el('label', { text: 'mode' }), sel]));
-    }
-    if (task === 'dart') {
-      extra.push(el('div', {}, [el('label', { text: 'vision_provider' }), providerSelect('dart', 'vision_provider')]));
     }
     tbody.appendChild(el('tr', {}, [
       el('td', {}, el('code', { class: 'kv', text: task })),
@@ -1198,11 +1194,11 @@ async function renderRouting(view) {
     const vCur = routing.vision || {};
     const vCard = el('div', { class: 'card' }, [
       el('h2', { text: 'Vision / VLM' }),
-      el('p', { class: 'subtitle', text: 'Vision-capable backend for DART alt-text / image description (DART_VISION_PROVIDER). Local = Ollama with a vision model + LOCAL_VISION_CAPABLE.' }),
+      el('p', { class: 'subtitle', text: 'Vision-capable backend for the SemantiK VLM seat — per-page extraction + figure alt-text (SEMANTIK_VLM_PROVIDER). Local = Ollama with a vision model (SEMANTIK_VLM_MODEL, default qwen2.5vl:7b).' }),
     ]);
 
     const provSel = el('select');
-    provSel.appendChild(el('option', { value: '', text: '— inherit (falls through to DART provider) —' }));
+    provSel.appendChild(el('option', { value: '', text: '— inherit (local Ollama VLM seat) —' }));
     visionProviders.forEach((p) => {
       const opt = el('option', { value: p, text: providerLabel(p) });
       if ((vCur.provider || '') === p) opt.selected = true;
@@ -1230,22 +1226,22 @@ async function renderRouting(view) {
         if (res.available && res.models.length) {
           res.models.forEach((m) => dl.appendChild(el('option', { value: m })));
           modelInp.placeholder = 'pick an installed Ollama model';
-          modelHint.textContent = `${res.models.length} Ollama model(s) at ${res.host}. Also set LOCAL_SYNTHESIS_MODEL to a vision model + LOCAL_VISION_CAPABLE=true.`;
+          modelHint.textContent = `${res.models.length} Ollama model(s) at ${res.host}. Saved as SEMANTIK_VLM_MODEL.`;
         } else {
           modelInp.placeholder = 'type a vision model id (Ollama not reachable)';
-          modelHint.textContent = `Ollama not reachable (${res.detail || 'no models'}). Free-text entry — set LOCAL_SYNTHESIS_MODEL to your Ollama vision model.`;
+          modelHint.textContent = `Ollama not reachable (${res.detail || 'no models'}). Free-text entry — saved as SEMANTIK_VLM_MODEL.`;
         }
       } else if (providerName === 'together-vision') {
         ['meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo', 'meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo']
           .forEach((m) => dl.appendChild(el('option', { value: m })));
         modelInp.placeholder = 'together-vision model id';
-        modelHint.textContent = 'Saved as TOGETHER_VISION_MODEL (only this provider uses a dedicated vision-model env var).';
+        modelHint.textContent = 'Saved as SEMANTIK_VLM_MODEL (the SemantiK VLM seat is provider-agnostic).';
       } else if (providerName === 'anthropic') {
         modelInp.placeholder = 'model id (optional)';
-        modelHint.textContent = 'Anthropic is always vision-capable; the model is pinned via DART_CLAUDE_MODEL / global routing, not a separate vision-model var.';
+        modelHint.textContent = 'Saved as SEMANTIK_VLM_MODEL. Anthropic is always vision-capable.';
       } else {
         modelInp.placeholder = 'select a vision provider first';
-        modelHint.textContent = 'Inherits the DART text provider when left unset.';
+        modelHint.textContent = 'Inherits the local Ollama VLM seat when left unset.';
       }
     }
 

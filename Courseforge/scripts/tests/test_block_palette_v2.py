@@ -67,9 +67,9 @@ def _render(block_type, content):
         page_id="week_01_content_01",
         sequence=0,
         content=content,
-        source_ids=("dart:sample#b1",),
+        source_ids=("semantik:sample#b1",),
     )
-    return _render_block_fallback_html(blk, source_ids=["dart:sample#b1"])
+    return _render_block_fallback_html(blk, source_ids=["semantik:sample#b1"])
 
 
 def test_table_renders_caption_and_scoped_th():

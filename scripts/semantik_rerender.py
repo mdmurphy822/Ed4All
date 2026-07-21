@@ -25,7 +25,7 @@ Two input modes
    This unlocks chapters converted BEFORE the cascade-IR sidecar existed. The
    reconstruction is faithful for HTML re-render (block html is carried
    verbatim; sids re-mint identically) but LOSSY for a few sidecar-only fields
-   (region_kind is approximated from ``data-dart-block-role``; figure alt / cell
+   (region_kind is approximated from ``data-semantik-block-role``; figure alt / cell
    grids are not recovered) — use ``--ir`` whenever the sidecar is present.
 
 Arg-driven + generic: no course paths are hardcoded. ``--output`` is REQUIRED
@@ -84,7 +84,7 @@ class _RerenderResult:
 
 
 def _parse_pages(value: Optional[str]) -> List[int]:
-    """Parse a ``data-dart-pages`` value ("3" / "3-5" / "3,5,7") to ints."""
+    """Parse a ``data-semantik-pages`` value ("3" / "3-5" / "3,5,7") to ints."""
     if not value:
         return []
     out: List[int] = []
@@ -159,15 +159,32 @@ _SID_POSITIONAL_RE = re.compile(r"^s(\d+)$")
 _CONT_SUFFIX_RE = re.compile(r"(?:\s*\(cont\.\))+\s*$")
 
 
+def _class_matcher(*names: str):
+    """BeautifulSoup attr filter matching any of ``names`` in an element's class.
+
+    Dual-READ: the parsed HTML may carry the current ``semantik-*`` structural
+    classes OR a legacy pre-SemantiK ``dart-*`` corpus, so pass both spellings.
+    """
+    wanted = set(names)
+
+    def _match(value: Any) -> bool:
+        if value is None:
+            return False
+        classes = value.split() if isinstance(value, str) else value
+        return bool(wanted.intersection(classes))
+
+    return _match
+
+
 def _chapters_from_html(
     html: str, synth: Optional[Dict[str, Any]] = None
 ) -> _RerenderResult:
     """Reconstruct the adapter chapter/block IR from emitted accessible HTML.
 
     Each ``<article role="doc-chapter">`` → one chapter (continuation detected
-    from a ``dart-continuation`` presentation div OR a trailing "(cont.)" in the
-    ``<h2>`` — so a re-render of the pre-fix buggy HTML reproduces the fixed
-    output). Each ``<section class="dart-section">`` → one block; the sr-only
+    from a ``semantik-continuation`` presentation div OR a trailing "(cont.)" in
+    the ``<h2>`` — so a re-render of the pre-fix buggy HTML reproduces the fixed
+    output). Each ``<section class="semantik-section">`` → one block; the sr-only
     label is stripped, the remaining inner HTML is carried verbatim.
     """
     from bs4 import BeautifulSoup, Tag
@@ -193,7 +210,9 @@ def _chapters_from_html(
     for article in soup.find_all("article", attrs={"role": "doc-chapter"}):
         h2 = article.find("h2", recursive=False)
         cont_div = article.find(
-            "div", attrs={"class": "dart-continuation"}, recursive=False
+            "div",
+            attrs={"class": _class_matcher("semantik-continuation", "dart-continuation")},
+            recursive=False,
         )
         if h2 is not None:
             title = h2.get_text(strip=True)
@@ -205,16 +224,18 @@ def _chapters_from_html(
             _CONT_SUFFIX_RE.search(title)
         )
         blocks: List[_AdapterBlock] = []
-        # ``recursive=True`` so sections wrapped in a ``dart-callout-group``
+        # ``recursive=True`` so sections wrapped in a ``semantik-callout-group``
         # boxing div (opener + its following content) are still discovered in
         # document order; sections are never nested in sections, so no double
         # count. (Direct-child-only would miss every grouped section.)
         for section in article.find_all(
-            "section", attrs={"class": "dart-section"}, recursive=True
+            "section",
+            attrs={"class": _class_matcher("semantik-section", "dart-section")},
+            recursive=True,
         ):
-            # DART->semantik purge Stage 3 (dual-READ): the parsed HTML may be
-            # freshly-emitted ``data-semantik-*`` OR a legacy ``data-dart-*``
-            # corpus, so every attribute read falls back to the dart spelling.
+            # Dual-READ: the parsed HTML may be freshly-emitted ``data-semantik-*``
+            # OR a legacy corpus, so every attribute read falls back to the
+            # legacy ``data-dart-*`` spelling.
             sid = (
                 section.get("data-semantik-block-id")
                 or section.get("data-dart-block-id")

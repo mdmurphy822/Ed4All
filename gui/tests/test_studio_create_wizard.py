@@ -54,9 +54,9 @@ def test_studio_settings_returns_scoped_subset(client, sample_settings_doc):
     cats = {c["category"] for c in body["catalog"]}
     assert cats <= {"credentials", "global", "answer", "local"}
     assert "credentials" in cats and "global" in cats
-    # The full operator catalog (dart / trainforge / embedding / courseforge)
+    # The full operator catalog (vision / trainforge / embedding / courseforge)
     # is NOT returned here.
-    assert "dart" not in cats and "trainforge" not in cats and "embedding" not in cats
+    assert "vision" not in cats and "trainforge" not in cats and "embedding" not in cats
 
     # Secret masked — no raw key leaks.
     assert body["env"].get("ANTHROPIC_API_KEY") == "set"
@@ -93,7 +93,7 @@ def test_studio_settings_exposes_two_pass_flag_for_flow_tree(client, sample_sett
     body = client.get("/api/settings/studio").json()
     assert "flags" in body, "studio payload must echo the scoped flags block"
     assert "COURSEFORGE_TWO_PASS" in body["flags"], "two-pass flag drives the flow tree"
-    # Only the scoped flag is echoed — no DART_LLM_CLASSIFICATION etc.
+    # Only the scoped flag is echoed — no other operator flags leak.
     assert set(body["flags"]).issubset({"COURSEFORGE_TWO_PASS"})
 
 
@@ -170,7 +170,7 @@ def test_workflows_carry_friendly_phase_labels(client):
     ttc = next(w for w in body["workflows"] if w["name"] == "textbook_to_course")
     by_name = {p["name"]: p for p in ttc["phases"]}
     # Every internal phase that has a friendly label exposes it.
-    assert by_name["dart_conversion"]["label"] == run_service.PHASE_LABELS["dart_conversion"]
+    assert by_name["semantik_conversion"]["label"] == run_service.PHASE_LABELS["semantik_conversion"]
     assert by_name["vector_indexing"]["label"]  # the new vector_indexing phase is labelled
     # Optional phases keep their flag for the checklist.
     assert by_name["trainforge_assessment"]["optional"] is True
@@ -200,13 +200,13 @@ def test_poll_phase_progress_emits_friendly_lines(state_dir, monkeypatch):
     async def _drive():
         # Start with one completed phase, then add a second + a skipped one.
         wf_file.write_text(json.dumps({
-            "phase_outputs": {"dart_conversion": {"_completed": True}}
+            "phase_outputs": {"semantik_conversion": {"_completed": True}}
         }), encoding="utf-8")
         task = asyncio.ensure_future(run_service._poll_phase_progress(run_id, workflow_id))
         await asyncio.sleep(1.2)
         wf_file.write_text(json.dumps({
             "phase_outputs": {
-                "dart_conversion": {"_completed": True},
+                "semantik_conversion": {"_completed": True},
                 "staging": {"_completed": True},
                 "trainforge_assessment": {"_completed": True, "_skipped": True},
             }
@@ -224,7 +224,7 @@ def test_poll_phase_progress_emits_friendly_lines(state_dir, monkeypatch):
         wf_file.unlink(missing_ok=True)
 
     text, _ = shared_state.tail_log(run_id, 0)
-    assert "[phase] dart_conversion done" in text
+    assert "[phase] semantik_conversion done" in text
     assert "[phase] staging done" in text
     assert "[phase] trainforge_assessment skipped" in text
     # Friendly label is appended.

@@ -134,7 +134,7 @@ def test_page_transform_injects_source_links_from_cf_ids():
     assert "View in textbook" in out
     # ``&`` serializes as ``&amp;`` in the rendered HTML attribute.
     assert "/api/courses/my-course/source-doc?doc=ch1&amp;ref=abc-123" in out
-    assert "#dart-abc-123" in out
+    assert "#semantik-abc-123" in out
     # The provenance attribute is preserved alongside the new link.
     assert "data-cf-source-ids" in out
 
@@ -201,7 +201,7 @@ def test_page_transform_prefers_primary_anchor_for_doc():
     assert out.count("View in textbook") == 1
     # The primary anchor (b1) is the surviving deep link, through /source-doc.
     assert "/api/courses/my-course/source-doc?doc=ch1&amp;ref=b1" in out
-    assert "#dart-b1" in out
+    assert "#semantik-b1" in out
     # The non-primary first token (b0) is NOT the surviving link.
     assert "ref=b0" not in out
 
@@ -248,9 +248,9 @@ def test_page_transform_source_link_carries_page():
         'data-dart-pages="47"><p>A worked example.</p></div>',
         slug="my-course",
     )
-    # &page=47 threaded into the href (before the #dart- fragment).
+    # &page=47 threaded into the href (before the #semantik- fragment).
     assert "/api/courses/my-course/source-doc?doc=ch1&amp;ref=abc-123&amp;page=47" in out
-    assert "#dart-abc-123" in out
+    assert "#semantik-abc-123" in out
     # Honest physical-page label in the link text (RISK-A: "PDF p.", not "p.").
     assert "View in textbook (PDF p. 47)" in out
 
@@ -263,7 +263,7 @@ def test_page_transform_source_link_range_targets_first_page():
         slug="c1",
     )
     # RISK-C: a "3-5" range deep-links page 3, labels "PDF pp. 3, 4, 5".
-    assert "&amp;page=3#dart-a" in out
+    assert "&amp;page=3#semantik-a" in out
     assert "(PDF pp. 3, 4, 5)" in out
 
 

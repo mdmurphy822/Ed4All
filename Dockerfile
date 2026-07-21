@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# System dependencies for DART PDF processing
+# System dependencies for SemantiK PDF processing
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         tesseract-ocr \

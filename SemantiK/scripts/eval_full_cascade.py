@@ -507,7 +507,7 @@ def _run_cascade_isolated(
     # Inherit env but ensure the real theta model is used (never the stub) so
     # the isolated run matches the in-process contract.
     env = dict(os.environ)
-    env.pop("DART_ALLOW_THETA_STUB", None)
+    env.pop("SEMANTIK_ALLOW_THETA_STUB", None)
     proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
     try:
         result = json.loads(out_path.read_text())
@@ -667,13 +667,13 @@ def main(argv: list[str] | None = None) -> int:
     # ---------- theta stub-fallback banner ----------
     # The theta semantic-preservation cross-encoder is strict-by-default
     # (see semantik_structure/theta/_module_state.py). When the model is
-    # missing/broken, evaluate() raises unless DART_ALLOW_THETA_STUB=1
+    # missing/broken, evaluate() raises unless SEMANTIK_ALLOW_THETA_STUB=1
     # is set. Surface the active state loudly so a human reading the
     # log knows whether theta_score includes a 0.7 placeholder.
-    _stub_allowed = os.environ.get("DART_ALLOW_THETA_STUB", "").strip() == "1"
+    _stub_allowed = os.environ.get("SEMANTIK_ALLOW_THETA_STUB", "").strip() == "1"
     if _stub_allowed:
         log(
-            "[eval] WARNING: DART_ALLOW_THETA_STUB=1 — semantic_preservation "
+            "[eval] WARNING: SEMANTIK_ALLOW_THETA_STUB=1 — semantic_preservation "
             "may fall back to the 0.7 stub_v1 placeholder. Composite "
             "theta_score is NOT a real measurement when this flag is set "
             "AND the trained model is missing/broken."
@@ -682,7 +682,7 @@ def main(argv: list[str] | None = None) -> int:
         log(
             "[eval] strict-by-default: theta semantic_preservation must "
             "load successfully OR every PDF will fail. Set "
-            "DART_ALLOW_THETA_STUB=1 to permit stub fallback."
+            "SEMANTIK_ALLOW_THETA_STUB=1 to permit stub fallback."
         )
 
     # ---------- output path / resume ----------

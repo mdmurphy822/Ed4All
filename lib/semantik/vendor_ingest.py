@@ -2,11 +2,11 @@
 
 The DUAL-SOURCE companion to the SemantiK PDF-conversion path. SemantiK
 (``lib/semantik/adapter.py``) synthesizes accessible HTML *from a PDF* (a
-council of pypdfium2/pdfplumber/OCR extractors → ``data-dart-source=
-"synthesized"``). Some publishers (e.g. OpenStax under CC-BY) already ship
+council of pypdfium2/pdfplumber/OCR extractors → ``data-semantik-source=
+"synthesized"``). Some publishers already ship
 CLEAN accessible HTML; for that input there is nothing to synthesize — we
-only need to NORMALIZE the existing accessible markup into the Ed4All DART
-output contract (``data-dart-*`` markers, ``dart:`` sourceIds, sidecars,
+only need to NORMALIZE the existing accessible markup into the Ed4All SemantiK
+output contract (``data-semantik-*`` markers, ``semantik:`` sourceIds, sidecars,
 exit_action→success) so the SAME downstream pipeline (chunk → index →
 retrieve) consumes it.
 
@@ -17,7 +17,7 @@ Design contract (this session's task brief):
   ``_AdapterChapter``/``_AdapterBlock`` IR
   ``lib.semantik.adapter.normalize_cascade_to_ed4all`` consumes, then calls
   it with ``source="vendor"``.
-* PROVENANCE DISCRIMINATOR: the emitted ``data-dart-source`` is ``"vendor"``
+* PROVENANCE DISCRIMINATOR: the emitted ``data-semantik-source`` is ``"vendor"``
   (AUTHORITATIVE — this HTML was authored accessible by the publisher, NOT
   synthesized by us). ``synthesized`` stays the SemantiK default. The M6
   finding holds: no consumer branches on the VALUE, so the new ``vendor``
@@ -238,7 +238,7 @@ def build_chapters_ir_from_html(
 
     def _append_block(blk: _AdapterBlock) -> None:
         # §3.4 overflow guard — spill into a continuation chapter so no
-        # chapter exceeds the safe section budget (a single OpenStax section
+        # chapter exceeds the safe section budget (a single publisher section
         # under one h2 can carry hundreds of p/li blocks).
         nonlocal current
         ch = _ensure_current()
@@ -341,12 +341,12 @@ def ingest_vendor_html(
     source: str = "vendor",
     canonical_course_code: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Ingest vendor accessible HTML into the Ed4All DART output contract.
+    """Ingest vendor accessible HTML into the Ed4All SemantiK output contract.
 
     Builds the chapters IR from the HTML (:func:`build_chapters_ir_from_html`)
     then runs the SAME ``normalize_cascade_to_ed4all`` adapter the SemantiK
     path uses, tagged with ``source="vendor"`` so every block carries
-    ``data-dart-source="vendor"`` (the authoritative provenance discriminator).
+    ``data-semantik-source="vendor"`` (the authoritative provenance discriminator).
 
     The vendor input is already accessible, so the conversion always
     "ships with confidence" — we attach a synthetic cascade-like result
@@ -355,7 +355,7 @@ def ingest_vendor_html(
 
     Returns the SAME dict shape as ``normalize_cascade_to_ed4all`` (``html`` +
     ``synthesized_sidecar`` + ``quality_sidecar`` + ``success`` + ...), with
-    ``data_dart_source`` set to ``source``.
+    ``data_semantik_source`` set to ``source``.
     """
     chapters = build_chapters_ir_from_html(html_or_pages, doc_title=doc_title)
 

@@ -26,7 +26,7 @@ _REGION_SNIPPET_CHARS = 240
 
 
 _SYSTEM_RESEGMENT = (
-    "You are a DART document-STRUCTURE BOUNDARY editor. You are NOT a content "
+    "You are a SemantiK document-STRUCTURE BOUNDARY editor. You are NOT a content "
     "author or generator. Your single job is to fix LOGICAL PRESENTATION "
     "defects by JOINING regions that were wrongly cut apart or SPLITTING a "
     "region that fused two logical units — by MOVING region boundaries only.\n"

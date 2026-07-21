@@ -94,7 +94,7 @@ def _make_block_for_type(block_type: str) -> Tuple[Block, str]:
             cognitive_domain="factual",
         )
         body = (
-            '<section class="objectives" data-cf-source-ids="dart:ch1#b1">'
+            '<section class="objectives" data-cf-source-ids="semantik:ch1#b1">'
             '<h2>Learning Objectives</h2>'
             '<ul><li data-cf-objective-id="TO-01" data-cf-bloom-level="remember"'
             ' data-cf-bloom-verb="define" data-cf-cognitive-domain="factual">'
@@ -118,7 +118,7 @@ def _make_block_for_type(block_type: str) -> Tuple[Block, str]:
             bloom_range="understand",
         )
         body = (
-            f'<section data-cf-source-ids="dart:ch1#b1">'
+            f'<section data-cf-source-ids="semantik:ch1#b1">'
             f'<h2 data-cf-content-type="{content_type_label}"'
             f' data-cf-key-terms="term_one,term_two"'
             f' data-cf-bloom-range="understand">Section Heading</h2>'

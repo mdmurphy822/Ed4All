@@ -76,9 +76,9 @@ class _CaptureSpy:
         self.events.append(dict(kwargs))
 
 
-def _write_dart_chunks(tmp_path: Path, chunks: List[Dict[str, Any]]) -> Path:
-    """Write dart_chunks/manifest.json + sibling chunks.jsonl (with bodies)."""
-    chunks_dir = tmp_path / "dart_chunks"
+def _write_semantik_chunks(tmp_path: Path, chunks: List[Dict[str, Any]]) -> Path:
+    """Write semantik_chunks/manifest.json + sibling chunks.jsonl (with bodies)."""
+    chunks_dir = tmp_path / "semantik_chunks"
     chunks_dir.mkdir(parents=True, exist_ok=True)
     with (chunks_dir / "chunks.jsonl").open("w", encoding="utf-8") as fh:
         for chunk in chunks:
@@ -88,7 +88,7 @@ def _write_dart_chunks(tmp_path: Path, chunks: List[Dict[str, Any]]) -> Path:
         json.dumps({
             "chunks_sha256": "0" * 64,
             "chunker_version": "v4",
-            "chunkset_kind": "dart",
+            "chunkset_kind": "semantik",
         }),
         encoding="utf-8",
     )
@@ -129,13 +129,13 @@ def _chunk(chunk_id: str, source_id: str) -> Dict[str, Any]:
 
 
 def test_lo_entailed_passes(tmp_path: Path) -> None:
-    manifest = _write_dart_chunks(tmp_path, [_chunk("c1", "dart:rdf#s1")])
+    manifest = _write_semantik_chunks(tmp_path, [_chunk("c1", "semantik:rdf#s1")])
     objectives = _write_objectives(
         tmp_path, terminal=[],
         chapter=[{
             "id": "CO-01",
             "statement": "Apply RDF triples to model semantic web data [ENTAIL].",
-            "source_refs": [{"ref": "ch1", "chunk_ids": ["dart:rdf#s1"]}],
+            "source_refs": [{"ref": "ch1", "chunk_ids": ["semantik:rdf#s1"]}],
         }],
     )
     result = ObjectiveEntailmentValidator(nli=_FakeNli()).validate({
@@ -162,7 +162,7 @@ def test_lo_entailed_passes(tmp_path: Path) -> None:
 def test_lo_statement_scored_as_single_hypothesis_us_abbrev(
     tmp_path: Path,
 ) -> None:
-    manifest = _write_dart_chunks(tmp_path, [_chunk("c1", "dart:rdf#s1")])
+    manifest = _write_semantik_chunks(tmp_path, [_chunk("c1", "semantik:rdf#s1")])
     # [ENTAIL] sits BEFORE the abbreviation: if the statement were split at
     # "U.S.", the beheaded second fragment ("and metric systems…") would lack
     # the marker → unsupported → rate 0.5 → OBJECTIVE_UNENTAILED. Scored
@@ -176,7 +176,7 @@ def test_lo_statement_scored_as_single_hypothesis_us_abbrev(
         chapter=[{
             "id": "CO-13",
             "statement": statement,
-            "source_refs": [{"ref": "ch1", "chunk_ids": ["dart:rdf#s1"]}],
+            "source_refs": [{"ref": "ch1", "chunk_ids": ["semantik:rdf#s1"]}],
         }],
     )
     nli = _FakeNli()
@@ -203,14 +203,14 @@ def test_lo_statement_scored_as_single_hypothesis_us_abbrev(
 
 
 def test_lo_unentailed_fails(tmp_path: Path) -> None:
-    manifest = _write_dart_chunks(tmp_path, [_chunk("c1", "dart:rdf#s1")])
+    manifest = _write_semantik_chunks(tmp_path, [_chunk("c1", "semantik:rdf#s1")])
     objectives = _write_objectives(
         tmp_path, terminal=[],
         chapter=[{
             "id": "CO-01",
             # No [ENTAIL] marker → fake NLI returns low entailment.
             "statement": "Compose interpretive jazz music from RDF triples.",
-            "source_refs": [{"ref": "ch1", "chunk_ids": ["dart:rdf#s1"]}],
+            "source_refs": [{"ref": "ch1", "chunk_ids": ["semantik:rdf#s1"]}],
         }],
     )
     result = ObjectiveEntailmentValidator(nli=_FakeNli()).validate({
@@ -232,13 +232,13 @@ def test_lo_unentailed_fails(tmp_path: Path) -> None:
 
 
 def test_lo_contradicted(tmp_path: Path) -> None:
-    manifest = _write_dart_chunks(tmp_path, [_chunk("c1", "dart:rdf#s1")])
+    manifest = _write_semantik_chunks(tmp_path, [_chunk("c1", "semantik:rdf#s1")])
     objectives = _write_objectives(
         tmp_path, terminal=[],
         chapter=[{
             "id": "CO-01",
             "statement": "RDF triples have no subject or predicate at all [CONTRA].",
-            "source_refs": [{"ref": "ch1", "chunk_ids": ["dart:rdf#s1"]}],
+            "source_refs": [{"ref": "ch1", "chunk_ids": ["semantik:rdf#s1"]}],
         }],
     )
     result = ObjectiveEntailmentValidator(nli=_FakeNli()).validate({
@@ -259,7 +259,7 @@ def test_lo_contradicted(tmp_path: Path) -> None:
 
 
 def test_legacy_and_empty_refs_skipped(tmp_path: Path) -> None:
-    manifest = _write_dart_chunks(tmp_path, [_chunk("c1", "dart:rdf#s1")])
+    manifest = _write_semantik_chunks(tmp_path, [_chunk("c1", "semantik:rdf#s1")])
     objectives = _write_objectives(
         tmp_path,
         terminal=[{"id": "TO-01", "statement": "Master RDF.", "source_refs": []}],
@@ -297,12 +297,12 @@ def test_nli_deps_missing_warns_passes(
     )
     monkeypatch.delenv("TRAINFORGE_REQUIRE_EMBEDDINGS", raising=False)
 
-    manifest = _write_dart_chunks(tmp_path, [_chunk("c1", "dart:rdf#s1")])
+    manifest = _write_semantik_chunks(tmp_path, [_chunk("c1", "semantik:rdf#s1")])
     objectives = _write_objectives(
         tmp_path, terminal=[],
         chapter=[{
             "id": "CO-01", "statement": "Apply RDF triples.",
-            "source_refs": [{"ref": "ch1", "chunk_ids": ["dart:rdf#s1"]}],
+            "source_refs": [{"ref": "ch1", "chunk_ids": ["semantik:rdf#s1"]}],
         }],
     )
     result = ObjectiveEntailmentValidator().validate({
@@ -324,12 +324,12 @@ def test_strict_mode_missing_deps_raises(
     )
     monkeypatch.setenv("TRAINFORGE_REQUIRE_EMBEDDINGS", "true")
 
-    manifest = _write_dart_chunks(tmp_path, [_chunk("c1", "dart:rdf#s1")])
+    manifest = _write_semantik_chunks(tmp_path, [_chunk("c1", "semantik:rdf#s1")])
     objectives = _write_objectives(
         tmp_path, terminal=[],
         chapter=[{
             "id": "CO-01", "statement": "Apply RDF triples.",
-            "source_refs": [{"ref": "ch1", "chunk_ids": ["dart:rdf#s1"]}],
+            "source_refs": [{"ref": "ch1", "chunk_ids": ["semantik:rdf#s1"]}],
         }],
     )
     with pytest.raises(RuntimeError) as excinfo:
@@ -346,7 +346,7 @@ def test_no_universe_warns_passes(tmp_path: Path) -> None:
         tmp_path, terminal=[],
         chapter=[{
             "id": "CO-01", "statement": "Apply RDF triples [ENTAIL].",
-            "source_refs": [{"ref": "ch1", "chunk_ids": ["dart:rdf#s1"]}],
+            "source_refs": [{"ref": "ch1", "chunk_ids": ["semantik:rdf#s1"]}],
         }],
     )
     result = ObjectiveEntailmentValidator(nli=_FakeNli()).validate({
@@ -365,18 +365,18 @@ def test_no_universe_warns_passes(tmp_path: Path) -> None:
 
 
 def test_id_text_loader_both_forms(tmp_path: Path) -> None:
-    manifest = _write_dart_chunks(
+    manifest = _write_semantik_chunks(
         tmp_path,
         [{
             "id": "course_chunk_00001",
             "text": _CHUNK_BODY,
-            "source": {"source_references": [{"sourceId": "dart:rdf#s1"}]},
+            "source": {"source_references": [{"sourceId": "semantik:rdf#s1"}]},
         }],
     )
     text_map = _load_dart_chunks_text_map(manifest)
     # Resolves by top-level id AND by source_references[].sourceId.
     assert text_map.get("course_chunk_00001") == _CHUNK_BODY
-    assert text_map.get("dart:rdf#s1") == _CHUNK_BODY
+    assert text_map.get("semantik:rdf#s1") == _CHUNK_BODY
 
 
 # --------------------------------------------------------------------- #
@@ -385,12 +385,12 @@ def test_id_text_loader_both_forms(tmp_path: Path) -> None:
 
 
 def test_decision_capture_dynamic_signals(tmp_path: Path) -> None:
-    manifest = _write_dart_chunks(tmp_path, [_chunk("c1", "dart:rdf#s1")])
+    manifest = _write_semantik_chunks(tmp_path, [_chunk("c1", "semantik:rdf#s1")])
     objectives = _write_objectives(
         tmp_path, terminal=[],
         chapter=[{
             "id": "CO-01", "statement": "Apply RDF triples [ENTAIL].",
-            "source_refs": [{"ref": "ch1", "chunk_ids": ["dart:rdf#s1"]}],
+            "source_refs": [{"ref": "ch1", "chunk_ids": ["semantik:rdf#s1"]}],
         }],
     )
     capture = _CaptureSpy()
@@ -457,14 +457,14 @@ def _latex_chunk(chunk_id: str, source_id: str) -> Dict[str, Any]:
 _MATH_LO = {
     "id": "CO-90",
     "statement": "Simplify square roots of radicals by factoring.",
-    "source_refs": [{"ref": "ch9", "chunk_ids": ["dart:alg#m1"]}],
+    "source_refs": [{"ref": "ch9", "chunk_ids": ["semantik:alg#m1"]}],
 }
 
 
 def test_math_fold_on_rescues_latex_premise(tmp_path: Path, monkeypatch) -> None:
     """Flag ON: a LaTeX-soup premise is folded before NLI → LO entails."""
     monkeypatch.setenv("ED4ALL_OBJECTIVE_ENTAILMENT_MATH_FOLD", "1")
-    manifest = _write_dart_chunks(tmp_path, [_latex_chunk("m1", "dart:alg#m1")])
+    manifest = _write_semantik_chunks(tmp_path, [_latex_chunk("m1", "semantik:alg#m1")])
     objectives = _write_objectives(tmp_path, terminal=[], chapter=[dict(_MATH_LO)])
     nli = _LatexBlindNli()
     result = ObjectiveEntailmentValidator(nli=nli).validate({
@@ -485,7 +485,7 @@ def test_math_fold_off_is_byte_identical_passthrough(tmp_path: Path, monkeypatch
     """Flag OFF (default): premises + hypothesis reach NLI byte-identical
     (raw LaTeX intact) and the LaTeX-blind scorer fails the LO."""
     monkeypatch.delenv("ED4ALL_OBJECTIVE_ENTAILMENT_MATH_FOLD", raising=False)
-    manifest = _write_dart_chunks(tmp_path, [_latex_chunk("m1", "dart:alg#m1")])
+    manifest = _write_semantik_chunks(tmp_path, [_latex_chunk("m1", "semantik:alg#m1")])
     objectives = _write_objectives(tmp_path, terminal=[], chapter=[dict(_MATH_LO)])
     nli = _LatexBlindNli()
     result = ObjectiveEntailmentValidator(nli=nli).validate({
@@ -507,13 +507,13 @@ def test_math_fold_plain_english_unchanged(tmp_path: Path, monkeypatch) -> None:
     invariance) — the standard entailed LO still passes with the premise
     text unchanged."""
     monkeypatch.setenv("ED4ALL_OBJECTIVE_ENTAILMENT_MATH_FOLD", "1")
-    manifest = _write_dart_chunks(tmp_path, [_chunk("c1", "dart:rdf#s1")])
+    manifest = _write_semantik_chunks(tmp_path, [_chunk("c1", "semantik:rdf#s1")])
     objectives = _write_objectives(
         tmp_path, terminal=[],
         chapter=[{
             "id": "CO-01",
             "statement": "Apply RDF triples to model semantic web data [ENTAIL].",
-            "source_refs": [{"ref": "ch1", "chunk_ids": ["dart:rdf#s1"]}],
+            "source_refs": [{"ref": "ch1", "chunk_ids": ["semantik:rdf#s1"]}],
         }],
     )
     nli = _FakeNli()
@@ -531,14 +531,14 @@ def test_math_fold_on_true_non_entailment_still_fails(tmp_path: Path, monkeypatc
     """Flag ON: folding never fabricates support — a genuinely unrelated
     statement still fails against a math premise."""
     monkeypatch.setenv("ED4ALL_OBJECTIVE_ENTAILMENT_MATH_FOLD", "1")
-    manifest = _write_dart_chunks(tmp_path, [_latex_chunk("m1", "dart:alg#m1")])
+    manifest = _write_semantik_chunks(tmp_path, [_latex_chunk("m1", "semantik:alg#m1")])
     objectives = _write_objectives(
         tmp_path, terminal=[],
         chapter=[{
             "id": "CO-91",
             # No keyword overlap with the folded premise → low entailment.
             "statement": "Compose interpretive jazz music from medieval banners.",
-            "source_refs": [{"ref": "ch9", "chunk_ids": ["dart:alg#m1"]}],
+            "source_refs": [{"ref": "ch9", "chunk_ids": ["semantik:alg#m1"]}],
         }],
     )
 
@@ -564,7 +564,7 @@ def test_math_fold_inputs_override_beats_env(tmp_path: Path, monkeypatch) -> Non
     """Gate-config seam: inputs['math_fold']=True enables folding with the
     env unset (per-gate override, mirrors the shadow knob)."""
     monkeypatch.delenv("ED4ALL_OBJECTIVE_ENTAILMENT_MATH_FOLD", raising=False)
-    manifest = _write_dart_chunks(tmp_path, [_latex_chunk("m1", "dart:alg#m1")])
+    manifest = _write_semantik_chunks(tmp_path, [_latex_chunk("m1", "semantik:alg#m1")])
     objectives = _write_objectives(tmp_path, terminal=[], chapter=[dict(_MATH_LO)])
     result = ObjectiveEntailmentValidator(nli=_LatexBlindNli()).validate({
         "synthesized_objectives_path": str(objectives),

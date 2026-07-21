@@ -59,8 +59,9 @@ class ThetaFlag(str, Enum):
     # auditing per the no-silent-fallbacks policy; does not change the
     # Stage 13 action.
     TITLE_FABRICATED = "title_fabricated"
-    # At least one ``<table>`` in the assembled doc carries
-    # ``data-dart-cell-roles="qwen-inferred"`` — the BERT-TableSpecialist
+    # At least one ``<table>`` in the assembled doc carries the legacy
+    # ``data-dart-cell-roles="qwen-inferred"`` attribute (a pre-SemantiK
+    # weights artifact) — the BERT-TableSpecialist
     # signal was missing for that table region (didn't run, didn't cover
     # the candidate, or partial failure) so Qwen-Table inferred the
     # header roles on its own. Stage 7's per-region gate does not
@@ -88,7 +89,7 @@ class ThetaFlag(str, Enum):
     OFFLINE_LANE_UNAVAILABLE_V1 = "offline_lane_unavailable_v1"
     # The semantic-preservation cross-encoder could not be loaded
     # (mode-collapsed / missing) and the 0.7 stub placeholder was
-    # substituted (DART_ALLOW_THETA_STUB=1). The composite theta_score
+    # substituted (SEMANTIK_ALLOW_THETA_STUB=1). The composite theta_score
     # is therefore UNVERIFIED — Stage 13 ships the doc WITH this flag
     # rather than letting the meaningless score gate ship/retry. Honest
     # degradation per feedback_no_silent_fallbacks: a WCAG-clean doc is

@@ -53,7 +53,7 @@ def _region_provenance() -> list[dict]:
         {
             # Section-level heading — the adapter renders this as a visible
             # <h*> that is the aria-labelledby target for its section (the
-            # dart_markers gate requires >=1 aria-labelledby section). A
+            # semantik_markers gate requires >=1 aria-labelledby section). A
             # heading-less body block alone no longer fabricates an sr-only
             # aria-labelledby label after the _render_section contract change.
             "region_index": 1,
@@ -167,11 +167,11 @@ def test_a_seam_writes_html_and_sidecars(monkeypatch, tmp_path):
     assert quality_doc["exit_action"] == "ship_with_confidence"
     assert quality_doc["certification_status"] == "certified"
 
-    # The normalized HTML passes the dart_markers gate.
-    from lib.validators.dart_markers import DartMarkersValidator
+    # The normalized HTML passes the semantik_markers gate.
+    from lib.validators.semantik_markers import SemantiKMarkersValidator
 
     html = out.read_text(encoding="utf-8")
-    res = DartMarkersValidator().validate({"html_content": html})
+    res = SemantiKMarkersValidator().validate({"html_content": html})
     assert res.passed, [i.code for i in res.issues if i.severity == "critical"]
 
 
@@ -355,10 +355,10 @@ def test_e_reuse_conversion_no_prior_runs_cascade(monkeypatch, tmp_path):
 
 
 def _adapter_html_fixture() -> str:
-    """A small SemantiK-adapter-shaped HTML with the data-dart enrichment.
+    """A small SemantiK-adapter-shaped HTML with the data-semantik-* enrichment.
 
-    Reuses the real adapter's render so the data-dart-block-role /
-    -confidence / -wcag attrs land on the SAME element as data-dart-block-id
+    Reuses the real adapter's render so the data-semantik-block-role /
+    -confidence / -wcag attrs land on the SAME element as data-semantik-block-id
     (the chunker's same-element pairing requirement).
     """
     from lib.semantik.adapter import _AdapterBlock, _AdapterChapter, _render_html
@@ -439,13 +439,15 @@ async def test_f_inline_chunk_stamps_six_fields(monkeypatch, tmp_path):
 async def test_f_inline_chunk_omits_fields_without_enrichment(
     monkeypatch, tmp_path
 ):
-    """Legacy / non-SemantiK HTML (no enrichment, no quality sidecar) stamps
-    NONE of the 6 fields (back-compat, byte-stable)."""
+    """Legacy-compat: legacy ``data-dart-*`` HTML (no enrichment, no quality
+    sidecar) exercises the back-compat fallback reader and stamps NONE of the 6
+    fields (byte-stable)."""
     from MCP.tools.pipeline_tools import _build_tool_registry
 
     staging = tmp_path / "staging"
     staging.mkdir()
-    # Plain DART HTML with block-id but no role/confidence/wcag, no sidecar.
+    # Legacy-compat input: legacy data-dart-* HTML (back-compat fallback
+    # reader) with block-id but no role/confidence/wcag, no sidecar.
     html = (
         "<!DOCTYPE html><html lang='en'><body>"
         "<a class='skip-link' href='#m'>skip</a>"
@@ -840,7 +842,7 @@ def test_gap_a_noop_when_no_figures_written(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# C3-1 keystone: the raw-PDF dart_conversion handler must offload the SYNC
+# C3-1 keystone: the raw-PDF semantik_conversion handler must offload the SYNC
 # SemantiK cascade to a worker thread so the sync-Playwright (axe-core WCAG
 # gate) path does NOT see a running asyncio loop. Sync Playwright raises
 # "It looks like you are using Playwright Sync API inside the asyncio loop"
@@ -892,7 +894,7 @@ def _loop_tripwire_seam(html_output_arg):
 
 @pytest.mark.asyncio
 async def test_c31_pdf_conversion_offloads_sync_cascade(monkeypatch, tmp_path):
-    """Raw-PDF dart_conversion does NOT raise the sync-Playwright loop error.
+    """Raw-PDF semantik_conversion does NOT raise the sync-Playwright loop error.
 
     Without the ``asyncio.to_thread`` offload this would crash, because the
     handler is an ``async def`` running on a live loop and the sync seam sees
@@ -919,7 +921,7 @@ async def test_c31_pdf_conversion_offloads_sync_cascade(monkeypatch, tmp_path):
     out = await handler(
         pdf_path=str(pdf),
         output_dir=str(out_dir),
-        phase="dart_conversion",
+        phase="semantik_conversion",
     )
     payload = json.loads(out)
     assert payload.get("success"), payload
@@ -986,7 +988,7 @@ async def test_c31_vendor_conversion_offloads_sync_seam(monkeypatch, tmp_path):
     out = await handler(
         pdf_path=str(src),
         output_dir=str(out_dir),
-        phase="dart_conversion",
+        phase="semantik_conversion",
     )
     payload = json.loads(out)
     assert payload.get("success"), payload

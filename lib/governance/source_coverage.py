@@ -3,7 +3,7 @@
 W3.H — per-stage source-coverage emit. The five sub-tasks (H1-H5)
 each emit a canonical block on a different phase output:
 
-* H1 — DART → CourseForge blocks: ``dart_chunks/manifest.json``
+* H1 — SemantiK → Courseforge blocks: ``semantik_chunks/manifest.json``
 * H2 — CourseForge blocks → rewritten HTML: two-pass
   ``02_validation_report/report.json``
 * H3 — CourseForge HTML → IMSCC: ``05_final_package/packaging_report.json``
@@ -33,7 +33,7 @@ Invariants:
   source artifacts that were COVERED (not dropped), bounded ``[0, 1]``.
   For a 1:1 filtering stage (``dropped == consumed - emitted``) this is
   identical to ``emitted / consumed``; at a FAN-OUT stage (one source
-  artifact → many downstream emits, e.g. H1 DART one page-level block →
+  artifact → many downstream emits, e.g. H1 SemantiK one page-level block →
   many chunks, or H4 one assessment → many items) ``emitted / consumed``
   would overshoot ``> 1`` and violate the schema ``maximum: 1``, so the
   covered-share form is the load-bearing bounded definition.
@@ -157,7 +157,7 @@ def build_source_coverage(
     # COVERED (produced ≥1 downstream emit), i.e. NOT dropped — bounded
     # [0, 1]. The naive emitted/consumed overshoots > 1 at a FAN-OUT
     # stage where one source artifact yields many downstream emits (H1
-    # DART: one page-level block → many chunks; H4: one assessment →
+    # SemantiK: one page-level block → many chunks; H4: one assessment →
     # many items) and then violates the schema ``maximum: 1``. Using
     # ``covered = consumed - dropped`` is the honest, schema-bounded
     # signal; for a 1:1 filtering stage (dropped == consumed - emitted)

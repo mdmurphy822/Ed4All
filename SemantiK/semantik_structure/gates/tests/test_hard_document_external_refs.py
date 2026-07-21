@@ -63,7 +63,7 @@ def test_self_contained_doc_passes():
     html = (
         "<main><h1>Title</h1><p>Body prose with inline math $x^2$.</p>"
         '<img src="doc-ch01_figures/fig-3.png" alt="A chart">'
-        '<span class="dart-figure-notation" role="img" '
+        '<span class="semantik-figure-notation" role="img" '
         'aria-label="Figure 1.6 (image not recoverable)">[figure]</span>'
         "</main>"
     )

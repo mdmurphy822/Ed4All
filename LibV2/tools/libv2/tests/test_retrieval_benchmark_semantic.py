@@ -45,19 +45,27 @@ _FIXTURE = (
 def _materialize_course(repo_root: Path, slug: str) -> Path:
     """Copy the mini_course fixture into ``repo_root/courses/<slug>/``.
 
-    Mirrors the WS1 fixture layout: ``dart_chunks/chunks.jsonl`` (the pinned
-    chunkset) + ``retrieval_eval/gold_set.json`` (the WS1 gold set).
+    LEGACY-COMPAT: this suite deliberately exercises the legacy
+    ``dart_chunks/chunks.jsonl`` read-fallback chunkset. Chunk bytes are sourced
+    from the current ``semantik_chunks/`` fixture but laid down under the legacy
+    ``dart_chunks/`` layout, and the copied gold set is re-pinned to
+    ``kind="dart"`` / ``dart_chunks/chunks.jsonl`` (sha unchanged — same bytes)
+    so the pin resolves against the legacy directory.
     """
     cdir = repo_root / "courses" / slug
     (cdir / "dart_chunks").mkdir(parents=True)
     (cdir / "retrieval_eval").mkdir(parents=True)
     shutil.copy(
-        _FIXTURE / "dart_chunks" / "chunks.jsonl",
+        _FIXTURE / "semantik_chunks" / "chunks.jsonl",
         cdir / "dart_chunks" / "chunks.jsonl",
     )
-    shutil.copy(
-        _FIXTURE / "retrieval_eval" / "gold_set.json",
-        cdir / "retrieval_eval" / "gold_set.json",
+    gold = json.loads(
+        (_FIXTURE / "retrieval_eval" / "gold_set.json").read_text()
+    )
+    gold["chunkset"]["kind"] = "dart"
+    gold["chunkset"]["chunks_path"] = "dart_chunks/chunks.jsonl"
+    (cdir / "retrieval_eval" / "gold_set.json").write_text(
+        json.dumps(gold, indent=2)
     )
     (cdir / "manifest.json").write_text(
         json.dumps({"classification": {"primary_domain": "rag"}})
@@ -67,7 +75,7 @@ def _materialize_course(repo_root: Path, slug: str) -> Path:
 
 @pytest.fixture(autouse=True)
 def _require_fixture():
-    if not (_FIXTURE / "dart_chunks" / "chunks.jsonl").exists():
+    if not (_FIXTURE / "semantik_chunks" / "chunks.jsonl").exists():
         pytest.skip("mini_course fixture not present")
 
 
@@ -152,6 +160,49 @@ class TestBenchmarkBm25:
         assert winner["delta_mrr"] == 0.0
 
 
+class TestBenchmarkEmbeddingClientReuse:
+    def test_builds_one_client_for_all_semantic_queries_and_engines(
+        self, tmp_path, monkeypatch
+    ):
+        slug = "mini-retrieval-101"
+        _materialize_course(tmp_path, slug)
+        shared_client = object()
+        build_calls = []
+        seen_clients = []
+
+        monkeypatch.setattr(
+            eval_harness, "_supports_engine_axis", lambda: (True, "")
+        )
+
+        import LibV2.tools.libv2.semantic_retriever as semantic_retriever
+        import LibV2.tools.libv2.vector_index as vector_index
+
+        monkeypatch.setattr(vector_index, "load_vector_index", lambda _path: object())
+
+        def _build_client(index):
+            build_calls.append(index)
+            return shared_client
+
+        monkeypatch.setattr(semantic_retriever, "_client_for_index", _build_client)
+
+        def _fake_retrieve_chunks(*_args, engine="lexical", **kwargs):
+            if engine != "lexical":
+                seen_clients.append(kwargs.get("embedding_client"))
+            return []
+
+        monkeypatch.setattr(eval_harness, "retrieve_chunks", _fake_retrieve_chunks)
+
+        benchmark_retrieval_engines(
+            tmp_path,
+            slug,
+            engines=("bm25", "semantic", "hybrid-rrf"),
+        )
+
+        assert len(build_calls) == 1
+        assert len(seen_clients) == 6
+        assert all(client is shared_client for client in seen_clients)
+
+
 class TestGoldPinMismatch:
     def test_drifted_chunkset_hard_errors(self, tmp_path):
         slug = "mini-retrieval-101"
@@ -172,8 +223,10 @@ class TestLegacyFallback:
         (cdir / "dart_chunks").mkdir(parents=True)
         (cdir / "retrieval").mkdir(parents=True)
         # Copy chunks but NO retrieval_eval/gold_set.json → legacy path.
+        # Legacy-compat: chunk bytes source from the current semantik_chunks/
+        # fixture, laid under the legacy dart_chunks/ read-fallback layout.
         shutil.copy(
-            _FIXTURE / "dart_chunks" / "chunks.jsonl",
+            _FIXTURE / "semantik_chunks" / "chunks.jsonl",
             cdir / "dart_chunks" / "chunks.jsonl",
         )
         (cdir / "manifest.json").write_text(json.dumps({}))

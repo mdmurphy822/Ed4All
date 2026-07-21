@@ -1,5 +1,5 @@
 """
 Ed4All MCP Server
 
-FastMCP server with orchestration, DART, Courseforge, and Trainforge tools.
+FastMCP server with orchestration, SemantiK, Courseforge, and Trainforge tools.
 """

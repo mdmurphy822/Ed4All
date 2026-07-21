@@ -76,7 +76,7 @@ def _flat_synthesized_objectives() -> dict:
                 "bloom_verb": "identify",
                 "cognitive_domain": "factual",
                 "week": 1,
-                "source_refs": ["dart:rdf_primer#s1"],
+                "source_refs": ["semantik:rdf_primer#s1"],
             },
             {
                 "id": "CO-02",
@@ -86,7 +86,7 @@ def _flat_synthesized_objectives() -> dict:
                 "bloom_verb": "describe",
                 "cognitive_domain": "conceptual",
                 "week": 2,
-                "source_refs": ["dart:rdf_primer#s2"],
+                "source_refs": ["semantik:rdf_primer#s2"],
             },
             {
                 "id": "CO-03",
@@ -151,7 +151,7 @@ def test_build_objectives_json_from_flat_chapter_list(tmp_path):
 
     # source_refs propagate when present.
     co1 = next(co for co in doc["component_objectives"] if co["id"] == "co-01")
-    assert co1["source_refs"] == ["dart:rdf_primer#s1"]
+    assert co1["source_refs"] == ["semantik:rdf_primer#s1"]
     assert co1["week"] == 1
 
 

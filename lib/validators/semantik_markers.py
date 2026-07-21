@@ -1,36 +1,31 @@
 """
-DART Markers Validator
+SemantiK Markers Validator
 
-Validates that DART-processed HTML contains required accessibility markers.
-DART-produced HTML must include:
+Validates that SemantiK-converted HTML carries the required accessibility
+markers. SemantiK-produced HTML must include:
   - Skip link (<a class="skip-link">)
   - Main content landmark (<main role="main">)
   - ARIA-labelled sections (<section aria-labelledby="...">)
-  - DART semantic classes (dart-section / dart-document)
+  - SemantiK semantic classes (semantik-section / semantik-document)
 
 Wraps the marker-detection logic from
-MCP.tools.pipeline_tools.validate_dart_markers (the MCP tool) into the
+MCP.tools.pipeline_tools.validate_semantik_markers (the MCP tool) into the
 ValidationGateManager Validator protocol so it can be wired as a
 validation gate in config/workflows.yaml.
 
-Wave 8 addition: source-provenance markers
-  - data-dart-source attribute on every <section>
-  - data-dart-block-id attribute on every <section>
+Source-provenance markers audited per <section>:
+  - data-semantik-source attribute on every <section>
+  - data-semantik-block-id attribute on every <section>
 
-These are emitted by `DART/multi_source_interpreter.py::generate_html_from_synthesized`
-(multi-source path) and stamped with `data-dart-source="claude_llm"` on the
-legacy claude_processor path.
-
-Wave 9 promotion: attributes that ARE emitted but are malformed / missing
-on a <section> that otherwise carries the DART semantic contract are now
-reported at CRITICAL severity. The graceful-fallback rule is preserved:
-when a document carries NO <section> elements with the DART semantic
-class (pre-Wave-8 legacy HTML), we do not fail — only pages that claim
-to be DART-produced and then omit provenance are blocked. This matches
-the design doc's "promote after Wave 8 emit has settled" note.
+An attribute that is present but empty is reported at CRITICAL severity
+(the "emitted-but-malformed" failure mode). Fully-absent attributes remain
+at warning severity: a document that carries NO <section> elements with the
+SemantiK semantic class is treated as graceful fallback and does not fail —
+only pages that claim the SemantiK semantic contract and then omit
+provenance are blocked.
 
 Referenced by: config/workflows.yaml
-  - textbook_to_course.semantik_conversion -> dart_markers
+  - textbook_to_course.semantik_conversion -> semantik_markers
 """
 
 import logging
@@ -43,8 +38,6 @@ from MCP.hardening.validation_gates import GateIssue, GateResult
 logger = logging.getLogger(__name__)
 
 
-# H3 W6a: orchestration-phase decision-capture (Pattern A — one emit
-# per validate() call).
 def _emit_decision(
     capture: Any,
     *,
@@ -60,7 +53,7 @@ def _emit_decision(
     empty_source_count: int,
     empty_block_id_count: int,
 ) -> None:
-    """Emit one ``dart_markers_check`` decision per validate() call."""
+    """Emit one ``semantik_markers_check`` decision per validate() call."""
     if capture is None:
         return
     decision = "passed" if passed else f"failed:{code or 'unknown'}"
@@ -68,7 +61,7 @@ def _emit_decision(
         f"{marker_density:.3f}" if marker_density is not None else "n/a"
     )
     rationale = (
-        f"DART markers orchestration check: "
+        f"SemantiK markers orchestration check: "
         f"pages_audited={pages_audited}, "
         f"markers_found={markers_found}, "
         f"markers_missing={markers_missing}, "
@@ -82,61 +75,66 @@ def _emit_decision(
     )
     try:
         capture.log_decision(
-            decision_type="dart_markers_check",
+            decision_type="semantik_markers_check",
             decision=decision,
             rationale=rationale,
         )
     except Exception as exc:  # noqa: BLE001
         logger.debug(
-            "DecisionCapture.log_decision raised on dart_markers_check: %s",
+            "DecisionCapture.log_decision raised on semantik_markers_check: %s",
             exc,
         )
 
 # Marker name -> tuple of literal substrings, any of which satisfies the marker.
-# Kept in sync with MCP/tools/pipeline_tools.py:validate_dart_markers.
+# Kept in sync with MCP/tools/pipeline_tools.py:validate_semantik_markers.
+# The semantic-class marker accepts both the ``semantik-*`` spelling (current
+# emit) and the legacy ``dart-*`` spelling (pre-SemantiK corpora) — any match
+# satisfies the marker.
 _REQUIRED_MARKERS: Dict[str, Tuple[str, ...]] = {
     "skip_link": ('class="skip', "class='skip"),
     "main_role": ('role="main"', "role='main'"),
     "aria_sections": ('aria-labelledby="', "aria-labelledby='"),
-    "semantik_structure_classes": ("dart-section", "dart-document"),
+    "semantik_structure_classes": (
+        "semantik-section", "semantik-document",
+        "dart-section", "dart-document",
+    ),
 }
 
-# Regex for finding top-level <section> open tags. Used for Wave 8
-# warning-level provenance checks. Intentionally permissive (matches any
-# attributes) — the presence of the section tag is what we count.
+# Regex for finding top-level <section> open tags. Used for the section-level
+# provenance checks. Intentionally permissive (matches any attributes) — the
+# presence of the section tag is what we count.
 _SECTION_OPEN_RE = re.compile(r"<section\b[^>]*>", re.IGNORECASE)
 
 # Attribute presence checks run against each section's attribute string.
-# DART->semantik purge Stage 1 (dual-READ): accept both ``data-dart-*`` and
-# ``data-semantik-*`` spellings. Emitters still stamp ``data-dart-*`` this stage.
-_DATA_DART_SOURCE_RE = re.compile(
+# Dual-READ: accept both ``data-semantik-*`` (current emit) and the legacy
+# ``data-dart-*`` spelling (pre-SemantiK corpora).
+_DATA_SEMANTIK_SOURCE_RE = re.compile(
     r'\bdata-(?:dart|semantik)-source\s*=', re.IGNORECASE,
 )
-_DATA_DART_BLOCK_ID_RE = re.compile(
+_DATA_SEMANTIK_BLOCK_ID_RE = re.compile(
     r'\bdata-(?:dart|semantik)-block-id\s*=', re.IGNORECASE,
 )
 
-# Wave 9: critical-severity checks for malformed attributes. An attribute
-# that is *present but empty* is a bug in the emit path and must block —
-# this is the "emitted-but-malformed" failure mode. Fully-absent attrs
-# remain at warning severity per the graceful-fallback rule documented
-# at the top of this module.
-_EMPTY_DATA_DART_SOURCE_RE = re.compile(
+# Critical-severity checks for malformed attributes. An attribute that is
+# *present but empty* is a bug in the emit path and must block — this is the
+# "emitted-but-malformed" failure mode. Fully-absent attrs remain at warning
+# severity per the graceful-fallback rule documented at the top of this module.
+_EMPTY_DATA_SEMANTIK_SOURCE_RE = re.compile(
     r'\bdata-(?:dart|semantik)-source\s*=\s*(["\'])\1', re.IGNORECASE,
 )
-_EMPTY_DATA_DART_BLOCK_ID_RE = re.compile(
+_EMPTY_DATA_SEMANTIK_BLOCK_ID_RE = re.compile(
     r'\bdata-(?:dart|semantik)-block-id\s*=\s*(["\'])\1', re.IGNORECASE,
 )
 
 
-class DartMarkersValidator:
-    """Validates DART HTML output for required accessibility markers."""
+class SemantiKMarkersValidator:
+    """Validates SemantiK HTML output for required accessibility markers."""
 
-    name = "dart_markers"
+    name = "semantik_markers"
     version = "1.0.0"
 
     def validate(self, inputs: Dict[str, Any]) -> GateResult:
-        """Validate DART markers in HTML content.
+        """Validate SemantiK markers in HTML content.
 
         Expected inputs (any one of):
             html_path: Path to HTML file to validate
@@ -146,7 +144,7 @@ class DartMarkersValidator:
         Returns:
             GateResult with one critical issue per missing marker.
         """
-        gate_id = inputs.get("gate_id", "dart_markers")
+        gate_id = inputs.get("gate_id", "semantik_markers")
         capture = inputs.get("decision_capture")
         if capture is None:
             capture = inputs.get("capture")
@@ -177,7 +175,7 @@ class DartMarkersValidator:
                     issues=[GateIssue(
                         severity="critical",
                         code="FILE_NOT_FOUND",
-                        message=f"DART HTML file not found: {path}",
+                        message=f"SemantiK HTML file not found: {path}",
                         location=str(path),
                     )],
                 )
@@ -206,7 +204,7 @@ class DartMarkersValidator:
                     issues=[GateIssue(
                         severity="critical",
                         code="FILE_READ_ERROR",
-                        message=f"Failed to read DART HTML file: {e}",
+                        message=f"Failed to read SemantiK HTML file: {e}",
                         location=str(path),
                     )],
                 )
@@ -234,7 +232,7 @@ class DartMarkersValidator:
                 issues=[GateIssue(
                     severity="critical",
                     code="EMPTY_CONTENT",
-                    message="DART HTML content is empty (no html_path or html_content supplied).",
+                    message="SemantiK HTML content is empty (no html_path or html_content supplied).",
                 )],
             )
 
@@ -244,19 +242,19 @@ class DartMarkersValidator:
                 issues.append(GateIssue(
                     severity="critical",
                     code=f"MISSING_{marker_name.upper()}",
-                    message=f"Required DART marker missing: {marker_name}",
-                    suggestion=f"Ensure DART output emits one of: {needles}",
+                    message=f"Required SemantiK marker missing: {marker_name}",
+                    suggestion=f"Ensure SemantiK output emits one of: {needles}",
                 ))
 
-        # Wave 8 + Wave 9: source-provenance marker checks.
+        # Source-provenance marker checks.
         #
         # Rules:
         #   - Absent attributes on every <section>           -> warning
-        #     (graceful fallback for pre-Wave-8 legacy HTML).
+        #     (graceful fallback for legacy HTML).
         #   - Some <section>s carry attrs, others don't      -> warning
         #     (emit has settled but coverage is incomplete).
         #   - An attr is PRESENT but the value is EMPTY      -> critical
-        #     (Wave 9 "emitted-but-malformed" blocker).
+        #     ("emitted-but-malformed" blocker).
         section_tags = _SECTION_OPEN_RE.findall(content)
         total_sections = len(section_tags)
         sections_without_source = 0
@@ -264,65 +262,65 @@ class DartMarkersValidator:
         empty_source_count = 0
         empty_block_id_count = 0
         for tag in section_tags:
-            if not _DATA_DART_SOURCE_RE.search(tag):
+            if not _DATA_SEMANTIK_SOURCE_RE.search(tag):
                 sections_without_source += 1
-            elif _EMPTY_DATA_DART_SOURCE_RE.search(tag):
+            elif _EMPTY_DATA_SEMANTIK_SOURCE_RE.search(tag):
                 empty_source_count += 1
-            if not _DATA_DART_BLOCK_ID_RE.search(tag):
+            if not _DATA_SEMANTIK_BLOCK_ID_RE.search(tag):
                 sections_without_block_id += 1
-            elif _EMPTY_DATA_DART_BLOCK_ID_RE.search(tag):
+            elif _EMPTY_DATA_SEMANTIK_BLOCK_ID_RE.search(tag):
                 empty_block_id_count += 1
 
         if total_sections > 0 and sections_without_source > 0:
             issues.append(GateIssue(
                 severity="warning",
-                code="MISSING_DATA_DART_SOURCE",
+                code="MISSING_DATA_SEMANTIK_SOURCE",
                 message=(
                     f"{sections_without_source}/{total_sections} <section> elements "
-                    "missing data-dart-source attribute"
+                    "missing data-semantik-source attribute"
                 ),
                 suggestion=(
-                    "Ensure DART emits data-dart-source on every <section>. "
-                    "Multi-source path: data-dart-source=\"pdfplumber\" etc. "
-                    "Legacy claude_processor path: data-dart-source=\"claude_llm\"."
+                    "Ensure SemantiK emits data-semantik-source on every <section>. "
+                    "Multi-source path: data-semantik-source=\"pdfplumber\" etc. "
+                    "Synthesized path: data-semantik-source=\"synthesized\"."
                 ),
             ))
 
         if total_sections > 0 and sections_without_block_id > 0:
             issues.append(GateIssue(
                 severity="warning",
-                code="MISSING_DATA_DART_BLOCK_ID",
+                code="MISSING_DATA_SEMANTIK_BLOCK_ID",
                 message=(
                     f"{sections_without_block_id}/{total_sections} <section> elements "
-                    "missing data-dart-block-id attribute"
+                    "missing data-semantik-block-id attribute"
                 ),
                 suggestion=(
-                    "Ensure DART emits data-dart-block-id on every <section>. "
+                    "Ensure SemantiK emits data-semantik-block-id on every <section>. "
                     "Multi-source path uses \"s{index}\" or content-hash IDs."
                 ),
             ))
 
-        # Wave 9 critical-severity checks: attributes emitted-but-malformed.
+        # Critical-severity checks: attributes emitted-but-malformed.
         if empty_source_count > 0:
             issues.append(GateIssue(
                 severity="critical",
-                code="EMPTY_DATA_DART_SOURCE",
+                code="EMPTY_DATA_SEMANTIK_SOURCE",
                 message=(
                     f"{empty_source_count}/{total_sections} <section> elements carry "
-                    "data-dart-source but the value is empty"
+                    "data-semantik-source but the value is empty"
                 ),
                 suggestion=(
                     "Emit one of the typed extractor enum values: pdftotext, "
-                    "pdfplumber, ocr, synthesized, vendor, claude_llm."
+                    "pdfplumber, ocr, synthesized, vendor."
                 ),
             ))
         if empty_block_id_count > 0:
             issues.append(GateIssue(
                 severity="critical",
-                code="EMPTY_DATA_DART_BLOCK_ID",
+                code="EMPTY_DATA_SEMANTIK_BLOCK_ID",
                 message=(
                     f"{empty_block_id_count}/{total_sections} <section> elements carry "
-                    "data-dart-block-id but the value is empty"
+                    "data-semantik-block-id but the value is empty"
                 ),
                 suggestion=(
                     "Populate with the synthesized-JSON block_id "

@@ -44,7 +44,7 @@ def _block(
     block_id: str = "page_01#concept_intro_0",
     block_type: str = "concept",
     content: str = "<p>placeholder.</p>",
-    source_ids: Tuple[str, ...] = ("dart:slug#blk_0",),
+    source_ids: Tuple[str, ...] = ("semantik:slug#blk_0",),
 ) -> Block:
     return Block(
         block_id=block_id,
@@ -86,7 +86,7 @@ def test_blocks_memoized_and_matches_hydration(tmp_path: Path) -> None:
             "page_id": "page_01",
             "sequence": 0,
             "content": "<p>Alpha body.</p>",
-            "source_ids": ["dart:slug#blk_0"],
+            "source_ids": ["semantik:slug#blk_0"],
         },
         {
             "block_id": "page_01#example_b_1",
@@ -94,7 +94,7 @@ def test_blocks_memoized_and_matches_hydration(tmp_path: Path) -> None:
             "page_id": "page_01",
             "sequence": 1,
             "content": "<p>Beta body.</p>",
-            "source_ids": ["dart:slug#blk_1"],
+            "source_ids": ["semantik:slug#blk_1"],
         },
     ]
     p.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
@@ -119,7 +119,7 @@ def test_source_chunks_returns_copy(tmp_path: Path) -> None:
             {
                 "id": "c_0",
                 "text": "Body zero.",
-                "source": {"source_references": [{"sourceId": "dart:slug#blk_0"}]},
+                "source": {"source_references": [{"sourceId": "semantik:slug#blk_0"}]},
             }
         )
         + "\n",
@@ -128,7 +128,7 @@ def test_source_chunks_returns_copy(tmp_path: Path) -> None:
     po = {"chunking": {"semantik_chunks_path": str(chunks)}}
     cache = BlockFeatureCache(po, {})
     a = cache.source_chunks()
-    assert a.get("dart:slug#blk_0") == "Body zero."
+    assert a.get("semantik:slug#blk_0") == "Body zero."
     assert a.get("c_0") == "Body zero."
     # Mutating the returned dict must not corrupt the memo.
     a["injected"] = "x"
@@ -200,11 +200,11 @@ def test_resolved_passages_matches_direct() -> None:
     from lib.validators.block_prose_entailment import _resolve_block_cited_passages
 
     cache = BlockFeatureCache({}, {})
-    blk = _block(source_ids=("dart:slug#blk_0",))
-    source_chunks = {"dart:slug#blk_0": "The cited chunk body."}
+    blk = _block(source_ids=("semantik:slug#blk_0",))
+    source_chunks = {"semantik:slug#blk_0": "The cited chunk body."}
     got = cache.resolved_passages(blk, source_chunks)
     assert got == _resolve_block_cited_passages(blk, source_chunks)
-    assert got == [{"chunk_id": "dart:slug#blk_0", "text": "The cited chunk body."}]
+    assert got == [{"chunk_id": "semantik:slug#blk_0", "text": "The cited chunk body."}]
 
 
 # --------------------------------------------------------------------- #
@@ -326,8 +326,8 @@ def _write_corpus(tmp_path: Path) -> Tuple[Dict[str, Any], Dict[str, Any]]:
                     "page_id": "page_01",
                     "sequence": 0,
                     "content": "<p>Alpha grounded body.</p>",
-                    "source_ids": ["dart:slug#blk_0"],
-                    "source_references": [{"sourceId": "dart:slug#blk_0"}],
+                    "source_ids": ["semantik:slug#blk_0"],
+                    "source_references": [{"sourceId": "semantik:slug#blk_0"}],
                 },
             ]
         ),
@@ -339,7 +339,7 @@ def _write_corpus(tmp_path: Path) -> Tuple[Dict[str, Any], Dict[str, Any]]:
             {
                 "id": "c_0",
                 "text": "Alpha chunk premise body.",
-                "source": {"source_references": [{"sourceId": "dart:slug#blk_0"}]},
+                "source": {"source_references": [{"sourceId": "semantik:slug#blk_0"}]},
             }
         )
         + "\n",

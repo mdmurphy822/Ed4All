@@ -4,8 +4,8 @@ Covers the four Option-B repairs landed in
 ``MCP/tools/pipeline_tools.py``:
 
 1. ``_canonical_source_ids_for_chunks`` resolves REAL resolvable
-   ``dart:{module_id}#{hash}`` sourceIds from a ``chunk_id -> [sourceId]``
-   map (instead of minting a synthetic ``dart:{course-slug}#{chunk_id}``),
+   ``semantik:{module_id}#{hash}`` sourceIds from a ``chunk_id -> [sourceId]``
+   map (instead of minting a synthetic ``semantik:{course-slug}#{chunk_id}``),
    and fails closed (mints nothing) when a chunk is absent / has no text /
    resolves to zero sourceIds / no map is supplied.
 2. ``_build_chunk_source_id_map`` harvests the real sourceIds from a
@@ -37,13 +37,13 @@ from MCP.tools import pipeline_tools as _pt  # noqa: E402
 
 
 def test_canonical_source_ids_emits_real_source_ids_from_map():
-    """A grounded chunk resolves to its REAL dart: sourceIds via the map."""
+    """A grounded chunk resolves to its REAL semantik: sourceIds via the map."""
     chunks = [{"id": "chunk_00001", "text": "Real grounded prose."}]
-    cmap = {"chunk_00001": ["dart:module-1#abc123", "dart:module-1#def456"]}
+    cmap = {"chunk_00001": ["semantik:module-1#abc123", "semantik:module-1#def456"]}
     out = _pt._canonical_source_ids_for_chunks(
         chunks, "course-slug", chunk_source_id_map=cmap,
     )
-    assert out == ["dart:module-1#abc123", "dart:module-1#def456"]
+    assert out == ["semantik:module-1#abc123", "semantik:module-1#def456"]
 
 
 def test_canonical_source_ids_dedups_in_discovery_order():
@@ -52,11 +52,11 @@ def test_canonical_source_ids_dedups_in_discovery_order():
         {"id": "c2", "text": "y"},
     ]
     cmap = {
-        "c1": ["dart:m#a", "dart:m#b"],
-        "c2": ["dart:m#b", "dart:m#c"],  # b duplicate
+        "c1": ["semantik:m#a", "semantik:m#b"],
+        "c2": ["semantik:m#b", "semantik:m#c"],  # b duplicate
     }
     out = _pt._canonical_source_ids_for_chunks(chunks, "s", chunk_source_id_map=cmap)
-    assert out == ["dart:m#a", "dart:m#b", "dart:m#c"]
+    assert out == ["semantik:m#a", "semantik:m#b", "semantik:m#c"]
 
 
 def test_canonical_source_ids_mints_nothing_without_map():
@@ -70,7 +70,7 @@ def test_canonical_source_ids_mints_nothing_without_map():
 
 def test_canonical_source_ids_mints_nothing_when_chunk_absent():
     chunks = [{"id": "missing_chunk", "text": "prose"}]
-    cmap = {"other_chunk": ["dart:m#a"]}
+    cmap = {"other_chunk": ["semantik:m#a"]}
     assert _pt._canonical_source_ids_for_chunks(
         chunks, "s", chunk_source_id_map=cmap,
     ) == []
@@ -79,7 +79,7 @@ def test_canonical_source_ids_mints_nothing_when_chunk_absent():
 def test_canonical_source_ids_mints_nothing_without_text():
     """A topic-paragraph fallback entry (no text) is not grounded provenance."""
     chunks = [{"id": "chunk_00001"}]  # no text key
-    cmap = {"chunk_00001": ["dart:m#a"]}
+    cmap = {"chunk_00001": ["semantik:m#a"]}
     assert _pt._canonical_source_ids_for_chunks(
         chunks, "s", chunk_source_id_map=cmap,
     ) == []
@@ -95,11 +95,11 @@ def test_canonical_source_ids_mints_nothing_when_map_value_empty():
 
 def test_canonical_source_ids_rejects_malformed_source_id():
     chunks = [{"id": "c1", "text": "prose"}]
-    cmap = {"c1": ["NOT-A-DART-ID", "dart:m#good"]}
+    cmap = {"c1": ["NOT-A-SOURCE-ID", "semantik:m#good"]}
     out = _pt._canonical_source_ids_for_chunks(
         chunks, "s", chunk_source_id_map=cmap,
     )
-    assert out == ["dart:m#good"]
+    assert out == ["semantik:m#good"]
 
 
 # --------------------------------------------------------------------- #
@@ -117,8 +117,8 @@ def test_build_chunk_source_id_map_harvests_real_ids(tmp_path):
             "text": "prose",
             "source": {
                 "source_references": [
-                    {"sourceId": "dart:module-1#aaa"},
-                    {"sourceId": "dart:module-1#bbb"},
+                    {"sourceId": "semantik:module-1#aaa"},
+                    {"sourceId": "semantik:module-1#bbb"},
                     {"sourceId": "not-canonical"},  # dropped
                 ]
             },
@@ -132,7 +132,7 @@ def test_build_chunk_source_id_map_harvests_real_ids(tmp_path):
         "\n".join(json.dumps(x) for x in lines) + "\n", encoding="utf-8"
     )
     cmap = _pt._build_chunk_source_id_map(chunks_path)
-    assert cmap == {"chunk_00001": ["dart:module-1#aaa", "dart:module-1#bbb"]}
+    assert cmap == {"chunk_00001": ["semantik:module-1#aaa", "semantik:module-1#bbb"]}
 
 
 def test_build_chunk_source_id_map_missing_file():
@@ -220,9 +220,9 @@ def test_repair_idempotent_on_valid_html():
 
 
 def test_repair_preserves_valid_tags_and_attrs():
-    good = '<section data-cf-source-ids="dart:m#a" class="c"><p>Text.</p></section>'
+    good = '<section data-cf-source-ids="semantik:m#a" class="c"><p>Text.</p></section>'
     fixed = _pt._repair_rewrite_html(good)
-    assert 'data-cf-source-ids="dart:m#a"' in fixed
+    assert 'data-cf-source-ids="semantik:m#a"' in fixed
     assert "<p>Text.</p>" in fixed
 
 
@@ -320,10 +320,12 @@ def test_cb2_keeps_bracketed_words():
     assert _pt._repair_rewrite_html(fixed) == fixed
 
 
-def test_cb2_strips_dart_shaped_source_id_token():
-    """A leaked canonical DART id ``[dart:photosynthesis#sec_01]`` (colon + '#',
-    no ``_<digits>`` suffix) is stripped from learner prose; prose intact;
-    second run is a no-op. Regression for the iter-4 non-math-corpus leak."""
+def test_cb2_strips_legacy_dart_shaped_source_id_token():
+    """LEGACY DUAL-READ COMPAT: a leaked legacy-prefixed source id
+    ``[dart:photosynthesis#sec_01]`` (colon + '#', no ``_<digits>`` suffix) is
+    stripped from learner prose; prose intact; second run is a no-op. The
+    bracketed-token strip regex only matches the legacy ``dart:`` prefix, so
+    this fixture deliberately keeps it to pin that legacy read path."""
     bad = (
         "<p>plants make their own food by photosynthesis. "
         "[dart:photosynthesis#sec_01]</p>"
@@ -335,9 +337,10 @@ def test_cb2_strips_dart_shaped_source_id_token():
     assert _pt._repair_rewrite_html(fixed) == fixed
 
 
-def test_cb2_dart_strip_does_not_touch_source_id_attribute():
-    """The bare dart id inside a ``data-cf-source-ids`` attribute value is
-    NEVER stripped (bracketed form only)."""
+def test_cb2_legacy_dart_strip_does_not_touch_source_id_attribute():
+    """LEGACY DUAL-READ COMPAT: the bare legacy-prefixed id inside a
+    ``data-cf-source-ids`` attribute value is NEVER stripped (bracketed form
+    only)."""
     good = (
         '<section data-cf-source-ids="dart:photosynthesis#sec_01">'
         "<p>Clean prose.</p></section>"
@@ -611,7 +614,7 @@ def test_cbscript_clean_block_byte_identical():
     """A clean block carrying NO stray script is byte-identical out (no
     over-stripping); idempotent."""
     good = (
-        '<section data-cf-source-ids="dart:m#a">'
+        '<section data-cf-source-ids="semantik:m#a">'
         "<p>Clean prose about fractions with <span>emphasis</span>.</p>"
         "</section>"
     )
@@ -715,7 +718,7 @@ def _seed_sidecars(project_path: Path, chunks_lookup, objectives):
 
 
 def _seed_libv2_chunks(libv2_root: Path, slug: str, chunks):
-    chunks_dir = libv2_root / "courses" / slug / "dart_chunks"
+    chunks_dir = libv2_root / "courses" / slug / "semantik_chunks"
     chunks_dir.mkdir(parents=True, exist_ok=True)
     path = chunks_dir / "chunks.jsonl"
     path.write_text(
@@ -782,7 +785,7 @@ def test_backstop_populates_source_ids_and_source_references(
     libv2_chunks = [{
         "id": "chunk_00001",
         "text": "Grounded prose.",
-        "source": {"source_references": [{"sourceId": "dart:module-1#hashabc"}]},
+        "source": {"source_references": [{"sourceId": "semantik:module-1#hashabc"}]},
     }]
     rewrite_html = '<section data-cf-objective-id="TO-01"><p>Body.</p></section>'
 
@@ -792,12 +795,12 @@ def test_backstop_populates_source_ids_and_source_references(
     )
     assert len(entries) == 1
     e = entries[0]
-    assert e["source_ids"] == ["dart:module-1#hashabc"]
+    assert e["source_ids"] == ["semantik:module-1#hashabc"]
     assert e["source_references"] == [
-        {"sourceId": "dart:module-1#hashabc", "role": "primary",
+        {"sourceId": "semantik:module-1#hashabc", "role": "primary",
          "extractor": "synthesized"}
     ]
-    assert 'data-cf-source-ids="dart:module-1#hashabc"' in e["content"]
+    assert 'data-cf-source-ids="semantik:module-1#hashabc"' in e["content"]
 
 
 def test_backstop_strips_unknown_objective_id(tmp_path, monkeypatch):
@@ -815,7 +818,7 @@ def test_backstop_strips_unknown_objective_id(tmp_path, monkeypatch):
     objectives = [{"id": "TO-01", "statement": "Real canonical objective text."}]
     libv2_chunks = [{
         "id": "c1", "text": "Grounded prose.",
-        "source": {"source_references": [{"sourceId": "dart:m#h1"}]},
+        "source": {"source_references": [{"sourceId": "semantik:m#h1"}]},
     }]
     rewrite_html = (
         '<section data-cf-objective-id="TO-27"><p>Hallucinated objective.</p>'
@@ -845,7 +848,7 @@ def test_backstop_repairs_malformed_html(tmp_path, monkeypatch):
     objectives = [{"id": "TO-01", "statement": "Real canonical objective text."}]
     libv2_chunks = [{
         "id": "c1", "text": "Grounded prose.",
-        "source": {"source_references": [{"sourceId": "dart:m#h1"}]},
+        "source": {"source_references": [{"sourceId": "semantik:m#h1"}]},
     }]
     rewrite_html = (
         '<section data-cf-objective-id="TO-01"><p>A <span>fraction is one '

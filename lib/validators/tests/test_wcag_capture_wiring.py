@@ -1,8 +1,7 @@
 """H3 Wave W6b — WCAGValidator decision-capture wiring.
 
 Per `plans/h3-validator-capture-wiring-2026-05.md` §3 W6b the
-`WCAGValidator` (relocated to `lib/validators/wcag.py` during the
-SemantiK migration that retired DART) MUST emit one
+`WCAGValidator` (`lib/validators/wcag.py`) MUST emit one
 `wcag_compliance_check` decision per gate-shape `validate()` call.
 """
 

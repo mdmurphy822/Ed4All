@@ -30,7 +30,7 @@ restores it in ``finally`` — single-threaded CLI use only; never import-and-ca
 Example
 -------
     .venv/bin/python scripts/ocr_recall_ab.py \
-        --side-a extract_200.json --side-b dart_in-300/ch02.pdf \
+        --side-a extract_200.json --side-b scan_in-300/ch02.pdf \
         --gold gold_chunks.jsonl --chapter 2 \
         --tess-config-b "--oem 1 -c preserve_interword_spaces=1" \
         --user-words-b SemantiK/data/config/algebra_user_words.txt \

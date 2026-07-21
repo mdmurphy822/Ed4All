@@ -87,8 +87,9 @@ def _load_chunks_by_id(course_dir: Path) -> Dict[str, dict]:
     ``resolve_chunks_path_for_query``), so a corpus-legacy / union index's
     ids hydrate against the corpus file rather than a precedence-resolved
     ``imscc_chunks/`` subset that would silently DROP the index's extra ids.
-    Falls back to directory precedence (imscc_chunks/ -> dart_chunks/ ->
-    legacy corpus/) when there is no index manifest. Accepts both ``id``
+    Falls back to directory precedence (imscc_chunks/ -> semantik_chunks/ ->
+    legacy dart_chunks/ -> legacy corpus/) when there is no index manifest.
+    Accepts both ``id``
     (canonical) and ``chunk_id`` (legacy / fixture) as the key — matching
     ``vector_index._chunk_id``.
     """

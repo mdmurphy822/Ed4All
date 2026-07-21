@@ -1,7 +1,7 @@
 """Tests for the vendor-ingest path (publisher-supplied accessible HTML).
 
 Exercises ``lib.semantik.vendor_ingest`` against a small synthetic vendor
-HTML document and the REAL Ed4All contract validators (``DartMarkersValidator``,
+HTML document and the REAL Ed4All contract validators (``SemantiKMarkersValidator``,
 ``source_refs``, ``SemanticStructureExtractor``). Mirrors the SemantiK adapter
 test assertions (the vendor path REUSES the adapter), with the added
 ``data-semantik-source="vendor"`` provenance-discriminator checks.
@@ -75,7 +75,7 @@ def test_vendor_source_discriminator(vendor_out):
     """Every <section> carries data-semantik-source="vendor" (authoritative),
     NOT the SemantiK "synthesized" default."""
     html = vendor_out["html"]
-    assert vendor_out["data_dart_source"] == "vendor"
+    assert vendor_out["data_semantik_source"] == "vendor"
     assert 'data-semantik-source="vendor"' in html
     assert 'data-semantik-source="synthesized"' not in html
     assert 'data-semantik-source=""' not in html
@@ -94,19 +94,19 @@ def test_vendor_source_discriminator(vendor_out):
     ] == ["vendor"]
 
 
-def test_vendor_dart_markers_pass(vendor_out):
-    """The four critical DART markers are present; gate passes with no
+def test_vendor_semantik_markers_pass(vendor_out):
+    """The four critical SemantiK markers are present; gate passes with no
     critical issues."""
-    from lib.validators.dart_markers import DartMarkersValidator
+    from lib.validators.semantik_markers import SemantiKMarkersValidator
 
-    res = DartMarkersValidator().validate({"html_content": vendor_out["html"]})
+    res = SemantiKMarkersValidator().validate({"html_content": vendor_out["html"]})
     critical = [i for i in res.issues if i.severity == "critical"]
-    assert res.passed, f"dart_markers failed: {[i.code for i in critical]}"
+    assert res.passed, f"semantik_markers failed: {[i.code for i in critical]}"
     assert not critical
 
 
 def test_vendor_source_ids_resolve(vendor_out):
-    """Every emitted data-semantik-block-id forms a valid dart: sourceId AND
+    """Every emitted data-semantik-block-id forms a valid semantik: sourceId AND
     resolves against the sidecar id universe (source_refs gate parity)."""
     from lib.validators.source_refs import SOURCE_ID_RE
 
@@ -199,6 +199,6 @@ def test_adapter_default_still_synthesized():
         ]
 
     out = normalize_cascade_to_ed4all(_R(), pdf_stem="t")
-    assert out["data_dart_source"] == "synthesized"
+    assert out["data_semantik_source"] == "synthesized"
     assert 'data-semantik-source="synthesized"' in out["html"]
     assert 'data-semantik-source="vendor"' not in out["html"]

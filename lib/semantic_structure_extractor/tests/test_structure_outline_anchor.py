@@ -67,7 +67,7 @@ _ANCHOR_HTML = """
   <article role="doc-chapter" id="chap-1">
     <section data-dart-block-id="chapter-outline"><h3>Chapter Outline</h3></section>
     <section aria-labelledby="o11"><h3>1.1 Whole Numbers</h3></section>
-    <section data-dart-demoted-role="list"><p>1.2 Use the Language of Algebra 1.3 Add and Subtract Integers</p></section>
+    <section data-semantik-demoted-role="list"><p>1.2 Use the Language of Algebra 1.3 Add and Subtract Integers</p></section>
     <section aria-labelledby="o14"><h3>1.4 Multiply and Divide</h3></section>
   </article>
   <article role="doc-chapter" id="chap-2">
@@ -286,10 +286,10 @@ _UNDECLARED_HTML = """
 <html lang="en"><body><main>
   <article role="doc-chapter" id="chap-1">
     <header><h2>Foundations</h2></header>
-    <section class="dart-section"><h3>Intro Topic</h3><p>Prose.</p></section>
+    <section class="semantik-section"><h3>Intro Topic</h3><p>Prose.</p></section>
   </article>
   <article role="doc-chapter" id="chap-2">
-    <section class="dart-section"><p>Continuation body block.</p></section>
+    <section class="semantik-section"><p>Continuation body block.</p></section>
   </article>
 </main></body></html>
 """
@@ -372,7 +372,7 @@ _CH07_SHAPE_HTML = """
 <html lang="en"><body><main><h1>Factoring</h1>
   <article role="doc-chapter" id="outline">
     <section data-dart-block-id="chapter-outline"><h3>Chapter Outline</h3></section>
-    <section data-dart-demoted-role="caption"><p>Figure 7.1 A tiling diagram illustrating factoring by area.</p></section>
+    <section data-semantik-demoted-role="caption"><p>Figure 7.1 A tiling diagram illustrating factoring by area.</p></section>
     <section aria-labelledby="empty"><h3></h3></section>
   </article>
   <article role="doc-chapter" id="body">
@@ -413,7 +413,7 @@ _CH04_SHAPE_HTML = """
   <article role="doc-chapter" id="body">
     <header><h2>Introduction</h2></header>
     <section><h3>4.1 The Coordinate Plane</h3><p>Body opener 4.1.</p></section>
-    <section data-dart-demoted-role="list"><p>4.2 Graph Linear Equations 4.3 Graph with Intercepts</p></section>
+    <section data-semantik-demoted-role="list"><p>4.2 Graph Linear Equations 4.3 Graph with Intercepts</p></section>
     <section><h3>4.2 Exercises</h3><p>Drill for 4.2.</p></section>
     <section><h3>4.3 Exercises</h3><p>Drill for 4.3.</p></section>
     <section><h3>4.4 Slope of a Line</h3><p>Body opener 4.4.</p></section>
@@ -450,7 +450,7 @@ _FUSED_ONLY_LEAK_HTML = """
     <header><h2>Introduction</h2></header>
     <section><h3>5.1 Solve by Graphing</h3><p>Body opener 5.1.</p></section>
     <section><h3>5.2 Solve by Substitution</h3><p>Body opener 5.2.</p></section>
-    <section data-dart-demoted-role="list"><p>5.11 Try It Warmup 5.20 Example Set 5.5 Figure Caption</p></section>
+    <section data-semantik-demoted-role="list"><p>5.11 Try It Warmup 5.20 Example Set 5.5 Figure Caption</p></section>
   </article>
 </main></body></html>
 """

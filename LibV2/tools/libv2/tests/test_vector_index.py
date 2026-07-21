@@ -82,9 +82,9 @@ class _FakeEmbeddingClient:
 
 
 def _write_course(tmp_path: Path, n: int = 5) -> Path:
-    """Create a tmp LibV2 course dir with a dart_chunks/chunks.jsonl."""
+    """Create a tmp LibV2 course dir with a semantik_chunks/chunks.jsonl."""
     course_dir = tmp_path / "courses" / "fake-101"
-    chunks_dir = course_dir / "dart_chunks"
+    chunks_dir = course_dir / "semantik_chunks"
     chunks_dir.mkdir(parents=True)
     lines = []
     for i in range(n):
@@ -116,7 +116,7 @@ def test_build_then_load_roundtrip(tmp_path):
     assert manifest.chunks_count == 5
     assert manifest.embedding_dim == 32
     assert manifest.embedding_provider == "fake"
-    assert manifest.chunkset_kind == "dart"
+    assert manifest.chunkset_kind == "semantik"
     assert manifest.normalized is True
     assert manifest.index_type == "exact-numpy"
 
@@ -217,7 +217,7 @@ def test_search_self_retrieval(tmp_path):
 def test_search_tie_break_by_chunk_id(tmp_path):
     # Two identical rows -> equal scores -> ordered by chunk_id asc.
     course_dir = tmp_path / "courses" / "ties"
-    chunks_dir = course_dir / "dart_chunks"
+    chunks_dir = course_dir / "semantik_chunks"
     chunks_dir.mkdir(parents=True)
     rows = [
         {"id": "zzz", "text": "identical", "source": {"section_heading": "H"}},
@@ -261,7 +261,7 @@ def test_staleness_on_chunk_mutation(tmp_path):
     # load fine first
     load_vector_index(course_dir, allow_fake=True)
     # mutate chunks.jsonl -> stale
-    chunks = course_dir / "dart_chunks" / "chunks.jsonl"
+    chunks = course_dir / "semantik_chunks" / "chunks.jsonl"
     chunks.write_text(
         chunks.read_text(encoding="utf-8") + '{"id":"x","text":"new"}\n',
         encoding="utf-8",
@@ -318,7 +318,7 @@ def test_stale_index_rebuilds_without_force(tmp_path):
     course_dir = _write_course(tmp_path, n=2)
     build_vector_index(course_dir, client=_FakeEmbeddingClient())
     # mutate chunks so the on-disk index is now stale
-    chunks = course_dir / "dart_chunks" / "chunks.jsonl"
+    chunks = course_dir / "semantik_chunks" / "chunks.jsonl"
     chunks.write_text(
         chunks.read_text(encoding="utf-8") + '{"id":"y","text":"z"}\n',
         encoding="utf-8",
@@ -330,7 +330,7 @@ def test_stale_index_rebuilds_without_force(tmp_path):
 
 def test_empty_chunkset_builds_zero_rows(tmp_path):
     course_dir = tmp_path / "courses" / "empty-101"
-    chunks_dir = course_dir / "dart_chunks"
+    chunks_dir = course_dir / "semantik_chunks"
     chunks_dir.mkdir(parents=True)
     (chunks_dir / "chunks.jsonl").write_text("", encoding="utf-8")
     m = build_vector_index(course_dir, client=_FakeEmbeddingClient())

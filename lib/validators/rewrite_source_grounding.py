@@ -289,7 +289,7 @@ class RewriteSourceGroundingValidator:
     Inputs:
         blocks: List[Block]
         source_chunks: Dict[str, str]
-            Mapping of canonical sourceId (e.g. ``dart:slug#blk_0``)
+            Mapping of canonical sourceId (e.g. ``semantik:slug#blk_0``)
             to the chunk's plain-text body. The workflow runner
             populates this from the staging manifest before dispatch;
             tests inject it directly.

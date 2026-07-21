@@ -15,7 +15,7 @@ committed fixture PDF and asserts all three output contracts:
 The test satisfies the A3 authoring-route guardrail via the sanctioned stub
 opt-in (``LOCAL_DISPATCHER_ALLOW_STUB=1``, see AUTHORING_ROUTE_ENV below):
 with no ``<AGENT>_PROVIDER`` env set, the content-generator runs the legacy
-deterministic DART-paragraph synthesis, so the run needs NO live LLM
+deterministic staged-content paragraph synthesis, so the run needs NO live LLM
 endpoint and is CI-runnable. It carries the ``slow`` marker for selective
 deselection (``-m "not slow"``); the default run does NOT deselect it.
 
@@ -76,8 +76,8 @@ STRICT_ENV_FLAGS = {
 # MCP/tests/test_authoring_provider_route_guardrail.py::
 # test_guardrail_passes_with_stub_opt_in). Crucially this does NOT set any
 # ``<AGENT>_PROVIDER`` env, so per Courseforge/CLAUDE.md the
-# content-generator runs the legacy deterministic DART-paragraph synthesis
-# (real staged-DART prose with full data-cf-* + JSON-LD metadata — NOT the
+# content-generator runs the legacy deterministic staged-content paragraph
+# synthesis (real staged-SemantiK prose with full data-cf-* + JSON-LD metadata — NOT the
 # old "PEDAGOGY 101" hardcoded template that Worker α asserts is gone), and
 # the ``content_authorship`` gate passes because LLM authoring was never
 # *intended* (no COURSEFORGE_PROVIDER / COURSEFORGE_TWO_PASS /
@@ -100,7 +100,7 @@ AUTHORING_ROUTE_ENV = {
 # nondeterministic and CI-infeasible (consecutive runs fail at different
 # phases depending on whether a model server happens to be up). This test
 # gates the Worker α/β/γ *fixture output contracts* (deterministic
-# DART-paragraph synthesis + chunk/graph/manifest shapes), NOT LLM-authored
+# staged-content paragraph synthesis + chunk/graph/manifest shapes), NOT LLM-authored
 # corpus quality (that's a separate, live-backend e2e concern). So we take
 # the master A5 opt-out — the documented companion to the stub authoring
 # route — which makes the runner skip the whole A5 set, including the
@@ -122,7 +122,7 @@ ARTIFACT_PATHS_TO_CLEAN: tuple[Path, ...] = (
     PROJECT_ROOT / "LibV2" / "courses" / COURSE_SLUG,
     PROJECT_ROOT / "training-captures" / "trainforge" / COURSE_NAME,
     PROJECT_ROOT / "training-captures" / "courseforge" / COURSE_NAME,
-    PROJECT_ROOT / "training-captures" / "dart" / COURSE_NAME,
+    PROJECT_ROOT / "training-captures" / "semantik" / COURSE_NAME,
 )
 
 
@@ -483,13 +483,13 @@ def _assert_worker_gamma() -> None:
 @pytest.mark.integration
 @pytest.mark.xfail(
     reason=(
-        "Known architectural gap: DART's leaf-only fallback wraps the whole "
-        "document in a single data-dart-block-id='main-content' section while "
+        "Known architectural gap: SemantiK's leaf-only fallback wraps the whole "
+        "document in a single data-semantik-block-id='main-content' section while "
         "the synthesized sidecar splits the same content into fine-grained "
         "section ids; the Courseforge topic parser harvests the coarse wrapper "
         "id, so content_generation fails source_refs/content_grounding gates "
         "(UNRESOLVED_SOURCE_ID). Reconciling the two block-ID namespaces is a "
-        "cross-subsystem fix (DART document_assembler + sidecar + topic "
+        "cross-subsystem fix (SemantiK document_assembler + sidecar + topic "
         "parser); until it lands this test xfails on the last gate while "
         "still exercising the first six phases deterministically."
     ),

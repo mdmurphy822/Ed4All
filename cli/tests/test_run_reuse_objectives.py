@@ -8,7 +8,7 @@ Pins the CLI flag's parse-time validation contract:
 * Missing file → fast error (exit code 2).
 * Malformed JSON → fast error.
 * Empty terminal list → fast error.
-* Non-textbook workflow → fast error (matches the --skip-dart
+* Non-textbook workflow → fast error (matches the --skip-conversion
   precedent — only textbook_to_course has a course_planning phase to
   reuse).
 """

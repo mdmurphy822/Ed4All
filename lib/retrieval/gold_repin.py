@@ -63,7 +63,8 @@ class GoldRepinError(Exception):
 
 
 # Chunkset kind -> default course-dir-relative chunks path.
-# DART->semantik purge Stage 1 (dual-READ): accept the ratified kind + dir.
+# ``semantik`` is the current layout; the remaining kinds are dual-read
+# fallbacks for legacy corpora.
 _KIND_DEFAULT_PATH = {
     "semantik": "semantik_chunks/chunks.jsonl",
     "dart": "dart_chunks/chunks.jsonl",
@@ -326,7 +327,7 @@ def repin_gold_set(
 
     Args:
         course_dir: LibV2 course directory.
-        kind: target chunkset kind (``dart`` / ``imscc`` / ``corpus``).
+        kind: target chunkset kind (``semantik`` / ``imscc`` / ``corpus``).
         chunks_path: course-dir-relative path to the target chunks.jsonl;
             defaults to the kind's conventional path.
         unfreeze_for_repin: required to re-pin a ``frozen: true`` set.

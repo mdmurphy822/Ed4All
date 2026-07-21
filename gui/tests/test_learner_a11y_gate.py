@@ -5,7 +5,7 @@ THE milestone bar (master plan M5–M7): **zero CRITICAL (Level A) and zero HIGH
 learner can actually see — the idle learner page, the busy state, the page with
 each answer-fragment status swapped in (exactly as ``learn.js`` does the swap,
 performed here in Python via bs4), each typed-error fragment, and the
-source-viewer output over the WS1 mini-course fixture (dart + imscc arms).
+source-viewer output over the WS1 mini-course fixture (semantik + imscc arms).
 
 The validator (``lib/validators/wcag.py``) is bs4-only (bs4 is a
 base dependency), so this gate runs on a default install with NO fastapi /
@@ -80,7 +80,7 @@ def _answered_payload(status: str) -> dict:
     """
     return {
         "status": status,
-        "course_slug": "mini-dart",
+        "course_slug": "mini-semantik",
         "answer_text": (
             "A vector store indexes embedding vectors for nearest-neighbour "
             "search.\n\n"
@@ -113,7 +113,7 @@ def _answered_payload(status: str) -> dict:
 
 def _refused_payload(status: str) -> dict:
     """A refused/blocked payload — contract guarantees no text, no citations."""
-    return {"status": status, "course_slug": "mini-dart", "answer_text": None, "citations": []}
+    return {"status": status, "course_slug": "mini-semantik", "answer_text": None, "citations": []}
 
 
 # --------------------------------------------------------------------------- #
@@ -184,13 +184,13 @@ def _assert_clean(variant: str, html: str) -> None:
 def _make_course(libv2_root: Path, slug: str, *, kind: str) -> Path:
     """Copy the WS1 mini-course source tree into ``libv2_root/courses/<slug>``.
 
-    ``kind`` (``dart`` / ``imscc``) selects the chunks dir so
+    ``kind`` (``semantik`` / ``imscc``) selects the chunks dir so
     ``_infer_chunkset_kind`` returns the kind under test.
     """
     course_dir = libv2_root / "courses" / slug
     course_dir.mkdir(parents=True, exist_ok=True)
     shutil.copytree(MINI_COURSE / "source", course_dir / "source")
-    chunks_dir = {"dart": "dart_chunks", "imscc": "imscc_chunks"}[kind]
+    chunks_dir = {"semantik": "semantik_chunks", "imscc": "imscc_chunks"}[kind]
     cdir = course_dir / chunks_dir
     cdir.mkdir(parents=True, exist_ok=True)
     (cdir / "chunks.jsonl").write_text("{}\n", encoding="utf-8")
@@ -245,11 +245,11 @@ def test_unknown_status_falls_back_clean():
     _assert_clean("unknown_status_fallback", _assemble_page(frag))
 
 
-@pytest.mark.parametrize("slug,kind", [("mini-dart", "dart"), ("mini-imscc", "imscc")])
+@pytest.mark.parametrize("slug,kind", [("mini-semantik", "semantik"), ("mini-imscc", "imscc")])
 def test_source_viewer_zero_aa_findings(slug, kind, libv2_root):
     """The viewer-wrapped archived source page (banner + injected ids) is clean.
 
-    Covers both the dart on-disk arm and the imscc in-memory-zip-member arm of
+    Covers both the semantik on-disk arm and the imscc in-memory-zip-member arm of
     ``resolve_source_page``. The banner nav + heading-id injection must not break
     heading hierarchy or the document lang.
     """
@@ -740,11 +740,11 @@ def test_real_ask_roundtrip_renders_resolvable_source(libv2_root, monkeypatch):
 
     from gui.app import create_app  # noqa: PLC0415
 
-    _make_course(libv2_root, "mini-dart", kind="dart")
+    _make_course(libv2_root, "mini-semantik", kind="semantik")
     client = TestClient(create_app())
     resp = client.post(
         "/api/learn/ask",
-        json={"slug": "mini-dart", "query": "What is a vector store?", "engine": "lexical"},
+        json={"slug": "mini-semantik", "query": "What is a vector store?", "engine": "lexical"},
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()

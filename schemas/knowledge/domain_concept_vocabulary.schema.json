@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ed4all.dev/schemas/knowledge/domain_concept_vocabulary.schema.json",
   "title": "Domain Concept Vocabulary",
-  "description": "Pins the domain_concept_vocabulary.json artifact emitted by Stage 3 (large-LLM concept extraction, plans/textbook-llm-synthesis-3stage-2026-05.md §4.3). Written as a sibling of concept_graph_semantic.json at LibV2/courses/<slug>/concept_graph/domain_concept_vocabulary.json. It is the merged, de-duplicated (on canonical_slug) per-chapter concept list; it is compiled into (canonical, [regex]) seed pairs that re-tag DART chunks before the co-occurrence graph build. Also the surface a future CURIE-minting pass reads.",
+  "description": "Pins the domain_concept_vocabulary.json artifact emitted by Stage 3 (large-LLM concept extraction, plans/textbook-llm-synthesis-3stage-2026-05.md §4.3). Written as a sibling of concept_graph_semantic.json at LibV2/courses/<slug>/concept_graph/domain_concept_vocabulary.json. It is the merged, de-duplicated (on canonical_slug) per-chapter concept list; it is compiled into (canonical, [regex]) seed pairs that re-tag SemantiK chunks before the co-occurrence graph build. Also the surface a future CURIE-minting pass reads.",
   "type": "object",
   "additionalProperties": false,
   "required": [

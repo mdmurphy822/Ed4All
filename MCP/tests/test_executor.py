@@ -554,8 +554,9 @@ class TestAgentToolMapping:
         assert "brightspace-packager" in AGENT_TOOL_MAPPING
 
     @pytest.mark.unit
-    def test_dart_agents_mapped(self):
-        """DART agents should be mapped."""
+    def test_legacy_dart_agent_aliases_mapped(self):
+        """Legacy pre-SemantiK agent aliases stay registered as read-compat
+        dispatch aliases so paused runs resume across the rename."""
         assert "dart-converter" in AGENT_TOOL_MAPPING
         assert "dart-automation-coordinator" in AGENT_TOOL_MAPPING
 

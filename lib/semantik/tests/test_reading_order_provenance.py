@@ -5,7 +5,7 @@ The reading-order fix is a final STABLE sort of ``build_structure_graph``'s
 region list by ``min(feature_block_indices)``. It reorders the region LIST;
 it must NOT touch the WIRE contract. The downstream sourceId / provenance
 values are all FeatureBlock-derived (``cascade.py`` ~``:548``
-``first_raw = min(fb_indices)``; the adapter mints ``data-dart-block-id``
+``first_raw = min(fb_indices)``; the adapter mints ``data-semantik-block-id``
 from that anchor, ``adapter.py::_mint_sid``), so they are invariant under the
 reorder.
 
@@ -25,7 +25,7 @@ This module proves, with NO models / GPU:
     For a hand-built ``region_provenance`` and a REORDERED (segregated) copy
     of it — same per-region dict values, different list order — the REAL
     adapter (``build_chapters_ir`` -> ``normalize_cascade_to_ed4all``) emits
-    an IDENTICAL multiset of ``data-dart-block-id`` HTML values and an
+    an IDENTICAL multiset of ``data-semantik-block-id`` HTML values and an
     identical multiset of ``first_raw_block_index``. No id VALUE is dropped,
     added, or rewritten by the reorder.
 
@@ -201,7 +201,7 @@ def test_no_raw_text_dropped_under_reorder(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Part B — REAL adapter sourceId mint: data-dart-block-id multiset stable.
+# Part B — REAL adapter sourceId mint: data-semantik-block-id multiset stable.
 # ---------------------------------------------------------------------------
 
 
@@ -320,11 +320,11 @@ def _adapter_html(provenance: list[dict]) -> dict:
 
 
 def _block_ids(html: str) -> collections.Counter:
-    return collections.Counter(re.findall(r'data-dart-block-id="([^"]+)"', html))
+    return collections.Counter(re.findall(r'data-semantik-block-id="([^"]+)"', html))
 
 
-def test_data_dart_block_id_multiset_stable_under_reorder():
-    """The adapter mints an IDENTICAL multiset of data-dart-block-id values
+def test_data_semantik_block_id_multiset_stable_under_reorder():
+    """The adapter mints an IDENTICAL multiset of data-semantik-block-id values
     from the reading-order provenance and its segregated reorder — no id
     VALUE dropped, added, or rewritten by the reorder."""
     reading = _reading_order_provenance()
@@ -335,7 +335,7 @@ def test_data_dart_block_id_multiset_stable_under_reorder():
 
     reading_ids = _block_ids(reading_out["html"])
     seg_ids = _block_ids(seg_out["html"])
-    assert reading_ids, "no data-dart-block-id emitted"
+    assert reading_ids, "no data-semantik-block-id emitted"
     assert reading_ids == seg_ids, (reading_ids, seg_ids)
 
 
@@ -357,7 +357,7 @@ def test_first_raw_multiset_stable_through_adapter():
 
 @pytest.mark.parametrize("flag", ["1", None])
 def test_adapter_sids_resolve_against_sidecar(monkeypatch, flag):
-    """Whichever order the regions arrive in, every HTML data-dart-block-id
+    """Whichever order the regions arrive in, every HTML data-semantik-block-id
     still resolves against the synthesized sidecar (the source_refs gate's
     valid-id universe) — the reorder never strands a sourceId."""
     if flag is None:
@@ -369,6 +369,6 @@ def test_adapter_sids_resolve_against_sidecar(monkeypatch, flag):
     )
     out = _adapter_html(prov)
     sidecar_ids = {s["section_id"] for s in out["synthesized_sidecar"]["sections"]}
-    html_ids = set(re.findall(r'data-dart-block-id="([^"]+)"', out["html"]))
+    html_ids = set(re.findall(r'data-semantik-block-id="([^"]+)"', out["html"]))
     assert html_ids
     assert html_ids <= sidecar_ids, (html_ids - sidecar_ids)

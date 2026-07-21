@@ -4,15 +4,15 @@ Asserts the contract on
 :func:`MCP.tools._content_gen_helpers.synthesize_objectives_from_topics`:
 
 * Path A (LOs extracted from explicit ``<p class="learning-objectives">``
-  lists) emits ``source_refs[]`` populated from each topic's DART block
-  IDs in the structured ``[{ref, chunk_ids[]}]`` shape.
+  lists) emits ``source_refs[]`` populated from each topic's source
+  block IDs in the structured ``[{ref, chunk_ids[]}]`` shape.
 * Path B (heading-driven synthesis) emits single-element structured
   ``source_refs[]`` per CO, with multi-entry aggregation on terminal
   outcomes that synthesize across multiple week topics.
 * :func:`_normalize_objective_entry` round-trips legacy ``List[str]``
   ``source_refs`` payloads verbatim (Wave 1.6 W1.6.A back-compat for
   ``--reuse-objectives``).
-* When a topic carries no DART provenance (legacy pre-Wave-12 fixtures
+* When a topic carries no source provenance (fixtures
   with no ``dart_block_ids`` / ``source_file``), the synthesizer emits
   an EMPTY ``source_refs[]`` array — the W1.6.C validator surfaces the
   empty case downstream; the synth path itself stays graceful.
@@ -87,7 +87,7 @@ def _mk_topic(
 def test_path_a_populates_structured_source_refs_from_topic_dart_block_ids() -> None:
     """Path A emits one structured source_refs[] entry per LO derived
     from the topic; ``ref`` falls back to the heading slug, ``chunk_ids``
-    is the topic's DART block-IDs projected to ``semantik:{slug}#{block_id}``.
+    is the topic's source block-IDs projected to ``semantik:{slug}#{block_id}``.
     """
     topics = [
         _mk_topic(
@@ -125,7 +125,7 @@ def test_path_a_populates_structured_source_refs_from_topic_dart_block_ids() -> 
 
 
 def test_path_a_uses_chapter_id_when_present() -> None:
-    """When the topic carries a ``chapter_id`` (Wave 24+ DART output
+    """When the topic carries a ``chapter_id`` (converter output
     with ``<article role="doc-chapter">``), the synthesizer prefers it
     over the slugified-heading fallback for the ``ref`` field.
     """
@@ -351,7 +351,7 @@ def test_normalize_objective_entry_preserves_structured_source_refs() -> None:
 
 def test_synthesizer_emits_empty_source_refs_when_topic_has_no_provenance() -> None:
     """A topic carrying no ``dart_block_ids`` AND no ``source_file``
-    (legacy pre-Wave-12 DART output) yields an EMPTY structured-shape
+    (legacy fixture output) yields an EMPTY structured-shape
     ``source_refs[]`` rather than raising. The W1.6.C validator
     surfaces the empty case downstream — the synth path itself MUST
     stay graceful so legacy corpora continue to round-trip.
@@ -376,7 +376,7 @@ def test_synthesizer_emits_empty_source_refs_when_topic_has_no_provenance() -> N
 
 def test_synthesizer_path_a_emits_empty_source_refs_for_attribution_less_topic() -> None:
     """Path A counterpart of the legacy-fixture branch: explicit LO list
-    on a topic with no DART block IDs still emits the LOs (statements
+    on a topic with no source block IDs still emits the LOs (statements
     are non-placeholder source material) but with empty source_refs[].
     """
     topics = [

@@ -1,7 +1,7 @@
 """M4 — degenerate-grouping fallback for the cooccurrence pair-counting unit.
 
-Root-cause regression net for the 7B-build KG dead-backbone bug: a DART
-converter that stamps a SINGLE ``lesson_id`` over an entire multi-chapter PDF
+Root-cause regression net for the 7B-build KG dead-backbone bug: a SemantiK
+conversion that stamps a SINGLE ``lesson_id`` over an entire multi-chapter PDF
 folds every chunk into ONE page-group. With ``group_by="page"`` every pair
 then lands ``weight == 1`` (one group), and the downstream
 ``related_from_cooccurrence`` rule (``weight >= 3``) emits ZERO ``related-to``
@@ -46,7 +46,7 @@ def _node_signature(graph) -> list:
     )
 
 
-# Six chunks that ALL share a single lesson_id (the DART single-page-collapse
+# Six chunks that ALL share a single lesson_id (the single-page-collapse
 # failure mode) but live in distinct SECTIONS. Every adjacent pair of chunks
 # overlaps on a concept so a pair co-occurs in >= 3 distinct sections.
 def _collapsed_page_corpus():

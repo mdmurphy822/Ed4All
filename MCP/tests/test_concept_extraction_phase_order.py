@@ -2,7 +2,7 @@
 
 Locks the mission fix: on a fresh ``textbook_to_course`` run (no
 ``--reuse-objectives``), the ``concept_extraction`` phase must run AFTER
-``course_planning`` so the synthesized objectives + LO-backfilled DART
+``course_planning`` so the synthesized objectives + LO-backfilled SemantiK
 chunks are available when the semantic concept graph is built. Pre-fix
 ``concept_extraction`` ran BEFORE ``course_planning``, so fresh runs had
 no synthesized objectives and no chunk ``learning_outcome_refs`` at
@@ -159,7 +159,7 @@ def _run_concept_extraction(
     objectives_path: str = "",
     synthesized_objectives_path: str = "",
 ) -> Dict[str, Any]:
-    chunks_path = tmp_path / "dart_chunks" / "chunks.jsonl"
+    chunks_path = tmp_path / "semantik_chunks" / "chunks.jsonl"
     _write_chunkset(chunks_path, _lo_tagged_chunkset())
     custom_libv2 = tmp_path / "libv2"
 

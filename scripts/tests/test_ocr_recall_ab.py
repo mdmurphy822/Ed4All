@@ -42,7 +42,7 @@ def _chunk(cid, text, chapter, section):
             "item_path": f"synthetic-book-ch{chapter:02d}_accessible.html",
             "source_references": [
                 {
-                    "sourceId": f"dart:synthetic-book-ch{chapter:02d}_accessible#{section}",
+                    "sourceId": f"semantik:synthetic-book-ch{chapter:02d}_accessible#{section}",
                     "role": "primary",
                 }
             ],

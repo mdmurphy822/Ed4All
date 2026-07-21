@@ -36,7 +36,7 @@ def _manifest_line(**overrides) -> Dict[str, Any]:
         "page_id": "week_04",
         "sequence": 0,
         "source_chunk_ids": ["demo_chunk_00012"],
-        "source_refs": [{"sourceId": "dart:demo#b-12", "role": "primary"}],
+        "source_refs": [{"sourceId": "semantik:demo#b-12", "role": "primary"}],
         "span_granularity": "chunk",
         "template_id": "concept.definition.v1",
         "synthesis": {
@@ -237,10 +237,10 @@ def test_scaffolding_block_exempt(tmp_path):
 # --------------------------------------------------------------------------
 def test_resolution_universe_from_chunks_jsonl(tmp_path):
     path = _write_manifest(tmp_path, [_manifest_line()])
-    chunks_dir = tmp_path / "dart_chunks"
+    chunks_dir = tmp_path / "semantik_chunks"
     chunks_dir.mkdir()
     (chunks_dir / "manifest.json").write_text(
-        json.dumps({"chunkset_kind": "dart"}), encoding="utf-8"
+        json.dumps({"chunkset_kind": "semantik"}), encoding="utf-8"
     )
     (chunks_dir / "chunks.jsonl").write_text(
         json.dumps({"id": "demo_chunk_00012", "source": {}}) + "\n",

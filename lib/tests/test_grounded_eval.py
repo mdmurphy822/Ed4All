@@ -146,7 +146,7 @@ def test_report_shape_and_headline(libv2_course):
     assert report["model_id"] == "fake-model"
     assert report["prompt_version"] == "ws3.v1"
     assert report["gold"]["chunks_sha256"]  # pinned
-    assert report["gold"]["chunkset_kind"] == "dart"
+    assert report["gold"]["chunkset_kind"] == "semantik"
 
     headline = report["headline"]
     for key in (
@@ -495,10 +495,10 @@ def test_chunkset_kind_from_gold_pin_reaches_pipeline(libv2_course):
         repo_root, slug, engine="semantic", answer_fn=_spy_fn,
         with_groundedness=True, write=False,
     )
-    # The mini fixture gold set pins chunkset.kind == "dart"; every call must
+    # The mini fixture gold set pins chunkset.kind == "semantik"; every call must
     # carry it (never absent, never the directory guess).
     assert seen_kinds  # at least the 3 gold questions + 3 probes
-    assert all(k == "dart" for k in seen_kinds)
+    assert all(k == "semantik" for k in seen_kinds)
 
 
 # ===========================================================================
@@ -613,7 +613,7 @@ def test_probe_expected_outcome_accessor():
 def test_critical_gold_issue_raises(libv2_course):
     repo_root, slug, course_dir = libv2_course
     # Tamper the chunkset so the pinned sha no longer matches → critical.
-    chunks = course_dir / "dart_chunks" / "chunks.jsonl"
+    chunks = course_dir / "semantik_chunks" / "chunks.jsonl"
     chunks.write_text(chunks.read_text() + '\n{"id":"x","text":"tamper"}\n')
     with pytest.raises(RuntimeError) as exc:
         run_grounded_eval(

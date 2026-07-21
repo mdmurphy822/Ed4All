@@ -122,14 +122,14 @@ def _write_textbook_structure(tmp_path: Path, *, chapter_ids, section_map=None) 
     return p
 
 
-def _write_dart_chunks(tmp_path: Path, chunks: List[Dict[str, Any]]) -> Path:
-    """Write a minimal dart_chunks/manifest.json + sibling chunks.jsonl.
+def _write_semantik_chunks(tmp_path: Path, chunks: List[Dict[str, Any]]) -> Path:
+    """Write a minimal semantik_chunks/manifest.json + sibling chunks.jsonl.
 
     Returns the manifest path. The validator harvests chunk-ids from
     the SIBLING chunks.jsonl per the documented contract; the manifest
     itself just needs to exist.
     """
-    chunks_dir = tmp_path / "dart_chunks"
+    chunks_dir = tmp_path / "semantik_chunks"
     chunks_dir.mkdir(parents=True, exist_ok=True)
     chunks_path = chunks_dir / "chunks.jsonl"
     with chunks_path.open("w", encoding="utf-8") as fh:
@@ -143,8 +143,8 @@ def _write_dart_chunks(tmp_path: Path, chunks: List[Dict[str, Any]]) -> Path:
         json.dumps({
             "chunks_sha256": "0" * 64,
             "chunker_version": "v4",
-            "chunkset_kind": "dart",
-            "source_dart_html_sha256": "0" * 64,
+            "chunkset_kind": "semantik",
+            "source_semantik_html_sha256": "0" * 64,
         }),
         encoding="utf-8",
     )
@@ -192,7 +192,7 @@ def test_legacy_string_list_all_resolved(tmp_path: Path) -> None:
         chapter_ids=["ch1", "ch2"],
         section_map={"ch1": ["sec1a"]},
     )
-    chunks_manifest = _write_dart_chunks(
+    chunks_manifest = _write_semantik_chunks(
         tmp_path,
         [
             {"id": "course_chunk_00001", "source": {}},
@@ -223,7 +223,7 @@ def test_legacy_string_list_all_resolved(tmp_path: Path) -> None:
 def test_legacy_string_list_one_unresolved(tmp_path: Path) -> None:
     """Case 2: legacy List[str] with one ref unresolved → WARNING + regenerate."""
     ts = _write_textbook_structure(tmp_path, chapter_ids=["ch1"])
-    chunks_manifest = _write_dart_chunks(
+    chunks_manifest = _write_semantik_chunks(
         tmp_path,
         [{"id": "course_chunk_00001", "source": {}}],
     )
@@ -264,15 +264,15 @@ def test_structured_all_resolved(tmp_path: Path) -> None:
         chapter_ids=["ch1"],
         section_map={"ch1": ["sec1a"]},
     )
-    chunks_manifest = _write_dart_chunks(
+    chunks_manifest = _write_semantik_chunks(
         tmp_path,
         [
             {
                 "id": "course_chunk_00001",
                 "source": {
                     "source_references": [
-                        {"sourceId": "dart:rdf11_primer#s4"},
-                        {"sourceId": "dart:rdf11_primer#s5"},
+                        {"sourceId": "semantik:rdf11_primer#s4"},
+                        {"sourceId": "semantik:rdf11_primer#s5"},
                     ],
                 },
             },
@@ -288,8 +288,8 @@ def test_structured_all_resolved(tmp_path: Path) -> None:
                 {
                     "ref": "ch1",
                     "chunk_ids": [
-                        "dart:rdf11_primer#s4",
-                        "dart:rdf11_primer#s5",
+                        "semantik:rdf11_primer#s4",
+                        "semantik:rdf11_primer#s5",
                     ],
                 },
             ],
@@ -310,13 +310,13 @@ def test_structured_all_resolved(tmp_path: Path) -> None:
 def test_structured_ref_unresolved(tmp_path: Path) -> None:
     """Case 4: structured shape, ref not in textbook structure → WARNING."""
     ts = _write_textbook_structure(tmp_path, chapter_ids=["ch1"])
-    chunks_manifest = _write_dart_chunks(
+    chunks_manifest = _write_semantik_chunks(
         tmp_path,
         [
             {
                 "id": "course_chunk_00001",
                 "source": {
-                    "source_references": [{"sourceId": "dart:foo#s1"}],
+                    "source_references": [{"sourceId": "semantik:foo#s1"}],
                 },
             },
         ],
@@ -330,7 +330,7 @@ def test_structured_ref_unresolved(tmp_path: Path) -> None:
             "source_refs": [
                 {
                     "ref": "ch_NOT_IN_TEXTBOOK",
-                    "chunk_ids": ["dart:foo#s1"],
+                    "chunk_ids": ["semantik:foo#s1"],
                 },
             ],
         }],
@@ -367,15 +367,15 @@ def test_structured_no_ref_grounded_chunks_passes(tmp_path: Path) -> None:
     accepted while the chunk_ids grounding is still enforced.
     """
     ts = _write_textbook_structure(tmp_path, chapter_ids=["ch1"])
-    chunks_manifest = _write_dart_chunks(
+    chunks_manifest = _write_semantik_chunks(
         tmp_path,
         [
             {
                 "id": "course_chunk_00001",
                 "source": {
                     "source_references": [
-                        {"sourceId": "dart:rdf11_primer#s4"},
-                        {"sourceId": "dart:rdf11_primer#s5"},
+                        {"sourceId": "semantik:rdf11_primer#s4"},
+                        {"sourceId": "semantik:rdf11_primer#s5"},
                     ],
                 },
             },
@@ -390,8 +390,8 @@ def test_structured_no_ref_grounded_chunks_passes(tmp_path: Path) -> None:
             "source_refs": [
                 {
                     "chunk_ids": [
-                        "dart:rdf11_primer#s4",
-                        "dart:rdf11_primer#s5",
+                        "semantik:rdf11_primer#s4",
+                        "semantik:rdf11_primer#s5",
                     ],
                 },
             ],
@@ -419,17 +419,17 @@ def test_structured_no_ref_unresolved_chunk_still_flagged(tmp_path: Path) -> Non
     unresolvable chunk_id on a no-``ref`` entry still fires the chunk-miss code.
     """
     ts = _write_textbook_structure(tmp_path, chapter_ids=["ch1"])
-    chunks_manifest = _write_dart_chunks(
+    chunks_manifest = _write_semantik_chunks(
         tmp_path,
         [{"id": "course_chunk_00001",
-          "source": {"source_references": [{"sourceId": "dart:rdf11_primer#s4"}]}}],
+          "source": {"source_references": [{"sourceId": "semantik:rdf11_primer#s4"}]}}],
     )
     objectives = _write_objectives(
         tmp_path,
         terminal=[{
             "id": "TO-01",
             "statement": "Master RDF foundations.",
-            "source_refs": [{"chunk_ids": ["dart:rdf11_primer#sNOPE"]}],
+            "source_refs": [{"chunk_ids": ["semantik:rdf11_primer#sNOPE"]}],
         }],
         chapter=[],
     )
@@ -456,13 +456,13 @@ def test_structured_chunk_id_unresolved(tmp_path: Path) -> None:
     action=block.
     """
     ts = _write_textbook_structure(tmp_path, chapter_ids=["ch1"])
-    chunks_manifest = _write_dart_chunks(
+    chunks_manifest = _write_semantik_chunks(
         tmp_path,
         [
             {
                 "id": "course_chunk_00001",
                 "source": {
-                    "source_references": [{"sourceId": "dart:rdf11_primer#s4"}],
+                    "source_references": [{"sourceId": "semantik:rdf11_primer#s4"}],
                 },
             },
         ],
@@ -477,8 +477,8 @@ def test_structured_chunk_id_unresolved(tmp_path: Path) -> None:
                 {
                     "ref": "ch1",
                     "chunk_ids": [
-                        "dart:rdf11_primer#s4",        # resolves
-                        "dart:rdf11_primer#sNOPE",     # does not resolve
+                        "semantik:rdf11_primer#s4",        # resolves
+                        "semantik:rdf11_primer#sNOPE",     # does not resolve
                     ],
                 },
             ],
@@ -502,12 +502,12 @@ def test_structured_chunk_id_unresolved(tmp_path: Path) -> None:
         if i.code == "OBJECTIVE_CHUNK_NOT_IN_DART_MANIFEST"
     )
     assert miss.severity == "warning"
-    assert "dart:rdf11_primer#sNOPE" in miss.message
+    assert "semantik:rdf11_primer#sNOPE" in miss.message
     # Aggregate CRITICAL orphan net.
     orphan = next(i for i in result.issues if i.code == "ORPHANED_CITATIONS")
     assert orphan.severity == "critical"
     assert "1 of 2" in orphan.message  # 1 orphaned of 2 cited
-    assert "dart:rdf11_primer#sNOPE" in orphan.message
+    assert "semantik:rdf11_primer#sNOPE" in orphan.message
 
 
 def test_orphaned_citations_all_renumbered_fires_critical(tmp_path: Path) -> None:
@@ -521,15 +521,15 @@ def test_orphaned_citations_all_renumbered_fires_critical(tmp_path: Path) -> Non
     """
     ts = _write_textbook_structure(tmp_path, chapter_ids=["ch1"])
     # Renumbered chunkset — none of the originally-cited ids survive.
-    chunks_manifest = _write_dart_chunks(
+    chunks_manifest = _write_semantik_chunks(
         tmp_path,
         [
             {
                 "id": "course_chunk_00099",
                 "source": {
                     "source_references": [
-                        {"sourceId": "dart:rdf11_primer#s40"},
-                        {"sourceId": "dart:rdf11_primer#s41"},
+                        {"sourceId": "semantik:rdf11_primer#s40"},
+                        {"sourceId": "semantik:rdf11_primer#s41"},
                     ],
                 },
             },
@@ -543,14 +543,14 @@ def test_orphaned_citations_all_renumbered_fires_critical(tmp_path: Path) -> Non
                 "id": "CO-01",
                 "statement": "Apply RDF triples.",
                 "source_refs": [
-                    {"ref": "ch1", "chunk_ids": ["dart:rdf11_primer#s4"]},
+                    {"ref": "ch1", "chunk_ids": ["semantik:rdf11_primer#s4"]},
                 ],
             },
             {
                 "id": "CO-02",
                 "statement": "Model graphs.",
                 "source_refs": [
-                    {"ref": "ch1", "chunk_ids": ["dart:rdf11_primer#s5"]},
+                    {"ref": "ch1", "chunk_ids": ["semantik:rdf11_primer#s5"]},
                 ],
             },
         ],
@@ -572,8 +572,8 @@ def test_orphaned_citations_all_renumbered_fires_critical(tmp_path: Path) -> Non
     # Both affected objectives counted.
     assert "2 objective(s)" in orphan.message
     # Sample ids present.
-    assert "dart:rdf11_primer#s4" in orphan.message
-    assert "dart:rdf11_primer#s5" in orphan.message
+    assert "semantik:rdf11_primer#s4" in orphan.message
+    assert "semantik:rdf11_primer#s5" in orphan.message
 
 
 def test_orphaned_citations_missing_chunkset_graceful_skip(tmp_path: Path) -> None:
@@ -589,7 +589,7 @@ def test_orphaned_citations_missing_chunkset_graceful_skip(tmp_path: Path) -> No
             "id": "CO-01",
             "statement": "Apply RDF triples.",
             "source_refs": [
-                {"ref": "ch1", "chunk_ids": ["dart:rdf11_primer#s4"]},
+                {"ref": "ch1", "chunk_ids": ["semantik:rdf11_primer#s4"]},
             ],
         }],
     )
@@ -608,7 +608,7 @@ def test_orphaned_citations_missing_chunkset_graceful_skip(tmp_path: Path) -> No
 def test_empty_source_refs_on_co(tmp_path: Path) -> None:
     """Case 6: empty source_refs on CO → WARNING + regenerate."""
     ts = _write_textbook_structure(tmp_path, chapter_ids=["ch1"])
-    chunks_manifest = _write_dart_chunks(
+    chunks_manifest = _write_semantik_chunks(
         tmp_path,
         [{"id": "c1", "source": {}}],
     )
@@ -637,7 +637,7 @@ def test_empty_source_refs_on_co(tmp_path: Path) -> None:
 def test_empty_source_refs_on_to_silent_pass_default(tmp_path: Path) -> None:
     """Case 7: empty source_refs on TO + require_to_attribution=False → silent pass."""
     ts = _write_textbook_structure(tmp_path, chapter_ids=["ch1"])
-    chunks_manifest = _write_dart_chunks(
+    chunks_manifest = _write_semantik_chunks(
         tmp_path,
         [{"id": "c1", "source": {}}],
     )
@@ -667,7 +667,7 @@ def test_empty_source_refs_on_to_silent_pass_default(tmp_path: Path) -> None:
 def test_empty_source_refs_on_to_warn_when_required(tmp_path: Path) -> None:
     """Case 8: empty source_refs on TO + require_to_attribution=True → WARNING."""
     ts = _write_textbook_structure(tmp_path, chapter_ids=["ch1"])
-    chunks_manifest = _write_dart_chunks(
+    chunks_manifest = _write_semantik_chunks(
         tmp_path,
         [{"id": "c1", "source": {}}],
     )
@@ -727,13 +727,13 @@ def test_no_universes_graceful_degrade(tmp_path: Path) -> None:
 def test_decision_capture_emits_per_lo(tmp_path: Path) -> None:
     """Case 10: per-LO decision-capture event with the seven required signals."""
     ts = _write_textbook_structure(tmp_path, chapter_ids=["ch1"])
-    chunks_manifest = _write_dart_chunks(
+    chunks_manifest = _write_semantik_chunks(
         tmp_path,
         [
             {
                 "id": "c1",
                 "source": {
-                    "source_references": [{"sourceId": "dart:foo#s1"}],
+                    "source_references": [{"sourceId": "semantik:foo#s1"}],
                 },
             },
         ],
@@ -744,7 +744,7 @@ def test_decision_capture_emits_per_lo(tmp_path: Path) -> None:
             "id": "TO-01",
             "statement": "Build it.",
             "source_refs": [
-                {"ref": "ch1", "chunk_ids": ["dart:foo#s1"]},
+                {"ref": "ch1", "chunk_ids": ["semantik:foo#s1"]},
             ],
         }],
         chapter=[{
@@ -810,7 +810,7 @@ def test_libv2_archive_form_flattens_identically(tmp_path: Path) -> None:
     ``_flatten_objectives`` reuse is shape-tolerant.
     """
     ts = _write_textbook_structure(tmp_path, chapter_ids=["ch1"])
-    chunks_manifest = _write_dart_chunks(
+    chunks_manifest = _write_semantik_chunks(
         tmp_path,
         [{"id": "c1", "source": {}}],
     )

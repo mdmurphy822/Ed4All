@@ -217,7 +217,7 @@ class TestBuildBackend:
         """Wave 73: ``--mode local`` + ``ED4ALL_RUN_ID`` → MailboxBrokeredBackend.
 
         Previously local mode always returned the throwing LocalBackend,
-        so DART alt-text and block classification silently dropped to
+        so SemantiK alt-text and block classification silently dropped to
         heuristic fallbacks even when a Claude Code operator *could*
         service completions. Presence of ED4ALL_RUN_ID + a resolvable
         mailbox base_dir now opts into the mailbox bridge.
@@ -452,7 +452,7 @@ class TestMailboxBrokeredBackend:
 
         Pre-fix the backend emitted ``f"{prefix}-{counter:04d}"`` starting
         from ``llm-0001``, so two concurrent backends (which happens
-        whenever ``dart_conversion`` runs ``max_concurrent: 4`` PDFs in
+        whenever ``semantik_conversion`` runs ``max_concurrent: 4`` PDFs in
         parallel, each auto-resolving its own backend in
         ``pipeline_tools._raw_text_to_accessible_html``) both emitted
         ``llm-0001`` on their first call. ``TaskMailbox.put_pending`` uses
@@ -506,7 +506,7 @@ class TestMailboxBrokeredBackend:
         # Every LLM id has the 'llm-' prefix.
         assert all(tid.startswith("llm-") for tid in llm_ids)
         # Phase ids from LocalDispatcher use phase-name prefixes
-        # (content_generation, dart_conversion, …) — none of which can
+        # (content_generation, semantik_conversion, …) — none of which can
         # equal the literal string 'llm' because phase names are
         # lowercase_snake_case and never start with that sequence in
         # the config.

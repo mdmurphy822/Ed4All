@@ -24,7 +24,7 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
     # =========================================================================
     # PIPELINE TOOLS (Textbook-to-Course)
     # =========================================================================
-    "stage_dart_outputs": {
+    "stage_semantik_outputs": {
         "required": ["run_id", "dart_html_paths", "course_name"],
         # "id" is injected by the orchestrator as a top-level task field
         # (task["id"] == task_id) and picked up by param_mapper.py line 97.
@@ -38,7 +38,21 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "course": "course_name",
             "mode": "stage_mode",
         },
-        "description": "Stage DART HTML outputs to Courseforge inputs directory",
+        "description": "Stage SemantiK HTML outputs to Courseforge inputs directory",
+    },
+    # Legacy pre-SemantiK schema-key alias for the registry alias key of the
+    # same name (read-compat: resume states that dispatch the old key).
+    "stage_dart_outputs": {
+        "required": ["run_id", "dart_html_paths", "course_name"],
+        "optional": ["stage_mode", "id"],
+        "defaults": {"stage_mode": None},
+        "param_mapping": {
+            "html_paths": "dart_html_paths",
+            "paths": "dart_html_paths",
+            "course": "course_name",
+            "mode": "stage_mode",
+        },
+        "description": "Legacy alias for stage_semantik_outputs",
     },
 
     "extract_and_convert_pdf": {
@@ -1013,7 +1027,7 @@ TOOL_CATEGORIES = {
         "complete_workflow_task",
     ],
     "pipeline": [
-        "stage_dart_outputs",
+        "stage_semantik_outputs",
         "extract_and_convert_pdf",
         "archive_to_libv2",
         "synthesize_training",

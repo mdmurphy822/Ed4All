@@ -289,7 +289,7 @@ def _write_blocks_jsonl_with_malformed_fields(path: Path) -> None:
             # Mixed valid + malformed LO refs
             "objective_ids": ["TO-01", "not-a-ref", "co-99-extra-bits"],
             # Mixed valid + empty source_ids
-            "source_ids": ["dart:ch1#sec1", "", None],
+            "source_ids": ["semantik:ch1#sec1", "", None],
             # Out-of-enum content_type_label
             "content_type_label": "wrongo",
             # Mixed valid CURIE-ish + malformed CURIE in key_terms.
@@ -306,7 +306,7 @@ def _write_blocks_jsonl_with_malformed_fields(path: Path) -> None:
             "sequence": 1,
             "content": "<p>" + ("Clean prose. " * 10) + "</p>",
             "objective_ids": ["TO-01"],
-            "source_ids": ["dart:ch1#sec2"],
+            "source_ids": ["semantik:ch1#sec2"],
             "content_type_label": "definition",
             "key_terms": ["plain_term"],
         },
@@ -384,7 +384,7 @@ def test_metadata_drops_zero_when_blocks_clean(
             "sequence": 0,
             "content": "<p>" + ("Clean prose. " * 10) + "</p>",
             "objective_ids": ["TO-01"],
-            "source_ids": ["dart:ch1#sec1"],
+            "source_ids": ["semantik:ch1#sec1"],
             "content_type_label": "definition",
         }) + "\n")
 

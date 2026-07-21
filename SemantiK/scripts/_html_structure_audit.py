@@ -1,4 +1,4 @@
-"""Semantic-structure fidelity audit for DART output HTML.
+"""Semantic-structure fidelity audit for SemantiK output HTML.
 
 axe-core answers "is the markup VALID per WCAG rules"; it does NOT answer
 "is this document correctly STRUCTURED" — a doc whose headings were all
@@ -13,9 +13,9 @@ Two tiers:
   Tier 2 — extrinsic (paired docs): ``diff_structure`` compares a
     predicted census against a ground-truth census (e.g. ar5iv HTML).
 
-Note: DART's assembler normalizes heading levels (heading_tree.py:
+Note: SemantiK's assembler normalizes heading levels (heading_tree.py:
 normalize_heading_levels promotes the first heading to h1 and closes
-skips), so a level-skip smell should be rare on real DART output — we
+skips), so a level-skip smell should be rare on real SemantiK output — we
 still check, because a regression there is exactly what we'd want to see.
 """
 
@@ -35,7 +35,7 @@ def _text(el) -> str:
 
 
 def audit_structure(html: str, *, n_pages: int | None = None) -> dict:
-    """Return {outline, census, smells, coverage} for a DART HTML document."""
+    """Return {outline, census, smells, coverage} for a SemantiK HTML document."""
     soup = BeautifulSoup(html or "", "lxml")
 
     # ---- heading outline (level, text) in document order ----

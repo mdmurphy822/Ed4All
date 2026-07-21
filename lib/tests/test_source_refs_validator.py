@@ -116,7 +116,7 @@ def _html_with_attrs_only(source_ids: list, primary: str = "") -> str:
 class TestHappyPath:
     def test_valid_refs_with_staging_pass(self, tmp_path):
         staging = _make_staging(tmp_path, "science_of_learning", ["s0_c0", "s1_c0"])
-        html = _html_with_json_ld(["dart:science_of_learning#s0_c0"])
+        html = _html_with_json_ld(["semantik:science_of_learning#s0_c0"])
         result = PageSourceRefValidator().validate({
             "staging_dir": str(staging),
             "html_contents": [{"path": "page.html", "html": html}],
@@ -132,7 +132,7 @@ class TestHappyPath:
         Wave4-I10: a page with NO ``data-cf-source-ids`` attr at all
         now trips EMPTY_SOURCE_REFS critical; the Wave-27 contract
         carve-out is to stamp the empty-string attribute explicitly
-        to mark "boilerplate, no DART provenance".
+        to mark "boilerplate, no source provenance".
         """
         map_path = tmp_path / "source_module_map.json"
         map_path.write_text("{}")
@@ -151,10 +151,10 @@ class TestHappyPath:
     def test_all_attrs_resolve_with_valid_source_ids_override(self):
         """Tests can seed valid_source_ids directly without a staging dir."""
         html = _html_with_attrs_only(
-            ["dart:doc#s0", "dart:doc#s1"], primary="dart:doc#s0"
+            ["semantik:doc#s0", "semantik:doc#s1"], primary="semantik:doc#s0"
         )
         result = PageSourceRefValidator().validate({
-            "valid_source_ids": ["dart:doc#s0", "dart:doc#s1"],
+            "valid_source_ids": ["semantik:doc#s0", "semantik:doc#s1"],
             "html_contents": [{"path": "page.html", "html": html}],
         })
         assert result.passed is True
@@ -177,7 +177,7 @@ class TestHappyPath:
 class TestUnresolvedSourceId:
     def test_unresolved_source_id_fails_critical(self, tmp_path):
         staging = _make_staging(tmp_path, "science_of_learning", ["s0_c0"])
-        html = _html_with_json_ld(["dart:science_of_learning#not_a_block"])
+        html = _html_with_json_ld(["semantik:science_of_learning#not_a_block"])
         result = PageSourceRefValidator().validate({
             "staging_dir": str(staging),
             "html_contents": [{"path": "bad.html", "html": html}],
@@ -190,7 +190,7 @@ class TestUnresolvedSourceId:
 
     def test_wrong_document_slug_fails(self, tmp_path):
         staging = _make_staging(tmp_path, "science_of_learning", ["s0_c0"])
-        html = _html_with_json_ld(["dart:other_doc#s0_c0"])
+        html = _html_with_json_ld(["semantik:other_doc#s0_c0"])
         result = PageSourceRefValidator().validate({
             "staging_dir": str(staging),
             "html_contents": [{"path": "bad.html", "html": html}],
@@ -200,7 +200,7 @@ class TestUnresolvedSourceId:
     def test_attr_only_emission_also_caught(self, tmp_path):
         """data-cf-source-ids without a JSON-LD block still gets validated."""
         staging = _make_staging(tmp_path, "x", ["s0_c0"])
-        html = _html_with_attrs_only(["dart:x#ghost_id"])
+        html = _html_with_attrs_only(["semantik:x#ghost_id"])
         result = PageSourceRefValidator().validate({
             "staging_dir": str(staging),
             "html_contents": [{"path": "bad.html", "html": html}],
@@ -209,7 +209,7 @@ class TestUnresolvedSourceId:
 
     def test_mixed_valid_and_invalid_fails(self, tmp_path):
         staging = _make_staging(tmp_path, "x", ["s0_c0"])
-        html = _html_with_json_ld(["dart:x#s0_c0", "dart:x#missing"])
+        html = _html_with_json_ld(["semantik:x#s0_c0", "semantik:x#missing"])
         result = PageSourceRefValidator().validate({
             "staging_dir": str(staging),
             "html_contents": [{"path": "bad.html", "html": html}],
@@ -239,17 +239,17 @@ class TestInvalidShape:
         )
 
     def test_uppercase_in_slug_fails(self):
-        html = _html_with_attrs_only(["dart:SCIENCE#s0"])
+        html = _html_with_attrs_only(["semantik:SCIENCE#s0"])
         result = PageSourceRefValidator().validate({
-            "valid_source_ids": ["dart:SCIENCE#s0"],
+            "valid_source_ids": ["semantik:SCIENCE#s0"],
             "html_contents": [{"path": "page.html", "html": html}],
         })
         assert result.passed is False
 
     def test_missing_separator_fails(self):
-        html = _html_with_attrs_only(["dart:science_no_sep"])
+        html = _html_with_attrs_only(["semantik:science_no_sep"])
         result = PageSourceRefValidator().validate({
-            "valid_source_ids": ["dart:science_no_sep"],
+            "valid_source_ids": ["semantik:science_no_sep"],
             "html_contents": [{"path": "page.html", "html": html}],
         })
         assert result.passed is False
@@ -264,7 +264,7 @@ class TestEmptyMapButEmittedRefs:
     def test_empty_map_with_emit_fails_critical(self, tmp_path):
         map_path = tmp_path / "source_module_map.json"
         map_path.write_text("{}")
-        html = _html_with_json_ld(["dart:slug#s0_c0"])
+        html = _html_with_json_ld(["semantik:slug#s0_c0"])
         result = PageSourceRefValidator().validate({
             "source_module_map_path": str(map_path),
             "html_contents": [{"path": "oops.html", "html": html}],
@@ -275,7 +275,7 @@ class TestEmptyMapButEmittedRefs:
 
     def test_missing_map_file_treated_as_empty(self, tmp_path):
         map_path = tmp_path / "does_not_exist.json"
-        html = _html_with_json_ld(["dart:slug#s0_c0"])
+        html = _html_with_json_ld(["semantik:slug#s0_c0"])
         result = PageSourceRefValidator().validate({
             "source_module_map_path": str(map_path),
             "html_contents": [{"path": "oops.html", "html": html}],
@@ -292,23 +292,23 @@ class TestJsonLdWalker:
     def test_walks_page_level_refs(self):
         data = {
             "sourceReferences": [
-                {"sourceId": "dart:x#a", "role": "primary"},
-                {"sourceId": "dart:x#b", "role": "contributing"},
+                {"sourceId": "semantik:x#a", "role": "primary"},
+                {"sourceId": "semantik:x#b", "role": "contributing"},
             ]
         }
-        assert sorted(_iter_jsonld_source_ids(data)) == ["dart:x#a", "dart:x#b"]
+        assert sorted(_iter_jsonld_source_ids(data)) == ["semantik:x#a", "semantik:x#b"]
 
     def test_walks_section_level_refs(self):
         data = {
             "sections": [
                 {
                     "sourceReferences": [
-                        {"sourceId": "dart:x#c", "role": "primary"}
+                        {"sourceId": "semantik:x#c", "role": "primary"}
                     ]
                 }
             ]
         }
-        assert list(_iter_jsonld_source_ids(data)) == ["dart:x#c"]
+        assert list(_iter_jsonld_source_ids(data)) == ["semantik:x#c"]
 
     def test_walker_tolerates_missing_key(self):
         assert list(_iter_jsonld_source_ids({})) == []
@@ -356,7 +356,7 @@ class TestSidecarWalker:
             ],
         }
         ids = list(_iter_sidecar_block_ids(sidecar))
-        assert "dart:override#s0" in ids
+        assert "semantik:override#s0" in ids
 
     def test_walker_returns_empty_when_no_slug(self):
         assert list(_iter_sidecar_block_ids({"sections": []})) == []
@@ -375,8 +375,8 @@ class TestSidecarWalker:
             }],
         }
         ids = sorted(_iter_sidecar_block_ids(sidecar))
-        assert "dart:x#s0_p0" in ids
-        assert "dart:x#s0_p1" in ids
+        assert "semantik:x#s0_p0" in ids
+        assert "semantik:x#s0_p1" in ids
 
 
 # ---------------------------------------------------------------------- #
@@ -388,7 +388,7 @@ class TestFileReading:
     def test_reads_page_paths(self, tmp_path):
         staging = _make_staging(tmp_path, "x", ["s0_c0"])
         page_path = tmp_path / "page.html"
-        page_path.write_text(_html_with_json_ld(["dart:x#s0_c0"]))
+        page_path.write_text(_html_with_json_ld(["semantik:x#s0_c0"]))
         result = PageSourceRefValidator().validate({
             "staging_dir": str(staging),
             "page_paths": [str(page_path)],
@@ -424,7 +424,7 @@ class TestSourceRefsManifestMissing:
         # sidecars. Harvested valid_ids will be empty.
         empty_staging = tmp_path / "staging_empty"
         empty_staging.mkdir()
-        html = _html_with_json_ld(["dart:slug#s0_c0"])
+        html = _html_with_json_ld(["semantik:slug#s0_c0"])
         result = PageSourceRefValidator().validate({
             "staging_dir": str(empty_staging),
             "html_contents": [{"path": "page.html", "html": html}],
@@ -439,7 +439,7 @@ class TestSourceRefsManifestMissing:
         assert crit and crit[0].severity == "critical"
         msg = crit[0].message
         assert str(empty_staging) in msg
-        assert "stage_dart_outputs" in msg
+        assert "stage_semantik_outputs" in msg
         assert "staging_manifest.json" in msg
 
     def test_missing_manifest_no_sidecars_fails_closed(self, tmp_path):
@@ -448,7 +448,7 @@ class TestSourceRefsManifestMissing:
         staging.mkdir()
         # Create unrelated junk so dir exists but no sidecars resolve.
         (staging / "readme.txt").write_text("nothing useful here")
-        html = _html_with_attrs_only(["dart:slug#s0_c0"])
+        html = _html_with_attrs_only(["semantik:slug#s0_c0"])
         result = PageSourceRefValidator().validate({
             "staging_dir": str(staging),
             "html_contents": [{"path": "page.html", "html": html}],
@@ -463,7 +463,7 @@ class TestSourceRefsManifestMissing:
         fail-closed branch must not mistake that for the silent-degrade
         case (which is detected via missing ``staging_dir``).
         """
-        html = _html_with_attrs_only(["dart:doc#s0"])
+        html = _html_with_attrs_only(["semantik:doc#s0"])
         result = PageSourceRefValidator().validate({
             "valid_source_ids": [],
             "html_contents": [{"path": "page.html", "html": html}],
@@ -529,7 +529,7 @@ class TestWave4I10EmptySourceRefsCritical:
     def test_empty_string_attr_passes_wave27_carveout(self, tmp_path):
         """`data-cf-source-ids=""` (empty string) -> passes, no GateIssue.
 
-        Wave-27 boilerplate contract: content blocks without DART
+        Wave-27 boilerplate contract: content blocks without source
         provenance still stamp the attribute, just with an empty value.
         """
         html = (
@@ -545,10 +545,10 @@ class TestWave4I10EmptySourceRefsCritical:
         assert "EMPTY_SOURCE_REFS" not in codes
 
     def test_populated_attr_passes(self, tmp_path):
-        """Populated `data-cf-source-ids="dart:doc#s0"` -> passes clean."""
-        html = _html_with_attrs_only(["dart:doc#s0"])
+        """Populated `data-cf-source-ids="semantik:doc#s0"` -> passes clean."""
+        html = _html_with_attrs_only(["semantik:doc#s0"])
         result = PageSourceRefValidator().validate({
-            "valid_source_ids": ["dart:doc#s0"],
+            "valid_source_ids": ["semantik:doc#s0"],
             "html_contents": [{"path": "page.html", "html": html}],
         })
         assert result.passed is True
@@ -599,20 +599,18 @@ class TestWave4I10WorkflowConfig:
 
 
 # ---------------------------------------------------------------------- #
-# Marketable-v1 A1: real DART converter sidecar shape regression.
+# SemantiK converter sidecar shape regression.
 #
-# The DART converter (DART/converter/sidecars.build_synthesized_sidecar)
-# writes a top-level ``slug`` field derived from the document *title*
-# (e.g. ``01-accessibility-foundations``) and NO ``campus_code`` /
-# ``document_slug`` field. The canonical sourceId slug, however, is
-# derived from the sidecar FILENAME stem
+# The SemantiK converter writes a top-level ``slug`` field derived from
+# the document *title* (e.g. ``01-accessibility-foundations``) and NO
+# ``campus_code`` / ``document_slug`` field. The canonical sourceId slug,
+# however, is derived from the sidecar FILENAME stem
 # (``01_accessibility_foundations_accessible``) -- the rule shared by the
 # source-router, content-grounding validator, and content-generator
-# emitter. The pre-fix harvester read the internal field, so it minted
-# IDs that never matched the emitter and every ``--skip-dart`` /
-# pre-converted-DART run tripped SOURCE_REFS_MANIFEST_MISSING. These
-# tests build a staging dir in the *real converter shape* and assert the
-# gate now resolves cleanly.
+# emitter. Reading the internal field mints IDs that never match the
+# emitter, so every ``--skip-conversion`` / pre-converted run trips
+# SOURCE_REFS_MANIFEST_MISSING. These tests build a staging dir in the
+# converter's sidecar shape and assert the gate resolves cleanly.
 # ---------------------------------------------------------------------- #
 
 
@@ -623,10 +621,10 @@ def _make_converter_shaped_staging(
     section_ids: list,
     include_manifest: bool = True,
 ) -> Path:
-    """Build a staging dir whose sidecar matches the DART CONVERTER shape.
+    """Build a staging dir whose sidecar matches the SemantiK converter shape.
 
-    Mirrors ``DART.converter.sidecars.build_synthesized_sidecar``:
-    top-level ``slug`` (title-derived, hyphenated), ``title``,
+    Mirrors the synthesized-sidecar builder: top-level ``slug``
+    (title-derived, hyphenated), ``title``,
     ``source_pdf``, ``sections[]`` keyed on ``section_id`` -- and NO
     ``campus_code`` / ``document_slug`` field.
     """
@@ -686,27 +684,27 @@ class TestConverterShapedSidecarHarvest:
             {"staging_dir": str(staging)}
         )
         assert (
-            "dart:01_accessibility_foundations_accessible#s1" in valid
+            "semantik:01_accessibility_foundations_accessible#s1" in valid
         )
         # The title-derived internal slug must NOT appear.
         assert not any(
-            sid.startswith("dart:01-accessibility-foundations#")
+            sid.startswith("semantik:01-accessibility-foundations#")
             for sid in valid
         )
 
-    def test_gate_passes_for_converter_sidecar_skip_dart_path(
+    def test_gate_passes_for_converter_sidecar_skip_conversion_path(
         self, tmp_path
     ):
         """End-to-end: emitter stamps the filename-derived sourceId; the
-        gate must resolve it and pass (the exact case that failed 6/7
-        real --skip-dart runs)."""
+        gate must resolve it and pass (the exact case that failed
+        real --skip-conversion runs)."""
         staging = _make_converter_shaped_staging(
             tmp_path,
             file_stem="02_aria_and_component_patterns_accessible",
             internal_slug="02-aria-and-component-patterns",
             section_ids=["s1", "s2"],
         )
-        emitted = "dart:02_aria_and_component_patterns_accessible#s1"
+        emitted = "semantik:02_aria_and_component_patterns_accessible#s1"
         html = _html_with_json_ld([emitted])
         result = PageSourceRefValidator().validate({
             "staging_dir": str(staging),
@@ -729,7 +727,7 @@ class TestConverterShapedSidecarHarvest:
             section_ids=["s1"],
             include_manifest=False,
         )
-        emitted = "dart:03_visual_design_principles_accessible#s1"
+        emitted = "semantik:03_visual_design_principles_accessible#s1"
         result = PageSourceRefValidator().validate({
             "staging_dir": str(staging),
             "html_contents": [
@@ -746,7 +744,7 @@ class TestConverterShapedSidecarHarvest:
         SOURCE_REFS_MANIFEST_MISSING."""
         empty = tmp_path / "staging_empty"
         empty.mkdir()
-        emitted = "dart:some_doc_accessible#s1"
+        emitted = "semantik:some_doc_accessible#s1"
         result = PageSourceRefValidator().validate({
             "staging_dir": str(empty),
             "html_contents": [
@@ -763,7 +761,7 @@ class TestConverterShapedSidecarHarvest:
         msg = crit[0].message
         assert str(empty) in msg
         assert "staging_manifest.json" in msg
-        assert "stage_dart_outputs" in msg
+        assert "stage_semantik_outputs" in msg
 
     def test_legacy_internal_slug_still_resolves_without_override(self):
         """Back-compat: a direct ``_iter_sidecar_block_ids`` call WITHOUT
@@ -779,5 +777,5 @@ class TestConverterShapedSidecarHarvest:
             ],
         }
         ids = set(_iter_sidecar_block_ids(legacy))
-        assert "dart:science_of_learning#s1" in ids
-        assert "dart:science_of_learning#s1_c0" in ids
+        assert "semantik:science_of_learning#s1" in ids
+        assert "semantik:science_of_learning#s1_c0" in ids

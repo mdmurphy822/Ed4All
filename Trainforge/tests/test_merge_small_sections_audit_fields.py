@@ -87,7 +87,7 @@ class TestMergedSectionResultBackCompat:
             heading="H",
             combined_text="text",
             chunk_type="explanation",
-            merged_source_ids=["dart:a"],
+            merged_source_ids=["semantik:a"],
             merged_headings=["H"],
             merged_key_claims=[{"claim": "x"}],
             merged_objective_alignment=[{"objective_id": "TO-01"}],
@@ -98,7 +98,7 @@ class TestMergedSectionResultBackCompat:
         assert elements[0] == "H"
         assert elements[1] == "text"
         assert elements[2] == "explanation"
-        assert elements[3] == ["dart:a"]
+        assert elements[3] == ["semantik:a"]
         assert elements[4] == ["H"]
 
     def test_legacy_destructure_5_tuple_works(self):
@@ -122,11 +122,11 @@ class TestMergedSectionResultBackCompat:
             heading="H",
             combined_text="text",
             chunk_type="explanation",
-            merged_source_ids=["dart:a"],
+            merged_source_ids=["semantik:a"],
             merged_headings=["H"],
             merged_key_claims=[{"claim": "x"}],
         )
-        assert result[3] == ["dart:a"]
+        assert result[3] == ["semantik:a"]
         assert result[4] == ["H"]
 
     def test_len_returns_5(self):
@@ -152,15 +152,15 @@ class TestMergeSmallSectionsAuditFields:
                 "Sec A",
                 "alpha alpha alpha",
                 key_claims=[
-                    {"claim": "X is Y", "source_chunk_ids": ["dart:a#1"]},
-                    {"claim": "P is Q", "source_chunk_ids": ["dart:a#2"]},
+                    {"claim": "X is Y", "source_chunk_ids": ["semantik:a#1"]},
+                    {"claim": "P is Q", "source_chunk_ids": ["semantik:a#2"]},
                 ],
             ),
             _section(
                 "Sec B",
                 "beta beta beta",
                 key_claims=[
-                    {"claim": "Z is W", "source_chunk_ids": ["dart:b#1"]},
+                    {"claim": "Z is W", "source_chunk_ids": ["semantik:b#1"]},
                 ],
             ),
         ]
@@ -174,8 +174,8 @@ class TestMergeSmallSectionsAuditFields:
         claims = [entry["claim"] for entry in result.merged_key_claims]
         assert claims == ["X is Y", "P is Q", "Z is W"]
         # Source-chunk attribution preserved per-entry.
-        assert result.merged_key_claims[0]["source_chunk_ids"] == ["dart:a#1"]
-        assert result.merged_key_claims[2]["source_chunk_ids"] == ["dart:b#1"]
+        assert result.merged_key_claims[0]["source_chunk_ids"] == ["semantik:a#1"]
+        assert result.merged_key_claims[2]["source_chunk_ids"] == ["semantik:b#1"]
 
     def test_dedupes_objective_alignment_first_seen_wins(self):
         """Two sections with overlapping objective_alignment (same
@@ -255,7 +255,7 @@ class TestMergeSmallSectionsAuditFields:
 
     def test_duck_typed_section_without_audit_attrs(self):
         """Section-like object that doesn't even DECLARE the new attrs
-        (legacy DART-side ContentSection-like, pre-W5.A parser) →
+        (a legacy ContentSection-like object, pre-W5.A parser) →
         getattr default kicks in, no AttributeError, fields are []."""
         legacy_section = SimpleNamespace(
             heading="Legacy",
@@ -388,7 +388,7 @@ class TestChunkTextBlockThreadsAuditFields:
         ctx = ChunkerContext(create_chunk=self._capture_callback(captured))
 
         merged_key_claims = [
-            {"claim": "X is Y", "source_chunk_ids": ["dart:a#1"]},
+            {"claim": "X is Y", "source_chunk_ids": ["semantik:a#1"]},
         ]
         merged_objective_alignment = [
             {"objective_id": "TO-05", "status": "delivered"},
@@ -551,7 +551,7 @@ class TestEndToEndChunkStamping:
             _section(
                 "Sec A",
                 "alpha " * 50,
-                key_claims=[{"claim": "X is Y", "source_chunk_ids": ["dart:a#1"]}],
+                key_claims=[{"claim": "X is Y", "source_chunk_ids": ["semantik:a#1"]}],
                 objective_alignment=[
                     {"objective_id": "TO-05", "status": "delivered"},
                 ],
@@ -559,7 +559,7 @@ class TestEndToEndChunkStamping:
             _section(
                 "Sec B",
                 "beta " * 50,
-                key_claims=[{"claim": "Z is W", "source_chunk_ids": ["dart:b#1"]}],
+                key_claims=[{"claim": "Z is W", "source_chunk_ids": ["semantik:b#1"]}],
                 objective_alignment=[
                     {"objective_id": "TO-06", "status": "delivered"},
                 ],

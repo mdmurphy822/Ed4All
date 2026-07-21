@@ -3,7 +3,7 @@
 Pre-Wave-27, zero chunks in any real LibV2 course carried
 ``source.source_references[]`` — the Wave 9 source-router's
 ``source_module_map`` path was populated, but the Courseforge
-content-generator never stamped per-element DART block IDs onto the
+content-generator never stamped per-element SemantiK block IDs onto the
 page HTML. Downstream Trainforge chunk harvesting (see
 ``Trainforge/parsers/html_content_parser.py``) looks for
 ``data-cf-source-ids`` on the nearest wrapper but found nothing.
@@ -11,16 +11,16 @@ page HTML. Downstream Trainforge chunk harvesting (see
 Wave 27 closes the loop:
 
 1. ``MCP.tools._content_gen_helpers.parse_dart_html_files`` captures
-   ``data-dart-block-id`` from every DART section wrapper.
+   ``data-semantik-block-id`` from every SemantiK section wrapper.
 2. ``_topic_to_section`` emits ``source_references[]`` on the
-   generated section dict when a DART block ID is present.
+   generated section dict when a SemantiK block ID is present.
 3. ``Courseforge.scripts.generate_course._render_content_sections``
    stamps ``data-cf-source-ids`` on the rendered ``<h2>`` and
    ``_build_sections_metadata`` propagates the same refs into the
    page's JSON-LD ``sections[].sourceReferences``.
 
 Tests below verify every step of that chain against a minimal staged
-DART HTML fixture so the suite runs hermetically.
+SemantiK HTML fixture so the suite runs hermetically.
 """
 
 from __future__ import annotations
@@ -44,17 +44,17 @@ from MCP.tools.pipeline_tools import _build_tool_registry  # noqa: E402
 COURSE_CODE = "WAVE27SRC_101"
 
 
-# Minimal DART HTML fixture with ``data-dart-block-id`` on every section.
+# Minimal SemantiK HTML fixture with ``data-semantik-block-id`` on every section.
 # Multiple sections so the dedup path can't accidentally drop all block
 # IDs. All section content is real educational prose so the no-placeholder
 # policy emits real pages.
-_DART_HTML_WITH_BLOCK_IDS = """<!DOCTYPE html>
+_SEMANTIK_HTML_WITH_BLOCK_IDS = """<!DOCTYPE html>
 <html lang="en">
 <head><title>Photosynthesis Basics</title></head>
 <body>
-<main id="main-content" role="main" class="dart-document">
-<section class="dart-section" data-dart-block-id="s1_c0"
-  data-dart-source="pdfplumber" data-dart-pages="12">
+<main id="main-content" role="main" class="semantik-document">
+<section class="semantik-section" data-semantik-block-id="s1_c0"
+  data-semantik-source="pdfplumber" data-semantik-pages="12">
   <h2>Introduction to Photosynthesis</h2>
   <p>Photosynthesis is the biological process by which plants, algae, and
   some bacteria convert light energy into chemical energy stored as
@@ -65,8 +65,8 @@ _DART_HTML_WITH_BLOCK_IDS = """<!DOCTYPE html>
   chlorophyll, a green pigment that absorbs light energy most effectively
   in the red and blue portions of the visible spectrum.</p>
 </section>
-<section class="dart-section" data-dart-block-id="s2_c0"
-  data-dart-source="pdftotext" data-dart-pages="14">
+<section class="semantik-section" data-semantik-block-id="s2_c0"
+  data-semantik-source="pdftotext" data-semantik-pages="14">
   <h2>The Two Stages of Photosynthesis</h2>
   <p>Photosynthesis proceeds in two interconnected stages: the
   light-dependent reactions and the Calvin cycle, also known as the
@@ -76,8 +76,8 @@ _DART_HTML_WITH_BLOCK_IDS = """<!DOCTYPE html>
   fluid-filled space surrounding the thylakoids. Both stages work
   together to fix atmospheric carbon dioxide into organic glucose.</p>
 </section>
-<section class="dart-section" data-dart-block-id="s3_c0"
-  data-dart-source="pdftotext" data-dart-pages="16">
+<section class="semantik-section" data-semantik-block-id="s3_c0"
+  data-semantik-source="pdftotext" data-semantik-pages="16">
   <h2>Cellular Respiration and Energy</h2>
   <p>Cellular respiration is the complementary process to
   photosynthesis. While photosynthesis stores chemical energy, cellular
@@ -92,10 +92,10 @@ _DART_HTML_WITH_BLOCK_IDS = """<!DOCTYPE html>
 """
 
 
-# Legacy DART HTML — same content, but no ``data-dart-block-id`` stamped
+# Legacy HTML — same content, but no block-id attribute stamped
 # (pre-Wave-12 output). Used to verify the back-compat path: no
 # ``data-cf-source-ids`` emitted, but the page still renders cleanly.
-_DART_HTML_LEGACY = """<!DOCTYPE html>
+_HTML_NO_BLOCK_IDS = """<!DOCTYPE html>
 <html lang="en">
 <head><title>Photosynthesis Basics</title></head>
 <body>
@@ -140,19 +140,19 @@ def _make_project(tmp_path: Path, project_id: str, duration_weeks: int = 1):
     return project_path
 
 
-def _stage_dart(staging_root: Path, run_id: str, html: str, filename: str):
+def _stage_html(staging_root: Path, run_id: str, html: str, filename: str):
     staging_dir = staging_root / run_id
     staging_dir.mkdir(parents=True, exist_ok=True)
     (staging_dir / filename).write_text(html, encoding="utf-8")
     return staging_dir
 
 
-class TestParseCapturesDartBlockIds:
-    """Unit test: ``parse_dart_html_files`` harvests ``data-dart-block-id``."""
+class TestParseCapturesBlockIds:
+    """Unit test: ``parse_dart_html_files`` harvests ``data-semantik-block-id``."""
 
-    def test_dart_block_ids_captured_on_topics(self, tmp_path):
+    def test_block_ids_captured_on_topics(self, tmp_path):
         path = tmp_path / "photosynthesis.html"
-        path.write_text(_DART_HTML_WITH_BLOCK_IDS, encoding="utf-8")
+        path.write_text(_SEMANTIK_HTML_WITH_BLOCK_IDS, encoding="utf-8")
 
         topics = _cgh.parse_dart_html_files([path])
         # Should have 3 non-low-signal topics; each carries its block_id.
@@ -163,16 +163,16 @@ class TestParseCapturesDartBlockIds:
             all_block_ids.extend(block_ids)
         assert "s1_c0" in all_block_ids or "s2_c0" in all_block_ids or (
             "s3_c0" in all_block_ids
-        ), f"No DART block IDs captured: {all_block_ids}"
+        ), f"No block IDs captured: {all_block_ids}"
 
-    def test_legacy_dart_no_block_ids(self, tmp_path):
+    def test_legacy_no_block_ids(self, tmp_path):
         path = tmp_path / "legacy.html"
-        path.write_text(_DART_HTML_LEGACY, encoding="utf-8")
+        path.write_text(_HTML_NO_BLOCK_IDS, encoding="utf-8")
 
         topics = _cgh.parse_dart_html_files([path])
         for t in topics:
             assert t.get("dart_block_ids") == [], (
-                f"Legacy DART topic should have empty block_ids, "
+                f"Legacy topic should have empty block_ids, "
                 f"got {t.get('dart_block_ids')}"
             )
 
@@ -231,9 +231,9 @@ class TestCourseforgeEmitsDataCfSourceIds:
         tools, tmp_path, staging_root = pipeline_registry
         project_id = "PROJ-27-EMIT-01"
         project_path = _make_project(tmp_path, project_id)
-        _stage_dart(
+        _stage_html(
             staging_root, "WF-27-01",
-            _DART_HTML_WITH_BLOCK_IDS, "photosynthesis.html",
+            _SEMANTIK_HTML_WITH_BLOCK_IDS, "photosynthesis.html",
         )
 
         asyncio.run(tools["generate_course_content"](
@@ -255,16 +255,16 @@ class TestCourseforgeEmitsDataCfSourceIds:
             "expected semantik:photosynthesis# prefix"
         )
 
-    def test_legacy_dart_no_source_ids_emitted(self, pipeline_registry):
-        """Back-compat: DART HTML without ``data-dart-block-id`` => no
+    def test_legacy_no_source_ids_emitted(self, pipeline_registry):
+        """Back-compat: HTML without a block-id attribute => no
         ``data-cf-source-ids`` on section wrappers (still renders page).
         """
         tools, tmp_path, staging_root = pipeline_registry
         project_id = "PROJ-27-EMIT-02"
         project_path = _make_project(tmp_path, project_id)
-        _stage_dart(
+        _stage_html(
             staging_root, "WF-27-02",
-            _DART_HTML_LEGACY, "legacy.html",
+            _HTML_NO_BLOCK_IDS, "legacy.html",
         )
 
         asyncio.run(tools["generate_course_content"](
@@ -280,7 +280,7 @@ class TestCourseforgeEmitsDataCfSourceIds:
             # test's project has no such map — assert there is no
             # ``semantik:legacy#`` attribute value derived from a real block.
             assert 'data-cf-source-ids="semantik:legacy#' not in body, (
-                "Legacy DART HTML (no data-dart-block-id) must not yield "
+                "Legacy HTML (no block-id attribute) must not yield "
                 "semantik:legacy# attributes on Courseforge pages"
             )
 
@@ -289,9 +289,9 @@ class TestCourseforgeEmitsDataCfSourceIds:
         tools, tmp_path, staging_root = pipeline_registry
         project_id = "PROJ-27-EMIT-03"
         project_path = _make_project(tmp_path, project_id)
-        _stage_dart(
+        _stage_html(
             staging_root, "WF-27-03",
-            _DART_HTML_WITH_BLOCK_IDS, "photosynthesis.html",
+            _SEMANTIK_HTML_WITH_BLOCK_IDS, "photosynthesis.html",
         )
 
         asyncio.run(tools["generate_course_content"](
@@ -326,7 +326,7 @@ class TestCourseforgeEmitsDataCfSourceIds:
         )
 
     def test_course_slug_derived_from_source_stem(self, pipeline_registry):
-        """Course slug tracks the staged DART file stem.
+        """Course slug tracks the staged SemantiK file stem.
 
         Wave 35: the emitted slug now preserves underscores (lowercase
         + space-to-hyphen only) so it matches the slug the
@@ -338,9 +338,9 @@ class TestCourseforgeEmitsDataCfSourceIds:
         tools, tmp_path, staging_root = pipeline_registry
         project_id = "PROJ-27-EMIT-04"
         project_path = _make_project(tmp_path, project_id)
-        _stage_dart(
+        _stage_html(
             staging_root, "WF-27-04",
-            _DART_HTML_WITH_BLOCK_IDS.replace(
+            _SEMANTIK_HTML_WITH_BLOCK_IDS.replace(
                 "<title>Photosynthesis Basics</title>",
                 "<title>XYZ_201 Textbook</title>",
             ),
@@ -367,9 +367,9 @@ class TestCourseforgeEmitsDataCfSourceIds:
         tools, tmp_path, staging_root = pipeline_registry
         project_id = "PROJ-27-EMIT-05"
         project_path = _make_project(tmp_path, project_id)
-        _stage_dart(
+        _stage_html(
             staging_root, "WF-27-05",
-            _DART_HTML_WITH_BLOCK_IDS, "photosynthesis.html",
+            _SEMANTIK_HTML_WITH_BLOCK_IDS, "photosynthesis.html",
         )
 
         asyncio.run(tools["generate_course_content"](
@@ -409,9 +409,9 @@ class TestTrainforgeHarvestsSourceReferences:
         tools, tmp_path, staging_root = pipeline_registry
         project_id = "PROJ-27-EMIT-06"
         project_path = _make_project(tmp_path, project_id)
-        _stage_dart(
+        _stage_html(
             staging_root, "WF-27-06",
-            _DART_HTML_WITH_BLOCK_IDS, "photosynthesis.html",
+            _SEMANTIK_HTML_WITH_BLOCK_IDS, "photosynthesis.html",
         )
 
         asyncio.run(tools["generate_course_content"](
@@ -438,7 +438,7 @@ class TestTrainforgeHarvestsSourceReferences:
             if refs:
                 found_ref = True
                 # Pattern-validate: every ref has the canonical sourceId
-                # shape and traces back to our staged DART fixture.
+                # shape and traces back to our staged SemantiK fixture.
                 for ref in refs:
                     assert isinstance(ref, dict)
                     sid = ref.get("sourceId", "")
@@ -461,9 +461,9 @@ class TestPageSourceRefValidatorNonVacuous:
         tools, tmp_path, staging_root = pipeline_registry
         project_id = "PROJ-27-EMIT-07"
         project_path = _make_project(tmp_path, project_id)
-        _stage_dart(
+        _stage_html(
             staging_root, "WF-27-07",
-            _DART_HTML_WITH_BLOCK_IDS, "photosynthesis.html",
+            _SEMANTIK_HTML_WITH_BLOCK_IDS, "photosynthesis.html",
         )
 
         asyncio.run(tools["generate_course_content"](

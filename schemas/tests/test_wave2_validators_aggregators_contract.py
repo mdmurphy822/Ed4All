@@ -819,7 +819,7 @@ def _build_claim_support_block(
     *,
     block_id: str = "page_01#concept_rdf_0",
     claims: List[Any],
-    source_id: str = "dart:rdf_intro#blk_0",
+    source_id: str = "semantik:rdf_intro#blk_0",
 ):
     """Build a Block with ``key_claims`` populated + a single source ref."""
     from blocks import Block  # noqa: WPS433
@@ -875,7 +875,7 @@ def test_6_claim_support_contradiction_and_entailment_regression() -> None:
     validator_a = ClaimSupportValidator(nli=nli_a)
     result_a = validator_a.validate({
         "blocks": [block_a],
-        "source_chunks": {"dart:rdf_intro#blk_0": cited_chunk_a},
+        "source_chunks": {"semantik:rdf_intro#blk_0": cited_chunk_a},
     })
 
     # passed stays True (every issue is warning-severity); the router consumes
@@ -919,7 +919,7 @@ def test_6_claim_support_contradiction_and_entailment_regression() -> None:
     validator_b = ClaimSupportValidator(nli=nli_b)
     result_b = validator_b.validate({
         "blocks": [block_b],
-        "source_chunks": {"dart:rdf_intro#blk_0": cited_chunk_b},
+        "source_chunks": {"semantik:rdf_intro#blk_0": cited_chunk_b},
     })
     assert result_b.passed is True
     assert result_b.action is None, (
@@ -960,7 +960,7 @@ def test_6_claim_support_contradiction_and_entailment_regression() -> None:
         "blocks": [block_c],
         # Same chunk as fixture A — but the mock NLI ignores semantics
         # and returns entailment=0.99 unconditionally.
-        "source_chunks": {"dart:rdf_intro#blk_0": cited_chunk_a},
+        "source_chunks": {"semantik:rdf_intro#blk_0": cited_chunk_a},
     })
     # Vacuous pass is the expected outcome of a silent-degrade NLI
     # (entailment >= 0.7 → bucketed as entailed).

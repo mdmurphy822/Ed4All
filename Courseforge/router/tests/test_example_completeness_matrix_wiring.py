@@ -50,7 +50,7 @@ from MCP.hardening.validation_gates import GateIssue, GateResult  # noqa: E402
 
 # A stub example body: a bare problem statement, no worked solution.
 _STUB_EXAMPLE_HTML = (
-    '<section data-cf-source-ids="dart:fractions#b0" '
+    '<section data-cf-source-ids="semantik:fractions#b0" '
     'data-cf-content-type="example">'
     '<h3 data-cf-content-type="example">Example: Dividing Fractions</h3>'
     "<p>Divide -2/3 by n.</p>"
@@ -60,7 +60,7 @@ _STUB_EXAMPLE_HTML = (
 # A complete example body: problem + intermediate steps + a final
 # answer, comfortably above the 40-word CB5a length floor.
 _COMPLETE_EXAMPLE_HTML = (
-    '<section data-cf-source-ids="dart:fractions#b0" '
+    '<section data-cf-source-ids="semantik:fractions#b0" '
     'data-cf-content-type="example">'
     '<h3 data-cf-content-type="example">Example: Dividing Fractions</h3>'
     "<p>Divide the fraction negative two-thirds by the fraction four-fifths, "

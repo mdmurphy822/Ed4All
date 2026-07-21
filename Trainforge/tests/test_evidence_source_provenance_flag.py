@@ -49,8 +49,8 @@ from Trainforge.rag.inference_rules import (
 
 
 SAMPLE_REFS = [
-    {"sourceId": "dart:science_of_learning#s5_p2", "role": "primary"},
-    {"sourceId": "dart:science_of_learning#s6_p1", "role": "contributing"},
+    {"sourceId": "semantik:sample_source#s5_p2", "role": "primary"},
+    {"sourceId": "semantik:sample_source#s6_p1", "role": "contributing"},
 ]
 
 
@@ -181,7 +181,7 @@ def test_is_a_refs_are_deep_copied_not_shared(flag_on):
     # Mutate emitted evidence
     for edge in edges:
         edge["provenance"]["evidence"]["source_references"].append(
-            {"sourceId": "dart:x#y", "role": "primary"}
+            {"sourceId": "semantik:x#y", "role": "primary"}
         )
     # Originating chunk's refs untouched
     assert chunks[0]["source"]["source_references"] == original_refs

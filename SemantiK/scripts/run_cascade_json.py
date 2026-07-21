@@ -62,7 +62,7 @@ On SUCCESS — all JSON-serializable fields the P3a/P3b seam consumes::
     }
 
 On FAILURE — a clear error object (the seam fails closed on this, NEVER a
-silent DART fallback)::
+silent fallback)::
 
     {"error": "<message>", "runtime_mode": <str|null>, "pdf": <str>}
 

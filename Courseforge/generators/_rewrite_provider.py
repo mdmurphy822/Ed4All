@@ -732,7 +732,7 @@ _REWRITE_SYSTEM_PROMPT = (
     "chunk-id `<cite>` (e.g. `<cite>..._chunk_00013</cite>`) or any "
     "\"According to the source ...\" / \"According to the source chunk "
     "...\" lead-in naming a chunk id in the visible prose. NEVER write a "
-    "raw provenance id such as `dart:...#<hash>` in the visible text. "
+    "raw provenance id such as `semantik:...#<hash>` in the visible text. "
     "NEVER write an inline objective reference like `(CO-NN)` / `(TO-NN)` "
     "in body prose. Source attribution lives ONLY in the "
     "`data-cf-source-ids` attribute, never in the prose the learner reads."

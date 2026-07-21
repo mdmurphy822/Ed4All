@@ -10,7 +10,7 @@ the SemantiK visual-convergence loop:
   fold now folds a run at a mask-sentinel (masked-tag/math) boundary too, while a
   lone interior comparison operator (``x &gt; y``) and in-math ``&gt;`` survive.
 * ITEM 2 — the ``:: MEDIA :: …`` colon-run residue inside the aria-hidden
-  ``dart-continuation`` banners (ch04 / ch07) — the marker scrub runs on block
+  ``semantik-continuation`` banners (ch04 / ch07) — the marker scrub runs on block
   bodies, never on the chapter-title/banner path — now folds at the banner emit
   site (user-invisible, but keep the source clean).
 
@@ -124,7 +124,7 @@ def test_item1_leading_gutter_survives_end_to_end():
             ],
         )
     ]
-    out = normalize_cascade_to_ed4all(_result(chapters), pdf_stem="ea2e_ch9")
+    out = normalize_cascade_to_ed4all(_result(chapters), pdf_stem="algebra_ch9")
     html = out["html"]
     assert "&gt;|" not in html
     assert "Simplify the radical expression here." in html
@@ -148,9 +148,9 @@ def _continuation_banner_text(title: str) -> str:
         ],
     )
     ch.continuation = True
-    out = normalize_cascade_to_ed4all(_result([ch]), pdf_stem="ea2e_ch4")
+    out = normalize_cascade_to_ed4all(_result([ch]), pdf_stem="algebra_ch4")
     m = re.search(
-        r'<div class="dart-continuation"[^>]*>(.*?)</div>', out["html"], re.DOTALL
+        r'<div class="semantik-continuation"[^>]*>(.*?)</div>', out["html"], re.DOTALL
     )
     assert m is not None, "continuation banner not emitted"
     return m.group(1)

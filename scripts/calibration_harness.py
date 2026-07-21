@@ -1064,8 +1064,8 @@ def _corpus_key(name: str) -> str:
 # The fix: when an export carries a resolvable SOURCE-DOCUMENT signal, key on the
 # normalized source-document identity instead of the slug, so same-textbook runs collapse.
 
-# A dart source-id is ``dart:<doc-slug>#<block-hash>``; we want the ``<doc-slug>``.
-_DART_SOURCE_RE = re.compile(r"^dart:([^#\s]+)")
+# A legacy source-id is ``dart:<doc-slug>#<block-hash>``; we want the ``<doc-slug>``.
+_LEGACY_SOURCE_RE = re.compile(r"^dart:([^#\s]+)")
 # Section/chapter-range suffixes appended to a textbook doc slug for a partial ingest
 # (e.g. ``sample-algebra-2e-s11to13`` / ``sample-algebra-2e-ch1-3``). Stripping
 # them collapses partial slices of one textbook to a single stable identity.
@@ -1093,7 +1093,7 @@ def _normalize_source_doc(raw: str) -> str:
     if "." in s:
         s = s.rsplit(".", 1)[0]
     s = s.replace("_", "-")
-    # Drop the SemantiK/DART ``-accessible`` marker.
+    # Drop the SemantiK ``-accessible`` marker.
     for marker in ("-accessible", "-converted", "-clean"):
         if s.endswith(marker):
             s = s[: -len(marker)]
@@ -1117,9 +1117,9 @@ def _dominant(counter: dict[str, int]) -> str:
 def _source_doc_from_blocks(export_dir: Path) -> str:
     """Most-common normalized source document across this export's blocks.
 
-    Reads ``source_ids`` (``dart:<slug>#...``) from the richest available blocks file
-    (rewrite-tier ``blocks_final`` preferred, then ``blocks_validated``). Returns ``""``
-    when no blocks / no dart source-ids are present.
+    Reads ``source_ids`` (legacy ``dart:<slug>#...``) from the richest available blocks
+    file (rewrite-tier ``blocks_final`` preferred, then ``blocks_validated``). Returns
+    ``""`` when no blocks / no legacy source-ids are present.
     """
     candidates = (
         "04_rewrite/blocks_final.jsonl",
@@ -1142,7 +1142,7 @@ def _source_doc_from_blocks(export_dir: Path) -> str:
                     if not isinstance(sids, list):
                         continue
                     for sid in sids:
-                        m = _DART_SOURCE_RE.match(str(sid))
+                        m = _LEGACY_SOURCE_RE.match(str(sid))
                         if not m:
                             continue
                         doc = _normalize_source_doc(m.group(1))
@@ -1195,12 +1195,14 @@ def _source_doc_from_structure(course_dir: Path) -> str:
 def _source_doc_from_chunks(course_dir: Path) -> str:
     """Most-common normalized source document from a libv2 course's chunk files.
 
-    Reads ``source.module_id`` / ``source.lesson_id`` from the dart/imscc chunk JSONL.
+    Reads ``source.module_id`` / ``source.lesson_id`` from the semantik/imscc chunk
+    JSONL (the legacy ``dart_chunks/`` dir is still read for un-migrated corpora).
     Returns ``""`` on no signal (e.g. empty smoke-test chunk files).
     """
     counter: dict[str, int] = {}
-    chunk_files = list(course_dir.rglob("dart_chunks/chunks.jsonl"))
-    chunk_files += list(course_dir.rglob("imscc_chunks/chunks.jsonl"))
+    chunk_files = list(course_dir.rglob("imscc_chunks/chunks.jsonl"))
+    chunk_files += list(course_dir.rglob("semantik_chunks/chunks.jsonl"))
+    chunk_files += list(course_dir.rglob("dart_chunks/chunks.jsonl"))
     for cf in chunk_files:
         if not cf.is_file():
             continue
@@ -1234,8 +1236,8 @@ def _content_corpus_key(course_dir: Path, name: str) -> str:
     Tries the content signals in order of ROBUSTNESS. ``textbook_structure.json``'s
     ``source_files`` is the ingested INPUT-FILE path, which carries the textbook
     identity verbatim across every provenance convention, so it is tried FIRST. The
-    blocks' ``dart:<slug>`` source-ids are a useful fallback BUT older exports stamped
-    the COURSE slug (not the textbook slug) into the dart id — so blocks are consulted
+    blocks' legacy ``dart:<slug>`` source-ids are a useful fallback BUT older exports
+    stamped the COURSE slug (not the textbook slug) into the id — so blocks are consulted
     only when no structure signal is present. Libv2 chunk source is the last resort.
     When ONE resolves, the corpus key is ``src:<normalized-doc>`` so two differently-
     named courses built from the same textbook collapse to a single corpus. When NONE

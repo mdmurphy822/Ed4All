@@ -155,7 +155,7 @@ def test_source_refs_skips_key_terms_block():
     # OUTLINE_BLOCK_INVALID_SOURCE_ID_SHAPE without the exemption.
     import dataclasses
     kt_bad = dataclasses.replace(kt, source_ids=("not-a-valid-sourceid",))
-    res = _run(BlockSourceRefValidator(), [kt_bad], valid_source_ids=["dart:c#b"])
+    res = _run(BlockSourceRefValidator(), [kt_bad], valid_source_ids=["semantik:c#b"])
     assert res.passed is True
     assert kt_bad.block_id not in {i.location for i in res.issues}
 

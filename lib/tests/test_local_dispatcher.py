@@ -11,8 +11,8 @@ from MCP.orchestrator.worker_contracts import PhaseInput, PhaseOutput
 
 
 def _phase_input(
-    phase_name: str = "dart_conversion",
-    agent: str = "dart-converter",
+    phase_name: str = "semantik_conversion",
+    agent: str = "semantik-converter",
     project_root: Path | None = None,
 ) -> PhaseInput:
     return PhaseInput(
@@ -40,7 +40,7 @@ class TestLocalDispatcherStub:
         assert isinstance(result, PhaseOutput)
         assert result.status == "ok"
         assert result.run_id == "RUN_LOCAL_001"
-        assert result.phase_name == "dart_conversion"
+        assert result.phase_name == "semantik_conversion"
         assert "dispatch_mode" in result.outputs
         assert result.outputs["dispatch_mode"] == "stub"
 
@@ -65,7 +65,7 @@ class TestLocalDispatcherWithAgentTool:
             captured["request"] = request
             return json.dumps({
                 "run_id": "RUN_LOCAL_001",
-                "phase_name": "dart_conversion",
+                "phase_name": "semantik_conversion",
                 "outputs": {"ok": True},
                 "status": "ok",
             })
@@ -76,7 +76,7 @@ class TestLocalDispatcherWithAgentTool:
         result = await dispatcher.dispatch_phase(_phase_input())
         assert result.status == "ok"
         assert result.outputs == {"ok": True}
-        assert captured["request"]["subagent_type"] == "dart-converter"
+        assert captured["request"]["subagent_type"] == "semantik-converter"
 
     @pytest.mark.asyncio
     async def test_invalid_json_response_marks_fail(self, tmp_path: Path):

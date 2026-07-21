@@ -86,7 +86,7 @@ def _base_node(**overrides: Any) -> Dict[str, Any]:
 
 def _valid_ref(**overrides: Any) -> Dict[str, Any]:
     base = {
-        "sourceId": "dart:science_of_learning#s3_c0",
+        "sourceId": "semantik:science_of_learning#s3_c0",
         "role": "primary",
     }
     base.update(overrides)
@@ -174,8 +174,8 @@ def test_node_with_multiple_source_refs_validates():
     """Multiple refs per node (from a chunk that merged 2+ sections)."""
     validator = _build_validator()
     refs = [
-        _valid_ref(sourceId="dart:slug#s1_c0", role="primary"),
-        _valid_ref(sourceId="dart:slug#s2_c0", role="contributing"),
+        _valid_ref(sourceId="semantik:slug#s1_c0", role="primary"),
+        _valid_ref(sourceId="semantik:slug#s2_c0", role="contributing"),
     ]
     node = _base_node(source_refs=refs)
     graph = _base_graph(nodes=[node])
@@ -231,7 +231,7 @@ def test_node_with_ref_missing_sourceId_rejected():
 
 def test_node_with_ref_missing_role_rejected():
     validator = _build_validator()
-    node = _base_node(source_refs=[{"sourceId": "dart:slug#s0_c0"}])
+    node = _base_node(source_refs=[{"sourceId": "semantik:slug#s0_c0"}])
     graph = _base_graph(nodes=[node])
     errors = list(validator.iter_errors(graph))
     assert errors, "Missing role should be rejected"
@@ -241,10 +241,10 @@ def test_node_with_ref_missing_role_rejected():
     "bad_source_id",
     [
         "",
-        "no_dart_prefix",
-        "dart:BAD_UPPER#s0_c0",
-        "dart:slug#",
-        "dart:slug#SHOUTY",
+        "no_semantik_prefix",
+        "semantik:BAD_UPPER#s0_c0",
+        "semantik:slug#",
+        "semantik:slug#SHOUTY",
     ],
 )
 def test_node_with_ref_malformed_source_id_rejected(bad_source_id):
@@ -261,7 +261,7 @@ def test_node_with_ref_malformed_source_id_rejected(bad_source_id):
 def test_node_with_ref_bad_role_rejected(bad_role):
     validator = _build_validator()
     node = _base_node(
-        source_refs=[{"sourceId": "dart:slug#s0_c0", "role": bad_role}]
+        source_refs=[{"sourceId": "semantik:slug#s0_c0", "role": bad_role}]
     )
     graph = _base_graph(nodes=[node])
     errors = list(validator.iter_errors(graph))

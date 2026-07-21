@@ -345,7 +345,7 @@ def test_empty_course_code_raises_value_error(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-_DART_HTML_FIXTURE = """<!DOCTYPE html>
+_SEMANTIK_HTML_FIXTURE = """<!DOCTYPE html>
 <html lang="en">
 <head><title>Photosynthesis Basics</title></head>
 <body>
@@ -457,12 +457,12 @@ def test_pipeline_tools_routes_through_provider_when_env_set(
         _json.dumps(config, indent=2), encoding="utf-8"
     )
 
-    # Stage a single DART HTML so build_week_data has at least one
+    # Stage a single SemantiK HTML so build_week_data has at least one
     # renderable topic (the provider seam fires per-topic).
     staging_dir = staging_root / "WF-PROV-01"
     staging_dir.mkdir(parents=True, exist_ok=True)
     (staging_dir / "photosynthesis.html").write_text(
-        _DART_HTML_FIXTURE, encoding="utf-8"
+        _SEMANTIK_HTML_FIXTURE, encoding="utf-8"
     )
 
     registry = _build_tool_registry()

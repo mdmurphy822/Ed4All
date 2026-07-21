@@ -83,7 +83,7 @@ def _outline_block(*, curies: List[str] | None = None) -> Block:
         content={
             "key_claims": ["The central concept is X."],
             "curies": list(curies or []),
-            "source_refs": ["dart:slug#blk1"],
+            "source_refs": ["semantik:slug#blk1"],
             "objective_refs": ["TO-01"],
         },
     )

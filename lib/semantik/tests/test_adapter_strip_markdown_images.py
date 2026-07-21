@@ -5,9 +5,9 @@ The Qwen2.5-VL scan-lane transcriber sometimes INVENTS a Markdown image
 hallucinated external host / bare relative filename that resolves to nothing.
 ``math_fold.strip_markdown_images`` + the adapter ``_strip_markdown_images``
 pass (which runs BEFORE ``_linkify_block_urls``) replace every image with the
-accessible ``.dart-figure-notation`` placeholder, so the fabricated URL never
+accessible ``.semantik-figure-notation`` placeholder, so the fabricated URL never
 becomes a live ``<a href>`` anchor and never ships as a broken external
-``<img>``. Legitimate prose URLs (cnx/openstax attribution) are still
+``<img>``. Legitimate prose URLs (publisher attribution) are still
 linkified — only image syntax is stripped.
 
 All synthetic IR — no course-data path, no model, no cascade run. Harness idiom
@@ -31,7 +31,7 @@ def test_strip_external_host_html_placeholder():
     )
     assert "imgur" not in out
     assert "![" not in out
-    assert 'class="dart-figure-notation"' in out
+    assert 'class="semantik-figure-notation"' in out
     assert 'aria-label="Figure 1.6 (image not recoverable)"' in out
 
 
@@ -66,7 +66,7 @@ def test_strip_idempotent():
 
 
 def test_strip_noop_without_image():
-    text = "Just prose, a http://cnx.org/x link, and $x^2$ math."
+    text = "Just prose, a http://example.org/x link, and $x^2$ math."
     assert strip_markdown_images(text, html=True) == text
 
 
@@ -80,7 +80,7 @@ def test_literal_escaped_img_external_html_placeholder():
     )
     assert "imgur" not in out
     assert "&lt;img" not in out and "<img" not in out
-    assert 'class="dart-figure-notation"' in out
+    assert 'class="semantik-figure-notation"' in out
 
 
 def test_literal_unescaped_img_in_raw_text_plain():
@@ -105,7 +105,7 @@ def test_literal_img_table_cell_escaped_preserves_alt():
 def test_literal_img_single_quote_and_selfclosing():
     a = strip_literal_img_tags("<img src='https://example.com/a.png'>", html=True)
     b = strip_literal_img_tags("<img src=https://h/x.png />", html=True)
-    assert "example.com" not in a and 'class="dart-figure-notation"' in a
+    assert "example.com" not in a and 'class="semantik-figure-notation"' in a
     assert "://h/x.png" not in b and "<img" not in b
 
 
@@ -171,7 +171,7 @@ def test_adapter_strips_fabricated_image_before_linkify():
     # No anchor minted from the fabricated URL (the doc shell's skip-link <a>
     # is legitimate; only a fabricated-host href would be a defect).
     assert "href=" not in html or "i.imgur" not in html
-    assert 'class="dart-figure-notation"' in html
+    assert 'class="semantik-figure-notation"' in html
     assert "Figure 1.6" in html  # aria-label carries the alt
 
 
@@ -192,10 +192,10 @@ def test_adapter_strips_example_com_target():
 def test_adapter_prose_url_still_linkified_not_stripped():
     # NEGATIVE control: a plain prose URL (no image syntax) is legitimate
     # attribution content and MUST still be linkified into an anchor.
-    out = _one_block_out("This book is available at http://cnx.org/content/abc")
+    out = _one_block_out("This book is available at http://example.org/content/abc")
     html = out["html"]
     assert "<a" in html
-    assert 'href="http://cnx.org/content/abc"' in html
+    assert 'href="http://example.org/content/abc"' in html
 
 
 def test_adapter_cleans_sidecar_text():
@@ -218,7 +218,7 @@ def test_adapter_strips_escaped_literal_img_before_linkify():
     assert "imgur" not in html
     assert "&lt;img" not in html and "<img" not in html
     assert "href=" not in html or "i.imgur" not in html
-    assert 'class="dart-figure-notation"' in html
+    assert 'class="semantik-figure-notation"' in html
 
 
 def test_adapter_literal_img_cleans_sidecar_text():

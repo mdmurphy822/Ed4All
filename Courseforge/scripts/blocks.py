@@ -1908,7 +1908,7 @@ class Block:
 
         Args:
             resolver: Optional callable mapping an outline ``sourceId`` (the
-                ``dart:{slug}#{block_id}`` shape) to a DART chunk identity. It
+                ``semantik:{slug}#{block_id}`` shape) to a SemantiK chunk identity. It
                 may return either:
 
                 * a chunk-id ``str`` (resolved, no span info available), or
@@ -1921,8 +1921,8 @@ class Block:
                   resulting gap on a substantive block).
 
                 When ``resolver`` is ``None`` every outline ``sourceId`` is
-                passed through verbatim as a ``source_chunk_id`` (test / no-DART
-                path).
+                passed through verbatim as a ``source_chunk_id`` (test /
+                no-source path).
 
         Returns:
             A manifest dict that validates against the W3 schema.

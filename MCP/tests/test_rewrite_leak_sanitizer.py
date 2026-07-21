@@ -177,6 +177,11 @@ def test_post_hoc_wrapper_cleans_both_leak_classes():
 
 # ---------------------------------------------------------------------------
 # P0 — VISIBLE provenance-id leak sanitizer (CLASS 1/2/3 identifier leakage)
+#
+# Legacy-compat: these fixtures are the legacy ``dart:{slug}#{hash}`` leaked
+# provenance ids the sanitizer strips from an EXISTING export (allowlisted
+# legacy-clean read path — the emit sites no longer author these ids). The
+# ``demo-textbook`` slug is a synthetic placeholder.
 # ---------------------------------------------------------------------------
 
 _DART_ID = "dart:demo-textbook-ch1_accessible#af6e8d9fc7932ce6"

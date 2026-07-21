@@ -69,9 +69,9 @@ def test_snake_case_entry_round_trip_preserves_all_fields():
         sequence=3,
         content="<section>body</section>",
         content_type_label="definition",
-        source_ids=("dart:slug#b1", "dart:slug#b2"),
-        source_primary="dart:slug#b1",
-        source_references=({"sourceId": "dart:slug#b1", "role": "primary"},),
+        source_ids=("semantik:slug#b1", "semantik:slug#b2"),
+        source_primary="semantik:slug#b1",
+        source_references=({"sourceId": "semantik:slug#b1", "role": "primary"},),
         objective_ids=("CO-01", "TO-02"),
         bloom_level="understand",
         key_terms=("term_a",),
@@ -90,8 +90,8 @@ def test_snake_case_entry_round_trip_preserves_all_fields():
 
     # Every scalar / tuple field survives.
     assert entry["content_type_label"] == "definition"
-    assert entry["source_ids"] == ["dart:slug#b1", "dart:slug#b2"]
-    assert entry["source_primary"] == "dart:slug#b1"
+    assert entry["source_ids"] == ["semantik:slug#b1", "semantik:slug#b2"]
+    assert entry["source_primary"] == "semantik:slug#b1"
     assert entry["objective_ids"] == ["CO-01", "TO-02"]
     assert entry["bloom_level"] == "understand"
 
@@ -237,7 +237,7 @@ def test_emit_manifest_flag_off_is_noop(tmp_path, monkeypatch):
 
 # --------------------------------------------------------------------------- #
 # Root 6 — 7B prose (explanation/example) blocks stamp CONCEPT CURIEs into the
-# data-cf-source-ids attribute instead of canonical dart:{slug}#{chunk} refs.
+# data-cf-source-ids attribute instead of canonical semantik:{slug}#{chunk} refs.
 #
 # A live full-7B run produced a NON-HOLLOW course
 # whose explanation/example blocks emitted
@@ -246,7 +246,7 @@ def test_emit_manifest_flag_off_is_noop(tmp_path, monkeypatch):
 # IDs, so the BLOCKING rewrite_source_refs gate fired
 # OUTLINE_BLOCK_INVALID_SOURCE_ID_SHAPE (action=block) on every prose block.
 # The rewrite backstop now resolves each block's REAL source chunks (from the
-# W2 outline_chunks.json sidecar -> chunks_lookup) into canonical dart: refs,
+# W2 outline_chunks.json sidecar -> chunks_lookup) into canonical semantik: refs,
 # OVERWRITES the bad attribute, sets structural source_ids, and PRESERVES the
 # displaced CURIEs as a hidden data-cf-curie span (the curie-anchoring signal).
 # --------------------------------------------------------------------------- #
@@ -266,14 +266,14 @@ def _chunk_id(n: int) -> str:
     return f"{_SLUG.replace('-', '_')}_chunk_{n:05d}"
 
 
-# Real, content_grounding-resolvable dart:{module_id}#{hash} sourceIds keyed by
-# DART chunk id — exactly the chunk.source.source_references[].sourceId shape the
-# rewrite backstop harvests from chunks.jsonl. The synthetic dart:{slug}#{chunk}
-# mint these tests previously asserted was the root cause of the all-blocks
-# UNRESOLVED_SOURCE_ID failure (it never resolves against the DART staging HTML).
+# Real, content_grounding-resolvable semantik:{module_id}#{hash} sourceIds keyed
+# by chunk id — exactly the chunk.source.source_references[].sourceId shape the
+# rewrite backstop harvests from chunks.jsonl. A synthetic semantik:{slug}#{chunk}
+# mint would be the root cause of an all-blocks UNRESOLVED_SOURCE_ID failure (it
+# never resolves against the staged SemantiK conversion HTML).
 _CHUNK_SOURCE_ID_MAP = {
-    _chunk_id(1): ["dart:module-1#aaa111"],
-    _chunk_id(2): ["dart:module-1#bbb222"],
+    _chunk_id(1): ["semantik:module-1#aaa111"],
+    _chunk_id(2): ["semantik:module-1#bbb222"],
 }
 
 
@@ -371,8 +371,8 @@ def _grounded_chunks():
     ]
 
 
-def test_canonical_source_ids_for_chunks_mints_dart_refs():
-    """The helper resolves REAL dart:{module_id}#{hash} sourceIds from the
+def test_canonical_source_ids_for_chunks_mints_semantik_refs():
+    """The helper resolves REAL semantik:{module_id}#{hash} sourceIds from the
     chunk_source_id_map and never fabricates a ref for an ungrounded
     (no-text / no-id / unmapped) chunk entry."""
     refs = _pt._canonical_source_ids_for_chunks(
@@ -385,7 +385,7 @@ def test_canonical_source_ids_for_chunks_mints_dart_refs():
         _SLUG,
         chunk_source_id_map=_CHUNK_SOURCE_ID_MAP,
     )
-    assert refs == ["dart:module-1#aaa111"]
+    assert refs == ["semantik:module-1#aaa111"]
     src_re = __import__(
         "Courseforge.router.inter_tier_gates", fromlist=["_SOURCE_ID_RE"],
     )._SOURCE_ID_RE
@@ -406,7 +406,7 @@ def test_canonical_source_ids_empty_when_no_grounded_chunks():
         [{"id": _chunk_id(1), "text": "x"}], "",
         chunk_source_id_map=_CHUNK_SOURCE_ID_MAP,
     ) == []
-    # No map supplied -> fail closed (never the synthetic dart:{slug}#{chunk}).
+    # No map supplied -> fail closed (never the synthetic semantik:{slug}#{chunk}).
     assert _pt._canonical_source_ids_for_chunks(
         [{"id": _chunk_id(1), "text": "x"}], _SLUG,
     ) == []
@@ -414,7 +414,7 @@ def test_canonical_source_ids_empty_when_no_grounded_chunks():
 
 def test_prose_block_curie_source_ids_rewritten_passes_gate():
     """An explanation block whose data-cf-source-ids carries CURIEs is
-    rewritten to canonical dart: refs and then PASSES rewrite_source_refs."""
+    rewritten to canonical semantik: refs and then PASSES rewrite_source_refs."""
     from Courseforge.router.inter_tier_gates import BlockSourceRefValidator
 
     raw = _curie_explanation_block()
@@ -431,8 +431,8 @@ def test_prose_block_curie_source_ids_rewritten_passes_gate():
 
     # Canonical refs landed on both the attribute and the structural field —
     # the REAL resolvable sourceIds from the chunk map, not a synthetic mint.
-    assert fixed.source_ids == ("dart:module-1#aaa111", "dart:module-1#bbb222")
-    assert 'data-cf-source-ids="dart:module-1#' in fixed.content
+    assert fixed.source_ids == ("semantik:module-1#aaa111", "semantik:module-1#bbb222")
+    assert 'data-cf-source-ids="semantik:module-1#' in fixed.content
     assert "samplecourse:prime_factorization" not in (
         fixed.content.split("<span")[0]
     ), "CURIE must be removed from the source-ids attribute"

@@ -68,7 +68,7 @@ def test_section_signals_union_opener_and_flows():
 
 
 def test_section_signals_legacy_section_is_empty():
-    # A section-like without the attributes (legacy / non-DART) → (None, []).
+    # A section-like without the unit/opener attributes (legacy) → (None, []).
     @dataclass
     class _Legacy:
         heading: str = "h"
@@ -178,7 +178,7 @@ def test_chunk_content_legacy_sections_pass_null_metadata():
     sections = [_Section("Intro", "plain prose about the topic here now", 6)]
     chunk_content([_item(sections)], "TEST_101", ctx=_capturing_ctx(captured))
     assert captured
-    # No data-dart-* attrs → chunk_text_block only forwards the kwargs when
+    # No unit/opener metadata → chunk_text_block only forwards the kwargs when
     # truthy, so the callback receives its defaults (None / None).
     assert captured[0]["unit"] is None
     assert captured[0]["roles"] is None

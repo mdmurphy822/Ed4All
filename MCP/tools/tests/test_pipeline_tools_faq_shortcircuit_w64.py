@@ -101,7 +101,7 @@ def _faq_block() -> Block:
         content=_FAQ_CONTENT,
         template_type=FAQ_TEMPLATE_TYPE,
         objective_ids=("CO-01",),
-        source_ids=("dart:test#c1",),
+        source_ids=("semantik:test#c1",),
         target_bloom="understand",
     )
 

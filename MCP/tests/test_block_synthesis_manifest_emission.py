@@ -65,8 +65,8 @@ def _rewrite_touch() -> Touch:
 def _concept_block(idx: int = 0) -> Block:
     content = {
         "source_refs": [
-            {"sourceId": "dart:demo#b-12", "role": "primary"},
-            {"sourceId": "dart:demo#b-13", "role": "contributing"},
+            {"sourceId": "semantik:demo#b-12", "role": "primary"},
+            {"sourceId": "semantik:demo#b-13", "role": "contributing"},
         ],
         "key_claims": [
             {
@@ -94,8 +94,8 @@ def _untagged_concept_block(idx: int = 0) -> Block:
     side must derive (ground) them from the cited chunks."""
     content = {
         "source_refs": [
-            {"sourceId": "dart:demo#b-12", "role": "primary"},
-            {"sourceId": "dart:demo#b-13", "role": "contributing"},
+            {"sourceId": "semantik:demo#b-12", "role": "primary"},
+            {"sourceId": "semantik:demo#b-13", "role": "contributing"},
         ],
         "key_claims": [
             {
@@ -119,7 +119,7 @@ def _untagged_concept_block(idx: int = 0) -> Block:
 
 
 def _write_chunks_jsonl(chunks_dir: Path) -> Path:
-    """Write a DART chunkset chunks.jsonl + sibling manifest.json. Returns the
+    """Write a SemantiK chunkset chunks.jsonl + sibling manifest.json. Returns the
     chunks.jsonl path (the emit-side resolver input)."""
     chunks_dir.mkdir(parents=True, exist_ok=True)
     chunks = [
@@ -130,7 +130,7 @@ def _write_chunks_jsonl(chunks_dir: Path) -> Path:
                 "char_span": [40, 1180],
                 "html_xpath": "/html/body/section[2]",
                 "source_references": [
-                    {"sourceId": "dart:demo#b-12", "role": "primary"}
+                    {"sourceId": "semantik:demo#b-12", "role": "primary"}
                 ],
             },
         },
@@ -140,7 +140,7 @@ def _write_chunks_jsonl(chunks_dir: Path) -> Path:
             "source": {
                 "char_span": [1180, 2200],
                 "source_references": [
-                    {"sourceId": "dart:demo#b-13", "role": "contributing"}
+                    {"sourceId": "semantik:demo#b-13", "role": "contributing"}
                 ],
             },
         },
@@ -149,11 +149,11 @@ def _write_chunks_jsonl(chunks_dir: Path) -> Path:
     chunks_jsonl.write_text(
         "\n".join(json.dumps(c) for c in chunks) + "\n", encoding="utf-8"
     )
-    # Sibling manifest.json (the validator's dart_chunks_manifest_path target).
+    # Sibling manifest.json (the validator's chunkset manifest.json target).
     (chunks_dir / "manifest.json").write_text(
         json.dumps(
             {
-                "chunkset_kind": "dart",
+                "chunkset_kind": "semantik",
                 "chunks_sha256": "0" * 64,
                 "chunker_version": "v4",
             }
@@ -174,7 +174,7 @@ def _write_custom_chunks_jsonl(chunks_dir: Path, chunks: list) -> Path:
     (chunks_dir / "manifest.json").write_text(
         json.dumps(
             {
-                "chunkset_kind": "dart",
+                "chunkset_kind": "semantik",
                 "chunks_sha256": "0" * 64,
                 "chunker_version": "v4",
             }
@@ -190,11 +190,11 @@ def _write_custom_chunks_jsonl(chunks_dir: Path, chunks: list) -> Path:
 
 
 def test_resolver_maps_sourceid_and_chunk_id(tmp_path):
-    chunks_jsonl = _write_chunks_jsonl(tmp_path / "dart_chunks")
+    chunks_jsonl = _write_chunks_jsonl(tmp_path / "semantik_chunks")
     resolver = _build_manifest_chunk_resolver(chunks_jsonl)
 
     # sourceId resolves to the chunk record with span info.
-    rec = resolver("dart:demo#b-12")
+    rec = resolver("semantik:demo#b-12")
     assert rec is not None
     assert rec["id"] == "demo_chunk_00012"
     assert rec["char_span"] == [40, 1180]
@@ -204,12 +204,12 @@ def test_resolver_maps_sourceid_and_chunk_id(tmp_path):
     assert resolver("demo_chunk_00013")["id"] == "demo_chunk_00013"
 
     # Unknown sourceId resolves to None.
-    assert resolver("dart:demo#b-99") is None
+    assert resolver("semantik:demo#b-99") is None
 
 
 def test_resolver_missing_chunkset_is_empty(tmp_path):
     resolver = _build_manifest_chunk_resolver(tmp_path / "nope" / "chunks.jsonl")
-    assert resolver("dart:demo#b-12") is None
+    assert resolver("semantik:demo#b-12") is None
 
 
 # --------------------------------------------------------------------------
@@ -219,7 +219,7 @@ def test_resolver_missing_chunkset_is_empty(tmp_path):
 
 def test_emit_writes_one_complete_record_per_block(tmp_path, monkeypatch):
     monkeypatch.setenv("COURSEFORGE_EMIT_BLOCKS", "true")
-    chunks_jsonl = _write_chunks_jsonl(tmp_path / "dart_chunks")
+    chunks_jsonl = _write_chunks_jsonl(tmp_path / "semantik_chunks")
     content_dir = tmp_path / "03_content_development"
     blocks = [_concept_block(0), _concept_block(1)]
 
@@ -247,7 +247,7 @@ def test_emit_writes_one_complete_record_per_block(tmp_path, monkeypatch):
 
 def test_emit_disabled_when_flag_off(tmp_path, monkeypatch):
     monkeypatch.delenv("COURSEFORGE_EMIT_BLOCKS", raising=False)
-    chunks_jsonl = _write_chunks_jsonl(tmp_path / "dart_chunks")
+    chunks_jsonl = _write_chunks_jsonl(tmp_path / "semantik_chunks")
     content_dir = tmp_path / "03_content_development"
     out = _emit_block_synthesis_manifest(
         [_concept_block(0)], content_dir, chunks_jsonl
@@ -258,7 +258,7 @@ def test_emit_disabled_when_flag_off(tmp_path, monkeypatch):
 
 def test_emit_idempotent_does_not_overwrite(tmp_path, monkeypatch):
     monkeypatch.setenv("COURSEFORGE_EMIT_BLOCKS", "true")
-    chunks_jsonl = _write_chunks_jsonl(tmp_path / "dart_chunks")
+    chunks_jsonl = _write_chunks_jsonl(tmp_path / "semantik_chunks")
     content_dir = tmp_path / "03_content_development"
 
     out = _emit_block_synthesis_manifest(
@@ -291,7 +291,7 @@ def test_emit_no_blocks_returns_none(tmp_path, monkeypatch):
 def test_derive_block_concept_tags_unions_cited_chunk_tags(tmp_path):
     # Two cited chunks each carrying pre-computed concept_tags → union.
     chunks_jsonl = _write_custom_chunks_jsonl(
-        tmp_path / "dart_chunks",
+        tmp_path / "semantik_chunks",
         [
             {
                 "id": "demo_chunk_00012",
@@ -299,7 +299,7 @@ def test_derive_block_concept_tags_unions_cited_chunk_tags(tmp_path):
                 "concept_tags": ["rdf-graph", "triple"],
                 "source": {
                     "source_references": [
-                        {"sourceId": "dart:demo#b-12", "role": "primary"}
+                        {"sourceId": "semantik:demo#b-12", "role": "primary"}
                     ]
                 },
             },
@@ -309,7 +309,7 @@ def test_derive_block_concept_tags_unions_cited_chunk_tags(tmp_path):
                 "concept_tags": ["triple", "predicate"],
                 "source": {
                     "source_references": [
-                        {"sourceId": "dart:demo#b-13", "role": "contributing"}
+                        {"sourceId": "semantik:demo#b-13", "role": "contributing"}
                     ]
                 },
             },
@@ -326,7 +326,7 @@ def test_derive_block_concept_tags_unions_cited_chunk_tags(tmp_path):
 def test_emit_grounds_concept_tags_from_cited_chunk_tags(tmp_path, monkeypatch):
     monkeypatch.setenv("COURSEFORGE_EMIT_BLOCKS", "true")
     chunks_jsonl = _write_custom_chunks_jsonl(
-        tmp_path / "dart_chunks",
+        tmp_path / "semantik_chunks",
         [
             {
                 "id": "demo_chunk_00012",
@@ -334,7 +334,7 @@ def test_emit_grounds_concept_tags_from_cited_chunk_tags(tmp_path, monkeypatch):
                 "concept_tags": ["rdf-graph"],
                 "source": {
                     "source_references": [
-                        {"sourceId": "dart:demo#b-12", "role": "primary"}
+                        {"sourceId": "semantik:demo#b-12", "role": "primary"}
                     ]
                 },
             },
@@ -344,7 +344,7 @@ def test_emit_grounds_concept_tags_from_cited_chunk_tags(tmp_path, monkeypatch):
                 "concept_tags": ["triple"],
                 "source": {
                     "source_references": [
-                        {"sourceId": "dart:demo#b-13", "role": "contributing"}
+                        {"sourceId": "semantik:demo#b-13", "role": "contributing"}
                     ]
                 },
             },
@@ -366,7 +366,7 @@ def test_emit_derives_concept_tags_via_extract_for_untagged_chunk(
     # Cited chunk carries NO concept_tags but DOES carry taggable text — the
     # fallback derives tags via extract_concept_tags over the chunk text.
     chunks_jsonl = _write_custom_chunks_jsonl(
-        tmp_path / "dart_chunks",
+        tmp_path / "semantik_chunks",
         [
             {
                 "id": "demo_chunk_00012",
@@ -377,7 +377,7 @@ def test_emit_derives_concept_tags_via_extract_for_untagged_chunk(
                 ),
                 "source": {
                     "source_references": [
-                        {"sourceId": "dart:demo#b-12", "role": "primary"}
+                        {"sourceId": "semantik:demo#b-12", "role": "primary"}
                     ]
                 },
             },
@@ -386,7 +386,7 @@ def test_emit_derives_concept_tags_via_extract_for_untagged_chunk(
                 "text": "A triple has a subject, predicate, and object.",
                 "source": {
                     "source_references": [
-                        {"sourceId": "dart:demo#b-13", "role": "contributing"}
+                        {"sourceId": "semantik:demo#b-13", "role": "contributing"}
                     ]
                 },
             },
@@ -407,14 +407,14 @@ def test_emit_honest_empty_when_cited_chunks_yield_no_tags(
     monkeypatch.setenv("COURSEFORGE_EMIT_BLOCKS", "true")
     # Cited chunks carry neither concept_tags nor taggable text → honest empty.
     chunks_jsonl = _write_custom_chunks_jsonl(
-        tmp_path / "dart_chunks",
+        tmp_path / "semantik_chunks",
         [
             {
                 "id": "demo_chunk_00012",
                 "text": "the and or of to a in is",
                 "source": {
                     "source_references": [
-                        {"sourceId": "dart:demo#b-12", "role": "primary"}
+                        {"sourceId": "semantik:demo#b-12", "role": "primary"}
                     ]
                 },
             },
@@ -423,7 +423,7 @@ def test_emit_honest_empty_when_cited_chunks_yield_no_tags(
                 "text": "a b c d e f g",
                 "source": {
                     "source_references": [
-                        {"sourceId": "dart:demo#b-13", "role": "contributing"}
+                        {"sourceId": "semantik:demo#b-13", "role": "contributing"}
                     ]
                 },
             },
@@ -443,7 +443,7 @@ def test_emit_does_not_clobber_block_pinned_concept_tags(tmp_path, monkeypatch):
     # The block already pins concept_tags; the cited chunks carry DIFFERENT
     # tags. The block's own tags must win (anti-clobber, additive only).
     chunks_jsonl = _write_custom_chunks_jsonl(
-        tmp_path / "dart_chunks",
+        tmp_path / "semantik_chunks",
         [
             {
                 "id": "demo_chunk_00012",
@@ -451,7 +451,7 @@ def test_emit_does_not_clobber_block_pinned_concept_tags(tmp_path, monkeypatch):
                 "concept_tags": ["some-other-tag"],
                 "source": {
                     "source_references": [
-                        {"sourceId": "dart:demo#b-12", "role": "primary"}
+                        {"sourceId": "semantik:demo#b-12", "role": "primary"}
                     ]
                 },
             },
@@ -461,7 +461,7 @@ def test_emit_does_not_clobber_block_pinned_concept_tags(tmp_path, monkeypatch):
                 "concept_tags": ["another-tag"],
                 "source": {
                     "source_references": [
-                        {"sourceId": "dart:demo#b-13", "role": "contributing"}
+                        {"sourceId": "semantik:demo#b-13", "role": "contributing"}
                     ]
                 },
             },
@@ -485,7 +485,7 @@ def test_gate_input_builder_resolves_manifest_and_universe(tmp_path):
     content_dir = tmp_path / "exports" / "PROJ" / "03_content_development"
     content_dir.mkdir(parents=True)
     (content_dir / "week_01.html").write_text("<html></html>", encoding="utf-8")
-    chunks_jsonl = _write_chunks_jsonl(tmp_path / "dart_chunks")
+    chunks_jsonl = _write_chunks_jsonl(tmp_path / "semantik_chunks")
 
     phase_outputs = {
         "objective_extraction": {"project_path": str(content_dir.parent)},
@@ -511,7 +511,7 @@ def test_gate_input_builder_skips_without_content_dir(tmp_path):
 
 def test_validator_passes_on_emitted_manifest(tmp_path, monkeypatch):
     monkeypatch.setenv("COURSEFORGE_EMIT_BLOCKS", "true")
-    chunks_dir = tmp_path / "dart_chunks"
+    chunks_dir = tmp_path / "semantik_chunks"
     chunks_jsonl = _write_chunks_jsonl(chunks_dir)
     content_dir = tmp_path / "03_content_development"
     content_dir.mkdir(parents=True)
@@ -536,7 +536,7 @@ def test_validator_passes_on_emitted_manifest(tmp_path, monkeypatch):
 
 def test_validator_fails_on_tampered_manifest(tmp_path, monkeypatch):
     monkeypatch.setenv("COURSEFORGE_EMIT_BLOCKS", "true")
-    chunks_dir = tmp_path / "dart_chunks"
+    chunks_dir = tmp_path / "semantik_chunks"
     chunks_jsonl = _write_chunks_jsonl(chunks_dir)
     content_dir = tmp_path / "03_content_development"
     content_dir.mkdir(parents=True)
@@ -565,7 +565,7 @@ def test_validator_fails_on_tampered_manifest(tmp_path, monkeypatch):
 
 def test_validator_fails_when_manifest_missing_but_blocks_exist(tmp_path):
     # Populated content dir, no manifest sidecar → anti-silent-degradation guard.
-    chunks_dir = tmp_path / "dart_chunks"
+    chunks_dir = tmp_path / "semantik_chunks"
     _write_chunks_jsonl(chunks_dir)
     content_dir = tmp_path / "03_content_development"
     content_dir.mkdir(parents=True)

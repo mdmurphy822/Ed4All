@@ -165,7 +165,7 @@ def test_manifest_created_and_replaced(tmp_path):
 
 def test_main_end_to_end_writes_pdf_and_manifest(tmp_path):
     src = _make_source_pdf(tmp_path / "src.pdf", n_pages=3)
-    out = tmp_path / "dart_in-300" / "ch01.pdf"
+    out = tmp_path / "scan_in-300" / "ch01.pdf"
     rc = rp.main([
         "--pdf", str(src), "--pages", "1:2", "--dpi", "150",
         "--format", "jpeg", "--out", str(out),

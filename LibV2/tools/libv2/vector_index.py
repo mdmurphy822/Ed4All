@@ -310,8 +310,9 @@ def resolve_chunks_for_index(
 
     ``chunkset`` pins a specific dir name (``imscc`` | ``dart`` |
     ``corpus-legacy``); ``None`` defers to the canonical resolver
-    precedence (imscc_chunks -> dart_chunks -> legacy corpus) keyed on the
-    presence of ``chunks.jsonl`` so an empty scaffold dir doesn't win.
+    precedence (imscc_chunks -> semantik_chunks -> dart_chunks -> legacy
+    corpus) keyed on the presence of ``chunks.jsonl`` so an empty scaffold
+    dir doesn't win. (``dart``/``corpus-legacy`` are legacy read-only pins.)
     """
     course_dir = Path(course_dir)
     if chunkset:

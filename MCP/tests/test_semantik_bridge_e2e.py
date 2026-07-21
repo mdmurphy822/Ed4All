@@ -191,14 +191,14 @@ def _write_accessible_html(tmp_path, bridge: dict):
 # ---------------------------------------------------------------------------
 
 
-def test_1_adapter_html_has_dart_markers(tmp_path):
+def test_1_adapter_html_has_semantik_markers(tmp_path):
     bridge = _bridge_json()
     staging, html_path, out = _write_accessible_html(tmp_path, bridge)
     html = html_path.read_text(encoding="utf-8")
 
-    from lib.validators.dart_markers import DartMarkersValidator
+    from lib.validators.semantik_markers import SemantiKMarkersValidator
 
-    res = DartMarkersValidator().validate({"html_content": html})
+    res = SemantiKMarkersValidator().validate({"html_content": html})
     critical = [i for i in res.issues if i.severity == "critical"]
     assert res.passed, [i.code for i in critical]
     assert 'data-semantik-source="synthesized"' in html
@@ -213,7 +213,7 @@ def test_1_adapter_html_has_dart_markers(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# (2) HTML → chunks: chunks carry data-dart markers + the 6 SemantiK fields.
+# (2) HTML → chunks: chunks carry data-semantik-* markers + the 6 SemantiK fields.
 # ---------------------------------------------------------------------------
 
 
@@ -248,7 +248,7 @@ async def test_2_chunks_carry_six_fields(tmp_path):
     # 5 of the 6 SemantiK §4 chunk-accompanying fields land on the chunk
     # (P2b/P3b): 3 HTML-harvested + 2 doc-level. The synthetic doc is small
     # enough that every section merges into ONE chunk; per the harvest contract
-    # (pipeline_tools ``_run_dart_chunking``: "when a chunk spans several DART
+    # (pipeline_tools ``_run_dart_chunking``: "when a chunk spans several source
     # blocks the FIRST in document order supplies the values") the merged
     # chunk's block-role reflects its leading section — the "Order of
     # Operations" heading (``data-semantik-block-role="heading"``). The

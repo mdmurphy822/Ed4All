@@ -2,7 +2,7 @@
 
 Covers the lane wire-up, sidecar emission, the alt-text pass with a stub
 client, and (when ``lib/semantik`` is importable) the end-to-end render of the
-accessible HTML + ``data-semantik-*`` / ``semantik:``|``dart:`` provenance
+accessible HTML + ``data-semantik-*`` / ``semantik:`` provenance
 contract from the lane's ``region_provenance``.
 """
 

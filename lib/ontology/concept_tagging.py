@@ -5,12 +5,12 @@ out of ``Trainforge/process_course.py::CourseProcessor._extract_concept_tags``
 so the same logic can run on BOTH chunk-emit surfaces:
 
   * the IMSCC chunk path (``CourseProcessor`` delegates here);
-  * the canonical DART chunkset path (``MCP/tools/pipeline_tools.py::
-    _run_dart_chunking``'s ``_create_chunk`` callback), which previously
-    emitted ``concept_tags: []`` because the extraction logic was
+  * the canonical SemantiK chunkset path (the chunking phase's
+    ``_create_chunk`` callback in ``MCP/tools/pipeline_tools.py``), which
+    previously emitted ``concept_tags: []`` because the extraction logic was
     coupled to ``CourseProcessor`` instance state.
 
-The empty DART ``concept_tags`` substrate starved the downstream
+The empty ``concept_tags`` substrate starved the downstream
 concept-graph + CURIE machinery. ``extract_concept_tags`` here has no
 ``CourseProcessor`` dependency: ``domain_concept_seeds`` is threaded as
 a parameter (empty list when the caller has no objectives file), the
@@ -158,7 +158,7 @@ def extract_concept_tags(
     ``domain_concept_seeds`` (compiled ``(canonical, [regex])`` pairs;
     see ``Trainforge.process_course.compile_domain_concept_seeds``) as a
     parameter so callers without a ``CourseProcessor`` instance — notably
-    the DART chunkset ``_create_chunk`` callback — can pass ``()``.
+    the SemantiK chunkset ``_create_chunk`` callback — can pass ``()``.
 
     Args:
         text: The chunk's plain text.

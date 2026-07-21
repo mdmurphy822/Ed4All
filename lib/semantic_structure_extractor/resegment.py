@@ -1,15 +1,14 @@
 """WS6b — collapse re-segmentation.
 
-When the DART heading-parser failure mode collapses a whole textbook into a
+When the heading-parser failure mode collapses a whole textbook into a
 SINGLE chapter carrying many sections (the 141:1 collapse signature), this
 module recovers coherent *pseudo-chapters* via contiguity-constrained Ward
 clustering over section embeddings, BEFORE ``textbook_structure.json`` is
 written.
 
-The algorithm was de-risked on a real 141-section algebra-textbook
-structure (2026-06-17): contiguous Ward at K≈11 recovered clean
-pseudo-chapters (whole numbers / variables / integers / fractions / decimals
-/ roots / properties) that map almost 1:1 to the source Ch.1's real structure.
+The algorithm was de-risked on a real 141-section textbook structure:
+contiguous Ward at K≈11 recovered clean pseudo-chapters that map almost 1:1
+to the source chapter's real structure.
 
 Design contract:
 
@@ -243,7 +242,7 @@ def _fallback_runs_by_cosine_drops(
 
 def _is_mega_chapter(chapter: Any) -> bool:
     """The collapse signature: a chapter carrying more than
-    ``_STRUCTURE_COLLAPSE_SECTION_THRESHOLD`` sections — the DART
+    ``_STRUCTURE_COLLAPSE_SECTION_THRESHOLD`` sections — the
     heading-parser dumping ground. Fires regardless of how many *other*
     chapters exist (the extractor may emit the mega-chapter alone, or
     alongside a tiny front-matter chapter)."""
@@ -389,7 +388,7 @@ def resegment_collapsed_structure(
 ) -> List[Dict[str, Any]]:
     """Recover pseudo-chapters from any collapsed mega-chapter(s).
 
-    The DART heading-parser collapse failure mode dumps most of a textbook
+    The heading-parser collapse failure mode dumps most of a textbook
     into one mega-chapter carrying scores of sections. Historically the
     extractor emitted that mega-chapter ALONE (``len(chapters)==1``); but a
     flatter heading shape can make it emit the mega-chapter alongside a tiny

@@ -167,12 +167,12 @@ def test_synthesized_suffix_stripped_from_minted_slug(
     """DART's multi-source strategy emits ``{stem}_synthesized.html``. The
     minted sourceId slug MUST strip the ``_synthesized`` suffix so it matches
     the join key the source_refs validator + source-router derive from the
-    SAME filename (both apply ``dart_slug_from_filename``). Without the strip
+    SAME filename (both apply ``semantik_slug_from_filename``). Without the strip
     the chunker keys ``semantik:intro_chapter_synthesized#s3_c0`` while every
     other consumer keys ``semantik:intro_chapter#s3_c0`` -> unresolvable."""
     from lib.validators.source_refs import (
         SOURCE_ID_RE as VALIDATOR_RE,
-        dart_slug_from_filename,
+        semantik_slug_from_filename,
     )
 
     staging = tmp_path / "staging"
@@ -184,7 +184,7 @@ def test_synthesized_suffix_stripped_from_minted_slug(
 
     # The slug the validator / source-router key on, derived from the SAME
     # filename. This is the authoritative join key the chunk must mint.
-    canonical_slug = dart_slug_from_filename(fname)
+    canonical_slug = semantik_slug_from_filename(fname)
     assert canonical_slug == "intro_chapter", canonical_slug
     expected_id = f"semantik:{canonical_slug}#s3_c0"
 

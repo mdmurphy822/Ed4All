@@ -337,12 +337,12 @@ def _structural_fallback(gold: Dict[str, Any]) -> List[GoldSetIssue]:
             )
         )
     else:
-        if chunkset.get("kind") not in ("dart", "imscc", "corpus"):
+        if chunkset.get("kind") not in ("semantik", "imscc", "dart", "corpus"):
             issues.append(
                 GoldSetIssue(
                     code="GOLD_SET_SCHEMA_VIOLATION",
                     severity="critical",
-                    message=f"chunkset.kind must be one of dart/imscc/corpus; got {chunkset.get('kind')!r}.",
+                    message=f"chunkset.kind must be one of semantik/imscc/dart/corpus; got {chunkset.get('kind')!r}.",
                 )
             )
         if not isinstance(chunkset.get("chunks_path"), str) or not chunkset.get("chunks_path"):

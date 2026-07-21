@@ -37,7 +37,7 @@ Example
 -------
     .venv/bin/python scripts/rasterize_pdf_scan.py \
         --pdf book.pdf --pages 12:41 --dpi 300 --format jpeg --quality 92 \
-        --out dart_in-300/ch02.pdf
+        --out scan_in-300/ch02.pdf
 """
 from __future__ import annotations
 

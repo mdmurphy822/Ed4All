@@ -428,7 +428,7 @@ def _block(*, deep_link, pages):
         objective_id="TO-01",
         page_id="week_01_content_01",
         deep_link=deep_link,
-        source_refs=["dart:src#anchorAAA"],
+        source_refs=["semantik:src#anchorAAA"],
         pages=pages,
     )
 

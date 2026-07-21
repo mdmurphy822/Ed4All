@@ -125,7 +125,7 @@ def test_item1_debris_block_collapses_content_survives():
             ],
         )
     ]
-    out = normalize_cascade_to_ed4all(_result(chapters), pdf_stem="ea2e_ch2")
+    out = normalize_cascade_to_ed4all(_result(chapters), pdf_stem="algebra_ch2")
     html = out["html"]
     assert "Real content sentence stays put here." in html
     assert "real answer content follows here" in html  # content-bearing survives
@@ -221,7 +221,7 @@ def test_item3_confusable_surfaces_marker_in_render():
             ],
         )
     ]
-    out = normalize_cascade_to_ed4all(_result(chapters), pdf_stem="ea2e_ch2")
+    out = normalize_cascade_to_ed4all(_result(chapters), pdf_stem="algebra_ch2")
     html = out["html"]
     assert "trvit" not in html.lower()
     assert "TRY IT 26" in html  # de-garbled + de-doubled marker surfaced
@@ -257,7 +257,7 @@ def test_item4_label_only_block_promotes_stacked_headings():
             ],
         )
     ]
-    out = normalize_cascade_to_ed4all(_result(chapters), pdf_stem="ea2e_ch2")
+    out = normalize_cascade_to_ed4all(_result(chapters), pdf_stem="algebra_ch2")
     html = out["html"]
     # The example number is a real opener heading (empty group).
     assert 'data-semantik-opener="worked_example"' in html
@@ -301,7 +301,7 @@ def test_item5_severed_display_math_neutralized_not_merged():
             ],
         )
     ]
-    out = normalize_cascade_to_ed4all(_result(chapters), pdf_stem="ea2e_ch2")
+    out = normalize_cascade_to_ed4all(_result(chapters), pdf_stem="algebra_ch2")
     html = out["html"]
     # The prose survives as readable text; NO display span wraps the prose.
     assert "Then we were left with five" in html
@@ -319,7 +319,7 @@ def test_item6_bare_number_lead_folds_into_exercise_list_start():
     )
     html = parse_list(text)
     assert html is not None
-    assert 'class="dart-exercise-list" start="430"' in html
+    assert 'class="semantik-exercise-list" start="430"' in html
     # The bare-number debris paragraph is gone.
     assert "<p>430</p>" not in html
 

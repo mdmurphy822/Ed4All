@@ -7,7 +7,7 @@ production phases didn't populate those keys in the tool return
 envelopes, so every one of the following gates silently skipped with
 ``missing inputs: *`` on live re-sims:
 
-* ``dart_markers`` — builder needs ``html_path`` / ``html_paths``;
+* ``semantik_markers`` — builder needs ``html_path`` / ``html_paths``;
   ``extract_and_convert_pdf`` only emitted ``output_path``.
 * ``content_grounding`` / ``page_objectives`` — builders need
   ``page_paths`` / ``content_dir``; ``generate_course_content``
@@ -83,13 +83,13 @@ def test_extract_and_convert_pdf_emits_html_path(tmp_path: Path, monkeypatch):
     """extract_and_convert_pdf must surface ``html_path`` alongside output_path.
 
     Pre-Wave-32 the tool only emitted ``output_path``, which the
-    ``DartMarkersValidator`` builder doesn't consume — so ``dart_markers``
+    ``SemantiKMarkersValidator`` builder doesn't consume — so ``semantik_markers``
     gates silently skipped with ``missing inputs: html_path``.
 
-    SemantiK migration: the legacy pdftotext converter was retired; the
-    live conversion runs the SemantiK v2 cascade on the ``dart_conversion``
-    phase. Hermetic: mocks ``_run_semantik_v2_conversion`` so we don't touch
-    SemantiK's heavy runtime deps.
+    The live conversion runs the SemantiK v2 cascade on the
+    ``semantik_conversion`` phase. Hermetic: mocks
+    ``_run_semantik_v2_conversion`` so we don't touch SemantiK's heavy
+    runtime deps.
     """
     pt = importlib.import_module("MCP.tools.pipeline_tools")
     registry = pt._build_tool_registry()
@@ -121,7 +121,7 @@ def test_extract_and_convert_pdf_emits_html_path(tmp_path: Path, monkeypatch):
         pdf_path=str(pdf),
         output_dir=str(out_dir),
         course_code="DEMO_101",
-        phase="dart_conversion",
+        phase="semantik_conversion",
     ))
     result = json.loads(result_json)
     assert result.get("success") is True, result
@@ -253,20 +253,20 @@ def _phase_outputs_for_router(**phases) -> Dict[str, Dict[str, Any]]:
     return {name: data for name, data in phases.items()}
 
 
-def test_router_picks_up_dart_markers_inputs(tmp_path: Path):
-    """dart_markers gate no longer skips when dart_conversion surfaces html_path."""
+def test_router_picks_up_semantik_markers_inputs(tmp_path: Path):
+    """semantik_markers gate no longer skips when semantik_conversion surfaces html_path."""
     html = tmp_path / "out.html"
     html.write_text("<html><body></body></html>", encoding="utf-8")
 
     phase_outputs = _phase_outputs_for_router(
-        dart_conversion={
+        semantik_conversion={
             "output_path": str(html),
             "html_path": str(html),  # Wave 32: new canonical alias
         },
     )
     r = default_router()
     inputs, missing = r.build(
-        "lib.validators.dart_markers.DartMarkersValidator",
+        "lib.validators.semantik_markers.SemantiKMarkersValidator",
         phase_outputs, {},
     )
     assert missing == []
@@ -327,7 +327,7 @@ def test_full_textbook_pipeline_no_gates_skip_on_missing_inputs(tmp_path: Path):
     what a real ``textbook_to_course`` run surfaces once Deliverable B
     lands.
     """
-    html = tmp_path / "dart.html"
+    html = tmp_path / "semantik.html"
     html.write_text("<html></html>", encoding="utf-8")
     content_dir = tmp_path / "content"
     content_dir.mkdir()
@@ -345,7 +345,7 @@ def test_full_textbook_pipeline_no_gates_skip_on_missing_inputs(tmp_path: Path):
     manifest.write_text(json.dumps({"slug": "test"}), encoding="utf-8")
 
     phase_outputs = _phase_outputs_for_router(
-        dart_conversion={
+        semantik_conversion={
             "output_path": str(html),
             "output_paths": str(html),
             "html_path": str(html),
@@ -375,7 +375,7 @@ def test_full_textbook_pipeline_no_gates_skip_on_missing_inputs(tmp_path: Path):
     r = default_router()
     # The six Wave 32 Deliverable B targets — builders must all resolve.
     for validator_path in [
-        "lib.validators.dart_markers.DartMarkersValidator",
+        "lib.validators.semantik_markers.SemantiKMarkersValidator",
         "lib.validators.content_grounding.ContentGroundingValidator",
         "lib.validators.page_objectives.PageObjectivesValidator",
         "lib.validators.imscc.IMSCCValidator",

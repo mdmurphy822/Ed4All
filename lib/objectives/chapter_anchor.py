@@ -3,9 +3,9 @@
 Terminal objectives are definitionally chapter-grained: a real textbook chapter
 is exactly one terminal competency. The legacy bottom-up derivation clustered CO
 *statement vectors*, which scattered a chapter's COs across theme clusters and
-produced week-pair prerequisite inversions (Defect A: 38% of week pairs in the
-a real scan-corpus review). This module recovers the chapter signal that already exists in
-the DART chunk metadata — every chunk carries a ``source.module_id`` that is 1:1
+produced week-pair prerequisite inversions (Defect A: 38% of week pairs in an
+internal scan-corpus review). This module recovers the chapter signal that already exists in
+the SemantiK chunk metadata — every chunk carries a ``source.module_id`` that is 1:1
 with a staged HTML file (one chapter) — and assigns each CO to the module its
 cited chunks predominantly come from. One module → one terminal objective.
 

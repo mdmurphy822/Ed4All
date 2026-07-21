@@ -22,8 +22,7 @@
 set -u  # NOT -e: continue on per-PDF failures
 cd "$(dirname "$0")/.."
 
-# 2026-06-16: the old external input_pdfs/ dir (a sibling dart-saas project)
-# is gone; the same sample family now lives in-repo under eval/side_by_side/*.
+# The sample PDF family lives in-repo under eval/side_by_side/*.
 DEFAULT_PDFS=(
   "eval/side_by_side/math_heavy_short_v7/input.pdf"
   "eval/side_by_side/shades_of_accessibility_v7/input.pdf"

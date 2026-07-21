@@ -15,7 +15,7 @@ and the optional ``content_router`` kwarg landed by Subtask 62:
   ``sections[0]["paragraphs"]`` after a double-newline split, mirroring
   the legacy provider-consumption shape.
 * Blocks returned with ``escalation_marker`` set (outline tier failed)
-  are skipped — the deterministic DART-paragraph floor stays for those
+  are skipped — the deterministic source-paragraph floor stays for those
   positions.
 
 The router is fully stubbed; no real LLM dispatch happens. The router
@@ -335,7 +335,7 @@ class TestRouterDispatch:
         """Blocks the router marks as outline-tier failures
         (``escalation_marker`` set) must NOT have their empty content
         bleed onto the section. The helper falls back to the
-        deterministic DART-paragraph floor for those positions —
+        deterministic source-paragraph floor for those positions —
         ``sections[0]['paragraphs']`` carries the topic's paragraphs
         rather than the failed block's empty string."""
         topics = [_mk_topic("Introduction"), _mk_topic("Stages")]
@@ -357,14 +357,14 @@ class TestRouterDispatch:
         )
 
         # Two modules emitted, but the failed-outline position must
-        # carry the DART-derived paragraph floor (NOT empty / NOT the
+        # carry the source-derived paragraph floor (NOT empty / NOT the
         # rewrite template).
         assert len(wd["content_modules"]) == 2
         failed_module = wd["content_modules"][0]
         paragraphs = failed_module["sections"][0]["paragraphs"]
-        assert paragraphs, "failed-outline position lost its DART floor"
+        assert paragraphs, "failed-outline position lost its source floor"
         joined = " ".join(paragraphs)
-        # Deterministic DART-floor signal — the topic's first paragraph
+        # Deterministic source-floor signal — the topic's first paragraph
         # heading shows up here.
         assert "Body text for Introduction" in joined
         # And the rewrite template never landed on this position.

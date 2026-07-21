@@ -9,7 +9,7 @@ health check** (see :mod:`semantik_structure.theta.semantic_preservation`).
 **Strict-by-default**: when the model is missing, fails to load, or
 fails the sentinel, ``evaluate()`` raises ``RuntimeError`` instead of
 silently falling back to the 0.7 ``stub_v1`` placeholder. The stub
-remains opt-in via ``DART_ALLOW_THETA_STUB=1``; see
+remains opt-in via ``SEMANTIK_ALLOW_THETA_STUB=1``; see
 :mod:`semantik_structure.theta._module_state` for the policy. The stub-only
 path stays import-light: no torch / transformers / peft are imported
 when running stub-only.
@@ -78,11 +78,10 @@ _TAG_STRIP_RE = re.compile(r"<[^>]+>")
 # i.e. BERT-TableSpecialist didn't supply per-cell header signals and
 # Qwen-Table inferred them on its own. See
 # ``semantik_structure.qwen_specialists.prompts.build_table_request``.
-# Dual-read (Stage-3 DART→semantik purge): the MockRuntime emit is flipped
-# to ``data-semantik-cell-roles``, while the trained Qwen-Table adapter still
-# stamps the legacy ``data-dart-cell-roles`` (a weights artifact — a clean
-# flip needs a retrain / post-process rename, deferred to the Stage-4
-# tighten), so this reader accepts BOTH prefixes.
+# Dual-read: the emit is ``data-semantik-cell-roles``, but the trained
+# Qwen-Table adapter still stamps the legacy ``data-dart-cell-roles`` (a
+# baked-in weights artifact, retired on Qwen-Table retrain), so this reader
+# accepts BOTH prefixes.
 _TABLE_QWEN_INFERRED_RE = re.compile(
     r'data-(?:dart|semantik)-cell-roles="qwen-inferred"',
     re.IGNORECASE,
@@ -90,7 +89,7 @@ _TABLE_QWEN_INFERRED_RE = re.compile(
 
 #: Canonical ``breakdown["method"]`` value the semantic-preservation
 #: dimension carries when the cross-encoder could not be loaded and the
-#: 0.7 placeholder was substituted (``DART_ALLOW_THETA_STUB=1``). This is
+#: 0.7 placeholder was substituted (``SEMANTIK_ALLOW_THETA_STUB=1``). This is
 #: the single source of truth for the stub marker — ``theta_is_stubbed``
 #: keys off it, so a stubbed run is detectable from the ``ThetaReport``
 #: alone (no env re-read needed at the Stage-13 seam).
@@ -175,7 +174,7 @@ def theta_is_stubbed(report: ThetaReport | None) -> bool:
     """True iff this report's semantic_preservation dimension was STUBBED.
 
     The theta cross-encoder (v8) is mode-collapsed on this box, so the
-    ``DART_ALLOW_THETA_STUB=1`` path substitutes a flat 0.7 placeholder
+    ``SEMANTIK_ALLOW_THETA_STUB=1`` path substitutes a flat 0.7 placeholder
     for the learned ``semantic_preservation`` dimension. That makes the
     composite ``theta_score`` meaningless — it MUST NOT gate the offline
     retry or the exit decision (see ``offline_retry._needs_retry`` /

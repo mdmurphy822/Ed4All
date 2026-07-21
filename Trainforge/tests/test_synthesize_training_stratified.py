@@ -77,7 +77,8 @@ def _real_archive() -> Path:
     No course slug is hardcoded: the archive lives under the gitignored
     ``LibV2/courses/`` tree (honors ``ED4ALL_LIBV2_ROOT``). Each course's
     chunks.jsonl is resolved via ``resolve_imscc_chunks_path`` so the
-    ``imscc_chunks/`` → ``dart_chunks/`` → legacy ``corpus/`` layouts are
+    ``imscc_chunks/`` → ``semantik_chunks/`` → legacy ``dart_chunks/`` →
+    legacy ``corpus/`` layouts are
     all found. Only a corpus carrying at least one chunk with populated
     ``learning_outcome_refs`` is selected — an objective-less chunk-only
     corpus (markdown-ingest / scan built with ``--stop-after chunking``)

@@ -86,7 +86,7 @@ def test_theorem_block_wraps_statement_proof_corollary(monkeypatch):
     assert 'aria-labelledby="theorem-3-1"' in html
     # All three callout boxes (statement, proof, corollary) live inside the unit.
     unit = re.search(
-        r'<section class="dart-unit dart-unit-theorem_block"[^>]*>(.*)',
+        r'<section class="semantik-unit semantik-unit-theorem_block"[^>]*>(.*)',
         html, re.DOTALL,
     ).group(1)
     assert unit.count("data-semantik-opener-group=") == 3

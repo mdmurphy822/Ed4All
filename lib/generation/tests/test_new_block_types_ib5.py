@@ -125,7 +125,7 @@ def _mm_block():
     return Block(
         block_id="p#multimedia_x_0", block_type="multimedia",
         page_id="p", sequence=0, content="body",
-        source_ids=("dart:s#b1",), source_primary="dart:s#b1",
+        source_ids=("semantik:s#b1",), source_primary="semantik:s#b1",
         media_a11y=("captions", "transcript"),
     )
 
@@ -144,7 +144,7 @@ def test_worked_example_fade_attr_flag_on(monkeypatch):
     blk = Block(
         block_id="p#worked_example_x_0", block_type="worked_example",
         page_id="p", sequence=0, content="body", fade_state="completion",
-        source_ids=("dart:s#b1",),
+        source_ids=("semantik:s#b1",),
     )
     attrs = blk.to_html_attrs()
     assert 'data-cf-fade-state="completion"' in attrs
@@ -155,7 +155,7 @@ def test_worked_example_fade_attr_absent_flag_off(monkeypatch):
     blk = Block(
         block_id="p#worked_example_x_0", block_type="worked_example",
         page_id="p", sequence=0, content="body", fade_state="completion",
-        source_ids=("dart:s#b1",),
+        source_ids=("semantik:s#b1",),
     )
     assert "data-cf-fade-state" not in blk.to_html_attrs()
 

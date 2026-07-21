@@ -7,9 +7,9 @@ feeds it to the ``Agent`` tool. This module builds those prompts for
 the three most common task shapes in the pipeline:
 
   * ``build_content_generation_prompt`` — Courseforge content-generator
-    for a single week. Inputs: week number, chapter DART HTML, planned
+    for a single week. Inputs: week number, chapter SemantiK HTML, planned
     learning objectives, target output directory.
-  * ``build_alt_text_prompt`` — DART alt-text generator for a single
+  * ``build_alt_text_prompt`` — SemantiK alt-text generator for a single
     figure. Inputs: figure bytes (base64), caption, surrounding context.
   * ``build_synthesize_training_prompt`` — Trainforge training-pair
     synthesis for a single chunk. Inputs: chunk text + LO refs.
@@ -38,7 +38,7 @@ Content generation prompt asks for::
       "outputs": {
         "pages": [
           {"filename": "week_{n}_overview.html", "html": "...",
-           "source_ids": ["dart-block-...", ...]},
+           "source_ids": ["semantik-block-...", ...]},
           ... (4 entries: overview / content / application / summary)
         ]
       },
@@ -128,7 +128,7 @@ Each page MUST:
   * carry data-cf-role, data-cf-objective-ids, data-cf-bloom-level,
     data-cf-bloom-verb, data-cf-cognitive-domain, and data-cf-content-type
     attributes on the <main> element (see Courseforge/CLAUDE.md)
-  * include a data-cf-source-ids attribute listing every DART source
+  * include a data-cf-source-ids attribute listing every SemantiK source
     block id used to ground the content; every id must resolve against
     the staging manifest (the source_refs validator enforces this)
   * embed one <script type="application/ld+json"> block with the
@@ -149,7 +149,7 @@ def build_content_generation_prompt(
 
     Args:
         week_n: Week number (1-indexed).
-        chapter_html: The DART HTML for the chapter(s) this week covers.
+        chapter_html: The SemantiK HTML for the chapter(s) this week covers.
             Truncated at ``max_chapter_chars`` to keep prompts tractable.
         planned_los: Iterable of planned learning objective refs. Each
             entry can be a dict (``{"id": "TO-01", "statement": "..."}``),
@@ -186,7 +186,7 @@ def build_content_generation_prompt(
         f"## Planned learning objectives for this week\n"
         f"Covered LOs: {los_rendered}\n\n"
         f"{los_detail}\n\n"
-        f"## Source DART HTML\n"
+        f"## Source SemantiK HTML\n"
         f"{chapter_header}\n"
         f"<chapter-html>\n{chapter_block}\n</chapter-html>\n\n"
         f"## Page contract\n{_CONTENT_PAGE_SCHEMA_BLOCK}\n"
@@ -267,7 +267,7 @@ def build_alt_text_prompt(
 
     return (
         f"# Task: Generate alt text for figure {fig_id}\n\n"
-        f"You are the DART alt-text subagent. Produce accessible alt "
+        f"You are the SemantiK alt-text subagent. Produce accessible alt "
         f"text for the figure below.\n\n"
         f"## Caption\n{cap}\n\n"
         f"## Surrounding context\n{ctx}\n\n"

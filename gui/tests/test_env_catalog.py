@@ -77,7 +77,7 @@ def test_default_settings_shape():
 def test_routing_to_env_emits_expected_keys():
     routing = {
         "global": {"mode": "api", "provider": "anthropic", "model": "claude-x"},
-        "dart": {"provider": "local", "vision_provider": "together-vision"},
+        "vision": {"provider": "local", "model": "qwen2.5vl:7b"},
         "courseforge_outline": {"provider": "local", "model": "qwen-x"},
         "trainforge_synthesis": {"provider": "together", "model": "llama-x"},
     }
@@ -85,8 +85,8 @@ def test_routing_to_env_emits_expected_keys():
     assert env["LLM_MODE"] == "api"
     assert env["LLM_PROVIDER"] == "anthropic"
     assert env["LLM_MODEL"] == "claude-x"
-    assert env["DART_PROVIDER"] == "local"
-    assert env["DART_VISION_PROVIDER"] == "together-vision"
+    assert env["SEMANTIK_VLM_PROVIDER"] == "local"
+    assert env["SEMANTIK_VLM_MODEL"] == "qwen2.5vl:7b"
     assert env["COURSEFORGE_OUTLINE_PROVIDER"] == "local"
     assert env["COURSEFORGE_OUTLINE_MODEL"] == "qwen-x"
     assert env["TRAINFORGE_SYNTHESIS_PROVIDER"] == "together"
@@ -94,20 +94,23 @@ def test_routing_to_env_emits_expected_keys():
     assert env["ANTHROPIC_SYNTHESIS_MODEL"] == "llama-x"
 
 
-def test_routing_to_env_vision_model_provider_conditional():
-    # together-vision => TOGETHER_VISION_MODEL emitted.
+def test_routing_to_env_vision_maps_semantik_vlm_seat():
+    # Vision routing maps to the real SemantiK VLM seat knobs, universally:
+    # the seat is provider-agnostic, so the model is always SEMANTIK_VLM_MODEL.
     env = env_catalog.routing_to_env(
         {"vision": {"provider": "together-vision", "model": "vlm-90b"}}
     )
-    assert env.get("TOGETHER_VISION_MODEL") == "vlm-90b"
-    assert env.get("DART_VISION_PROVIDER") == "together-vision"
+    assert env.get("SEMANTIK_VLM_PROVIDER") == "together-vision"
+    assert env.get("SEMANTIK_VLM_MODEL") == "vlm-90b"
 
-    # local vision provider => no invented DART_VISION_MODEL / TOGETHER var.
+    # local vision provider still carries the model on SEMANTIK_VLM_MODEL.
     env2 = env_catalog.routing_to_env(
         {"vision": {"provider": "local", "model": "llava:13b"}}
     )
+    assert env2.get("SEMANTIK_VLM_PROVIDER") == "local"
+    assert env2.get("SEMANTIK_VLM_MODEL") == "llava:13b"
+    # No invented TOGETHER vision-model var.
     assert "TOGETHER_VISION_MODEL" not in env2
-    assert env2.get("DART_VISION_PROVIDER") == "local"
 
 
 def test_routing_to_env_drops_nulls():

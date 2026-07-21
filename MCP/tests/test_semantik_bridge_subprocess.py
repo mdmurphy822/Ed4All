@@ -8,7 +8,7 @@ without ever spawning a real process or touching SemantiK's heavy deps:
     the (mock-written) bridge JSON, builds the IR + adapter, writes
     ``{stem}_accessible.html`` + sidecars, returns success + required keys.
   * SEMANTIK_PYTHON unset + in-process import fails → fail-closed clear error
-    (NO DART fallback), no HTML written.
+    (no legacy fallback), no HTML written.
   * subprocess non-zero exit → fail-closed.
   * bridge JSON carrying ``{"error": ...}`` → fail-closed.
 
@@ -54,7 +54,7 @@ def _bridge_json(*, runtime_mode: str = "real", exit_action: str = "ship_with_co
                 # least one aria-labelledby section. Post-B4 (anonymous prose
                 # sections no longer get sr-only names) a fixture with only a
                 # chapter title + bare paragraph legitimately emits zero
-                # aria-labelledby, which trips DartMarkersValidator's
+                # aria-labelledby, which trips SemantiKMarkersValidator's
                 # MISSING_ARIA_SECTIONS — real corpora always have headed
                 # sections, so the fixture should too.
                 "region_index": 1,
@@ -182,11 +182,11 @@ def test_a_bridge_writes_html_and_returns_keys(monkeypatch, tmp_path):
     assert out.is_file()
     assert (tmp_path / "sample_text_ch1_accessible_synthesized.json").is_file()
     assert (tmp_path / "sample_text_ch1_accessible.quality.json").is_file()
-    # The HTML the adapter produced passes the dart_markers gate.
-    from lib.validators.dart_markers import DartMarkersValidator
+    # The HTML the adapter produced passes the semantik_markers gate.
+    from lib.validators.semantik_markers import SemantiKMarkersValidator
 
     html = out.read_text(encoding="utf-8")
-    res = DartMarkersValidator().validate({"html_content": html})
+    res = SemantiKMarkersValidator().validate({"html_content": html})
     assert res.passed, [i.code for i in res.issues if i.severity == "critical"]
 
     # The subprocess was invoked with cwd = SEMANTIK_RUNTIME_DIR.
@@ -283,7 +283,7 @@ def test_b_no_bridge_env_fails_closed(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# (c) subprocess non-zero exit → fail-closed (no silent DART fallback).
+# (c) subprocess non-zero exit → fail-closed (no silent legacy fallback).
 # ---------------------------------------------------------------------------
 
 

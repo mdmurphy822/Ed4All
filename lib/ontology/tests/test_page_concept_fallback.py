@@ -2,7 +2,7 @@
 
 Covers the pure derivation + quality gates + env-gated in-place mutation of
 ``lib.ontology.page_concept_fallback``. No chunking / MCP surface here — the
-integration test lives in ``MCP/tests/test_dart_chunking_page_concept_fallback.py``.
+integration test lives beside the MCP chunking tests.
 """
 
 from __future__ import annotations

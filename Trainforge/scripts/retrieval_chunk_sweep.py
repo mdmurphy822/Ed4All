@@ -10,7 +10,7 @@ on-disk chunkset or the chunker's defaults.
 Key invariants:
 
 * **Read-only w.r.t. canonical chunksets.** Every variant is chunked
-  in-memory; the script NEVER writes ``dart_chunks/`` / ``imscc_chunks/``.
+  in-memory; the script NEVER writes ``semantik_chunks/`` / ``imscc_chunks/``.
   The only write is the ``--out`` report.
 * **Chunker defaults untouched.** The sweep drives the chunker's existing
   per-call size knobs (``min_chunk_size`` / ``max_chunk_size`` /
@@ -40,7 +40,7 @@ Usage::
 
     python -m Trainforge.scripts.retrieval_chunk_sweep \\
         --course-code <course-slug> \\
-        --source-kind dart \\
+        --source-kind semantik \\
         --max-chunk-sizes 400,800,1200 \\
         --target-chunk-sizes 250,500 \\
         --overlap-sentences 0,1,2 \\
@@ -83,7 +83,7 @@ _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 
 # Default search roots for archived source pages, per source kind. Mirrors the
 # resolve order documented for the citation anchor.
-_DART_SOURCE_ROOTS = ("sources/textbooks", "source/html", "source/dart")
+_SEMANTIK_SOURCE_ROOTS = ("sources/textbooks", "source/html", "source/dart")
 
 
 # --------------------------------------------------------------------------- #
@@ -136,13 +136,14 @@ def _course_dir(course_slug: str) -> Path:
 def _iter_source_html(course_dir: Path, source_kind: str) -> List[Tuple[str, str]]:
     """Return [(item_path, html_text), ...] for the archived source pages.
 
-    For ``dart`` source kind, walks the DART HTML roots. For ``imscc`` /
-    ``corpus``, reads HTML members from any archived ``*.imscc`` under
-    ``source/imscc`` (and the pre-unpacked dir). Deterministic ordering.
+    For ``semantik`` (and the legacy ``dart`` read alias) source kind, walks
+    the SemantiK HTML roots. For ``imscc`` / ``corpus``, reads HTML members
+    from any archived ``*.imscc`` under ``source/imscc`` (and the pre-unpacked
+    dir). Deterministic ordering.
     """
     pages: List[Tuple[str, str]] = []
-    if source_kind == "dart":
-        for rel in _DART_SOURCE_ROOTS:
+    if source_kind in ("semantik", "dart"):
+        for rel in _SEMANTIK_SOURCE_ROOTS:
             root = course_dir / rel
             if not root.exists():
                 continue
@@ -192,7 +193,7 @@ def _build_parsed_items(
 ) -> List[Dict[str, Any]]:
     """Parse each (item_path, html) into a chunker-ready parsed_item dict.
 
-    Mirrors the minimal parsed_item shape ``_run_dart_chunking`` threads into
+    Mirrors the minimal parsed_item shape ``_run_semantik_chunking`` threads into
     the chunker (item_id / item_path / module_id / sections / key_concepts /
     raw_html). Pipeline_tools is NOT imported (it pulls the whole MCP surface
     and is churn-fenced).
@@ -243,7 +244,7 @@ def _minimal_create_chunk(
 ) -> Dict[str, Any]:
     """Materialise a retrieval-scoring-minimal v4 chunk dict.
 
-    Cribbed from ``MCP/tools/pipeline_tools.py::_run_dart_chunking``'s
+    Cribbed from ``MCP/tools/pipeline_tools.py::_run_semantik_chunking``'s
     ``_create_chunk`` — id / text / html / source / word_count only. Retrieval
     scoring (BM25 + gold text-quote containment) needs nothing else: no concept
     tags, bloom, LO refs, or per-page SHA. Keeping it minimal also keeps the
@@ -447,7 +448,10 @@ def _load_baseline_chunks(course_dir: Path, source_kind: str) -> Optional[List[D
     """Load the canonical on-disk chunkset for the baseline row, if present."""
     from lib.libv2_storage import resolve_imscc_chunks_path
 
-    if source_kind == "dart":
+    if source_kind == "semantik":
+        path = course_dir / "semantik_chunks" / "chunks.jsonl"
+    elif source_kind == "dart":
+        # Legacy read-compat: pre-migration corpora shipped dart_chunks/.
         path = course_dir / "dart_chunks" / "chunks.jsonl"
     else:
         # imscc/corpus: use the file-aware resolver (imscc -> dart -> corpus).
@@ -564,9 +568,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--course-code", required=True, help="Course code or slug.")
     p.add_argument(
         "--source-kind",
-        choices=("dart", "imscc", "corpus"),
-        default="dart",
-        help="Which archived chunkset/source to re-chunk (default: dart).",
+        choices=("semantik", "dart", "imscc", "corpus"),
+        default="semantik",
+        help=(
+            "Which archived chunkset/source to re-chunk (default: semantik). "
+            "'dart' is a legacy read-compat alias for pre-migration corpora."
+        ),
     )
     p.add_argument("--max-chunk-sizes", default="400,800,1200")
     p.add_argument("--target-chunk-sizes", default="250,500")

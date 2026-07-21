@@ -35,8 +35,9 @@ def _isolate_qc_cache(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Synthetic accessible-HTML fixture (built inline — sections with
-# data-dart-block-id, headings, paragraphs, a list + a table).
+# LEGACY-COMPAT fixture: synthetic accessible-HTML with the pre-SemantiK
+# ``data-dart-*`` block attributes, pinning the parser's legacy READ fallback
+# (headings, paragraphs, a list + a table).
 # ---------------------------------------------------------------------------
 def _fixture_html() -> str:
     return """<!doctype html><html><head><title>T</title></head><body><article>
@@ -101,32 +102,32 @@ def test_parse_accessible_html_ordered_records(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# (1b) REAL adapter shape — the live seam emits data-semantik-* (2026-07 rename),
-# NOT data-dart-*. The parser must extract these (regression: it returned 0
-# blocks against a real converter output whose sections use data-semantik-*).
+# (1b) REAL adapter shape — the live seam emits data-semantik-* attributes.
+# The parser must extract these (regression: it returned 0 blocks against a
+# real converter output whose sections use data-semantik-*).
 # Placeholder text only — no real textbook sentences.
 # ---------------------------------------------------------------------------
 def _fixture_html_semantik() -> str:
     return """<!doctype html><html><head><title>T</title></head><body><article>
 <h1>Doc Title</h1>
-<section class="dart-section" id="s0" data-semantik-block-id="s0"
+<section class="semantik-section" id="s0" data-semantik-block-id="s0"
          data-semantik-source="synthesized" data-semantik-pages="1"
          data-semantik-page-kind="physical" data-semantik-block-role="paragraph"
          data-semantik-wcag="passed" data-semantik-demoted-role="definition_list">
   <p>Placeholder body sentence one for the first block.</p>
 </section>
-<section class="dart-section" id="example-9-9" data-semantik-block-id="example-9-9"
+<section class="semantik-section" id="example-9-9" data-semantik-block-id="example-9-9"
          data-semantik-source="synthesized" data-semantik-pages="2-3"
          data-semantik-block-role="worked_example" data-semantik-wcag="passed">
   <h3>Placeholder Example Heading</h3>
   <p>Placeholder solution walk-through text.</p>
 </section>
-<section class="dart-section" id="s7" data-semantik-block-id="s7"
+<section class="semantik-section" id="s7" data-semantik-block-id="s7"
          data-semantik-source="synthesized" data-semantik-pages="3"
          data-semantik-block-role="list" data-semantik-wcag="passed">
   <ol><li>alpha</li><li>beta</li></ol>
 </section>
-<section class="dart-section" id="tbl-2" data-semantik-block-id="tbl-2"
+<section class="semantik-section" id="tbl-2" data-semantik-block-id="tbl-2"
          data-semantik-source="synthesized" data-semantik-pages="4"
          data-semantik-wcag="passed">
   <table><tr><td>x</td><td>y</td></tr></table>

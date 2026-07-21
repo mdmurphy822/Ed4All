@@ -17,7 +17,7 @@ arxiv, synthetic_blockquote_code}`` — it is **PMC/CFR-table absent**, and
 Plans/06 §5.6 explicitly tracks the ``Structure`` ``table_region``
 extension as a deferred item. Without table-rich rows from the new
 sources, the ``table_region`` head sees almost no positive examples from
-the document types DART's buyers actually submit, and the layout
+the document types users actually submit, and the layout
 side-channel never learns the geometric signature of a real rendered
 table.
 

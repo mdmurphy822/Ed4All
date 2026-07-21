@@ -149,7 +149,7 @@ def test_section_jsonld_omits_optional_keys_when_unset() -> None:
 
 
 def test_section_jsonld_emits_source_references_when_present() -> None:
-    refs = ({"sourceId": "dart:ch1#b1", "role": "primary"},)
+    refs = ({"sourceId": "semantik:ch1#b1", "role": "primary"},)
     b = Block(
         block_id="x",
         block_type="explanation",
@@ -160,7 +160,7 @@ def test_section_jsonld_emits_source_references_when_present() -> None:
         source_references=refs,
     )
     e = b.to_jsonld_entry()
-    assert e["sourceReferences"] == [{"sourceId": "dart:ch1#b1", "role": "primary"}]
+    assert e["sourceReferences"] == [{"sourceId": "semantik:ch1#b1", "role": "primary"}]
 
 
 def test_concept_jsonld_section_shape() -> None:

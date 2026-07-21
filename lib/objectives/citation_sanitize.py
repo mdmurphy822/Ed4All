@@ -1,8 +1,8 @@
 """Deterministic write-time citation SANITIZER (default ON, safety net).
 
 The stage-2 local synthesizer (7B / nano-omni) sometimes emits *fabricated*
-citations: instead of a real chunk id (``openstax_alg_..._chunk_00001`` or a
-``semantik:{slug}#sN`` / ``dart:{slug}#{block_id}`` sourceId) it echoes a
+citations: instead of a real chunk id (``<slug>_chunk_00001`` or a
+``semantik:{slug}#sN`` sourceId) it echoes a
 descriptive topic LABEL (``"Round Whole Numbers"``, ``"Order of Operations"``)
 or the objective STATEMENT text itself into ``source_refs`` /
 ``source_chunk_ids``. Those ids resolve against NOTHING in the current
@@ -94,11 +94,11 @@ def resolve_sanitize_citations(value: Optional[bool] = None) -> bool:
 def build_chunk_universe(chunks: Iterable[Mapping[str, Any]]) -> Set[str]:
     """Harvest the chunk-id resolution universe from a chunk iterable.
 
-    Mirrors ``lib/validators/objective_source_refs.py::_load_dart_chunks_universe``
-    EXACTLY: each chunk's top-level ``id`` plus the union of every chunk's
-    ``source.source_references[*].sourceId`` (the ``semantik:{slug}#sN`` /
-    ``dart:{slug}#{block_id}`` shape). Both forms are valid citation targets so
-    the sanitizer's set-membership check matches the gate's.
+    Mirrors the ``lib/validators/objective_source_refs.py`` chunk-universe
+    loader EXACTLY: each chunk's top-level ``id`` plus the union of every chunk's
+    ``source.source_references[*].sourceId`` (the ``semantik:{slug}#sN`` shape).
+    Both forms are valid citation targets so the sanitizer's set-membership
+    check matches the gate's.
     """
     universe: Set[str] = set()
     for chunk in chunks:

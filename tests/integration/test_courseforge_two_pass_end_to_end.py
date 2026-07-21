@@ -262,7 +262,7 @@ def _build_mini_course() -> Tuple[List[Block], Dict[str, Dict[str, Any]], Dict[s
             sequence=idx,
             content="",
             objective_ids=(obj_ref,),
-            source_ids=("dart:slug#blk1",),
+            source_ids=("semantik:slug#blk1",),
         )
         blocks.append(b)
         # Map block_type → a content_type drawn from the canonical
@@ -291,7 +291,7 @@ def _build_mini_course() -> Tuple[List[Block], Dict[str, Dict[str, Any]], Dict[s
                 [{"heading": "Definition"}] if block_type != "summary_takeaway"
                 else [{"heading": "Recap"}]
             ),
-            "source_refs": [{"sourceId": "dart:slug#blk1", "role": "primary"}],
+            "source_refs": [{"sourceId": "semantik:slug#blk1", "role": "primary"}],
             "structural_warnings": [],
         }
         if block_type == "assessment_item":
@@ -305,7 +305,7 @@ def _build_mini_course() -> Tuple[List[Block], Dict[str, Dict[str, Any]], Dict[s
         # The rewrite-tier HTML preserves both CURIEs verbatim so the
         # CURIE-survival assertion below holds.
         htmls[block_id] = (
-            "<section data-cf-source-ids=\"dart:slug#blk1\">"
+            "<section data-cf-source-ids=\"semantik:slug#blk1\">"
             f"<h2>{block_type.title()}</h2>"
             f"<p>This block grounds <code>sh:NodeShape</code> via "
             f"<code>rdf:type</code> against {obj_ref}.</p>"
@@ -460,7 +460,7 @@ def test_two_pass_end_to_end_yields_outline_and_rewrite_touches(
     inter_outputs = _run_inter_tier_validation(
         outlined_blocks,
         objectives=objectives,
-        valid_source_ids=["dart:slug#blk1"],
+        valid_source_ids=["semantik:slug#blk1"],
         output_dir=tmp_path / "inter_tier",
     )
     assert "blocks_validated_path" in inter_outputs
@@ -558,7 +558,7 @@ def test_two_pass_failed_outline_block_skips_rewrite_tier(
     inter_outputs = _run_inter_tier_validation(
         outlined_blocks,
         objectives=objectives,
-        valid_source_ids=["dart:slug#blk1"],
+        valid_source_ids=["semantik:slug#blk1"],
         output_dir=tmp_path / "inter_tier",
     )
     failed_ids = [b.block_id for b in inter_outputs["failed_blocks"]]

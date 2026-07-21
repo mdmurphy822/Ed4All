@@ -104,7 +104,7 @@ def _base_chunk(source_overrides: Dict[str, Any] = None) -> Dict[str, Any]:
 
 def _valid_ref(**overrides: Any) -> Dict[str, Any]:
     base = {
-        "sourceId": "dart:science_of_learning#s3_c0",
+        "sourceId": "semantik:science_of_learning#s3_c0",
         "role": "primary",
     }
     base.update(overrides)
@@ -170,9 +170,9 @@ def test_chunk_with_multiple_source_references_validates():
     """Merged chunks carry multiple refs (one per merged section)."""
     validator = _build_validator()
     refs = [
-        _valid_ref(sourceId="dart:slug#s1_c0", role="primary"),
-        _valid_ref(sourceId="dart:slug#s2_c0", role="contributing"),
-        _valid_ref(sourceId="dart:slug#s3_c0", role="corroborating"),
+        _valid_ref(sourceId="semantik:slug#s1_c0", role="primary"),
+        _valid_ref(sourceId="semantik:slug#s2_c0", role="contributing"),
+        _valid_ref(sourceId="semantik:slug#s3_c0", role="corroborating"),
     ]
     chunk = _base_chunk({"source_references": refs})
     errors = list(validator.iter_errors(chunk))
@@ -212,9 +212,9 @@ def test_chunk_with_role_precedence_mix_validates():
     """Merged sections can produce all three roles in one chunk."""
     validator = _build_validator()
     refs = [
-        _valid_ref(sourceId="dart:a#s0_c0", role="primary"),
-        _valid_ref(sourceId="dart:a#s1_c0", role="contributing"),
-        _valid_ref(sourceId="dart:b#s0_c0", role="corroborating"),
+        _valid_ref(sourceId="semantik:a#s0_c0", role="primary"),
+        _valid_ref(sourceId="semantik:a#s1_c0", role="contributing"),
+        _valid_ref(sourceId="semantik:b#s0_c0", role="corroborating"),
     ]
     chunk = _base_chunk({"source_references": refs})
     errors = list(validator.iter_errors(chunk))
@@ -236,7 +236,7 @@ def test_chunk_with_missing_sourceId_rejected():
 
 def test_chunk_with_missing_role_rejected():
     validator = _build_validator()
-    bad_ref = {"sourceId": "dart:slug#s0_c0"}  # no role
+    bad_ref = {"sourceId": "semantik:slug#s0_c0"}  # no role
     chunk = _base_chunk({"source_references": [bad_ref]})
     errors = list(validator.iter_errors(chunk))
     assert errors, "Missing role should be rejected"
@@ -246,10 +246,10 @@ def test_chunk_with_missing_role_rejected():
     "bad_source_id",
     [
         "",
-        "no_dart_prefix",
-        "dart:NO_UPPERCASE#s0_c0",
-        "dart:slug#",
-        "dart:#s0_c0",
+        "no_semantik_prefix",
+        "semantik:NO_UPPERCASE#s0_c0",
+        "semantik:slug#",
+        "semantik:#s0_c0",
     ],
 )
 def test_chunk_with_malformed_source_id_rejected(bad_source_id):
@@ -263,7 +263,7 @@ def test_chunk_with_malformed_source_id_rejected(bad_source_id):
 @pytest.mark.parametrize("bad_role", ["", "PRIMARY", "supporting", "main"])
 def test_chunk_with_bad_role_rejected(bad_role):
     validator = _build_validator()
-    bad_ref = {"sourceId": "dart:slug#s0_c0", "role": bad_role}
+    bad_ref = {"sourceId": "semantik:slug#s0_c0", "role": bad_role}
     chunk = _base_chunk({"source_references": [bad_ref]})
     errors = list(validator.iter_errors(chunk))
     assert errors, f"Bad role {bad_role!r} should be rejected"
@@ -316,7 +316,7 @@ def test_source_references_items_ref_resolves():
     """The $ref chain (chunk.Source → source_reference) must resolve."""
     validator = _build_validator()
     # Negative case leveraging the $ref: rejection proves resolution happened.
-    bad_ref = {"sourceId": "dart:slug#s0_c0", "role": "not-in-enum"}
+    bad_ref = {"sourceId": "semantik:slug#s0_c0", "role": "not-in-enum"}
     chunk = _base_chunk({"source_references": [bad_ref]})
     errors: List[Any] = list(validator.iter_errors(chunk))
     assert errors, (

@@ -59,16 +59,16 @@ def _write_jsonl(path: Path, rows: List[Dict[str, Any]]) -> None:
 
 
 def _build_course(course_dir: Path) -> None:
-    """Build a tiny imscc + dart chunkset.
+    """Build a tiny imscc + semantik chunkset.
 
     Distinct tokens across the corpus:
-      * dart:{A}#a1  — anchor present in staged A, book chunk present  → both resolve
-      * dart:{A}#a2  — anchor present in staged A, NO book chunk        → book unresolved
-      * dart:{B}#b9  — anchor MISSING in staged B, book chunk present   → anchor unresolved
+      * semantik:{A}#a1  — anchor present in staged A, book chunk present  → both resolve
+      * semantik:{A}#a2  — anchor present in staged A, NO book chunk        → book unresolved
+      * semantik:{B}#b9  — anchor MISSING in staged B, book chunk present   → anchor unresolved
     """
-    tok_a1 = f"dart:{_STEM_A}#a1"
-    tok_a2 = f"dart:{_STEM_A}#a2"
-    tok_b9 = f"dart:{_STEM_B}#b9"
+    tok_a1 = f"semantik:{_STEM_A}#a1"
+    tok_a2 = f"semantik:{_STEM_A}#a2"
+    tok_b9 = f"semantik:{_STEM_B}#b9"
 
     imscc = [
         # multi-token attr (two tokens), module week_01
@@ -82,8 +82,8 @@ def _build_course(course_dir: Path) -> None:
     ]
     _write_jsonl(course_dir / "imscc_chunks" / "chunks.jsonl", imscc)
 
-    # Book-side dart chunks: cover tok_a1 + tok_b9, but NOT tok_a2.
-    dart = [
+    # Book-side semantik chunks: cover tok_a1 + tok_b9, but NOT tok_a2.
+    book_chunks = [
         {
             "id": "d1",
             "source": {
@@ -101,19 +101,19 @@ def _build_course(course_dir: Path) -> None:
             },
         },
     ]
-    _write_jsonl(course_dir / "dart_chunks" / "chunks.jsonl", dart)
+    _write_jsonl(course_dir / "semantik_chunks" / "chunks.jsonl", book_chunks)
 
 
 def _build_staging(staging_dir: Path) -> None:
     """Staged accessible HTML: A carries a1 + a2; B carries only b0 (not b9)."""
     staging_dir.mkdir(parents=True, exist_ok=True)
     (staging_dir / f"{_STEM_A}.html").write_text(
-        '<section data-dart-block-id="a1"><h2>A1</h2></section>'
-        '<section data-dart-block-id="a2"><h2>A2</h2></section>',
+        '<section data-semantik-block-id="a1"><h2>A1</h2></section>'
+        '<section data-semantik-block-id="a2"><h2>A2</h2></section>',
         encoding="utf-8",
     )
     (staging_dir / f"{_STEM_B}.html").write_text(
-        '<section data-dart-block-id="b0"><h2>B0</h2></section>',
+        '<section data-semantik-block-id="b0"><h2>B0</h2></section>',
         encoding="utf-8",
     )
 
@@ -142,13 +142,13 @@ def test_all_three_ratios_and_unresolved(tmp_path: Path):
     assert anchor["count"] == 2
     assert anchor["total"] == 3
     assert anchor["ratio"] == round(2 / 3, 4)
-    assert anchor["unresolved"] == [f"dart:{_STEM_B}#b9"]
+    assert anchor["unresolved"] == [f"semantik:{_STEM_B}#b9"]
 
     # Book-chunk resolution: a1 + b9 covered; a2 NOT.
     book = report["source_ids_book_chunk_resolved"]
     assert book["count"] == 2
     assert book["total"] == 3
-    assert book["unresolved"] == [f"dart:{_STEM_A}#a2"]
+    assert book["unresolved"] == [f"semantik:{_STEM_A}#a2"]
 
     assert report["staging_dir_used"] == str(staging_dir)
 
@@ -174,7 +174,7 @@ def test_per_module_breakdown(tmp_path: Path):
     course_dir = tmp_path / "course"
     # Two provenance-free chunks in different modules.
     imscc = [
-        _imscc_chunk("c1", "week_01", _cf_block(f"dart:{_STEM_A}#a1")),
+        _imscc_chunk("c1", "week_01", _cf_block(f"semantik:{_STEM_A}#a1")),
         _imscc_chunk("c2", "week_03", _cf_block("")),
         _imscc_chunk("c3", "week_05", "<p>no attr</p>"),
         _imscc_chunk("c4", "week_05", _cf_block("")),

@@ -1,6 +1,6 @@
 """Defect F — ``ed4all objectives restructure`` CLI tests.
 
-Hermetic: the DART chunkset loader and the embedding-client builder are
+Hermetic: the SemantiK chunkset loader and the embedding-client builder are
 monkeypatched to synthetic stubs so no LibV2 course / real embedding model is
 touched. Synthetic fixtures only (no course slugs / publisher names / paths).
 """
@@ -46,7 +46,7 @@ def patched(monkeypatch):
     import lib.embedding.providers as prov
 
     monkeypatch.setattr(
-        pt, "_load_dart_chunkset_for_planning",
+        pt, "_load_semantik_chunkset_for_planning",
         lambda *, course_slug, kwargs: (cbi, all_chunks),
     )
     monkeypatch.setattr(prov, "build_embedding_client", lambda **kw: _StubEmbed())

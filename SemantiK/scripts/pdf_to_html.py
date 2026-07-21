@@ -18,7 +18,7 @@ report carrying ``error`` + ``traceback`` + ``wall_elapsed`` before exiting
 nonzero — the contract ``eval_full_cascade._run_cascade_isolated`` parses.
 
 No stubs, no drift:
-  * Theta runs the real v8 cross-encoder. ``DART_ALLOW_THETA_STUB`` is neither
+  * Theta runs the real v8 cross-encoder. ``SEMANTIK_ALLOW_THETA_STUB`` is neither
     set nor needed (the strict-by-default loader picks up ``models/theta/
     semantic_preservation/v8``); if theta weights were missing the cascade
     raises loudly rather than silently scoring 0.7 (feedback_no_silent_fallbacks).

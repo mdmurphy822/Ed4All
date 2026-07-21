@@ -319,8 +319,16 @@ def test_calibrate_does_not_modify_source_files(tmp_path: Path) -> None:
 
 
 def test_calibrate_dart_disagreement_rate_calc(tmp_path: Path) -> None:
-    """5%% of pairs carrying dart_disagreement → fire_rate=0.05."""
-    course_root = tmp_path / "course-dart"
+    """5%% of pairs carrying dart_disagreement → fire_rate=0.05.
+
+    The ``dart_source_check`` / ``dart_disagreement`` / ``dart_max_contradiction``
+    tokens are the legacy decision-capture keys/values the calibration reader
+    consumes (``c.get("dart_source_check") or c.get("outcome")``), and
+    ``dart_disagreement_rate_ceiling`` / the ``Wave 9 TIGHT — Dual-Source DART``
+    label are the source-emitted metric + wave names — legacy-compat reads, so
+    they are pinned verbatim here.
+    """
+    course_root = tmp_path / "course-a"
     pairs: List[Dict[str, Any]] = []
     # 100 pairs, 5 carry dart_disagreement on a per-claim entry.
     for i in range(100):
@@ -347,7 +355,7 @@ def test_calibrate_dart_disagreement_rate_calc(tmp_path: Path) -> None:
 
     rows_by_wave, _ = run_calibration(
         course_root=course_root,
-        course_code="course-dart",
+        course_code="course-a",
         target_percentile=5.0,
     )
     w9 = rows_by_wave["Wave 9 TIGHT — Dual-Source DART Pair Validation"]

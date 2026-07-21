@@ -32,14 +32,11 @@ LIBV2_ROOT = LIBV2_PATH
 
 # Minimum decisions required per phase for quality assurance
 MIN_DECISIONS_PER_PHASE: Dict[str, int] = {
-    # Conversion phases. DART->semantik naming purge (task #19):
-    # ``semantik_conversion`` is the ratified live emit phase; the legacy
-    # ``dart-conversion`` key stays (dual-key) so pre-purge capture trees
-    # still audit against the same floor. ``dart-validation`` has NO live
-    # emitter (constants-only residue) — kept untouched pending S4.
+    # Conversion phases. ``semantik_conversion`` is the ratified live emit
+    # phase; the legacy ``dart-conversion`` key stays (dual-key) so pre-rename
+    # capture trees still audit against the same floor.
     "semantik_conversion": 3,
     "dart-conversion": 3,
-    "dart-validation": 2,
     # Courseforge phases
     "courseforge-input-research": 3,
     "courseforge-exam-research": 2,
@@ -92,7 +89,7 @@ OPERATION_MAP: Dict[str, str] = {
     "source_usage": "use_source",
     "outcome_signal": "record_outcome",
     "alignment_check": "check_alignment",
-    # DART operations
+    # SemantiK conversion operations
     "structure_detection": "detect_structure",
     "heading_assignment": "assign_heading",
     "alt_text_generation": "generate_alt_text",
@@ -212,7 +209,7 @@ def ensure_training_dir(tool: str = "") -> Path:
     """Ensure training directory exists and return path.
 
     Args:
-        tool: Optional tool name for subdirectory (dart, courseforge, trainforge)
+        tool: Optional tool name for subdirectory (semantik, courseforge, trainforge)
 
     Returns:
         Path to training directory (created if needed)

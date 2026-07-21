@@ -1,7 +1,7 @@
 """Deterministic builder for the shared retrieval mini-course fixture.
 
 Run this script manually whenever the source HTML pages change; it
-regenerates ``dart_chunks/chunks.jsonl``, ``source/imscc/mini.imscc``, and
+regenerates ``semantik_chunks/chunks.jsonl``, ``source/imscc/mini.imscc``, and
 keeps the fixture self-consistent (char_spans correct by construction by
 re-resolving the body xpath at build time).
 
@@ -13,7 +13,7 @@ the WS1 offline-retrieval suite. It contains:
   * source/html/page_alpha.html, page_beta.html — small text-only pages.
   * source/imscc/mini.imscc                     — zip of the same two pages
                                                   + a stub imsmanifest.xml.
-  * dart_chunks/chunks.jsonl                     — 7 v4 chunks; 6 with CORRECT
+  * semantik_chunks/chunks.jsonl                 — 7 v4 chunks; 6 with CORRECT
                                                   char_spans and 1 with a
                                                   deliberately fabricated span
                                                   (id suffix ``_fabricated``).
@@ -43,7 +43,7 @@ from Trainforge.parsers.xpath_walker import resolve_xpath  # noqa: E402
 
 HTML_DIR = FIXTURE_DIR / "source" / "html"
 IMSCC_DIR = FIXTURE_DIR / "source" / "imscc"
-DART_CHUNKS_DIR = FIXTURE_DIR / "dart_chunks"
+SEMANTIK_CHUNKS_DIR = FIXTURE_DIR / "semantik_chunks"
 GOLD_DIR = FIXTURE_DIR / "retrieval_eval"
 
 COURSE_ID = "MINI_RETRIEVAL_101"
@@ -179,13 +179,13 @@ def _build_chunk(
 
 
 def build() -> None:
-    DART_CHUNKS_DIR.mkdir(parents=True, exist_ok=True)
+    SEMANTIK_CHUNKS_DIR.mkdir(parents=True, exist_ok=True)
     IMSCC_DIR.mkdir(parents=True, exist_ok=True)
     GOLD_DIR.mkdir(parents=True, exist_ok=True)
 
     chunks: list[dict] = []
-    # Aggregate source sha over all pages (mirrors the DART merkle-aggregate
-    # convention: chunks share one corpus-level sha, not per-page).
+    # Aggregate source sha over all pages: chunks share one corpus-level sha,
+    # not per-page.
     page_bytes: dict[str, bytes] = {}
     for page in PAGES:
         page_bytes[page["file"]] = (HTML_DIR / page["file"]).read_bytes()
@@ -243,7 +243,7 @@ def build() -> None:
     chunks.append(fabricated)
 
     # Write chunks.jsonl (deterministic ordering).
-    out = DART_CHUNKS_DIR / "chunks.jsonl"
+    out = SEMANTIK_CHUNKS_DIR / "chunks.jsonl"
     with out.open("w", encoding="utf-8") as fh:
         for chunk in chunks:
             fh.write(json.dumps(chunk, ensure_ascii=False, sort_keys=True) + "\n")
@@ -286,8 +286,8 @@ def build() -> None:
     imscc_path = IMSCC_DIR / "mini.imscc"
     with zipfile.ZipFile(imscc_path, "w", zipfile.ZIP_DEFLATED) as zf:
         # Deterministic member order; the imscc member item_path is "alpha.html"
-        # / "beta.html" (same as dart item_path) so the resolver finds members
-        # by item_path directly.
+        # / "beta.html" (same as the chunk item_path) so the resolver finds
+        # members by item_path directly.
         zf.writestr("imsmanifest.xml", manifest_xml)
         for page in PAGES:
             zf.writestr(f"{page['module_id']}.html", page_bytes[page["file"]].decode("utf-8"))
@@ -299,8 +299,8 @@ def build() -> None:
         "schema_version": "1.0",
         "course_slug": "mini-retrieval-101",
         "chunkset": {
-            "kind": "dart",
-            "chunks_path": "dart_chunks/chunks.jsonl",
+            "kind": "semantik",
+            "chunks_path": "semantik_chunks/chunks.jsonl",
             "chunks_sha256": chunks_sha,
         },
         "authored_at": "2026-06-09T00:00:00Z",

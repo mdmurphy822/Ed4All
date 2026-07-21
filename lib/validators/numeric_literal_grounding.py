@@ -19,7 +19,7 @@ The numeric-literal extraction behind ``ED4ALL_ANSWER_NLI_ADD``
 ``claim_numerics_present``) — "every numeric literal in the claim present in the
 chunk (NLI is number-blind)". That guard handles plain decimals / currency /
 percent but NOT signed fractions ``a/b`` or the OCR space-separated digit groups
-the real DART chunkset stores (``-55/84`` lives as ``− 55 84``). This module
+the SemantiK chunkset stores (``-55/84`` lives as ``− 55 84``). This module
 EXTENDS the precedent's normalization (unicode minus / slash) and adds a
 **paired-fraction** extractor + OCR-tolerant containment so a fraction's
 ``(numerator, denominator)`` pair is matched as adjacent digit groups in source.
@@ -27,7 +27,7 @@ EXTENDS the precedent's normalization (unicode minus / slash) and adds a
 The measured rule (real-data, see the module-level investigation)
 -----------------------------------------------------------------
 On the 8 real 7B blocks vs the 72 real chunks of a course archive
-(``LibV2/courses/<course-slug>/dart_chunks/chunks.jsonl``):
+(``LibV2/courses/<course-slug>/semantik_chunks/chunks.jsonl``):
 
 * The fabrication ``-40/88`` (a worked-example INPUT that appears NOWHERE as an
   adjacent digit-group pair in the 72 chunks) is FLAGGED — present in BOTH the
@@ -117,7 +117,7 @@ logger = logging.getLogger(__name__)
 # OCR-tolerant normalization + paired-fraction extraction
 # --------------------------------------------------------------------------- #
 
-#: Unicode minus variants the DART OCR emits in place of ASCII ``-``.
+#: Unicode minus variants the SemantiK OCR lane emits in place of ASCII ``-``.
 _UNICODE_MINUS = ("−", "–", "—", "‐", "‑")
 #: Unicode slash / division-slash variants.
 _UNICODE_SLASH = ("⁄", "∕")
@@ -350,10 +350,10 @@ class NumericLiteralGroundingValidator:
     Inputs:
         blocks: List[Block]
         source_chunks: Dict[str, str]
-            Mapping of canonical sourceId (e.g. ``dart:slug#blk_0``) to the
+            Mapping of canonical sourceId (e.g. ``semantik:slug#blk_0``) to the
             chunk's plain-text body. The gate-input builder
             (``_build_rewrite_block_input``) populates this from the staging
-            manifest + DART chunks.jsonl body fallback; tests inject it directly.
+            manifest + SemantiK chunks.jsonl body fallback; tests inject it directly.
         shadow: bool
             Forces emitted issues to warning-severity (compute + capture only).
         min_absent_fractions: Optional[int]

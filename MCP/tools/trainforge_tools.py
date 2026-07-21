@@ -860,10 +860,10 @@ def register_trainforge_tools(mcp):
             # Collect all decision files
             decision_files = list(TRAINING_OUTPUT.rglob("decisions_*.jsonl"))
 
-            # Also check courseforge and dart directories
+            # Also check courseforge and semantik capture buckets
             courseforge_output = TRAINING_DIR / "courseforge"
-            dart_output = TRAINING_DIR / "dart"
-            for alt_dir in [courseforge_output, dart_output]:
+            semantik_output = TRAINING_DIR / "semantik"
+            for alt_dir in [courseforge_output, semantik_output]:
                 if alt_dir.exists():
                     decision_files.extend(alt_dir.rglob("decisions_*.jsonl"))
 
@@ -873,7 +873,7 @@ def register_trainforge_tools(mcp):
                 first_file = decision_files[0]
                 parts = first_file.parts
                 for i, part in enumerate(parts):
-                    if part in ["trainforge", "courseforge", "dart"] and i + 1 < len(parts):
+                    if part in ["trainforge", "courseforge", "semantik"] and i + 1 < len(parts):
                         course_code = parts[i + 1]
                         break
 

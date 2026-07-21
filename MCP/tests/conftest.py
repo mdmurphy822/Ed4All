@@ -179,7 +179,7 @@ agents:
     capabilities:
       - imscc_packaging
 
-  dart-converter:
+  semantik-converter:
     description: "Converts PDF to accessible HTML"
     tool: extract_and_convert_pdf
     capabilities:

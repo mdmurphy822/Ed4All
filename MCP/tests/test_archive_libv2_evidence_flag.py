@@ -119,7 +119,7 @@ def test_graph_has_evidence_refs_true_on_wave11_evidence():
                         "definition_excerpt": "y",
                         "pattern": "p",
                         "source_references": [
-                            {"sourceId": "dart:s#b", "role": "primary"},
+                            {"sourceId": "semantik:s#b", "role": "primary"},
                         ],
                     },
                 },
@@ -185,7 +185,7 @@ def test_graph_has_evidence_refs_true_with_mixed_edges():
                         "concept_slug": "z",
                         "content_type": "chunk_type",
                         "source_references": [
-                            {"sourceId": "dart:a#b", "role": "contributing"}
+                            {"sourceId": "semantik:a#b", "role": "contributing"}
                         ],
                     },
                 },
@@ -208,7 +208,7 @@ def test_graph_has_evidence_refs_tolerates_malformed_entries():
                 "provenance": {
                     "evidence": {
                         "source_references": [
-                            {"sourceId": "dart:x#y", "role": "primary"}
+                            {"sourceId": "semantik:x#y", "role": "primary"}
                         ]
                     }
                 }
@@ -241,7 +241,7 @@ def test_detect_evidence_reads_graph_subdir(tmp_path):
                 "provenance": {
                     "evidence": {
                         "source_references": [
-                            {"sourceId": "dart:x#y", "role": "primary"}
+                            {"sourceId": "semantik:x#y", "role": "primary"}
                         ]
                     }
                 }
@@ -264,7 +264,7 @@ def test_detect_evidence_falls_back_to_corpus_subdir(tmp_path):
                 "provenance": {
                     "evidence": {
                         "source_references": [
-                            {"sourceId": "dart:x#y", "role": "primary"}
+                            {"sourceId": "semantik:x#y", "role": "primary"}
                         ]
                     }
                 }
@@ -367,7 +367,7 @@ def test_archive_manifest_evidence_flag_true_with_wave11_graph(
                 "provenance": {
                     "evidence": {
                         "source_references": [
-                            {"sourceId": "dart:a#b", "role": "primary"},
+                            {"sourceId": "semantik:a#b", "role": "primary"},
                         ]
                     }
                 }

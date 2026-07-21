@@ -51,7 +51,7 @@ def _block(
                  "source_chunk_ids": list(chunk_ids or [])},
             ],
             "curies": list(curies or []),
-            "source_refs": ["dart:slug#blk1"],
+            "source_refs": ["semantik:slug#blk1"],
             "objective_refs": ["TO-01"],
         },
     )
@@ -393,7 +393,7 @@ def test_backstops_noop_on_clean_block(monkeypatch):
     monkeypatch.delenv("ED4ALL_REWRITE_FIT_WINDOW", raising=False)
     # The model emits the CURIE token verbatim in TEXT content already.
     clean_html = (
-        '<section data-cf-source-ids="dart:slug#blk1" '
+        '<section data-cf-source-ids="semantik:slug#blk1" '
         'data-cf-block-id="page#concept_x_0" '
         'data-cf-objective-id="TO-01">'
         "<h2>The sh:NodeShape concept</h2>"

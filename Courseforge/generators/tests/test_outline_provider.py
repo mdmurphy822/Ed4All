@@ -151,7 +151,7 @@ def _valid_outline_payload(
         "section_skeleton": [
             {"heading": "Definition"} for _ in range(max(section_min, 1))
         ] if section_min > 0 else [],
-        "source_refs": [{"sourceId": "dart:slug#blk1", "role": "primary"}],
+        "source_refs": [{"sourceId": "semantik:slug#blk1", "role": "primary"}],
         "structural_warnings": [],
     }
     return payload
@@ -303,7 +303,7 @@ def test_outline_user_prompt_includes_block_id_and_objectives(monkeypatch):
         {"id": "CO-02", "statement": "Explain the introductory framing."},
     ]
     chunks = [
-        {"id": "dart:slug#blk1", "body": "Source body content."},
+        {"id": "semantik:slug#blk1", "body": "Source body content."},
     ]
     rendered = p._render_user_prompt(
         block=block, source_chunks=chunks, objectives=objectives
@@ -640,8 +640,8 @@ def test_outline_user_prompt_carries_per_claim_attribution_clause(monkeypatch):
     p = OutlineProvider(provider="local")
     block = _stub_block(block_type="concept")
     chunks = [
-        {"id": "dart:slug-a#blk1", "body": "First chunk body."},
-        {"id": "dart:slug-b#blk2", "body": "Second chunk body."},
+        {"id": "semantik:slug-a#blk1", "body": "First chunk body."},
+        {"id": "semantik:slug-b#blk2", "body": "Second chunk body."},
     ]
     objectives = [
         {"id": "TO-01", "statement": "Define the central concept."},
@@ -689,7 +689,7 @@ def test_outline_user_prompt_example_block_carries_concrete_instance_directive(
     block = _stub_block(block_type="example", block_id="page-1#example_div_0")
     chunks = [
         {
-            "id": "dart:frac#blk1",
+            "id": "semantik:frac#blk1",
             "body": (
                 "Example: Divide 3/4 by 2/5. Multiply by the reciprocal: "
                 "3/4 x 5/2 = 15/8. The answer is 15/8."
@@ -718,7 +718,7 @@ def test_outline_user_prompt_non_example_block_omits_concrete_instance_directive
     monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
     p = OutlineProvider(provider="local")
     block = _stub_block(block_type="concept")
-    chunks = [{"id": "dart:slug#blk1", "body": "A concept body."}]
+    chunks = [{"id": "semantik:slug#blk1", "body": "A concept body."}]
     objectives = [{"id": "TO-01", "statement": "Define the concept."}]
     rendered = p._render_user_prompt(
         block=block, source_chunks=chunks, objectives=objectives
@@ -895,7 +895,7 @@ def test_outline_user_prompt_surfaces_bloom_triple_for_dict_shape(monkeypatch):
     p = OutlineProvider(provider="local")
     block = _stub_block(block_type="concept")
     chunks = [
-        {"id": "dart:slug-a#blk1", "body": "First chunk body."},
+        {"id": "semantik:slug-a#blk1", "body": "First chunk body."},
     ]
     objectives = [
         {
@@ -923,7 +923,7 @@ def test_outline_user_prompt_falls_back_to_legacy_shape_when_bloom_absent(monkey
     p = OutlineProvider(provider="local")
     block = _stub_block(block_type="concept")
     chunks = [
-        {"id": "dart:slug-a#blk1", "body": "First chunk body."},
+        {"id": "semantik:slug-a#blk1", "body": "First chunk body."},
     ]
     objectives = [
         {"id": "TO-01", "statement": "Define the central concept."},
@@ -992,10 +992,10 @@ def test_grounding_repair_populates_empty_source_chunk_ids_from_block(
 
     payload = _structured_claim_payload(source_chunk_ids=[])
     block_chunks = [
-        {"id": "dart:slug#blk1", "body": "Divisibility test body."},
-        {"id": "dart:slug#blk2", "body": "Worked-example body."},
+        {"id": "semantik:slug#blk1", "body": "Divisibility test body."},
+        {"id": "semantik:slug#blk2", "body": "Worked-example body."},
     ]
-    expected_ids = ["dart:slug#blk1", "dart:slug#blk2"]
+    expected_ids = ["semantik:slug#blk1", "semantik:slug#blk2"]
 
     seen: List[httpx.Request] = []
 
@@ -1033,14 +1033,14 @@ def test_grounding_repair_filters_garbage_keeps_only_valid_ids(monkeypatch):
 
     payload = _structured_claim_payload(
         source_chunk_ids=[
-            "dart:slug#blk1",
+            "semantik:slug#blk1",
             "Source chunk: a prose hallucination, not an id.",
-            "dart:slug#nonexistent",
+            "semantik:slug#nonexistent",
         ]
     )
     block_chunks = [
-        {"id": "dart:slug#blk1", "body": "Real body."},
-        {"id": "dart:slug#blk2", "body": "Other body."},
+        {"id": "semantik:slug#blk1", "body": "Real body."},
+        {"id": "semantik:slug#blk2", "body": "Other body."},
     ]
 
     def handler(_: httpx.Request) -> httpx.Response:
@@ -1051,8 +1051,8 @@ def test_grounding_repair_filters_garbage_keeps_only_valid_ids(monkeypatch):
         _stub_block(), source_chunks=block_chunks, objectives=[]
     )
     claim = out.content["key_claims"][0]
-    assert claim["source_chunk_ids"] == ["dart:slug#blk1"]
-    valid = {"dart:slug#blk1", "dart:slug#blk2"}
+    assert claim["source_chunk_ids"] == ["semantik:slug#blk1"]
+    valid = {"semantik:slug#blk1", "semantik:slug#blk2"}
     assert all(cid in valid for cid in claim["source_chunk_ids"])
 
 
@@ -1066,7 +1066,7 @@ def test_grounding_repair_emits_signals_in_decision_capture(monkeypatch):
 
     capture = _FakeCapture()
     payload = _structured_claim_payload(source_chunk_ids=[])
-    block_chunks = [{"id": "dart:slug#blk1", "body": "Body."}]
+    block_chunks = [{"id": "semantik:slug#blk1", "body": "Body."}]
 
     def handler(_: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=_success_body(json.dumps(payload)))
@@ -1188,7 +1188,7 @@ def _valid_explanation_outline() -> Dict[str, Any]:
         ],
         "section_skeleton": [{"heading": "Overview"}],
         "source_refs": [
-            {"sourceId": "dart:slug#chunk_a", "role": "primary"},
+            {"sourceId": "semantik:slug#chunk_a", "role": "primary"},
         ],
         "structural_warnings": [],
     }
@@ -1372,11 +1372,11 @@ def test_combined_repairs_normalize_both_failures_end_to_end():
 
 def test_bare_source_refs_rejected_before_repair():
     """Baseline: bare-string source_refs items fail the strict schema —
-    the exact live-7B ``'dart:...' is not of type 'object'`` failure."""
+    the exact live-7B ``'semantik:...' is not of type 'object'`` failure."""
     import jsonschema  # type: ignore[import-untyped]
 
     payload = _valid_explanation_outline()
-    payload["source_refs"] = ["dart:slug#chunk_a", "dart:slug#chunk_b"]
+    payload["source_refs"] = ["semantik:slug#chunk_a", "semantik:slug#chunk_b"]
     with pytest.raises(jsonschema.ValidationError):
         _validate_explanation(payload)
 
@@ -1389,8 +1389,8 @@ def test_repair_source_refs_wraps_bare_strings_and_backfills_role():
     sourceId is fabricated."""
     payload = _valid_explanation_outline()
     payload["source_refs"] = [
-        "dart:slug#chunk_a",                       # bare string → wrap
-        {"sourceId": "dart:slug#chunk_b"},         # role-less dict → backfill
+        "semantik:slug#chunk_a",                       # bare string → wrap
+        {"sourceId": "semantik:slug#chunk_b"},         # role-less dict → backfill
         {"role": "contributing"},                  # no sourceId → drop
         "   ",                                      # whitespace-only → drop
     ]
@@ -1406,14 +1406,14 @@ def test_repair_source_refs_wraps_bare_strings_and_backfills_role():
 
     refs = out["source_refs"]
     assert refs == [
-        {"sourceId": "dart:slug#chunk_a", "role": "primary"},
-        {"sourceId": "dart:slug#chunk_b", "role": "primary"},
+        {"sourceId": "semantik:slug#chunk_a", "role": "primary"},
+        {"sourceId": "semantik:slug#chunk_b", "role": "primary"},
     ]
     # Every surviving sourceId is one the model actually cited — nothing
     # invented.
     assert {r["sourceId"] for r in refs} <= {
-        "dart:slug#chunk_a",
-        "dart:slug#chunk_b",
+        "semantik:slug#chunk_a",
+        "semantik:slug#chunk_b",
     }
     _validate_explanation(out)  # must not raise
 
@@ -1447,10 +1447,10 @@ def test_repair_source_refs_noop_when_absent_or_not_list():
     assert out["_source_refs_shape_repair"]["repaired"] is False
     out.pop("_source_refs_shape_repair")
 
-    payload2 = {"source_refs": "dart:slug#chunk_a"}
+    payload2 = {"source_refs": "semantik:slug#chunk_a"}
     out2 = _repair_outline_source_refs(payload2)
     assert out2["_source_refs_shape_repair"]["repaired"] is False
-    assert out2["source_refs"] == "dart:slug#chunk_a"
+    assert out2["source_refs"] == "semantik:slug#chunk_a"
 
 
 # ---------------------------------------------------------------------------
@@ -1461,7 +1461,7 @@ def test_repair_source_refs_noop_when_absent_or_not_list():
 # exact clean-fractions shape the live 7B probe exercises.
 _PREREQ_SOURCE = [
     {
-        "id": "dart:simplifying-fractions#sec_01",
+        "id": "semantik:simplifying-fractions#sec_01",
         "text": (
             "To simplify a fraction, divide both the numerator and the "
             "denominator by their greatest common factor (GCF).\n\n"
@@ -1602,11 +1602,11 @@ def test_repair_prereq_pages_output_satisfies_strict_schema():
         "curies": ["math:gcf"],
         "key_claims": [
             {"claim": "Learners need factoring first.",
-             "source_chunk_ids": ["dart:simplifying-fractions#sec_01"]}
+             "source_chunk_ids": ["semantik:simplifying-fractions#sec_01"]}
         ],
         "section_skeleton": [{"heading": "Prerequisites"}],
         "source_refs": [
-            {"sourceId": "dart:simplifying-fractions#sec_01", "role": "primary"}
+            {"sourceId": "semantik:simplifying-fractions#sec_01", "role": "primary"}
         ],
         "structural_warnings": [],
         "prerequisitePages": ["p#bad_0"],  # garbage-only → would fail minItems
@@ -1705,7 +1705,7 @@ def test_all_five_repairs_normalize_every_failure_end_to_end():
     stray_id = "democourse_chunk_00001"
     payload["key_claims"].append(stray_id)
     payload["curies"] = ["foo:bar", "schema:https://example.com/vocab"]
-    payload["source_refs"] = ["dart:slug#chunk_a", {"sourceId": "dart:slug#chunk_b"}]
+    payload["source_refs"] = ["semantik:slug#chunk_a", {"sourceId": "semantik:slug#chunk_b"}]
     payload["bloom_level"] = 2
     valid_ids = ["chunk_a", stray_id]
 
@@ -1725,8 +1725,8 @@ def test_all_five_repairs_normalize_every_failure_end_to_end():
     assert len(payload["key_claims"]) == 2
     assert all(isinstance(c, dict) for c in payload["key_claims"])
     assert payload["source_refs"] == [
-        {"sourceId": "dart:slug#chunk_a", "role": "primary"},
-        {"sourceId": "dart:slug#chunk_b", "role": "primary"},
+        {"sourceId": "semantik:slug#chunk_a", "role": "primary"},
+        {"sourceId": "semantik:slug#chunk_b", "role": "primary"},
     ]
     assert payload["bloom_level"] == "understand"  # tier 2 → understand
     _validate_explanation(payload)
@@ -1952,7 +1952,7 @@ def _minimal_outline_payload(
         "key_claims": key_claims,
         "section_skeleton": section_skeleton,
         "source_refs": [
-            {"sourceId": "dart:slug#chunk_a", "role": "primary"},
+            {"sourceId": "semantik:slug#chunk_a", "role": "primary"},
         ],
         "structural_warnings": [],
     }
@@ -2023,7 +2023,7 @@ def _echo_objectives() -> List[Dict[str, Any]]:
     return [{"id": "CO-01", "statement": _ECHO_OBJECTIVE, "bloom_level": "apply"}]
 
 
-def _structured(text: str, ids=("dart:slug#blk1",)) -> Dict[str, Any]:
+def _structured(text: str, ids=("semantik:slug#blk1",)) -> Dict[str, Any]:
     return {"claim": text, "source_chunk_ids": list(ids)}
 
 

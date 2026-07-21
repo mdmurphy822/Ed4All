@@ -49,9 +49,9 @@ def test_save_rejects_unknown_provider(state_dir):
 
 def test_update_settings_deep_merges(state_dir, sample_settings_doc):
     settings_store.save_settings(sample_settings_doc)
-    merged = settings_store.update_settings({"flags": {"DART_LLM_CLASSIFICATION": True}})
+    merged = settings_store.update_settings({"flags": {"TRAINFORGE_REQUIRE_EMBEDDINGS": True}})
     # Patch merged in; pre-existing flag preserved.
-    assert merged["flags"]["DART_LLM_CLASSIFICATION"] is True
+    assert merged["flags"]["TRAINFORGE_REQUIRE_EMBEDDINGS"] is True
     assert merged["flags"]["COURSEFORGE_TWO_PASS"] is True
     assert merged["env"]["ANTHROPIC_API_KEY"] == "sk-ant-test-secret-value"
 
@@ -67,7 +67,7 @@ def test_render_env_maps_routing_flags_and_passthrough(state_dir, sample_setting
     assert rendered["COURSEFORGE_REWRITE_MODEL"] == "claude-sonnet-4-6"
     # flags -> lowercase bool strings
     assert rendered["COURSEFORGE_TWO_PASS"] == "true"
-    assert rendered["DART_LLM_CLASSIFICATION"] == "false"
+    assert rendered["ED4ALL_ANSWER_LIBRARY_WIDE"] == "false"
     # retrieval.require_embeddings mirror
     assert rendered["TRAINFORGE_REQUIRE_EMBEDDINGS"] == "true"
     # explicit env passthrough of a catalog-known key
@@ -163,7 +163,7 @@ def test_secret_at_rest_split_to_sidecar(state_dir, sample_settings_doc):
 def test_update_settings_preserves_sidecar_secret(state_dir, sample_settings_doc):
     """Patching a non-secret field must not lose the previously-stored secret."""
     settings_store.save_settings(sample_settings_doc)
-    merged = settings_store.update_settings({"flags": {"DART_LLM_CLASSIFICATION": True}})
+    merged = settings_store.update_settings({"flags": {"TRAINFORGE_REQUIRE_EMBEDDINGS": True}})
     assert merged["env"]["ANTHROPIC_API_KEY"] == "sk-ant-test-secret-value"
     assert "sk-ant-test-secret-value" not in shared_state.settings_path().read_text()
 

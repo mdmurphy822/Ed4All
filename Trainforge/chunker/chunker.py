@@ -93,10 +93,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from Trainforge.chunker.boilerplate import strip_boilerplate
 from Trainforge.chunker.helpers import (
     _block_element_spans,
-    build_dart_block_offset_index,
+    build_semantik_block_offset_index,
     extract_plain_text_with_curies,
     extract_section_html,
-    harvest_dart_source_refs,
+    harvest_semantik_source_refs,
     resolve_dart_refs_for_chunk,
     strip_assessment_feedback,
     strip_feedback_from_text,
@@ -1729,7 +1729,7 @@ def chunk_text_block(
 
     DART source-provenance threading: accepts ``dart_source_refs`` — the
     ``{block_id, pages}`` pairs harvested by
-    :func:`Trainforge.chunker.helpers.harvest_dart_source_refs` from the
+    :func:`Trainforge.chunker.helpers.harvest_semantik_source_refs` from the
     ``data-dart-block-id`` / ``data-dart-pages`` attributes on the
     section / item HTML. Forwarded to the ``ctx.create_chunk`` callback as
     the optional ``dart_source_refs`` kwarg (additive, ``TypeError``-fallback
@@ -1845,7 +1845,7 @@ def chunk_text_block(
     # attributed every in-scope block whose prose it contains, in doc order.
     _probe_scope_html = dart_block_scope_html or raw_html_for_xpath
     block_probe_index = (
-        build_dart_block_offset_index(_probe_scope_html)
+        build_semantik_block_offset_index(_probe_scope_html)
         if dart_source_refs
         else []
     )
@@ -2246,7 +2246,7 @@ def chunk_content(
             )
             # Harvest DART source-provenance pairs from the whole item HTML
             # (the unsectioned path has no per-section block to scope to).
-            item_dart_refs = harvest_dart_source_refs(raw_html)
+            item_dart_refs = harvest_semantik_source_refs(raw_html)
             if item["resource_type"] == "quiz":
                 text = strip_feedback_from_text(text)
             if text.strip():
@@ -2331,7 +2331,7 @@ def chunk_content(
             section_forced_curies: List[str] = list(sec_forced_curies)
             # Harvest DART {block_id, pages} from this section's HTML block.
             section_dart_refs: List[Dict[str, Any]] = list(
-                harvest_dart_source_refs(html_block)
+                harvest_semantik_source_refs(html_block)
             )
             for extra_heading in merged_headings or []:
                 if extra_heading == heading:
@@ -2344,7 +2344,7 @@ def chunk_content(
                 )
                 section_curies.extend(extra_curies)
                 section_forced_curies.extend(extra_forced)
-                section_dart_refs.extend(harvest_dart_source_refs(extra_html))
+                section_dart_refs.extend(harvest_semantik_source_refs(extra_html))
             # DART stamps data-dart-* on the block wrapper, not on leaf
             # headings, so a heading-derived ``html_block`` slice often carries
             # no attribute. We pass ``section_dart_refs`` to ``chunk_text_block``
@@ -2357,7 +2357,7 @@ def chunk_content(
             # When the section slice carried no block, fall back to the SINGLE
             # block enclosing this section's heading in document order (the
             # nearest preceding block whose span covers the heading position) —
-            # NOT the whole document's list. ``harvest_dart_source_refs(raw_html)``
+            # NOT the whole document's list. ``harvest_semantik_source_refs(raw_html)``
             # below is the document-presence probe; we then narrow it to the one
             # enclosing block so ``dart_source_refs[0]`` is a correct coarse
             # anchor for this section, not the file's first (colophon) block.
@@ -2371,7 +2371,7 @@ def chunk_content(
                     # the actual per-chunk selection to char-span containment
                     # (chunk_text_block sees the full offset index). The first
                     # document block is used only as the last-resort ≤1 fallback.
-                    doc_refs = harvest_dart_source_refs(raw_html)
+                    doc_refs = harvest_semantik_source_refs(raw_html)
                     section_dart_refs = doc_refs[:1] if doc_refs else []
             # Bound this section's block-probe scope by the NEXT group's heading
             # (structural section boundary). None → whole-item scope fallback in

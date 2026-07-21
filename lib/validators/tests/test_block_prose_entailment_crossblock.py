@@ -76,7 +76,7 @@ def _blocks() -> List[Block]:
     ]
     blocks: List[Block] = []
     for i, (bid, content) in enumerate(specs):
-        sid = f"dart:slug#blk_{i}"
+        sid = f"semantik:slug#blk_{i}"
         blocks.append(
             Block(
                 block_id=bid,
@@ -93,7 +93,7 @@ def _blocks() -> List[Block]:
 
 def _source_chunks(blocks: List[Block]) -> Dict[str, str]:
     return {
-        f"dart:slug#blk_{i}": (
+        f"semantik:slug#blk_{i}": (
             "The grounded premise body for this block covers energy production, "
             "the computed sum across the domain, and the exact procedure."
         )

@@ -3,7 +3,7 @@
 Phase 6 ST 12 — exercises the new ``_run_concept_extraction`` helper
 registered by ``_build_tool_registry`` to confirm it:
 
-  * Reads DART staging output (``*_synthesized.json`` sidecars).
+  * Reads SemantiK staging output (``*_synthesized.json`` sidecars).
   * Persists ``concept_graph_semantic.json`` + ``manifest.json`` under
     ``LibV2/courses/<slug>/concept_graph/``.
   * Emits a SHA-256 hex digest of the graph bytes.
@@ -39,7 +39,7 @@ _SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
 
 
 def _write_synthesized(path: Path, slug: str) -> None:
-    """Emit a minimal DART ``*_synthesized.json`` sidecar at ``path``."""
+    """Emit a minimal SemantiK ``*_synthesized.json`` sidecar at ``path``."""
     doc = {
         "campus_code": slug,
         "campus_name": slug.replace("_", " ").title(),
@@ -86,7 +86,7 @@ def _write_synthesized(path: Path, slug: str) -> None:
 
 @pytest.fixture
 def concept_extraction_fixture(tmp_path, monkeypatch):
-    """Build a minimal DART staging dir + fake LibV2 root."""
+    """Build a minimal SemantiK staging dir + fake LibV2 root."""
     fake_root = tmp_path / "root"
     fake_root.mkdir()
 
@@ -532,12 +532,12 @@ class TestRunConceptExtractionConsumesUpstreamChunks:
 
 
 # ---------------------------------------------------------------------------
-# Phase 7b Subtask 11 — _run_dart_chunking smoke tests
+# Phase 7b Subtask 11 — SemantiK chunking smoke tests
 # ---------------------------------------------------------------------------
 
 
-def _write_dart_html(path: Path, title: str) -> None:
-    """Emit a minimal DART-shaped HTML file at ``path``."""
+def _write_semantik_html(path: Path, title: str) -> None:
+    """Emit a minimal SemantiK-shaped HTML file at ``path``."""
     path.write_text(
         f"""<!DOCTYPE html>
 <html lang="en">
@@ -546,7 +546,7 @@ def _write_dart_html(path: Path, title: str) -> None:
   <main>
     <section>
       <h1>{title}</h1>
-      <p>This DART HTML file is a fixture for the Phase 7b chunking smoke test. {' '.join(['Chunk content padding sentence.'] * 60)}</p>
+      <p>This SemantiK HTML file is a fixture for the Phase 7b chunking smoke test. {' '.join(['Chunk content padding sentence.'] * 60)}</p>
       <h2>Sub-section about pedagogy</h2>
       <p>Pedagogy describes the methods and practice of teaching. {' '.join(['Additional padding text to clear the chunker minimum-size threshold.'] * 60)}</p>
     </section>
@@ -559,8 +559,8 @@ def _write_dart_html(path: Path, title: str) -> None:
 
 
 @pytest.fixture
-def dart_chunking_fixture(tmp_path, monkeypatch):
-    """Build a minimal DART staging dir + fake LibV2 root."""
+def semantik_chunking_fixture(tmp_path, monkeypatch):
+    """Build a minimal SemantiK staging dir + fake LibV2 root."""
     fake_root = tmp_path / "root"
     fake_root.mkdir()
 
@@ -578,8 +578,8 @@ def dart_chunking_fixture(tmp_path, monkeypatch):
 
     staging = tmp_path / "staging"
     staging.mkdir()
-    _write_dart_html(staging / "chapter_01.html", "Chapter One")
-    _write_dart_html(staging / "chapter_02.html", "Chapter Two")
+    _write_semantik_html(staging / "chapter_01.html", "Chapter One")
+    _write_semantik_html(staging / "chapter_02.html", "Chapter Two")
 
     return {
         "fake_root": fake_root,
@@ -589,7 +589,7 @@ def dart_chunking_fixture(tmp_path, monkeypatch):
     }
 
 
-def _invoke_dart_chunking(course_name: str, staging_dir: Path) -> dict:
+def _invoke_semantik_chunking(course_name: str, staging_dir: Path) -> dict:
     registry = _build_tool_registry()
     tool = registry["run_dart_chunking"]
     result = asyncio.run(
@@ -601,13 +601,13 @@ def _invoke_dart_chunking(course_name: str, staging_dir: Path) -> dict:
     return json.loads(result)
 
 
-class TestRunDartChunkingEmitsChunksJsonl:
-    def test_run_dart_chunking_emits_chunks_jsonl(self, dart_chunking_fixture):
+class TestRunSemantikChunkingEmitsChunksJsonl:
+    def test_run_semantik_chunking_emits_chunks_jsonl(self, semantik_chunking_fixture):
         """ST 11 plan-cited verification — helper writes chunks.jsonl
         and a sibling manifest.json under
-        ``LibV2/courses/<slug>/dart_chunks/``."""
-        fx = dart_chunking_fixture
-        payload = _invoke_dart_chunking(fx["course_name"], fx["staging_dir"])
+        ``LibV2/courses/<slug>/semantik_chunks/``."""
+        fx = semantik_chunking_fixture
+        payload = _invoke_semantik_chunking(fx["course_name"], fx["staging_dir"])
 
         assert payload["success"] is True
         assert "semantik_chunks_path" in payload
@@ -628,9 +628,9 @@ class TestRunDartChunkingEmitsChunksJsonl:
         assert parts[3] == "semantik_chunks"
         assert parts[4] == "chunks.jsonl"
 
-    def test_dart_chunks_sha256_matches_file_bytes(self, dart_chunking_fixture):
-        fx = dart_chunking_fixture
-        payload = _invoke_dart_chunking(fx["course_name"], fx["staging_dir"])
+    def test_semantik_chunks_sha256_matches_file_bytes(self, semantik_chunking_fixture):
+        fx = semantik_chunking_fixture
+        payload = _invoke_semantik_chunking(fx["course_name"], fx["staging_dir"])
 
         assert _SHA256_RE.match(payload["semantik_chunks_sha256"]), (
             f"sha256 not in canonical hex shape: {payload['semantik_chunks_sha256']!r}"
@@ -642,11 +642,11 @@ class TestRunDartChunkingEmitsChunksJsonl:
             "Returned sha256 must match on-disk chunks.jsonl bytes."
         )
 
-    def test_manifest_emitted_and_validates(self, dart_chunking_fixture):
+    def test_manifest_emitted_and_validates(self, semantik_chunking_fixture):
         """Manifest.json is emitted with the canonical chunkset shape
         and passes the ChunksetManifestValidator gate."""
-        fx = dart_chunking_fixture
-        payload = _invoke_dart_chunking(fx["course_name"], fx["staging_dir"])
+        fx = semantik_chunking_fixture
+        payload = _invoke_semantik_chunking(fx["course_name"], fx["staging_dir"])
 
         manifest_path = Path(payload["manifest_path"])
         assert manifest_path.exists()
@@ -654,8 +654,8 @@ class TestRunDartChunkingEmitsChunksJsonl:
 
         # Required schema fields.
         assert manifest["chunks_sha256"] == payload["semantik_chunks_sha256"]
-        # DART->semantik naming purge (task #19): the chunker sidecar now emits
-        # the ratified chunkset_kind + source-sha field names.
+        # The chunker sidecar emits the ratified chunkset_kind + source-sha
+        # field names.
         assert manifest["chunkset_kind"] == "semantik"
         assert _SHA256_RE.match(manifest["source_semantik_html_sha256"])
         assert "source_dart_html_sha256" not in manifest
@@ -699,10 +699,10 @@ class TestRunDartChunkingEmitsChunksJsonl:
             f"{[i.code for i in result.issues]}"
         )
 
-    def test_chunks_jsonl_lines_match_count(self, dart_chunking_fixture):
+    def test_chunks_jsonl_lines_match_count(self, semantik_chunking_fixture):
         """``chunks_count`` in manifest matches actual JSONL line count."""
-        fx = dart_chunking_fixture
-        payload = _invoke_dart_chunking(fx["course_name"], fx["staging_dir"])
+        fx = semantik_chunking_fixture
+        payload = _invoke_semantik_chunking(fx["course_name"], fx["staging_dir"])
 
         chunks_path = Path(payload["semantik_chunks_path"])
         actual_lines = sum(1 for line in chunks_path.read_text(encoding="utf-8").splitlines() if line.strip())
@@ -740,7 +740,7 @@ class TestRunDartChunkingEmitsChunksJsonl:
                 )
             )
 
-    def test_run_dart_chunking_registered_in_registry(self):
+    def test_run_semantik_chunking_registered_in_registry(self):
         """Forward-reference closure from Phase 7b ST 9's
         AGENT_TOOL_MAPPING entry: the tool must be registered."""
         registry = _build_tool_registry()
@@ -778,7 +778,7 @@ def _build_imscc_zip(zip_path: Path, html_files: list[tuple[str, str]]) -> None:
 
 
 def _imscc_html_payload(title: str) -> str:
-    """Emit a DART-shaped HTML payload large enough to clear the
+    """Emit a SemantiK-shaped HTML payload large enough to clear the
     chunker's minimum-size threshold."""
     return (
         f"<!DOCTYPE html>\n"
@@ -908,7 +908,7 @@ class TestRunImsccChunkingEmitsChunksJsonl:
         assert manifest["chunks_count"] == payload["chunks_count"]
         # additionalProperties: false — only the canonical keys.
         # W3.H sub-task H1 added the optional ``source_coverage`` block
-        # symmetrically to both DART + IMSCC manifests.
+        # symmetrically to both SemantiK + IMSCC manifests.
         assert set(manifest.keys()).issubset({
             "chunks_sha256",
             "chunker_version",

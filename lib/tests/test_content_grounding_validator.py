@@ -44,10 +44,10 @@ def _build_staging(tmp_path: Path, block_ids: list) -> Path:
     """Build a staging dir with a synthesized sidecar declaring block IDs."""
     staging = tmp_path / "staging"
     staging.mkdir()
-    # Write a minimal DART HTML with data-dart-block-id attributes.
+    # Write a minimal SemantiK HTML with data-semantik-block-id attributes.
     html = "<html><body>"
     for bid in block_ids:
-        html += f'<section data-dart-block-id="{bid}"><p>Body content for {bid}</p></section>'
+        html += f'<section data-semantik-block-id="{bid}"><p>Body content for {bid}</p></section>'
     html += "</body></html>"
     (staging / "sample.html").write_text(html, encoding="utf-8")
     return staging
@@ -243,7 +243,7 @@ class TestObjectivesPageExemption:
     """FIX 1 — the auto-generated objectives-list structural page is exempt.
 
     Its CO objective statements render as ungrounded ``<li>`` legitimately
-    (objective statements carry no DART source block). The exemption is TIGHT:
+    (objective statements carry no SemantiK source block). The exemption is TIGHT:
     only the ``learning_objectives.html`` basename — week overview/summary pages
     stay checked (see ``test_week_overview_still_checked`` below).
     """
@@ -313,14 +313,14 @@ class TestObjectivesPageExemption:
 class TestChunkIdNamespace:
     """FIX 2 — chunk-id namespace source-ids resolve against the run chunkset.
 
-    The key_terms feature stamps ``dart:{slug}#{course}_chunk_NNNNN`` ids that
-    deep-link to real chunks. ``_resolve_valid_block_ids`` only harvests DART
+    The key_terms feature stamps ``semantik:{slug}#{course}_chunk_NNNNN`` ids that
+    deep-link to real chunks. ``_resolve_valid_block_ids`` only harvests SemantiK
     block ids, so these were categorically UNRESOLVED_SOURCE_ID. FIX 2 admits
     the chunk-id namespace by exact membership against the harvested chunkset.
     """
 
     def _write_chunks(self, tmp_path: Path, chunk_ids: list) -> Path:
-        path = tmp_path / "dart_chunks" / "chunks.jsonl"
+        path = tmp_path / "semantik_chunks" / "chunks.jsonl"
         path.parent.mkdir(parents=True)
         import json
         path.write_text(
@@ -334,13 +334,13 @@ class TestChunkIdNamespace:
             tmp_path, ["demo_chunk_00001", "demo_chunk_00002"]
         )
         # Vocab-card paragraph stamped with the canonical key_terms source-id.
-        body = _make_para(40, "dart:demo#demo_chunk_00001")
+        body = _make_para(40, "semantik:demo#demo_chunk_00001")
         page = tmp_path / "week_01_key_terms.html"
         page.write_text(_make_page(body), encoding="utf-8")
         result = ContentGroundingValidator().validate({
             "page_paths": [str(page)],
-            "valid_block_ids": ["s1"],  # DART block universe (irrelevant here)
-            "dart_chunks_path": str(chunks),
+            "valid_block_ids": ["s1"],  # SemantiK block universe (irrelevant here)
+            "chunks_path": str(chunks),
         })
         # Resolves against the chunkset → passes for the right reason.
         assert result.passed is True
@@ -349,7 +349,7 @@ class TestChunkIdNamespace:
         assert "UNRESOLVED_CHUNK_SOURCE_ID" not in codes
 
     def test_valid_chunk_ids_precomputed_resolves(self, tmp_path):
-        body = _make_para(40, "dart:demo#demo_chunk_00007")
+        body = _make_para(40, "semantik:demo#demo_chunk_00007")
         page = tmp_path / "week_01_key_terms.html"
         page.write_text(_make_page(body), encoding="utf-8")
         result = ContentGroundingValidator().validate({
@@ -368,22 +368,22 @@ class TestChunkIdNamespace:
         """
         chunks = self._write_chunks(tmp_path, ["demo_chunk_00001"])
         body = (
-            _make_para(40, "dart:demo#demo_chunk_99999")
-            + _make_para(40, "dart:demo#demo_chunk_88888")
-            + _make_para(40, "dart:demo#demo_chunk_77777")
+            _make_para(40, "semantik:demo#demo_chunk_99999")
+            + _make_para(40, "semantik:demo#demo_chunk_88888")
+            + _make_para(40, "semantik:demo#demo_chunk_77777")
         )
         page = tmp_path / "week_01_key_terms.html"
         page.write_text(_make_page(body), encoding="utf-8")
         result = ContentGroundingValidator().validate({
             "page_paths": [str(page)],
             "valid_block_ids": ["s1"],
-            "dart_chunks_path": str(chunks),
+            "chunks_path": str(chunks),
         })
         assert result.passed is False
         assert "UNRESOLVED_SOURCE_ID" in {i.code for i in result.issues}
 
-    def test_bogus_dart_block_id_still_flags_when_chunkset_present(self, tmp_path):
-        """CONTROL: a genuinely-bogus DART block id STILL flags critical.
+    def test_bogus_semantik_block_id_still_flags_when_chunkset_present(self, tmp_path):
+        """CONTROL: a genuinely-bogus SemantiK block id STILL flags critical.
 
         Even with a chunkset harvested, a non-chunk-shaped unresolved id is a
         real grounding defect and must stay UNRESOLVED_SOURCE_ID critical.
@@ -399,7 +399,7 @@ class TestChunkIdNamespace:
         result = ContentGroundingValidator().validate({
             "page_paths": [str(page)],
             "valid_block_ids": ["real_block"],
-            "dart_chunks_path": str(chunks),
+            "chunks_path": str(chunks),
         })
         assert result.passed is False
         assert "UNRESOLVED_SOURCE_ID" in {i.code for i in result.issues}
@@ -408,11 +408,11 @@ class TestChunkIdNamespace:
         """Fallback: no harvestable chunkset → chunk-namespace id is a WARNING.
 
         The chunk-pattern unresolved demotes to UNRESOLVED_CHUNK_SOURCE_ID
-        (warning), never blocking, while a real DART-block-id unresolved on the
+        (warning), never blocking, while a real SemantiK-block-id unresolved on the
         same page stays critical.
         """
         body = (
-            _make_para(40, "dart:demo#demo_chunk_00001")  # chunk-shaped → warn
+            _make_para(40, "semantik:demo#demo_chunk_00001")  # chunk-shaped → warn
             + _make_para(40, "ghost_block")               # bogus block → crit
             + _make_para(40, "ghost_block_2")
             + _make_para(40, "ghost_block_3")
@@ -422,12 +422,12 @@ class TestChunkIdNamespace:
         result = ContentGroundingValidator().validate({
             "page_paths": [str(page)],
             "valid_block_ids": ["real_block"],
-            # No dart_chunks_path / valid_chunk_ids → harvest unavailable.
+            # No chunks_path / valid_chunk_ids → harvest unavailable.
         })
         codes = {i.code for i in result.issues}
         # Chunk-namespace id demoted to a warning.
         assert "UNRESOLVED_CHUNK_SOURCE_ID" in codes
-        # Bogus DART block ids still flag critical (detection unweakened).
+        # Bogus SemantiK block ids still flag critical (detection unweakened).
         assert "UNRESOLVED_SOURCE_ID" in codes
         assert result.passed is False
 

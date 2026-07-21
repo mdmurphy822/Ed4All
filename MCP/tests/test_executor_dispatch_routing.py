@@ -167,7 +167,7 @@ async def test_feature_flag_on_python_tool_agent_stays_in_process(
     monkeypatch, state_runs_isolated,
 ):
     """Flag on, but agent is Python-tool-classified (not in
-    AGENT_SUBAGENT_SET) → legacy path. DART conversion, packaging,
+    AGENT_SUBAGENT_SET) → legacy path. SemantiK conversion, packaging,
     TF-IDF routing etc. must stay in-process. Uses
     ``get_courseforge_status`` which has zero required params so the
     test stays focused on routing behaviour, not parameter mapping."""

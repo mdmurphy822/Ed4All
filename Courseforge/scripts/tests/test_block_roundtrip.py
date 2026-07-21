@@ -83,13 +83,13 @@ def _representative_body_html() -> str:
     ContentSection entries.
     """
     return (
-        '<section data-cf-source-ids="dart:ch1#b1">'
+        '<section data-cf-source-ids="semantik:ch1#b1">'
         '<h2 data-cf-content-type="explanation"'
         ' data-cf-key-terms="term_one,term_two"'
         ' data-cf-bloom-range="understand">Section A: Concept Overview</h2>'
         '<p>Body prose for section A.</p>'
         '</section>'
-        '<section data-cf-source-ids="dart:ch1#b2">'
+        '<section data-cf-source-ids="semantik:ch1#b2">'
         '<h2 data-cf-content-type="example"'
         ' data-cf-key-terms="term_three"'
         ' data-cf-bloom-range="apply">Section B: Example</h2>'

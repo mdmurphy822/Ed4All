@@ -9,7 +9,7 @@ the new fields silently — but this test pins three contracts under
   (a) chunk WITHOUT the new fields (legacy / pre-Wave-5 corpus) MUST validate
       cleanly — back-compat day-1.
   (b) chunk WITH structured ``key_claims=[{"claim": "X is Y",
-      "source_chunk_ids": ["dart:chunk_A"]}]`` AND ``objective_alignment=[
+      "source_chunk_ids": ["semantik:chunk_A"]}]`` AND ``objective_alignment=[
       {"objective_id": "TO-05", "declared_bloom": "apply",
       "status": "delivered"}]`` MUST validate cleanly.
   (c) chunk WITH malformed ``key_claims=[{"claim": 5,
@@ -132,7 +132,7 @@ def test_chunk_with_structured_key_claims_and_objective_alignment_validates():
     chunk["key_claims"] = [
         {
             "claim": "X is Y",
-            "source_chunk_ids": ["dart:chunk_A"],
+            "source_chunk_ids": ["semantik:chunk_A"],
         }
     ]
     chunk["objective_alignment"] = [
@@ -220,8 +220,8 @@ def test_chunk_with_learning_outcome_source_refs_validates():
     validator = _build_validator()
     chunk = _base_chunk()
     chunk["learning_outcome_source_refs"] = {
-        "TO-05": ["dart:rdf-primer-ch3#sec-2"],
-        "TO-06": ["dart:chunk_alpha", "dart:chunk_beta"],
+        "TO-05": ["semantik:rdf-primer-ch3#sec-2"],
+        "TO-06": ["semantik:chunk_alpha", "semantik:chunk_beta"],
     }
     errors = list(validator.iter_errors(chunk))
     assert errors == [], (

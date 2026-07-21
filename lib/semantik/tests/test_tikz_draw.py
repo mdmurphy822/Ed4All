@@ -134,7 +134,7 @@ def test_parse_none_on_empty():
 def test_golden_svg_unfilled_circle():
     spec = parse_tikz(r"\begin{tikzpicture} \draw (0,0) circle (1); \end{tikzpicture}")
     assert render_svg(spec) == (
-        '<svg class="dart-figure-svg" role="img" '
+        '<svg class="semantik-figure-svg" role="img" '
         'aria-label="Coordinate-plane figure" viewBox="0 0 84 84" '
         'xmlns="http://www.w3.org/2000/svg">'
         "<title>Coordinate-plane figure</title>"
@@ -148,7 +148,7 @@ def test_golden_svg_filled_rectangle():
         r"\begin{tikzpicture} \fill[blue] (0,0) rectangle (2,3); \end{tikzpicture}"
     )
     assert render_svg(spec) == (
-        '<svg class="dart-figure-svg" role="img" '
+        '<svg class="semantik-figure-svg" role="img" '
         'aria-label="Coordinate-plane figure" viewBox="0 0 84 114" '
         'xmlns="http://www.w3.org/2000/svg">'
         "<title>Coordinate-plane figure</title>"
@@ -162,7 +162,7 @@ def test_golden_svg_thick_segment_with_label():
         r"\node at (-1.5,2) {12 ft}; \end{tikzpicture}"
     )
     assert render_svg(spec) == (
-        '<svg class="dart-figure-svg" role="img" '
+        '<svg class="semantik-figure-svg" role="img" '
         'aria-label="Coordinate-plane figure with labels: 12 ft" '
         'viewBox="0 0 69 144" xmlns="http://www.w3.org/2000/svg">'
         "<title>Coordinate-plane figure with labels: 12 ft</title>"
@@ -181,11 +181,11 @@ def test_svg_structural_invariants_for_axes():
         r"\filldraw [gray] (1,4) circle (2pt); \end{tikzpicture}"
     )
     svg = render_svg(spec)
-    assert svg.startswith('<svg class="dart-figure-svg" role="img"')
+    assert svg.startswith('<svg class="semantik-figure-svg" role="img"')
     assert 'aria-label="Coordinate-plane figure with labels: x, y"' in svg
     assert svg.count("<title>") == 1
     assert 'viewBox="0 0' in svg
-    assert svg.count(f'marker-end="url(#dart-tikz-arrow)"') == 2  # both axes
+    assert svg.count(f'marker-end="url(#semantik-tikz-arrow)"') == 2  # both axes
     assert '<circle' in svg and 'fill="gray"' in svg
     assert svg.endswith("</svg>")
 
@@ -232,8 +232,8 @@ def test_adapter_pass_renders_pure_figure_when_flag_on(monkeypatch):
     block.repaired_text = "side"
     ch = _AdapterChapter(title="Chapter 4 Graphs", blocks=[block])
     _render_tikz_figures([ch])
-    assert '<figure class="dart-figure">' in block.html
-    assert 'class="dart-figure-svg"' in block.html
+    assert '<figure class="semantik-figure">' in block.html
+    assert 'class="semantik-figure-svg"' in block.html
     assert "tikzpicture" not in block.html
     assert "$$" not in block.html          # delimiters consumed with the figure
     # HTML-only: sidecar / chunk text untouched.

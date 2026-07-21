@@ -508,7 +508,7 @@ ed4all:interferesWithOutcome
 #
 # Phase 1.2 (chunk_v4_v1.jsonld) introduced two structural sub-shapes that
 # the Phase 2.1 vocabulary file did not yet declare: KeyTerm (term +
-# definition pair on a chunk) and SourceReference (DART/Courseforge
+# definition pair on a chunk) and SourceReference (SemantiK/Courseforge
 # provenance entry threaded through chunks via source.source_references[]).
 # Wave 87 declares both as classes so the chunk-side predicates that point
 # at them (cf:hasKeyTerm, cf:hasSource, cf:sourceReference) carry well-typed
@@ -524,7 +524,7 @@ ed4all:KeyTerm
 ed4all:SourceReference
   a rdfs:Class, owl:Class ;
   rdfs:label "Source Reference" ;
-  rdfs:comment "Wave 87: a DART/Courseforge provenance entry threaded through chunks (and Courseforge JSON-LD blocks). Canonical shape: schemas/knowledge/source_reference.schema.json. Carries sourceId, role (primary / contributing / corroborating), weight, confidence, pages, extractor. Range of cf:hasSource and cf:sourceReference — both pointers on a chunk's source.source_references[] sub-shape resolve to instances of this class. Subclass of prov:Entity so PROV-O reasoners can treat each ref as a typed provenance node." ;
+  rdfs:comment "Wave 87: a SemantiK/Courseforge provenance entry threaded through chunks (and Courseforge JSON-LD blocks). Canonical shape: schemas/knowledge/source_reference.schema.json. Carries sourceId, role (primary / contributing / corroborating), weight, confidence, pages, extractor. Range of cf:hasSource and cf:sourceReference — both pointers on a chunk's source.source_references[] sub-shape resolve to instances of this class. Subclass of prov:Entity so PROV-O reasoners can treat each ref as a typed provenance node." ;
   rdfs:subClassOf prov:Entity ;
   rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
 
@@ -792,7 +792,7 @@ ed4all:hasSource
 ed4all:sourceId
   a rdf:Property, owl:DatatypeProperty ;
   rdfs:label "source id" ;
-  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld SourceReference 'sourceId'. Stable identifier for the upstream DART/Courseforge source block. Resolves against the DART staging manifest (validated by lib/validators/source_refs.py)." ;
+  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld SourceReference 'sourceId'. Stable identifier for the upstream SemantiK/Courseforge source block. Resolves against the SemantiK staging manifest (validated by lib/validators/source_refs.py)." ;
   rdfs:domain ed4all:SourceReference ;
   rdfs:range xsd:string ;
   rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
@@ -816,7 +816,7 @@ ed4all:sourceWeight
 ed4all:sourceConfidence
   a rdf:Property, owl:DatatypeProperty ;
   rdfs:label "source confidence" ;
-  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld SourceReference 'confidence'. Float in [0, 1] expressing extractor confidence per DART/CLAUDE.md § Source provenance scale." ;
+  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld SourceReference 'confidence'. Float in [0, 1] expressing extractor confidence per SemantiK/CLAUDE.md § Source provenance scale." ;
   rdfs:domain ed4all:SourceReference ;
   rdfs:range xsd:decimal ;
   rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
@@ -832,7 +832,7 @@ ed4all:sourcePages
 ed4all:sourceExtractor
   a rdf:Property, owl:DatatypeProperty ;
   rdfs:label "source extractor" ;
-  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld SourceReference 'extractor'. Identifier of the extractor / strategy that produced this reference (e.g., 'dart-llm-classifier', 'dart-heuristic-headings'). Used for downstream provenance audits." ;
+  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld SourceReference 'extractor'. Identifier of the extractor / strategy that produced this reference (e.g., 'semantik-llm-classifier', 'semantik-heuristic-headings'). Used for downstream provenance audits." ;
   rdfs:domain ed4all:SourceReference ;
   rdfs:range xsd:string ;
   rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
@@ -941,7 +941,7 @@ ed4all:objectiveId
 ed4all:sourceId
   a owl:DatatypeProperty ;
   rdfs:label "source ID" ;
-  rdfs:comment "Phase 2 — set-valued DART staging-manifest source IDs the Block is grounded in. Mirrors Block.sourceIds[]; resolved against the staging manifest by the source_refs validator gate." ;
+  rdfs:comment "Phase 2 — set-valued SemantiK staging-manifest source IDs the Block is grounded in. Mirrors Block.sourceIds[]; resolved against the staging manifest by the source_refs validator gate." ;
   rdfs:domain ed4all:Block ;
   rdfs:range xsd:string ;
   rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
@@ -949,7 +949,7 @@ ed4all:sourceId
 ed4all:sourcePrimary
   a owl:DatatypeProperty ;
   rdfs:label "primary source ID" ;
-  rdfs:comment "Phase 2 — single primary DART source ID a Block was authored against (the canonical attribution; `sourceIds[]` is the union including contributing / corroborating sources)." ;
+  rdfs:comment "Phase 2 — single primary SemantiK source ID a Block was authored against (the canonical attribution; `sourceIds[]` is the union including contributing / corroborating sources)." ;
   rdfs:domain ed4all:Block ;
   rdfs:range xsd:string ;
   rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .

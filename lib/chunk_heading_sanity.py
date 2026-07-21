@@ -1,7 +1,7 @@
 """Defensive heading-sanity filter for the Ed4All chunk path.
 
 A chunk's ``source.section_heading`` is relayed faithfully by the chunker
-from whatever ``<h*>`` the upstream DART / SemantiK heading classifier
+from whatever ``<h*>`` the upstream SemantiK heading classifier
 emitted. When the upstream classifier mis-tags answer-key rows, exercise
 banners, or full-sentence prose as headings, that noise becomes the chunk's
 display heading — polluting retrieval display + starving definition queries.
@@ -10,7 +10,7 @@ This module is a CONSERVATIVE, defensive hardening pass (SemantiK retraining
 is the upstream root fix). It is gated behind ``TRAINFORGE_HEADING_SANITY_FILTER``
 (default OFF for byte-stable back-compat) and wired into both chunk-emit sites
 (``Trainforge/process_course.py::CourseProcessor._create_chunk`` and the inline
-``_create_chunk`` in ``MCP/tools/pipeline_tools.py::_run_dart_chunking``).
+``_create_chunk`` in ``MCP/tools/pipeline_tools.py::_run_semantik_chunking``).
 
 Design contract (NEVER demote a real heading):
 
@@ -26,8 +26,8 @@ Design contract (NEVER demote a real heading):
 
 * **Plus two NARROW additive clauses** for noise families that detector does
   NOT catch but the task names explicitly (calibrated against a real full-book
-  corpus): (1) the OpenStax ``EXERCISES Practice Makes Perfect``
-  banner / ≥2 embedded ``\\d{2,3}.`` exercise-answer markers, and (2)
+  corpus): (1) a publisher exercise-section banner
+  / ≥2 embedded ``\\d{2,3}.`` exercise-answer markers, and (2)
   full-sentence imperative/declarative prose (>15 words ending in a period).
   Both have generous floors so a real title containing a number or a short
   phrase survives.
@@ -66,7 +66,7 @@ FLAG_ENV = "TRAINFORGE_HEADING_SANITY_FILTER"
 # word-count / trailing-period heuristics; the surviving stem is what we test.
 _PART_SUFFIX_RE = re.compile(r"\s*\(part\s+\d+\)\s*$", re.IGNORECASE)
 
-# Unambiguous OpenStax exercise-section banner. These are exercise prose the
+# Unambiguous publisher exercise-section banner. These are exercise prose the
 # font-size promoter lifts into a heading; never a real section title.
 # Consolidated into lib/objectives/apparatus_lexicon (single source of truth);
 # re-exported here as ``_EXERCISE_BANNER_RE`` — byte-identical, no behavior change.
@@ -83,17 +83,17 @@ _EXERCISE_NUMBER_RE = re.compile(r"(?<!\d)\d{2,3}\.\s")
 _EXERCISE_NUMBER_MIN = 2
 
 # Full-sentence prose floor: a heading longer than this many words AND ending
-# in a sentence-terminal period is prose, not a title. Real OpenStax section
-# titles are all well under this (the longest, "1.1 Introduction to Whole
-# Numbers (part 1)", is 7 words and carries no terminal period).
+# in a sentence-terminal period is prose, not a title. Real section titles are
+# all well under this (a typical numbered title like "1.1 Introduction ...
+# (part 1)" is a handful of words and carries no terminal period).
 _PROSE_WORD_FLOOR = 15
 
 # Internal sentence-terminal period: a "." followed by whitespace + more text,
 # where the char before the "." is NOT a digit (so decimals "3.5" / section
 # numbers "1.1" and the answer-key "N." markers handled above don't trip). A
 # real title never embeds a mid-string sentence period; combined with a word
-# floor this catches prose like "Write the numbers one under the other, lining
-# up the decimal points. 0.6" while sparing short abbreviation titles
+# floor this catches prose like "Line up the values one under the other, keeping
+# the decimal points aligned. 0.6" while sparing short abbreviation titles
 # ("U.S. Customary Units", "Mr. Smith") which sit well under the floor.
 _INTERNAL_SENTENCE_RE = re.compile(r"(?<![0-9])\.\s+\S")
 _INTERNAL_SENTENCE_WORD_FLOOR = 8
@@ -124,7 +124,7 @@ def is_suspect_section_heading(text: Optional[str]) -> bool:
 
     1. The canonical ``_is_noncontent_heading`` (answer-key numeric runs,
        circled-answer markers, front-matter, donor lists).
-    2. An OpenStax exercise-section banner / >=2 embedded ``\\d{2,3}.``
+    2. A publisher exercise-section banner / >=2 embedded ``\\d{2,3}.``
        exercise-answer markers.
     3. Full-sentence prose: >15 words AND ending in a sentence-terminal period.
     """

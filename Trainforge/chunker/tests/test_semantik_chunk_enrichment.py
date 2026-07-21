@@ -37,7 +37,7 @@ if str(PROJECT_ROOT) not in sys.path:
 import pytest
 
 from Trainforge.chunker import ChunkerContext, chunk_content
-from Trainforge.chunker.helpers import harvest_dart_source_refs
+from Trainforge.chunker.helpers import harvest_semantik_source_refs
 from lib.semantik.adapter import (
     _AdapterBlock,
     _AdapterChapter,
@@ -329,7 +329,7 @@ def test_legacy_html_chunks_without_the_six_fields():
     """A legacy DART HTML fixture WITHOUT the new attrs (and with no doc-level
     signals on the instance) still chunks; NONE of the six §4 fields appear."""
     # The legacy HTML harvests block-id + pages, but NONE of the enrichment.
-    refs = harvest_dart_source_refs(_LEGACY_HTML)
+    refs = harvest_semantik_source_refs(_LEGACY_HTML)
     assert refs and refs[0]["block_id"] == "s1"
     assert "block_role" not in refs[0]
     assert "confidence" not in refs[0]

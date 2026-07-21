@@ -7,7 +7,7 @@ Plans/04 §1.5 — fixed shell:
   * <a class="skip-link" href="#main-content">Skip to main content</a>
   * <main id="main-content">
 
-The ``<!-- DART_TITLE_SLOT -->`` comment immediately inside ``<main>`` is
+The ``<!-- SEMANTIK_TITLE_SLOT -->`` comment immediately inside ``<main>`` is
 the splice target Stage 9c uses when a ``missing_title`` GapSlot is
 filled (the gap-fill output may carry a fresh ``<h1>`` that needs to
 land before any other body content).
@@ -190,11 +190,11 @@ DOC_OPEN = (
     '<body>\n'
     '<a class="skip-link" href="#main-content">Skip to main content</a>\n'
     '<main id="main-content">\n'
-    '<!-- DART_TITLE_SLOT -->\n'
+    '<!-- SEMANTIK_TITLE_SLOT -->\n'
 )
 DOC_CLOSE = '</main>\n</body>\n</html>\n'
 
-TITLE_SLOT_SENTINEL = '<!-- DART_TITLE_SLOT -->\n'
+TITLE_SLOT_SENTINEL = '<!-- SEMANTIK_TITLE_SLOT -->\n'
 
 
 def build_shell(
@@ -206,7 +206,7 @@ def build_shell(
     """Return ``(doc_open, doc_close)`` for the document shell.
 
     When ``fabricated_title=True``, inject a
-    ``<meta name="dart-title-source" content="fallback">`` immediately
+    ``<meta name="semantik-title-source" content="fallback">`` immediately
     after the ``<title>`` tag so any consumer of ``assembled.html`` can
     see at a glance that the title was synthesised by the assembler
     (no doc_role:title region, no input h1, no Qwen gap-fill survivor)
@@ -243,7 +243,7 @@ def build_shell(
             f"<title>{_escape(title)}</title>\n",
             (
                 f"<title>{_escape(title)}</title>\n"
-                '<meta name="dart-title-source" content="fallback">\n'
+                '<meta name="semantik-title-source" content="fallback">\n'
             ),
             1,
         )

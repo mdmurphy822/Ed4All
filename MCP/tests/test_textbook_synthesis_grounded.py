@@ -149,7 +149,7 @@ def _chunk(cid, slug, body):
     return {
         "id": cid,
         "text": body,
-        "source": {"source_references": [{"sourceId": f"dart:{slug}#{cid}",
+        "source": {"source_references": [{"sourceId": f"semantik:{slug}#{cid}",
                                            "role": "primary"}]},
     }
 

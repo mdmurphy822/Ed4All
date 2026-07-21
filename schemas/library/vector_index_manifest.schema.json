@@ -69,8 +69,8 @@
     },
     "chunkset_kind": {
       "type": "string",
-      "enum": ["imscc", "dart", "corpus-legacy"],
-      "description": "Which resolved chunkset was embedded. 'imscc' (imscc_chunks/), 'dart' (dart_chunks/), or 'corpus-legacy' (pre-Phase-7c corpus/ dir). Resolved via lib.libv2_storage.resolve_imscc_chunks_dir precedence unless the build was pinned with --chunkset."
+      "enum": ["imscc", "semantik", "dart", "corpus-legacy"],
+      "description": "Which resolved chunkset was embedded. 'imscc' (imscc_chunks/), 'semantik' (semantik_chunks/, the active staged-conversion emit dir), 'dart' (legacy dart_chunks/, read-only fallback), or 'corpus-legacy' (pre-Phase-7c corpus/ dir). Resolved via lib.libv2_storage.resolve_imscc_chunks_dir precedence unless the build was pinned with --chunkset."
     },
     "source_chunks_sha256": {
       "type": "string",

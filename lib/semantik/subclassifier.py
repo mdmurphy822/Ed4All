@@ -1,7 +1,7 @@
 r"""Tier-3 model-assisted subclassifier for SemantiK composite units (Build #23).
 
 The Tier-2 composite-unit planner (:mod:`lib.semantik.composite_units`) coagulates
-a run of adjacent sibling blocks into one ``<section class="dart-unit" data-dart-unit
+a run of adjacent sibling blocks into one ``<section class="semantik-unit" data-semantik-unit
 ="<type>">`` pedagogical whole (worked_example / exercise_set / definition_group /
 procedure / section_opener / figure_group). Tier-3 asks a light local model to pick
 a finer SUBCLASS for each unit — e.g. a ``worked_example`` is an
@@ -14,8 +14,8 @@ Safety contract (from the June reviewer-redesign + the gold-semantic-class lesso
 * **Payload-only, HTML-only.** This is a post-cascade ADAPTER pass over already-
   rendered chapter HTML — consistent with every other post-cascade seam. It NEVER
   alters text or structure: it adds exactly two things to a unit's ``<section>``
-  opening tag — ``data-dart-subclass="<label>"`` and an extra CSS class
-  ``dart-sub-<label>``. The sidecar / raw_text are untouched. A before/after HTML
+  opening tag — ``data-semantik-subclass="<label>"`` and an extra CSS class
+  ``semantik-sub-<label>``. The sidecar / raw_text are untouched. A before/after HTML
   diff differs ONLY in those two attributes (asserted by the payload-only test).
 * **Strict parse.** The model is asked for ONE subclass from the seed vocabulary OR
   a new kebab-case label. The response is parsed strictly — a single-token
@@ -389,14 +389,14 @@ def _unit_page_range(inner: str) -> Optional[Tuple[int, int]]:
 def _annotate_open_tag(open_tag: str, attrs: str, label: str) -> str:
     """Return the rewritten unit ``<section>`` open tag carrying the subclass.
 
-    Adds ``data-dart-subclass="<label>"`` and appends ``dart-sub-<label>`` to the
-    existing ``class`` value. Payload-only: nothing else in the tag changes.
+    Adds ``data-semantik-subclass="<label>"`` and appends ``semantik-sub-<label>``
+    to the existing ``class`` value. Payload-only: nothing else in the tag changes.
     """
     new_attrs = _CLASS_ATTR_RE.sub(
-        lambda m: f'class="{m.group(1)} dart-sub-{label}"', attrs, count=1
+        lambda m: f'class="{m.group(1)} semantik-sub-{label}"', attrs, count=1
     )
     if new_attrs == attrs:  # no class attr (defensive) — add one
-        new_attrs = f'{attrs} class="dart-sub-{label}"'
+        new_attrs = f'{attrs} class="semantik-sub-{label}"'
     new_attrs = f'{new_attrs} data-semantik-subclass="{label}"'
     return f"<section{new_attrs}>"
 
@@ -598,7 +598,7 @@ def annotate_html_subclasses(
     """Annotate every composite unit in ``html`` with a Tier-3 subclass.
 
     Payload-only: the returned HTML differs from the input ONLY by the two
-    ``data-dart-subclass`` / ``dart-sub-<label>`` attributes on subclassed unit
+    ``data-semantik-subclass`` / ``semantik-sub-<label>`` attributes on subclassed unit
     ``<section>`` open tags. ``client`` is a ``prompt -> completion`` callable
     (mock in tests, the local reviewer seat in production). Returns
     ``(annotated_html, report)`` where ``report`` carries per-unit assignments,

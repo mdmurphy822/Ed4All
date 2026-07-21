@@ -72,7 +72,7 @@ NEIGHBOR_SNIPPET_CHARS = 120
 # ---------------------------------------------------------------------------
 
 _SYSTEM_REVIEWER = (
-    "You are a DART document-STRUCTURE REVIEWER. You are NOT a content "
+    "You are a SemantiK document-STRUCTURE REVIEWER. You are NOT a content "
     "author or generator. Your single job is to review the logical and "
     "semantic conformance of one already-classified document block and, "
     "where it is mis-structured, correct its ROLE / KIND / heading-LEVEL "
@@ -156,7 +156,7 @@ _GLOBAL_WCAG_HEADER = (
     "  - Preserve every source word verbatim — never rewrite/paraphrase/"
     "add/remove (the verbatim invariant above).\n"
     "  - Emit NO color/font/spacing CSS — contrast/resize/focus/spacing "
-    "(SC 1.4.3/1.4.4/2.4.7) are owned by the DART page CSS template, not "
+    "(SC 1.4.3/1.4.4/2.4.7) are owned by the SemantiK page CSS template, not "
     "by block content.\n"
     "  - Never an empty image source (<img src=''>) and never math-as-"
     "image.\n"

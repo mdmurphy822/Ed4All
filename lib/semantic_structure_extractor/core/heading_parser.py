@@ -1,8 +1,8 @@
 """
 Heading Parser Module
 
-Extracts heading hierarchy from DART-processed HTML documents.
-DART outputs semantic HTML with:
+Extracts heading hierarchy from SemantiK accessible HTML documents.
+SemantiK outputs semantic HTML with:
 - h1-h6 heading hierarchy
 - <section aria-labelledby="heading-id"> wrappers
 - Roman numeral detection (I., II., III.) -> h2
@@ -78,15 +78,15 @@ class HeadingHierarchy:
 
 class HeadingParser:
     """
-    Parses heading hierarchy from DART-processed HTML.
+    Parses heading hierarchy from SemantiK accessible HTML.
 
-    DART creates semantic HTML with:
+    SemantiK creates semantic HTML with:
     - Proper h1-h6 heading levels
     - Section wrappers with aria-labelledby attributes
     - Consistent heading detection from various patterns
     """
 
-    # Patterns that DART uses for heading detection
+    # Patterns used for heading detection
     ROMAN_NUMERAL_PATTERN = re.compile(r'^([IVXLCDM]+)\.\s*(.+)$', re.IGNORECASE)
     NUMBERED_SECTION_PATTERN = re.compile(r'^(\d+(?:\.\d+)*)\.\s*(.+)$')
     LETTERED_SECTION_PATTERN = re.compile(r'^([A-Z])\.\s*(.+)$')
@@ -189,7 +189,7 @@ class HeadingParser:
         """
         Find the parent section element for a heading.
 
-        DART wraps sections with: <section aria-labelledby="heading-id">
+        Sections are wrapped as: <section aria-labelledby="heading-id">
         """
         # Check if the heading has an ID
         heading_id = heading.get('id')
@@ -286,7 +286,7 @@ class HeadingParser:
         """
         Detect the pattern used in a heading.
 
-        DART normalizes various patterns, but we can still detect the original format.
+        SemantiK normalizes various patterns, but we can still detect the original format.
 
         Returns:
             Dictionary with pattern information

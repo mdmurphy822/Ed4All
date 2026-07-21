@@ -97,7 +97,7 @@ def regenerated_output(tmp_path_factory):
 
     mini_course_clean ships a source_html/ tree but no .imscc, so we build a
     minimal IMSCC zip on the fly from the fixture. This keeps the test fast
-    and sidesteps the full DART → Courseforge pipeline.
+    and sidesteps the full SemantiK → Courseforge pipeline.
     """
     import shutil
     import zipfile

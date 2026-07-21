@@ -53,7 +53,7 @@ def test_default_router_registers_every_shipping_validator():
         "lib.validators.imscc.IMSCCValidator",
         "lib.validators.wcag.WCAGValidator",
         "lib.validators.oscqr.OSCQRValidator",
-        "lib.validators.dart_markers.DartMarkersValidator",
+        "lib.validators.semantik_markers.SemantiKMarkersValidator",
         "lib.validators.assessment.AssessmentQualityValidator",
         "lib.validators.assessment.FinalQualityValidator",
         "lib.validators.bloom.BloomAlignmentValidator",
@@ -117,7 +117,7 @@ def test_content_structure_builder_resolves_html_path(tmp_path: Path):
     html.write_text("<h1>hi</h1>", encoding="utf-8")
 
     phase_outputs = _make_phase_outputs(
-        dart_conversion={"output_path": str(html)},
+        semantik_conversion={"output_path": str(html)},
     )
     r = default_router()
     inputs, missing = r.build(
@@ -138,7 +138,7 @@ def test_source_refs_builder_composes_page_paths_and_staging(tmp_path: Path):
     smm.write_text("{}", encoding="utf-8")
 
     phase_outputs = _make_phase_outputs(
-        dart_conversion={"output_paths": str(html)},
+        semantik_conversion={"output_paths": str(html)},
         staging={"staging_dir": str(tmp_path / "staging")},
         source_mapping={"source_module_map_path": str(smm)},
     )
@@ -567,8 +567,8 @@ def test_group_b_rewrite_source_grounding_surfaces_chunks(
     manifest_path.write_text(
         json.dumps({
             "files": [
-                {"source_id": "dart:foo#b1", "text": "chunk text alpha"},
-                {"sourceId": "dart:foo#b2", "plain_text": "chunk text beta"},
+                {"source_id": "semantik:foo#b1", "text": "chunk text alpha"},
+                {"sourceId": "semantik:foo#b2", "plain_text": "chunk text beta"},
             ],
         }),
         encoding="utf-8",
@@ -585,8 +585,8 @@ def test_group_b_rewrite_source_grounding_surfaces_chunks(
     assert missing == []
     assert "blocks" in inputs
     assert inputs.get("source_chunks") == {
-        "dart:foo#b1": "chunk text alpha",
-        "dart:foo#b2": "chunk text beta",
+        "semantik:foo#b1": "chunk text alpha",
+        "semantik:foo#b2": "chunk text beta",
     }
 
 
@@ -915,17 +915,17 @@ def test_wave2_i9_validators_have_builders_registered(validator_path: str):
 # ---- ChunksetManifestValidator ---------------------------------------- #
 
 
-def test_chunkset_manifest_builder_resolves_dart_manifest_from_chunks_path(
+def test_chunkset_manifest_builder_resolves_semantik_manifest_from_chunks_path(
     tmp_path: Path,
 ):
-    """DART chunking emits dart_chunks_path; manifest sits beside it."""
-    chunks_dir = tmp_path / "dart_chunks"
+    """SemantiK chunking emits semantik_chunks_path; manifest sits beside it."""
+    chunks_dir = tmp_path / "semantik_chunks"
     chunks_dir.mkdir()
     chunks_path = chunks_dir / "chunks.jsonl"
     chunks_path.write_text("", encoding="utf-8")
 
     phase_outputs = _make_phase_outputs(
-        chunking={"dart_chunks_path": str(chunks_path)},
+        chunking={"semantik_chunks_path": str(chunks_path)},
     )
     r = default_router()
     inputs, missing = r.build(
@@ -963,8 +963,8 @@ def test_chunkset_manifest_builder_prefers_explicit_manifest_path():
     """Explicit manifest_path on the chunking phase output wins."""
     phase_outputs = _make_phase_outputs(
         chunking={
-            "dart_chunks_path": "/tmp/dart_chunks/chunks.jsonl",
-            "manifest_path": "/tmp/dart_chunks/explicit_manifest.json",
+            "semantik_chunks_path": "/tmp/semantik_chunks/chunks.jsonl",
+            "manifest_path": "/tmp/semantik_chunks/explicit_manifest.json",
         },
     )
     r = default_router()
@@ -974,7 +974,7 @@ def test_chunkset_manifest_builder_prefers_explicit_manifest_path():
         {},
     )
     assert missing == []
-    assert inputs["chunkset_manifest_path"] == "/tmp/dart_chunks/explicit_manifest.json"
+    assert inputs["chunkset_manifest_path"] == "/tmp/semantik_chunks/explicit_manifest.json"
 
 
 def test_chunkset_manifest_builder_skips_when_no_chunks_path():
@@ -1099,13 +1099,13 @@ def test_wave2_i9_router_dispatches_to_correct_builder(tmp_path: Path):
     inputs for all three Wave2-I9 validators routes each validator
     through its own builder, producing the validator-specific shape.
     """
-    chunks_dir = tmp_path / "dart_chunks"
+    chunks_dir = tmp_path / "semantik_chunks"
     chunks_dir.mkdir()
     chunks_path = chunks_dir / "chunks.jsonl"
     chunks_path.write_text("", encoding="utf-8")
 
     phase_outputs = _make_phase_outputs(
-        chunking={"dart_chunks_path": str(chunks_path)},
+        chunking={"semantik_chunks_path": str(chunks_path)},
         concept_extraction={
             "concept_graph_path": "/tmp/concept_graph_semantic.json",
         },

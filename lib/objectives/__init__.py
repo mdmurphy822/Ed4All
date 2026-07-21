@@ -2,7 +2,7 @@
 
 This package holds the deterministic, hermetically-testable helpers that the
 three-stage textbook synthesis surface uses to turn chapter-grained LO drafts
-into GROUNDED, deduplicated chapter objectives that cite the DART chunks they
+into GROUNDED, deduplicated chapter objectives that cite the SemantiK chunks they
 are derived from:
 
 - :mod:`lib.objectives.chunk_window` — chapter → chunk-window partitioning sized

@@ -333,14 +333,14 @@ class IntelligenceLevelAggregator:
         )
 
     def _iter_chunks(self) -> List[Dict[str, Any]]:
-        """Best-effort load of the imscc/dart chunkset (first that resolves)."""
+        """Best-effort load of the imscc/semantik chunkset (first that resolves)."""
         candidates: List[Path] = []
         if self.libv2_course_path is not None:
             candidates.append(
                 self.libv2_course_path / "imscc_chunks" / "chunks.jsonl"
             )
-            # DART->semantik purge Stage 3c: the ratified staged emit dir is
-            # ``semantik_chunks/``; try it before the legacy ``dart_chunks/``.
+            # The canonical staged emit dir is ``semantik_chunks/``; try it
+            # before the legacy-corpus fallback dir.
             candidates.append(
                 self.libv2_course_path / "semantik_chunks" / "chunks.jsonl"
             )

@@ -6,9 +6,9 @@ The chunk_v4 schema (`schemas/knowledge/chunk_v4.schema.json`) marks
 ``difficulty`` to the 3-value enum {foundational, intermediate, advanced}.
 
 Before Wave3-Anew2, the `_create_chunk` callbacks in
-``MCP/tools/pipeline_tools.py::_run_dart_chunking`` /
-``_run_imscc_chunking`` omitted ``bloom_level`` entirely (100% schema
-failure on the F2 calibration corpus: 72 of 72 DART chunks missing the
+``MCP/tools/pipeline_tools.py`` (the SemantiK-chunking and IMSCC-chunking
+phase handlers) omitted ``bloom_level`` entirely (100% schema
+failure on the F2 calibration corpus: 72 of 72 chunks missing the
 field) and hardcoded ``difficulty="intermediate"`` so all 72 chunks
 shared a single difficulty regardless of cognitive demand.
 
@@ -82,7 +82,7 @@ def test_bloom_level_falls_through_to_verb_heuristic_without_jsonld() -> None:
     """No JSON-LD + applicable verb in text → verb-heuristic fires.
 
     The canonical F2 fixture corpus has zero JSON-LD signal in the
-    DART HTML output; the chunker MUST detect cognitive demand from the
+    SemantiK HTML output; the chunker MUST detect cognitive demand from the
     chunk's prose to satisfy the schema's required-field contract.
     Verbs like ``analyze`` push the level to ``analyze`` per
     ``lib.ontology.bloom.detect_bloom_level``.
@@ -211,7 +211,7 @@ def test_f2_regression_emitted_chunks_carry_required_fields(
     Synthesizes a parsed-item dict (the same shape the chunking-phase
     HTMLContentParser produces), threads it through
     ``Trainforge.chunker.chunk_content`` with the production
-    ``_run_dart_chunking._create_chunk`` callback shape (re-built here
+    chunking-phase ``_create_chunk`` callback shape (re-built here
     via the public ``_resolve_chunk_*`` helpers to avoid reaching into
     the helper's closure), and asserts every emitted chunk carries
     ``bloom_level`` (required by schema) and a valid ``difficulty``

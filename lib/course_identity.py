@@ -2,7 +2,7 @@
 
 The LibV2 archive can SPLIT-BRAIN a single course across two directories:
 
-* The chunk-write path (``MCP/tools/pipeline_tools.py::_run_dart_chunking``)
+* The chunk-write path (``MCP/tools/pipeline_tools.py::_run_semantik_chunking``)
   names the course dir from the VERBATIM lowercased course name
   (``"Ed4All"`` → ``courses/ed4all/``) and populates it with real chunks.
 * Historically the decision-capture path (``lib/decision_capture.py``) could be
@@ -95,15 +95,16 @@ def course_is_populated(course_dir: Path) -> bool:
     """Return True when ``course_dir`` holds real archived content.
 
     Populated = a course ``manifest.json`` exists, OR a non-empty
-    ``chunks.jsonl`` exists in any known chunkset dir (``semantik_chunks`` /
-    ``dart_chunks`` / ``imscc_chunks`` / legacy ``corpus``).
+    ``chunks.jsonl`` exists in any known chunkset dir (``semantik_chunks`` is
+    the current layout; ``imscc_chunks`` / ``corpus`` and the legacy
+    ``dart_chunks`` are dual-read fallbacks).
     """
     course_dir = Path(course_dir)
     if not course_dir.is_dir():
         return False
     if (course_dir / "manifest.json").is_file():
         return True
-    # DART->semantik purge Stage 1 (dual-READ): ``semantik_chunks`` preferred.
+    # ``semantik_chunks`` is the current layout; the rest are dual-read fallbacks.
     for sub in ("semantik_chunks", "dart_chunks", "imscc_chunks", "corpus"):
         chunks = course_dir / sub / "chunks.jsonl"
         try:

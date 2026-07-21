@@ -117,31 +117,32 @@ def test_source_reference_schema_accepts_both_prefixes():
 # ---------------------------------------------------------------------------
 
 def test_harvest_source_refs_semantik_attr_equals_dart_attr():
-    from Trainforge.chunker import harvest_dart_source_refs
+    from Trainforge.chunker import harvest_semantik_source_refs
 
     dart_html = '<section data-dart-block-id="s3_c0" data-dart-pages="3-5">x</section>'
     semantik_html = (
         '<section data-semantik-block-id="s3_c0" '
         'data-semantik-pages="3-5">x</section>'
     )
-    dart_refs = harvest_dart_source_refs(dart_html)
-    semantik_refs = harvest_dart_source_refs(semantik_html)
+    dart_refs = harvest_semantik_source_refs(dart_html)
+    semantik_refs = harvest_semantik_source_refs(semantik_html)
 
     assert dart_refs == semantik_refs
     assert dart_refs[0]["block_id"] == "s3_c0"
     assert dart_refs[0]["pages"] == [3, 4, 5]
 
 
-def test_dart_markers_attr_presence_dual_read():
-    from lib.validators.dart_markers import (
-        _DATA_DART_SOURCE_RE,
-        _DATA_DART_BLOCK_ID_RE,
+def test_semantik_markers_attr_presence_dual_read():
+    from lib.validators.semantik_markers import (
+        _DATA_SEMANTIK_SOURCE_RE,
+        _DATA_SEMANTIK_BLOCK_ID_RE,
     )
 
-    assert _DATA_DART_SOURCE_RE.search('data-dart-source="claude_llm"')
-    assert _DATA_DART_SOURCE_RE.search('data-semantik-source="claude_llm"')
-    assert _DATA_DART_BLOCK_ID_RE.search('data-dart-block-id="s0"')
-    assert _DATA_DART_BLOCK_ID_RE.search('data-semantik-block-id="s0"')
+    # Legacy-compat: the marker regexes dual-READ both spellings.
+    assert _DATA_SEMANTIK_SOURCE_RE.search('data-dart-source="claude_llm"')
+    assert _DATA_SEMANTIK_SOURCE_RE.search('data-semantik-source="claude_llm"')
+    assert _DATA_SEMANTIK_BLOCK_ID_RE.search('data-dart-block-id="s0"')
+    assert _DATA_SEMANTIK_BLOCK_ID_RE.search('data-semantik-block-id="s0"')
 
 
 # ---------------------------------------------------------------------------
@@ -152,14 +153,14 @@ def test_resolve_chunks_dir_prefers_semantik(tmp_path):
     from lib.libv2_storage import (
         resolve_imscc_chunks_dir,
         SEMANTIK_CHUNKS_DIRNAME,
-        DART_CHUNKS_DIRNAME,
+        LEGACY_CHUNKS_DIRNAME,
     )
 
     course = tmp_path / "course"
     (course / SEMANTIK_CHUNKS_DIRNAME).mkdir(parents=True)
-    (course / DART_CHUNKS_DIRNAME).mkdir(parents=True)
+    (course / LEGACY_CHUNKS_DIRNAME).mkdir(parents=True)
     (course / SEMANTIK_CHUNKS_DIRNAME / "chunks.jsonl").write_text("{}\n")
-    (course / DART_CHUNKS_DIRNAME / "chunks.jsonl").write_text("{}\n")
+    (course / LEGACY_CHUNKS_DIRNAME / "chunks.jsonl").write_text("{}\n")
 
     resolved = resolve_imscc_chunks_dir(course, filename="chunks.jsonl")
     assert resolved.name == SEMANTIK_CHUNKS_DIRNAME
@@ -172,17 +173,17 @@ def test_resolve_chunks_dir_dart_fallback_byte_identical(tmp_path):
 
     from lib.libv2_storage import (
         resolve_imscc_chunks_dir,
-        DART_CHUNKS_DIRNAME,
+        LEGACY_CHUNKS_DIRNAME,
     )
 
     course = tmp_path / "course"
-    (course / DART_CHUNKS_DIRNAME).mkdir(parents=True)
-    (course / DART_CHUNKS_DIRNAME / "chunks.jsonl").write_text("{}\n")
+    (course / LEGACY_CHUNKS_DIRNAME).mkdir(parents=True)
+    (course / LEGACY_CHUNKS_DIRNAME / "chunks.jsonl").write_text("{}\n")
 
     with warnings.catch_warnings():
         warnings.simplefilter("error", DeprecationWarning)
         resolved = resolve_imscc_chunks_dir(course, filename="chunks.jsonl")
-    assert resolved.name == DART_CHUNKS_DIRNAME
+    assert resolved.name == LEGACY_CHUNKS_DIRNAME
 
 
 # ---------------------------------------------------------------------------

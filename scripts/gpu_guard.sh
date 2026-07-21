@@ -3,7 +3,7 @@
 # Ed4All and a sibling Semantic session that share one local 8GB GPU.
 # Deliberately interoperable with that sibling session's conventions:
 #
-#   * Shared flock mutex on /tmp/dart_qwen_train.lock — the SAME file
+#   * Shared flock mutex on /tmp/semantik_qwen_train.lock — the SAME file
 #     Semantic's semantik_structure/qwen_specialists/training_lock.py flocks. Holding
 #     it here makes Semantic's (non-blocking) flock refuse, and vice-versa.
 #   * VRAM gate: refuse to start while memory.used > 1500 MiB — the SAME
@@ -19,13 +19,13 @@
 #   scripts/gpu_guard.sh wait              # VRAM-gate only (no flock); for ad-hoc use
 #
 # Env overrides (flags win):
-#   ED4ALL_GPU_LOCK         lock path     (default /tmp/dart_qwen_train.lock — shared w/ Semantic)
+#   ED4ALL_GPU_LOCK         lock path     (default /tmp/semantik_qwen_train.lock — shared w/ Semantic)
 #   ED4ALL_GPU_MAX_USED_MB  busy ceiling  (default 1500 — matches Semantic run_gpu_queue.sh)
 #   ED4ALL_GPU_POLL_SECONDS poll interval (default 15)
 #   ED4ALL_GPU_TIMEOUT_SECONDS  max wait, 0 = forever (default 0)
 set -uo pipefail
 
-LOCK="${ED4ALL_GPU_LOCK:-/tmp/dart_qwen_train.lock}"
+LOCK="${ED4ALL_GPU_LOCK:-/tmp/semantik_qwen_train.lock}"
 MAX_USED="${ED4ALL_GPU_MAX_USED_MB:-1500}"
 POLL="${ED4ALL_GPU_POLL_SECONDS:-15}"
 TIMEOUT="${ED4ALL_GPU_TIMEOUT_SECONDS:-0}"

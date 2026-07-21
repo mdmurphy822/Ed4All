@@ -1,14 +1,12 @@
-"""SemantiK v2 → Ed4All DART output-contract adapter (Phase P2a).
+"""SemantiK v2 → Ed4All output-contract adapter (Phase P2a).
 
-This is the *keystone* of the SemantiK migration
-(``plans/finegrain/semantic-v2-dart-migration-2026-06-21.md`` §3): it
-normalizes a Semantic v2 cascade RESULT into the HTML + sidecar shape
+Normalizes a Semantic v2 cascade RESULT into the HTML + sidecar shape
 Ed4All's downstream contract consumers require.
 
-Without this adapter the critical ``dart_markers`` gate blocks every run
+Without this adapter the critical ``semantik_markers`` gate blocks every run
 (Semantic v2 emits NO ``role="main"`` / ``aria-labelledby`` sections /
-``dart-*`` classes / ``data-semantik-*`` attrs / page provenance / sidecar) and
-the chunker / ``SemanticStructureExtractor`` / ``source_refs`` gate silently
+``semantik-*`` classes / ``data-semantik-*`` attrs / page provenance / sidecar)
+and the chunker / ``SemanticStructureExtractor`` / ``source_refs`` gate silently
 lose all structure.
 
 §3 subsection → code-section map
@@ -18,14 +16,14 @@ lose all structure.
   ``aria-labelledby`` / heading ``id`` / ``data-semantik-block-id`` / sidecar
   ``section_id`` / ``#fragment``.
 * §3.1  four critical markers ............ :func:`_render_html`
-  (``role="main"`` + ``class="dart-document"`` on ``<main>``;
-  ``<section aria-labelledby … class="dart-section">`` per block; skip-link
+  (``role="main"`` + ``class="semantik-document"`` on ``<main>``;
+  ``<section aria-labelledby … class="semantik-section">`` per block; skip-link
   preserved).
-* §3.2  source-provenance ................ :data:`_DATA_DART_SOURCE_VALUE`
+* §3.2  source-provenance ................ :data:`_DATA_SEMANTIK_SOURCE_VALUE`
   (the M6 ``synthesized`` decision) + placement-on-wrapper-only in
   :func:`_render_section`.
 * §3.3  sourceId scheme .................. :func:`_slug` (reuses
-  ``dart_slug_from_filename``) + parity in :func:`build_synthesized_sidecar`.
+  ``semantik_slug_from_filename``) + parity in :func:`build_synthesized_sidecar`.
 * §3.3a region-id determinism ............ :func:`_mint_sid` mints from the
   RAW extracted block document-order (``raw_block_index``), anchored to a
   region's FIRST raw block — never post-model region order.
@@ -63,7 +61,7 @@ logger = logging.getLogger(__name__)
 # Ed4All contract helpers (the targets). These are the single sources of
 # truth — REUSE, never re-implement.
 from gui.services.source_page import heading_slug
-from lib.validators.source_refs import dart_slug_from_filename
+from lib.validators.source_refs import semantik_slug_from_filename
 
 # Non-content-heading filter (§3.4) — reused so chapter/section emission
 # drops answer-key / numeric / front-matter noise exactly like the
@@ -144,10 +142,10 @@ from lib.semantik.heading_classifier import (
 # ``data-semantik-source`` HTML attribute VALUE branches on a specific enum
 # value. The chunker (``Trainforge/chunker/helpers.py``) harvests only
 # block-id / pages / page-kind — there is NO ``data-semantik-source`` value
-# regex. ``lib/validators/dart_markers.py`` checks presence + non-empty
-# only (``_DATA_DART_SOURCE_RE`` is a presence regex; the empty check is
-# ``_EMPTY_DATA_DART_SOURCE_RE``). ``_build_source_module_map`` /
-# ``_dart_block_source_references`` set ``"extractor": "synthesized"`` as a
+# regex. ``lib/validators/semantik_markers.py`` checks presence + non-empty
+# only (``_DATA_SEMANTIK_SOURCE_RE`` is a presence regex; the empty check is
+# ``_EMPTY_DATA_SEMANTIK_SOURCE_RE``). ``_build_source_module_map`` /
+# ``_semantik_block_source_references`` set ``"extractor": "synthesized"`` as a
 # HARDCODED python string, never read from the HTML attribute. There is no
 # code-enforced allowlist (only a suggestion-text list in the validator).
 #
@@ -155,7 +153,7 @@ from lib.semantik.heading_classifier import (
 # NOT add a new ``semantik`` enum member. ``synthesized`` is the most honest
 # label: SemantiK's output IS the council-synthesized combination of
 # pypdfium2/pdfplumber/OCR extraction, exactly what ``synthesized`` has
-# always denoted. NEVER empty (``EMPTY_DATA_DART_SOURCE`` is critical).
+# always denoted. NEVER empty (``EMPTY_DATA_SEMANTIK_SOURCE`` is critical).
 #
 # Vendor-ingest discriminator (this session): the publisher-supplied
 # accessible-HTML path (``lib/semantik/vendor_ingest.py``) threads
@@ -165,14 +163,15 @@ from lib.semantik.heading_classifier import (
 # no consumer branches on the VALUE, so adding the ``vendor`` value
 # mis-routes nothing; ``synthesized`` stays the SemantiK default.
 # ---------------------------------------------------------------------------
-_DATA_DART_SOURCE_VALUE = "synthesized"
+_DATA_SEMANTIK_SOURCE_VALUE = "synthesized"
 
 # Honest provenance labels accepted for the per-document source override.
-# Suggestion-only (the dart_markers validator's allowlist is suggestion text,
-# not a code-enforced enum — see lib/validators/dart_markers.py): an unknown
-# value still passes the markers gate so long as it is non-empty, but we pin
+# Suggestion-only (the semantik_markers validator's allowlist is suggestion
+# text, not a code-enforced enum — see lib/validators/semantik_markers.py):
+# an unknown value still passes the markers gate so long as it is non-empty,
+# but we pin
 # the two we emit so a typo (e.g. "vender") is caught at the adapter boundary.
-_KNOWN_DATA_DART_SOURCE_VALUES = frozenset({"synthesized", "vendor"})
+_KNOWN_DATA_SEMANTIK_SOURCE_VALUES = frozenset({"synthesized", "vendor"})
 
 
 def _resolve_source_value(source: Optional[str]) -> str:
@@ -180,18 +179,18 @@ def _resolve_source_value(source: Optional[str]) -> str:
 
     ``None``/empty → the SemantiK default ``synthesized``. A known value
     (``synthesized``/``vendor``) is honored verbatim. NEVER empty (the
-    ``EMPTY_DATA_DART_SOURCE`` gate is critical), so a blank override falls
+    ``EMPTY_DATA_SEMANTIK_SOURCE`` gate is critical), so a blank override falls
     back to the default rather than stamping ``data-semantik-source=""``.
     """
     val = (source or "").strip()
     if not val:
-        return _DATA_DART_SOURCE_VALUE
+        return _DATA_SEMANTIK_SOURCE_VALUE
     return val
 
 # §3.5 — page-kind is honest physical PDF pages. Semantic v2 resolves only
 # physical PDF pages today; never upgrade physical→printed (RISK-A
 # anti-fabrication). Absent normalizes to physical anyway (back-compat).
-_DATA_DART_PAGE_KIND = "physical"
+_DATA_SEMANTIK_PAGE_KIND = "physical"
 
 # §3.6 — pinned 5-point confidence band. Map any per-region confidence into
 # exactly these points; never invent scale points.
@@ -206,8 +205,7 @@ _EXIT_ACTION_MAP: Dict[str, tuple[bool, str]] = {
     "non_certified_stamp": (True, "non_certified"),
 }
 
-# RegionKind → sidecar section_type (mirrors the DART converter's
-# role→section_type mapping; SemantiK region kinds are the source vocab).
+# RegionKind → sidecar section_type. SemantiK region kinds are the source vocab.
 _SECTION_TYPE_BY_KIND: Dict[str, str] = {
     "heading": "section",
     "paragraph": "paragraph-group",
@@ -407,7 +405,7 @@ def _mint_unique_sids(
     ``_mint_sid`` is deterministic per block, so two headings sharing a slug
     (the SAME section title on two pages) or two blocks with identical
     content-hash text collide on ``data-semantik-block-id`` — breaking
-    ``dart:{slug}#{block_id}`` anchor uniqueness (9 collisions on the audited
+    ``semantik:{slug}#{block_id}`` anchor uniqueness (9 collisions on the audited
     chapter). This walks the emit-order block stream ONCE and appends a stable
     ``-2`` / ``-3`` … suffix to each repeat of a base sid (the first occurrence
     keeps the bare base), guarding against a pre-existing literal ``base-2``.
@@ -627,7 +625,7 @@ def _is_furniture_block(block: _AdapterBlock) -> bool:
 
 
 def _render_section(
-    block: _AdapterBlock, sid: str, *, source_value: str = _DATA_DART_SOURCE_VALUE
+    block: _AdapterBlock, sid: str, *, source_value: str = _DATA_SEMANTIK_SOURCE_VALUE
 ) -> str:
     """Render one ``<section>`` wrapper for a block (§3.1/§3.2/§3.5).
 
@@ -650,7 +648,7 @@ def _render_section(
     publisher-supplied HTML).
     """
     attrs: List[str] = [
-        'class="dart-section"',
+        'class="semantik-section"',
         # index 1 reserved: aria-labelledby (heading blocks) OR id (content).
         f'data-semantik-block-id="{_esc_attr(sid)}"',
         f'data-semantik-source="{_esc_attr(source_value)}"',
@@ -658,7 +656,7 @@ def _render_section(
     pages = _format_pages(block.pages)
     if pages:
         attrs.append(f'data-semantik-pages="{_esc_attr(pages)}"')
-        attrs.append(f'data-semantik-page-kind="{_DATA_DART_PAGE_KIND}"')
+        attrs.append(f'data-semantik-page-kind="{_DATA_SEMANTIK_PAGE_KIND}"')
     conf = _band_confidence(block.confidence)
     if conf is not None:
         attrs.append(f'data-semantik-confidence="{conf:.2f}"')
@@ -763,7 +761,7 @@ def _wrap_callout_group(parts: Sequence[str], role: str) -> str:
     """Wrap an opener + its following content sections in ONE boxed container.
 
     The ``data-semantik-opener-group`` attribute mirrors the opener's
-    ``data-semantik-opener`` value so ``dart_content.css`` can draw a SINGLE box that
+    ``data-semantik-opener`` value so ``semantik_content.css`` can draw a SINGLE box that
     encloses the whole pedagogical unit (opener label + steps/solution/prose),
     instead of the opener heading floating in its own box while the content spills
     outside it. Standalone (no-CSS) re-render output is unaffected — the wrapper
@@ -771,7 +769,7 @@ def _wrap_callout_group(parts: Sequence[str], role: str) -> str:
     """
     inner = "\n".join(parts)
     return (
-        f'<div class="dart-callout-group" '
+        f'<div class="semantik-callout-group" '
         f'data-semantik-opener-group="{_esc_attr(role)}">\n{inner}\n</div>'
     )
 
@@ -791,7 +789,7 @@ _UNIT_LABELS: Dict[str, str] = {
 
 #: A short standalone prose block (<= this many words) is treated as a candidate
 #: exercise-set DIRECTIVE lead — but only grouped when immediately followed by a
-#: ``dart-exercise-list`` (the planner's guard), so the cap keeps it conservative.
+#: ``semantik-exercise-list`` (the planner's guard), so the cap keeps it conservative.
 _DIRECTIVE_MAX_WORDS = 45
 
 
@@ -799,7 +797,7 @@ def _standalone_unit_role(block: _AdapterBlock, html: str) -> Optional[str]:
     """Abstract composite-unit role for a NON-heading standalone content section.
 
     Shape-driven (never subject vocabulary): a delivered ``<dl>`` -> definition,
-    a ``figure`` region -> figure, a ``dart-exercise-list`` -> exercise_list, a
+    a ``figure`` region -> figure, a ``semantik-exercise-list`` -> exercise_list, a
     short prose -> directive (exercise-set lead candidate). Everything else is
     inert prose (``None``) — never grouped.
     """
@@ -807,7 +805,7 @@ def _standalone_unit_role(block: _AdapterBlock, html: str) -> Optional[str]:
         return _cu.ROLE_FIGURE
     if "<dl" in html:
         return _cu.ROLE_DEFINITION
-    if 'class="dart-exercise-list"' in html:
+    if 'class="semantik-exercise-list"' in html:
         return _cu.ROLE_EXERCISE_LIST
     text = re.sub(r"<[^>]+>", " ", html)
     n = len(text.split())
@@ -855,7 +853,7 @@ def _wrap_composite_unit(
 ) -> str:
     """Wrap the constituent rendered items of a composite unit (Tier-2).
 
-    Emits ``<section class="dart-unit dart-unit-<type>" data-semantik-unit="<type>"
+    Emits ``<section class="semantik-unit semantik-unit-<type>" data-semantik-unit="<type>"
     role="group" …>`` with an accessible name: ``aria-labelledby`` -> the lead
     item's heading id when present, else ``aria-label`` -> the unit-type name.
     The unit ``<section>`` also carries a ``data-semantik-pages`` rollup spanning its
@@ -871,10 +869,10 @@ def _wrap_composite_unit(
     if rollup:
         pages_attr = (
             f' data-semantik-pages="{_esc_attr(rollup)}"'
-            f' data-semantik-page-kind="{_DATA_DART_PAGE_KIND}"'
+            f' data-semantik-page-kind="{_DATA_SEMANTIK_PAGE_KIND}"'
         )
     return (
-        f'<section class="dart-unit dart-unit-{unit_type}" '
+        f'<section class="semantik-unit semantik-unit-{unit_type}" '
         f'data-semantik-unit="{_esc_attr(unit_type)}" role="group" {name}{pages_attr}>\n'
         f"{inner}\n</section>"
     )
@@ -889,7 +887,7 @@ def _apply_composite_units(
 
     Runs the pure :func:`composite_units.plan_units` planner over the item
     metadata and rebuilds the HTML list: a matched span is wrapped in a
-    ``dart-unit`` ``<section>``; a pass-through span emits its item verbatim.
+    ``semantik-unit`` ``<section>``; a pass-through span emits its item verbatim.
     """
     out: List[str] = []
     for span in _cu.plan_units(item_meta):
@@ -912,7 +910,7 @@ def _apply_composite_units(
 def _render_chapters(
     chapters: Sequence[_AdapterChapter],
     *,
-    source_value: str = _DATA_DART_SOURCE_VALUE,
+    source_value: str = _DATA_SEMANTIK_SOURCE_VALUE,
 ) -> str:
     """Render every chapter as an ``<article role="doc-chapter">`` (§3.4)."""
     parts: List[str] = []
@@ -931,7 +929,7 @@ def _render_chapters(
         # sections) are also collected with their abstract composite-unit role so
         # a run of adjacent siblings that form one pedagogical whole (a worked
         # example + its solution + practice; an objectives + readiness opener) is
-        # wrapped in a ``dart-unit`` group. Units are planned per genuine-heading
+        # wrapped in a ``semantik-unit`` group. Units are planned per genuine-heading
         # SEGMENT so a unit never crosses a section boundary.
         item_html: List[str] = []
         item_meta: List["_cu.UnitItem"] = []
@@ -1050,7 +1048,7 @@ def _render_chapters(
                 or ch_title_display
             )
             heading_html = (
-                f'<div class="dart-continuation" role="presentation" '
+                f'<div class="semantik-continuation" role="presentation" '
                 f'aria-hidden="true">{_esc_text(banner_text)}</div>'
             )
         else:
@@ -1179,12 +1177,12 @@ def _render_html(
     *,
     title: str,
     lang: str,
-    source_value: str = _DATA_DART_SOURCE_VALUE,
+    source_value: str = _DATA_SEMANTIK_SOURCE_VALUE,
 ) -> str:
     """Assemble the full normalized document (§3.1 four critical markers).
 
-    Keeps the skip-link; adds ``role="main"`` + ``class="dart-document"`` to
-    ``<main>``; wraps every block in an aria-labelled ``dart-section``.
+    Keeps the skip-link; adds ``role="main"`` + ``class="semantik-document"`` to
+    ``<main>``; wraps every block in an aria-labelled ``semantik-section``.
     """
     body = _render_chapters(chapters, source_value=source_value)
     # §3.1 WCAG 2.4.6 — a single document-title <h1> at the top of <main>,
@@ -1216,7 +1214,7 @@ def _render_html(
         "</head>\n"
         "<body>\n"
         '<a class="skip-link" href="#main-content">Skip to main content</a>\n'
-        '<main id="main-content" role="main" class="dart-document">\n'
+        '<main id="main-content" role="main" class="semantik-document">\n'
         f"{head_block}"
         f"{body}\n"
         "</main>\n"
@@ -1236,7 +1234,7 @@ def build_synthesized_sidecar(
     title: str,
     source_pdf: Optional[str] = None,
     slug: str,
-    source_value: str = _DATA_DART_SOURCE_VALUE,
+    source_value: str = _DATA_SEMANTIK_SOURCE_VALUE,
 ) -> Dict[str, Any]:
     """Return the canonical ``{stem}_synthesized.json`` sidecar (§3.5b).
 
@@ -1342,7 +1340,7 @@ def build_quality_sidecar(
 ) -> Dict[str, Any]:
     """Return the canonical ``{stem}.quality.json`` sidecar (§3.5b).
 
-    Self-contained (no DART WCAG validator load): the WCAG verdict + theta
+    Self-contained (no separate WCAG validator load): the WCAG verdict + theta
     + exit decision come from the cascade result, not a re-run.
     """
     compliant = wcag_status == "passed"
@@ -1826,7 +1824,7 @@ _MARKER_SPACE_BEFORE_PUNCT_RE = re.compile(r"\s+([.,;:)])")
 # and fold a colon-run that abuts such a boundary (``$`` / ``{`` / ``}``, modulo
 # whitespace, either side), preserving the boundary char AND the math itself. A
 # ``::`` is NEVER a valid math operator in this corpus (verified: 0 brace/``$``-
-# adjacent colon-runs across every DART exemplar, incl. the linear-algebra math
+# adjacent colon-runs across every exemplar corpus, incl. the linear-algebra math
 # textbook), so real math is untouched; a legitimate SINGLE label colon and an
 # interior ``::`` not adjacent to a boundary both survive. ``(?<!\\)`` guards a
 # currency ``\$``.
@@ -1843,7 +1841,7 @@ _MARKER_COLON_BEFORE_MATH_RE = re.compile(
 # pedagogical marker-separator shape and NEVER valid content: a Haskell/type-sig
 # ``f :: A`` (letter after ``::``) and a C++ ``std::vector`` (letter after) are
 # untouched (digit-follow guard), and a ratio ``1::2`` (digit before) is untouched
-# (letter-precede guard). Verified 0 ``LETTER::DIGIT`` runs across every DART
+# (letter-precede guard). Verified 0 ``LETTER::DIGIT`` runs across every
 # exemplar, so real content on the wide-net corpus is safe.
 _MARKER_COLON_MARKER_NUM_RE = re.compile(
     r"(?<=[A-Za-z])[ \t]*:(?:[ \t]*:)+[ \t]*(?=\d)"
@@ -2801,7 +2799,7 @@ def _strip_markdown_images(chapters: Sequence[_AdapterChapter]) -> None:
     fetch) and, worse, :func:`_linkify_block_urls` would turn the fabricated URL
     into a LIVE ``<a href>`` anchor. So this pass runs FIRST (before the
     linkifier), replacing every image with the accessible
-    ``.dart-figure-notation`` placeholder (mirroring :func:`_strip_tikz_figures`).
+    ``.semantik-figure-notation`` placeholder (mirroring :func:`_strip_tikz_figures`).
     Unlike the TikZ strip this ALSO cleans ``raw_text`` / ``repaired_text`` (the
     same sidecar fields :func:`_linkify_block_urls` touches) so the fabricated URL
     never reaches the chunker / retrieval index either. Idempotent.
@@ -2827,7 +2825,7 @@ def _strip_literal_img_tags(chapters: Sequence[_AdapterChapter]) -> None:
     regex never matches and :func:`_linkify_block_urls` would otherwise turn the
     fabricated URL into a live ``<a href>``. Runs at the SAME seam (BEFORE the
     linkifier). Only tags whose ``src`` is external / bare-fabricated are
-    replaced by the accessible ``.dart-figure-notation`` placeholder — a real
+    replaced by the accessible ``.semantik-figure-notation`` placeholder — a real
     DOM figure ``<img>`` with a local ``{stem}_figures/…`` src is untouched.
     Cleans HTML + ``raw_text`` / ``repaired_text`` so the fabricated URL reaches
     neither the learner page nor the chunker / retrieval index.
@@ -2983,7 +2981,7 @@ def _strip_tikz_figures(chapters: Sequence[_AdapterChapter]) -> None:
     sibling). This is figure content, not math — the corpus-wide figure story is
     the accepted scan-corpus limitation (``SEMANTIK_DETECT_FIGURES`` off) — so
     :func:`~lib.semantik.math_fold.strip_tikz_figures` replaces a pure-figure
-    span with the accessible ``.dart-figure-notation`` placeholder (the raw TikZ
+    span with the accessible ``.semantik-figure-notation`` placeholder (the raw TikZ
     source is noise to every reader and never ships visibly) and keeps the math
     of a mixed span (real math + embedded figure), dropping only the figure env.
 
@@ -3439,7 +3437,7 @@ def _normalize_ocr_headings(
 
     # Round-10 (final) — replace VLM-emitted TikZ / pgfplots FIGURE code inside
     # math spans (``$$\begin{tikzpicture}…\end{tikzpicture}$$`` coordinate-plane
-    # graphs) with an accessible ``.dart-figure-notation`` placeholder so MathJax
+    # graphs) with an accessible ``.semantik-figure-notation`` placeholder so MathJax
     # stops emitting "Undefined environment tikzpicture" ``mjx-merror`` nodes and
     # the raw TikZ source never ships visibly. HTML-only; runs LAST so the round-9
     # sanitizer's edits are settled and the figure env is intact when found.
@@ -3532,7 +3530,7 @@ def normalize_cascade_to_ed4all(
     subclass_capture: Optional[Any] = None,
     subclass_review_sidecar: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Normalize a Semantic v2 cascade RESULT into Ed4All's DART contract.
+    """Normalize a Semantic v2 cascade RESULT into Ed4All's output contract.
 
     Parameters
     ----------
@@ -3543,8 +3541,8 @@ def normalize_cascade_to_ed4all(
         seam attaches it; the synthetic fixture builds it directly — see
         :func:`_extract_chapters_from_result`).
     pdf_stem
-        The staged-HTML file stem; the ``dart:{slug}`` slug derives from it
-        via ``dart_slug_from_filename`` (§3.3, gentle slug — NOT
+        The staged-HTML file stem; the ``semantik:{slug}`` slug derives from it
+        via ``semantik_slug_from_filename`` (§3.3, gentle slug — NOT
         ``canonical_slug``).
     figures_dir
         Optional figures directory (recorded; figure copy is the P3 seam's
@@ -3568,7 +3566,7 @@ def normalize_cascade_to_ed4all(
         ``quality_sidecar`` + ``method`` + ``word_count`` + ``wcag_status`` +
         ``exit_action`` + ``theta_score`` + ``flags`` + ``certification_status``.
     """
-    slug = dart_slug_from_filename(pdf_stem)
+    slug = semantik_slug_from_filename(pdf_stem)
     source_value = _resolve_source_value(source)
 
     exit_action = getattr(cascade_result, "exit_action", None)
@@ -3615,7 +3613,7 @@ def normalize_cascade_to_ed4all(
 
     # Build #23 Tier-3 — model-assisted composite-unit subclassing (opt-in).
     # Runs WITHIN the render path so the emitted HTML is the fully-rendered
-    # chapter PLUS the payload-only data-semantik-subclass / dart-sub-<label>
+    # chapter PLUS the payload-only data-semantik-subclass / semantik-sub-<label>
     # attributes. Gated on SEMANTIK_SEMANTIC_SUBCLASS (default off → byte-
     # identical) OR an explicitly injected client (the pilot / corpus-apply
     # driver forces the pass with a mock or the real local seat). No client
@@ -3674,7 +3672,7 @@ def normalize_cascade_to_ed4all(
         "flags": flags,
         "lane_used": lane_used,
         "certification_status": certification_status,
-        "data_dart_source": source_value,
+        "data_semantik_source": source_value,
         "slug": slug,
         "canonical_course_code": canonical_course_code,
         "figures_dir": figures_dir,
@@ -3701,5 +3699,5 @@ __all__ = [
     "_AdapterBlock",
     "_AdapterChapter",
     "_mint_sid",
-    "_DATA_DART_SOURCE_VALUE",
+    "_DATA_SEMANTIK_SOURCE_VALUE",
 ]

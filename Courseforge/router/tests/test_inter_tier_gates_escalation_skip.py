@@ -256,7 +256,7 @@ def test_source_refs_no_marker_audited():
         _str_block(
             content=_GOOD_HTML,
             escalation_marker=None,
-            source_ids=("dart:slug#blk1",),
+            source_ids=("semantik:slug#blk1",),
         )
     ]
     result = BlockSourceRefValidator().validate({"blocks": blocks})

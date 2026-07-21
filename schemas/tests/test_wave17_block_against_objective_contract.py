@@ -604,12 +604,12 @@ def test_4_outline_and_rewrite_prompts_carry_bloom_triple_verbatim(
                 "RDF Schema defines a vocabulary for class hierarchies."
             ],
             "curies": ["rdfs:subClassOf"],
-            "source_refs": ["dart:rdfs-spec#sec1"],
+            "source_refs": ["semantik:rdfs-spec#sec1"],
             "objective_refs": ["CO-08"],
         },
     )
     chunks = [
-        {"id": "dart:rdfs-spec#sec1", "body": "RDFS subclass body."},
+        {"id": "semantik:rdfs-spec#sec1", "body": "RDFS subclass body."},
     ]
     objective_statement = (
         "Design RDF Schema vocabularies for subclass hierarchies."

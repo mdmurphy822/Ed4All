@@ -1,6 +1,6 @@
 """P3d tests — input-type detection + the vendor-ingest conversion seam.
 
-The DUAL-SOURCE companion to ``test_semantik_dispatch_flip.py``. SemantiK
+The dual-source companion to ``test_semantik_dispatch_flip.py``. SemantiK
 converts a PDF; a publisher's already-accessible HTML (e.g. a CC-BY publisher)
 routes through ``_run_vendor_ingest_conversion`` instead. These tests prove
 the input-type detection routes HTML→vendor / PDF→cascade and that the vendor
@@ -20,11 +20,11 @@ Covers (SemantiK migration P3d):
   * ``_detect_conversion_input_type`` rule: PDF file / dir → "pdf"; HTML file /
     dir → "vendor"; missing path classified by suffix; mixed dir → "pdf"
     (PDF wins); unknown → "unknown".
-  * ``dart_conversion`` phase routes an HTML-dir input to the vendor seam, NOT
-    the SemantiK cascade seam.
-  * ``dart_conversion`` phase routes a PDF input to the SemantiK cascade seam,
-    NOT the vendor seam.
-  * ``dart_conversion`` phase fails closed clear on an unknown input.
+  * ``semantik_conversion`` phase routes an HTML-dir input to the vendor seam,
+    NOT the SemantiK cascade seam.
+  * ``semantik_conversion`` phase routes a PDF input to the SemantiK cascade
+    seam, NOT the vendor seam.
+  * ``semantik_conversion`` phase fails closed clear on an unknown input.
   * ``_run_vendor_ingest_conversion`` writes {stem}_accessible.html + both
     sidecars, returns the required contract keys + data-semantik-source="vendor".
   * Fail-closed-clear on an empty / unreadable input.
@@ -108,12 +108,12 @@ def test_detect_input_type_rules(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# (b) dart_conversion phase → routes HTML to the vendor seam (not cascade).
+# (b) semantik_conversion phase → routes HTML to the vendor seam (not cascade).
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_dart_conversion_html_dir_routes_to_vendor(monkeypatch, tmp_path):
+async def test_semantik_conversion_html_dir_routes_to_vendor(monkeypatch, tmp_path):
     import MCP.tools.pipeline_tools as pt
 
     cascade_calls: list = []
@@ -132,7 +132,7 @@ async def test_dart_conversion_html_dir_routes_to_vendor(monkeypatch, tmp_path):
     out = await tool(
         pdf_path=str(corpus),
         course_code="EA_1",
-        phase="dart_conversion",
+        phase="semantik_conversion",
         output_dir=str(tmp_path / "out"),
     )
     payload = json.loads(out)
@@ -140,7 +140,8 @@ async def test_dart_conversion_html_dir_routes_to_vendor(monkeypatch, tmp_path):
     assert cascade_calls == [], "SemantiK cascade was called for an HTML input"
     assert payload["success"] is True
     assert payload["method"] == "vendor_ingest"
-    assert payload["data_dart_source"] == "vendor"
+    # ``data_semantik_source`` is the seam's live provenance-source key.
+    assert payload["data_semantik_source"] == "vendor"
     # The accessible-HTML + sidecars contract is written.
     from pathlib import Path
 
@@ -163,12 +164,12 @@ async def test_dart_conversion_html_dir_routes_to_vendor(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# (c) dart_conversion phase → routes a PDF to the cascade (not vendor).
+# (c) semantik_conversion phase → routes a PDF to the cascade (not vendor).
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_dart_conversion_pdf_routes_to_cascade(monkeypatch, tmp_path):
+async def test_semantik_conversion_pdf_routes_to_cascade(monkeypatch, tmp_path):
     import MCP.tools.pipeline_tools as pt
 
     cascade_calls: list = []
@@ -194,7 +195,7 @@ async def test_dart_conversion_pdf_routes_to_cascade(monkeypatch, tmp_path):
     out = await tool(
         pdf_path="sample_text.pdf",  # bare path; classified pdf by suffix
         course_code="ALG_9",
-        phase="dart_conversion",
+        phase="semantik_conversion",
         output_dir=str(tmp_path),
     )
     payload = json.loads(out)
@@ -205,12 +206,12 @@ async def test_dart_conversion_pdf_routes_to_cascade(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# (d) dart_conversion phase → fails closed clear on an unknown input.
+# (d) semantik_conversion phase → fails closed clear on an unknown input.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_dart_conversion_unknown_input_fails_closed(monkeypatch, tmp_path):
+async def test_semantik_conversion_unknown_input_fails_closed(monkeypatch, tmp_path):
     import MCP.tools.pipeline_tools as pt
 
     monkeypatch.setattr(
@@ -226,7 +227,7 @@ async def test_dart_conversion_unknown_input_fails_closed(monkeypatch, tmp_path)
     out = await tool(
         pdf_path=str(txt),
         course_code="X",
-        phase="dart_conversion",
+        phase="semantik_conversion",
         output_dir=str(tmp_path),
     )
     payload = json.loads(out)
@@ -252,7 +253,7 @@ def test_vendor_seam_single_file(tmp_path):
     assert res["success"] is True
     assert res["method"] == "vendor_ingest"
     assert res["runtime_mode"] == "real"
-    assert res["data_dart_source"] == "vendor"
+    assert res["data_semantik_source"] == "vendor"
     assert res["vendor_html_file_count"] == 1
     assert res["html_length"] > 0
 
@@ -280,7 +281,7 @@ def test_vendor_seam_multi_page_dir(tmp_path):
     assert res["vendor_html_file_count"] == 2
     # The dir name drives the {stem}_accessible.html.
     assert res["html_path"].endswith("corpus_accessible.html")
-    assert res["data_dart_source"] == "vendor"
+    assert res["data_semantik_source"] == "vendor"
 
 
 def test_vendor_seam_empty_input_fails_closed(tmp_path):

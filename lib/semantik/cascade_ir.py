@@ -10,13 +10,12 @@ THIS module converts that list into the ``List[_AdapterChapter]`` the
 adapter's :func:`~lib.semantik.adapter.normalize_cascade_to_ed4all`
 consumes.
 
-Migration plan ``plans/finegrain/semantic-v2-dart-migration-2026-06-21.md``
-section map:
+Section map:
 
 * §3.3a raw-block-index determinism .... :data:`region_provenance[i]
   ["first_raw_block_index"]` is carried verbatim onto
   :attr:`_AdapterBlock.raw_block_index`; the adapter mints the ``sid`` from
-  it, so the same provenance → identical ``data-dart-block-id`` set across
+  it, so the same provenance → identical ``data-semantik-block-id`` set across
   runs (the determinism contract).
 * §3.4 chapter structure ............... :func:`_chapter_boundary` groups
   regions into ``<article role="doc-chapter">`` chapters at content-bearing
@@ -27,7 +26,7 @@ section map:
   ``region_provenance[i]["pages"]``.
 * §3.7 object map ...................... the produced IR is EXACTLY what the
   P2a synthetic fixture (``_SyntheticCascadeResult.chapters``) builds, so
-  the chain P3a → adapter → DartMarkersValidator is exercised end-to-end on
+  the chain P3a → adapter → SemantiKMarkersValidator is exercised end-to-end on
   synthetic data with no models.
 
 NO models, NO GPU, NO JSON serialization: the cascade result lives in
@@ -194,7 +193,7 @@ def _chapter_title_from_heading_tree(
 # of ≥2 of these markers is the deterministic signal that the region is a
 # genuine bullet list we can render as ``<ul><li>`` rather than flatten to a
 # single ``<p>`` (the adapter's historical behaviour). ``◦``/``▪``/``‣`` are
-# OpenStax's nested-bullet glyphs; ``•``/``·`` the top-level bullet.
+# common nested-bullet glyphs; ``•``/``·`` the top-level bullet.
 _BULLET_SPLIT_RE = re.compile(r"\s*[•◦▪‣·]\s+")
 
 # A ``definition_list``-kind region whose raw_text carries "term – definition"
@@ -516,7 +515,7 @@ def _replay_repaired_text(
     seam (mirroring ``qwen_specialists.ocr_repair.assert_repair_conservation``,
     re-implemented locally so this Ed4All-venv seam never imports the SemantiK
     cascade package). ANY other drift → ``False`` and the caller reverts the
-    block to verbatim ``original`` (the ``data-dart-repair`` exemption is only
+    block to verbatim ``original`` (the ``data-semantik-repair`` exemption is only
     honored when this passes).
     """
     text = original

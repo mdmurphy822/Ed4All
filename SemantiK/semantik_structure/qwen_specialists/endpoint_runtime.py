@@ -102,13 +102,13 @@ _OUTPUT_TOKEN_SAFETY_MARGIN = 512
 # Per-region delimiters the batched prompt instructs the model to wrap each
 # fragment in. DOTALL-parsed back into {region_id: fragment}. The id is the
 # region's stable r{idx} id so the runner maps fragments back to jobs.
-_BATCH_REGION_OPEN = '<<<DART_REGION id="{rid}">>>'
-_BATCH_REGION_CLOSE = '<<<DART_REGION_END id="{rid}">>>'
+_BATCH_REGION_OPEN = '<<<SEMANTIK_REGION id="{rid}">>>'
+_BATCH_REGION_CLOSE = '<<<SEMANTIK_REGION_END id="{rid}">>>'
 # DOTALL regex: capture the body between a matching open/close pair. The
 # backreference \1 forces the END tag's id to equal the OPEN tag's id, so a
 # region whose END tag is missing/mismatched simply does not match -> None.
 _BATCH_REGION_RE = re.compile(
-    r'<<<DART_REGION id="(r\d+)">>>(.*?)<<<DART_REGION_END id="\1">>>',
+    r'<<<SEMANTIK_REGION id="(r\d+)">>>(.*?)<<<SEMANTIK_REGION_END id="\1">>>',
     re.DOTALL,
 )
 
@@ -291,7 +291,7 @@ def parse_batch_envelope(
     """Parse a batched response into ``{region_id: fragment | None}``.
 
     Tolerant DOTALL extraction of every
-    ``<<<DART_REGION id="rN">>> … <<<DART_REGION_END id="rN">>>`` pair (the
+    ``<<<SEMANTIK_REGION id="rN">>> … <<<SEMANTIK_REGION_END id="rN">>>`` pair (the
     END id is backreference-pinned to the OPEN id, so a missing/mismatched
     END tag yields no match for that region). Code fences are stripped first.
     Every requested ``region_id`` is present in the result; any region whose
@@ -363,7 +363,7 @@ def _resolve_timeout() -> float:
 # reinforce the OUTPUT-ENVELOPE contract so the hosted model emits a bare
 # fragment the assembler can parse identically to the adapter's output.
 _ENVELOPE_DIRECTIVE = (
-    "You are a DART document-conversion specialist. Convert the single "
+    "You are a SemantiK document-conversion specialist. Convert the single "
     "region described in the USER message into ONE accessible HTML5 "
     "fragment conforming to ARIA-in-HTML and WCAG 2.2 AA. For math emit "
     "MathML 4.0 (a single <math ...>...</math> with an alttext attribute); "
@@ -382,9 +382,9 @@ _BATCH_ENVELOPE_DIRECTIVE = (
     "You will convert MULTIPLE regions in ONE response. The USER message "
     "lists each region, tagged with its id. For EACH region, emit EXACTLY "
     "this block and nothing else around it:\n"
-    '<<<DART_REGION id="r{idx}">>>\n'
+    '<<<SEMANTIK_REGION id="r{idx}">>>\n'
     "...single HTML5/MathML fragment for that region...\n"
-    '<<<DART_REGION_END id="r{idx}">>>\n'
+    '<<<SEMANTIK_REGION_END id="r{idx}">>>\n'
     "Emit the blocks IN THE SAME ORDER the regions appear, using each "
     "region's OWN id. Put NOTHING between blocks — no commentary, no "
     "Markdown, no code fences, no blank-line prose. Each block's body is the "
@@ -859,7 +859,7 @@ class OpenAICompatibleRuntime:
         ):
             logger.warning(
                 "Stage6 batched envelope parse recovered 0/%d regions "
-                "(ids=%s) — the POST succeeded but no <<<DART_REGION>>> blocks "
+                "(ids=%s) — the POST succeeded but no <<<SEMANTIK_REGION>>> blocks "
                 "were parseable; response head: %r",
                 len(region_ids),
                 region_ids[:8],

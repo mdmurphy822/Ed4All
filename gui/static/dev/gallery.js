@@ -128,13 +128,13 @@ function gateStripSection() {
 /* ---- phase timeline: a full ordered checklist, sequential states ---- */
 function phaseTimelineSection() {
   const tl = phaseTimeline([
-    { name: 'dart_conversion', label: 'Convert textbook to accessible HTML' },
+    { name: 'semantik_conversion', label: 'Convert textbook to accessible HTML' },
     { name: 'staging', label: 'Stage source files' },
     { name: 'content_generation', label: 'Generate course content' },
     { name: 'packaging', label: 'Package course' },
     { name: 'trainforge_assessment', label: 'Generate assessments', optional: true },
   ]);
-  tl.setState('dart_conversion', 'done');
+  tl.setState('semantik_conversion', 'done');
   tl.setState('staging', 'done');
   tl.setState('content_generation', 'running');
   tl.setTaskProgress('content_generation', 23, 50);
@@ -182,7 +182,7 @@ function fieldRowSection() {
 function timelineBarSection() {
   return section('Timeline bar', 'A stacked horizontal bar of run-history phase durations (aria-hidden bar + a semantic legend).',
     timelineBar([
-      { name: 'dart_conversion', label: 'Convert', duration_ms: 320000, state: 'done' },
+      { name: 'semantik_conversion', label: 'Convert', duration_ms: 320000, state: 'done' },
       { name: 'content_generation', label: 'Generate content', duration_ms: 1080000, state: 'done' },
       { name: 'packaging', label: 'Package', duration_ms: 60000, state: 'done' },
       { name: 'trainforge_assessment', label: 'Assessments', duration_ms: 140000, state: 'skipped' },
@@ -227,7 +227,7 @@ function buildConsoleSection() {
   // Median per-phase durations (history) so the console can render the honest
   // ETA range ("about Nm left"). source:"history" → no "rough estimate" tag.
   const durations = {
-    dart_conversion: { median_ms: 320000, n: 6 },
+    semantik_conversion: { median_ms: 320000, n: 6 },
     staging: { median_ms: 40000, n: 6 },
     content_generation: { median_ms: 1080000, n: 6 },
     packaging: { median_ms: 60000, n: 6 },
@@ -235,7 +235,7 @@ function buildConsoleSection() {
   };
   const buildConsole = runProgressConsole({
     phases: [
-      { name: 'dart_conversion', label: 'Convert textbook to accessible HTML' },
+      { name: 'semantik_conversion', label: 'Convert textbook to accessible HTML' },
       { name: 'staging', label: 'Stage source files' },
       { name: 'content_generation', label: 'Generate course content' },
       { name: 'packaging', label: 'Package course' },
@@ -275,9 +275,9 @@ function buildConsoleSection() {
   const t0 = Date.now();
   const iso = (offsetMs) => new Date(t0 + offsetMs).toISOString();
   const script = [
-    `[${iso(0)}] [progress] dart_conversion 1/3`,
-    `[${iso(800)}] [progress] dart_conversion 3/3`,
-    `[${iso(1200)}] [phase] dart_conversion done — Convert textbook to accessible HTML`,
+    `[${iso(0)}] [progress] semantik_conversion 1/3`,
+    `[${iso(800)}] [progress] semantik_conversion 3/3`,
+    `[${iso(1200)}] [phase] semantik_conversion done — Convert textbook to accessible HTML`,
     `[${iso(1800)}] [phase] staging done — Stage source files`,
     `[${iso(2200)}] [progress] content_generation 12/50`,
     `[${iso(3000)}] [progress] content_generation 50/50`,
@@ -317,7 +317,7 @@ function runHistorySection() {
     {
       title: 'PHYS_101', status: 'completed', href: '#/create/GUI-1', meta: 'textbook_to_course · 28m',
       durs: [
-        { name: 'dart_conversion', label: 'Convert', duration_ms: 320000, state: 'done' },
+        { name: 'semantik_conversion', label: 'Convert', duration_ms: 320000, state: 'done' },
         { name: 'content_generation', label: 'Generate content', duration_ms: 1080000, state: 'done' },
         { name: 'packaging', label: 'Package', duration_ms: 60000, state: 'done' },
         { name: 'trainforge_assessment', label: 'Assessments', duration_ms: 140000, state: 'skipped' },
@@ -331,7 +331,7 @@ function runHistorySection() {
     {
       title: 'CHEM_101', status: 'failed', href: '#/create/GUI-3', meta: 'textbook_to_course · 6m',
       durs: [
-        { name: 'dart_conversion', label: 'Convert', duration_ms: 300000, state: 'done' },
+        { name: 'semantik_conversion', label: 'Convert', duration_ms: 300000, state: 'done' },
         { name: 'content_generation', label: 'Generate content', duration_ms: 60000, state: 'failed' },
       ],
       live: false, retry: true,

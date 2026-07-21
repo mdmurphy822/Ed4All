@@ -42,9 +42,9 @@ splitting, donor-pool hallucination injection, shuffle/drop machinery):
 
 Hard requirements honored here:
 
-* CPU-only — ``CUDA_VISIBLE_DEVICES=""`` and ``DART_THETA_DEVICE=cpu``
+* CPU-only — ``CUDA_VISIBLE_DEVICES=""`` and ``SEMANTIK_THETA_DEVICE=cpu``
   are forced before any torch import (another project owns the GPU).
-* No silent 7-dim calibration — ``DART_ALLOW_THETA_STUB`` is scrubbed
+* No silent 7-dim calibration — ``SEMANTIK_ALLOW_THETA_STUB`` is scrubbed
   from the environment, so a missing/broken v8 cross-encoder raises
   instead of calibrating against the 0.7 stub
   (feedback_no_silent_fallbacks).
@@ -64,10 +64,10 @@ import os
 # semantik_structure.theta). The GPU is off-limits during calibration runs
 # (train CUDA-context guard) and the v8 cross-encoder runs fine on CPU.
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
-os.environ["DART_THETA_DEVICE"] = "cpu"
+os.environ["SEMANTIK_THETA_DEVICE"] = "cpu"
 # Strict-by-default: never calibrate against the 0.7 stub. If the v8
 # model can't load, evaluate() must raise, not degrade to 7 real dims.
-os.environ.pop("DART_ALLOW_THETA_STUB", None)
+os.environ.pop("SEMANTIK_ALLOW_THETA_STUB", None)
 
 import argparse
 import html as html_mod
@@ -1071,7 +1071,7 @@ def main() -> None:
     t0 = time.time()
 
     # Load the REAL v8 cross-encoder up front — raises (strict-by-default,
-    # DART_ALLOW_THETA_STUB scrubbed above) if it can't load, so we never
+    # SEMANTIK_ALLOW_THETA_STUB scrubbed above) if it can't load, so we never
     # calibrate 8 weights against 7 real dims + a 0.7 constant.
     _print("[calibrate] loading semantic-preservation cross-encoder (CPU)...")
     from semantik_structure.theta._module_state import _get_model
@@ -1210,7 +1210,7 @@ def main() -> None:
             "max_blocks": args.max_blocks,
             "pairs_root": str(args.pairs_root),
             "semantic_model_dir": os.environ.get(
-                "DART_SEMANTIC_MODEL_DIR", "models/theta/semantic_preservation/v8"
+                "SEMANTIK_SEMANTIC_MODEL_DIR", "models/theta/semantic_preservation/v8"
             ),
             "device": "cpu",
             "runtime_seconds": round(time.time() - t0, 1),

@@ -95,7 +95,7 @@ def _rewrite_block(
             f'<li data-cf-distractor-index="{i}">{dtext}</li>'
         )
     html = (
-        "<section data-cf-source-ids=\"dart:math#q1\">"
+        "<section data-cf-source-ids=\"semantik:math#q1\">"
         "<p>Simplify 20/30 to lowest terms.</p>"
         "<ol>" + "".join(lis) + "</ol>"
         "</section>"

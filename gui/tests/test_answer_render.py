@@ -340,7 +340,7 @@ def test_legacy_citation_omits_provenance_disclosure():
 
 def test_provenance_disclosure_renders_block_and_pdf_links():
     payload = _answered_payload()
-    payload["citations"][0]["source_block"] = "dart:mini_alpha#s3_c0"
+    payload["citations"][0]["source_block"] = "semantik:mini_alpha#s3_c0"
     payload["citations"][0]["pdf_pages"] = [7, 12]
     html = ar.render_answer_fragment(payload)
     # Disclosure pattern: a toggle button controlling a hidden detail panel.
@@ -348,7 +348,7 @@ def test_provenance_disclosure_renders_block_and_pdf_links():
     assert 'aria-controls="src-detail-chunk_0001"' in html
     assert 'id="src-detail-chunk_0001" class="src-detail" hidden' in html
     # Informational source block id.
-    assert "<code>dart:mini_alpha#s3_c0</code>" in html
+    assert "<code>semantik:mini_alpha#s3_c0</code>" in html
     # One labelled, new-tab PDF link per page.
     assert html.count('class="src-pdf-link"') == 2
     assert 'target="_blank" rel="noopener"' in html
@@ -359,11 +359,11 @@ def test_provenance_disclosure_renders_block_and_pdf_links():
 
 def test_provenance_block_only_when_no_pages():
     payload = _answered_payload()
-    payload["citations"][0]["source_block"] = "dart:mini_alpha#s3_c0"
+    payload["citations"][0]["source_block"] = "semantik:mini_alpha#s3_c0"
     payload["citations"][0]["pdf_pages"] = []
     html = ar.render_answer_fragment(payload)
     assert "src-detail-toggle" in html
-    assert "<code>dart:mini_alpha#s3_c0</code>" in html
+    assert "<code>semantik:mini_alpha#s3_c0</code>" in html
     # No PDF links when no pages are known.
     assert "src-pdf-link" not in html
 
@@ -381,7 +381,7 @@ def test_provenance_pages_only_when_no_block():
 
 def test_provenance_source_block_is_escaped():
     payload = _answered_payload()
-    payload["citations"][0]["source_block"] = 'dart:x#"><script>alert(1)</script>'
+    payload["citations"][0]["source_block"] = 'semantik:x#"><script>alert(1)</script>'
     payload["citations"][0]["pdf_pages"] = []
     html = ar.render_answer_fragment(payload)
     assert "<script>alert(1)" not in html
@@ -393,7 +393,7 @@ def test_provenance_source_block_is_escaped():
 
 def test_original_source_link_rendered_when_source_block_present():
     payload = _answered_payload()
-    payload["citations"][0]["source_block"] = "dart:intro-textbook-vol1#a1b2c3d4e5f60718"
+    payload["citations"][0]["source_block"] = "semantik:intro-textbook-vol1#a1b2c3d4e5f60718"
     payload["citations"][0]["pdf_pages"] = []
     html = ar.render_answer_fragment(payload)
     # The source-block row is a "View original source" deep link (new tab).
@@ -401,22 +401,22 @@ def test_original_source_link_rendered_when_source_block_present():
     assert ">View original source (accessible HTML)</a>" in html
     assert 'target="_blank" rel="noopener"' in html
     assert "opens in new tab" in html
-    # href: /api/courses/{slug}/source-doc?doc=<doc>&ref=<block>#dart-<block>
+    # href: /api/courses/{slug}/source-doc?doc=<doc>&ref=<block>#semantik-<block>
     assert (
         "/api/courses/phys-101/source-doc?doc=intro-textbook-vol1"
-        "&amp;ref=a1b2c3d4e5f60718#dart-a1b2c3d4e5f60718" in html
+        "&amp;ref=a1b2c3d4e5f60718#semantik-a1b2c3d4e5f60718" in html
     )
     # The sourceId rides along as secondary <code> text.
-    assert "<code>dart:intro-textbook-vol1#a1b2c3d4e5f60718</code>" in html
+    assert "<code>semantik:intro-textbook-vol1#a1b2c3d4e5f60718</code>" in html
 
 
 def test_original_source_url_helper_shape():
-    cit = {"source_block": "dart:foo-doc#blk_9"}
+    cit = {"source_block": "semantik:foo-doc#blk_9"}
     url = ar.original_source_url(cit, "my-course")
-    assert url == "/api/courses/my-course/source-doc?doc=foo-doc&ref=blk_9#dart-blk_9"
-    # Non-dart / malformed source blocks → empty (no link emitted).
+    assert url == "/api/courses/my-course/source-doc?doc=foo-doc&ref=blk_9#semantik-blk_9"
+    # Non-parseable / malformed source blocks → empty (no link emitted).
     assert ar.original_source_url({"source_block": "imscc:x#y"}, "s") == ""
-    assert ar.original_source_url({"source_block": "dart:onlydoc"}, "s") == ""
+    assert ar.original_source_url({"source_block": "semantik:onlydoc"}, "s") == ""
     assert ar.original_source_url({}, "s") == ""
 
 
@@ -428,7 +428,7 @@ def test_original_source_link_suppressed_when_no_source_block():
 
 def test_original_source_link_suppressed_when_flag_off():
     payload = _answered_payload()
-    payload["citations"][0]["source_block"] = "dart:foo#blk_1"
+    payload["citations"][0]["source_block"] = "semantik:foo#blk_1"
     payload["citations"][0]["pdf_pages"] = [3]
     html = ar.render_answer_fragment(payload, include_original_source_links=False)
     # No original-source link, no PDF-page link (both gated by the toggle).
@@ -436,12 +436,12 @@ def test_original_source_link_suppressed_when_flag_off():
     assert "src-pdf-link" not in html
     # The informational <code> sourceId still shows (it is not a redistribution
     # link, just an identifier).
-    assert "<code>dart:foo#blk_1</code>" in html
+    assert "<code>semantik:foo#blk_1</code>" in html
 
 
 def test_original_source_link_url_encoded():
     payload = _answered_payload()
-    payload["citations"][0]["source_block"] = "dart:doc with space#blk a"
+    payload["citations"][0]["source_block"] = "semantik:doc with space#blk a"
     payload["citations"][0]["pdf_pages"] = []
     html = ar.render_answer_fragment(payload)
     # The doc / ref halves are percent-encoded in the href.
@@ -449,17 +449,17 @@ def test_original_source_link_url_encoded():
     assert "ref=blk%20a" in html
 
 
-def test_main_source_link_is_anchored_source_doc_for_dart_citations():
+def test_main_source_link_is_anchored_source_doc_for_citations():
     """Source-side citations: the MAIN "Source:" link must land on the cited
     block in the original document (user-reported: the unanchored learner
     source URL opened the doc at the top — the attribution front matter)."""
     payload = _answered_payload()
-    payload["citations"][0]["source_block"] = "dart:intro-textbook-vol1#a1b2c3d4e5f60718"
+    payload["citations"][0]["source_block"] = "semantik:intro-textbook-vol1#a1b2c3d4e5f60718"
     html = ar.render_answer_fragment(payload)
     c = _parse(html)
     main_href = c.hrefs[0]
     assert main_href.startswith("/api/courses/phys-101/source-doc?doc=intro-textbook-vol1")
-    assert main_href.endswith("#dart-a1b2c3d4e5f60718")
+    assert main_href.endswith("#semantik-a1b2c3d4e5f60718")
 
 
 def test_main_source_link_unchanged_for_course_page_citations():
@@ -473,18 +473,18 @@ def test_main_source_link_unchanged_for_course_page_citations():
 
 def test_original_source_url_threads_first_pdf_page():
     """original_source_url appends &page=N (min pdf_page) before the #fragment."""
-    cit = {"source_block": "dart:foo-doc#blk_9", "pdf_pages": [7, 12]}
+    cit = {"source_block": "semantik:foo-doc#blk_9", "pdf_pages": [7, 12]}
     url = ar.original_source_url(cit, "my-course")
     assert url == (
-        "/api/courses/my-course/source-doc?doc=foo-doc&ref=blk_9&page=7#dart-blk_9"
+        "/api/courses/my-course/source-doc?doc=foo-doc&ref=blk_9&page=7#semantik-blk_9"
     )
 
 
 def test_original_source_url_page_less_byte_identical():
     """No pdf_pages → byte-identical to the legacy (no &page=) URL."""
-    cit = {"source_block": "dart:foo-doc#blk_9", "pdf_pages": []}
+    cit = {"source_block": "semantik:foo-doc#blk_9", "pdf_pages": []}
     url = ar.original_source_url(cit, "my-course")
-    assert url == "/api/courses/my-course/source-doc?doc=foo-doc&ref=blk_9#dart-blk_9"
+    assert url == "/api/courses/my-course/source-doc?doc=foo-doc&ref=blk_9#semantik-blk_9"
     assert "&page=" not in url
 
 

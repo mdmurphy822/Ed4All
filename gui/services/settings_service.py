@@ -55,8 +55,8 @@ def build_settings_payload() -> Dict[str, Any]:
 # The env-catalog categories a non-developer Studio user needs to see + edit:
 # their cloud-provider keys, the global LLM mode/provider/model, the
 # grounded-answer (ask) backend, and the local server wiring (so an air-gapped
-# Ollama lattice can be pointed at). The full operator catalog (DART / per-tier
-# Courseforge / Trainforge / embedding knobs) is intentionally hidden from
+# Ollama lattice can be pointed at). The full operator catalog (conversion /
+# per-tier Courseforge / Trainforge / embedding knobs) is intentionally hidden from
 # Studio. ``model_routing`` tasks the page edits map to the same canonical env
 # vars via ``ROUTING_ENV_MAP`` — the page writes routing, never raw env, so a
 # secret never round-trips through it.

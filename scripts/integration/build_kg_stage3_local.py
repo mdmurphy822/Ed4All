@@ -51,7 +51,7 @@ Usage:
     TEXTBOOK_SYNTHESIS_MODEL=qwen2.5-7b-8k \
     LOCAL_SYNTHESIS_BASE_URL=http://localhost:11434/v1 \
     python -m scripts.integration.build_kg_stage3_local \
-        --chunks LibV2/courses/<slug>/dart_chunks/chunks.jsonl \
+        --chunks LibV2/courses/<slug>/semantik_chunks/chunks.jsonl \
         --course-slug <slug> \
         --objectives <project>/01_learning_objectives/synthesized_objectives.json \
         --textbook-structure <project>/.../textbook_structure.json \
@@ -143,7 +143,7 @@ def run_stage3_concept_synthesis(
     and ``extract_concept_tags`` helpers; re-tags ``chunks`` IN PLACE.
 
     Args:
-        chunks: loaded DART chunks (mutated in place — concept_tags UNIONed).
+        chunks: loaded SemantiK chunks (mutated in place — concept_tags UNIONed).
         textbook_structure_path: path to textbook_structure.json (chapter
             text source).
         course_name: canonical course name (drives the capture rationale).
@@ -566,7 +566,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
     )
     parser.add_argument(
-        "--chunks", required=True, help="Path to dart_chunks/chunks.jsonl",
+        "--chunks", required=True, help="Path to semantik_chunks/chunks.jsonl",
     )
     parser.add_argument(
         "--course-slug", required=True, help="Course slug (e.g. my-course-101)",

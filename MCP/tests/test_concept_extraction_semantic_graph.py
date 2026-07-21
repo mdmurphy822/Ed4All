@@ -5,10 +5,10 @@ now emits the genuine ``kind: "concept_semantic"`` graph (``DomainConcept``
 nodes + typed edges) via ``build_semantic_graph``, replacing the prior
 lightweight ``kind: "pedagogy"`` graph from ``build_pedagogy_graph``.
 
-The phase consumes the upstream DART chunkset (``dart_chunks_path``);
-this test feeds a tagged DART chunkset fixture whose chunks carry
-hand-set ``concept_tags`` — the test does NOT depend on the DART tagging
-path (a parallel worker owns that).
+The phase consumes the upstream SemantiK chunkset; this test feeds a
+tagged SemantiK chunkset fixture whose chunks carry hand-set
+``concept_tags`` — the test does NOT depend on the chunk-tagging path
+(a parallel worker owns that).
 
 Contract assertions:
 
@@ -41,7 +41,7 @@ from MCP.tools.pipeline_tools import _build_tool_registry  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
-# Tagged DART chunkset fixture — hand-set concept_tags, no DART tagging path.
+# Tagged SemantiK chunkset fixture — hand-set concept_tags, no tagging path.
 # ---------------------------------------------------------------------------
 
 _CONCEPTS = [
@@ -52,7 +52,7 @@ _CONCEPTS = [
 
 
 def _tagged_chunkset() -> List[Dict[str, Any]]:
-    """A DART chunkset whose chunks carry populated ``concept_tags``.
+    """A SemantiK chunkset whose chunks carry populated ``concept_tags``.
 
     Each concept appears in ≥2 chunks so it survives the default
     ``min_freq=2`` co-occurrence floor and clears the validator's
@@ -85,7 +85,7 @@ def _tagged_chunkset() -> List[Dict[str, Any]]:
 
 
 def _empty_tag_chunkset() -> List[Dict[str, Any]]:
-    """A DART chunkset with empty ``concept_tags`` — the pre-Fix-2 DART
+    """A SemantiK chunkset with empty ``concept_tags`` — the pre-Fix-2
     chunk shape. Exercises the empty-graph shell path.
     """
     return [
@@ -117,7 +117,7 @@ def _run(tmp_path: Path, chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Invoke ``_run_concept_extraction`` against a tagged chunkset
     fixture and return the parsed result payload + the on-disk graph.
     """
-    chunks_path = tmp_path / "dart_chunks" / "chunks.jsonl"
+    chunks_path = tmp_path / "semantik_chunks" / "chunks.jsonl"
     _write_chunkset(chunks_path, chunks)
     custom_libv2 = tmp_path / "libv2"
 
@@ -164,7 +164,7 @@ def test_emits_domain_concept_nodes(tmp_path: Path) -> None:
         n for n in nodes if n.get("class") in concept_classes
     ]
     assert domain_nodes, (
-        "Expected ≥1 DomainConcept-class node from a tagged DART "
+        "Expected ≥1 DomainConcept-class node from a tagged SemantiK "
         f"chunkset; node classes seen: {sorted({n.get('class') for n in nodes})}."
     )
 
@@ -280,7 +280,7 @@ def test_sha256_chain_integrity(tmp_path: Path) -> None:
 
 
 def test_empty_tag_chunkset_emits_semantic_shell(tmp_path: Path) -> None:
-    """A DART chunkset with empty ``concept_tags`` still emits a
+    """A SemantiK chunkset with empty ``concept_tags`` still emits a
     ``kind: "concept_semantic"`` graph (an empty shell), NOT a
     pedagogy graph — the empty-shell ``kind`` was updated by Fix-2.
     """

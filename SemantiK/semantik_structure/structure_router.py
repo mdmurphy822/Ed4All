@@ -1,12 +1,12 @@
 """Genre/confidence-gated STRUCTURE ROUTER (deterministic, CPU-only).
 
 The concrete Pillar-A generalization lever that came out of the task-#25
-structure-authority measurement. An oracle A/B
-(``inputs/openstax-scan/structure_authority_oracle.py``, ground truth = a
-born-digital PDF's ToC bookmarks) established that section-structure authority
-is **DOMAIN-CONDITIONAL**:
+structure-authority measurement. An oracle A/B (a local, untracked
+structure-authority harness under the gitignored ``inputs/`` corpus root;
+ground truth = a born-digital PDF's ToC bookmarks) established that
+section-structure authority is **DOMAIN-CONDITIONAL**:
 
-* ON the tuning domain (OpenStax textbook scans) the council BERTs WIN section
+* ON the tuning domain (the textbook-scan corpus) the council BERTs WIN section
   recall + chapter-title recovery; the VLM markdown loses.
 * On an INACCESSIBLE image-only scan of a NEW GENRE the textbook-tuned BERTs
   COLLAPSE (recall ~0.25 — a couple of real sections buried under ~20
@@ -39,7 +39,7 @@ Contract:
   region the VLM marks a whole-block heading that the council typed as prose,
   and DEMOTES a council heading that is unambiguous apparatus/pedagogical
   furniture the VLM does NOT corroborate. FeatureBlock partitions,
-  ``feature_block_indices`` and every FB-derived ``data-dart-block-id`` /
+  ``feature_block_indices`` and every FB-derived ``data-semantik-block-id`` /
   ``sourceId`` stay stable. It rides the reviewer's token-conservation invariant
   and **fails closed** (whole-revert to the input list) on any violation,
   mirroring ``clean_structure``.
@@ -47,7 +47,7 @@ Contract:
 Thresholds are CALIBRATION constants (marked ``# TODO(calibration)``), NOT
 corpus targets — no course slug, publisher name, or corpus-specific gate lives
 here (SemantiK wide-net doctrine). Oracle-validation on the real scan corpora
-(bates-scan off-domain vs OpenStax-scan on-domain) is the FOLLOW-UP.
+(an off-domain scan vs the on-domain textbook-scan corpus) is the FOLLOW-UP.
 """
 
 from __future__ import annotations

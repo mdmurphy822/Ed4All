@@ -18,7 +18,7 @@ The fix in ``MCP/tools/pipeline_tools.py`` does two things:
      ``error_code = TRAINFORGE_OUTPUT_STALE`` and refuse to write the
      manifest.
 
-The gate must NOT break DART-only batches that intentionally skip
+The gate must NOT break conversion-only batches that intentionally skip
 Trainforge — when no chunks file is present at all, archival proceeds.
 """
 
@@ -262,13 +262,13 @@ async def test_libv2_archival_proceeds_when_trainforge_intentionally_absent(
     isolated_archive,
 ):
     """Guardrail: the fail-closed gate must NOT break workflows where
-    Trainforge is intentionally skipped (e.g. DART-only batch runs that
+    Trainforge is intentionally skipped (e.g. conversion-only batch runs that
     skip ``trainforge_assessment`` via ``--no-assessments``). With no
     Trainforge dir resolvable, no chunks file lands at the destination —
     archival must complete and write the manifest."""
     archive, root = isolated_archive
-    course_name = "DART_ONLY_999"
-    slug = "dart-only-999"
+    course_name = "CONVERSION_ONLY_999"
+    slug = "conversion-only-999"
     course_dir = root / "LibV2" / "courses" / slug
 
     # No project_workspace, no assessment_path. The heuristic fallback

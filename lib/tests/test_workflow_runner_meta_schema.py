@@ -4,7 +4,7 @@ Covers:
 - Meta-schema validation of config/workflows.yaml
   (schemas/config/workflows_meta.schema.json)
 - YAML-backed phase routing accessors in MCP.core.workflow_runner
-- DartMarkersValidator gate wrapper for the orphaned `validate_dart_markers`
+- SemantiKMarkersValidator gate wrapper for the orphaned `validate_semantik_markers`
   MCP tool (REC-CTR-06)
 """
 
@@ -325,17 +325,17 @@ def test_get_phase_output_keys_unknown_phase_returns_empty():
 
 
 # ---------------------------------------------------------------------------
-# DartMarkersValidator (REC-CTR-06)
+# SemantiKMarkersValidator (REC-CTR-06)
 # ---------------------------------------------------------------------------
 
 
-GOOD_DART_HTML = """<!DOCTYPE html>
+GOOD_SEMANTIK_HTML = """<!DOCTYPE html>
 <html lang="en">
-<head><title>DART doc</title></head>
+<head><title>SemantiK doc</title></head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
   <main role="main">
-    <section class="dart-section" aria-labelledby="sec-1">
+    <section class="semantik-section" aria-labelledby="sec-1">
       <h2 id="sec-1">Section 1</h2>
       <p>Body.</p>
     </section>
@@ -345,14 +345,14 @@ GOOD_DART_HTML = """<!DOCTYPE html>
 """
 
 
-def test_dart_markers_validator_passes_on_compliant_html():
-    from lib.validators.dart_markers import DartMarkersValidator
+def test_semantik_markers_validator_passes_on_compliant_html():
+    from lib.validators.semantik_markers import SemantiKMarkersValidator
 
-    result = DartMarkersValidator().validate({"html_content": GOOD_DART_HTML})
+    result = SemantiKMarkersValidator().validate({"html_content": GOOD_SEMANTIK_HTML})
     # Legacy critical markers are present -> gate passes.
     assert result.passed is True
-    # Wave 8 added warning-level provenance checks. GOOD_DART_HTML has a
-    # <section> without data-dart-source / data-dart-block-id, so warnings
+    # Warning-level provenance checks: GOOD_SEMANTIK_HTML has a <section>
+    # without data-semantik-source / data-semantik-block-id, so warnings
     # are expected. No *critical* issues should be raised.
     critical = [i for i in result.issues if i.severity == "critical"]
     assert critical == []
@@ -360,43 +360,43 @@ def test_dart_markers_validator_passes_on_compliant_html():
     assert result.score == 1.0
 
 
-def test_dart_markers_validator_fails_on_missing_main_role():
-    from lib.validators.dart_markers import DartMarkersValidator
+def test_semantik_markers_validator_fails_on_missing_main_role():
+    from lib.validators.semantik_markers import SemantiKMarkersValidator
 
-    stripped = GOOD_DART_HTML.replace('role="main"', "")
-    result = DartMarkersValidator().validate({"html_content": stripped})
+    stripped = GOOD_SEMANTIK_HTML.replace('role="main"', "")
+    result = SemantiKMarkersValidator().validate({"html_content": stripped})
     assert result.passed is False
     codes = {i.code for i in result.issues}
     assert "MISSING_MAIN_ROLE" in codes
 
 
-def test_dart_markers_validator_fails_on_empty_input():
-    from lib.validators.dart_markers import DartMarkersValidator
+def test_semantik_markers_validator_fails_on_empty_input():
+    from lib.validators.semantik_markers import SemantiKMarkersValidator
 
-    result = DartMarkersValidator().validate({})
+    result = SemantiKMarkersValidator().validate({})
     assert result.passed is False
     assert any(i.code == "EMPTY_CONTENT" for i in result.issues)
 
 
-def test_dart_markers_validator_reports_missing_file(tmp_path):
-    from lib.validators.dart_markers import DartMarkersValidator
+def test_semantik_markers_validator_reports_missing_file(tmp_path):
+    from lib.validators.semantik_markers import SemantiKMarkersValidator
 
     missing = tmp_path / "nope.html"
-    result = DartMarkersValidator().validate({"html_path": str(missing)})
+    result = SemantiKMarkersValidator().validate({"html_path": str(missing)})
     assert result.passed is False
     assert any(i.code == "FILE_NOT_FOUND" for i in result.issues)
 
 
-def test_dart_markers_validator_reads_file(tmp_path):
-    from lib.validators.dart_markers import DartMarkersValidator
+def test_semantik_markers_validator_reads_file(tmp_path):
+    from lib.validators.semantik_markers import SemantiKMarkersValidator
 
     html_file = tmp_path / "good.html"
-    html_file.write_text(GOOD_DART_HTML, encoding="utf-8")
-    result = DartMarkersValidator().validate({"html_path": str(html_file)})
+    html_file.write_text(GOOD_SEMANTIK_HTML, encoding="utf-8")
+    result = SemantiKMarkersValidator().validate({"html_path": str(html_file)})
     assert result.passed is True
 
 
-def test_dart_markers_validator_path_is_allowlisted():
+def test_semantik_markers_validator_path_is_allowlisted():
     """REC-CTR-06: Validator must be importable via ValidationGateManager.
 
     The gate manager has an allowlist of module prefixes. The new validator
@@ -406,9 +406,9 @@ def test_dart_markers_validator_path_is_allowlisted():
     from MCP.hardening.validation_gates import ValidationGateManager
 
     mgr = ValidationGateManager()
-    validator = mgr.load_validator("lib.validators.dart_markers.DartMarkersValidator")
+    validator = mgr.load_validator("lib.validators.semantik_markers.SemantiKMarkersValidator")
     # Validate smoke
-    result = validator.validate({"html_content": GOOD_DART_HTML})
+    result = validator.validate({"html_content": GOOD_SEMANTIK_HTML})
     assert result.passed is True
 
 
@@ -417,23 +417,22 @@ def test_dart_markers_validator_path_is_allowlisted():
 # ---------------------------------------------------------------------------
 
 
-def test_dart_markers_gate_wired_to_textbook_pipeline(
+def test_semantik_markers_gate_wired_to_textbook_pipeline(
     workflows_yaml_data,
 ):
-    """The dart_markers gate must be wired on the textbook pipeline's
-    DART-producing phase per REC-CTR-06 — this guards the data-dart-*
+    """The semantik_markers gate must be wired on the textbook pipeline's
+    conversion phase per REC-CTR-06 — this guards the data-semantik-*
     contract validator wiring.
     """
     wf = workflows_yaml_data["workflows"]
 
-    # textbook_to_course: gate is on `semantik_conversion` (renamed from
-    # `dart_conversion` in task #19 Stage 3d).
+    # textbook_to_course: gate is on `semantik_conversion`.
     tbc_phases = {p["name"]: p for p in wf["textbook_to_course"]["phases"]}
     tbc_gates = [
         g["gate_id"]
         for g in (tbc_phases["semantik_conversion"].get("validation_gates") or [])
     ]
-    assert "dart_markers" in tbc_gates
+    assert "semantik_markers" in tbc_gates
 
 
 # ---------------------------------------------------------------------------

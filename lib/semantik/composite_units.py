@@ -15,7 +15,7 @@ The planner is pure: it consumes an ordered list of :class:`UnitItem`
 (``role`` + ``boundary`` + ``members`` + ``has_heading``) and returns
 :class:`UnitSpan` groupings. The adapter (:mod:`lib.semantik.adapter`) derives
 the items from its rendered top-level element stream and wraps each planned span
-in a ``<section class="dart-unit dart-unit-<type>" role="group">``.
+in a ``<section data-semantik-unit="<type>" role="group">`` grouping element.
 
 Association rules (each expressed over abstract roles; the concrete opener slug
 -> abstract role map lives in the lexicon as ``association_role``):

@@ -102,7 +102,7 @@ def _valid_outline_payload(
         "section_skeleton": [
             {"heading": "Definition"} for _ in range(max(section_min, 1))
         ] if section_min > 0 else [],
-        "source_refs": [{"sourceId": "dart:slug#blk1", "role": "primary"}],
+        "source_refs": [{"sourceId": "semantik:slug#blk1", "role": "primary"}],
         "structural_warnings": [],
     }
     return payload

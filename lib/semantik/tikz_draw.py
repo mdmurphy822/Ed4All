@@ -1,7 +1,7 @@
 r"""Constrained TikZ → inline-SVG re-draw (real-figure wave — 2026-07).
 
 The round-10 :func:`lib.semantik.math_fold.strip_tikz_figures` pass substitutes an
-accessible ``.dart-figure-notation`` PLACEHOLDER for the coordinate-plane FIGURES
+accessible ``.semantik-figure-notation`` PLACEHOLDER for the coordinate-plane FIGURES
 the VLM transcribed as raw TikZ picture code inside math delimiters (MathJax reds
 them "Undefined environment tikzpicture"). This module goes one step further: it
 DETERMINISTICALLY re-draws the narrow shape grammar the corpus actually emits
@@ -33,7 +33,7 @@ from typing import List, Optional, Tuple
 _UNIT = 30  # px per TikZ coordinate unit
 _PAD = 12   # px viewBox padding
 _FONT = 13  # px node-label font size
-_ARROW_MARKER_ID = "dart-tikz-arrow"
+_ARROW_MARKER_ID = "semantik-tikz-arrow"
 
 # Recognised colour names (a bare colour token or ``color=/fill=/draw=`` value).
 _COLORS = {
@@ -387,7 +387,7 @@ def render_svg(spec: FigureSpec) -> str:
     needs_arrow = any(isinstance(el, _Path) and el.arrow for el in spec.elements)
 
     parts: List[str] = [
-        f'<svg class="dart-figure-svg" role="img" aria-label="{esc_name}" '
+        f'<svg class="semantik-figure-svg" role="img" aria-label="{esc_name}" '
         f'viewBox="0 0 {width} {height}" '
         f'xmlns="http://www.w3.org/2000/svg">',
         f"<title>{esc_name}</title>",
@@ -419,7 +419,7 @@ def render_svg(spec: FigureSpec) -> str:
 def _render_grid(el: _Grid, sx, sy) -> str:
     x0, x1 = sorted((el.x0, el.x1))
     y0, y1 = sorted((el.y0, el.y1))
-    lines: List[str] = ['<g class="dart-figure-grid" stroke="currentColor" '
+    lines: List[str] = ['<g class="semantik-figure-grid" stroke="currentColor" '
                         'stroke-width="0.5" opacity="0.35">']
     gx = math.ceil(x0)
     while gx <= x1 + 1e-9:
@@ -493,7 +493,7 @@ def render_tikz_figures(text: str) -> str:
     Walks the same delimited math spans as
     :func:`lib.semantik.math_fold.strip_tikz_figures`. For a PURE-figure span
     (stripping the env leaves nothing) whose notation parses, the whole span is
-    replaced by ``<figure class="dart-figure">…<svg…></figure>`` (delimiters +
+    replaced by ``<figure class="semantik-figure">…<svg…></figure>`` (delimiters +
     TikZ source gone). A pure-figure span that does NOT parse is left UNTOUCHED so
     the downstream strip pass emits the placeholder. A MIXED span (real math +
     embedded figure) keeps its surviving math and gains the accessible placeholder
@@ -528,7 +528,7 @@ def render_tikz_figures(text: str) -> str:
             spec = parse_tikz(inner)
             if spec is None:
                 return span  # unchanged → strip pass emits the placeholder
-            return f'<figure class="dart-figure">{render_svg(spec)}</figure>'
+            return f'<figure class="semantik-figure">{render_svg(spec)}</figure>'
         # Mixed span → keep the surviving math, but leave the placeholder for the
         # figure so it is no longer silently dropped.
         return f"{o}{stripped}{c}{_TIKZ_FIGURE_PLACEHOLDER}"

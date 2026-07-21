@@ -1,17 +1,17 @@
 """Master promotion-chain aggregator (Worker W3.G — governance G1).
 
-Walks all 9 arrows of the DART -> eval-report chain, reads each per-stage
+Walks all 9 arrows of the source -> eval-report chain, reads each per-stage
 report best-effort, and produces a single canonical
 ``<libv2_course>/courseforge_promotion_chain_report.json`` (schema 1.0).
 
 The 9 canonical arrows (post-W3.H per-stage source-coverage emit):
 
-  1. DART source -> DART HTML
-     Reads the DART staging manifest (Courseforge/inputs/textbooks/
+  1. source -> SemantiK HTML
+     Reads the SemantiK staging manifest (Courseforge/inputs/textbooks/
      <run_id>/staging_manifest.json) — single canonical emit from
-     ``MCP/tools/pipeline_tools.py::stage_dart_outputs``.
-  2. DART HTML -> CourseForge blocks
-     Reads ``<libv2>/dart_chunks/manifest.json`` (W3.H sub-task H1
+     ``MCP/tools/pipeline_tools.py::stage_semantik_outputs``.
+  2. SemantiK HTML -> CourseForge blocks
+     Reads ``<libv2>/semantik_chunks/manifest.json`` (W3.H sub-task H1
      post-emit; the canonical chunkset_manifest with the source_coverage
      block).
   3. CF blocks -> rewritten HTML
@@ -166,7 +166,7 @@ def _resolve_coverage_strict(value: object = None) -> bool:
 #
 # Schema-vs-validation seam (W-D11.D debt-sweep note): the chunk schema
 # (``schemas/knowledge/chunk_v4.schema.json::key_claims`` structured arm)
-# admits ``evidence_quote`` on EVERY chunk, including DART chunks at Arrow 2.
+# admits ``evidence_quote`` on EVERY chunk, including SemantiK chunks at Arrow 2.
 # But the validators that POPULATE the field — ``claim_support`` (block-side)
 # and ``pair_claim_support`` (pair-side) — run at ``post_rewrite_validation``
 # (Arrow 3) and ``training_synthesis`` (Arrow 7), not at chunking time.
@@ -188,8 +188,8 @@ _EVIDENCE_QUOTE_METADATA_KEYS = (
 # ``(arrow_id, arrow_name)`` so the aggregator's emit + tests share a
 # single source of truth.
 ARROW_NAMES: Dict[int, str] = {
-    1: "dart_source_to_dart_html",
-    2: "dart_html_to_courseforge_blocks",
+    1: "semantik_source_to_semantik_html",
+    2: "semantik_html_to_courseforge_blocks",
     3: "courseforge_blocks_to_rewritten_html",
     4: "rewritten_html_to_imscc",
     5: "imscc_to_imscc_chunks",
@@ -274,7 +274,7 @@ class PromotionChainAggregator:
         ``phase_outputs.objective_extraction.project_path`` /
         ``phase_outputs.objective_extraction.project_id``.
     staging_manifest_path:
-        Optional explicit path to the DART staging manifest (Arrow 1
+        Optional explicit path to the SemantiK staging manifest (Arrow 1
         input). When unset the aggregator resolves from
         ``phase_outputs.staging.staging_dir`` /
         ``phase_outputs.staging.manifest_path`` and falls back to
@@ -437,7 +437,7 @@ class PromotionChainAggregator:
     # Per-arrow builders
     # ------------------------------------------------------------------
     def _build_arrow_1(self) -> Dict[str, Any]:
-        """Arrow 1 — DART source -> DART HTML. Reads staging manifest."""
+        """Arrow 1 — source -> SemantiK HTML. Reads staging manifest."""
         path = self._resolve_staging_manifest_path()
         if path is None or not path.exists():
             return _missing_arrow_row(1, ARROW_NAMES[1])
@@ -455,8 +455,8 @@ class PromotionChainAggregator:
         # the day-1 contract; future work can carry a richer shape.
         coverage = self._synthetic_coverage(consumed=emitted, emitted=emitted)
         # Stamp wcag_compliance on the staging arrow so the accessibility
-        # cohort has at least one anchor row when DART produces accessible
-        # HTML by construction (the canonical DART surface). Downstream
+        # cohort has at least one anchor row when SemantiK produces accessible
+        # HTML by construction (the canonical conversion surface). Downstream
         # phases that own dedicated WCAG validators may re-stamp the same
         # gate ID later in the chain; the cohort_passes() helper handles
         # the union.
@@ -465,7 +465,7 @@ class PromotionChainAggregator:
             "name": ARROW_NAMES[1],
             "input_hash": None,
             "output_hash": _sha256_file(path),
-            "validator_set": ["dart_markers", "wcag_compliance"],
+            "validator_set": ["semantik_markers", "wcag_compliance"],
             "passed": True if emitted > 0 else False,
             "warnings_count": 0 if (payload.get("errors") in (None, [])) else 1,
             "source_coverage": coverage,
@@ -473,13 +473,13 @@ class PromotionChainAggregator:
         }
 
     def _build_arrow_2(self) -> Dict[str, Any]:
-        """Arrow 2 — DART HTML -> CourseForge blocks. Reads dart_chunks/manifest.json."""
+        """Arrow 2 — SemantiK HTML -> CourseForge blocks. Reads the staged chunkset manifest.json."""
         course = self.course_path
         if course is None:
             return _missing_arrow_row(2, ARROW_NAMES[2])
-        # DART->semantik purge Stage 3c: dual-read the staged chunkset dir
-        # (semantik_chunks/ -> dart_chunks/ -> corpus/) so arrow-2 resolves the
-        # manifest on new-name courses (drives course_status governance).
+        # Dual-read the staged chunkset dir (semantik_chunks/ -> dart_chunks/
+        # -> corpus/) so arrow-2 resolves the manifest on both current and
+        # legacy courses (drives course_status governance).
         from lib.libv2_storage import resolve_staged_chunks_dir
         manifest_path = (
             resolve_staged_chunks_dir(course, filename="manifest.json")
@@ -497,7 +497,8 @@ class PromotionChainAggregator:
         return {
             "arrow_id": 2,
             "name": ARROW_NAMES[2],
-            "input_hash": payload.get("source_dart_html_sha256"),
+            "input_hash": payload.get("source_semantik_html_sha256")
+            or payload.get("source_dart_html_sha256"),
             "output_hash": payload.get("chunks_sha256"),
             "validator_set": ["chunkset_manifest"],
             "passed": passed,
@@ -905,7 +906,7 @@ class PromotionChainAggregator:
     # Helpers
     # ------------------------------------------------------------------
     def _resolve_staging_manifest_path(self) -> Optional[Path]:
-        """Resolve the DART staging manifest path (Arrow 1 input)."""
+        """Resolve the SemantiK staging manifest path (Arrow 1 input)."""
         if self.staging_manifest_path is not None:
             return self.staging_manifest_path
         staging = (self.phase_outputs.get("staging") or {})

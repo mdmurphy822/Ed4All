@@ -163,7 +163,7 @@ AGENT_TOOL_MAPPING = {
     # -------------------------------------------------------------------------
     # textbook-ingestor routes to extract_textbook_structure (real
     # SemanticStructureExtractor dispatch), not create_course_project.
-    "textbook-stager": "stage_dart_outputs",
+    "textbook-stager": "stage_semantik_outputs",
     "textbook-ingestor": "extract_textbook_structure",
     "source-router": "build_source_module_map",
     # Backs the ``concept_extraction`` phase; ``_run_concept_extraction``

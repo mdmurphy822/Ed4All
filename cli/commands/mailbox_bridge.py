@@ -10,7 +10,7 @@ task, dispatches a completion, and writes the result envelope to
 There are two shapes of pending tasks:
 
 * ``kind="llm_call"`` (Wave 73) — emitted by ``MailboxBrokeredBackend``
-  when DART alt-text / block classifier / Trainforge align_chunks
+  when SemantiK alt-text / block classifier / Trainforge align_chunks
   need an LLM completion. Operators reply with a ``response_text``
   string.
 * ``kind="agent_task"`` (Wave 74) — emitted by

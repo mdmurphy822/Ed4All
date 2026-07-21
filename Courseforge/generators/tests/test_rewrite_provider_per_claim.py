@@ -61,13 +61,13 @@ def _structured_block(
         claims = [
             {
                 "claim": "A SHACL node shape declares constraints on RDF nodes.",
-                "source_chunk_ids": ["dart:shacl-spec#sec1"],
+                "source_chunk_ids": ["semantik:shacl-spec#sec1"],
             },
             {
                 "claim": "Targets fire when a node fails a property predicate.",
                 "source_chunk_ids": [
-                    "dart:shacl-spec#sec2",
-                    "dart:shacl-spec#sec3",
+                    "semantik:shacl-spec#sec2",
+                    "semantik:shacl-spec#sec3",
                 ],
             },
         ]
@@ -80,9 +80,9 @@ def _structured_block(
             "key_claims": claims,
             "curies": ["sh:NodeShape"],
             "source_refs": [
-                "dart:shacl-spec#sec1",
-                "dart:shacl-spec#sec2",
-                "dart:shacl-spec#sec3",
+                "semantik:shacl-spec#sec1",
+                "semantik:shacl-spec#sec2",
+                "semantik:shacl-spec#sec3",
             ],
             "objective_refs": ["TO-01"],
         },
@@ -109,7 +109,7 @@ def _legacy_block(
         content={
             "key_claims": claims,
             "curies": ["sh:NodeShape"],
-            "source_refs": ["dart:shacl-spec#sec1"],
+            "source_refs": ["semantik:shacl-spec#sec1"],
             "objective_refs": ["TO-01"],
         },
         escalation_marker=escalation_marker,
@@ -203,9 +203,9 @@ def test_render_user_prompt_contains_per_claim_block_structured(monkeypatch):
     assert "claim 1: " in prompt
     assert "claim 2: " in prompt
     # Single chunk_id verbatim.
-    assert "[dart:shacl-spec#sec1]" in prompt
+    assert "[semantik:shacl-spec#sec1]" in prompt
     # Multiple chunk_ids comma-separated verbatim.
-    assert "[dart:shacl-spec#sec2, dart:shacl-spec#sec3]" in prompt
+    assert "[semantik:shacl-spec#sec2, semantik:shacl-spec#sec3]" in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -238,8 +238,8 @@ def test_render_escalated_user_prompt_contains_per_claim_block(monkeypatch):
     assert "Per-claim source attribution" in prompt
     assert "claim 1: " in prompt
     assert "claim 2: " in prompt
-    assert "[dart:shacl-spec#sec1]" in prompt
-    assert "[dart:shacl-spec#sec2, dart:shacl-spec#sec3]" in prompt
+    assert "[semantik:shacl-spec#sec1]" in prompt
+    assert "[semantik:shacl-spec#sec2, semantik:shacl-spec#sec3]" in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -255,8 +255,8 @@ def test_prompt_size_growth_bounded_on_five_claim_block(monkeypatch):
         {
             "claim": f"Claim number {i} body — short prose statement.",
             "source_chunk_ids": [
-                f"dart:slug#chunk{i}",
-                f"dart:slug#chunk{i + 100}",
+                f"semantik:s#c{i}",
+                f"semantik:s#c{i + 100}",
             ][: 1 + (i % 3)],
         }
         for i in range(1, 6)
@@ -314,7 +314,7 @@ def test_render_user_prompt_no_claims_edge_case(monkeypatch):
         content={
             "key_claims": [],
             "curies": [],
-            "source_refs": ["dart:slug#blk1"],
+            "source_refs": ["semantik:slug#blk1"],
             "objective_refs": ["TO-01"],
         },
     )

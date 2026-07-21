@@ -237,7 +237,7 @@ def _write_fixture_export(tmp_path: Path, course: str) -> Path:
 
 
 def _write_fixture_chunkset(tmp_path: Path, course: str) -> Path:
-    chunks_path = tmp_path / "dart_chunks" / "chunks.jsonl"
+    chunks_path = tmp_path / "semantik_chunks" / "chunks.jsonl"
     chunks_path.parent.mkdir(parents=True)
     with chunks_path.open("w", encoding="utf-8") as fh:
         for c in _fixture_chunks(course.lower()):

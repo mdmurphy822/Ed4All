@@ -104,7 +104,7 @@ def _outline_block(
         content={
             "key_claims": ["The central concept is X."],
             "curies": list(curies or []),
-            "source_refs": ["dart:slug#blk1"],
+            "source_refs": ["semantik:slug#blk1"],
             "objective_refs": ["TO-01"],
         },
         escalation_marker=escalation_marker,
@@ -164,7 +164,7 @@ def test_generate_rewrite_calls_anthropic_path_for_anthropic_provider(
                     {
                         "type": "text",
                         "text": (
-                            "<section data-cf-source-ids=\"dart:slug#blk1\">"
+                            "<section data-cf-source-ids=\"semantik:slug#blk1\">"
                             "<h2 data-cf-content-type=\"explanation\">"
                             "Concept</h2>"
                             "<p>The central concept is X.</p>"
@@ -212,7 +212,7 @@ def test_curie_preservation_gate_fires_remediation_on_drop(monkeypatch):
         "<section><p>The node shape constrains the focus node.</p></section>",
         # Second emit (post-remediation): CURIE preserved verbatim.
         (
-            "<section data-cf-source-ids=\"dart:slug#blk1\">"
+            "<section data-cf-source-ids=\"semantik:slug#blk1\">"
             "<p>The <code>sh:NodeShape</code> constrains the focus node.</p>"
             "</section>"
         ),
@@ -455,7 +455,7 @@ def _curie_dense_block(curies: List[str]) -> Block:
                 "A common multiple is shared; prime factors build it up."
             ],
             "curies": list(curies),
-            "source_refs": ["dart:slug#blk1"],
+            "source_refs": ["semantik:slug#blk1"],
             "objective_refs": ["TO-01"],
         },
     )
@@ -1565,7 +1565,7 @@ def test_rewrite_user_prompt_carries_authoring_framing_directives(monkeypatch):
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
-        body = "<section data-cf-source-ids=\"dart:slug#blk1\"><p>X.</p></section>"
+        body = "<section data-cf-source-ids=\"semantik:slug#blk1\"><p>X.</p></section>"
         return httpx.Response(200, json=_success_body(body))
 
     p = RewriteProvider(provider="local", client=_make_client(handler))
@@ -1598,7 +1598,7 @@ def test_rewrite_escalated_prompt_carries_authoring_framing_directives(
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
-        body = "<section data-cf-source-ids=\"dart:slug#blk1\"><p>X.</p></section>"
+        body = "<section data-cf-source-ids=\"semantik:slug#blk1\"><p>X.</p></section>"
         return httpx.Response(200, json=_success_body(body))
 
     p = RewriteProvider(provider="local", client=_make_client(handler))

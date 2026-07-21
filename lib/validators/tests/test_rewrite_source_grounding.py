@@ -77,7 +77,7 @@ def _make_block(
     block_id: str = "page_01#explanation_demo_0",
     block_type: str = "explanation",
     content: str = "<p>Some prose.</p>",
-    source_ids=("dart:slug#blk_0",),
+    source_ids=("semantik:slug#blk_0",),
 ) -> Block:
     return Block(
         block_id=block_id,
@@ -139,7 +139,7 @@ def test_block_fully_grounded_passes() -> None:
     block = _make_block(content=_GROUNDED_HTML)
     result = RewriteSourceGroundingValidator(embedder=embedder).validate({
         "blocks": [block],
-        "source_chunks": {"dart:slug#blk_0": _GROUNDING_SOURCE},
+        "source_chunks": {"semantik:slug#blk_0": _GROUNDING_SOURCE},
     })
     assert result.passed is True
     assert result.action is None
@@ -165,7 +165,7 @@ def test_hallucinated_block_fails_with_grounding_low() -> None:
     block = _make_block(content=_HALLUCINATED_HTML)
     result = RewriteSourceGroundingValidator(embedder=embedder).validate({
         "blocks": [block],
-        "source_chunks": {"dart:slug#blk_0": _GROUNDING_SOURCE},
+        "source_chunks": {"semantik:slug#blk_0": _GROUNDING_SOURCE},
     })
     assert result.passed is False
     assert result.action == "regenerate"
@@ -200,7 +200,7 @@ def test_mostly_grounded_with_one_hallucinated_passes() -> None:
     block = _make_block(content=mixed_html)
     result = RewriteSourceGroundingValidator(embedder=embedder).validate({
         "blocks": [block],
-        "source_chunks": {"dart:slug#blk_0": _GROUNDING_SOURCE},
+        "source_chunks": {"semantik:slug#blk_0": _GROUNDING_SOURCE},
     })
     assert result.passed is True
     assert result.action is None
@@ -216,11 +216,11 @@ def test_assessment_item_skipped() -> None:
     block = _make_block(
         block_type="assessment_item",
         content=_HALLUCINATED_HTML,  # would fail, but skipped
-        source_ids=("dart:slug#blk_0",),
+        source_ids=("semantik:slug#blk_0",),
     )
     result = RewriteSourceGroundingValidator(embedder=embedder).validate({
         "blocks": [block],
-        "source_chunks": {"dart:slug#blk_0": _GROUNDING_SOURCE},
+        "source_chunks": {"semantik:slug#blk_0": _GROUNDING_SOURCE},
     })
     assert result.passed is True
     assert result.action is None
@@ -245,11 +245,11 @@ def test_example_block_skipped() -> None:
     block = _make_block(
         block_type="example",
         content=_HALLUCINATED_HTML,  # would fail, but skipped
-        source_ids=("dart:slug#blk_0",),
+        source_ids=("semantik:slug#blk_0",),
     )
     result = RewriteSourceGroundingValidator(embedder=embedder).validate({
         "blocks": [block],
-        "source_chunks": {"dart:slug#blk_0": _GROUNDING_SOURCE},
+        "source_chunks": {"semantik:slug#blk_0": _GROUNDING_SOURCE},
     })
     assert result.passed is True
     assert result.action is None
@@ -299,7 +299,7 @@ def test_embedding_deps_missing_warns_and_passes() -> None:
         try:
             result = RewriteSourceGroundingValidator().validate({
                 "blocks": [block],
-                "source_chunks": {"dart:slug#blk_0": _GROUNDING_SOURCE},
+                "source_chunks": {"semantik:slug#blk_0": _GROUNDING_SOURCE},
             })
         finally:
             if prev is not None:
@@ -328,7 +328,7 @@ def test_strict_mode_missing_deps_fails_critical() -> None:
     ):
         result = RewriteSourceGroundingValidator().validate({
             "blocks": [block],
-            "source_chunks": {"dart:slug#blk_0": _GROUNDING_SOURCE},
+            "source_chunks": {"semantik:slug#blk_0": _GROUNDING_SOURCE},
         })
     assert result.passed is False
     assert result.action == "regenerate"
@@ -365,7 +365,7 @@ def test_decision_capture_emits_per_block() -> None:
     block = _make_block(content=_GROUNDED_HTML)
     RewriteSourceGroundingValidator(embedder=embedder).validate({
         "blocks": [block],
-        "source_chunks": {"dart:slug#blk_0": _GROUNDING_SOURCE},
+        "source_chunks": {"semantik:slug#blk_0": _GROUNDING_SOURCE},
         "decision_capture": capture,
     })
     assert len(capture.calls) == 1

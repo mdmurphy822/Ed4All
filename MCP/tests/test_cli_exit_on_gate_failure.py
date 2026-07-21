@@ -104,7 +104,7 @@ def test_cli_exit_zero_when_all_gates_pass():
     fake = _FakeResult(
         "ok",
         {
-            "dart_conversion": {"gates_passed": True, "completed": 1, "task_count": 1},
+            "semantik_conversion": {"gates_passed": True, "completed": 1, "task_count": 1},
             "content_generation": {"gates_passed": True, "completed": 5, "task_count": 5},
         },
     )
@@ -135,7 +135,7 @@ def test_cli_exit_two_when_any_gate_failed():
     fake = _FakeResult(
         "ok",
         {
-            "dart_conversion": {"gates_passed": True, "completed": 1, "task_count": 1},
+            "semantik_conversion": {"gates_passed": True, "completed": 1, "task_count": 1},
             "trainforge_assessment": {"gates_passed": False, "completed": 1, "task_count": 1},
         },
     )
@@ -164,7 +164,7 @@ def test_cli_exit_two_when_workflow_failed():
     runner = CliRunner()
     fake = _FakeResult(
         "failed",
-        {"dart_conversion": {"gates_passed": True}},
+        {"semantik_conversion": {"gates_passed": True}},
         error="Some error",
     )
     with (

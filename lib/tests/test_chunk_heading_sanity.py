@@ -6,7 +6,7 @@ never blank, never repair noise → noise) + the ``TRAINFORGE_HEADING_SANITY_FIL
 gate parse-with-fallback. All fixtures inline — no course-data references.
 
 The positive (noise) / negative (real-title) lists are calibrated against the
-real full-book corpus headings observed at the live ``_run_dart_chunking``
+real full-book corpus headings observed at the live ``_run_semantik_chunking``
 path: the 8 noise families the task names + the real section titles that MUST
 survive untouched.
 """
@@ -41,7 +41,7 @@ from lib.chunk_heading_sanity import (
         "2⎡⎣1 + 3(10 − 2)⎤⎦ 126. 5⎡⎣2 + 4(3 − 2)⎤⎦",
         # 5. Compact numeric/operator noise (canonical numeric ratio).
         "24a 32b 2",
-        # 6. OpenStax exercise banner + following-exercises prose (Layer 2a).
+        # 6. Textbook exercise banner + following-exercises prose (Layer 2a).
         "EXERCISES Practice Makes Perfect Use Place Value with Whole Numbers "
         "In the following exercises, find the place value of each digit in "
         "the given numbers.",
@@ -75,7 +75,7 @@ def test_noise_headings_are_flagged(text):
 @pytest.mark.parametrize(
     "text",
     [
-        # Real OpenStax section titles observed on the live path.
+        # Real textbook section titles observed on the live path.
         "1.1 Introduction to Whole Numbers",
         "1.1 Introduction to Whole Numbers (part 1)",
         "1.3 Add and Subtract Integers",

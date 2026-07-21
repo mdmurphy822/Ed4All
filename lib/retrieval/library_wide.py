@@ -125,7 +125,8 @@ def _course_has_retrievable_corpus(course_dir: Path) -> bool:
     never archived a chunkset (so we never widen the union to a course that
     would just error).
     """
-    # DART->semantik purge Stage 1 (dual-READ): ``semantik_chunks`` preferred.
+    # Dual-READ: the canonical ``semantik_chunks`` dir is preferred over the
+    # legacy ``dart_chunks`` fallback.
     for sub in ("semantik_chunks", "dart_chunks", "imscc_chunks", "corpus"):
         if (course_dir / sub / "chunks.jsonl").is_file():
             return True

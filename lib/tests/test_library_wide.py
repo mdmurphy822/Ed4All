@@ -54,8 +54,8 @@ class _FakeResult:
 
 def _make_course(libv2_root: Path, slug: str, *, domain: str = "physics") -> Path:
     course_dir = libv2_root / "courses" / slug
-    (course_dir / "dart_chunks").mkdir(parents=True, exist_ok=True)
-    (course_dir / "dart_chunks" / "chunks.jsonl").write_text(
+    (course_dir / "semantik_chunks").mkdir(parents=True, exist_ok=True)
+    (course_dir / "semantik_chunks" / "chunks.jsonl").write_text(
         json.dumps({"id": f"{slug}-c0", "text": "body", "chunk_type": "explanation",
                     "word_count": 30, "concept_tags": ["alpha"]}) + "\n",
         encoding="utf-8",

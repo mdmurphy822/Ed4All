@@ -127,7 +127,7 @@ def test_union_index_hydration_reads_extra_ids(tmp_path):
     table = _load_chunks_by_id(course_dir)
     # All 10 union ids hydrate (not just the 4 imscc ids).
     assert set(table) == {f"chunk_{i:05d}" for i in range(10)}
-    # The dart-range / extra ids (5..9) that imscc_chunks lacks are present.
+    # The extra ids (5..9) that imscc_chunks lacks are present.
     assert "chunk_00009" in table
 
 
@@ -184,10 +184,11 @@ def test_no_index_falls_back_to_precedence(tmp_path):
     assert path == course_dir / "imscc_chunks" / "chunks.jsonl"
 
 
-def test_no_index_dart_only_course(tmp_path):
-    """A DART-staged course (dart_chunks only, no index) resolves via
-    precedence to dart_chunks — unchanged."""
-    course_dir = tmp_path / "courses" / "dart-only-101"
+def test_no_index_legacy_chunks_only_course_legacy_compat(tmp_path):
+    """Legacy-compat: a course carrying only the pre-SemantiK
+    ``dart_chunks/`` read-fallback dir (no index) resolves via precedence
+    to that legacy dir — the dual-read path un-migrated corpora depend on."""
+    course_dir = tmp_path / "courses" / "legacy-only-101"
     _write_chunkset(course_dir, "dart_chunks", range(0, 5))
 
     path, resolution = resolve_chunks_path_for_query(course_dir, "chunks.jsonl")
@@ -248,13 +249,14 @@ def test_imscc_kind_manifest_resolves_to_imscc(tmp_path):
     assert path == resolve_imscc_chunks_path(course_dir, "chunks.jsonl")
 
 
-def test_dart_kind_manifest_resolves_to_dart(tmp_path):
-    """A dart-pinned index (the common DART-staged shape) resolves to
-    dart_chunks/ via the manifest."""
-    course_dir = tmp_path / "courses" / "dart-101"
-    dart = _write_chunkset(course_dir, "dart_chunks", range(0, 6))
+def test_legacy_kind_manifest_resolves_to_legacy_dir_legacy_compat(tmp_path):
+    """Legacy-compat: an index pinned to the legacy ``dart`` chunkset_kind
+    resolves to the pre-SemantiK ``dart_chunks/`` dir via the manifest —
+    the dual-read path un-migrated corpora depend on."""
+    course_dir = tmp_path / "courses" / "legacy-101"
+    legacy = _write_chunkset(course_dir, "dart_chunks", range(0, 6))
     build_vector_index(course_dir, client=_fake_client(), chunkset="dart")
 
     path, resolution = resolve_chunks_path_for_query(course_dir, "chunks.jsonl")
     assert resolution == "manifest"
-    assert path == dart
+    assert path == legacy

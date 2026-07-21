@@ -2,7 +2,7 @@
 LLM backend abstraction for the pipeline orchestrator.
 
 Centralizes every LLM call in the codebase behind a single ``LLMBackend``
-Protocol. Domain code (DART, Courseforge, Trainforge) receives an injected
+Protocol. Domain code (SemantiK, Courseforge, Trainforge) receives an injected
 backend instead of reaching for ``anthropic.Anthropic()`` directly — which
 means the same code path works under ``local`` mode (Claude Code session),
 ``api`` mode (Anthropic SDK), or tests (MockBackend).
@@ -433,9 +433,9 @@ class MailboxBrokeredBackend(_CaptureMixin):
     """``LLMBackend`` that routes completions through a ``TaskMailbox``.
 
     Wave 73: in ``--mode local`` runs the orchestrator is a Python subprocess
-    that has no direct access to an LLM API. Historically this meant every
-    in-process LLM call site (``DART.converter.llm_classifier``,
-    ``DART.pdf_converter.alt_text_generator``, ``Trainforge.align_chunks``)
+    that has no direct access to an LLM API. Without this backend every
+    in-process LLM call site (``SemantiK.converter.llm_classifier``,
+    ``SemantiK.converter.alt_text_generator``, ``Trainforge.align_chunks``)
     either refused to start (``LocalBackend`` throws) or silently fell back
     to a heuristic / no-op path — so "local mode" shipped real grounded
     templated content but no real Claude-generated enrichment anywhere.

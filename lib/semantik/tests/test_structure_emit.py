@@ -139,7 +139,7 @@ def test_list_alpha_repeating_cycles_nested():
     )
     html = parse_list(src)
     assert html is not None
-    assert 'class="dart-exercise-list"' in html
+    assert 'class="semantik-exercise-list"' in html
     # Two cycles → two nested <ol type="a"> lists, six leaf <li> items.
     assert html.count('<ol type="a">') == 2
     assert html.count("<li>$\\sqrt") == 6

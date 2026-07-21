@@ -2,8 +2,8 @@
 (Task #26 — source page-number provenance on SemantiK chunks).
 
 ``source_pages`` is the sorted, deduped union of the page numbers the composing
-DART/SemantiK blocks carried (``data-semantik-pages`` / ``data-dart-pages``),
-emitted at the chunk TOP LEVEL (deliberately NOT inside ``source``, whose
+SemantiK blocks carried (``data-semantik-pages``), emitted at the chunk TOP
+LEVEL (deliberately NOT inside ``source``, whose
 ``$defs.Source`` is ``additionalProperties: false``). This test pins the SCHEMA
 contract:
 

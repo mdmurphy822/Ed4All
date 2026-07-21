@@ -3,14 +3,14 @@
 Covers the Phase 6 ST 19 extension to ``LibV2ManifestValidator`` that
 recognizes the new ``concept_graph_sha256`` manifest field. Phase 6
 landed the gate at warning severity (advisory only); **Phase 7c ST 17
-promoted it to critical** alongside the new ``dart_chunks_sha256`` +
+promoted it to critical** alongside the new ``semantik_chunks_sha256`` +
 ``imscc_chunks_sha256`` checks.
 
 Tests (post Phase 7c promotion):
   - Manifest with a valid hash + matching on-disk graph passes
     (no concept_graph issues fire).
   - Manifest missing the hash AND graph file absent — no concept_graph
-    issue (legacy / DART-only run).
+    issue (legacy run).
   - Manifest missing the hash but graph file present — critical fires
     (``MISSING_CONCEPT_GRAPH_SHA256``); blocks.
   - Manifest with a malformed hash (non-hex / wrong length) —
@@ -21,7 +21,7 @@ Tests (post Phase 7c promotion):
     canonical 64-hex pattern declared in
     ``schemas/library/course_manifest.schema.json``.
 
-Fixtures include stub ``dart_chunks_sha256`` + ``imscc_chunks_sha256``
+Fixtures include stub ``semantik_chunks_sha256`` + ``imscc_chunks_sha256``
 fields (now required by Phase 7c ST 17) so the new ``MISSING_*`` checks
 don't fire spuriously and pollute the concept_graph-scoped assertions.
 """
@@ -111,10 +111,10 @@ def archive_with_graph(tmp_path: Path):
             "evidence_source_provenance": True,
         },
         "concept_graph_sha256": graph_hash,
-        # Phase 7c ST 17: dart/imscc chunkset hashes are now required;
+        # Phase 7c ST 17: semantik/imscc chunkset hashes are now required;
         # stub with synthetic 64-hex values so the new MISSING_*
         # checks don't fire and pollute the concept_graph assertions.
-        "dart_chunks_sha256": "d" * 64,
+        "semantik_chunks_sha256": "d" * 64,
         "imscc_chunks_sha256": "1" * 64,
     }
     manifest_path = course_dir / "manifest.json"
@@ -168,10 +168,10 @@ def archive_without_graph(tmp_path: Path):
             "evidence_source_provenance": True,
         },
         # No concept_graph_sha256 + no concept_graph/ subdir at all.
-        # Phase 7c ST 17: dart/imscc chunkset hashes are now required;
+        # Phase 7c ST 17: semantik/imscc chunkset hashes are now required;
         # stub with synthetic 64-hex values so the new MISSING_*
         # checks don't pollute legacy-archive assertions below.
-        "dart_chunks_sha256": "d" * 64,
+        "semantik_chunks_sha256": "d" * 64,
         "imscc_chunks_sha256": "1" * 64,
     }
     manifest_path = course_dir / "manifest.json"
@@ -216,7 +216,7 @@ def test_valid_concept_graph_hash_passes_no_warning(archive_with_graph):
     )
     # Concept-graph extension must not fire critical issues against a
     # well-formed concept_graph_sha256 + matching graph file. (Other
-    # critical issues — e.g. from the new dart/imscc chunkset checks —
+    # critical issues — e.g. from the new semantik/imscc chunkset checks —
     # are out of scope for this concept-graph-focused test.)
     cg_codes = {
         "MISSING_CONCEPT_GRAPH_SHA256",
@@ -237,10 +237,10 @@ def test_valid_concept_graph_hash_passes_no_warning(archive_with_graph):
 def test_legacy_archive_without_concept_graph_blocks_critical(archive_without_graph):
     """Legacy archive missing concept_graph_sha256 → critical fires (Phase 7c ST 17).
 
-    Phase 6 left the gate at warning severity so legacy / DART-only archives
+    Phase 6 left the gate at warning severity so legacy archives
     didn't surface noise. Phase 7c ST 17 promoted the field to a required
     manifest key; legacy archives MUST now be backfilled (via
-    ``LibV2/tools/libv2/scripts/backfill_dart_chunks.py``) to be valid.
+    ``LibV2/tools/libv2/scripts/backfill_legacy_chunks.py``) to be valid.
     """
     manifest_path, course_dir = archive_without_graph
     result = LibV2ManifestValidator().validate({
@@ -399,13 +399,13 @@ def test_archive_to_libv2_persists_concept_graph_sha256_to_manifest(tmp_path):
 
 def test_archive_to_libv2_persists_all_three_chunkset_hashes(tmp_path):
     """Phase 7c.5 SHIPPING BLOCKER end-to-end: ``_archive_to_libv2`` routes
-    all three chunkset hashes (``dart_chunks_sha256`` +
+    all three chunkset hashes (``semantik_chunks_sha256`` +
     ``imscc_chunks_sha256`` + ``concept_graph_sha256``) into manifest.
 
-    Phase 7c ST 17 promoted ``dart_chunks_sha256`` + ``imscc_chunks_sha256``
+    Phase 7c ST 17 promoted ``semantik_chunks_sha256`` + ``imscc_chunks_sha256``
     to required manifest fields at the validator boundary. Phase 7c.5
     closes the producer-side gap: the workflow runner threads both hashes
-    via ``inputs_from`` (``chunking`` → ``dart_chunks_sha256``,
+    via ``inputs_from`` (``chunking`` → ``semantik_chunks_sha256``,
     ``imscc_chunking`` → ``imscc_chunks_sha256``) into the same kwarg
     chain that ST 18 wired for ``concept_graph_sha256``.
 
@@ -428,17 +428,17 @@ def test_archive_to_libv2_persists_all_three_chunkset_hashes(tmp_path):
         archive = registry["archive_to_libv2"]
 
         # Three distinct stable canonical hashes so the test catches a
-        # cross-wiring bug (e.g. dart kwarg landing on imscc field).
-        dart_hash = hashlib.sha256(b"fixture dart chunkset").hexdigest()
+        # cross-wiring bug (e.g. chunkset kwarg landing on the imscc field).
+        semantik_hash = hashlib.sha256(b"fixture semantik chunkset").hexdigest()
         imscc_hash = hashlib.sha256(b"fixture imscc chunkset").hexdigest()
         cg_hash = hashlib.sha256(b"fixture concept graph").hexdigest()
-        assert dart_hash != imscc_hash != cg_hash
+        assert semantik_hash != imscc_hash != cg_hash
 
         result = asyncio.run(archive(
             course_name="PHASE7C5_E2E",
             domain="general",
             division="STEM",
-            dart_chunks_sha256=dart_hash,
+            dart_chunks_sha256=semantik_hash,
             imscc_chunks_sha256=imscc_hash,
             concept_graph_sha256=cg_hash,
         ))
@@ -452,9 +452,9 @@ def test_archive_to_libv2_persists_all_three_chunkset_hashes(tmp_path):
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
         # All three hashes present on the canonical 64-hex shape.
-        assert manifest.get("dart_chunks_sha256") == dart_hash, (
-            f"manifest should carry the threaded dart hash; got "
-            f"{manifest.get('dart_chunks_sha256')!r}"
+        assert manifest.get("semantik_chunks_sha256") == semantik_hash, (
+            f"manifest should carry the threaded semantik chunkset hash; got "
+            f"{manifest.get('semantik_chunks_sha256')!r}"
         )
         assert manifest.get("imscc_chunks_sha256") == imscc_hash, (
             f"manifest should carry the threaded imscc hash; got "
@@ -465,7 +465,7 @@ def test_archive_to_libv2_persists_all_three_chunkset_hashes(tmp_path):
             f"{manifest.get('concept_graph_sha256')!r}"
         )
         for field in (
-            "dart_chunks_sha256", "imscc_chunks_sha256", "concept_graph_sha256",
+            "semantik_chunks_sha256", "imscc_chunks_sha256", "concept_graph_sha256",
         ):
             assert re.match(r"^[0-9a-f]{64}$", manifest[field]), (
                 f"manifest[{field!r}] must satisfy the 64-hex regex"
@@ -479,7 +479,7 @@ def test_archive_to_libv2_omits_chunkset_hashes_when_kwargs_absent(tmp_path):
     still produce a valid manifest (just without the new fields).
 
     The validator's ``MISSING_*`` critical fires downstream — that's the
-    intended behavior for legacy / DART-only runs. The producer must NOT
+    intended behavior for legacy runs. The producer must NOT
     silently emit a placeholder hash that would mask the gap; it must
     omit the field so the validator's ``MISSING_*`` fires loudly.
     """
@@ -510,8 +510,8 @@ def test_archive_to_libv2_omits_chunkset_hashes_when_kwargs_absent(tmp_path):
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         # New fields absent — caller didn't supply them, helper must
         # not invent values.
-        assert "dart_chunks_sha256" not in manifest, (
-            "Legacy caller without dart_chunks_sha256 kwarg must NOT see "
+        assert "semantik_chunks_sha256" not in manifest, (
+            "Legacy caller without semantik_chunks_sha256 kwarg must NOT see "
             "the field in manifest (would mask MISSING_* critical)."
         )
         assert "imscc_chunks_sha256" not in manifest, (
@@ -557,7 +557,7 @@ def test_archive_to_libv2_rejects_malformed_chunkset_hashes(tmp_path):
 
         manifest_path = Path(payload["manifest_path"])
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        assert "dart_chunks_sha256" not in manifest
+        assert "semantik_chunks_sha256" not in manifest
         assert "imscc_chunks_sha256" not in manifest
     finally:
         pt.PROJECT_ROOT = orig_root

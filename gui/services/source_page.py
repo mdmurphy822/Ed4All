@@ -4,7 +4,7 @@ This is the serving wrapper around
 ``lib.retrieval.citation_anchor.resolve_source_page``. It exists because the
 underlying resolver is a *read-only library* that takes an ``item_path`` and
 walks the course dir / cartridge zips with **no traversal guard**
-(``_resolve_dart_page`` does ``root / item_path`` + ``.is_file()`` directly).
+(the on-disk resolver does ``root / item_path`` + ``.is_file()`` directly).
 A learner-facing route hands ``item_path`` straight from a URL query string,
 so this wrapper closes the hole *before* the resolver touches the filesystem
 (pre-rejection) and *after* it returns an on-disk path (commonpath
@@ -274,8 +274,9 @@ def _sanitize_and_wrap(
     # 3) Inject heading ids using the frozen slug. The Ask answer-citation
     #    deep-link (grounded_answer._fragment_for) is the SLUGGED section_heading
     #    text, so that text-slug must resolve to the heading even when the
-    #    heading ALREADY carries a different id (DART stamps hash ids like
-    #    ``sec-<hash>`` on ~all headings — the "lands at document TOP" defect).
+    #    heading ALREADY carries a different id (the converter stamps hash ids
+    #    like ``sec-<hash>`` on ~all headings — the "lands at document TOP"
+    #    defect).
     #    No id → set the text-slug id directly; an existing id that differs from
     #    the text-slug → plant the text-slug as an additional sibling anchor span
     #    (never clobbering the original id, never duplicating an id already on
@@ -291,7 +292,7 @@ def _sanitize_and_wrap(
                 heading["id"] = slug_id
             elif existing != slug_id and not soup.find(id=slug_id):
                 anchor = soup.new_tag("span", id=slug_id)
-                anchor["class"] = ["dart-heading-anchor"]
+                anchor["class"] = ["semantik-heading-anchor"]
                 heading.insert(0, anchor)
 
     # 4) Ensure <html lang> present (mark when injected so the gate can tell).
@@ -389,7 +390,7 @@ def render_source_page(
 
     source_id, raw_html = resolved
 
-    # On-disk hits (DART / pre-unpacked) → commonpath containment. Zip-member
+    # On-disk hits (pre-unpacked) → commonpath containment. Zip-member
     # hits are inherently contained (in-memory read; member name came from
     # ``namelist()``) and are not filesystem paths.
     if isinstance(source_id, Path):

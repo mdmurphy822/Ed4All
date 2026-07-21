@@ -1,6 +1,6 @@
 """Wave #22 Tier-2 — composite-unit wrapping at the adapter render seam.
 
-Synthetic block IR only (no corpus files). Exercises the ``dart-unit`` grouping
+Synthetic block IR only (no corpus files). Exercises the ``semantik-unit`` grouping
 in ``_render_chapters``: adjacent sibling openers / sections that form one
 pedagogical whole are wrapped in a ``<section role="group">`` with an accessible
 name, while lone boxes and cross-boundary runs stay ungrouped.
@@ -36,7 +36,7 @@ def _section(text, idx):
 
 def _unit_section(html, unit_type):
     m = re.search(
-        rf'<section class="dart-unit dart-unit-{unit_type}"[^>]*>(.*?)</section>\s*$',
+        rf'<section class="semantik-unit semantik-unit-{unit_type}"[^>]*>(.*?)</section>\s*$',
         html, re.DOTALL,
     )
     return m
@@ -62,7 +62,7 @@ def test_worked_example_unit_wraps_example_solution_practice():
     assert 'aria-labelledby="example-9-1"' in html
     # The three callout-group boxes are all inside the one unit.
     unit = re.search(
-        r'<section class="dart-unit dart-unit-worked_example"[^>]*>(.*)',
+        r'<section class="semantik-unit semantik-unit-worked_example"[^>]*>(.*)',
         html, re.DOTALL,
     ).group(1)
     assert unit.count("data-semantik-opener-group=") == 3
@@ -112,7 +112,7 @@ def test_unit_never_crosses_section_heading():
 
 
 def test_exercise_set_unit_two_exercise_lists():
-    xl = '<ol class="dart-exercise-list"><li><ol type="a"><li>$x$</li></ol></li></ol>'
+    xl = '<ol class="semantik-exercise-list"><li><ol type="a"><li>$x$</li></ol></li></ol>'
     ch = _AdapterChapter(
         title="Ex",
         blocks=[
@@ -137,5 +137,5 @@ def test_group_role_always_has_accessible_name():
         ],
     )
     html = _render_chapters([ch])
-    for tag in re.findall(r'<section class="dart-unit[^>]*>', html):
+    for tag in re.findall(r'<section class="semantik-unit[^>]*>', html):
         assert "aria-labelledby=" in tag or "aria-label=" in tag

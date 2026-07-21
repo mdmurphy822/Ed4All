@@ -127,7 +127,7 @@ def main(ctx, repo: Optional[str]):
 @click.option("--slm-version", help="SLM version used for processing")
 @click.option("--slm-specialist", multiple=True, help="SLM specialists used (can specify multiple)")
 @click.option("--pdf", type=click.Path(exists=True), help="Path to original PDF source")
-@click.option("--html", type=click.Path(exists=True), help="Path to DART accessible HTML")
+@click.option("--html", type=click.Path(exists=True), help="Path to accessible HTML source")
 @click.option("--arxiv-id", help="Arxiv paper ID to load metadata from database")
 @click.option("--arxiv-db", type=click.Path(exists=True), help="Path to arxiv papers.db SQLite database")
 @click.pass_context
@@ -3107,7 +3107,9 @@ def vector_index():
 @click.option("--provider", help="Embedding provider (default: env ED4ALL_EMBEDDING_PROVIDER or 'st')")
 @click.option("--model", "model_id", help="Embedding model id override")
 @click.option("--chunkset", type=click.Choice(["imscc", "dart", "corpus-legacy"]),
-              help="Pin a chunkset (default: imscc_chunks -> dart_chunks -> legacy corpus)")
+              # 'dart'/'corpus-legacy' are legacy read-only pins for old on-disk archives.
+              help="Pin a chunkset (default precedence: imscc_chunks -> semantik_chunks -> "
+                   "dart_chunks -> legacy corpus)")
 @click.option("--device", type=click.Choice(["cpu", "cuda"]), help="ST device override (default cpu)")
 @click.option("--batch-size", type=int, help="Embedding batch size override")
 @click.option("--offline", is_flag=True, help="Refuse network downloads (default for build is online)")
@@ -3748,7 +3750,7 @@ def gold_validate(ctx, course: str, coverage: bool, no_coverage_write: bool):
 
 @main.command("gold-repin")
 @click.option("--course", "-c", required=True, help="Course slug whose gold set to re-pin")
-@click.option("--kind", type=click.Choice(["dart", "imscc", "corpus"]), required=True,
+@click.option("--kind", type=click.Choice(["semantik", "imscc", "dart", "corpus"]), required=True,
               help="Target chunkset kind to re-anchor the gold set to.")
 @click.option("--chunks-path", help="Override the kind's default course-dir-relative chunks.jsonl path.")
 @click.option("--unfreeze-for-repin", is_flag=True,

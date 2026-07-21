@@ -28,7 +28,7 @@ Constants
     ``DOC_OPEN.format(lang=..., title=...)`` call. The ``<style>`` bundle and
     the JSON-LD block are spliced in Phase 8 at the brace-free
     ``GOLD_STYLE_SLOT`` / ``GOLD_JSONLD_SLOT`` sentinels (kept brace-free so
-    they never collide with ``str.format``). The ``DART_TITLE_SLOT`` sentinel
+    they never collide with ``str.format``). The ``SEMANTIK_TITLE_SLOT`` sentinel
     is preserved (mirrors ``shell.TITLE_SLOT_SENTINEL``) so Stage-9c title
     gap-fill lands inside ``<header>``.
 """
@@ -52,7 +52,7 @@ from .semantic_catalog import label_for
 # ``GOLD_DOC_OPEN.format(...)`` never trips over them).
 GOLD_STYLE_SLOT = "<!-- GOLD_STYLE_SLOT -->"
 GOLD_JSONLD_SLOT = "<!-- GOLD_JSONLD_SLOT -->"
-GOLD_TITLE_SLOT = "<!-- DART_TITLE_SLOT -->"
+GOLD_TITLE_SLOT = "<!-- SEMANTIK_TITLE_SLOT -->"
 
 
 GOLD_HEAD_META = '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
@@ -92,7 +92,7 @@ GOLD_DOC_OPEN = (
     '<main id="main-content" role="main">\n'
     '<article>\n'
     '<header>\n'
-    '<!-- DART_TITLE_SLOT -->\n'
+    '<!-- SEMANTIK_TITLE_SLOT -->\n'
     '</header>\n'
 )
 
@@ -118,7 +118,7 @@ GOLD_DOC_CLOSE = (
 # the flag-off path is byte-identical.
 #
 # Each ``role=region`` / labelled-section / nav container mints its OWN inner
-# label heading ``<hN id="dart-{class}-{first_fb}">{LABEL}</hN>`` (LABEL from the
+# label heading ``<hN id="semantik-{class}-{first_fb}">{LABEL}</hN>`` (LABEL from the
 # Phase-2 catalog via ``semantic_catalog.label_for``) and points
 # ``aria-labelledby`` at that minted id — so every container resolves to a real,
 # non-empty-named id at ALL times, independent of Phase 9's outer-``section``
@@ -392,7 +392,7 @@ def _wrap_semantic_class(
 
     heading = ""
     if spec.aria == "labelledby" and spec.heading_tag:
-        ident = _mint_unique_id(f"dart-{sc}-{first_fb}", doc_ids)
+        ident = _mint_unique_id(f"semantik-{sc}-{first_fb}", doc_ids)
         attrs.append(f'aria-labelledby="{ident}"')
         heading = f'<{spec.heading_tag} id="{ident}">{esc_label}</{spec.heading_tag}>'
     elif spec.aria == "label":

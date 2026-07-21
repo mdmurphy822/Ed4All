@@ -38,7 +38,7 @@ from lib.aggregators.tests.test_promotion_chain_report import (  # noqa: E402
 def _strip_training_arrows(layout: Dict[str, Path]) -> None:
     """Delete the assessment/training arrow artifacts (arrows 6-9).
 
-    Leaves arrows 1-5 (staging, dart chunks, rewrite, packaging, imscc
+    Leaves arrows 1-5 (staging, semantik chunks, rewrite, packaging, imscc
     chunks) intact so the run looks exactly like a non-training build that
     stopped after imscc_chunking.
     """

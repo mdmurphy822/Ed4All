@@ -157,14 +157,14 @@ def _build_full_promotion_layout(tmp_path: Path) -> Dict[str, Path]:
             "errors": None,
         },
     )
-    # Arrow 2 — dart_chunks/manifest.json
+    # Arrow 2 — semantik_chunks/manifest.json
     _write_json(
-        course_dir / "dart_chunks" / "manifest.json",
+        course_dir / "semantik_chunks" / "manifest.json",
         {
             "chunks_sha256": "a" * 64,
             "chunker_version": "v4",
-            "chunkset_kind": "dart",
-            "source_dart_html_sha256": "b" * 64,
+            "chunkset_kind": "semantik",
+            "source_semantik_html_sha256": "b" * 64,
             "chunks_count": 100,
             "source_coverage": _coverage_block(100, 100),
         },

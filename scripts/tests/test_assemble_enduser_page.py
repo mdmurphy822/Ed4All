@@ -1,5 +1,5 @@
 """B1/B2 — end-user page assembler: single <main>/skip-link/<h1>, MathJax
-assistive-MML, dart-content CSS hooks. Synthetic content + the real template.
+assistive-MML, semantik-content CSS hooks. Synthetic content + the real template.
 """
 from __future__ import annotations
 
@@ -29,16 +29,16 @@ _CONTENT = """<!DOCTYPE html>
 <head><meta charset="utf-8"><title>Roots and Radicals</title></head>
 <body>
 <a class="skip-link" href="#main-content">Skip to main content</a>
-<main id="main-content" role="main" class="dart-document">
+<main id="main-content" role="main" class="semantik-document">
 <h1>Roots and Radicals</h1>
 <article role="doc-chapter" id="chap-1">
 <h2>Chapter 9 Roots and Radicals</h2>
-<section class="dart-section" aria-labelledby="try-1" data-dart-block-id="try-1"
-         data-dart-source="synthesized" data-dart-opener="try_it">
+<section class="semantik-section" aria-labelledby="try-1" data-semantik-block-id="try-1"
+         data-semantik-source="synthesized" data-semantik-opener="try_it">
 <h4 id="try-1">Try It 9.1</h4>
 </section>
-<section class="dart-section" id="p1" data-dart-block-id="p1"
-         data-dart-source="synthesized">
+<section class="semantik-section" id="p1" data-semantik-block-id="p1"
+         data-semantik-source="synthesized">
 <p>A number whose square is $m$ is a square root of $m$.</p>
 </section>
 </article>
@@ -59,7 +59,7 @@ def _assemble(**kw):
         module_link="index.html",
         mathjax=True,
         css_hooks=False,
-        dart_css_path=None,
+        semantik_css_path=None,
     )
     defaults.update(kw)
     return assemble_mod.assemble(**defaults)
@@ -87,7 +87,7 @@ def test_single_h1_no_duplicate_title():
 
 def test_injected_content_and_openers_present():
     page = _assemble()
-    assert 'data-dart-opener="try_it"' in page
+    assert 'data-semantik-opener="try_it"' in page
     assert ">Try It 9.1</h4>" in page
     assert "square root of $m$" in page  # math left intact for MathJax
 
@@ -120,8 +120,11 @@ def test_mathjax_config_processes_escapes():
     assert "processEscapes: true" in page
 
 
-def test_css_hooks_inlines_dart_content_css():
+def test_css_hooks_inlines_semantik_content_css():
     page = _assemble(css_hooks=True)
+    # LEGACY-COMPAT: semantik_content.css retains the .dart-* class SELECTORS as
+    # read-compat styling for un-migrated legacy corpora, so the inlined sheet
+    # still carries them (see the allowlisted CSS file).
     assert ".dart-example" in page
     assert 'data-semantik-opener="try_it"' in page
     assert ".dart-key-terms dt" in page
@@ -129,6 +132,7 @@ def test_css_hooks_inlines_dart_content_css():
 
 def test_css_hooks_absent_by_default():
     page = _assemble(css_hooks=False)
+    # LEGACY-COMPAT selector: proves the sheet is not inlined when hooks are off.
     assert ".dart-key-terms dt" not in page
 
 

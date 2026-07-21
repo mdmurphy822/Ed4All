@@ -109,7 +109,7 @@ def _make_block(
     page_id: str = "page_01",
     sequence: int = 0,
     key_claims: Optional[List[Any]] = None,
-    source_ids: Tuple[str, ...] = ("dart:slug#blk_0",),
+    source_ids: Tuple[str, ...] = ("semantik:slug#blk_0",),
     source_references: Optional[Tuple[Dict[str, Any], ...]] = None,
 ) -> Block:
     """Build a Block with dict content + ``key_claims`` populated.
@@ -148,10 +148,10 @@ def test_all_entailed_block_passes() -> None:
 
     block = _make_block(
         key_claims=["Claim A about X.", "Claim B about Y."],
-        source_ids=("dart:slug#blk_0",),
+        source_ids=("semantik:slug#blk_0",),
     )
     source_chunks = {
-        "dart:slug#blk_0": "Source chunk text covering X and Y in detail.",
+        "semantik:slug#blk_0": "Source chunk text covering X and Y in detail.",
     }
 
     result = validator.validate(
@@ -186,8 +186,8 @@ def test_above_unsupported_threshold_fires_warning_and_regenerate() -> None:
     nli = _StubNli(response_map=response_map)
     validator = ClaimSupportValidator(nli=nli)
 
-    block = _make_block(key_claims=claims, source_ids=("dart:slug#blk_0",))
-    source_chunks = {"dart:slug#blk_0": chunk_text}
+    block = _make_block(key_claims=claims, source_ids=("semantik:slug#blk_0",))
+    source_chunks = {"semantik:slug#blk_0": chunk_text}
 
     result = validator.validate(
         {"blocks": [block], "source_chunks": source_chunks}
@@ -229,8 +229,8 @@ def test_above_contradicted_threshold_fires_warning_and_regenerate() -> None:
     nli = _StubNli(response_map=response_map)
     validator = ClaimSupportValidator(nli=nli)
 
-    block = _make_block(key_claims=claims, source_ids=("dart:slug#blk_0",))
-    source_chunks = {"dart:slug#blk_0": chunk_text}
+    block = _make_block(key_claims=claims, source_ids=("semantik:slug#blk_0",))
+    source_chunks = {"semantik:slug#blk_0": chunk_text}
 
     result = validator.validate(
         {"blocks": [block], "source_chunks": source_chunks}
@@ -261,11 +261,11 @@ def test_legacy_list_str_key_claims_uses_block_level_chunks() -> None:
 
     block = _make_block(
         key_claims=["Single claim text."],
-        source_ids=("dart:slug#blk_a", "dart:slug#blk_b"),
+        source_ids=("semantik:slug#blk_a", "semantik:slug#blk_b"),
     )
     source_chunks = {
-        "dart:slug#blk_a": chunk_a,
-        "dart:slug#blk_b": chunk_b,
+        "semantik:slug#blk_a": chunk_a,
+        "semantik:slug#blk_b": chunk_b,
     }
     result = validator.validate(
         {"blocks": [block], "source_chunks": source_chunks}
@@ -300,18 +300,18 @@ def test_structured_key_claims_uses_per_claim_chunk_scoping() -> None:
         key_claims=[
             {
                 "claim": "Claim about RDF.",
-                "source_chunk_ids": ["dart:slug#blk_a"],
+                "source_chunk_ids": ["semantik:slug#blk_a"],
             },
             {
                 "claim": "Claim about SHACL.",
-                "source_chunk_ids": ["dart:slug#blk_b"],
+                "source_chunk_ids": ["semantik:slug#blk_b"],
             },
         ],
-        source_ids=("dart:slug#blk_a", "dart:slug#blk_b"),
+        source_ids=("semantik:slug#blk_a", "semantik:slug#blk_b"),
     )
     source_chunks = {
-        "dart:slug#blk_a": chunk_a,
-        "dart:slug#blk_b": chunk_b,
+        "semantik:slug#blk_a": chunk_a,
+        "semantik:slug#blk_b": chunk_b,
     }
 
     result = validator.validate(
@@ -352,10 +352,10 @@ def test_nli_deps_missing_emits_warning_passes(
 
     block = _make_block(
         key_claims=["A claim."],
-        source_ids=("dart:slug#blk_0",),
+        source_ids=("semantik:slug#blk_0",),
     )
     result = validator.validate(
-        {"blocks": [block], "source_chunks": {"dart:slug#blk_0": "Source."}}
+        {"blocks": [block], "source_chunks": {"semantik:slug#blk_0": "Source."}}
     )
 
     deps_issues = [
@@ -387,11 +387,11 @@ def test_strict_mode_with_missing_deps_raises_runtime_error(
 
     block = _make_block(
         key_claims=["A claim."],
-        source_ids=("dart:slug#blk_0",),
+        source_ids=("semantik:slug#blk_0",),
     )
     with pytest.raises(RuntimeError) as excinfo:
         validator.validate(
-            {"blocks": [block], "source_chunks": {"dart:slug#blk_0": "Source."}}
+            {"blocks": [block], "source_chunks": {"semantik:slug#blk_0": "Source."}}
         )
     assert "TRAINFORGE_REQUIRE_EMBEDDINGS" in str(excinfo.value)
 
@@ -419,7 +419,7 @@ def test_skip_set_block_types_emit_no_events_or_issues() -> None:
     result = validator.validate(
         {
             "blocks": blocks,
-            "source_chunks": {"dart:slug#blk_0": "Source."},
+            "source_chunks": {"semantik:slug#blk_0": "Source."},
         }
     )
 
@@ -469,18 +469,18 @@ def test_decision_capture_fires_per_block_with_required_signals() -> None:
     block_a = _make_block(
         block_id="page_01#concept_a_0",
         key_claims=["Claim A1.", "Claim A2."],
-        source_ids=("dart:slug#blk_0",),
+        source_ids=("semantik:slug#blk_0",),
     )
     block_b = _make_block(
         block_id="page_01#concept_b_1",
         key_claims=["Claim B1."],
-        source_ids=("dart:slug#blk_0",),
+        source_ids=("semantik:slug#blk_0",),
     )
 
     validator.validate(
         {
             "blocks": [block_a, block_b],
-            "source_chunks": {"dart:slug#blk_0": "Source text."},
+            "source_chunks": {"semantik:slug#blk_0": "Source text."},
             "decision_capture": _CaptureStub(),
         }
     )
@@ -518,13 +518,13 @@ def test_empty_key_claims_silent_pass_no_events() -> None:
     # Block with NO key_claims at all.
     block = _make_block(
         key_claims=None,  # → no "key_claims" field set
-        source_ids=("dart:slug#blk_0",),
+        source_ids=("semantik:slug#blk_0",),
     )
 
     result = validator.validate(
         {
             "blocks": [block],
-            "source_chunks": {"dart:slug#blk_0": "Source."},
+            "source_chunks": {"semantik:slug#blk_0": "Source."},
             "decision_capture": _CaptureStub(),
         }
     )
@@ -559,11 +559,11 @@ def test_gate_config_thresholds_override_defaults() -> None:
     # (0.30 < 0.70, 0.05 < 0.50). With a tighter ceiling of 0.05
     # max_unsupported, 1/1 unsupported (100%) > 5% should fire.
     validator = ClaimSupportValidator(nli=nli)
-    block = _make_block(key_claims=["c1"], source_ids=("dart:slug#blk_0",))
+    block = _make_block(key_claims=["c1"], source_ids=("semantik:slug#blk_0",))
     result = validator.validate(
         {
             "blocks": [block],
-            "source_chunks": {"dart:slug#blk_0": chunk_text},
+            "source_chunks": {"semantik:slug#blk_0": chunk_text},
             "max_unsupported_claim_rate": 0.05,
         }
     )

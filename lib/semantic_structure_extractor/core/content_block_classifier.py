@@ -1,7 +1,7 @@
 """
 Content Block Classifier Module
 
-Classifies content blocks within DART-processed HTML documents.
+Classifies content blocks within SemantiK-processed HTML documents.
 Identifies:
 - Paragraphs with definitions (term: definition pattern)
 - Key terms (emphasized with <strong> or <em>)
@@ -122,7 +122,7 @@ class ContentBlockClassifier:
     """
     Classifies content blocks within HTML sections.
 
-    Designed to work with DART-processed HTML which has:
+    Designed to work with SemantiK-processed HTML which has:
     - Clean semantic structure
     - Proper heading hierarchy
     - Accessible tables and figures
@@ -293,7 +293,7 @@ class ContentBlockClassifier:
         classes = element.get('class', [])
         role = element.get('role', '')
 
-        # Check for callout boxes (DART uses role="note")
+        # Check for callout boxes (SemantiK uses role="note")
         if role == 'note' or 'callout' in ' '.join(classes):
             return self._create_callout_block(element, classes)
 

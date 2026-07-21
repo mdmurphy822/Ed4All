@@ -46,8 +46,7 @@ Inputs contract:
 * ``inputs["chunks_path"]`` — path to the ``chunks.jsonl`` (required when the
   gate is ON). The gate-input builder
   (``MCP/hardening/gate_input_routing.py::_build_chunk_health``) resolves it from
-  ``phase_outputs.chunking.semantik_chunks_path`` (legacy
-  ``dart_chunks_path``).
+  ``phase_outputs.chunking.semantik_chunks_path``.
 * ``inputs["textbook_structure_path"]`` / ``inputs["textbook_structure"]`` —
   the structure to audit (optional; the S-class structure checks skip when
   absent — a chunk-only import legitimately lacks it).
@@ -654,7 +653,13 @@ class ChunkHealthValidator:
                     str(s.get("headingText") or s.get("title") or "").strip()
                 )
         nsec = len(sec_titles)
-        exp_sec = max(nsrc, 1) * th.sections_per_chapter
+        # Scale basis is CHAPTERS (the message's own "expected ~N/chapter"
+        # semantics), falling back to source files when no chapter structure
+        # exists. Per-chapter-PDF corpora (file == chapter) are unchanged;
+        # a whole book as ONE PDF no longer trips S3 on its real chapter
+        # count. S1 (chapter explosion) still bounds chapters-per-file, so a
+        # furniture-driven chapter+section collapse remains caught there.
+        exp_sec = max(n_ch, nsrc, 1) * th.sections_per_chapter
 
         # S3 section explosion — CRITICAL on >4x expected, WARNING on >2x.
         if nsec > 4 * exp_sec:

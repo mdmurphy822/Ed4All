@@ -290,7 +290,7 @@ class OSCQRValidator:
         return None
 
     # Size guard: skip HTML files larger than this when scanning a
-    # course dir (they're almost certainly DART textbook outputs, not
+    # course dir (they're almost certainly SemantiK textbook outputs, not
     # course modules). Keeps the validator fast on LibV2 archives.
     _MAX_PAGE_SIZE_BYTES = 500_000
 
@@ -332,7 +332,7 @@ class OSCQRValidator:
         if course_path:
             # Limit search to direct children + one-level-down to avoid
             # walking giant corpus trees (LibV2 archives can carry
-            # multi-MB DART HTML under source/).
+            # multi-MB SemantiK HTML under source/).
             for name in ("syllabus.html", "syllabus.md", "Syllabus.html"):
                 candidate_paths.append(course_path / name)
                 # One level down — common layouts: overview/syllabus.html,

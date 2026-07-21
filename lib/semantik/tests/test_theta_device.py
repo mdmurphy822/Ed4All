@@ -117,7 +117,7 @@ def _load_module_state():
 
 # ---------------------------------------------------------------------------
 # Bug 1 — _model_dir() resolves through the SINGLE env-aware paths.resolve_model
-# resolver (precedence DART_SEMANTIC_MODEL_DIR > SEMANTIK_MODEL_DIR >
+# resolver (precedence SEMANTIK_SEMANTIC_MODEL_DIR > SEMANTIK_MODEL_DIR >
 # SEMANTIK_HOME > package-relative). Regression-proof for the real-run bug
 # where SEMANTIK_MODEL_DIR was ignored by the theta loader.
 # ---------------------------------------------------------------------------
@@ -127,7 +127,7 @@ _SEMANTIK_PKG_ROOT = _REPO_ROOT / "SemantiK"
 
 class TestModuleStateModelDir:
     def _clean_env(self, monkeypatch):
-        monkeypatch.delenv("DART_SEMANTIC_MODEL_DIR", raising=False)
+        monkeypatch.delenv("SEMANTIK_SEMANTIC_MODEL_DIR", raising=False)
         monkeypatch.delenv("SEMANTIK_MODEL_DIR", raising=False)
         monkeypatch.delenv("SEMANTIK_HOME", raising=False)
 
@@ -149,17 +149,17 @@ class TestModuleStateModelDir:
         )
 
     def test_legacy_absolute_override_wins_verbatim(self, monkeypatch):
-        """Absolute DART_SEMANTIC_MODEL_DIR still returned unchanged."""
+        """Absolute SEMANTIK_SEMANTIC_MODEL_DIR still returned unchanged."""
         self._clean_env(monkeypatch)
-        monkeypatch.setenv("DART_SEMANTIC_MODEL_DIR", "/abs/legacy/dir")
+        monkeypatch.setenv("SEMANTIK_SEMANTIC_MODEL_DIR", "/abs/legacy/dir")
         ms = _load_module_state()
         assert ms._model_dir() == Path("/abs/legacy/dir")
 
     def test_legacy_override_wins_over_semantik_model_dir(self, monkeypatch):
-        """Legacy precedence preserved: DART_SEMANTIC_MODEL_DIR > SEMANTIK_MODEL_DIR."""
+        """Legacy precedence preserved: SEMANTIK_SEMANTIC_MODEL_DIR > SEMANTIK_MODEL_DIR."""
         self._clean_env(monkeypatch)
         monkeypatch.setenv("SEMANTIK_MODEL_DIR", "/some/abs")
-        monkeypatch.setenv("DART_SEMANTIC_MODEL_DIR", "/abs/legacy/dir")
+        monkeypatch.setenv("SEMANTIK_SEMANTIC_MODEL_DIR", "/abs/legacy/dir")
         ms = _load_module_state()
         assert ms._model_dir() == Path("/abs/legacy/dir")
 

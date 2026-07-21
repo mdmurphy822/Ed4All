@@ -69,8 +69,8 @@ _ISSUE_LIST_CAP = 50
 
 # Canonical sourceId pattern (kept in sync with
 # lib/validators/source_refs.py:34 / source_reference.schema.json).
-# DART->semantik purge Stage 1 (dual-READ): accepts BOTH the legacy ``dart:``
-# prefix AND the ratified ``semantik:`` prefix. Emitters unchanged this stage.
+# Dual-READ: accepts BOTH the legacy ``dart:`` prefix (pre-SemantiK corpora)
+# and the current ``semantik:`` prefix. Emitters mint only ``semantik:``.
 import re
 
 _SOURCE_ID_RE = re.compile(r"^(?:dart|semantik):[a-z0-9_-]+#[a-z0-9_-]+$")
@@ -326,7 +326,7 @@ def _strip_html(html: str) -> str:
 # pattern from Courseforge/scripts/blocks.py + generate_course.py:
 #   data-cf-content-type="<chunk-type>"
 #   data-cf-objective-id="<TO-NN>"  (per-element, may repeat)
-#   data-cf-source-ids="dart:slug#blk[,dart:slug#blk2]"
+#   data-cf-source-ids="semantik:slug#blk[,semantik:slug#blk2]"
 # Quotes are normalised to double quotes by the renderer; we accept
 # both for forward-compat with future emit changes.
 _DATA_CF_CONTENT_TYPE_RE = re.compile(
@@ -1506,7 +1506,7 @@ class BlockPageObjectivesValidator:
 
 
 def _resolve_against_manifest(manifest_path: Optional[Path]) -> Set[str]:
-    """Harvest the valid sourceId universe from a DART staging manifest.
+    """Harvest the valid sourceId universe from a SemantiK staging manifest.
 
     Mirrors ``lib/validators/source_refs.py::_collect_valid_ids`` but
     accepts the path directly (no ``inputs`` indirection). Returns
@@ -1550,7 +1550,7 @@ class BlockSourceRefValidator:
     """Outline-tier source-ref manifest gate.
 
     Every outline-tier Block's ``block.source_references`` (or the
-    ``source_ids`` tuple) must resolve against the DART staging
+    ``source_ids`` tuple) must resolve against the SemantiK staging
     manifest at ``inputs['manifest_path']``. A miss is structural —
     the Block references a ``sourceId`` that doesn't exist in the
     staging manifest, so the rewrite tier has nothing to ground on.
@@ -1631,7 +1631,7 @@ class BlockSourceRefValidator:
 
             if not block_ids:
                 # No source_ids on this block — Blocks are allowed to
-                # defer source attribution when no DART grounding
+                # defer source attribution when no SemantiK grounding
                 # applies, so an empty list passes the structural check
                 # on both tiers.
                 passed_count += 1
@@ -1672,7 +1672,7 @@ class BlockSourceRefValidator:
                             message=(
                                 f"Outline-tier Block {block.block_id!r} "
                                 f"declares sourceId {sid!r} which does not "
-                                f"match the canonical dart:{{slug}}#{{block_id}} "
+                                f"match the canonical semantik:{{slug}}#{{block_id}} "
                                 f"shape."
                             ),
                             location=block.block_id,
@@ -1696,7 +1696,7 @@ class BlockSourceRefValidator:
                             ),
                             location=block.block_id,
                             suggestion=(
-                                "Re-run stage_dart_outputs to regenerate "
+                                "Re-run stage_semantik_outputs to regenerate "
                                 "the manifest, or correct the source-router "
                                 "binding upstream."
                             ),

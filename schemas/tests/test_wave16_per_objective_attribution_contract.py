@@ -219,7 +219,7 @@ def test_1_schema_validity_both_shapes_and_mixed_rejection() -> None:
     co_def = schema_doc["definitions"]["ComponentObjective"]
 
     # Sub-test 1a — legacy List[str] source_refs validates clean on BOTH defs.
-    legacy_refs = ["dart:rdf-primer#sec1", "dart:rdf-primer#sec2"]
+    legacy_refs = ["semantik:rdf-primer#sec1", "semantik:rdf-primer#sec2"]
     jsonschema.Draft7Validator(to_def).validate(_to_payload(legacy_refs))
     jsonschema.Draft7Validator(co_def).validate(_co_payload(legacy_refs))
 
@@ -227,13 +227,13 @@ def test_1_schema_validity_both_shapes_and_mixed_rejection() -> None:
     structured_refs = [
         {
             "ref": "ch7",
-            "chunk_ids": ["dart:shacl-spec#sec3-1-targets"],
+            "chunk_ids": ["semantik:shacl-spec#sec3-1-targets"],
         },
         {
             "ref": "ch8",
             "chunk_ids": [
-                "dart:shacl-spec#sec4-1-core-constraints",
-                "dart:shacl-spec#sec4-2-property-shapes",
+                "semantik:shacl-spec#sec4-1-core-constraints",
+                "semantik:shacl-spec#sec4-2-property-shapes",
             ],
         },
     ]
@@ -243,10 +243,10 @@ def test_1_schema_validity_both_shapes_and_mixed_rejection() -> None:
     # Sub-test 1c — mixed-shape (one string + one object) MUST FAIL via
     # the canonical ``oneOf`` rejection error on BOTH defs.
     mixed_refs = [
-        "dart:rdf-primer#sec1",
+        "semantik:rdf-primer#sec1",
         {
             "ref": "ch7",
-            "chunk_ids": ["dart:shacl-spec#sec3-1-targets"],
+            "chunk_ids": ["semantik:shacl-spec#sec3-1-targets"],
         },
     ]
     with pytest.raises(jsonschema.ValidationError):
@@ -378,7 +378,11 @@ def test_2_anti_silent_degradation_unresolved_ref_consistency_walk(
 
     # Empty manifest — sibling chunks.jsonl absent so the chunks
     # universe is empty (matches the "legacy archive" branch the plan
-    # calls out).
+    # calls out). LEGACY READ-COMPAT: this fixture deliberately uses the
+    # pre-migration ``dart_chunks/`` layout + ``chunkset_kind: "dart"`` +
+    # the ``dart_chunks_manifest_path`` input key to exercise the
+    # dual-read acceptance the validator still honours for un-migrated
+    # archives on disk.
     chunks_dir = tmp_path / "dart_chunks"
     chunks_dir.mkdir()
     chunks_manifest_path = chunks_dir / "manifest.json"
@@ -807,7 +811,7 @@ def test_5_validator_decision_type_in_canonical_enum(tmp_path: Path) -> None:
                 "bloom_level": "remember",
                 "week": 1,
                 "source_refs": [
-                    {"ref": "ch7", "chunk_ids": ["dart:fixture#sec1"]},
+                    {"ref": "ch7", "chunk_ids": ["semantik:fixture#sec1"]},
                 ],
             },
         ],

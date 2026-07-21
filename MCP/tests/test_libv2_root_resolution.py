@@ -1,8 +1,8 @@
 """Phase 8 ST 3 regression tests — `_resolve_libv2_root` resolution
 chain + per-helper LibV2 root threading.
 
-Pre-Phase-8: three Phase 6/7 helpers (`_run_concept_extraction`,
-`_run_dart_chunking`, `_run_imscc_chunking`) used a hardcoded
+Pre-Phase-8: three Phase 6/7 helpers (concept extraction, SemantiK
+chunking, IMSCC chunking) used a hardcoded
 ``_PROJECT_ROOT / "LibV2" / "courses" / course_slug`` literal. This
 made the helpers unportable for ops topologies that mount LibV2 at
 a non-default location (Docker volume / NFS / ConfigMap).
@@ -126,7 +126,7 @@ class TestResolveLibV2RootResolutionChain:
 
 
 def _write_synthesized(path: Path) -> None:
-    """Emit a minimal DART ``*_synthesized.json`` fixture sidecar."""
+    """Emit a minimal SemantiK ``*_synthesized.json`` fixture sidecar."""
     doc = {
         "campus_code": "phase8st3",
         "campus_name": "Phase 8 ST 3 LibV2 Root Threading",
@@ -148,8 +148,8 @@ def _write_synthesized(path: Path) -> None:
     path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
 
 
-def _write_dart_html(path: Path) -> None:
-    """Emit a minimal DART HTML fixture for the chunker."""
+def _write_semantik_html(path: Path) -> None:
+    """Emit a minimal SemantiK HTML fixture for the chunker."""
     path.write_text(
         '<!DOCTYPE html><html><body>'
         '<section><h1>Section A</h1>'
@@ -259,18 +259,18 @@ class TestHelperLibV2RootThreading:
             "is threaded explicitly."
         )
 
-    def test_run_dart_chunking_writes_to_threaded_libv2_root(
+    def test_run_semantik_chunking_writes_to_threaded_libv2_root(
         self, hermetic_libv2
     ):
-        """`_run_dart_chunking` writes the DART chunkset under
-        ``<libv2_root>/courses/<slug>/dart_chunks/`` when
+        """The SemantiK chunking helper writes the chunkset under
+        ``<libv2_root>/courses/<slug>/semantik_chunks/`` when
         ``libv2_root`` is threaded.
         """
         fake_root = hermetic_libv2["fake_root"]
         custom_libv2 = hermetic_libv2["tmp_path"] / "custom_libv2"
         staging = hermetic_libv2["tmp_path"] / "staging"
         staging.mkdir()
-        _write_dart_html(staging / "demo_accessible.html")
+        _write_semantik_html(staging / "demo_accessible.html")
 
         registry = _build_tool_registry()
         tool = registry["run_dart_chunking"]
@@ -291,7 +291,7 @@ class TestHelperLibV2RootThreading:
             / "chunks.jsonl"
         )
         assert expected_chunks.exists(), (
-            f"DART chunkset should land under threaded libv2_root: "
+            f"SemantiK chunkset should land under threaded libv2_root: "
             f"{expected_chunks!r}; got payload['semantik_chunks_path']="
             f"{payload.get('semantik_chunks_path')!r}."
         )
@@ -391,7 +391,7 @@ class TestHelperBackwardCompat:
             f"{payload.get('concept_graph_path')!r}."
         )
 
-    def test_dart_chunking_uses_env_var_when_no_kwarg(
+    def test_semantik_chunking_uses_env_var_when_no_kwarg(
         self, hermetic_libv2, monkeypatch
     ):
         """No kwarg, ED4ALL_LIBV2_ROOT set → writes to env-var root.
@@ -402,7 +402,7 @@ class TestHelperBackwardCompat:
         monkeypatch.setenv("ED4ALL_LIBV2_ROOT", str(env_libv2))
         staging = hermetic_libv2["tmp_path"] / "staging"
         staging.mkdir()
-        _write_dart_html(staging / "demo_accessible.html")
+        _write_semantik_html(staging / "demo_accessible.html")
 
         registry = _build_tool_registry()
         tool = registry["run_dart_chunking"]
@@ -421,7 +421,7 @@ class TestHelperBackwardCompat:
             / "chunks.jsonl"
         )
         assert expected_chunks.exists(), (
-            f"Env-var leg should route DART chunkset to "
+            f"Env-var leg should route SemantiK chunkset to "
             f"$ED4ALL_LIBV2_ROOT/courses/<slug>/semantik_chunks/; got "
             f"payload['semantik_chunks_path']="
             f"{payload.get('semantik_chunks_path')!r}."

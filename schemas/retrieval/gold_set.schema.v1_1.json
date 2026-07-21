@@ -24,8 +24,8 @@
       "properties": {
         "kind": {
           "type": "string",
-          "enum": ["dart", "imscc", "corpus"],
-          "description": "Chunkset kind. 'dart' -> dart_chunks/chunks.jsonl; 'imscc' -> imscc_chunks/chunks.jsonl; 'corpus' -> the union corpus/chunks.jsonl (generated course pages + original-textbook chunks)."
+          "enum": ["semantik", "imscc", "dart", "corpus"],
+          "description": "Chunkset kind. 'semantik' -> semantik_chunks/chunks.jsonl (current staged-conversion layout); 'imscc' -> imscc_chunks/chunks.jsonl; 'dart' -> legacy dart_chunks/chunks.jsonl read-fallback; 'corpus' -> the union corpus/chunks.jsonl (generated course pages + original-textbook chunks)."
         },
         "chunks_path": {
           "type": "string",

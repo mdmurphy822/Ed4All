@@ -445,7 +445,7 @@ def build_faq_blocks(
             answer=e["answer"],
             source_link=e.get("source_link"),
         )
-        # Resolve the grounding chunk's real DART source id (when present) so the
+        # Resolve the grounding chunk's real SemantiK source id (when present) so the
         # block carries grounding the source-ref gate can resolve.
         source_ids: Tuple[str, ...] = ()
         chunk = e.get("source_chunk")

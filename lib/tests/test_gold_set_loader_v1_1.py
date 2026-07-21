@@ -142,14 +142,14 @@ def test_v1_1_doc_loads_clean(tmp_path: Path):
 def test_v1_0_doc_still_loads(tmp_path: Path):
     """A v1.0 doc validates against the v1.0 schema (back-compat preserved)."""
     course = tmp_path / "demo-101"
-    _write_chunks(course, rel="dart_chunks/chunks.jsonl")
-    chunks_path = course / "dart_chunks" / "chunks.jsonl"
+    _write_chunks(course, rel="corpus/chunks.jsonl")
+    chunks_path = course / "corpus" / "chunks.jsonl"
     doc = {
         "schema_version": "1.0",
         "course_slug": "demo-101",
         "chunkset": {
-            "kind": "dart",
-            "chunks_path": "dart_chunks/chunks.jsonl",
+            "kind": "corpus",
+            "chunks_path": "corpus/chunks.jsonl",
             "chunks_sha256": sha256_file(chunks_path),
         },
         "authored_at": "2026-06-11T00:00:00Z",
@@ -179,12 +179,12 @@ def test_v1_0_doc_with_v1_1_type_rejected(tmp_path: Path):
     """A v1.0-declared doc using a v1.1-only question_type must be rejected by
     the v1.0 schema (the version pin is load-bearing)."""
     course = tmp_path / "demo-101"
-    _write_chunks(course, rel="dart_chunks/chunks.jsonl")
-    chunks_path = course / "dart_chunks" / "chunks.jsonl"
+    _write_chunks(course, rel="corpus/chunks.jsonl")
+    chunks_path = course / "corpus" / "chunks.jsonl"
     doc = {
         "schema_version": "1.0",
         "course_slug": "demo-101",
-        "chunkset": {"kind": "dart", "chunks_path": "dart_chunks/chunks.jsonl",
+        "chunkset": {"kind": "corpus", "chunks_path": "corpus/chunks.jsonl",
                      "chunks_sha256": sha256_file(chunks_path)},
         "authored_at": "2026-06-11T00:00:00Z",
         "frozen": False,

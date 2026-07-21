@@ -1,17 +1,14 @@
-"""Wave 74 Session 3 semantic_structure_extractor heading-fallback tests.
+"""semantic_structure_extractor heading-fallback tests.
 
-DART's live pipeline was caught emitting HTML that lacked both
-``<article role="doc-chapter">`` wrappers AND ``<section>`` wrappers
-for many files (notably the W3C spec family: rdf11-primer,
-shacl-advanced-features, owl2-primer). The pre-Wave-74-S3 extractor
-keyed chapter detection off ``<section>``/doc-chapter wrappers alone,
-so those inputs yielded a single "Contents" chapter with no sections
-or, worse, zero chapters. Downstream ``source_module_map.json`` ended
-up with 0 entries per week.
+Some documents lack both ``<article role="doc-chapter">`` wrappers AND
+``<section>`` wrappers (notably the W3C spec family: rdf11-primer,
+shacl-advanced-features, owl2-primer). Keying chapter detection off
+``<section>``/doc-chapter wrappers alone yields a single "Contents"
+chapter with no sections — or, worse, zero chapters — leaving
+``source_module_map.json`` with 0 entries per week.
 
-These tests lock in the heading-hierarchy fallback that activates
-when the primary section-based and doc-chapter paths produce trivial
-output.
+These tests lock in the heading-hierarchy fallback that activates when
+the primary section-based and doc-chapter paths produce trivial output.
 """
 
 from __future__ import annotations
@@ -194,9 +191,9 @@ def test_section_wrapped_html_still_uses_primary_path():
 
 
 def test_warning_fires_when_fallback_activates(caplog):
-    """The fallback must log a WARNING so DART output quality is
+    """The fallback must log a WARNING so conversion output quality is
     observable. Callers (the textbook-to-course pipeline) rely on this
-    signal to flag upstream DART regressions.
+    signal to flag upstream regressions.
 
     The TOC-h2 fixture is the canonical case where the primary path
     degenerates (picks up "Contents" as the only chapter) and the
@@ -240,12 +237,12 @@ def test_warning_does_not_fire_for_section_wrapped_html(caplog):
 
 
 # ---------------------------------------------------------------------------
-# data-dart-* provenance carries through the fallback
+# data-semantik-* provenance carries through the fallback
 # ---------------------------------------------------------------------------
 
 
-def test_dart_provenance_content_survives_fallback():
-    """``data-dart-*``-tagged content elements must survive the
+def test_semantik_provenance_content_survives_fallback():
+    """``data-semantik-*``-tagged content elements must survive the
     fallback path intact. The `ContentBlock` schema doesn't serialize
     raw HTML attributes (that's parity with the primary path), but the
     block's originating `element` reference must still point at the
@@ -264,13 +261,13 @@ def test_dart_provenance_content_survives_fallback():
     <h1>Provenance Doc</h1>
     <h2>Contents</h2>
     <h3 id="ch1">Chapter One</h3>
-    <p data-dart-block-id="p1" data-dart-source="pdf"
-       data-dart-pages="1-2">
+    <p data-semantik-block-id="p1" data-semantik-source="pdf"
+       data-semantik-pages="1-2">
       A paragraph with provenance attributes on chapter one.
     </p>
     <h3 id="ch2">Chapter Two</h3>
-    <p data-dart-block-id="p2" data-dart-source="pdf"
-       data-dart-pages="3-4">
+    <p data-semantik-block-id="p2" data-semantik-source="pdf"
+       data-semantik-pages="3-4">
       Another paragraph with provenance attributes on chapter two.
     </p>
   </main>
@@ -282,7 +279,7 @@ def test_dart_provenance_content_survives_fallback():
     chapters = result["chapters"]
     assert len(chapters) == 2
     # Each chapter must carry at least one content block whose
-    # originating element still has the data-dart-* attributes.
+    # originating element still has the data-semantik-* attributes.
     for chapter_dict, expected_block_id in zip(
         chapters, ["p1", "p2"], strict=True
     ):
@@ -292,7 +289,7 @@ def test_dart_provenance_content_survives_fallback():
         )
         # We also verify via a direct re-extraction of the typed
         # chapter objects that the underlying `element` reference is
-        # intact — this is what downstream DART-provenance walkers
+        # intact — this is what downstream provenance walkers
         # read.
     # Re-extract using the internal path so we can see ContentBlock
     # `element` references (which aren't serialized in to_dict).
@@ -318,35 +315,35 @@ def test_dart_provenance_content_survives_fallback():
         for blocks in buckets:
             for block in blocks:
                 elem = block.element
-                if elem is not None and elem.get("data-dart-block-id") == expected:
+                if elem is not None and elem.get("data-semantik-block-id") == expected:
                     found = True
                     break
             if found:
                 break
         assert found, (
             f"chapter {chapter.heading_text!r} has no ContentBlock with "
-            f"data-dart-block-id={expected!r} — provenance lost"
+            f"data-semantik-block-id={expected!r} — provenance lost"
         )
 
 
 # ---------------------------------------------------------------------------
-# Live DART output smoke
+# Live SemantiK output smoke
 # ---------------------------------------------------------------------------
 
 
-_LIVE_DART_SAMPLES = [
+_LIVE_SEMANTIK_SAMPLES = [
     "SemantiK/output/rdf11_primer_accessible.html",
     "SemantiK/output/shacl_advanced_features_accessible.html",
     "SemantiK/output/rdf_schema_accessible.html",
 ]
 
 
-@pytest.mark.parametrize("sample_path", _LIVE_DART_SAMPLES)
-def test_live_dart_sample_produces_titled_chapters(sample_path):
-    """Pointed at a real DART output file from the 2026-04-24 pipeline
-    run, the extractor must now emit at least one chapter with a
-    non-empty title. Auto-skips when the file isn't materialised so
-    CI doesn't require live DART artefacts to stay green."""
+@pytest.mark.parametrize("sample_path", _LIVE_SEMANTIK_SAMPLES)
+def test_live_semantik_sample_produces_titled_chapters(sample_path):
+    """Pointed at a real SemantiK conversion output, the extractor must
+    emit at least one chapter with a non-empty title. Auto-skips when the
+    file isn't materialised so CI doesn't require live artefacts to stay
+    green."""
     repo_root = Path(__file__).resolve().parents[2]
     target = repo_root / sample_path
     if not target.exists():

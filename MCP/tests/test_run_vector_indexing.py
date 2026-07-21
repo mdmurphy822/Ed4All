@@ -38,6 +38,9 @@ _FIXTURE = (
 
 
 def _materialize_course(libv2_root: Path, slug: str) -> Path:
+    # Mirrors the shared retrieval fixture layout. That fixture ships under the
+    # legacy ``dart_chunks/`` directory name, which the indexer still dual-reads
+    # as a fallback (allowlisted legacy-compat).
     cdir = libv2_root / "courses" / slug
     (cdir / "dart_chunks").mkdir(parents=True)
     import shutil
@@ -130,6 +133,7 @@ class TestRunVectorIndexingHappyPath:
             assert key in env, f"missing envelope key {key}"
 
         assert env["embedding_provider"] == "fake"
+        # chunkset_kind reflects the shared retrieval fixture's manifest.
         assert env["chunkset_kind"] == "dart"
         assert env["chunks_count"] == 7
         assert env["course_slug"] == slug

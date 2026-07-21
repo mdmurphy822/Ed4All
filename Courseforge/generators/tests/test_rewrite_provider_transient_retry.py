@@ -77,7 +77,7 @@ def _outline_block(
         content={
             "key_claims": ["The central concept is X."],
             "curies": list(curies or []),
-            "source_refs": ["dart:slug#blk1"],
+            "source_refs": ["semantik:slug#blk1"],
             "objective_refs": ["TO-01"],
         },
         escalation_marker=escalation_marker,
@@ -99,7 +99,7 @@ def test_transient_does_not_burn_parse_budget(monkeypatch):
     monkeypatch.setenv("LOCAL_SYNTHESIS_BASE_URL", "http://localhost:11434/v1")
 
     success_html = (
-        "<section data-cf-source-ids=\"dart:slug#blk1\">"
+        "<section data-cf-source-ids=\"semantik:slug#blk1\">"
         "<p>The central concept is X.</p></section>"
     )
     p = RewriteProvider(

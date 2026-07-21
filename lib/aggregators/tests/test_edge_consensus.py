@@ -1083,9 +1083,9 @@ def test_load_chunk_text_lookup_reads_course_tree(tmp_path: Path) -> None:
     from lib.aggregators.edge_consensus import load_chunk_text_lookup
 
     course_dir = tmp_path / "course"
-    dart = course_dir / "dart_chunks"
-    dart.mkdir(parents=True)
-    (dart / "chunks.jsonl").write_text(
+    semantik = course_dir / "semantik_chunks"
+    semantik.mkdir(parents=True)
+    (semantik / "chunks.jsonl").write_text(
         json.dumps({"id": "chunk_00001", "text": "hello"}) + "\n"
         + json.dumps({"chunk_id": "chunk_00002", "text": "world"}) + "\n"
         + "not json\n"

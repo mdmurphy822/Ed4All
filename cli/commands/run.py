@@ -425,13 +425,13 @@ def _validate_skip_dart_inputs(
     root = Path(dart_output_dir)
     if not root.is_dir():
         return (
-            f"--skip-dart requires --semantik-output-dir to point at an "
+            f"--skip-conversion requires --semantik-output-dir to point at an "
             f"existing directory; got: {dart_output_dir!r}"
         )
     htmls = _discover_dart_htmls(dart_output_dir)
     if not htmls:
         return (
-            f"--skip-dart requires at least one ``*_accessible.html`` file "
+            f"--skip-conversion requires at least one ``*_accessible.html`` file "
             f"inside {dart_output_dir!r}; found none."
         )
     # Warn (don't fail) on corpus/output mismatches
@@ -441,8 +441,8 @@ def _validate_skip_dart_inputs(
         missing = [s for s in pdf_stems if s not in html_stems]
         if missing:
             click.secho(
-                f"warning: --skip-dart is set but {len(missing)} corpus PDF(s) "
-                f"have no matching ``*_accessible.html`` in "
+                f"warning: --skip-conversion is set but {len(missing)} corpus "
+                f"PDF(s) have no matching ``*_accessible.html`` in "
                 f"{dart_output_dir!r}: {missing}",
                 fg="yellow",
             )
@@ -702,7 +702,8 @@ def _build_orchestrator(
     help="Resume a prior run from its last checkpoint (provide run_id)",
 )
 @click.option(
-    "--skip-dart",
+    "--skip-conversion",
+    "skip_dart",
     is_flag=True,
     default=False,
     help=(
@@ -714,13 +715,23 @@ def _build_orchestrator(
     ),
 )
 @click.option(
+    # --skip-dart is the hidden legacy alias of --skip-conversion; still
+    # honored, coalesced into ``skip_dart`` in the body below.
+    "--skip-dart",
+    "skip_dart_legacy",
+    is_flag=True,
+    default=False,
+    hidden=True,
+    help="Deprecated alias of --skip-conversion (back-compat).",
+)
+@click.option(
     "--semantik-output-dir",
     "dart_output_dir",
     type=click.Path(),
     default=None,
     help=(
         "Directory containing ``*_accessible.html`` files. Only consulted "
-        "when --skip-dart is set. Defaults to SemantiK/output/."
+        "when --skip-conversion is set. Defaults to SemantiK/output/."
     ),
 )
 @click.option(
@@ -917,6 +928,7 @@ def run_command(
     objectives: Optional[str],
     resume_run_id: Optional[str],
     skip_dart: bool,
+    skip_dart_legacy: bool,
     dart_output_dir: Optional[str],
     dart_output_dir_legacy: Optional[str],
     reuse_objectives: Optional[str],
@@ -957,6 +969,11 @@ def run_command(
     if dart_output_dir is None and dart_output_dir_legacy is not None:
         dart_output_dir = dart_output_dir_legacy
 
+    # Coalesce the hidden legacy --skip-dart alias into the canonical
+    # --skip-conversion flag (both target the ``skip_dart`` run-param).
+    if skip_dart_legacy:
+        skip_dart = True
+
     workflow = _normalize_workflow(workflow_name)
 
     if workflow not in {_normalize_workflow(w) for w in SUPPORTED_WORKFLOWS}:
@@ -987,8 +1004,8 @@ def run_command(
     # don't have a semantik_conversion phase to elide.
     if skip_dart and workflow != "textbook_to_course":
         click.secho(
-            f"--skip-dart is only supported for workflow 'textbook_to_course'; "
-            f"got '{workflow}'.",
+            f"--skip-conversion is only supported for workflow "
+            f"'textbook_to_course'; got '{workflow}'.",
             fg="red",
         )
         sys.exit(2)
@@ -1207,7 +1224,7 @@ def _dry_run_plan(
             ):
                 phase_entry["status"] = "SKIPPED"
                 phase_entry["skip_reason"] = (
-                    f"--skip-dart set; reusing HTML from "
+                    f"--skip-conversion set; reusing HTML from "
                     f"{params.get('dart_output_dir', DEFAULT_DART_OUTPUT_DIR)!r}"
                 )
             # Wave 80 Worker A: mark course_planning as REUSED in the

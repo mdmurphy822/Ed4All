@@ -29,7 +29,7 @@ def _chunks():
         # source (original document) chunk: carries source_references
         "c_source_a": {"id": "c_source_a", "text": "Original textbook says fractions need a common denominator.",
                        "source": {"item_path": "textbook.html",
-                                  "source_references": [{"sourceId": "dart:textbook#abc"}]},
+                                  "source_references": [{"sourceId": "semantik:textbook#abc"}]},
                        "learning_outcome_refs": ["co-01"]},
         # source by flat-html heuristic (no source_references, flat *.html)
         "c_source_b": {"id": "c_source_b", "text": "Original textbook defines an irrational number.",

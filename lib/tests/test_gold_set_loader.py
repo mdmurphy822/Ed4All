@@ -35,13 +35,17 @@ def _codes(issues):
 
 @pytest.fixture()
 def mini_course_dir(tmp_path: Path) -> Path:
-    """A writable copy of the mini-course fixture (dart_chunks + gold set)."""
+    """A writable copy of the mini-course fixture.
+
+    The shared fixture ships its chunkset under the ``semantik_chunks/`` layout;
+    the loader resolves it via the pinned ``chunkset.chunks_path``.
+    """
     dst = tmp_path / "mini-course"
-    (dst / "dart_chunks").mkdir(parents=True)
+    (dst / "semantik_chunks").mkdir(parents=True)
     (dst / "retrieval_eval").mkdir(parents=True)
     shutil.copy(
-        MINI_COURSE / "dart_chunks" / "chunks.jsonl",
-        dst / "dart_chunks" / "chunks.jsonl",
+        MINI_COURSE / "semantik_chunks" / "chunks.jsonl",
+        dst / "semantik_chunks" / "chunks.jsonl",
     )
     shutil.copy(
         MINI_COURSE / "retrieval_eval" / "gold_set.json",
@@ -62,7 +66,7 @@ def test_clean_load_zero_issues(mini_course_dir: Path):
 
 def test_verify_false_skips_chunkset_io(mini_course_dir: Path):
     # Remove the chunkset entirely; verify=False must still load + schema-check.
-    (mini_course_dir / "dart_chunks" / "chunks.jsonl").unlink()
+    (mini_course_dir / "semantik_chunks" / "chunks.jsonl").unlink()
     gold, issues = load_gold_set(mini_course_dir, verify=False)
     assert gold.get("schema_version") == "1.0"
     assert "GOLD_SET_CHUNKSET_NOT_FOUND" not in _codes(issues)
@@ -96,7 +100,7 @@ def test_corrupted_sha_detected(mini_course_dir: Path):
     without re-pinning) must surface GOLD_SET_CHUNKSET_SHA_MISMATCH. This is
     the contract WS2's eval harness consumes — an eval refuses to run against
     a drifted corpus."""
-    chunks_path = mini_course_dir / "dart_chunks" / "chunks.jsonl"
+    chunks_path = mini_course_dir / "semantik_chunks" / "chunks.jsonl"
     # Append a byte so the recomputed sha no longer matches the pinned one.
     with chunks_path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps({"id": "extra", "text": "x", "source": {}}) + "\n")
@@ -106,7 +110,7 @@ def test_corrupted_sha_detected(mini_course_dir: Path):
 
 
 def test_chunkset_not_found(mini_course_dir: Path):
-    (mini_course_dir / "dart_chunks" / "chunks.jsonl").unlink()
+    (mini_course_dir / "semantik_chunks" / "chunks.jsonl").unlink()
     gold, issues = load_gold_set(mini_course_dir, verify=True)
     assert "GOLD_SET_CHUNKSET_NOT_FOUND" in _codes(issues)
 
@@ -285,7 +289,7 @@ def test_real_seed_gold_set_zero_critical(slug):
     # authoring sprint scales the set up, so the count is variable by design.
     assert len(gold["questions"]) >= 1
     assert gold.get("schema_version") in {"1.0", "1.1", "1.2"}
-    assert gold["chunkset"]["kind"] in {"imscc", "dart", "corpus"}
+    assert gold["chunkset"]["kind"] in {"imscc", "semantik", "dart", "corpus"}
 
 
 @pytest.mark.skipif(

@@ -1,9 +1,9 @@
 """Wave #22 stamp-site coverage: ``CourseProcessor._create_chunk`` propagates
 the ``composite_unit`` / ``unit_roles`` kwargs onto the emitted chunk.
 
-Unit-level companion to the end-to-end
-``MCP/tests/test_dart_chunking_composite_unit_metadata.py`` (which drives the same
-fields through the ``_run_dart_chunking`` registry callback). Here we exercise
+Unit-level companion to the end-to-end MCP chunking-phase composite-unit
+metadata test (which drives the same fields through the SemantiK-chunking
+registry callback). Here we exercise
 the IMSCC-path ``CourseProcessor._create_chunk`` seam in isolation: when the
 chunker's ``section_unit_signals`` / ``aggregate_composite_unit``
 helpers thread the aggregated values through as kwargs, ``_create_chunk`` stamps

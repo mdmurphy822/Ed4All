@@ -167,7 +167,7 @@ def decide_exit(report: ThetaReport) -> ThetaReport:
         )
 
     # WCAG passed, but the semantic-preservation cross-encoder was
-    # STUBBED (mode-collapsed / unavailable; DART_ALLOW_THETA_STUB=1).
+    # STUBBED (mode-collapsed / unavailable; SEMANTIK_ALLOW_THETA_STUB=1).
     # The composite theta_score includes a flat 0.7 placeholder and is
     # therefore meaningless — it must NOT decide ship_with_confidence
     # vs ship_with_flag. Stamp SHIP_WITH_FLAG with the explicit
