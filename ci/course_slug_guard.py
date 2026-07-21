@@ -12,7 +12,7 @@ Why scheme regexes and not a literal blocklist
 A blocklist of today's slugs is worthless: the next course has a new
 name. But the opposite extreme — "flag any lowercase-hyphen token" —
 is worse: it fires on the legitimate *neutral* literals that stand in
-for real slugs in tests (``alg-dart``, ``alg-legacy``, ``alg-101``,
+for real slugs in tests (``alg-demo``, ``alg-legacy``, ``alg-101``,
 ``sample-alg-9``, ``course-a``, ``unit-test-alg-xyz``), destroying the
 very replacements the purge introduced.
 

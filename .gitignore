@@ -74,9 +74,8 @@ Courseforge/runtime/*
 # Courseforge generated data files in scripts/
 Courseforge/scripts/*.json
 
-# SemantiK conversion batch output + dated scratch rounds (DART->semantik
-# purge task #19; SemantiK/output/* + SemantiK/inputs/* are handled in the
-# SemantiK section below).
+# SemantiK conversion batch output + dated scratch rounds (SemantiK/output/*
+# + SemantiK/inputs/* are handled in the SemantiK section below).
 SemantiK/batch_output/*
 !SemantiK/batch_output/.gitkeep
 SemantiK/output_*/
@@ -116,8 +115,9 @@ runtime/
 extracted/
 
 # Training captures (generated data)
-training-captures/dart/*
-!training-captures/dart/.gitkeep
+# The legacy capture mirror dir holds pre-rename local capture data
+# (never tracked); the ignore rule must outlive the code rename.
+training-captures/dart/
 training-captures/semantik/*
 !training-captures/semantik/.gitkeep
 training-captures/courseforge/*
@@ -262,7 +262,7 @@ docker-compose.override.yml
 docs/operations/spark-profile.md
 
 # =============================================================================
-# SemantiK (Semantic v2 DART) — runtime artifacts never ship
+# SemantiK (Semantic v2 conversion) — runtime artifacts never ship
 # =============================================================================
 SemantiK/models/
 SemantiK/data/extract_cache/
@@ -377,3 +377,7 @@ state/embedding_cache*.jsonl
 
 # Operator-local demo LMS deployment (OpenOLAT stack: compose, config, provisioning)
 demo/
+
+# Catch-all hardening (2026-07-21): ANY capture tool dir not enumerated above
+# stays out of git (tracked .gitkeep files are unaffected by ignore rules).
+training-captures/*

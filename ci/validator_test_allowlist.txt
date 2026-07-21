@@ -26,3 +26,13 @@ leak_check
 # Tested by lib/validators/tests/test_shacl_result_enricher.py via
 # class import; stem doesn't match the convention.
 shape_provenance
+
+# Framework block-type validators tested via class import in
+# lib/generation/tests/ (co-located with the block feature they gate), where
+# the test stem follows the block-feature name, not the validator stem:
+#   b08_sequence         -> lib/generation/tests/test_guided_practice_b08.py
+#   b09_debrief          -> lib/generation/tests/test_scenario_debrief_b09.py
+#   resource_link_purpose-> lib/generation/tests/test_resources_block_b15.py
+b08_sequence
+b09_debrief
+resource_link_purpose

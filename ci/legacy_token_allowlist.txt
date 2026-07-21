@@ -1,0 +1,393 @@
+# Legacy 'dart' token allowlist  (ci/legacy_token_guard.py)
+#
+# The guard fails when the retired engine name ``dart`` (any casing) appears
+# in a tracked file that is not listed here. ``DART`` was the AGPL PDF->HTML
+# engine ``SemantiK`` replaced. EMIT / write paths are dart-free: converted
+# HTML carries ``data-semantik-*`` attributes, chunk source-ids are minted
+# ``semantik:{slug}#{block_id}``, the on-disk chunkset dir is ``semantik_chunks/``,
+# and freshly-emitted manifests stamp ``semantik_chunks_sha256`` /
+# ``chunkset_kind:"semantik"``. Every file below carries the token for one
+# reason only: a load-bearing dual-READ / migration / wire-contract literal
+# that must survive so 19 un-migrated local corpora + 230 old checkpoints +
+# paused resume state keep validating. There is NO "scrub-pending" ratchet:
+# each entry is an individually-justified WHAT-MUST-STAY surface.
+#
+# Format (one per line, '#' starts a comment):
+#   <repo-relative-path>            allow every 'dart' match in that file
+#   <repo-relative-path><TAB><tok>  allow exactly one matched spelling there
+#
+# The guard's own module + test and this allowlist are always self-exempt
+# (``_SELF_PATHS``) and need no entry. Prefer an inline ``legacy-token: allow``
+# marker on a single doc line over allowlisting a whole doc.
+
+
+# ── GUARD WIRING (WHAT-MUST-STAY) ────────────────────────────────────────────────
+# The integrity-check registration names the token in its docstring +
+# failure messages to explain what it enforces.
+ci/integrity_check.py
+
+# ── CORPUS-MIGRATION TOOLING (WHAT-MUST-STAY) ────────────────────────────────────
+# The dart-purge migration registry, the legacy dart_chunks/ backfill
+# tool, and their tests necessarily name the legacy layout they migrate
+# away from.
+LibV2/tools/libv2/migrate.py
+LibV2/tools/libv2/scripts/backfill_legacy_chunks.py
+LibV2/tools/libv2/tests/test_chunks_path_for_query.py
+LibV2/tools/libv2/tests/test_dart_purge_corpus_migration.py
+
+# ── SCHEMA DUAL-READ (WHAT-MUST-STAY) ────────────────────────────────────────────
+# source_reference ^(dart|semantik) pattern, the widened decision-event /
+# pair-audit / chunkset / gold-set enums + SHACL sh:in lists, the
+# anyOf dart_chunks_sha256 <-> semantik_chunks_sha256 manifest fields, the
+# still-emitted source_dart_html_sha256 sidecar field, and the persisted
+# DART_EVIDENCE_DROPPED / IMSCC_CLAIM_NOT_IN_DART drift codes. Readers
+# accept the legacy spelling so old corpora + checkpoints still validate.
+schemas/ONTOLOGY.md
+schemas/academic/textbook_structure.schema.json
+schemas/context/training_pair.shacl.ttl
+schemas/events/decision_event.schema.json
+schemas/events/session_annotation.schema.json
+schemas/governance/promotion_chain.schema.json
+schemas/knowledge/pair_audit_fields.schema.json
+schemas/knowledge/source_reference.schema.json
+schemas/library/chunkset_drift_report.schema.json
+schemas/library/chunkset_manifest.schema.json
+schemas/library/course_manifest.schema.json
+schemas/library/vector_index_manifest.schema.json
+schemas/retrieval/gold_set.schema.json
+schemas/retrieval/gold_set.schema.v1_1.json
+schemas/retrieval/gold_set.schema.v1_2.json
+schemas/tests/fixtures/vector_index/valid_fake_manifest_null_revision.json
+schemas/tests/fixtures/ws1-retrieval/valid_minimal_gold_set.json
+schemas/tests/test_chunkset_manifest_schema.py
+schemas/tests/test_source_reference_schema.py
+schemas/tests/test_wave16_per_objective_attribution_contract.py
+schemas/tests/test_wave4_pair_validation_contract.py
+
+# ── PAIR-AUDIT WIRE TOKENS (WHAT-MUST-STAY) ──────────────────────────────────────
+# dart_source_check / dart_disagreement / DART_DISAGREEMENT_RATE_HIGH are
+# the sole accepted pair-audit wire values stamped on every training pair
+# (pinned by pair_audit_fields.schema.json). No ratified semantik
+# successor exists yet; the validators, thresholds, calibrator and their
+# tests keep the internal consts name-consistent with the wire token.
+Trainforge/scripts/calibrate_pair_validation.py
+Trainforge/tests/test_calibrate_pair_validation.py
+lib/validators/pair/_claim_support_thresholds.py
+lib/validators/pair/claim_support.py
+lib/validators/pair_claim_support.py
+
+# ── STYLING READ-COMPAT (WHAT-MUST-STAY) ─────────────────────────────────────────
+# The .dart-example / .dart-solution / .dart-callout--* / .dart-key-terms
+# .dart-figure-* class selectors still style legacy-exported HTML (the
+# internal --dart-* custom props were renamed; the selectors stay).
+Courseforge/templates/accessibility/semantik_content.css
+
+# ── TRAINED-WEIGHTS + ENV READ-COMPAT (WHAT-MUST-STAY) ───────────────────────────
+# The trained Qwen-Table LoRA still emits data-dart-cell-roles, so the theta
+# evaluator/types/prompts dual-read it (retire on retrain); reasoning_qc
+# dual-reads data-dart-* block/role/pages attrs; and DART_THETA_DEVICE
+# stays a read-alias env for the theta device pin.
+SemantiK/semantik_structure/qwen_specialists/prompts.py
+SemantiK/semantik_structure/reasoning_qc_standalone.py
+SemantiK/semantik_structure/tests/test_reasoning_qc_standalone.py
+SemantiK/semantik_structure/theta/evaluator.py
+SemantiK/semantik_structure/theta/semantic_preservation.py
+SemantiK/semantik_structure/theta/types.py
+lib/semantik/tests/test_theta_device.py
+
+# ── COURSEFORGE ROUTER READ-COMPAT (WHAT-MUST-STAY) ──────────────────────────────
+# _SOURCE_ID_RE ^(?:dart|semantik): dual-READs the inter-tier source-id
+# so outline/rewrite blocks citing a legacy dart: ref still resolve.
+Courseforge/router/inter_tier_gates.py
+
+# ── WORKFLOW / AGENT CONFIG DUAL-READ (WHAT-MUST-STAY) ───────────────────────────
+# config declares the legacy dart-* agent keys + dart_conversion phase as
+# resolve-on-read aliases, and pins the dart_chunks_* / dart_html_paths
+# ``param:`` (kwarg) names that phase consumers map INTO on read.
+config/agents.yaml
+config/workflows.yaml
+
+# ── CLI ALIAS READ-COMPAT (WHAT-MUST-STAY) ───────────────────────────────────────
+# --skip-dart is the hidden legacy alias of --skip-conversion (coalesced
+# into the skip_dart / dart_output_dir run-params on read); the dart_conversion
+# phase name + _load_dart_chunkset_for_planning kwarg are accepted on read.
+cli/commands/objectives_cmd.py
+cli/commands/run.py
+cli/tests/test_backup_command.py
+cli/tests/test_run_command.py
+
+# ── GUI READ-COMPAT (WHAT-MUST-STAY) ─────────────────────────────────────────────
+# _SOURCE_ID_PREFIXES ('semantik:','dart:') dual-parse, the source-materials
+# dart_docs API field + _DART_ROOTS 'source/dart' root, the dart_conversion
+# phase-weight for old runs, and data-dart-* / dart: source-doc fixtures.
+gui/routers/library.py
+gui/services/answer_render.py
+gui/services/imscc_service.py
+gui/services/retrieval_service.py
+gui/services/run_service.py
+gui/services/source_materials.py
+gui/static/studio/studio.js
+gui/tests/test_contents_textbook_link.py
+gui/tests/test_sanitize_reveals.py
+gui/tests/test_source_materials_router.py
+gui/tests/test_studio_a11y_gate.py
+
+# ── LIBRARY READ-COMPAT (WHAT-MUST-STAY) ─────────────────────────────────────────
+# The dual-READ core: data-(?:dart|semantik)-* attr regexes, dart:/semantik:
+# source-id acceptance, the dart_chunks/ read-fallback subdir + LEGACY_CHUNKS_DIRNAME,
+# chunkset_kind 'dart' enum + kind->path maps, the dart_chunks_path /
+# dart_chunks_manifest_path input keys, the source_dart_html_sha256 READ
+# fallback, the OBJECTIVE_CHUNK_NOT_IN_DART_MANIFEST wire code, the
+# dart-conversion phase alias, the ED4ALL_HOME 'dart-output' basename, and
+# the 'converted-by-dart' legacy deny-slug. Read-side only; live symbols
+# renamed where internal, literals kept.
+lib/aggregators/edge_consensus.py
+lib/aggregators/intelligence_level.py
+lib/aggregators/promotion_chain_report.py
+lib/aggregators/provenance_resolution.py
+lib/constants.py
+lib/course_identity.py
+lib/libv2_storage.py
+lib/objectives/chunk_window.py
+lib/objectives/generation_quality_eval.py
+lib/objectives/lo_map_builder.py
+lib/ontology/lexical_concept_seeds.py
+lib/paths.py
+lib/retrieval/citation_anchor.py
+lib/retrieval/cross_course_negatives.py
+lib/retrieval/gold_repin.py
+lib/retrieval/gold_set.py
+lib/retrieval/graph_expand.py
+lib/retrieval/grounded_answer.py
+lib/retrieval/library_wide.py
+lib/semantic_structure_extractor/semantic_structure_extractor.py
+lib/semantik/subclassifier.py
+lib/validators/_block_rubric_helpers.py
+lib/validators/chunk_wcag_status.py
+lib/validators/chunkset_drift.py
+lib/validators/chunkset_manifest.py
+lib/validators/citation_anchor.py
+lib/validators/content_grounding.py
+lib/validators/difficulty_provenance.py
+lib/validators/feature_cache.py
+lib/validators/libv2/course_completeness.py
+lib/validators/libv2/manifest.py
+lib/validators/manifest_completeness.py
+lib/validators/objective_entailment.py
+lib/validators/objective_source_refs.py
+lib/validators/objective_specificity.py
+lib/validators/semantik_markers.py
+lib/validators/source_coverage.py
+lib/validators/source_refs.py
+lib/validators/terminal_objective_source_grounding.py
+lib/validators/vector_index_manifest.py
+
+# ── LIBRARY LEGACY-COMPAT TESTS (WHAT-MUST-STAY) ─────────────────────────────────
+# Pin the read-compat surfaces above: dart:/semantik: dual-resolve, the
+# dart_chunks/ dir + dart_chunks_sha256 manifest fallback, chunkset_kind
+# 'dart' fixtures, the 'dart-conversion' phase, 'dart-output' ED4ALL_HOME,
+# legacy data-dart-* structure/objective fixtures, and the
+# OBJECTIVE_CHUNK_NOT_IN_DART* wire codes.
+lib/objectives/tests/test_citation_reselect_real_grounding.py
+lib/objectives/tests/test_citation_sanitize.py
+lib/objectives/tests/test_lo_map_builder.py
+lib/semantic_structure_extractor/tests/test_semantic_structure_extractor.py
+lib/semantic_structure_extractor/tests/test_structure_outline_anchor.py
+lib/tests/test_decision_capture.py
+lib/tests/test_gold_set_loader.py
+lib/tests/test_imscc_chunks_path_shim.py
+lib/tests/test_paths_ed4all_home.py
+lib/tests/test_semantic_structure_extractor_heading_fallback.py
+lib/tests/test_semantik_dual_read.py
+lib/tests/test_source_refs_validator.py
+lib/validators/tests/test_chunk_wcag_status.py
+lib/validators/tests/test_chunkset_drift.py
+lib/validators/tests/test_chunkset_manifest.py
+lib/validators/tests/test_citation_anchor_validator.py
+lib/validators/tests/test_libv2_manifest_concept_graph.py
+lib/validators/tests/test_libv2_manifest_dual_chunkset.py
+lib/validators/tests/test_manifest_completeness.py
+lib/validators/tests/test_numeric_literal_grounding.py
+lib/validators/tests/test_objective_entailment.py
+lib/validators/tests/test_objective_source_refs.py
+lib/validators/tests/test_objective_specificity.py
+lib/validators/tests/test_source_coverage.py
+
+# ── LIBV2 TOOLING READ-COMPAT (WHAT-MUST-STAY) ───────────────────────────────────
+# imscc->dart->corpus chunkset resolver + 'dart' Click.Choice / pin
+# docstrings + the legacy dart_chunks/ read-fallback comments; LibV2/CLAUDE.md
+# documents the dart_chunks/ fallback, chunkset_kind 'dart' read-accept, and
+# the dual-read manifest SHA.
+LibV2/CLAUDE.md
+LibV2/tools/libv2/cli.py
+LibV2/tools/libv2/multi_retriever.py
+LibV2/tools/libv2/retriever.py
+LibV2/tools/libv2/semantic_retriever.py
+LibV2/tools/libv2/vector_index.py
+
+# ── LIBV2 LEGACY-COMPAT TESTS (WHAT-MUST-STAY) ───────────────────────────────────
+# The dedicated dart_chunks read-fallback resolution + benchmark tests that
+# deliberately exercise the legacy dir end-to-end.
+LibV2/tools/libv2/tests/test_multi_retriever_course_scope.py
+LibV2/tools/libv2/tests/test_retrieval_benchmark_semantic.py
+
+# ── ORCHESTRATION READ-COMPAT (WHAT-MUST-STAY) ───────────────────────────────────
+# Registry/phase/tool aliases + kwarg-compat that old checkpoints, resumed
+# runs and mailbox tasks reference: run_dart_chunking registry key,
+# stage_dart_outputs / validate_dart_markers tool-name aliases, the
+# dart-chunker / dart-converter / dart-automation-coordinator AGENT_TOOL_MAPPING
+# aliases, the dart_conversion checkpoint/phase alias + _CONVERSION_PHASE_ALIASES,
+# the dart_chunks_path / dart_chunks_sha256 phase-output READ keys, and the
+# data-(?:dart|semantik)-block-id / dart:{slug} dual-read harvest in the
+# chunker + content-gen helpers. EMIT stays semantik: (verified).
+MCP/core/executor.py
+MCP/core/tool_schemas.py
+MCP/core/workflow_runner.py
+MCP/hardening/checkpoint.py
+MCP/hardening/gate_input_routing.py
+MCP/ipc/status_tracker.py
+MCP/tools/_content_gen_helpers.py
+MCP/tools/pipeline_tools.py
+
+# ── ORCHESTRATION LEGACY-COMPAT TESTS (WHAT-MUST-STAY) ───────────────────────────
+# Pin the aliases + kwargs above: run_dart_chunking registry lookups,
+# stage_dart_outputs tool alias, the dart-agent dispatch aliases, the
+# dart_conversion phase alias, --skip-dart threading, dart_chunks_path /
+# dart_chunks_sha256 kwargs, the dart_block_ids topic field, data-dart-*
+# dual-read HTML, and the leaked-[dart:...] strip fixtures. The dart-named
+# test files test the legacy read paths and keep their name deliberately.
+MCP/tests/test_activity_prompt_variety.py
+MCP/tests/test_archive_to_libv2_mcp_tool_parity.py
+MCP/tests/test_assessment_per_co_coverage.py
+MCP/tests/test_block_synthesis_manifest_emission.py
+MCP/tests/test_chunk_local_tags.py
+MCP/tests/test_concept_extraction_edge_consensus.py
+MCP/tests/test_concept_extraction_kg_quality.py
+MCP/tests/test_concept_extraction_lo_objectives.py
+MCP/tests/test_concept_extraction_phase_order.py
+MCP/tests/test_concept_extraction_semantic_graph.py
+MCP/tests/test_content_gen_reads_dart_html.py
+MCP/tests/test_courseforge_source_id_emit.py
+MCP/tests/test_dart_chunker_registration.py
+MCP/tests/test_dart_chunking_composite_unit_metadata.py
+MCP/tests/test_dart_chunking_concept_tags.py
+MCP/tests/test_dart_chunking_page_concept_fallback.py
+MCP/tests/test_dart_chunking_source_pages.py
+MCP/tests/test_dart_chunking_source_refs.py
+MCP/tests/test_dart_chunking_source_sha.py
+MCP/tests/test_dart_chunking_stranded_tails.py
+MCP/tests/test_executor.py
+MCP/tests/test_executor_dispatch_routing.py
+MCP/tests/test_extraction_contract_provenance.py
+MCP/tests/test_gate_input_routing_w4_nli.py
+MCP/tests/test_generate_course_content.py
+MCP/tests/test_h1_dart_source_coverage.py
+MCP/tests/test_libv2_root_resolution.py
+MCP/tests/test_objectives_bloom_fallback.py
+MCP/tests/test_objectives_ul_populated.py
+MCP/tests/test_pipeline_tools.py
+MCP/tests/test_rewrite_leak_sanitizer.py
+MCP/tests/test_run_vector_indexing.py
+MCP/tests/test_semantik_bridge_e2e.py
+MCP/tests/test_semantik_dispatch_flip.py
+MCP/tests/test_semantik_v2_seam.py
+MCP/tests/test_source_module_map_heuristic.py
+MCP/tests/test_stage_and_archive_figures.py
+MCP/tests/test_stage_dart_outputs.py
+MCP/tests/test_textbook_synthesis_stage3.py
+MCP/tests/test_tool_registry_schema_parity.py
+MCP/tests/test_week_title_mapping.py
+MCP/tests/test_workflow_runner_dart_reuse_stop.py
+MCP/tests/test_workflow_runner_skip_dart.py
+MCP/tools/tests/test_content_gen_helpers_objective_source_refs.py
+MCP/tools/tests/test_dart_chunking_heading_sanity.py
+MCP/tools/tests/test_objective_quality_gate.py
+MCP/tools/tests/test_pipeline_tools_outline_self_consistency.py
+MCP/tools/tests/test_post_rewrite_gate_roots.py
+MCP/tools/tests/test_rewrite_source_id_resolution.py
+
+# ── CHUNKER / PARSER READ-COMPAT (WHAT-MUST-STAY) ────────────────────────────────
+# Live data-(?:dart|semantik)-* dual-read regexes + dart:{slug} dual-key,
+# the ContentSection.data_dart_* harvested fields, the still-dart-named
+# parse_dart_pages_attr public API, and the (now semantik-named)
+# harvest_semantik_source_refs / build_semantik_block_offset_index chunker API
+# that reads both attribute spellings. dart_chunks/ read fallback in __init__.
+Trainforge/chunker/__init__.py
+Trainforge/chunker/chunker.py
+Trainforge/chunker/helpers.py
+Trainforge/parsers/html_content_parser.py
+
+# ── CHUNKER / PARSER LEGACY-COMPAT TESTS (WHAT-MUST-STAY) ────────────────────────
+# Pin the dual-read: legacy data-dart-* HTML fixtures, the data_dart_* section
+# fields, harvest_semantik_source_refs / build_semantik_block_offset_index behavior,
+# and the dart_source_refs create_chunk callback kwarg.
+Trainforge/chunker/tests/test_chunk_overlap.py
+Trainforge/chunker/tests/test_composite_unit_metadata.py
+Trainforge/chunker/tests/test_section_hard_break_and_text_fold.py
+Trainforge/chunker/tests/test_semantik_chunk_enrichment.py
+Trainforge/chunker/tests/test_source_pages_union.py
+Trainforge/chunker/tests/test_source_refs_section_scoped.py
+Trainforge/chunker/tests/test_unit_subclass.py
+Trainforge/parsers/tests/test_opener_extraction.py
+Trainforge/parsers/tests/test_pedagogical_flow_extraction.py
+Trainforge/parsers/tests/test_subclass_extraction.py
+Trainforge/parsers/tests/test_unit_extraction.py
+
+# ── TRAINFORGE READ-COMPAT (WHAT-MUST-STAY) ──────────────────────────────────────
+# dart_source_refs harvest fold into source_references[], the
+# 'dart_chunks/chunks.jsonl' read-fallback in the chunk-candidate + graph-layout
+# lists, and the legacy source/dart + --source-kind dart sweep read path.
+Trainforge/process_course.py
+Trainforge/scripts/retrieval_chunk_sweep.py
+Trainforge/synthesize_training.py
+Trainforge/training/graph_layout.py
+
+# ── TRAINFORGE LEGACY-COMPAT TESTS (WHAT-MUST-STAY) ──────────────────────────────
+# Pin the dart_chunks/ read-fallback discovery tuple, chunkset_kind 'dart' +
+# source_dart_html_sha256 sidecar fixtures, run_dart_chunking registry lookup,
+# the dart_source_refs kwarg contract, 'converted-by-dart' fixture slug, and
+# the harvest_semantik_source_refs / build_semantik_block_offset_index dual-read.
+Trainforge/tests/_archive_discovery.py
+Trainforge/tests/test_chunk_source_refs.py
+Trainforge/tests/test_chunk_source_refs_per_chunk.py
+Trainforge/tests/test_chunk_subsection_break.py
+Trainforge/tests/test_chunk_v4_jsonld_roundtrip.py
+Trainforge/tests/test_chunk_validation.py
+Trainforge/tests/test_chunker_resume_safety.py
+Trainforge/tests/test_citation_anchor_contract.py
+Trainforge/tests/test_instruction_pair_extractor_template_aware.py
+Trainforge/tests/test_lexical_concept_seeds.py
+Trainforge/tests/test_lo_refs_backfill_wave3_anew3.py
+Trainforge/tests/test_synthesize_training_stratified.py
+
+# ── OPERATOR SCRIPT READ-COMPAT (WHAT-MUST-STAY) ─────────────────────────────────
+# Legacy data-dart-block-id / data-dart-* attribute readers, the dart:<slug>
+# source-id parse, the dart_chunks/ read path, the stage_dart_outputs tool
+# name, and the 'dart_conversion' phase-key note for pre-migration runs.
+scripts/archive/wave81_reclassify_chunks.py
+scripts/calibration_harness.py
+scripts/integration/run_local_generation_smoke.py
+scripts/mailbox_servicer.py
+scripts/repair_partial_resume_state.py
+scripts/semantik_rerender.py
+scripts/structure_scorecard.py
+
+# ── SCRIPT LEGACY-COMPAT TESTS + FIXTURES (WHAT-MUST-STAY) ───────────────────────
+# Build / assert on dart:<doc># source-ids, data-dart-* HTML, .dart-* styling
+# hooks and dart_chunks/ fixtures that exercise the legacy read paths.
+scripts/tests/fixtures/build_calibration_corpora.py
+scripts/tests/test_assemble_enduser_page.py
+scripts/tests/test_calibration_harness.py
+scripts/tests/test_semantik_rerender_title.py
+scripts/tests/test_structure_scorecard.py
+
+# ── CROSS-PROJECT LEGACY-COMPAT TEST (WHAT-MUST-STAY) ────────────────────────────
+# Keeps dart_chunks/ in the offline retrieval discovery tuple as marked
+# legacy dual-read coverage (main path flipped to semantik_chunks/).
+tests/offline/test_retrieval_offline.py
+
+# ── LEGACY CAPTURE-MIRROR IGNORE (WHAT-MUST-STAY) ──────
+# .gitignore keeps the training-captures/dart/ ignore rule so the pre-SemantiK
+# local capture-mirror dir (never tracked) stays ignored. A .gitignore pattern
+# line cannot carry an inline marker, so the single 'dart' spelling is pinned.
+.gitignore	dart

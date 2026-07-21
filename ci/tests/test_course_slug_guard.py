@@ -59,7 +59,7 @@ def test_ignores_neutral_test_literals():
     # These are the deliberate generic replacements the purge introduces;
     # firing on them would destroy the fix.
     neutral = [
-        "alg-dart",
+        "alg-demo",
         "alg-legacy",
         "alg-101",
         "alg-quiz-course",

@@ -63,10 +63,11 @@ jobs:
         run: python ci/integrity_check.py --verbose
 
       # The integrity run above already ENFORCES the course-slug guard
-      # (registered as check_course_slug_leak). This step exercises the
-      # guard's own unit tests, which live under ci/tests/ (outside the
-      # pytest.ini testpaths the main `test` job scans).
-      - name: Test course-slug guard
+      # (check_course_slug_leak) and the retired-engine-name guard
+      # (check_legacy_token_leak). This step exercises both guards' own unit
+      # tests, which live under ci/tests/ (outside the pytest.ini testpaths
+      # the main `test` job scans).
+      - name: Test CI leak guards
         run: python -m pytest ci/tests -q
 
   # The GUI suite (~494 tests under gui/tests/) imports FastAPI's TestClient.

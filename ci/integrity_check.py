@@ -738,12 +738,16 @@ def check_validator_test_coverage(
         if m:
             shim_for_subpackage[(m.group(1), m.group(2))] = s.stem
 
-    # Aggregate test stems across canonical dirs.
+    # Aggregate test stems across canonical dirs. Recurse so tests placed
+    # in a subpackage-mirroring subdir (e.g. lib/validators/tests/alignment/)
+    # count as coverage for the corresponding validator subpackage.
     all_test_stems: set = set()
     for d in test_dirs:
         if not d.exists():
             continue
-        for t in d.glob("test_*.py"):
+        for t in d.rglob("test_*.py"):
+            if "__pycache__" in t.parts:
+                continue
             all_test_stems.add(t.stem)
 
     def _has_test(validator: Path) -> bool:
@@ -933,6 +937,57 @@ def check_course_slug_leak(verbose: bool = False) -> CheckResult:
     return result
 
 
+def check_legacy_token_leak(verbose: bool = False) -> CheckResult:
+    """Fail when the retired legacy 'dart' engine name is in a tracked file.
+
+    ``DART`` was the AGPL PDF-conversion engine that ``SemantiK`` replaced;
+    the public repo must carry no reference to it except in the narrow set
+    of dual-read compat / migration / legacy-compat-test files enumerated
+    in ``ci/legacy_token_allowlist.txt``. Detection (boundary-aware, so
+    ``standard`` never fires) and the allowlist live in
+    ``ci/legacy_token_guard.py``. Scans ``git ls-files`` only. An
+    unscannable tree (no git) is a warning + pass, not a silent skip; any
+    violation fails the check with file:line:token.
+    """
+    start_time = time.time()
+    result = CheckResult(name="legacy_token_leak", passed=False, message="")
+
+    try:
+        from ci import legacy_token_guard
+    except ImportError as e:
+        result.errors.append(f"legacy_token_guard import failed: {e}")
+        result.message = "Legacy-token guard unavailable"
+        result.duration_seconds = time.time() - start_time
+        return result
+
+    try:
+        violations = legacy_token_guard.scan_repository(PROJECT_ROOT)
+    except RuntimeError as e:
+        result.message = f"Legacy-token scan skipped: {e}"
+        result.warnings.append(result.message)
+        result.passed = True
+        result.duration_seconds = time.time() - start_time
+        return result
+
+    result.details["violation_count"] = len(violations)
+    if violations:
+        for v in violations:
+            result.errors.append(v.format())
+        result.passed = False
+        result.message = f"{len(violations)} legacy 'dart' token(s) in tracked files"
+    else:
+        result.passed = True
+        result.message = "No legacy 'dart' tokens in tracked files"
+
+    if verbose:
+        logger.info(f"  {result.message}")
+        for v in violations:
+            logger.warning(f"    {v.format()}")
+
+    result.duration_seconds = time.time() - start_time
+    return result
+
+
 def check_provenance_enum_sync(verbose: bool = False) -> CheckResult:
     """Verify the closed Touch.provider enum is in sync across all sites.
 
@@ -1036,6 +1091,7 @@ def run_integrity_checks(
         ("Sample Finalization", lambda: check_sample_finalization(runs_path, verbose)),
         ("LibV2 Vendor Sync", lambda: check_libv2_vendor_sync(verbose)),
         ("Course Slug Leak", lambda: check_course_slug_leak(verbose)),
+        ("Legacy Token Leak", lambda: check_legacy_token_leak(verbose)),
         ("Provenance Enum Sync", lambda: check_provenance_enum_sync(verbose)),
         (
             "Validator Test Coverage",
