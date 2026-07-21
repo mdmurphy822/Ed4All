@@ -1,0 +1,61 @@
+# Default training config for the NVIDIA Nemotron-3-Nano-30B-A3B (BF16) base.
+# Loaded by ``Trainforge.training.configs.load_config("nemotron3-nano-30b")``.
+# Course-level overrides may override any field; see TrainingConfig.
+#
+# Architecture note (verified against the pinned snapshot's
+# modeling_nemotron_h.py, model_type=nemotron_h — hybrid 52-layer stack:
+# 23 Mamba-2 mixer + 23 MoE + 6 attention layers):
+#
+#   * target_modules covers the ATTENTION projections (q/k/v/o_proj — only
+#     6/52 layers) AND the MAMBA-2 mixer projections (in_proj/out_proj —
+#     23/52 layers carry a Mamba mixer, so skipping them would leave most
+#     of the network unadapted).
+#   * NO gate_proj — it does not exist on this architecture (NemotronHMLP
+#     is a 2-projection up_proj/down_proj MLP, no gated branch).
+#   * NO bare up_proj/down_proj — those names would ALSO match the ~5,900
+#     per-expert nn.Linear modules inside the MoE expert lists, wrapping
+#     thousands of tiny adapters (VRAM blow-up, near-zero per-expert
+#     signal). The MoE router gate is an fp32 nn.Parameter (not an
+#     nn.Linear), so it is not LoRA-targetable at all. If MoE adaptation
+#     is ever wanted, target the always-active dense path only:
+#     shared_experts.up_proj / shared_experts.down_proj (i.e.
+#     "shared_experts.*" suffix-scoped names), never the bare MLP names.
+#
+# bf16 LoRA ONLY — QLoRA/4-bit is NOT supported for this hybrid arch
+# (keep use_4bit=false). Sized for a 121 GB unified-memory host
+# (~59 GB bf16 weights); gradient_checkpointing on to bound activation
+# memory at max_seq_length=4096.
+
+base_model: nemotron3-nano-30b
+learning_rate: 1.0e-4
+epochs: 3
+lora_rank: 16
+lora_alpha: 32
+lora_dropout: 0.05
+max_seq_length: 4096
+batch_size: 1
+gradient_accumulation_steps: 16
+warmup_ratio: 0.03
+weight_decay: 0.01
+target_modules:
+  - q_proj
+  - k_proj
+  - v_proj
+  - o_proj
+  - in_proj
+  - out_proj
+# Hybrid Mamba-2 + MoE arch: 4-bit quantization unsupported — bf16 LoRA only.
+use_4bit: false
+# 30B base: activation checkpointing keeps the bf16 fit inside the
+# unified-memory budget (threaded via the accepted-kwargs shim).
+gradient_checkpointing: true
+min_dpo_pairs: 50
+dpo_preference_filter: editorial_or_misconception
+dpo_fail_hard: true
+seed: 42
+# Per-epoch checkpoint retention for the downstream-probe selector.
+save_total_limit: 3
+completion_only_loss: true
+verify_loss_mask: true
+early_stopping_patience: 1
+checkpoint_selection_metric: gold_keypoint_coverage

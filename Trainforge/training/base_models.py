@@ -11,7 +11,7 @@ this module only declares which weights to load.
 
 Resolved chat templates for Wave 90:
 
-* ``chatml`` — Qwen / SmolLM2 (``<|im_start|>role\\n…<|im_end|>``)
+* ``chatml`` — Qwen / SmolLM2 / Nemotron-3 Nano (``<|im_start|>role\\n…<|im_end|>``)
 * ``llama3`` — Llama-3 family (``<|start_header_id|>role<|end_header_id|>…``)
 * ``phi3`` — Phi-3.5 (``<|user|>\\n…<|end|>\\n<|assistant|>\\n…``)
 
@@ -40,6 +40,15 @@ class BaseModelSpec:
         recommended_max_seq_length: Default ``training_config.max_seq_length``.
         recommended_lora_rank: Default LoRA ``r`` for QLoRA fits.
         recommended_lora_alpha: Default LoRA ``alpha``.
+        trust_remote_code: Passed through to every ``from_pretrained``
+            call in ``peft_trainer.py``. ``True`` ONLY for bases whose
+            architecture ships as repo-local modeling code (e.g.
+            Nemotron-3 Nano's ``NemotronHForCausalLM``). The executed
+            code is the pinned local snapshot's own ``modeling_*.py``
+            (revision-pinned, pre-seeded) — consistent with the
+            project's HF-offline posture: nothing is fetched, the flag
+            merely permits loading the code that already ships inside
+            the audited snapshot.
     """
 
     name: str
@@ -49,13 +58,15 @@ class BaseModelSpec:
     recommended_max_seq_length: int
     recommended_lora_rank: int
     recommended_lora_alpha: int
+    trust_remote_code: bool = False
 
 
 # ---------------------------------------------------------------------- #
 # Registry                                                                #
 # ---------------------------------------------------------------------- #
 #
-# Wave 90 ships 5 supported bases. The first entry (Qwen2.5-1.5B) is the
+# Wave 90 shipped 5 supported bases; ``nemotron3-nano-30b`` (entry 6) was
+# added later for the big-memory host. The first entry (Qwen2.5-1.5B) is the
 # default for textbook-to-course training because:
 #   * Open weights (no HF gating, no HF_TOKEN required).
 #   * Native ChatML template, plays nicely with TRL's SFTTrainer.
@@ -109,6 +120,26 @@ _REGISTRY: Dict[str, BaseModelSpec] = {
         recommended_max_seq_length=4096,
         recommended_lora_rank=16,
         recommended_lora_alpha=32,
+    ),
+    # NVIDIA Nemotron-3-Nano-30B-A3B (BF16): hybrid Mamba-2 + MoE
+    # ``NemotronHForCausalLM`` (~30B total / 3.5B active, 256K ctx), ChatML
+    # template per the snapshot's chat_template.jinja. bf16 LoRA ONLY —
+    # QLoRA/4-bit is NOT supported for this hybrid arch (keep
+    # ``use_4bit=false``). Revision pinned to the locally pre-seeded
+    # snapshot (HF-offline hosts never download). Sized for a 121 GB
+    # unified-memory host (~59 GB bf16 weights).
+    "nemotron3-nano-30b": BaseModelSpec(
+        name="nemotron3-nano-30b",
+        huggingface_repo="nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
+        default_revision="cbd3fa9f933d55ef16a84236559f4ee2a0526848",
+        chat_template="chatml",
+        recommended_max_seq_length=4096,
+        recommended_lora_rank=16,
+        recommended_lora_alpha=32,
+        # model_type=nemotron_h ships its architecture as repo-local
+        # modeling code — the pinned snapshot's own modeling_nemotron_h.py
+        # is what executes (HF-offline posture; nothing downloaded).
+        trust_remote_code=True,
     ),
 }
 

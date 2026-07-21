@@ -115,13 +115,25 @@ dev = [
 # band. The BitsAndBytesConfig shape this codebase uses (``nf4`` +
 # ``bnb_4bit_compute_dtype=torch.float16`` + double-quant) is fully
 # supported in 0.45+.
+# Training-setup audit 2026-07-21 (nemotron3-nano-30b enablement): band
+# lifted to transformers>=4.57 (nemotron_h remote-code support) +
+# trl>=0.25,<0.27 + peft>=0.17 + bitsandbytes>=0.48. The trl>=0.25 flip
+# ACTIVATES SFTConfig.completion_only_loss (prompt-masked loss — the
+# 0.12 band silently fell back to the full-sequence "text" path) and the
+# peft_trainer.py rename shims (tokenizer=→processing_class=,
+# max_seq_length=→max_length=) switch to their modern spellings.
+# NB: this is a TEXT-ONLY pin change — the live environment has NOT been
+# upgraded (env changes deferred while a production pipeline is live).
+# After the environment is actually upgraded, re-run the qwen2.5-1.5b
+# regression fit to re-validate the shim-selected call surfaces before
+# any 30B fit.
 training = [
     "torch>=2.1.0",
-    "transformers>=4.49.0,<4.50.0",
-    "trl>=0.12,<0.13",
-    "peft>=0.10.0,<1.0.0",
+    "transformers>=4.57,<5",
+    "trl>=0.25,<0.27",
+    "peft>=0.17,<1.0",
     "accelerate>=1.0.0,<2.0.0",
-    "bitsandbytes>=0.45.0,<0.47.0",
+    "bitsandbytes>=0.48,<1.0",
     "datasets>=2.18.0",
     "safetensors>=0.4.0",
     # Wave 101: optional generic-benchmark sanity floor via the

@@ -177,6 +177,25 @@ def _raise_if_stopped(stop_cb: Any, site_id: str) -> None:
         )
 
 
+def _missing_mamba_kernel_packages() -> List[str]:
+    """Names of the Mamba fast-path kernel packages that fail to import.
+
+    ``modeling_nemotron_h.py`` gates its fused-kernel fast path on
+    ``mamba_ssm`` + ``causal_conv1d`` (``is_fast_path_available``); when
+    either is absent the model silently falls back to the eager
+    ``torch_forward`` scan (~5x slower). We probe the SAME imports the
+    modeling file probes so the preflight check matches the model's own
+    gate. Monkeypatch seam for tests.
+    """
+    missing: List[str] = []
+    for module in ("mamba_ssm", "causal_conv1d"):
+        try:
+            __import__(module)
+        except ImportError:
+            missing.append(module)
+    return missing
+
+
 def _require_training_deps() -> None:
     """Raise a single actionable error when any heavy dep is missing.
 
@@ -377,6 +396,64 @@ class PEFTTrainer:
         self.training_config = dict(training_config)
 
     # ------------------------------------------------------------------ #
+    # Hybrid-Mamba fast-path preflight                                    #
+    # ------------------------------------------------------------------ #
+
+    def _assert_mamba_fast_path(self) -> None:
+        """Fail LOUD when a ``nemotron_h`` fit would run without fused kernels.
+
+        The Nemotron-H hybrid (23/52 layers are Mamba-2 mixers) gates its
+        fused scan on ``mamba_ssm`` + ``causal_conv1d`` being importable
+        (``is_fast_path_available`` in the snapshot's modeling file). When
+        they are absent the model does NOT error — it silently degrades to
+        the eager ``torch_forward`` path, ~5x slower, which on a 30B multi-
+        epoch fit is the difference between hours and days. Owner rule:
+        loud failure beats silent 5x degrade.
+
+        Gated so the other five registered bases are untouched: returns
+        immediately unless the spec opts into ``trust_remote_code`` AND the
+        resolved model config declares ``model_type == "nemotron_h"``. The
+        config is resolved via ``AutoConfig`` (no weight load) so the check
+        fires BEFORE the ~59 GB base is materialised. A config-resolution
+        failure is logged and skipped — the model load right after will
+        fail loudly on the same problem with a better traceback.
+        """
+        if not getattr(self.spec, "trust_remote_code", False):
+            return
+        try:
+            from transformers import AutoConfig  # type: ignore
+
+            model_config = AutoConfig.from_pretrained(
+                self.spec.huggingface_repo,
+                revision=self.spec.default_revision,
+                trust_remote_code=True,
+            )
+        except Exception as exc:  # noqa: BLE001 - preflight best-effort
+            logger.warning(
+                "PEFTTrainer: could not resolve the model config for the "
+                "Mamba fast-path preflight (%s); check SKIPPED — the model "
+                "load will surface any real problem.",
+                exc,
+            )
+            return
+        if getattr(model_config, "model_type", None) != "nemotron_h":
+            return
+        missing = _missing_mamba_kernel_packages()
+        if missing:
+            raise RuntimeError(
+                f"Refusing to fit base {self.base_model!r} "
+                f"(model_type=nemotron_h): the Mamba fused-kernel packages "
+                f"{missing} are not importable, so the model would silently "
+                f"fall back to the eager torch scan (~5x slower) for the 23 "
+                f"Mamba-2 layers. Install mamba_ssm + causal_conv1d first — "
+                f"on aarch64 (e.g. DGX Spark) there are no prebuilt wheels; "
+                f"both must be built from source against the installed "
+                f"torch/CUDA. NB: environment changes are deferred while a "
+                f"production pipeline is live — schedule the kernel build "
+                f"with the environment upgrade window."
+            )
+
+    # ------------------------------------------------------------------ #
     # SFT                                                                 #
     # ------------------------------------------------------------------ #
 
@@ -423,9 +500,18 @@ class PEFTTrainer:
         # `datasets` only when actually fitting.
         from datasets import Dataset  # type: ignore
 
+        # nemotron_h preflight: fail loud (not silent 5x degrade) when the
+        # Mamba fused kernels are absent — BEFORE any weight is loaded.
+        self._assert_mamba_fast_path()
+
+        # trust_remote_code is spec-driven (True only for bases whose arch
+        # ships as repo-local modeling code, e.g. nemotron_h). The executed
+        # code is the pinned local snapshot's own modeling file — consistent
+        # with the HF-offline posture (revision-pinned, nothing fetched).
         tokenizer = AutoTokenizer.from_pretrained(
             self.spec.huggingface_repo,
             revision=self.spec.default_revision,
+            trust_remote_code=self.spec.trust_remote_code,
         )
         if getattr(tokenizer, "pad_token", None) is None:
             tokenizer.pad_token = tokenizer.eos_token
@@ -476,6 +562,9 @@ class PEFTTrainer:
         bf16_ok = bool(cuda_ok and torch.cuda.is_bf16_supported())
         model_kwargs: Dict[str, Any] = {
             "revision": self.spec.default_revision,
+            # Spec-driven; executes the pinned snapshot's own modeling file
+            # (HF-offline posture — see the tokenizer comment above).
+            "trust_remote_code": self.spec.trust_remote_code,
         }
         if use_4bit:
             from transformers import BitsAndBytesConfig  # type: ignore
@@ -541,8 +630,33 @@ class PEFTTrainer:
         _save_total_limit = self.training_config.get("save_total_limit")
         if _save_total_limit is not None:
             sft_config_kwargs["save_total_limit"] = int(_save_total_limit)
+        # Activation/gradient checkpointing (large-base memory bound, e.g.
+        # the 30B nemotron bf16 fit). use_reentrant=False is the
+        # non-deprecated torch.utils.checkpoint mode and the only one that
+        # composes with PEFT-frozen params without requires_grad hacks.
+        # Both keys ride the accepted-kwargs shim below, so a trl/
+        # transformers band lacking either degrades gracefully (key dropped).
+        if bool(self.training_config.get("gradient_checkpointing", False)):
+            sft_config_kwargs["gradient_checkpointing"] = True
+            sft_config_kwargs["gradient_checkpointing_kwargs"] = {
+                "use_reentrant": False,
+            }
         if use_completion_only:
             sft_config_kwargs["completion_only_loss"] = True
+            # Train-time thinking-off: trl>=0.25's prompt-completion path
+            # renders examples through the tokenizer's chat template; for
+            # reasoning-capable templates (nemotron_h's chat_template.jinja
+            # defaults enable_thinking=True) that would open a dangling
+            # `<think>\n` block on the generation prompt, teaching the
+            # adapter to emit reasoning tokens. Passing enable_thinking=False
+            # renders the closed `<think></think>` sentinel instead.
+            # Non-reasoning templates (qwen2.5 chatml etc.) ignore the kwarg.
+            # Rides the accepted-kwargs shim: older trl without
+            # SFTConfig.chat_template_kwargs drops the key (that band uses
+            # the hand-rolled _format_chatml text path anyway — unchanged).
+            sft_config_kwargs["chat_template_kwargs"] = {
+                "enable_thinking": False,
+            }
         # Drop any knob the installed trl's SFTConfig doesn't accept so an
         # older trl never crashes on a newer field.
         sft_config_kwargs = _filter_accepted(SFTConfig, sft_config_kwargs)
@@ -692,12 +806,24 @@ class PEFTTrainer:
         from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore
         from trl import DPOConfig, DPOTrainer  # type: ignore
 
+        # nemotron_h preflight (mirrors fit_sft): loud failure before any
+        # weight load when the Mamba fused kernels are absent.
+        self._assert_mamba_fast_path()
+
         rows = {
             "prompt": [pair["prompt"] for pair in preference_pairs],
             "chosen": [pair["chosen"] for pair in preference_pairs],
             "rejected": [pair["rejected"] for pair in preference_pairs],
         }
         dataset = Dataset.from_dict(rows)
+
+        # Hoisted ABOVE dpo_config_kwargs: these were previously defined
+        # only after the tokenizer load (~40 lines below), so the dict
+        # literal referenced them before assignment — a NameError on every
+        # real fit_dpo invocation. Regression net:
+        # Trainforge/tests/test_peft_trainer_nemotron.py::test_fit_dpo_*.
+        cuda_ok = bool(torch.cuda.is_available())
+        bf16_ok = bool(cuda_ok and torch.cuda.is_bf16_supported())
 
         dpo_config_kwargs: Dict[str, Any] = {
             "output_dir": str(output_dir),
@@ -735,20 +861,27 @@ class PEFTTrainer:
         # (the renamed tokenizer arg). The SFT save_model() path saves
         # the tokenizer alongside the adapter; base-model fallback
         # covers legacy SFT dirs that don't carry the tokenizer.
+        # trust_remote_code is spec-driven (True only for repo-local-code
+        # arches, e.g. nemotron_h); the executed code is the pinned local
+        # snapshot's own modeling/tokenizer file (HF-offline posture).
         try:
-            tokenizer = AutoTokenizer.from_pretrained(str(sft_model_dir))
+            tokenizer = AutoTokenizer.from_pretrained(
+                str(sft_model_dir),
+                trust_remote_code=self.spec.trust_remote_code,
+            )
         except (OSError, ValueError):
             tokenizer = AutoTokenizer.from_pretrained(
                 self.spec.huggingface_repo,
                 revision=self.spec.default_revision,
+                trust_remote_code=self.spec.trust_remote_code,
             )
         if getattr(tokenizer, "pad_token", None) is None:
             tokenizer.pad_token = tokenizer.eos_token
 
-        cuda_ok = bool(torch.cuda.is_available())
-        bf16_ok = bool(cuda_ok and torch.cuda.is_bf16_supported())
+        # (cuda_ok / bf16_ok are computed once, above dpo_config_kwargs.)
         base_kwargs: Dict[str, Any] = {
             "revision": self.spec.default_revision,
+            "trust_remote_code": self.spec.trust_remote_code,
         }
         if use_4bit:
             from transformers import BitsAndBytesConfig  # type: ignore

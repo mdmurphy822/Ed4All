@@ -58,6 +58,13 @@ class TrainingConfig:
     # memory-constrained boxes. NB: LoRA already leaks less than full-FT;
     # keep epochs light (2-3) with early-stopping on.
     use_4bit: bool = False
+    # Activation/gradient checkpointing: trade compute for memory on large
+    # bases (e.g. the 30B nemotron3-nano-30b bf16 LoRA fit). Threaded into
+    # SFTConfig as ``gradient_checkpointing=True`` +
+    # ``gradient_checkpointing_kwargs={"use_reentrant": False}`` via the
+    # accepted-kwargs shim, so older trl/transformers bands that lack a
+    # kwarg degrade gracefully. Orchestration knob — NOT a CARD_FIELD.
+    gradient_checkpointing: bool = False
     min_dpo_pairs: int = 50
     dpo_preference_filter: str = "editorial_or_misconception"
     dpo_fail_hard: bool = True
@@ -169,9 +176,9 @@ def load_config(
     if not yaml_path.exists():
         raise FileNotFoundError(
             f"No training config for base_model={base_model!r}. "
-            f"Expected {yaml_path}. Wave 90 ships configs for "
-            f"qwen2.5-1.5b, llama-3.2-1b, smollm2-1.7b. Add a YAML "
-            f"with the same shape to extend support."
+            f"Expected {yaml_path}. Configs ship for qwen2.5-1.5b, "
+            f"llama-3.2-1b, smollm2-1.7b, nemotron3-nano-30b. Add a "
+            f"YAML with the same shape to extend support."
         )
     base_payload = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
     base_payload.setdefault("base_model", base_model)

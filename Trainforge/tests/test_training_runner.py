@@ -239,7 +239,7 @@ def test_decision_capture_fires_required_events(libv2_root: Path):
 
 
 # ---------------------------------------------------------------------- #
-# 4. BaseModelRegistry resolves all 5 supported names                     #
+# 4. BaseModelRegistry resolves all 6 supported names                     #
 # ---------------------------------------------------------------------- #
 
 
@@ -249,6 +249,7 @@ def test_decision_capture_fires_required_events(libv2_root: Path):
     "llama-3.2-3b",
     "smollm2-1.7b",
     "phi-3.5-mini",
+    "nemotron3-nano-30b",
 ])
 def test_base_model_registry_resolves(name: str):
     spec = BaseModelRegistry.resolve(name)
@@ -264,10 +265,34 @@ def test_base_model_registry_unknown_raises():
         BaseModelRegistry.resolve("not-a-real-model")
 
 
-def test_list_supported_returns_at_least_5():
+def test_list_supported_returns_at_least_6():
     supported = BaseModelRegistry.list_supported()
-    assert len(supported) >= 5
+    assert len(supported) >= 6
     assert "qwen2.5-1.5b" in supported
+    assert "nemotron3-nano-30b" in supported
+
+
+def test_base_model_registry_resolves_nemotron3_nano_30b():
+    """Regression: the Nemotron-3-Nano-30B (BF16) entry resolves with the
+    pinned local-snapshot revision, the ChatML template, and sane bf16-LoRA
+    defaults. No weights are loaded — pure registry lookup (HF-offline safe).
+    """
+    spec = BaseModelRegistry.resolve("nemotron3-nano-30b")
+    assert spec.name == "nemotron3-nano-30b"
+    assert spec.huggingface_repo == "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
+    # Pinned commit sha — HF-offline hosts must resolve the pre-seeded
+    # snapshot, never a floating "main".
+    assert spec.default_revision == "cbd3fa9f933d55ef16a84236559f4ee2a0526848"
+    assert re.fullmatch(r"[0-9a-f]{40}", spec.default_revision)
+    # ChatML per the snapshot's chat_template.jinja (<|im_start|>…<|im_end|>).
+    assert spec.chat_template == "chatml"
+    out = format_instruction(spec, {"prompt": "Q?", "completion": "A."})
+    assert "<|im_start|>user" in out and "<|im_start|>assistant" in out
+    # Conservative bf16-LoRA defaults consistent with the registry's
+    # conventions (rank 16 / alpha 32 / 4096 seq like phi-3.5-mini).
+    assert spec.recommended_lora_rank == 16
+    assert spec.recommended_lora_alpha == 32
+    assert spec.recommended_max_seq_length == 4096
 
 
 # ---------------------------------------------------------------------- #

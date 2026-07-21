@@ -784,12 +784,13 @@ Pin source of truth is `pyproject.toml::[project.optional-dependencies].training
 | `llama-3.2-3b` | `meta-llama/Llama-3.2-3B` | HF gated — set `HF_TOKEN`. |
 | `smollm2-1.7b` | `HuggingFaceTB/SmolLM2-1.7B` | Open. |
 | `phi-3.5-mini` | `microsoft/Phi-3.5-mini-instruct` | HF gated — set `HF_TOKEN`. |
+| `nemotron3-nano-30b` | `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16` | Open (NVIDIA Nemotron Open Model License — commercial use + LoRA derivatives permitted). Hybrid Mamba-2 + MoE `NemotronHForCausalLM` (~30B total / 3.5B active); **bf16 LoRA only — QLoRA/4-bit is unsupported for this arch, keep `use_4bit=false`**. Revision pinned to the pre-seeded local snapshot for HF-offline hosts; sized for a 121 GB unified-memory host. |
 
 `format_instruction()` handles the chatml / llama3 / phi3 templates so `instruction_pairs.jsonl` formats correctly per base. Each base entry also pins a `default_revision` HF commit SHA so a re-run on a different node loads the same weights — flowed through to both `AutoModelForCausalLM` and `AutoTokenizer` as `revision=`.
 
 ### Training configuration knobs
 
-`Trainforge/training/configs/__init__.py::TrainingConfig` is the canonical surface. Per-base YAML (`Trainforge/training/configs/<short-name>.yaml`) materializes the production defaults; the model card persists every populated field for audit. YAML currently ships for a SUBSET of the five registered bases (`qwen2.5-1.5b`, `llama-3.2-1b`, `smollm2-1.7b`) — a base without a YAML resolves to the `TrainingConfig` dataclass defaults, which differ from the table below in at least `save_total_limit` (dataclass default `None` vs YAML `3`). Schema mirrored in `schemas/models/model_card.schema.json::training_config`.
+`Trainforge/training/configs/__init__.py::TrainingConfig` is the canonical surface. Per-base YAML (`Trainforge/training/configs/<short-name>.yaml`) materializes the production defaults; the model card persists every populated field for audit. YAML currently ships for a SUBSET of the six registered bases (`qwen2.5-1.5b`, `llama-3.2-1b`, `smollm2-1.7b`) — a base without a YAML resolves to the `TrainingConfig` dataclass defaults, which differ from the table below in at least `save_total_limit` (dataclass default `None` vs YAML `3`). Schema mirrored in `schemas/models/model_card.schema.json::training_config`.
 
 | Field | Default (qwen2.5-1.5b) | Purpose |
 |-------|------------------------|---------|
