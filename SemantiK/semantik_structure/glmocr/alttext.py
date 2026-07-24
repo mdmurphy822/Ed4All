@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -118,7 +119,31 @@ class OpenAICompatibleAltTextClient:
             f"{self.base_url}/chat/completions",
             data=json.dumps(payload).encode(), headers=headers,
         )
+        _t0 = time.monotonic()
         resp = json.load(urllib.request.urlopen(req, timeout=self.timeout))
+        _duration_ms = (time.monotonic() - _t0) * 1000.0
+        # OP2 usage tap — best-effort per-POST metering row (provider
+        # ``semantik-alttext``, the per-surface labeling convention). Token
+        # counts come ONLY from the server-reported ``usage``; any failure is
+        # swallowed inside the meter (never perturbs the alt-text call).
+        try:
+            from .. import llm_usage_meter
+
+            _finish = None
+            try:
+                _finish = resp["choices"][0].get("finish_reason")
+            except (KeyError, IndexError, TypeError):
+                pass
+            llm_usage_meter.record_provider_usage(
+                provider="semantik-alttext",
+                model=self.model,
+                usage=resp.get("usage") if isinstance(resp, dict) else None,
+                duration_ms=_duration_ms,
+                finish_reason=_finish,
+                phase="semantik_conversion",
+            )
+        except Exception:  # noqa: BLE001 — metering must never crash a call
+            pass
         content = resp["choices"][0]["message"]["content"]
         return _parse_alt_json(content)
 

@@ -161,23 +161,43 @@ _CHECKPOINT_FAMILY_ENV = "ED4ALL_GENERATION_CHECKPOINT"
 _CHECKPOINT_FALSEY = {"0", "false", "no", "off"}
 
 
-def resolve_heading_judge_mode() -> bool:
-    """Master gate: run the Super heading-level judge pass? Default OFF.
+#: Explicit opt-out tokens for the default-ON heading-judge gate (mirrors the
+#: ED4ALL_GPU_LIFECYCLE default-ON house pattern).
+_HEADING_JUDGE_FALSEY = {"0", "false", "no", "off"}
 
-    When off the ``heading_judge`` module is never imported by the lane, so
-    ``region_provenance`` / ``heading_tree`` / escalations are byte-identical.
+
+def resolve_heading_judge_mode() -> bool:
+    """Master gate: run the Super heading-level judge pass? Default ON (deviation).
+
+    Owner directive: the Super heading-level judge must not be optional. Only
+    an explicit falsey token (``0`` / ``false`` / ``no`` / ``off``,
+    case-insensitive) disables; unset / blank / garbage / truthy → on
+    (parse-with-fallback, the ``ED4ALL_GPU_LIFECYCLE`` default-ON pattern).
+    When explicitly off the ``heading_judge`` module is never imported by the
+    lane, so ``region_provenance`` / ``heading_tree`` / escalations are
+    byte-identical. A no-pending (born-digital / fully-anchored) chapter stays
+    a natural no-op even when the gate is on.
     """
-    return _truthy(os.environ.get("SEMANTIK_HEADING_JUDGE"))
+    raw = os.environ.get("SEMANTIK_HEADING_JUDGE")
+    if raw is None or not str(raw).strip():
+        return True
+    return str(raw).strip().lower() not in _HEADING_JUDGE_FALSEY
 
 
 def resolve_heading_judge_base_url() -> str:
-    """Heading-judge seat base URL (default the Super seat localhost:8001/v1)."""
-    return _env_str("SEMANTIK_HEADING_JUDGE_BASE_URL", "http://localhost:8001/v1")
+    """Heading-judge seat base URL (default the TRT-LLM Super seat :8123/v1)."""
+    return _env_str("SEMANTIK_HEADING_JUDGE_BASE_URL", "http://localhost:8123/v1")
 
 
 def resolve_heading_judge_model() -> str:
-    """Heading-judge seat model id (default ``nemotron-3-super``)."""
-    return _env_str("SEMANTIK_HEADING_JUDGE_MODEL", "nemotron-3-super")
+    """Heading-judge seat model id (default the served TRT-LLM Super id).
+
+    ``trtllm-serve`` has no ``--served-model-name``, so it serves the checkpoint
+    under its full HF path — the default matches what ``/v1/models`` reports."""
+    return _env_str(
+        "SEMANTIK_HEADING_JUDGE_MODEL",
+        "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4",
+    )
 
 
 def resolve_heading_judge_timeout() -> float:

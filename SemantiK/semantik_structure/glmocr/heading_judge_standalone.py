@@ -10,7 +10,7 @@ DEEP COPY. It NEVER modifies its inputs.
 CLI
 ---
 ``python3 -m semantik_structure.glmocr.heading_judge_standalone <layout.json> \
-    [--out DIR] [--apply]``
+    [--out DIR] [--apply] [--source-html PRIOR_HTML]``
 
 Report-only (default) writes ``<out>/<stem>.heading_judgments.json`` (the
 skeleton digest, pending count, per-heading judgments, tallies). ``--apply``
@@ -60,13 +60,26 @@ def run_standalone(
     seat=None,
     post_fn=None,
     use_cache: Optional[bool] = None,
+    source_html: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    """Judge one layout sidecar; return the report dict. Never touches inputs."""
+    """Judge one layout sidecar; return the report dict. Never touches inputs.
+
+    ``source_html`` (``--source-html``): path to the PRIOR rendered
+    ``{stem}_accessible.html`` (the enriched conversion output). The layout
+    sidecar carries the RAW GLM pages only — the VLM alt-text enrichment
+    (``SEMANTIK_ALTTEXT_PROVIDER``) lives solely in the prior render — so the
+    ``--apply`` re-render would otherwise DEGRADE every VLM-captioned figure
+    to the ``sr-only "Figure."`` placeholder. When given, the re-rendered
+    HTML has its degraded figure captions/alt restored from the prior render
+    via ``lib.semantik.figure_enrich_merge`` (ADD-only; heading levels
+    untouched). Best-effort: a merge failure keeps the unmerged re-render.
+    """
     from .heading_judge import (
         apply_judged_levels,
         build_heading_skeleton,
         judge_heading_levels,
         resolve_heading_judge_model,
+        run_final_review,
     )
 
     layout_path = Path(layout_path)
@@ -98,16 +111,47 @@ def run_standalone(
             plan, seat=seat, post_fn=post_fn, use_cache=use_cache)
     result = apply_judged_levels(prov, heading_tree, escalations, verdict_map)
 
+    # Phase B (SEMANTIK_HEADING_JUDGE_FINAL_REVIEW, default OFF): whole-document
+    # consistency reconciliation over the just-judged tree, applied on the same
+    # DEEP COPY. Returns None (byte-identical) when the gate is off, so the
+    # standalone / pipeline `--apply` path is unchanged by default.
+    final_review = run_final_review(
+        prov, heading_tree, escalations,
+        seat=seat, post_fn=post_fn, use_cache=use_cache)
+
     report = {
+        "final_review": final_review,
         "layout": str(layout_path),
         "stem": stem,
         "model": (seat.model if seat else resolve_heading_judge_model()),
         "n_headings": len(plan.entries),
         "n_pending": len(plan.pending_ids),
+        # ``applied`` counts VERDICTS RECORDED, not headings re-levelled — a
+        # verdict that re-confirms the level already on the region is applied
+        # but render-invisible. ``changed``/``agreed``/``transitions`` are the
+        # ADDITIVE (2026-07-22) split that makes the two impossible to confuse:
+        # ``applied == changed + agreed``, and only ``changed`` can move an
+        # emitted <hN>. An idempotent re-judge of an already-judged conversion
+        # legitimately reports applied>0 with changed==0 against the prior
+        # render.
         "applied": result.applied,
+        "changed": getattr(result, "changed", 0),
+        "agreed": getattr(result, "agreed", 0),
+        "transitions": dict(getattr(result, "transitions", {}) or {}),
         "clamped": result.clamped,
         "dropped": result.dropped,
         "kept": result.kept,
+        # Fix-2 accounting distinction: kept == kept_judged + unjudged, where
+        # ``unjudged`` names the truncation hole (no verdict ever covered the
+        # heading) that the old report silently folded into ``kept``.
+        "kept_judged": getattr(result, "kept_judged", 0),
+        "unjudged": getattr(result, "unjudged", 0),
+        # Failure MECHANISM (2026-07-22 incident): a chapter that ends
+        # unjudged must carry WHY at the TOP level of the report, so the
+        # pipeline seam can name it in its operator warning instead of the
+        # anonymous "truncation hole" phrasing that hid a killed seat.
+        "failure_modes": list(meta.get("failure_modes") or []),
+        "unjudged_reason": meta.get("unjudged_reason"),
         "windows": len(plan.windows),
         "judgments": {str(k): {"from": v[0], "to": v[1], "clamped": v[2]}
                       for k, v in result.corrections.items()},
@@ -142,6 +186,23 @@ def run_standalone(
                 heading_tree=[tuple(t) for t in heading_tree],
                 escalations=escalations)
             html = render_accessible_html(lane_result, pdf_stem=stem)
+            # Figure-enrichment preservation: the layout sidecar has no VLM
+            # alt-text enrichment, so restore degraded figure captions/alt
+            # from the prior enriched render (ADD-only; headings untouched).
+            if source_html is not None and Path(source_html).is_file():
+                try:
+                    from lib.semantik.figure_enrich_merge import (
+                        merge_figure_enrichment,
+                    )
+
+                    prior = Path(source_html).read_text(encoding="utf-8")
+                    html, restored = merge_figure_enrichment(prior, html)
+                    report["figure_enrichment_restored"] = restored
+                    report["figure_enrichment_source"] = str(source_html)
+                except Exception as exc:  # noqa: BLE001 — never lose the render
+                    logger.warning(
+                        "figure-enrichment merge failed (unmerged re-render "
+                        "kept) for %s: %s", stem, exc)
             html_path = out_dir / f"{stem}_accessible.html"
             html_path.write_text(html, encoding="utf-8")
             report["html_path"] = str(html_path)
@@ -164,6 +225,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help="bypass the per-window resume sidecar cache "
                              "(default: cache ON per "
                              "SEMANTIK_HEADING_JUDGE_CHECKPOINT)")
+    parser.add_argument("--source-html", default=None,
+                        help="path to the PRIOR rendered {stem}_accessible."
+                             "html (the enriched conversion output); with "
+                             "--apply, degraded figure captions/alt in the "
+                             "re-render are restored from it (the layout "
+                             "sidecar carries no VLM alt-text enrichment)")
     args = parser.parse_args(argv)
 
     layout = Path(args.layout)
@@ -171,7 +238,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"error: layout sidecar not found: {layout}", file=sys.stderr)
         return 2
     report = run_standalone(layout, out_dir=Path(args.out), apply=args.apply,
-                            use_cache=False if args.no_cache else None)
+                            use_cache=False if args.no_cache else None,
+                            source_html=(Path(args.source_html)
+                                         if args.source_html else None))
     print(json.dumps({k: v for k, v in report.items()
                       if k != "skeleton_digest"}, ensure_ascii=False, indent=1))
     return 0

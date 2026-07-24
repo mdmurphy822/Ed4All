@@ -22,6 +22,7 @@ import logging
 import shutil
 import subprocess
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Protocol, Sequence
@@ -197,17 +198,38 @@ class SdkGlmOcrClient:
         except Exception as exc:  # noqa: BLE001 — never fail the lane on override
             logger.warning("GLM-OCR label_task_mapping override failed: %s", exc)
 
-    def _parse_chunk(self, image_paths: Sequence[Path], start_page: int) -> List[GlmPage]:
-        parser = self._make_parser()
+    def _parse_with_parser(
+        self, parser: Any, image_paths: Sequence[Path], start_page: int
+    ) -> List[GlmPage]:
+        """Parse ``image_paths`` on an ALREADY-CONSTRUCTED ``parser`` (meter +
+        normalise). Does NOT construct or close the parser — the caller owns its
+        lifecycle, so a rolling worker can reuse ONE parser across the pages it
+        pulls (the parser is never rebuilt per page). Byte-identical per-page
+        ``GlmPage`` regardless of how the pages were batched onto the parser
+        (the SDK OCRs each page independently)."""
+        _t0 = time.monotonic()
+        results = parser.parse(
+            [str(p) for p in image_paths], save_layout_visualization=False
+        )
+        # OP2 usage tap — best-effort per-call metering row (provider
+        # ``semantik-glmocr``, the per-surface labeling convention). The SDK
+        # fans its own per-region POSTs internally and surfaces NO server
+        # ``usage``, so token counts are honest zeros per the tap contract;
+        # the additive ``pages`` field carries this call's page count (the
+        # single-worker chunk, or 1 on the rolling per-page dispatch).
         try:
-            results = parser.parse(
-                [str(p) for p in image_paths], save_layout_visualization=False
+            from .. import llm_usage_meter
+
+            llm_usage_meter.record_provider_usage(
+                provider="semantik-glmocr",
+                model=self.model,
+                usage=None,
+                duration_ms=(time.monotonic() - _t0) * 1000.0,
+                phase="semantik_conversion",
+                extra={"pages": len(image_paths)},
             )
-        finally:
-            try:
-                parser.close()
-            except Exception:  # noqa: BLE001
-                pass
+        except Exception:  # noqa: BLE001 — metering must never crash a call
+            pass
         if not isinstance(results, list):
             results = [results]
         pages: List[GlmPage] = []
@@ -221,21 +243,86 @@ class SdkGlmOcrClient:
             ))
         return pages
 
+    def _parse_chunk(self, image_paths: Sequence[Path], start_page: int) -> List[GlmPage]:
+        """Single-parser path: construct → parse the whole chunk → close.
+
+        The byte-stable single-worker (``n <= 1``) code path; also the
+        construction/close bookend the rolling path replaces with per-worker
+        parser reuse."""
+        parser = self._make_parser()
+        try:
+            return self._parse_with_parser(parser, image_paths, start_page)
+        finally:
+            try:
+                parser.close()
+            except Exception:  # noqa: BLE001
+                pass
+
     def parse_pages(self, image_paths: Sequence[Path]) -> List[GlmPage]:
         paths = list(image_paths)
         if not paths:
             return []
+        # Keep the VRAM/width contract EXACTLY as before: n resident GlmOcr
+        # model instances, one per worker (never raised — more workers = more
+        # resident models = more VRAM). Rolling at the SAME width is the win.
         n = min(self.workers, len(paths))
         if n <= 1:
             return self._parse_chunk(paths, 1)
-        # split into n contiguous chunks, one SDK instance per worker thread,
-        # reassemble in page order (mirrors the validated scratchpad harness).
-        size = (len(paths) + n - 1) // n
-        chunks = [(paths[i:i + size], i + 1) for i in range(0, len(paths), size)]
-        out: List[GlmPage] = []
-        with ThreadPoolExecutor(max_workers=n) as ex:
-            for chunk_pages in ex.map(lambda c: self._parse_chunk(*c), chunks):
-                out.extend(chunk_pages)
+        return self._parse_pages_rolling(paths, n)
+
+    def _parse_pages_rolling(
+        self, paths: List[Path], n: int
+    ) -> List[GlmPage]:
+        """ROLLING per-page dispatch: hand the pool the FLAT page list and let
+        every one of the ``n`` workers pull the next page the instant it frees
+        up — so a worker that finishes cheap pages immediately takes the next
+        instead of idling while the worker with expensive pages runs (the
+        static-partition drain-to-1 tail this replaces). Mirrors the alt-text
+        lane's ``ex.map(_one, <flat list>)`` template.
+
+        Parser reuse (contract): each WORKER THREAD constructs ONE GlmOcr
+        parser lazily on its first pulled page (thread-local; construction
+        already serialized under ``_PARSER_CONSTRUCT_LOCK``) and REUSES it for
+        every subsequent page it pulls — the parser is NEVER rebuilt per page,
+        so the model is not thrashed. Exactly ``n`` parsers are built (one per
+        resident worker), matching the old one-parser-per-chunk residency.
+
+        Page order (contract): ``ex.map`` yields in submission order, and the
+        results are additionally sorted by ``page_no`` — so output is in page
+        order regardless of completion order (as today). Error handling is
+        unchanged: an SDK ``_error`` becomes ``GlmPage.error`` and a raising
+        parse propagates, exactly as the chunk path."""
+        thread_local = threading.local()
+        built_parsers: List[Any] = []
+        built_lock = threading.Lock()
+
+        def _worker_parser() -> Any:
+            parser = getattr(thread_local, "parser", None)
+            if parser is None:
+                parser = self._make_parser()  # construction is lock-guarded
+                thread_local.parser = parser
+                with built_lock:
+                    built_parsers.append(parser)
+            return parser
+
+        def _one(item: tuple[int, Path]) -> GlmPage:
+            idx, path = item
+            parser = _worker_parser()
+            # One page per work item → the pool pulls rolling; the reused
+            # thread-local parser keeps construction off the per-page path.
+            return self._parse_with_parser(parser, [path], idx + 1)[0]
+
+        try:
+            with ThreadPoolExecutor(max_workers=n) as ex:
+                out: List[GlmPage] = list(ex.map(_one, list(enumerate(paths))))
+        finally:
+            # Every parse has drained (the pool joined) — release the n resident
+            # models, one per worker (the close bookend the chunk path did).
+            for parser in built_parsers:
+                try:
+                    parser.close()
+                except Exception:  # noqa: BLE001
+                    pass
         out.sort(key=lambda p: p.page_no)
         return out
 

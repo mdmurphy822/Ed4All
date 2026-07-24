@@ -27,6 +27,7 @@ same ``data-semantik-block-id`` set across runs.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -512,6 +513,11 @@ def transform_document(pages: Sequence[GlmPage]) -> TransformResult:
                 p["_escalated_caption"] = True
 
     _stitch_cross_page(prov, escalations)
+    # Chapter-ladder reconcile runs BEFORE the section anchor so its promoted
+    # level-1 openers satisfy the anchor pass's ``has_chapter_heading`` check
+    # (a whole-book document with real "Chapter N" openers must never receive
+    # a synthesized modal-major opener on top of them).
+    _reconcile_chapter_ladder(prov, heading_tree, escalations)
     _anchor_declared_sections(prov, heading_tree, escalations)
     _normalize_math_and_ordinals(prov, heading_tree)
     # strip internal bookkeeping keys before returning the wire contract
@@ -548,6 +554,144 @@ def _normalize_math_and_ordinals(
             (int(p.get("level", 3) or 3), str(p.get("heading_text", "")))
             for p in prov if p.get("region_kind") == "heading"
         ]
+
+
+# ── Chapter-ladder reconcile (SEMANTIK_CHAPTER_LADDER_RECONCILE). ───────────
+# A "Chapter N[: Short Title]" opener heading. Domain-agnostic STRUCTURE shape
+# (ordinal series reasoning), never publisher vocabulary. The optional tail is
+# bounded by _CHAPTER_TAIL_MAX_WORDS below so a prose sentence that merely
+# BEGINS with "Chapter 3 ..." can never be mistaken for an opener.
+_CHAPTER_OPENER_HEAD_RE = re.compile(
+    r"^\s*chapter\s+(\d{1,3})\b[\s:.–—-]*(.*)$", re.IGNORECASE
+)
+# Compactness band for a real chapter-opener title tail (mirrors the
+# running-header-title compactness rationale in lib/semantik/cascade_ir.py).
+_CHAPTER_TAIL_MAX_WORDS = 8
+# End-of-chapter apparatus qualifiers: "Chapter N Review" / "Chapter N
+# Exercises" is a SECTION of chapter N, never its root (mirrors the adapter's
+# _CHAPTER_APPARATUS_RE — structural apparatus vocabulary, not publisher's).
+_CHAPTER_APPARATUS_TAIL_RE = re.compile(
+    r"\b(review|outline|exercises?|key\s*terms?|practice\s*test|summary)\b",
+    re.IGNORECASE,
+)
+# Implicit chapter series: the major ordinal of an "N.M ..." section heading.
+_SECTION_MAJOR_RE = re.compile(r"^\s*(\d{1,3})\.\s?\d{1,3}\b")
+
+
+def resolve_chapter_reconcile_mode() -> bool:
+    """SEMANTIK_CHAPTER_LADDER_RECONCILE — default ON within the lane.
+
+    Default-on falsey-set parse (mirrors ``resolve_math_normalize_mode``):
+    only the explicit falsey tokens disable; unset / blank / truthy /
+    garbage → on. ``=0`` is the byte-identical revert lever.
+    """
+    val = os.environ.get("SEMANTIK_CHAPTER_LADDER_RECONCILE", "").strip().lower()
+    return val not in {"0", "false", "no", "off"}
+
+
+def _reconcile_chapter_ladder(
+    prov: List[Dict[str, Any]],
+    heading_tree: List[Tuple[int, str]],
+    escalations: List[Dict[str, Any]],
+) -> None:
+    """Reconcile the document's chapter series to ONE canonical ladder.
+
+    Root cause (whole-book single-PDF reference corpus): the transform has no
+    chapter-opener rule, so every printed "Chapter N" opener defaults to
+    level 3 *pending* — BELOW its own level-2 ``N.M`` sections — and the
+    heading judge is forbidden from lifting a pending to a peer of the N.M
+    spine. Downstream, the adapter then sees ZERO level-1 chapter openers,
+    derives a SECOND "Chapter N" ladder from the section majors, and both
+    ladders render (h2 + h3), each with different missing members.
+
+    Deterministic repair: when the document's headings carry a genuine
+    chapter ORDINAL SERIES — ≥2 distinct "Chapter N" opener-shaped headings
+    whose first occurrences ascend in document order, or opener ordinals
+    corroborated by the implicit ``N.M`` major series — promote each series
+    member (first occurrence per ordinal) to level 1 and clear its pending
+    flag, so exactly one canonical ladder reaches the adapter. Text is never
+    touched; an end-matter apparatus heading ("Chapter 3 Review") is never a
+    series member. No-op on a document with no chapter series (a per-chapter
+    scan without opener text, a paper, a manual).
+    """
+    if not resolve_chapter_reconcile_mode():
+        return
+    # 1. explicit opener-shaped headings, first occurrence per ordinal, in
+    #    document order.
+    explicit: Dict[int, Dict[str, Any]] = {}
+    order: List[int] = []
+    for p in prov:
+        if p.get("region_kind") != "heading":
+            continue
+        text = str(p.get("heading_text") or "").strip()
+        if not text or "\n" in text:
+            continue
+        m = _CHAPTER_OPENER_HEAD_RE.match(text)
+        if not m:
+            continue
+        tail = m.group(2).strip()
+        if tail and len(tail.split()) > _CHAPTER_TAIL_MAX_WORDS:
+            continue  # a sentence mentioning a chapter, not an opener
+        if tail and _CHAPTER_APPARATUS_TAIL_RE.search(tail):
+            continue  # "Chapter N Review" is a section, never a chapter root
+        if rm.is_endmatter_apparatus(text):
+            continue  # a bare end-matter apparatus heading is never a root
+        try:
+            ordinal = int(m.group(1))
+        except (TypeError, ValueError):
+            continue
+        if ordinal not in explicit:
+            explicit[ordinal] = p
+            order.append(ordinal)
+    if not explicit:
+        return
+    # 2. implicit majors from the N.M section spine.
+    majors: set = set()
+    for p in prov:
+        if p.get("region_kind") != "heading":
+            continue
+        mm = _SECTION_MAJOR_RE.match(str(p.get("heading_text") or ""))
+        if mm:
+            try:
+                majors.add(int(mm.group(1)))
+            except (TypeError, ValueError):
+                pass
+    # 3. series decision: a strictly-ascending multi-member explicit series is
+    #    self-evident; otherwise promote only ordinals the implicit major
+    #    series corroborates (a lone cross-reference heading never promotes).
+    ascending = all(a < b for a, b in zip(order, order[1:]))
+    if len(explicit) >= 2 and ascending:
+        promote = set(explicit)
+    else:
+        promote = {o for o in explicit if o in majors}
+    if not promote:
+        return
+    for ordinal in promote:
+        p = explicit[ordinal]
+        if int(p.get("level", 3) or 3) == 1 and not p.get("heading_level_pending"):
+            continue  # already a chapter root (e.g. a synthesized opener)
+        p["level"] = 1
+        p["chapter_ladder_promoted"] = True
+        recovered_idx = p.get("first_raw_block_index")
+        if p.pop("heading_level_pending", None):
+            escalations[:] = [
+                e for e in escalations
+                if not (e.get("reason") == "heading_level_pending"
+                        and e.get("region_index") == recovered_idx)
+            ]
+        escalations.append({
+            "region_index": recovered_idx,
+            "source_page": p.get("source_page"),
+            "native_label": p.get("native_label", ""),
+            "reason": "chapter_ladder_promoted",
+            "detail": (f"chapter-series opener promoted to level 1 "
+                       f"(ordinal {ordinal})"),
+            "text": str(p.get("heading_text") or "")[:120],
+        })
+    heading_tree[:] = [
+        (int(p.get("level", 3) or 3), str(p.get("heading_text", "")))
+        for p in prov if p.get("region_kind") == "heading"
+    ]
 
 
 # ToC declaration: "1.1 Title" / "1. 1 Title" (per-region OCR often splits the

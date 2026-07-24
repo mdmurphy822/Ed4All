@@ -544,3 +544,129 @@ def test_toc_harvested_from_single_blob_region():
     beta = [h for h in heads if "Beta Topic" in str(h.get("heading_text"))]
     assert beta[0]["heading_text"] == "7.2 Beta Topic"
     assert beta[0]["level"] == 2
+
+
+# ── Chapter-ladder reconcile (SEMANTIK_CHAPTER_LADDER_RECONCILE) ────────────
+# Anonymized whole-book shape: printed "Chapter N" openers + N.M sections.
+# NOT real course content.
+
+
+def _whole_book_pages():
+    """A tiny multi-chapter book: preface (0.M), two chapters with openers."""
+    front = GlmPage(page_no=1, regions=[
+        _region(0, "doc_title", "SAMPLE WIDGET COMPENDIUM"),
+        _region(1, "text", "A placeholder preface paragraph about widgets."),
+        _region(2, "paragraph_title", "0.1 Who should read this guide"),
+        _region(3, "text", "Placeholder audience prose for the preface."),
+    ])
+    ch1 = GlmPage(page_no=2, regions=[
+        _region(0, "paragraph_title", "Chapter 1"),
+        _region(1, "paragraph_title", "Widget Basics"),
+        _region(2, "paragraph_title", "1.1 Alpha Widgets"),
+        _region(3, "text", "Placeholder prose describing alpha widgets."),
+    ])
+    ch2 = GlmPage(page_no=3, regions=[
+        _region(0, "paragraph_title", "Chapter 2"),
+        _region(1, "paragraph_title", "2.1 Beta Widgets"),
+        _region(2, "text", "Placeholder prose describing beta widgets."),
+    ])
+    return [front, ch1, ch2]
+
+
+def _chapter_heads(tr, text):
+    return [p for p in tr.region_provenance
+            if p["region_kind"] == "heading"
+            and str(p.get("heading_text")) == text]
+
+
+def test_chapter_ladder_promotes_ascending_opener_series():
+    tr = transform_document(_whole_book_pages())
+    for text in ("Chapter 1", "Chapter 2"):
+        head = _chapter_heads(tr, text)[0]
+        assert head["level"] == 1, text
+        assert head.get("chapter_ladder_promoted") is True
+        assert not head.get("heading_level_pending")
+    # N.M sections stay the level-2 spine; the preface's 0.1 too.
+    for text in ("1.1 Alpha Widgets", "2.1 Beta Widgets",
+                 "0.1 Who should read this guide"):
+        assert _chapter_heads(tr, text)[0]["level"] == 2, text
+    reasons = [e["reason"] for e in tr.escalations]
+    assert "chapter_ladder_promoted" in reasons
+    # promoted openers must not leave stale pending escalations behind
+    pend = [e for e in tr.escalations
+            if e["reason"] == "heading_level_pending"
+            and str(e.get("text", "")).startswith("Chapter ")]
+    assert not pend
+    assert (1, "Chapter 1") in tr.heading_tree
+    assert (1, "Chapter 2") in tr.heading_tree
+
+
+def test_chapter_ladder_single_opener_corroborated_by_major():
+    pages = [GlmPage(page_no=1, regions=[
+        _region(0, "paragraph_title", "Chapter 3"),
+        _region(1, "paragraph_title", "3.1 Gamma Widgets"),
+        _region(2, "text", "Placeholder prose describing gamma widgets."),
+    ])]
+    tr = transform_document(pages)
+    assert _chapter_heads(tr, "Chapter 3")[0]["level"] == 1
+
+
+def test_chapter_ladder_lone_uncorroborated_mention_not_promoted():
+    pages = [GlmPage(page_no=1, regions=[
+        _region(0, "paragraph_title", "Chapter 5"),
+        _region(1, "paragraph_title", "2.1 Beta Widgets"),
+        _region(2, "text", "Placeholder prose describing beta widgets."),
+    ])]
+    tr = transform_document(pages)
+    head = _chapter_heads(tr, "Chapter 5")[0]
+    assert head["level"] == 3
+    assert head.get("heading_level_pending") is True
+    assert not head.get("chapter_ladder_promoted")
+
+
+def test_chapter_ladder_apparatus_heading_never_promoted():
+    pages = _whole_book_pages()
+    pages.append(GlmPage(page_no=4, regions=[
+        _region(0, "paragraph_title", "Chapter 2 Review"),
+        _region(1, "text", "Placeholder review prose for chapter two."),
+    ]))
+    tr = transform_document(pages)
+    review = _chapter_heads(tr, "Chapter 2 Review")[0]
+    # an apparatus qualifier tail is never a chapter root — the heading keeps
+    # its non-root level (pending, for the judge) and is never promoted
+    assert review["level"] != 1
+    assert not review.get("chapter_ladder_promoted")
+
+
+def test_chapter_ladder_off_flag_byte_identical(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_CHAPTER_LADDER_RECONCILE", "0")
+    tr = transform_document(_whole_book_pages())
+    for text in ("Chapter 1", "Chapter 2"):
+        head = _chapter_heads(tr, text)[0]
+        assert head["level"] == 3, text
+        assert head.get("heading_level_pending") is True
+        assert "chapter_ladder_promoted" not in head
+    assert not any(e["reason"] == "chapter_ladder_promoted"
+                   for e in tr.escalations)
+
+
+def test_chapter_ladder_suppresses_modal_major_opener_synthesis():
+    """Promoted openers satisfy has_chapter_heading, so the anchor pass must
+    NOT stack a synthesized modal-major opener on top of a real ladder."""
+    toc = GlmPage(page_no=1, regions=[
+        _region(0, "text", "1.1 Alpha Widgets 5\n1.2 Beta Widgets 9\n"
+                           "1.3 Gamma Widgets 13"),
+    ])
+    body = GlmPage(page_no=2, regions=[
+        _region(0, "paragraph_title", "Chapter 1"),
+        _region(1, "paragraph_title", "1.1 Alpha Widgets"),
+        _region(2, "text", "Placeholder prose describing alpha widgets."),
+        _region(3, "paragraph_title", "Chapter 2"),
+        _region(4, "paragraph_title", "2.1 Delta Widgets"),
+        _region(5, "text", "Placeholder prose describing delta widgets."),
+    ])
+    tr = transform_document([toc, body])
+    assert not any(p.get("chapter_title_synthesized")
+                   for p in tr.region_provenance)
+    assert not any(e["reason"] == "chapter_title_synthesized"
+                   for e in tr.escalations)

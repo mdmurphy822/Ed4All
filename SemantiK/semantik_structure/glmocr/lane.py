@@ -130,11 +130,13 @@ def run_glmocr_lane(
     # 3. deterministic transform → wire contract + escalations
     tr: TransformResult = transform_document(pages)
 
-    # 3b. optional Super heading-level JUDGE pass (SEMANTIK_HEADING_JUDGE) —
-    # resolves the transform's PENDING (level-defaulted) headings into a
+    # 3b. Super heading-level JUDGE pass (SEMANTIK_HEADING_JUDGE, DEFAULT ON —
+    # owner directive: the judge is not optional; explicit falsey token opts
+    # out) — resolves the transform's PENDING (level-defaulted) headings into a
     # hierarchy-consistent tree BEFORE sidecars are written, so the escalations
     # sidecar carries heading_level_judged rows instead of resolved pending
-    # rows. Flag off → the module is never imported → byte-identical.
+    # rows. Explicitly off → the module is never imported → byte-identical; a
+    # no-pending chapter is a natural no-op (no POST) even when on.
     if resolve_heading_judge_mode():
         from .heading_judge import run_heading_judge
 
