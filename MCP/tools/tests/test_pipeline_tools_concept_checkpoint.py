@@ -75,6 +75,25 @@ class _FakeConceptProvider:
         }
 
 
+#: Windows the phase must dispatch on a full (non-resume) run, as an
+#: ORDER-INDEPENDENT expectation.
+#:
+#: Stage-3 dispatches each batch of ≤10 windows CONCURRENTLY —
+#: ``asyncio.gather(*[loop.run_in_executor(None, _one_window, spec) ...])`` in
+#: ``pipeline_tools._run_concept_extraction`` — so the order in which the fake
+#: provider's ``synthesize_concepts`` bodies run is thread-scheduling
+#: nondeterminism, not a contract. Production does not depend on it either: the
+#: results are zipped back per-spec and the concept list is reassembled in
+#: ORIGINAL ``window_specs`` order afterwards. Asserting a literal call ORDER
+#: here made these tests flaky under load (they flip to
+#: ``["ch2#w0", "ch1#w0"]`` when the box is busy), so compare sorted.
+_ALL_WINDOWS = ["ch1#w0", "ch2#w0"]
+
+
+def _calls_sorted() -> List[str]:
+    return sorted(_FakeConceptProvider.calls)
+
+
 @pytest.fixture(autouse=True)
 def _reset_fake_provider():
     _FakeConceptProvider.model = "test-model-v1"
@@ -157,7 +176,7 @@ def test_sidecar_written_incrementally_per_batch(tmp_path, monkeypatch):
         tmp_path, monkeypatch, batch_size=1, observe=True,
     )
     assert payload["success"] is True, payload
-    assert _FakeConceptProvider.calls == ["ch1#w0", "ch2#w0"]
+    assert _calls_sorted() == _ALL_WINDOWS
     assert _FakeConceptProvider.records_seen == [0, 1]
 
     sidecar = _sidecar_for(tmp_path, "CONCEPT_CP")
@@ -178,7 +197,7 @@ def test_sidecar_written_incrementally_per_batch(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 def test_resume_skips_matching_windows_byte_equivalent(tmp_path, monkeypatch):
     fresh = _run_phase(tmp_path, monkeypatch)
-    assert _FakeConceptProvider.calls == ["ch1#w0", "ch2#w0"]
+    assert _calls_sorted() == _ALL_WINDOWS
     assert fresh["concept_windows_reused_from_checkpoint"] == 0
 
     # Capture the persisted Stage-3 vocabulary artifact BEFORE the resume
@@ -206,7 +225,7 @@ def test_resume_skips_matching_windows_byte_equivalent(tmp_path, monkeypatch):
 
 def test_partial_resume_dispatches_only_missing(tmp_path, monkeypatch):
     _run_phase(tmp_path, monkeypatch)
-    assert _FakeConceptProvider.calls == ["ch1#w0", "ch2#w0"]
+    assert _calls_sorted() == _ALL_WINDOWS
 
     # Simulate a partial run: drop one window record from the sidecar.
     sidecar = _sidecar_for(tmp_path, "CONCEPT_CP")
@@ -228,7 +247,7 @@ def test_fingerprint_mismatch_model_reruns(tmp_path, monkeypatch):
     # A different model id changes every fingerprint → full re-dispatch.
     _FakeConceptProvider.calls = []
     resume = _run_phase(tmp_path, monkeypatch, model="test-model-v2")
-    assert _FakeConceptProvider.calls == ["ch1#w0", "ch2#w0"]
+    assert _calls_sorted() == _ALL_WINDOWS
     assert resume["concept_windows_reused_from_checkpoint"] == 0
 
 
@@ -239,7 +258,7 @@ def test_fingerprint_mismatch_changed_chapter_text_reruns(tmp_path, monkeypatch)
     # mismatch → full re-dispatch.
     _FakeConceptProvider.calls = []
     resume = _run_phase(tmp_path, monkeypatch, mutate_text=True)
-    assert _FakeConceptProvider.calls == ["ch1#w0", "ch2#w0"]
+    assert _calls_sorted() == _ALL_WINDOWS
     assert resume["concept_windows_reused_from_checkpoint"] == 0
 
 
@@ -249,7 +268,7 @@ def test_fingerprint_mismatch_changed_chapter_text_reruns(tmp_path, monkeypatch)
 def test_opt_out_disables_write(tmp_path, monkeypatch):
     monkeypatch.setenv("ED4ALL_CONCEPT_EXTRACTION_CHECKPOINT", "0")
     payload = _run_phase(tmp_path, monkeypatch)
-    assert _FakeConceptProvider.calls == ["ch1#w0", "ch2#w0"]
+    assert _calls_sorted() == _ALL_WINDOWS
     sidecar = _sidecar_for(tmp_path, "CONCEPT_CP")
     assert not sidecar.exists()  # no sidecar written when disabled
     assert payload["concept_windows_reused_from_checkpoint"] == 0
@@ -265,7 +284,7 @@ def test_opt_out_disables_reuse(tmp_path, monkeypatch):
     monkeypatch.setenv("ED4ALL_CONCEPT_EXTRACTION_CHECKPOINT", "0")
     _FakeConceptProvider.calls = []
     resume = _run_phase(tmp_path, monkeypatch)
-    assert _FakeConceptProvider.calls == ["ch1#w0", "ch2#w0"]
+    assert _calls_sorted() == _ALL_WINDOWS
     assert resume["concept_windows_reused_from_checkpoint"] == 0
 
 

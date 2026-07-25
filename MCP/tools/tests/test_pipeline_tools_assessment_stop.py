@@ -64,9 +64,21 @@ class _FakeGen:
         course_code: str,
         objective_ids: List[str],
         bloom_levels: List[str],
-        question_count: int,
+        question_count: int = 10,
         source_chunks=None,
+        ensure_objective_coverage: bool = False,
+        chunks_by_objective=None,
     ) -> AssessmentData:
+        """Mirror ``AssessmentGenerator.generate``'s keyword surface.
+
+        The production quiz loop calls this with
+        ``ensure_objective_coverage=`` + ``chunks_by_objective=``; the call is
+        wrapped in a broad ``except Exception`` that logs-and-continues, so a
+        double whose signature drifts from the real generator silently routes
+        every test through the "generation failed" fallback instead of the
+        checkpoint/stop behaviour under test. Keep this signature in lockstep
+        with ``Trainforge/generators/assessment_generator.py::generate``.
+        """
         type(self).calls.append(list(objective_ids))
         if type(self).arm_after and len(type(self).calls) == type(self).arm_after:
             stop_control.request_stop(scope="run", reason="test", source="test")
@@ -175,10 +187,40 @@ def _output_snapshot(proj: Path) -> Dict[str, str]:
 def _armed_env(state_runs_isolated, monkeypatch):
     monkeypatch.setenv("ED4ALL_RUN_ID", _RUN_ID)
     monkeypatch.delenv("ED4ALL_ASSESSMENT_PROSE_PROVIDER", raising=False)
+    # Hermetic quiz-loop knobs: the fake stands in for the legacy ``generate``
+    # path at the 1-item-per-objective budget, so an ambient DIVERSIFIED /
+    # items-per-objective override must not re-route or re-scale the loop.
+    monkeypatch.delenv("ED4ALL_ASSESSMENT_DIVERSIFIED", raising=False)
+    monkeypatch.delenv("ED4ALL_ASSESSMENT_ITEMS_PER_OBJECTIVE", raising=False)
     stop_control.clear_stop(include_global=True)
     _reset_gen()
     yield
     stop_control.clear_stop(include_global=True)
+
+
+# ===========================================================================
+# Double-fidelity guard
+# ===========================================================================
+def test_fake_generator_signature_covers_real_generator():
+    """The double must accept every kwarg the real generator accepts.
+
+    The production quiz loop wraps its ``generate(...)`` call in a broad
+    ``except Exception: continue``. A double whose signature lags the real
+    generator therefore raises ``TypeError`` INSIDE that guard and every test
+    in this module silently degrades to the "generation failed" fallback while
+    still reporting the phase as successful. This assertion makes that drift a
+    loud failure instead of an invisible one.
+    """
+    import inspect
+
+    from Trainforge.generators.assessment_generator import AssessmentGenerator
+
+    real = set(inspect.signature(AssessmentGenerator.generate).parameters) - {"self"}
+    fake = set(inspect.signature(_FakeGen.generate).parameters) - {"self"}
+    assert real <= fake, (
+        "_FakeGen.generate is missing kwargs the real AssessmentGenerator."
+        f"generate accepts: {sorted(real - fake)}"
+    )
 
 
 # ===========================================================================

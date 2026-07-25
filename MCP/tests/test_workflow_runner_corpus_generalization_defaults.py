@@ -144,6 +144,16 @@ def test_measured_graph_shaping_quartet_is_complete():
         "ED4ALL_BLOCK_QUALITY_SHADOW": "1",
         "TRAINFORGE_EDGE_NLI": "1",
         "TRAINFORGE_CONTRADICTED_EDGE_POLICY": "decay",
+        # Assessment-quality overhaul promotions. All PORTABLE — deterministic
+        # (marker guard / prose mining view / QTI sidecar / deterministic item
+        # mix planner), domain-agnostic, and NONE selects an LLM provider,
+        # model, or synthesis backend, so none needs a docs/LICENSING.md row.
+        # Per-flag rationale + measurements live beside each entry in
+        # MCP/core/workflow_runner.py::_CORPUS_GENERALIZATION_ENV_DEFAULTS.
+        "ED4ALL_ASSESSMENT_APPARATUS_STRICT": "true",
+        "ED4ALL_ASSESSMENT_CLEAN_PROSE": "true",
+        "ED4ALL_ASSESSMENT_ITEM_BANK": "true",
+        "ED4ALL_ASSESSMENT_DIVERSIFIED": "true",
     }
     assert _CORPUS_GENERALIZATION_ENV_DEFAULTS == expected
 

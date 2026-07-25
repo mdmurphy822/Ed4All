@@ -307,7 +307,12 @@ def _write_blocks_jsonl_with_malformed_fields(path: Path) -> None:
             "content": "<p>" + ("Clean prose. " * 10) + "</p>",
             "objective_ids": ["TO-01"],
             "source_ids": ["semantik:ch1#sec2"],
-            "content_type_label": "definition",
+            # Must be a canonical ChunkType (schemas/taxonomies/content_type.json
+            # $defs.ChunkType via lib/validators/content_type.py::
+            # get_valid_chunk_types) — the same enum the outline provider and
+            # BlockContentTypeValidator use. "definition" is a SectionContentType,
+            # NOT a ChunkType, so it is a legitimate content_type drop.
+            "content_type_label": "explanation",
             "key_terms": ["plain_term"],
         },
     ]
@@ -385,7 +390,11 @@ def test_metadata_drops_zero_when_blocks_clean(
             "content": "<p>" + ("Clean prose. " * 10) + "</p>",
             "objective_ids": ["TO-01"],
             "source_ids": ["semantik:ch1#sec1"],
-            "content_type_label": "definition",
+            # Canonical ChunkType — see the note in
+            # _write_blocks_jsonl_with_malformed_fields. "definition" is a
+            # SectionContentType and is correctly dropped as out-of-enum, so a
+            # block carrying it is NOT the clean block this test needs.
+            "content_type_label": "explanation",
         }) + "\n")
 
     monkeypatch.setattr(_pt, "PROJECT_ROOT", tmp_path)

@@ -105,12 +105,14 @@ def test_smoke_all_defect2_gates_resolve(tmp_path: Path):
 
 
 def test_assessment_quality_gate_carries_per_type_config():
-    """Both ``assessment_quality`` gate sites in ``config/workflows.yaml``
-    carry a ``config.per_question_type_thresholds`` block populated with
-    the canonical 5-type table (multiple_choice / true_false /
-    short_answer / essay / fill_in_blank), each with the four-axis
+    """Every BLOCKING ``assessment_quality`` gate site in
+    ``config/workflows.yaml`` carries a ``config.per_question_type_thresholds``
+    block populated with the canonical 5-type table (multiple_choice /
+    true_false / short_answer / essay / fill_in_blank), each with the four-axis
     sub-thresholds the W6.A AssessmentQualityValidator's
-    ``_resolve_per_type_thresholds`` consumes.
+    ``_resolve_per_type_thresholds`` consumes. A ``warning``-severity site may
+    omit the overlay (the "warning day-1" product-surface posture) and inherit
+    the validator's hardcoded defaults.
 
     The Wave 78 setdefault-merge at
     ``MCP/hardening/validation_gates.py:266-271`` flows
@@ -168,19 +170,36 @@ def test_assessment_quality_gate_carries_per_type_config():
                 if gate.get("gate_id") == "assessment_quality":
                     gate_sites.append((wf_name, phase.get("name", "?"), gate))
 
-    # Both known sites: rag_training::assessment_generation and
-    # textbook_to_course::trainforge_assessment.
-    assert len(gate_sites) == 2, (
-        f"Expected exactly 2 assessment_quality gate sites; got "
-        f"{[(w, p) for w, p, _ in gate_sites]}"
+    # The two ORIGINAL W6.C operator-overlay sites must still exist. Newer
+    # sites may be added (the assessment-quality overhaul ported the validator
+    # onto the shipped 06_assessments QTI product surface at
+    # ``*::assessment_synthesis``), so this is a floor, not a count pin — the
+    # per-site rule below is what actually carries the contract.
+    site_names = {(w, p) for w, p, _ in gate_sites}
+    assert {
+        ("rag_training", "assessment_generation"),
+        ("textbook_to_course", "trainforge_assessment"),
+    } <= site_names, (
+        f"Missing a known assessment_quality gate site; got {sorted(site_names)}"
     )
 
+    # Contract (supersedes the old ``len(gate_sites) == 2`` pin, which drifted
+    # the moment a third site landed): a site is allowed to omit the overlay
+    # ONLY when it cannot block — i.e. severity ``warning``, where falling back
+    # to the validator's hardcoded ``_PER_QUESTION_TYPE_THRESHOLDS`` is the
+    # documented "warning day-1" posture. Any BLOCKING (critical) site must
+    # carry the full canonical 5-type x 4-axis operator overlay.
     for wf_name, phase_name, gate in gate_sites:
         cfg = gate.get("config")
-        assert isinstance(cfg, dict), (
-            f"{wf_name}::{phase_name}::assessment_quality missing "
-            f"config block (W6.C regression)"
-        )
+        severity = gate.get("severity")
+        if not isinstance(cfg, dict) or "per_question_type_thresholds" not in cfg:
+            assert severity == "warning", (
+                f"{wf_name}::{phase_name}::assessment_quality has severity "
+                f"{severity!r} but no config.per_question_type_thresholds "
+                f"overlay — a blocking site must not silently fall back to the "
+                f"validator's hardcoded defaults (W6.C regression)."
+            )
+            continue
         per_type = cfg.get("per_question_type_thresholds")
         assert isinstance(per_type, dict), (
             f"{wf_name}::{phase_name}::assessment_quality "

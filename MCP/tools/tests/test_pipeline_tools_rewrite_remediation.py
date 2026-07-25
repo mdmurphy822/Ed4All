@@ -8,12 +8,16 @@ by Worker W3 in ``MCP/tools/pipeline_tools.py``:
   pre-W3 single-shot ``router.route(blk, tier="rewrite",
   source_chunks=[], objectives=[])`` short-circuit that broke the
   inter-tier seam).
-* The rewrite loop passes ``validators=[]`` to
-  ``route_rewrite_with_remediation`` — in-loop remediation is OFF and
-  the standalone ``post_rewrite_validation`` phase owns validation
-  (operator decision 2026-06-09). The ``_resolve_post_rewrite_validators``
-  helper is retained for the unit tests below (absent workflow_type
-  yields ``[]``) but has no production caller.
+* The rewrite loop passes the DELIBERATELY TINY in-loop chain built by
+  ``_build_rewrite_inloop_validators`` to
+  ``route_rewrite_with_remediation`` — today exactly one cheap,
+  deterministic, high-precision candidate-rejection check
+  (``ProseStutterValidator``, landed a6f7d90e), which supersedes the
+  earlier ``validators=[]`` contract (65b02cd / operator decision
+  2026-06-09). The FULL YAML-declared gate chain still belongs to the
+  standalone ``post_rewrite_validation`` phase; ``_resolve_post_rewrite_
+  validators`` is retained for the unit tests below (absent
+  workflow_type yields ``[]``) but has no production caller.
 * ``source_chunks`` and ``objectives`` are rehydrated from the
   W2-persisted ``outline_chunks.json`` + ``outline_objectives.json``
   sidecars when the workflow_runner threads ``outline_chunks_path`` /
@@ -263,29 +267,31 @@ def test_rewrite_phase_threads_source_chunks_and_validators(
     ]
     # Objectives rehydrated from the sidecar (not the pre-W3 [] default).
     assert call["objectives"] == objectives_payload
-    # 65b02cd production pivot: ``_run_content_generation_rewrite`` calls
-    # ``route_rewrite_with_remediation`` with hard-coded ``validators=[]``
-    # (pipeline_tools.py ~5049-5054). The in-loop validator chain is
-    # DELIBERATELY skipped — the rewrite tier authors every block from
-    # scratch as HTML, a backstop post-processes the Qwen output
-    # (canonical objective IDs + CURIE injection), and the separate
-    # ``post_rewrite_validation`` phase runs the YAML-declared validator
-    # chain on the corrected content afterwards. The sidecar-rehydration
-    # of source_chunks/objectives (asserted above) is the load-bearing
-    # wiring this test still proves.
+    # In-loop validator chain. HISTORY: 65b02cd pinned ``validators=[]``
+    # (in-loop remediation fully OFF, operator decision 2026-06-09).
+    # a6f7d90e SUPERSEDED that: the rewrite loop now dispatches the
+    # deliberately tiny chain from ``_build_rewrite_inloop_validators`` so a
+    # phrase-stuttered candidate fires ``action="regenerate"`` and re-rolls at
+    # authoring time instead of shipping slop into the retrieval corpus.
     #
-    # PRODUCT DECISION (operator, 2026-06-09): the dead in-loop call to
-    # ``_resolve_post_rewrite_validators`` (and its result variable) has
-    # been REMOVED from ``_run_content_generation_rewrite`` — in-loop
-    # remediation stays OFF and ``validators=[]`` is the contract; the
-    # standalone ``post_rewrite_validation`` phase owns validation. The
-    # helper ``_resolve_post_rewrite_validators`` (pipeline_tools.py
-    # ~3646) is RETAINED because it remains directly exercised by the unit
-    # tests below; it has no remaining production caller.
-    assert call["validators"] == [], (
-        "65b02cd: the rewrite loop passes validators=[] (in-loop "
-        "remediation skipped; post_rewrite_validation runs the chain "
-        f"instead). Got {call['validators']!r}"
+    # The load-bearing contract is TWO-part and both halves are asserted:
+    #   1. the loop passes exactly what the builder produced (wiring), and
+    #   2. that chain stays cheap + deterministic — the FULL YAML-declared
+    #      gate chain still belongs to the standalone
+    #      ``post_rewrite_validation`` phase, so an expensive validator
+    #      (NLI / embedding) appearing here is a regression, not a feature.
+    expected_inloop = [
+        type(v).__name__ for v in _pt._build_rewrite_inloop_validators()
+    ]
+    assert [type(v).__name__ for v in call["validators"]] == expected_inloop, (
+        "a6f7d90e: the rewrite loop dispatches _build_rewrite_inloop_"
+        f"validators() output. Expected {expected_inloop}; got "
+        f"{[type(v).__name__ for v in call['validators']]}"
+    )
+    assert expected_inloop == ["ProseStutterValidator"], (
+        "The in-loop chain must stay a cheap deterministic candidate-"
+        "rejection set; the full gate chain runs in post_rewrite_validation. "
+        f"Got {expected_inloop}"
     )
 
 
