@@ -106,6 +106,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
@@ -249,7 +250,7 @@ class _NormalisedGate:
     message: Optional[str] = None
 
     def to_per_phase_entry(self) -> Dict[str, Any]:
-        return {
+        entry: Dict[str, Any] = {
             "gate_id": self.gate_id,
             "severity": self.severity,
             "passed": self.passed,
@@ -257,6 +258,15 @@ class _NormalisedGate:
             "issue_count": self.issue_count,
             "top_issues": list(self.top_issues),
         }
+        # ADDITIVE, and only when populated: `_tally` falls back to these when
+        # a gate carries no per-issue rows (the two-pass chain summary never
+        # does), so a blocking row keeps actionable text instead of nulls. A
+        # gate with neither emits the exact pre-existing key set.
+        if self.code is not None:
+            entry["code"] = self.code
+        if self.message is not None:
+            entry["message"] = self.message
+        return entry
 
     def to_summary_entry(self) -> Dict[str, Any]:
         return {
@@ -266,6 +276,66 @@ class _NormalisedGate:
             "code": self.code,
             "message": self.message,
         }
+
+
+@lru_cache(maxsize=1)
+def _configured_gate_severities() -> Dict[Tuple[str, str], str]:
+    """``(phase, gate_id) -> severity`` read from ``config/workflows.yaml``.
+
+    The gate's CONFIGURED severity is the authority on whether a failure
+    blocks. Deriving it here instead of defaulting to ``"critical"`` is what
+    keeps a warning-configured gate out of ``blocking_failures`` (and so out
+    of ``final_promotion_decision`` / ``course_status``).
+
+    Keyed by ``(phase, gate_id)`` because the same gate legitimately carries
+    different severities in different phases (``assessment_quality`` is a
+    warning at ``assessment_synthesis`` and critical at
+    ``trainforge_assessment``). When two workflows disagree on the SAME
+    ``(phase, gate_id)`` the entry resolves to ``"critical"`` — an ambiguous
+    gate fails closed rather than silently downgrading.
+
+    Best-effort: an unreadable/absent config yields an empty map and every
+    caller falls back to its previous default.
+    """
+    severities: Dict[Tuple[str, str], str] = {}
+    try:
+        import yaml  # noqa: PLC0415 — optional at import time
+
+        from lib.paths import PROJECT_ROOT  # noqa: PLC0415
+
+        raw = yaml.safe_load(
+            (Path(PROJECT_ROOT) / "config" / "workflows.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+    except Exception:  # noqa: BLE001 — config read is best-effort
+        return severities
+    if not isinstance(raw, dict):
+        return severities
+    for wf in (raw.get("workflows") or {}).values():
+        if not isinstance(wf, dict):
+            continue
+        for phase in wf.get("phases") or []:
+            if not isinstance(phase, dict):
+                continue
+            phase_name = str(phase.get("name") or "")
+            for gate in phase.get("validation_gates") or []:
+                if not isinstance(gate, dict):
+                    continue
+                gate_id = str(gate.get("gate_id") or "")
+                if not phase_name or not gate_id:
+                    continue
+                sev = str(gate.get("severity") or "critical").strip().lower()
+                key = (phase_name, gate_id)
+                prior = severities.get(key)
+                # Disagreement across workflows -> fail closed.
+                severities[key] = "critical" if (prior and prior != sev) else sev
+    return severities
+
+
+def _configured_severity(phase: str, gate_id: str) -> Optional[str]:
+    """Configured severity for one gate, or ``None`` when not in config."""
+    return _configured_gate_severities().get((str(phase), str(gate_id)))
 
 
 class CourseforgeValidationReport:
@@ -579,10 +649,16 @@ class CourseforgeValidationReport:
             for i in issues[:TOP_ISSUES_LIMIT]
             if isinstance(i, Mapping)
         ]
-        # Severity falls back to "critical" so unknown gates fail closed
-        # in the blocking_failures list. Validators that want to be
-        # surfaced as warnings set severity explicitly.
-        severity = str(gate_result.get("severity") or "critical").lower()
+        # Severity precedence: the gate payload's own value > the CONFIGURED
+        # severity in config/workflows.yaml > "critical" (unknown gates fail
+        # closed in blocking_failures). Consulting the config is what stops a
+        # payload that simply omits the key from being reported as critical
+        # when the workflow configured it as a warning.
+        severity = str(
+            gate_result.get("severity")
+            or _configured_severity(phase, gate_result.get("gate_id") or "")
+            or "critical"
+        ).lower()
         first = issues[0] if issues and isinstance(issues[0], Mapping) else None
 
         return _NormalisedGate(
@@ -613,10 +689,18 @@ class CourseforgeValidationReport:
         bodies.
         """
         gate_id = str(gate_result.get("gate_id") or "unknown")
-        # Every two-pass router gate is critical by architecture (the
-        # seam blocks on failure). When new warning-style gates land
-        # they should be explicitly listed here.
-        severity = "critical"
+        # The per-block report.json chain summary carries no severity, so it
+        # is read from the gate's CONFIGURED severity in config/workflows.yaml
+        # (falling back to "critical" for a gate absent from config, which
+        # keeps an unknown gate failing closed).
+        #
+        # This previously hardcoded "critical" with a note that warning-style
+        # gates "should be explicitly listed here" — a list that was never
+        # added. The result: five gates configured `severity: warning,
+        # on_fail: warn` landed in blocking_failures and drove
+        # final_promotion_decision -> "failed" on a course whose own
+        # report.json showed 3037/3037 blocks passed, 0 failed, 0 escalated.
+        severity = _configured_severity(phase, gate_id) or "critical"
         passed = bool(gate_result.get("passed", True))
         # Folded report.json chain only stores issue_count. Synthesise
         # a code/message from the report's failed/escalated counts when
@@ -673,12 +757,20 @@ class CourseforgeValidationReport:
             top_issue = (gate.get("top_issues") or [{}])[0] if gate.get(
                 "top_issues"
             ) else {}
+            # Fall back to the gate's OWN synthesised code/message when it has
+            # no per-issue rows. The two-pass chain summary carries only an
+            # issue COUNT (top_issues is always empty there), so reading
+            # top_issues alone produced blocking_failures rows with null code
+            # AND null message — a "critical failure" with no reason attached,
+            # which is close to untriageable.
             row = {
                 "phase": phase,
                 "gate_id": gate.get("gate_id"),
                 "severity": severity,
-                "code": top_issue.get("code") if top_issue else None,
-                "message": top_issue.get("message") if top_issue else None,
+                "code": (top_issue.get("code") if top_issue else None)
+                or gate.get("code"),
+                "message": (top_issue.get("message") if top_issue else None)
+                or gate.get("message"),
             }
             if severity == "warning":
                 warning_count += 1

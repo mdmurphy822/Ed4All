@@ -1026,3 +1026,72 @@ class TestSchemaBumpBackCompat:
             assert "phase" in entry
             assert "gates" in entry
             assert isinstance(entry["gates"], list)
+
+
+# ---- configured-severity resolution (blocking_failures correctness) -------
+#
+# The aggregator used to hardcode "critical" for every two-pass gate (and to
+# default to it whenever a payload omitted `severity`), so gates configured
+# `severity: warning, on_fail: warn` landed in `blocking_failures` and drove
+# `final_promotion_decision` -> "failed". Measured on a real export: 17
+# blocking rows where only 2 gates were genuinely critical.
+
+from lib.aggregators.courseforge_validation_report import (  # noqa: E402
+    _NormalisedGate,
+    _configured_gate_severities,
+    _configured_severity,
+)
+
+
+def test_severity_map_loads_from_workflows_config():
+    assert len(_configured_gate_severities()) > 0
+
+
+def test_warning_configured_gates_resolve_warning():
+    """The five gates that were mislabelled critical on a real build."""
+    for gate_id in (
+        "outline_objective_assessment_similarity",
+        "outline_distractor_plausibility",
+        "outline_assessment_numeric_equivalence",
+        "outline_instructional_depth",
+        "retrieval_presence",
+    ):
+        assert _configured_severity("inter_tier_validation", gate_id) == "warning"
+
+
+def test_critical_configured_gate_resolves_critical():
+    assert _configured_severity(
+        "post_rewrite_validation", "rewrite_html_shape"
+    ) == "critical"
+
+
+def test_severity_is_phase_scoped():
+    """Same gate_id, different severity per phase — keying must be by pair."""
+    assert _configured_severity("assessment_synthesis", "assessment_quality") == "warning"
+    assert _configured_severity("trainforge_assessment", "assessment_quality") == "critical"
+
+
+def test_unknown_gate_resolves_none_so_caller_fails_closed():
+    assert _configured_severity("no_such_phase", "no_such_gate") is None
+
+
+def test_entry_omits_code_and_message_when_absent():
+    """Additive-only: a gate with neither keeps the exact prior key set."""
+    entry = _NormalisedGate(
+        phase="p", gate_id="g", severity="critical", passed=True,
+        action=None, issue_count=0,
+    ).to_per_phase_entry()
+    assert "code" not in entry and "message" not in entry
+    assert set(entry) == {
+        "gate_id", "severity", "passed", "action", "issue_count", "top_issues",
+    }
+
+
+def test_entry_carries_synthesised_code_and_message_when_present():
+    """So `_tally` can fall back to them when there are no per-issue rows."""
+    entry = _NormalisedGate(
+        phase="p", gate_id="g", severity="critical", passed=False,
+        action=None, issue_count=3, code="TWO_PASS_G_FAIL", message="3 blocks",
+    ).to_per_phase_entry()
+    assert entry["code"] == "TWO_PASS_G_FAIL"
+    assert entry["message"] == "3 blocks"
