@@ -41,6 +41,8 @@ from typing import Any, Dict, List, Optional
 __all__ = [
     "question_to_qti_item",
     "assessment_to_qti",
+    "assessment_to_objectbank",
+    "BANK_METADATA_FIELDS",
     "discussion_to_imsdt",
     "assignment_to_resource",
     "resolve_cc_profile",
@@ -755,6 +757,106 @@ def assessment_to_qti(a: Any) -> str:
     for q in a.get("questions") or []:
         item = question_to_qti_item(q)
         section.append(item)
+
+    return _serialize(root)
+
+
+#: Per-item ``qtimetadata`` fields the objectbank stamps so a bank consumer can
+#: SELECT items without re-parsing prose. Ordered; ``(fieldlabel, source key)``.
+#: Only fields whose source value is present + non-empty are emitted, so an item
+#: lacking (say) ``item_subtype`` simply carries fewer fields — never a blank.
+BANK_METADATA_FIELDS: List[tuple] = [
+    ("ed4all_objective_id", "objective_id"),
+    ("ed4all_bloom_level", "bloom_level"),
+    ("ed4all_item_subtype", "item_subtype"),
+    ("ed4all_question_type", "question_type"),
+    ("ed4all_cognitive_task_type", "cognitive_task_type"),
+]
+
+
+def _stamp_bank_metadata(item: ET.Element, q: Dict[str, Any]) -> None:
+    """Append the queryable bank fields to an item's ``itemmetadata/qtimetadata``.
+
+    Reuses the element ``question_to_qti_item`` already built (which always
+    emits ``itemmetadata`` → ``qtimetadata`` carrying ``cc_profile``), so the
+    bank item is the EXACT same item shape an exam carries, plus additive
+    selection metadata. Idempotent per call: a field already present under the
+    same ``fieldlabel`` is not duplicated.
+    """
+    itemmeta = item.find("itemmetadata")
+    if itemmeta is None:
+        itemmeta = ET.SubElement(item, "itemmetadata")
+    qtimeta = itemmeta.find("qtimetadata")
+    if qtimeta is None:
+        qtimeta = ET.SubElement(itemmeta, "qtimetadata")
+
+    existing = {
+        (f.findtext("fieldlabel") or "").strip()
+        for f in qtimeta.findall("qtimetadatafield")
+    }
+    for label, key in BANK_METADATA_FIELDS:
+        if label in existing:
+            continue
+        raw = q.get(key)
+        if raw is None:
+            continue
+        value = str(raw).strip()
+        if not value:
+            continue
+        _qtimetadata_field(qtimeta, label, value)
+
+
+def assessment_to_objectbank(bank: Any) -> str:
+    """Transform a pool of questions into a QTI 1.2 ``<objectbank>`` document.
+
+    This is the ITEM-BANK surface: the storage format for a course's whole
+    question pool, as opposed to :func:`assessment_to_qti`, which emits one
+    fixed ``<assessment>`` (an exam). ``objectbank`` is the QTI 1.2 container
+    for a reusable item pool, so a per-week quiz becomes a SELECTION from the
+    bank rather than the bank itself.
+
+    Input accepts the same shapes as :func:`assessment_to_qti` — a dataclass
+    exposing ``to_dict()`` or the plain dict — reading ``questions`` (or
+    ``items``). Recognised keys: ``bank_id`` / ``assessment_id`` (ident) and
+    ``title``.
+
+    Every item is built by the SAME :func:`question_to_qti_item` the exam path
+    uses, then stamped with the additive :data:`BANK_METADATA_FIELDS`
+    ``qtimetadata`` (objective id, Bloom level, item subtype, question type,
+    cognitive task type) so a consumer can select by objective or Bloom level
+    without re-parsing the stem. No content is invented — a field absent on the
+    question is simply not emitted (anti-fabrication contract).
+    """
+    bank = _as_dict(bank)
+    bank_id = _ncname(
+        str(bank.get("bank_id") or bank.get("assessment_id") or ""),
+        fallback="objectbank",
+    )
+    title = str(bank.get("title") or bank_id)
+
+    ET.register_namespace("", QTI_NS)
+    ET.register_namespace("xsi", _XSI_NS)
+    root = ET.Element(f"{{{QTI_NS}}}questestinterop")
+    root.set(
+        f"{{{_XSI_NS}}}schemaLocation",
+        f"{QTI_NS} http://www.imsglobal.org/profile/cc/ccv1p3/ccv1p3_qtiasiv1p2p1_v1p0.xsd",
+    )
+
+    objectbank = ET.SubElement(root, "objectbank")
+    objectbank.set("ident", bank_id)
+
+    bank_meta = ET.SubElement(objectbank, "qtimetadata")
+    _qtimetadata_field(bank_meta, "cc_profile", CC_EXAM_PROFILE)
+    _qtimetadata_field(bank_meta, "ed4all_bank_title", title)
+
+    questions = bank.get("questions")
+    if questions is None:
+        questions = bank.get("items") or []
+    for q in questions or []:
+        q_dict = _as_dict(q)
+        item = question_to_qti_item(q_dict)
+        _stamp_bank_metadata(item, q_dict)
+        objectbank.append(item)
 
     return _serialize(root)
 

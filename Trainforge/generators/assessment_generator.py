@@ -1352,15 +1352,25 @@ class AssessmentGenerator:
                         if d_text not in distractors:
                             distractors.append(d_text)
 
-                # Strategy 3: Factual statements
-                for stmt in statements:
+                # Strategy 3: Factual statements.
+                # Rotate the statement pool for the same reason Strategy 2
+                # rotates its term pool: iterating from statements[0] on every
+                # question re-serves the same leading statements as distractors
+                # across the whole quiz set (measured: 29 distractor strings
+                # reused >=3x on a 313-item set). Reuses the shared
+                # ``_distractor_offset`` cursor advanced by Strategy 2 above,
+                # and skips duplicates already collected for THIS question.
+                _sn = len(statements)
+                for _k in range(_sn):
                     if len(distractors) >= 3:
                         break
+                    stmt = statements[(self._distractor_offset + _k) % _sn]
                     if stmt.statement.lower() != target.definition.lower():
                         d_text = stmt.statement
                         if len(d_text) > 200:
                             d_text = d_text[:197] + "..."
-                        distractors.append(d_text)
+                        if d_text not in distractors:
+                            distractors.append(d_text)
 
                 # No padded-distractor fallback. Padding the choices with a
                 # template string ("A concept unrelated to <term> in this

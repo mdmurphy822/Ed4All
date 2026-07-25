@@ -84,6 +84,61 @@ def _apparatus_banner_re() -> "re.Pattern[str]":
     return re.compile(alts, re.IGNORECASE)
 
 
+#: Env flag for the WIDENED generic-apparatus marker set below. Default off →
+#: :func:`_is_apparatus_text` keeps the exact legacy marker set (byte-identical
+#: harvest on every existing corpus). A5 auto-ons it for pipeline runs.
+_APPARATUS_STRICT_ENV = "ED4ALL_ASSESSMENT_APPARATUS_STRICT"
+
+
+def resolve_apparatus_strict() -> bool:
+    """Resolve the widened-apparatus-marker flag (parse-with-fallback).
+
+    Truthy ``1``/``true``/``yes``/``on`` enables the widened marker set;
+    anything else (unset, empty, garbage, falsey) keeps the legacy set.
+    """
+    return (os.environ.get(_APPARATUS_STRICT_ENV, "") or "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+# Widened GENERIC apparatus markers (gated by ``_APPARATUS_STRICT_ENV``). Same
+# vocabulary CLASS as ``_APPARATUS_RE`` — pedagogical-label / figure-apparatus
+# scaffolding, never subject words — so these stay in code alongside it;
+# publisher-specific banners remain DATA in the lexicon. Each pattern closes a
+# measured leak on an OCR'd scan corpus where the legacy set matched nothing:
+#
+#   * ``Solution`` / ``Check`` WITHOUT the colon the legacy pattern requires —
+#     OCR routinely drops it ("Solution A gray checkmark inside a circle").
+#   * An all-caps ``HOW TO <PROCEDURE>`` banner heading.
+#   * A leading ``Figure|Table|Example N.N`` caption, anchored at string start
+#     so a definition that merely CITES a figure mid-sentence is not rejected.
+#   * A pure glyph/icon alt-text description ("A gray checkmark inside a
+#     circle, indicating correct or complete.") — image scaffolding the OCR
+#     lane emits as prose. Anchored at start and required to close with an
+#     ``indicating``/``showing``-class participle so real prose is untouched.
+_APPARATUS_WIDE_RE = re.compile(
+    r"(?:^|(?<=[\s>]))(?:Solution|Check)\s+(?=[A-Z])"
+    r"|\bHOW\s+TO\s+[A-Z][A-Z\s]{3,}"
+    r"|^\s*(?:Figure|Table|Example)\s+\d+(?:\.\d+)?\b",
+)
+
+#: Glyph / icon alt-text: an image description the OCR lane rendered as prose.
+#: Anchored at start; requires BOTH a glyph noun and a trailing descriptive
+#: participle so ordinary sentences mentioning a shape are not swept up.
+_GLYPH_ALT_TEXT_RE = re.compile(
+    r"^\s*(?:An?\s+)?[\w\s\-]{0,40}?"
+    r"\b(?:checkmark|check\s*mark|arrow|icon|symbol|bullet|glyph|"
+    r"circle|square|triangle|rectangle|box|star)\b"
+    r"[\w\s\-,]{0,60}?,\s*"
+    # NB: "showing" is deliberately EXCLUDED — it is common in legitimate
+    # math prose ("a box plot ... showing the median"), so including it
+    # produced measured false positives. Glyph alt-text reliably uses the
+    # state-describing participles below.
+    r"(?:indicating|representing|denoting|signifying)\b",
+    re.IGNORECASE,
+)
+
+
 def _is_apparatus_text(text: str) -> bool:
     """True when the candidate text is exercise/solution APPARATUS.
 
@@ -93,9 +148,18 @@ def _is_apparatus_text(text: str) -> bool:
     it otherwise leaks (e.g. "Solution: r Check: ...") through every harvest
     path. Generic markers are matched in-code; publisher-specific exercise
     banners are matched from the data-driven lexicon.
+
+    Under ``ED4ALL_ASSESSMENT_APPARATUS_STRICT`` the widened generic marker
+    set additionally fires (colon-less Solution/Check, all-caps HOW-TO
+    banners, leading figure/table captions, glyph alt-text) — the OCR'd-scan
+    leak class the legacy patterns miss. Default off → byte-identical.
     """
     t = text or ""
-    return bool(_APPARATUS_RE.search(t) or _apparatus_banner_re().search(t))
+    if _APPARATUS_RE.search(t) or _apparatus_banner_re().search(t):
+        return True
+    if resolve_apparatus_strict():
+        return bool(_APPARATUS_WIDE_RE.search(t) or _GLYPH_ALT_TEXT_RE.search(t))
+    return False
 
 
 # --------------------------------------------------------------------------- #

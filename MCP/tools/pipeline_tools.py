@@ -576,6 +576,18 @@ def _assessment_manifest_entry(
     return entry
 
 
+def _item_bank_enabled() -> bool:
+    """Resolve the QTI item-BANK sidecar flag (parse-with-fallback).
+
+    ``ED4ALL_ASSESSMENT_ITEM_BANK`` gates the additive
+    ``06_assessments/item_bank.xml`` ``<objectbank>`` emit. Default off →
+    byte-identical ``06_assessments`` (no extra file, no extra manifest key).
+    """
+    return (
+        os.environ.get("ED4ALL_ASSESSMENT_ITEM_BANK", "") or ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _write_assessment_artifacts(
     out_dir: Path,
     artifacts: List[Dict[str, Any]],
@@ -29835,6 +29847,67 @@ def _build_tool_registry() -> dict:
             )
             artifacts = []
         manifest = _write_assessment_artifacts(out_dir, artifacts)
+
+        # ---- QTI item BANK sidecar (question-library surface) --------------- #
+        # The per-week `<assessment>` documents above are fixed EXAMS. The bank
+        # is the reusable question-LIBRARY: one QTI 1.2 `<objectbank>` carrying
+        # every emitted item with queryable per-item qtimetadata (objective id,
+        # Bloom level, item subtype, question type), so a consumer can SELECT
+        # items by objective/Bloom instead of re-parsing prose.
+        #
+        # Deliberately a SIDECAR, recorded under its own top-level manifest key
+        # rather than inside `assessments[]`: an objectbank document's root tag
+        # is `questestinterop`, which the packager's root-tag map
+        # (package_multifile_imscc.py) resolves to the `qti` resource type — so
+        # listing it in assessments[] would ship the whole item bank into the
+        # cartridge AS AN EXAM. The sidecar keeps it out of the LMS resource
+        # set while remaining available as a course artifact.
+        if _item_bank_enabled():
+            try:
+                from Courseforge.scripts.qti_emitter import (  # noqa: PLC0415
+                    assessment_to_objectbank,
+                )
+                _bank_questions: List[Any] = []
+                for _a in built_assessments:
+                    _ad = _a.to_dict() if hasattr(_a, "to_dict") else _a
+                    if isinstance(_ad, dict):
+                        _bank_questions.extend(_ad.get("questions") or [])
+                if _bank_questions:
+                    # course_name is NOT a local here — this handler takes
+                    # **kwargs (mirrors the project_id fallback above).
+                    _bank_course = str(
+                        kwargs.get("course_code")
+                        or kwargs.get("course_name")
+                        or "course"
+                    ).strip() or "course"
+                    _bank_xml = assessment_to_objectbank({
+                        "bank_id": f"BANK-{_bank_course}",
+                        "title": f"{_bank_course} — Item Bank",
+                        "questions": _bank_questions,
+                    })
+                    (out_dir / "item_bank.xml").write_text(
+                        _bank_xml, encoding="utf-8"
+                    )
+                    manifest["item_bank"] = {
+                        "file": "item_bank.xml",
+                        "kind": "objectbank",
+                        "item_count": len(_bank_questions),
+                        "packaged": False,
+                    }
+                    (out_dir / "manifest.json").write_text(
+                        json.dumps(manifest, indent=2, ensure_ascii=False),
+                        encoding="utf-8",
+                    )
+                    logger.info(
+                        "run_assessment_synthesis: wrote item_bank.xml "
+                        "(%d items, sidecar — not packaged).",
+                        len(_bank_questions),
+                    )
+            except Exception as exc:  # noqa: BLE001 — sidecar is best-effort
+                logger.warning(
+                    "run_assessment_synthesis: item-bank emit failed (%s); "
+                    "per-week quizzes are unaffected.", exc,
+                )
 
         # ---- Instructor answer key (assessment-quality overhaul C.2) -------- #
         # A deterministic, grounded sidecar carrying everything the six CC QTI

@@ -822,9 +822,9 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 |--------|-------|-----------:|
 | `TRAINFORGE_*` / `LOCAL_SYNTHESIS_*` / `TOGETHER_*` / `ANTHROPIC_SYNTHESIS_*` / `CURRICULUM_ALIGNMENT_*` / `WAVE18_*` | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 58 |
 | `NVIDIA_*` (vendor endpoint-registry row for the hosted large-model seat — `NVIDIA_API_KEY` / `NVIDIA_BASE_URL` / `NVIDIA_LARGE_MODEL`) | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 3 |
-| `SEMANTIK_*` (SemantiK semantic-cascade converter; also honors the single legacy `DART_THETA_DEVICE` compat env, aliased to `SEMANTIK_THETA_DEVICE`) <!-- legacy-token: allow --> | [`SemantiK/CLAUDE.md § Opt-In Behavior Flags`](SemantiK/CLAUDE.md) | 163 |
+| `SEMANTIK_*` (SemantiK semantic-cascade converter; also honors the single legacy `DART_THETA_DEVICE` compat env, aliased to `SEMANTIK_THETA_DEVICE`) <!-- legacy-token: allow --> | [`SemantiK/CLAUDE.md § Opt-In Behavior Flags`](SemantiK/CLAUDE.md) | 164 |
 | `COURSEFORGE_*` / `COURSEPLANNER_*` / `TEXTBOOK_SYNTHESIS_*` | [`Courseforge/CLAUDE.md § Opt-In Behavior Flags`](Courseforge/CLAUDE.md) | 45 |
-| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root index (below) + [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 238 |
+| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root index (below) + [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 252 |
 
 ### Cross-cutting flags (root-owned)
 
@@ -1061,6 +1061,8 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `ED4ALL_ASSESSMENT_APPLY_ARM_MAX` | `4` | Satellite of `ED4ALL_ASSESSMENT_APPLY_ARM` — bounded per-quiz LLM draft budget (garbage / non-positive → 4). |
 | `ED4ALL_ASSESSMENT_ITEM_TRIVOTE` | unset (off) | A2 Bloom-trivote seam in the item-writing linter (asserted vs verb-ontology + injected zero-shot voter; `ITEM_BLOOM_TRIVOTE_UNSUPPORTED` warning). |
 | `ED4ALL_ASSESSMENT_NUMERIC_RECOVERY` | unset (off) | A3 apparatus-guard numeric-recovery — re-admits Solution/Check/Step-N regions for the numeric-FIB extractor ONLY (still sympy-verified); guard intact elsewhere. |
+| `ED4ALL_ASSESSMENT_APPARATUS_STRICT` | unset (off; **A5 auto-on for pipeline runs**) | Widened GENERIC apparatus markers on the assessment harvest paths — colon-less `Solution`/`Check`, all-caps `HOW TO` banners, leading `Figure|Table|Example N.N` captions, and glyph alt-text — closing the OCR'd-scan leak the legacy colon-anchored set misses. |
+| `ED4ALL_ASSESSMENT_ITEM_BANK` | unset (off; **A5 auto-on for pipeline runs**) | Emits the QTI 1.2 `<objectbank>` question-LIBRARY sidecar `06_assessments/item_bank.xml` (every item + queryable `ed4all_*` selection `qtimetadata`), recorded under its own `item_bank` manifest key so the packager never ships the bank as an exam. |
 | `ED4ALL_DISCUSSION_GROUNDING_NLI` | unset (off) | A5 text-grounded NLI arm for `discussion_assignment_grounded` — flips refs-only Jaccard to authoritative text-entailment where runnable (only tightens; legacy fallback). |
 | `ED4ALL_EVAL_COMPOSER_PROVIDER` | unset (absent) | E7a diagnostic-composer arm — composes eval answers on a stronger local seat while retrieval + gates stay byte-identical (separates retrieval vs composition failures). |
 | `ED4ALL_EVAL_COMPOSER_MODEL` | per-provider | Satellite of `ED4ALL_EVAL_COMPOSER_PROVIDER` — model-ID override for the diagnostic composer seat. |
