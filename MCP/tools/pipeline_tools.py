@@ -640,6 +640,28 @@ def _assessment_manifest_entry(
     return entry
 
 
+def _resolve_items_per_objective() -> int:
+    """Resolve ``ED4ALL_ASSESSMENT_ITEMS_PER_OBJECTIVE`` (default ``1``).
+
+    Multiplies the per-objective item floor in ``assessment_synthesis`` so a
+    course can emit an EXPANSIVE bank (N items per objective) rather than the
+    1-per-objective minimum a fixed weekly exam needs. ``1`` (the default)
+    leaves the budget byte-identical.
+
+    Parse-with-fallback: a positive int wins; garbage / non-positive falls
+    back to ``1`` so a misconfigured value never shrinks coverage below the
+    one-item-per-objective archival-gate floor.
+    """
+    raw = (os.environ.get("ED4ALL_ASSESSMENT_ITEMS_PER_OBJECTIVE", "") or "").strip()
+    if not raw:
+        return 1
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        return 1
+    return parsed if parsed > 0 else 1
+
+
 def _item_bank_enabled() -> bool:
     """Resolve the QTI item-BANK sidecar flag (parse-with-fallback).
 
@@ -31285,7 +31307,15 @@ def _build_tool_registry() -> dict:
             # one item per objective (TO + every child CO) so the strict
             # archival gate (OBJECTIVE_NO_ASSESSMENT / UNCOVERED_TERMINAL_
             # OUTCOME) sees every objective assessed.
-            _q_effective_count = max(question_count, len(obj_ids))
+            # Expansive-bank scaling: ED4ALL_ASSESSMENT_ITEMS_PER_OBJECTIVE
+            # multiplies the per-objective floor so a course can emit N items
+            # per objective (the item-bank / question-library shape) instead of
+            # the 1-per-objective minimum a fixed weekly exam needs. Default 1
+            # → byte-identical budget.
+            _items_per_obj = _resolve_items_per_objective()
+            _q_effective_count = max(
+                question_count, len(obj_ids) * _items_per_obj
+            )
             # ---- resume checkpoint: replay a completed quiz unit ----------
             # ``cov=per_co_v1`` in the knobs deliberately invalidates pre-
             # coverage sidecar units so a resumed run re-rolls quizzes under
@@ -31304,6 +31334,10 @@ def _build_tool_registry() -> dict:
                     f"bloom={','.join(bloom_levels)};qc={question_count};"
                     f"cov=per_co_v1"
                     + (";div=1" if _diversified_on else "")
+                    # Fold the per-objective multiplier in so raising it
+                    # invalidates cached quiz units and they re-roll at the
+                    # new budget instead of replaying the smaller one.
+                    + (f";ipo={_items_per_obj}" if _items_per_obj != 1 else "")
                 ),
             )
             _q_key = _assessment_unit_key("quiz", tid)

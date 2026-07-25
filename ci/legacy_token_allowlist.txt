@@ -391,3 +391,26 @@ tests/offline/test_retrieval_offline.py
 # local capture-mirror dir (never tracked) stays ignored. A .gitignore pattern
 # line cannot carry an inline marker, so the single 'dart' spelling is pinned.
 .gitignore	dart
+
+# ── FIGURE ENRICH-MERGE DUAL-READ (WHAT-MUST-STAY) ───────────────────────────
+# The enrich-merge pass re-anchors judged figure HTML back onto the prior
+# render by block id. Pre-SemantiK renders stamped ``data-dart-block-id``, so
+# the READ regex must accept both spellings or a legacy render silently
+# merges nothing. EMIT is ``data-semantik-block-id`` only. The test asserts
+# exactly that legacy-render coverage.
+lib/semantik/figure_enrich_merge.py	dart
+lib/semantik/tests/test_figure_enrich_merge.py	dart
+
+# ── CHUNKER REGISTRY-KEY COMPAT TESTS (WHAT-MUST-STAY) ───────────────────────
+# ``_run_dart_chunking`` is the registry key the chunking phases dispatch to;
+# root CLAUDE.md pins that the key keeps its pre-SemantiK name for
+# checkpoint / resume read-compat (the agent is ``semantik-chunker``). These
+# tests exercise that keyed dispatch, so the literal must survive.
+MCP/tests/test_dart_chunking_module_title.py	dart
+
+# ── LEGACY PHASE-NAME ALIAS TEST (WHAT-MUST-STAY) ────────────────────────────
+# ``dart_conversion`` is the legacy conversion phase name accepted on READ
+# (checkpoint alias + phase_outputs resume normalization) so paused pre-rename
+# runs still ``--resume``. The auto-name test parametrizes over it to pin that
+# alias coverage.
+MCP/tests/test_workflow_runner_auto_name.py	dart

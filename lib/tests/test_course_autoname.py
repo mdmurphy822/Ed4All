@@ -153,12 +153,12 @@ def test_title_acceptance(title):
 
 
 def test_resolve_run_init_prefers_created_at():
-    ts = resolve_run_init_timestamp("2026-07-22T07:04:33.123456", "TTC_x_20250101_010101")
+    ts = resolve_run_init_timestamp("2026-07-22T07:04:33.123456", "TTC_x_20250101_010101")  # slug-guard: allow
     assert ts == datetime(2026, 7, 22, 7, 4, 33, 123456)
 
 
 def test_resolve_run_init_falls_back_to_run_id():
-    ts = resolve_run_init_timestamp("not-a-date", "TTC_prov_20260722_070433")
+    ts = resolve_run_init_timestamp("not-a-date", "TTC_prov_20260722_070433")  # slug-guard: allow
     assert ts == datetime(2026, 7, 22, 7, 4, 33)
 
 
