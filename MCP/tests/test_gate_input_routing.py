@@ -1775,3 +1775,52 @@ def test_assessment_quality_rejects_truncated_json(tmp_path):
     )
     assert "assessment_path" not in inputs
     assert missing == ["ASSESSMENTS_FILE_MISSING"]
+
+
+def test_qti_surface_skips_the_objectbank_sidecar(tmp_path):
+    """The item-bank library must not double-count the exam's own items.
+
+    ED4ALL_ASSESSMENT_ITEM_BANK emits 06_assessments/item_bank.xml restating
+    every item. Parsing it alongside the exams counted each item twice (332 ->
+    664 on a real export), which halves every stem/answer diversity ratio.
+    """
+    from MCP.hardening.gate_input_routing import _assessment_data_from_qti_surface
+
+    qti = tmp_path / "06_assessments"
+    qti.mkdir()
+    item = (
+        '<item ident="i1" title="OBJ-1">'
+        '<itemmetadata><qtimetadata><qtimetadatafield>'
+        '<fieldlabel>cc_profile</fieldlabel>'
+        '<fieldentry>cc.multiple_choice.v0p1</fieldentry>'
+        '</qtimetadatafield></qtimetadata></itemmetadata>'
+        '<presentation><material><mattext texttype="text/html">Define a ratio.'
+        '</mattext></material>'
+        '<response_lid ident="r1"><render_choice>'
+        '<response_label ident="A"><material><mattext>a comparison</mattext>'
+        '</material></response_label>'
+        '<response_label ident="B"><material><mattext>a sum</mattext>'
+        '</material></response_label>'
+        '</render_choice></response_lid></presentation>'
+        '<resprocessing><respcondition><conditionvar>'
+        '<varequal respident="r1">A</varequal></conditionvar>'
+        '<setvar action="Set" varname="SCORE">100</setvar>'
+        '</respcondition></resprocessing></item>'
+    )
+    ns = 'xmlns="http://www.imsglobal.org/xsd/ims_qtiasiv1p2"'
+    (qti / "week_01_quiz.xml").write_text(
+        f'<questestinterop {ns}><assessment ident="a1"><section ident="s1">'
+        f'{item}</section></assessment></questestinterop>',
+        encoding="utf-8",
+    )
+    (qti / "item_bank.xml").write_text(
+        f'<questestinterop {ns}><objectbank ident="b1">{item}</objectbank>'
+        f'</questestinterop>',
+        encoding="utf-8",
+    )
+
+    data = _assessment_data_from_qti_surface(
+        {"packaging": {"qti_dir": str(qti)}}, {},
+    )
+    assert data is not None
+    assert len(data["questions"]) == 1, "objectbank sidecar was counted again"

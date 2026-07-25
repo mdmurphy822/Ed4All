@@ -666,6 +666,16 @@ def _assessment_data_from_qti_surface(
             root = _ET.fromstring(xml_path.read_text(encoding="utf-8"))
         except (OSError, _ET.ParseError):
             continue
+        # Skip the QTI <objectbank> question-LIBRARY sidecar. It restates every
+        # item that the exam files already carry, so counting it doubles the
+        # population and collapses the stem/answer DIVERSITY ratios -- the bank
+        # is a library to select from, not an assessment to score. Discriminate
+        # structurally rather than by filename: both shapes share the same
+        # <questestinterop> root, and only the child element differs.
+        if any(
+            child.tag.rsplit("}", 1)[-1] == "objectbank" for child in list(root)
+        ):
+            continue
         for elem in _iter_local(root, "item"):
             norm = _item_from_xml(elem)
             q_type = _profile_to_type.get(norm["cc_profile"], "")
