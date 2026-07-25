@@ -62,6 +62,56 @@ _PROVIDER = "local"
 # Edge-status verdicts that exclude an edge from ANY pair (consensus filter).
 _EXCLUDED_EDGE_STATUS: Set[str] = {"contradicted", "retracted"}
 
+# Edge types that record where a node CAME FROM rather than how two topics
+# relate to each other. Verbalizing them produces "explain how X relates to
+# Y" pairs over pipeline bookkeeping, so they never become training signal.
+# (On a representative course these were 8,922 of 10,000 edges.)
+_PROVENANCE_EDGE_TYPES: Set[str] = {"derived-from-objective"}
+
+# A graph node is only verbalizable if it carries a HUMAN label. Concept
+# graphs also hold evidence/bookkeeping nodes (``class: "Chunk"``,
+# ``ComponentObjective``, ``Outcome``) whose ``label`` is just their own
+# opaque id -- e.g. ``<course>_chunk_00633`` or ``co-01``. Emitting those
+# teaches the model to answer with internal identifiers, so a node whose
+# label is identifier-shaped is skipped entirely rather than verbalized.
+# Deliberately shape-based, not class-based: a graph whose objective nodes
+# DO carry real statements stays eligible.
+# NOTE on the digit terminator: ``\b`` is wrong here, because ``_`` is a word
+# character -- ``..._chunk_00190_co-01`` has no word boundary after the digit
+# run, so a ``\b``-anchored pattern silently misses every compound id.
+_OPAQUE_LABEL_RES: Tuple[re.Pattern, ...] = (
+    re.compile(r"(?:^|[_\s-])chunk[_\s-]?\d{2,}(?!\d)", re.I),  # ..._chunk_00633
+    re.compile(r"^[a-z]{1,4}[-_\s]?\d{1,5}$", re.I),            # co-01, to-1, q12
+    re.compile(r"^[0-9a-f]{8,}$", re.I),                        # bare hash/uuid
+)
+
+# A slug-shaped token run with an embedded digit group, e.g.
+# ``q_openstax_scan_chunk_00190_co-01``. Used only when the declared label is
+# byte-identical to the node id, which is the tell that no human label exists.
+_ID_SHAPED_RE = re.compile(r"^\S+$")
+_DIGIT_RUN_RE = re.compile(r"\d{2,}")
+
+
+def _is_opaque_label(text: str) -> bool:
+    """True when ``text`` is an identifier rather than a human label."""
+    t = _norm_text(text)
+    if not t:
+        return True
+    return any(r.search(t) for r in _OPAQUE_LABEL_RES)
+
+
+def _is_id_echo(label: str, node_id: str) -> bool:
+    """True when ``label`` is just the node's own id echoed back.
+
+    Catch-all for id schemes the explicit patterns do not enumerate: a label
+    identical to the id, carrying no whitespace and an embedded digit run, is
+    a machine identifier no matter its prefix.
+    """
+    lbl = _norm_text(label)
+    if not lbl or lbl != _norm_text(node_id):
+        return False
+    return bool(_ID_SHAPED_RE.match(lbl) and _DIGIT_RUN_RE.search(lbl))
+
 # Emit-order family list (deterministic).
 _FAMILIES: Tuple[str, ...] = (
     "relation_qa",
@@ -133,12 +183,23 @@ def _node_index(graph: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
 
 
 def _label_for(node: Optional[Dict[str, Any]], node_id: str) -> str:
+    """Human label for a node, or ``""`` when it has none.
+
+    Returning empty is meaningful: every caller skips the pair rather than
+    verbalizing it. The declared ``label`` is preferred, then a de-slugged
+    id (``complete-factorization`` -> ``complete factorization``), but a
+    label that is merely the node's own identifier is rejected at BOTH
+    steps -- otherwise an evidence node verbalizes as though the chunk id
+    were a concept name.
+    """
     if isinstance(node, dict):
         lbl = _norm_text(node.get("label"))
-        if lbl:
+        if lbl and not _is_opaque_label(lbl) and not _is_id_echo(lbl, node_id):
             return lbl
-    # Fall back to a de-slugged id (never the raw chunk-ish literal).
-    return _norm_text(str(node_id).replace("-", " ").replace("_", " ")) or str(node_id)
+    deslugged = _norm_text(str(node_id).replace("-", " ").replace("_", " "))
+    if deslugged and not _is_opaque_label(deslugged):
+        return deslugged
+    return ""
 
 
 def _surviving_edges(graph: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -154,6 +215,8 @@ def _surviving_edges(graph: Dict[str, Any]) -> List[Dict[str, Any]]:
         if not (s and t and et):
             continue
         if str(e.get("edge_status") or "").strip().lower() in _EXCLUDED_EDGE_STATUS:
+            continue
+        if str(et).strip().lower() in _PROVENANCE_EDGE_TYPES:
             continue
         out.append(e)
     out.sort(key=lambda e: (
@@ -226,11 +289,14 @@ def _fmt_prereq_path(
     p1 = first[0]
     label = _label_for(node_index.get(node_id), node_id)
     p1l = _label_for(node_index.get(p1), p1)
+    # Both endpoints must be nameable, else the path verbalizes an id.
+    if not label or not p1l:
+        return None
     # Try a second hop (prerequisite of the prerequisite).
     second = prereq_adj.get(p1) or []
     p2 = next((x for x in second if x not in (node_id, p1)), None)
-    if p2:
-        p2l = _label_for(node_index.get(p2), p2)
+    p2l = _label_for(node_index.get(p2), p2) if p2 else ""
+    if p2 and p2l:
         completion = (
             f"To learn '{label}', follow the prerequisite path in the course: "
             f"first study '{p2l}', then '{p1l}', and finally '{label}'."
@@ -400,7 +466,9 @@ def generate_graph_sft_pairs(
         if et == "prerequisite":
             prereq_adj.setdefault(s, []).append(t)
         tl = _label_for(node_index.get(t), t)
-        neighbors_by_node.setdefault(s, []).append((et, tl))
+        # An unnameable neighbour would verbalize as its own identifier.
+        if tl:
+            neighbors_by_node.setdefault(s, []).append((et, tl))
 
     # Deterministic emit order: inverse-degree (lowest first), then id.
     node_ids = sorted(node_index.keys(), key=lambda nid: (deg.get(nid, 0), nid))

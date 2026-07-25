@@ -142,3 +142,96 @@ def test_max_pairs_cap_and_determinism():
     assert len(p1) == 3
     assert [x["prompt"] for x in p1] == [x["prompt"] for x in p2]
     assert [x["seed"] for x in p1] == [x["seed"] for x in p2]
+
+
+# --------------------------------------------------------------------- #
+# Identifier leakage (SFT corpus poisoning)                              #
+# --------------------------------------------------------------------- #
+#
+# A concept graph also holds evidence/bookkeeping nodes whose ``label`` is
+# just their own opaque id (``class: "Chunk"`` / ``ComponentObjective`` /
+# ``Outcome``). Verbalizing those emitted pairs like
+#   "explain how 'Complete Factorization' relates to '<course>_chunk_00633'"
+# which teach the adapter to answer with internal identifiers. On a real
+# course this reached 86% of the emitted corpus.
+
+import re  # noqa: E402
+
+_CHUNK_ID_RE = re.compile(r"chunk[_\s-]?\d{2,}", re.I)
+
+
+def _graph_with_id_only_nodes() -> Dict[str, Any]:
+    """Graph mixing real concepts with id-labelled bookkeeping nodes."""
+    return {
+        "nodes": [
+            {"id": "complete-factorization", "label": "Complete Factorization",
+             "class": "DomainConcept", "occurrences": ["c_00001"]},
+            {"id": "binomial", "label": "Binomial", "class": "DomainConcept",
+             "occurrences": ["c_00002"]},
+            # label == id, no human name available.
+            {"id": "course_scan_chunk_00633", "label": "course_scan_chunk_00633",
+             "class": "Chunk"},
+            # Compound id: the digit run is followed by "_", not a word
+            # boundary — a \b-anchored pattern misses this shape.
+            {"id": "q_course_scan_chunk_00190_co-01",
+             "label": "q_course_scan_chunk_00190_co-01", "class": "Chunk"},
+            {"id": "co-01", "label": "co-01", "class": "ComponentObjective"},
+            {"id": "to-02", "label": "to-02", "class": "Outcome"},
+        ],
+        "edges": [
+            {"source": "complete-factorization", "target": "course_scan_chunk_00633",
+             "type": "defined-by", "edge_status": "supported"},
+            {"source": "binomial", "target": "q_course_scan_chunk_00190_co-01",
+             "type": "assesses", "edge_status": "supported"},
+            {"source": "complete-factorization", "target": "co-01",
+             "type": "derived-from-objective", "edge_status": "supported"},
+            {"source": "binomial", "target": "to-02",
+             "type": "derived-from-objective", "edge_status": "supported"},
+            # The one genuine concept-to-concept relation.
+            {"source": "binomial", "target": "complete-factorization",
+             "type": "prerequisite", "edge_status": "supported"},
+        ],
+    }
+
+
+def test_no_pair_contains_a_raw_chunk_identifier():
+    pairs = list(generate_graph_sft_pairs(
+        _graph_with_id_only_nodes(), _RecordingCapture()))
+    offenders = [
+        p for p in pairs
+        if _CHUNK_ID_RE.search(p["prompt"]) or _CHUNK_ID_RE.search(p["completion"])
+    ]
+    assert not offenders, (
+        "chunk identifiers leaked into training text: "
+        f"{[(p['prompt'][:80], p['completion'][:80]) for p in offenders[:3]]}"
+    )
+
+
+def test_id_only_labels_are_never_verbalized():
+    """co-01 / to-02 / chunk ids must not appear as quoted concept names."""
+    pairs = list(generate_graph_sft_pairs(
+        _graph_with_id_only_nodes(), _RecordingCapture()))
+    blob = " ".join(p["prompt"] + " " + p["completion"] for p in pairs)
+    for opaque in ("co-01", "to-02", "course_scan_chunk_00633",
+                   "q_course_scan_chunk_00190_co-01"):
+        assert f"'{opaque}'" not in blob, f"{opaque!r} verbalized as a concept"
+
+
+def test_provenance_edges_never_become_relation_pairs():
+    """derived-from-objective records where a node CAME FROM; it is not a
+    relation between two topics and must not be verbalized."""
+    pairs = list(generate_graph_sft_pairs(
+        _graph_with_id_only_nodes(), _RecordingCapture()))
+    blob = " ".join(p["completion"] for p in pairs)
+    assert "is derived from the objective" not in blob
+
+
+def test_real_concepts_still_emit_pairs():
+    """The filter must not empty the corpus — genuine concept-to-concept
+    edges and nameable nodes still produce pairs."""
+    pairs = list(generate_graph_sft_pairs(
+        _graph_with_id_only_nodes(), _RecordingCapture()))
+    assert pairs, "filter removed every pair"
+    blob = " ".join(p["prompt"] + " " + p["completion"] for p in pairs)
+    assert "Complete Factorization" in blob
+    assert "Binomial" in blob

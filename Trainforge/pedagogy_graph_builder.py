@@ -191,6 +191,31 @@ def _norm_lo_id(raw: str) -> str:
     return s
 
 
+_OBJECTIVE_LABEL_MAX_CHARS = 80
+
+
+def _objective_label(statement: Any, node_id: str) -> str:
+    """Display label for an Outcome / ComponentObjective node.
+
+    Prefers the objective's own statement over the bare ``TO-01`` / ``CO-07``
+    id. Consumers that verbalize the graph (concept-graph -> SFT pair
+    generation, coverage reports) render ``label``; when it is just the id
+    echoed back they have no human text to work with and emit identifiers
+    as though they were concept names. Falls back to the id when no
+    statement exists, so the field is never empty.
+    """
+    text = re.sub(r"\s+", " ", str(statement or "")).strip()
+    if not text:
+        return node_id
+    if len(text) > _OBJECTIVE_LABEL_MAX_CHARS:
+        cut = text[:_OBJECTIVE_LABEL_MAX_CHARS]
+        sp = cut.rfind(" ")
+        if sp > 0:
+            cut = cut[:sp]
+        text = cut.rstrip(" ,;:.") + "…"
+    return text
+
+
 def _split_lo_refs(refs: Iterable[Any]) -> List[str]:
     """Split a chunk's ``learning_outcome_refs`` list into clean ids.
 
@@ -431,11 +456,12 @@ def build_pedagogy_graph(
         if not nid:
             continue
         bloom = (to.get("bloom_level") or "").strip().lower()
+        statement = to.get("statement") or to.get("text") or ""
         node = {
             "id": nid,
             "class": "Outcome",
-            "label": nid,
-            "statement": to.get("statement") or to.get("text") or "",
+            "label": _objective_label(statement, nid),
+            "statement": statement,
             "bloom_level": bloom,
         }
         if course_id:
@@ -457,11 +483,12 @@ def build_pedagogy_graph(
         )
         parent = _norm_lo_id(parent_raw) if parent_raw else ""
         week = co.get("week")
+        statement = co.get("statement") or co.get("text") or ""
         node = {
             "id": nid,
             "class": "ComponentObjective",
-            "label": nid,
-            "statement": co.get("statement") or co.get("text") or "",
+            "label": _objective_label(statement, nid),
+            "statement": statement,
             "bloom_level": bloom,
         }
         if parent:
