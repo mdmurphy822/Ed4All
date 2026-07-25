@@ -2226,3 +2226,75 @@ def test_seat_activity_helper_mixed_seats_reports_each(monkeypatch):
     assert [s["seat"] for s in act["seats"]] == ["seat-a", "seat-b"]
     assert [s["concern"] for s in act["seats"]] == [False, True]
     assert act["concern"] is True  # any alarming seat raises the top-level flag
+
+
+def test_stage_run_keeps_two_pass_tiers_visible(state_dir):
+    """A courseforge-* stage run skips BOTH branch sides — hide NEITHER tier.
+
+    Regression: the env-branch hiding rule hid any branchy row that resolved
+    "skipped". Its premise is "the branch didn't run — its COMPLEMENT did",
+    but a ``courseforge-rewrite`` stage subcommand skips phases via the
+    ``courseforge_stage`` whitelist, so both sides skip and the two-pass
+    tiers vanished from the rail entirely (observed live: 18 phases instead
+    of 20, no content_generation_outline / inter_tier_validation).
+    """
+    run_id = _seed_run(
+        state_dir,
+        run_id="GUI-prog-stagerun",
+        workflow_id="WF-20260101-prog0040",
+        orch_run_id="TTC_stagerun",  # synthetic run id, slug-guard: allow
+        phase_outputs={
+            **{
+                name: {"_completed": True}
+                for name in (
+                    "semantik_conversion", "heading_judge", "staging",
+                    "chunking", "objective_extraction", "source_mapping",
+                    "course_planning", "concept_extraction",
+                )
+            },
+            # The stage whitelist skipped BOTH sides of the env branch.
+            "content_generation": {"_skipped": True},
+            "content_generation_outline": {"_skipped": True},
+            "inter_tier_validation": {"_skipped": True},
+            # ...only the rewrite tier actually ran.
+            "content_generation_rewrite": {"_completed": True},
+        },
+    )
+    payload = progress_service.run_progress(run_id)
+    names = [p["name"] for p in payload["phases"]]
+    for tier in ("content_generation_outline", "inter_tier_validation"):
+        assert tier in names, (
+            f"{tier} was skipped by the stage whitelist, NOT by the env "
+            "branch — its complement never ran, so it must stay on the rail"
+        )
+        assert _phase(payload, tier)["group"] == "generation"
+    # The single-pass fallback row stays hidden — under two-pass it is noise.
+    assert "content_generation" not in names
+
+
+def test_single_pass_run_still_hides_two_pass_tiers(state_dir):
+    """The original contract holds: complement RAN -> hide the not-taken side."""
+    run_id = _seed_run(
+        state_dir,
+        run_id="GUI-prog-singlepass2",
+        workflow_id="WF-20260101-prog0041",
+        orch_run_id="TTC_singlepass2",  # synthetic run id, slug-guard: allow
+        phase_outputs={
+            **{
+                name: {"_completed": True}
+                for name in (
+                    "semantik_conversion", "heading_judge", "staging",
+                    "chunking", "objective_extraction", "source_mapping",
+                    "course_planning", "concept_extraction",
+                )
+            },
+            "content_generation": {"_completed": True},
+            "content_generation_outline": {"_skipped": True},
+            "inter_tier_validation": {"_skipped": True},
+        },
+    )
+    payload = progress_service.run_progress(run_id)
+    names = [p["name"] for p in payload["phases"]]
+    assert _phase(payload, "content_generation")["state"] == "done"
+    for tier in ("content_generation_outline", "inter_tier_validation"):
+        assert tier not in names, f"{tier} not-taken and complement ran — hide"

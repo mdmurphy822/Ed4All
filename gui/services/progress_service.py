@@ -1836,11 +1836,37 @@ def run_progress(run_id: str) -> Optional[Dict[str, Any]]:
     #     it appears as "current" and the complement tiers hide once their
     #     skip is observed.
     # A phase whose complement clause is NOT in the plan is never hidden.
+    #
+    # "the branch provably didn't run — its complement did" is the LOAD-BEARING
+    # half of that premise. A skip alone does NOT prove it: a courseforge-*
+    # stage subcommand skips phases by the ``courseforge_stage`` whitelist, and
+    # `--stop-after` skips by index, so on those runs BOTH sides of the branch
+    # resolve "skipped" and hiding on skip-alone deletes the two-pass tiers
+    # (content_generation_outline / inter_tier_validation) from the rail
+    # entirely. So a POSITIVE ("=", taken-side) row is hidden only when its
+    # complement shows real evidence of having run. The NEGATIVE ("!=",
+    # single-pass fallback) side keeps the original skip-hides rule: under
+    # two-pass it is genuine noise, and its no-evidence case is handled below.
     plan_clauses = set()
     for ph in plan:
         parsed = _parse_env_condition(ph.get("enabled_when_env"))
         if parsed is not None:
             plan_clauses.add(parsed)
+
+    _RAN_TOKENS = frozenset({"done", "current", "failed"})
+
+    def _complement_ran(var: str, op: str, expected: str) -> bool:
+        """True when the OTHER side of this env branch shows it actually ran."""
+        want = (var, "!=" if op == "=" else "=", expected)
+        for other in plan:
+            if _parse_env_condition(other.get("enabled_when_env")) != want:
+                continue
+            if resolved.get(other["name"]) in _RAN_TOKENS:
+                return True
+            if checkpoint_current == other["name"]:
+                return True
+        return False
+
     hidden_phases: set = set()
     for ph in plan:
         parsed = _parse_env_condition(ph.get("enabled_when_env"))
@@ -1852,7 +1878,8 @@ def run_progress(run_id: str) -> Optional[Dict[str, Any]]:
         name = ph["name"]
         token = resolved.get(name)
         if token == "skipped":
-            hidden_phases.add(name)
+            if op == "!=" or _complement_ran(var, op, expected):
+                hidden_phases.add(name)
         elif token is None and op == "!=" and checkpoint_current != name:
             hidden_phases.add(name)
 
