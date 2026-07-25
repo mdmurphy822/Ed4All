@@ -476,3 +476,65 @@ def test_generate_diversified_can_emit_written_types():
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
+
+
+# ---- apparatus backstop coverage on the diversified path -----------------
+#
+# `generate()` guards each `_generate_question` call site, but the diversified
+# builders reached `questions` UNGATED. Turning ED4ALL_ASSESSMENT_DIVERSIFIED
+# on therefore routed generation around the guard: a real build shipped
+# 159/626 distractors and 30/305 correct answers carrying figure captions,
+# HOW-TO banners and glyph alt-text. The guard now sits at `_emit` — the single
+# assembly seam — so a new subtype builder cannot bypass it.
+
+APPARATUS_CHUNK = {
+    "id": "c-app-1",
+    "text": (
+        "A gray checkmark inside a circle, indicating correct or complete. "
+        "HOW TO ROUND WHOLE NUMBERS Round 23,658 to the nearest hundred. "
+        "Figure 1.14 shows the names of the place values."
+    ),
+    "learning_outcome_refs": ["CO-01"],
+    "key_terms": [
+        {"term": "place value",
+         "definition": "A gray checkmark inside a circle, indicating correct or complete."},
+        {"term": "rounding",
+         "definition": "HOW TO ROUND WHOLE NUMBERS Round 23,658 to the nearest hundred."},
+    ],
+}
+
+
+def _apparatus_hits(assessment):
+    import re
+    pat = re.compile(r"(HOW TO|Figure \d|checkmark|indicating)", re.I)
+    texts = []
+    for q in assessment.questions:
+        texts.append(str(q.correct_answer or ""))
+        texts += [str((c or {}).get("text") or "") for c in (q.choices or [])]
+    return [t for t in texts if t.strip() and pat.search(t)]
+
+
+def test_diversified_emit_applies_the_apparatus_guard(monkeypatch):
+    monkeypatch.setenv("ED4ALL_ASSESSMENT_APPARATUS_STRICT", "1")
+    gen = AssessmentGenerator(capture=None, check_leaks=False)
+    out = gen.generate_diversified(
+        course_code="T", objective_ids=["CO-01"],
+        bloom_levels=["remember"], question_count=4,
+        source_chunks=[APPARATUS_CHUNK],
+    )
+    assert _apparatus_hits(out) == [], (
+        "apparatus text reached the diversified emit — the _emit guard is the "
+        "single assembly seam and must reject it"
+    )
+
+
+def test_diversified_guard_is_inert_when_flag_off(monkeypatch):
+    """Default OFF stays byte-identical (the widened markers never fire)."""
+    monkeypatch.delenv("ED4ALL_ASSESSMENT_APPARATUS_STRICT", raising=False)
+    gen = AssessmentGenerator(capture=None, check_leaks=False)
+    out = gen.generate_diversified(
+        course_code="T", objective_ids=["CO-01"],
+        bloom_levels=["remember"], question_count=4,
+        source_chunks=[APPARATUS_CHUNK],
+    )
+    assert out is not None  # no crash; legacy marker set governs

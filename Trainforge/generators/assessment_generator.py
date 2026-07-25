@@ -2989,6 +2989,16 @@ class AssessmentGenerator:
             items = result if isinstance(result, list) else [result]
             any_q = False
             for it in items:
+                # Apparatus backstop — the SINGLE assembly seam for this tier.
+                # ``generate()`` guards each ``_generate_question`` call site,
+                # but the diversified builders reached ``questions`` ungated,
+                # so turning ED4ALL_ASSESSMENT_DIVERSIFIED on routed generation
+                # around the guard entirely: a real build shipped 159/626
+                # distractors and 30/305 correct answers carrying figure
+                # captions, HOW-TO banners and glyph alt-text. Guarding here
+                # (rather than per builder) makes the backstop universal by
+                # construction — a new subtype builder cannot bypass it.
+                it = self._apparatus_guard(it)
                 if isinstance(it, QuestionData):
                     questions.append(it)
                     self._stats.record_item(it.item_subtype or subtype)
