@@ -1722,3 +1722,56 @@ def test_textbook_outline_builder_end_to_end_validate(tmp_path: Path):
         dict(inputs, gate_id="textbook_outline_enrichment")
     )
     assert result.passed is True
+
+
+# ------------------------------------------------------------------ #
+# assessment_quality: non-JSON path must not reach the validator
+# ------------------------------------------------------------------ #
+#
+# ``assessment_synthesis`` publishes no questions JSON, so ``_locate`` falls
+# through to the generic ``output_path`` -- which ``semantik_conversion`` fills
+# with accessible HTML. An existence-only guard handed that to the validator's
+# ``json.loads``, which died on "Expecting value: line 1 column 1". The gate is
+# critical + fail_closed at ``trainforge_assessment``, so this blocked the run.
+
+
+def test_assessment_quality_rejects_non_json_output_path(tmp_path):
+    """HTML at output_path must not be routed as assessment_path."""
+    from MCP.hardening.gate_input_routing import _build_assessment_quality
+
+    html = tmp_path / "chapter_one_accessible.html"
+    html.write_text("<html><body><p>not json</p></body></html>", encoding="utf-8")
+
+    inputs, missing = _build_assessment_quality(
+        {"semantik_conversion": {"output_path": str(html)}}, {},
+    )
+    assert "assessment_path" not in inputs
+    assert missing == ["ASSESSMENTS_FILE_MISSING"]
+
+
+def test_assessment_quality_accepts_a_real_json_path(tmp_path):
+    """The trainforge_assessment path (real JSON) stays byte-identical."""
+    from MCP.hardening.gate_input_routing import _build_assessment_quality
+
+    doc = tmp_path / "assessments.json"
+    doc.write_text(json.dumps({"questions": []}), encoding="utf-8")
+
+    inputs, missing = _build_assessment_quality(
+        {"trainforge_assessment": {"assessments_path": str(doc)}}, {},
+    )
+    assert inputs == {"assessment_path": str(doc)}
+    assert missing == []
+
+
+def test_assessment_quality_rejects_truncated_json(tmp_path):
+    """A file that merely starts with '{' is still not loadable."""
+    from MCP.hardening.gate_input_routing import _build_assessment_quality
+
+    doc = tmp_path / "assessments.json"
+    doc.write_text('{"questions": [', encoding="utf-8")
+
+    inputs, missing = _build_assessment_quality(
+        {"trainforge_assessment": {"assessments_path": str(doc)}}, {},
+    )
+    assert "assessment_path" not in inputs
+    assert missing == ["ASSESSMENTS_FILE_MISSING"]

@@ -516,6 +516,35 @@ def _build_semantik_markers(
     return inputs, []
 
 
+#: Bytes read to decide "is this JSON at all". A JSON document's first
+#: non-whitespace byte is ``{`` or ``[``; HTML and XML lead with ``<``. Sniffing
+#: keeps a multi-megabyte HTML file from being read whole just to reject it.
+_JSON_SNIFF_BYTES = 64
+
+
+def _is_json_document(path: Path) -> bool:
+    """True when ``path`` holds a JSON object/array the validator can load.
+
+    Sniffs the opening byte first so a wrong-format file is rejected cheaply,
+    then confirms with a real parse -- a file that merely *starts* with ``{``
+    can still be truncated, and the point of this guard is that the validator's
+    ``json.loads`` must not be the thing that discovers it.
+    """
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            head = handle.read(_JSON_SNIFF_BYTES).lstrip()
+    except (OSError, ValueError):
+        return False
+    if not head or head[0] not in "{[":
+        return False
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            json.load(handle)
+    except (OSError, ValueError):
+        return False
+    return True
+
+
 def _build_assessment_quality(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
@@ -528,9 +557,20 @@ def _build_assessment_quality(
     line 1 column 1". So:
 
     * resolve the candidate path,
-    * verify it exists AND is non-empty,
+    * verify it exists, is non-empty, AND actually parses as JSON,
     * return ``(None, ['ASSESSMENTS_FILE_MISSING'])`` when it isn't, marking
       the gate skipped with a structured reason instead of crashing.
+
+    The JSON check is not belt-and-braces. ``assessment_synthesis`` publishes no
+    questions JSON (only QTI XML + a manifest), so no phase offers
+    ``assessments_path`` / ``assessment_path`` and ``_locate`` falls through to
+    the generic ``output_path`` -- which ``semantik_conversion`` fills with
+    accessible HTML. That file exists and is very much non-empty, so an
+    existence-only guard hands the validator a chapter of HTML to ``json.loads``
+    and the gate dies on "Expecting value: line 1 column 1" -- fail_closed and
+    critical at ``trainforge_assessment``. Rejecting a non-JSON path here lets
+    control reach the QTI-surface fallback below, which is what should have
+    handled this phase all along.
     """
     path_str = _locate(
         phase_outputs,
@@ -550,6 +590,13 @@ def _build_assessment_quality(
                     size = 0
                 ok = size > 0
         except (OSError, ValueError, TypeError):
+            ok = False
+        if ok and not _is_json_document(path):
+            logger.info(
+                "assessment_quality: resolved path %s is not JSON; falling "
+                "back to the QTI surface rather than parsing it as JSON.",
+                path,
+            )
             ok = False
         if ok:
             return {"assessment_path": str(path)}, []
