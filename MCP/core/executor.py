@@ -37,6 +37,11 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from lib.paths import STATE_PATH, get_state_runs_dir  # noqa: E402
+# Workflow-state write discipline: atomic temp+replace + bounded advisory
+# flock around the read-modify-write cycle (2026-07-21 corruption incident:
+# two racing writers interleaved plain open('w')+dump partial writes).
+from lib.file_lock import file_lock  # noqa: E402
+from lib.state_manager import atomic_write_json  # noqa: E402
 from lib.generation.stop_control import (  # noqa: E402
     GracefulStopRequested,
     clear_stop,
@@ -249,7 +254,8 @@ _PHASE_TOOL_MAPPING: Dict[str, str] = {
     # and ``staging``. Shells out per chapter, copies judged HTML/escalations
     # back over the conversion output (keeping ``.prejudge.bak`` / ``.bak``),
     # and FAIL-OPENS per chapter — a judge failure must never block a build.
-    # Skip-with-pass when SEMANTIK_HEADING_JUDGE is off or no sidecars exist.
+    # SEMANTIK_HEADING_JUDGE is DEFAULT-ON (explicit falsey token opts out);
+    # skip-with-pass when explicitly off or no sidecars exist (born-digital).
     "heading_judge": "run_heading_judge",
 }
 
@@ -1389,11 +1395,35 @@ class TaskExecutor:
         result: Optional[Dict[str, Any]] = None,
         error: Optional[str] = None,
     ) -> bool:
-        """Update task status in workflow state."""
+        """Update task status in workflow state.
+
+        The load+mutate+atomic-replace cycle runs under a bounded advisory
+        flock so concurrent processes serialize their read-modify-write. On
+        lock timeout the helper logs LOUDLY and the write still proceeds via
+        atomic temp+replace — losing at worst one update, never corrupting
+        the file (the 2026-07-21 interleaved-write incident).
+        """
         workflow_path = STATE_PATH / "workflows" / f"{workflow_id}.json"
         if not workflow_path.exists():
             return False
 
+        with file_lock(
+            workflow_path.with_name(workflow_path.name + ".lock"), timeout=10.0
+        ):
+            return self._update_task_status_locked(
+                workflow_id, workflow_path, task_id, status, result, error
+            )
+
+    def _update_task_status_locked(
+        self,
+        workflow_id: str,
+        workflow_path: Path,
+        task_id: str,
+        status: str,
+        result: Optional[Dict[str, Any]] = None,
+        error: Optional[str] = None,
+    ) -> bool:
+        """Body of ``_update_task_status`` — runs under the advisory flock."""
         try:
             with open(workflow_path) as f:
                 workflow = json.load(f)
@@ -1439,8 +1469,9 @@ class TaskExecutor:
         workflow["updated_at"] = datetime.now().isoformat()
 
         try:
-            with open(workflow_path, 'w') as f:
-                json.dump(workflow, f, indent=2)
+            # Atomic temp+replace — never a direct truncating write that a
+            # concurrent writer could interleave with mid-document.
+            atomic_write_json(workflow_path, workflow, indent=2)
             return True
         except OSError:
             return False
@@ -1602,80 +1633,170 @@ class TaskExecutor:
                     phase_name, tid, success=res.status == "COMPLETE"
                 )
 
+        # ROLLING CONCURRENCY WINDOW (replaces the former batch barrier).
+        #
+        # The old loop sliced the dependency-satisfied frontier to
+        # ``max_concurrent`` and blocked on ``asyncio.gather`` over the WHOLE
+        # slice before dispatching the next slice. Concurrency therefore
+        # started at ``max_concurrent`` and DRAINED toward 1 as the fast tasks
+        # in a slice finished while gather waited on the slowest — the exact
+        # GPU-starving anti-pattern. This version keeps up to
+        # ``max_concurrent`` tasks IN FLIGHT and refills a freed slot from the
+        # frontier the INSTANT any single task completes, so the pipe stays
+        # full at ``max_concurrent`` for the whole phase. Every contract the
+        # barrier upheld is preserved (see the per-block comments):
+        #   * dependency DAG gating — refill only from deps-satisfied tasks;
+        #   * no mid-flight cancellation of a STARTED task on stop/poison —
+        #     we stop DISPATCHING and drain the in-flight set;
+        #   * poison-pill halt — checked per completion (finer than the batch
+        #     boundary), halts dispatch, drains in-flight, same result shape;
+        #   * stop-sentinel — probed before each new dispatch, drains in-flight
+        #     to their unit-boundary checkpoint, marks un-run PENDING PAUSED;
+        #   * per-task checkpoint — unchanged (written inside _run_and_record);
+        #   * whole-phase wall bound — the ``execute_phase`` batch-timeout
+        #     wrapper still wraps THIS coroutine unchanged, so a wedged task
+        #     cannot hang the phase past the deadline + grace (a rolling loop
+        #     is strictly friendlier: fast tasks keep completing + checkpointing
+        #     right up to the deadline instead of stalling at a drained batch
+        #     boundary).
+        # ``max_concurrent`` (the width) is untouched — rolling keeps the pipe
+        # full at exactly today's ceiling, it does NOT raise it.
+
+        # in-flight asyncio.Task -> the task dict it is executing.
+        inflight: Dict["asyncio.Task[None]", Dict[str, Any]] = {}
+        dispatched_ids: set = set()  # task ids already handed to _run_and_record
+        halt = False  # tripped by stop-sentinel or poison-pill: dispatch no more
+
+        def _ready_frontier() -> List[Dict[str, Any]]:
+            """PENDING, not-yet-dispatched tasks whose deps are all COMPLETE.
+
+            Mirrors the barrier's frontier scan exactly: already-COMPLETE tasks
+            (e.g. from a resume) fold into ``completed_ids`` so their dependents
+            unlock, and a task only becomes runnable when EVERY dependency is in
+            ``completed_ids`` — a task completing may unlock new dependents,
+            which the next call surfaces.
+            """
+            ready: List[Dict[str, Any]] = []
+            for task in tasks:
+                tid = task.get("id")
+                status = task.get("status")
+                if status == "COMPLETE":
+                    completed_ids.add(tid)
+                    continue
+                if status != "PENDING":
+                    continue
+                if tid in dispatched_ids:
+                    continue  # in flight or finished — never double-dispatch
+                deps = task.get("dependencies", [])
+                if all(d in completed_ids for d in deps):
+                    ready.append(task)
+            return ready
+
         while True:
-            # Graceful stop ("checkpoint on command"): if a stop sentinel is
-            # present, stop dispatching NEW tasks. In-flight tasks from the
-            # previous batch have already drained (asyncio.gather awaited them
-            # below), so this mirrors the poison-pill break — halt-next-batch,
-            # never cancel a mid-flight request. Still-PENDING tasks are marked
-            # PAUSED so ``execute_phase`` detects the stop and stamps the phase
-            # checkpoint ``paused`` (rather than silently reporting success on a
-            # partially-run phase); they stay in the checkpoint's tasks_pending
-            # for --resume.
-            if stop_requested(self.run_id):
-                for task in tasks:
-                    tid = task.get("id")
-                    if task.get("status") == "PENDING" and tid not in results:
-                        results[tid] = ExecutionResult(
-                            task_id=tid,
-                            status="PAUSED",
-                            error="Graceful stop requested; task not dispatched",
-                            error_class="paused",
-                        )
-                        task["status"] = "PAUSED"
+            # Graceful stop ("checkpoint on command"): probe the sentinel
+            # BEFORE dispatching anything new (mirrors the barrier's loop-top
+            # check + the ED4ALL_NLI_CROSSBLOCK template's per-submit poll).
+            # Once observed we STOP DISPATCHING but let in-flight tasks drain to
+            # their next unit boundary + checkpoint — never cancel a started
+            # request (that would risk a partial/corrupt artifact). Un-run
+            # PENDING tasks are marked PAUSED after the drain (below).
+            if not halt and stop_requested(self.run_id):
+                halt = True
                 logger.info(
                     f"[{self.run_id}] Graceful stop observed"
                     + (f" in phase '{phase_name}'" if phase_name else "")
-                    + "; halting batch loop (no new tasks dispatched)"
+                    + "; halting dispatch (in-flight tasks draining to a unit "
+                    "boundary, no new tasks dispatched)"
                 )
+
+            # Refill free slots from the dependency-satisfied frontier. Only
+            # while NOT halted — a stop/poison halt drains but never dispatches.
+            if not halt:
+                while len(inflight) < max_concurrent:
+                    frontier = _ready_frontier()
+                    if not frontier:
+                        break
+                    task = frontier[0]
+                    dispatched_ids.add(task["id"])
+                    fut = asyncio.ensure_future(_run_and_record(task))
+                    inflight[fut] = task
+
+            # Nothing in flight and nothing left to dispatch → phase done.
+            if not inflight:
                 break
 
-            # Find tasks that can run (pending + dependencies met)
-            runnable = []
-            for task in tasks:
-                task_id = task.get("id")
-                if task.get("status") != "PENDING":
-                    if task.get("status") == "COMPLETE":
-                        completed_ids.add(task_id)
+            # Wait for the FIRST in-flight task to finish (not the whole
+            # slice). This is both the steady-state refill trigger AND the
+            # drain: on halt we add no new work but still await every in-flight
+            # task so it checkpoints.
+            try:
+                done, _pending = await asyncio.wait(
+                    set(inflight), return_when=asyncio.FIRST_COMPLETED
+                )
+            except asyncio.CancelledError:
+                # This coroutine was CANCELLED — which happens ONLY on the
+                # ``execute_phase`` batch-timeout HARD kill (the grace window
+                # already expired with a worker unresponsive to the sentinel).
+                # Mirror ``asyncio.gather``'s cancellation propagation that the
+                # barrier relied on: cancel the in-flight children so their
+                # inner ``execute_task`` raises CancelledError and is left
+                # unrecorded → correctly abandoned (the results_sink already
+                # holds every task that finished before the deadline). This is
+                # the ONLY place a started task is cancelled, and it is the
+                # pre-existing hard-timeout behaviour — the graceful-stop and
+                # poison-pill paths above set ``halt`` and DRAIN instead.
+                for fut in inflight:
+                    fut.cancel()
+                raise
+
+            for fut in done:
+                finished_task = inflight.pop(fut)
+                if fut.cancelled():  # defensive — not reached on a normal wait
                     continue
+                # ``_run_and_record`` never raises (it funnels every Exception
+                # into an ERROR ExecutionResult); surface anything unexpected
+                # rather than swallow it.
+                exc = fut.exception()
+                if exc is not None:
+                    raise exc
 
-                deps = task.get("dependencies", [])
-                if all(d in completed_ids for d in deps):
-                    runnable.append(task)
+                # Poison-pill: check the INSTANT this task resolves (finer-
+                # grained than the batch boundary — a strict improvement). Once
+                # tripped, dispatch no more; the loop then drains the remaining
+                # in-flight tasks and halts with the same result shape the
+                # barrier produced. In-flight siblings are NOT cancelled (same
+                # anti-partial-artifact guarantee).
+                tid = finished_task.get("id")
+                r = results.get(tid)
+                if (
+                    not halt
+                    and r is not None
+                    and not isinstance(r, Exception)
+                    and getattr(r, "status", None) == "POISON_PILL"
+                ):
+                    halt = True
+                    logger.error(
+                        f"[{self.run_id}] Poison pill observed; halting dispatch "
+                        f"(in-flight tasks draining, remaining runnables skipped)"
+                    )
 
-            if not runnable:
-                break
-
-            # Execute batch. Each ``_run_and_record`` writes its own result
-            # into ``results`` as it finishes, so no post-gather
-            # zip-and-record pass is needed. ``return_exceptions=True`` keeps
-            # a single task's raised exception from cancelling its siblings;
-            # the helper itself already funnels non-cancellation exceptions
-            # into an ERROR ExecutionResult.
-            batch = runnable[:max_concurrent]
-            await asyncio.gather(
-                *[_run_and_record(t) for t in batch],
-                return_exceptions=True,
-            )
-
-            # Stop the batch loop as soon as any task emits POISON_PILL so
-            # subsequent batches don't waste work. In-flight siblings in the
-            # current batch have already completed (``asyncio.gather`` awaits
-            # them all), so nothing is cancelled mid-flight. Cancelling mid-
-            # flight would require ``asyncio.wait(FIRST_COMPLETED)`` + explicit
-            # task.cancel(), which risks partial-state artifacts on the tool
-            # side — stopping at the next batch boundary is the safe minimum
-            # that still satisfies "poison detection halts the batch".
-            if any(
-                r.status == "POISON_PILL"
-                for r in results.values()
-                if not isinstance(r, Exception)
-            ):
-                logger.error(
-                    f"[{self.run_id}] Poison pill observed; "
-                    f"halting batch loop (remaining runnables skipped)"
-                )
-                break
+        # After the loop: if we halted on a STOP sentinel (not poison — poison
+        # writes no sentinel), mark still-PENDING, never-dispatched tasks PAUSED
+        # so ``execute_phase`` detects the stop and stamps the phase checkpoint
+        # ``paused`` rather than reporting success on a partially-run phase;
+        # they stay in the checkpoint's tasks_pending for --resume. Idempotent
+        # with the pre-armed-sentinel case (nothing was ever dispatched).
+        if stop_requested(self.run_id):
+            for task in tasks:
+                tid = task.get("id")
+                if task.get("status") == "PENDING" and tid not in results:
+                    results[tid] = ExecutionResult(
+                        task_id=tid,
+                        status="PAUSED",
+                        error="Graceful stop requested; task not dispatched",
+                        error_class="paused",
+                    )
+                    task["status"] = "PAUSED"
 
         return results
 
@@ -1841,6 +1962,22 @@ class TaskExecutor:
         # ``finally`` so a nested/next phase never inherits a stale name.
         _prev_active_phase = getattr(self, "_active_phase_name", None)
         self._active_phase_name = phase_name
+        # Metering context: also publish the active phase in the environment so
+        # an in-process content-gen LLM usage tap (which is NOT passed the
+        # executor instance) can stamp the SPENDING phase on its
+        # ``llm_usage.jsonl`` row — the local OpenAI-compatible seat serves many
+        # phases and cannot know its phase from a static literal the way the
+        # SemantiK cascade taps do. Env name kept in sync with the tap's
+        # ``Trainforge.generators._openai_compatible_client.ENV_ACTIVE_PHASE``.
+        # Restored in ``finally`` so a nested / next phase never inherits a
+        # stale value; best-effort (never perturbs phase execution).
+        _active_phase_env = "ED4ALL_ACTIVE_PHASE"
+        _prev_active_phase_env = os.environ.get(_active_phase_env)
+        try:
+            if phase_name:
+                os.environ[_active_phase_env] = str(phase_name)
+        except Exception:  # noqa: BLE001 — metering context must never block a phase
+            pass
         try:
             # Graceful-stop timeout → pause. ``asyncio.wait_for``
             # CANCELS ``_execute_parallel`` at the deadline — precisely the hard
@@ -1959,6 +2096,16 @@ class TaskExecutor:
             # (or nested) phase never inherits a stale name. Per-task
             # checkpointing only needs it while ``_execute_parallel`` ran above.
             self._active_phase_name = _prev_active_phase
+            # Restore the published active-phase metering env to its prior value
+            # (or remove it when it was unset) so a subsequent / nested phase
+            # never stamps usage rows with a stale phase. Best-effort.
+            try:
+                if _prev_active_phase_env is None:
+                    os.environ.pop(_active_phase_env, None)
+                else:
+                    os.environ[_active_phase_env] = _prev_active_phase_env
+            except Exception:  # noqa: BLE001 — metering context cleanup must never raise
+                pass
 
         # Update checkpoint with task results. This end-of-phase sweep is the
         # idempotent complement to the per-task ``_checkpoint_task_result``

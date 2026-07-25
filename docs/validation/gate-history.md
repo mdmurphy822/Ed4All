@@ -601,3 +601,37 @@ programmatic checks still run.
 > The count table is re-derived from `config/workflows.yaml` (+1 warning gate per
 > workflow): `course_generation` 28→29 warning / 62→63 total, `textbook_to_course`
 > 71→72 warning / 135→136 total, Total 102→104 warning / 206→208 total.
+
+### Book-1 canary keystone — `block_prose_stutter` at post_rewrite_validation — 2026-07-22
+
+Landed the deterministic prose-stutter validator
+(`lib/validators/prose_stutter.py::ProseStutterValidator`) as a
+`post_rewrite_validation` gate in BOTH `course_generation` and
+`textbook_to_course`. Root cause: the rewrite tier's local model ships
+phrase-repetition slop ("GET and HEAD are safe and HEAD are safe and
+idempotent"-shaped duplication) that NLI entailment cannot catch — a stuttered
+sentence still entails its source — and ~150-190 of 613 canary prose chunks
+carried it into the retrieval corpus. Five pure-text rules over segment-scoped,
+HTML-stripped prose (element boundaries become hard newlines; hidden
+`data-cf-curie` spans + `pre`/`code` bodies stripped): adjacent_repeat,
+window_repeat, near_adjacent_repeat, echo_word, label_dup. Builder reuses
+`_build_block_input_rewrite` (blocks only), registered in
+`MCP/hardening/gate_input_routing.py`.
+
+ENFORCEMENT is not the gate: `_run_content_generation_rewrite` threads the same
+validator into the rewrite router's per-candidate chain
+(`route_rewrite_with_remediation` + `route_rewrite_batch` — previously
+`validators=[]`), so a stuttered candidate fires `action="regenerate"` and the
+best-of-N loop re-rolls it at authoring time. The gate is the observability
+net; warning day-1 (`on_fail: warn` / `on_error: warn`) per the WS3/W4
+deferred-flip convention (NOT IB3). Calibration on the canary imscc chunkset:
+243/613 prose chunks flagged (the canary heuristic flagged ~247), all 5
+owner-confirmed stutter chunks caught verbatim, 0.9% (7/765) flag rate on the
+clean-path QTI assessment population, ~87% hand-audited precision on flagged
+prose (residual dominated by chunk-boundary fusion artifacts that cannot occur
+on block HTML).
+
+> The count table is re-derived from `config/workflows.yaml` (+1 warning gate per
+> two-pass workflow): `course_generation` 29→30 warning / 63→64 total,
+> `textbook_to_course` 72→73 warning / 136→137 total, Total 104→106 warning /
+> 208→210 total.

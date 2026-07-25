@@ -101,11 +101,49 @@ def test_measured_graph_shaping_quartet_is_complete():
         "TRAINFORGE_DROP_FRONTMATTER": "true",
         "TRAINFORGE_LEXICAL_CONCEPT_SEEDS": "true",
         "TRAINFORGE_OBJECTIVE_QUALITY_GATE": "true",
+        # Vendor-parity D1 — page-level key-concept fallback for markup-less
+        # GLM-OCR accessible HTML (fills EMPTY key_concepts only; page-level,
+        # never chunk-local). See lib/ontology/page_concept_fallback.py.
+        "TRAINFORGE_PAGE_CONCEPT_FALLBACK": "true",
+        # Vendor-parity D4 — relocate stranded next-section heading tails
+        # ("...Figure. 1.1 EXERCISES" -> marker opens the following chunk).
+        # See Trainforge/chunker/stranded_heading_tails.py.
+        "TRAINFORGE_RELOCATE_STRANDED_HEADINGS": "true",
         # Defensive heading-sanity filter — repairs a chunk's section_heading to
         # its nearest clean ancestor when the upstream classifier mis-tagged
         # answer-key / exercise / numeric noise as a heading (chunk + retrieval
         # display quality; see lib/chunk_heading_sanity.py).
         "TRAINFORGE_HEADING_SANITY_FILTER": "true",
+        # Campaign-validated 2026-07 promotions — deterministic, no LLM
+        # provider/model selection (see workflow_runner comments per flag).
+        "ED4ALL_OBJECTIVE_CITATION_RESELECT": "true",
+        "ED4ALL_OBJECTIVE_DEDUP_LEXICAL": "true",
+        "ED4ALL_CHUNK_ROLE_DIVERSIFY": "true",
+        "ED4ALL_PROSE_GATE_PROVENANCE_RESOLVE": "true",
+        # Campaign flag-coverage audit 2026-07-22 promotions — PORTABLE
+        # (deterministic / warning-day-1 / read-only or a KG-shaping arm; none
+        # selects an LLM provider/model/seat). Owner-validated on book 1.
+        "TRAINFORGE_PREREQ_LO_ADJACENT_ONLY": "true",
+        "ED4ALL_KG_PREREQ_HEALTH": "1",
+        "ED4ALL_CONCEPT_COVERAGE": "1",
+        "ED4ALL_INTELLIGENCE_RUBRIC": "1",
+        "ED4ALL_RETRIEVAL_INTERLEAVE": "1",
+        "ED4ALL_TRIANGLE_FLOOR": "1",
+        "ED4ALL_WORKED_EXAMPLE_FLOOR": "1",
+        "ED4ALL_BLOOM_SPREAD_FLOOR": "1",
+        "ED4ALL_OBJECTIVE_SPECIFICITY": "1",
+        "ED4ALL_OBJECTIVE_BLOOM_RELEVEL": "1",
+        "ED4ALL_TO_SOURCE_GROUNDING": "1",
+        "ED4ALL_BLOOM_DISTRIBUTION": "1",
+        "ED4ALL_EMBED_OVERFLOW_GUARD": "1",
+        "ED4ALL_KEY_TERMS_PAGE": "1",
+        "ED4ALL_FAQ_PAGE": "1",
+        "ED4ALL_KEYTERM_DEF_QUALITY": "1",
+        "ED4ALL_ARCHIVE_REQUIRE_FULL_COURSE": "1",
+        "ED4ALL_BLOCK_QUALITY_RUBRIC": "1",
+        "ED4ALL_BLOCK_QUALITY_SHADOW": "1",
+        "TRAINFORGE_EDGE_NLI": "1",
+        "TRAINFORGE_CONTRADICTED_EDGE_POLICY": "decay",
     }
     assert _CORPUS_GENERALIZATION_ENV_DEFAULTS == expected
 
@@ -320,6 +358,149 @@ def test_explicit_legacy_value_is_honored(monkeypatch):
     assert _TEXTBOOK_SYNTHESIS_PROVIDER_ENV not in applied
     # ...but the un-pinned flags still get their defaults.
     assert os.environ.get("TRAINFORGE_PRUNE_SCAFFOLDING_CONCEPTS") == "true"
+
+
+# --------------------------------------------------------------------------
+# Campaign-validated 2026-07 promotions: the four deterministic ED4ALL_* flags.
+# --------------------------------------------------------------------------
+
+_CAMPAIGN_2026_07_FLAGS = (
+    "ED4ALL_OBJECTIVE_CITATION_RESELECT",
+    "ED4ALL_OBJECTIVE_DEDUP_LEXICAL",
+    "ED4ALL_CHUNK_ROLE_DIVERSIFY",
+    "ED4ALL_PROSE_GATE_PROVENANCE_RESOLVE",
+)
+
+
+@pytest.mark.parametrize("workflow_type", ["textbook_to_course", "course_generation"])
+def test_campaign_2026_07_flags_auto_on_for_pipeline(monkeypatch, workflow_type):
+    """The four campaign-validated deterministic flags fill "true" on a
+    pipeline run (setdefault applied when the env is unset)."""
+    _clear_envs(monkeypatch)
+    runner = _make_runner()
+
+    applied = runner._apply_corpus_generalization_defaults(workflow_type)
+
+    import os
+
+    for env_var in _CAMPAIGN_2026_07_FLAGS:
+        assert os.environ.get(env_var) == "true"
+        assert applied[env_var] == "true"
+
+
+@pytest.mark.parametrize("env_var", _CAMPAIGN_2026_07_FLAGS)
+def test_campaign_2026_07_explicit_env_value_honored(monkeypatch, env_var):
+    """setdefault — an operator (or the live campaign env) pinning a promoted
+    flag, on OR off, is honored verbatim; the helper never overwrites."""
+    _clear_envs(monkeypatch)
+    monkeypatch.setenv(env_var, "0")
+    runner = _make_runner()
+
+    applied = runner._apply_corpus_generalization_defaults("textbook_to_course")
+
+    import os
+
+    assert os.environ.get(env_var) == "0"
+    assert env_var not in applied
+
+
+@pytest.mark.parametrize("workflow_type", ["rag_training", "trainforge_train"])
+def test_campaign_2026_07_flags_untouched_for_non_pipeline(monkeypatch, workflow_type):
+    """Non-pipeline workflows (and bare library calls that never reach
+    run_workflow) keep the legacy default-off contract for the promoted set."""
+    _clear_envs(monkeypatch)
+    runner = _make_runner()
+
+    runner._apply_corpus_generalization_defaults(workflow_type)
+
+    import os
+
+    for env_var in _CAMPAIGN_2026_07_FLAGS:
+        assert os.environ.get(env_var) is None
+
+
+# --------------------------------------------------------------------------
+# Campaign flag-coverage audit 2026-07-22 promotions: the 21 PORTABLE
+# owner-validated flags now auto-on for pipeline runs. Values are taken
+# verbatim from the campaign env (ED4ALL_* booleans as "1",
+# TRAINFORGE_PREREQ_LO_ADJACENT_ONLY as "true", the edge policy as "decay").
+# --------------------------------------------------------------------------
+
+_CAMPAIGN_2026_07_22_FLAGS = {
+    "TRAINFORGE_PREREQ_LO_ADJACENT_ONLY": "true",
+    "ED4ALL_KG_PREREQ_HEALTH": "1",
+    "ED4ALL_CONCEPT_COVERAGE": "1",
+    "ED4ALL_INTELLIGENCE_RUBRIC": "1",
+    "ED4ALL_RETRIEVAL_INTERLEAVE": "1",
+    "ED4ALL_TRIANGLE_FLOOR": "1",
+    "ED4ALL_WORKED_EXAMPLE_FLOOR": "1",
+    "ED4ALL_BLOOM_SPREAD_FLOOR": "1",
+    "ED4ALL_OBJECTIVE_SPECIFICITY": "1",
+    "ED4ALL_OBJECTIVE_BLOOM_RELEVEL": "1",
+    "ED4ALL_TO_SOURCE_GROUNDING": "1",
+    "ED4ALL_BLOOM_DISTRIBUTION": "1",
+    "ED4ALL_EMBED_OVERFLOW_GUARD": "1",
+    "ED4ALL_KEY_TERMS_PAGE": "1",
+    "ED4ALL_FAQ_PAGE": "1",
+    "ED4ALL_KEYTERM_DEF_QUALITY": "1",
+    "ED4ALL_ARCHIVE_REQUIRE_FULL_COURSE": "1",
+    "ED4ALL_BLOCK_QUALITY_RUBRIC": "1",
+    "ED4ALL_BLOCK_QUALITY_SHADOW": "1",
+    "TRAINFORGE_EDGE_NLI": "1",
+    "TRAINFORGE_CONTRADICTED_EDGE_POLICY": "decay",
+}
+
+
+@pytest.mark.parametrize("workflow_type", ["textbook_to_course", "course_generation"])
+def test_campaign_2026_07_22_flags_auto_on_for_pipeline(monkeypatch, workflow_type):
+    """Every 2026-07-22 promotion fills its campaign value on a pipeline run
+    (setdefault applied when the env is unset)."""
+    _clear_envs(monkeypatch)
+    runner = _make_runner()
+
+    applied = runner._apply_corpus_generalization_defaults(workflow_type)
+
+    import os
+
+    for env_var, value in _CAMPAIGN_2026_07_22_FLAGS.items():
+        assert os.environ.get(env_var) == value
+        assert applied[env_var] == value
+
+
+@pytest.mark.parametrize("env_var", sorted(_CAMPAIGN_2026_07_22_FLAGS))
+def test_campaign_2026_07_22_explicit_env_value_honored(monkeypatch, env_var):
+    """OPERATOR-OVERRIDE-WINS — setdefault: an operator pinning a promoted flag
+    OFF ("0") — or to any explicit value — is honored verbatim; the helper never
+    overwrites and never reports it as applied."""
+    _clear_envs(monkeypatch)
+    monkeypatch.setenv(env_var, "0")
+    runner = _make_runner()
+
+    applied = runner._apply_corpus_generalization_defaults("textbook_to_course")
+
+    import os
+
+    assert os.environ.get(env_var) == "0"
+    assert env_var not in applied
+
+
+@pytest.mark.parametrize("workflow_type", ["rag_training", "trainforge_train"])
+def test_campaign_2026_07_22_flags_untouched_for_non_pipeline(
+    monkeypatch, workflow_type
+):
+    """BARE-LIBRARY-CALL-UNCHANGED — non-pipeline workflows (and any bare
+    lib/Trainforge call that never reaches run_workflow) keep the legacy
+    default-off contract for the whole 2026-07-22 promotion set."""
+    _clear_envs(monkeypatch)
+    runner = _make_runner()
+
+    applied = runner._apply_corpus_generalization_defaults(workflow_type)
+
+    import os
+
+    assert applied == {}
+    for env_var in _CAMPAIGN_2026_07_22_FLAGS:
+        assert os.environ.get(env_var) is None
 
 
 # --------------------------------------------------------------------------

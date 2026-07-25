@@ -346,6 +346,70 @@ _CURIE_SPAN_EL_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+# Matches an ORPHAN (unterminated) junk curie-span open tag plus its immediate
+# text run. Observed on a real rewrite export: the forced-inject path emitted
+# ``<span hidden data-cf-curie="some-tag" data-cf-curie-forced="true">some-tag
+# </div>`` — the span is never closed by ``</span>`` (a stray ``</div>``
+# "terminates" it), so ``_CURIE_SPAN_EL_RE`` cannot strip it. The literal
+# ``data-cf-curie`` substring then survives in the HTML and the minting
+# idempotence guard (``"data-cf-curie" not in new_content``) permanently
+# REFUSES to append a freshly-minted real CURIE span — the block stays
+# curieless even though its prose names a vocabulary concept. This pattern
+# removes only the orphan open tag + its token text (up to the next ``<``);
+# any stray close tag that "terminated" the span belongs to the surrounding
+# block markup and is deliberately left intact (removal-only, tag-balance is
+# the HTML-shape repairer's job). Applied ONLY after ``_CURIE_SPAN_EL_RE``
+# has removed every well-formed span, so remaining matches are unterminated
+# by construction.
+_CURIE_SPAN_ORPHAN_OPEN_RE = re.compile(
+    r'<\s*span\b[^>]*\bdata-cf-curie\b[^>]*>[^<]*',
+    re.IGNORECASE,
+)
+
+# Matches an orphan ``data-cf-curie-forced="true"`` junk-marker attribute that
+# survived OUTSIDE a strippable span. Observed on a real rewrite export: the
+# forced-inject markup got fused into a host tag's attribute area (no ``<span``
+# at all — e.g. ``...#s862"messaging" data-cf-curie-forced="true">messaging
+# </section>``), so neither span regex fires, yet the surviving literal
+# ``data-cf-curie`` substring (inside ``data-cf-curie-forced``) still trips
+# the minting idempotence guard. The marker is emitted ONLY by the forced-
+# inject path, so removing the bare attribute residue is always junk removal.
+_CURIE_FORCED_MARKER_RE = re.compile(
+    r'\s*\bdata-cf-curie-forced\s*=\s*(["\'])true\1',
+    re.IGNORECASE,
+)
+
+
+def _strip_junk_curie_spans(html: str) -> str:
+    """Strip junk ``data-cf-curie`` markup, including UNTERMINATED spans.
+
+    Three-stage removal shared by every junk-span strip site (the restamp
+    helper, the in-loop rewrite backstop, and the final anchoring sweep):
+
+    1. ``_CURIE_SPAN_EL_RE`` removes every well-formed
+       ``<span ... data-cf-curie ...>...</span>`` element.
+    2. If a ``data-cf-curie`` occurrence survives (an orphan open tag whose
+       span was never closed by ``</span>``),
+       ``_CURIE_SPAN_ORPHAN_OPEN_RE`` removes the open tag plus its
+       immediate text run. Stray close tags are left for the HTML-shape
+       repairer (removal-only contract).
+    3. If an occurrence STILL survives, it is the forced-inject junk marker
+       fused into a host tag's attribute area;
+       ``_CURIE_FORCED_MARKER_RE`` removes the bare
+       ``data-cf-curie-forced="true"`` residue so the minting idempotence
+       guard is no longer tripped by a marker that anchors nothing.
+
+    Idempotent: HTML with no junk markup round-trips unchanged.
+    """
+    if not html or "data-cf-curie" not in html:
+        return html
+    out = _CURIE_SPAN_EL_RE.sub("", html)
+    if "data-cf-curie" in out:
+        out = _CURIE_SPAN_ORPHAN_OPEN_RE.sub("", out)
+    if "data-cf-curie" in out:
+        out = _CURIE_FORCED_MARKER_RE.sub("", out)
+    return out
+
 # ---------------------------------------------------------------------------
 # P0 — CURIE / LO-id leak sanitizer (7B→Sonnet parity, Wave 1).
 # ---------------------------------------------------------------------------
@@ -672,6 +736,108 @@ def _filter_questions_to_objective_universe(
         else:
             dropped.append(q)
     return kept, dropped
+
+
+_STEM_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _normalize_stem_for_dedup(stem: Any) -> str:
+    """Canonicalize a question stem for exact-duplicate comparison.
+
+    HTML tags stripped, whitespace collapsed, lowercased. PURE — no I/O.
+    An empty result means "no comparable stem" (never treated as a
+    duplicate key).
+    """
+    text = _STEM_TAG_RE.sub(" ", str(stem or ""))
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def _dedup_assessment_stems(
+    assessments: List[Any],
+) -> Tuple[List[Any], Dict[str, Any]]:
+    """Collapse exact-duplicate stems across the WHOLE emitted quiz set.
+
+    Deterministic pre-emit guard: the W10 phase hands the same corpus-wide
+    chunk pool to every per-TO quiz, so deterministic templates can mint the
+    SAME stem in many quizzes (book-1 canary: 325/765 items in exact-duplicate
+    groups). First occurrence (quiz-list order, i.e. week order) wins; every
+    later exact duplicate is DROPPED — an honest count reduction beats salad
+    duplication. A quiz whose questions all collapse is dropped entirely
+    (never emit an empty QTI document).
+
+    Accepts both ``AssessmentData``-shaped objects (``.questions`` of
+    ``QuestionData``) and their cached ``to_dict()`` form (``["questions"]``
+    of dicts). Returns ``(surviving_assessments, report)`` where ``report``
+    carries ``total_before`` / ``total_after`` / ``duplicates_removed`` /
+    ``duplicate_groups`` / ``dropped_assessments`` /
+    ``objectives_losing_coverage`` (objective_ids whose ONLY item(s) were
+    dropped as duplicates — reported, not silently papered over).
+    """
+    seen_stems: Dict[str, int] = {}
+    kept_objectives: set = set()
+    dropped_by_objective: Dict[str, int] = {}
+    total_before = 0
+    total_after = 0
+    duplicates_removed = 0
+    dropped_assessments: List[str] = []
+    survivors: List[Any] = []
+
+    def _questions_of(a: Any) -> List[Any]:
+        qs = getattr(a, "questions", None)
+        if qs is None and isinstance(a, dict):
+            qs = a.get("questions")
+        return list(qs or [])
+
+    def _field(q: Any, name: str) -> Any:
+        val = getattr(q, name, None)
+        if val is None and isinstance(q, dict):
+            val = q.get(name)
+        return val
+
+    for assessment in assessments:
+        questions = _questions_of(assessment)
+        kept: List[Any] = []
+        for q in questions:
+            total_before += 1
+            key = _normalize_stem_for_dedup(_field(q, "stem"))
+            oid = str(_field(q, "objective_id") or "").strip()
+            if key and key in seen_stems:
+                seen_stems[key] += 1
+                duplicates_removed += 1
+                if oid:
+                    dropped_by_objective[oid] = (
+                        dropped_by_objective.get(oid, 0) + 1
+                    )
+                continue
+            if key:
+                seen_stems[key] = 1
+            kept.append(q)
+            total_after += 1
+            if oid:
+                kept_objectives.add(oid)
+        if not kept:
+            ident = getattr(assessment, "assessment_id", None)
+            if ident is None and isinstance(assessment, dict):
+                ident = assessment.get("assessment_id")
+            dropped_assessments.append(str(ident or "unknown"))
+            continue
+        if isinstance(assessment, dict):
+            assessment["questions"] = kept
+        else:
+            assessment.questions = kept
+        survivors.append(assessment)
+
+    report = {
+        "total_before": total_before,
+        "total_after": total_after,
+        "duplicates_removed": duplicates_removed,
+        "duplicate_groups": sum(1 for n in seen_stems.values() if n > 1),
+        "dropped_assessments": dropped_assessments,
+        "objectives_losing_coverage": sorted(
+            o for o in dropped_by_objective if o not in kept_objectives
+        ),
+    }
+    return survivors, report
 
 
 def _build_assessment_artifacts_from_data(
@@ -4818,6 +4984,13 @@ def _derive_terminals_bottom_up(
         _reroll_salt = _planning_reroll_salt()
         if _reroll_salt:
             _cl_fp_inputs["reroll_salt"] = _reroll_salt
+        # Failure-directed feedback digest (same contract as the salt): a
+        # DIFFERENT digest → different fingerprint → no stale-cache reuse.
+        _reroll_feedback = _planning_reroll_feedback()
+        if _reroll_feedback:
+            _cl_fp_inputs["reroll_feedback_sha"] = _llm_hash_text(
+                _reroll_feedback
+            )
         _cl_fp = _llm_compute_fingerprint(_cl_fp_inputs)
         authored: Optional[Dict[str, Any]] = None
         if _cluster_store.enabled:
@@ -5241,6 +5414,13 @@ def _derive_terminals_chapter_anchored(
         _reroll_salt = _planning_reroll_salt()
         if _reroll_salt:
             _cl_fp_inputs["reroll_salt"] = _reroll_salt
+        # Failure-directed feedback digest (mirrors the bottom-up site): a
+        # DIFFERENT digest → different fingerprint → no stale-cache reuse.
+        _reroll_feedback = _planning_reroll_feedback()
+        if _reroll_feedback:
+            _cl_fp_inputs["reroll_feedback_sha"] = _llm_hash_text(
+                _reroll_feedback
+            )
         _cl_fp = _llm_compute_fingerprint(_cl_fp_inputs)
         authored: Optional[Dict[str, Any]] = None
         if _cluster_store.enabled:
@@ -5455,6 +5635,23 @@ def _planning_reroll_salt() -> str:
     dicts carry no salt key (byte-identical to legacy).
     """
     return os.environ.get("ED4ALL_PLANNING_REROLL_SALT", "").strip()
+
+
+def _planning_reroll_feedback() -> str:
+    """Failure-directed remediation digest for the gate-retry loop.
+
+    Set (alongside the salt) by
+    ``WorkflowRunner._retry_course_planning_gates`` — a compact per-issue
+    digest of the failing critical gates (``_planning_failure_digest``);
+    empty on every normal run. Folded (as a hash) into the cluster-stage
+    sidecar FINGERPRINT at both TO-derivation call sites — and,
+    independently, into the ``TextbookSynthesisProvider`` system prompt as
+    a delimited REMEDIATION section — so a retry attempt is DIRECTED at
+    the observed failure modes and a changed digest never reuses a stale
+    cached TO. Empty → no feedback key in the fingerprint dicts
+    (byte-identical to legacy).
+    """
+    return os.environ.get("ED4ALL_PLANNING_REROLL_FEEDBACK", "").strip()
 
 
 def _stage2_window_key(chapter_id: str, window_index: int) -> str:
@@ -5689,7 +5886,11 @@ def _append_stage2_chapter_fallback_checkpoint(
 # is removed only AFTER the manifest write succeeds (a stop raises before that
 # write, so the sidecar survives for the resume).
 _ASSESSMENTS_CHECKPOINT_NAME = ".assessments_checkpoint.jsonl"
-_ASSESSMENT_PROMPT_VERSION = "v1"
+# v2: relationship-template clause-grab fix (term-like concept guard +
+# relationship/procedure/example rotation) + footnote-apparatus strip changed
+# what the deterministic generator emits — invalidate pre-fix quiz sidecars so
+# a resumed run re-rolls under the fixed templater instead of replaying salad.
+_ASSESSMENT_PROMPT_VERSION = "v2"
 
 
 def _assessments_store(path: Optional[Path]) -> _LlmCheckpointStore:
@@ -5992,6 +6193,11 @@ async def _run_stage2_window_synthesis(
         build_embedding_client,
     )
 
+    # Real (un-patchable) run-scoped stop-sentinel probe for the rolling-window
+    # DISPATCH BOUNDARY. Referenced through the module so it stays distinct from
+    # the module-global ``stop_requested`` an in-flight ``_one_window`` consults
+    # (the P3.0 marker path) — mirroring the legacy check_stop/_one_window split.
+    from lib.generation import stop_control as _stop_control
     _loop = _asyncio.get_running_loop()
     candidates_synthesized = 0
     _flat_candidates: List[Dict[str, Any]] = []
@@ -6195,28 +6401,63 @@ async def _run_stage2_window_synthesis(
             else:
                 _to_dispatch.append(_wd)
 
-        # Dispatch ONLY the un-cached windows (≤10 per batch), keyed by window.
-        # Each completed window is appended to the sidecar AS ITS BATCH LANDS
-        # (not after the full dispatch loop) so a kill / power-loss mid-phase
-        # only costs the in-flight batch on resume, never the whole run.
+        # Dispatch ONLY the un-cached windows, keyed by window. ROLLING WINDOW
+        # (not a batch BARRIER): instead of gathering each batch of N and idling
+        # the pool on the slowest window per batch, keep ``_width`` window
+        # futures IN FLIGHT at all times and refill from the queue the instant
+        # one resolves (``asyncio.wait(FIRST_COMPLETED)``). ``_width`` is the
+        # provider's configured batch size (still 10 by default, via
+        # ``batch_chapters``) capped at the window count — the SAME effective
+        # concurrency as the barrier, never raised. Each completed window is
+        # appended to the sidecar AS ITS OWN FUTURE RESOLVES (finer than the old
+        # per-batch append: a kill / power-loss mid-phase now only costs the
+        # ``≤_width`` in-flight windows on resume, never a whole batch). Results
+        # are keyed by window identity and reassembled in the ORIGINAL window
+        # order below, so the emitted objectives are deterministic regardless of
+        # completion order (the barrier's gather already could not guarantee
+        # in-batch completion order — this reassembly always was key-based).
         _dispatched: Dict[Tuple[str, int], Optional[Dict[str, Any]]] = {}
         _batches = provider.batch_chapters(_to_dispatch)
-        _stop_marker_seen = False
-        for _batch in _batches:
-            # Graceful stop BETWEEN batches: every prior batch's completed
-            # window is already appended to the sidecar, so this plain raise
-            # loses nothing (mid-batch arming is handled by the STOP_MARKER
-            # return inside _one_window + the post-loop raise below).
-            check_stop("stage2_windows", len(_dispatched))
-            _results = await _asyncio.gather(*[
-                _loop.run_in_executor(None, _one_window, w) for w in _batch
-            ])
-            for _wd, _res in zip(_batch, _results):
+        _width = max((len(_b) for _b in _batches), default=1)
+        _queue = [_w for _b in _batches for _w in _b]
+        _qi = 0
+        _inflight: Dict[Any, Dict[str, Any]] = {}
+        _stop_seen = False
+
+        # Graceful stop (checkpoint on command). Two independent probes,
+        # mirroring the legacy check_stop/_one_window split:
+        #   * the DISPATCH-BOUNDARY probe below uses the REAL run-scoped sentinel
+        #     (``_stop_control.stop_requested`` — NOT the module-global
+        #     ``stop_requested`` an in-flight ``_one_window`` consults) before
+        #     EVERY new submission, so no new window is dispatched once a stop is
+        #     pending; and
+        #   * a stop armed WHILE a window is in flight surfaces as a STOP_MARKER
+        #     return from ``_one_window`` (the P3.0 marker pattern), skipped on
+        #     drain so resume re-runs that not-attempted window.
+        # On a stop we STOP submitting, let the in-flight windows finish +
+        # checkpoint, then raise AFTER the drain — worst-case loss ``≤_width``
+        # in-flight windows (unchanged from the barrier).
+        while _qi < len(_queue) and len(_inflight) < _width:
+            if _stop_control.stop_requested():
+                _stop_seen = True
+                break
+            _w = _queue[_qi]
+            _qi += 1
+            _inflight[_loop.run_in_executor(None, _one_window, _w)] = _w
+
+        while _inflight:
+            _done, _ = await _asyncio.wait(
+                set(_inflight), return_when=_asyncio.FIRST_COMPLETED
+            )
+            for _fut in _done:
+                _wd = _inflight.pop(_fut)
+                # ``_one_window`` fail-softs to None / STOP_MARKER — never raises.
+                _res = _fut.result()
                 _dkey = _window_key(_wd)
                 if _res is STOP_MARKER:
                     # Not-attempted (stop refused pre-dispatch): skip append so
                     # resume re-runs it. Do NOT record in _dispatched.
-                    _stop_marker_seen = True
+                    _stop_seen = True
                     continue
                 _dispatched[_dkey] = _res
                 if _cp_enabled and _res is not None:
@@ -6231,11 +6472,25 @@ async def _run_stage2_window_synthesis(
                             if isinstance(_c, dict)
                         ],
                     )
-        if _stop_marker_seen:
-            # A stop was armed mid-batch: every window that COMPLETED before it
-            # is now in _dispatched AND checkpointed; the markers were never
-            # dispatched. Raise AFTER the sidecar append so resume re-runs only
-            # the un-attempted windows (P3.0).
+            # Refill to ``_width`` (each freshly-resolved window's sidecar append
+            # above is already durable), probing the boundary stop before each.
+            while (
+                not _stop_seen
+                and _qi < len(_queue)
+                and len(_inflight) < _width
+            ):
+                if _stop_control.stop_requested():
+                    _stop_seen = True
+                    break
+                _w = _queue[_qi]
+                _qi += 1
+                _inflight[_loop.run_in_executor(None, _one_window, _w)] = _w
+
+        if _stop_seen:
+            # Every window that COMPLETED before the stop is in _dispatched AND
+            # checkpointed; not-attempted windows were never submitted (boundary
+            # probe) or returned STOP_MARKER. Raise AFTER the drain so resume
+            # re-runs only the un-attempted windows (P3.0).
             raise GracefulStopRequested("stage2_windows", len(_dispatched))
 
         # Reassemble candidates in ORIGINAL window order (byte-equivalent to an
@@ -7166,6 +7421,7 @@ async def create_textbook_pipeline(
     target_block_ids: Optional[List[str]] = None,
     target_block_instance_ids: Optional[List[str]] = None,
     target_page_ids: Optional[List[str]] = None,
+    auto_name: bool = False,
 ) -> str:
     """
     Create and orchestrate a textbook-to-course pipeline.
@@ -7322,6 +7578,12 @@ async def create_textbook_pipeline(
             )
         if target_page_ids:
             params["target_page_ids"] = list(target_page_ids)
+        # --auto-name: the caller-supplied course_name is PROVISIONAL; the
+        # workflow runner resolves the FINAL H1-derived, run-timestamped slug
+        # post-conversion (``_maybe_apply_auto_name``) and rebinds
+        # course_name on these params. Unset -> no key -> byte-identical.
+        if auto_name:
+            params["auto_name"] = True
         # Hosted-seat build profile GAP-2 fix — forward --stop-after so the workflow
         # runner halts cleanly after the named phase (before later phases run).
         if stop_after:
@@ -8516,6 +8778,24 @@ def _run_semantik_bridge_subprocess(
         _stop_sentinel = _semantik_stop_sentinel_env_value()
         if _stop_sentinel:
             bridge_env[_SEMANTIK_STOP_SENTINEL_ENV] = _stop_sentinel
+        # LLM-usage-tap plumbing (OP2): the SemantiK-side meter
+        # (``semantik_structure/llm_usage_meter.py``) resolves the run ledger
+        # ``<state-runs>/<run_id>/llm_usage.jsonl`` from ``ED4ALL_RUN_ID`` +
+        # ``ED4ALL_STATE_RUNS_DIR``. ``ED4ALL_RUN_ID`` is inherited from the
+        # parent env (the orchestrator exports it), but the SemantiK venv
+        # cannot import Ed4All's ``lib.paths`` — so without the explicit dir
+        # export every meter row from the bridge subprocess silently fell to
+        # the SemantiK data-dir sidecar instead of the run ledger the GUI
+        # stats band reads. setdefault: an operator's explicit value wins.
+        # Best-effort — path resolution must never break the conversion.
+        try:
+            from lib.paths import get_state_runs_dir  # noqa: PLC0415
+
+            bridge_env.setdefault(
+                "ED4ALL_STATE_RUNS_DIR", str(get_state_runs_dir())
+            )
+        except Exception:  # noqa: BLE001 — metering plumbing is best-effort
+            pass
         if _semantik_expandable_segments_enabled():
             bridge_env.setdefault(
                 "PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True"
@@ -12324,6 +12604,33 @@ def _block_planner_week_key(week_num: int) -> str:
     return f"w{int(week_num)}"
 
 
+def _resolve_block_plan_concurrency() -> int:
+    """Resolve the dynamic-block-planner warm-up pool size.
+
+    ``COURSEFORGE_BLOCK_PLAN_CONCURRENCY`` (positive int) wins; garbage / < 1
+    falls back to ``COURSEFORGE_OUTLINE_CONCURRENCY`` (positive int, itself
+    defaulting to 1), so by DEFAULT the parallel per-week planner warm-up
+    inherits the outline concurrency with no new required flag but can be tuned
+    independently. Parse-with-fallback throughout (mirrors the inline
+    COURSEFORGE_OUTLINE_CONCURRENCY resolver). A resolved value <= 1 means the
+    warm-up is skipped entirely (byte-identical legacy sequential loop).
+    """
+    def _pos_int(name: str) -> Optional[int]:
+        try:
+            val = int(os.environ.get(name, ""))
+        except (TypeError, ValueError):
+            return None
+        return val if val >= 1 else None
+
+    resolved = _pos_int("COURSEFORGE_BLOCK_PLAN_CONCURRENCY")
+    if resolved is not None:
+        return resolved
+    resolved = _pos_int("COURSEFORGE_OUTLINE_CONCURRENCY")
+    if resolved is not None:
+        return resolved
+    return 1
+
+
 def _block_planner_week_fingerprint(
     *,
     week_num: int,
@@ -14086,8 +14393,13 @@ def restamp_blocks_final_jsonl(
             _body_curies = []
         if not _body_curies:
             # Strip a junk data-cf-curie span (carries no extractable CURIE).
+            # ``_strip_junk_curie_spans`` also removes UNTERMINATED junk spans
+            # (open tag never closed by ``</span>``) — otherwise the surviving
+            # ``data-cf-curie`` substring makes the idempotence guard below
+            # refuse the fresh mint forever (the real root cause of 17/23
+            # curieless blocks on a real rewrite export).
             if "data-cf-curie" in new_content:
-                new_content = _CURIE_SPAN_EL_RE.sub("", new_content)
+                new_content = _strip_junk_curie_spans(new_content)
             _tokens: List[str] = []
             try:
                 _prose = _strip_html_fn(new_content)
@@ -14130,6 +14442,242 @@ def restamp_blocks_final_jsonl(
         "content_type_stamped": content_type_stamped,
         "curie_minted": curie_minted,
         "still_curieless": still_curieless,
+        "wrote": wrote,
+    }
+
+
+# Canonical per-block-type interactive-component marker attributes, mirroring
+# the templated-emit attr helpers in ``Courseforge/scripts/blocks.py``
+# (``_flip_card_grid_attrs`` / ``_self_check_question_attrs`` /
+# ``_activity_attrs``). Consumed by the required-attr re-injection helper:
+# these values are FIXED per block_type (never content-derived), so injecting
+# them is deterministic.
+_REWRITE_COMPONENT_PURPOSE_BY_TYPE: Dict[str, "Tuple[str, str]"] = {
+    "flip_card_grid": ("flip-card", "term-definition"),
+    "self_check_question": ("self-check", "formative-assessment"),
+    "activity": ("activity", "practice"),
+}
+
+# Recovers an AUTHORED ``data-cf-key-terms`` value trapped inside mangled
+# attribute quoting (broken-quote emits swallow the attribute so the gate's
+# parser never sees it, but the quoted value itself survives verbatim in the
+# raw text). Recovery-only: the captured value is the rewrite LLM's own emit.
+_KEY_TERMS_ATTR_VALUE_RE = re.compile(
+    r'data-cf-key-terms\s*=\s*"([^"<>]+)"',
+    re.IGNORECASE,
+)
+
+
+def _recover_authored_key_terms(html: str) -> Optional[str]:
+    """Recover the block's own authored ``data-cf-key-terms`` value.
+
+    Returns the sanitized comma-joined value, or ``None`` when the block's
+    raw text carries no recoverable authored value (anti-fabrication: key
+    terms are content-authored, never invented by the repairer). Sanitation
+    is REMOVAL-ONLY: comma tokens polluted by attribute residue (an ``=`` or
+    a ``data-cf`` fragment swallowed by the broken quoting) are dropped.
+    """
+    m = _KEY_TERMS_ATTR_VALUE_RE.search(html or "")
+    if not m:
+        return None
+    tokens = [t.strip() for t in m.group(1).split(",")]
+    clean = [
+        t for t in tokens
+        if t and "=" not in t and "data-cf" not in t.lower()
+    ]
+    return ", ".join(clean) if clean else None
+
+
+def _inject_named_attr(html: str, attr_name: str, value: str) -> str:
+    """Stamp ``{attr_name}="{value}"`` onto the first start tag.
+
+    Generic sibling of :func:`_inject_block_id_attr` /
+    :func:`_inject_content_type_attr` for the required-attr re-injection
+    helper. No-op when the value is empty or no start tag is found. The
+    value is attribute-escaped. Idempotence is enforced by the CALLER (it
+    injects only attrs the gate's parser reports missing).
+    """
+    if not attr_name or not value:
+        return html
+    from html import escape as _esc_attr  # noqa: PLC0415
+    safe = _esc_attr(str(value), quote=True)
+
+    def _repl(match: "re.Match") -> str:
+        tag, attrs, closing = match.group(1), match.group(2), match.group(3)
+        return f'<{tag}{attrs} {attr_name}="{safe}"{closing}>'
+
+    return _FIRST_START_TAG_RE.sub(_repl, html, count=1)
+
+
+def reinject_required_attrs_blocks_final_jsonl(
+    *,
+    blocks_final_path: "Union[str, Path]",
+    in_place: bool = False,
+) -> Dict[str, Any]:
+    """Re-inject deterministically-derivable REQUIRED ``data-cf-*`` attrs.
+
+    Operator-facing sibling of :func:`restamp_blocks_final_jsonl` for the
+    ``rewrite_html_shape`` gate's ``REWRITE_MISSING_REQUIRED_ATTR`` class.
+    For every audited block it runs the gate's OWN parser
+    (``lib.validators.rewrite_html_shape._ShapeParser``) to find which
+    required attributes (``REQUIRED_ATTRS[block_type]``) the parser cannot
+    see, then injects only those whose value is deterministically derivable
+    from the block's OWN metadata or the canonical per-type emitter
+    constants — never content invented by the repairer:
+
+    * ``data-cf-block-id``      → the block's own ``block_id``.
+    * ``data-cf-component`` /
+      ``data-cf-purpose``       → fixed per block_type
+      (:data:`_REWRITE_COMPONENT_PURPOSE_BY_TYPE`, mirroring
+      ``Courseforge/scripts/blocks.py``).
+    * ``data-cf-content-type``  → the block_type's canonical ChunkType
+      (:func:`_resolve_block_content_type`).
+    * ``data-cf-key-terms``     → RECOVERY-ONLY: the block's own authored
+      value trapped in mangled attribute quoting
+      (:func:`_recover_authored_key_terms`); absent → not derivable.
+    * ``data-cf-bloom-level``   → the entry's own ``bloom_level`` field.
+    * ``data-cf-objective-id`` /
+      ``data-cf-objective-ref`` → the entry's own first ``objective_ids``.
+
+    A non-derivable attr is left missing (reported in ``unrepairable``).
+    Each injection is VERIFIED by re-parsing with the gate's parser; if the
+    injected attr still cannot be seen (hopelessly mangled first tag) the
+    block's content is reverted (reported in ``unrepairable``). Idempotent:
+    a re-run finds nothing missing and rewrites nothing. CPU-only, no LLM.
+
+    Returns ``{total, audited, blocks_repaired, attrs_injected,
+    unrepairable, wrote}`` where ``unrepairable`` is a list of
+    ``{block_id, attrs}`` dicts.
+    """
+    from lib.validators.rewrite_html_shape import (
+        REQUIRED_ATTRS as _REQUIRED_ATTRS_MAP,
+        _ShapeParser as _GateShapeParser,
+        _is_unshipped_escalation_tombstone as _is_tombstone_shape_fn,
+    )
+
+    blocks_path = Path(str(blocks_final_path))
+    if not blocks_path.exists():
+        raise FileNotFoundError(f"blocks_final.jsonl not found: {blocks_path}")
+
+    def _found_attrs(html: str) -> "Optional[Set[str]]":
+        parser = _GateShapeParser()
+        try:
+            parser.feed(html)
+            parser.close()
+        except Exception:  # noqa: BLE001 — parse-fail class, not attr class
+            return None
+        return parser.found_attrs
+
+    entries: List[Dict[str, Any]] = []
+    with blocks_path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            entries.append(json.loads(line))
+
+    total = len(entries)
+    audited = 0
+    blocks_repaired = 0
+    attrs_injected = 0
+    unrepairable: List[Dict[str, Any]] = []
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        block = _block_from_checkpoint_entry(entry)
+        if block is None:
+            continue
+        content = entry.get("content")
+        if not isinstance(content, str):
+            continue
+        if _is_tombstone_shape_fn(block):
+            continue
+        block_type = entry.get("block_type")
+        required = _REQUIRED_ATTRS_MAP.get(block_type or "", ())
+        if not required:
+            continue
+        audited += 1
+        found = _found_attrs(content)
+        if found is None:
+            continue
+        missing = [a for a in required if a not in found]
+        if not missing:
+            continue
+
+        # Derive values for the missing attrs (None => not derivable).
+        comp_purpose = _REWRITE_COMPONENT_PURPOSE_BY_TYPE.get(block_type or "")
+        objective_ids = entry.get("objective_ids") or []
+        first_objective = (
+            objective_ids[0]
+            if objective_ids and isinstance(objective_ids[0], str)
+            else None
+        )
+        bloom_level = entry.get("bloom_level")
+        derived: Dict[str, Optional[str]] = {}
+        for attr in missing:
+            if attr == "data-cf-block-id":
+                derived[attr] = entry.get("block_id") or None
+            elif attr == "data-cf-component":
+                derived[attr] = comp_purpose[0] if comp_purpose else None
+            elif attr == "data-cf-purpose":
+                derived[attr] = comp_purpose[1] if comp_purpose else None
+            elif attr == "data-cf-content-type":
+                derived[attr] = _resolve_block_content_type(block_type)
+            elif attr == "data-cf-key-terms":
+                derived[attr] = _recover_authored_key_terms(content)
+            elif attr == "data-cf-bloom-level":
+                derived[attr] = (
+                    bloom_level.strip()
+                    if isinstance(bloom_level, str) and bloom_level.strip()
+                    else None
+                )
+            elif attr in ("data-cf-objective-id", "data-cf-objective-ref"):
+                derived[attr] = first_objective
+            else:
+                derived[attr] = None
+
+        injectable = {a: v for a, v in derived.items() if v}
+        not_derivable = sorted(a for a, v in derived.items() if not v)
+
+        new_content = content
+        for attr, value in injectable.items():
+            new_content = _inject_named_attr(new_content, attr, value)
+
+        injected_ok = False
+        if injectable and new_content != content:
+            # VERIFY with the gate's own parser: every injected attr must
+            # now be visible, or the injection is reverted (a hopelessly
+            # mangled first tag can swallow appended attrs).
+            post = _found_attrs(new_content)
+            if post is not None and all(a in post for a in injectable):
+                entry["content"] = new_content
+                blocks_repaired += 1
+                attrs_injected += len(injectable)
+                injected_ok = True
+
+        failed_attrs = sorted(
+            set(not_derivable)
+            | (set() if injected_ok or not injectable else set(injectable))
+        )
+        if failed_attrs:
+            unrepairable.append(
+                {"block_id": entry.get("block_id"), "attrs": failed_attrs}
+            )
+
+    wrote = False
+    if in_place and blocks_repaired:
+        with blocks_path.open("w", encoding="utf-8") as fh:
+            for entry in entries:
+                fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        wrote = True
+
+    return {
+        "total": total,
+        "audited": audited,
+        "blocks_repaired": blocks_repaired,
+        "attrs_injected": attrs_injected,
+        "unrepairable": unrepairable,
         "wrote": wrote,
     }
 
@@ -14196,6 +14744,47 @@ def _emit_curie_minting_capture(
     if matched_surface == "sibling_page_fallback":
         ml_features["sibling_donor_count"] = sibling_count
         ml_features["page_id"] = page_id
+    # Capture-quality contract (proficient floor): reference the REAL
+    # inputs the minting decision consumed — the block plus the actual
+    # vocabulary concepts its text matched (sibling-fallback consumed the
+    # page's donor siblings instead). The genuine alternative every mint
+    # weighs is doing nothing: leaving ``content['curies']`` empty/generic
+    # fails ``BlockCurieAnchoringValidator`` on a prose corpus — that gate
+    # failure is exactly why the minting pass exists. When the anchorability
+    # filter dropped matched concepts, minting those too was the other
+    # genuinely-rejected option.
+    inputs_ref = [
+        {"source_type": "block", "path_or_id": str(block.block_id)}
+    ]
+    if matched_surface == "sibling_page_fallback":
+        inputs_ref.append(
+            {
+                "source_type": "sibling_page_blocks",
+                "path_or_id": (
+                    f"{page_id}#{sibling_count}_minted_sibling_donor(s)"
+                ),
+            }
+        )
+    else:
+        inputs_ref.extend(
+            {"source_type": "domain_concept", "path_or_id": str(canonical)}
+            for canonical in matched_canonicals
+        )
+    alternatives = [
+        (
+            f"leave content['curies']={existing!r} unchanged (rejected: "
+            "the block then fails BlockCurieAnchoringValidator on a "
+            "prose corpus — the gate gap this minting pass closes)"
+        ),
+    ]
+    dropped_count = len(matched_canonicals) - len(minted_curies)
+    if matched_surface != "sibling_page_fallback" and dropped_count > 0:
+        alternatives.append(
+            f"also mint the {dropped_count} matched concept(s) whose only "
+            "surface form fails _surface_form_can_anchor (rejected: an "
+            "unanchorable short/stopword alias would fail the gate and "
+            "poison concept_tags)"
+        )
     try:
         capture.log_decision(
             decision_type="curie_minting",
@@ -14205,6 +14794,8 @@ def _emit_curie_minting_capture(
             ),
             rationale=rationale,
             ml_features=ml_features,
+            alternatives_considered=alternatives,
+            inputs_ref=inputs_ref,
         )
     except Exception:  # noqa: BLE001
         pass
@@ -15462,6 +16053,203 @@ async def _run_content_generation_outline(**kwargs) -> str:
             else _load_semantik_chunkset_detail_map(chunkset_path)
         )
 
+    # ------------------------------------------------------------------ #
+    # Per-week planner input builder (shared by the parallel warm-up pass
+    # and the sequential loop below).
+    # ------------------------------------------------------------------ #
+    # The per-week planner inputs (``_week_to`` / child COs / grounded source
+    # chunks) + the resume fingerprint are computed by IDENTICAL code in both
+    # the warm-up pre-pass and the loop, so the warm-up's fingerprint can NEVER
+    # drift from the loop's ``_planner_store.reuse(...)`` fingerprint (a drift
+    # would miss the cache and double-dispatch every week). Closes over the
+    # pre-built per-week indices; pure (no side effects).
+    def _build_week_planner_inputs(
+        _wn: int,
+        _wk_objectives: List[Dict[str, Any]],
+        _wk_objective_ids: Tuple[str, ...],
+    ):  # type: ignore[no-untyped-def]
+        from lib.generation.block_planner import (  # noqa: PLC0415
+            DEFAULT_BLOCK_BUDGET,
+        )
+
+        _wk_to = (
+            _wk_objectives[0]
+            if _wk_objectives
+            else {"id": (_wk_objective_ids[0] if _wk_objective_ids else ""),
+                  "statement": ""}
+        )
+        _wk_cos = week_co_objectives_index.get(_wn, [])
+        _wk_cids = week_chunk_id_index.get(_wn, [])
+        _wk_chunks: List[Dict[str, str]] = []
+        if chunkset_present:
+            for _cid in _wk_cids:
+                _body = chunk_text_map.get(_cid)
+                if _body:
+                    _heading = str(
+                        (_planner_detail_map.get(_cid) or {}).get("heading")
+                        or ""
+                    )
+                    _wk_chunks.append({"id": _cid, "text": _body,
+                                       "heading": _heading})
+        _wk_key = _block_planner_week_key(_wn)
+        _wk_fp = _block_planner_week_fingerprint(
+            week_num=_wn,
+            terminal_objective=_wk_to,
+            chapter_objectives=_wk_cos,
+            source_chunks=_wk_chunks,
+            model=_planner_model,
+            budget=DEFAULT_BLOCK_BUDGET,
+            course_code=course_code,
+        )
+        return _wk_key, _wk_fp, _wk_to, _wk_cos, _wk_chunks
+
+    def _week_objectives_for(_wn: int):  # type: ignore[no-untyped-def]
+        """Per-week (objectives, objective_ids) — the loop's 16052-16062 logic."""
+        _objs = (
+            list(_week_to_assignment.get(_wn, [])) if terminal_objectives else []
+        )
+        _oids: Tuple[str, ...] = tuple(
+            str(o.get("id")) for o in _objs if o.get("id")
+        )
+        return _objs, _oids
+
+    # ------------------------------------------------------------------ #
+    # Parallel warm-up pre-pass (ED4ALL_DYNAMIC_BLOCK_PLAN on only).
+    # ------------------------------------------------------------------ #
+    # The per-week ``plan_week_blocks`` dispatches are INDEPENDENT (each depends
+    # only on per-week inputs derived from the pre-built indices — no
+    # loop-carried state), so instead of serializing ~15-20 min of Super-120B
+    # calls one-at-a-time against a ~95%-idle seat, fan them across a bounded
+    # thread pool HERE and write each result into the SAME ``_planner_store``
+    # sidecar the loop reads. The loop below stays byte-identical: every week
+    # now HITS ``_planner_store.reuse(...)`` and skips the inline dispatch,
+    # while still running weeks 1..N sequentially (unchanged output order). OFF
+    # path (dynamic_block_plan False) OR resolved concurrency <= 1 builds NO
+    # pool and is byte-identical to the legacy sequential loop.
+    _block_plan_concurrency = _resolve_block_plan_concurrency()
+    if dynamic_block_plan and _block_plan_concurrency > 1:
+        # Build each week's inputs + fingerprint; only weeks NOT already
+        # checkpointed (fingerprint match from a prior interrupted run) need a
+        # dispatch — an already-warmed week is skipped (no double dispatch).
+        _warm_specs: List[Tuple[int, str, str, Dict[str, Any],
+                                List[Dict[str, Any]], List[Dict[str, str]]]] = []
+        for _wn in range(1, duration_weeks + 1):
+            _w_objs, _w_oids = _week_objectives_for(_wn)
+            (_w_key, _w_fp, _w_to, _w_cos,
+             _w_chunks) = _build_week_planner_inputs(_wn, _w_objs, _w_oids)
+            if _planner_store.reuse(
+                _w_key, _w_fp, cache=_planner_cache,
+            ) is not None:
+                continue
+            _warm_specs.append(
+                (_wn, _w_key, _w_fp, _w_to, _w_cos, _w_chunks)
+            )
+
+        if _warm_specs:
+            from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+            from lib.generation.block_planner import (  # noqa: PLC0415
+                plan_week_blocks as _warm_plan_week_blocks,
+            )
+
+            _warm_pool_size = min(
+                _block_plan_concurrency, len(_warm_specs)
+            ) or 1
+
+            if capture is not None:
+                try:
+                    capture.log_decision(
+                        decision_type="content_selection",
+                        decision=(
+                            f"Block-planner warm-up: dispatching "
+                            f"{len(_warm_specs)} week plan(s) across a "
+                            f"{_warm_pool_size}-thread pool before the "
+                            f"sequential loop."
+                        ),
+                        rationale=(
+                            f"COURSEFORGE_BLOCK_PLAN_CONCURRENCY resolved to "
+                            f"{_block_plan_concurrency} (pool sized to "
+                            f"min(knob, uncached_weeks)={_warm_pool_size}) fans "
+                            f"the INDEPENDENT per-week Super-120B "
+                            f"plan_week_blocks dispatch out across threads and "
+                            f"warms the same {_BLOCK_PLANNER_CHECKPOINT_NAME} "
+                            f"sidecar the loop reuses, so the loop makes ZERO "
+                            f"inline planner calls and its output order is "
+                            f"unchanged (weeks 1..{duration_weeks} still "
+                            f"consumed sequentially)."
+                        ),
+                        ml_features={
+                            "gate_id": "_run_content_generation_outline",
+                            "block_plan_concurrency": _block_plan_concurrency,
+                            "pool_size": _warm_pool_size,
+                            "warm_weeks": len(_warm_specs),
+                            "duration_weeks": duration_weeks,
+                        },
+                    )
+                except Exception:  # noqa: BLE001 — best-effort capture
+                    pass
+
+            # Graceful stop: a pre-armed sentinel refuses the whole warm-up
+            # before any future is submitted (ZERO planner dispatches). Mirrors
+            # the outline-tier P3.0 pre-dispatch guard.
+            check_stop("block_planner_weeks", 0)
+
+            def _warm_one_week(_spec):  # type: ignore[no-untyped-def]
+                """Dispatch ONE week's plan (fail-soft; returns STOP_MARKER when
+                a mid-pool stop is armed pre-dispatch, so a not-yet-started
+                worker RETURNS rather than raises — the P3.0 drain discipline)."""
+                (_s_wn, _s_key, _s_fp, _s_to, _s_cos, _s_chunks) = _spec
+                if stop_requested():
+                    return STOP_MARKER
+                try:
+                    _plan = _warm_plan_week_blocks(
+                        terminal_objective=_s_to,
+                        chapter_objectives=_s_cos,
+                        source_chunks=_s_chunks,
+                        provider=block_planner_provider,
+                        capture=capture,
+                        course_code=course_code,
+                    )
+                except Exception as _warm_exc:  # noqa: BLE001
+                    # plan_week_blocks fail-softs internally, but guard anyway:
+                    # a worker failure must not kill the pool. Skip appending —
+                    # the sequential loop then inline-dispatches this one week
+                    # (correct fallback, no double-dispatch for the rest).
+                    logger.warning(
+                        "block-planner warm-up: week %d dispatch failed (%s); "
+                        "the sequential loop will re-dispatch this week.",
+                        _s_wn, _warm_exc,
+                    )
+                    return None
+                return (_s_key, _s_fp, _plan)
+
+            with ThreadPoolExecutor(max_workers=_warm_pool_size) as _warm_pool:
+                _warm_futs = [
+                    _warm_pool.submit(_warm_one_week, _spec)
+                    for _spec in _warm_specs
+                ]
+                for _wf in _warm_futs:
+                    try:
+                        _wf_result = _wf.result()
+                    except Exception as _wf_exc:  # noqa: BLE001
+                        logger.warning(
+                            "block-planner warm-up: worker raised: %s", _wf_exc,
+                        )
+                        continue
+                    if _wf_result is STOP_MARKER or _wf_result is None:
+                        # Stop-armed pre-dispatch (re-run on resume) or a
+                        # fail-soft skip; neither appends.
+                        continue
+                    _w_key, _w_fp, _w_plan = _wf_result
+                    _planner_store.append(
+                        _w_key, _w_fp, _serialize_week_block_plan(_w_plan),
+                    )
+            # Reload so the loop's reuse(...) sees the freshly-warmed entries.
+            # A mid-pool stop leaves the sentinel armed; the loop-top
+            # ``check_stop("block_planner_weeks", ...)`` on week 1 raises
+            # GracefulStopRequested (every warmed week is already checkpointed,
+            # so nothing computed is lost).
+            _planner_cache = _planner_store.load()
+
     for week_num in range(1, duration_weeks + 1):
         # Graceful stop (checkpoint on command): raise at the week-loop unit
         # boundary. Every prior week's block plan was appended to the planner
@@ -15525,35 +16313,13 @@ async def _run_content_generation_outline(**kwargs) -> str:
         # (byte-identical legacy behaviour).
         week_block_plan = None
         if dynamic_block_plan:
-            from lib.generation.block_planner import (
-                DEFAULT_BLOCK_BUDGET,
-                plan_week_blocks,
-            )
+            from lib.generation.block_planner import plan_week_blocks
 
-            _week_to = (
-                week_objectives[0]
-                if week_objectives
-                else {"id": (objective_ids[0] if objective_ids else ""),
-                      "statement": ""}
-            )
-            _week_cos = week_co_objectives_index.get(week_num, [])
-            # Digest the week's grounded source chunk text for the prompt.
-            _week_cids = week_chunk_id_index.get(week_num, [])
-            _week_chunks: List[Dict[str, str]] = []
-            if chunkset_present:
-                for _cid in _week_cids:
-                    _body = chunk_text_map.get(_cid)
-                    if _body:
-                        # IB7.1 — populate the heading from the provenance detail
-                        # map (fall back to "" when absent), so the planner
-                        # prompt + content-shape detectors see the structural
-                        # heading signal.
-                        _heading = str(
-                            (_planner_detail_map.get(_cid) or {}).get("heading")
-                            or ""
-                        )
-                        _week_chunks.append({"id": _cid, "text": _body,
-                                             "heading": _heading})
+            # Per-week planner inputs + resume fingerprint. Built by the SAME
+            # helper the parallel warm-up pre-pass uses, so the fingerprint here
+            # is byte-identical to the warm-up's — every warmed week HITS the
+            # reuse(...) below and skips the inline dispatch. IB7.1 heading
+            # signal + grounded source-chunk digest live inside the helper.
             # Resume sidecar: reuse a prior week's plan when its fingerprint
             # matches (skips the per-week 70B ``plan_week_blocks`` dispatch);
             # a mismatch / miss re-plans + checkpoints. The deterministic
@@ -15561,15 +16327,9 @@ async def _run_content_generation_outline(**kwargs) -> str:
             # byte-equivalent. A GracefulStopRequested cannot originate here
             # (``plan_week_blocks`` never raises — it fail-softs to the fixed
             # plan), so the pause boundary is the loop-top check_stop above.
-            _planner_key = _block_planner_week_key(week_num)
-            _planner_fp = _block_planner_week_fingerprint(
-                week_num=week_num,
-                terminal_objective=_week_to,
-                chapter_objectives=_week_cos,
-                source_chunks=_week_chunks,
-                model=_planner_model,
-                budget=DEFAULT_BLOCK_BUDGET,
-                course_code=course_code,
+            (_planner_key, _planner_fp, _week_to, _week_cos,
+             _week_chunks) = _build_week_planner_inputs(
+                week_num, week_objectives, objective_ids,
             )
             _planner_reused = _planner_store.reuse(
                 _planner_key, _planner_fp, cache=_planner_cache,
@@ -17902,6 +18662,36 @@ def _copy_export_assessments(
     return copied
 
 
+def _build_rewrite_inloop_validators() -> list:
+    """Per-candidate validator chain for the rewrite best-of-N loop.
+
+    Book-1 canary keystone fix: the deterministic prose-stutter check runs
+    IN-LOOP (per candidate) so phrase-repetition slop is rejected at
+    authoring time — a stuttered candidate fires ``action="regenerate"``
+    and ``route_rewrite_with_remediation`` / ``route_rewrite_batch``
+    re-rolls it — instead of shipping into the retrieval corpus and only
+    surfacing at the (warning-severity) ``block_prose_stutter`` gate.
+
+    Deliberately tiny: the standalone ``post_rewrite_validation`` phase
+    still owns the full gate chain; only cheap, deterministic,
+    high-precision candidate-rejection checks belong here. The validator
+    is stateless/pure, so one shared instance is thread-safe under
+    ``COURSEFORGE_REWRITE_CONCURRENCY`` fan-out. Fail-soft: an import
+    failure degrades to the legacy empty chain (never blocks dispatch).
+    """
+    try:
+        from lib.validators.prose_stutter import (  # noqa: PLC0415
+            ProseStutterValidator,
+        )
+        return [ProseStutterValidator()]
+    except Exception as exc:  # noqa: BLE001 — never break the rewrite phase
+        logger.warning(
+            "rewrite phase: prose-stutter in-loop validator unavailable "
+            "(%s); dispatching with the legacy empty chain.", exc,
+        )
+        return []
+
+
 async def _run_content_generation_rewrite(**kwargs) -> str:
     """Run the rewrite tier of the Phase 3 two-pass content pipeline.
 
@@ -18072,15 +18862,18 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
             "project_id": project_id,
         })
 
-    # Rewrite-tier routing intentionally passes validators=[] (in-loop
-    # remediation OFF; the standalone post_rewrite_validation phase owns
-    # validation). Each block is dispatched
+    # Rewrite-tier in-loop chain: the standalone post_rewrite_validation
+    # phase still owns the FULL gate chain, but the cheap deterministic
+    # prose-stutter check (book-1 canary keystone fix) runs per-candidate
+    # via ``_build_rewrite_inloop_validators`` so phrase-repetition slop
+    # re-rolls at authoring time instead of shipping into the corpus.
+    # Each block is dispatched
     # through ``router.route_rewrite_with_remediation`` for its sidecar-
     # rehydrated ``source_chunks`` / ``objectives`` grounding (loaded from
     # the W2-persisted ``outline_chunks.json`` / ``outline_objectives.json``
     # next to ``blocks_outline.jsonl``; the workflow_runner threads the
-    # sidecar paths in as kwargs via the YAML ``inputs_from`` block), not
-    # for an in-loop validator chain.
+    # sidecar paths in as kwargs via the YAML ``inputs_from`` block).
+    _inloop_validators = _build_rewrite_inloop_validators()
     # Reconstruct the phase_outputs sub-shape the loader helpers expect
     # from the resolved path kwargs the workflow_runner threaded in.
     _phase_outputs_proxy: Dict[str, Any] = {
@@ -18376,10 +19169,11 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
 
     # Route EVERY block through rewrite, including marker-bearing blocks
     # (Wave-7 escalate_immediately) — the rewrite tier authors them from
-    # scratch as HTML. In-loop validators are skipped (validators=[]);
-    # the backstop below post-processes the Qwen output (canonical
-    # objective IDs + CURIE injection) and the post_rewrite_validation
-    # phase runs the validator chain on the corrected content.
+    # scratch as HTML. The in-loop chain carries ONLY the deterministic
+    # prose-stutter candidate check (``_inloop_validators``); the backstop
+    # below post-processes the Qwen output (canonical objective IDs +
+    # CURIE injection) and the post_rewrite_validation phase runs the
+    # full validator chain on the corrected content.
     # Per-block rewrite cache (resume optimization). A prior attempt that was
     # killed/crashed mid-phase leaves a partial ``blocks_final.jsonl`` on disk.
     # Reuse its SUCCESSFUL rewrites (real string content, no escalation marker)
@@ -18923,7 +19717,7 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
         # CURIE span. A span carrying a real CURIE leaves ``_body_curies``
         # non-empty (caught above) and is never stripped.
         if not _body_curies and "data-cf-curie" in new_content:
-            new_content = _CURIE_SPAN_EL_RE.sub("", new_content)
+            new_content = _strip_junk_curie_spans(new_content)
 
         _curie_tokens: List[str] = list(displaced_curies)
         if not _body_curies and not _curie_tokens:
@@ -19107,7 +19901,7 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
         try:
             rewritten = router.route_rewrite_with_remediation(
                 blk,
-                validators=[],
+                validators=_inloop_validators,
                 source_chunks=block_chunks,
                 objectives=objectives_payload,
             )
@@ -19336,7 +20130,7 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
                     _to_batch,
                     source_chunks_by_block_id=_chunks_for_batch,
                     objectives=objectives_payload,
-                    validators=[],
+                    validators=_inloop_validators,
                     on_block_resolved=_on_batch_block_resolved,
                 )
             except GracefulStopRequested:
@@ -19552,7 +20346,7 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
             # whose text carries no extractable CURIE) then prose-mint.
             _new_content = _content
             if "data-cf-curie" in _new_content:
-                _new_content = _CURIE_SPAN_EL_RE.sub("", _new_content)
+                _new_content = _strip_junk_curie_spans(_new_content)
             try:
                 _prose = _strip_html_anchor(_new_content)
             except Exception:  # noqa: BLE001
@@ -20081,8 +20875,23 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
 # (routed by NAME via ``MCP/core/executor.py::_PHASE_TOOL_MAPPING``).
 # Contract:
 #
-#   * SEMANTIK_HEADING_JUDGE off  -> skip-with-pass (byte-identical no-op).
+#   * SEMANTIK_HEADING_JUDGE is DEFAULT-ON (owner directive: the Super
+#     heading-level judge must not be optional). Only an explicit falsey
+#     token ({0,false,no,off}, case-insensitive) opts out -> skip-with-pass
+#     (byte-identical no-op); unset / blank / garbage / truthy -> the phase
+#     runs (the ED4ALL_GPU_LIFECYCLE default-ON house pattern).
 #   * no ``*.glmocr_layout.json`` -> skip-with-pass (born-digital corpus).
+#   * SCOPED to THIS run's own corpus (``_heading_judge_corpus_stems``): a
+#     campaign shares ONE corpus directory across books, so an unscoped glob
+#     judged — and copied back over — a DIFFERENT book's leftover sidecars
+#     (2026-07-22 shared-corpus-dir incident). A foreign stem is never judged,
+#     never copied back, and never counted. An unresolvable stem set keeps the
+#     legacy unscoped behavior but logs it LOUDLY.
+#   * a chapter whose pendings end 100% UNJUDGED is a REAL FAILURE: it is
+#     counted (``chapters_unjudged``), logged at ERROR, and its warning names
+#     the MECHANISM the judge reported (seat aborted / seat unreachable /
+#     length-exhausted / empty content / parse failure) instead of the old
+#     anonymous "truncation hole" phrasing that hid a killed seat.
 #   * per chapter: run the standalone judge as a SUBPROCESS
 #     (``python -m semantik_structure.glmocr.heading_judge_standalone
 #     <layout> --apply --out <dir>`` with cwd = the SemantiK repo root) and
@@ -20092,6 +20901,23 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
 #     ``.bak``). ``{stem}.glmocr_layout.json`` is NEVER overwritten — the
 #     judge's ``corrected_layout.json`` has a DIFFERENT shape
 #     (region_provenance + heading_tree, not pages).
+#   * ``.prejudge.bak`` NAMING (documented, deliberately NOT renamed — other
+#     tooling and shipped artifacts depend on the name): it is the conversion
+#     output as it stood BEFORE **THIS PHASE's** copy-back, NOT "before any
+#     judging". SEMANTIK_HEADING_JUDGE gates the judge in TWO places — the
+#     IN-LANE pass inside ``semantik_conversion`` (SemantiK
+#     ``glmocr/lane.py`` step 3b) and this standalone phase — so on a normal
+#     build the backup is ALREADY a judged render and a judged HTML that is
+#     byte-identical to it is the CORRECT outcome of an idempotent re-judge,
+#     never a dropped verdict (2026-07-22 misdiagnosis).
+#   * REPORTING (2026-07-22 misdiagnosis guard): ``applied`` counts verdicts
+#     RECORDED; only ``changed`` (the subset whose level actually moved) can
+#     alter an emitted ``<hN>``. Both are surfaced separately in the summary
+#     line, the phase output JSON (``total_applied`` / ``total_changed`` /
+#     ``total_agreed`` / ``level_transitions``) and the DecisionCapture, and
+#     the summary additionally reports the MEASURED render-vs-pre-judge
+#     comparison (``chapters_render_unchanged`` / ``_compared``) so an
+#     idempotent re-judge names itself instead of looking like a first pass.
 #   * FAIL-OPEN per chapter: nonzero exit / timeout -> warning + continue
 #     (the corpus keeps that chapter's pre-judge HTML); the phase always
 #     completes successfully with a warnings list. Never blocks the build.
@@ -20106,14 +20932,286 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
 _HEADING_JUDGE_FLAG_ENV = "SEMANTIK_HEADING_JUDGE"
 _HEADING_JUDGE_CHAPTER_TIMEOUT_ENV = "SEMANTIK_HEADING_JUDGE_CHAPTER_TIMEOUT"
 _HEADING_JUDGE_CHAPTER_TIMEOUT_DEFAULT = 5400.0
+_HEADING_JUDGE_FALSEY = frozenset({"0", "false", "no", "off"})
+
+# ── Post-judge deterministic AUDIT + opt-in targeted RE-JUDGE. ───────────────
+_HEADING_JUDGE_AUDIT_FLAG_ENV = "SEMANTIK_HEADING_JUDGE_AUDIT"
+_HEADING_JUDGE_REJUDGE_FLAG_ENV = "SEMANTIK_HEADING_JUDGE_REJUDGE"
+_HEADING_JUDGE_REJUDGE_MAX_ATTEMPTS_ENV = (
+    "SEMANTIK_HEADING_JUDGE_REJUDGE_MAX_ATTEMPTS"
+)
 _HEADING_JUDGE_TRUTHY = frozenset({"1", "true", "yes", "on"})
+#: Bounded targeted-re-run rounds over the flagged set (a re-audit runs after
+#: each round). Default 1 = one re-run pass + one re-audit (the task spec).
+# TODO(calibration): 1 is the conservative default — measure whether a second
+# round meaningfully recovers a still-collapsed chapter before raising it.
+_HEADING_JUDGE_REJUDGE_MAX_ATTEMPTS_DEFAULT = 1
+#: Audit subprocess is a fast deterministic pass — a modest fixed timeout.
+_HEADING_JUDGE_AUDIT_TIMEOUT = 600.0
+
+
+def _heading_judge_audit_enabled() -> bool:
+    """SEMANTIK_HEADING_JUDGE_AUDIT — default ON (falsey-set opt-out).
+
+    Report-only deterministic pass; only an explicit falsey token
+    ({0,false,no,off}) disables. Mirrors _heading_judge_enabled's default-ON
+    parse (the ED4ALL_GPU_LIFECYCLE house pattern). Byte-identical when ``=0``.
+    """
+    raw = (os.environ.get(_HEADING_JUDGE_AUDIT_FLAG_ENV) or "").strip().lower()
+    return raw not in _HEADING_JUDGE_FALSEY
+
+
+def _heading_judge_rejudge_enabled() -> bool:
+    """SEMANTIK_HEADING_JUDGE_REJUDGE — default OFF (truthy-set opt-in).
+
+    Behaviour-changing (re-runs the judge on flagged chapters), so it follows
+    the house opt-in pattern rather than the audit's default-ON. Only truthy
+    ({1,true,yes,on}) enables; unset / falsey / garbage → off.
+    """
+    raw = (os.environ.get(_HEADING_JUDGE_REJUDGE_FLAG_ENV) or "").strip().lower()
+    return raw in _HEADING_JUDGE_TRUTHY
+
+
+def _heading_judge_rejudge_max_attempts() -> int:
+    """Bounded per-chapter re-run rounds; parse-with-fallback → 1."""
+    raw = (
+        os.environ.get(_HEADING_JUDGE_REJUDGE_MAX_ATTEMPTS_ENV) or ""
+    ).strip()
+    if raw:
+        try:
+            val = int(raw)
+            if val >= 1:
+                return val
+        except ValueError:
+            pass
+    return _HEADING_JUDGE_REJUDGE_MAX_ATTEMPTS_DEFAULT
+
+
+def _heading_judge_pos_int_env(name: str, default: int) -> int:
+    """Positive-int env parse-with-fallback (re-judge window sizing)."""
+    raw = (os.environ.get(name) or "").strip()
+    try:
+        val = int(raw)
+        return val if val > 0 else default
+    except ValueError:
+        return default
+
+
+def _heading_judge_run_audit(
+    judge_python: str,
+    judge_cwd: Any,
+    judge_env: Dict[str, str],
+    out_dir: Path,
+    timeout: float = _HEADING_JUDGE_AUDIT_TIMEOUT,
+) -> Optional[Dict[str, Any]]:
+    """Shell out to the deterministic audit standalone over the judged
+    ``{stem}.corrected_layout.json`` sidecars in ``out_dir``; return the parsed
+    report dict (with an added ``report_path``) or ``None`` on any failure.
+
+    Best-effort by contract: the audit failing NEVER fails the phase.
+    Report-only — the audit never mutates a sidecar or HTML.
+    """
+    import subprocess  # noqa: PLC0415
+
+    report_path = Path(out_dir) / "heading_judge_audit.json"
+    cmd = [
+        judge_python,
+        "-m",
+        "semantik_structure.glmocr.heading_judge_audit_standalone",
+        str(out_dir),
+        "--out",
+        str(out_dir),
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(judge_cwd),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=judge_env,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning(
+            "run_heading_judge: audit subprocess could not run (non-fatal): %s",
+            exc,
+        )
+        return None
+    if proc.returncode != 0:
+        logger.warning(
+            "run_heading_judge: audit exited %d (non-fatal). stderr tail: %s",
+            proc.returncode,
+            (proc.stderr or "").strip()[-300:],
+        )
+        return None
+    try:
+        data = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        logger.warning(
+            "run_heading_judge: audit report unreadable (non-fatal): %s", exc
+        )
+        return None
+    if isinstance(data, dict):
+        data["report_path"] = str(report_path)
+        return data
+    return None
+
+
+async def _heading_judge_rejudge_flagged(
+    flagged_stems: List[str],
+    sidecars: List[Tuple[Path, Path]],
+    *,
+    judge_python: str,
+    judge_cwd: Any,
+    judge_env: Dict[str, str],
+    out_dir: Path,
+    timeout: float,
+) -> Dict[str, Any]:
+    """Targeted re-judge of ONLY the audit-flagged chapters (Part 2).
+
+    Re-invokes the EXISTING per-chapter judge subprocess machinery on each
+    flagged ``{stem}.glmocr_layout.json`` sidecar with SMALLER windows for the
+    re-run only (a reduced ``SEMANTIK_HEADING_JUDGE_MAX_TOKENS`` shrinks the
+    pending-window cap AND changes the per-window cache key + digest, and a
+    halved ``SEMANTIK_HEADING_JUDGE_CTX_BUDGET`` re-windows the digest). This
+    matters because the judge is ``temperature=0`` — a PLAIN re-run of a
+    MODE-COLLAPSED chapter would serve the same cached verdict / reproduce the
+    collapse, whereas smaller windows are a genuinely different roll AND less
+    collapse-prone; a transient fail-open chapter (nothing cached) benefits
+    from any re-run regardless.
+
+    Copies back each successful re-run (judged HTML over the conversion output,
+    corrected escalations over the corpus sidecar — the same ``.prejudge.bak`` /
+    ``.bak`` contract as the main loop). Fail-open per chapter — a re-run that
+    fails leaves that chapter's prior judged output in place.
+    """
+    import asyncio as _asyncio  # noqa: PLC0415
+    import functools as _functools  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415
+
+    from lib.paths import semantik_output_dir  # noqa: PLC0415
+
+    flagged = set(flagged_stems)
+    by_stem: Dict[str, Tuple[Path, Path]] = {}
+    for layout, corpus_dir in sidecars:
+        s = layout.name
+        for suffix in (".glmocr_layout.json", ".json"):
+            if s.endswith(suffix):
+                s = s[: -len(suffix)]
+                break
+        by_stem.setdefault(s, (layout, corpus_dir))
+
+    # Reduced-window env: smaller windows + a fresh cache key/digest so the
+    # re-run is a GENUINE re-roll (not a cache-served reproduction of the
+    # collapse at temperature=0).
+    rej_env = dict(judge_env)
+    cur_ceiling = _heading_judge_pos_int_env(
+        "SEMANTIK_HEADING_JUDGE_MAX_TOKENS", 30000
+    )
+    cur_ctx = _heading_judge_pos_int_env(
+        "SEMANTIK_HEADING_JUDGE_CTX_BUDGET", 31500
+    )
+    # 0.75x ceiling floored at 22880 keeps the derived pending-window cap >= 8
+    # (floor 20480 + 8*300); 0.5x ctx re-windows the digest.
+    rej_env["SEMANTIK_HEADING_JUDGE_MAX_TOKENS"] = str(
+        max(22880, int(cur_ceiling * 0.75))
+    )
+    rej_env["SEMANTIK_HEADING_JUDGE_CTX_BUDGET"] = str(
+        max(8000, int(cur_ctx * 0.5))
+    )
+
+    rejudged = 0
+    warnings_out: List[str] = []
+    for stem in sorted(flagged):
+        entry = by_stem.get(stem)
+        if entry is None:
+            continue
+        layout, corpus_dir = entry
+        cmd = [
+            judge_python,
+            "-m",
+            "semantik_structure.glmocr.heading_judge_standalone",
+            str(layout),
+            "--apply",
+            "--out",
+            str(out_dir),
+        ]
+        try:
+            prior_html_path = semantik_output_dir() / f"{stem}_accessible.html"
+            if prior_html_path.is_file():
+                cmd += ["--source-html", str(prior_html_path)]
+        except Exception:  # noqa: BLE001 — path resolution must not fail phase
+            pass
+        attempt_cmds: List[List[str]] = [cmd]
+        if "--source-html" in cmd:
+            legacy_cmd = list(cmd)
+            flag_at = legacy_cmd.index("--source-html")
+            del legacy_cmd[flag_at:flag_at + 2]
+            attempt_cmds.append(legacy_cmd)
+
+        proc = None
+        failed = False
+        for attempt_idx, attempt_cmd in enumerate(attempt_cmds):
+            try:
+                proc = await _asyncio.to_thread(
+                    _functools.partial(
+                        subprocess.run,
+                        attempt_cmd,
+                        cwd=str(judge_cwd),
+                        capture_output=True,
+                        text=True,
+                        timeout=timeout,
+                        env=rej_env,
+                    )
+                )
+            except (
+                subprocess.TimeoutExpired,
+                OSError,
+                subprocess.SubprocessError,
+            ) as exc:
+                failed = True
+                warnings_out.append(
+                    f"{stem}: targeted re-judge subprocess failed ({exc}); "
+                    f"prior judged output kept (fail-open)."
+                )
+                logger.warning("run_heading_judge: %s", warnings_out[-1])
+                break
+            if (
+                attempt_idx == 0
+                and len(attempt_cmds) > 1
+                and proc.returncode == 2
+                and "--source-html" in (proc.stderr or "")
+            ):
+                continue
+            break
+        if failed or proc is None:
+            continue
+        if proc.returncode != 0:
+            warnings_out.append(
+                f"{stem}: targeted re-judge exited {proc.returncode}; prior "
+                f"judged output kept (fail-open)."
+            )
+            logger.warning("run_heading_judge: %s", warnings_out[-1])
+            continue
+        copy_warnings, _copy_info = _heading_judge_copy_back(
+            stem, out_dir, corpus_dir
+        )
+        warnings_out.extend(copy_warnings)
+        rejudged += 1
+    return {"rejudged": rejudged, "warnings": warnings_out}
 
 
 def _heading_judge_enabled() -> bool:
-    """Parse-with-fallback SEMANTIK_HEADING_JUDGE (truthy set {1,true,yes,on},
-    case-insensitive; unset / garbage / falsey -> off)."""
+    """Parse-with-fallback SEMANTIK_HEADING_JUDGE — default ON (deviation).
+
+    Owner directive: the Super heading-level judge must not be optional. Only
+    an explicit falsey token ({0,false,no,off}, case-insensitive) disables;
+    unset / blank / garbage / truthy -> ON (mirrors the ED4ALL_GPU_LIFECYCLE
+    default-ON house pattern). The born-digital no-sidecars skip and the
+    per-chapter fail-open semantics are structural and unchanged.
+    """
     raw = (os.environ.get(_HEADING_JUDGE_FLAG_ENV) or "").strip().lower()
-    return raw in _HEADING_JUDGE_TRUTHY
+    return raw not in _HEADING_JUDGE_FALSEY
 
 
 def _resolve_heading_judge_chapter_timeout() -> float:
@@ -20162,6 +21260,64 @@ def _heading_judge_corpus_dirs(pdf_paths: Any) -> List[Path]:
     return dirs
 
 
+#: File extensions that name a CORPUS INPUT (the thing SemantiK converts). The
+#: GLM-OCR lane names its sidecars ``{input stem}.glmocr_layout.json``, so the
+#: stems of this run's own corpus inputs are exactly the sidecars it owns.
+_HEADING_JUDGE_CORPUS_SUFFIXES = frozenset({
+    ".pdf", ".htm", ".html", ".xhtml", ".md", ".markdown", ".txt", ".epub",
+})
+
+
+def _heading_judge_corpus_stems(pdf_paths: Any) -> Set[str]:
+    """Stems of THIS run's own corpus inputs — the sidecar ALLOWLIST.
+
+    Cross-book contamination guard (2026-07-22 shared-corpus-dir incident): the
+    campaign points every run at ONE book inside a SHARED corpus directory
+    (``--corpus <dir>/<book>.pdf``), so ``_heading_judge_corpus_dirs`` resolves
+    to that shared directory and a bare ``*.glmocr_layout.json`` glob picks up
+    EVERY other book's leftover sidecars. In the incident a run judged a
+    FOREIGN book (105 pendings of a different title), burned the seat on it,
+    and copied judged HTML + corrected escalations back over that other book's
+    conversion output (its ``.glmocr_escalations.jsonl.bak`` is the fingerprint).
+
+    A FILE token contributes its own stem; a DIRECTORY token contributes the
+    stems of the corpus-input files it holds (non-recursive — the
+    ``--corpus <dir>/`` shape). An EMPTY result means the stems could not be
+    resolved (e.g. only ``SEMANTIK_GLMOCR_OUTPUT_DIR`` is set), and the caller
+    then keeps the legacy unscoped behavior with a LOUD warning rather than
+    silently judging nothing.
+    """
+    if isinstance(pdf_paths, (list, tuple)):
+        tokens = [str(t).strip() for t in pdf_paths if str(t).strip()]
+    elif pdf_paths:
+        tokens = [t.strip() for t in str(pdf_paths).split(",") if t.strip()]
+    else:
+        tokens = []
+
+    stems: Set[str] = set()
+    for tok in tokens:
+        p = Path(tok)
+        if p.is_dir():
+            try:
+                children = sorted(p.iterdir())
+            except OSError:
+                continue
+            for child in children:
+                if (
+                    child.is_file()
+                    and child.suffix.lower() in _HEADING_JUDGE_CORPUS_SUFFIXES
+                ):
+                    stems.add(child.stem)
+        else:
+            # A file token (existing or not — resume paths may name a moved
+            # input): its stem is authoritative for THIS run.
+            if p.suffix.lower() in _HEADING_JUDGE_CORPUS_SUFFIXES:
+                stems.add(p.stem)
+            elif p.name:
+                stems.add(p.stem or p.name)
+    return stems
+
+
 def _heading_judge_residual_pending(escalations_path: Path) -> int:
     """Count remaining ``heading_level_pending`` rows in a corrected
     escalations sidecar (best-effort; unreadable -> 0)."""
@@ -20186,31 +21342,167 @@ def _heading_judge_residual_pending(escalations_path: Path) -> int:
     return count
 
 
+def _heading_judge_change_counts(
+    report: Dict[str, Any],
+) -> Tuple[int, int, Dict[str, int]]:
+    """``(changed, agreed, transitions)`` for one chapter's judge report.
+
+    ``applied`` counts verdicts RECORDED; only the subset whose level actually
+    MOVED can alter a rendered ``<hN>``. The 2026-07-22 misdiagnosis read an
+    ``applied=58`` summary as "58 headings re-levelled" when 30 of those
+    verdicts merely re-confirmed the level already on the region.
+
+    Prefers the report's own ``changed``/``agreed``/``transitions`` keys; a
+    LEGACY report (written before those keys existed) is reconstructed from its
+    per-heading ``judgments`` map (``{"<rid>": {"from": x, "to": y}}``) rather
+    than silently assumed to be all-changed.
+    """
+    applied = int(report.get("applied") or 0)
+    if "changed" in report:
+        changed = int(report.get("changed") or 0)
+        agreed = int(report.get("agreed", applied - changed) or 0)
+        raw = report.get("transitions") or {}
+        transitions = {
+            str(k): int(v) for k, v in raw.items()
+            if isinstance(v, (int, float))
+        } if isinstance(raw, dict) else {}
+        return changed, agreed, transitions
+
+    judgments = report.get("judgments")
+    if not isinstance(judgments, dict) or not judgments:
+        # Nothing to reconstruct from — report the honest unknown as 0/0 and
+        # let the caller's "comparison unavailable" wording carry it.
+        return 0, applied, {}
+    changed = 0
+    transitions: Dict[str, int] = {}
+    for row in judgments.values():
+        if not isinstance(row, dict):
+            continue
+        try:
+            frm = int(row.get("from"))
+            to = int(row.get("to"))
+        except (TypeError, ValueError):
+            continue
+        if frm != to:
+            changed += 1
+            key = f"{frm}->{to}"
+            transitions[key] = transitions.get(key, 0) + 1
+    return changed, max(0, applied - changed), transitions
+
+
+def _heading_judge_format_transitions(
+    transitions: Dict[str, int], *, limit: int = 6
+) -> str:
+    """``{"3->2": 28}`` -> ``"3->2 x28"`` (busiest first, bounded). Empty -> ``""``."""
+    if not transitions:
+        return ""
+    rows = sorted(transitions.items(), key=lambda kv: (-kv[1], kv[0]))
+    out = ", ".join(f"{k} x{v}" for k, v in rows[:limit])
+    if len(rows) > limit:
+        out += f", +{len(rows) - limit} more"
+    return out
+
+
 def _heading_judge_copy_back(
     stem: str, judged_dir: Path, corpus_dir: Path
-) -> List[str]:
+) -> Tuple[List[str], Dict[str, Any]]:
     """COPY-BACK contract (validated live): judged HTML over the conversion
     output (``.prejudge.bak`` kept), corrected escalations over the corpus
     sidecar (``.bak`` kept). NEVER touches ``{stem}.glmocr_layout.json``.
 
-    Returns a warnings list (missing judged artifact / copy failure);
-    warnings never fail the phase (fail-open).
+    Returns ``(warnings, info)``. Warnings (missing judged artifact / copy
+    failure) never fail the phase (fail-open). ``info`` carries
+    ``render_changed`` — ``True``/``False`` when the judged HTML could be
+    compared byte-for-byte against the conversion output it replaces, ``None``
+    when no comparison was possible (no prior file / unreadable / no judged
+    HTML). That comparison is the ONLY honest signal for "did this phase
+    actually change anything on disk", and it is what distinguishes a real
+    first-pass re-levelling from an IDEMPOTENT RE-JUDGE of a conversion whose
+    in-lane judge had already applied the same levels.
     """
     from lib.paths import semantik_output_dir  # noqa: PLC0415
 
     warnings_out: List[str] = []
+    info: Dict[str, Any] = {"render_changed": None}
 
     html_src = judged_dir / f"{stem}_accessible.html"
     if html_src.is_file():
         try:
             html_dest = semantik_output_dir() / f"{stem}_accessible.html"
             html_dest.parent.mkdir(parents=True, exist_ok=True)
+            merged_text: Optional[str] = None
+            prior_text: Optional[str] = None
             if html_dest.exists():
+                # NAMING HONESTY (2026-07-22): ``.prejudge.bak`` means "before
+                # THIS PHASE's copy-back", NOT "before any judging". The judge
+                # runs TWICE under one flag — once IN-LANE during
+                # ``semantik_conversion`` (SemantiK .../glmocr/lane.py step 3b,
+                # which is what produced this very file) and again here as the
+                # standalone ``heading_judge`` phase. So on a normal build this
+                # backup is ALREADY a judged render, and a judged HTML that is
+                # byte-identical to it is the CORRECT result of an idempotent
+                # re-judge — never evidence of a dropped verdict. The file name
+                # is load-bearing for other tooling and today's artifacts, so it
+                # is documented rather than renamed.
                 shutil.copy2(
                     html_dest,
                     html_dest.parent / f"{html_dest.name}.prejudge.bak",
                 )
-            shutil.copy2(html_src, html_dest)
+                try:
+                    prior_text = html_dest.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    prior_text = None
+                # Figure-enrichment preservation (belt-and-suspenders — the
+                # standalone judge already merges when handed --source-html):
+                # the judge re-renders from the layout sidecar, which never
+                # carried the VLM alt-text enrichment, so a VLM-captioned
+                # figure degrades to the sr-only "Figure." placeholder.
+                # Restore degraded figure captions/alt from the enriched
+                # pre-judge HTML before it is overwritten (ADD-only; the
+                # judged heading levels are untouched by construction).
+                try:
+                    from lib.semantik.figure_enrich_merge import (  # noqa: PLC0415
+                        merge_figure_enrichment,
+                    )
+
+                    judged_text = html_src.read_text(encoding="utf-8")
+                    candidate, restored = merge_figure_enrichment(
+                        prior_text if prior_text is not None
+                        else html_dest.read_text(encoding="utf-8"),
+                        judged_text,
+                    )
+                    if restored > 0:
+                        merged_text = candidate
+                        logger.info(
+                            "heading_judge copy-back: restored %d degraded "
+                            "figure caption(s)/alt on %s from the pre-judge "
+                            "enriched HTML",
+                            restored,
+                            stem,
+                        )
+                except Exception as exc:  # noqa: BLE001 — merge is best-effort
+                    warnings_out.append(
+                        f"{stem}: figure-enrichment merge failed ({exc}); "
+                        f"judged HTML copied unmerged"
+                    )
+            if merged_text is not None:
+                html_dest.write_text(merged_text, encoding="utf-8")
+            else:
+                shutil.copy2(html_src, html_dest)
+            # Did this phase actually change the shipped render? Compare the
+            # bytes it just wrote against the bytes it replaced. This is a
+            # MEASUREMENT, not an inference: identical bytes mean the judged
+            # levels were already on disk (the in-lane judge ran during
+            # conversion), so the phase re-judged idempotently.
+            if prior_text is not None:
+                try:
+                    final_text = (
+                        merged_text if merged_text is not None
+                        else html_dest.read_text(encoding="utf-8")
+                    )
+                    info["render_changed"] = final_text != prior_text
+                except (OSError, UnicodeDecodeError):
+                    info["render_changed"] = None
         except OSError as exc:
             warnings_out.append(
                 f"{stem}: judged-HTML copy-back failed ({exc}); "
@@ -20241,7 +21533,7 @@ def _heading_judge_copy_back(
             f"{stem}: corrected escalations missing at {esc_src}; "
             f"pre-judge escalations kept"
         )
-    return warnings_out
+    return warnings_out, info
 
 
 def _emit_heading_judge_capture(
@@ -20260,6 +21552,14 @@ def _emit_heading_judge_capture(
         windows = int(report.get("windows") or 0)
         n_pending = int(report.get("n_pending") or 0)
         model = str(report.get("model") or "unknown")
+        # Fix-2 accounting distinction (kept == kept_judged + unjudged). A
+        # legacy report without the keys treats every kept as judged-kept.
+        unjudged = int(report.get("unjudged") or 0)
+        kept_judged = int(report.get("kept_judged", kept - unjudged) or 0)
+        # VERDICT RECORDED vs LEVEL CHANGED (2026-07-22): a legacy report
+        # without the keys is reconstructed from its own per-heading
+        # ``judgments`` map rather than assumed to be all-changed.
+        changed, agreed, transitions = _heading_judge_change_counts(report)
 
         capture = DecisionCapture(
             course_code=course_code or stem or "unknown",
@@ -20271,16 +21571,21 @@ def _emit_heading_judge_capture(
         rationale = (
             f"Heading-level judge ({model}) judged {n_pending} pending "
             f"heading(s) on {stem} across {windows} skeleton window(s): "
-            f"{applied} level correction(s) applied, {kept} kept at their "
-            f"current level, {clamped} clamped by the parent+1 contiguity "
-            f"contract, {dropped} fixed-anchor target(s) dropped. "
-            f"Deterministic clamp re-stamped PENDING headings only "
-            f"(levels, never text)."
+            f"{applied} verdict(s) applied, of which {changed} CHANGED a "
+            f"level ({_heading_judge_format_transitions(transitions) or 'none'}) "
+            f"and {agreed} AGREED with the pre-existing level (recorded, "
+            f"render-invisible); {kept} kept at their "
+            f"current level ({kept_judged} judged-kept, {unjudged} "
+            f"UNJUDGED — no verdict ever covered them), {clamped} clamped "
+            f"by the parent+1 contiguity contract, {dropped} fixed-anchor "
+            f"target(s) dropped. Deterministic clamp re-stamped PENDING "
+            f"headings only (levels, never text)."
         )
         capture.log_decision(
             decision_type="structure_review",
             decision=(
-                f"heading_judge applied={applied} kept={kept} "
+                f"heading_judge applied={applied} verdicts "
+                f"(changed={changed}, agreed={agreed}) kept={kept} "
                 f"clamped={clamped} dropped={dropped} windows={windows}"
             ),
             rationale=rationale,
@@ -20298,6 +21603,11 @@ def _emit_heading_judge_capture(
             # downstream analysis separates heading-judge rows from the
             # Stage-5d reviewer's structure_review rows on a FIELD.
             heading_level_judge=True,
+            # ADDITIVE structured split so a query can filter on "actually
+            # re-levelled" without re-parsing the rationale prose.
+            hj_applied=applied,
+            hj_changed=changed,
+            hj_agreed=agreed,
         )
     except Exception as exc:  # noqa: BLE001 — best-effort; never break phase
         logger.warning(
@@ -20318,9 +21628,23 @@ async def _run_heading_judge(**kwargs) -> str:
 
     Output counts: ``chapters_judged`` (subprocess success, >=1 pending
     heading), ``chapters_skipped`` (subprocess success, zero pendings),
-    ``chapters_failed`` (nonzero exit / timeout — fail-open), plus
-    ``total_applied`` / ``total_kept`` summed from the per-chapter reports
-    and ``residual_pending`` summed from the corrected escalations.
+    ``chapters_failed`` (nonzero exit / timeout — fail-open),
+    ``chapters_unjudged`` (subprocess success but 100% of that chapter's
+    pendings came back UNJUDGED — a REAL failure, logged at ERROR),
+    ``chapters_foreign_skipped`` / ``foreign_stems`` (leftover sidecars of
+    OTHER books in a shared corpus dir, excluded from judging AND copy-back),
+    plus ``total_applied`` / ``total_kept`` summed from the per-chapter
+    reports and ``residual_pending`` summed from the corrected escalations.
+
+    Verdict-vs-change accounting (2026-07-22): ``total_applied`` counts
+    verdicts RECORDED — ``total_changed`` is the subset whose level actually
+    MOVED (``total_applied == total_changed + total_agreed``), with
+    ``level_transitions`` the ``{"3->2": 28}`` histogram over the changed
+    ones. ``chapters_render_unchanged`` / ``chapters_render_compared`` report
+    the MEASURED comparison of each judged HTML against the conversion output
+    it replaced: all-unchanged means this phase re-judged an already-judged
+    conversion idempotently (the in-lane judge ran during
+    ``semantik_conversion``) and wrote nothing new — not a dropped verdict.
     """
     import asyncio as _asyncio
     import functools as _functools
@@ -20328,8 +21652,8 @@ async def _run_heading_judge(**kwargs) -> str:
 
     if not _heading_judge_enabled():
         logger.info(
-            "run_heading_judge: %s off — skip-with-pass (byte-identical "
-            "no-op).",
+            "run_heading_judge: %s explicitly off (opt-out token) — "
+            "skip-with-pass (byte-identical no-op).",
             _HEADING_JUDGE_FLAG_ENV,
         )
         return json.dumps({
@@ -20339,8 +21663,17 @@ async def _run_heading_judge(**kwargs) -> str:
             "chapters_judged": 0,
             "chapters_skipped": 0,
             "chapters_failed": 0,
+            "chapters_unjudged": 0,
+            "chapters_foreign_skipped": 0,
             "total_applied": 0,
+            "total_changed": 0,
+            "total_agreed": 0,
+            "level_transitions": {},
+            "chapters_render_compared": 0,
+            "chapters_render_unchanged": 0,
             "total_kept": 0,
+            "total_kept_judged": 0,
+            "total_unjudged": 0,
             "residual_pending": 0,
         })
 
@@ -20350,13 +21683,45 @@ async def _run_heading_judge(**kwargs) -> str:
     )
     corpus_dirs = _heading_judge_corpus_dirs(pdf_paths)
 
+    # SCOPE the sidecar set to THIS run's own conversion outputs. The corpus
+    # dir is shared across a campaign, so an unscoped glob judges (and copies
+    # back over!) other books' leftover sidecars — the 2026-07-22 cross-book
+    # sweep. An unresolvable stem set keeps the legacy unscoped behavior, but
+    # LOUDLY, so the degradation is never silent.
+    own_stems = _heading_judge_corpus_stems(pdf_paths)
     sidecars: List[Tuple[Path, Path]] = []  # (layout_path, corpus_dir)
+    foreign_stems: List[str] = []
     for d in corpus_dirs:
         try:
-            for layout in sorted(d.glob("*.glmocr_layout.json")):
-                sidecars.append((layout, d))
+            layouts = sorted(d.glob("*.glmocr_layout.json"))
         except OSError:
             continue
+        for layout in layouts:
+            stem = layout.name[: -len(".glmocr_layout.json")]
+            if own_stems and stem not in own_stems:
+                foreign_stems.append(stem)
+                continue
+            sidecars.append((layout, d))
+    if foreign_stems:
+        logger.warning(
+            "run_heading_judge: skipped %d FOREIGN layout sidecar(s) under %s "
+            "that are not this run's corpus (%s) — a leftover sidecar from "
+            "another book's run must never be judged, copied back, or counted: "
+            "%s",
+            len(foreign_stems),
+            [str(d) for d in corpus_dirs],
+            sorted(own_stems),
+            foreign_stems,
+        )
+    if not own_stems:
+        logger.warning(
+            "run_heading_judge: could not resolve this run's corpus stems from "
+            "pdf_paths=%r — judging EVERY *.glmocr_layout.json under %s "
+            "(legacy unscoped behavior; a shared corpus dir will cross-judge "
+            "other books).",
+            pdf_paths,
+            [str(d) for d in corpus_dirs],
+        )
     if not sidecars:
         logger.info(
             "run_heading_judge: no *.glmocr_layout.json sidecars under %s — "
@@ -20370,14 +21735,27 @@ async def _run_heading_judge(**kwargs) -> str:
             "chapters_judged": 0,
             "chapters_skipped": 0,
             "chapters_failed": 0,
+            "chapters_unjudged": 0,
+            "chapters_foreign_skipped": len(foreign_stems),
             "total_applied": 0,
+            "total_changed": 0,
+            "total_agreed": 0,
+            "level_transitions": {},
+            "chapters_render_compared": 0,
+            "chapters_render_unchanged": 0,
             "total_kept": 0,
+            "total_kept_judged": 0,
+            "total_unjudged": 0,
             "residual_pending": 0,
         })
 
     # Subprocess seat: SEMANTIK_PYTHON / SEMANTIK_RUNTIME_DIR when set (the
     # cross-venv bridge contract), else this interpreter + <repo>/SemantiK.
-    from lib.paths import SEMANTIK_PATH, get_state_runs_dir  # noqa: PLC0415
+    from lib.paths import (  # noqa: PLC0415
+        SEMANTIK_PATH,
+        get_state_runs_dir,
+        semantik_output_dir,
+    )
 
     judge_python = (
         (os.environ.get(_SEMANTIK_PYTHON_ENV) or "").strip() or sys.executable
@@ -20413,8 +21791,24 @@ async def _run_heading_judge(**kwargs) -> str:
     chapters_judged = 0
     chapters_skipped = 0
     chapters_failed = 0
+    #: chapters whose pendings ended 100% UNJUDGED — a real failure the old
+    #: "N judged / 0 failed" summary reported as a success (2026-07-22).
+    chapters_unjudged = 0
     total_applied = 0
+    #: verdicts that actually MOVED a level vs verdicts that re-confirmed the
+    #: level already on the region — ``total_applied == changed + agreed``.
+    #: Split so an operator can never read "applied=N" as "N headings moved".
+    total_changed = 0
+    total_agreed = 0
+    total_transitions: Dict[str, int] = {}
+    #: chapters whose judged HTML could be compared byte-for-byte against the
+    #: conversion output it replaced, and how many of those came out IDENTICAL
+    #: (the measured idempotent-re-judge signal).
+    chapters_render_compared = 0
+    chapters_render_unchanged = 0
     total_kept = 0
+    total_kept_judged = 0
+    total_unjudged = 0
     residual_pending = 0
     warnings_list: List[str] = []
 
@@ -20439,35 +21833,82 @@ async def _run_heading_judge(**kwargs) -> str:
             "--out",
             str(out_dir),
         ]
+        # Figure-enrichment preservation: the layout sidecar carries the RAW
+        # GLM pages only — the VLM alt-text enrichment lives solely in the
+        # prior rendered conversion output — so hand the standalone judge the
+        # prior HTML to restore degraded figure captions from (ADD-only; the
+        # copy-back merge below is the belt-and-suspenders for older judge
+        # subprocesses that ignore the flag).
         try:
-            proc = await _asyncio.to_thread(
-                _functools.partial(
-                    subprocess.run,
-                    cmd,
-                    cwd=str(judge_cwd),
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout,
-                    env=judge_env,
+            prior_html_path = (
+                semantik_output_dir() / f"{stem}_accessible.html"
+            )
+            if prior_html_path.is_file():
+                cmd += ["--source-html", str(prior_html_path)]
+        except Exception:  # noqa: BLE001 — path resolution must not fail phase
+            pass
+        # Legacy-runtime compat: a SEMANTIK_PYTHON/SEMANTIK_RUNTIME_DIR
+        # pointing at an older SemantiK checkout whose standalone judge does
+        # not know --source-html would argparse-exit 2 — retry ONCE without
+        # the flag (the copy-back merge below still restores the figure
+        # enrichment Ed4All-side).
+        attempt_cmds: List[List[str]] = [cmd]
+        if "--source-html" in cmd:
+            legacy_cmd = list(cmd)
+            flag_at = legacy_cmd.index("--source-html")
+            del legacy_cmd[flag_at:flag_at + 2]
+            attempt_cmds.append(legacy_cmd)
+
+        proc = None
+        subprocess_failed = False
+        for attempt_idx, attempt_cmd in enumerate(attempt_cmds):
+            try:
+                proc = await _asyncio.to_thread(
+                    _functools.partial(
+                        subprocess.run,
+                        attempt_cmd,
+                        cwd=str(judge_cwd),
+                        capture_output=True,
+                        text=True,
+                        timeout=timeout,
+                        env=judge_env,
+                    )
                 )
-            )
-        except subprocess.TimeoutExpired:
+            except subprocess.TimeoutExpired:
+                subprocess_failed = True
+                warnings_list.append(
+                    f"{stem}: heading judge timed out after {timeout:.0f}s; "
+                    f"pre-judge HTML kept (fail-open). Raise "
+                    f"{_HEADING_JUDGE_CHAPTER_TIMEOUT_ENV} if the chapter "
+                    f"legitimately needs longer."
+                )
+                logger.warning("run_heading_judge: %s", warnings_list[-1])
+                break
+            except (OSError, subprocess.SubprocessError) as exc:
+                subprocess_failed = True
+                warnings_list.append(
+                    f"{stem}: heading judge subprocess could not run "
+                    f"({judge_python}): {exc}; pre-judge HTML kept "
+                    f"(fail-open)."
+                )
+                logger.warning("run_heading_judge: %s", warnings_list[-1])
+                break
+            if (
+                attempt_idx == 0
+                and len(attempt_cmds) > 1
+                and proc.returncode == 2
+                and "--source-html" in (proc.stderr or "")
+            ):
+                logger.warning(
+                    "run_heading_judge: %s — judge runtime does not know "
+                    "--source-html (legacy checkout?); retrying without it "
+                    "(the copy-back merge still restores figure enrichment).",
+                    stem,
+                )
+                continue
+            break
+        if subprocess_failed:
             chapters_failed += 1
-            warnings_list.append(
-                f"{stem}: heading judge timed out after {timeout:.0f}s; "
-                f"pre-judge HTML kept (fail-open). Raise "
-                f"{_HEADING_JUDGE_CHAPTER_TIMEOUT_ENV} if the chapter "
-                f"legitimately needs longer."
-            )
-            logger.warning("run_heading_judge: %s", warnings_list[-1])
-            continue
-        except (OSError, subprocess.SubprocessError) as exc:
-            chapters_failed += 1
-            warnings_list.append(
-                f"{stem}: heading judge subprocess could not run "
-                f"({judge_python}): {exc}; pre-judge HTML kept (fail-open)."
-            )
-            logger.warning("run_heading_judge: %s", warnings_list[-1])
             continue
 
         if proc.returncode != 0:
@@ -20481,9 +21922,15 @@ async def _run_heading_judge(**kwargs) -> str:
             continue
 
         # Success: COPY BACK (never the layout sidecar), then tally + capture.
-        warnings_list.extend(
-            _heading_judge_copy_back(stem, out_dir, corpus_dir)
+        copy_warnings, copy_info = _heading_judge_copy_back(
+            stem, out_dir, corpus_dir
         )
+        warnings_list.extend(copy_warnings)
+        render_changed = copy_info.get("render_changed")
+        if render_changed is not None:
+            chapters_render_compared += 1
+            if not render_changed:
+                chapters_render_unchanged += 1
 
         report: Dict[str, Any] = {}
         report_path = out_dir / f"{stem}.heading_judgments.json"
@@ -20501,33 +21948,316 @@ async def _run_heading_judge(**kwargs) -> str:
         else:
             chapters_skipped += 1
         total_applied += int(report.get("applied") or 0)
-        total_kept += int(report.get("kept") or 0)
+        ch_changed, ch_agreed, ch_transitions = _heading_judge_change_counts(
+            report
+        )
+        total_changed += ch_changed
+        total_agreed += ch_agreed
+        for _k, _v in ch_transitions.items():
+            total_transitions[_k] = total_transitions.get(_k, 0) + int(_v)
+        chapter_kept = int(report.get("kept") or 0)
+        total_kept += chapter_kept
+        # Fix-2 accounting distinction: judged-kept vs UNJUDGED (the
+        # truncation hole). A legacy report without the keys counts every
+        # kept as judged-kept (unjudged unknowable there → 0).
+        chapter_unjudged = int(report.get("unjudged") or 0)
+        total_unjudged += chapter_unjudged
+        total_kept_judged += int(
+            report.get("kept_judged", chapter_kept - chapter_unjudged) or 0
+        )
+        if chapter_unjudged > 0:
+            report_meta = report.get("meta") or {}
+            unjudged_ids = report_meta.get("unjudged_ids")
+            # The MECHANISM is mandatory in the operator warning: before the
+            # 2026-07-22 incident every non-verdict read as an anonymous
+            # "truncation hole", so a seat that was stopped mid-flight looked
+            # exactly like an over-deliberating model.
+            mechanism = (
+                report.get("unjudged_reason")
+                or report_meta.get("unjudged_reason")
+                or "UNKNOWN (the judge reported no failure mechanism)"
+            )
+            modes = (
+                report.get("failure_modes")
+                or report_meta.get("failure_modes")
+                or []
+            )
+            chapter_pending = int(report.get("n_pending") or 0)
+            total_hole = (
+                chapter_pending > 0 and chapter_unjudged >= chapter_pending
+            )
+            warnings_list.append(
+                f"{stem}: {chapter_unjudged} of {chapter_pending} pending "
+                f"heading(s) UNJUDGED"
+                + (" — 100% of this chapter's pendings; the judge produced NO "
+                   "usable verdict, every pre-judge level was KEPT "
+                   "(fail-open). This is a REAL FAILURE, not a judged-keep."
+                   if total_hole else
+                   " (no verdict ever covered them; NOT judged-kept)")
+                + f" MECHANISM: {mechanism}"
+                + (f" [modes: {','.join(str(m) for m in modes)}]"
+                   if modes else "")
+                + (f"; region ids: {unjudged_ids}" if unjudged_ids else "")
+            )
+            if total_hole:
+                chapters_unjudged += 1
+                logger.error("run_heading_judge: %s", warnings_list[-1])
+            else:
+                logger.warning("run_heading_judge: %s", warnings_list[-1])
         residual_pending += _heading_judge_residual_pending(
             out_dir / f"{stem}.glmocr_escalations.jsonl"
         )
         _emit_heading_judge_capture(course_name, stem, report)
 
-    logger.info(
-        "run_heading_judge: %d judged / %d zero-pending / %d failed "
-        "(fail-open); applied=%d kept=%d residual_pending=%d",
+    # ── Deterministic post-judge AUDIT (SEMANTIK_HEADING_JUDGE_AUDIT, default
+    # ON) + opt-in targeted RE-JUDGE (SEMANTIK_HEADING_JUDGE_REJUDGE, OFF). ──
+    audit_report_path: Optional[str] = None
+    chapters_flagged = 0
+    chapters_collapsed = 0
+    inconsistent_signature_count = 0
+    audit_flagged_stems: List[str] = []
+    if _heading_judge_audit_enabled():
+        audit_report = await _asyncio.to_thread(
+            _heading_judge_run_audit, judge_python, judge_cwd, judge_env, out_dir
+        )
+        if audit_report is not None:
+            audit_report_path = audit_report.get("report_path")
+            book = audit_report.get("book") or {}
+            audit_flagged_stems = [
+                str(s) for s in (audit_report.get("flagged_chapters") or [])
+            ]
+            chapters_flagged = len(audit_flagged_stems)
+            chapters_collapsed = len(book.get("collapsed_chapters") or [])
+            inconsistent_signature_count = len(
+                book.get("inconsistent_signatures") or []
+            )
+            logger.info(
+                "run_heading_judge: audit flagged %d chapter(s) "
+                "(%d collapsed), %d inconsistent cross-chapter signature(s) "
+                "[ADVISORY]; report: %s",
+                chapters_flagged,
+                chapters_collapsed,
+                inconsistent_signature_count,
+                audit_report_path,
+            )
+
+            # ── Targeted RE-JUDGE (opt-in) of ONLY the flagged chapters. ──
+            if _heading_judge_rejudge_enabled() and audit_flagged_stems:
+                before_flagged = list(audit_flagged_stems)
+                max_attempts = _heading_judge_rejudge_max_attempts()
+                current_flagged = list(audit_flagged_stems)
+                total_rejudged = 0
+                attempt = 0
+                while current_flagged and attempt < max_attempts:
+                    attempt += 1
+                    rej = await _heading_judge_rejudge_flagged(
+                        current_flagged,
+                        sidecars,
+                        judge_python=judge_python,
+                        judge_cwd=judge_cwd,
+                        judge_env=judge_env,
+                        out_dir=out_dir,
+                        timeout=timeout,
+                    )
+                    warnings_list.extend(rej.get("warnings") or [])
+                    total_rejudged += int(rej.get("rejudged") or 0)
+                    # Re-run the audit once per round (a still-flagged chapter
+                    # STAYS flagged — reported, fail-open, never blocks).
+                    after_report = await _asyncio.to_thread(
+                        _heading_judge_run_audit,
+                        judge_python,
+                        judge_cwd,
+                        judge_env,
+                        out_dir,
+                    )
+                    if after_report is None:
+                        break
+                    book = after_report.get("book") or {}
+                    audit_report_path = after_report.get("report_path")
+                    audit_flagged_stems = [
+                        str(s)
+                        for s in (after_report.get("flagged_chapters") or [])
+                    ]
+                    chapters_flagged = len(audit_flagged_stems)
+                    chapters_collapsed = len(book.get("collapsed_chapters") or [])
+                    inconsistent_signature_count = len(
+                        book.get("inconsistent_signatures") or []
+                    )
+                    current_flagged = list(audit_flagged_stems)
+                logger.info(
+                    "run_heading_judge: targeted re-judge re-ran %d chapter(s) "
+                    "over %d round(s); flagged before=%d after=%d (delta=%d) — "
+                    "still-flagged chapters stay reported (fail-open, never "
+                    "blocks the build)",
+                    total_rejudged,
+                    attempt,
+                    len(before_flagged),
+                    len(audit_flagged_stems),
+                    len(before_flagged) - len(audit_flagged_stems),
+                )
+
+    # ── Unambiguous summary (2026-07-22 misdiagnosis guard). ─────────────
+    # Two things the old one-liner conflated, both now spelled out:
+    #   (1) applied=N read as "N headings re-levelled"; it counts VERDICTS
+    #       RECORDED, of which only ``changed`` can move a rendered <hN>.
+    #   (2) nothing said whether this was a FIRST judging pass or an
+    #       IDEMPOTENT RE-JUDGE of a conversion the in-lane judge had already
+    #       levelled — so byte-identical output looked like a dropped verdict.
+    # The idempotency clause is MEASURED (judged HTML vs the bytes it
+    # replaced), never inferred; when no comparison was possible we say so.
+    transitions_str = _heading_judge_format_transitions(total_transitions)
+    transitions_suffix = f" [{transitions_str}]" if transitions_str else ""
+
+    if chapters_render_compared and (
+        chapters_render_unchanged == chapters_render_compared
+    ):
+        render_clause = (
+            "; render byte-identical to the pre-judge output on all %d "
+            "chapter(s) — IDEMPOTENT RE-JUDGE (the in-lane judge had already "
+            "applied these levels during semantik_conversion); this phase "
+            "changed nothing on disk" % chapters_render_compared
+        )
+    elif chapters_render_unchanged:
+        render_clause = (
+            "; render byte-identical to the pre-judge output on %d of %d "
+            "chapter(s) (idempotent re-judge for those)"
+            % (chapters_render_unchanged, chapters_render_compared)
+        )
+    elif chapters_render_compared:
+        render_clause = (
+            "; render CHANGED on all %d chapter(s)" % chapters_render_compared
+        )
+    elif total_applied and not total_changed:
+        render_clause = (
+            "; 0 level changes (layout already judged or judge agreed) — "
+            "render-vs-pre-judge comparison unavailable"
+        )
+    else:
+        render_clause = "; render-vs-pre-judge comparison unavailable"
+
+    summary_args = (
         chapters_judged,
         chapters_skipped,
         chapters_failed,
+        chapters_unjudged,
+        len(foreign_stems),
         total_applied,
+        total_changed,
+        total_agreed,
+        transitions_suffix,
         total_kept,
+        total_kept_judged,
+        total_unjudged,
         residual_pending,
+        render_clause,
     )
+    summary_fmt = (
+        "run_heading_judge: %d judged / %d zero-pending / %d failed "
+        "(fail-open) / %d FULLY-UNJUDGED / %d foreign-skipped; applied=%d "
+        "verdicts (%d changed level, %d agreed with the pre-existing level)%s; "
+        "kept=%d (judged-kept=%d, UNJUDGED=%d) residual_pending=%d%s"
+    )
+    # A run where every judged chapter came back 100% unjudged is NOT a
+    # success summary — surface it at ERROR so the campaign log cannot read
+    # "N judged / 0 failed" over a dead seat (2026-07-22 incident).
+    if chapters_unjudged:
+        logger.error(summary_fmt, *summary_args)
+    else:
+        logger.info(summary_fmt, *summary_args)
     return json.dumps({
         "success": True,
         "chapters_judged": chapters_judged,
         "chapters_skipped": chapters_skipped,
         "chapters_failed": chapters_failed,
+        "chapters_unjudged": chapters_unjudged,
+        "chapters_foreign_skipped": len(foreign_stems),
+        "foreign_stems": sorted(set(foreign_stems)),
         "total_applied": total_applied,
+        "total_changed": total_changed,
+        "total_agreed": total_agreed,
+        "level_transitions": dict(total_transitions),
+        "chapters_render_compared": chapters_render_compared,
+        "chapters_render_unchanged": chapters_render_unchanged,
         "total_kept": total_kept,
+        "total_kept_judged": total_kept_judged,
+        "total_unjudged": total_unjudged,
         "residual_pending": residual_pending,
+        # Deterministic post-judge AUDIT fold (SEMANTIK_HEADING_JUDGE_AUDIT;
+        # None/0 when the audit is opted out or produced no report).
+        "audit_report_path": audit_report_path,
+        "chapters_flagged": chapters_flagged,
+        "chapters_collapsed": chapters_collapsed,
+        "inconsistent_signature_count": inconsistent_signature_count,
         "warnings": warnings_list,
         "judged_dir": str(out_dir),
     })
+
+
+# ── Chapter-ladder reconcile (SEMANTIK_CHAPTER_LADDER_RECONCILE) — per-chunk
+# module_title resolution for a MULTI-CHAPTER single-file corpus. ────────────
+
+_ARTICLE_CHAPTER_RE = re.compile(
+    r"<article\b[^>]*role=\"doc-chapter\"[^>]*>", re.IGNORECASE
+)
+_ARTICLE_H2_RE = re.compile(r"<h2[^>]*>([^<]+)</h2>", re.IGNORECASE)
+# Dual-read: the chunker's attribute harvest admits the legacy pre-SemantiK
+# block-id spelling, so the module map must too.
+_BLOCK_ID_ATTR_RE = re.compile(
+    r"data-(?:semantik|dart)-block-id=\"([^\"]+)\"", re.IGNORECASE
+)
+
+
+def _chapter_ladder_reconcile_enabled() -> bool:
+    """SEMANTIK_CHAPTER_LADDER_RECONCILE — default ON (falsey-set opt-out).
+
+    Seam-side twin of the adapter/GLM-lane resolvers (mirrors the
+    SEMANTIK_TITLE_SANITIZE precedent of a SEMANTIK_* flag consumed at the
+    chunking sites). Only the explicit falsey tokens disable.
+    """
+    val = os.getenv("SEMANTIK_CHAPTER_LADDER_RECONCILE", "").strip().lower()
+    return val not in {"0", "false", "no", "off"}
+
+
+def _article_module_titles_by_block_id(raw_html: str) -> Optional[Dict[str, str]]:
+    """Map ``data-semantik-block-id`` → enclosing chapter-article ``<h2>`` title.
+
+    A whole-book accessible-HTML file carries MULTIPLE ``<article
+    role="doc-chapter">`` chapters, but the chunking seam stamps every chunk's
+    ``source.module_title`` from the file-level document title — on the
+    whole-book reference corpus all 112 chunks collapsed onto the
+    (already-defective) ``"Chapter 0"`` h1, flattening the book to one
+    module for retrieval metadata. This helper derives the per-ARTICLE module map so each chunk's
+    module_title resolves to its real chapter.
+
+    Returns ``None`` (byte-identical legacy path) unless the file carries ≥2
+    doc-chapter articles — a per-chapter corpus file has exactly one article,
+    so the historical single-chapter shape is untouched BY CONSTRUCTION.
+    Block-id keyed (each provenance-stamped section belongs to exactly one
+    article), so duplicate section-heading TEXT across chapters can never
+    misattribute a chunk.
+    """
+    if not raw_html:
+        return None
+    import html as _html
+
+    articles = list(_ARTICLE_CHAPTER_RE.finditer(raw_html))
+    if len(articles) < 2:
+        return None
+    spans: List[tuple] = []  # (start, end, title)
+    for i, m in enumerate(articles):
+        start = m.end()
+        end = articles[i + 1].start() if i + 1 < len(articles) else len(raw_html)
+        h2 = _ARTICLE_H2_RE.search(raw_html, start, end)
+        title = _html.unescape(h2.group(1)).strip() if h2 else ""
+        spans.append((m.start(), end, title))
+    mapping: Dict[str, str] = {}
+    for bid_match in _BLOCK_ID_ATTR_RE.finditer(raw_html):
+        pos = bid_match.start()
+        for start, end, title in spans:
+            if start <= pos < end and title:
+                mapping[bid_match.group(1)] = title
+                break
+    return mapping or None
 
 
 def _build_tool_registry() -> dict:
@@ -28388,6 +30118,29 @@ def _build_tool_registry() -> dict:
             local_item["key_concepts"] = local_concepts
             return local_item
 
+        # Chapter-ladder reconcile (SEMANTIK_CHAPTER_LADDER_RECONCILE, default
+        # ON): per-item block-id → chapter-article-title module maps for
+        # MULTI-chapter single-file corpora (a whole-book PDF). ``None`` per
+        # item unless the file carries ≥2 <article role="doc-chapter">
+        # chapters, so per-chapter corpora stay byte-identical. Best-effort:
+        # a map failure degrades to the legacy file-level module_title.
+        _article_module_maps: Dict[str, Optional[Dict[str, str]]] = {}
+        if _chapter_ladder_reconcile_enabled():
+            for _pi in parsed_items:
+                try:
+                    _article_module_maps[str(_pi.get("item_id") or "")] = (
+                        _article_module_titles_by_block_id(
+                            str(_pi.get("raw_html") or "")
+                        )
+                    )
+                except Exception:  # noqa: BLE001 — module map is best-effort
+                    logger.warning(
+                        "chapter-ladder module map failed for item %s; "
+                        "keeping file-level module_title",
+                        _pi.get("item_id"),
+                        exc_info=True,
+                    )
+
         def _create_chunk(
             *,
             chunk_id: str,
@@ -28449,6 +30202,28 @@ def _build_tool_registry() -> dict:
             # on a real 3-chapter scan). Strip it to the clean chapter title.
             _module_title = item.get("module_title") or ""
             _lesson_title = item.get("title") or ""
+            # Chapter-ladder reconcile (SEMANTIK_CHAPTER_LADDER_RECONCILE):
+            # on a MULTI-chapter single-file corpus (≥2 doc-chapter articles
+            # → a non-None per-item map), resolve this chunk's module_title
+            # to its ENCLOSING chapter-article <h2> via the chunk's own
+            # block-id refs — instead of the file-level document title that
+            # flattened a whole book onto one module (reference corpus: all 112
+            # chunks stamped "Chapter 0"). A chunk with no resolvable ref
+            # keeps the file-level title; per-chapter corpora never build a
+            # map (byte-identical).
+            _mod_map = _article_module_maps.get(str(item.get("item_id") or ""))
+            if _mod_map:
+                for _ref in (dart_source_refs or []):
+                    _sid = str(
+                        _ref.get("sourceId") or _ref.get("block_id") or ""
+                    )
+                    _bid = _sid.rsplit("#", 1)[-1] if "#" in _sid else _sid
+                    _art_title = _mod_map.get(_bid)
+                    if _art_title:
+                        _module_title = _art_title
+                        break
+            _module_title_base = _module_title
+            _lesson_title_base = _lesson_title
             try:
                 from lib.textbook_title_sanitize import (
                     sanitize_running_header_title as _san_title,
@@ -28458,8 +30233,8 @@ def _build_tool_registry() -> dict:
                     _module_title = _san_title(_module_title)
                     _lesson_title = _san_title(_lesson_title)
             except Exception:  # noqa: BLE001 — sanitizer is best-effort
-                _module_title = item.get("module_title") or ""
-                _lesson_title = item.get("title") or ""
+                _module_title = _module_title_base
+                _lesson_title = _lesson_title_base
             source: Dict[str, Any] = {
                 "course_id": course_code,
                 "module_id": item.get("module_id") or "",
@@ -29609,6 +31384,56 @@ def _build_tool_registry() -> dict:
                 {"kind": "quiz", "terminal_id": tid, "assessment": _q_payload},
             )
             _assessment_units_done += 1
+
+        # ---- cross-quiz exact-duplicate stem guard (pre-emit) ------------
+        # Deterministic: collapse exact-duplicate stems across the WHOLE quiz
+        # set (first occurrence wins, later duplicates dropped, emptied
+        # quizzes removed). Runs over the FINAL assembled list — fresh AND
+        # checkpoint-replayed units alike — so the result is identical on a
+        # resume. Honest count reduction beats salad duplication; any
+        # objective whose only item(s) were duplicates is REPORTED loudly.
+        built_assessments, _dedup_report = _dedup_assessment_stems(
+            built_assessments
+        )
+        if _dedup_report["duplicates_removed"]:
+            logger.warning(
+                "run_assessment_synthesis: cross-quiz stem dedup collapsed "
+                "%d exact-duplicate item(s) across %d duplicate group(s) "
+                "(%d -> %d items; %d quiz(zes) emptied and dropped). "
+                "Objectives losing all coverage to dedup: %s. The generator "
+                "could not mint enough distinct stems from the chunk "
+                "content — honest count reduction beats duplication.",
+                _dedup_report["duplicates_removed"],
+                _dedup_report["duplicate_groups"],
+                _dedup_report["total_before"],
+                _dedup_report["total_after"],
+                len(_dedup_report["dropped_assessments"]),
+                _dedup_report["objectives_losing_coverage"] or "none",
+            )
+        if capture is not None:
+            try:
+                capture.log_decision(
+                    decision_type="assessment_stem_dedup",
+                    decision=(
+                        f"collapsed {_dedup_report['duplicates_removed']} "
+                        f"duplicate stems: "
+                        f"{_dedup_report['total_before']} -> "
+                        f"{_dedup_report['total_after']} items"
+                    ),
+                    rationale=(
+                        f"deterministic cross-quiz exact-stem dedup over "
+                        f"{len(terminal_ids)} per-TO quizzes; "
+                        f"duplicate_groups="
+                        f"{_dedup_report['duplicate_groups']}; "
+                        f"dropped_quizzes="
+                        f"{_dedup_report['dropped_assessments']}; "
+                        f"objectives_losing_coverage="
+                        f"{_dedup_report['objectives_losing_coverage']}; "
+                        f"chunkset_sha={_assessment_chunkset_sha_val[:12]}"
+                    ),
+                )
+            except Exception:
+                pass
 
         # ============================================================== #
         # 2. ASSIGNMENT + DISCUSSION PROSE — optional LLM prose seat.     #

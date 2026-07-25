@@ -16,9 +16,13 @@ and no-ops elsewhere instead of blocking progress.
 from __future__ import annotations
 
 import logging
+import os
+import sys
+import time
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
-from typing import Iterator, Union
+from typing import Iterator, Optional, Union
 
 try:  # pragma: no cover - exercised on POSIX
     import fcntl as _fcntl  # type: ignore[import-not-found]
@@ -30,14 +34,60 @@ logger = logging.getLogger(__name__)
 __all__ = ["file_lock"]
 
 
+def _read_holder_stamp(lock_path: Path) -> str:
+    """Best-effort read of the holder stamp a timeout-mode acquirer wrote.
+
+    Returns a short human-readable description of the current/most-recent
+    holder, or ``"unknown holder"`` when the sentinel carries no stamp.
+    """
+    try:
+        stamp = lock_path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return "unknown holder"
+    return stamp or "unknown holder"
+
+
+def _write_holder_stamp(fh) -> None:
+    """Best-effort stamp of this process's identity into the held sentinel.
+
+    Only called while the exclusive lock is held, and only on the
+    timeout-mode path — blocking-mode callers (e.g. the LibV2 catalog) keep
+    the historical never-written sentinel. The stamp lets a later contender
+    that times out name the other holder in its warning.
+    """
+    try:
+        fh.seek(0)
+        fh.truncate()
+        fh.write(
+            f"pid={os.getpid()} cmd={os.path.basename(sys.argv[0]) if sys.argv else '?'} "
+            f"acquired={datetime.now().isoformat()}\n"
+        )
+        fh.flush()
+    except (OSError, ValueError):
+        pass
+
+
 @contextmanager
-def file_lock(lock_path: Union[str, Path]) -> Iterator[None]:
+def file_lock(
+    lock_path: Union[str, Path],
+    timeout: Optional[float] = None,
+) -> Iterator[None]:
     """Acquire an exclusive advisory lock on ``lock_path`` for the block.
 
     Creates ``lock_path`` (and parents) if absent, opens it, and holds an
-    exclusive ``LOCK_EX`` for the duration of the ``with`` block. The lock
-    file itself is a sentinel — it is never written to — so it can be safely
-    reused across calls.
+    exclusive ``LOCK_EX`` for the duration of the ``with`` block. In the
+    default (blocking) mode the lock file itself is a sentinel — it is never
+    written to — so it can be safely reused across calls.
+
+    ``timeout``: when ``None`` (default) the acquire blocks indefinitely —
+    the historical behavior. When a positive number of seconds is given the
+    acquire is a non-blocking (``LOCK_NB``) retry loop bounded by that many
+    seconds; on expiry a LOUD warning naming the other holder (when knowable
+    from the sentinel's holder stamp) is logged and the body runs UNLOCKED.
+    For a caller that pairs the lock with an atomic temp+replace write this
+    is strictly safe: a lost lock can at worst lose one update, never
+    corrupt the file. Timeout-mode acquirers stamp their pid/cmd into the
+    sentinel so contenders can name them.
 
     Graceful degradation:
 
@@ -63,16 +113,55 @@ def file_lock(lock_path: Union[str, Path]) -> Iterator[None]:
     locked = False
     try:
         if _fcntl is not None:
-            try:
-                _fcntl.flock(fh.fileno(), _fcntl.LOCK_EX)
-                locked = True
-            except OSError as exc:
-                logger.warning(
-                    "file_lock: flock unavailable on %s (%s); proceeding "
-                    "unlocked — concurrent writers may race.",
-                    lock_path,
-                    exc,
-                )
+            if timeout is None:
+                try:
+                    _fcntl.flock(fh.fileno(), _fcntl.LOCK_EX)
+                    locked = True
+                except OSError as exc:
+                    logger.warning(
+                        "file_lock: flock unavailable on %s (%s); proceeding "
+                        "unlocked — concurrent writers may race.",
+                        lock_path,
+                        exc,
+                    )
+            else:
+                deadline = time.monotonic() + max(timeout, 0.0)
+                flock_broken = False
+                while True:
+                    try:
+                        _fcntl.flock(
+                            fh.fileno(), _fcntl.LOCK_EX | _fcntl.LOCK_NB
+                        )
+                        locked = True
+                        break
+                    except (BlockingIOError, PermissionError):
+                        # Held by another process — retry until the deadline.
+                        if time.monotonic() >= deadline:
+                            break
+                        time.sleep(0.1)
+                    except OSError as exc:
+                        # flock itself unsupported on this FS.
+                        logger.warning(
+                            "file_lock: flock unavailable on %s (%s); "
+                            "proceeding unlocked — concurrent writers may "
+                            "race.",
+                            lock_path,
+                            exc,
+                        )
+                        flock_broken = True
+                        break
+                if locked:
+                    _write_holder_stamp(fh)
+                elif not flock_broken:
+                    logger.warning(
+                        "file_lock: TIMED OUT after %.1fs waiting for %s "
+                        "(held by %s); proceeding WITHOUT the lock — the "
+                        "paired atomic replace cannot corrupt the file, but "
+                        "one concurrent update may be lost.",
+                        timeout,
+                        lock_path,
+                        _read_holder_stamp(lock_path),
+                    )
         yield
     finally:
         if locked:

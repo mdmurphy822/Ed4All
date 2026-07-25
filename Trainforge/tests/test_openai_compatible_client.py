@@ -845,6 +845,117 @@ def test_resolve_reasoning_thinking_off_parse_with_fallback(monkeypatch):
     assert resolve_reasoning_thinking_off() is False
 
 
+# ---------------------------------------------------------------------------
+# apply_reasoning_thinking_off_payload — three-way reasoning mode
+# (LOW_EFFORT > THINKING_OFF > none). Directly exercises the payload-mutator
+# helper the bypass call sites (_base._dispatch_call_with_usage,
+# _synthesis_provider._chat_completion_raw) use.
+# ---------------------------------------------------------------------------
+
+
+def _reasoning_payload():
+    return {"messages": [{"role": "user", "content": "hi"}]}
+
+
+def test_apply_reasoning_neither_flag_is_byte_identical(monkeypatch):
+    """Neither env truthy → no injection (no key, messages untouched)."""
+    from Trainforge.generators._openai_compatible_client import (
+        apply_reasoning_thinking_off_payload,
+    )
+
+    monkeypatch.delenv("ED4ALL_REASONING_LOW_EFFORT", raising=False)
+    monkeypatch.delenv("ED4ALL_REASONING_THINKING_OFF", raising=False)
+    payload = _reasoning_payload()
+    apply_reasoning_thinking_off_payload(payload)
+    assert "chat_template_kwargs" not in payload
+    assert payload["messages"] == [{"role": "user", "content": "hi"}]
+
+
+def test_apply_reasoning_thinking_off_only(monkeypatch):
+    """THINKING_OFF on, LOW_EFFORT off → enable_thinking False + directive."""
+    from Trainforge.generators._openai_compatible_client import (
+        apply_reasoning_thinking_off_payload,
+    )
+
+    monkeypatch.delenv("ED4ALL_REASONING_LOW_EFFORT", raising=False)
+    monkeypatch.setenv("ED4ALL_REASONING_THINKING_OFF", "1")
+    payload = _reasoning_payload()
+    apply_reasoning_thinking_off_payload(payload)
+    assert payload["chat_template_kwargs"] == {"enable_thinking": False}
+    assert payload["messages"][0]["role"] == "system"
+    assert "detailed thinking off" in payload["messages"][0]["content"]
+
+
+def test_apply_reasoning_low_effort_only(monkeypatch):
+    """LOW_EFFORT on → enable_thinking True + low_effort True, NO system
+    directive (thinking stays enabled, just cheaper)."""
+    from Trainforge.generators._openai_compatible_client import (
+        apply_reasoning_thinking_off_payload,
+    )
+
+    monkeypatch.delenv("ED4ALL_REASONING_THINKING_OFF", raising=False)
+    monkeypatch.setenv("ED4ALL_REASONING_LOW_EFFORT", "1")
+    payload = _reasoning_payload()
+    apply_reasoning_thinking_off_payload(payload)
+    assert payload["chat_template_kwargs"] == {
+        "enable_thinking": True,
+        "low_effort": True,
+    }
+    # No injected system directive — thinking is ON.
+    assert payload["messages"] == [{"role": "user", "content": "hi"}]
+
+
+def test_apply_reasoning_low_effort_wins_over_thinking_off(monkeypatch):
+    """Both env truthy → LOW_EFFORT wins (precedence LOW_EFFORT > THINKING_OFF)."""
+    from Trainforge.generators._openai_compatible_client import (
+        apply_reasoning_thinking_off_payload,
+    )
+
+    monkeypatch.setenv("ED4ALL_REASONING_THINKING_OFF", "1")
+    monkeypatch.setenv("ED4ALL_REASONING_LOW_EFFORT", "true")
+    payload = _reasoning_payload()
+    apply_reasoning_thinking_off_payload(payload)
+    assert payload["chat_template_kwargs"] == {
+        "enable_thinking": True,
+        "low_effort": True,
+    }
+    assert payload["messages"] == [{"role": "user", "content": "hi"}]
+
+
+def test_apply_reasoning_low_effort_preserves_sibling_kwargs(monkeypatch):
+    """LOW_EFFORT merges into existing chat_template_kwargs; sibling keys kept."""
+    from Trainforge.generators._openai_compatible_client import (
+        apply_reasoning_thinking_off_payload,
+    )
+
+    monkeypatch.delenv("ED4ALL_REASONING_THINKING_OFF", raising=False)
+    monkeypatch.setenv("ED4ALL_REASONING_LOW_EFFORT", "on")
+    payload = _reasoning_payload()
+    payload["chat_template_kwargs"] = {"foo": "bar", "enable_thinking": False}
+    apply_reasoning_thinking_off_payload(payload)
+    assert payload["chat_template_kwargs"] == {
+        "foo": "bar",
+        "enable_thinking": True,
+        "low_effort": True,
+    }
+
+
+def test_resolve_reasoning_low_effort_parse_with_fallback(monkeypatch):
+    """Truthy parse: ``1/true/yes/on`` (case-insensitive) → True; else False."""
+    from Trainforge.generators._openai_compatible_client import (
+        resolve_reasoning_low_effort,
+    )
+
+    for truthy in ("1", "true", "TRUE", "Yes", "on", "  on  "):
+        monkeypatch.setenv("ED4ALL_REASONING_LOW_EFFORT", truthy)
+        assert resolve_reasoning_low_effort() is True
+    for falsey in ("0", "false", "no", "off", "garbage", ""):
+        monkeypatch.setenv("ED4ALL_REASONING_LOW_EFFORT", falsey)
+        assert resolve_reasoning_low_effort() is False
+    monkeypatch.delenv("ED4ALL_REASONING_LOW_EFFORT", raising=False)
+    assert resolve_reasoning_low_effort() is False
+
+
 def test_compute_backoff_upper_bound_matches_legacy_schedule():
     """``_compute_backoff`` never exceeds the legacy fixed exponential.
 

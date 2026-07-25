@@ -150,6 +150,11 @@ def _cloud_router(provider: _RecordingBatchProvider) -> CourseforgeRouter:
 def _force_cloud_spec(monkeypatch) -> None:
     monkeypatch.setenv("COURSEFORGE_REWRITE_PROVIDER", "nvidia")
     monkeypatch.setenv("COURSEFORGE_REWRITE_BATCH", "1")
+    # Pin the per-call cap so batch packing is decoupled from the shipped
+    # rewrite max_tokens default (batches split when the summed per-block
+    # output budget exceeds the 16384-512 cap); these tests assert on stop /
+    # checkpoint semantics, not on the token cap.
+    monkeypatch.setenv("COURSEFORGE_REWRITE_MAX_TOKENS", "2400")
 
 
 class _Recorder:

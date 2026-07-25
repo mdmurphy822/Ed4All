@@ -716,6 +716,14 @@ class AssessmentGenerator:
         # reuse.
         self._used_terms: set = set()
         self._used_statements: set = set()
+        # Relationship / procedure / example analogs. The W10 phase hands the
+        # SAME generator instance + the SAME corpus-wide chunk pool to every
+        # per-TO quiz, so always picking relationships[0] / procedures[0] /
+        # examples[0] collapses every quiz onto ONE stem (the book-1 canary's
+        # 325-item exact-duplicate group). Rotation state spans the whole run.
+        self._used_relationships: set = set()
+        self._used_procedures: set = set()
+        self._used_examples: set = set()
         # Per-Bloom-level question_type rotation cursor. Always firing
         # available_types[0] collapses every remember-level item onto
         # multiple_choice and leaves the essay / short_answer paths dead;
@@ -744,6 +752,54 @@ class AssessmentGenerator:
         t = terms[0]
         self._used_terms.add(str(getattr(t, "term", t)).strip().lower())
         return t
+
+    def _rotate_unique(self, items, used: set, key_of):
+        """Generic diversity rotation: first item whose key is unused this
+        run; reset the tracker only when every distinct key is consumed
+        (mirrors :meth:`_rotate_term` — never collapses a run onto
+        ``items[0]``)."""
+        for it in items:
+            key = key_of(it)
+            if key and key not in used:
+                used.add(key)
+                return it
+        used.clear()
+        it = items[0]
+        used.add(key_of(it))
+        return it
+
+    def _rotate_relationship(self, relationships):
+        """Relationship analog of :meth:`_rotate_term` — keyed on the
+        (concept_a, concept_b) pair so distinct extracted relationships are
+        consumed before any reuse."""
+        return self._rotate_unique(
+            relationships,
+            self._used_relationships,
+            lambda r: (
+                str(getattr(r, "concept_a", "")).strip().lower(),
+                str(getattr(r, "concept_b", "")).strip().lower(),
+            ),
+        )
+
+    def _rotate_procedure(self, procedures):
+        """Procedure analog of :meth:`_rotate_term` — keyed on title plus the
+        first step so same-titled ("Process") procedures still rotate."""
+        return self._rotate_unique(
+            procedures,
+            self._used_procedures,
+            lambda p: (
+                str(getattr(p, "title", "")).strip().lower(),
+                str((getattr(p, "steps", None) or [""])[0])[:80].strip().lower(),
+            ),
+        )
+
+    def _rotate_example(self, examples):
+        """Example analog of :meth:`_rotate_term`."""
+        return self._rotate_unique(
+            examples,
+            self._used_examples,
+            lambda e: str(getattr(e, "description", ""))[:80].strip().lower(),
+        )
 
     def _rotate_statement(self, statements):
         """Statement analog of :meth:`_rotate_term`."""
@@ -1745,7 +1801,7 @@ class AssessmentGenerator:
             examples = self._content_extractor.extract_examples(source_chunks)
 
             if relationships:
-                rel = relationships[0]
+                rel = self._rotate_relationship(relationships)
                 stem = (
                     f"<p>{verb.capitalize()} the relationship between "
                     f"<em>{rel.concept_a}</em> and <em>{rel.concept_b}</em>. "
@@ -1780,7 +1836,7 @@ class AssessmentGenerator:
                 )
 
             elif examples:
-                ex = examples[0]
+                ex = self._rotate_example(examples)
                 stem = (
                     f"<p>{verb.capitalize()} the following scenario: "
                     f"<em>{ex.description}</em>. "
@@ -1838,7 +1894,7 @@ class AssessmentGenerator:
             terms = self._content_extractor.extract_key_terms(source_chunks)
 
             if procedures:
-                proc = procedures[0]
+                proc = self._rotate_procedure(procedures)
                 stem = (
                     f"<p>Briefly {verb} the steps involved in "
                     f"<em>{proc.title.lower()}</em>.</p>"
@@ -1861,7 +1917,7 @@ class AssessmentGenerator:
                 )
 
             elif relationships:
-                rel = relationships[0]
+                rel = self._rotate_relationship(relationships)
                 stem = (
                     f"<p>Briefly {verb} the relationship between "
                     f"<em>{rel.concept_a}</em> and <em>{rel.concept_b}</em>.</p>"

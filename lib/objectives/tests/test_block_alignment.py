@@ -40,8 +40,22 @@ def _content(key_claims, objective_refs=None):
     }
 
 
+class _RecordingCapture:
+    def __init__(self):
+        self.calls = []
+
+    def log_decision(self, **kwargs):
+        self.calls.append(kwargs)
+
+
 def test_alignment_adds_missed_objective_ref():
-    """A block whose claims match CO-02 but omitted the ref gets it ADDED."""
+    """A block whose claims match CO-02 but omitted the ref gets it ADDED.
+
+    Also the capture-quality regression for the ``block_objective_alignment``
+    decision event: it must fire with a real ``inputs_ref`` (the block) and
+    genuine ``alternatives_considered`` (the cosine-scored-but-rejected
+    objective candidates) so the row rates proficient instead of developing.
+    """
     objectives = [
         {"id": "CO-01", "statement": "Explain the basics of medieval heraldry."},
         {"id": "CO-02", "statement": "Compute the area of a triangle from base and height."},
@@ -53,11 +67,30 @@ def test_alignment_adds_missed_objective_ref():
             objective_refs=[],
         ),
     )
+    capture = _RecordingCapture()
+    # threshold=0.4 sits between the FakeEmbed cosines (CO-01 ~0.30 vs
+    # CO-02 ~0.59) so exactly one candidate is added and the other is a
+    # genuinely scored-and-rejected alternative.
     out = align_blocks_to_objectives(
-        [block], objectives, embed=FakeEmbed(), threshold=0.2,
+        [block], objectives, embed=FakeEmbed(), threshold=0.4,
+        capture=capture,
     )
     refs = out[0].content["objective_refs"]
     assert "CO-02" in refs
+    assert "CO-01" not in refs
+
+    events = [
+        c for c in capture.calls
+        if c.get("decision_type") == "block_objective_alignment"
+    ]
+    assert len(events) == 1, "alignment capture must fire once per block"
+    event = events[0]
+    assert {"source_type": "block", "path_or_id": "b1"} in event["inputs_ref"]
+    alternatives = event["alternatives_considered"]
+    # CO-01 was cosine-scored against the block and rejected below the
+    # threshold — a genuinely weighed alternative, listed with its score.
+    assert alternatives
+    assert any("CO-01" in a and "cosine" in a for a in alternatives)
     assert "no_objective_alignment" not in (
         out[0].content.get("structural_warnings") or []
     )

@@ -21,6 +21,11 @@ self-register — the bootstrap wires them in explicitly):
   it correct + reachable). EXCLUDED from the bare default — it is a
   run-preflight concern, surfaced only via ``--run`` / ``--ping`` /
   ``--group provider`` so the default doctor stays focused.
+* ``seat`` — vLLM SEAT-topology preflight (registry parse validity,
+  loopback-only + duplicate-port, container existence, per-seat
+  ``/v1/models`` liveness, launch-spec paths, assistant seat). Deployment-
+  specific, so EXCLUDED from the bare default UNLESS a seat registry is
+  configured; also surfaced via ``--run`` / ``--group seat``.
 
 The body is wrapped defensively so the command can never raise to the
 operator (the foundation already never raises; this is
@@ -62,6 +67,7 @@ from lib.diagnostics.gpu_profile import register_gpu_profile_checks
 from lib.diagnostics.postmortem import register_postmortem_checks
 from lib.diagnostics.provider import register_provider_checks
 from lib.diagnostics.run_env import applied_run_env
+from lib.diagnostics.seat_schedule import register_seat_checks
 from lib.diagnostics.serving_window import register_serving_window_checks
 from lib.diagnostics.vram import register_gpu_checks
 
@@ -84,7 +90,7 @@ from cli.commands.run import (
 #: ``--group provider`` (keeps the bare default free of class-default seat
 #: noise).
 _DEFAULT_GROUPS = ("gpu", "gpu_profile", "window", "environment")
-_RUN_GROUPS = ("gpu", "gpu_profile", "window", "environment", "provider")
+_RUN_GROUPS = ("gpu", "gpu_profile", "window", "environment", "provider", "seat")
 
 #: Post-mortem mode (``--run-id``) is a DISTINCT mode — it analyzes a PAST run
 #: off disk (checkpoints + VRAM trajectory) and does ZERO live-env probing. It
@@ -145,13 +151,15 @@ def _bootstrap_checks() -> None:
     """Register the built-in check groups (idempotent).
 
     Clears the registry first so repeated command invocations / tests do
-    NOT double-register, then wires the five explicit per-group helpers
-    (``gpu`` / ``window`` / ``environment`` / ``provider`` / ``postmortem``).
-    Safe to call on every command invocation. NB: registering ``provider``
-    makes ``--group provider`` valid; it is still EXCLUDED from the bare
-    default group selection (run-preflight only). Likewise ``postmortem`` is
-    reachable via ``--group postmortem`` / ``--run-id`` only (past-run forensic
-    mode), never in the bare default.
+    NOT double-register, then wires the explicit per-group helpers
+    (``gpu`` / ``gpu_profile`` / ``window`` / ``environment`` / ``provider`` /
+    ``seat`` / ``postmortem``). Safe to call on every command invocation. NB:
+    registering ``provider`` makes ``--group provider`` valid; it is still
+    EXCLUDED from the bare default group selection (run-preflight only).
+    ``seat`` is likewise registered-but-not-default: it opts in via ``-g seat``
+    / ``--run`` / a configured seat registry (see :func:`_seat_registry_present`).
+    Likewise ``postmortem`` is reachable via ``--group postmortem`` / ``--run-id``
+    only (past-run forensic mode), never in the bare default.
     """
     clear_registry()
     register_gpu_checks()
@@ -159,6 +167,7 @@ def _bootstrap_checks() -> None:
     register_serving_window_checks()
     register_environment_checks()
     register_provider_checks()
+    register_seat_checks()
     register_postmortem_checks()
 
 
@@ -189,6 +198,26 @@ def _compute_cloud_seat_preflight(workflow: str, provider: str | None) -> dict |
 _compute_nvidia_preflight = _compute_cloud_seat_preflight
 
 
+def _seat_registry_present() -> bool:
+    """True when a vLLM seat registry is configured (opts the ``seat`` group in).
+
+    Mirrors the ``provider`` group's opt-in shape: the ``seat`` group is not in
+    the bare default set (seat topology is deployment-specific), but a host that
+    HAS declared a seat registry (``ED4ALL_SEAT_BASE_URLS`` or
+    ``ED4ALL_VLLM_CONTAINERS``) gets it automatically on a bare ``ed4all doctor``.
+    Best-effort — any import/parse failure degrades to ``False``.
+    """
+    try:
+        from lib.vllm_container_lifecycle import (
+            parse_container_registry,
+            parse_seat_registry,
+        )
+
+        return bool(parse_seat_registry()) or bool(parse_container_registry())
+    except Exception:  # noqa: BLE001 — never break group selection
+        return False
+
+
 @click.command("doctor")
 @click.option(
     "--base-url",
@@ -213,8 +242,9 @@ _compute_nvidia_preflight = _compute_cloud_seat_preflight
     multiple=True,
     help=(
         "Run only the named check group(s) (e.g. -g gpu -g window -g provider). "
-        "Repeatable. Default (none given): gpu/window/environment (provider is "
-        "opt-in via --run/--ping/-g provider)."
+        "Repeatable. Default (none given): gpu/gpu_profile/window/environment "
+        "(provider is opt-in via --run/--ping/-g provider; seat is opt-in via "
+        "-g seat/--run/a configured seat registry)."
     ),
 )
 @click.option(
@@ -415,7 +445,12 @@ def doctor_command(
         elif run_workflow or ping:
             selected_groups = _RUN_GROUPS
         else:
+            # Bare default. The seat group is deployment-specific (not in the
+            # bare default), but a host that has DECLARED a seat registry gets
+            # it automatically — mirrors provider's opt-in shape.
             selected_groups = _DEFAULT_GROUPS
+            if _seat_registry_present():
+                selected_groups = (*_DEFAULT_GROUPS, "seat")
 
         ctx = CheckContext(base_url=base_url, run_config=run_config)
         results = run_checks(ctx, groups=selected_groups)

@@ -193,6 +193,47 @@ def align_blocks_to_objectives(
 
         if capture is not None:
             try:
+                # Capture-quality contract (proficient floor): the genuine
+                # alternatives are the scored-but-rejected objective
+                # candidates — every objective in the pool was cosine-scored
+                # against this block, and those below threshold (or capped
+                # out of the top-K) were weighed and NOT added. Surface the
+                # top rejected few by cosine (all were considered; listing
+                # the closest calls keeps the row replayable without
+                # dumping the whole pool). The real input is the block.
+                rejected = sorted(
+                    (
+                        (oid, cos)
+                        for (oid, cos) in scored
+                        if oid not in union_ids
+                    ),
+                    key=lambda pair: pair[1],
+                    reverse=True,
+                )
+                alternatives = [
+                    (
+                        f"add {oid} (cosine {cos:.3f} "
+                        + (
+                            f"< threshold {threshold}"
+                            if cos < threshold
+                            else f">= threshold {threshold} but capped out "
+                            f"of top-{_TOP_K}"
+                        )
+                        + ")"
+                    )
+                    for (oid, cos) in rejected[:5]
+                ]
+                if len(rejected) > 5:
+                    alternatives.append(
+                        f"...plus {len(rejected) - 5} lower-cosine "
+                        "objective candidate(s) also scored and rejected"
+                    )
+                inputs_ref = [
+                    {
+                        "source_type": "block",
+                        "path_or_id": str(getattr(block, "block_id", "")),
+                    }
+                ]
                 capture.log_decision(
                     decision_type="block_objective_alignment",
                     decision=(
@@ -217,6 +258,8 @@ def align_blocks_to_objectives(
                         "final_refs": len(union_ids),
                         "unaligned": 0 if union_ids else 1,
                     },
+                    alternatives_considered=alternatives or None,
+                    inputs_ref=inputs_ref,
                 )
             except Exception:  # noqa: BLE001
                 pass

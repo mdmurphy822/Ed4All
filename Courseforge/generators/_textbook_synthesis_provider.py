@@ -108,6 +108,20 @@ ENV_TIMEOUT = "TEXTBOOK_SYNTHESIS_TIMEOUT_SECONDS"
 # the cluster (TO-derivation) stage re-rolls (its sidecar is evicted and its
 # fingerprint carries the salt).
 ENV_PLANNING_REROLL_SALT = "ED4ALL_PLANNING_REROLL_SALT"
+# Failure-directed sibling of the salt (runner-managed, never operator-set).
+# ``WorkflowRunner._retry_course_planning_gates`` serializes the failing
+# critical gates' issues into a compact remediation digest
+# (``_planning_failure_digest``) and exports it here alongside the salt.
+# Read at CONSTRUCTION like the salt and folded into the SYSTEM prompt as a
+# clearly-delimited REMEDIATION section (only when non-empty), so the
+# cluster/TO-minting retry attempt is DIRECTED at the observed failure
+# modes instead of a blind salted re-roll — mirroring the rewrite tier's
+# remediation-directive pattern (Courseforge/router/remediation.py). The
+# cluster sidecar fingerprint in ``MCP/tools/pipeline_tools.py`` folds the
+# digest hash in beside the salt (a changed digest never reuses a stale
+# cached TO); the Stage-2 WINDOW fingerprint keeps hashing the UNSALTED
+# module constant, so the window/CO cache still survives a retry.
+ENV_PLANNING_REROLL_FEEDBACK = "ED4ALL_PLANNING_REROLL_FEEDBACK"
 
 # DEFAULT_PROVIDER preserves legacy class-body behavior (parity with
 # OutlinerProvider). The WORKFLOW default is "no in-process provider
@@ -334,6 +348,207 @@ def _window_objectives_schema(
         max_candidates
     )
     return schema
+
+
+# ---------------------------------------------------------------------------
+# Anti-truncation output schemas for the four unbounded synthesis surfaces.
+#
+# Root cause these bound: ``synthesize_concepts`` / ``synthesize_outline`` /
+# ``synthesize_chapter_objectives`` / ``reconcile_terminal_objectives`` each
+# dispatched with NO constrained-output schema, so on a dense chapter the model
+# emitted an UNBOUNDED array and hit the ``max_tokens`` cap
+# (``finish_reason='length'``) → the JSON truncated mid-array and content was
+# lost (a §5.4 degrade). The owner considers ANY truncation a critical failure.
+#
+# Fix: bound each surface with a Draft-2020-12 schema, wired through
+# ``_build_synthesis_grammar_payload`` (constrains the schema-supporting
+# backends at SAMPLE time — vLLM guided_json/response_format, Ollama ``format``)
+# AND validated post-parse with ``jsonschema.Draft202012Validator`` (the backstop
+# for backends that ignore the schema), EXACTLY mirroring the already-fixed
+# ``synthesize_window_objectives`` path.
+#
+# Design rules (see the per-schema budget comments):
+#   * Every top-level array carries ``maxItems`` sized generously above the
+#     realistic per-chapter/per-course ceiling but bounded so the array can
+#     never run away — capping the array is what fixes the production bug.
+#   * Every FREE-TEXT field carries ``maxLength`` — the array cap alone does not
+#     prevent truncation if each item can be arbitrarily verbose; the per-field
+#     length cap is what keeps the emitted token total under the
+#     ``TEXTBOOK_SYNTHESIS_MAX_TOKENS`` cap (documented 8192 in the production
+#     profile; the code default is 4096).
+#   * PERMISSIVE about structure — NO ``additionalProperties: false`` (the
+#     ``_normalise_*`` helpers tolerate extra keys, so forbidding them would let
+#     the post-parse validator REJECT a currently-valid response). ``bloom_level``
+#     is a bounded string, NOT an enum, because ``_normalise_one_objective``
+#     lowercases + defaults it — an enum would reject a capitalised
+#     ``"Understand"``. Only the single primary output array is ``required`` (the
+#     same contract ``_WINDOW_OBJECTIVES_SCHEMA`` uses with ``candidate_objectives``).
+#   * ``abcd`` stays a generic ``{"type": "object"}`` (mirrors the window schema)
+#     — it is four short ABCD fields, not a runaway array; ``source_refs`` bounds
+#     only the ref COUNT (its items stay loose, matching the normaliser's
+#     pass-through of any list).
+# Token budgets below use the repo-wide 2.5 chars/token convention.
+# ---------------------------------------------------------------------------
+
+_DRAFT_2020 = "https://json-schema.org/draft/2020-12/schema"
+
+
+def _objective_item_schema(*, with_sub_objectives: bool) -> Dict[str, Any]:
+    """Build the bounded per-objective item schema shared by the outline
+    (draft TO), chapter-objective (CO), and reconcile (TO) surfaces.
+
+    Matches the exact accepted shape of :meth:`_normalise_one_objective`
+    (statement/text alias, bloom_level string, bloom_verb, abcd object,
+    source_refs list) plus the chapter-only ``sub_objectives`` string list.
+    Permissive (no ``additionalProperties: false``, minimal ``required``) so a
+    schema-valid response is always normaliser-valid.
+
+    Per-objective worst case (chars): statement 400 + text-alias(excl., one of)
+    + bloom_level 20 + bloom_verb 48 + abcd (loose, ~400 typical) + source_refs
+    (loose, ~300 typical) + sub_objectives (5×160 = 800 when present) +
+    structural ~100 ≈ 1.9k chars ≈ ~760 tok worst / ~480 tok typical.
+    """
+    props: Dict[str, Any] = {
+        # ``text`` is the normaliser's statement alias; either key satisfies it.
+        "statement": {"type": "string", "maxLength": 400},
+        "text": {"type": "string", "maxLength": 400},
+        # NOT an enum — ``_normalise_one_objective`` lowercases + defaults, so an
+        # enum would reject a valid capitalised ``"Understand"``.
+        "bloom_level": {"type": "string", "maxLength": 20},
+        "bloom_verb": {"type": "string", "maxLength": 48},
+        # Generic object (mirrors ``_WINDOW_OBJECTIVES_SCHEMA``): four short ABCD
+        # fields, not a runaway array.
+        "abcd": {"type": "object"},
+        # Bound the ref COUNT (the runaway vector); items stay loose because the
+        # normaliser passes the list through verbatim.
+        "source_refs": {"type": "array", "maxItems": 8},
+    }
+    if with_sub_objectives:
+        props["sub_objectives"] = {
+            "type": "array",
+            "maxItems": 6,
+            "items": {"type": "string", "maxLength": 200},
+        }
+    return {"type": "object", "properties": props}
+
+
+# Stage 3 — ``synthesize_concepts`` (per chapter). Realistic ~15 concepts/
+# chapter (seen up to a few dozen); ``maxItems: 24`` gives generous headroom
+# while bounding the runaway that truncated in production. Worst item (chars):
+# canonical/term 120 + aliases (4×48=192) + definition_hint/definition 200 +
+# chapter_ids (4×40=160) + struct ~80 ≈ 752 chars ≈ ~300 tok. Budget: 24 × ~300
+# ≈ 7.2k tok — comfortably under the 8192 production cap.
+_CONCEPTS_SCHEMA: Dict[str, Any] = {
+    "$schema": _DRAFT_2020,
+    "type": "object",
+    "required": ["concepts"],
+    "properties": {
+        "concepts": {
+            "type": "array",
+            "maxItems": 24,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "canonical": {"type": "string", "maxLength": 120},
+                    "term": {"type": "string", "maxLength": 120},
+                    "aliases": {
+                        "type": "array",
+                        "maxItems": 4,
+                        "items": {"type": "string", "maxLength": 48},
+                    },
+                    "definition_hint": {"type": "string", "maxLength": 200},
+                    "definition": {"type": "string", "maxLength": 200},
+                    "chapter_ids": {
+                        "type": "array",
+                        "maxItems": 4,
+                        "items": {"type": "string", "maxLength": 40},
+                    },
+                },
+            },
+        }
+    },
+}
+
+
+# Stage 1 — ``synthesize_outline`` (whole-textbook, flat payload). Two unbounded
+# arrays are capped: ``themes`` (course themes; realistic handful, ``maxItems:
+# 16``) and ``draft_terminal_objectives`` (draft TO-NN; realistic ≤ ~20,
+# ``maxItems: 24``). ``course_summary`` is one prose blob (``maxLength: 1200`` ≈
+# 480 tok). Only ``draft_terminal_objectives`` (the Stage-1 primary output) is
+# required; ``themes`` is bounded-but-optional (permissive). Budget (typical):
+# course_summary ~480 tok + ~6 themes × ~300 tok + ~12 draft TOs × ~250 tok ≈
+# 5.3k tok, under the 8192 cap; the maxItems caps are the runaway guard.
+_OUTLINE_SCHEMA: Dict[str, Any] = {
+    "$schema": _DRAFT_2020,
+    "type": "object",
+    "required": ["draft_terminal_objectives"],
+    "properties": {
+        "course_summary": {"type": "string", "maxLength": 1200},
+        "themes": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "maxLength": 200},
+                    "summary": {"type": "string", "maxLength": 400},
+                    "chapter_ids": {
+                        "type": "array",
+                        "maxItems": 10,
+                        "items": {"type": "string", "maxLength": 48},
+                    },
+                    "prerequisite_theme_titles": {
+                        "type": "array",
+                        "maxItems": 6,
+                        "items": {"type": "string", "maxLength": 120},
+                    },
+                },
+            },
+        },
+        "draft_terminal_objectives": {
+            "type": "array",
+            "maxItems": 24,
+            "items": _objective_item_schema(with_sub_objectives=False),
+        },
+    },
+}
+
+
+# Stage 2 — ``synthesize_chapter_objectives`` (per chapter, CO-NN). Realistic
+# CO count ≤ ~15 (docstring); ``maxItems: 16`` bounds it with light headroom.
+# Items carry ``sub_objectives`` (the chapter-only string list). Budget
+# (typical): 15 × ~480 tok ≈ 7.2k tok under the 8192 cap; the item cap plus the
+# per-field maxLengths are the runaway/verbosity guards.
+_CHAPTER_OBJECTIVES_SCHEMA: Dict[str, Any] = {
+    "$schema": _DRAFT_2020,
+    "type": "object",
+    "required": ["chapter_objectives"],
+    "properties": {
+        "chapter_objectives": {
+            "type": "array",
+            "maxItems": 16,
+            "items": _objective_item_schema(with_sub_objectives=True),
+        }
+    },
+}
+
+
+# Reconciliation — ``reconcile_terminal_objectives`` (whole-course, TO-NN).
+# Realistic TO count ≤ ~20; ``maxItems: 24`` bounds it. No ``sub_objectives`` on
+# a terminal objective. Budget (typical): ~15 × ~250 tok ≈ 3.8k tok under the
+# 8192 cap.
+_RECONCILE_SCHEMA: Dict[str, Any] = {
+    "$schema": _DRAFT_2020,
+    "type": "object",
+    "required": ["terminal_objectives"],
+    "properties": {
+        "terminal_objectives": {
+            "type": "array",
+            "maxItems": 24,
+            "items": _objective_item_schema(with_sub_objectives=False),
+        }
+    },
+}
 
 
 def _bloom_verb_examples(*, per_level: int = 5) -> str:
@@ -635,6 +850,26 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
                 "in the supplied source material and do not repeat the prior "
                 "attempt's phrasing verbatim.]"
             )
+        # Failure-directed remediation digest (see the
+        # ENV_PLANNING_REROLL_FEEDBACK comment above): fold the runner's
+        # per-issue failure digest in as a clearly-delimited REMEDIATION
+        # section — only when non-empty, so the prompt stays byte-identical
+        # on every normal (non-retry) construction.
+        reroll_feedback = os.environ.get(
+            ENV_PLANNING_REROLL_FEEDBACK, ""
+        ).strip()
+        if reroll_feedback:
+            resolved_system_prompt = (
+                f"{resolved_system_prompt}\n\n"
+                "=== REMEDIATION (validation failures from the prior "
+                "attempt) ===\n"
+                f"{reroll_feedback}\n"
+                "Address each directive above in this attempt. Fix ONLY "
+                "what the directives name; keep every other statement "
+                "grounded in the supplied source material exactly as "
+                "required.\n"
+                "=== END REMEDIATION ==="
+            )
 
         super().__init__(
             provider=base_provider_arg,
@@ -771,6 +1006,77 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
         merged["options"] = options
         return merged
 
+    def _dispatch_with_schema(
+        self,
+        base_prompt: str,
+        *,
+        schema: Dict[str, Any],
+    ) -> Tuple[Optional[Dict[str, Any]], str, int, Optional[str]]:
+        """Dispatch ``base_prompt`` bounded by ``schema`` — anti-truncation.
+
+        Mirrors the :meth:`synthesize_window_objectives` loop EXACTLY so the
+        four previously-unbounded surfaces (outline / concepts / chapter
+        objectives / reconcile) get the same output bound:
+
+        1. build the per-backend constrained-decoding payload via
+           :meth:`_build_synthesis_grammar_payload` (the schema constrains the
+           schema-supporting backends at SAMPLE time — vLLM guided_json /
+           response_format, Ollama ``format``);
+        2. dispatch with ``extra_payload=extra_payload or None`` — so when the
+           payload is EMPTY (grammar mode ``none`` / Anthropic / a schema-
+           ignoring backend) the wire dispatch is BYTE-IDENTICAL to the legacy
+           bare ``_dispatch_call(user_prompt)``;
+        3. validate the lenient-parsed object with
+           ``jsonschema.Draft202012Validator`` (the post-parse backstop for
+           backends that ignore the schema);
+        4. on a schema mismatch append the schema hint and retry within the
+           EXISTING ``_MAX_SYNTHESIS_PARSE_RETRIES`` budget (no new retries).
+
+        Returns ``(parsed_or_None, last_raw, total_retries, last_error)`` — the
+        caller owns normalisation + decision capture + the ``*_exhausted`` raise
+        so each surface keeps its distinct code + capture fields unchanged.
+        """
+        import jsonschema  # type: ignore[import-untyped]
+
+        extra_payload = self._build_synthesis_grammar_payload(schema=schema)
+
+        last_error: Optional[str] = None
+        last_raw: str = ""
+        total_retries = 0
+        parsed: Optional[Dict[str, Any]] = None
+        attempt = 0
+        while attempt < _MAX_SYNTHESIS_PARSE_RETRIES:
+            user_prompt = base_prompt
+            if attempt > 0 and last_error:
+                schema_hint = json.dumps(schema, sort_keys=True)
+                user_prompt = (
+                    f"{base_prompt}\n\n"
+                    "Your previous output failed JSON Schema validation: "
+                    f"{last_error}\n"
+                    "Return ONLY a JSON object matching this schema:\n"
+                    f"{schema_hint}"
+                )
+            raw_text, retry_count = self._dispatch_call(
+                user_prompt, extra_payload=extra_payload or None
+            )
+            total_retries += int(retry_count)
+            last_raw = raw_text
+            candidate = self._extract_json_lenient(raw_text)
+            if candidate is None:
+                last_error = "lenient JSON parse returned None"
+                attempt += 1
+                continue
+            try:
+                jsonschema.Draft202012Validator(schema).validate(candidate)
+            except jsonschema.ValidationError as exc:
+                last_error = str(exc.message)[:300]
+                attempt += 1
+                continue
+            parsed = candidate
+            break
+
+        return parsed, last_raw, total_retries, last_error
+
     # ==================================================================
     # Public API — Stage 1: outline synthesis
     # ==================================================================
@@ -827,20 +1133,27 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
         last_error: Optional[str] = None
 
         for group in chapter_groups:
-            user_prompt = self._render_user_prompt(
+            base_prompt = self._render_user_prompt(
                 mode="outline",
                 chapters=group,
                 course_name=course_name,
             )
-            text, retry_count = self._dispatch_call(user_prompt)
-            parsed = self._extract_json_lenient(text)
+            # Anti-truncation: bound the (previously unbounded) outline payload
+            # with ``_OUTLINE_SCHEMA`` — constrained at sample time on schema-
+            # supporting backends + validated post-parse (mirrors the window
+            # path). Byte-identical wire dispatch when the payload is empty.
+            parsed, text, retry_count, schema_error = (
+                self._dispatch_with_schema(
+                    base_prompt, schema=_OUTLINE_SCHEMA
+                )
+            )
             calls += 1
 
             themes_emit = 0
             draft_to_emit = 0
             normalised: Optional[Dict[str, Any]] = None
             if parsed is None:
-                last_error = "lenient JSON parse returned None"
+                last_error = schema_error or "lenient JSON parse returned None"
             else:
                 normalised = self._normalise_outline_payload(parsed)
                 if not course_summary:
@@ -937,20 +1250,26 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
         chapter_id = str(chapter.get("id") or "")
         chapter_text, truncated = self._chapter_text_bounded(chapter)
 
-        user_prompt = self._render_user_prompt(
+        base_prompt = self._render_user_prompt(
             mode="concepts",
             chapter=chapter,
             chapter_id=chapter_id,
             chapter_text=chapter_text,
             course_name=course_name,
         )
-        text, retry_count = self._dispatch_call(user_prompt)
-        parsed = self._extract_json_lenient(text)
+        # Anti-truncation: bound the (previously unbounded) concept array with
+        # ``_CONCEPTS_SCHEMA`` — this is the surface that truncated in
+        # production. Constrained at sample time on schema-supporting backends +
+        # validated post-parse (mirrors the window path). Byte-identical wire
+        # dispatch when the payload is empty.
+        parsed, text, retry_count, schema_error = self._dispatch_with_schema(
+            base_prompt, schema=_CONCEPTS_SCHEMA
+        )
 
         concepts: Optional[List[Dict[str, Any]]] = None
         last_error: Optional[str] = None
         if parsed is None:
-            last_error = "lenient JSON parse returned None"
+            last_error = schema_error or "lenient JSON parse returned None"
         else:
             concepts = self._normalise_concepts_payload(parsed, chapter_id)
 
@@ -1024,7 +1343,7 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
         chapter_id = str(chapter.get("id") or "")
         chapter_text, truncated = self._chapter_text_bounded(chapter)
 
-        user_prompt = self._render_user_prompt(
+        base_prompt = self._render_user_prompt(
             mode="chapter_objectives",
             chapter=chapter,
             chapter_id=chapter_id,
@@ -1032,13 +1351,18 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
             course_name=course_name,
             draft_terminal_objectives=draft_terminal_objectives or [],
         )
-        text, retry_count = self._dispatch_call(user_prompt)
-        parsed = self._extract_json_lenient(text)
+        # Anti-truncation: bound the (previously unbounded) CO array with
+        # ``_CHAPTER_OBJECTIVES_SCHEMA`` — constrained at sample time on schema-
+        # supporting backends + validated post-parse (mirrors the window path).
+        # Byte-identical wire dispatch when the payload is empty.
+        parsed, text, retry_count, schema_error = self._dispatch_with_schema(
+            base_prompt, schema=_CHAPTER_OBJECTIVES_SCHEMA
+        )
 
         objectives: Optional[List[Dict[str, Any]]] = None
         last_error: Optional[str] = None
         if parsed is None:
-            last_error = "lenient JSON parse returned None"
+            last_error = schema_error or "lenient JSON parse returned None"
         else:
             objectives = self._normalise_chapter_objectives_payload(
                 parsed, chapter_id
@@ -1285,19 +1609,24 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
         draft_tos = list(draft_terminal_objectives or [])
         chapter_cos = list(chapter_objectives or [])
 
-        user_prompt = self._render_user_prompt(
+        base_prompt = self._render_user_prompt(
             mode="reconcile",
             draft_terminal_objectives=draft_tos,
             chapter_objectives=chapter_cos,
             course_name=course_name,
         )
-        text, retry_count = self._dispatch_call(user_prompt)
-        parsed = self._extract_json_lenient(text)
+        # Anti-truncation: bound the (previously unbounded) reconciled TO array
+        # with ``_RECONCILE_SCHEMA`` — constrained at sample time on schema-
+        # supporting backends + validated post-parse (mirrors the window path).
+        # Byte-identical wire dispatch when the payload is empty.
+        parsed, text, retry_count, schema_error = self._dispatch_with_schema(
+            base_prompt, schema=_RECONCILE_SCHEMA
+        )
 
         terminals: Optional[List[Dict[str, Any]]] = None
         last_error: Optional[str] = None
         if parsed is None:
-            last_error = "lenient JSON parse returned None"
+            last_error = schema_error or "lenient JSON parse returned None"
         else:
             terminals = self._normalise_reconcile_payload(parsed)
 
@@ -2248,6 +2577,24 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
             return {"format": schema}
         if mode == "json_object":
             return {}
+        if mode == "response_format":
+            # OpenAI-STANDARD structured-output payload — vLLM 0.21+ enforces the
+            # schema (incl. ``maxItems`` / ``required``) at sample time. Mirrors
+            # the outline tier's ``response_format`` mode: the seat-agnostic
+            # constrained-decoding path for a REGISTRY vLLM seat (``spark-super``)
+            # whose base_url carries no ``vllm`` marker, so the auto-detect below
+            # would emit Ollama ``{"format": schema}`` that this vLLM seat IGNORES
+            # → unbounded synthesis → ``finish_reason='length'`` window truncation.
+            return {
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "WindowObjectives",
+                        "schema": schema,
+                        "strict": True,
+                    },
+                }
+            }
         if mode == "none":
             return {}
 
@@ -2689,4 +3036,8 @@ __all__ = [
     "ENV_WINDOW_MAX_CANDIDATES",
     "resolve_window_max_candidates",
     "_window_objectives_schema",
+    "_CONCEPTS_SCHEMA",
+    "_OUTLINE_SCHEMA",
+    "_CHAPTER_OBJECTIVES_SCHEMA",
+    "_RECONCILE_SCHEMA",
 ]

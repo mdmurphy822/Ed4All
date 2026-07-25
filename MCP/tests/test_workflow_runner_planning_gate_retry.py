@@ -14,8 +14,9 @@ Pins the ``ED4ALL_PLANNING_GATE_RETRIES`` contract in
   dispatches observed, the CLUSTER sidecar
   (``.stage2_clusters_checkpoint.jsonl``) is evicted between attempts while
   the WINDOW sidecar (``.stage2_windows_checkpoint.jsonl``) is kept, and the
-  per-attempt ``ED4ALL_PLANNING_REROLL_SALT`` is set for each retry (and
-  cleaned up after).
+  per-attempt ``ED4ALL_PLANNING_REROLL_SALT`` PLUS the failure-directed
+  ``ED4ALL_PLANNING_REROLL_FEEDBACK`` remediation digest are set for each
+  retry (and cleaned up after).
 - all attempts fail → the phase completes WITH the
   ``PLANNING_GATE_RETRIES_EXHAUSTED`` warning (fail-open) and the workflow
   CONTINUES to downstream phases.
@@ -39,11 +40,13 @@ from MCP.core.config import WorkflowConfig, WorkflowPhase
 from MCP.core.executor import ExecutionResult
 from MCP.core.workflow_runner import (
     WorkflowRunner,
+    _planning_failure_digest,
     resolve_planning_gate_retries,
 )
 
 _WORKFLOW_ID = "WF-TEST-PLANNING-RETRY"
 _SALT_ENV = "ED4ALL_PLANNING_REROLL_SALT"
+_FEEDBACK_ENV = "ED4ALL_PLANNING_REROLL_FEEDBACK"
 _RETRIES_ENV = "ED4ALL_PLANNING_GATE_RETRIES"
 
 
@@ -88,6 +91,7 @@ class _PlanningExecutorStub:
         self.cluster_sidecar_at_entry: List[bool] = []
         self.window_sidecar_at_entry: List[bool] = []
         self.salt_at_entry: List[Optional[str]] = []
+        self.feedback_at_entry: List[Optional[str]] = []
 
     def __call__(self, *_a: Any, **kw: Any):
         # Sync callable — AsyncMock(side_effect=...) awaits the mock and
@@ -106,6 +110,7 @@ class _PlanningExecutorStub:
         self.cluster_sidecar_at_entry.append(cluster.exists())
         self.window_sidecar_at_entry.append(window.exists())
         self.salt_at_entry.append(os.environ.get(_SALT_ENV))
+        self.feedback_at_entry.append(os.environ.get(_FEEDBACK_ENV))
         # Simulate the synthesis pass writing its artifacts + sidecars.
         self.obj_dir.mkdir(parents=True, exist_ok=True)
         cluster.write_text('{"unit": "cluster01"}\n', encoding="utf-8")
@@ -226,8 +231,9 @@ def test_retries_off_keeps_legacy_gate_block(tmp_path, monkeypatch) -> None:
     assert "_planning_gate_retries_exhausted" not in (
         persisted["course_planning"]
     )
-    # The salt env was never set (legacy path).
+    # The salt + feedback envs were never set (legacy path).
     assert stub.salt_at_entry == [None]
+    assert stub.feedback_at_entry == [None]
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +267,18 @@ def test_retry_recovers_after_transient_gate_failures(
     assert stub.salt_at_entry == [None, "attempt-1", "attempt-2"]
     assert _SALT_ENV not in os.environ
 
+    # Failure-DIRECTED feedback: none on the first attempt; each retry
+    # carries the serialized digest of the failing critical gates' issues
+    # (objective id + issue code + directive/message); cleaned up after.
+    assert stub.feedback_at_entry[0] is None
+    for digest in stub.feedback_at_entry[1:]:
+        assert digest, "each retry must carry the remediation digest"
+        assert "objective_entailment" in digest
+        assert "OBJECTIVE_NOT_ENTAILED" in digest
+        assert "TO-01" in digest
+        assert len(digest) <= 1200
+    assert _FEEDBACK_ENV not in os.environ
+
     persisted = _load_persisted(tmp_path)
     assert persisted["course_planning"]["_gates_passed"] is True
     assert persisted["course_planning"]["_completed"] is True
@@ -290,6 +308,10 @@ def test_retry_recovers_after_transient_gate_failures(
     assert "attempt 1" in rationale
     assert "objective_entailment" in rationale
     assert "OBJECTIVE_NOT_ENTAILED" in rationale
+    # Capture quality contract: the retry decision interpolates the
+    # failure-directed remediation digest it fed back to the synthesizer.
+    assert "remediation digest" in rationale
+    assert "TO-01" in rationale
 
 
 # ---------------------------------------------------------------------------
@@ -338,8 +360,9 @@ def test_retries_exhausted_fail_open_with_loud_warning(
         for r in caplog.records
     ), "expected the loud PLANNING_GATE_RETRIES_EXHAUSTED error line"
 
-    # Salt env cleaned up.
+    # Salt + feedback envs cleaned up.
     assert _SALT_ENV not in os.environ
+    assert _FEEDBACK_ENV not in os.environ
 
 
 # ---------------------------------------------------------------------------
@@ -386,3 +409,90 @@ def test_non_planning_phase_is_never_retried(tmp_path, monkeypatch) -> None:
     assert calls == ["other_gated_phase"], (
         "gate retry must be scoped to course_planning only"
     )
+
+
+# ---------------------------------------------------------------------------
+# _planning_failure_digest — failure-directed remediation digest builder
+# ---------------------------------------------------------------------------
+
+
+def _gate(
+    gate_id: str,
+    issues: List[Dict[str, Any]],
+    *,
+    passed: bool = False,
+    severity: str = "critical",
+) -> Dict[str, Any]:
+    return {
+        "gate_id": gate_id,
+        "passed": passed,
+        "severity": severity,
+        "issues": issues,
+    }
+
+
+def test_digest_mapped_code_yields_directive_and_objective_id() -> None:
+    digest = _planning_failure_digest([
+        _gate("objective_entailment", [{
+            "severity": "critical",
+            "code": "OBJECTIVE_UNENTAILED",
+            "message": (
+                "LO 'TO-08' statement is NOT entailed by its cited chunk(s)"
+            ),
+            "location": "TO-08",
+        }]),
+    ])
+    assert digest.startswith("- [objective_entailment] TO-08 "
+                             "OBJECTIVE_UNENTAILED:")
+    # The code→directive map fired (not the raw-message fallback).
+    assert "directly supported by its cited chunks" in digest
+
+
+def test_digest_unmapped_code_falls_back_to_truncated_message() -> None:
+    long_msg = "CO-12 " + ("x" * 500)
+    digest = _planning_failure_digest([
+        _gate("some_gate", [{
+            "severity": "critical",
+            "code": "SOME_UNKNOWN_CODE",
+            "message": long_msg,
+            "location": None,
+        }]),
+    ])
+    assert "CO-12 SOME_UNKNOWN_CODE:" in digest
+    # Raw message fallback is truncated per line.
+    assert len(digest) < 300
+
+
+def test_digest_ignores_passing_and_warning_gates() -> None:
+    digest = _planning_failure_digest([
+        _gate("passed_gate", [{
+            "severity": "critical", "code": "X", "message": "m",
+        }], passed=True),
+        _gate("warning_gate", [{
+            "severity": "critical", "code": "Y", "message": "m",
+        }], severity="warning"),
+        _gate("crit_gate", [{
+            "severity": "warning", "code": "Z", "message": "m",
+        }]),
+    ])
+    assert digest == ""
+
+
+def test_digest_dedupes_and_caps_at_1200_chars() -> None:
+    issues = [
+        {
+            "severity": "critical",
+            "code": "OBJECTIVE_UNENTAILED",
+            "message": f"LO 'CO-{i:02d}' statement is NOT entailed",
+            "location": f"CO-{i:02d}",
+        }
+        for i in range(1, 60)
+    ]
+    # Duplicate of the first issue → deduped on (gate, objective, code).
+    issues.append(dict(issues[0]))
+    digest = _planning_failure_digest([_gate("objective_entailment", issues)])
+    assert len(digest) <= 1200
+    assert digest.count("CO-01 OBJECTIVE_UNENTAILED") == 1
+    # Whole lines only — the cap never leaves a dangling partial directive.
+    for line in digest.splitlines():
+        assert line.startswith("- [objective_entailment] ")

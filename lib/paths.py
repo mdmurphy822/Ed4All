@@ -28,6 +28,11 @@ Environment:
 
         When ED4ALL_HOME is unset every path is byte-identical to the legacy
         repo-relative default (no behavior change for the in-repo case).
+
+    ED4ALL_CAMPAIGN_DIR: Operator campaign-harness directory (see
+        ``campaign_dir``). Defaults to the neutral repo-relative
+        ``plans/campaign``; a site with its harness elsewhere points at it
+        with this env var.
 """
 
 import os
@@ -308,6 +313,45 @@ def get_endpoints_path() -> Path:
         if home_path.exists():
             return home_path
     return CONFIG_PATH / "endpoints.yaml"
+
+
+# ============================================================================
+# OPERATOR CAMPAIGN HARNESS DIRECTORY
+# ============================================================================
+
+#: Env var naming the operator campaign-harness directory.
+ENV_CAMPAIGN_DIR = "ED4ALL_CAMPAIGN_DIR"
+
+#: Neutral repo-relative default for the operator campaign-harness directory.
+CAMPAIGN_DIR_DEFAULT = PROJECT_ROOT / "plans" / "campaign"
+
+
+def campaign_dir() -> Path:
+    """Resolve the operator campaign-harness directory.
+
+    The campaign harness is an OPERATOR-owned, gitignored ops tree (book
+    manifest, per-book logs, prepared env overlays, launched-run ledger,
+    review queue) that the assistant tool surface reads and the operator's
+    own pilot/driver scripts write. Where that tree lives is a SITE choice,
+    not a code constant — a deployment points the codebase at its own tree
+    with ``ED4ALL_CAMPAIGN_DIR`` (the "registry/env, not hardcode"
+    convention used for LibV2, endpoints, seats, and state dirs).
+
+    Priority:
+    1. ``ED4ALL_CAMPAIGN_DIR`` env var. An absolute path is used verbatim;
+       a relative path resolves against ``PROJECT_ROOT``. ``~`` expands.
+    2. ``PROJECT_ROOT / "plans" / "campaign"`` — the neutral repo-relative
+       default (``CAMPAIGN_DIR_DEFAULT``).
+
+    Read at call time so tests can monkeypatch the env var without
+    re-importing modules. Empty / whitespace values fall back to the default
+    (parse-with-fallback).
+    """
+    raw = os.environ.get(ENV_CAMPAIGN_DIR, "").strip()
+    if raw:
+        candidate = Path(raw).expanduser()
+        return candidate if candidate.is_absolute() else PROJECT_ROOT / candidate
+    return CAMPAIGN_DIR_DEFAULT
 
 
 def get_state_runs_dir() -> Path:
@@ -622,6 +666,11 @@ __all__ = [
     "semantik_output_dir",
     "get_endpoints_path",
     "get_state_runs_dir",
+
+    # Operator campaign-harness directory
+    "ENV_CAMPAIGN_DIR",
+    "CAMPAIGN_DIR_DEFAULT",
+    "campaign_dir",
 
     # LibV2 root resolver
     "libv2_path",

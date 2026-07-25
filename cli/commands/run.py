@@ -205,6 +205,27 @@ def _parse_csv_tokens(raw: Optional[str]) -> Optional[List[str]]:
     return out
 
 
+def _derive_provisional_course_name(corpus: str) -> Optional[str]:
+    """Derive a provisional course name from the corpus path (``--auto-name``).
+
+    Used only when ``--auto-name`` is set WITHOUT ``--course-name``: the
+    provisional identity (run_id / state dir / logging) is minted from the
+    corpus filename (or directory name) via ``canonical_slug``. Returns
+    ``None`` when no usable name can be derived (caller fails loud —
+    workflow creation requires >= 2 chars).
+    """
+    from lib.ontology.slugs import canonical_slug
+
+    path = Path(corpus)
+    if path.is_dir():
+        stem = path.name
+    else:
+        first = corpus.split(",")[0].strip()
+        stem = Path(first).stem
+    slug = canonical_slug(stem)[:40].rstrip("-")
+    return slug if len(slug) >= 2 else None
+
+
 def _build_workflow_params(
     workflow: str,
     *,
@@ -231,6 +252,7 @@ def _build_workflow_params(
     stop_after: Optional[str] = None,
     license_note: Optional[str] = None,
     attribution: Optional[str] = None,
+    auto_name: bool = False,
 ) -> Dict[str, Any]:
     """Build the params dict for a workflow from CLI inputs.
 
@@ -371,6 +393,15 @@ def _build_workflow_params(
         params["license_note"] = license_note
     if attribution:
         params["attribution"] = attribution
+
+    # --auto-name: opt-in H1-derived, run-timestamped course slug. The
+    # course_name above becomes PROVISIONAL (run_id / state dir / logging);
+    # the workflow runner resolves the FINAL slug from the conversion
+    # output's <h1> + the run-init timestamp immediately after
+    # semantik_conversion (+ heading_judge) and before staging. Unset ->
+    # no key on params -> byte-identical current behavior everywhere.
+    if auto_name:
+        params["auto_name"] = True
 
     return params
 
@@ -563,6 +594,10 @@ async def _create_textbook_workflow(
         # failure-driven cache reuse.
         target_block_instance_ids=params.get("target_block_instance_ids"),
         target_page_ids=params.get("target_page_ids"),
+        # --auto-name: forward the opt-in so the workflow runner resolves the
+        # H1-derived final slug post-conversion. Unset -> False ->
+        # byte-identical params on the workflow state.
+        auto_name=bool(params.get("auto_name", False)),
     )
     return json.loads(result)
 
@@ -900,6 +935,25 @@ def _build_orchestrator(
     ),
 )
 @click.option(
+    "--auto-name",
+    "auto_name",
+    is_flag=True,
+    default=False,
+    help=(
+        "Opt-in H1-derived course slug: --course-name becomes the "
+        "PROVISIONAL identity (run_id / state dir / logging; when omitted "
+        "it is derived from the corpus filename). The FINAL slug is "
+        "resolved right after the conversion (+ heading_judge) phases from "
+        "the accessible HTML's <h1> plus the run-init timestamp "
+        "(canonical_slug(h1) capped ~60 chars + -YYYYMMDD-HHMM, e.g. "
+        "intro-to-linear-algebra-20260722-0704); every "
+        "post-conversion phase mints artifacts under it, and the raw h1 is "
+        "recorded as display_title. Honest fallbacks: multi-file corpus / "
+        "missing or garbage h1 keep the provided name (reason logged). "
+        "textbook-to-course only. Default off -> byte-identical behavior."
+    ),
+)
+@click.option(
     "--dry-run",
     is_flag=True,
     help="Show the planned pipeline without executing",
@@ -942,6 +996,7 @@ def run_command(
     stop_after: Optional[str],
     license_note: Optional[str],
     attribution: Optional[str],
+    auto_name: bool,
     dry_run: bool,
     watch: bool,
     output_json: bool,
@@ -1047,6 +1102,46 @@ def run_command(
     target_block_instance_ids = _parse_csv_tokens(block_ids_filter)
     target_page_ids = _parse_csv_tokens(pages_filter)
 
+    # --auto-name: validate scope at parse time (fail fast, loud). Only the
+    # textbook_to_course conversion path produces the accessible HTML whose
+    # <h1> names the course; a Courseforge stage subcommand operates on an
+    # existing export addressed BY course name, so rebinding there would
+    # orphan it.
+    if auto_name:
+        if workflow != "textbook_to_course":
+            click.secho(
+                f"--auto-name is only supported for workflow "
+                f"'textbook_to_course'; got '{workflow}'.",
+                fg="red",
+            )
+            sys.exit(2)
+        if courseforge_stage:
+            click.secho(
+                "--auto-name cannot be combined with a courseforge stage "
+                "subcommand (stages address an existing export by its "
+                "course name).",
+                fg="red",
+            )
+            sys.exit(2)
+        # Without --course-name, mint the PROVISIONAL identity from the
+        # corpus filename (workflow creation needs >= 2 chars for the
+        # run_id / state dir; the final slug is resolved post-conversion).
+        if not course_name and corpus and not resume_run_id:
+            course_name = _derive_provisional_course_name(corpus)
+            if not course_name:
+                click.secho(
+                    f"--auto-name: could not derive a provisional course "
+                    f"name from corpus {corpus!r}; pass --course-name.",
+                    fg="red",
+                )
+                sys.exit(2)
+            click.secho(
+                f"--auto-name: provisional course name {course_name!r} "
+                f"(final slug resolves from the document h1 after "
+                f"conversion).",
+                fg="cyan",
+            )
+
     params = _build_workflow_params(
         workflow,
         corpus=corpus,
@@ -1071,6 +1166,7 @@ def run_command(
         stop_after=stop_after,
         license_note=license_note,
         attribution=attribution,
+        auto_name=auto_name,
         # Pass the EXPLICIT flag (None when unset), not the
         # `_resolve_provider` anthropic-fallback value, so an unset provider
         # leaves the authoring-env resolution to LLM_PROVIDER > local.

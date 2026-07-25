@@ -14,6 +14,7 @@ natural-language query).
 # Importing libv2_generate_quiz attaches the ``generate-quiz``
 # subcommand to the shared ``libv2_group`` Click group at import time.
 from . import libv2_generate_quiz  # noqa: F401
+from .assistant import register_assistant_command
 from .backup import register_backup_command
 from .convert import register_convert_command
 from .doctor import register_doctor_command
@@ -67,4 +68,5 @@ __all__ = [
     "register_convert_command",
     "register_support_bundle_command",
     "register_backup_command",
+    "register_assistant_command",
 ]

@@ -41,15 +41,18 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from Courseforge.generators._rewrite_provider import (  # noqa: E402
     DEFAULT_PROVIDER,
+    ENV_MAX_TOKENS,
     ENV_PROVIDER,
     RewriteProvider,
     RewriteProviderError,
     SUPPORTED_PROVIDERS,
     _BLOCK_TYPE_OUTPUT_CONTRACTS,
+    _DEFAULT_MAX_TOKENS,
     _REWRITE_SYSTEM_PROMPT,
     _escape_orphan_placeholder_tags,
     _format_objectives,
     _objectives_for_block,
+    _resolve_rewrite_max_tokens,
 )
 from blocks import Block, Touch  # noqa: E402  (Phase 2 intermediate format)
 
@@ -138,6 +141,50 @@ def test_unknown_provider_raises_value_error(monkeypatch):
     monkeypatch.delenv(ENV_PROVIDER, raising=False)
     with pytest.raises(ValueError):
         RewriteProvider(provider="bogus")
+
+
+# ---------------------------------------------------------------------------
+# big-model-overflow-fix-2026-07 — max_tokens env override
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_rewrite_max_tokens_default_when_env_unset(monkeypatch):
+    """Env unset resolves to the 4096 default (bumped from the legacy
+    7B-calibrated 2400)."""
+    monkeypatch.delenv(ENV_MAX_TOKENS, raising=False)
+    assert _DEFAULT_MAX_TOKENS == 4096
+    assert _resolve_rewrite_max_tokens(None) == 4096
+
+
+def test_resolve_rewrite_max_tokens_env_positive_int(monkeypatch):
+    monkeypatch.setenv(ENV_MAX_TOKENS, "8192")
+    assert _resolve_rewrite_max_tokens(None) == 8192
+
+
+@pytest.mark.parametrize("bad", ["", "  ", "not-an-int", "0", "-5", "3.5"])
+def test_resolve_rewrite_max_tokens_garbage_falls_back(monkeypatch, bad):
+    """Garbage / non-positive env → the 4096 default (parse-with-fallback)."""
+    monkeypatch.setenv(ENV_MAX_TOKENS, bad)
+    assert _resolve_rewrite_max_tokens(None) == 4096
+
+
+def test_resolve_rewrite_max_tokens_kwarg_wins_over_env(monkeypatch):
+    monkeypatch.setenv(ENV_MAX_TOKENS, "8192")
+    assert _resolve_rewrite_max_tokens(1500) == 1500
+
+
+def test_rewrite_provider_threads_resolved_max_tokens(monkeypatch):
+    """The resolved cap reaches ``RewriteProvider._max_tokens`` (env path)
+    and an explicit kwarg still wins — on both the OpenAI-compatible (local)
+    and the early-return claude_session paths."""
+    monkeypatch.setenv(ENV_PROVIDER, "local")
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    monkeypatch.setenv(ENV_MAX_TOKENS, "6000")
+    assert RewriteProvider()._max_tokens == 6000
+    assert RewriteProvider(max_tokens=1234)._max_tokens == 1234
+    # claude_session early-return branch also honors the resolved cap.
+    p_cs = RewriteProvider(provider="claude_session", dispatcher=object())
+    assert p_cs._max_tokens == 6000
 
 
 # ---------------------------------------------------------------------------

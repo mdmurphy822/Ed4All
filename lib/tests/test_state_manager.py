@@ -301,3 +301,87 @@ class TestConcurrency:
 
         # All reads should return same data
         assert all(r == sample_json_data for r in results)
+
+
+# =============================================================================
+# DEFAULT-SERIALIZER PASSTHROUGH TESTS
+# =============================================================================
+
+class TestAtomicWriteJsonDefault:
+    """Test the optional json.dump default= passthrough."""
+
+    @pytest.mark.unit
+    def test_default_str_serializes_non_native_values(self, tmp_path):
+        """default=str should serialize e.g. datetime/Path values."""
+        from datetime import datetime
+
+        json_path = tmp_path / "test.json"
+        data = {"when": datetime(2026, 7, 21, 20, 55), "where": Path("/x")}
+
+        atomic_write_json(json_path, data, default=str)
+
+        with open(json_path) as f:
+            loaded = json.load(f)
+        assert loaded["when"].startswith("2026-07-21")
+        assert loaded["where"] == "/x"
+
+    @pytest.mark.unit
+    def test_without_default_stays_strict(self, tmp_path):
+        """Omitting default keeps the strict TypeError behavior."""
+        from datetime import datetime
+
+        with pytest.raises(TypeError):
+            atomic_write_json(tmp_path / "t.json", {"when": datetime.now()})
+
+
+# =============================================================================
+# CORRUPTION-GUARDED LOADER TESTS
+# =============================================================================
+
+class TestLoadStateJson:
+    """Test load_state_json / StateFileCorruptedError."""
+
+    @pytest.mark.unit
+    def test_loads_valid_file(self, tmp_path):
+        from lib.state_manager import load_state_json
+
+        json_path = tmp_path / "state.json"
+        atomic_write_json(json_path, {"ok": True})
+
+        assert load_state_json(json_path) == {"ok": True}
+
+    @pytest.mark.unit
+    def test_missing_file_raises_file_not_found(self, tmp_path):
+        from lib.state_manager import load_state_json
+
+        with pytest.raises(FileNotFoundError):
+            load_state_json(tmp_path / "missing.json")
+
+    @pytest.mark.unit
+    def test_corrupted_file_raises_enriched_error(self, tmp_path):
+        from lib.state_manager import StateFileCorruptedError, load_state_json
+
+        json_path = tmp_path / "state.json"
+        # Interleaved-write shape: a complete doc + a second doc's head.
+        json_path.write_text('{"id": "WF-x", "tasks": []}{"id": "WF-x", "st')
+
+        with pytest.raises(StateFileCorruptedError) as excinfo:
+            load_state_json(json_path, recovery_hint="Recover from checkpoints.")
+
+        msg = str(excinfo.value)
+        assert str(json_path) in msg
+        assert "char 27" in msg  # position of the second doc's head
+        assert "Recover from checkpoints." in msg
+        assert isinstance(excinfo.value.__cause__, json.JSONDecodeError)
+
+    @pytest.mark.unit
+    def test_corrupted_error_is_a_value_error(self, tmp_path):
+        """Callers catching ValueError keep working."""
+        from lib.state_manager import StateFileCorruptedError, load_state_json
+
+        json_path = tmp_path / "state.json"
+        json_path.write_text("{ torn")
+
+        with pytest.raises(ValueError):
+            load_state_json(json_path)
+        assert issubclass(StateFileCorruptedError, ValueError)

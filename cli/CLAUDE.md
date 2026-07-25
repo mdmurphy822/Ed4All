@@ -62,7 +62,7 @@ they carry no import risk): `validate-run`, `summarize-run`, `diff-runs`,
 | `mailbox watch` | `commands/mailbox_watch.py` | Outer-session watcher for the `LocalDispatcher` task mailbox. |
 | `mailbox-bridge peek \| complete \| peek-agent \| complete-agent` | `commands/mailbox_bridge.py` | Hidden group (`hidden=True`); operator plumbing for the brokered LLM bridge. |
 | `gui` | `commands/gui_cmd.py` | Launches the control-plane server; see [`gui/CLAUDE.md`](../gui/CLAUDE.md). |
-| `doctor` | `commands/doctor.py` | Preflight/post-mortem. `-g/--group` repeatable; default groups `gpu`/`gpu_profile`/`window`/`environment` (`_DEFAULT_GROUPS`), `provider` is opt-in via `--run`/`--ping`/`-g provider`. |
+| `doctor` | `commands/doctor.py` | Preflight/post-mortem. `-g/--group` repeatable; default groups `gpu`/`gpu_profile`/`window`/`environment` (`_DEFAULT_GROUPS`), `provider` is opt-in via `--run`/`--ping`/`-g provider`, `seat` (vLLM seat topology) is opt-in via `-g seat`/`--run`/a configured seat registry. The `environment` + `window` groups are topology-aware: on a vLLM-seat host (LOCAL_SYNTHESIS_BASE_URL → a registered seat) they probe `/v1/models` instead of the ollama `/api/tags` + `/api/show` (no false "model not pulled / served window unknown" DEGRADED). |
 | `convert` | `commands/convert.py` | Thin PDF/HTML → `{stem}_accessible.html` slice; `--output` required. |
 | `import-docs` | `commands/import_docs.py` | Deterministic Markdown/docs-tree → accessible-HTML corpus. |
 | `harvest-bloom-labels` | `commands/harvest_bloom_labels.py` | No-LLM Bloom-label harvester. |

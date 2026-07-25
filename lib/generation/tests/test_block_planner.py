@@ -741,6 +741,8 @@ def test_ib5_injection_noop_when_flag_off(monkeypatch):
 from lib.generation.block_planner import (  # noqa: E402
     _BLOOM_CEILING_ENV,
     _BLOOM_CLIMB_ENV,
+    _DEFAULT_PLANNER_MAX_TOKENS,
+    _ENV_PLANNER_MAX_TOKENS,
     _LIFECYCLE_ENV,
     _SPACING_ENV,
     _apply_bloom_ceilings,
@@ -748,6 +750,7 @@ from lib.generation.block_planner import (  # noqa: E402
     _apply_spacing,
     _build_prompt,
     _ensure_lifecycle_endpoints,
+    _resolve_block_plan_max_tokens,
     _resolve_planner_model,
     _source_text_blob,
     build_planner_provider,
@@ -806,6 +809,45 @@ def test_ib7_local_seat_constructs_without_nvidia_key(monkeypatch):
     prov = build_planner_provider(provider="local")
     assert prov is not None
     assert getattr(prov, "_provider", "") == "local"
+
+
+# ---- big-model-overflow-fix-2026-07 — planner max_tokens env override ----- #
+def test_resolve_block_plan_max_tokens_default_when_env_unset(monkeypatch):
+    """Env unset resolves to the 4096 default (bumped from the legacy 2048;
+    a truncated week plan corrupts the whole week upstream of authoring)."""
+    monkeypatch.delenv(_ENV_PLANNER_MAX_TOKENS, raising=False)
+    assert _DEFAULT_PLANNER_MAX_TOKENS == 4096
+    assert _resolve_block_plan_max_tokens(None) == 4096
+
+
+def test_resolve_block_plan_max_tokens_env_positive_int(monkeypatch):
+    monkeypatch.setenv(_ENV_PLANNER_MAX_TOKENS, "8192")
+    assert _resolve_block_plan_max_tokens(None) == 8192
+
+
+@pytest.mark.parametrize("bad", ["", "  ", "not-an-int", "0", "-5", "3.5"])
+def test_resolve_block_plan_max_tokens_garbage_falls_back(monkeypatch, bad):
+    """Garbage / non-positive env → the 4096 default (parse-with-fallback)."""
+    monkeypatch.setenv(_ENV_PLANNER_MAX_TOKENS, bad)
+    assert _resolve_block_plan_max_tokens(None) == 4096
+
+
+def test_resolve_block_plan_max_tokens_kwarg_wins_over_env(monkeypatch):
+    monkeypatch.setenv(_ENV_PLANNER_MAX_TOKENS, "8192")
+    assert _resolve_block_plan_max_tokens(4096) == 4096
+
+
+def test_build_planner_provider_threads_resolved_max_tokens(monkeypatch):
+    """The resolved cap reaches the constructed planner provider (env path)
+    and an explicit kwarg still wins."""
+    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
+    monkeypatch.delenv("ED4ALL_DYNAMIC_BLOCK_PLAN_MODEL", raising=False)
+    monkeypatch.setenv("LOCAL_SYNTHESIS_MODEL", "qwen2.5:14b-instruct-q4_K_M")
+    monkeypatch.setenv(_ENV_PLANNER_MAX_TOKENS, "6000")
+    prov = build_planner_provider(provider="local")
+    assert prov is not None and prov._max_tokens == 6000
+    prov2 = build_planner_provider(provider="local", max_tokens=1234)
+    assert prov2 is not None and prov2._max_tokens == 1234
 
 
 # ---- IB7.3 — programmatic Bloom-climb re-sort ----------------------------- #

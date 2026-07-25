@@ -360,6 +360,106 @@ def test_decision_capture_emitted_on_mismatch():
     assert len(mismatch_event["rationale"]) >= 20
 
 
+def test_mismatch_rationales_distinct_per_objective():
+    """Regression — DUPLICATE_BOILERPLATE_RATIONALE (live-run finding).
+
+    The mismatch rationale used to open with a ~107-char static preamble,
+    so every ``abcd_verb_bloom_mismatch`` event shared the same
+    first-80-char prefix and tripped the DecisionCapture boilerplate
+    scanner (``lib/decision_capture.py::_scan_boilerplate_rationales``,
+    which keys on ``_BOILERPLATE_PREFIX_LEN=80``). Two DIFFERENT
+    mismatching objectives must now yield two DIFFERENT rationales —
+    distinct even in their first 80 chars — each ≥ 20 chars and each
+    interpolating that objective's id, verb, and declared Bloom level.
+    """
+    validator = AbcdObjectiveValidator()
+    create_verbs = sorted(BLOOMS_VERBS["create"])
+    remember_verbs = BLOOMS_VERBS["remember"]
+    # Two DISTINCT mismatching verbs (both create-level, neither in remember).
+    mismatch_pool = [v for v in create_verbs if v not in remember_verbs]
+    assert len(mismatch_pool) >= 2, "need two distinct mismatch verbs"
+    verb_a, verb_b = mismatch_pool[0], mismatch_pool[1]
+
+    lo_a = _make_lo(lo_id="CO-01", bloom_level="remember", verb=verb_a)
+    lo_b = _make_lo(lo_id="CO-02", bloom_level="remember", verb=verb_b)
+    capture = _StubDecisionCapture()
+
+    result = validator.validate(
+        {"objectives": [lo_a, lo_b], "decision_capture": capture}
+    )
+
+    assert result.action == "regenerate"
+    rationales = [
+        e["rationale"]
+        for e in capture.events
+        if e["decision_type"] == "abcd_verb_bloom_mismatch"
+    ]
+    assert len(rationales) == 2
+    r_a, r_b = rationales
+    # Distinct as whole strings AND within the scanner's 80-char prefix
+    # window (the property the boilerplate detector actually checks).
+    assert r_a != r_b
+    assert r_a[:80] != r_b[:80]
+    for rationale, lo_id, verb in ((r_a, "CO-01", verb_a), (r_b, "CO-02", verb_b)):
+        assert len(rationale) >= 20
+        assert lo_id in rationale
+        assert verb in rationale
+        assert "remember" in rationale  # the declared level it mismatched
+
+
+def test_mismatch_same_verb_rationales_still_distinct_by_id():
+    """Two LOs with the SAME mismatching verb still get distinct rationales.
+
+    The per-objective id leads the rationale, so even a shared verb +
+    level cannot collapse two objectives to one boilerplate prefix.
+    """
+    validator = AbcdObjectiveValidator()
+    create_verbs = sorted(BLOOMS_VERBS["create"])
+    remember_verbs = BLOOMS_VERBS["remember"]
+    verb = next(v for v in create_verbs if v not in remember_verbs)
+
+    lo_a = _make_lo(lo_id="CO-11", bloom_level="remember", verb=verb)
+    lo_b = _make_lo(lo_id="CO-12", bloom_level="remember", verb=verb)
+    capture = _StubDecisionCapture()
+    validator.validate({"objectives": [lo_a, lo_b], "decision_capture": capture})
+
+    rationales = [
+        e["rationale"]
+        for e in capture.events
+        if e["decision_type"] == "abcd_verb_bloom_mismatch"
+    ]
+    assert len(rationales) == 2
+    assert rationales[0][:80] != rationales[1][:80]
+
+
+def test_pass_rationales_distinct_per_objective():
+    """abcd_authored rationales are distinct even for a shared verb+level.
+
+    Same boilerplate-scanner regression guard for the positive path: the
+    pass rationale used to omit the objective id entirely, so a corpus of
+    LOs sharing one verb collapsed to a single 80-char prefix.
+    """
+    validator = AbcdObjectiveValidator()
+    verb = _pick_verb("remember")
+    lo_a = _make_lo(lo_id="CO-21", verb=verb)
+    lo_b = _make_lo(lo_id="CO-22", verb=verb)
+    capture = _StubDecisionCapture()
+    validator.validate({"objectives": [lo_a, lo_b], "decision_capture": capture})
+
+    rationales = [
+        e["rationale"]
+        for e in capture.events
+        if e["decision_type"] == "abcd_authored"
+    ]
+    assert len(rationales) == 2
+    assert rationales[0] != rationales[1]
+    assert rationales[0][:80] != rationales[1][:80]
+    for rationale, lo_id in ((rationales[0], "CO-21"), (rationales[1], "CO-22")):
+        assert len(rationale) >= 20
+        assert lo_id in rationale
+        assert verb in rationale
+
+
 def test_decision_capture_emitted_on_pass():
     """Happy path emits decision_type='abcd_authored'."""
     validator = AbcdObjectiveValidator()

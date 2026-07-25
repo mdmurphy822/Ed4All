@@ -54,12 +54,15 @@ if str(PROJECT_ROOT) not in sys.path:
 from Courseforge.generators._outline_provider import (  # noqa: E402
     DEFAULT_MODEL,
     DEFAULT_PROVIDER,
+    ENV_MAX_TOKENS,
     ENV_PROVIDER,
     MAX_PARSE_RETRIES,
     OutlineProvider,
     OutlineProviderError,
     SUPPORTED_PROVIDERS,
     _BLOCK_TYPE_JSON_SCHEMAS,
+    _DEFAULT_MAX_TOKENS,
+    _resolve_outline_max_tokens,
     _OBJECTIVE_ECHO_WARNING,
     _OUTLINE_KIND_BOUNDS,
     _OUTLINE_SYSTEM_PROMPT,
@@ -541,7 +544,15 @@ def test_outline_failure_emits_decision_event(monkeypatch):
     )
     block = _stub_block(block_id="page-1#concept_failed_0")
     with pytest.raises(OutlineProviderError):
-        p.generate_outline(block, source_chunks=[], objectives=[])
+        p.generate_outline(
+            block,
+            source_chunks=[
+                {"id": "chunk-alpha", "body": "Alpha grounding text."},
+            ],
+            objectives=[
+                {"id": "CO-01", "statement": "Explain alpha."},
+            ],
+        )
 
     assert len(capture.events) == 1, (
         "expected exactly one block_outline_call event on failure"
@@ -557,6 +568,26 @@ def test_outline_failure_emits_decision_event(monkeypatch):
     assert "success=False" in rationale
     # Captured the attempts count (>= 1; up to MAX_PARSE_RETRIES).
     assert "attempts=" in rationale
+    # Capture-quality contract (proficient floor): the event references
+    # the REAL inputs the call consumed — the block plus the supplied
+    # source-chunk / objective universes — and the genuine retry /
+    # escalation alternatives the parse-retry loop weighed.
+    inputs_ref = event["inputs_ref"]
+    assert {
+        "source_type": "block",
+        "path_or_id": "page-1#concept_failed_0",
+    } in inputs_ref
+    assert {
+        "source_type": "source_chunk",
+        "path_or_id": "chunk-alpha",
+    } in inputs_ref
+    assert {
+        "source_type": "learning_objective",
+        "path_or_id": "CO-01",
+    } in inputs_ref
+    alternatives = event["alternatives_considered"]
+    assert alternatives, "failure event must carry genuine alternatives"
+    assert any("accept the attempt-" in a for a in alternatives)
 
 
 def test_outline_success_emits_decision_event(monkeypatch):
@@ -588,6 +619,20 @@ def test_outline_success_emits_decision_event(monkeypatch):
     assert "success=True" in rationale
     assert f"model={p._model}" in rationale
     assert "retry_count=" in rationale
+    # Capture-quality contract (proficient floor): even with an empty
+    # chunk/objective universe the event references the real block input
+    # and the genuine retry/escalation alternatives the loop weighed —
+    # never empty inputs_ref AND empty alternatives (that rates
+    # "developing" and excludes the row from the training corpus).
+    inputs_ref = event["inputs_ref"]
+    assert {
+        "source_type": "block",
+        "path_or_id": block.block_id,
+    } in inputs_ref
+    alternatives = event["alternatives_considered"]
+    assert alternatives, "success event must carry genuine alternatives"
+    assert any("re-dispatch" in a for a in alternatives)
+    assert any("outline_exhausted" in a for a in alternatives)
 
 
 # ---------------------------------------------------------------------------
@@ -727,20 +772,77 @@ def test_outline_user_prompt_non_example_block_omits_concrete_instance_directive
     assert "Example block contract" not in rendered
 
 
-def test_outline_kind_bounds_example_key_claims_bumped():
-    """CB5b bounds change — ``_OUTLINE_KIND_BOUNDS["example"]["key_claims"]``
-    is widened to (2, 4) so a concrete worked instance has room for the
-    problem + step(s) + answer claims. (2, 4) keeps ``hi >= lo`` and
-    leaves headroom without forcing the 3-part decomposition."""
-    lo, hi = _OUTLINE_KIND_BOUNDS["example"]["key_claims"]
-    assert (lo, hi) == (2, 4)
-    # Sanity: the bump must still produce a valid schema (minItems <=
-    # maxItems) for the example block.
-    schema = _build_block_outline_schema("example")
-    key_claims_arms = schema["properties"]["key_claims"]["oneOf"]
-    for arm in key_claims_arms:
-        assert arm["minItems"] == 2
-        assert arm["maxItems"] == 4
+def test_resolve_outline_max_tokens_default_when_env_unset(monkeypatch):
+    """big-model-overflow-fix-2026-07 — env unset resolves to the 4096
+    default (bumped from the legacy 7B-calibrated 1200)."""
+    monkeypatch.delenv(ENV_MAX_TOKENS, raising=False)
+    assert _DEFAULT_MAX_TOKENS == 4096
+    assert _resolve_outline_max_tokens(None) == 4096
+
+
+def test_resolve_outline_max_tokens_env_positive_int(monkeypatch):
+    """A positive-int env value is honored."""
+    monkeypatch.setenv(ENV_MAX_TOKENS, "8192")
+    assert _resolve_outline_max_tokens(None) == 8192
+
+
+@pytest.mark.parametrize("bad", ["", "  ", "not-an-int", "0", "-5", "3.5"])
+def test_resolve_outline_max_tokens_garbage_falls_back(monkeypatch, bad):
+    """Garbage / non-positive env → the 4096 default (parse-with-fallback;
+    a misconfigured knob never shrinks the cap)."""
+    monkeypatch.setenv(ENV_MAX_TOKENS, bad)
+    assert _resolve_outline_max_tokens(None) == 4096
+
+
+def test_resolve_outline_max_tokens_kwarg_wins_over_env(monkeypatch):
+    """Per-call kwarg beats the env (kwarg > env > default)."""
+    monkeypatch.setenv(ENV_MAX_TOKENS, "8192")
+    assert _resolve_outline_max_tokens(1500) == 1500
+
+
+def test_outline_provider_threads_resolved_max_tokens(monkeypatch):
+    """The resolved cap reaches ``OutlineProvider._max_tokens`` (env path)
+    and an explicit kwarg still wins."""
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    monkeypatch.setenv(ENV_MAX_TOKENS, "6000")
+    p = OutlineProvider(provider="local")
+    assert p._max_tokens == 6000
+    p2 = OutlineProvider(provider="local", max_tokens=1234)
+    assert p2._max_tokens == 1234
+
+
+def test_outline_kind_bounds_lowered_floors_accept_single_claim():
+    """big-model-overflow-fix-2026-07 — the ``key_claims`` MINIMUM is lowered
+    from 2 to 1 for the six dense-block types a large reasoning seat tends to
+    author as ONE dense, well-cited claim (max unchanged). A single-claim
+    structured block must now validate for each."""
+    lowered = {
+        "example": (1, 4),
+        "explanation": (1, 6),
+        "table": (1, 8),
+        "flip_card_grid": (1, 8),
+        "acronym": (1, 8),
+        "worked_example": (1, 6),
+    }
+    for block_type, (lo, hi) in lowered.items():
+        assert _OUTLINE_KIND_BOUNDS[block_type]["key_claims"] == (lo, hi)
+        schema = _build_block_outline_schema(block_type)
+        key_claims_schema = schema["properties"]["key_claims"]
+        for arm in key_claims_schema["oneOf"]:
+            assert arm["minItems"] == 1
+            assert arm["maxItems"] == hi
+        # A single well-formed structured claim now validates against the
+        # key_claims subschema (was rejected under the old floor of 2).
+        single_structured = [
+            {"claim": "one dense fact", "source_chunk_ids": ["c1"]}
+        ]
+        jsonschema.Draft202012Validator(key_claims_schema).validate(
+            single_structured
+        )
+        # A single flat-string claim (legacy arm) validates too.
+        jsonschema.Draft202012Validator(key_claims_schema).validate(
+            ["one dense fact"]
+        )
 
 
 def test_outline_retry_directive_matches_oneof_validation_error():
@@ -773,21 +875,22 @@ def test_outline_retry_directive_matches_oneof_validation_error():
 
 
 def test_surface_key_claims_min_items_unmasks_oneof_suberror():
-    """A single well-formed structured claim against an ``explanation``
-    block (``key_claims`` minItems=2) raises the masking top-level
+    """A single well-formed structured claim against a ``diagram``
+    block (``key_claims`` minItems=2 — one of the types that RETAINS the
+    2-floor after the big-model-overflow fix) raises the masking top-level
     ``oneOf`` error; ``_surface_key_claims_min_items`` walks ``exc.context``
     and returns the structured arm's real "too short" sub-error so the
     true cause (NOT the bare oneOf) drives the next retry."""
-    schema = _build_block_outline_schema("explanation")
+    schema = _build_block_outline_schema("diagram")
     candidate = {
         "block_id": "b1",
-        "block_type": "explanation",
+        "block_type": "diagram",
         "content_type": "explanation",
         "bloom_level": "understand",
         "objective_refs": ["CO-01"],
         "curies": [],
         # Exactly ONE structured claim — well-formed, but below the
-        # explanation block's key_claims minItems=2 bound.
+        # diagram block's key_claims minItems=2 bound.
         "key_claims": [{"claim": "one idea", "source_chunk_ids": ["c1"]}],
         "section_skeleton": [{"h": "x"}],
         "source_refs": [],
@@ -831,21 +934,22 @@ def test_surface_key_claims_min_items_ignores_non_key_claims_oneof():
     assert _surface_key_claims_min_items(excinfo.value) is None
 
 
-def test_match_retry_directive_returns_min_items_directive_for_explanation():
+def test_match_retry_directive_returns_min_items_directive_for_diagram():
     """With the surfaced ``key_claims: ... is too short`` sub-error,
     ``_match_retry_directive`` returns the dedicated minItems decomposition
     directive (NOT the W1.5.B "emit objects not flat strings" directive),
-    with the per-type min interpolated to 2 for ``explanation``."""
+    with the per-type min interpolated to 2 for ``diagram`` (a type that
+    RETAINS the 2-floor after the big-model-overflow fix)."""
     err = (
         "key_claims: [{'claim': 'one idea'}] is too short | "
         "[...] is not valid under any of the given schemas"
     )
-    directive = _match_retry_directive(err, "explanation")
+    directive = _match_retry_directive(err, "diagram")
     assert directive is not None
     # The minItems directive — NOT the W1.5.B oneOf catch-all.
     assert "key_claims has too FEW entries" in directive
     assert "MUST be a list of objects" not in directive  # W1.5.B signature
-    # The per-type min (explanation -> 2) is interpolated; the {{...}}
+    # The per-type min (diagram -> 2) is interpolated; the {{...}}
     # escape collapses to a literal {claim, source_chunk_ids} shape hint.
     assert "at least 2 distinct" in directive
     assert "{claim, source_chunk_ids}" in directive
@@ -853,7 +957,7 @@ def test_match_retry_directive_returns_min_items_directive_for_explanation():
     assert "Do NOT fabricate" in directive
     assert "decomposing" in directive
     # Confirm the resolved min tracks the canonical bound for the type.
-    assert _OUTLINE_KIND_BOUNDS["explanation"]["key_claims"][0] == 2
+    assert _OUTLINE_KIND_BOUNDS["diagram"]["key_claims"][0] == 2
 
 
 def test_min_items_directive_ordered_before_w15b_oneof_catchall():

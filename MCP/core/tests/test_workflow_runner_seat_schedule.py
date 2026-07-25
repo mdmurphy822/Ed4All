@@ -122,17 +122,23 @@ def test_seat_transitions_across_two_pass_order(monkeypatch, _seat_env):
             name, set(desired), seat_state, None
         )
 
-    # Super starts EXACTLY once (at course_planning) and is never cold-restarted
-    # for assessment after validation — the whole point of the schedule.
-    assert starts.count("spark-super") == 1
+    # Super starts EXACTLY twice: once at course_planning (held warm through
+    # assessment_synthesis — never cold-restarted inside that range), and
+    # once at training_synthesis (2026-07-22 in-build training synthesis:
+    # the pair paraphrase pass dispatches to the local Super seat, so the
+    # schedule brings it back up after the seat-free NLI validation range).
+    assert starts.count("spark-super") == 2
     assert starts.count("spark-glm") == 1
     assert starts.count("spark-qwen") == 1
-    # Super is stopped when the seat-free validation range begins.
-    assert "spark-super" in stops
+    # Super is stopped three times: the fresh-run clean-start sweep at the
+    # first scheduled phase (stops every registered undesired seat), when the
+    # seat-free validation range begins, and again when training_synthesis
+    # hands the card back (libv2_archival is []).
+    assert stops.count("spark-super") == 3
     # The conversion seats are swapped out exactly once (at course_planning).
     assert stops.count("spark-glm") == 1
     assert stops.count("spark-qwen") == 1
-    # Final seat-state is empty (post_rewrite..finalization declare []).
+    # Final seat-state is empty (libv2_archival..finalization declare []).
     assert seat_state == set()
 
 

@@ -155,3 +155,126 @@ def test_withheld_edge_never_in_graph_sft_pair(tmp_path):
     for p in rel_pairs:
         text = p["completion"]
         assert not ("Concept A" in text and "Concept B" in text)
+
+
+# --------------------------------------------------------------------------- #
+# S4 sequencing fix: pre-build the holdout split BEFORE graph-pair emission    #
+# --------------------------------------------------------------------------- #
+#
+# The in-build ``training_synthesis`` phase runs BEFORE any eval, so on a
+# fresh corpus ``eval/holdout_split.json`` did not exist yet and the S4
+# reduction silently no-op'd — the graph->pair generators trained on 100% of
+# the edges, including the ones the Stage-B eval harness would LATER withhold
+# (its lazy ``HoldoutBuilder`` build at eval time). These tests pin the fix:
+# ``run_synthesis`` pre-builds the split when a graph->pair arm is enabled.
+
+from Trainforge.synthesize_training import (  # noqa: E402
+    _ensure_holdout_split_for_graph_pairs,
+    run_synthesis,
+)
+
+
+def _write_pedagogy_graph(course_dir: Path) -> None:
+    (course_dir / "graph").mkdir(parents=True, exist_ok=True)
+    (course_dir / "graph" / "pedagogy_graph.json").write_text(
+        json.dumps({
+            "nodes": [],
+            "edges": [
+                {"source": "concept-a", "target": "concept-b",
+                 "relation_type": "related_to"},
+                {"source": "concept-b", "target": "concept-c",
+                 "relation_type": "related_to"},
+            ],
+        }),
+        encoding="utf-8",
+    )
+
+
+def test_prebuild_creates_split_from_pedagogy_graph(tmp_path):
+    _write_pedagogy_graph(tmp_path)
+    split = tmp_path / "eval" / "holdout_split.json"
+    assert not split.exists()
+    _ensure_holdout_split_for_graph_pairs(tmp_path)
+    assert split.exists()
+    payload = json.loads(split.read_text(encoding="utf-8"))
+    # 2 same-relation edges at 10% -> exactly 1 withheld (k = max(1, 0), capped n-1).
+    assert len(payload["withheld_edges"]) == 1
+    # The pre-built split immediately feeds the reduction.
+    idx = _load_withheld_edge_index(tmp_path)
+    assert len(idx) == 1
+
+
+def test_prebuild_noop_when_split_already_exists(tmp_path):
+    _write_pedagogy_graph(tmp_path)
+    sentinel = {"withheld_edges": [], "sentinel": "pre-existing"}
+    (tmp_path / "eval").mkdir(parents=True)
+    split = tmp_path / "eval" / "holdout_split.json"
+    split.write_text(json.dumps(sentinel), encoding="utf-8")
+    _ensure_holdout_split_for_graph_pairs(tmp_path)
+    # Existing split is respected verbatim (never rebuilt / clobbered).
+    assert json.loads(split.read_text(encoding="utf-8")) == sentinel
+
+
+def test_prebuild_noop_without_pedagogy_graph(tmp_path):
+    # Legacy corpus with no graph: best-effort skip, no raise, no file.
+    _ensure_holdout_split_for_graph_pairs(tmp_path)
+    assert not (tmp_path / "eval" / "holdout_split.json").exists()
+
+
+def test_prebuild_respects_explicit_holdout_path(tmp_path):
+    _write_pedagogy_graph(tmp_path)
+    explicit = tmp_path / "elsewhere" / "holdout_split.json"
+    _ensure_holdout_split_for_graph_pairs(tmp_path, explicit)
+    # Caller owns the explicit path: nothing is built anywhere.
+    assert not (tmp_path / "eval" / "holdout_split.json").exists()
+    assert not explicit.exists()
+
+
+def test_run_synthesis_prebuilds_split_and_reduces_graph_sft(tmp_path):
+    """End-to-end (mock provider, offline): a FRESH corpus with no holdout
+    split gets one built inside run_synthesis, and the graph->SFT arm emits
+    from the holdout-REDUCED graph (holdout_edges_excluded > 0)."""
+    import shutil
+
+    fixture = Path(__file__).resolve().parent / "fixtures" / "mini_course_training"
+    course = tmp_path / "mini_course_training"
+    shutil.copytree(fixture, course)
+    for stale in (
+        course / "training_specs" / "instruction_pairs.jsonl",
+        course / "training_specs" / "preference_pairs.jsonl",
+    ):
+        if stale.exists():
+            stale.unlink()
+
+    _write_pedagogy_graph(course)
+    # Concept graph mirrors the pedagogy edges so the withheld edge has a
+    # concept-graph counterpart to exclude.
+    (course / "graph" / "concept_graph_semantic.json").write_text(
+        json.dumps({
+            "kind": "concept_semantic",
+            "nodes": [
+                {"id": "concept-a", "label": "Concept A", "occurrences": ["c1"]},
+                {"id": "concept-b", "label": "Concept B", "occurrences": ["c2"]},
+                {"id": "concept-c", "label": "Concept C", "occurrences": ["c3"]},
+            ],
+            "edges": [
+                {"source": "concept-a", "target": "concept-b", "type": "related-to",
+                 "edge_status": "supported"},
+                {"source": "concept-b", "target": "concept-c", "type": "related-to",
+                 "edge_status": "supported"},
+            ],
+        }),
+        encoding="utf-8",
+    )
+    assert not (course / "eval" / "holdout_split.json").exists()
+
+    stats = run_synthesis(course, "MINI_101", provider="mock", with_graph_sft=True)
+
+    split = course / "eval" / "holdout_split.json"
+    assert split.exists(), "run_synthesis must pre-build the holdout split"
+    payload = json.loads(split.read_text(encoding="utf-8"))
+    assert len(payload["withheld_edges"]) == 1
+    # The reduction fired against real withheld edges — the defect scenario
+    # (fresh corpus, empty index, 0 excluded) is closed.
+    assert stats.holdout_edges_excluded == 1
+    assert stats.graph_sft_pairs_emitted >= 1

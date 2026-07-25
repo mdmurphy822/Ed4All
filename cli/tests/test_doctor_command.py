@@ -11,11 +11,29 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from click.testing import CliRunner
 
 from cli.commands import doctor as doctor_mod
 from cli.commands.doctor import doctor_command
 from lib.diagnostics import CheckResult, Severity, registered_checks
+
+
+@pytest.fixture(autouse=True)
+def _clear_seat_topology_env(monkeypatch):
+    """Keep the suite hermetic w.r.t. the ``seat`` group's env-driven opt-in.
+
+    The bare-default group selection now adds ``seat`` when a seat registry is
+    configured (``_seat_registry_present``), so a developer shell that has
+    sourced the vLLM-seat env would otherwise flip the bare-default assertions.
+    Clear those envs unless a test sets them itself.
+    """
+    for var in (
+        "ED4ALL_SEAT_BASE_URLS",
+        "ED4ALL_VLLM_CONTAINERS",
+        "ED4ALL_SEAT_LAUNCH_SPECS",
+    ):
+        monkeypatch.delenv(var, raising=False)
 
 
 # ---------------------------------------------------------------------- #
@@ -68,29 +86,24 @@ def _patch_run_checks(monkeypatch, results, *, capture=None):
 # ---------------------------------------------------------------------- #
 
 
-def test_bootstrap_registers_exactly_five_groups_and_is_idempotent():
-    doctor_mod._bootstrap_checks()
-    groups_once = {g for g, _ in registered_checks()}
-    assert groups_once == {
+def test_bootstrap_registers_all_groups_and_is_idempotent():
+    expected = {
         "gpu",
         "gpu_profile",
         "window",
         "environment",
         "provider",
+        "seat",
         "postmortem",
     }
+    doctor_mod._bootstrap_checks()
+    groups_once = {g for g, _ in registered_checks()}
+    assert groups_once == expected
 
     # Idempotent: a second bootstrap clears-then-registers, same set.
     doctor_mod._bootstrap_checks()
     groups_twice = {g for g, _ in registered_checks()}
-    assert groups_twice == {
-        "gpu",
-        "gpu_profile",
-        "window",
-        "environment",
-        "provider",
-        "postmortem",
-    }
+    assert groups_twice == expected
 
 
 # ---------------------------------------------------------------------- #
@@ -427,7 +440,14 @@ def test_doctor_run_adds_provider_group_and_threads_run_config(monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert "provider" in capture["groups"]
-    assert capture["groups"] == ("gpu", "gpu_profile", "window", "environment", "provider")
+    assert capture["groups"] == (
+        "gpu",
+        "gpu_profile",
+        "window",
+        "environment",
+        "provider",
+        "seat",
+    )
     rc = capture["run_config"]
     assert rc is not None
     assert rc["workflow"] == "textbook_to_course"
@@ -849,3 +869,48 @@ def test_doctor_run_id_json_reflects_failed_run_exit_code(monkeypatch):
     payload = json.loads(result.output)
     assert payload["exit_code"] == 2
     assert "DANGER" in payload["summary"]
+
+
+# ---------------------------------------------------------------------- #
+# seat group opt-in (P1-2 wiring)
+# ---------------------------------------------------------------------- #
+
+
+def test_bare_doctor_omits_seat_without_registry(monkeypatch):
+    capture: dict = {}
+    _patch_run_checks(monkeypatch, _all_ok_results(), capture=capture)
+    # No seat registry env (cleared by the autouse fixture).
+    result = CliRunner().invoke(doctor_command, [])
+    assert result.exit_code == 0, result.output
+    assert capture["groups"] == ("gpu", "gpu_profile", "window", "environment")
+    assert "seat" not in capture["groups"]
+
+
+def test_bare_doctor_adds_seat_when_registry_present(monkeypatch):
+    capture: dict = {}
+    _patch_run_checks(monkeypatch, _all_ok_results(), capture=capture)
+    monkeypatch.setenv("ED4ALL_SEAT_BASE_URLS", "spark-super=http://localhost:8001")
+    result = CliRunner().invoke(doctor_command, [])
+    assert result.exit_code == 0, result.output
+    assert capture["groups"] == ("gpu", "gpu_profile", "window", "environment", "seat")
+
+
+def test_seat_registry_present_helper(monkeypatch):
+    assert doctor_mod._seat_registry_present() is False
+    monkeypatch.setenv("ED4ALL_VLLM_CONTAINERS", "http://localhost:8001=vllm-super")
+    assert doctor_mod._seat_registry_present() is True
+
+
+def test_explicit_group_seat_is_valid(monkeypatch):
+    capture: dict = {}
+    _patch_run_checks(monkeypatch, [_result("seat_loopback", "seat", Severity.OK)], capture=capture)
+    result = CliRunner().invoke(doctor_command, ["--group", "seat"])
+    assert result.exit_code == 0, result.output
+    assert capture["groups"] == ("seat",)
+
+
+def test_help_lists_gpu_profile_in_default_groups():
+    result = CliRunner().invoke(doctor_command, ["--help"])
+    assert result.exit_code == 0
+    assert "gpu_profile" in result.output
+    assert "seat is opt-in" in result.output

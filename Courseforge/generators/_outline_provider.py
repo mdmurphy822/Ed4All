@@ -21,7 +21,9 @@ Constructor surface (per Phase 3 §2.1.1):
 - ``grammar_mode`` — ``"gbnf" | "json_schema" | "json_object" | "none"``
   (env ``COURSEFORGE_OUTLINE_GRAMMAR_MODE``); ``None`` autodetects from
   ``provider`` + ``base_url``.
-- ``max_tokens`` — defaults to ``1200`` (outline JSON is short).
+- ``max_tokens`` — defaults to ``4096`` (env ``COURSEFORGE_OUTLINE_MAX_TOKENS``;
+  a large reasoning seat produces dense outline JSON that overruns a small
+  7B-calibrated cap → ``finish_reason='length'`` truncation).
 - ``temperature`` — defaults to ``0.0`` (outline tier is deterministic).
 
 Sibling-of-:class:`Courseforge.generators._provider.ContentGeneratorProvider`,
@@ -110,6 +112,12 @@ ENV_GRAMMAR_MODE = "COURSEFORGE_OUTLINE_GRAMMAR_MODE"
 # into a single outline-tier user prompt + the input-truncation tripwire.
 ENV_MAX_CHUNKS = "COURSEFORGE_OUTLINE_MAX_CHUNKS"
 ENV_TRUNCATION_TRIPWIRE = "COURSEFORGE_OUTLINE_TRUNCATION_TRIPWIRE"
+# big-model-overflow-fix-2026-07: per-call generation cap override. A large
+# reasoning seat emits denser/longer outline JSON than the 7B this tier was
+# calibrated for; the old 1200-token default truncated ~30% of blocks
+# (finish_reason='length' → malformed JSON → escalation). Resolution
+# (high → low): ``max_tokens`` kwarg > this env > the 4096 default.
+ENV_MAX_TOKENS = "COURSEFORGE_OUTLINE_MAX_TOKENS"
 
 DEFAULT_PROVIDER = "local"
 DEFAULT_MODEL = "qwen2.5:7b-instruct-q4_K_M"
@@ -128,8 +136,40 @@ DEFAULT_MAX_CHUNKS = 8
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 _FALSEY = frozenset({"0", "false", "no", "off"})
 
-_DEFAULT_MAX_TOKENS = 1200
+_DEFAULT_MAX_TOKENS = 4096
 _DEFAULT_TEMPERATURE = 0.0
+
+
+def _resolve_outline_max_tokens(explicit: Optional[int]) -> int:
+    """Resolve the outline-tier generation cap: kwarg > env > default.
+
+    ``explicit`` (the ``max_tokens`` kwarg) wins when supplied. Otherwise read
+    :data:`ENV_MAX_TOKENS` (``COURSEFORGE_OUTLINE_MAX_TOKENS``) and parse it as a
+    positive int; a missing / unparseable / non-positive value falls back to
+    :data:`_DEFAULT_MAX_TOKENS`. Parse-with-fallback mirrors
+    ``_textbook_synthesis_provider._resolve_synthesis_max_tokens`` so a garbage
+    env value never shrinks the cap.
+    """
+    if explicit is not None:
+        return int(explicit)
+    raw = os.environ.get(ENV_MAX_TOKENS)
+    if not raw or not str(raw).strip():
+        return _DEFAULT_MAX_TOKENS
+    try:
+        parsed = int(str(raw).strip())
+    except (TypeError, ValueError):
+        logger.warning(
+            "OutlineProvider: ignoring non-integer %s=%r; using default %d",
+            ENV_MAX_TOKENS, raw, _DEFAULT_MAX_TOKENS,
+        )
+        return _DEFAULT_MAX_TOKENS
+    if parsed <= 0:
+        logger.warning(
+            "OutlineProvider: ignoring non-positive %s=%r; using default %d",
+            ENV_MAX_TOKENS, raw, _DEFAULT_MAX_TOKENS,
+        )
+        return _DEFAULT_MAX_TOKENS
+    return parsed
 
 
 def _resolve_outline_max_chunks(
@@ -352,7 +392,11 @@ _OUTLINE_KIND_BOUNDS: Dict[str, Dict[str, Tuple[int, int]]] = {
     # the rewrite tier rendered a stub). (2, 4) leaves headroom for the
     # 3-part problem/steps/answer decomposition without forcing it.
     "example": {
-        "key_claims": (2, 4),
+        # big-model-overflow-fix-2026-07: floor 2 -> 1 (mirrors the 65a9efe8
+        # "lower over-demanding floors" precedent). A large seat routinely
+        # emits ONE dense, well-cited worked-instance claim; the (2, ...) floor
+        # rejected it and burned the regen budget. Max unchanged.
+        "key_claims": (1, 4),
         "section_skeleton": (0, 2),
         "summary_chars": (60, 300),
     },
@@ -372,7 +416,9 @@ _OUTLINE_KIND_BOUNDS: Dict[str, Dict[str, Tuple[int, int]]] = {
     # Explanations are the long-form pedagogical block; allow more
     # sections + claims.
     "explanation": {
-        "key_claims": (2, 6),
+        # big-model-overflow-fix-2026-07: floor 2 -> 1 (65a9efe8 precedent) —
+        # a big model's one dense well-cited claim must SHIP, not be rejected.
+        "key_claims": (1, 6),
         "section_skeleton": (1, 4),
         "summary_chars": (120, 500),
     },
@@ -408,7 +454,9 @@ _OUTLINE_KIND_BOUNDS: Dict[str, Dict[str, Tuple[int, int]]] = {
     },
     # Flip-card grids — N cards × (term, definition).
     "flip_card_grid": {
-        "key_claims": (2, 8),
+        # big-model-overflow-fix-2026-07: floor 2 -> 1 (65a9efe8 precedent) —
+        # a big model's one dense well-cited claim must SHIP, not be rejected.
+        "key_claims": (1, 8),
         "section_skeleton": (1, 1),
         "summary_chars": (60, 300),
     },
@@ -502,14 +550,18 @@ _OUTLINE_KIND_BOUNDS: Dict[str, Dict[str, Tuple[int, int]]] = {
     # Comparison / tabular block — one claim per row's salient fact, no
     # section decomposition (the rows ARE the structure).
     "table": {
-        "key_claims": (2, 8),
+        # big-model-overflow-fix-2026-07: floor 2 -> 1 (65a9efe8 precedent) —
+        # a big model's one dense well-cited claim must SHIP, not be rejected.
+        "key_claims": (1, 8),
         "section_skeleton": (0, 1),
         "summary_chars": (60, 300),
     },
     # Acronym / mnemonic block — one claim per letter→term mapping; atomic
     # (the <dl> rows are the structure, no sub-sections).
     "acronym": {
-        "key_claims": (2, 8),
+        # big-model-overflow-fix-2026-07: floor 2 -> 1 (65a9efe8 precedent) —
+        # a big model's one dense well-cited claim must SHIP, not be rejected.
+        "key_claims": (1, 8),
         "section_skeleton": (0, 0),
         "summary_chars": (40, 240),
     },
@@ -537,7 +589,9 @@ _OUTLINE_KIND_BOUNDS: Dict[str, Dict[str, Tuple[int, int]]] = {
     # Worked example (faded) — a fully-worked procedure: one claim per
     # subgoal/step plus problem + answer; section_skeleton holds the steps.
     "worked_example": {
-        "key_claims": (2, 6),
+        # big-model-overflow-fix-2026-07: floor 2 -> 1 (65a9efe8 precedent) —
+        # a big model's one dense well-cited claim must SHIP, not be rejected.
+        "key_claims": (1, 6),
         "section_skeleton": (1, 3),
         "summary_chars": (80, 400),
     },
@@ -2231,7 +2285,10 @@ class OutlineProvider(_BaseLLMProvider):
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         capture: Optional[Any] = None,
-        max_tokens: int = _DEFAULT_MAX_TOKENS,
+        # ``None`` sentinel → resolve from ``COURSEFORGE_OUTLINE_MAX_TOKENS``
+        # env (falling back to :data:`_DEFAULT_MAX_TOKENS`, 4096). An explicit
+        # int wins outright (per-call kwarg > env > default).
+        max_tokens: Optional[int] = None,
         temperature: float = _DEFAULT_TEMPERATURE,
         # Per-request HTTP timeout (seconds). Resolution chain (high →
         # low): this kwarg > ``ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS`` env
@@ -2284,6 +2341,10 @@ class OutlineProvider(_BaseLLMProvider):
         if resolved_provider == _OPENAI_COMPATIBLE_ALIAS:
             resolved_provider = "local"
 
+        # Resolve the per-call generation cap: kwarg > env > default. A large
+        # reasoning seat overruns the legacy 7B-calibrated cap and truncates.
+        resolved_max_tokens = _resolve_outline_max_tokens(max_tokens)
+
         # Per-call kwarg wins; otherwise source the generous default
         # from ``ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS`` (fallback 300.0).
         resolved_timeout: float = (
@@ -2297,7 +2358,7 @@ class OutlineProvider(_BaseLLMProvider):
             api_key=api_key,
             base_url=base_url,
             capture=capture,
-            max_tokens=max_tokens,
+            max_tokens=resolved_max_tokens,
             temperature=temperature,
             timeout=resolved_timeout,
             client=client,
@@ -2458,6 +2519,21 @@ class OutlineProvider(_BaseLLMProvider):
         # never fabricating an id outside the block's own source chunks.
         valid_chunk_ids = _block_source_chunk_ids(source_chunks)
 
+        # Capture-quality contract: the REAL input universes this call
+        # consumes, threaded into every ``_emit_per_call_decision`` below
+        # so the ``block_outline_call`` event's ``inputs_ref`` references
+        # the actual grounding (never fabricated). Sorted for stable,
+        # replayable capture rows.
+        capture_chunk_ids = sorted(valid_chunk_ids)
+        capture_objective_ids = [
+            oid
+            for oid in (
+                str(o.get("id") or o.get("objective_id") or "")
+                for o in (objectives or [])
+            )
+            if oid
+        ]
+
         last_error: Optional[str] = None
         last_raw: str = ""
         parsed: Optional[Dict[str, Any]] = None
@@ -2595,6 +2671,8 @@ class OutlineProvider(_BaseLLMProvider):
                             f"{usage.get('prompt_tokens')!r} "
                             f"(num_ctx={self._outline_num_ctx})"
                         ),
+                        source_chunk_ids=capture_chunk_ids,
+                        objective_ids=capture_objective_ids,
                     )
                     raise OutlineProviderError(
                         f"Outline tier detected silent input-prompt "
@@ -2830,6 +2908,8 @@ class OutlineProvider(_BaseLLMProvider):
             attempts=attempt + 1 if parsed is not None else MAX_PARSE_RETRIES,
             last_error=last_error,
             grounding_repair=grounding_repair,
+            source_chunk_ids=capture_chunk_ids,
+            objective_ids=capture_objective_ids,
         )
 
         if parsed is None:
@@ -3170,6 +3250,32 @@ class OutlineProvider(_BaseLLMProvider):
             # the OpenAICompatibleClient when ``json_mode=True``; no
             # additional payload needed.
             return {}
+        if mode == "response_format":
+            # OpenAI-STANDARD structured-output payload. vLLM 0.21+, Together,
+            # OpenAI, and most OpenAI-compatible servers enforce the JSON Schema
+            # (incl. ``maxItems`` / ``required`` / ``additionalProperties``) at
+            # SAMPLE time. This is the seat-agnostic constrained-decoding path
+            # for a REGISTRY seat (e.g. ``spark-super``) whose provider name is
+            # not ``local``/``together`` and whose base_url carries no
+            # ``vllm``/``llama``/``ollama`` marker — the auto-detect below would
+            # otherwise fall through to ``{}`` (NO constraint), letting a large
+            # reasoning model over-generate PAST ``maxItems`` (→ ``finish_reason
+            # ='length'`` truncation) and omit required fields / add extras
+            # (→ schema-validation retries). Ollama is the exception (honours
+            # ``format:``, not ``response_format``) — keep ``json_schema`` mode
+            # for those seats. Mirrors the ``together`` auto-detect branch shape.
+            if schema is not None:
+                return {
+                    "response_format": {
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": f"OutlineBlock_{block_type}",
+                            "schema": schema,
+                            "strict": True,
+                        },
+                    }
+                }
+            return {}
         if mode == "none":
             return {}
 
@@ -3301,10 +3407,71 @@ class OutlineProvider(_BaseLLMProvider):
             rationale_parts.append(f"last_error={str(last_error)[:120]}")
         rationale = "; ".join(rationale_parts)
 
+        # Capture-quality contract (proficient floor): reference the REAL
+        # inputs this call consumed — the block plus the source-chunk /
+        # objective id universes the prompt rendered (threaded through
+        # ``call_context`` by ``generate_outline``; both already in scope
+        # at the dispatch site, never fabricated here). Empty lists stay
+        # empty — a block authored with no grounding records none.
+        source_chunk_ids = [
+            str(c) for c in (call_context.get("source_chunk_ids") or [])
+        ]
+        objective_ids = [
+            str(o) for o in (call_context.get("objective_ids") or [])
+        ]
+        inputs_ref: List[Dict[str, Any]] = [
+            {"source_type": "block", "path_or_id": str(block_id)}
+        ]
+        inputs_ref.extend(
+            {"source_type": "source_chunk", "path_or_id": cid}
+            for cid in source_chunk_ids
+        )
+        inputs_ref.extend(
+            {"source_type": "learning_objective", "path_or_id": oid}
+            for oid in objective_ids
+        )
+
+        # The genuine alternative exits the parse-retry loop weighs on
+        # every attempt (see ``generate_outline``): accept the candidate,
+        # re-dispatch with a schema-remediation directive, or raise
+        # ``outline_exhausted`` and escalate the block to the router.
+        if success:
+            alternatives = [
+                (
+                    f"re-dispatch with schema-remediation directive "
+                    f"(parse-retry budget {MAX_PARSE_RETRIES}, "
+                    f"{max(attempts - 1, 0)} consumed before acceptance)"
+                ),
+                (
+                    "raise OutlineProviderError(outline_exhausted) and "
+                    f"escalate block {block_id} to the router"
+                ),
+            ]
+        else:
+            reject_reason = (
+                str(last_error)[:120]
+                if last_error
+                else "failed JSON parse / schema validation"
+            )
+            alternatives = [
+                (
+                    f"accept the attempt-{attempts} candidate "
+                    f"(rejected: {reject_reason})"
+                ),
+                (
+                    "keep re-dispatching the same prompt "
+                    f"(rejected: parse-retry budget "
+                    f"MAX_PARSE_RETRIES={MAX_PARSE_RETRIES} / hard "
+                    "non-retryable failure bounds the loop)"
+                ),
+            ]
+
         self._emit_decision(
             decision_type="block_outline_call",
             decision=decision,
             rationale=rationale,
+            alternatives_considered=alternatives,
+            inputs_ref=inputs_ref,
         )
 
 

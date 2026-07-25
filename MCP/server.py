@@ -580,6 +580,15 @@ except ImportError as e:
     logger.warning(f"Could not register GUI tools: {e}")
     _failed_modules.append("GUI")
 
+try:
+    from tools.assistant_tools import register_assistant_tools
+    register_assistant_tools(mcp)
+    logger.info("Assistant tools registered")
+    _loaded_modules.append("Assistant")
+except ImportError as e:
+    logger.warning(f"Could not register Assistant tools: {e}")
+    _failed_modules.append("Assistant")
+
 logger.info(f"MCP tool modules loaded: {', '.join(_loaded_modules) or 'none'}")
 if _failed_modules:
     logger.warning(f"MCP tool modules failed: {', '.join(_failed_modules)}")

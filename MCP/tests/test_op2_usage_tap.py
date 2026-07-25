@@ -96,3 +96,82 @@ def test_multiple_calls_append(
         if line.strip()
     ]
     assert len(rows) == 2
+
+
+# --------------------------------------------------------------------------
+# Metering-correctness — the row stamps the SPENDING phase from the executor-
+# published active-phase env, exactly as the SemantiK cascade taps do.
+# --------------------------------------------------------------------------
+
+
+def _one_row(usage_path: Path) -> dict:
+    rows = [
+        json.loads(line)
+        for line in usage_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(rows) == 1
+    return rows[0]
+
+
+def test_row_stamps_active_phase_when_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("ED4ALL_STATE_RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setenv("ED4ALL_RUN_ID", "RUN-PHASE")
+    monkeypatch.setenv("ED4ALL_ACTIVE_PHASE", "course_planning")
+    client = _mock_client()
+    client.chat_completion([{"role": "user", "content": "hi"}])
+    row = _one_row(tmp_path / "runs" / "RUN-PHASE" / "llm_usage.jsonl")
+    assert row["phase"] == "course_planning"
+
+
+def test_row_omits_phase_when_context_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # No active-phase env — the row degrades to the legacy shape (no ``phase``
+    # key), never raises. This is today's null-phase behaviour, preserved.
+    monkeypatch.setenv("ED4ALL_STATE_RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setenv("ED4ALL_RUN_ID", "RUN-NOPHASE")
+    monkeypatch.delenv("ED4ALL_ACTIVE_PHASE", raising=False)
+    client = _mock_client()
+    client.chat_completion([{"role": "user", "content": "hi"}])
+    row = _one_row(tmp_path / "runs" / "RUN-NOPHASE" / "llm_usage.jsonl")
+    assert "phase" not in row
+
+
+def test_row_omits_phase_when_context_blank(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # A blank / whitespace active-phase env is treated as absent (never
+    # fabricated into a phase, never raises).
+    monkeypatch.setenv("ED4ALL_STATE_RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setenv("ED4ALL_RUN_ID", "RUN-BLANK")
+    monkeypatch.setenv("ED4ALL_ACTIVE_PHASE", "   ")
+    client = _mock_client()
+    client.chat_completion([{"role": "user", "content": "hi"}])
+    row = _one_row(tmp_path / "runs" / "RUN-BLANK" / "llm_usage.jsonl")
+    assert "phase" not in row
+
+
+def test_module_tap_stamps_active_phase(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # The module-level tap (the seam the Courseforge two-pass dispatch calls
+    # directly, bypassing ``chat_completion``) also stamps the active phase.
+    from Trainforge.generators._openai_compatible_client import (
+        maybe_append_usage_row,
+    )
+
+    monkeypatch.setenv("ED4ALL_STATE_RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setenv("ED4ALL_RUN_ID", "RUN-MOD")
+    monkeypatch.setenv("ED4ALL_ACTIVE_PHASE", "content_generation_rewrite")
+    maybe_append_usage_row(
+        provider_label="local",
+        model="m",
+        usage={"prompt_tokens": 3, "completion_tokens": 1},
+        duration_ms=1.0,
+    )
+    row = _one_row(tmp_path / "runs" / "RUN-MOD" / "llm_usage.jsonl")
+    assert row["phase"] == "content_generation_rewrite"
+    assert row["prompt_tokens"] == 3

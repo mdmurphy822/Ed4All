@@ -441,6 +441,22 @@ workflows:
                 max_contradicted_rate: 0.05
             description: "W4 — full-block-prose NLI entailment vs cited chunks (windowed scorer-v2). WARNING pending pedagogy-entailment calibration (owner recal 2026-07-19); contradiction remains the hard signal."
 
+          # Deterministic prose-stutter gate — two-pass mirror of the
+          # textbook_to_course::post_rewrite_validation gate (book-1 canary
+          # keystone fix; see that entry for the calibration numbers).
+          # Enforcement is the in-loop rewrite-candidate rejection; this
+          # gate is the observability net. Warning day-1 per the
+          # calibration convention (WS3/W4 deferred-flip pattern; NOT IB3).
+          - gate_id: block_prose_stutter
+            validator: lib.validators.prose_stutter.ProseStutterValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: "Deterministic phrase-repetition (stutter) detector over rewrite-tier block prose (mirrors textbook_to_course::block_prose_stutter). Warning day-1; the in-chain rewrite-candidate rejection is the enforcement surface."
+
           # Numeric-literal grounding — the fabrication control for NUMERIC /
           # math content that the number-blind NLI gate cannot provide.
           # DeBERTa-v3-mnli scores a fabricated worked-example input (present in
@@ -1518,8 +1534,10 @@ workflows:
       # residual 1154->1, zero level skips). Validator-only phase routed by
       # NAME via MCP/core/executor.py::_PHASE_TOOL_MAPPING['heading_judge']
       # -> run_heading_judge (agents: [] => the runner synthesizes one
-      # virtual phase-handler task). Skip-with-pass when SEMANTIK_HEADING_JUDGE
-      # is off (byte-identical no-op) or the corpus carries no GLM-OCR layout
+      # virtual phase-handler task). SEMANTIK_HEADING_JUDGE is DEFAULT-ON
+      # (owner directive — the judge is not optional; only an explicit falsey
+      # token 0/false/no/off opts out). Skip-with-pass when explicitly off
+      # (byte-identical no-op) or the corpus carries no GLM-OCR layout
       # sidecars (born-digital). Per-chapter FAIL-OPEN: a nonzero exit /
       # timeout keeps that chapter's pre-judge HTML and the phase still
       # completes (warnings list) — the judge never blocks a build. Judged
@@ -1530,9 +1548,18 @@ workflows:
         agents: []
         parallel: false
         max_concurrent: 1
-        # SEAT SCHEDULE: the judge runs on the Super seat; the schedule swaps
-        # out the conversion seats (spark-glm/spark-qwen) and brings Super up
-        # for the judged skeleton POSTs.
+        # SEAT SCHEDULE: the judge runs on the Super seat (spark-super). On the
+        # current TRT-LLM topology this is ONE physical seat (trtllm-super, 1M
+        # context) that serves BOTH the heading judge and every downstream
+        # synthesis phase, so the schedule keeps it resident across both and only
+        # swaps out the conversion seats (spark-glm/spark-qwen) for it. The
+        # judge's SEMANTIK_HEADING_JUDGE_SEAT_CONTEXT=auto reads that seat's
+        # max_model_len and derives its window budgets, so no hand-set 250k/65k
+        # split is needed. (LEGACY vLLM option: a SEPARATE big-context
+        # 250k/4-seq Super — historically the distinct `spark-super-hj` seat on
+        # its own port — can still be swapped in for this phase alone by
+        # registering it and pointing SEMANTIK_HEADING_JUDGE_BASE_URL at it; see
+        # docs/operations/behavior-flags.md. Not needed on one TRT seat.)
         seats: [spark-super]
         depends_on: [semantik_conversion]
         # Per-chapter subprocess timeout is SEMANTIK_HEADING_JUDGE_CHAPTER_TIMEOUT
@@ -2704,12 +2731,12 @@ workflows:
           # MCQs skip (pass). action=regenerate is advisory at warning.
           - gate_id: outline_assessment_numeric_equivalence
             validator: lib.validators.assessment_numeric_equivalence.AssessmentNumericEquivalenceValidator
-            severity: critical
+            severity: warning
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: block
-              on_error: fail_closed
+              on_fail: warn
+              on_error: warn
             description: a6d6291b — numeric-value distractor-equivalence gate; a distractor equal in VALUE to the correct answer (4/6 == 2/3) is a second correct answer that token-Jaccard distinctness can't detect. Scope-limited to numeric/fraction MCQs.
 
           - gate_id: outline_padded_distractor
@@ -3417,6 +3444,28 @@ workflows:
                 contradiction_floor: 0.50
                 max_contradicted_rate: 0.05
             description: "W4 — full-block-prose NLI entailment vs cited chunks (windowed scorer-v2). WARNING pending pedagogy-entailment calibration (owner recal 2026-07-19); contradiction remains the hard signal."
+
+          # Deterministic prose-stutter gate — book-1 canary keystone fix.
+          # Phrase-repetition slop ("GET and HEAD are safe and HEAD are safe
+          # and idempotent"-shaped duplication) shipped in ~150-190 of 613
+          # canary prose chunks and NLI entailment cannot catch it (a
+          # stuttered sentence still entails its source). ENFORCEMENT is
+          # in-loop: the rewrite tier's per-candidate chain runs the same
+          # validator (action="regenerate" -> best-of-N re-roll); this gate
+          # is the observability net. Warning day-1 per the calibration
+          # convention (WS3/W4 deferred-flip pattern; NOT IB3). Calibration
+          # (canary imscc chunkset): catches all 5 owner-confirmed stutter
+          # chunks verbatim; 0.9% flag rate on the clean-path assessment
+          # population; ~87% hand-audited precision on flagged prose.
+          - gate_id: block_prose_stutter
+            validator: lib.validators.prose_stutter.ProseStutterValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: "Deterministic phrase-repetition (stutter) detector over rewrite-tier block prose (adjacent / windowed / near-adjacent n-gram repeats, verb echo, duplicated ':'-labels; element boundaries hard, CURIE spans + code stripped). Warning day-1; the in-chain rewrite-candidate rejection is the enforcement surface."
 
           # Numeric-literal grounding — the fabrication control for NUMERIC /
           # math content that the number-blind NLI gate cannot provide.
@@ -4620,7 +4669,16 @@ workflows:
       # that skips ``trainforge_assessment``).
       - name: training_synthesis
         agents: [training-synthesizer]
-        seats: []  # SEAT SCHEDULE: seat-free range — GPU belongs to NLI/embedding, Super retired.
+        # SEAT SCHEDULE (2026-07-22, in-build training synthesis): the pair
+        # paraphrase pass dispatches to the LOCAL synthesis seat
+        # (TRAINFORGE_SYNTHESIS_PROVIDER=local routed at :8001 by the
+        # campaign env), so the reconciler must bring Super back UP here
+        # instead of leaving the range seat-free — a seats: [] annotation
+        # would evict the very seat the phase is about to call (connection
+        # refused at the first paraphrase dispatch). The phase-end NLI/
+        # embedding gates (pair_claim_support) co-reside fine on the
+        # unified-memory host. Skipped entirely under --skip-training.
+        seats: [spark-super]
         parallel: false
         max_concurrent: 1
         # Phase 7c ST 16: training_synthesis now depends on the

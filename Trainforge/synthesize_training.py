@@ -1209,6 +1209,59 @@ def _reduce_graph_by_holdout(
     return reduced, removed
 
 
+def _ensure_holdout_split_for_graph_pairs(
+    corpus_dir: Path,
+    holdout_split_path: Optional[Path] = None,
+) -> None:
+    """SFT program S4 sequencing fix: pre-build ``eval/holdout_split.json``
+    BEFORE any graph->pair generator emits.
+
+    The S4 design rule ("a withheld edge can never train") is only
+    enforceable when the holdout split exists at pair-emission time. The
+    in-build ``training_synthesis`` phase runs BEFORE any eval, so on a
+    fresh corpus the split did not exist yet, ``_load_withheld_edge_index``
+    resolved EMPTY, and the graph->pair generators trained on 100% of the
+    edges — including the exact edges the Tier-2 eval would LATER withhold
+    (``slm_eval_harness.run_all`` lazily builds the split at eval time,
+    after training). Building it here closes that train-on-test race:
+
+    * deterministic — ``HoldoutBuilder`` pins ``seed=42`` and reruns over
+      the same graph are byte-identical, so a downstream lazy rebuild over
+      the archived (unchanged) graph reproduces the same split;
+    * respected downstream — ``run_all`` only builds when the file is
+      absent, so a pre-built split is consumed verbatim.
+
+    No-ops when: an explicit ``holdout_split_path`` override was supplied
+    (the caller owns that file), the split already exists, or no pedagogy
+    graph is resolvable (legacy corpus — the reduction then no-ops exactly
+    as before). Best-effort: any build failure logs a warning and falls
+    through to the legacy empty-index path (never aborts synthesis).
+    """
+    if holdout_split_path is not None:
+        return
+    split_path = Path(corpus_dir) / "eval" / "holdout_split.json"
+    if split_path.exists():
+        return
+    try:
+        from Trainforge.eval.holdout_builder import HoldoutBuilder
+
+        built = HoldoutBuilder(Path(corpus_dir)).build()
+        logger.info(
+            "SFT program S4: pre-built pedagogy-graph holdout split at %s "
+            "before graph->pair emission (train-on-test guard).", built,
+        )
+    except FileNotFoundError as exc:
+        logger.warning(
+            "SFT program S4: holdout-split pre-build skipped (%s); the "
+            "graph->pair holdout reduction will no-op on this corpus.", exc,
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort, never abort emit
+        logger.warning(
+            "SFT program S4: holdout-split pre-build failed (%s); the "
+            "graph->pair holdout reduction will no-op on this corpus.", exc,
+        )
+
+
 def _resolve_assessment_docs(
     corpus_dir: Path,
 ) -> Tuple[Optional[Any], Optional[Dict[str, Any]]]:
@@ -2029,6 +2082,14 @@ def run_synthesis(
         _with_graph_sft = _resolve_bool_env(
             "ED4ALL_WITH_GRAPH_SFT", with_graph_sft,
         )
+        # S4 sequencing fix: on a fresh (in-build) corpus the holdout split
+        # does not exist yet at synthesis time — pre-build it BEFORE loading
+        # the withheld-edge index so the reduction below has real edges to
+        # withhold instead of silently no-oping (train-on-test race with the
+        # Stage-B eval harness's lazy holdout build). Only fires when a
+        # graph->pair generator is actually enabled.
+        if _with_graph_sft or with_kg_metadata:
+            _ensure_holdout_split_for_graph_pairs(corpus_dir, holdout_split_path)
         _withheld_edge_index = _load_withheld_edge_index(
             corpus_dir, holdout_split_path,
         )

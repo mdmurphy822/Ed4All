@@ -28,7 +28,12 @@ from typing import Any, Callable, Dict, List, Literal, Optional
 
 from MCP.core.config import OrchestratorConfig
 from MCP.core.executor import TaskExecutor
-from MCP.core.workflow_runner import STATE_PATH, WorkflowRunner
+from MCP.core.workflow_runner import (
+    _WORKFLOW_STATE_RECOVERY_HINT,
+    STATE_PATH,
+    WorkflowRunner,
+)
+from lib.state_manager import load_state_json
 
 from .llm_backend import BackendSpec, LLMBackend, build_backend
 from .worker_contracts import PhaseInput
@@ -499,8 +504,9 @@ class PipelineOrchestrator:
         path = STATE_PATH / "workflows" / f"{workflow_id}.json"
         if not path.exists():
             return None
-        with open(path) as f:
-            return json.load(f)
+        # A corrupted state file (torn write) raises StateFileCorruptedError
+        # naming the file, corruption position, and recovery hint.
+        return load_state_json(path, recovery_hint=_WORKFLOW_STATE_RECOVERY_HINT)
 
     # -------------------------------------------------------- phase input
 

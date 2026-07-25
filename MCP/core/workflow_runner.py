@@ -59,6 +59,26 @@ from lib.generation.stop_control import (
 )
 from lib.paths import SEMANTIK_PATH, get_state_runs_dir, semantik_output_dir
 
+# Workflow-state persistence discipline: the state/workflows/<id>.json doc is
+# written by multiple processes (a run + a concurrent status/resume tool), so
+# every write MUST be temp+replace-atomic (a plain open('w')+dump interleave
+# corrupts the file mid-document — 2026-07-21 incident) and the writer holds a
+# bounded advisory flock. See lib/state_manager.py + lib/file_lock.py.
+from lib.file_lock import file_lock
+from lib.state_manager import atomic_write_json, load_state_json
+
+#: Bounded wait (seconds) for the workflow-state advisory write lock. On
+#: expiry the writer logs LOUDLY and proceeds with the atomic replace —
+#: losing at worst one update, never corrupting the file.
+_WORKFLOW_STATE_LOCK_TIMEOUT_SECONDS = 10.0
+
+#: Operator-facing recovery guidance for a corrupted workflow-state file.
+_WORKFLOW_STATE_RECOVERY_HINT = (
+    "Check the <path>.tmp sibling for a partially-written document; phase "
+    "checkpoints under state/runs/<run_id>/checkpoints/ are the "
+    "authoritative recovery source."
+)
+
 
 class AuthoringProviderRouteError(RuntimeError):
     """Raised when a run would dispatch an LLM-needing phase to an
@@ -174,6 +194,131 @@ _CORPUS_GENERALIZATION_ENV_DEFAULTS: Dict[str, str] = {
     # (SemantiK retraining is the upstream root fix). See
     # lib/chunk_heading_sanity.py. Default-off (byte-stable) outside a run.
     "TRAINFORGE_HEADING_SANITY_FILTER": "true",
+    # ---- Campaign-validated 2026-07 promotions (all deterministic; none
+    # selects an LLM provider/model, so no docs/LICENSING.md rows). ----
+    # Deterministic post-hoc CO citation RE-SELECTION: re-cite the cosine-best
+    # REAL window/chapter chunk independently of the (possibly fabricated)
+    # cited ids. Validated on a whole-book single-PDF reference corpus —
+    # repairs the wrong-chunk citation class (the correct chunk existed
+    # in-corpus in all 7 audited cases). Its two satellite guards (_RESELECT_EXERCISE_DEMOTE,
+    # _RESELECT_KEEP_ORIGINAL) already default ON when re-selection is on.
+    # Zero LLM calls; graceful no-op without the [embedding] extras. See
+    # lib/objectives/citation_reselect.py.
+    "ED4ALL_OBJECTIVE_CITATION_RESELECT": "true",
+    # W2 Defect E — cross-window lexical-dedup SECOND PASS (complete-linkage
+    # merge of near-restatement CO clusters the 0.88-cosine single-link pass
+    # misses). Campaign-validated on cross-window paraphrase duplicates.
+    # Deterministic; unions existing candidates only. See
+    # lib/objectives/objective_dedup.py::resolve_dedup_lexical.
+    "ED4ALL_OBJECTIVE_DEDUP_LEXICAL": "true",
+    # Gap #11 — deterministic per-block-role rotation of a page's ranked chunk
+    # order (stable sha1 offset, no randomness) so co-located blocks don't all
+    # lead with the same anchor example. Validated need: 35% cross-page claim
+    # duplication in canary book 1. Permutation only — same chunk universe,
+    # never a drop/invent. See lib/generation/content_page_budget.py.
+    "ED4ALL_CHUNK_ROLE_DIVERSIFY": "true",
+    # Gate-side provenance resolution for the block_prose_entailment gate:
+    # maps a rewrite block's semantik:{slug}#anchor refs through the
+    # {ref -> [chunk_id]} reverse index when direct chunk-id resolution yields
+    # nothing, recovering the premise set instead of a vacuous fail-open
+    # NO_GROUNDING pass. Validated 2026-07-16 (112/116 blocks scored with it
+    # on). ADD-only, anti-fabrication (existing refs -> existing chunks). See
+    # lib/validators/block_prose_entailment.py.
+    "ED4ALL_PROSE_GATE_PROVENANCE_RESOLVE": "true",
+    # Widened GENERIC apparatus markers for the assessment harvest paths
+    # (key-term definitions / factual statements / assembled answers+choices).
+    # The legacy marker set requires a colon ("Solution:"), which an OCR'd scan
+    # lane routinely drops, so figure captions, all-caps HOW-TO banners and
+    # glyph alt-text ("A gray checkmark inside a circle, indicating correct")
+    # leaked into distractors AND correct answers. Measured on a 313-item
+    # scan-derived quiz set: catches 34/391 contaminated distractors + 13/270
+    # contaminated correct answers, with ZERO false positives on that corpus
+    # (every flagged string carries a real fused apparatus marker). Contaminated
+    # items become SkippedItem so the fill loop draws a replacement — never a
+    # padded placeholder. Deterministic, domain-agnostic, selects no LLM
+    # provider/model. See Trainforge/generators/content_extractor.py.
+    "ED4ALL_ASSESSMENT_APPARATUS_STRICT": "true",
+    # QTI item-BANK sidecar: one <objectbank> carrying every emitted item with
+    # queryable per-item qtimetadata (objective id / Bloom level / item
+    # subtype / question type), so the course ships a reusable question LIBRARY
+    # alongside the fixed per-week exams. Written as a SIDECAR under its own
+    # manifest key — never inside assessments[] — because an objectbank's root
+    # tag is `questestinterop`, which the packager would otherwise ship into the
+    # cartridge as an exam. Deterministic; selects no LLM provider/model.
+    "ED4ALL_ASSESSMENT_ITEM_BANK": "true",
+    # Deterministic diversified item tier: supplies item_subtype + per-distractor
+    # misconception notes (measured 0/313 misconception-tagged distractors with
+    # this off, against the CLAUDE.md "distractor misconception targeting
+    # required" standard). No LLM in the loop — the mix planner dispatches to
+    # grounded deterministic builders.
+    "ED4ALL_ASSESSMENT_DIVERSIFIED": "true",
+    # ---- Campaign flag-coverage audit 2026-07-22 promotions (owner-validated
+    # on the reference corpus). All PORTABLE — deterministic /
+    # warning-day-1 / read-only, or a deterministic KG-shaping arm; NONE selects
+    # an LLM provider / model / seat / hardware profile, so no docs/LICENSING.md
+    # rows. The campaign's hardware/deployment/licensing/site-tuning flags
+    # (ED4ALL_SEAT_SCHEDULE + registries, ED4ALL_DYNAMIC_BLOCK_PLAN[_PROVIDER],
+    # ED4ALL_REWRITE_NUM_CTX, ED4ALL_CHUNK_HEALTH_*, TRAINFORGE_REQUIRE_EMBEDDINGS,
+    # ED4ALL_PLANNING_GATE_RETRIES) are DELIBERATELY NOT promoted — they stay
+    # campaign-env-only (the operator campaign env template). ----
+    # KG edge quality: LO-order closure was 61% of edges / 14.4% contradiction
+    # source; adjacency-only prereq inference + deterministic transitive
+    # reduction. See Trainforge/rag/inference_rules/prerequisite_from_lo_order.py.
+    "TRAINFORGE_PREREQ_LO_ADJACENT_ONLY": "true",
+    # KG observability — deterministic, warning-only / read-only, best-effort
+    # (never alters final_status): prereq-DAG health signals + the read-only
+    # capability aggregators. See lib/validators/kg_quality.py,
+    # lib/aggregators/concept_coverage.py, lib/aggregators/intelligence_level.py.
+    "ED4ALL_KG_PREREQ_HEALTH": "1",
+    "ED4ALL_CONCEPT_COVERAGE": "1",
+    "ED4ALL_INTELLIGENCE_RUBRIC": "1",
+    # Planner floors — calibration-confirmed REAL gaps. RETRIEVAL_INTERLEAVE is
+    # the direct fix for book-1 retrieval_presence 0.0; TRIANGLE closes the
+    # by-construction OBJECTIVE_NO_ACTIVITY / NO_ALIGNED_ASSESSMENT misses; the
+    # P4 pair closes measured 13% worked-example density + a 64/4/4/0 Bloom
+    # spread. Deterministic block-plan augmentation. See lib/generation/block_planner.py.
+    "ED4ALL_RETRIEVAL_INTERLEAVE": "1",
+    "ED4ALL_TRIANGLE_FLOOR": "1",
+    "ED4ALL_WORKED_EXAMPLE_FLOOR": "1",
+    "ED4ALL_BLOOM_SPREAD_FLOOR": "1",
+    # Objective quality — deterministic, warning-day-1 (no blocking risk):
+    # CO specificity/vacuity, Bloom-level relevel from the main verb, terminal
+    # objective source-grounding, course-level Bloom-distribution-vs-curve. See
+    # lib/validators/objective_specificity.py, lib/objectives/bloom_relevel.py,
+    # lib/validators/terminal_objective_source_grounding.py,
+    # lib/validators/bloom_distribution.py.
+    "ED4ALL_OBJECTIVE_SPECIFICITY": "1",
+    "ED4ALL_OBJECTIVE_BLOOM_RELEVEL": "1",
+    "ED4ALL_TO_SOURCE_GROUNDING": "1",
+    "ED4ALL_BLOOM_DISTRIBUTION": "1",
+    # Retrieval-index truth: quantify >512-token embed truncation in the index
+    # manifest (embed serving-window overflow guard). See lib/embedding/providers.py.
+    # (TRAINFORGE_REQUIRE_EMBEDDINGS is NOT promoted — it breaks minimal installs
+    # without the [embedding] extras; it stays campaign-env-only.)
+    "ED4ALL_EMBED_OVERFLOW_GUARD": "1",
+    # Library-consistency window — course-shape flags enabled so every course in
+    # a batch shares one shape: per-TO deterministic key-terms pages, per-week
+    # deterministic FAQ pages, definition-quality gate (warning-day-1), and the
+    # loud archival-completeness halt (a loud halt beats a poisoned library
+    # entry). See MCP/tools/pipeline_tools.py (key-terms / FAQ page emitters),
+    # lib/validators/key_terms_definition_quality.py,
+    # lib/validators/libv2/course_completeness.py.
+    "ED4ALL_KEY_TERMS_PAGE": "1",
+    "ED4ALL_FAQ_PAGE": "1",
+    "ED4ALL_KEYTERM_DEF_QUALITY": "1",
+    "ED4ALL_ARCHIVE_REQUIRE_FULL_COURSE": "1",
+    # 8-dim block-quality scoring in SHADOW (collect-only; the campaign corpus is
+    # the calibration corpus, so the rubric collects without blocking). See
+    # lib/validators/_block_rubric_helpers.py.
+    "ED4ALL_BLOCK_QUALITY_RUBRIC": "1",
+    "ED4ALL_BLOCK_QUALITY_SHADOW": "1",
+    # Edge-NLI consensus arm: shadow build on the book-1 graph = 5/5 correct
+    # retractions (incl. a phantom-concept edge), 0 paraphrase FPs, ~1 min/book.
+    # Retractions surface as retracted_count + per-edge edge_status; the decay
+    # policy governs only rule-based contradictions (halves confidence, keeps the
+    # edge statused). See lib/aggregators/edge_consensus.py.
+    "TRAINFORGE_EDGE_NLI": "1",
+    "TRAINFORGE_CONTRADICTED_EDGE_POLICY": "decay",
 }
 
 # The env var that selects the three-stage textbook-synthesis provider. It
@@ -876,8 +1021,97 @@ def _summarize_gate_failure(gate_results: Any) -> str:
 
 _PLANNING_GATE_RETRIES_ENV = "ED4ALL_PLANNING_GATE_RETRIES"
 _PLANNING_REROLL_SALT_ENV = "ED4ALL_PLANNING_REROLL_SALT"
+_PLANNING_REROLL_FEEDBACK_ENV = "ED4ALL_PLANNING_REROLL_FEEDBACK"
 _PLANNING_GATE_RETRY_PHASE = "course_planning"
 _PLANNING_CLUSTER_SIDECAR_NAME = ".stage2_clusters_checkpoint.jsonl"
+
+# Failure-directed retry (owner directive 2026-07-22: "are we feeding failure
+# modes back in with each retry?"): cap on the serialized failure digest the
+# retry loop exports via _PLANNING_REROLL_FEEDBACK_ENV. Compact by design —
+# the digest rides inside the synthesis SYSTEM prompt, so it must never crowd
+# out the source material.
+_PLANNING_FEEDBACK_MAX_CHARS = 1200
+
+# code -> one-line actionable remediation directive. Mirrors the rewrite
+# tier's remediation-suffix pattern (Courseforge/router/remediation.py): the
+# model sees a concrete failure signal instead of a blind salted retry.
+# Codes are the CRITICAL course_planning gate codes (objective_entailment /
+# objective_source_refs / abcd_verb_alignment / chapter_objective_coverage /
+# terminal_objective_coverage). An unmapped code falls back to the raw gate
+# message (truncated) — never silently dropped.
+_PLANNING_ISSUE_DIRECTIVES: Dict[str, str] = {
+    "OBJECTIVE_UNENTAILED": (
+        "the statement must be directly supported by its cited chunks — "
+        "state only what the chunks establish, avoid broad evaluative "
+        "framing"
+    ),
+    "OBJECTIVE_CONTRADICTED": (
+        "the statement conflicts with its cited chunks — restate it so it "
+        "agrees with what the cited source text actually says"
+    ),
+    "OBJECTIVE_NO_GROUNDING_SOURCE": (
+        "the objective cites no resolvable source — cite only chunk ids "
+        "that exist in the supplied source material"
+    ),
+    "OBJECTIVE_MISSING_SOURCE_REFS": (
+        "every objective must cite at least one supplied source chunk id"
+    ),
+    "OBJECTIVE_SOURCE_REF_UNRESOLVED": (
+        "a cited source id resolves to nothing — cite only ids present in "
+        "the supplied source material, never invented ids"
+    ),
+    "ORPHANED_CITATIONS": (
+        "cited source ids resolve to nothing in the corpus — cite only ids "
+        "present in the supplied source material, never invented ids"
+    ),
+    "ABCD_VERB_BLOOM_MISMATCH": (
+        "the behavior verb must match the declared Bloom level — pick an "
+        "observable verb canonical to that level"
+    ),
+    "ABCD_INCOMPLETE": (
+        "author complete ABCD fields (audience / behavior / condition / "
+        "degree) for the objective"
+    ),
+    "ABCD_MALFORMED": (
+        "author complete, well-formed ABCD fields (audience / behavior / "
+        "condition / degree) for the objective"
+    ),
+    "OBJECTIVE_VAGUE_VERB": (
+        "replace the vague/non-observable main verb with an observable, "
+        "measurable verb"
+    ),
+    "CHAPTER_OBJ_MISSING": (
+        "a supplied chapter has no chapter objective — author at least one "
+        "grounded CO for every chapter"
+    ),
+    "CHAPTER_OBJ_PARTIAL_COVERAGE": (
+        "some supplied chapters have no chapter objective — cover every "
+        "chapter with at least one grounded CO"
+    ),
+    "ORPHAN_TERMINAL_NO_CHAPTER": (
+        "every terminal objective must be supported by chapter objectives — "
+        "do not mint a TO that no CO belongs to"
+    ),
+    "ORPHAN_TERMINAL_NO_CHAPTER_OBJECTIVE": (
+        "every terminal objective must be supported by chapter objectives — "
+        "do not mint a TO that no CO belongs to"
+    ),
+    "ORPHAN_TERMINAL_NO_CHAPTER_REF": (
+        "every terminal objective must reference the chapters its member "
+        "COs are grounded in"
+    ),
+    "RECONCILED_TO_EMPTY": (
+        "terminal-objective reconciliation produced an empty set — author "
+        "at least one terminal objective grounded in the member COs"
+    ),
+}
+
+# LO-id extraction for the failure digest (canonical TO-NN / CO-NN pattern
+# per lib/ontology/learning_objectives.py; matched in location, then message).
+_PLANNING_OBJECTIVE_ID_RE = re.compile(r"\b(?:TO|CO)-\d{2,}\b")
+
+# Per-line raw-message fallback truncation for unmapped issue codes.
+_PLANNING_FEEDBACK_MSG_TRUNC = 160
 
 
 def resolve_planning_gate_retries() -> int:
@@ -940,6 +1174,82 @@ def _planning_failing_gate_summary(
             if sev == "critical" and code and code not in issue_codes:
                 issue_codes.append(code)
     return gate_ids, issue_codes
+
+
+def _planning_failure_digest(
+    gate_results: Any,
+    max_chars: int = _PLANNING_FEEDBACK_MAX_CHARS,
+) -> str:
+    """Serialize a COMPACT, failure-directed remediation digest from a
+    phase's failing CRITICAL gates (dicts, or GateResult-shaped objects).
+
+    One line per de-duplicated (gate, objective, code) critical issue:
+    ``- [gate_id] TO-08 CODE: <actionable directive>`` where the directive
+    comes from ``_PLANNING_ISSUE_DIRECTIVES`` (fallback: the raw issue
+    message truncated to ``_PLANNING_FEEDBACK_MSG_TRUNC`` chars). The
+    objective id is extracted from the issue's ``location`` (preferred)
+    then ``message`` via the canonical ``TO-NN`` / ``CO-NN`` pattern;
+    omitted when neither carries one. Capped at ``max_chars`` (whole lines
+    only — a truncated digest never ends mid-directive). Empty string when
+    no failing critical gate carries a critical issue.
+
+    Consumed by ``_retry_course_planning_gates``, which exports it via
+    ``ED4ALL_PLANNING_REROLL_FEEDBACK`` alongside the re-roll salt so the
+    synthesis provider folds it into the retry prompt as a REMEDIATION
+    section (mirroring the rewrite tier's remediation-directive pattern)
+    instead of re-rolling blind.
+    """
+    lines: List[str] = []
+    seen: set = set()
+    total = 0
+    for gr in gate_results or []:
+        if isinstance(gr, dict):
+            passed = gr.get("passed", True)
+            gate_id = gr.get("gate_id", "") or ""
+            severity = gr.get("severity", "warning") or "warning"
+            issues = gr.get("issues") or []
+        elif hasattr(gr, "gate_id"):
+            passed = getattr(gr, "passed", True)
+            gate_id = getattr(gr, "gate_id", "") or ""
+            severity = getattr(gr, "severity", "warning") or "warning"
+            issues = getattr(gr, "issues", None) or []
+        else:
+            continue
+        if passed or severity != "critical":
+            continue
+        for issue in issues:
+            if isinstance(issue, dict):
+                code = issue.get("code", "") or ""
+                sev = issue.get("severity", "") or ""
+                message = issue.get("message", "") or ""
+                location = issue.get("location", "") or ""
+            else:
+                code = getattr(issue, "code", "") or ""
+                sev = getattr(issue, "severity", "") or ""
+                message = getattr(issue, "message", "") or ""
+                location = getattr(issue, "location", "") or ""
+            if sev != "critical" or not code:
+                continue
+            obj_match = _PLANNING_OBJECTIVE_ID_RE.search(
+                str(location)
+            ) or _PLANNING_OBJECTIVE_ID_RE.search(str(message))
+            obj_id = obj_match.group(0) if obj_match else ""
+            dedup_key = (gate_id, obj_id, code)
+            if dedup_key in seen:
+                continue
+            seen.add(dedup_key)
+            directive = _PLANNING_ISSUE_DIRECTIVES.get(code)
+            if directive is None:
+                raw = " ".join(str(message).split())
+                directive = raw[:_PLANNING_FEEDBACK_MSG_TRUNC] or code
+            subject = f"{obj_id} {code}" if obj_id else code
+            line = f"- [{gate_id}] {subject}: {directive}"
+            # Whole lines only — never end the digest mid-directive.
+            if total + len(line) + (1 if lines else 0) > max_chars:
+                return "\n".join(lines)
+            lines.append(line)
+            total += len(line) + (1 if len(lines) > 1 else 0)
+    return "\n".join(lines)
 
 
 def _planning_cluster_sidecar_path(
@@ -1906,13 +2216,17 @@ class WorkflowRunner:
         Returns:
             Dict with workflow_id, status, phase_results, and phase_outputs
         """
-        # Load workflow state
+        # Load workflow state. A corrupted file (torn write from a racing
+        # non-atomic writer) raises StateFileCorruptedError naming the file,
+        # the corruption position, and the recovery hint — never a bare
+        # JSONDecodeError traceback.
         workflow_path = STATE_PATH / "workflows" / f"{workflow_id}.json"
         if not workflow_path.exists():
             return {"error": f"Workflow not found: {workflow_id}"}
 
-        with open(workflow_path) as f:
-            workflow_state = json.load(f)
+        workflow_state = load_state_json(
+            workflow_path, recovery_hint=_WORKFLOW_STATE_RECOVERY_HINT
+        )
 
         workflow_type = workflow_state.get("type", "")
         workflow_params = workflow_state.get("params", {})
@@ -2348,6 +2662,17 @@ class WorkflowRunner:
                     break
 
             logger.info(f"Starting phase {phase_idx + 1}/{len(sorted_phases)}: {phase_name}")
+
+            # ``--auto-name``: resolve the H1-derived, run-timestamped FINAL
+            # course slug at the first executing phase after conversion (+
+            # heading_judge) and BEFORE staging consumes identity. Rebinds
+            # ``course_name`` on workflow_params (persisted) so every routed
+            # param below mints artifacts under the final slug. No-op (and
+            # byte-identical) unless the run opted in via --auto-name.
+            self._maybe_apply_auto_name(
+                phase_name, workflow_params, phase_outputs,
+                workflow_state, workflow_path,
+            )
 
             # Route parameters from workflow params + prior phase outputs
             routed_params = self._route_params(phase_name, workflow_params, phase_outputs)
@@ -4665,6 +4990,157 @@ class WorkflowRunner:
             )
             return report_paths
 
+    # Phases that run BEFORE course identity is consumed into artifacts.
+    # ``--auto-name`` resolution fires at the first phase OUTSIDE this set
+    # (normally ``staging`` — the first identity-consuming phase).
+    _AUTO_NAME_PRE_IDENTITY_PHASES = frozenset(
+        _CONVERSION_PHASE_NAMES | {"heading_judge"}
+    )
+
+    def _maybe_apply_auto_name(
+        self,
+        phase_name: str,
+        workflow_params: Dict[str, Any],
+        phase_outputs: Dict[str, Dict],
+        workflow_state: Dict[str, Any],
+        workflow_path: Path,
+    ) -> None:
+        """``--auto-name``: rebind course identity to the H1-derived slug.
+
+        Owner directive: "slugs can inherit the H1 title after semantik
+        creates it, combined with the Date/time the run was initialized."
+
+        Fires ONCE per run, at the first phase about to EXECUTE outside the
+        pre-identity set (conversion + heading_judge) — i.e. immediately
+        after the accessible HTML (post heading-judge copy-back) exists and
+        BEFORE ``staging`` consumes course identity into artifacts. The
+        resolution outcome (final slug OR the fallback keeping the
+        provisional name, with reason) is persisted onto the workflow params
+        so a ``--resume`` never re-resolves — one run, one identity.
+
+        Opt-in and honest: a run without ``auto_name`` is byte-identical
+        (this method returns before touching anything); a resolution failure
+        KEEPS the provided course name (logged), never fabricates a title.
+        The run_id and the pre-existing ``state/runs/<run_id>`` dir keep the
+        provisional name (internal; they already embed the timestamp).
+        """
+        if not workflow_params.get("auto_name"):
+            return
+        if workflow_params.get("auto_name_resolved"):
+            return
+        if phase_name in self._AUTO_NAME_PRE_IDENTITY_PHASES:
+            return
+
+        from lib.course_autoname import (
+            resolve_auto_course_name,
+            resolve_run_init_timestamp,
+        )
+
+        provisional = str(workflow_params.get("course_name") or "")
+        conv_out = (
+            phase_outputs.get(_CONVERSION_PHASE)
+            or phase_outputs.get(_LEGACY_CONVERSION_PHASE)
+            or {}
+        )
+        raw_paths = (
+            conv_out.get("output_paths")
+            or conv_out.get("html_paths")
+            or ([conv_out["output_path"]] if conv_out.get("output_path") else [])
+        )
+        if isinstance(raw_paths, str):
+            # The --skip-conversion synthesized output comma-joins its
+            # paths (see _synthesize_dart_skip_output); real conversion
+            # emits a list. Split so a 2-file corpus is honestly counted.
+            raw_paths = [p.strip() for p in raw_paths.split(",") if p.strip()]
+        html_paths = [str(p) for p in (raw_paths or []) if p]
+
+        run_init = resolve_run_init_timestamp(
+            workflow_state.get("created_at"),
+            workflow_params.get("run_id"),
+        )
+        resolution = resolve_auto_course_name(provisional, html_paths, run_init)
+
+        # Mark resolved FIRST (even on fallback) so the check runs once per
+        # run — a fallback outcome is a final answer, not a retry loop.
+        workflow_params["auto_name_resolved"] = True
+        workflow_params["auto_name_reason"] = resolution.reason
+
+        if resolution.resolved and resolution.final_name != provisional:
+            workflow_params["provisional_course_name"] = provisional
+            workflow_params["course_name"] = resolution.final_name
+            workflow_params["display_title"] = resolution.display_title
+            # Re-pin the Wave-29 canonical course code from the FINAL name so
+            # downstream captures/archives tag one consistent identity.
+            try:
+                from lib.decision_capture import (
+                    normalize_course_code as _normalize_cc,
+                )
+
+                workflow_params["canonical_course_code"] = _normalize_cc(
+                    resolution.final_name
+                )
+            except Exception as exc:  # noqa: BLE001 — best-effort re-pin
+                logger.debug(
+                    "auto-name: canonical_course_code re-derivation "
+                    "failed: %s", exc,
+                )
+            logger.info(
+                "auto-name: course identity rebound %r -> %r "
+                "(h1=%r, before phase %s)",
+                provisional, resolution.final_name,
+                resolution.display_title, phase_name,
+            )
+        else:
+            logger.info(
+                "auto-name: keeping provisional course name %r "
+                "(reason=%s, h1=%r)",
+                provisional, resolution.reason, resolution.h1_title,
+            )
+
+        # Persist the (possibly rebound) params so a --resume sees the same
+        # identity. ``workflow_params`` may be a fresh dict when the state
+        # stored params as a JSON string, so write it back explicitly.
+        workflow_state["params"] = workflow_params
+        self._save_workflow_state(workflow_path, workflow_state)
+
+        # ONE decision-capture event recording provisional -> final (or the
+        # kept provisional + reason). Best-effort — capture never blocks.
+        try:
+            from lib.decision_capture import DecisionCapture
+
+            capture = DecisionCapture(
+                course_code=str(workflow_params.get("course_name") or provisional),
+                phase="semantik_conversion",
+                tool="orchestrator",
+            )
+            corpus_ref = (
+                workflow_params.get("corpus")
+                or workflow_params.get("pdf_paths")
+                or ""
+            )
+            capture.log_decision(
+                decision_type="course_identity_rebind",
+                decision=(
+                    f"{provisional} -> {resolution.final_name}"
+                    if resolution.resolved
+                    else f"kept provisional {provisional}"
+                ),
+                rationale=(
+                    f"--auto-name resolution before phase {phase_name}: "
+                    f"h1={resolution.h1_title!r}, "
+                    f"run_init={run_init.isoformat() if run_init else None}, "
+                    f"corpus={corpus_ref!r}, reason={resolution.reason}, "
+                    f"html_files={len(html_paths)}"
+                ),
+                alternatives_considered=[
+                    f"keep provisional {provisional!r}"
+                    if resolution.resolved
+                    else "rebind to an h1-derived slug (h1 unusable)"
+                ],
+            )
+        except Exception as exc:  # noqa: BLE001 — capture never blocks the run
+            logger.warning("auto-name: decision capture failed (%s)", exc)
+
     def _route_params(
         self,
         phase_name: str,
@@ -5375,8 +5851,12 @@ class WorkflowRunner:
         Per attempt: log the failing critical gate ids + issue codes, evict
         ONLY the cluster-stage sidecar (keep the window/CO cache), set the
         per-attempt ``ED4ALL_PLANNING_REROLL_SALT`` (folded into the
-        synthesis system prompt + cluster fingerprint downstream), emit a
-        decision-capture event, then re-dispatch the phase. Stops early on
+        synthesis system prompt + cluster fingerprint downstream) PLUS the
+        failure-directed ``ED4ALL_PLANNING_REROLL_FEEDBACK`` remediation
+        digest (``_planning_failure_digest`` — folded into the same prompt
+        as a delimited REMEDIATION section and into the same cluster
+        fingerprint), emit a decision-capture event, then re-dispatch the
+        phase. Both env vars are popped together when the loop exits. Stops early on
         the first gate PASS; a retry attempt whose TASKS fail/pause (not a
         gate verdict) aborts the loop and falls back to the legacy failure
         path. When every attempt fails, the phase is FAIL-OPENED: a LOUD
@@ -5436,13 +5916,25 @@ class WorkflowRunner:
                         )
                 salt = f"attempt-{attempt}"
                 os.environ[_PLANNING_REROLL_SALT_ENV] = salt
+                # Failure-DIRECTED retry: serialize the failing critical
+                # gates' issues into a compact remediation digest and export
+                # it beside the salt so the synthesis provider folds it into
+                # the retry prompt (mirrors the rewrite tier's remediation-
+                # directive pattern) instead of re-rolling blind.
+                feedback = _planning_failure_digest(gate_results)
+                if feedback:
+                    os.environ[_PLANNING_REROLL_FEEDBACK_ENV] = feedback
+                else:
+                    os.environ.pop(_PLANNING_REROLL_FEEDBACK_ENV, None)
                 logger.warning(
                     "course_planning gate failure — retry %d/%d: failing "
                     "critical gate(s)=%s, issue code(s)=%s; evicted cluster "
-                    "sidecar=%s (%s), window/CO cache kept, re-roll salt=%r",
+                    "sidecar=%s (%s), window/CO cache kept, re-roll salt=%r, "
+                    "remediation digest=%d chars:\n%s",
                     attempt, retry_budget,
                     failing_ids or ["<none>"], issue_codes or ["<none>"],
                     evicted, sidecar, salt,
+                    len(feedback), feedback or "<empty>",
                 )
                 if capture is not None:
                     try:
@@ -5463,7 +5955,12 @@ class WorkflowRunner:
                                 f"({sidecar}), kept the window/CO cache, "
                                 f"re-dispatching TO derivation with re-roll "
                                 f"salt {salt} under the graceful-retry "
-                                f"contract for this phase."
+                                f"contract for this phase. Failure-directed "
+                                f"remediation digest fed back to the "
+                                f"synthesizer via "
+                                f"{_PLANNING_REROLL_FEEDBACK_ENV} "
+                                f"({len(feedback)} chars): "
+                                f"{feedback[:400] or '<empty>'}"
                             ),
                             alternatives_considered=[
                                 "stop the workflow on the first critical "
@@ -5525,6 +6022,7 @@ class WorkflowRunner:
                     break
         finally:
             os.environ.pop(_PLANNING_REROLL_SALT_ENV, None)
+            os.environ.pop(_PLANNING_REROLL_FEEDBACK_ENV, None)
 
         exhausted = (not gates_passed) and (not aborted)
         if exhausted:
@@ -7425,11 +7923,22 @@ class WorkflowRunner:
         return [phase_map[name] for name in sorted_names if name in phase_map]
 
     def _save_workflow_state(self, path: Path, state: Dict[str, Any]) -> None:
-        """Persist workflow state to disk."""
+        """Persist workflow state to disk (atomic temp+replace, flock-guarded).
+
+        Two concurrent writers of the same workflow file (e.g. a racing pair
+        of ``--resume`` processes) must never interleave partial writes:
+        the write goes to a temp file in the same directory and is atomically
+        renamed over the target. A bounded advisory flock additionally
+        serializes writers; on lock timeout we log LOUDLY (naming the other
+        holder when knowable) and still do the atomic replace — an atomic
+        replace under contention loses one update but can never corrupt.
+        """
         state["updated_at"] = datetime.now().isoformat()
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "w") as f:
-                json.dump(state, f, indent=2, default=str)
+            with file_lock(
+                path.with_name(path.name + ".lock"),
+                timeout=_WORKFLOW_STATE_LOCK_TIMEOUT_SECONDS,
+            ):
+                atomic_write_json(path, state, indent=2, default=str)
         except OSError as e:
             logger.error(f"Failed to save workflow state: {e}")

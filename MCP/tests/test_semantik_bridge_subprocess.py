@@ -258,6 +258,57 @@ def test_a2_bridge_env_setdefault_respects_operator(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# (a4) LLM-usage-tap plumbing — the bridge env carries ED4ALL_STATE_RUNS_DIR so
+#      the SemantiK-side llm_usage_meter (which cannot import lib.paths in its
+#      own venv) can resolve <state-runs>/<run_id>/llm_usage.jsonl. Without the
+#      export every GLM-lane metering row silently fell to the SemantiK
+#      data-dir sidecar (the GUI stats band never saw semantik_conversion).
+# ---------------------------------------------------------------------------
+
+
+def test_a4_bridge_exports_state_runs_dir_for_usage_meter(monkeypatch, tmp_path):
+    from MCP.tools.pipeline_tools import _run_semantik_v2_conversion
+    from lib.paths import get_state_runs_dir
+
+    monkeypatch.setenv("SEMANTIK_PYTHON", "/fake/venv/python")
+    monkeypatch.setenv("SEMANTIK_RUNTIME_DIR", str(tmp_path / "semantik_repo"))
+    # The parent orchestrator process does NOT export the dir itself — the
+    # bridge must derive it from lib.paths (the meter's documented contract).
+    monkeypatch.delenv("ED4ALL_STATE_RUNS_DIR", raising=False)
+    _force_inprocess_import_fail(monkeypatch)
+    record: list = []
+    _mock_subprocess_run(monkeypatch, bridge=_bridge_json(), record=record)
+
+    out = tmp_path / "sample_text_ch1_accessible.html"
+    _run_semantik_v2_conversion("sample_text_ch1.pdf", str(out))
+
+    assert record, "subprocess.run was not called"
+    env = record[0]["env"]
+    assert env.get("ED4ALL_STATE_RUNS_DIR") == str(get_state_runs_dir())
+
+
+def test_a4b_bridge_state_runs_dir_setdefault_respects_operator(
+    monkeypatch, tmp_path
+):
+    from MCP.tools.pipeline_tools import _run_semantik_v2_conversion
+
+    monkeypatch.setenv("SEMANTIK_PYTHON", "/fake/venv/python")
+    monkeypatch.setenv("SEMANTIK_RUNTIME_DIR", str(tmp_path / "semantik_repo"))
+    operator_dir = tmp_path / "operator_runs"
+    monkeypatch.setenv("ED4ALL_STATE_RUNS_DIR", str(operator_dir))
+    _force_inprocess_import_fail(monkeypatch)
+    record: list = []
+    _mock_subprocess_run(monkeypatch, bridge=_bridge_json(), record=record)
+
+    out = tmp_path / "sample_text_ch1_accessible.html"
+    _run_semantik_v2_conversion("sample_text_ch1.pdf", str(out))
+
+    assert record, "subprocess.run was not called"
+    env = record[0]["env"]
+    assert env.get("ED4ALL_STATE_RUNS_DIR") == str(operator_dir)
+
+
+# ---------------------------------------------------------------------------
 # (b) SEMANTIK_PYTHON unset + import fails → fail-closed clear (NO fallback).
 # ---------------------------------------------------------------------------
 

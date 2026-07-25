@@ -93,6 +93,7 @@ These are the providers that actually produce paraphrased training pairs. Each r
 | `local` (Qwen 7B) | `qwen2.5:7b-instruct-q4_K_M` | Apache 2.0 | N/A (your hardware) | **Yes** | **Recommended default** for license-clean corpora |
 | `local` (Qwen 14B) | `qwen2.5:14b-instruct-q4_K_M` | Apache 2.0 | N/A | **Yes** | Stronger paraphrase, 12 GB GPU |
 | `local` (Qwen 32B) | `qwen2.5:32b-instruct-q4_K_M` | Apache 2.0 | N/A | **Yes** | Top OSS quality on 24 GB GPU |
+| `ED4ALL_CAMPAIGN_BASE_MODEL` | `nemotron3-nano-30b` (BF16 LoRA base, not a synthesis provider) | NVIDIA Nemotron Open Model License (Dec 15 2025 pin — `assert_nemotron_pin` fails the build on identity drift) | N/A (your hardware, HF-offline pre-seeded snapshot) | n/a — this flag selects the model being TRAINED, not a pair-authoring teacher | Campaign Stage-B base-model selector (`lib/assistant/campaign_tools.resolve_campaign_base_model`); the value must resolve in `Trainforge/training/base_models.py::BaseModelRegistry` — unknown name is a loud error, never a fallback model. Teacher-side licensing for the pairs it trains on is governed by the SFT teacher roster below. |
 | `local` (Qwen 72B) | `qwen2.5:72b-instruct-q4_K_M` | Qwen License Agreement | N/A | **Yes** (outputs unrestricted at any scale) | Highest OSS quality, A100 / multi-GPU |
 | `local` (Llama 70B) | `llama3.3:70b-instruct-q4_K_M` | Llama 3.3 Community License | N/A | **Yes** (with attribution) | Strong instruction following |
 | `local` (Mistral 24B) | `mistral-small:24b-instruct-q4_K_M` | Apache 2.0 | N/A | **Yes** | Faster on 16 GB GPU |
@@ -270,6 +271,7 @@ land with a row here.
 | Flag/value | Default model | Model license | ToS layer | Training-data permitted | Recommended use |
 |------------|---------------|---------------|-----------|-------------------------|-----------------|
 | `ED4ALL_ANSWER_PROVIDER=local` | `qwen2.5:7b-instruct-q4_K_M` (via `ED4ALL_ANSWER_MODEL` → `LOCAL_SYNTHESIS_MODEL`) | Apache 2.0 | N/A (your hardware; loopback-enforced) | N/A — runtime Q&A inference; outputs are ephemeral learner answers, never corpus content | **Only permitted value in Phase IA.** Non-loopback resolution raises `AnswerProviderNotLocal`. |
+| `ED4ALL_ASSISTANT_BASE_URL` / `ED4ALL_ASSISTANT_MODEL` (the `ed4all assistant` seat) | `nemotron-3-nano` on a local vLLM seat (`http://localhost:8004/v1`) | NVIDIA Nemotron Open Model License | N/A (your hardware; loopback-enforced — non-loopback resolution raises `AssistantProviderNotLocal`) | N/A — runtime operator-help surface (status / run start-stop / curated help chat); outputs are ephemeral operator replies, NEVER a training-data producer and never re-ingested as corpus content | Operator-assistant chat only (`lib/assistant/`); sandboxed to a typed tool whitelist, no shell / file access. |
 
 ### Citation links (verbatim)
 

@@ -60,6 +60,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -67,6 +68,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from Trainforge.generators._openai_compatible_client import (
     OpenAICompatibleClient,
     apply_reasoning_thinking_off_payload,
+    maybe_append_usage_row,
 )
 
 # Per-backend IDENTITY (base_url / default_model) is sourced from the unified
@@ -624,10 +626,37 @@ class _BaseLLMProvider(ABC):
         # (byte-identical). Applied AFTER the ``extra_body`` + ``extra_payload``
         # merges so an explicit caller / endpoint-row override still wins.
         apply_reasoning_thinking_off_payload(payload)
+        _call_start = time.monotonic()
         body, retry_count = self._oa_client._post_with_retry(payload)
-        text = self._oa_client._extract_text(body)
+        _duration_ms = (time.monotonic() - _call_start) * 1000.0
         usage = body.get("usage") if isinstance(body, dict) else None
-        return text, retry_count, usage if isinstance(usage, dict) else {}
+        usage_dict: Dict[str, Any] = usage if isinstance(usage, dict) else {}
+        # OP2 usage tap — this call site POSTs via ``_post_with_retry``
+        # DIRECTLY (bypassing ``chat_completion``, see the thinking-off note
+        # above), so ``_maybe_append_usage_row`` never fires for it. Mirror
+        # the tap here through the SHARED module-level helper so every
+        # Courseforge tier dispatch (outline / rewrite / content-generator /
+        # the together-local outliner + textbook-synthesis branches) meters
+        # into the same ``state/runs/<run_id>/llm_usage.jsonl`` ledger.
+        # Contract-identical: best-effort (the helper swallows everything),
+        # gated on ``ED4ALL_RUN_ID``, real server-reported token counts only
+        # (an absent usage block defaults to 0 per the existing row shape),
+        # and appended BEFORE ``_extract_text`` — which RAISES
+        # ``output_truncated`` on ``finish_reason == "length"`` — so a
+        # truncated call still records the row that names the truncation.
+        maybe_append_usage_row(
+            provider_label=getattr(
+                self._oa_client, "provider_label", self._provider
+            ),
+            model=self._model,
+            usage=usage_dict,
+            duration_ms=_duration_ms,
+            finish_reason=OpenAICompatibleClient._extract_finish_reason(body)
+            if isinstance(body, dict)
+            else None,
+        )
+        text = self._oa_client._extract_text(body)
+        return text, retry_count, usage_dict
 
     def _call_anthropic(self, user_prompt: str) -> Tuple[str, int]:
         """Run the call against the Anthropic SDK.
@@ -733,6 +762,8 @@ class _BaseLLMProvider(ABC):
         decision_type: str,
         decision: str,
         rationale: str,
+        alternatives_considered: Optional[List[str]] = None,
+        inputs_ref: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         """Generic capture-emit helper.
 
@@ -741,14 +772,33 @@ class _BaseLLMProvider(ABC):
         at ``schemas/events/decision_event.schema.json``) and call
         through here so the swallow-on-error semantics live in one
         place.
+
+        ``alternatives_considered`` / ``inputs_ref`` are optional
+        pass-throughs to ``DecisionCapture.log_decision``. Callers pass
+        them ONLY when genuine values exist in scope (real code-path
+        alternatives that were weighed / real input references the call
+        consumed) — never fabricated or padded. The capture quality
+        gate (``lib/quality.py::assess_decision_quality``) requires at
+        least one of them non-empty for a "proficient" rating, so an
+        emit that omits both is flagged for exclusion from the
+        decision-capture training corpus.
         """
         if self._capture is None:
             return
+        # Pass the optional fields ONLY when supplied so legacy call
+        # sites keep their exact log_decision call shape (test fakes may
+        # pin a strict keyword signature).
+        extra: Dict[str, Any] = {}
+        if alternatives_considered:
+            extra["alternatives_considered"] = alternatives_considered
+        if inputs_ref:
+            extra["inputs_ref"] = inputs_ref
         try:
             self._capture.log_decision(
                 decision_type=decision_type,
                 decision=decision,
                 rationale=rationale,
+                **extra,
             )
         except Exception as exc:  # pragma: no cover — defensive
             logger.warning(

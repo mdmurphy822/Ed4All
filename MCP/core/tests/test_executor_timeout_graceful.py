@@ -244,11 +244,17 @@ async def test_batch_two_stage_wait_timeouts(isolated_state_runs, monkeypatch):
         max_concurrent=5,
     )
 
-    # Exactly two waits: stage-1 deadline, then stage-2 grace.
-    assert len(recorded) == 2
-    assert recorded[0] == pytest.approx(0.1)
-    assert recorded[1] == pytest.approx(_grace_seconds(0.1))
-    assert recorded[1] == pytest.approx(0.05)
+    # Exactly two BATCH-LEVEL waits: stage-1 deadline, then stage-2 grace.
+    # The rolling concurrency window inside ``_execute_parallel`` also calls
+    # ``asyncio.wait(..., return_when=FIRST_COMPLETED)`` with NO timeout to
+    # await the first in-flight completion; that untimed inner wait is filtered
+    # out here so the assertion still pins ONLY the two-stage batch-timeout
+    # machinery (the timeout-bearing waits) it is about.
+    batch_waits = [t for t in recorded if t is not None]
+    assert len(batch_waits) == 2
+    assert batch_waits[0] == pytest.approx(0.1)
+    assert batch_waits[1] == pytest.approx(_grace_seconds(0.1))
+    assert batch_waits[1] == pytest.approx(0.05)
 
 
 @pytest.mark.asyncio

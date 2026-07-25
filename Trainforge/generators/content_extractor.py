@@ -338,9 +338,43 @@ class Example:
     source_chunk_id: str
 
 
+# --------------------------------------------------------------------------- #
+# Footnote-apparatus strip (assessment-path only, removal-only).
+#
+# Source chunks quote textbook prose that carries footnote APPARATUS: LaTeX
+# superscript-only footnote markers (``$^{2}$``) and the bare footnote URLs
+# the marker points at. When a stem quotes that text verbatim (fill-in-blank
+# context sentences, factual statements, relationship sentences) the apparatus
+# ships inside the question. Strip it at the single point the assessment path
+# ingests chunk text. REMOVAL-ONLY — never rewrites content; the chunker /
+# conversion layers are deliberately untouched (separate fix).
+#
+# ``_FOOTNOTE_MARKER_RE`` matches ONLY superscript-only math spans (an
+# optional-whitespace ``$^{N}$`` with a bare integer) — real math like
+# ``$x^{2}$`` has content before the ``^`` and never matches.
+# --------------------------------------------------------------------------- #
+_FOOTNOTE_MARKER_RE = re.compile(r"\$\s*\^\s*\{\s*\d+\s*\}\s*\$")
+#: A bare URL token (footnote target). Trailing sentence punctuation is left
+#: for the whitespace normalizer / sentence splitter to handle.
+_FOOTNOTE_URL_RE = re.compile(r"https?://[^\s<>\"')\]]+")
+
+
+def _strip_footnote_apparatus(text: str) -> str:
+    """Remove footnote markers (``$^{n}$``) and bare footnote URLs.
+
+    Removal-only: nothing is inserted or paraphrased. Applied to every text
+    the assessment generators quote from chunk content (via
+    :func:`_strip_html`), so stems never retain footnote apparatus.
+    """
+    text = _FOOTNOTE_MARKER_RE.sub(" ", text)
+    text = _FOOTNOTE_URL_RE.sub(" ", text)
+    return text
+
+
 def _strip_html(text: str) -> str:
-    """Strip HTML tags and normalize whitespace."""
+    """Strip HTML tags, footnote apparatus, and normalize whitespace."""
     text = re.sub(r"<[^>]+>", " ", text)
+    text = _strip_footnote_apparatus(text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
@@ -350,6 +384,65 @@ def _split_sentences(text: str) -> List[str]:
     # Split on sentence-ending punctuation followed by space or end
     sentences = re.split(r'(?<=[.!?])\s+', text)
     return [s.strip() for s in sentences if len(s.strip()) > 10]
+
+
+# --------------------------------------------------------------------------- #
+# Relationship-concept term-likeness guard.
+#
+# ``RELATIONSHIP_PATTERNS`` capture ``([^,.]+?)`` — an arbitrary clause up to
+# the next comma/period — as each "concept". On real prose that grabs a full
+# CLAUSE ("X replicates your data across multiple nodes so that the loss of a
+# single node doesn't") instead of a concept term, and the "relationship
+# between X and Y" stem template then emits word salad. Only mint a
+# ConceptRelationship when BOTH captures read as genuine short noun-phrase
+# terms: bounded length/word count, no finite verbs / clause connectives, and
+# passing the canonical fragment-phrase filter from ``lib.ontology``.
+# --------------------------------------------------------------------------- #
+
+#: Leading determiners tolerated on a prose-mined concept ("the mitochondria").
+_LEADING_DETERMINER_RE = re.compile(
+    r"^(?:the|a|an|its|their|your|our|this|these|those)\s+", re.IGNORECASE
+)
+#: Finite verbs / negations / clause connectives that mark a CLAUSE, not a
+#: noun-phrase concept term. Any hit rejects the capture.
+_CLAUSE_MARKER_RE = re.compile(
+    r"\b(?:is|are|was|were|be|been|being|has|have|had|do|does|did|"
+    r"don'?t|doesn'?t|didn'?t|isn'?t|aren'?t|wasn'?t|weren'?t|"
+    r"can|cannot|can'?t|will|won'?t|would|should|could|must|may|might|"
+    r"shall|so\s+that|because|which|that|when|while|whereas|if|unless|"
+    r"although|though)\b",
+    re.IGNORECASE,
+)
+#: Character / word caps for a concept term (noun phrases are short).
+_MAX_TERM_CHARS = 60
+_MAX_TERM_WORDS = 5
+
+
+def _is_term_like_concept(text: str) -> bool:
+    """Is ``text`` a genuine short noun-phrase concept term?
+
+    Used by :meth:`ContentExtractor.extract_relationships` to reject
+    clause-grabs before a relationship stem template is minted. Delegates the
+    fragment-phrase heuristics to the canonical
+    ``lib.ontology.lexical_concept_seeds.is_fragment_phrase`` after stripping
+    a tolerated leading determiner, and layers explicit length / word-count
+    caps plus a finite-verb / clause-connective rejection on top.
+    """
+    from lib.ontology.lexical_concept_seeds import is_fragment_phrase
+
+    if not text:
+        return False
+    stripped = text.strip().strip("\"'").rstrip(".,;:")
+    if len(stripped) < 3 or len(stripped) > _MAX_TERM_CHARS:
+        return False
+    core = _LEADING_DETERMINER_RE.sub("", stripped).strip()
+    if len(core) < 3:
+        return False
+    if len(core.split()) > _MAX_TERM_WORDS:
+        return False
+    if _CLAUSE_MARKER_RE.search(core):
+        return False
+    return not is_fragment_phrase(core)
 
 
 class ContentExtractor:
@@ -693,6 +786,19 @@ class ContentExtractor:
                         a = match.group(1).strip()
                         b = match.group(2).strip()
                         if len(a) < 3 or len(b) < 3:
+                            continue
+                        # Clause-grab guard: only mint a relationship when
+                        # BOTH captures read as short noun-phrase terms.
+                        # ``([^,.]+?)`` otherwise grabs a full clause, and
+                        # the "relationship between X and Y" stem template
+                        # emits word salad. A rejected sentence simply
+                        # yields no relationship — downstream generators
+                        # fall back to their next template (procedure /
+                        # example / key-term).
+                        if not (
+                            _is_term_like_concept(a)
+                            and _is_term_like_concept(b)
+                        ):
                             continue
                         # Determine relationship type from the matched pattern
                         rel = match.group(0).strip()

@@ -11,7 +11,7 @@ import os
 import tempfile
 import threading
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 # In-process locks for atomic_update_json to prevent race conditions
 # between threads (fcntl only protects against other processes)
@@ -19,7 +19,21 @@ _update_locks: Dict[str, threading.Lock] = {}
 _update_locks_guard = threading.Lock()
 
 
-def atomic_write_json(path: Path, data: Dict[str, Any], indent: int = 2) -> None:
+class StateFileCorruptedError(ValueError):
+    """A JSON state file on disk failed to parse (torn/interleaved write).
+
+    Raised by :func:`load_state_json` with a message naming the file, the
+    corruption position, and the recovery hint — instead of a bare
+    ``json.JSONDecodeError`` traceback.
+    """
+
+
+def atomic_write_json(
+    path: Path,
+    data: Dict[str, Any],
+    indent: int = 2,
+    default: Optional[Callable[[Any], Any]] = None,
+) -> None:
     """
     Atomic JSON write with fcntl locking.
 
@@ -32,6 +46,8 @@ def atomic_write_json(path: Path, data: Dict[str, Any], indent: int = 2) -> None
         path: Target file path
         data: Dictionary to serialize as JSON
         indent: JSON indentation level (default 2)
+        default: Optional ``json.dump`` fallback serializer (e.g. ``str``)
+            for non-JSON-native values; ``None`` keeps strict serialization
 
     Raises:
         OSError: If file operations fail
@@ -49,7 +65,7 @@ def atomic_write_json(path: Path, data: Dict[str, Any], indent: int = 2) -> None
             # Acquire exclusive lock
             fcntl.flock(f.fileno(), fcntl.LOCK_EX)
             try:
-                json.dump(data, f, indent=indent)
+                json.dump(data, f, indent=indent, default=default)
                 f.flush()
                 os.fsync(f.fileno())  # Force disk write
             finally:
@@ -96,6 +112,37 @@ def atomic_read_json(path: Path, default: Optional[Dict] = None) -> Dict[str, An
             return json.load(f)
         finally:
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+
+def load_state_json(path: Path, recovery_hint: Optional[str] = None) -> Dict[str, Any]:
+    """Load a JSON state file, converting parse failures into a clear error.
+
+    A torn / interleaved write (two non-atomic writers racing the same file)
+    leaves a document that fails mid-parse. Instead of a bare
+    ``json.JSONDecodeError`` traceback, raise :class:`StateFileCorruptedError`
+    naming the file, the corruption position, and (when given) a recovery
+    hint pointing the operator at the authoritative recovery source.
+
+    Args:
+        path: State file to read
+        recovery_hint: Optional operator-facing recovery guidance appended to
+            the error message
+
+    Raises:
+        FileNotFoundError: If the file does not exist
+        StateFileCorruptedError: If the file exists but is not valid JSON
+    """
+    path = Path(path)
+    try:
+        return atomic_read_json(path)
+    except json.JSONDecodeError as exc:
+        message = (
+            f"State file corrupted: {path} — JSON parse failed at char {exc.pos} "
+            f"(line {exc.lineno} column {exc.colno}): {exc.msg}."
+        )
+        if recovery_hint:
+            message = f"{message} {recovery_hint}"
+        raise StateFileCorruptedError(message) from exc
 
 
 def atomic_update_json(

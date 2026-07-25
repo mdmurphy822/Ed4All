@@ -280,6 +280,66 @@ _DEFAULT_OUTLINE_MODEL = "qwen2.5:7b-instruct-q4_K_M"
 _DEFAULT_REWRITE_MODEL_LOCAL = "qwen2.5:7b-instruct-q4_K_M"
 _DEFAULT_REWRITE_MODEL_ANTHROPIC = "claude-sonnet-4-6"
 
+# --- Per-tier max_tokens DEFAULT resolvers (env-driven) --------------------
+# The router constructs each tier provider with an explicit
+# ``max_tokens=spec.max_tokens`` kwarg, and ``spec.max_tokens`` is the value
+# resolved into ``BlockProviderSpec`` here / in ``policy._spec_from_dict``.
+# That explicit kwarg WINS over the generators' own
+# ``COURSEFORGE_OUTLINE_MAX_TOKENS`` / ``COURSEFORGE_REWRITE_MAX_TOKENS``
+# resolution, so the ONLY knob that actually changes the pipeline's per-call
+# generation cap is the DEFAULT baked into ``spec.max_tokens``. These resolvers
+# make that default env-driven. Resolution priority (high → low) for the
+# effective ``spec.max_tokens`` stays: YAML / per-block ``max_tokens`` override
+# > this env > the hardcoded default below. Mirrors the parse-with-fallback
+# discipline of the generators' ``_resolve_outline_max_tokens`` /
+# ``_resolve_synthesis_max_tokens``.
+ENV_OUTLINE_MAX_TOKENS = "COURSEFORGE_OUTLINE_MAX_TOKENS"
+ENV_REWRITE_MAX_TOKENS = "COURSEFORGE_REWRITE_MAX_TOKENS"
+_DEFAULT_OUTLINE_MAX_TOKENS = 4096
+_DEFAULT_REWRITE_MAX_TOKENS = 6144
+
+
+def _resolve_env_max_tokens_default(env_var: str, default: int) -> int:
+    """Resolve a per-tier ``max_tokens`` DEFAULT from an env var.
+
+    Reads ``env_var`` and parses it as a positive int; a missing / empty /
+    unparseable / non-positive value falls back to ``default`` with a one-time
+    ``logger.warning`` (garbage never silently shrinks the generation cap).
+    Read at call time so a test can monkeypatch the env per call.
+    """
+    raw = os.environ.get(env_var)
+    if not raw or not str(raw).strip():
+        return default
+    try:
+        parsed = int(str(raw).strip())
+    except (TypeError, ValueError):
+        logger.warning(
+            "CourseforgeRouter: ignoring non-integer %s=%r; using default %d",
+            env_var, raw, default,
+        )
+        return default
+    if parsed <= 0:
+        logger.warning(
+            "CourseforgeRouter: ignoring non-positive %s=%r; using default %d",
+            env_var, raw, default,
+        )
+        return default
+    return parsed
+
+
+def resolve_outline_max_tokens_default() -> int:
+    """Env-driven DEFAULT ``max_tokens`` for the outline tier (else 4096)."""
+    return _resolve_env_max_tokens_default(
+        ENV_OUTLINE_MAX_TOKENS, _DEFAULT_OUTLINE_MAX_TOKENS
+    )
+
+
+def resolve_rewrite_max_tokens_default() -> int:
+    """Env-driven DEFAULT ``max_tokens`` for the rewrite tier (else 6144)."""
+    return _resolve_env_max_tokens_default(
+        ENV_REWRITE_MAX_TOKENS, _DEFAULT_REWRITE_MAX_TOKENS
+    )
+
 # Block types that route through the Anthropic rewrite default — the
 # multi-step-reasoning workloads where the higher-capability model
 # noticeably improves emit quality.
@@ -724,6 +784,8 @@ def _build_hardcoded_defaults() -> Dict[Tuple[str, str], BlockProviderSpec]:
     :data:`Courseforge.scripts.blocks.BLOCK_TYPES` has both an outline
     and a rewrite entry.
     """
+    outline_max_tokens = resolve_outline_max_tokens_default()
+    rewrite_max_tokens = resolve_rewrite_max_tokens_default()
     table: Dict[Tuple[str, str], BlockProviderSpec] = {}
     for block_type in BLOCK_TYPES:
         table[(block_type, "outline")] = BlockProviderSpec(
@@ -732,7 +794,7 @@ def _build_hardcoded_defaults() -> Dict[Tuple[str, str], BlockProviderSpec]:
             provider="local",
             model=_DEFAULT_OUTLINE_MODEL,
             temperature=0.0,
-            max_tokens=1200,
+            max_tokens=outline_max_tokens,
         )
         if block_type in _REWRITE_ANTHROPIC_BLOCK_TYPES:
             table[(block_type, "rewrite")] = BlockProviderSpec(
@@ -741,7 +803,7 @@ def _build_hardcoded_defaults() -> Dict[Tuple[str, str], BlockProviderSpec]:
                 provider="anthropic",
                 model=_DEFAULT_REWRITE_MODEL_ANTHROPIC,
                 temperature=0.4,
-                max_tokens=2400,
+                max_tokens=rewrite_max_tokens,
             )
         else:
             table[(block_type, "rewrite")] = BlockProviderSpec(
@@ -750,7 +812,7 @@ def _build_hardcoded_defaults() -> Dict[Tuple[str, str], BlockProviderSpec]:
                 provider="local",
                 model=_DEFAULT_REWRITE_MODEL_LOCAL,
                 temperature=0.4,
-                max_tokens=2400,
+                max_tokens=rewrite_max_tokens,
             )
     return table
 
@@ -949,7 +1011,26 @@ class CourseforgeRouter:
 
         # Build the resolved spec by overlaying each layer in reverse
         # priority order so the highest-priority source wins.
-        resolved: BlockProviderSpec = baseline
+        #
+        # The hardcoded baseline table (:data:`_HARDCODED_DEFAULTS`) is built
+        # ONCE at module import, so its ``max_tokens`` froze in the env value
+        # present at import. Re-resolve the baseline's ``max_tokens`` DEFAULT
+        # from the env at CALL time so ``COURSEFORGE_OUTLINE_MAX_TOKENS`` /
+        # ``COURSEFORGE_REWRITE_MAX_TOKENS`` are the real per-call generation
+        # cap knob regardless of import ordering. This only re-resolves the
+        # lowest-priority default: a YAML ``policy_spec`` REPLACES ``resolved``
+        # wholesale below (and ``policy._spec_from_dict`` already env-resolves
+        # its own default + honors a per-block YAML ``max_tokens`` override),
+        # and per-call ``overrides`` still win — so precedence stays
+        # YAML/per-block override > env > resolver default.
+        env_default_max_tokens = (
+            resolve_outline_max_tokens_default()
+            if tier == "outline"
+            else resolve_rewrite_max_tokens_default()
+        )
+        resolved: BlockProviderSpec = dataclasses.replace(
+            baseline, max_tokens=env_default_max_tokens
+        )
 
         # 3. YAML policy — Wave N stub. When ``self._policy`` is non-None
         # and exposes a ``resolve(block_id, block_type, tier)`` method,
@@ -4736,6 +4817,26 @@ class CourseforgeRouter:
             "failed_candidate_count": failed_candidate_count,
             "validator_failure_distribution": dict(validator_failure_distribution),
         }
+        # Capture-quality contract (proficient floor): the REAL input this
+        # selection consumed is the block under dispatch; the genuine
+        # alternatives are the sibling candidates that were actually
+        # dispatched and rejected by the validator chain (when any were —
+        # a clean single-candidate pass weighs no alternates, and none
+        # are fabricated for it).
+        inputs_ref = [
+            {"source_type": "block", "path_or_id": str(block.block_id)}
+        ]
+        alternatives: Optional[List[str]] = None
+        if failed_candidate_count:
+            dist = dict(validator_failure_distribution)
+            alternatives = [
+                (
+                    f"{failed_candidate_count} dispatched sibling "
+                    f"candidate(s) of block {block.block_id} rejected by "
+                    f"the validator chain"
+                    + (f" (failure distribution: {dist})" if dist else "")
+                ),
+            ]
         try:
             self._capture.log_decision(
                 decision_type="block_outline_call",
@@ -4745,6 +4846,8 @@ class CourseforgeRouter:
                 ),
                 rationale="; ".join(rationale_parts),
                 ml_features=ml_features,
+                alternatives_considered=alternatives,
+                inputs_ref=inputs_ref,
             )
         except Exception as exc:  # pragma: no cover — defensive
             logger.warning(
@@ -5073,6 +5176,30 @@ class CourseforgeRouter:
         if extra_rationale:
             rationale_parts.append(extra_rationale)
         rationale = "; ".join(rationale_parts)
+        # Capture-quality contract (proficient floor): a routing decision's
+        # genuine alternatives are the OTHER policy-resolution layers the
+        # resolver walked in precedence order (per_call > yaml_policy >
+        # env_var > hardcoded_default; ``policy_source`` names the layer
+        # that won — see ``_classify_policy_source``). The real input is
+        # the block being routed.
+        _POLICY_LAYERS = (
+            "per_call",
+            "yaml_policy",
+            "env_var",
+            "hardcoded_default",
+        )
+        alternatives = [
+            (
+                f"resolve provider/model from the '{layer}' policy layer "
+                f"(walked in precedence order; not selected — "
+                f"'{policy_source}' won)"
+            )
+            for layer in _POLICY_LAYERS
+            if layer != policy_source
+        ]
+        inputs_ref = [
+            {"source_type": "block", "path_or_id": str(block.block_id)}
+        ]
         try:
             self._capture.log_decision(
                 decision_type=decision_type,
@@ -5081,6 +5208,8 @@ class CourseforgeRouter:
                     f":{outcome}"
                 ),
                 rationale=rationale,
+                alternatives_considered=alternatives,
+                inputs_ref=inputs_ref,
             )
         except Exception as exc:  # pragma: no cover — defensive
             logger.warning(

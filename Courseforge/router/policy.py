@@ -45,7 +45,11 @@ import yaml
 # The router lives next to this module; reuse its BlockProviderSpec so
 # the loader emits the exact same frozen dataclass the dispatch path
 # already consumes.
-from Courseforge.router.router import BlockProviderSpec
+from Courseforge.router.router import (
+    BlockProviderSpec,
+    resolve_outline_max_tokens_default,
+    resolve_rewrite_max_tokens_default,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -832,8 +836,13 @@ def _spec_from_dict(
 
     The schema constrains ``provider`` and ``model`` shape, so missing
     values here mean the operator left them out intentionally; we fall
-    back to per-tier conventions — outline at temperature 0.0 / 1200
-    tokens, rewrite at 0.4 / 2400 tokens, both on the local 7B Qwen.
+    back to per-tier conventions — outline at temperature 0.0, rewrite at
+    0.4, both on the local 7B Qwen. The ``max_tokens`` DEFAULT is env-driven
+    (``COURSEFORGE_OUTLINE_MAX_TOKENS`` / ``COURSEFORGE_REWRITE_MAX_TOKENS``,
+    resolved in ``Courseforge.router.router``) so the effective per-call
+    generation cap can be tuned without editing this file; an explicit
+    per-block ``max_tokens`` in ``block_routing.yaml`` still wins over the
+    env default (YAML/per-block override > env > resolver default).
     """
     provider = spec_dict.get("provider", "local")
     model = spec_dict.get(
@@ -846,7 +855,10 @@ def _spec_from_dict(
         "temperature", 0.0 if tier == "outline" else 0.4
     )
     max_tokens = spec_dict.get(
-        "max_tokens", 1200 if tier == "outline" else 2400
+        "max_tokens",
+        resolve_outline_max_tokens_default()
+        if tier == "outline"
+        else resolve_rewrite_max_tokens_default(),
     )
     # Optional per-tier-spec regen budget (consumed by the router's
     # cascading-regen helper). ``None`` when the operator didn't

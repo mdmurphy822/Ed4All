@@ -289,6 +289,36 @@ def test_capture_fires_with_sibling_fallback_marker(tmp_path):
     )
     assert "sibling" in call["rationale"].lower()
     assert call["ml_features"]["sibling_donor_count"] == 1
+    # Capture-quality contract (proficient floor): the fallback event
+    # references the real inputs it consumed (the block + the donor
+    # siblings) and the genuine do-nothing alternative (leave the block
+    # un-minted and fail the anchoring gate).
+    inputs_ref = call["inputs_ref"]
+    assert {
+        "source_type": "block",
+        "path_or_id": "week_01_content_01#callout_eval_1",
+    } in inputs_ref
+    assert any(
+        r.get("source_type") == "sibling_page_blocks" for r in inputs_ref
+    )
+    alternatives = call["alternatives_considered"]
+    assert alternatives
+    assert any("BlockCurieAnchoringValidator" in a for a in alternatives)
+
+    # The sibling's own (non-fallback) mint event references the actual
+    # matched vocabulary concept(s) as inputs.
+    direct_calls = [
+        c for c in capture.calls
+        if c.get("ml_features", {}).get("matched_surface")
+        != "sibling_page_fallback"
+    ]
+    assert direct_calls, "sibling's own mint should also have fired"
+    direct = direct_calls[0]
+    assert any(
+        r.get("source_type") == "domain_concept"
+        for r in direct["inputs_ref"]
+    )
+    assert direct["alternatives_considered"]
 
 
 # ---------------------------------------------------------------------------

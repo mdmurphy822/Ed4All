@@ -98,6 +98,19 @@ ENV_REQUEST_TIMEOUT: str = "ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS"
 # bare library caller (no run id) is byte-identical to the pre-tap path.
 ENV_RUN_ID: str = "ED4ALL_RUN_ID"
 
+# Active-phase metering context. The workflow engine publishes the name of the
+# phase currently executing (``core/executor.py::execute_phase`` sets this env
+# at phase entry and restores it in a ``finally``, mirroring the instance-level
+# ``self._active_phase_name`` it already tracks) so an in-process content-gen
+# LLM call — which, unlike the SemantiK cascade taps, is dispatched from MANY
+# phases (course_planning, concept_extraction, content_generation_*,
+# assessment_synthesis, training_synthesis) and cannot know its phase from a
+# static literal — can stamp the SPENDING phase on its usage row. Read at
+# row-emit time, best-effort; unset / blank leaves ``phase`` off the row so a
+# bare library caller stays byte-identical. Same wire contract as the executor's
+# literal (kept in sync there by comment).
+ENV_ACTIVE_PHASE: str = "ED4ALL_ACTIVE_PHASE"
+
 # Nemotron "detailed thinking off" toggle. NVIDIA Nemotron-3 REASONING models
 # emit ``<think>`` reasoning tokens by default plus a large system preamble;
 # a bulk-authoring call whose preamble + reasoning + answer exceeds
@@ -118,6 +131,30 @@ ENV_REASONING_THINKING_OFF: str = "ED4ALL_REASONING_THINKING_OFF"
 # a module constant so the injection site and the regression test agree on the
 # literal.
 _REASONING_THINKING_OFF_DIRECTIVE: str = "detailed thinking off"
+
+# Strict-OpenAI servers (e.g. TRT-LLM ``trtllm-serve``) validate the request body
+# with pydantic ``extra_forbidden`` and REJECT the Ollama-style top-level
+# ``format`` field with HTTP 400. When this env is truthy the ``json_mode``
+# dual-inject omits ``format: "json"`` and sends ONLY the OpenAI-spec
+# ``response_format`` object (which trtllm-serve accepts). Default off →
+# byte-identical (both fields sent, as Ollama / vLLM want). Parse-with-fallback
+# truthy semantics mirror the other ``ED4ALL_*`` boolean knobs.
+ENV_OMIT_OLLAMA_FORMAT: str = "ED4ALL_LLM_OMIT_OLLAMA_FORMAT"
+
+
+def _omit_ollama_format() -> bool:
+    raw = os.environ.get(ENV_OMIT_OLLAMA_FORMAT)
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"} if raw else False
+
+# NVIDIA's Nemotron-3 model card documents a third reasoning mode — LOW EFFORT —
+# that keeps thinking ENABLED but emits "significantly fewer reasoning tokens
+# than full thinking mode" via
+# ``chat_template_kwargs={"enable_thinking": True, "low_effort": True}``. This
+# env selects it. Precedence across the two reasoning knobs (high → low):
+# ``ED4ALL_REASONING_LOW_EFFORT`` > ``ED4ALL_REASONING_THINKING_OFF`` > neither.
+# Default OFF → byte-identical to the legacy path. Parse-with-fallback truthy
+# semantics mirror the other ``ED4ALL_*`` boolean knobs.
+ENV_REASONING_LOW_EFFORT: str = "ED4ALL_REASONING_LOW_EFFORT"
 
 # Task #10 — TTFT (time-to-first-token) metering. When this env is truthy the
 # chat-completion call switches from the non-streaming JSON POST to a streaming
@@ -173,6 +210,23 @@ def resolve_reasoning_thinking_off() -> bool:
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def resolve_reasoning_low_effort() -> bool:
+    """Return whether the Nemotron "low effort" reasoning toggle is on.
+
+    Reads :data:`ENV_REASONING_LOW_EFFORT` and parses it as a boolean. Truthy
+    values are ``1`` / ``true`` / ``yes`` / ``on`` (case-insensitive,
+    whitespace-trimmed); anything else — including an unset / empty / garbage
+    value — resolves to ``False``. Read at call time (not construction) so a
+    test can monkeypatch the env per call and a live run can flip the behavior
+    without rebuilding client instances. Mirrors
+    :func:`resolve_reasoning_thinking_off`.
+    """
+    raw = os.environ.get(ENV_REASONING_LOW_EFFORT)
+    if not raw or not str(raw).strip():
+        return False
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def resolve_ttft_meter() -> bool:
     """Return whether TTFT (time-to-first-token) metering is on.
 
@@ -187,6 +241,101 @@ def resolve_ttft_meter() -> bool:
     if not raw or not str(raw).strip():
         return False
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def maybe_append_usage_row(
+    *,
+    provider_label: str,
+    model: str,
+    usage: Dict[str, int],
+    duration_ms: float,
+    ttft_ms: Optional[float] = None,
+    stream_usage_present: Optional[bool] = None,
+    finish_reason: Optional[str] = None,
+) -> None:
+    """Append one OP2 metering row to ``state/runs/<run_id>/llm_usage.jsonl``.
+
+    Roadmap OP2 + Task #10 + perf-doc P4 — the SHARED tap implementation.
+    Module-level so every OpenAI-compatible call site meters through ONE
+    seam: :meth:`OpenAICompatibleClient._maybe_append_usage_row` (the
+    ``chat_completion`` path) delegates here, and call sites that POST via
+    ``_post_with_retry`` directly — notably
+    ``Courseforge/generators/_base.py::_dispatch_call_with_usage``, the
+    outline/rewrite-tier dispatch that bypasses ``chat_completion`` — call
+    this function themselves so their calls land in the same ledger.
+
+    Fires only when ``ED4ALL_RUN_ID`` identifies a run; otherwise a strict
+    no-op so bare library callers stay byte-identical. Base row shape:
+    ``{ts, provider, model, prompt_tokens, completion_tokens, duration_ms}``.
+
+    Task #10 additive fields (present ONLY when TTFT metering measured a
+    streaming call, so the flag-off row is byte-identical to the legacy
+    OP2 row): ``ttft_ms`` (float, time-to-first-token) and — when the
+    streaming server omitted the ``usage`` block despite
+    ``stream_options.include_usage`` — ``stream_usage_present: false`` so an
+    auditor knows the token counts on that row are absent-defaulted to 0
+    rather than server-reported.
+
+    perf-doc P4 additive field: ``finish_reason`` (the first choice's
+    server-reported terminator — ``"stop"`` / ``"length"`` /
+    ``"tool_calls"`` / …). Present only when the server reported it; OMITTED
+    when None so a body without the field keeps the legacy row shape. This
+    is the signal that turns silent-truncation diagnosis (``finish_reason ==
+    "length"``) from guesswork into a fact ``BuildCostAggregator`` consumers
+    can read straight off the row. NB: the tap contract carries no per-call
+    *call-site label* field (the tap sees only ``provider`` / ``model`` /
+    ``usage`` — not the caller's ``decision_metadata``), so none is added;
+    ``BuildCostAggregator`` reads only the fields it knows and ignores the
+    rest, so this addition is additive and never breaks a reader.
+
+    Fully best-effort — ANY failure (unresolvable run dir, unwritable path,
+    serialization error) is swallowed so metering never perturbs a real LLM
+    call.
+    """
+    run_id = os.environ.get(ENV_RUN_ID)
+    if not run_id or not str(run_id).strip():
+        return
+    try:
+        from datetime import datetime, timezone
+
+        from lib.paths import get_state_runs_dir
+
+        run_dir = get_state_runs_dir() / str(run_id).strip()
+        run_dir.mkdir(parents=True, exist_ok=True)
+        row = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "provider": str(provider_label),
+            "model": str(model),
+            "prompt_tokens": int(usage.get("prompt_tokens", 0) or 0),
+            "completion_tokens": int(usage.get("completion_tokens", 0) or 0),
+            "duration_ms": round(float(duration_ms), 3),
+        }
+        # Metering-correctness — stamp the SPENDING phase so the per-phase
+        # token breakdown (GUI ``_usage_stats`` groups rows by ``phase``)
+        # attributes local content-gen (e.g. the spark-super course_planning
+        # TO/CO synthesis) to the phase that spent it, exactly as the SemantiK
+        # cascade taps already do. Read from the executor-published active-phase
+        # env; additive + best-effort — unset / blank leaves the field off so a
+        # bare library caller (no active phase) stays byte-identical.
+        _active_phase = os.environ.get(ENV_ACTIVE_PHASE)
+        if _active_phase and str(_active_phase).strip():
+            row["phase"] = str(_active_phase).strip()
+        # perf-doc P4 — additive finish_reason, omitted when None so a body
+        # without the field keeps the legacy row shape byte-identical.
+        if finish_reason is not None:
+            row["finish_reason"] = str(finish_reason)
+        # Additive TTFT fields — omitted when None so a flag-off / non-
+        # streaming row stays byte-identical to the legacy OP2 shape.
+        if ttft_ms is not None:
+            row["ttft_ms"] = round(float(ttft_ms), 3)
+        if stream_usage_present is False:
+            row["stream_usage_present"] = False
+        with open(
+            run_dir / "llm_usage.jsonl", "a", encoding="utf-8"
+        ) as fh:
+            fh.write(_json.dumps(row) + "\n")
+    except Exception as exc:  # noqa: BLE001 — metering must never crash a call
+        logger.debug("llm_usage tap failed (ignoring): %s", exc)
 
 
 class _StreamingUnsupported(Exception):
@@ -592,69 +741,21 @@ class OpenAICompatibleClient:
     ) -> None:
         """Append one metering row to ``state/runs/<run_id>/llm_usage.jsonl``.
 
-        Roadmap OP2 + Task #10 + perf-doc P4. Fires only when ``ED4ALL_RUN_ID``
-        identifies a run; otherwise a strict no-op so bare library callers stay
-        byte-identical. Base row shape: ``{ts, provider, model, prompt_tokens,
-        completion_tokens, duration_ms}``.
-
-        Task #10 additive fields (present ONLY when TTFT metering measured a
-        streaming call, so the flag-off row is byte-identical to the legacy
-        OP2 row): ``ttft_ms`` (float, time-to-first-token) and — when the
-        streaming server omitted the ``usage`` block despite
-        ``stream_options.include_usage`` — ``stream_usage_present: false`` so an
-        auditor knows the token counts on that row are absent-defaulted to 0
-        rather than server-reported.
-
-        perf-doc P4 additive field: ``finish_reason`` (the first choice's
-        server-reported terminator — ``"stop"`` / ``"length"`` /
-        ``"tool_calls"`` / …). Present only when the server reported it; OMITTED
-        when None so a body without the field keeps the legacy row shape. This
-        is the signal that turns silent-truncation diagnosis (``finish_reason ==
-        "length"``) from guesswork into a fact ``BuildCostAggregator`` consumers
-        can read straight off the row. NB: the tap contract carries no per-call
-        *call-site label* field (the tap sees only ``provider`` / ``model`` /
-        ``usage`` — not the caller's ``decision_metadata``), so none is added;
-        ``BuildCostAggregator`` reads only the fields it knows and ignores the
-        rest, so this addition is additive and never breaks a reader.
-
-        Fully best-effort — ANY failure (unresolvable run dir, unwritable path,
-        serialization error) is swallowed so metering never perturbs a real LLM
-        call.
+        Thin delegator to the module-level :func:`maybe_append_usage_row`
+        (the shared OP2 tap implementation) with this client's
+        ``provider_label`` / ``model`` identity. Kept as a method so the
+        existing ``chat_completion`` call site and its regression tests
+        stay on the same seam name.
         """
-        run_id = os.environ.get(ENV_RUN_ID)
-        if not run_id or not str(run_id).strip():
-            return
-        try:
-            from datetime import datetime, timezone
-
-            from lib.paths import get_state_runs_dir
-
-            run_dir = get_state_runs_dir() / str(run_id).strip()
-            run_dir.mkdir(parents=True, exist_ok=True)
-            row = {
-                "ts": datetime.now(timezone.utc).isoformat(),
-                "provider": self._provider_label,
-                "model": self._model,
-                "prompt_tokens": int(usage.get("prompt_tokens", 0) or 0),
-                "completion_tokens": int(usage.get("completion_tokens", 0) or 0),
-                "duration_ms": round(float(duration_ms), 3),
-            }
-            # perf-doc P4 — additive finish_reason, omitted when None so a body
-            # without the field keeps the legacy row shape byte-identical.
-            if finish_reason is not None:
-                row["finish_reason"] = str(finish_reason)
-            # Additive TTFT fields — omitted when None so a flag-off / non-
-            # streaming row stays byte-identical to the legacy OP2 shape.
-            if ttft_ms is not None:
-                row["ttft_ms"] = round(float(ttft_ms), 3)
-            if stream_usage_present is False:
-                row["stream_usage_present"] = False
-            with open(
-                run_dir / "llm_usage.jsonl", "a", encoding="utf-8"
-            ) as fh:
-                fh.write(_json.dumps(row) + "\n")
-        except Exception as exc:  # noqa: BLE001 — metering must never crash a call
-            logger.debug("llm_usage tap failed (ignoring): %s", exc)
+        maybe_append_usage_row(
+            provider_label=self._provider_label,
+            model=self._model,
+            usage=usage,
+            duration_ms=duration_ms,
+            ttft_ms=ttft_ms,
+            stream_usage_present=stream_usage_present,
+            finish_reason=finish_reason,
+        )
 
     # ------------------------------------------------------------------
     # Internals — TTFT streaming (Task #10)
@@ -703,7 +804,8 @@ class OpenAICompatibleClient:
         # servers that don't honor it just omit usage (handled downstream).
         stream_payload["stream_options"] = {"include_usage": True}
         if self._json_mode:
-            stream_payload.setdefault("format", "json")
+            if not _omit_ollama_format():
+                stream_payload.setdefault("format", "json")
             stream_payload.setdefault(
                 "response_format", {"type": "json_object"}
             )
@@ -1027,7 +1129,8 @@ class OpenAICompatibleClient:
         # don't recognize. Caller-supplied values (extra_payload) take
         # precedence so a future provider can opt out per-call.
         if self._json_mode:
-            payload.setdefault("format", "json")
+            if not _omit_ollama_format():
+                payload.setdefault("format", "json")
             payload.setdefault(
                 "response_format", {"type": "json_object"}
             )
@@ -1529,19 +1632,46 @@ def apply_reasoning_thinking_off_payload(
     its ``max_tokens`` budget on ``<think>`` tokens and trips the
     ``finish_reason == "length"`` truncation guard in :meth:`_extract_text`.
 
-    No-op (byte-identical) when the env toggle is off. When on: (a) rewrites
-    ``payload["messages"]`` via
-    :meth:`OpenAICompatibleClient._inject_thinking_off_system` (fresh list — the
-    caller's message list is never mutated in place) so the ``detailed thinking
-    off`` SYSTEM directive rides at the front, and (b) ``setdefault``s
-    ``chat_template_kwargs={"enable_thinking": False}`` (the vLLM / HF-native
-    mechanism the ``nemotron_v3`` reasoning parser honors) so an explicit value
-    already present on the payload (a caller override / endpoint-row
-    ``extra_body``) wins. Mirrors the injection ``chat_completion`` performs;
-    the actual message rewrite is the SAME shared static, so the two paths can't
-    drift on the directive text. Call it AFTER any ``extra_payload`` /
-    ``extra_body`` merge so a caller-supplied override takes precedence.
+    THREE-WAY reasoning mode, precedence (high → low): LOW_EFFORT
+    (:func:`resolve_reasoning_low_effort`) > THINKING_OFF
+    (:func:`resolve_reasoning_thinking_off`) > neither. Both env vars are read
+    on EVERY call (never cached) so a test can toggle them inline and a live run
+    can flip behavior without rebuilding client instances.
+
+    - **LOW_EFFORT on** — thinking stays ENABLED but the Nemotron-3 low-effort
+      mode is requested by MERGING ``{"enable_thinking": True, "low_effort":
+      True}`` into any existing ``payload["chat_template_kwargs"]`` (sibling keys
+      preserved, never clobbered). NO system directive is injected — thinking is
+      on, just cheaper. Documented on NVIDIA's Nemotron-3 model card as
+      "significantly fewer reasoning tokens than full thinking mode".
+    - **THINKING_OFF on (LOW_EFFORT off)** — the EXISTING behavior: (a) rewrites
+      ``payload["messages"]`` via
+      :meth:`OpenAICompatibleClient._inject_thinking_off_system` (fresh list —
+      the caller's message list is never mutated in place) so the ``detailed
+      thinking off`` SYSTEM directive rides at the front, and (b) ``setdefault``s
+      ``chat_template_kwargs={"enable_thinking": False}`` (the vLLM / HF-native
+      mechanism the ``nemotron_v3`` reasoning parser honors) so an explicit value
+      already present on the payload (a caller override / endpoint-row
+      ``extra_body``) wins.
+    - **neither** — no-op (byte-identical to today: no messages change, no
+      payload key added).
+
+    Mirrors the injection ``chat_completion`` performs; the actual message
+    rewrite is the SAME shared static, so the two paths can't drift on the
+    directive text. Call it AFTER any ``extra_payload`` / ``extra_body`` merge so
+    a caller-supplied override takes precedence. Pure payload-mutator — never
+    raises.
     """
+    if resolve_reasoning_low_effort():
+        # Low-effort keeps thinking ENABLED (no "detailed thinking off" system
+        # directive) but requests the cheaper reasoning budget. Merge into any
+        # existing chat_template_kwargs so sibling keys survive.
+        existing = payload.get("chat_template_kwargs")
+        merged: Dict[str, Any] = dict(existing) if isinstance(existing, dict) else {}
+        merged["enable_thinking"] = True
+        merged["low_effort"] = True
+        payload["chat_template_kwargs"] = merged
+        return payload
     if not resolve_reasoning_thinking_off():
         return payload
     messages = payload.get("messages")
@@ -1560,8 +1690,10 @@ __all__ = [
     "ENV_RUN_ID",
     "ENV_REASONING_THINKING_OFF",
     "ENV_TTFT_METER",
+    "ENV_REASONING_LOW_EFFORT",
     "resolve_default_timeout",
     "resolve_reasoning_thinking_off",
+    "resolve_reasoning_low_effort",
     "resolve_ttft_meter",
     "apply_reasoning_thinking_off_payload",
     "DEFAULT_MAX_RETRIES",

@@ -15,7 +15,7 @@ Unified orchestration system for SemantiK, Courseforge, Trainforge, and LibV2.
 > ordering, per-phase artifacts, gate-failure triage, resume/stop procedure,
 > what to check between phases): see
 > [`docs/operations/full-run-playbook.md`](docs/operations/full-run-playbook.md).
-> Its environment template is [`run-env.example.sh`](run-env.example.sh) —
+> Its environment template is [`docs/operations/run-env.example.sh`](docs/operations/run-env.example.sh) —
 > sanitized, sectioned into PORTABLE / HARDWARE-PROFILE / VALIDATED
 > MEASUREMENTS. The hardware-profile values (concurrency, NLI batch sizes,
 > `ED4ALL_GPU_LIFECYCLE=0`, `ED4ALL_NLI_EVICT_FOR_CUDA=0`) are tuned for a
@@ -25,7 +25,7 @@ Unified orchestration system for SemantiK, Courseforge, Trainforge, and LibV2.
 > ```bash
 > # _SEAT_MAIN_MODEL must match your seat's --served-model-name; the template
 > # warns loudly at source time if it is unset. Edit §2 for your hardware first.
-> _SEAT_MAIN_MODEL=<served-model-name> source ./run-env.example.sh
+> _SEAT_MAIN_MODEL=<served-model-name> source ./docs/operations/run-env.example.sh
 > ed4all run textbook-to-course --corpus ./inputs/<DIR> --course-name <NAME> \
 >   --skip-training
 > ```
@@ -393,6 +393,33 @@ and the GUI stay in sync. Full detail: `gui/README.md § Claude Code integration
 | `gui_post_event` | Append a `claude`-sourced event (shows in the Activity tab) |
 | `gui_read_events` | Read activity events with `seq >= since` (sees human messages) |
 
+### Assistant Tools
+
+External MCP surface for the operator-assistant's BOUNDED campaign harness
+(`MCP/tools/assistant_tools.py`). Thin, non-widening wrappers that delegate to
+`lib/assistant/campaign_tools` (every mutating tool routes through the validated
+`dispatch_campaign_tool` choke point) + `lib/assistant/client`; path
+confinement, the flag allowlist, plain-resume-only (no `--force`), and the
+single-owner preflight are all inherited from the underlying implementation.
+`assistant_ask` runs a READONLY `campaign-tick` engine turn (observe + report),
+so an MCP client cannot mutate the campaign via the LLM — direct mutations go
+through the explicit tools. Full contract: `lib/assistant/` module docstrings.
+
+| Tool | Description |
+|------|-------------|
+| `assistant_campaign_queue` | Return the book/corpus queue + manifest states (read-only) |
+| `assistant_campaign_run_status` | Active/recent run states; optional `wf_id` for one record + log tail |
+| `assistant_campaign_prepare_run` | Validate corpus + flag overrides, then write a fixed-shape env overlay (no script) |
+| `assistant_campaign_launch_run` | Launch a prepared overlay by name with the full single-owner preflight |
+| `assistant_campaign_resume_run` | Resume a paused run with a PLAIN `--resume` (never `--force`) |
+| `assistant_campaign_stop_run` | Gracefully stop one run (drops the stop sentinel) |
+| `assistant_campaign_prepare_training` | Validate a book's Stage-B LoRA-training readiness (manifest status, pairs, base model, reviewer approval marker, training env, single-owner) — mutates nothing |
+| `assistant_campaign_launch_training` | Re-validate everything, `docker stop` every registered vLLM seat + verify the card is free, then launch `ed4all run trainforge_train` detached (fixed argv) |
+| `assistant_campaign_training_status` | Recent/active training runs (launched-runs `kind:"training"` rows) + WF status + bounded log tail + env-readiness (read-only) |
+| `assistant_campaign_report` | File a structured review-queue report for a human reviewer |
+| `assistant_seat_status` | Dynamic seat-resolution view: which seat/model would answer now (read-only probe) |
+| `assistant_ask` | One-shot READONLY `campaign-tick` engine turn (observe + report only) |
+
 **Trainforge tools** — see `Trainforge/CLAUDE.md § MCP Tools`.
 
 ### Pipeline Tools
@@ -412,7 +439,7 @@ and the GUI stay in sync. Full detail: `gui/README.md § Claude Code integration
 | `extract_textbook_structure` | `objective_extraction` | Runs `SemanticStructureExtractor` over every staged SemantiK HTML file and merges per-file chapter/section hierarchies into a single `textbook_structure.json`. |
 | `plan_course_structure` | `course_planning` | Synthesizes canonical `TO-NN` / `CO-NN` learning objectives from the textbook structure and publishes `synthesized_objectives.json`. |
 
-**Phase-name dispatch override** (`MCP/core/executor.py::_PHASE_TOOL_MAPPING`): seven phases route by phase name, not agent name — `content_generation_outline` → `run_content_generation_outline`; `inter_tier_validation` → `run_inter_tier_validation`; `content_generation_rewrite` → `run_content_generation_rewrite`; `post_rewrite_validation` → `run_post_rewrite_validation`; `imscc_chunking` → `run_imscc_chunking`; `assessment_synthesis` → `run_assessment_synthesis`; `heading_judge` → `run_heading_judge` (the SEMANTIK_HEADING_JUDGE post-conversion Super heading-level judge — skip-with-pass when off / born-digital, per-chapter fail-open copy-back). Validator-only phases declare `agents: []` in `config/workflows.yaml`; `workflow_runner._create_phase_tasks` synthesizes a virtual `phase-handler` task only when the phase appears in this map. The mapping cannot be inferred from YAML.
+**Phase-name dispatch override** (`MCP/core/executor.py::_PHASE_TOOL_MAPPING`): seven phases route by phase name, not agent name — `content_generation_outline` → `run_content_generation_outline`; `inter_tier_validation` → `run_inter_tier_validation`; `content_generation_rewrite` → `run_content_generation_rewrite`; `post_rewrite_validation` → `run_post_rewrite_validation`; `imscc_chunking` → `run_imscc_chunking`; `assessment_synthesis` → `run_assessment_synthesis`; `heading_judge` → `run_heading_judge` (the SEMANTIK_HEADING_JUDGE post-conversion Super heading-level judge — default ON, explicit falsey token opts out; skip-with-pass when explicitly off / born-digital, per-chapter fail-open copy-back). Validator-only phases declare `agents: []` in `config/workflows.yaml`; `workflow_runner._create_phase_tasks` synthesizes a virtual `phase-handler` task only when the phase appears in this map. The mapping cannot be inferred from YAML.
 
 ### Analysis Tools
 
@@ -468,13 +495,14 @@ tracker.update_status("content_generator", "IN_PROGRESS",
        phase_outputs resume-normalization) so old paused runs still
        `--resume`.
 
-2. heading_judge (optional, SEMANTIK_HEADING_JUDGE)
+2. heading_judge (SEMANTIK_HEADING_JUDGE, default ON — deviation; opt out
+   with an explicit falsey token 0/false/no/off)
    └── Super heading-level judge over the GLM-OCR lane's
        {stem}.glmocr_layout.json sidecars: re-levels heading_level_pending
        headings via the standalone judge subprocess, then copies judged
        {stem}_accessible.html + corrected escalations back over the
        conversion output (.prejudge.bak / .bak kept; the layout sidecar is
-       never overwritten). Skip-with-pass when the flag is off or the
+       never overwritten). Skip-with-pass when explicitly opted out or the
        corpus is born-digital; per-chapter FAIL-OPEN (never blocks a build).
 
 3. staging
@@ -571,7 +599,10 @@ tracker.update_status("content_generator", "IN_PROGRESS",
    └── Synthesize instruction + preference training pairs from the
        generated chunks + assessments. Routes via the
        `training-synthesizer` agent (tool: `synthesize_training`).
-       Skipped when no `ANTHROPIC_API_KEY` or when `--skip-training`.
+       Skipped ONLY via `--skip-training`; the provider resolves through
+       `TRAINFORGE_SYNTHESIS_PROVIDER` (license-clean local/together —
+       the anthropic SDK path fails closed; no `ANTHROPIC_API_KEY`
+       involvement).
        Emits a per-pair resume sidecar at
        `training_specs/.synthesis_pairs_checkpoint.jsonl` (opt out via
        `--no-checkpoint`).
@@ -783,11 +814,11 @@ Summary by workflow (counts derived from `config/workflows.yaml`):
 
 | Workflow | Critical | Warning | Total |
 |----------|---------:|--------:|------:|
-| `course_generation` | 34 | 29 | 63 |
+| `course_generation` | 34 | 30 | 64 |
 | `rag_training` | 4 | 3 | 7 |
-| `textbook_to_course` | 64 | 72 | 136 |
+| `textbook_to_course` | 63 | 74 | 137 |
 | `trainforge_train` | 2 | 0 | 2 |
-| **Total** | **104** | **104** | **208** |
+| **Total** | **103** | **107** | **210** |
 
 Per-wave gate-landing history (additions, demotions, deferred severity flips, with the intermediate running subtotals at each wave): `docs/validation/gate-history.md`. The table above is the current authoritative count; the history file's per-wave subtotals are provenance-only and do not sum to the current total.
 
@@ -835,9 +866,9 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `DECISION_VALIDATION_STRICT` | unset | Fails closed on unknown `decision_type` values in decision captures. |
 | `ED4ALL_CAPTURE_BUFFER` | unset (off) | Coalesces the per-decision write+flush+fsync across the three JSONL capture mirrors into one batched write every N rows (telemetry-only crash-loss window; drains on flush/close/atexit). |
 | `ED4ALL_CAPTURE_BUFFER_ROWS` | `50` | Satellite of `ED4ALL_CAPTURE_BUFFER` — buffered-row batch size / worst-case telemetry-loss window (garbage / ≤0 → 50). |
-| `ED4ALL_BLOCK_QUALITY_RUBRIC` | unset (off) | IB6 keystone — the 8-dim 0-3 block-quality scoring + rollup pass and its composing validators. |
+| `ED4ALL_BLOCK_QUALITY_RUBRIC` | unset (off; **A5 auto-on for pipeline runs**) | IB6 keystone — the 8-dim 0-3 block-quality scoring + rollup pass and its composing validators. |
 | `ED4ALL_BLOCK_BODY_CHAR_CEILING` | `200` (global override) / per-type default | IB6.4 per-block D2 cognitive-load body ceiling |
-| `ED4ALL_BLOCK_QUALITY_SHADOW` | unset (off) | W8.8 shadow-collect gate for the IB6 block-quality validators |
+| `ED4ALL_BLOCK_QUALITY_SHADOW` | unset (off; **A5 auto-on for pipeline runs**) | W8.8 shadow-collect gate for the IB6 block-quality validators |
 | `ED4ALL_COVERAGE_FLOOR` | `0.80` | W8.6 warning-day-1 source→objective coverage floor for the post-loop `PromotionChainAggregator` |
 | `ED4ALL_COVERAGE_DROP_STRICT` | unset (off) | W8.6 opt-in stricter gating for the `COVERAGE_DROP` signal |
 | `ED4ALL_KG_REAL_FLOORS` | unset (off) | Recompute REAL completeness+accuracy KG-quality scores before the per-dimension floor check. |
@@ -870,21 +901,38 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `ED4ALL_ANSWER_COMPLETENESS_RERETRIEVE` | unset (off) | W5.4 step-4b completeness recheck re-retrieves per uncovered sub-question before re-asking (verdict-safe). |
 | `ED4ALL_ANSWER_HEDGE_TIER` | unset (off) | W5.5 confidence-graded HEDGE tier on the grounded-answer path |
 | `ED4ALL_ANSWER_HEDGE_MARGIN` | `0.15` | W5.5 hedge band width for `ED4ALL_ANSWER_HEDGE_TIER` |
-| `ED4ALL_ARCHIVE_REQUIRE_FULL_COURSE` | unset (off) | "True full course" archival-completeness strict-mode gate |
+| `ED4ALL_ARCHIVE_REQUIRE_FULL_COURSE` | unset (off; **A5 auto-on for pipeline runs**) | "True full course" archival-completeness strict-mode gate |
+| `ED4ALL_ASSISTANT_BASE_URL` | `http://localhost:8004/v1` | Base URL of the local nano vLLM seat behind `ed4all assistant`; loopback-only (non-loopback host → raise, mirroring the grounded-answer guard). |
+| `ED4ALL_ASSISTANT_MODEL` | `nemotron-3-nano` | Model ID for the assistant seat (must match its `--served-model-name`); honors `ED4ALL_REASONING_THINKING_OFF`. |
+| `ED4ALL_ASSISTANT_AUTOSTART` | unset (off) | When truthy and the seat is down, `ed4all assistant` lazy-starts the `spark-nano` seat via `start_seat_coherent` (liveness ceiling + coherence probes); `--no-seat-start` forbids it. |
+| `ED4ALL_ASSISTANT_MAX_TOKENS` | `1024` | Per-reply generation cap for the assistant seat (garbage / non-positive → 1024). |
+| `ED4ALL_ASSISTANT_TIMEOUT_SECONDS` | `120` | Assistant-seat HTTP timeout; a transport failure raises `AssistantSeatUnavailable` (never a canned fallback). |
+| `ED4ALL_ASSISTANT_SEAT` | `spark-nano` | Logical registry seat name the assistant autostart path targets (model-agnostic — nano is only the default deployment; point at any registered local seat). |
+| `ED4ALL_ASSISTANT_DEBUG_ON_FAILURE` | unset (off) | Campaign driver writes `<campaign dir>/last_failure.json` on a failed book + prints the `ed4all assistant --debug --run <id>` command; `build_debug_context(None)` prefers that pointer. |
+| `ED4ALL_ASSISTANT_SEAT_PRIORITY` | `spark-super,spark-nano` | Ordered logical-seat priority the `ed4all assistant` dynamic resolver walks (registry-driven via `ED4ALL_SEAT_BASE_URLS`, loopback-enforced, served model read from `/v1/models`); first LIVE seat answers, so the assistant rides Super while the pipeline serves it, else nano. Priority seats are never autostarted (only fallback nano is). |
+| `ED4ALL_CAMPAIGN_DIR` | `plans/campaign` (repo-relative) | Operator campaign-harness directory (`lib/paths.py::campaign_dir`) — the single site-configurable root every campaign path derives from (manifest, per-book logs, prepared overlays, review queue, pilot driver). Absolute wins; relative resolves against `PROJECT_ROOT`; blank → default. |
+| `ED4ALL_PILOT_TICK_SECONDS` | `600` | Loop interval (s) for the deterministic campaign monitor driver `<campaign dir>/pilot.py` (positive int; garbage → 600). |
+| `ED4ALL_PILOT_MAX_AUTO_RESUMES` | `2` | Per-run cap on pilot plain `--resume` auto-retries for a PAUSED run before it files a `run_paused` review report (never `--force`; non-negative int, 0 = report immediately, garbage → 2). |
+| `ED4ALL_PILOT_STALL_MINUTES` | `45` | Phase-stall window (min) — a RUNNING run whose newest checkpoint/sidecar mtime is older is flagged `stalled` in the pilot snapshot (report-only; positive int, garbage → 45). |
+| `ED4ALL_PILOT_MAX_AUTO_RECOVERIES` | `1` | Per-run cap on the campaign pilot's scheduler-only SELF-RECOVERY of a FAILED run: an auto `--resume` fires only when the failure's UNDERLYING cause classifies TRANSIENT (a seat stopped out from under the run → connection refused → `POISON_PILL`, classified via the production `ErrorClassifier`, not the surface status) AND a self-heal gate confirms the needed seats serve now / no `STOP_ALL` / disk not full; content-gate / schema / genuine-poison / unknown / Stage-B failures never recover (they halt for human). Persisted separately from the paused-run auto-resume counter; 0 = never recover, garbage/negative → 1. |
+| `ED4ALL_PILOT_SCHEDULE` | unset (off) | Opt-in campaign SCHEDULER in the pilot tick loop (also `--schedule`): reconcile manifest vs workflow records, then at most ONE action per idle tick — next pending book's Stage-A build, or Stage-B `trainforge_train` for a built+pairs+approved book (approval marker written only by the reviewer). Off → monitor-only, byte-identical. |
+| `ED4ALL_PILOT_MAX_CONSECUTIVE_FAILURES` | `2` | Scheduler circuit breaker — consecutive failed books before the campaign halts with a `campaign_halted` report (success resets; persisted across pilot restarts; training-launch refusals never count). |
+| `ED4ALL_PILOT_NO_REVIEW_GATES` | unset (off) | Full-auto bypass of the per-book `training-approved` reviewer marker gating Stage-B launches (default keeps the review-protocol contract). |
+| `ED4ALL_CAMPAIGN_BASE_MODEL` | `nemotron3-nano-30b` | Campaign Stage-B base-model selector — must resolve in `Trainforge/training/base_models.py::BaseModelRegistry`; unknown name = loud error, never a fallback model. Has a `docs/LICENSING.md` row (Nemotron license pin guard). |
 | `ED4ALL_RERANK_PROVIDER` | unset (off) | Cross-encoder reranker over the first-stage retrieval candidate pool on the grounded-answer path |
 | `ED4ALL_BLOCK_ANATOMY` | unset (off) | IB1 six-slot anatomy contract emit gate |
 | `ED4ALL_BLOCK_A11Y` | unset (off) | IB4 per-block WCAG 2.2 AA + UDL emit gate |
 | `ED4ALL_CALLOUT_TYPED` | unset (off) | FR-A11Y-03 typed B12 callout emit + gate flag |
 | `ED4ALL_COS_PER_WEEK_CAP` | `0` (auto) | WS5 §2.2 per-week chapter-objective placement cap for the single-sourced ceil-stride slicer. |
 | `ED4ALL_WEEK_TO_GROUPS` | unset (off) | WS5 week-grouping override: when on AND `duration_weeks == num_tos`, per-week `"Week N"` groups are built by TO membership (week N = TO-N's `child_co_ids`) instead of the ceil-stride CO slice; else warns + falls back to ceil-stride. |
-| `ED4ALL_CONCEPT_COVERAGE` | unset (off) | W4.1 read-only capability aggregator |
+| `ED4ALL_CONCEPT_COVERAGE` | unset (off; **A5 auto-on for pipeline runs**) | W4.1 read-only capability aggregator |
 | `ED4ALL_CONCEPT_EXTRACTION_CHECKPOINT` | `on` | Site override for the concept_extraction Stage-3 per-window (`synthesize_concepts`) resume sidecar (beats `ED4ALL_GENERATION_CHECKPOINT`). |
-| `ED4ALL_INTELLIGENCE_RUBRIC` | unset (off) | W4.6 read-only capability aggregator |
+| `ED4ALL_INTELLIGENCE_RUBRIC` | unset (off; **A5 auto-on for pipeline runs**) | W4.6 read-only capability aggregator |
 | `ED4ALL_CONTENT_PAGE_PER_CO` | unset (off) | Page-per-CO content-emit gate |
 | `ED4ALL_CONTENT_PAGE_NUM_CTX` | `4096` (→ `ED4ALL_ANSWER_NUM_CTX` → 4096) | Authoring serving-window token budget for the page-per-CO per-page chunk cap |
 | `ED4ALL_CONTENT_PAGE_MAX_CHUNKS` | `5` | Hard top-K ceiling on chunks kept per CO page for the page-per-CO cap |
 | `ED4ALL_CONTENT_PAGE_PER_CO_UNCAPPED` | unset (off) | TRUE one-page-per-CO opt-in: lifts the page-per-CO NEVER-INCREASE topic cap so a CO-rich week emits one content page per CO (1:1 binding; O(Σ COs) authoring cost) |
-| `ED4ALL_CHUNK_ROLE_DIVERSIFY` | unset (off) | Gap #11 — deterministic per-block-role rotation of a page's ranked chunk order so co-located blocks don't all lead with the same anchor example (chunk-universe remap; default off → byte-identical). |
+| `ED4ALL_CHUNK_ROLE_DIVERSIFY` | unset (off; **A5 auto-on for pipeline runs**) | Gap #11 — deterministic per-block-role rotation of a page's ranked chunk order so co-located blocks don't all lead with the same anchor example (chunk-universe remap; bare library calls keep default-off → byte-identical). |
 | `ED4ALL_COURSE_IDENTITY_DEDUP` | unset (off) | W0.5 course-identity SPLIT-BRAIN guard |
 | `ED4ALL_EMBEDDING_PROVIDER` | `st` | Selects the retrieval-index embedding backend (`st` / `local-openai` / `fake`). |
 | `ED4ALL_EMBEDDING_MODEL` | per-provider | Model ID override for the embedding provider |
@@ -908,20 +956,20 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `ED4ALL_PLANNER_SPACING` | unset (off) | IB7.5a within-module temporal-spacing pass |
 | `ED4ALL_PLANNER_BLOOM_CEILING` | unset (off) | IB7.6b per-type Bloom-range ceiling re-route |
 | `ED4ALL_PLANNER_FADING` | unset (off) | FR-INT-01 B08 guided-practice **fading-sequence** planner pass |
-| `ED4ALL_WORKED_EXAMPLE_FLOOR` | unset (off) | P4 worked-example DENSITY floor: ≥1 example/problem block per procedural (apply/create) CO. |
-| `ED4ALL_BLOOM_SPREAD_FLOOR` | unset (off) | P4 Bloom-spread floor: ≥1 analyze-or-higher block per week (widens the apply-heavy Bloom mix). |
-| `ED4ALL_TRIANGLE_FLOOR` | unset (off) | GAP D (IB3 alignment triangle) per-CO activity + assessment floor for the block planner. |
-| `ED4ALL_RETRIEVAL_INTERLEAVE` | unset (off) | GAP C (IB7.5b interleaved retrieval) per-content-page retrieval-block floor. |
+| `ED4ALL_WORKED_EXAMPLE_FLOOR` | unset (off; **A5 auto-on for pipeline runs**) | P4 worked-example DENSITY floor: ≥1 example/problem block per procedural (apply/create) CO. |
+| `ED4ALL_BLOOM_SPREAD_FLOOR` | unset (off; **A5 auto-on for pipeline runs**) | P4 Bloom-spread floor: ≥1 analyze-or-higher block per week (widens the apply-heavy Bloom mix). |
+| `ED4ALL_TRIANGLE_FLOOR` | unset (off; **A5 auto-on for pipeline runs**) | GAP D (IB3 alignment triangle) per-CO activity + assessment floor for the block planner. |
+| `ED4ALL_RETRIEVAL_INTERLEAVE` | unset (off; **A5 auto-on for pipeline runs**) | GAP C (IB7.5b interleaved retrieval) per-content-page retrieval-block floor. |
 | `ED4ALL_HOME` | unset (repo-relative) | Relocatable data root — sets every mutable data dir under it instead of repo-relative. |
 | `ED4ALL_IMSCC_MODULE_TITLES` | unset (legacy) | IMSCC packager module-title mode: exact token `to` titles org groups "Module N: <TO topic>" from `terminal_objectives[N-1]` (anchor_module_title → truncated statement → legacy fallback); anything else → legacy "Week N" titles. Operator-set alongside `ED4ALL_WEEK_TO_GROUPS`. |
-| `ED4ALL_KEY_TERMS_PAGE` | unset (off) | Feature I5 — per-terminal-objective deterministic **"Key Terms" page** gate |
+| `ED4ALL_KEY_TERMS_PAGE` | unset (off; **A5 auto-on for pipeline runs**) | Feature I5 — per-terminal-objective deterministic **"Key Terms" page** gate |
 | `ED4ALL_NEW_BLOCK_TYPES` | unset (off) | IB5 gate for four framework block types: hook, multimedia, worked_example, diagram. |
 | `ED4ALL_REFLECTION_CALIBRATION` | unset (off) | FR-INT-03 gate for the B11 reflection predict-then-reveal calibration contract. |
 | `ED4ALL_REASONING_THINKING_OFF` | unset (off) | Injects the Nemotron "detailed thinking off" system directive + `chat_template_kwargs.enable_thinking=false` on every composed OpenAI-compatible call so reasoning-token output doesn't trip the finish_reason=length truncation guard. |
 | `ED4ALL_RECALL_SELF_CHECK` | unset (off) | Free-recall / cloze self-check variant gate |
 | `ED4ALL_MISCONCEPTION_RICH` | unset (off) | Named subject-specific misconception + productive-failure gate for the B03/B12 `misconception` block |
 | `ED4ALL_MAYER_CTML` | unset (off) | Mayer CTML 12-principles structural check enriching the UDL/multimedia surface |
-| `ED4ALL_BLOOM_DISTRIBUTION` | unset (off) | Course-level Bloom-distribution-vs-target-curve gate |
+| `ED4ALL_BLOOM_DISTRIBUTION` | unset (off; **A5 auto-on for pipeline runs**) | Course-level Bloom-distribution-vs-target-curve gate |
 | `ED4ALL_BLOOM_DISTRIBUTION_TARGET` | unset (canonical default) | Operator override for the target Bloom curve consumed by `BloomDistributionValidator` |
 | `ED4ALL_BLOOM_DISTRIBUTION_TOLERANCE` | `0.20` | Float L1-deviation tolerance for the `BLOOM_DISTRIBUTION_OFF_TARGET` decision |
 | `ED4ALL_BLOOM_DISTRIBUTION_MIN_LOS` | `6` | Small-N objective floor for `BloomDistributionValidator` |
@@ -931,7 +979,7 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `ED4ALL_PREREQ_TRANSITIVE_REDUCTION` | unset (off) | W3.3 deterministic stdlib DFS transitive reduction of the projected TO→TO prereq graph |
 | `ED4ALL_PREREQ_CENTRALITY_TIEBREAK` | unset (off) | W3.4 concept-centrality stable tie-break for the TO topological sort |
 | `ED4ALL_PREREQ_CENTRALITY_METHOD` | `in_degree` | W3.4 satellite selecting the centrality method consumed by `ED4ALL_PREREQ_CENTRALITY_TIEBREAK` |
-| `ED4ALL_KG_PREREQ_HEALTH` | unset (off) | W3.2/W3.4/W3.6 prereq-DAG health signals on the `kg_quality_report` validator |
+| `ED4ALL_KG_PREREQ_HEALTH` | unset (off; **A5 auto-on for pipeline runs**) | W3.2/W3.4/W3.6 prereq-DAG health signals on the `kg_quality_report` validator |
 | `ED4ALL_RICHER_VISUAL_SYSTEM` | unset (off) | Richer-visual-system Phase 0 gate |
 | `ED4ALL_LIBV2_ROOT` | `<repo>/LibV2/` | Absolute path to the LibV2 root directory |
 | `ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS` | `60` at the client; `300` at the content-generation providers | Per-request HTTP timeout (s) for local content-generation LLM calls (7B prose authoring). |
@@ -955,24 +1003,24 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `ED4ALL_OBJECTIVE_REVIEW_PROVIDER` | unset (off) | Grounding-safe **objective-review** pass gate |
 | `ED4ALL_OBJECTIVE_REVIEW_MODEL` | per-provider | Model-ID override for the objective-review pass |
 | `ED4ALL_OBJECTIVE_CHUNK_RELEVANCE_FLOOR` | `0.30` | Fix 1A relevance floor for the objective-dedup union prune |
-| `ED4ALL_OBJECTIVE_CITATION_RESELECT` | unset (off) | Post-hoc CO citation re-selection: re-cite the best REAL window/chapter chunk by cosine, INDEPENDENTLY of the (possibly fabricated) cited ids — re-grounds a wholly-fabricated / zero-citation CO instead of leaving ~0 real grounding. |
+| `ED4ALL_OBJECTIVE_CITATION_RESELECT` | unset (off; **A5 auto-on for pipeline runs**) | Post-hoc CO citation re-selection: re-cite the best REAL window/chapter chunk by cosine, INDEPENDENTLY of the (possibly fabricated) cited ids — re-grounds a wholly-fabricated / zero-citation CO instead of leaving ~0 real grounding. Bare library calls keep default-off. |
 | `ED4ALL_OBJECTIVE_RESELECT_EXERCISE_DEMOTE` | on (when reselect on) | Demotes exercise/answer-list chunks below instructional prose in the citation re-selection rank (opt-out). |
 | `ED4ALL_OBJECTIVE_RESELECT_KEEP_ORIGINAL` | on (when reselect on) | Keep-original union guard for citation re-selection: never STRIP a synthesis citation — unions every above-floor, non-exercise original into the kept set so the cosine top-K can only ADD supporters (fixes an entailment-gate regression; opt-out). |
 | `ED4ALL_OBJECTIVE_SANITIZE_CITATIONS` | on (default) | Write-time citation SANITIZER backstop — deterministically DROPS any `source_refs` / `source_chunk_ids` entry that resolves against NOTHING in the current chunkset/textbook-structure universe (fabricated topic-label / statement-echo citations the local synthesizer emits) just before `synthesized_objectives.json` is written, converting a would-be `objective_source_refs` ORPHANED_CITATIONS critical block into the benign `OBJECTIVE_NO_GROUNDING_SOURCE` warning path. Set-membership REMOVAL only (never invents/re-points an id — the complement of `ED4ALL_OBJECTIVE_CITATION_RESELECT`). No-op (byte-identical) on a healthy corpus, a legacy/no-chunkset run, or when set falsey. |
 | `ED4ALL_OBJECTIVE_ENTAILMENT_MATH_FOLD` | unset (off) | Opt-in LaTeX/unicode-math folding of premise + hypothesis before NLI in the `objective_entailment` gate (measured net-neutral on a math-scan corpus — see behavior-flags.md; deferred-flip candidate). |
 | `ED4ALL_OBJECTIVE_DEDUP_THRESHOLD` | `0.88` | W2 §4.2 cosine clustering threshold for the in-synthesis objective-dedup pass |
 | `ED4ALL_OBJECTIVE_DISTINCT_SKILL_SPLIT` | unset (off) | I3 PRONG A — distinct-skill SPLIT gate for the objective-dedup pass |
-| `ED4ALL_OBJECTIVE_DEDUP_LEXICAL` | unset (off) | W2 Defect E — cross-window lexical-dedup SECOND PASS (complete-linkage merge of near-restatement clusters after single-link cosine, before the PRONG-A split). Default off → byte-identical DedupResult. |
+| `ED4ALL_OBJECTIVE_DEDUP_LEXICAL` | unset (off; **A5 auto-on for pipeline runs**) | W2 Defect E — cross-window lexical-dedup SECOND PASS (complete-linkage merge of near-restatement clusters after single-link cosine, before the PRONG-A split). Bare library calls keep default-off → byte-identical DedupResult. |
 | `ED4ALL_OBJECTIVE_DEDUP_LEXICAL_COSINE` | `0.78` | W2 Defect E satellite — centroid-cosine floor for a lexical merge edge (below the 0.88 single-link dedup threshold). |
 | `ED4ALL_OBJECTIVE_DEDUP_LEXICAL_JACCARD` | `0.60` | W2 Defect E satellite — best-grounded skill-signature Jaccard floor for a lexical merge edge (above PRONG-A's <0.34 distinctness band). |
-| `ED4ALL_OBJECTIVE_SPECIFICITY` | unset (off) | W2 Defect B — opt-in gate for the CO-statement specificity/vacuity validator (`objective_specificity` at course_planning; V1 content-residual vacuity + V2 vague-object + V3 source-token recall). Default off → byte-identical skip-with-pass. |
+| `ED4ALL_OBJECTIVE_SPECIFICITY` | unset (off; **A5 auto-on for pipeline runs**) | W2 Defect B — opt-in gate for the CO-statement specificity/vacuity validator (`objective_specificity` at course_planning; V1 content-residual vacuity + V2 vague-object + V3 source-token recall). Default off → byte-identical skip-with-pass. |
 | `ED4ALL_OBJECTIVE_WINDOW_PER_SECTION` | unset (off) | Vendor-depth per-SECTION stage-2 map units — partitions each chapter's chunks along the `textbook_structure.json` chapter→section tree (ordered walk on `section_heading` provenance; <3-chunk sections coalesce with a sibling) so a 10-chapter/71-section corpus synthesizes ~64-71 section-scoped windows instead of ~23 giant packed windows (the measured 52-vs-797-CO depth gap). Build mode + section label fold into the window fingerprint, so a mid-course flip invalidates the window resume sidecars (those windows re-run on `--resume`). Default off → byte-identical chapter-packed windows. |
 | `ED4ALL_OBJECTIVE_WINDOW_MAX_CANDIDATES` | unset (legacy 1-3) / `12` in per-section mode | Per-window candidate-objective budget for Stage-2 window synthesis — ONE resolved value drives the prompt ("Synthesize 1-N"), the parse-side schema `maxItems`, AND the grammar payload so all three agree; folded into the window fingerprint (a budget change re-rolls affected windows on `--resume`). Positive-int env > `12` when `ED4ALL_OBJECTIVE_WINDOW_PER_SECTION` is on > legacy `None` (byte-identical "1-3" prompt + untouched schema). Garbage / non-positive → next tier (parse-with-fallback). |
 | `ED4ALL_OBJECTIVE_SEED_SANITIZE` | unset (off) | W4 Defect C — exercise-apparatus seed sanitation (`lib/objectives/chunk_window.py::resolve_seed_sanitize`): strips apparatus lines/sentences from the RENDERED Pass-B window body + drops Pass-C survivors whose STATEMENT matches an apparatus marker (chunk_ids / citability untouched). Default off → byte-identical windows. **Operator note:** flipping this mid-course changes the window-render fingerprint, so window resume sidecars invalidate and those windows re-run on `--resume`. |
 | `ED4ALL_SYNTHESIS_SKELETON` | unset (off) | Structure-aware objective synthesis — inject a compact CONTEXT-ONLY document HEADING SKELETON of the window's chapter (from `textbook_structure.json` chapters→sections→subsections) into the Stage-2 per-window synthesis prompt so TO/CO derivation is structure-aware. Capped ~1.5k tokens/window, deepest heading levels dropped first. Objectives still cite chunk ids (citation path unchanged). Default off → byte-identical prompt. **Operator note:** the skeleton is folded into the window-render fingerprint, so flipping this mid-course invalidates the window resume sidecars and those windows re-run on `--resume`. Active only when `TEXTBOOK_SYNTHESIS_PROVIDER` is set. |
 | `ED4ALL_OBJECTIVE_SOURCE_BACKFILL` | unset (off) | I3 PRONG B — source-richness BACKFILL gate |
 | `ED4ALL_OBJECTIVE_BACKFILL_COVERAGE_TARGET` | `1.0` | I3 PRONG B coverage target: min fraction of content-bearing chunks the backfill drives toward. |
-| `ED4ALL_OBJECTIVE_BLOOM_RELEVEL` | unset (off) | Feature 1 — deterministic Bloom-level relevel (re-derive a mislabelled CO/TO `bloom_level` from its main verb's canonical level; statements never change). |
+| `ED4ALL_OBJECTIVE_BLOOM_RELEVEL` | unset (off; **A5 auto-on for pipeline runs**) | Feature 1 — deterministic Bloom-level relevel (re-derive a mislabelled CO/TO `bloom_level` from its main verb's canonical level; statements never change). |
 | `ED4ALL_OBJECTIVE_BLOOM_COMPLEMENT` | unset (off) | Feature 2 / PRONG C — LLM-assisted grounded analyze/evaluate complement synthesis when the higher-order Bloom share is too thin. |
 | `ED4ALL_OBJECTIVE_BLOOM_COMPLEMENT_MIN_SHARE` | `0.15` | PRONG C satellite — analyze+evaluate+create share floor below which complements are synthesized. |
 | `ED4ALL_OBJECTIVE_BLOOM_COMPLEMENT_MAX` | `8` | PRONG C satellite — hard cap on complement COs added per pass (0 = measure-only). |
@@ -982,10 +1030,11 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `ED4ALL_OBJECTIVE_MAX_CHUNKS_PER_OBJECTIVE` | `5` | Fix 1A top-K cap on cited chunks per MERGED objective |
 | `ED4ALL_OBJECTIVE_SYNTHESIS_CHECKPOINT` | `on` | Site override for the stage-2 window + cluster resume sidecars (beats `ED4ALL_GENERATION_CHECKPOINT`). |
 | `ED4ALL_PLANNING_GATE_RETRIES` | `0` (off) | Graceful course_planning gate-failure retry budget — bounds how many times a nondeterministic TO/CO synthesis re-roll may be attempted before the phase stops blocking the build (per attempt: evict the cluster sidecar, keep the window/CO cache, salted TO re-roll); after exhaustion the phase FAIL-OPENS complete-with-warning (`PLANNING_GATE_RETRIES_EXHAUSTED`) and the workflow continues. |
-| `ED4ALL_PLANNING_REROLL_SALT` | unset (runner-managed) | Per-attempt `attempt-N` re-roll salt the gate-retry loop sets (not operator-set); folded into the synthesis system prompt + the cluster sidecar fingerprint so each retry attempt genuinely differs. |
+| `ED4ALL_PLANNING_REROLL_SALT` | unset (runner-managed) | Per-attempt `attempt-N` re-roll salt the gate-retry loop sets (not operator-set); folded into the synthesis system prompt + the cluster sidecar fingerprint so each retry attempt genuinely differs. Sibling: `ED4ALL_PLANNING_REROLL_FEEDBACK` (next row) rides the same set/pop lifecycle. |
+| `ED4ALL_PLANNING_REROLL_FEEDBACK` | unset (runner-managed) | Failure-DIRECTED sibling of the re-roll salt (not operator-set): the gate-retry loop serializes the failing critical gates' issues into a compact per-issue remediation digest (objective id + issue code + code→directive line, ≤1200 chars) and the synthesis provider folds it into the cluster/TO-minting system prompt as a delimited REMEDIATION section + into the cluster sidecar fingerprint (a changed digest never reuses a stale cached TO). |
 | `ED4ALL_REQUIRE_ARCHIVED_OBJECTIVES` | unset (off) | W2.3 fail-closed for the archive_to_libv2 objectives→objectives.json plumbing. |
 | `ED4ALL_PRODUCTION` | `0` | When `1`, enables production-mode FastMCP server settings. |
-| `ED4ALL_PROSE_GATE_PROVENANCE_RESOLVE` | unset (off) | Gate-side provenance resolution for `block_prose_entailment` — when a rewrite block's cited `semantik:{slug}#anchor` refs resolve to nothing in `source_chunks`, map them through a `{ref -> [chunk_id]}` index (section-level ref → ALL section chunks) to recover the premise set. ADD-only, anti-fabrication (existing refs → existing chunks); default off → byte-identical NO_GROUNDING path. |
+| `ED4ALL_PROSE_GATE_PROVENANCE_RESOLVE` | unset (off; **A5 auto-on for pipeline runs**) | Gate-side provenance resolution for `block_prose_entailment` — when a rewrite block's cited `semantik:{slug}#anchor` refs resolve to nothing in `source_chunks`, map them through a `{ref -> [chunk_id]}` index (section-level ref → ALL section chunks) to recover the premise set. ADD-only, anti-fabrication (existing refs → existing chunks); bare library calls keep default-off → byte-identical NO_GROUNDING path. |
 | `ED4ALL_RESEGMENT_COLLAPSED` | `1` | WS6b collapse re-segmentation gate |
 | `ED4ALL_RESEGMENT_SECTIONS_PER_CHAPTER` | `13` | WS6b target sections-per-pseudo-chapter |
 | `ED4ALL_ROOT` | auto-detect | Absolute path to the Ed4All project root. |
@@ -1007,7 +1056,7 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `ED4ALL_TO_MERGE_COSINE` | `0.85` | P1 centroid-cosine merge floor for the near-duplicate-TO merge |
 | `ED4ALL_TO_ALLOW_SINGLETON_TO` | unset (off → singleton TOs dissolved) | Anti-hallucinated-TO backstop — the OPT-OUT for the unconditional `dissolve_singletons` pass |
 | `ED4ALL_TO_MIN_CLUSTERS` | `3` | Tiny-course floor for the `dissolve_singletons` backstop |
-| `ED4ALL_TO_SOURCE_GROUNDING` | unset (off) | W7.5 opt-in gate for the TERMINAL-objective source-grounding validator |
+| `ED4ALL_TO_SOURCE_GROUNDING` | unset (off; **A5 auto-on for pipeline runs**) | W7.5 opt-in gate for the TERMINAL-objective source-grounding validator |
 | `ED4ALL_TO_CHAPTER_ANCHOR` | unset (off) | W3 Defect A master gate — chapter-anchored TO derivation (one SemantiK module → one terminal objective by cited-chunk plurality) instead of bottom-up statement clustering. Default off → bottom-up path unchanged. |
 | `ED4ALL_TO_CHAPTER_ANCHOR_REORDER` | on-when-master-on | W3 Defect A §6 satellite — stable book-order CO re-sort (by module order + in-module position) BEFORE the week slice, so ceil-stride weeks are chapter-contiguous even without `ED4ALL_WEEK_TO_GROUPS`. Only the falsey tokens disable it. |
 | `ED4ALL_TO_CHAPTER_MIN_MODULES` | `2` | W3 Defect A satellite — module-count floor below which anchor mode degrades to bottom-up (a monolithic single-HTML corpus can't be anchored). |
@@ -1033,19 +1082,19 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `ED4ALL_PLANNER_INTEGRATION_MAX_OVERLAP` | `0.10` | Integration-floor satellite — token-overlap floor below which a CO is weak-membership (aligned with the CO→TO backlink token floor) |
 | `ED4ALL_PLANNER_INTEGRATION_MAX_PER_WEEK` | `2` | Integration-floor satellite — hard cap on integrated-practice injections per week (weakest-first) |
 | `ED4ALL_PLANNER_CROSS_WEEK_RETRIEVAL` | unset (off) | W6.1 cross-week cumulative retrieval for the dynamic block planner (needs prior-week context). |
-| `ED4ALL_FAQ_PAGE` | unset (off) | W6.4 deterministic per-week "FAQ" page gate |
+| `ED4ALL_FAQ_PAGE` | unset (off; **A5 auto-on for pipeline runs**) | W6.4 deterministic per-week "FAQ" page gate |
 | `ED4ALL_FAQ_MAX_PER_PAGE` | `12` | W6.4 satellite — hard cap on FAQ cards emitted per week page |
 | `ED4ALL_OBJECTIVE_OBSERVABLE_VERB` | unset (off) | W1.1 non-observable (fuzzy) main-verb scan on the objective statement (legacy no-ABCD path). |
 | `ED4ALL_OBJECTIVE_INFER_BLOOM` | unset (off) | W1.4 infer a null LO bloom_level from its declared ABCD behavior.verb instead of skipping. |
 | `ED4ALL_CHUNK_COVERAGE_FLOOR` | unset (off) | W1.2 import-coverage gate floor on the existing `chunkset_manifest` gate |
 | `ED4ALL_MIN_CHUNKS` | unset (off) | W1.2 thin-chunkset floor on the `chunkset_manifest` gate (CHUNKSET_TOO_THIN warning). |
 | `ED4ALL_CHUNK_HEALTH_GATE` | unset (off) | Opt-in master switch for the pre-synthesis `chunk_health` gate (`lib/validators/chunk_health.py::ChunkHealthValidator`) at `textbook_to_course::objective_extraction` — audits the emitted chunkset + `textbook_structure.json` for synthesis-poisoning defects (phantom-chapter/resegment/section-explosion/instructional-starvation/empty-chunk → critical/block; OCR mojibake/furniture/reading-order → warning) BEFORE `course_planning`. Default OFF → skip-with-pass. C2 counts WORKED examples (`example`/`worked_example` chunks with a `Solution`/`Try It`/`Step N` marker) as instructional so a worked-example workbook is not false-starved; C10 evaluates only non-apparatus PROSE chunks. Thresholds env-overridable (`ED4ALL_CHUNK_HEALTH_{CHAPTER_RATIO_FAIL,CHAPTER_RATIO_WARN,SECTIONS_PER_CHAPTER,INSTRUCTIONAL_FAIL,INSTRUCTIONAL_WARN,APPARATUS_FAIL,APPARATUS_WARN,MIN_CHUNKS,TINY_WORDS,MEGA_WORDS,MOJIBAKE_RATE,NUMDUMP_RATE,WORKED_EXAMPLE_INSTRUCTIONAL}`; parse-with-fallback). |
-| `ED4ALL_KEYTERM_DEF_QUALITY` | unset (off) | W1.5 glossary definition-quality gate (circular / too-long / not-distinct / missing-math-condition) — critical gate (flip-wave-2) emitting warning-severity issues; audits key-terms vocab cards AND inline `<div class="definition-box">` blocks parsed out of concept/explanation HTML. |
+| `ED4ALL_KEYTERM_DEF_QUALITY` | unset (off; **A5 auto-on for pipeline runs**) | W1.5 glossary definition-quality gate (circular / too-long / not-distinct / missing-math-condition) — critical gate (flip-wave-2) emitting warning-severity issues; audits key-terms vocab cards AND inline `<div class="definition-box">` blocks parsed out of concept/explanation HTML. |
 | `ED4ALL_PAGE_EST_MINUTES` | unset (off) | W1.6 per-page estimated learning-time emit gate |
 | `ED4ALL_PAGE_WPM` | `200` | W1.6 satellite — reading-speed divisor for the `ED4ALL_PAGE_EST_MINUTES` estimate |
 | `ED4ALL_PAGE_INTERACTION_MINUTES` | `1.0` | W1.6 satellite — per-interaction minute cost for the `ED4ALL_PAGE_EST_MINUTES` estimate |
 | `ED4ALL_GROUNDEDNESS_COMPUTATIONAL` | unset (off) | W1.8 numeric-grounding of NLI-exempt computational sentences on the grounded-answer path |
-| `ED4ALL_EMBED_OVERFLOW_GUARD` | unset (off) | W1b.2 embedding serving-window overflow guard |
+| `ED4ALL_EMBED_OVERFLOW_GUARD` | unset (off; **A5 auto-on for pipeline runs**) | W1b.2 embedding serving-window overflow guard |
 | `ED4ALL_EMBED_OVERFLOW_SPLIT` | unset (off) | W1b.2 satellite of `ED4ALL_EMBED_OVERFLOW_GUARD` |
 | `ED4ALL_EMBED_MAX_SEQ_TOKENS` | `512` | W1b.2 serving-window token ceiling driving the embed model max_seq_length pin + overflow. |
 | `ED4ALL_CHUNK_CODE_SPLIT` | unset (off) | W1b.3 code-fence-aware chunk splitting |

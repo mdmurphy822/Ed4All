@@ -972,13 +972,128 @@ def detect_resources_reference(source_text: str) -> bool:
     return bool(_RESOURCES_HINT_RE.search(source_text))
 
 
+_DEFAULT_PLANNER_MAX_TOKENS = 4096
+# big-model-overflow-fix-2026-07: per-call generation cap override for the
+# block-plan JSON on the large seat. The old 2048 default truncated a dense
+# week plan on a reasoning model (finish_reason='length'), corrupting a whole
+# week upstream of authoring. Resolution (high → low): ``max_tokens`` kwarg >
+# ``ED4ALL_DYNAMIC_BLOCK_PLAN_MAX_TOKENS`` env > the 4096 default.
+_ENV_PLANNER_MAX_TOKENS = "ED4ALL_DYNAMIC_BLOCK_PLAN_MAX_TOKENS"
+
+
+def _resolve_block_plan_max_tokens(explicit: Optional[int]) -> int:
+    """Resolve the planner generation cap: kwarg > env > default.
+
+    ``explicit`` (the ``max_tokens`` kwarg) wins when supplied. Otherwise read
+    ``ED4ALL_DYNAMIC_BLOCK_PLAN_MAX_TOKENS`` and parse it as a positive int; a
+    missing / unparseable / non-positive value falls back to
+    :data:`_DEFAULT_PLANNER_MAX_TOKENS`. Parse-with-fallback so a garbage env
+    value never shrinks the cap (mirrors the tier providers' resolvers).
+    """
+    import os  # noqa: PLC0415
+
+    if explicit is not None:
+        return int(explicit)
+    raw = os.environ.get(_ENV_PLANNER_MAX_TOKENS)
+    if not raw or not str(raw).strip():
+        return _DEFAULT_PLANNER_MAX_TOKENS
+    try:
+        parsed = int(str(raw).strip())
+    except (TypeError, ValueError):
+        logger.warning(
+            "block_planner: ignoring non-integer %s=%r; using default %d",
+            _ENV_PLANNER_MAX_TOKENS, raw, _DEFAULT_PLANNER_MAX_TOKENS,
+        )
+        return _DEFAULT_PLANNER_MAX_TOKENS
+    if parsed <= 0:
+        logger.warning(
+            "block_planner: ignoring non-positive %s=%r; using default %d",
+            _ENV_PLANNER_MAX_TOKENS, raw, _DEFAULT_PLANNER_MAX_TOKENS,
+        )
+        return _DEFAULT_PLANNER_MAX_TOKENS
+    return parsed
+
+
+_ENV_PLAN_GRAMMAR_MODE = "ED4ALL_DYNAMIC_BLOCK_PLAN_GRAMMAR_MODE"
+# Hard runaway ceiling on the week-plan block count (the DEFAULT_BLOCK_BUDGET max
+# is 24; 40 leaves generous headroom for a raised per-week budget while still
+# bounding the array so the large seat can't over-generate an unbounded plan →
+# finish_reason='length' truncation that "corrupts a whole week"). The downstream
+# _validate_and_repair enforces the ACTUAL per-call budget; this is only the
+# structural anti-runaway bound.
+_PLAN_MAX_BLOCKS = 40
+
+
+def _build_plan_grammar_payload() -> Dict[str, Any]:
+    """response_format:json_schema payload for the whole-week plan output.
+
+    ROOT-CAUSE cure (owner-verified 2026-07-23) for the block-planner analogue of
+    the outline/synthesis truncation: the planner emits ``{"blocks":[…]}`` on the
+    large vLLM seat with NO schema enforcement (``json_mode`` only), so the model
+    can over-generate past the budget (→ ``finish_reason='length'`` truncation of a
+    whole week's plan) and emit invalid block/page types. When
+    ``ED4ALL_DYNAMIC_BLOCK_PLAN_GRAMMAR_MODE=response_format`` this bounds the
+    ``blocks`` array (``maxItems``), pins ``block_type`` / ``page_type`` to their
+    enums, and forces the object shape at SAMPLE time (vLLM-0.21 enforces it —
+    proven on this seat). Default off / any other value → ``{}`` (byte-identical
+    ``json_mode``-only path). Mirrors the ``response_format`` mode added to the
+    outline + textbook-synthesis grammar builders.
+    """
+    import os  # noqa: PLC0415
+
+    if os.environ.get(_ENV_PLAN_GRAMMAR_MODE, "").strip().lower() != "response_format":
+        return {}
+    block_types = sorted(_resolve_block_types())
+    schema: Dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "blocks": {
+                "type": "array",
+                "maxItems": _PLAN_MAX_BLOCKS,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "block_type": {"type": "string", "enum": block_types},
+                        "target_co_ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                        "page_type": {
+                            "type": "string",
+                            "enum": list(CANONICAL_PAGE_TYPES),
+                        },
+                        "content_focus": {"type": "string"},
+                        "target_bloom": {"type": "string"},
+                    },
+                    "required": ["block_type", "page_type"],
+                    "additionalProperties": False,
+                },
+            }
+        },
+        "required": ["blocks"],
+        "additionalProperties": False,
+    }
+    return {
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "WeekBlockPlan",
+                "schema": schema,
+                "strict": True,
+            },
+        }
+    }
+
+
 def build_planner_provider(
     *,
     provider: str = "nvidia",
     model: Optional[str] = None,
     capture: Optional[Any] = None,
     client: Optional[Any] = None,
-    max_tokens: int = 2048,
+    # ``None`` sentinel → resolve from ``ED4ALL_DYNAMIC_BLOCK_PLAN_MAX_TOKENS``
+    # (falling back to 4096). An explicit int wins (kwarg > env > default).
+    max_tokens: Optional[int] = None,
 ):
     """Construct the dedicated planner provider (large seat, planning system prompt).
 
@@ -997,7 +1112,7 @@ def build_planner_provider(
             model=resolved_model,
             capture=capture,
             client=client,
-            max_tokens=max_tokens,
+            max_tokens=_resolve_block_plan_max_tokens(max_tokens),
         )
     except Exception as exc:  # noqa: BLE001 — fail-safe to fixed plan
         logger.warning(
@@ -1075,14 +1190,17 @@ def _make_block_planner_provider_cls():
             model: Optional[str] = None,
             capture: Optional[Any] = None,
             client: Optional[Any] = None,
-            max_tokens: int = 2048,
+            # ``None`` sentinel → resolve from
+            # ``ED4ALL_DYNAMIC_BLOCK_PLAN_MAX_TOKENS`` (falling back to 4096);
+            # an explicit int wins (kwarg > env > default).
+            max_tokens: Optional[int] = None,
         ) -> None:
             super().__init__(
                 provider=provider,
                 model=model,
                 capture=capture,
                 client=client,
-                max_tokens=max_tokens,
+                max_tokens=_resolve_block_plan_max_tokens(max_tokens),
                 temperature=0.3,
                 env_provider_var="ED4ALL_DYNAMIC_BLOCK_PLAN_PROVIDER",
                 default_provider=provider or "nvidia",
@@ -1105,8 +1223,17 @@ def _make_block_planner_provider_cls():
             return None
 
         def plan_blocks(self, prompt: str) -> str:
-            """Dispatch the planner prompt; return the raw model text."""
-            text, _retries = self._dispatch_call(prompt)
+            """Dispatch the planner prompt; return the raw model text.
+
+            Threads the ``response_format`` week-plan schema (when
+            ``ED4ALL_DYNAMIC_BLOCK_PLAN_GRAMMAR_MODE=response_format``) so the
+            large vLLM seat enforces the plan shape + block-count bound at sample
+            time. Default off → ``extra_payload=None`` (byte-identical json_mode).
+            """
+            extra = _build_plan_grammar_payload()
+            text, _retries = self._dispatch_call(
+                prompt, extra_payload=extra or None
+            )
             return text
 
     return BlockPlannerProvider

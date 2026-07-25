@@ -31,9 +31,10 @@ credentials surface serves both task surfaces.
 
 Default config:
 
-- ``max_tokens=2400`` (the rewrite tier authors a single block's HTML
-  body, not a whole page; 2400 is the empirically-derived Pattern-22
-  per-block budget).
+- ``max_tokens=4096`` (env ``COURSEFORGE_REWRITE_MAX_TOKENS``). The rewrite
+  tier authors a single block's HTML body, not a whole page; the legacy 2400
+  budget was calibrated for a small 7B and truncates a large reasoning seat's
+  denser output (~20-30% of blocks → ``finish_reason='length'``).
 - ``temperature=0.4`` (light authorial variation while keeping
   determinism viable for cache-keyed reruns; mirrors Phase 1's
   ContentGeneratorProvider default).
@@ -99,6 +100,7 @@ from lib.retrieval.answer_backend import (  # noqa: E402
 from lib.retrieval._prompts import estimate_tokens as _estimate_tokens  # noqa: E402
 from Trainforge.generators._openai_compatible_client import (  # noqa: E402
     ENV_REQUEST_TIMEOUT as _OA_ENV_REQUEST_TIMEOUT,
+    _omit_ollama_format,
 )
 from MCP.hardening.error_classifier import (  # noqa: E402
     ErrorClass,
@@ -147,6 +149,11 @@ logger = logging.getLogger(__name__)
 
 ENV_PROVIDER = "COURSEFORGE_REWRITE_PROVIDER"
 ENV_MODEL = "COURSEFORGE_REWRITE_MODEL"
+# big-model-overflow-fix-2026-07: per-call generation cap override. A large
+# reasoning seat emits denser HTML than the 7B this tier's 2400 budget was
+# calibrated for, truncating ~20-30% of blocks (finish_reason='length').
+# Resolution (high → low): ``max_tokens`` kwarg > this env > the 4096 default.
+ENV_MAX_TOKENS = "COURSEFORGE_REWRITE_MAX_TOKENS"
 
 DEFAULT_PROVIDER = "anthropic"
 DEFAULT_MODEL = "claude-sonnet-4-6"
@@ -159,8 +166,40 @@ DEFAULT_MODEL_ANTHROPIC = "claude-sonnet-4-6"
 DEFAULT_MODEL_TOGETHER = "meta-llama/Llama-3.3-70B-Instruct-Turbo"
 DEFAULT_MODEL_LOCAL = "qwen2.5:7b-instruct-q4_K_M"
 
-_DEFAULT_MAX_TOKENS = 2400
+_DEFAULT_MAX_TOKENS = 4096
 _DEFAULT_TEMPERATURE = 0.4
+
+
+def _resolve_rewrite_max_tokens(explicit: Optional[int]) -> int:
+    """Resolve the rewrite-tier generation cap: kwarg > env > default.
+
+    ``explicit`` (the ``max_tokens`` kwarg) wins when supplied. Otherwise read
+    :data:`ENV_MAX_TOKENS` (``COURSEFORGE_REWRITE_MAX_TOKENS``) and parse it as a
+    positive int; a missing / unparseable / non-positive value falls back to
+    :data:`_DEFAULT_MAX_TOKENS`. Parse-with-fallback mirrors
+    ``_textbook_synthesis_provider._resolve_synthesis_max_tokens`` so a garbage
+    env value never shrinks the cap.
+    """
+    if explicit is not None:
+        return int(explicit)
+    raw = os.environ.get(ENV_MAX_TOKENS)
+    if not raw or not str(raw).strip():
+        return _DEFAULT_MAX_TOKENS
+    try:
+        parsed = int(str(raw).strip())
+    except (TypeError, ValueError):
+        logger.warning(
+            "RewriteProvider: ignoring non-integer %s=%r; using default %d",
+            ENV_MAX_TOKENS, raw, _DEFAULT_MAX_TOKENS,
+        )
+        return _DEFAULT_MAX_TOKENS
+    if parsed <= 0:
+        logger.warning(
+            "RewriteProvider: ignoring non-positive %s=%r; using default %d",
+            ENV_MAX_TOKENS, raw, _DEFAULT_MAX_TOKENS,
+        )
+        return _DEFAULT_MAX_TOKENS
+    return parsed
 
 # Per-request HTTP timeout (seconds) for the rewrite tier's
 # OpenAI-compatible backends (local / together). The rewrite tier
@@ -2952,7 +2991,10 @@ class RewriteProvider(_BaseLLMProvider):
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         capture: Optional[Any] = None,
-        max_tokens: int = _DEFAULT_MAX_TOKENS,
+        # ``None`` sentinel → resolve from ``COURSEFORGE_REWRITE_MAX_TOKENS``
+        # env (falling back to :data:`_DEFAULT_MAX_TOKENS`, 4096). An explicit
+        # int wins outright (per-call kwarg > env > default).
+        max_tokens: Optional[int] = None,
         temperature: float = _DEFAULT_TEMPERATURE,
         # Per-request HTTP timeout (seconds). Resolution chain (high →
         # low): this kwarg > ``ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS`` env
@@ -3000,6 +3042,10 @@ class RewriteProvider(_BaseLLMProvider):
         # ``test_phase3a_env_var_overrides_hardcoded_default`` in
         # ``Courseforge/router/tests/test_router.py``.
         resolved_model = model or os.environ.get(ENV_MODEL)
+
+        # Resolve the per-call generation cap: kwarg > env > default. A large
+        # reasoning seat overruns the legacy 7B-calibrated cap and truncates.
+        resolved_max_tokens = _resolve_rewrite_max_tokens(max_tokens)
 
         # Wave6: resolve the provider here so we can intercept
         # ``claude_session`` BEFORE delegating to ``super().__init__``
@@ -3078,7 +3124,7 @@ class RewriteProvider(_BaseLLMProvider):
             self._provider = "claude_session"
             self._model = resolved_model or DEFAULT_MODEL_ANTHROPIC
             self._capture = capture
-            self._max_tokens = int(max_tokens)
+            self._max_tokens = int(resolved_max_tokens)
             self._temperature = float(temperature)
             self._system_prompt = resolved_system_prompt
             self._supported_providers = tuple(SUPPORTED_PROVIDERS)
@@ -3109,7 +3155,7 @@ class RewriteProvider(_BaseLLMProvider):
             api_key=api_key,
             base_url=base_url,
             capture=capture,
-            max_tokens=max_tokens,
+            max_tokens=resolved_max_tokens,
             temperature=temperature,
             timeout=resolved_timeout,
             client=client,
@@ -3157,8 +3203,27 @@ class RewriteProvider(_BaseLLMProvider):
         ``options`` are no worse off than today — the pre/post-dispatch
         tripwires remain the deterministic backstop for the min-rule case
         (request cannot guarantee the window).
+
+        Strict-OpenAI opt-out (``ED4ALL_LLM_OMIT_OLLAMA_FORMAT``): the
+        Ollama-style ``options`` wrapper (like the top-level ``format:
+        "json"`` field the same flag suppresses in
+        ``Trainforge/generators/_openai_compatible_client.py``) is an
+        Ollama-ism. A strict-OpenAI local server (vLLM / TRT-LLM) does NOT
+        ignore an unknown top-level ``options`` field — it REJECTS the
+        request with HTTP 400 ``extra_forbidden`` (``loc: ('body',
+        'options')``), 400-ing EVERY rewrite-tier dispatch. Because this
+        payload is injected as request-body extras that BYPASS the
+        client-level ``format`` guard, honor the same operator signal here:
+        when the flag is truthy (the operator has declared this local seat
+        is a strict-OpenAI server), return ``None`` so no Ollama-only field
+        is sent. When unset / falsey, behavior is byte-identical to before
+        (real Ollama seats still get ``options.num_ctx``, preventing silent
+        context truncation). Reuses the canonical
+        ``_omit_ollama_format()`` resolver rather than re-parsing the env.
         """
         if self._provider in ("anthropic", "claude_session"):
+            return None
+        if _omit_ollama_format():
             return None
         base = self._base_url or ""
         host_local = any(

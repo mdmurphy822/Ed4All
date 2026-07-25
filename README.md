@@ -36,7 +36,7 @@ stopped automatically so only the models a phase needs are ever resident.
 | # | Phase | What it does | GPU workload |
 |---|-------|--------------|--------------|
 | 1 | `semantik_conversion` | PDF → accessible semantic HTML (layout extraction + image alt text) | OCR + vision models |
-| 2 | `heading_judge` | Re-levels ambiguous heading levels via a large-model judge *(optional)* | Large model |
+| 2 | `heading_judge` | Re-levels ambiguous heading levels via a large-model judge (runs by default; no-op on born-digital corpora) | Large model |
 | 3 | `staging` | Stages converted HTML for course generation | — |
 | 4 | `chunking` | Emits the deterministic source chunkset | — |
 | 5 | `objective_extraction` | Parses staged HTML into the textbook structure (chapters, sections, blocks) | — |
@@ -123,6 +123,19 @@ If you already ran `pip install -e ".[full]"` above (it includes the GUI), just 
 ed4all gui             # serves http://127.0.0.1:8077
 ```
 
+To manage pipeline runs from the GUI's **Assistant** panel — ask what a run is
+doing, prepare and launch builds, resume or stop them — launch with the
+assistant seat enabled:
+
+```bash
+ED4ALL_ASSISTANT_AUTOSTART=1 ed4all gui   # assistant panel may start its local model seat on demand
+```
+
+The assistant picks its model dynamically: if a larger local model seat is
+already serving (for example while a build is running), it answers through
+that seat and the panel shows which model replied; otherwise it brings up its
+own small default seat. Details in [The built-in assistant](#the-built-in-assistant).
+
 ### Prefer containers?
 
 A two-service Docker Compose stack serves the GUI on `http://localhost:8077`
@@ -190,7 +203,30 @@ against — is NVIDIA's **Nemotron Nano** (the NeMo model family) served with
 vLLM; set `ED4ALL_ASSISTANT_AUTOSTART=1` to let the CLI bring that seat up on
 demand, and `ED4ALL_ASSISTANT_DEBUG_ON_FAILURE=1` to have failed pipeline runs
 print the exact debug command to investigate them. The same assistant is
-available as a chat panel in the GUI.
+available as a chat panel in the GUI (see [Prefer a GUI?](#prefer-a-gui) for
+launching it with the assistant enabled).
+
+**Dynamic model selection.** When several local seats are registered
+(`ED4ALL_SEAT_BASE_URLS`), the assistant probes them in
+`ED4ALL_ASSISTANT_SEAT_PRIORITY` order (default `spark-super,spark-nano`) and
+answers through the first one that is live — so while a build has a large
+model seat loaded, the assistant (CLI and GUI panel alike) automatically
+upgrades to it, sharing the seat with the running pipeline. If nothing is
+live, it starts only its own small default seat (`ED4ALL_ASSISTANT_SEAT`),
+never the large one.
+
+**Managing multi-run pipelines.** The assistant can also organize builds end
+to end: list your input corpora, arrange the environment for a run as a
+*validated configuration overlay* (it prepares settings from a curated
+allowlist — it can never write scripts or code), launch a build, watch its
+phases, resume a paused run, stop one gracefully, and compile structured
+error reports for a human (or a Claude Code session) to review whenever
+something needs an actual fix:
+
+```bash
+ed4all assistant --campaign        # interactive run-management session
+ed4all assistant --campaign-tick   # one non-interactive monitoring pass (for schedulers)
+```
 
 ## What's inside
 

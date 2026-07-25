@@ -159,6 +159,7 @@ capability registry and writes a snapshot.
 | `tools/pipeline_tools.py` | `stage_semantik_outputs`, `archive_to_libv2`, `get_pipeline_status`, `validate_semantik_markers`, `synthesize_training` |
 | `tools/analysis_tools.py` | `analyze_training_data`, `get_quality_distribution`, `preview_export_filter` |
 | `tools/gui_tools.py` | the nine `gui_*` tools |
+| `tools/assistant_tools.py` | the twelve `assistant_*` operator-assistant campaign tools (thin wrappers delegating to `lib/assistant`; every mutating tool routes through `campaign_tools.dispatch_campaign_tool`, so the external surface is bounded, not widened) |
 
 **Internal (registry-only)** — `tools/pipeline_tools.py::_build_tool_registry()`
 returns a `{tool_name: async callable}` dict consumed by `TaskExecutor` for

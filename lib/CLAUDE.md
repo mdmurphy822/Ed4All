@@ -28,7 +28,7 @@ itself, start at the root `CLAUDE.md`; for a specific engine, its own
 | `llm/` | LLM plumbing that is not a provider: `endpoints.py` (loader for `config/endpoints.yaml`, the unified endpoint registry), `rate_limiter.py`, `truncation_guard.py`, `oom.py`, `vram_doctor.py`, `vram_reclaim.py`. |
 | `governance/` | Promotion/status policy: `course_status.py` (`compose_course_status` + the 5-value enum), `calibration_gate.py` (severity-flip resolution for calibration-gated validators), `procurement_evidence.py`, `source_coverage.py`. |
 | `licensing/` | `teacher_roster.py` — the machine-readable SFT teacher-license roster and its fail-closed guards (`assert_export_licenses`, `assert_checkpoint_license`, `assert_nemotron_pin`, `stamp_pair_license`, `provider_verdict_roster`). Prose posture lives in `docs/LICENSING.md`. |
-| `diagnostics/` | The `ed4all doctor` check framework: `core.py` defines `CheckResult` / `CheckContext` / `register(group, fn)` / `run_checks` / `resolve_exit_code`; the sibling modules register the groups `environment`, `provider`, `postmortem`, `gpu_profile`, `gpu` (from `vram.py`), and `window` (from `serving_window.py`). `run_env.py` registers no group — it is the seat/provider-key resolution helper the other checks call. |
+| `diagnostics/` | The `ed4all doctor` check framework: `core.py` defines `CheckResult` / `CheckContext` / `register(group, fn)` / `run_checks` / `resolve_exit_code`; the sibling modules register the groups `environment`, `provider`, `postmortem`, `gpu_profile`, `gpu` (from `vram.py`), `window` (from `serving_window.py`), and `seat` (vLLM seat topology, from `seat_schedule.py`). `run_env.py` registers no group — it is the seat/provider-key + local-synthesis-topology resolution helper the other checks call (`resolve_local_synthesis_topology` makes the `environment`/`window` groups probe `/v1/models` on a vLLM-seat host instead of ollama). |
 | `semantik/` | Ed4All-side adapters and helpers for the SemantiK cascade — `adapter.py` normalizes a cascade result into the downstream HTML + sidecar contract; also `heading_classifier.py`, `table_structure.py`, `latex_mathml.py`, `math_fold.py`, `vendor_ingest.py`, `toc_frontmatter_detector.py`. The cascade itself lives in `SemantiK/`. |
 | `semantic_structure_extractor/` | `SemanticStructureExtractor` — staged HTML → `textbook_structure.json` (chapters/sections/blocks), plus `resegment.py` and the `core/`, `analysis/`, `formats/`, `transformers/` submodules. |
 | `importers/` | `docs_corpus.py` + `_markdown.py` — the deterministic, LLM-free Markdown/docs-tree importer behind `ed4all import-docs`. |
@@ -132,7 +132,7 @@ class Validator(Protocol):
    `inputs` dict a gate receives. A new gate that needs an input the router does
    not already produce needs a builder there too.
 
-Of the 208 configured gates, 193 resolve to `lib.validators.*`; the remaining 15
+Of the 210 configured gates, 195 resolve to `lib.validators.*`; the remaining 15
 are Courseforge inter-tier gates (`Courseforge.router.inter_tier_gates.*`). The
 authoritative per-gate table is `docs/validation/gates.md`; the per-wave landing
 history is `docs/validation/gate-history.md`.

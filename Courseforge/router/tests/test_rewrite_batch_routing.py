@@ -130,6 +130,12 @@ def _force_cloud_spec(monkeypatch):
     yields a non-loopback / hosted seat for every block_type."""
     monkeypatch.setenv("COURSEFORGE_REWRITE_PROVIDER", "nvidia")
     monkeypatch.setenv("COURSEFORGE_REWRITE_BATCH", "1")
+    # Pin the per-call cap so batch packing (which starts a new batch when the
+    # summed per-block output budget exceeds the 16384-512 cap) is decoupled
+    # from the shipped rewrite max_tokens default — these tests assert on
+    # rebatching / stop semantics, not on the token cap. 2400 keeps a 3-block
+    # batch comfortably under the cap.
+    monkeypatch.setenv("COURSEFORGE_REWRITE_MAX_TOKENS", "2400")
 
 
 # ---------------------------------------------------------------------------

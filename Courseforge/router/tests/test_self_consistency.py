@@ -221,6 +221,20 @@ def test_third_candidate_passes_after_two_fail(monkeypatch):
     ml = sc_events[0]["ml_features"]
     assert ml["winning_candidate_index"] == 2
     assert ml["failed_candidate_count"] == 2
+    # Capture-quality contract (proficient floor): the audit event
+    # references the real block input, and its alternatives name the
+    # genuinely dispatched-and-rejected sibling candidates.
+    inputs_ref = sc_events[0]["inputs_ref"]
+    assert {
+        "source_type": "block",
+        "path_or_id": blk.block_id,
+    } in inputs_ref
+    alternatives = sc_events[0]["alternatives_considered"]
+    assert alternatives, (
+        "self-consistency event with failed candidates must list them "
+        "as alternatives"
+    )
+    assert any("2 dispatched sibling" in a for a in alternatives)
 
 
 def test_all_candidates_fail_returns_last_with_validation_attempts_n(monkeypatch):

@@ -278,6 +278,22 @@ except ImportError as _backup_err:  # pragma: no cover
     )
 
 
+# Register 'ed4all assistant' command — sandboxed operator-assistant chat
+# (REPL + one-shot) over the local nano vLLM seat, a thin consumer of
+# lib/assistant/'s AssistantEngine. Lazy try/except so the CLI still loads
+# if the assistant seams fail to import.
+try:
+    from cli.commands import register_assistant_command
+
+    register_assistant_command(cli)
+except ImportError as _assistant_err:  # pragma: no cover
+    import logging as _logging
+    _logging.getLogger(__name__).warning(
+        "cli.commands.assistant unavailable: %s",
+        _assistant_err,
+    )
+
+
 # =============================================================================
 # VALIDATE-RUN COMMAND
 # =============================================================================

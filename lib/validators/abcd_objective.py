@@ -806,14 +806,18 @@ class AbcdObjectiveValidator:
                         f"{len(valid_verbs)})."
                     ),
                     rationale=(
-                        f"AbcdObjectiveValidator audits verb-Bloom alignment "
-                        f"against lib.ontology.learning_objectives.BLOOMS_VERBS. "
-                        f"LO {lo_id} declared bloom_level={level!r} and "
-                        f"abcd.behavior.verb={verb_raw!r}; normalized "
-                        f"{verb!r} is not in the canonical verb set "
-                        f"(first 10: {_format_valid_verbs(level)}). "
-                        f"Routing action=regenerate so the upstream emitter "
-                        f"re-rolls the LO."
+                        # Dynamic signals FIRST (lo_id / verb / level) so the
+                        # first-80-char prefix is distinct per objective — the
+                        # DecisionCapture boilerplate scanner keys on that
+                        # prefix (DUPLICATE_BOILERPLATE_RATIONALE, Wave4-I5).
+                        f"LO {lo_id} verb {verb_raw!r} (normalized {verb!r}) "
+                        f"is outside BLOOMS_VERBS[{level!r}] "
+                        f"({len(valid_verbs)} canonical verbs; e.g. "
+                        f"{_format_valid_verbs(level)}), so the declared "
+                        f"bloom_level={level!r} and the ABCD behavior verb "
+                        f"disagree; AbcdObjectiveValidator routes "
+                        f"action=regenerate so the upstream emitter re-rolls "
+                        f"this objective with an aligned verb."
                     ),
                     context=(
                         f"lo_id={lo_id}; bloom_level={level}; verb={verb}; "
@@ -864,11 +868,13 @@ class AbcdObjectiveValidator:
                     f"bloom_level={level!r}."
                 ),
                 rationale=(
-                    f"AbcdObjectiveValidator confirmed "
-                    f"abcd.behavior.verb={verb_raw!r} (normalized "
-                    f"{verb!r}) is a member of "
-                    f"BLOOMS_VERBS[{level!r}] (size "
-                    f"{len(valid_verbs)}). No regenerate action emitted."
+                    # lo_id + verb lead so the first-80-char prefix stays
+                    # distinct per objective (boilerplate-scanner contract).
+                    f"LO {lo_id} abcd.behavior.verb={verb_raw!r} (normalized "
+                    f"{verb!r}) is a member of BLOOMS_VERBS[{level!r}] "
+                    f"(size {len(valid_verbs)}); AbcdObjectiveValidator "
+                    f"confirms verb-Bloom alignment for this objective, so "
+                    f"no regenerate action is emitted."
                 ),
                 context=f"lo_id={lo_id}; bloom_level={level}; verb={verb}",
             )

@@ -3291,6 +3291,14 @@ def default_router() -> GateInputRouter:
         "lib.validators.block_prose_entailment.BlockProseEntailmentValidator",
         _build_rewrite_block_input,
     )
+    # Deterministic prose-stutter gate (post_rewrite_validation) — book-1
+    # canary keystone fix. Consumes ONLY ``inputs['blocks']`` (pure text
+    # scan, no source premise), so it reuses the rewrite-tier Block-input
+    # shim rather than the +source_chunks builder.
+    r.register(
+        "lib.validators.prose_stutter.ProseStutterValidator",
+        _build_block_input_rewrite,
+    )
     # W4 §0.1 FIX — claim_support was NEVER registered, so the executor's
     # __no_builder_registered__ contract ran it with source_chunks={} (a
     # silent no-op: every claim hit the empty-premise branch). Wire the same

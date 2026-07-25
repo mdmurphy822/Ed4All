@@ -643,6 +643,22 @@ def test_route_emits_block_outline_call_decision_event(monkeypatch):
     assert "block_id=page1#concept_alpha_0" in rationale
     assert "provider=" in rationale
     assert "outcome=success" in rationale
+    # Capture-quality contract (proficient floor): the per-route event
+    # references the real block input and lists the genuine policy-
+    # resolution layers walked but not selected as alternatives.
+    inputs_ref = events[0]["inputs_ref"]
+    assert {
+        "source_type": "block",
+        "path_or_id": "page1#concept_alpha_0",
+    } in inputs_ref
+    alternatives = events[0]["alternatives_considered"]
+    assert alternatives, "route event must carry the unchosen policy layers"
+    assert len(alternatives) == 3  # the 4-layer chain minus the winner
+    joined = " ".join(alternatives)
+    # The winning layer never appears as an alternative to itself.
+    for layer in ("per_call", "yaml_policy", "env_var", "hardcoded_default"):
+        if f"policy_source={layer}" in rationale:
+            assert f"'{layer}' policy layer" not in joined
 
 
 def test_escalate_immediately_short_circuits_outline_tier(monkeypatch):
