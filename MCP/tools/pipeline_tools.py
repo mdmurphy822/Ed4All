@@ -12334,6 +12334,81 @@ def _block_to_snake_case_entry(block: Any) -> Dict[str, Any]:
     return entry
 
 
+#: Required `data-cf-*` attributes this deterministic pass can restore, keyed
+#: by block_type -> (attribute, Block field supplying the value). ONLY
+#: attributes whose value the block ALREADY declares are listed: the stamp
+#: copies the block's own metadata onto its wrapper, it never invents a value.
+_STAMPABLE_REQUIRED_ATTRS: Dict[str, Tuple[Tuple[str, str], ...]] = {
+    "assessment_item": (("data-cf-objective-ref", "objective_ids"),),
+}
+
+
+def _stamp_missing_required_attrs(blocks: List[Any]) -> Tuple[List[Any], int]:
+    """Restore a missing required `data-cf-*` attr from the block's own data.
+
+    The `rewrite_html_shape` gate requires per-block-type `data-cf-*`
+    attributes on the wrapper (mirroring `Block.to_html_attrs`). When the
+    rewrite model omits one, a re-roll is the wrong instrument — the value is
+    not something the model needs to invent, it is already on the Block. A
+    measured 15-block targeted re-roll fixed 11 of 15 and left exactly this
+    class behind: 4 `assessment_item` blocks missing `data-cf-objective-ref`
+    while each declared its `objective_ids`.
+
+    ANTI-FABRICATION: a block whose source field is empty is left untouched
+    (it then fails the gate honestly). Only the FIRST wrapper tag is stamped,
+    the attribute is never overwritten when already present, and no text is
+    edited. Deterministic, no LLM. Never raises — a per-block failure leaves
+    that block unchanged.
+
+    Returns ``(blocks, n_stamped)``.
+    """
+    import dataclasses as _dc  # noqa: PLC0415
+    import re as _re  # noqa: PLC0415
+
+    out: List[Any] = []
+    stamped = 0
+    for blk in blocks:
+        content = getattr(blk, "content", None)
+        rules = _STAMPABLE_REQUIRED_ATTRS.get(
+            str(getattr(blk, "block_type", "") or "")
+        )
+        if not rules or not isinstance(content, str) or not content.strip():
+            out.append(blk)
+            continue
+        new_content = content
+        changed = False
+        for attr, field_name in rules:
+            if attr in new_content:
+                continue
+            raw = getattr(blk, field_name, None)
+            if isinstance(raw, (list, tuple)):
+                value = ",".join(str(v).strip() for v in raw if str(v).strip())
+            else:
+                value = str(raw or "").strip()
+            if not value:
+                continue  # nothing declared -> fail the gate honestly
+            # Stamp the FIRST opening tag only.
+            m = _re.search(r"<([A-Za-z][\w:-]*)\b", new_content)
+            if not m:
+                continue
+            insert_at = m.end()
+            new_content = (
+                new_content[:insert_at]
+                + f' {attr}="{value}"'
+                + new_content[insert_at:]
+            )
+            changed = True
+        if not changed:
+            out.append(blk)
+            continue
+        try:
+            out.append(_dc.replace(blk, content=new_content))
+            stamped += 1
+        except (TypeError, ValueError):
+            out.append(blk)
+    return out, stamped
+
+
 def _maybe_repair_block_html_balance(
     blocks: List[Any],
 ) -> Tuple[List[Any], int, Dict[str, int]]:
@@ -20574,6 +20649,19 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
     rewrite_blocks, _n_html_repaired, _html_repair_op_counts = (
         _maybe_repair_block_html_balance(rewrite_blocks)
     )
+    # Deterministic required-attribute restore, same seam. A missing
+    # `data-cf-*` the block ALREADY declares is a stamping job, not a re-roll
+    # job — a targeted re-roll of 15 structurally-invalid blocks fixed 11 and
+    # left exactly this class (4 assessment_item blocks missing
+    # data-cf-objective-ref while each declared its objective_ids).
+    rewrite_blocks, _n_attr_stamped = _stamp_missing_required_attrs(
+        rewrite_blocks
+    )
+    if _n_attr_stamped:
+        logger.info(
+            "rewrite phase: stamped a missing required data-cf-* attribute on "
+            "%d block(s) from their own declared metadata.", _n_attr_stamped,
+        )
     if _n_html_repaired and capture is not None:
         try:
             capture.log_decision(
