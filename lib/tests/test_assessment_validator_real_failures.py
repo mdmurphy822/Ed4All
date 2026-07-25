@@ -363,3 +363,119 @@ def test_assessment_placeholder_emits_critical_severity():
         f"placeholder leak must fail the gate; got passed=True with issues: "
         f"{[(i.code, i.severity) for i in result.issues]}"
     )
+
+
+# --------------------------------------------------------------------- #
+# TOC-fragment false positives (quantitative corpora)                    #
+# --------------------------------------------------------------------- #
+#
+# The original TOC discriminator was "three standalone integers inline"
+# (``_TOC_THREE_INTS_RE``), which matches any string holding three
+# integers. On a quantitative corpus that is every worked answer, so
+# assessment_quality failed closed on correct arithmetic. The six
+# ``correct_answer`` / correct-choice strings below are verbatim from the
+# run that surfaced it; each must stay quiet.
+
+
+# (label, answer text) — verbatim correct answers wrongly flagged as TOC.
+_ARITHMETIC_ANSWERS = [
+    (
+        "place_value_periods",
+        "Separate into periods: 8 | 165 | 432 | 098 | 710; Name each "
+        "period: 8 → eight trillion 165 → one hundred sixty-five billion "
+        "432 → four hundred thirty-two million 098 → ninety-eight "
+        "thousand 710 → seven hundred ten",
+    ),
+    (
+        "fraction_common_denominator",
+        "Substitute -3/4 for x in the expression x + 1/3.; Write the "
+        "expression as -3/4 + 1/3.; Find the least common denominator of "
+        "4 and 3, which is 12.; Rewrite each fraction with denominator "
+        "12: -3/4 becomes -9/12 and 1/3 becomes 4/12.",
+    ),
+    (
+        "divisibility_rule_of_3",
+        "multiple of 3 (1+2=3), while 13 ends in 3 but is not a multiple "
+        "of 3 (1+3=4, not divisible by 3)",
+    ),
+    (
+        "digit_sum_check",
+        "State the problem: Is 5,625 divisible by 3?; Recall the "
+        "divisibility rule for 3: a number is divisible by 3 if the sum "
+        "of its digits is divisible by 3.; Calculate the sum of the "
+        "digits: 5 + 6 + 2 + 5 = 18.; Check if the sum is divisible by "
+        "3: 18 ÷ 3 = 6",
+    ),
+    ("multiple_of_24", "multiple of 24 because 4 divides 24"),
+    (
+        "multiple_of_7",
+        "multiple of 7 because 42 = 7 × 6, and 6 is a counting number",
+    ),
+]
+
+
+def test_arithmetic_correct_answers_do_not_fire_toc_check():
+    """Digit-dense worked answers are not TOC fragments.
+
+    Each of these failed the critical TOC_FRAGMENT_ANSWER check purely
+    for containing three integers.
+    """
+    for label, answer in _ARITHMETIC_ANSWERS:
+        q = {
+            "question_id": f"q-{label}",
+            "question_type": "short_answer",
+            "stem": "<p>Explain how you reached that result</p>",
+            "bloom_level": "apply",
+            "objective_id": "LO-01",
+            "correct_answer": answer,
+        }
+        result = AssessmentQualityValidator().validate({
+            "assessment_data": {"questions": [q]},
+        })
+        codes = [i.code for i in result.issues]
+        assert "TOC_FRAGMENT_ANSWER" not in codes, (
+            f"{label}: arithmetic answer wrongly flagged as a TOC "
+            f"fragment: {answer[:120]!r}"
+        )
+
+
+def test_arithmetic_correct_choice_does_not_fire_toc_check():
+    """Same guard on the MCQ correct-choice surface, which the TOC
+    check audits alongside correct_answer."""
+    questions = [
+        _q(
+            qid=f"q-{i:03d}",
+            stem=f"<p>Identify which statement about multiples is true ({i})</p>",
+            correct=f"<p>{answer}</p>",
+        )
+        for i, (_label, answer) in enumerate(_ARITHMETIC_ANSWERS)
+    ]
+    result = AssessmentQualityValidator().validate({
+        "assessment_data": {"questions": questions},
+    })
+    codes = [i.code for i in result.issues]
+    assert "TOC_FRAGMENT_ANSWER" not in codes, f"codes: {codes}"
+
+
+def test_toc_entry_inside_a_sentence_does_not_fire():
+    """A sentence that merely *contains* a numbered phrase is not a TOC.
+
+    Detection requires the entries to make up the bulk of the text, so a
+    single incidental "<num> <Title> <num>" run stays quiet.
+    """
+    q = {
+        "question_id": "q-001",
+        "question_type": "short_answer",
+        "stem": "<p>Summarise the reading assignment</p>",
+        "bloom_level": "understand",
+        "objective_id": "LO-01",
+        "correct_answer": (
+            "Read section 2 Photosynthesis 41 carefully, then write a "
+            "short paragraph explaining how the two stages of the "
+            "process depend on one another in ordinary daylight."
+        ),
+    }
+    result = AssessmentQualityValidator().validate({
+        "assessment_data": {"questions": [q]},
+    })
+    assert "TOC_FRAGMENT_ANSWER" not in [i.code for i in result.issues]

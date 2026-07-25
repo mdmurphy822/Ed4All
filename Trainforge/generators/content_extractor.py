@@ -145,6 +145,22 @@ _GLYPH_ALT_TEXT_RE = re.compile(
 #: merely MENTIONS a step ("Step 1 is to isolate the variable") is untouched.
 _BARE_STEP_LABEL_RE = re.compile(r"^\s*Step\s+\d+\s*[.:)]?\s*$", re.IGNORECASE)
 
+#: A worked-solution step that LEADS its candidate: the label plus a delimiter
+#: plus the step body ("Step 2: Since -9 is 9 units from 0, |-9| = 9."). The
+#: bare-label pattern above only fires when the label is the WHOLE candidate,
+#: so a sentence-splitter that hands the guard one complete step sentence saw
+#: no marker at all and the step shipped as a true/false statement, as a
+#: fill-in-the-blank context sentence, and as a key TERM. That is the single
+#: most common shape of worked-solution apparatus in both OCR'd source scans
+#: and in generated worked-example prose, so it must be matched wherever it
+#: LEADS the candidate.
+#:
+#: The trailing delimiter is REQUIRED, which is what keeps ordinary prose
+#: intact: "Step 1 is to isolate the variable" has no ``.``/``:``/``)`` after
+#: the ordinal and is untouched. Same pedagogical-label vocabulary class as
+#: ``Solution:`` / ``Check:`` — no subject words, no publisher phrases.
+_STEP_LABEL_PREFIX_RE = re.compile(r"^\s*Step\s+\d+\s*[.:)]", re.IGNORECASE)
+
 
 def _is_apparatus_text(text: str) -> bool:
     """True when the candidate text is exercise/solution APPARATUS.
@@ -180,7 +196,30 @@ def _is_apparatus_text(text: str) -> bool:
         _APPARATUS_WIDE_RE.search(c)
         or _GLYPH_ALT_TEXT_RE.search(c)
         or _BARE_STEP_LABEL_RE.match(c)
+        or _STEP_LABEL_PREFIX_RE.match(c)
         for c in candidates
+    )
+
+
+def _is_apparatus_key_term(term: str, definition: str, context: str) -> bool:
+    """True when a key-term candidate is apparatus in ANY of its three parts.
+
+    ``extract_key_terms`` historically screened only the DEFINITION, which let
+    a worked-solution step become the *term* itself. Measured on a real
+    generated course: ``"Step 1: Find the opposite of 7: it"`` /
+    ``"Try It: Determine whether 30"`` / ``"Show answer Yes, 42"`` /
+    ``"Solution"`` all shipped as key terms — and a key term is reused as the
+    fill-in-the-blank ANSWER and as the MCQ stem subject, so the apparatus
+    surfaced on both the question and the answer key.
+
+    Screening all three parts is the same guard applied to the whole
+    candidate rather than a third of it. Domain-agnostic: the marker set is
+    unchanged pedagogical-label vocabulary.
+    """
+    return any(
+        _is_apparatus_text(part)
+        for part in (term, definition, context)
+        if part
     )
 
 
@@ -649,8 +688,12 @@ class ContentExtractor:
                     candidates_seen += 1
                     if _is_toc_fragment(term):
                         continue
-                    # Apparatus text must never become a definition.
-                    if _is_apparatus_text(definition):
+                    # Apparatus text must never become a definition — nor the
+                    # TERM, which is reused verbatim as the fill-in-the-blank
+                    # answer key and as the MCQ stem subject.
+                    if _is_apparatus_key_term(
+                        term, definition, match.group(0)
+                    ):
                         continue
                     term_key = term.lower()
                     if term_key not in seen_terms:
@@ -694,6 +737,11 @@ class ContentExtractor:
                         if len(parts) > 1:
                             definition = parts[1].strip().lstrip("—–-:,").strip()
                         break
+                # Same apparatus screen as Strategy 1: a bolded "Solution" /
+                # "Step 2:" label inside a worked example is markup, not a key
+                # term, and generated course HTML bolds exactly those labels.
+                if _is_apparatus_key_term(term, definition, context):
+                    continue
                 if context and len(definition) > 10:
                     seen_terms.add(term.lower())
                     candidates_accepted += 1
@@ -715,18 +763,24 @@ class ContentExtractor:
                 candidates_seen += 1
                 if _is_toc_fragment(tag_lower):
                     continue
-                # Find sentence containing the tag
+                # Find sentence containing the tag. The whole sentence becomes
+                # the definition AND the context, so an apparatus sentence
+                # must not be adopted just because it happens to mention a
+                # concept tag.
                 for sentence in _split_sentences(text):
-                    if tag_lower in sentence.lower():
-                        seen_terms.add(tag_lower)
-                        candidates_accepted += 1
-                        terms.append(KeyTerm(
-                            term=deslugify_concept(tag).title(),
-                            definition=sentence,
-                            source_chunk_id=chunk_id,
-                            context_sentence=sentence,
-                        ))
-                        break
+                    if tag_lower not in sentence.lower():
+                        continue
+                    if _is_apparatus_key_term(tag_lower, sentence, sentence):
+                        continue
+                    seen_terms.add(tag_lower)
+                    candidates_accepted += 1
+                    terms.append(KeyTerm(
+                        term=deslugify_concept(tag).title(),
+                        definition=sentence,
+                        source_chunk_id=chunk_id,
+                        context_sentence=sentence,
+                    ))
+                    break
 
             # All candidates were rejected as TOC fragments. Tag the chunk so
             # downstream callers can see that key-term extraction yielded

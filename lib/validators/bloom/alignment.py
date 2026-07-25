@@ -94,6 +94,46 @@ def detect_bloom_level(stem: str) -> Optional[str]:
     return level
 
 
+#: A cloze (fill-in-the-blank) gap marker. Four shapes cover every emitter in
+#: the codebase and every external QTI import seen so far: a rule of underscores
+#: (``_______``), a bracketed or braced ``blank`` token, a run of ellipses, and
+#: a rule of em/horizontal/full-width dashes some publishers use as the gap.
+#: Each requires a RUN (3+ characters, 2+ ellipses) so ordinary punctuation and
+#: code identifiers never register. Deliberately structural —
+#: no subject vocabulary, no publisher phrase list — so a different book, a
+#: different discipline and a different converter all exercise the same rule.
+_CLOZE_GAP_RE = re.compile(
+    r"_{3,}"
+    r"|\[\s*blank\s*\]"
+    r"|\{\s*blank\s*\}"
+    r"|…{2,}"
+    r"|[—―＿]{3,}",
+    re.IGNORECASE,
+)
+
+
+def stem_is_cloze(stem_text: str) -> bool:
+    """True when the stem is a cloze / fill-in-the-blank sentence.
+
+    A cloze stem is *a sentence with a gap in it*, not an instruction: its
+    cognitive task is carried by the item TYPE and by the gap itself, and the
+    only imperative it can carry is the item-type-appropriate one the emitter
+    prepends ("Complete the following: …"). Demanding a Bloom cognitive verb
+    inside such a stem is category-inappropriate — ``_______ is a multiple of
+    4.`` is a correctly-shaped item, and flagging it as ``VERB_LESS_STEM``
+    was a linter false positive that (at scale) escalated to a blocking
+    ``PERVASIVE_VERBLESS_STEMS`` critical.
+
+    Detection is on the STEM SHAPE rather than on ``question_type`` on
+    purpose: an imported cartridge routinely mislabels a cloze item as
+    ``short_answer`` / ``essay``, and a genuinely verb-less non-cloze stem
+    carries no gap marker and so is still reported.
+
+    Callers must pass TAG-STRIPPED text; the gap markers survive stripping.
+    """
+    return bool(_CLOZE_GAP_RE.search(stem_text or ""))
+
+
 class BloomAlignmentValidator:
     """Validates assessment alignment with Bloom's taxonomy."""
 
@@ -196,6 +236,15 @@ class BloomAlignmentValidator:
                 # No Bloom verb found in the stem.
                 if permissive_mode:
                     # Legacy behavior: count as aligned.
+                    aligned += 1
+                    q_aligned = True
+                elif stem_is_cloze(stem_text):
+                    # A cloze stem is a sentence with a gap, not an
+                    # instruction: the cognitive task rides on the item type
+                    # and the gap, so "no Bloom verb" is the CORRECT shape,
+                    # not a defect. Count it aligned (scoring it unaligned
+                    # would depress the alignment score for a structurally
+                    # valid item type) and emit no diagnostic.
                     aligned += 1
                     q_aligned = True
                 else:

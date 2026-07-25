@@ -36,6 +36,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 from lib.validators.bloom import detect_bloom_level
+# Imported from the module rather than the package ``__init__`` so the cloze
+# helper stays co-located with ``detect_bloom_level`` — the two are always used
+# together (see ``_stem_lacks_task_verb``).
+from lib.validators.bloom.alignment import stem_is_cloze
 from MCP.hardening.validation_gates import GateIssue, GateResult
 
 # W-D7 T7.4: thresholds + placeholder helpers extracted into the
@@ -93,6 +97,38 @@ def _item_allows_multiple_keys(q: Dict[str, Any]) -> bool:
     if isinstance(plural, list) and len(plural) > 1:
         return True
     return False
+
+
+def _stem_lacks_task_verb(stem_text: str) -> bool:
+    """True when a stem genuinely carries no task verb (the VERB_LESS defect).
+
+    Two conditions, both required:
+
+    1. :func:`detect_bloom_level` finds no Bloom verb, and
+    2. the stem is not a **cloze** (fill-in-the-blank) sentence.
+
+    Condition 2 is the fix for a real linter false positive. A cloze stem is a
+    sentence with a gap in it — ``Complete the following: _______ is a multiple
+    of 4.`` — whose only imperative is the item-type-appropriate one the
+    emitter prepends, and whose cognitive demand is carried by the item TYPE
+    and the gap rather than by a Bloom verb inside the sentence. On a
+    cloze-rich assessment those false positives accumulate until the
+    cross-question ``PERVASIVE_VERBLESS_STEMS`` critical fires and blocks the
+    build, so the exemption has to live at the per-question rule, not at the
+    cap.
+
+    The test is on stem SHAPE, not on ``question_type``: an imported cartridge
+    routinely mislabels a cloze item, while a genuinely verb-less non-cloze
+    stem carries no gap marker and is still reported. Domain-agnostic by
+    construction — no subject vocabulary, no publisher phrase list.
+
+    ``stem_text`` must already be tag-stripped.
+    """
+    if not stem_text:
+        return False
+    if detect_bloom_level(stem_text) is not None:
+        return False
+    return not stem_is_cloze(stem_text)
 
 
 def _emit_assessment_quality_decision(
@@ -525,8 +561,9 @@ class AssessmentQualityValidator:
 
         # Wave 26: verb-less stem (warning). T/F questions are allowed one
         # verb-less stem per-assessment — the cross-question pass enforces
-        # that cap. Here we just record the finding per question.
-        if text and detect_bloom_level(text) is None:
+        # that cap. Here we just record the finding per question. Cloze
+        # (fill-in-the-blank) stems are exempt: see ``_stem_lacks_task_verb``.
+        if _stem_lacks_task_verb(text):
             issues.append(
                 GateIssue(
                     severity="warning",
@@ -570,7 +607,10 @@ class AssessmentQualityValidator:
 
         The per-question VERB_LESS_STEM warnings are capped at 1 per
         assessment (allowing a single T/F-style verb-less stem); anything
-        above the cap is escalated here.
+        above the cap is escalated here. Cloze (fill-in-the-blank) stems
+        never count toward the cap — see ``_stem_lacks_task_verb``; both
+        sites share that helper so the per-question warning and the
+        cross-question escalation can never disagree about what counts.
 
         Wave 6 W6.A extension: when ``per_type_thresholds`` is supplied,
         questions are ALSO bucketed by ``_normalize_question_type`` and
@@ -697,7 +737,7 @@ class AssessmentQualityValidator:
             s = _strip_html_text(q.get("stem", ""))
             if not s:
                 continue
-            if detect_bloom_level(s) is None:
+            if _stem_lacks_task_verb(s):
                 q_id = q.get("question_id", "unknown")
                 if q.get("question_type") == "true_false":
                     tf_verbless_q_ids.append(q_id)
