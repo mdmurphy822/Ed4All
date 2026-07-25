@@ -25,7 +25,9 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from lib.paths import PROJECT_ROOT  # noqa: E402
 from lib.paths import courseforge_exports_dir as _lib_courseforge_exports_dir  # noqa: E402
+from lib.paths import semantik_output_dir  # noqa: E402
 from lib.secure_paths import validate_path_within_root  # noqa: E402
+from lib.assessment import source_prose as _clean_prose_lib  # noqa: E402
 from Trainforge.chunker import CHUNKER_SCHEMA_VERSION  # noqa: E402
 from Trainforge.chunker import EXTRACTION_TEXT_CONTRACT_VERSION  # noqa: E402
 from Trainforge.chunker import (  # noqa: E402
@@ -599,6 +601,35 @@ def _index_objective_records(
 # Matches a filesystem-safe basename token: alnum / underscore / hyphen / dot,
 # no path separators (anti path-traversal for the manifest ``file`` field).
 _ASSESSMENT_FILENAME_RE = re.compile(r"[^0-9A-Za-z._-]+")
+
+
+def _resolve_staged_html_dir(project_path: Path, course_slug: str) -> Path | None:
+    """Locate the SemantiK HTML staged for this project, or ``None``.
+
+    ``assessment_synthesis`` has no staging path in its ``inputs_from``, so the
+    dir is recovered the same way the courseforge stage subcommands recover an
+    export: newest ``TTC_<slug>_*`` under the textbook staging root. Returns
+    ``None`` rather than guessing when nothing matches — the caller then falls
+    back to the converter's own output dir.
+    """
+    staging_root = project_path.parent.parent / "inputs" / "textbooks"
+    if not staging_root.is_dir():
+        return None
+    prefix = f"TTC_{course_slug}_"
+    candidates: List[tuple[float, Path]] = []
+    try:
+        for cand in staging_root.iterdir():
+            if cand.is_dir() and cand.name.startswith(prefix):
+                try:
+                    candidates.append((cand.stat().st_mtime, cand))
+                except OSError:
+                    continue
+    except OSError:
+        return None
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    return candidates[0][1]
 
 
 def _safe_assessment_basename(stem: str, *, fallback: str) -> str:
@@ -31494,8 +31525,56 @@ def _build_tool_registry() -> dict:
             except OSError:
                 loaded_chunks = []
 
+        # ---- prose-only mining view (ED4ALL_ASSESSMENT_CLEAN_PROSE) -------
+        # chunk["text"] is a FLATTENED region rendering: figure alt-text,
+        # worked solutions, exercise banks, display-math and OCR'd tables read
+        # as ordinary sentences once the markup is gone, so the generator
+        # mines them as distractors AND as correct answers. SemantiK still
+        # labels those regions on the accessible HTML, so re-derive a
+        # prose-only view HERE, at mining time. The chunkset on disk is never
+        # rewritten -> semantik_chunks_sha256 is stable and no upstream phase
+        # re-runs; only this phase sees the cleaned text.
+        if loaded_chunks and _clean_prose_lib.resolve_clean_prose():
+            _html_dirs = [
+                _p for _p in (
+                    _resolve_staged_html_dir(project_path, course_slug),
+                    semantik_output_dir(),
+                ) if _p is not None
+            ]
+            _html_paths = _clean_prose_lib.resolve_source_html_paths(
+                loaded_chunks, _html_dirs,
+            )
+            _prose_filter = (
+                _clean_prose_lib.build_prose_filter(_html_paths)
+                if _html_paths else None
+            )
+            if _prose_filter:
+                loaded_chunks, _prose_stats = _clean_prose_lib.clean_chunks(
+                    loaded_chunks, _prose_filter,
+                )
+                logger.info(
+                    "run_assessment_synthesis: clean-prose mining view — "
+                    "%d/%d chunks filtered (%d emptied), %d -> %d chars "
+                    "(%.1f%% prose retained) from %d non-prose fragments.",
+                    _prose_stats["changed"], _prose_stats["chunks"],
+                    _prose_stats["emptied"], _prose_stats["chars_in"],
+                    _prose_stats["chars_out"],
+                    (100.0 * _prose_stats["chars_out"]
+                     / max(1, _prose_stats["chars_in"])),
+                    _prose_filter.fragment_count,
+                )
+            else:
+                logger.warning(
+                    "run_assessment_synthesis: %s is on but no prose filter "
+                    "could be built — mining from the raw flattened chunk "
+                    "text.", _clean_prose_lib.ENV_CLEAN_PROSE,
+                )
+
         # Chunkset fingerprint axis (shared by every unit): a re-chunk that
-        # changes the grounding re-runs the affected units on resume.
+        # changes the grounding re-runs the affected units on resume. Computed
+        # AFTER the clean-prose pass, so flipping that flag re-rolls every
+        # cached unit against the filtered text instead of replaying units
+        # mined from the unfiltered chunkset.
         _assessment_chunkset_sha_val = _assessment_chunkset_sha(loaded_chunks)
 
         # ---- params ------------------------------------------------------

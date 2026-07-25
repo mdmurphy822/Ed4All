@@ -238,6 +238,25 @@ _CORPUS_GENERALIZATION_ENV_DEFAULTS: Dict[str, str] = {
     # padded placeholder. Deterministic, domain-agnostic, selects no LLM
     # provider/model. See Trainforge/generators/content_extractor.py.
     "ED4ALL_ASSESSMENT_APPARATUS_STRICT": "true",
+    # Prose-only MINING VIEW for assessment_synthesis. The marker guard above
+    # is a last-line filter on strings the generator already chose; this stops
+    # the apparatus reaching the generator at all. chunk["text"] is a FLATTENED
+    # region rendering, so figure alt-text, worked solutions, exercise banks,
+    # display-math and OCR'd tables read as ordinary sentences and get mined as
+    # distractors AND as correct answers. SemantiK still LABELS those regions
+    # on the accessible HTML (data-semantik-block-role) and the rest are
+    # generic structural carriers (<table>, <figcaption>, img/@alt), so the
+    # phase re-derives a prose-only view of each chunk at mining time. The
+    # chunkset on disk is never rewritten -> semantik_chunks_sha256 stays
+    # stable and NO upstream phase re-runs. Measured on a scan-derived corpus:
+    # eliminates the whole figure/alt-text contamination class (9/12 residual
+    # markers, 59% of prose retained, ~1.4s for 692 chunks). The 3 survivors
+    # are order-scrambled table/LaTeX flattenings whose chunk-side token order
+    # does not match any current HTML region — those need the chunkset rebuilt
+    # from the same HTML, not a wider rule. Deterministic, domain-agnostic
+    # (keys off the converter's OWN taxonomy, never a phrase list), selects no
+    # LLM provider/model. See lib/assessment/source_prose.py.
+    "ED4ALL_ASSESSMENT_CLEAN_PROSE": "true",
     # QTI item-BANK sidecar: one <objectbank> carrying every emitted item with
     # queryable per-item qtimetadata (objective id / Bloom level / item
     # subtype / question type), so the course ships a reusable question LIBRARY
