@@ -3906,6 +3906,20 @@ class RewriteProvider(_BaseLLMProvider):
                 if classified.error_class is ErrorClass.TRANSIENT:
                     if transient_retries < _TRANSIENT_RETRY_BUDGET:
                         transient_retries += 1
+                        # LOUD: this used to be a bare ``continue``. A read
+                        # timeout re-dispatch is a ~10-minute wall-clock event
+                        # (ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS) that emitted
+                        # NOTHING — no httpx line either, since httpx only logs
+                        # on a response — so a block silently burning a
+                        # multi-retry ladder was invisible in the log and
+                        # indistinguishable from a hung process.
+                        logger.warning(
+                            "RewriteProvider: TRANSIENT dispatch failure for "
+                            "block %r — re-dispatching (transient retry %d/%d, "
+                            "parse-retry slot %d unchanged): %s",
+                            block.block_id, transient_retries,
+                            _TRANSIENT_RETRY_BUDGET, attempt, exc,
+                        )
                         # Do NOT advance attempt — re-dispatch under the
                         # same parse-retry slot.
                         continue

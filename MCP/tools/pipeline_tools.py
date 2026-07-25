@@ -20485,7 +20485,22 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
                 _pool.submit(_process_one_block, _blk): _idx
                 for _idx, _blk in enumerate(outline_blocks)
             }
-            for _fut in _futs:
+            # Drain in COMPLETION order, not submission order. Iterating the
+            # submission-ordered dict makes checkpointing head-of-line blocked:
+            # one slow block stalls the sidecar for every block behind it that
+            # has already finished. Observed on a real 3037-block run — a
+            # single wedged block froze the sidecar at 2215 rows for ~65
+            # minutes while ~540 completed blocks sat unflushed in memory, all
+            # of which a kill in that window would have discarded.
+            #
+            # Determinism is unaffected: results are collected into the
+            # index-keyed ``_results_by_idx`` and reassembled in ORIGINAL block
+            # order below, so ``blocks_final.jsonl`` is byte-identical either
+            # way. Only the resume sidecar's line order changes, and resume
+            # dedupes by block_id.
+            from concurrent.futures import as_completed  # noqa: PLC0415
+
+            for _fut in as_completed(_futs):
                 _idx = _futs[_fut]
                 try:
                     _fut_result = _fut.result()
