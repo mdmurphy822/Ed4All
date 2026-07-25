@@ -139,6 +139,13 @@ _GLYPH_ALT_TEXT_RE = re.compile(
 )
 
 
+#: A worked-example step LABEL standing alone as the whole candidate
+#: ("Step 1", "Step 2.") — pure procedural scaffolding, never an answer or a
+#: plausible distractor. Anchored + fullmatch-shaped so ordinary prose that
+#: merely MENTIONS a step ("Step 1 is to isolate the variable") is untouched.
+_BARE_STEP_LABEL_RE = re.compile(r"^\s*Step\s+\d+\s*[.:)]?\s*$", re.IGNORECASE)
+
+
 def _is_apparatus_text(text: str) -> bool:
     """True when the candidate text is exercise/solution APPARATUS.
 
@@ -157,9 +164,24 @@ def _is_apparatus_text(text: str) -> bool:
     t = text or ""
     if _APPARATUS_RE.search(t) or _apparatus_banner_re().search(t):
         return True
-    if resolve_apparatus_strict():
-        return bool(_APPARATUS_WIDE_RE.search(t) or _GLYPH_ALT_TEXT_RE.search(t))
-    return False
+    if not resolve_apparatus_strict():
+        return False
+    # Match against the TAG-STRIPPED text as well. Several widened patterns are
+    # ``^``-anchored (leading figure/table caption, glyph alt-text, a bare
+    # "Step N" label), and the assessment emitter wraps choice / answer text in
+    # ``<p>…</p>`` — so on the real emit the anchor never fired and apparatus
+    # shipped anyway. Testing both forms keeps the raw-text behaviour identical
+    # while closing the wrapped case.
+    candidates = [t]
+    stripped = re.sub(r"<[^>]+>", " ", t).strip()
+    if stripped and stripped != t:
+        candidates.append(stripped)
+    return any(
+        _APPARATUS_WIDE_RE.search(c)
+        or _GLYPH_ALT_TEXT_RE.search(c)
+        or _BARE_STEP_LABEL_RE.match(c)
+        for c in candidates
+    )
 
 
 # --------------------------------------------------------------------------- #

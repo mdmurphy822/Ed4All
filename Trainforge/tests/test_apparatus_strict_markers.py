@@ -94,3 +94,57 @@ def test_legacy_colon_marker_still_fires_with_flag_off(monkeypatch):
     monkeypatch.delenv(_FLAG, raising=False)
     assert _is_apparatus_text("Solution: x = 4 Check: 2(4) = 8") is True
     assert _is_apparatus_text("Try It 3.14") is True
+
+
+# ---- HTML-WRAPPED shape (the production emit) ----------------------------
+#
+# The widened markers are `^`-anchored, and the assessment emitter wraps
+# choice / answer text in `<p>…</p>`. So the guard matched raw chunk strings
+# in an offline A/B while passing the wrapped form the real emit produces —
+# apparatus shipped anyway (159/626 distractors on a real build). The guard
+# now also matches against the tag-stripped text.
+
+WRAPPED_APPARATUS = [
+    "<p>A gray checkmark inside a circle, indicating correct or complete.</p>",
+    "<p>Figure 1.14 shows the names of the place values.</p>",
+    "<p>HOW TO ROUND WHOLE NUMBERS Round 23,658.</p>",
+    "<li>Right-pointing arrow inside a square, indicating a next action.</li>",
+    "<p>Table 3.19 A right-pointing arrow, indicating navigation.</p>",
+]
+
+# A bare worked-example step label is pure scaffolding, never an answer.
+BARE_STEP_LABELS = ["Step 1", "<p>Step 2.</p>", "Step 3:", "  step 10 "]
+
+WRAPPED_LEGIT = [
+    "<p>A circle is the set of all points equidistant from a center.</p>",
+    "<p>Step 1 is to isolate the variable on one side.</p>",
+    "<p>The graph in Figure 1.14 illustrates the relationship.</p>",
+    "<p>A box plot summarizes data, showing the median.</p>",
+    "<p>multiple of n if it is the product of a counting number and n</p>",
+    "<p>The distributive property states that a(b+c) = ab + ac.</p>",
+]
+
+
+@pytest.mark.parametrize("text", WRAPPED_APPARATUS + BARE_STEP_LABELS)
+def test_wrapped_apparatus_is_caught(monkeypatch, text):
+    monkeypatch.setenv(_FLAG, "1")
+    assert _is_apparatus_text(text) is True
+
+
+@pytest.mark.parametrize("text", WRAPPED_LEGIT)
+def test_wrapped_legitimate_prose_survives(monkeypatch, text):
+    monkeypatch.setenv(_FLAG, "1")
+    assert _is_apparatus_text(text) is False
+
+
+@pytest.mark.parametrize("text", WRAPPED_APPARATUS + BARE_STEP_LABELS)
+def test_wrapped_forms_inert_when_flag_off(monkeypatch, text):
+    monkeypatch.delenv(_FLAG, raising=False)
+    assert _is_apparatus_text(text) is False
+
+
+def test_step_label_only_matches_a_STANDALONE_label(monkeypatch):
+    """'Step N' inside a real sentence is content, not scaffolding."""
+    monkeypatch.setenv(_FLAG, "1")
+    assert _is_apparatus_text("Step 1") is True
+    assert _is_apparatus_text("In Step 1 we isolate x, then Step 2 divides.") is False
