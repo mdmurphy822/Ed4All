@@ -18,11 +18,19 @@ import { el } from '../dom.js';
 const _RUN = {
   queued: { glyph: '◷', label: 'Queued', cls: 'pending' },
   running: { glyph: '◐', label: 'Building', cls: 'running' },
+  building: { glyph: '◐', label: 'Building', cls: 'running' },
   completed: { glyph: '●', label: 'Ready', cls: 'done' },
   failed: { glyph: '✕', label: 'Failed', cls: 'failed' },
   cancelled: { glyph: '–', label: 'Cancelled', cls: 'skipped' },
   cancel_requested: { glyph: '◌', label: 'Cancelling…', cls: 'running' },
   interrupted: { glyph: '–', label: 'Interrupted', cls: 'skipped' },
+  // Honest non-terminal states derived server-side from process liveness +
+  // the graceful-stop sentinel (gui/services/liveness.py::effective_status).
+  // Each is a glyph + plain-language label (never color-only, WCAG 1.4.1).
+  paused: { glyph: '❚❚', label: 'Paused', cls: 'warn' },
+  stopping: { glyph: '◔', label: 'Stopping…', cls: 'warn' },
+  incomplete: { glyph: '■', label: 'Incomplete', cls: 'skipped' },
+  'stalled?': { glyph: '◍', label: 'Stalled?', cls: 'warn' },
 };
 
 const _ANSWER = {
@@ -36,6 +44,8 @@ const _ANSWER = {
 
 const _SEVERITY = {
   pass: { glyph: '✓', label: 'Passing', cls: 'pass' },
+  ok: { glyph: '✓', label: 'OK', cls: 'pass' },
+  info: { glyph: 'ℹ', label: 'Info', cls: 'info' },
   warn: { glyph: '△', label: 'Warning', cls: 'warn' },
   warning: { glyph: '△', label: 'Warning', cls: 'warn' },
   fail: { glyph: '✗', label: 'Failed', cls: 'fail' },

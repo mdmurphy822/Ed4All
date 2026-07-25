@@ -15,7 +15,7 @@ The GUI lets a human:
 - **Route models per task** — set provider + model independently for the
   SemantiK conversion lane, Courseforge outline/rewrite, course planning,
   textbook synthesis, Trainforge synthesis/assessment, plus a vision/VLM lane
-  (incl. local Ollama).
+  (incl. a local OpenAI-compatible server — vLLM, Ollama, llama.cpp).
 - **Author course topics / subjects / objectives** — edit terminal/chapter
   learning objectives and LibV2 classification; saved as a reuse-compatible
   `synthesized_objectives.json`.
@@ -92,7 +92,7 @@ left nav has six tabs:
 |-----|--------------|
 | **Upload & Run** | Drag-drop a corpus (PDF / IMSCC) → pick a workflow *or* a single phase → set course name + options → Launch. A live log panel streams over WebSocket and a gate-results table shows per-phase pass/fail. |
 | **Settings / API Keys** | Renders the credentials + global-routing knobs from the env catalog. Secret fields show `set` / `unset` only; saving writes the raw value. A "Test" button per provider runs a real reachability probe. |
-| **Model Routing** | Per-task provider + model selectors (dropdowns sourced from the live provider registry, base-model list, and live Ollama model discovery). Includes the two-pass toggle and the vision/VLM lane. Maps to the `model_routing` block. |
+| **Model Routing** | Per-task provider + model selectors (dropdowns sourced from the live provider registry, base-model list, and live local model-server discovery). Includes the two-pass toggle and the vision/VLM lane. Maps to the `model_routing` block. |
 | **Courses & Topics** | Course list (Courseforge exports + LibV2 courses). Edit terminal/chapter objectives, subjects, and tags; save writes a reuse-compatible objectives JSON. Edit LibV2 classification where a manifest exists. |
 | **Retrieval** | Course picker, query box, and a mode switch (BM25 / multi / LLM-rerank). Results show scores + per-item rationale. An adapter picker + prompt runs real adapter inference. |
 | **Activity (Claude ↔ GUI)** | Tails `events.jsonl`. Post a message to Claude (writes a `gui`-sourced event); see `claude`-sourced events. This is the human-visible side of the Claude↔GUI bridge. |
@@ -104,13 +104,19 @@ left nav has six tabs:
 ### Where settings persist
 
 The canonical settings doc is `state/gui/settings.json` (versioned, schema v1).
-It carries four sections:
+It carries five sections:
 
 - `env` — raw env-var values (including secrets).
 - `model_routing` — per-task `{provider, model[, mode][, vision_provider]}`.
 - `retrieval` — `top_k`, `min_grounding_cosine`, `require_embeddings`.
 - `flags` — boolean behavior flags (e.g. `COURSEFORGE_TWO_PASS`,
   `TRAINFORGE_REQUIRE_EMBEDDINGS`).
+- `assistant` — the Studio Assistant chat panel: `autostart` (bool, default
+  `false`) governs whether a chat request may *attempt* the engine's lazy
+  seat-start path when the local assistant seat is down (the engine's own
+  `ED4ALL_ASSISTANT_AUTOSTART` policy still decides whether a start actually
+  occurs). Patchable via the usual deep-patch paths, e.g.
+  `gui_set_setting("assistant.autostart", true)` from the MCP bridge.
 
 `gui/settings_store.py` is the single source of truth: `load_settings()`
 overlays the on-disk doc onto catalog defaults; `save_settings()` /
@@ -174,7 +180,7 @@ run never trips it.
 
 ---
 
-## Model routing (incl. VLM + Ollama)
+## Model routing (incl. VLM + local model server)
 
 The provider registry mirrors `_OPENAI_COMPATIBLE_PROVIDERS` in
 `MCP/orchestrator/llm_backend.py` plus the native `anthropic` and `mock`
@@ -184,7 +190,7 @@ mirrored in `env_catalog.PROVIDERS`. Current providers:
 | Provider | Label | API key env | Default base URL | Vision |
 |----------|-------|-------------|------------------|:------:|
 | `anthropic` | Anthropic (Claude) | `ANTHROPIC_API_KEY` | — | ✓ |
-| `local` | Ollama (local) | `LOCAL_SYNTHESIS_API_KEY` (optional) | `http://localhost:11434/v1` | ✓¹ |
+| `local` | Local model server (OpenAI-compatible: vLLM, Ollama, llama.cpp) | `LOCAL_SYNTHESIS_API_KEY` (optional) | `http://localhost:11434/v1` | ✓¹ |
 | `together` | Together AI (text) | `TOGETHER_API_KEY` | `https://api.together.xyz/v1` | — |
 | `together-vision` | Together AI (vision) | `TOGETHER_API_KEY` | `https://api.together.xyz/v1` | ✓ |
 | `groq` | Groq | `GROQ_API_KEY` | `https://api.groq.com/openai/v1` | — |
@@ -199,33 +205,45 @@ Per-task routing slots (each → its canonical env var on render): `global`
 `vision`, `courseforge_outline`, `courseforge_rewrite`, `courseplanner`,
 `textbook_synthesis`, `trainforge_synthesis`, `trainforge_assessment`.
 
-### Ollama = the `local` provider
+### The `local` provider = any local OpenAI-compatible server
 
-The `local` provider **is Ollama** by default: its base URL points at Ollama's
-OpenAI-compatible port (`http://localhost:11434/v1`). The registry name stays
-`local` because SemantiK / Trainforge / the provider resolver all key on that
-literal; the GUI shows the human label "Ollama (local)". Point
-`LOCAL_SYNTHESIS_BASE_URL` at any OpenAI-compatible server (vLLM / llama.cpp /
-LM Studio) to use it instead.
+The `local` provider is **backend-agnostic**: it is any local OpenAI-compatible
+model server — vLLM, Ollama, llama.cpp, LM Studio, etc. Its default base URL
+points at port `11434` (Ollama's default, `http://localhost:11434/v1`) only as
+a fallback; point `LOCAL_SYNTHESIS_BASE_URL` at your seat (e.g.
+`http://localhost:8001` for a vLLM seat) to use it instead. The registry name
+stays `local` because SemantiK / Trainforge / the provider resolver all key on
+that literal; the GUI shows the human label "Local model server (OpenAI-compatible:
+vLLM, Ollama, llama.cpp)". Ollama is one supported backend, not *the* local
+backend.
 
-**Live model discovery:** `GET /api/settings/ollama-models` issues a real
-`GET <host>/api/tags` against the local server (stripping the `/v1` OpenAI-compat
-suffix to reach Ollama's native tags API) and returns the installed model names.
-This powers the live model dropdowns in Model Routing — a real probe, never a
-hardcoded list. It degrades gracefully (`available: false`, empty `models`) when
-Ollama is offline.
+**Live model discovery (protocol-first):** `GET /api/settings/local-models`
+probes the OpenAI-compatible `GET <root>/v1/models` endpoint FIRST (vLLM, Ollama,
+llama.cpp, and LM Studio all serve it) and falls back to Ollama's native
+`GET <root>/api/tags` only when the OpenAI path fails or returns nothing. The
+`/v1` suffix on `LOCAL_SYNTHESIS_BASE_URL` is detected and never doubled into
+`/v1/v1/models`. The response is `{available, models, detail, host, backend}`,
+where `backend` names what actually answered (`openai-compatible` | `ollama` |
+`null`). This powers the live model dropdowns in Model Routing — a real probe,
+never a hardcoded list. It degrades gracefully (`available: false`, empty
+`models`, `backend: null`, vendor-neutral `detail`) when the local server is
+offline.
+
+> **Deprecated alias:** `GET /api/settings/ollama-models` still resolves and
+> delegates to the same protocol-first `list_local_models` implementation, for
+> backward compatibility. Prefer `/api/settings/local-models`.
 
 ### Vision / VLM
 
 The vision lane drives the SemantiK conversion engine's image / alt-text calls.
 The vision provider dropdown is filtered to vision-capable backends only:
 `anthropic`,
-`together-vision`, and `local` (Ollama with a vision model). Selecting a
-vision model:
+`together-vision`, and `local` (a local OpenAI-compatible vision seat with a
+vision model — e.g. Ollama or vLLM). Selecting a vision model:
 
 - **`together-vision`** — set the model; it renders to `TOGETHER_VISION_MODEL`.
-- **`local` (Ollama)** — set `LOCAL_SYNTHESIS_MODEL` to a vision model (e.g.
-  `llama3.2-vision`, `llava:13b`, `qwen2.5-vl`) **and** flip
+- **`local`** — set `LOCAL_SYNTHESIS_MODEL` to a vision model (e.g.
+  `qwen2.5-vl`, `llama3.2-vision`, `llava:13b`) **and** flip
   `LOCAL_VISION_CAPABLE=true`. There is no separate `LOCAL_VISION_MODEL` var.
 - **`anthropic`** — the model comes from the SemantiK conversion lane's
   Anthropic model env knob (falling through to `LLM_MODEL`).
@@ -265,7 +283,8 @@ success.
 | PUT | `/api/settings` | full settings doc | masked stored doc (422 on invalid) |
 | PATCH | `/api/settings` | partial patch (`env` / `flags` / `model_routing` / `retrieval`) | masked stored doc (deep-merged) |
 | POST | `/api/settings/apply` | — | `{applied: [<env key names>]}` (names only, never values) |
-| GET | `/api/settings/ollama-models` | — | `{available, models, detail, host}` (live Ollama probe) |
+| GET | `/api/settings/local-models` | — | `{available, models, detail, host, backend}` (protocol-first local model-server probe: `/v1/models` then Ollama `/api/tags`) |
+| GET | `/api/settings/ollama-models` | — | **DEPRECATED** alias for `/local-models` (same protocol-first response) |
 | POST | `/api/settings/test-provider` | `{provider}` | `{provider, ok, status, detail}` (real probe) |
 
 ### Uploads — `/api/uploads`
@@ -289,6 +308,8 @@ partial directory.
 | POST | `/api/runs/phase` | `{workflow, phase, course_name?, project_id?, mode?, provider?, model?, options{}}` | `{run_id, status, tasks?, gate_results?}` (422 on failure) |
 | GET | `/api/runs` | — | `{runs: [<run record>...]}` (newest first) |
 | GET | `/api/runs/{run_id}` | — | the run record (404 if unknown). On a failed run the record carries `failed_phase` + `failure_reason`. |
+| GET | `/api/runs/{run_id}/progress` | — | Stage-tracker payload for the pipeline rail + live stats band: `{run_id, workflow_id, workflow, status, phases:[{name, index, state, group, label, wallclock_s}], current_phase, failed_phase, failure_reason, stats:{tok_s, streams?, calls, prompt_tokens, completion_tokens, ttft_p50_ms, phase_elapsed_s, seat:{name, url, model}\|null}, updated_at}`. Phase `state` is `done \| current \| pending \| failed \| skipped`; the phase list is the run's own `config/workflows.yaml` plan (workflow-agnostic, cached — when the plan carries both sides of an `enabled_when_env` branch, the not-taken side is omitted from the list: a branchy row that resolved skipped, or the negative-clause fallback row with no evidence of running yet), merged with the orchestrator workflow state, checkpoint wall-clocks, and a bounded tail of the OP2 `llm_usage.jsonl` tap (`tok_s` is the AGGREGATE seat throughput — sliding-window completion tokens over the window's wall span; `streams` is the estimated in-flight request count over that window, omitted when not computable; the per-stream figure is `stats.detail.throughput.per_stream_tok_s`; nulls when no usage yet). `seat` is a TTL-cached `/v1/models` probe over the `ED4ALL_SEAT_BASE_URLS` registry (null when no seat registry / terminal run). Cheap enough to poll at 2–5s. Accepts a GUI run id or a bare orchestrator workflow id; typed 404 otherwise. |
+| GET | `/api/runs/{run_id}/output-tail` | — | Live-output tail for the run's CURRENT phase (the Studio "Live output" panel): `{run_id, phase, source, label, row_count, rows:[{seq, label, text}]}` — the last ≤15 complete rows of the phase's per-unit resume-checkpoint sidecar (or, for `heading_judge`, the newest per-chapter judgment files — a growing-directory source; `training_synthesis` tails its per-pair `training_specs/.synthesis_pairs_checkpoint.jsonl`), each mapped to a bounded display record (`text` HTML-stripped + truncated to ~500 chars with a trailing `…`; rows without a content field render a compact JSON of their payload minus fingerprint/schema bookkeeping). Bounded seek-from-end read (~2 MB cap); corrupt / mid-append partial rows are skipped; absent sidecar or unmapped phase → honest `rows: []` with `source: null`. Typed 404 when the run is unknown. |
 | GET | `/api/runs/{run_id}/validation-report` | — | `{run_id, report, report_path, failed_gates:[{phase, gate_id, severity, message, issues_count}], failed_phase, failure_reason}`. `report` is the `courseforge_validation_report.json` body when present, else `null` with an explanatory `note`. 404 if the run is unknown. |
 | POST | `/api/runs/{run_id}/cancel` | — | `{run_id, status}` (404 if unknown) |
 
@@ -351,6 +372,68 @@ non-safelisted method, so a **cross-origin** caller incurs a CORS preflight (the
 open `allow_methods=["*"]` policy already permits it); the **same-origin** SPA is
 unaffected. `GET`/other methods on this path return 405.
 
+### Assistant — `/api/assistant`
+
+The Studio **Assistant** panel's backend — a pure chat front-end over the
+sandboxed `lib.assistant.AssistantEngine` (loopback-only local seat, typed tool
+whitelist, 6-round tool cap, decision capture). The GUI adds no capability on
+top of the engine. The engine is built lazily and cached per server process;
+every request is stateless — the conversation `history` round-trips through
+the client.
+
+| Method | Path | Request | Response |
+|--------|------|---------|----------|
+| POST | `/api/assistant/chat` | `{message, history?, debug?, run_id?}` (`history` = the previous response's `history`, or `null` for a fresh conversation; `debug: true` + optional `run_id` run the turn on the debug-mode engine) | `{reply, history, tool_calls: [{tool, arguments, result}], rounds}` (+ `debug: {run_id, failed_phase, summary}` on debug turns) |
+| GET | `/api/assistant/debug-context` | optional `?run_id=WF-YYYYMMDD-xxxxxxxx` | `{available: bool, run_id, course, failed_phase, summary}` — 404-free: no failed run → `available: false` + `reason` |
+| GET | `/api/assistant/status` | — | `{seat_serving: bool, model: str\|null}` (a misconfigured seat adds a `detail` string) — powers the panel's status pill |
+| GET | `/api/assistant/seat/status` | — | `{live_seat: str\|null, seats: {name: bool}, starting: bool, last_seat_error: str\|null}` (a misconfigured seat adds a `detail` string) — powers the "Seat model" button |
+| POST | `/api/assistant/seat` | — (no body) | `{ok: true, state: "starting", seat, error: null}` — starts the assistant's own seat in the background |
+
+**Debug mode** consumes `lib.assistant.debug_context.build_debug_context`: the
+summarized, secret-filtered failed-run snapshot (run report + failing-phase
+gate report + log tail + doctor post-mortem, ≤ ~6k chars) for a given `WF-` id
+or the auto-resolved most recent failure. The server builds it **once per
+failed run per process** (the probe and the debug conversation share the
+cache) and constructs an `AssistantEngine(mode="debug", debug_context=...)`
+for those requests — same tool whitelist, no extra capability. The client
+re-sends `debug` + `run_id` with the round-tripped `history` on every turn of
+a debug conversation.
+
+Errors are typed `{error, detail}`: **503 `assistant_seat_unavailable`** when
+the local assistant seat is down — `detail` carries the seat-start
+instructions verbatim (when the `assistant.autostart` setting is true the
+server attempts the engine's `ensure_seat` lazy-start once before failing);
+**500 `assistant_config_error`** when the resolved seat URL is non-loopback
+(the engine's construction-time guard); **422 `empty_message`** on a blank
+message and **422 `invalid_run_id`** on a malformed `run_id` (both endpoints);
+**409 `debug_context_unavailable`** when a debug chat is requested but no
+failed run resolves. Each exchange also appends one `assistant`-sourced event
+to the activity bridge (see below) so assistant usage shows in the Activity
+tab (debug exchanges are marked `mode: "debug"`).
+
+**Seat model** (`POST /api/assistant/seat`) is the panel's explicit
+human-triggered seat start. It seats the assistant's **own** seat — the logical
+name from `ED4ALL_ASSISTANT_SEAT` — through exactly the lifecycle path the
+engine's autostart uses (`lib.assistant.client.autostart_seat` →
+`lib.vllm_container_lifecycle.start_seat_coherent`: liveness ceiling + bounded
+coherence probes + cold-recreate self-heal). The launch script comes from that
+seat's `ED4ALL_SEAT_LAUNCH_SPECS` registry entry — the GUI never names a script
+path. Because it is an explicit action it does **not** require
+`ED4ALL_ASSISTANT_AUTOSTART` (that flag governs only the implicit lazy-start on
+a chat turn).
+
+A cold start takes minutes, so the call returns `{"ok": true, "state":
+"starting"}` immediately and the work runs on one background thread;
+`GET /api/assistant/seat/status` reports `starting: true` while it runs and
+surfaces a failed start as `last_seat_error` afterwards. The start is
+**single-flight**: a second POST while one is in flight returns the same
+`starting` payload and never launches a second start. Refusals have **no side
+effect**: **409 `assistant_seat_already_live`** when any candidate seat already
+answers `/v1/models` (the detail names it), **500
+`assistant_seat_no_launch_spec`** when the resolved seat has no
+`ED4ALL_SEAT_LAUNCH_SPECS` entry (the detail is that remediation message
+verbatim), and **500 `assistant_config_error`** on a non-loopback seat config.
+
 ### Activity bridge — `/api/activity`
 
 | Method | Path | Request | Response |
@@ -358,11 +441,56 @@ unaffected. `GET`/other methods on this path return 405.
 | GET | `/api/activity/events` | `?since=<seq>` | `{events: [...]}` with `seq >= since` |
 | POST | `/api/activity/post` | `{kind, payload{}}` | `{event: <stored record>}` (always `source="gui"`) |
 
+Event `source` values are `gui` | `claude` | `assistant` — the third is
+appended server-side by the Assistant panel (one `assistant_exchange` event per
+chat exchange: question summary + tools used), so assistant activity shows in
+the Activity tab alongside the Claude↔GUI events.
+
 ### Health
 
 | Method | Path | Response |
 |--------|------|----------|
-| GET | `/api/health` | `{status: "ok"}` |
+| GET | `/api/health` | `{status: "ok"}` — the unauthenticated Docker liveness probe. |
+| GET | `/api/health/doctor` | Cached in-process `ed4all doctor` preflight: `{generated_at, exit_state, exit_code, verdict, groups: [{group, checks: [CheckResult]}], summary}`. `exit_state` is `healthy` \| `degraded` \| `critical` (the worst-severity banner verdict); each `check` is a `{name, group, severity, summary, detail, remediation, data}` dict. **Group-agnostic** — the default check groups (`gpu`, `gpu_profile`, `window`, `environment`) plus any opt-in group whose env prerequisite is present (e.g. `seat` when a seat-registry env is set) are discovered from the live diagnostics registry, never hardcoded; the run-preflight `provider` + run-scoped `postmortem` groups are excluded. Results are cached ~30 s. |
+| POST | `/api/health/doctor/refresh` | Re-runs the preflight now (bypasses the TTL cache); same shape. |
+| GET | `/api/health/doctor/run/{run_id}` | Cached **run-scoped post-mortem** (the `ed4all doctor --run-id` equivalent): the global shape plus `{run_id, orchestrator_run_id, effective_status, usage: {present, rows}}`. `run_id` accepts a GUI run id, a `WF-*` orchestrator workflow id, or a bare orchestrator run id (resolved to `state/runs/<run_id>/` like the run/progress services). Unknown run → 404 `run_not_found`. |
+| POST | `/api/health/doctor/run/{run_id}/refresh` | Re-runs the run-scoped post-mortem now; same shape (404 for an unknown run). |
+
+The `/api/health/*` family is deliberately **open** (mirroring `/api/health`): it
+carries no secret and rides the open Studio Dashboard. In-process, no subprocess;
+heavy checks run in the request threadpool so the event loop never blocks.
+Service: `gui.services.health_service`; router: `gui.routers.health`.
+
+### Model seats — `/api/seats`
+
+| Method | Path | Response |
+|--------|------|----------|
+| GET | `/api/seats` | The **global** vLLM seat monitor: `{generated_at, registry_configured, docker_available, seats: [{name, base_url, live, state, container, model, since, since_ms}]}`. The seat list is exactly the `ED4ALL_SEAT_BASE_URLS` registry, **in registry order** — model-agnostic, no seat name is hardcoded anywhere in this surface. Cached ~10 s. |
+| GET | `/api/seats/run/{run_id}` | The same payload **plus the run's phase context**: `{run_id, workflow, status, effective_status, current_phase, expected_seats, mismatch: [{seat, state, base_url}]}`, and an `expected: bool` flag on every seat. `run_id` accepts a GUI run id or a `WF-*` workflow id (same resolution as `/api/runs/{id}/progress`); unknown run → 404 `run_not_found`. |
+
+`state` is one of:
+
+| state | meaning |
+|-------|---------|
+| `live` | `GET {base_url}/v1/models` answered 2xx (`model` carries the served id). |
+| `loading` | the seat's registered container **is running** but the endpoint has not answered yet — a large seat's cold start takes ~9 minutes, so this is progress, **not** an alarm. |
+| `down` | the seat's registered container is verifiably **not running**. |
+| `unknown` | we genuinely cannot tell: docker is unavailable (CLI absent / no perms / timeout) or the seat has no `ED4ALL_VLLM_CONTAINERS` entry. Never a guessed `down`. |
+
+`expected_seats` mirrors the current phase's `seats:` annotation in
+`config/workflows.yaml` and honours all three cases: a **name list** (an
+expectation), **`[]`** (declared seat-free), and **`null`** (the key is absent —
+no opinion, so no mismatch is ever reported). `mismatch` names an expected seat
+that is neither `live` nor `loading` — the "this phase needs *X*, *X* is down"
+signal. `since` / `since_ms` are the age of the seat's **current** state as
+observed by this server process (`null` on the first observation — there is no
+prior observation to compare against); they are not a claim about the seat's
+real history.
+
+Open (mirroring `/api/health/*`) — it carries no secret and rides the open
+Studio Dashboard. Read-only: it probes `/v1/models` and reads `docker ps`, and
+never starts or stops anything. Service: `gui.services.seat_service`; router:
+`gui.routers.seats`.
 
 ---
 
@@ -446,11 +574,12 @@ code paths, so existing `DecisionCapture` wiring stays intact.
   retrieval finds nothing. Fix by removing the empty `imscc_chunks/` directory
   so the legacy `corpus/chunks.jsonl` resolves, or by running the legacy
   chunk-backfill helper under `LibV2/tools/libv2/scripts/`.
-- **Local providers fail / Ollama models don't list.** Ollama (or whichever
-  OpenAI-compatible server `LOCAL_SYNTHESIS_BASE_URL` names) must be running with
-  the relevant model pulled. Use Settings → "Test" (`local`) for a live
-  `GET /models` probe, and the Model Routing dropdowns reflect
-  `GET /api/settings/ollama-models`.
+- **Local providers fail / local models don't list.** The local model server
+  `LOCAL_SYNTHESIS_BASE_URL` names — a vLLM seat, Ollama, llama.cpp, LM Studio,
+  etc. — must be running with the relevant model served. Use Settings → "Test"
+  (`local`) for a live `GET /models` probe, and the Model Routing dropdowns
+  reflect `GET /api/settings/local-models` (which probes `/v1/models` first, then
+  Ollama's `/api/tags`).
 - **Adapter inference returns 503 `training_deps_missing`.** The training extras
   aren't installed in the GUI's environment. Install them (or run inference from
   an environment that has the Trainforge eval stack). The 503 is intentional —
@@ -517,8 +646,8 @@ In learner-only mode:
 - **Reachable:** `/` and `/learn/` (the learner page), `/api/learn/*`,
   `/api/health`.
 - **Not mounted (404):** `/api/settings`, `/api/uploads`, `/api/runs`,
-  `/api/courses`, `/api/retrieval`, the `/ws/runs/*` log stream, and the
-  operator SPA.
+  `/api/courses`, `/api/retrieval`, `/api/assistant`, the `/ws/runs/*` log
+  stream, and the operator SPA.
 
 Without `--learner`, the full app serves both surfaces: the facilitator uses the
 operator SPA while a participant opens `/learn/` — appropriate for dev/demo on a
@@ -641,7 +770,9 @@ one. Two extra hash routes ride the Studio shell (`gui/static/studio/`):
 | `#/create` | `create.js` | The **Create wizard** — a 3-step flow to build a course from a textbook. |
 | `#/create/<run_id>` | `create.js` | The **progress view** for a launched build (re-attaches on refresh via the run registry + WS). |
 | `#/create/<run_id>/log` | `create.js` | The raw **build log** for a run (replayed over the WS), surfaced on failure. |
+| `#/live` | `create.js` | **Live run** — thin resolver: finds the currently running workflow in the merged `/api/runs` list (running/paused preferred, CLI-launched runs included) and delegates to the same build-progress view; honest "No live run" empty state (CTA to Run history) when nothing is building. |
 | `#/settings` | `settings.js` | The simplified **Studio settings** page (provider/model + answer backend + cloud API keys). |
+| `#/assistant` | `assistant.js` | The **Assistant** chat panel — see below. |
 
 **Create wizard flow** (3 steps as a labelled `<ol aria-label>` progress
 structure with `aria-current="step"` on the active step):
@@ -663,6 +794,27 @@ structure with `aria-current="step"` on the active step):
    error + a **View build log** link. Launching navigates to `#/create/<run_id>`
    so a browser refresh **re-attaches** to the running build (state survives via
    the run registry, never client-only).
+
+**Pipeline stage rail + live stats band** — under the Build Console the progress
+view renders `stage-rail.js` (shared kit component), fed by a 3s poll of
+`GET /api/runs/{run_id}/progress` that stops at a terminal state (a finished /
+failed run renders statically — no pulse, no polling). The rail is a horizontal
+connected chain of phase nodes (wraps on narrow widths), visually grouped by the
+server-derived stage (conversion / planning / generation / validation /
+packaging / archive — name-derived, never phase indices). Node states: done ✓,
+current (CSS pulse; a static highlight ring under `prefers-reduced-motion` —
+motion lives in `tokens.css`), pending ○, failed ✗, skipped – (dimmed, e.g.
+`enabled_when_env`-disabled tiers or `--skip-training`). Completed nodes show
+their checkpoint wall-clock under the node. The stats band shows tokens/sec
+(AGGREGATE seat throughput: sliding-window completion tokens over the window's
+wall span), the estimated in-flight request count ("N in flight" — the seat is
+serving many requests concurrently, so per-request speed is roughly
+aggregate ÷ N; the per-stream figure lives in the detail disclosure), total LLM calls,
+prompt/completion token totals, TTFT p50 (when the run streams under
+`ED4ALL_LLM_TTFT_METER`), elapsed time in the current phase, and the currently
+serving vLLM seat/model. Every state pairs its color with a glyph +
+visually-hidden text (never color-only), and the rail adds no live region — the
+console's single `role=status` line stays the only announcer.
 
 The progress checklist's live per-phase signal comes from
 `run_service._poll_phase_progress`: a best-effort poller that watches the
@@ -732,6 +884,73 @@ loopback-respecting for the answer provider) and reports the result in plain
 language: connected / ready / key-present / **not authorized** (missing key) /
 **unreachable** / error.
 
+**Assistant panel** (`#/assistant`, `assistant.js`) — a chat surface over the
+sandboxed operator assistant (`POST /api/assistant/chat`; see the REST
+reference above). It is a *pure front-end*: the engine server-side owns the
+tool whitelist, the loopback guard, and the round cap — the panel only renders
+the conversation. It carries a chat message list, a send-on-Enter input
+(Shift+Enter for a newline), a busy indicator, a **status pill** driven by
+`GET /api/assistant/status` (seat serving + model / seat down / misconfigured),
+a collapsible per-message **tool-call trace** (tool name, arguments, result),
+and a "New conversation" reset. When the seat is down the 503's start
+instructions render in-line as the assistant's reply. Reachable from the
+Studio primary nav ("Assistant").
+
+A **"Debug last failure"** button sits in the panel header: always visible,
+enabled by a single mount-time probe of `GET /api/assistant/debug-context`
+(disabled with the probe's `reason` as tooltip when no failed run exists — no
+polling). Clicking starts a *fresh* conversation seeded in debug mode: the
+failure summary renders as a distinct system-style banner bubble, followed by
+the model's opening diagnosis; subsequent messages in that conversation keep
+the debug context (the panel re-sends `debug` + `run_id` each turn). The deep
+link `#/assistant/debug[/WF-...]` triggers the same flow on mount, so other
+views can link a failed run straight into a debug conversation.
+
+A **"Seat model"** button sits beside the status pill. It is a real `<button>`
+rendered only when `GET /api/assistant/seat/status` reports that **no**
+candidate seat is live and no start is in flight — when a seat is up, it is
+hidden. Clicking POSTs `/api/assistant/seat` (no body: the server resolves the
+seat and its registered launch spec), switches the button to a busy state
+(`aria-busy`, text "Seating nano…") and polls the same status endpoint every
+10s until a seat comes up (pill refreshes, button hides) or the start fails
+(toast + an inline `role="status"` message carrying the server's detail — the
+signal is always text, never color alone).
+
+**System health section** (Dashboard `#/`, `health.js`) — a self-fetching
+"System health" zone on the Author Dashboard over `GET /api/health/doctor` (see
+the REST reference above). It renders an overall **verdict banner**
+(healthy / degraded / critical, from the worst check severity) with a
+last-checked timestamp and a **Refresh** button (`POST .../refresh`), then one
+**card per check group** — each check a row with a shared **statusPill**
+(glyph + text, never color-only) and its summary, plus an expandable
+`<details>` carrying the remediation + detail. It is **group-agnostic** (renders
+whatever groups the backend reports) and **on-demand** (fetched once on mount,
+re-fetched only on Refresh — no polling loop). The run-scoped
+`GET /api/health/doctor/run/{run_id}` post-mortem backs the build console's
+per-run health/debug surface (payload shaped for that follow-up view).
+
+**Model seats monitor** (`seats.js`) — the always-on vLLM seat panel, mounted on
+**both** the Author Dashboard (a "Model seats" zone below System health, over
+`GET /api/seats`) and the build-progress page (a compact strip below the
+run-health strip, over `GET /api/seats/run/{run_id}`). One chip per **registered**
+seat — registry order, no seat name in the code — carrying a shared statusPill
+plus the seat name, a plain-language state word (`serving` / `starting up` /
+`down` / `unknown`) and how long it has been in that state ("serving · 12m"), so
+a flapping seat is visible. Never color-only.
+
+It exists because of a real incident: two concurrent runs, one run's seat
+schedule stopped the seat the other was mid-dispatch to, and a 2.5-hour build
+failed with nothing in the GUI showing it. So on a build page the panel's
+headline is **expected-vs-actual** — when the current phase declares a seat that
+is not serving, a warning line names both: *"Phase heading_judge needs
+spark-super — not serving."* A seat still **loading** (a ~9-minute cold start)
+never raises that warning.
+
+Both mounts poll every 15 s while on screen and stop on unmount (the dashboard
+route returns a teardown; the build page latches on a terminal run after one
+final snapshot). The service holds a single ~10 s cache, so a dashboard and a
+build page open at once do **not** double the probe rate.
+
 ### Serve modes (`--mode` / `ED4ALL_GUI_MODE`)
 
 The serve mode is now a three-way choice — `full` (default) | `studio` |
@@ -749,13 +968,14 @@ In **studio mode**:
 
 - **Reachable:** `/` (→ `/studio/`), `/studio/*`, `/shared/*`, `/learn/*` (the
   C2 ask drawer rides this), `/api/library`, `/api/courses/{id}/*`,
-  `/api/learn/*`, `/api/health`, **plus the C3 Create-wizard surface**:
+  `/api/learn/*`, `/api/health`, `/api/seats` (the model-seat monitor),
+  **plus the C3 Create-wizard surface**:
   `/api/uploads` (PDF intake), `/api/runs` + `/api/workflows` + `/ws/runs/*`
   (launch + run registry + the progress stream), and `/api/settings` +
   `/api/settings/studio` + `/api/settings/test-provider` (the scoped Studio
-  settings page). The settings router is mounted in full so `PATCH` /
-  `test-provider` work, but the Studio settings UI only surfaces the
-  `/api/settings/studio` subset.
+  settings page), and `/api/assistant/*` (the Assistant chat panel). The
+  settings router is mounted in full so `PATCH` / `test-provider` work, but
+  the Studio settings UI only surfaces the `/api/settings/studio` subset.
 - **Not mounted (404):** the operator `/api/retrieval` router and the operator
   `/api/courses` listing router (the Studio `/api/courses/{id}/manifest|page|asset`
   viewer endpoints come from `gui.routers.library`), plus the operator SPA.
@@ -797,7 +1017,7 @@ compare; a miss returns `401` with a `WWW-Authenticate: Bearer` challenge):
 
 Deliberately **left open** even when the token is set (so the Docker
 healthcheck + the Studio Create/Settings flows keep working): `/api/health`,
-the Studio-shared API routers (`/api/settings`, `/api/uploads`, `/api/runs`
+`/api/seats`, the Studio-shared API routers (`/api/settings`, `/api/uploads`, `/api/runs`
 REST, `/api/learn`, `/api/library`), and the static `shared` / `studio` /
 `learn` / `styles.css` assets. Studio & learner serve modes don't mount the
 operator surface and install **no** gate, so the token is full-mode-only.

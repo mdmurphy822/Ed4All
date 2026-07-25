@@ -70,10 +70,10 @@ ed4all gui --host 127.0.0.1 --port 8077
 - **Imports fail / stale deps after a pull** — run with `--reinstall`.
 - **`python3-venv` missing (Linux)** — install it (`sudo apt install
   python3-venv`) and re-run.
-- **Local models** — local-provider routing (the `local` provider) expects an
-  OpenAI-compatible server such as [Ollama](https://ollama.com) running and the
-  relevant model pulled; configure the base URL/model from the GUI's
-  Settings → Model Routing tab.
+- **Local models** — local-provider routing (the `local` provider) expects a
+  local OpenAI-compatible server — a vLLM seat, [Ollama](https://ollama.com),
+  llama.cpp, LM Studio, etc. — running and the relevant model served; configure
+  the base URL/model from the GUI's Settings → Model Routing tab.
 
 ## Secrets
 

@@ -53,8 +53,8 @@ cannot silently downgrade a requested `studio`.
 
 | Mode | Routers mounted | `/` serves |
 |------|-----------------|-----------|
-| `full` (default) | `settings`, `uploads`, `runs` (at bare `/api`), `courses`, `retrieval`, `learn`, plus `library` | Studio shell (open); operator SPA + dev console move behind the token gate at `/advanced/` |
-| `studio` | `library`, `learn`, `uploads`, `runs`, `settings` | redirect to `/studio/` |
+| `full` (default) | `settings`, `uploads`, `runs` (at bare `/api`), `courses`, `retrieval`, `learn`, `assistant`, plus `library` | Studio shell (open); operator SPA + dev console move behind the token gate at `/advanced/` |
+| `studio` | `library`, `learn`, `uploads`, `runs`, `settings`, `assistant` | redirect to `/studio/` |
 | `learner` | `learn` only | learner page (`gui/static/learn/`) |
 
 Mount-order matters in `full`: `/advanced`, `/studio`, `/learn`, `/shared` are
@@ -84,8 +84,10 @@ Operator-classified (gated when a token is set):
 
 Deliberately open: the bare `/` (Studio shell = the product), `/api/health`
 (Docker healthcheck), the Studio-shared routers `/api/settings` `/api/uploads`
-`/api/runs` `/api/learn` `/api/library`, and the `/shared/` `/studio/` `/learn/`
-static subtrees plus `/advanced/styles.css`.
+`/api/runs` `/api/learn` `/api/library` `/api/assistant` (the Assistant panel
+rides the Studio shell; its power is bounded by the engine's tool whitelist,
+mirroring the open `/api/runs` posture), and the `/shared/` `/studio/`
+`/learn/` static subtrees plus `/advanced/styles.css`.
 
 Token comparison uses `hmac.compare_digest` (`tokens_match`). Do not add a
 plain `==` compare.
@@ -114,7 +116,7 @@ A new retrieval-shaped endpoint must use `QUERY_METHODS` + the helper, not bare 
 ## Settings + secrets (`gui/settings_store.py`)
 
 Canonical store: `state/gui/settings.json` (schema `version: 1`; keys `env`,
-`model_routing`, `retrieval`, `flags`). Split-file secret handling:
+`model_routing`, `retrieval`, `flags`, `assistant`). Split-file secret handling:
 
 - `_is_secret_key` = any env key ending `_API_KEY` or `_KEY`.
 - Secrets are written to a sibling `secrets.json`, never into `settings.json`.
@@ -129,8 +131,10 @@ writes go through `_atomic_write_text` / `_atomic_write_json` (tmpfile +
 `os.replace`). Never open a state file and write it in place. `_state_root()`
 honors `ED4ALL_STATE_RUNS_DIR` (its parent) so tests redirect into `tmp_path`.
 
-The append-only `events.jsonl` (sources `gui` | `claude`) is the Claude↔GUI
-activity bridge read/written by both `gui/routers/runs.py` and the MCP `gui_*` tools.
+The append-only `events.jsonl` (sources `gui` | `claude` | `assistant`) is the
+Claude↔GUI activity bridge read/written by both `gui/routers/runs.py` and the
+MCP `gui_*` tools; `gui/services/assistant_service.py` appends one
+`assistant`-sourced event per chat exchange.
 
 ---
 
@@ -142,6 +146,104 @@ workflows via `MCP.tools.pipeline_tools.create_textbook_pipeline` /
 `PipelineOrchestrator`. Its `SUPPORTED_WORKFLOWS` + `COURSEFORGE_STAGE_SUBCOMMANDS`
 tuples mirror `cli/commands/run.py` — **keep both in sync when a workflow lands.**
 
+`gui/services/progress_service.py` backs `GET /api/runs/{run_id}/progress` (the
+Studio stage-tracker rail + live stats band): a READ-ONLY merge of the run's
+`config/workflows.yaml` phase plan (mtime-cached; workflow-agnostic — never a
+hardcoded phase list) with the orchestrator workflow state's
+`_completed`/`_skipped` markers, `state/runs/<id>/checkpoints/` wall-clocks, a
+bounded incremental tail of the OP2 `llm_usage.jsonl` tap, a TTL-cached
+`/v1/models` probe over the `ED4ALL_SEAT_BASE_URLS` seat registry, and real
+in-phase unit progress (`stats.phase_units`) counted from the pipeline's own
+per-unit resume-checkpoint sidecars (`_PHASE_UNIT_SIDECARS`, a data-driven
+phase→sidecar map whose names are pinned to the writing code; sidecar dirs are
+resolved from the run's real `project_path`/chunkset outputs, never a
+hardcoded export pattern), plus the comprehensive `stats.detail` matrix
+(run totals, cumulative avg tok/s, TTFT p50/p95, duration mean/median,
+`finish_reason=length` truncation + `stream_usage_present:false` health
+tripwires, per-(provider, model) and per-phase token breakdowns — the
+per-phase join buckets usage-row epochs against the checkpoint wall-clock
+windows with an explicit `unattributed` bucket for rows outside every
+window — and the latest `vram_trajectory.jsonl` sample). Page-metered
+usage rows (the SemantiK GLM-OCR lane: honest zero tokens, progress in a
+positive-int `pages` field + `duration_ms`) aggregate into always-present
+`stats.pages` / `pages_rows` / `pages_per_hr` (0/None defaults — shape
+back-compat); the rate prefers the WALL SPAN of the page rows' own
+timestamps (`ts` is completion-stamped, so earliest `ts − duration` →
+latest `ts`; concurrent batches make a summed-duration rate understate
+wall-clock throughput), falling back to summed durations when no ts
+parses — never this process's wall clock. `create.js::applyPagesStat`
+renders it as a "pages" band row and, on an all-page-metered run
+(calls > 0, zero tokens), drops the empty token rows so the pages stat
+carries the band. It never
+mutates run state and never fabricates: unknown workflow → the observed
+`phase_outputs` order; no usage rows → null/zero stats; empty seat registry →
+no probe at all; no sidecar on disk → `phase_units` omitted entirely, and no
+totals are ever estimated. Four honesty contracts on the rail payload: an
+env-conditional phase with NO observed marker evidence renders `pending`,
+never a skip guessed from the serving process env; when the plan carries BOTH
+sides of an `enabled_when_env` variable (single-pass `content_generation` vs
+the two-pass tiers), the not-taken side is HIDDEN from the payload — a
+branchy row that resolved skipped, or the negative-clause (fallback) row
+while it has no evidence of running — so the generation group starts at the
+outline tier on a two-pass run and at `content_generation` on a single-pass
+one; phase `group`s consolidate the whole authoring slice (single-pass +
+two-pass tiers + inter-tier validators + assessment synthesis) into ONE
+`generation` section so each rail header renders once; a near-zero (≤0.5s,
+i.e. restored-from-checkpoint) wall-clock is suppressed rather than shown as
+"0s". The payload also carries the run's LIVE course/book identity
+(`course_name` + `display_title`): the workflow state's `params` win over the
+GUI record's creation-time name, because an `--auto-name` run rebinds
+`params.course_name` mid-run (`workflow_runner._maybe_apply_auto_name`) —
+unknown → `null`, never fabricated. The build page (`create.js`) re-syncs its
+header/meta from it on every poll, and mounts a run-health strip below the
+rail (60s poll of `GET /api/health/doctor/run/{id}`) that expands into a
+Debug panel — findings FAIL-first with remediation, the effective_status
+explanation, and a copyable `ed4all assistant --debug --run <id>` command —
+on a paused/stopping/incomplete/stalled?/failed run. The same module's
+`output_tail` backs `GET /api/runs/{run_id}/output-tail` (the Studio "Live
+output" panel): a bounded seek-from-end tail of the CURRENT phase's per-unit
+resume sidecar (or, for `heading_judge`, the newest per-chapter judgment
+files under `state/runs/<run_id>/heading_judge/` — a growing-directory
+source; `training_synthesis` tails its per-pair
+`training_specs/.synthesis_pairs_checkpoint.jsonl`; the `trainforge_train`
+`training` phase tails the NEWEST
+`models/<model_id>/eval/eval_progress.jsonl` eval-harness stream, its
+`training_run.jsonl` being a run-end whole-file mirror, not incremental)
+mapped to truncated,
+HTML-stripped display rows — absent sidecar → `rows: []`, and phases whose
+artifacts are atomic whole-file emits (chunking, packaging, vector_indexing,
+semantik_conversion, …) are deliberately unmapped rather than fabricated.
+Tests: `gui/tests/test_run_progress.py`.
+
+`gui/services/liveness.py` derives an honest `effective_status` (ADDITIVE — it
+never mutates `status`) so a stale CLI `RUNNING` record no longer renders
+"Building" forever. It is stdlib-only + read-only + import-light (imported by
+BOTH `run_service.list_runs` and `progress_service.run_progress`; never writes
+`state/`). Signals: a `/proc` scan for live `ed4all run` processes matched on
+ADJACENT `ed4all`/`run` argv tokens (never `pgrep -f`, which self-matches the
+wrapper shell), the graceful-stop sentinel
+`state/runs/<orch_run_id>/control/STOP_REQUESTED`, and workflow-file mtime.
+A run ATTRIBUTES to a live process when any of its identifier tokens
+(corpus / project / course name / orchestrator run id / workflow `WF-<id>`)
+is a substring of that process's argv — the workflow id is what lets a bare
+`ed4all run … --resume WF-<id>` process self-attribute (its argv carries
+NEITHER the corpus/project — loaded from persisted state — NOR the
+`orch_run_id`, which differs from the `WF-<id>`); without it a long
+single-phase resume false-positives as `stalled?`. All three callers
+(`run_service`, `progress_service`, `health_service`) thread the run record's
+`workflow_id` into `attribution_tokens_from_params(..., wf_id=…)`.
+Vocabulary: `paused` (resumable) · `stopping` (sentinel present, draining) ·
+`incomplete` (CLI process gone without reaching completion, record stale) ·
+`stalled?` (live-but-unattributable
+process + >10 min stale file) · `building` (attributed/GUI/fresh) · terminal
+passthrough. The `/proc`-liveness branch (`incomplete`/`stalled?`) applies to
+CLI-launched runs ONLY — a GUI run is driven in-process (no external process),
+so its non-terminal status is left unchanged bar the PAUSED / stop-sentinel
+signals. Frontend: `pill.js` carries the new run keys (glyph+text, never
+color-only); `run-history.js` + `create.js` prefer `effective_status` for the
+pill / heading / meta line (a paused/stopping/incomplete run gets an honest state
+line, not "Building your course"). Tests: `gui/tests/test_run_liveness.py`.
+
 Background driver tasks are held in a module-level dict so asyncio's weak
 reference doesn't collect them mid-flight and so `cancel_run` can find them. Those
 tasks are in-process only, so `create_app` registers a startup hook calling
@@ -149,6 +251,81 @@ tasks are in-process only, so `create_app` registers a startup hook calling
 `queued`/`running` runs stuck forever with no driver.
 
 ---
+
+## Seat monitor (`gui/services/seat_service.py`)
+
+`seat_overview(run_id=None)` backs `GET /api/seats` (global) and
+`GET /api/seats/run/{run_id}` (phase-aware), rendered by
+`gui/static/studio/seats.js` on BOTH the Dashboard ("Model seats", always
+visible) and the build page (a strip below the run-health strip). It exists
+because a run's seat schedule once stopped the seat another live run was
+dispatching to — connection refused → poison pill → a failed 2.5-hour build —
+with nothing in the GUI showing it. Five invariants a change must not break:
+
+- **Registry-driven, never a roster.** Seats are exactly
+  `lib.vllm_container_lifecycle.parse_seat_registry()` (`ED4ALL_SEAT_BASE_URLS`)
+  and containers `parse_container_registry()` (`ED4ALL_VLLM_CONTAINERS`). No
+  seat name appears in `seat_service.py`, `seats.js`, or the CSS — a new seat is
+  a registry entry. A test greps for that.
+- **`loading` ≠ `down`.** A large seat's cold start takes ~9 minutes (container
+  up, `/v1/models` silent) and must not render as an alarm. `down` is asserted
+  ONLY when the registered container is verifiably not running; when docker is
+  unavailable or the seat has no container entry the state is `unknown` — never
+  a guessed `down`. The `docker ps` read is bounded, never-raising, and retries
+  once through `sg docker -c` (the Spark docker-group wrapping), mirroring
+  `lib/diagnostics/seat_schedule.py`. It is READ-ONLY: nothing here ever starts
+  or stops a container.
+- **Expectations are DECLARED.** `expected_seats` comes from the current phase's
+  `seats:` annotation in `config/workflows.yaml`, and the three cases are
+  distinct: names (an expectation), `[]` (declared seat-free), ABSENT (`null` —
+  no opinion, so no mismatch can ever be reported). This is why the service
+  re-reads the raw YAML instead of using `progress_service.phase_plan`, whose
+  `seats` key coerces absent → `[]`.
+- **One shared cache.** A single module-level ~10 s TTL cache serves the
+  dashboard AND every build page, so N pollers cost ONE probe round; probes run
+  OUTSIDE the lock. Never raises — a broken registry yields an empty seat list
+  with a `detail`, a failed probe yields `unknown`.
+- **`since` is process-scoped and honest.** The per-seat transition markers
+  record when THIS PROCESS first observed the current state (reset on change,
+  preserved when unchanged, pruned when a seat leaves the registry); the first
+  observation reports `null` because there is nothing to compare against. It is
+  never presented as the seat's real history.
+
+Frontend contract: chips are statusPill + seat name + a plain state word + age
+(text, never color-only); the mismatch line names the phase and the missing
+seat. Both mounts poll 15 s and stop on teardown (`renderDashboard` now returns
+a teardown; the build page latches on a terminal run). Tests:
+`gui/tests/test_seat_service.py`.
+
+## Assistant seat start
+
+`gui/services/assistant_service.py` owns the Studio Assistant adapter. Beyond
+the chat/debug turn plumbing it exposes the panel's **"Seat model"** action —
+`seat_status()` + `seat_nano()`, surfaced as `GET /api/assistant/seat/status` +
+`POST /api/assistant/seat`. Four invariants a change must not break:
+
+- **No script path in the GUI.** The seat name comes from
+  `lib.assistant.client.resolve_assistant_seat()` (`ED4ALL_ASSISTANT_SEAT`) and
+  the launch command from that seat's `ED4ALL_SEAT_LAUNCH_SPECS` registry entry;
+  the start itself goes through `client.autostart_seat()` →
+  `lib.vllm_container_lifecycle.start_seat_coherent`. Never subprocess a script
+  here. A seat with no registered launch spec is a typed refusal whose detail is
+  the remediation message verbatim — never a silent no-op or a guessed path.
+- **Explicit action ≠ autostart policy.** `ED4ALL_ASSISTANT_AUTOSTART` gates
+  only the *implicit* lazy-start inside `AssistantEngine.ensure_seat`; a human
+  clicking the button is not subject to it. Everything else (loopback guard,
+  coherence probes, self-heal) stays engine/lifecycle-owned.
+- **Refusals have no side effect.** If the priority walk
+  (`resolve_active_seat`) reports any live seat, the start is refused with that
+  seat named and the lifecycle is never called.
+- **Single-flight, background.** A cold start takes minutes, so it runs on one
+  daemon thread behind a module-level lock + state (`_SEAT_START`); the POST
+  returns `state="starting"` immediately, a second click observes the in-flight
+  start, and a failure surfaces on the next `seat_status()` as
+  `last_seat_error`. The worker never raises.
+
+`GET /api/assistant/status` (the pill's three-key `seat_serving`/`model`/`seat`
+shape) is deliberately left untouched — the button has its own endpoint.
 
 ## Embeddable ask widget
 
@@ -181,7 +358,7 @@ restrictive CSP is never clobbered. CR/LF are scrubbed and whitespace collapsed
 
 ## Tests
 
-`gui/tests/` (46 `test_*.py`). Every module that needs the web stack starts with
+`gui/tests/` (52 `test_*.py`). Every module that needs the web stack starts with
 `pytest.importorskip("fastapi")` so the suite is a clean skip on a default install
 without the `gui` extra. The suite includes per-surface a11y gates
 (`test_studio_a11y_gate.py`, `test_learner_a11y_gate.py`,

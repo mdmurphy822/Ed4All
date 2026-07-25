@@ -505,9 +505,25 @@ def test_ws_runs_route_registered_under_api_prefix(client):
     from starlette.routing import WebSocketRoute
 
     app = client.app
-    ws_paths = {
-        r.path for r in app.routes if isinstance(r, WebSocketRoute)
-    }
+    # Newer FastAPI wraps included routers in lazy ``_IncludedRouter`` objects,
+    # so a flat ``app.routes`` scan no longer surfaces WebSocketRoute entries —
+    # traverse through the wrappers (``original_router`` + include-context
+    # prefix) as well as any plainly-nested routers.
+    ws_paths = set()
+    stack = list(app.routes)
+    while stack:
+        r = stack.pop()
+        if isinstance(r, WebSocketRoute) or "WebSocket" in type(r).__name__:
+            ws_paths.add(getattr(r, "path", getattr(r, "path_format", "")))
+        orig = getattr(r, "original_router", None)
+        if orig is not None:
+            ctx = getattr(r, "include_context", None)
+            prefix = getattr(ctx, "prefix", "") if ctx else ""
+            for sub in orig.routes:
+                if isinstance(sub, WebSocketRoute) or "WebSocket" in type(sub).__name__:
+                    ws_paths.add(prefix + sub.path)
+        for sub in getattr(r, "routes", None) or []:
+            stack.append(sub)
     assert "/api/ws/runs/{run_id}" in ws_paths
 
     with client.websocket_connect("/api/ws/runs/GUI-does-not-exist-000000") as ws:

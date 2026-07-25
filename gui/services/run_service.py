@@ -44,11 +44,12 @@ import logging
 import os
 import re
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from gui import settings_store, shared_state
+from gui.services import liveness
 
 logger = logging.getLogger("gui.run_service")
 
@@ -2092,18 +2093,245 @@ def phase_duration_medians(workflow: str) -> Dict[str, Any]:
 
 
 def list_runs(limit: Optional[int] = None) -> List[Dict[str, Any]]:
-    """Return GUI run records, newest-first.
+    """Return GUI + CLI-launched run records, newest-first.
+
+    GUI-registry records (``state/gui/runs/``) are tagged ``source: "gui"``.
+    CLI-launched orchestrator workflows (``state/workflows/WF-*.json`` records
+    with no GUI registry entry) are additionally surfaced as run-record-shaped
+    dicts tagged ``source: "cli"`` (see :func:`_list_cli_workflow_runs`), so a
+    live ``ed4all run`` campaign is discoverable from the Runs tab instead of
+    requiring a hand-built ``#/create/<WF-...>`` URL. De-duped: a workflow id
+    already referenced by a GUI record's ``workflow_id`` is never listed twice.
 
     ``limit`` (optional) caps the number of records returned; ``None`` (default)
     returns all of them, preserving the prior unbounded behavior for callers that
     don't pass it. A non-positive limit returns an empty list.
     """
+    # Scan for live ``ed4all run`` processes ONCE per listing — every CLI
+    # record's process-liveness verdict (building / stopped / stalled?) reads
+    # the same snapshot (no per-record /proc walk).
+    processes = liveness.scan_pipeline_processes()
+
     runs = shared_state.list_runs()
+    for record in runs:
+        record.setdefault("source", "gui")
+        # GUI runs are driven in-process (no external ``ed4all run`` process),
+        # so only PAUSED / stop-sentinel signals refine their status here.
+        record["effective_status"] = liveness.effective_status(
+            record.get("status"),
+            is_cli=False,
+            orch_run_id=_record_orch_run_id(record.get("params")),
+            processes=processes,
+        )
+    gui_workflow_ids = {
+        str(r.get("workflow_id")) for r in runs if r.get("workflow_id")
+    }
+    runs.extend(
+        _list_cli_workflow_runs(
+            exclude_workflow_ids=gui_workflow_ids, processes=processes
+        )
+    )
+    # Newest-first merge across both sources. Sort on the PARSED timestamp
+    # (GUI records carry tz-aware UTC ISO strings, orchestrator state files
+    # naive-local ones — a plain string sort would skew across the tz offset);
+    # unparsable/missing timestamps sink to the bottom.
+    runs.sort(
+        key=lambda r: _parse_state_timestamp(r.get("created_at")) or datetime.min,
+        reverse=True,
+    )
     if limit is not None:
         if limit <= 0:
             return []
         return runs[:limit]
     return runs
+
+
+# ---- CLI-launched workflow surfacing (Runs tab) -------------------------
+#
+# DISPLAY HEURISTIC (not a lifecycle truth-source): ``state/workflows/``
+# accumulates stale RUNNING records from old crashed runs whose processes are
+# long dead — the orchestrator has no reaper stamping them terminal. Dumping
+# them all into the Runs tab would bury the live build under dozens of
+# zombie "running" rows. So a CLI record is surfaced only when it is
+# plausibly still relevant:
+#   * non-terminal status AND updated within the last 48 h, OR
+#   * terminal status AND updated within the last 7 days.
+# This filters the LISTING only — it never mutates workflow state, and every
+# record (stale or not) stays reachable via ``#/create/<WF-...>`` /
+# ``GET /api/runs/<id>/progress`` directly.
+_CLI_SCAN_CAP = 100  # newest state files (by mtime) considered per listing
+_CLI_ACTIVE_WINDOW_HOURS = 48
+_CLI_TERMINAL_WINDOW_DAYS = 7
+# Lowercased terminal workflow statuses (WorkflowRunner writes COMPLETE /
+# FAILED / PAUSED / RUNNING / PENDING; TIMEOUT survives from older runs).
+_CLI_TERMINAL_STATUSES = {"complete", "completed", "failed", "cancelled", "timeout"}
+
+
+def _parse_state_timestamp(value: Any) -> Optional[datetime]:
+    """Parse an ISO timestamp into a NAIVE LOCAL datetime (``None`` on garbage).
+
+    GUI records carry tz-aware UTC ISO strings; orchestrator workflow state
+    files carry naive local-time ones. Normalize both onto naive local time so
+    recency windows and sort keys compare consistently.
+    """
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone().replace(tzinfo=None)
+    return parsed
+
+
+def _record_orch_run_id(params: Any) -> Optional[str]:
+    """Best-effort orchestrator run id (``params.run_id``) for a run record.
+
+    The stop-sentinel + checkpoint dirs live under ``state/runs/<run_id>/`` keyed
+    by this orchestrator run id (NOT the ``WF-...`` workflow id). Tolerates a
+    JSON-string params blob.
+    """
+    if isinstance(params, str):
+        try:
+            params = json.loads(params)
+        except ValueError:
+            return None
+    if isinstance(params, dict):
+        rid = params.get("run_id")
+        if isinstance(rid, str) and rid.strip():
+            return rid.strip()
+    return None
+
+
+def _cli_workflow_run_record(
+    state: Dict[str, Any],
+    mtime: float,
+    *,
+    processes: Optional[List[Tuple[int, List[str]]]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Map one orchestrator workflow-state dict onto the Runs-tab record shape.
+
+    Returns ``None`` when the record fails the display heuristic above (stale)
+    or carries no usable id. Honest data only: fields the workflow state does
+    not carry (mode/provider/model/params/gate_results) are ``None`` — never
+    invented. ``params`` is deliberately ``None`` (not the workflow's params
+    dict) so the frontend's "Run again" affordance — which re-POSTs GUI-shaped
+    params — never fires with the orchestrator's incompatible param shape.
+    """
+    workflow_id = str(state.get("id") or "").strip()
+    if not workflow_id:
+        return None
+
+    status = str(state.get("status") or "").strip().lower()
+    if status == "complete":
+        status = "completed"  # frontend terminal-set vocabulary
+
+    updated = _parse_state_timestamp(state.get("updated_at"))
+    if updated is None:
+        updated = datetime.fromtimestamp(mtime)
+    age = datetime.now() - updated
+    if status in _CLI_TERMINAL_STATUSES:
+        if age > timedelta(days=_CLI_TERMINAL_WINDOW_DAYS):
+            return None
+    elif age > timedelta(hours=_CLI_ACTIVE_WINDOW_HOURS):
+        return None
+
+    params = state.get("params")
+    if isinstance(params, str):
+        try:
+            params = json.loads(params)
+        except ValueError:
+            params = {}
+    if not isinstance(params, dict):
+        params = {}
+
+    # Honest process-liveness verdict for a CLI-launched run (see liveness.py):
+    # a RUNNING record whose ``ed4all run`` process is gone → "incomplete", one
+    # with a stop sentinel → "stopping", etc. Uses the shared per-listing scan.
+    orch_run_id = _record_orch_run_id(params)
+    eff_status = liveness.effective_status(
+        status,
+        is_cli=True,
+        orch_run_id=orch_run_id,
+        attribution_tokens=liveness.attribution_tokens_from_params(
+            params, orch_run_id, wf_id=workflow_id
+        ),
+        processes=processes,
+        wf_mtime=mtime,
+    )
+
+    return {
+        "run_id": workflow_id,
+        "kind": "pipeline",
+        "workflow": state.get("type"),
+        "workflow_id": workflow_id,
+        "course_name": params.get("course_name"),
+        "phase": None,
+        "mode": None,
+        "provider": None,
+        "model": None,
+        "status": status or "unknown",
+        "effective_status": eff_status,
+        "params": None,
+        "gate_results": None,
+        "tasks": None,
+        "error": state.get("failure_reason") or None,
+        "created_at": state.get("created_at"),
+        "updated_at": state.get("updated_at"),
+        "started_at": state.get("started_at"),
+        "finished_at": (
+            state.get("completed_at") if status in _CLI_TERMINAL_STATUSES else None
+        ),
+        "source": "cli",
+    }
+
+
+def _list_cli_workflow_runs(
+    *,
+    exclude_workflow_ids: set,
+    processes: Optional[List[Tuple[int, List[str]]]] = None,
+) -> List[Dict[str, Any]]:
+    """Return CLI-launched workflow runs as Runs-tab records (best-effort).
+
+    Reads ``<state>/workflows/WF-*.json`` bounded to the newest
+    ``_CLI_SCAN_CAP`` files by mtime. Skips: ids in ``exclude_workflow_ids``
+    (already represented by a GUI registry record — the de-dupe contract),
+    mid-write/corrupt/non-dict JSON, and records failing the staleness display
+    heuristic (see the comment block above). Any directory-level failure
+    returns ``[]`` — the GUI listing must never break on orchestrator state.
+    """
+    workflows_dir = _workflow_state_file("WF-probe").parent
+    try:
+        candidates = [
+            p
+            for p in workflows_dir.iterdir()
+            if p.is_file() and p.suffix == ".json" and not p.name.startswith(".")
+        ]
+    except (FileNotFoundError, OSError):
+        return []
+
+    def _mtime(path: Path) -> float:
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    candidates.sort(key=_mtime, reverse=True)
+    out: List[Dict[str, Any]] = []
+    for path in candidates[:_CLI_SCAN_CAP]:
+        if path.stem in exclude_workflow_ids:
+            continue
+        try:
+            state = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue  # mid-write / corrupt — tolerate and skip
+        if not isinstance(state, dict):
+            continue
+        if str(state.get("id") or path.stem) in exclude_workflow_ids:
+            continue
+        record = _cli_workflow_run_record(state, _mtime(path), processes=processes)
+        if record is not None:
+            out.append(record)
+    return out
 
 
 # Non-terminal states a fresh process should reconcile on boot. ``queued`` and

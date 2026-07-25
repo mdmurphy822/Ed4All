@@ -27,6 +27,10 @@ import { el, clear, uid } from '/shared/dom.js';
 import { toast, toastErr } from '/shared/toast.js';
 import { runProgressConsole } from '/shared/components/run-progress.js';
 import { stageRail } from '/shared/components/stage-rail.js';
+import { emptyState } from '/shared/components/empty-state.js';
+import { statusPill } from '/shared/components/pill.js';
+import { mountSeatMonitor } from '/studio/seats.js';
+import { fmtAge } from '/studio/seats.js';
 
 const WORKFLOW = 'textbook_to_course';
 const ACCEPT_EXT = ['.pdf'];
@@ -514,6 +518,755 @@ async function renderLaunchStep(shell, panel, model) {
 
 /* =================================================== progress (re-attach) */
 
+/**
+ * Build the stage-tracker rail + its 3s poll loop over
+ * GET /api/runs/{id}/progress. Shared by BOTH progress paths — the full
+ * GUI-launched page and the degraded CLI-run page (renderCliRunProgress) —
+ * so the poll / terminal-stop logic exists exactly once instead of being
+ * duplicated per path. The rail itself is PURE PRESENTATION (see
+ * gui/services/progress_service.py for the payload); this helper owns the
+ * loop, and a terminal status stops it so a finished / failed run renders
+ * statically (no pulse, no further polling). Callers append `.el` then
+ * `start()`; `stop()` is the route-change teardown; `pollOnce()` takes one
+ * last snapshot after a terminal WS frame; `apply()` seeds the rail from a
+ * snapshot already in hand (no double-fetch on first paint).
+ */
+/** Compact pages/hr figure for the band: 1840 → "1.8k", 732 → "732". */
+function fmtPagesRate(n) {
+  if (!Number.isFinite(n)) return '';
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return String(Math.round(n));
+}
+
+/**
+ * Page-metered progress stat for the live stats band (a create.js-owned
+ * add-on over the shared stage-rail band). The SemantiK GLM-OCR conversion
+ * lane meters HONEST ZERO tokens — its usage rows carry a positive-int
+ * `pages` field instead — so during conversion the band would otherwise show
+ * an LLM-call count with no token metrics and no sign of page progress.
+ * When the payload carries stats.pages > 0 this inserts a "pages" row
+ * (e.g. "236 pages · ~2.3k pages/hr" — same div.stage-stat > dt/dd markup +
+ * .tabular-nums styling as the band's own rows; plain text, never
+ * color-only) right after the "LLM calls" row. And when the run so far is
+ * ALL page-metered (calls > 0 with zero prompt+completion tokens), the
+ * token-shaped rows (the "tok/s" dash and "0 in · 0 out") are dropped so the
+ * pages stat carries the band instead of an empty token area. Token
+ * rendering is untouched the moment any real tokens exist. The rate is
+ * omitted (count only) when the server sent pages_per_hr: null — nothing
+ * fabricated. Re-applied after every rail.update() (which rebuilds the
+ * band), so the injection is naturally idempotent per poll.
+ */
+function applyPagesStat(rootEl, payload) {
+  const s = (payload && payload.stats) || {};
+  // The band's own <dl> is a DIRECT child of the rail section; the detail
+  // disclosure nests another dl.stage-stats, so scope to direct children.
+  const dl = rootEl.querySelector(':scope > dl.stage-stats');
+  if (!dl) return;
+  const pages = s.pages;
+  if (!Number.isFinite(pages) || pages <= 0) return;
+  const byTerm = new Map();
+  Array.from(dl.querySelectorAll(':scope > .stage-stat')).forEach((r) => {
+    const dt = r.querySelector('dt');
+    if (dt) byTerm.set(dt.textContent, r);
+  });
+  // The `pages` field is emitted ONLY by the SemantiK GLM-OCR conversion lane
+  // (sdk_client.py: extra={"pages": N}); no other surface reports it. So the
+  // stat is always OCR page throughput — label it explicitly.
+  const rate = s.pages_per_hr;
+  const text = Number.isFinite(rate)
+    ? `${pages} · ~${fmtPagesRate(rate)} OCR pages/hr`
+    : `${pages} OCR pages`;
+  const row = el('div', { class: 'stage-stat' }, [
+    el('dt', { text: 'OCR pages' }),
+    el('dd', { class: 'tabular-nums', text }),
+  ]);
+  const callsRow = byTerm.get('LLM calls');
+  if (callsRow && callsRow.after) callsRow.after(row);
+  else dl.appendChild(row);
+  const zeroTokens = (Number(s.prompt_tokens) || 0) === 0
+    && (Number(s.completion_tokens) || 0) === 0;
+  if (zeroTokens && Number(s.calls) > 0) {
+    const tokS = byTerm.get('tok/s');
+    const tokens = byTerm.get('tokens');
+    if (tokS) tokS.remove();
+    if (tokens) tokens.remove();
+  }
+}
+
+/** Live age of a waiting seat — prefers the ISO marker (ticks between polls),
+ * mirroring seats.js seatAge, else the server's elapsed_ms. */
+function seatWaitAge(seat) {
+  if (seat && seat.since) {
+    const t = Date.parse(seat.since);
+    if (!Number.isNaN(t)) return fmtAge(Date.now() - t);
+  }
+  if (Number.isFinite(seat && seat.elapsed_ms)) return fmtAge(seat.elapsed_ms);
+  return '';
+}
+
+/**
+ * Seat-swap / cold-start annotation for the stage rail (a create.js-owned
+ * add-on over the shared rail, sibling of `applyPagesStat`). The stage tracker
+ * attributes only a phase's OWN compute time, so a long vLLM seat swap at a
+ * phase boundary (the schedule tears down the conversion seats and cold-starts
+ * the next — up to ~10 min: container up, /v1/models silent) renders as the
+ * phase hanging with no progress. When the payload carries
+ * `stats.seat_activity` this inserts a distinct line directly under the phase
+ * nodes (above the stats band, subordinate to the rail) that reads as "the
+ * pipeline is waiting for a model seat to come up", NOT as phase compute — and
+ * never touches any phase's wall-clock.
+ *
+ * Two honesty grades, text-not-color-only (WCAG 1.4.1):
+ *   - PATIENT (loading): "Swapping model seats … starting <seat> · ~5m elapsed"
+ *     — an expected ~9-min cold start, `.stage-seatwait` (accent rule).
+ *   - ALARMING (down / unregistered / unknown — the mismatch set): "Waiting for
+ *     a model seat that is not coming up …", `.stage-seatwait-concern` (fail
+ *     rule) + a ⚠ glyph.
+ * Absent field (every needed seat live) → the line is removed. Re-applied after
+ * every rail.update(), so it is idempotent per poll.
+ */
+function applySeatActivity(rootEl, payload) {
+  const act = (payload && payload.stats && payload.stats.seat_activity) || null;
+  const seats = act && Array.isArray(act.seats) ? act.seats : [];
+  let banner = rootEl.querySelector(':scope > .stage-seatwait');
+  if (!act || !seats.length) {
+    if (banner) banner.remove();
+    return;
+  }
+  const concern = !!act.concern;
+  const phase = String(act.phase || 'this phase').replace(/_/g, ' ');
+  const parts = seats.map((s) => {
+    const name = String(s.seat || '');
+    const age = seatWaitAge(s);
+    if (s.state === 'loading') return `starting ${name}${age ? ` · ~${age} elapsed` : ''}`;
+    if (s.state === 'down') return `${name} is not running${age ? ` · ${age}` : ''}`;
+    if (s.state === 'unregistered') return `${name} is not registered`;
+    return `${name} is ${s.state || 'unknown'}${age ? ` · ${age}` : ''}`;
+  });
+  const lead = concern
+    ? `Phase ${phase} is waiting for a model seat that is not coming up — `
+    : `Swapping model seats for phase ${phase} — `;
+  const tail = concern
+    ? '. A dispatch to a stopped seat fails the build — this is the pipeline waiting on a seat, not the phase hanging.'
+    : ' (a cold start can take up to ~10 minutes; the phase is waiting on the seat, not stuck).';
+  const glyph = concern ? '⚠ ' : '⏳ ';
+  if (!banner) {
+    banner = el('p', { class: 'stage-seatwait' });
+    const host = rootEl.querySelector(':scope > .stage-rail-host');
+    if (host && host.after) host.after(banner);
+    else rootEl.insertBefore(banner, rootEl.firstChild);
+  }
+  banner.className = concern ? 'stage-seatwait stage-seatwait-concern' : 'stage-seatwait';
+  clear(banner);
+  banner.appendChild(el('span', { class: 'stage-seatwait-glyph', 'aria-hidden': 'true', text: glyph }));
+  banner.appendChild(el('span', { text: `${lead}${parts.join('; ')}${tail}` }));
+}
+
+// effective_status / raw-status vocabularies that mean a run is over.
+const RAIL_TERMINAL_EFF = ['completed', 'failed', 'cancelled', 'canceled', 'interrupted', 'paused', 'timeout', 'error', 'incomplete'];
+const RAIL_TERMINAL_RAW = ['completed', 'failed', 'cancelled', 'canceled', 'interrupted', 'paused', 'timeout', 'error'];
+
+/**
+ * Mount the stage-tracker rail + its 3s poll loop over GET
+ * /api/runs/{id}/progress.
+ *
+ * `opts.pipeline` turns on the MERGED-pipeline mode: the single rail shows the
+ * build run's phases followed by the follow-on LoRA-training (Stage-B) phases
+ * as ONE trailing "training" group — never a separate segregated band. The
+ * merge is driven each poll:
+ *   - the pipeline CHAIN (GET /api/runs/{id}/pipeline) is refreshed on a slow
+ *     ~18s cadence (stage EXISTENCE changes rarely); a 404 / one-stage chain /
+ *     any error leaves the plain single build rail untouched;
+ *   - build phases come from the build run's /progress and always LEAD;
+ *   - training phases come from the training run's /progress (when it is a real
+ *     run) with every phase's `group` FORCED to `"training"`, else are
+ *     synthesized as dim PENDING nodes from the chain's planned_phases;
+ *   - the ACTIVE run (training once it is under way, else the build run) is the
+ *     BASE payload the stats band / current-phase pulse / status / course
+ *     identity / output-tail derive from — merged phases are laid onto it.
+ * Exactly one phase across the merged list is ever `current` (the non-active
+ * run is terminal), so band + pulse follow the active run with no conflict.
+ *
+ * The rail latches terminal (stops polling) only when the WHOLE pipeline is
+ * done — the active run is terminal AND no downstream training is still pending
+ * after a SUCCESSFUL build — so a build that finished with training still
+ * planned keeps polling and the trailing pending nodes flip to a live group
+ * with no page reload.
+ *
+ * `onState(eff, payload, activeRunId)` fires each poll so the host can re-sync
+ * the heading / health strip (which follows `activeRunId`) / seat strip.
+ */
+function mountStageRail(runId, ariaLabel, onState, opts = {}) {
+  const rail = stageRail({ ariaLabel });
+  const RAIL_POLL_MS = 3000;
+  const CHAIN_REFRESH_MS = 18000; // stage EXISTENCE changes rarely; the 3s poll owns live phase state
+  const pipeline = !!opts.pipeline;
+  let railTimer = null;
+  let terminal = false;
+  let chain = null;        // last /pipeline chain (pipeline mode only)
+  let chainAt = 0;         // last successful chain fetch (ms)
+  let activeRunId = runId; // run whose /progress is the BASE payload
+
+  function stop() {
+    if (railTimer != null) { clearInterval(railTimer); railTimer = null; }
+  }
+
+  // Paint one payload onto the rail + its create.js-owned add-ons and notify
+  // the host. Returns {eff, raw}; does NOT latch terminal — the caller owns
+  // that so pipeline mode can keep polling for a follow-on training stage after
+  // the build run itself is terminal. `effective_status`
+  // (gui/services/liveness.py) reflects real process liveness.
+  function render(p, active) {
+    rail.update(p);
+    applyPagesStat(rail.el, p);
+    applySeatActivity(rail.el, p);
+    const raw = String((p && p.status) || '').toLowerCase();
+    const eff = String((p && p.effective_status) || raw).toLowerCase();
+    if (typeof onState === 'function') {
+      try { onState(eff, p, active || runId); } catch (_) { /* presentation-only */ }
+    }
+    return { eff, raw };
+  }
+
+  // Seed/apply path for callers holding a snapshot (renderCliRunProgress). In
+  // plain mode a terminal snapshot latches exactly as before; in pipeline mode
+  // it never latches (pollOnce owns latching), so a terminal build snapshot
+  // doesn't freeze the rail before training is merged in.
+  function apply(p) {
+    const { eff, raw } = render(p, runId);
+    if (!pipeline && (RAIL_TERMINAL_EFF.includes(eff) || RAIL_TERMINAL_RAW.includes(raw))) {
+      terminal = true;
+      stop();
+    }
+  }
+
+  async function pollOncePlain() {
+    try {
+      apply(await api(`/api/runs/${encodeURIComponent(runId)}/progress`));
+    } catch (_) { /* best-effort — the page's primary surface stays usable */ }
+    if (terminal) return;
+    // "Live output" panel: the current phase's real sidecar tail (bounded
+    // display rows). Best-effort on the same cadence.
+    try {
+      rail.updateTail(await api(`/api/runs/${encodeURIComponent(runId)}/output-tail`));
+    } catch (_) { /* best-effort — the panel simply doesn't advance */ }
+  }
+
+  async function pollOncePipeline() {
+    // Slow-cadence chain refresh — best-effort. A failure keeps the last chain
+    // (or null → today's plain single build rail), never blocks the build poll.
+    if (Date.now() - chainAt >= CHAIN_REFRESH_MS) {
+      try {
+        chain = await api(`/api/runs/${encodeURIComponent(runId)}/pipeline`);
+        chainAt = Date.now();
+      } catch (_) { /* keep prior chain; a 404 / one-stage chain → build-only */ }
+    }
+    const training = pipelineTrainingStage(chain);
+    const trainRunId = (training && training.present && training.run_id != null)
+      ? String(training.run_id) : null;
+
+    // The build run's phases always LEAD the rail.
+    let buildP = null;
+    try {
+      buildP = await api(`/api/runs/${encodeURIComponent(runId)}/progress`);
+    } catch (_) { /* best-effort */ }
+
+    // The training run's phases (+ base, when it is active) come from its own
+    // /progress — fetched only once it is a real run.
+    let trainP = null;
+    if (trainRunId) {
+      try {
+        trainP = await api(`/api/runs/${encodeURIComponent(trainRunId)}/progress`);
+      } catch (_) { /* not observable yet → treat as planned pending nodes */ }
+    }
+
+    // ACTIVE run = the training run once it is under way (build finished), else
+    // the build run. Its /progress is the BASE (stats band, current highlight,
+    // status, course identity, output-tail).
+    const trainActive = !!(trainRunId && trainP);
+    const base = trainActive ? trainP : buildP;
+    activeRunId = trainActive ? trainRunId : runId;
+    if (!base) return; // nothing renderable this tick (both fetches failed)
+
+    const buildPhases = Array.isArray(buildP && buildP.phases) ? buildP.phases : [];
+    // Force every training phase into ONE trailing "training" group so they
+    // never interleave into the build's generation/validation sections.
+    const trainingPhases = trainP
+      ? (Array.isArray(trainP.phases) ? trainP.phases : []).map((p) => ({ ...p, group: 'training' }))
+      : plannedTrainingPhases(training);
+
+    const merged = { ...base, phases: [...buildPhases, ...trainingPhases] };
+    const { eff, raw } = render(merged, activeRunId);
+
+    // Latch only when the WHOLE pipeline is done. Training follows a
+    // SUCCESSFUL build only, so keep polling past a terminal state ONLY when
+    // the build completed and a training stage is still planned but not yet the
+    // live active run; a paused / failed build latches immediately as before.
+    const activeTerminal = RAIL_TERMINAL_EFF.includes(eff) || RAIL_TERMINAL_RAW.includes(raw);
+    const buildEff = String((buildP && (buildP.effective_status || buildP.status)) || '').toLowerCase();
+    const pendingTraining = !!(training && !trainActive && buildEff === 'completed');
+    if (activeTerminal && !pendingTraining) {
+      terminal = true;
+      stop();
+    }
+    if (terminal) return;
+    // Output-tail follows the ACTIVE run so a training phase's live tail shows
+    // in the same panel once training is under way.
+    try {
+      rail.updateTail(await api(`/api/runs/${encodeURIComponent(activeRunId)}/output-tail`));
+    } catch (_) { /* best-effort — the panel simply doesn't advance */ }
+  }
+
+  const pollOnce = pipeline ? pollOncePipeline : pollOncePlain;
+
+  function start() {
+    if (terminal) return; // a seeded terminal snapshot renders statically
+    pollOnce();
+    railTimer = setInterval(pollOnce, RAIL_POLL_MS);
+  }
+  return { el: rail.el, apply, pollOnce, start, stop };
+}
+
+// Honest header/state copy for each non-building effective_status the server
+// derives (gui/services/liveness.py). `building` (and any unlisted state) means
+// no override — the normal "Building …" heading stands.
+const HONEST_BUILD_STATE = {
+  stopping: { suffix: 'stopping', line: 'Stopping — the run is draining to a checkpoint. It will pause when the in-flight unit finishes.' },
+  incomplete: { suffix: 'incomplete', line: 'This build did not make it through final completion — no ed4all run process is driving it. The record may be stale.' },
+  'stalled?': { suffix: 'stalled?', line: 'This build may be stalled — no progress has been recorded recently.' },
+  paused: { suffix: 'paused', line: 'Paused — this build is resumable.' },
+};
+
+/**
+ * Reflect a run's honest effective_status in the progress heading + a state
+ * line (never a fabricated "Building" for an incomplete/paused/stopping run). Pure
+ * presentation over the elements already in `v`; announcements route through
+ * the shell's single role=status region (no new live region). For a paused (or
+ * otherwise resumable) run it appends the exact `ed4all run --resume <id>` hint.
+ */
+function applyHonestBuildState(shell, v, eff, payload, courseName) {
+  const heading = v.querySelector('h1');
+  let line = v.querySelector('.build-state-line');
+  const info = HONEST_BUILD_STATE[eff];
+  if (!info) {
+    if (line) line.remove();
+    if (heading) heading.textContent = courseName ? `Building ${courseName}` : 'Building your course';
+    return;
+  }
+  const base = courseName || 'your course';
+  if (heading) heading.textContent = `${base} — ${info.suffix}`;
+  if (!line) {
+    line = el('p', { class: 'build-state-line muted' });
+    if (heading && heading.after) heading.after(line);
+    else v.insertBefore(line, v.firstChild);
+  }
+  const workflowId = (payload && payload.workflow_id) || '';
+  let text = info.line;
+  if ((eff === 'paused' || eff === 'stopping' || eff === 'incomplete') && workflowId) {
+    text += ` Resume with: ed4all run --resume ${workflowId}`;
+  }
+  line.textContent = text;
+  if (typeof shell.setStatus === 'function') shell.setStatus(`${base}: ${info.suffix}.`);
+}
+
+/**
+ * Course/book-name meta element for the run header area. Plain text (no
+ * color-only signal); empty until a name is known. The /progress payload's
+ * `course_name` is the LIVE source — an --auto-name run starts under a
+ * provisional slug and the pipeline rebinds course identity mid-run, so the
+ * name is re-set on every poll via `set()` (a changed name simply re-renders).
+ */
+function courseNameMeta(initial) {
+  const span = el('span', { class: 'run-course-name' });
+  function set(name) {
+    clear(span);
+    if (!name) return;
+    span.appendChild(el('span', { text: String(name) }));
+    span.appendChild(el('span', { class: 'sep', 'aria-hidden': 'true', text: ' · ' }));
+  }
+  set(initial || '');
+  return { el: span, set };
+}
+
+/* ============================================ run health strip + debug */
+
+// effective_status values that expand the health strip into the Debug panel:
+// the honest non-building states (liveness.py) plus the failed family.
+const DEBUG_STATES = ['paused', 'stopping', 'incomplete', 'stalled?', 'failed', 'error', 'timeout'];
+// States after which the health poll stops (one final snapshot, then no more).
+const HEALTH_TERMINAL = ['completed', 'failed', 'cancelled', 'canceled', 'interrupted', 'paused', 'timeout', 'error', 'incomplete'];
+// One-line explanation per debug-triggering state (plain language; the
+// paused/stopping/incomplete/stalled? copy mirrors HONEST_BUILD_STATE).
+const DEBUG_STATE_EXPLAIN = {
+  stopping: HONEST_BUILD_STATE.stopping.line,
+  incomplete: HONEST_BUILD_STATE.incomplete.line,
+  'stalled?': HONEST_BUILD_STATE['stalled?'].line,
+  paused: HONEST_BUILD_STATE.paused.line,
+  failed: 'This build failed. The findings below come from the run post-mortem diagnostics.',
+  error: 'This build ended with an error. The findings below come from the run post-mortem diagnostics.',
+  timeout: 'This build timed out. The findings below come from the run post-mortem diagnostics.',
+};
+
+/**
+ * Split a doctor payload's checks into FAIL-first / WARN buckets. Shared by the
+ * per-run health strip (`mountRunHealth`) and the top-level pipeline-health panel
+ * (`mountPipelineHealthPanel`) so the severity mapping lives in exactly one
+ * place. Missing/garbage payload → empty buckets (never a fabricated finding).
+ */
+function doctorFindings(payload) {
+  const rows = [];
+  const groups = (payload && Array.isArray(payload.groups)) ? payload.groups : [];
+  groups.forEach((g) => {
+    (Array.isArray(g.checks) ? g.checks : []).forEach((c) => rows.push(c));
+  });
+  const sev = (c) => {
+    const s = String((c && c.severity) || '').toLowerCase();
+    return s === 'critical' || s === 'error' ? 'fail' : s === 'warning' ? 'warn' : s;
+  };
+  return {
+    fail: rows.filter((c) => sev(c) === 'fail'),
+    warn: rows.filter((c) => sev(c) === 'warn'),
+  };
+}
+
+/** One doctor finding row: severity pill + summary, expandable
+ * remediation/detail (the health.js checkRow markup, so the .health-* styles
+ * apply as-is). Shared by both doctor surfaces. */
+function doctorFindingRow(check, sev) {
+  const li = el('li', { class: 'health-check' });
+  li.appendChild(el('div', { class: 'health-check-row' }, [
+    statusPill(`severity:${sev}`),
+    el('span', { class: 'health-check-summary', text: String(check.summary || check.name || '') }),
+  ]));
+  const remediation = String(check.remediation || '').trim();
+  const detail = String(check.detail || '').trim();
+  if (remediation || detail) {
+    const details = el('details', { class: 'health-check-more' }, [
+      el('summary', { text: 'Details' }),
+    ]);
+    if (remediation) {
+      details.appendChild(el('p', { class: 'health-remediation' }, [
+        el('strong', { text: 'Fix: ' }),
+        remediation,
+      ]));
+    }
+    if (detail) details.appendChild(el('p', { class: 'health-detail muted', text: detail }));
+    li.appendChild(details);
+  }
+  return li;
+}
+
+/**
+ * Mount the compact run-health strip (fed by GET /api/health/doctor/run/{id})
+ * for the build-progress page. Compact while building: an overall verdict
+ * pill + WARN/FAIL finding counts, polled at a modest cadence (the endpoint
+ * carries a ~30s server cache, so the poll is cheap). When the run reaches a
+ * bad state (DEBUG_STATES) the strip expands into the Debug panel: run-scoped
+ * doctor findings (FAIL first, then WARN) with expandable remediation rows
+ * (the health.js row pattern), the effective_status explanation, and a
+ * copyable `ed4all assistant --debug --run <id>` command — no new backend LLM
+ * calls are wired here.
+ *
+ * Honesty/degradation contract: no payload (endpoint down / unknown run) →
+ * the section renders EMPTY (the element is omitted, never a fabricated
+ * verdict). The poll stops itself after a terminal state (one final
+ * snapshot). Callers append `.el`, call `start()`, wire `setRunState` into
+ * the stage-rail onState callback, and `stop()` on teardown.
+ */
+function mountRunHealth(runId) {
+  const HEALTH_POLL_MS = 60000;
+  const box = el('section', { class: 'run-health', 'aria-label': 'Run health' });
+  let payload = null;
+  let eff = '';
+  let wfId = '';
+  let timer = null;
+  let latched = false;
+  // The run this strip currently reports on. In the merged-pipeline rail this
+  // follows the ACTIVE run (build → training) via setTarget(), so a training
+  // failure surfaces the training run's post-mortem.
+  let curId = String(runId || '');
+  // Signature of the LAST painted subtree. The strip/Debug-panel DOM is a pure
+  // function of {payload findings, effective_status, resolved target id}; when
+  // none of those changed between polls we skip the (destructive) rebuild so
+  // the ~3s progress poll no longer wipes a text selection the user is making
+  // inside the Debug panel (e.g. highlighting the copyable assistant command).
+  let lastSig = null;
+
+  // A stable signature of everything `render()` reads to build the subtree.
+  function renderSignature() {
+    if (!payload) return 'empty';
+    const found = doctorFindings(payload);
+    const target = String((payload.orchestrator_run_id || '')).trim() || wfId || curId;
+    const rowSig = (c) => [c && c.severity, c && (c.summary || c.name), c && c.remediation, c && c.detail];
+    return JSON.stringify({
+      eff,
+      debug: DEBUG_STATES.includes(eff),
+      exit_state: payload.exit_state || '',
+      target,
+      fail: found.fail.map(rowSig),
+      warn: found.warn.map(rowSig),
+    });
+  }
+
+  // True when the user currently has a non-collapsed text selection anchored
+  // inside this box — i.e. they are highlighting text to copy. We must not tear
+  // that subtree out from under them; defer the rebuild until the selection
+  // clears (the next poll re-attempts, since lastSig is left stale).
+  function selectionInBox() {
+    const sel = typeof window.getSelection === 'function' ? window.getSelection() : null;
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return false;
+    return !!((sel.anchorNode && box.contains(sel.anchorNode))
+      || (sel.focusNode && box.contains(sel.focusNode)));
+  }
+
+  function render() {
+    // (a) Nothing that affects the DOM changed → keep the existing subtree (and
+    // any in-progress text selection) intact, no rebuild.
+    const sig = renderSignature();
+    if (sig === lastSig) return;
+    // (b) Content DID change, but the user is mid-selection inside the panel —
+    // defer the destructive rebuild so their highlight/copy survives. lastSig
+    // stays stale so the next poll re-attempts once the selection is released.
+    if (lastSig !== null && selectionInBox()) return;
+    lastSig = sig;
+    clear(box);
+    if (!payload) return; // nothing fetched → omit the element entirely
+    const found = doctorFindings(payload);
+    const state = String(payload.exit_state || 'healthy');
+    const sev = state === 'critical' ? 'fail' : state === 'degraded' ? 'warn' : 'ok';
+    const parts = [];
+    if (found.fail.length) parts.push(`${found.fail.length} failing`);
+    if (found.warn.length) parts.push(`${found.warn.length} warning${found.warn.length === 1 ? '' : 's'}`);
+    const label = parts.length ? `Run health: ${parts.join(', ')}` : 'Run health: all checks passing';
+    box.appendChild(el('div', { class: 'run-health-strip' }, [
+      statusPill(`severity:${sev}`),
+      el('span', { class: 'run-health-label', text: label }),
+    ]));
+    if (!DEBUG_STATES.includes(eff)) return;
+
+    // ---- Debug panel (expanded strip) ----
+    const panel = el('div', { class: 'run-debug-panel' });
+    panel.appendChild(el('h2', { class: 'run-debug-title', text: 'Debug this run' }));
+    const explain = DEBUG_STATE_EXPLAIN[eff];
+    if (explain) {
+      panel.appendChild(el('p', { class: 'run-debug-state muted', text: `State: ${eff}. ${explain}` }));
+    }
+    const ordered = found.fail.map((c) => ['fail', c]).concat(found.warn.map((c) => ['warn', c]));
+    if (ordered.length) {
+      const list = el('ul', { class: 'health-checks' });
+      ordered.forEach(([sevKey, c]) => list.appendChild(doctorFindingRow(c, sevKey)));
+      panel.appendChild(list);
+    } else {
+      panel.appendChild(el('p', { class: 'muted', text: 'No failing or warning findings from the run diagnostics. Check the build log for detail.' }));
+    }
+    // "Ask the assistant" affordance: a copyable CLI command, never a new
+    // backend LLM call. Prefer the orchestrator run id from the health
+    // payload; fall back to the WF workflow id.
+    const target = String((payload.orchestrator_run_id || '')).trim() || wfId || curId;
+    const cmd = `ed4all assistant --debug --run ${target}`;
+    panel.appendChild(el('p', {
+      class: 'run-debug-assistant-hint muted',
+      text: 'Ask the assistant about this run — it inspects the run state and diagnostics and explains what happened:',
+    }));
+    panel.appendChild(el('div', { class: 'resume-hint inline' }, [
+      el('code', { class: 'kv resume-cmd', text: cmd }),
+      copyHintBtn(cmd, 'Copy assistant debug command to clipboard'),
+    ]));
+    box.appendChild(panel);
+  }
+
+  async function pollOnce() {
+    try {
+      payload = await api(`/api/health/doctor/run/${encodeURIComponent(curId)}`);
+    } catch (_) { /* best-effort — keep the last payload (or stay omitted) */ }
+    render();
+  }
+  function stop() {
+    if (timer != null) { clearInterval(timer); timer = null; }
+  }
+  function start() {
+    if (latched) return; // a seeded terminal state already took its snapshot
+    pollOnce();
+    timer = setInterval(pollOnce, HEALTH_POLL_MS);
+  }
+  /**
+   * Re-point the strip at a new (active) run — the merged rail calls this each
+   * poll with the active run id; a same-id call is a no-op. On a real change it
+   * drops the prior run's payload + latch and resumes polling so the strip
+   * reflects the run it now targets (e.g. a training run that started after the
+   * build finished + latched).
+   */
+  function setTarget(newId) {
+    const next = String(newId || '');
+    if (!next || next === curId) return;
+    curId = next;
+    payload = null;
+    latched = false;
+    render();
+    if (timer == null) timer = setInterval(pollOnce, HEALTH_POLL_MS);
+    pollOnce();
+  }
+  /** Feed the rail's effective_status + progress payload on every poll. */
+  function setRunState(newEff, progressPayload) {
+    eff = String(newEff || '').toLowerCase();
+    if (progressPayload && progressPayload.workflow_id) wfId = String(progressPayload.workflow_id);
+    render();
+    if (HEALTH_TERMINAL.includes(eff) && !latched) {
+      latched = true;
+      stop();
+      pollOnce(); // one final snapshot so the strip reflects the end state
+    }
+  }
+  return { el: box, start, stop, setRunState, setTarget };
+}
+
+/* ============================================ full-pipeline (Stage A + B) */
+
+/**
+ * Top-level collapsible "Pipeline health" panel fed by the GLOBAL preflight
+ * (GET /api/health/doctor). Sibling of the per-run health strips: it reports on
+ * the host/environment (seats, GPU, disk, config) rather than one run. Reuses
+ * `doctorFindings` / `doctorFindingRow` so the finding rows render identically
+ * to the run strip.
+ *
+ * Honesty/degradation: no payload (endpoint down) → the element is OMITTED
+ * entirely (`hidden`), never a fabricated verdict. Collapsed while
+ * `exit_state === "healthy"`; auto-expanded the moment the state is degraded /
+ * critical — but only re-applied on a STATE TRANSITION, so a manual toggle by
+ * the operator between transitions is respected. Callers append `.el`, call
+ * `start()`, and `stop()` on teardown.
+ */
+function mountPipelineHealthPanel() {
+  const PANEL_POLL_MS = 60000;
+  const summary = el('summary', { class: 'pipeline-health-summary' });
+  const body = el('div', { class: 'pipeline-health-body' });
+  const details = el('details', { class: 'pipeline-health-panel' }, [summary, body]);
+  const wrap = el('section', { class: 'pipeline-health', 'aria-label': 'Pipeline health' });
+  wrap.hidden = true; // omitted until a payload arrives (no fabricated verdict)
+  wrap.appendChild(details);
+  let payload = null;
+  let prevState = null;
+  let timer = null;
+
+  function render() {
+    clear(summary);
+    clear(body);
+    if (!payload) { wrap.hidden = true; return; }
+    wrap.hidden = false;
+    const found = doctorFindings(payload);
+    const state = String(payload.exit_state || 'healthy');
+    const sev = state === 'critical' ? 'fail' : state === 'degraded' ? 'warn' : 'ok';
+    const parts = [];
+    if (found.fail.length) parts.push(`${found.fail.length} failing`);
+    if (found.warn.length) parts.push(`${found.warn.length} warning${found.warn.length === 1 ? '' : 's'}`);
+    const label = parts.length ? `Pipeline health: ${parts.join(', ')}` : 'Pipeline health: all checks passing';
+    summary.appendChild(statusPill(`severity:${sev}`));
+    summary.appendChild(el('span', { class: 'pipeline-health-label', text: label }));
+    // Auto-open only on a state TRANSITION (respect a manual toggle otherwise).
+    if (state !== prevState) {
+      details.open = state !== 'healthy';
+      prevState = state;
+    }
+    const ordered = found.fail.map((c) => ['fail', c]).concat(found.warn.map((c) => ['warn', c]));
+    if (ordered.length) {
+      const list = el('ul', { class: 'health-checks' });
+      ordered.forEach(([sevKey, c]) => list.appendChild(doctorFindingRow(c, sevKey)));
+      body.appendChild(list);
+    } else {
+      body.appendChild(el('p', { class: 'muted', text: 'All preflight checks are passing.' }));
+    }
+  }
+  async function pollOnce() {
+    try {
+      payload = await api('/api/health/doctor');
+    } catch (_) { /* best-effort — keep the last payload (or stay omitted) */ }
+    render();
+  }
+  function stop() {
+    if (timer != null) { clearInterval(timer); timer = null; }
+  }
+  function start() {
+    pollOnce();
+    timer = setInterval(pollOnce, PANEL_POLL_MS);
+  }
+  return { el: wrap, start, stop };
+}
+
+/**
+ * The follow-on LoRA-training (Stage-B) stage from a GET /api/runs/{id}/pipeline
+ * chain, or null. Matched by workflow or stage id so a 404 / one-stage chain
+ * (no training) yields null and the rail stays the plain single build rail.
+ */
+function pipelineTrainingStage(chain) {
+  const stages = chain && Array.isArray(chain.stages) ? chain.stages : [];
+  return stages.find((s) => s && (s.workflow === 'trainforge_train' || s.stage === 'training')) || null;
+}
+
+/**
+ * Synthesize the trailing "training" group's PENDING nodes for a training stage
+ * that has not started yet (present:false). One node per planned_phases name,
+ * friendly-labelled (the same titleCase lookup the console uses), grouped
+ * `training`, no wall-clock — honest "planned, not started", never a fake
+ * spinner or percent. Empty when the stage carries no planned_phases.
+ */
+function plannedTrainingPhases(stage) {
+  const names = stage && Array.isArray(stage.planned_phases) ? stage.planned_phases : [];
+  return names.map((name) => ({
+    name: String(name),
+    label: titleCase(String(name)),
+    state: 'pending',
+    group: 'training',
+  }));
+}
+
+/* ==================================================== live run (#/live) */
+
+// Statuses that mean a run is over — the complement is "live". Mirrors the
+// backend's TERMINAL_STATUSES (gui/services/progress_service.py) minus
+// "paused": a paused run is resumable and still the operator's live concern.
+const LIVE_RUN_OVER = ['completed', 'failed', 'cancelled', 'canceled', 'interrupted', 'timeout', 'error'];
+
+/**
+ * #/live — THIN resolver: find the currently running workflow in the merged
+ * run list (GET /api/runs, newest first — includes CLI-launched orchestrator
+ * runs) and delegate to the SAME build-progress view (`renderProgress`,
+ * which itself degrades to the CLI-run path for orchestrator-only ids). A
+ * running/paused run wins over any other non-terminal record (requested /
+ * queued); nothing live → an honest empty state pointing at Run history —
+ * never a guessed run.
+ */
+export async function renderLiveRun(shell) {
+  shell.crumbs([{ text: 'Live run' }]);
+  const v = clear(shell.view());
+  shell.setBusy(true);
+  shell.setStatus('Finding the live run.');
+  let runs;
+  try {
+    runs = (await api('/api/runs')).runs || [];
+  } catch (e) {
+    shell.setBusy(false);
+    v.appendChild(el('p', { class: 'error', role: 'alert', text: shell.errText(e) }));
+    toastErr(e, 'Could not load runs');
+    return;
+  }
+  const status = (r) => String((r && r.status) || '').toLowerCase();
+  const target = runs.find((r) => ['running', 'paused'].includes(status(r)))
+    || runs.find((r) => !LIVE_RUN_OVER.includes(status(r)));
+  if (!target) {
+    shell.setBusy(false);
+    v.appendChild(el('h1', { text: 'Live run' }));
+    v.appendChild(emptyState({
+      title: 'No live run',
+      message: 'Nothing is building right now. Past and finished builds are in Run history.',
+      cta: { label: 'View run history', href: '#/runs' },
+    }));
+    shell.setStatus('No live run.');
+    return;
+  }
+  const runId = target.run_id || target.runId || target.id || '';
+  return renderProgress(shell, runId);
+}
+
 async function renderProgress(shell, runId) {
   shell.crumbs([{ text: 'Library', href: '#/library' }, { text: 'Create course', href: '#/create' }, { text: 'Build progress' }]);
   const v = clear(shell.view());
@@ -533,6 +1286,23 @@ async function renderProgress(shell, runId) {
       fetchPhaseList(),
     ]);
   } catch (e) {
+    // Degraded re-attach for CLI-launched runs. run_service only reads the
+    // GUI run registry (state/gui/runs/) BY DESIGN, so a bare orchestrator
+    // workflow id — `ed4all run ...` from a terminal — 404s here as
+    // unknown_run even while the pipeline is live. progress_service
+    // deliberately accepts that same id ("CLI-launched runs are observable
+    // too"), so before surfacing the hard error we probe /progress once: if
+    // it answers, render the honest degraded page (stage rail + poll only —
+    // no log console, no cancel; the GUI never launched this process, so
+    // neither capability exists and faking them is forbidden). Any other
+    // failure — or a dead /progress too — keeps the error path verbatim.
+    if (e && e.status === 404 && e.error === 'unknown_run') {
+      let snapshot = null;
+      try {
+        snapshot = await api(`/api/runs/${encodeURIComponent(runId)}/progress`);
+      } catch (_) { snapshot = null; /* not observable either — fall through */ }
+      if (snapshot) return renderCliRunProgress(shell, v, runId, snapshot);
+    }
     shell.setBusy(false);
     v.appendChild(el('p', { class: 'error', role: 'alert', text: shell.errText(e) }));
     toastErr(e, 'Could not load run');
@@ -571,9 +1341,15 @@ async function renderProgress(shell, runId) {
     onCancel: () => requestCancel(shell, runId, progress),
   });
 
-  // Run id sits in the meta line (left of the console's elapsed timer).
+  // Course/book name + run id sit in the meta line (left of the console's
+  // elapsed timer). The name is LIVE: an --auto-name run rebinds course
+  // identity mid-run, and /progress carries the freshest course_name — the
+  // rail's onState callback below re-syncs the meta line + heading each poll.
+  let liveCourseName = courseName;
+  const courseMeta = courseNameMeta(courseName);
   progress.el.querySelector('.run-progress-meta').insertBefore(
     el('span', {}, [
+      courseMeta.el,
       el('span', { text: `Run ${runId}` }),
       el('span', { class: 'sep', 'aria-hidden': 'true', text: ' · ' }),
     ]),
@@ -581,28 +1357,49 @@ async function renderProgress(shell, runId) {
   );
   v.appendChild(progress.el);
 
+  // Run-health strip (mounted below the rail — visually subordinate to the
+  // stage tracker; expands into the Debug panel on a bad effective_status).
+  const healthCtl = mountRunHealth(runId);
+  // vLLM seat strip (below the health strip): every registered seat + the
+  // expected-vs-actual warning when the CURRENT phase declares a seat that is
+  // not serving. See gui/static/studio/seats.js + gui/services/seat_service.py.
+  const seatCtl = mountSeatMonitor({ runId });
+
   // Stage-tracker rail + live stats band, fed by GET /api/runs/{id}/progress
   // (config-driven phase list merged with the run's real state — see
-  // gui/services/progress_service.py). The rail is PURE PRESENTATION; this
-  // page owns the poll loop, which stops at a terminal state (a finished /
-  // failed run renders statically — no pulse, no further polling).
-  const rail = stageRail({ ariaLabel: `Pipeline progress for ${courseName || runId}` });
-  v.appendChild(rail.el);
-  const RAIL_POLL_MS = 3000;
-  let railTimer = null;
-  function stopRailPoll() {
-    if (railTimer != null) { clearInterval(railTimer); railTimer = null; }
-  }
-  async function pollRailOnce() {
-    try {
-      const p = await api(`/api/runs/${encodeURIComponent(runId)}/progress`);
-      rail.update(p);
-      const st = String((p && p.status) || '').toLowerCase();
-      if (['completed', 'failed', 'cancelled', 'canceled', 'interrupted', 'paused', 'timeout', 'error'].includes(st)) {
-        stopRailPoll();
+  // gui/services/progress_service.py). In MERGED-pipeline mode the ONE rail
+  // shows the build phases followed by the follow-on LoRA-training (Stage-B)
+  // phases as a trailing "training" group — never a separate segregated band.
+  // Poll loop, pipeline-chain merge, and terminal-stop live in the shared
+  // mountStageRail helper (also used by the degraded CLI-run page).
+  const railCtl = mountStageRail(
+    runId,
+    `Pipeline progress for ${courseName || runId}`,
+    (eff, payload, activeRunId) => {
+      const live = payload && typeof payload.course_name === 'string' ? payload.course_name.trim() : '';
+      if (live && live !== liveCourseName) {
+        liveCourseName = live;
+        courseMeta.set(live);
       }
-    } catch (_) { /* best-effort — the console remains the primary surface */ }
-  }
+      applyHonestBuildState(shell, v, eff, payload, liveCourseName);
+      // The run-health strip follows the ACTIVE run (build → training) so a
+      // training failure surfaces the training run's post-mortem.
+      healthCtl.setTarget(activeRunId);
+      healthCtl.setRunState(eff, payload);
+      seatCtl.setRunState(eff);
+    },
+    { pipeline: true },
+  );
+  v.appendChild(railCtl.el);
+  v.appendChild(healthCtl.el);
+  v.appendChild(seatCtl.el);
+
+  // Global preflight "Pipeline health" panel (host/environment doctor —
+  // seats, GPU, disk, config — independent of any one run). Mounted below the
+  // rail; best-effort, omitted entirely when its own endpoint is down.
+  const healthPanelCtl = mountPipelineHealthPanel();
+  v.appendChild(healthPanelCtl.el);
+  healthPanelCtl.start();
 
   // The failure panel + terminal CTAs render below the console.
   const finalBox = el('div', { class: 'final-box' });
@@ -614,10 +1411,14 @@ async function renderProgress(shell, runId) {
   // the "last running" heuristic; the console tracks it for us.
   function finalize(status, errMsg) {
     clear(finalBox);
-    // Terminal: stop the rail poll and take one last snapshot so the rail
-    // freezes on the true final state (static render, no pulse).
-    stopRailPoll();
-    pollRailOnce();
+    // The merged rail owns its own lifecycle: it keeps polling for a follow-on
+    // training stage (build done → training running) and self-latches when the
+    // WHOLE pipeline is done, so finalize does NOT stop it here — stopping on
+    // build completion would kill the training poll. A paused / failed build
+    // self-latches on its next poll (training follows a successful build only).
+    // The seat monitor latches on the build's terminal status (its watch is the
+    // build run's seat schedule).
+    seatCtl.setRunState(status);
     // I1 review flow: a PAUSED run halted at the objectives-review checkpoint —
     // NOT a failure. The console's onStatus() has no paused arm (its else-branch
     // reads as failed), so drive the paused presentation directly: freeze the
@@ -680,15 +1481,23 @@ async function renderProgress(shell, runId) {
       progress.onLine(`[phase] ${record.failed_phase} failed`);
     }
     finalize(record.status, record.error || record.failure_reason);
-    return;
+    // A viewed run that is already terminal may still have a LIVE follow-on
+    // training stage (build done, training running), so start the merged rail
+    // (+ health / seat / the global health panel are already started above) so
+    // it keeps polling for it and self-latches when the whole pipeline is done.
+    railCtl.start();
+    healthCtl.start();
+    seatCtl.start();
+    return () => { railCtl.stop(); healthCtl.stop(); seatCtl.stop(); healthPanelCtl.stop(); };
   }
 
   // Live stream. The WS carries {type:line} (the console parses the ISO-prefixed
   // "[phase]"/"[progress]" lines, including Tier-1 timing) and a terminal
   // {type:status}.
   progress.startFirstRunning();
-  pollRailOnce();
-  railTimer = setInterval(pollRailOnce, RAIL_POLL_MS);
+  railCtl.start();
+  healthCtl.start();
+  seatCtl.start();
 
   const ws = openRunSocket(runId, {
     onLine: (line) => progress.onLine(line),
@@ -699,8 +1508,88 @@ async function renderProgress(shell, runId) {
     },
   });
 
-  // Teardown: close the WS + stop the console timer + rail poll on route change.
-  return () => { progress.destroy(); ws.close(); stopRailPoll(); };
+  // Teardown: close the WS + stop the console timer + rail/health/seat/global
+  // health-panel polls on route change.
+  return () => { progress.destroy(); ws.close(); railCtl.stop(); healthCtl.stop(); seatCtl.stop(); healthPanelCtl.stop(); };
+}
+
+/* ================================== degraded progress (CLI-launched runs) */
+
+/**
+ * Degraded-but-honest progress page for a run the GUI did not launch.
+ *
+ * WHY this exists: `ed4all run ...` writes orchestrator state that
+ * progress_service reads, but never a GUI run record, a GUI log file
+ * (state/gui/logs/<id>.log), or an in-process driver task. So on this page:
+ *   - the runProgressConsole (WS log console) is OMITTED — its log source
+ *     does not exist, and faking a stream would violate the no-stubs rule;
+ *   - the cancel button is OMITTED — there is no driver task to cancel, so
+ *     a wired-looking control here would be a fabricated capability;
+ *   - the stage-tracker rail + 3s poll IS rendered, identical to the normal
+ *     path (shared mountStageRail), because /progress is real pipeline state
+ *     and stops itself at a terminal status just like the normal path.
+ * No explanatory banner (owner direction): the page renders the rail /
+ * stats / output directly; the shell's single polite live region stays the
+ * only announcement channel (the a11y contract of this file).
+ */
+function renderCliRunProgress(shell, v, runId, snapshot) {
+  // Same meta affordance the console path provides: the course/book name
+  // (when the /progress payload carries one — it is LIVE, so an --auto-name
+  // rebind mid-run updates it on the next poll) + the run id, plainly
+  // visible under the "Building your course" heading.
+  let liveCourseName = '';
+  const courseMeta = courseNameMeta('');
+  v.appendChild(el('p', { class: 'muted' }, [
+    courseMeta.el,
+    el('span', { text: `Run ${runId}` }),
+  ]));
+
+  // Run-health strip + Debug panel (below the rail; shared helper).
+  const healthCtl = mountRunHealth(runId);
+  // vLLM seat strip (shared helper): registered seats + the expected-vs-actual
+  // warning for the current phase.
+  const seatCtl = mountSeatMonitor({ runId });
+
+  const railCtl = mountStageRail(
+    runId,
+    `Pipeline progress for ${runId}`,
+    (eff, payload, activeRunId) => {
+      const live = payload && typeof payload.course_name === 'string' ? payload.course_name.trim() : '';
+      if (live && live !== liveCourseName) {
+        liveCourseName = live;
+        courseMeta.set(live);
+      }
+      applyHonestBuildState(shell, v, eff, payload, liveCourseName);
+      // The run-health strip follows the ACTIVE run (build → training).
+      healthCtl.setTarget(activeRunId);
+      healthCtl.setRunState(eff, payload);
+      seatCtl.setRunState(eff);
+    },
+    { pipeline: true },
+  );
+  v.appendChild(railCtl.el);
+  v.appendChild(healthCtl.el);
+  v.appendChild(seatCtl.el);
+  // Global preflight "Pipeline health" panel (host/environment doctor). Mounted
+  // below the rail; best-effort, omitted entirely when its own endpoint is down.
+  const healthPanelCtl = mountPipelineHealthPanel();
+  v.appendChild(healthPanelCtl.el);
+  healthPanelCtl.start();
+  // Seed the rail from the probe snapshot we already hold (first paint costs
+  // no extra fetch); start() then runs the merged 3s loop (build phases +
+  // trailing training group). In pipeline mode the seed never latches, so a
+  // terminal build snapshot doesn't freeze the rail before training is merged.
+  railCtl.apply(snapshot);
+  railCtl.start();
+  healthCtl.start();
+  seatCtl.start();
+
+  shell.setBusy(false);
+  shell.setStatus('Showing build progress.');
+
+  // Teardown: the rail + health + seat + global health-panel polls to stop —
+  // no WS, no console timer.
+  return () => { railCtl.stop(); healthCtl.stop(); seatCtl.stop(); healthPanelCtl.stop(); };
 }
 
 /* =============================================== A6 failure panel (UX) */
@@ -931,9 +1820,9 @@ function renderRecoveryActions(shell, container, record, courseName, _failedPhas
   }
 }
 
-/** Copy-to-clipboard button for the resume CLI hint (a real <button>). */
-function copyHintBtn(text) {
-  const btn = el('button', { type: 'button', class: 'btn', 'aria-label': 'Copy resume command to clipboard', text: 'Copy command' });
+/** Copy-to-clipboard button for a CLI command hint (a real <button>). */
+function copyHintBtn(text, ariaLabel) {
+  const btn = el('button', { type: 'button', class: 'btn', 'aria-label': ariaLabel || 'Copy resume command to clipboard', text: 'Copy command' });
   btn.addEventListener('click', async () => {
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {

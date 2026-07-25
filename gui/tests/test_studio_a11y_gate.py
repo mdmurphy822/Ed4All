@@ -523,6 +523,40 @@ def test_persona_switcher_present_in_static_shell():
     assert personas["author"].get("href") == "#/"
 
 
+def test_live_run_tab_in_primary_nav_and_routed():
+    """The "Live run" tab: present in the labelled primary <nav> landmark,
+    routed (#/live) via the shared hash router, and backed by a THIN resolver
+    in create.js that finds the newest running/paused run in the merged
+    /api/runs list, delegates to the shared build-progress view, and renders
+    an honest empty state (CTA to Run history) when nothing is live."""
+    soup = _soup(STUDIO_INDEX.read_text(encoding="utf-8"))
+    nav = soup.find("nav", class_="primary-nav")
+    assert nav is not None, "the shell must render the primary nav"
+    assert nav.get("aria-label"), "primary nav must stay a labelled landmark"
+    live = nav.find("a", href="#/live")
+    assert live is not None, "the Live run tab must be in the primary nav"
+    assert live.get_text(strip=True) == "Live run"
+
+    studio_js = (STUDIO_DIR / "studio.js").read_text(encoding="utf-8")
+    assert "live: () => renderLiveRun(shell)" in studio_js
+    assert (
+        "import { renderCreate, renderLiveRun } from '/studio/create.js';"
+        in studio_js
+    ), "renderLiveRun must be imported from create.js"
+
+    create_js = (STUDIO_DIR / "create.js").read_text(encoding="utf-8")
+    start = create_js.index("function renderLiveRun(")
+    body = create_js[start : create_js.index("\n}", start)]
+    assert "api('/api/runs')" in body  # the merged run list (incl. CLI runs)
+    assert "'running', 'paused'" in body  # live preference over other states
+    assert "renderProgress(shell, runId)" in body  # thin delegation, no fork
+    assert "emptyState(" in body and "#/runs" in body, (
+        "no live run must render the empty state with a Run-history CTA"
+    )
+    # The shell with the new tab stays WCAG-clean.
+    _assert_clean("studio-live-run-nav", STUDIO_INDEX.read_text(encoding="utf-8"))
+
+
 def test_persona_switcher_shell_zero_aa_findings():
     # The whole shell with the switcher present must stay WCAG-clean.
     _assert_clean("studio-persona-switcher", str(_soup(STUDIO_INDEX.read_text(encoding="utf-8"))))
@@ -929,7 +963,7 @@ _SETTINGS_INNER = """
 <form class="settings-form" novalidate>
   <h2>AI provider</h2>
   <div class="field"><label for="mode-x">Mode</label><select id="mode-x"><option value="local" selected>local</option><option value="api">api</option></select><p class="field-hint">local: run on this machine (no key needed). api: call a cloud provider.</p></div>
-  <div class="field"><label for="prov-x">Provider</label><select id="prov-x"><option value="local" selected>Ollama (local)</option><option value="anthropic">Anthropic (Claude)</option></select></div>
+  <div class="field"><label for="prov-x">Provider</label><select id="prov-x"><option value="local" selected>Local model server (OpenAI-compatible)</option><option value="anthropic">Anthropic (Claude)</option></select></div>
   <div class="field"><label for="model-x">Model (optional)</label><input id="model-x" type="text" autocomplete="off" placeholder="provider default"><p class="field-hint">Leave blank to use the provider’s default model.</p></div>
   <div class="field"><button type="button" class="btn">Test provider</button><p class="test-result is-ok" role="status" aria-live="polite">Connected. The provider is reachable.</p></div>
   <h2>Answers (course Q&amp;A)</h2>

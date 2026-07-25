@@ -124,6 +124,9 @@ _ROUTER_MOUNTS = [
     ("courses", "/api/courses"),
     ("retrieval", "/api/retrieval"),
     ("learn", "/api/learn"),  # learner answer surface (ask, courses, source)
+    ("assistant", "/api/assistant"),  # sandboxed operator-assistant chat panel
+    ("health", "/api/health"),  # in-process ed4all doctor (global + run-scoped)
+    ("seats", "/api/seats"),  # vLLM seat monitor (global + phase-aware per run)
 ]
 
 # The learner-only serve mode (``ed4all gui --learner`` / ``ED4ALL_GUI_LEARNER=1``)
@@ -156,6 +159,9 @@ _STUDIO_ROUTER_MOUNTS = [
     ("uploads", "/api/uploads"),  # C3 Create wizard step 1 (PDF intake)
     ("runs", "/api"),  # C3 launch + run registry + /ws/runs/* progress stream
     ("settings", "/api/settings"),  # C3 Studio settings page (scoped subset)
+    ("assistant", "/api/assistant"),  # Studio Assistant chat panel (engine-sandboxed)
+    ("health", "/api/health"),  # Dashboard "System health" card + run-scoped doctor
+    ("seats", "/api/seats"),  # Dashboard seat monitor + build-page seat strip
 ]
 
 

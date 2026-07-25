@@ -50,8 +50,9 @@ from lib.llm.endpoints import openai_compatible_legacy_registry
 # GUI-facing overlay applied per derived provider:
 #   * ``label``          human-facing string the settings UI renders.
 #   * ``vision_capable`` (``local`` only) forced True so the routing dropdown
-#     offers the local/Ollama seat; the real gate is LOCAL_VISION_CAPABLE +
-#     LOCAL_SYNTHESIS_MODEL at resolve time. All other providers inherit the
+#     offers the local OpenAI-compatible seat (vLLM / Ollama / llama.cpp); the
+#     real gate is LOCAL_VISION_CAPABLE + LOCAL_SYNTHESIS_MODEL at resolve
+#     time. All other providers inherit the
 #     canonical row's vision_capable (default False when the row omits it).
 #
 # GUI-explicit (NOT OpenAI-wire) seats stay hand-declared:
@@ -68,12 +69,19 @@ from lib.llm.endpoints import openai_compatible_legacy_registry
 # ``nvidia-deepseek``) the GUI does not surface; they are intentionally NOT
 # listed here so no default selection changes.
 _DERIVED_PROVIDER_META: List[Dict[str, Any]] = [
-    # ``local`` IS Ollama by default (base_url points at the Ollama
-    # OpenAI-compat port 11434). The registry name stays ``"local"`` because
-    # Trainforge and the resolver all key on that literal. The GUI marks
-    # it vision-capable for the routing dropdown (overlay); the real enable is
-    # LOCAL_VISION_CAPABLE + a vision LOCAL_SYNTHESIS_MODEL at resolve time.
-    {"name": "local", "label": "Ollama (local)", "vision_capable": True},
+    # ``local`` is ANY local OpenAI-compatible server (vLLM / Ollama /
+    # llama.cpp / LM Studio) — NOT hard-wired to Ollama. Its default base_url
+    # points at port 11434 (Ollama's default) only as a fallback; a vLLM seat
+    # deployment overrides LOCAL_SYNTHESIS_BASE_URL to its own host:port. The
+    # registry name stays ``"local"`` because Trainforge and the resolver all
+    # key on that literal. The GUI marks it vision-capable for the routing
+    # dropdown (overlay); the real enable is LOCAL_VISION_CAPABLE + a vision
+    # LOCAL_SYNTHESIS_MODEL at resolve time.
+    {
+        "name": "local",
+        "label": "Local model server (OpenAI-compatible: vLLM, Ollama, llama.cpp)",
+        "vision_capable": True,
+    },
     {"name": "together", "label": "Together AI (text)"},
     {"name": "together-vision", "label": "Together AI (vision)"},
     {"name": "groq", "label": "Groq"},
@@ -196,9 +204,9 @@ def vision_provider_names() -> List[str]:
 
     Filters ``PROVIDERS`` on the ``vision_capable`` marker. These are the
     only providers a vision/VLM routing dropdown should offer:
-    ``anthropic``, ``local`` (Ollama with LOCAL_VISION_CAPABLE=true), and
-    ``together-vision``. These feed the SemantiK VLM seat selector
-    (``SEMANTIK_VLM_PROVIDER``).
+    ``anthropic``, ``local`` (a local OpenAI-compatible vision seat — e.g.
+    Ollama or vLLM — with LOCAL_VISION_CAPABLE=true), and ``together-vision``.
+    These feed the SemantiK VLM seat selector (``SEMANTIK_VLM_PROVIDER``).
     """
     return [p["name"] for p in PROVIDERS if p.get("vision_capable")]
 
@@ -389,9 +397,10 @@ def _build_catalog() -> List[Dict[str, Any]]:
         # SemantiK cascade consumes to select its VLM seat for per-page
         # extraction + figure alt-text (``semantik_structure/extract_shared.py
         # ::resolve_vlm_provider``). The enum is filtered to the vision-capable
-        # provider universe (anthropic / together-vision / local-as-Ollama) so
-        # the UI can't offer a text-only backend that would fail the VLM
-        # seat's "fail at startup, not mid-page" readiness gate.
+        # provider universe (anthropic / together-vision / local — a local
+        # OpenAI-compatible vision seat such as Ollama or vLLM) so the UI can't
+        # offer a text-only backend that would fail the VLM seat's "fail at
+        # startup, not mid-page" readiness gate.
         {
             "key": "SEMANTIK_VLM_PROVIDER",
             "label": "Vision Provider (SemantiK VLM / alt-text)",
@@ -402,9 +411,10 @@ def _build_catalog() -> List[Dict[str, Any]]:
             "help": (
                 "Vision-capable LLM backend for the SemantiK VLM seat "
                 "(per-page extraction + figure alt-text). Unset falls back to "
-                "the local Ollama VLM seat. Vision-capable options only: "
-                "anthropic, together-vision, or local (Ollama with a vision "
-                "model + LOCAL_VISION_CAPABLE=true)."
+                "the local OpenAI-compatible VLM seat. Vision-capable options "
+                "only: anthropic, together-vision, or local (a local vision "
+                "model + LOCAL_VISION_CAPABLE=true — served by vLLM, Ollama, "
+                "etc.)."
             ),
             "applies_to": "vision",
         },
@@ -418,22 +428,22 @@ def _build_catalog() -> List[Dict[str, Any]]:
                 "Model id the SemantiK VLM seat requests "
                 "(semantik_structure/extract_shared.py::resolve_vlm_model). "
                 "Default qwen2.5vl:7b (Qwen2.5-VL-7B-Instruct, Apache-2.0) on "
-                "the local Ollama seat."
+                "the local vision seat (e.g. Ollama or a vLLM seat)."
             ),
             "applies_to": "vision",
         },
         {
             "key": "LOCAL_VISION_CAPABLE",
-            "label": "Ollama / Local Vision Capable",
+            "label": "Local Vision Capable",
             "category": "vision",
             "type": "bool",
             "default": False,
             "help": (
-                "Flip on when the local (Ollama) server has a vision model "
-                "loaded (e.g. llama3.2-vision, llava:13b, qwen2.5-vl). This is "
-                "how a LOCAL/Ollama VLM is selected: set the local model "
-                "(LOCAL_SYNTHESIS_MODEL) to the vision model AND flip this on. "
-                "There is no separate LOCAL_VISION_MODEL env var in the code."
+                "Flip on when the local model server (vLLM, Ollama, etc.) has "
+                "a vision model loaded (e.g. qwen2.5-vl, llama3.2-vision, "
+                "llava:13b). This is how a LOCAL VLM is selected: set the local "
+                "model (LOCAL_SYNTHESIS_MODEL) to the vision model AND flip this "
+                "on. There is no separate LOCAL_VISION_MODEL env var in the code."
             ),
             "applies_to": "vision",
         },
@@ -915,6 +925,14 @@ def default_settings() -> Dict[str, Any]:
         "flags": {
             "COURSEFORGE_TWO_PASS": False,
             "TRAINFORGE_REQUIRE_EMBEDDINGS": False,
+        },
+        # The Studio Assistant chat panel. ``autostart`` governs whether a chat
+        # request may ATTEMPT the engine's lazy seat-start path when the local
+        # assistant seat is down (the engine's own ED4ALL_ASSISTANT_AUTOSTART
+        # policy still decides whether a start actually occurs). Default off:
+        # a down seat surfaces as a 503 with start instructions.
+        "assistant": {
+            "autostart": False,
         },
     }
 

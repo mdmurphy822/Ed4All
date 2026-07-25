@@ -25,7 +25,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from gui import shared_state
-from gui.services import progress_service, run_service
+from gui.services import pipeline_service, progress_service, run_service
 
 logger = logging.getLogger("gui.routers.runs")
 
@@ -214,6 +214,48 @@ async def get_run_progress(run_id: str) -> Any:
     except Exception as exc:  # noqa: BLE001 — surface the real error
         logger.exception("run_progress failed for %s", run_id)
         return _error(500, "run_progress_failed", str(exc))
+    if payload is None:
+        return _error(404, "unknown_run", run_id)
+    return payload
+
+
+@router.get("/runs/{run_id}/pipeline")
+async def get_run_pipeline(run_id: str) -> Any:
+    """Return the FULL-pipeline chain for a run: Stage-A build → Stage-B training.
+
+    Read-only correlation of the queried run with its sibling stage by course
+    slug: the course BUILD run (``textbook_to_course`` / ``course_generation``)
+    and the ``trainforge_train`` LoRA-training run are two separate run records
+    tied only by slug (see ``gui.services.pipeline_service``). Each stage carries
+    a ``run_id`` usable for ``/api/runs/{id}/progress``, its ``planned_phases``,
+    and (training) discovered ``model_ids``. Accepts a GUI run id or a bare
+    orchestrator workflow id; typed 404 when neither resolves.
+    """
+    try:
+        payload = pipeline_service.pipeline_chain(run_id)
+    except Exception as exc:  # noqa: BLE001 — surface the real error
+        logger.exception("pipeline_chain failed for %s", run_id)
+        return _error(500, "pipeline_chain_failed", str(exc))
+    if payload is None:
+        return _error(404, "unknown_run", run_id)
+    return payload
+
+
+@router.get("/runs/{run_id}/output-tail")
+async def get_run_output_tail(run_id: str) -> Any:
+    """Return the live-output tail for a run's CURRENT phase.
+
+    The last few complete rows of the phase's per-unit resume sidecar, each
+    mapped to a bounded ``{seq, label, text}`` display record (HTML-stripped,
+    hard-truncated) — the Studio build page's "Live output" panel. Absent
+    sidecar / unmapped phase → an honest ``rows: []``. Typed 404 when the run
+    is unknown (mirrors ``/progress``).
+    """
+    try:
+        payload = progress_service.output_tail(run_id)
+    except Exception as exc:  # noqa: BLE001 — surface the real error
+        logger.exception("output_tail failed for %s", run_id)
+        return _error(500, "output_tail_failed", str(exc))
     if payload is None:
         return _error(404, "unknown_run", run_id)
     return payload

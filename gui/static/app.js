@@ -226,22 +226,33 @@ async function queryJSON(path, body) {
   return apiJSON(path, 'POST', body);
 }
 
-/* Live Ollama model discovery (GET /api/settings/ollama-models). Returns the
- * service shape {available, models, detail, host}; never throws — a network /
- * offline failure degrades to {available:false, models:[]} so callers fall
- * back to free-text entry. */
-async function fetchOllamaModels() {
+/* Live local model discovery (GET /api/settings/local-models). Protocol-first:
+ * the backend probes the OpenAI-compatible /v1/models endpoint (vLLM, Ollama,
+ * llama.cpp, LM Studio) first and falls back to Ollama's native /api/tags.
+ * Returns the service shape {available, models, detail, host, backend} where
+ * ``backend`` names what actually answered ('openai-compatible' | 'ollama' |
+ * null). Never throws — a network / offline failure degrades to
+ * {available:false, models:[], backend:null} so callers fall back to free-text
+ * entry. */
+async function fetchLocalModels() {
   try {
-    const r = await api('/api/settings/ollama-models');
+    const r = await api('/api/settings/local-models');
     return {
       available: !!(r && r.available),
       models: (r && Array.isArray(r.models)) ? r.models : [],
       detail: (r && r.detail) || '',
       host: (r && r.host) || '',
+      backend: (r && r.backend) || null,
     };
   } catch (e) {
-    return { available: false, models: [], detail: (e && e.detail) || String(e && e.message || e), host: '' };
+    return { available: false, models: [], detail: (e && e.detail) || String(e && e.message || e), host: '', backend: null };
   }
+}
+/* Human label for a detected local backend (text, never color-only). */
+function localBackendLabel(backend) {
+  if (backend === 'openai-compatible') return 'OpenAI-compatible';
+  if (backend === 'ollama') return 'Ollama';
+  return null;
 }
 
 /* =====================================================================
@@ -960,7 +971,7 @@ async function renderSettings(view) {
   const GROUP_TITLES = {
     credentials: 'API keys & credentials',
     global: 'Global AI routing',
-    local: 'Local model server (Ollama)',
+    local: 'Local model server (OpenAI-compatible: vLLM, Ollama, llama.cpp)',
     together: 'Together AI models',
     vision: 'Vision / image models',
     courseforge: 'Course authoring (Courseforge)',
@@ -989,30 +1000,33 @@ async function renderSettings(view) {
     view.appendChild(card);
   }
 
-  // Ollama models helper — live discovery of installed local (Ollama) models.
+  // Local models helper — live discovery of models on the local model server.
+  // Protocol-first: probes the OpenAI-compatible /v1/models endpoint (vLLM,
+  // Ollama, llama.cpp, LM Studio) first, falling back to Ollama's /api/tags.
   // Mirrors the Model Routing vision-model discovery; uses the same
-  // /api/settings/ollama-models probe so the operator can confirm what is
-  // installed on the local backend before pinning LOCAL_SYNTHESIS_MODEL.
+  // /api/settings/local-models probe so the operator can confirm what is served
+  // on the local backend before pinning LOCAL_SYNTHESIS_MODEL.
   {
     const card = el('div', { class: 'card' }, [
-      el('h2', { text: 'Ollama models (local backend)' }),
-      el('p', { class: 'subtitle', text: 'Live probe of the local Ollama server (LOCAL_SYNTHESIS_BASE_URL → /api/tags). Set LOCAL_SYNTHESIS_MODEL above to one of these; flip LOCAL_VISION_CAPABLE for a vision model.' }),
+      el('h2', { text: 'Local models (local model server)' }),
+      el('p', { class: 'subtitle', text: 'Live probe of the local model server (LOCAL_SYNTHESIS_BASE_URL). Any OpenAI-compatible backend — vLLM, Ollama, llama.cpp, LM Studio. Set LOCAL_SYNTHESIS_MODEL above to one of these; flip LOCAL_VISION_CAPABLE for a vision model.' }),
     ]);
     const statusLine = el('div', { class: 'help', text: 'Click Refresh to query the local server.' });
     const listBox = el('div', { class: 'inline' });
     const refreshBtn = el('button', { class: 'ghost sm', text: 'Refresh' });
     refreshBtn.addEventListener('click', async () => {
       refreshBtn.disabled = true;
-      statusLine.textContent = 'Querying local Ollama server…';
+      statusLine.textContent = 'Querying local model server…';
       clear(listBox);
-      const res = await fetchOllamaModels();
+      const res = await fetchLocalModels();
+      const backend = localBackendLabel(res.backend);
       if (res.available && res.models.length) {
-        statusLine.textContent = `${res.models.length} model(s) at ${res.host}.`;
+        statusLine.textContent = `Local models — ${res.models.length} found at ${res.host}${backend ? ` (${backend})` : ''}.`;
         res.models.forEach((m) => listBox.appendChild(el('code', { class: 'kv', text: m })));
       } else if (res.available) {
-        statusLine.textContent = `Reachable at ${res.host} but no models installed.`;
+        statusLine.textContent = `Reachable at ${res.host}${backend ? ` (${backend})` : ''} but no models served.`;
       } else {
-        statusLine.textContent = `Ollama not reachable: ${res.detail || 'connection failed'}`;
+        statusLine.textContent = `Local model server not reachable at ${res.host || 'the configured base URL'}: ${res.detail || 'connection failed'}`;
       }
       refreshBtn.disabled = false;
     });
@@ -1107,7 +1121,8 @@ async function renderRouting(view) {
   const providerObjs = data.providers || [];
   const providers = providerObjs.map((p) => p.name || p);
   // Vision-capable subset (provider.vision_capable marker from the catalog):
-  // anthropic, together-vision, local (Ollama). Used by the Vision/VLM row.
+  // anthropic, together-vision, local (a local OpenAI-compatible vision seat —
+  // e.g. vLLM or Ollama). Used by the Vision/VLM row.
   const visionProviders = providerObjs
     .filter((p) => p && typeof p === 'object' && p.vision_capable)
     .map((p) => p.name);
@@ -1125,7 +1140,7 @@ async function renderRouting(view) {
 
   // Tasks: keys present in routing + the canonical set from spec §3.
   // ``vision`` is rendered in its own dedicated card below (provider list
-  // filtered to vision-capable backends + live Ollama model discovery), so
+  // filtered to vision-capable backends + live local model discovery), so
   // it is excluded from the generic per-task table here.
   const canonical = ['global', 'courseforge_outline', 'courseforge_rewrite', 'courseplanner', 'textbook_synthesis', 'trainforge_synthesis', 'trainforge_assessment'];
   const tasks = Array.from(new Set([...canonical, ...Object.keys(routing)])).filter((t) => t !== 'vision');
@@ -1186,19 +1201,20 @@ async function renderRouting(view) {
   // ---------------------------------------------------------------- Vision / VLM
   // Dedicated routing row for vision-capable backends. Provider dropdown is
   // filtered to the vision-capable subset (anthropic / together-vision /
-  // local-as-Ollama). When the provider is ``local`` (Ollama), the model
-  // field is populated from a LIVE /api/settings/ollama-models probe; on any
-  // other provider (or an unreachable Ollama) it degrades to free-text entry.
-  // Writes go to draft.vision and PATCH model_routing.vision on save.
+  // local). When the provider is ``local`` (a local OpenAI-compatible vision
+  // seat), the model field is populated from a LIVE /api/settings/local-models
+  // probe; on any other provider (or an unreachable local server) it degrades
+  // to free-text entry. Writes go to draft.vision and PATCH model_routing.vision
+  // on save.
   {
     const vCur = routing.vision || {};
     const vCard = el('div', { class: 'card' }, [
       el('h2', { text: 'Vision / VLM' }),
-      el('p', { class: 'subtitle', text: 'Vision-capable backend for the SemantiK VLM seat — per-page extraction + figure alt-text (SEMANTIK_VLM_PROVIDER). Local = Ollama with a vision model (SEMANTIK_VLM_MODEL, default qwen2.5vl:7b).' }),
+      el('p', { class: 'subtitle', text: 'Vision-capable backend for the SemantiK VLM seat — per-page extraction + figure alt-text (SEMANTIK_VLM_PROVIDER). Local = a local OpenAI-compatible vision seat (vLLM, Ollama, …) with a vision model (SEMANTIK_VLM_MODEL, default qwen2.5vl:7b).' }),
     ]);
 
     const provSel = el('select');
-    provSel.appendChild(el('option', { value: '', text: '— inherit (local Ollama VLM seat) —' }));
+    provSel.appendChild(el('option', { value: '', text: '— inherit (local OpenAI-compatible VLM seat) —' }));
     visionProviders.forEach((p) => {
       const opt = el('option', { value: p, text: providerLabel(p) });
       if ((vCur.provider || '') === p) opt.selected = true;
@@ -1206,7 +1222,7 @@ async function renderRouting(view) {
     });
 
     // Model field: a free-text input backed by a datalist of discovered
-    // Ollama models (when provider=local) or together-vision suggestions.
+    // local models (when provider=local) or together-vision suggestions.
     const listId = 'vision-model-options';
     const modelInp = el('input', {
       type: 'text',
@@ -1221,15 +1237,16 @@ async function renderRouting(view) {
     async function refreshModelOptions(providerName) {
       clear(dl);
       if (providerName === 'local') {
-        modelHint.textContent = 'Discovering installed Ollama models…';
-        const res = await fetchOllamaModels();
+        modelHint.textContent = 'Discovering local models…';
+        const res = await fetchLocalModels();
+        const backend = localBackendLabel(res.backend);
         if (res.available && res.models.length) {
           res.models.forEach((m) => dl.appendChild(el('option', { value: m })));
-          modelInp.placeholder = 'pick an installed Ollama model';
-          modelHint.textContent = `${res.models.length} Ollama model(s) at ${res.host}. Saved as SEMANTIK_VLM_MODEL.`;
+          modelInp.placeholder = 'pick a served local model';
+          modelHint.textContent = `${res.models.length} local model(s) at ${res.host}${backend ? ` (${backend})` : ''}. Saved as SEMANTIK_VLM_MODEL.`;
         } else {
-          modelInp.placeholder = 'type a vision model id (Ollama not reachable)';
-          modelHint.textContent = `Ollama not reachable (${res.detail || 'no models'}). Free-text entry — saved as SEMANTIK_VLM_MODEL.`;
+          modelInp.placeholder = 'type a vision model id (local server not reachable)';
+          modelHint.textContent = `Local model server not reachable (${res.detail || 'no models'}). Free-text entry — saved as SEMANTIK_VLM_MODEL.`;
         }
       } else if (providerName === 'together-vision') {
         ['meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo', 'meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo']
@@ -1241,7 +1258,7 @@ async function renderRouting(view) {
         modelHint.textContent = 'Saved as SEMANTIK_VLM_MODEL. Anthropic is always vision-capable.';
       } else {
         modelInp.placeholder = 'select a vision provider first';
-        modelHint.textContent = 'Inherits the local Ollama VLM seat when left unset.';
+        modelHint.textContent = 'Inherits the local OpenAI-compatible VLM seat when left unset.';
       }
     }
 

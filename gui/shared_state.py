@@ -29,8 +29,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-# Permitted ``source`` values for events (the Claude<->GUI bridge).
-_VALID_EVENT_SOURCES = ("gui", "claude")
+# Permitted ``source`` values for events (the Claude<->GUI bridge, plus the
+# Studio Assistant panel — one ``assistant``-sourced event per chat exchange).
+_VALID_EVENT_SOURCES = ("gui", "claude", "assistant")
 
 
 def _now_iso() -> str:

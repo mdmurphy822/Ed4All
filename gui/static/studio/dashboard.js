@@ -18,7 +18,11 @@
  *
  * PURE PRESENTATION + host-owns-fetch: this view owns its two REST calls
  * (GET /api/runs, GET /api/library); the shared kit (courseCard / runCard /
- * timelineBar / emptyState) is data-fed and structurally fetch-free.
+ * timelineBar / emptyState) is data-fed and structurally fetch-free. Two
+ * self-fetching sections are mounted below them: "System health" (health.js,
+ * on-demand) and "Model seats" (seats.js — the ALWAYS-ON vLLM seat monitor,
+ * which polls while mounted; the route teardown returned by this view stops
+ * that timer so a backgrounded tab never spins).
  *
  * A11y: each zone is a <section aria-labelledby> with a heading (the view keeps
  * its single <h1>; zone headings are <h2>). Cards are keyboard-operable links
@@ -33,6 +37,8 @@ import { toast, toastErr } from '/shared/toast.js';
 import { courseCard, runCard } from '/shared/components/card.js';
 import { timelineBar } from '/shared/components/timeline-bar.js';
 import { emptyState } from '/shared/components/empty-state.js';
+import { renderHealthSection } from '/studio/health.js';
+import { renderSeatSection } from '/studio/seats.js';
 
 const LIVE = new Set(['queued', 'running', 'cancel_requested', 'requested']);
 const TERMINAL = new Set(['completed', 'failed', 'cancelled', 'interrupted', 'canceled', 'error']);
@@ -67,9 +73,14 @@ export async function renderDashboard(shell) {
       message: 'Turn a textbook PDF into an accessible, ask-ready course. Upload a PDF and we do the rest.',
       cta: { label: 'Build your first course', href: '#/create' },
     }));
+    // System health + model seats are server-scoped, not course-scoped — show
+    // them even before the first build so an operator can preflight the box.
+    v.appendChild(renderHealthSection(shell));
+    const seatsOnboarding = renderSeatSection();
+    v.appendChild(seatsOnboarding.el);
     shell.setBusy(false);
     shell.setStatus('No courses yet. Build your first course.');
-    return;
+    return () => seatsOnboarding.stop();
   }
 
   // Zone 1 — Building now (omitted entirely when nothing is live).
@@ -83,12 +94,23 @@ export async function renderDashboard(shell) {
   // Zone 3 — Recent builds.
   v.appendChild(recentSection(shell, recent, runsErr));
 
+  // Zone 4 — System health (in-process ed4all doctor; self-fetching section).
+  v.appendChild(renderHealthSection(shell));
+
+  // Zone 5 — Model seats (the always-on vLLM seat monitor; self-polling).
+  const seatsSection = renderSeatSection();
+  v.appendChild(seatsSection.el);
+
   shell.setBusy(false);
   const parts = [];
   if (live.length) parts.push(`${live.length} building`);
   parts.push(`${courses.length} course${courses.length === 1 ? '' : 's'}`);
   parts.push(`${recent.length} past build${recent.length === 1 ? '' : 's'}`);
   shell.setStatus(`Dashboard ready: ${parts.join(', ')}.`);
+
+  // Route teardown: stop the seat poll on route change (the router keeps the
+  // returned function and calls it before the next view renders).
+  return () => seatsSection.stop();
 }
 
 /* ----------------------------------------------------------- Building now */

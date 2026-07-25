@@ -44,6 +44,7 @@
   --gate-pass: #1a7f37;     /* = --ok */
   --gate-warn: #8a6100;     /* = --warn */
   --gate-fail: #8a1c1c;     /* = --error-fg */
+  --gate-info: #0b5cad;     /* = --accent (informational, below warn) */
 
   /* ---- Spatial / radius scale ---- */
   --space-1: 4px;
@@ -88,6 +89,7 @@
   --gate-pass: #3fb950;     /* = --good */
   --gate-warn: #d29922;     /* = --warn */
   --gate-fail: #f85149;     /* = --bad */
+  --gate-info: #4493f8;     /* = --accent (informational, below warn) */
 }
 
 /* ---- Spin keyframes for future progress rings (none exists today). ---- */

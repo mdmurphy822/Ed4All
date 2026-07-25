@@ -10,6 +10,8 @@ Endpoint contract (frontend-facing):
 * ``PUT    ""``             → save a full settings doc, return masked doc
 * ``PATCH  ""``             → deep-merge a partial patch, return masked doc
 * ``POST   "/apply"``       → render+apply settings env, return applied key NAMES
+* ``GET    "/local-models"`` → protocol-first local model-server discovery
+* ``GET    "/ollama-models"`` → DEPRECATED alias for ``/local-models``
 * ``POST   "/test-provider"`` → REAL per-provider reachability check
 
 Validation / store errors surface as a typed ``{error, detail}`` body with the
@@ -131,20 +133,36 @@ async def get_studio_settings() -> Any:
         return _error(500, "studio_settings_load_failed", str(exc))
 
 
-@router.get("/ollama-models")
-async def ollama_models() -> Any:
-    """Discover models installed on the local Ollama server (live probe).
+@router.get("/local-models")
+async def local_models() -> Any:
+    """Discover models on the local model server (protocol-first live probe).
 
-    Delegates to ``settings_service.list_ollama_models``; returns
-    ``{available, models, detail, host}``. Graceful on connection failure
-    (``available=False`` / empty ``models``) — never raises for an offline
-    Ollama, so the service handles its own failures. A genuinely unexpected
-    error surfaces as a typed 500.
+    Delegates to ``settings_service.list_local_models``; returns
+    ``{available, models, detail, host, backend}`` where ``backend`` names what
+    actually answered (``openai-compatible`` for vLLM / llama.cpp / LM Studio /
+    Ollama's /v1, ``ollama`` for the native /api/tags fallback, or ``null`` when
+    unreachable). Graceful on connection failure (``available=False`` / empty
+    ``models``) — never raises for an offline server, so the service handles its
+    own failures. A genuinely unexpected error surfaces as a typed 500.
     """
     try:
-        return settings_service.list_ollama_models()
+        return settings_service.list_local_models()
     except Exception as exc:  # noqa: BLE001 — service is graceful; this is a backstop
-        return _error(500, "ollama_models_failed", str(exc))
+        return _error(500, "local_models_failed", str(exc))
+
+
+@router.get("/ollama-models")
+async def ollama_models() -> Any:
+    """DEPRECATED alias for ``GET /local-models`` (kept so external callers work).
+
+    Model discovery is now protocol-first and vendor-neutral. This path simply
+    delegates to the same ``settings_service.list_local_models`` implementation;
+    prefer ``/api/settings/local-models``.
+    """
+    try:
+        return settings_service.list_local_models()
+    except Exception as exc:  # noqa: BLE001 — service is graceful; this is a backstop
+        return _error(500, "local_models_failed", str(exc))
 
 
 @router.post("/test-provider")

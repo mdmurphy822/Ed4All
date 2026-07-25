@@ -70,6 +70,7 @@
 .pill-pass    { color: var(--gate-pass);     border-color: var(--gate-pass); }
 .pill-warn    { color: var(--gate-warn);     border-color: var(--gate-warn); }
 .pill-fail    { color: var(--gate-fail);     border-color: var(--gate-fail); }
+.pill-info    { color: var(--gate-info);     border-color: var(--gate-info); }
 
 /* ---- gate chip (icon + visually-hidden label) ---- */
 .gate-chip {
@@ -341,6 +342,81 @@ a.card:hover { border-color: var(--accent); }
 .stage-stat { display: flex; align-items: baseline; gap: var(--space-1); }
 .stage-stat dt { font-size: 12px; color: var(--muted); }
 .stage-stat dd { margin: 0; font-size: 13px; color: var(--fg); }
+
+/* ---- "Detailed stats" disclosure under the band (stage-rail.js) ----
+ * Native <details>/<summary>; body rebuilt per poll (silent DOM refresh, no
+ * live region), open state preserved. Tables scroll INSIDE their own wrapper
+ * (overflow-x) so wide breakdowns never scroll the page horizontally. */
+.stage-detail {
+  margin-top: var(--space-2);
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-2);
+}
+.stage-detail > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--muted);
+  user-select: none;
+}
+.stage-detail > summary:hover { color: var(--fg); }
+.stage-detail-body { display: flex; flex-direction: column; gap: var(--space-2); margin-top: var(--space-2); }
+.stage-detail-lines { margin: 0; padding: 0; border-top: none; }
+.stage-detail-heading {
+  margin: 0 0 var(--space-1);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.stage-detail-scroll { overflow-x: auto; max-width: 100%; }
+.stage-detail-table {
+  border-collapse: collapse;
+  font-size: 12px;
+  min-width: 20rem;
+}
+.stage-detail-table th,
+.stage-detail-table td {
+  text-align: left;
+  padding: 2px var(--space-2) 2px 0;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.stage-detail-table th { font-weight: 600; color: var(--muted); }
+
+/* ---- "Live output" panel under the detail disclosure (stage-rail.js) ----
+ * Real pipeline output (the current phase's sidecar tail): monospace rows in
+ * a bounded-height container with LOCAL vertical scroll (auto-stick to
+ * newest). Hidden entirely when the server sent no rows. */
+.stage-output { margin-top: var(--space-2); }
+.stage-output-heading {
+  margin: 0 0 var(--space-1);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.stage-output-scroll {
+  max-height: 300px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 6px);
+  padding: var(--space-1) var(--space-2);
+}
+.stage-output-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.stage-output-row {
+  font-family: var(--mono, monospace);
+  font-size: 12px;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+.stage-output-label { color: var(--muted); margin-right: var(--space-1); }
 
 /* ---- run history (Studio #/runs) ---- */
 .run-history-list { list-style: none; margin: var(--space-3) 0 0; padding: 0; }

@@ -153,6 +153,13 @@ button[disabled] { opacity: 0.55; cursor: not-allowed; }
   background: #fdecea;
   color: #922b21;
 }
+/* Run-history "CLI" badge (source: "cli" orchestrator runs) — neutral tint
+ * over the shared .card-badge base (which defaults to the green --ok tone);
+ * the badge always carries the literal text "CLI", never colour alone. */
+.card-badge.cli-badge {
+  border-color: var(--muted);
+  color: var(--muted);
+}
 
 /* ---- Card actions (scorecard + delete) ---- */
 .card-li { position: relative; display: flex; flex-direction: column; }
@@ -935,3 +942,303 @@ details.advanced summary:focus-visible { outline: 3px solid var(--focus); outlin
   .dash-recent-list .card,
   .persona-switcher a { transition: none; }
 }
+
+/* ===================================================================== */
+/* System health section (Dashboard #/ — in-process ed4all doctor)       */
+/* ===================================================================== */
+.health-body { margin: 0.25rem 0 0; }
+
+.health-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin: 0 0 0.5rem;
+}
+.health-banner {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.4rem 0.8rem;
+  border: 1px solid var(--border);
+  border-left-width: 4px;
+  border-radius: var(--radius-card, 8px);
+}
+.health-banner.health-ok   { border-left-color: var(--gate-pass); }
+.health-banner.health-warn { border-left-color: var(--gate-warn); }
+.health-banner.health-fail { border-left-color: var(--gate-fail); }
+.health-banner-label { font-weight: 600; }
+.health-banner-counts { font-size: 0.9rem; }
+.health-updated { margin: 0 0 1rem; font-size: 0.85rem; }
+
+.health-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 1rem;
+}
+.health-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card, 8px);
+  padding: 0.75rem 0.9rem;
+  background: var(--panel, transparent);
+}
+.health-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin: 0 0 0.5rem;
+}
+.health-card-title { margin: 0; font-size: 1rem; text-transform: capitalize; }
+
+.health-checks { list-style: none; margin: 0; padding: 0; }
+.health-check { padding: 0.3rem 0; border-top: 1px solid var(--border); }
+.health-check:first-child { border-top: 0; }
+.health-check-row { display: flex; align-items: baseline; gap: 0.5rem; }
+.health-check-summary { flex: 1; }
+.health-check-more { margin: 0.25rem 0 0 0.25rem; }
+.health-check-more summary { cursor: pointer; font-size: 0.85rem; color: var(--accent); }
+.health-remediation { margin: 0.35rem 0 0; font-size: 0.9rem; }
+.health-detail { margin: 0.25rem 0 0; font-size: 0.85rem; white-space: pre-wrap; }
+
+@media (prefers-reduced-motion: reduce) {
+  .health-cards .health-card { transition: none; }
+}
+
+/* ------------------------------------------------------------------- */
+/* Build-progress run-health strip + Debug panel (create.js).          */
+/* Deliberately quiet — visually subordinate to the stage tracker; the */
+/* finding rows reuse the .health-check-* rules above verbatim.        */
+/* ------------------------------------------------------------------- */
+
+.run-health { margin: 1rem 0 0; }
+.run-health-strip {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+}
+.run-health-label { color: var(--muted); }
+.run-debug-panel {
+  margin: 0.6rem 0 0;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.run-debug-title { margin: 0 0 0.35rem; font-size: 1.05rem; }
+.run-debug-state { margin: 0 0 0.5rem; }
+.run-debug-assistant-hint { margin: 0.75rem 0 0.25rem; }
+
+/* Course/book name in the run meta line (plain text, no color signal). */
+.run-course-name { font-weight: 600; }
+
+/* ------------------------------------------------------------------- */
+/* Global preflight "Pipeline health" panel (create.js                  */
+/* mountPipelineHealthPanel): a quiet, collapsible host/environment      */
+/* doctor mounted below the viewed run's rail. The follow-on LoRA-       */
+/* training (Stage-B) phases now render inside the SINGLE merged rail as */
+/* a trailing "training" group — reusing the normal rail node styles     */
+/* (.stage-node.is-pending etc.), so no segregated band chrome remains.  */
+/* ------------------------------------------------------------------- */
+
+/* Global preflight health panel — quiet, collapsible; matches the      */
+/* run-debug-panel chrome so both doctor surfaces read as one system.   */
+.pipeline-health { margin: 0.75rem 0 0; }
+.pipeline-health-panel {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card, 8px);
+  padding: 0.5rem 0.9rem;
+}
+.pipeline-health-summary {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+}
+.pipeline-health-label { color: var(--muted); }
+.pipeline-health-body { margin: 0.6rem 0 0; }
+
+/* ===================================================================== */
+/* vLLM seat monitor (seats.js) — the Dashboard "Model seats" section    */
+/* AND the build page's seat strip. Same markup on both surfaces, so     */
+/* one rule set styles both. Every state is carried by TEXT (the pill's  */
+/* glyph+label plus the plain state word); the border tints below are a  */
+/* redundant cue only — never the sole signal (WCAG 1.4.1).             */
+/* ===================================================================== */
+
+.seat-monitor { margin: 0.6rem 0 0; }
+.dash-zone.seat-zone .seat-monitor { margin-top: 0.25rem; }
+
+.seat-strip {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.seat-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  padding: 0.25rem 0.65rem;
+  border: 1px solid var(--border);
+  border-left-width: 4px;
+  border-radius: var(--radius-pill, 999px);
+  background: var(--panel, transparent);
+  font-size: 0.9rem;
+}
+.seat-chip[data-state="live"]    { border-left-color: var(--gate-pass); }
+.seat-chip[data-state="loading"] { border-left-color: var(--accent); }
+.seat-chip[data-state="down"]    { border-left-color: var(--gate-warn); }
+.seat-chip[data-state="unknown"] { border-left-color: var(--border); }
+.seat-chip.seat-chip-missing     { border-left-color: var(--gate-fail); }
+
+.seat-chip-name { font-weight: 600; }
+.seat-chip-state { color: var(--muted); }
+.seat-chip-flag {
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.seat-mismatch {
+  margin: 0 0 0.5rem;
+  padding: 0.4rem 0.7rem;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--gate-fail);
+  border-radius: var(--radius-card, 8px);
+  font-size: 0.9rem;
+}
+.seat-mismatch-glyph { font-weight: 700; }
+.seat-note,
+.seat-empty { margin: 0.4rem 0 0; font-size: 0.85rem; }
+
+/* Seat-swap / cold-start annotation on the stage rail (create.js
+ * applySeatActivity). Subordinate to the rail, distinct from a phase's own
+ * progress. PATIENT (loading) uses the accent rule; ALARMING (down / mismatch)
+ * escalates to the fail rule — the distinction is carried by the sentence + the
+ * ⚠ glyph too, never by color alone (WCAG 1.4.1). */
+.stage-seatwait {
+  margin: 0.4rem 0 0;
+  padding: 0.4rem 0.7rem;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent);
+  border-radius: var(--radius-card, 8px);
+  font-size: 0.9rem;
+}
+.stage-seatwait.stage-seatwait-concern { border-left-color: var(--gate-fail); }
+.stage-seatwait-glyph { font-weight: 700; }
+
+/* ===================================================================== */
+/* Assistant chat panel (#/assistant)                                    */
+/* ===================================================================== */
+
+.assistant-intro { max-width: 46rem; }
+
+.assistant-status { margin: 0 0 1rem; }
+.assistant-pill {
+  display: inline-block;
+  padding: 0.15rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill, 999px);
+  font-size: 0.85rem;
+  background: var(--panel);
+  color: var(--muted);
+}
+.assistant-pill.is-ok { color: var(--ok); border-color: var(--ok); }
+.assistant-pill.is-down { color: var(--error-fg); border-color: var(--error-fg); }
+
+/* "Seat model" action beside the pill — a real <button>; its busy state is
+   text ("Seating nano…") + aria-busy, never a color-only signal. */
+.assistant-seat-btn { margin-left: 0.6rem; vertical-align: middle; }
+.assistant-seat-note {
+  max-width: 46rem;
+  margin: -0.6rem 0 1rem;
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+.assistant-seat-note.error { color: var(--error-fg); }
+
+.assistant-toolbar { max-width: 46rem; margin: 0 0 0.8rem; }
+
+.chat-log {
+  max-width: 46rem;
+  max-height: 55vh;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card, 8px);
+  padding: 0.8rem;
+  background: var(--bg);
+}
+.chat-empty { margin: 0; }
+
+.chat-msg {
+  margin: 0 0 0.8rem;
+  padding: 0.5rem 0.7rem;
+  border-radius: var(--radius-card, 8px);
+}
+.chat-msg:last-child { margin-bottom: 0; }
+.chat-user { background: var(--selected-bg); }
+.chat-assistant { background: var(--panel); }
+.chat-error { border: 1px solid var(--error-fg); }
+/* System-style debug-context banner — --warn/--panel exist in both themes. */
+.chat-banner {
+  background: var(--panel);
+  border-left: 3px solid var(--warn);
+}
+.chat-banner .chat-role { color: var(--warn); }
+.chat-role {
+  margin: 0 0 0.2rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+.chat-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat-thinking { margin: 0.2rem 0 0.8rem; }
+/* Per-reply seat/model badge (S11) — --muted is theme-aware (light + dark). */
+.assistant-seat-badge {
+  display: inline-block;
+  margin: 0.35rem 0 0;
+  font-size: 0.75rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.tool-trace { margin: 0.5rem 0 0; font-size: 0.9rem; }
+.tool-trace summary { cursor: pointer; color: var(--accent); }
+.tool-trace summary:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.tool-call {
+  margin: 0.5rem 0 0;
+  padding: 0.4rem 0.6rem;
+  border-left: 3px solid var(--border);
+}
+.tool-name { margin: 0 0 0.3rem; }
+.tool-label { margin: 0.3rem 0 0.1rem; font-size: 0.8rem; font-weight: 600; color: var(--muted); }
+.tool-pre {
+  margin: 0;
+  padding: 0.3rem 0.5rem;
+  background: var(--panel);
+  border-radius: 4px;
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 14rem;
+  overflow-y: auto;
+}
+
+.chat-form { max-width: 46rem; margin-top: 0.8rem; display: flex; flex-direction: column; gap: 0.5rem; }
+.chat-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card, 8px);
+  font: inherit;
+  resize: vertical;
+}
+.chat-input:focus-visible { outline: 3px solid var(--focus); outline-offset: 1px; }
+.chat-actions { display: flex; justify-content: flex-end; gap: 0.6rem; }

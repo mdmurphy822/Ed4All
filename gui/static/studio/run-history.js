@@ -28,6 +28,16 @@ import { timelineBar } from '/shared/components/timeline-bar.js';
 
 const TERMINAL = new Set(['completed', 'failed', 'cancelled', 'interrupted', 'canceled', 'error']);
 
+// Honest meta-line labels for the non-terminal effective_status values the
+// server derives (gui/services/liveness.py). Anything else non-terminal reads
+// as "building".
+const NONTERMINAL_META = {
+  paused: 'paused',
+  stopping: 'stopping',
+  incomplete: 'incomplete',
+  'stalled?': 'stalled?',
+};
+
 export async function renderRunHistory(shell) {
   shell.crumbs([{ text: 'Library', href: '#/library' }, { text: 'Run history' }]);
   const v = clear(shell.view());
@@ -67,27 +77,49 @@ export async function renderRunHistory(shell) {
 /** One run entry: a runCard + (when present) a timelineBar + actions. */
 function runHistoryEntry(shell, r) {
   const runId = r.run_id || r.runId || r.id || '';
-  const status = normalizeStatus(r.status || '');
+  // Prefer the server-derived honest state (gui/services/liveness.py): a stale
+  // RUNNING record renders incomplete / stopping / stalled? / paused instead of
+  // "Building" forever. Falls back to the raw status for older payloads.
+  const effStatus = String(r.effective_status || r.status || '').toLowerCase();
+  const status = normalizeStatus(effStatus);
   const workflow = r.workflow || r.workflow_name || '';
-  const isTerminal = TERMINAL.has(r.status || '');
+  const isTerminal = TERMINAL.has(effStatus) || TERMINAL.has(String(r.status || '').toLowerCase());
+  const isCli = r.source === 'cli';
 
-  // Meta line: workflow + total duration (from persisted phase_durations).
+  // Meta line: workflow + total duration (from persisted phase_durations) +
+  // when the run was last updated (created_at fallback).
   const durs = Array.isArray(r.phase_durations) ? r.phase_durations : [];
   const totalMs = durs.reduce((s, p) => s + Math.max(0, Number(p.duration_ms) || 0), 0);
   const metaParts = [workflow].filter(Boolean);
   if (totalMs > 0) metaParts.push(fmtDur(totalMs));
-  else if (!isTerminal) metaParts.push('building');
+  // A non-terminal run is not necessarily "building" — a paused run is
+  // resumable, a stopping run is draining to a checkpoint, an incomplete run's
+  // process is gone, a stalled? run is ambiguous. Label them honestly.
+  else if (!isTerminal) metaParts.push(NONTERMINAL_META[effStatus] || 'building');
+  const when = fmtWhen(r.updated_at || r.created_at);
+  if (when) metaParts.push(when);
 
   const wrap = el('div', { class: 'run-history-entry' });
 
   // The card (re-attach link is the card href for a still-running build; a
-  // terminal run links to its frozen progress view too).
+  // terminal run links to its frozen progress view too — CLI-launched ids
+  // resolve through the same route via create.js's unknown_run /progress
+  // fallback).
   const card = runCard({
     title: r.course_name || runId,
     status,
     href: runId ? `#/create/${encodeURIComponent(runId)}` : undefined,
     meta: metaParts.join(' · '),
   });
+  // CLI-launched orchestrator run (source: "cli") — badge it so the operator
+  // knows it was started outside the Studio (no build console / cancel here).
+  if (isCli) {
+    card.appendChild(el('span', {
+      class: 'card-badge cli-badge',
+      text: 'CLI',
+      title: 'Launched from the command line (ed4all run)',
+    }));
+  }
   wrap.appendChild(card);
 
   // The persisted timeline bar (run-history phase durations) when we have them.
@@ -151,6 +183,16 @@ function normalizeStatus(s) {
   if (s === 'error') return 'failed';
   if (s === 'requested') return 'queued';
   return s || 'queued';
+}
+
+/** Short local date/time for the meta line ('' when unparsable). */
+function fmtWhen(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleString(undefined, {
+    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+  });
 }
 
 function fmtDur(ms) {

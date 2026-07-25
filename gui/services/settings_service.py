@@ -21,8 +21,10 @@ from typing import Any, Dict, Optional
 
 from gui import env_catalog, settings_store
 
-# Default base URL for the local OpenAI-compatible server (Ollama et al.) when
-# neither os.environ nor the settings env block names one.
+# Default base URL for the local OpenAI-compatible server when neither
+# os.environ nor the settings env block names one. Port 11434 is Ollama's
+# default; a vLLM / llama.cpp / LM Studio deployment overrides
+# LOCAL_SYNTHESIS_BASE_URL to its own host:port.
 _DEFAULT_LOCAL_BASE_URL = "http://localhost:11434/v1"
 
 # Short network timeout (seconds) for live reachability probes so a stuck
@@ -55,7 +57,8 @@ def build_settings_payload() -> Dict[str, Any]:
 # The env-catalog categories a non-developer Studio user needs to see + edit:
 # their cloud-provider keys, the global LLM mode/provider/model, the
 # grounded-answer (ask) backend, and the local server wiring (so an air-gapped
-# Ollama lattice can be pointed at). The full operator catalog (conversion /
+# local model server — vLLM / Ollama / llama.cpp — can be pointed at). The full
+# operator catalog (conversion /
 # per-tier Courseforge / Trainforge / embedding knobs) is intentionally hidden from
 # Studio. ``model_routing`` tasks the page edits map to the same canonical env
 # vars via ``ROUTING_ENV_MAP`` — the page writes routing, never raw env, so a
@@ -374,91 +377,181 @@ def _test_key_presence(
     )
 
 
-# ----------------------------------------------------------------- ollama models
+# ----------------------------------------------------- local model discovery
 
 
-def list_ollama_models() -> Dict[str, Any]:
-    """Discover models installed on the local Ollama server (REAL, live probe).
+def _local_server_root(settings_env: Dict[str, Any]) -> str:
+    """Resolve the local model server's ROOT host URL (no trailing ``/`` or ``/v1``).
 
-    The Ollama host is derived from ``LOCAL_SYNTHESIS_BASE_URL`` (the ``local``
-    provider's base URL, e.g. ``http://localhost:11434/v1``) by stripping a
-    trailing ``/v1`` — Ollama's native tags API lives at ``/api/tags`` on the
-    bare host, NOT under the OpenAI-compat ``/v1`` prefix. Issues a short-timeout
-    ``GET <host>/api/tags`` and returns::
-
-        {"available": bool, "models": [<name>, ...], "detail": str, "host": str}
-
-    Graceful on any connection failure (refused / timeout / DNS / HTTP error /
-    bad JSON): ``available=False``, ``models=[]`` and a human-readable
-    ``detail``. This powers the live model dropdowns in the GUI — a real
-    discovery, never a hardcoded list.
+    Base URL from ``LOCAL_SYNTHESIS_BASE_URL`` (or the default). The seat-registry
+    convention is a bare host root (``http://localhost:8001``) while some envs
+    carry the OpenAI-client ``/v1`` form (``http://localhost:11434/v1``). Both
+    resolve to the same ROOT here so the caller can compose ``/v1/models`` and
+    ``/api/tags`` from it without ever doubling the ``/v1`` suffix.
     """
-    settings_env = _settings_env()
     base_url = (
         _resolve_env_value("LOCAL_SYNTHESIS_BASE_URL", settings_env)
         or _DEFAULT_LOCAL_BASE_URL
     )
-    # Strip a trailing ``/v1`` (Ollama OpenAI-compat prefix) to reach the host
-    # root that serves ``/api/tags``.
-    host = base_url.rstrip("/")
-    if host.endswith("/v1"):
-        host = host[: -len("/v1")]
-    url = host + "/api/tags"
+    root = str(base_url).rstrip("/")
+    if root.endswith("/v1"):
+        root = root[: -len("/v1")].rstrip("/")
+    return root
 
+
+def _http_get_json(url: str, key: Optional[str]) -> Any:
+    """Bounded ``GET url`` returning parsed JSON, or raising on any failure.
+
+    Never used at module scope — every caller wraps it in try/except and degrades
+    gracefully. Raises so the caller can distinguish reachable-but-bad from
+    unreachable in its own vendor-neutral detail message.
+    """
     import json as _json  # noqa: PLC0415
-    import urllib.error  # noqa: PLC0415
     import urllib.request  # noqa: PLC0415
 
     request = urllib.request.Request(url, method="GET")
-    key = _resolve_env_value("LOCAL_SYNTHESIS_API_KEY", settings_env)
     if key:
         request.add_header("Authorization", f"Bearer {key}")
+    with urllib.request.urlopen(request, timeout=_PROBE_TIMEOUT_S) as response:  # noqa: S310
+        return _json.loads(response.read().decode("utf-8"))
 
+
+def _probe_openai_models(root: str, key: Optional[str]) -> Dict[str, Any]:
+    """Probe the OpenAI-compatible ``GET {root}/v1/models`` (vLLM / Ollama / …).
+
+    Returns ``{"ok": bool, "models": [<id>, ...], "detail": str}``. ``ok`` is True
+    when the endpoint answered with a parseable body (even if the model list is
+    empty). Never raises. The ``/v1`` suffix is composed from the ROOT here, so it
+    is never doubled.
+    """
+    url = root + "/v1/models"
     try:
-        with urllib.request.urlopen(request, timeout=_PROBE_TIMEOUT_S) as response:  # noqa: S310
-            raw = response.read()
-    except urllib.error.HTTPError as exc:
-        return {
-            "available": False,
-            "models": [],
-            "detail": f"GET {url} returned HTTP {exc.code}.",
-            "host": host,
-        }
-    except Exception as exc:  # noqa: BLE001 — connection refused / timeout / DNS
-        return {
-            "available": False,
-            "models": [],
-            "detail": f"GET {url} failed: {type(exc).__name__}: {exc}",
-            "host": host,
-        }
+        payload = _http_get_json(url, key)
+    except Exception as exc:  # noqa: BLE001 — refused / timeout / DNS / HTTP / bad JSON
+        return {"ok": False, "models": [], "detail": f"GET {url} failed: {type(exc).__name__}: {exc}"}
+    # OpenAI ``/v1/models`` shape: {"data": [{"id": "nemotron-3-super", ...}, ...]}.
+    data = payload.get("data") if isinstance(payload, dict) else None
+    models: list = []
+    if isinstance(data, list):
+        for item in data:
+            ident = item.get("id") if isinstance(item, dict) else item
+            if ident:
+                models.append(str(ident))
+    return {"ok": True, "models": models, "detail": f"GET {url} returned {len(models)} model(s)."}
 
+
+def _probe_ollama_tags(root: str, key: Optional[str]) -> Dict[str, Any]:
+    """Probe Ollama's native ``GET {root}/api/tags`` (Ollama-specific fallback).
+
+    Returns ``{"ok": bool, "models": [<name>, ...], "detail": str}``. Ollama's
+    tags API lives on the bare host root, NOT under the OpenAI-compat ``/v1``
+    prefix. Never raises.
+    """
+    url = root + "/api/tags"
     try:
-        payload = _json.loads(raw.decode("utf-8"))
-    except Exception as exc:  # noqa: BLE001 — non-JSON body
-        return {
-            "available": False,
-            "models": [],
-            "detail": f"GET {url} returned non-JSON body: {exc}",
-            "host": host,
-        }
-
+        payload = _http_get_json(url, key)
+    except Exception as exc:  # noqa: BLE001 — refused / timeout / DNS / HTTP / bad JSON
+        return {"ok": False, "models": [], "detail": f"GET {url} failed: {type(exc).__name__}: {exc}"}
     # Ollama ``/api/tags`` shape: {"models": [{"name": "llava:13b", ...}, ...]}.
     raw_models = payload.get("models") if isinstance(payload, dict) else None
-    models = []
+    models: list = []
     if isinstance(raw_models, list):
         for item in raw_models:
-            if isinstance(item, dict):
-                name = item.get("name") or item.get("model")
-            else:
-                name = item
+            name = (item.get("name") or item.get("model")) if isinstance(item, dict) else item
             if name:
                 models.append(str(name))
+    return {"ok": True, "models": models, "detail": f"GET {url} returned {len(models)} model(s)."}
+
+
+def list_local_models() -> Dict[str, Any]:
+    """Discover models on the local model server (protocol-first, REAL live probe).
+
+    Backend-agnostic. The local server may be vLLM, Ollama, llama.cpp, LM Studio,
+    or any other OpenAI-compatible server. Discovery is PROTOCOL-FIRST, not
+    vendor-first: it probes the OpenAI-compatible ``GET {root}/v1/models`` FIRST
+    (every one of the above serves it) and falls back to Ollama's native
+    ``GET {root}/api/tags`` only when the OpenAI path fails or returns nothing.
+
+    The host root comes from ``LOCAL_SYNTHESIS_BASE_URL`` (or the default). A
+    trailing ``/v1`` on that base URL is detected and never doubled into
+    ``/v1/v1/models`` (the seat-registry convention is a bare host root, but some
+    envs carry the OpenAI-client ``/v1`` form). Returns::
+
+        {"available": bool, "models": [<id>, ...], "detail": str,
+         "host": str, "backend": "openai-compatible"|"ollama"|None}
+
+    ``backend`` names what actually ANSWERED so the UI can report it. Graceful on
+    any connection failure (refused / timeout / DNS / HTTP error / bad JSON):
+    ``available=False``, ``models=[]``, ``backend=None`` and a human-readable,
+    vendor-neutral ``detail``. Powers the live model dropdowns in the GUI — a
+    real discovery, never a hardcoded list.
+    """
+    settings_env = _settings_env()
+    root = _local_server_root(settings_env)
+    key = _resolve_env_value("LOCAL_SYNTHESIS_API_KEY", settings_env)
+
+    # Protocol-first: the OpenAI-compatible endpoint (served by vLLM AND Ollama).
+    v1 = _probe_openai_models(root, key)
+    if v1["ok"] and v1["models"]:
+        return {
+            "available": True,
+            "models": v1["models"],
+            "detail": v1["detail"],
+            "host": root,
+            "backend": "openai-compatible",
+        }
+
+    # Vendor fallback: Ollama's native tags API (only when the OpenAI path failed
+    # or returned nothing).
+    tags = _probe_ollama_tags(root, key)
+    if tags["ok"] and tags["models"]:
+        return {
+            "available": True,
+            "models": tags["models"],
+            "detail": tags["detail"],
+            "host": root,
+            "backend": "ollama",
+        }
+
+    # Reachable but empty: prefer the protocol-first backend when it answered.
+    if v1["ok"]:
+        return {
+            "available": True,
+            "models": [],
+            "detail": v1["detail"],
+            "host": root,
+            "backend": "openai-compatible",
+        }
+    if tags["ok"]:
+        return {
+            "available": True,
+            "models": [],
+            "detail": tags["detail"],
+            "host": root,
+            "backend": "ollama",
+        }
+
+    # Neither endpoint answered — a genuinely unreachable local server. The
+    # detail names both probes and the base URL, blaming no specific vendor.
     return {
-        "available": True,
-        "models": models,
-        "detail": f"GET {url} returned {len(models)} model(s).",
-        "host": host,
+        "available": False,
+        "models": [],
+        "detail": (
+            f"Local model server not reachable at {root} "
+            f"({v1['detail']}; {tags['detail']})."
+        ),
+        "host": root,
+        "backend": None,
     }
+
+
+def list_ollama_models() -> Dict[str, Any]:
+    """Deprecated alias for :func:`list_local_models` (kept for external callers).
+
+    Backend discovery is now protocol-first and vendor-neutral; this alias simply
+    delegates so nothing that imported the old name breaks.
+    """
+    return list_local_models()
 
 
 # --------------------------------------------------------------------- helpers
@@ -473,5 +566,6 @@ __all__ = [
     "build_settings_payload",
     "build_studio_settings_payload",
     "test_provider",
+    "list_local_models",
     "list_ollama_models",
 ]

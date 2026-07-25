@@ -16,9 +16,10 @@ import { $, el, clear, uid } from '/shared/dom.js';
 import { toast, toastErr } from '/shared/toast.js';
 import { createRouter } from '/shared/router.js';
 import { createAskDrawer } from '/studio/drawer.js';
-import { renderCreate } from '/studio/create.js';
+import { renderCreate, renderLiveRun } from '/studio/create.js';
 import { renderSettings } from '/studio/settings.js';
 import { renderRunHistory } from '/studio/run-history.js';
+import { renderAssistant } from '/studio/assistant.js';
 import { renderDashboard } from '/studio/dashboard.js';
 import { initPersonaSwitcher } from '/studio/persona-switcher.js';
 
@@ -831,10 +832,18 @@ const router = createRouter(
     // from any dashboard run card — not only mid-wizard. Delegates to the same
     // create.js progress renderer (it branches on a run_id in segments[0]).
     build: (segments, raw) => renderCreate(shell, segments, raw),
+    // Live run (#/live): thin resolver — finds the currently running workflow
+    // in the merged run list and delegates to the SAME build-progress view
+    // (create.js renderLiveRun → renderProgress); honest empty state when
+    // nothing is live.
+    live: () => renderLiveRun(shell),
     settings: (segments, raw) => renderSettings(shell, segments, raw),
     // Run History (Phase 4 §5.1(F)): reachable via the EXISTING studio router —
     // NO Phase-2 auth remount, NO route/auth change.
     runs: () => renderRunHistory(shell),
+    // Assistant chat panel (#/assistant): a pure front-end over the
+    // engine-sandboxed /api/assistant endpoints.
+    assistant: () => renderAssistant(shell),
   },
   {
     // #/ (empty hash) lands on the Author Dashboard.

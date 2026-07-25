@@ -302,7 +302,7 @@ _FIELD_INNER = (
     '<div class="field field-row">'
     '<label class="field-label" for="fr-2">Outline course model</label>'
     '<select id="fr-2" name="outline_provider" aria-describedby="fr-2-h">'
-    '<option value="local" selected="">Ollama (local)</option>'
+    '<option value="local" selected="">Local model server (OpenAI-compatible)</option>'
     '<option value="anthropic">Anthropic (Claude)</option></select>'
     '<p id="fr-2-h" class="field-hint">The AI provider that drafts the course outline.</p>'
     '<p class="error field-error" role="alert" hidden=""></p>'
