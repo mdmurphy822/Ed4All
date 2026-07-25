@@ -90,7 +90,14 @@ function runHistoryEntry(shell, r) {
   // when the run was last updated (created_at fallback).
   const durs = Array.isArray(r.phase_durations) ? r.phase_durations : [];
   const totalMs = durs.reduce((s, p) => s + Math.max(0, Number(p.duration_ms) || 0), 0);
-  const metaParts = [workflow].filter(Boolean);
+  // A `courseforge-*` stage subcommand mints its OWN workflow id + orchestrator
+  // run id, so it lands as a separate row whose rail/stats come from a
+  // 2-checkpoint run dir — visually a near-empty build of a course that is in
+  // fact far along. Label it as the scoped re-run it is, and name the build it
+  // belongs to, so it is never read as a broken build. `workflow` is
+  // `textbook_to_course` for BOTH, so `stage` is the only discriminator.
+  const stage = typeof r.stage === 'string' && r.stage.trim() ? r.stage.trim() : '';
+  const metaParts = [stage ? `${workflow} · ${stage.replace(/_/g, '-')}` : workflow].filter(Boolean);
   if (totalMs > 0) metaParts.push(fmtDur(totalMs));
   // A non-terminal run is not necessarily "building" — a paused run is
   // resumable, a stopping run is draining to a checkpoint, an incomplete run's
@@ -120,7 +127,31 @@ function runHistoryEntry(shell, r) {
       title: 'Launched from the command line (ed4all run)',
     }));
   }
+  // Stage badge + parent-build association. Text, never colour-only.
+  if (stage) {
+    const parent = typeof r.parent_run_id === 'string' ? r.parent_run_id : '';
+    card.appendChild(el('span', {
+      class: 'card-badge stage-badge',
+      text: 'stage',
+      title: parent
+        ? `Scoped re-run (${stage.replace(/_/g, '-')}) over the build ${parent} — `
+          + 'its own phase stats cover only the re-run phases, not the whole course.'
+        : `Scoped re-run (${stage.replace(/_/g, '-')}) — its phase stats cover `
+          + 'only the re-run phases, not the whole course.',
+    }));
+  }
   wrap.appendChild(card);
+
+  // Name the parent build so a stage run is never read as an orphan.
+  if (stage && typeof r.parent_run_id === 'string' && r.parent_run_id) {
+    const line = el('div', { class: 'run-history-parent' });
+    line.appendChild(document.createTextNode('part of build '));
+    line.appendChild(el('a', {
+      href: `#/create/${encodeURIComponent(r.parent_run_id)}`,
+      text: r.parent_run_id,
+    }));
+    wrap.appendChild(line);
+  }
 
   // The persisted timeline bar (run-history phase durations) when we have them.
   if (durs.length) {

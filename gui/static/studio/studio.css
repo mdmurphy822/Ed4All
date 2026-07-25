@@ -161,6 +161,22 @@ button[disabled] { opacity: 0.55; cursor: not-allowed; }
   color: var(--muted);
 }
 
+/* Run-history "stage" badge — a `courseforge-*` scoped re-run, which mints its
+ * own workflow + orchestrator run id and therefore shows phase stats covering
+ * only the re-run phases. Neutral tint over the shared .card-badge base; the
+ * badge always carries the literal text "stage", never colour alone. */
+.card-badge.stage-badge {
+  border-color: var(--muted);
+  color: var(--muted);
+}
+/* "part of build <id>" association line under a stage run's card. */
+.run-history-parent {
+  margin-top: 0.25rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+.run-history-parent a { color: inherit; }
+
 /* ---- Card actions (scorecard + delete) ---- */
 .card-li { position: relative; display: flex; flex-direction: column; }
 .card-li .card { flex: 1; }

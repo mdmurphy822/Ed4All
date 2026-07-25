@@ -2092,6 +2092,57 @@ def phase_duration_medians(workflow: str) -> Dict[str, Any]:
     return {"workflow": name, "durations": durations, "source": source}
 
 
+def _run_stage(record: Dict[str, Any]) -> Optional[str]:
+    """Resolve a record's stage-subcommand identity, or ``None`` for a build.
+
+    CLI records carry it from the `courseforge_stage` param; a GUI-launched
+    stage run carries it as the requested `workflow` name. Both collapse to
+    the same vocabulary so the frontend has one field to read.
+    """
+    stage = record.get("stage")
+    if isinstance(stage, str) and stage.strip():
+        return stage.strip()
+    # A GUI record may carry either spelling (the CLI subcommand is hyphenated,
+    # the registry tuple underscored), so normalise before the membership test.
+    workflow = str(record.get("workflow") or "").strip().replace("-", "_")
+    if workflow in COURSEFORGE_STAGE_SUBCOMMANDS:
+        return workflow
+    return None
+
+
+def _attach_run_lineage(runs: List[Dict[str, Any]]) -> None:
+    """Stamp `stage` / `course_group` / `parent_run_id` across a listing.
+
+    A `courseforge-*` stage subcommand mints its own workflow id AND its own
+    orchestrator run id, so it surfaces as an unrelated row whose rail and
+    stats are computed from its 2-checkpoint run dir — visually a broken build
+    of a course that is actually far along. Grouping restores the association:
+    a stage run points at the newest NON-stage build of the same course that
+    started at or before it.
+
+    Mutates in place. `runs` MUST already be newest-first (the caller sorts).
+    Honest-only: no parent is invented when none precedes the stage run —
+    `parent_run_id` stays ``None`` rather than pointing at an unrelated build.
+    """
+    for record in runs:
+        record["stage"] = _run_stage(record)
+        if not record.get("course_group"):
+            record["course_group"] = record.get("course_name") or None
+        record.setdefault("parent_run_id", None)
+
+    # Walk oldest-first so each stage run sees the builds that PRECEDE it.
+    newest_build_by_course: Dict[str, str] = {}
+    for record in reversed(runs):
+        course = record.get("course_group")
+        run_id = record.get("run_id")
+        if not course or not run_id:
+            continue
+        if record.get("stage"):
+            record["parent_run_id"] = newest_build_by_course.get(course)
+        else:
+            newest_build_by_course[course] = run_id
+
+
 def list_runs(limit: Optional[int] = None) -> List[Dict[str, Any]]:
     """Return GUI + CLI-launched run records, newest-first.
 
@@ -2139,6 +2190,7 @@ def list_runs(limit: Optional[int] = None) -> List[Dict[str, Any]]:
         key=lambda r: _parse_state_timestamp(r.get("created_at")) or datetime.min,
         reverse=True,
     )
+    _attach_run_lineage(runs)
     if limit is not None:
         if limit <= 0:
             return []
@@ -2282,6 +2334,18 @@ def _cli_workflow_run_record(
             state.get("completed_at") if status in _CLI_TERMINAL_STATUSES else None
         ),
         "source": "cli",
+        # Stage identity + course grouping. A `courseforge-*` stage subcommand
+        # mints its OWN workflow id + orchestrator run id, so it lands as a
+        # separate row whose rail/stats come from a 2-checkpoint run dir — it
+        # renders as a near-empty build of a course that is in fact far along.
+        # `stage` lets the GUI label it as a scoped re-run rather than a build,
+        # and `course_group` lets it be associated with its parent build.
+        # `state["type"]` is the canonical workflow for BOTH, so the stage is
+        # only recoverable from the `courseforge_stage` param.
+        "stage": (params.get("courseforge_stage") or None),
+        "course_group": params.get("course_name") or None,
+        # Filled by `_attach_run_lineage` once the whole listing is known.
+        "parent_run_id": None,
     }
 
 

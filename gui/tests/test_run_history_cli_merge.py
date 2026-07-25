@@ -248,3 +248,89 @@ def test_run_history_shows_when():
 def test_studio_css_carries_cli_badge_tint():
     css = STUDIO_CSS.read_text(encoding="utf-8")
     assert ".card-badge.cli-badge" in css
+
+
+# ---- stage identity + parent/course grouping ----------------------------
+#
+# A `courseforge-*` stage subcommand mints its OWN workflow id AND its own
+# orchestrator run id, so it surfaces as an unrelated row whose rail/stats come
+# from a 2-checkpoint run dir — visually a near-empty build of a course that is
+# in fact far along. These pin the association that makes it readable.
+
+def _rec(run_id, *, course, stage=None, created, workflow="textbook_to_course"):
+    return {
+        "run_id": run_id,
+        "workflow": workflow,
+        "course_name": course,
+        "course_group": course,
+        "stage": stage,
+        "created_at": created,
+        "source": "cli",
+    }
+
+
+def test_stage_run_points_at_preceding_build():
+    runs = [  # newest-first, as list_runs sorts them
+        _rec("WF-stage", course="c1", stage="courseforge_rewrite",
+             created="2026-07-25T08:00:00"),
+        _rec("WF-build", course="c1", created="2026-07-24T11:00:00"),
+    ]
+    run_service._attach_run_lineage(runs)
+    by_id = {r["run_id"]: r for r in runs}
+    assert by_id["WF-stage"]["stage"] == "courseforge_rewrite"
+    assert by_id["WF-stage"]["parent_run_id"] == "WF-build"
+    # A full build is never itself a stage, and never gets a parent.
+    assert by_id["WF-build"]["stage"] is None
+    assert by_id["WF-build"]["parent_run_id"] is None
+
+
+def test_stage_run_never_adopts_another_courses_build():
+    runs = [
+        _rec("WF-stage", course="c1", stage="courseforge_rewrite",
+             created="2026-07-25T08:00:00"),
+        _rec("WF-other", course="c2", created="2026-07-24T11:00:00"),
+    ]
+    run_service._attach_run_lineage(runs)
+    assert runs[0]["parent_run_id"] is None, "no build for c1 — invent nothing"
+
+
+def test_stage_run_with_no_preceding_build_has_no_parent():
+    """Honest-only: a LATER build must not be back-adopted as the parent."""
+    runs = [
+        _rec("WF-build", course="c1", created="2026-07-25T09:00:00"),
+        _rec("WF-stage", course="c1", stage="courseforge_rewrite",
+             created="2026-07-25T08:00:00"),
+    ]
+    run_service._attach_run_lineage(runs)
+    by_id = {r["run_id"]: r for r in runs}
+    assert by_id["WF-stage"]["parent_run_id"] is None
+
+
+def test_stage_run_binds_to_the_newest_preceding_build():
+    runs = [
+        _rec("WF-stage", course="c1", stage="courseforge_rewrite",
+             created="2026-07-25T08:00:00"),
+        _rec("WF-build-new", course="c1", created="2026-07-24T11:00:00"),
+        _rec("WF-build-old", course="c1", created="2026-07-20T11:00:00"),
+    ]
+    run_service._attach_run_lineage(runs)
+    assert runs[0]["parent_run_id"] == "WF-build-new"
+
+
+def test_gui_stage_run_derives_stage_from_workflow_name():
+    """A GUI-launched stage run carries it as the requested workflow name."""
+    rec = {
+        "run_id": "GUI-1", "workflow": "courseforge-rewrite",
+        "course_name": "c1", "created_at": "2026-07-25T08:00:00",
+        "source": "gui",
+    }
+    runs = [rec, _rec("WF-build", course="c1", created="2026-07-24T11:00:00")]
+    run_service._attach_run_lineage(runs)
+    assert rec["stage"] == "courseforge_rewrite"
+    assert rec["parent_run_id"] == "WF-build"
+
+
+def test_lineage_tolerates_records_missing_identity():
+    runs = [{"run_id": None}, {"course_name": None, "run_id": "x"}]
+    run_service._attach_run_lineage(runs)  # must not raise
+    assert runs[1]["parent_run_id"] is None
