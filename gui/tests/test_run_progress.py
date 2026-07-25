@@ -19,7 +19,9 @@ bounded tail of the OP2 ``llm_usage.jsonl`` tap. These tests pin:
 - the no-evidence → pending contract for env-conditional phases (the serving
   process env is never a skip prediction),
 - the consolidated section grouping (one generation header spanning the whole
-  authoring slice; every section header exactly once),
+  authoring slice; every section header exactly once) and the rail SECTION
+  order for the one sequenced build→training pipeline (conversion → planning →
+  generation → validation → packaging → archive → training → finalization),
 - resume RE-STAMP wall-clocks (identical started/completed timestamps)
   suppressed, never "0s", while a genuinely-fast phase keeps its real
   sub-second span ("<1s", never blank),
@@ -43,6 +45,37 @@ import pytest
 
 from gui import shared_state
 from gui.services import progress_service
+
+# The rail's canonical SECTION order for the one sequenced build→training
+# pipeline. The rail buckets phases by `group` in FIRST-OCCURRENCE order
+# (stage-rail.js::renderRail), so this list is the order the derived groups
+# must appear in — and a group must never appear twice, which would mean a
+# later phase rendering inside an earlier section.
+CANONICAL_GROUP_ORDER = [
+    "conversion",
+    "planning",
+    "generation",
+    "validation",
+    "packaging",
+    "archive",
+    "training",
+    "finalization",
+]
+
+
+def _rail_section_order(phases: List[Dict[str, Any]]) -> List[str]:
+    """Group sections in the order stage-rail.js::renderRail would render them.
+
+    Mirrors that function's bucketing EXACTLY: first occurrence of a `group`
+    creates its section; later phases of the same group join the existing
+    bucket wherever it already sits.
+    """
+    order: List[str] = []
+    for p in phases:
+        g = p.get("group") or "other"
+        if g not in order:
+            order.append(g)
+    return order
 
 
 @pytest.fixture(autouse=True)
@@ -262,6 +295,10 @@ def test_run_progress_happy_path(state_dir):
     assert _phase(payload, "inter_tier_validation")["group"] == "generation"
     assert _phase(payload, "packaging")["group"] == "packaging"
     assert _phase(payload, "libv2_archival")["group"] == "archive"
+    # finalization is genuinely LAST in the sequenced pipeline, so it owns its
+    # own trailing section — folding it into "archive" (whose first member is
+    # much earlier) would render it visually BEFORE the training tail.
+    assert _phase(payload, "finalization")["group"] == "finalization"
 
     # Usage totals + windowed throughput. The band's tok_s is AGGREGATE seat
     # throughput: 500 tokens over the ~100s wall span (first row ts → the
@@ -602,8 +639,7 @@ def test_generation_section_consolidated_grouping(state_dir):
     """Owner design: ONE generation section (single-pass phase + both tiers +
     inter-tier validators + assessment synthesis), post_rewrite_validation in
     validation, and the payload's group sequence renders each section header
-    exactly once: conversion → planning → generation → validation →
-    packaging → archive."""
+    exactly once, in the canonical pipeline order."""
     assert progress_service.phase_group("content_generation") == "generation"
     assert progress_service.phase_group("content_generation_outline") == "generation"
     assert progress_service.phase_group("inter_tier_validation") == "generation"
@@ -620,16 +656,17 @@ def test_generation_section_consolidated_grouping(state_dir):
     payload = progress_service.run_progress(run_id)
     groups = [p["group"] for p in payload["phases"]]
     collapsed = [g for i, g in enumerate(groups) if i == 0 or g != groups[i - 1]]
-    # Contiguous sections, each exactly once, in the canonical order.
-    assert collapsed == [
-        "conversion",
-        "planning",
-        "generation",
-        "validation",
-        "packaging",
-        "archive",
-    ]
+    # Contiguous sections, each exactly once, in the canonical order. Compared
+    # against the canonical order FILTERED to the groups this workflow's plan
+    # actually contains, so the assertion states the contract ("no group ever
+    # repeats, and sections appear in canonical order") rather than pinning
+    # which optional tail phases config/workflows.yaml currently declares.
+    assert collapsed == [g for g in CANONICAL_GROUP_ORDER if g in set(groups)]
     assert len(collapsed) == len(set(collapsed))
+    # ...and the rail's own first-occurrence bucketing yields the same order,
+    # i.e. no section is dragged backwards by a late phase joining an early
+    # bucket (see test_rail_section_order_for_sequenced_build_then_training).
+    assert _rail_section_order(payload["phases"]) == collapsed
     # Within-group phase order is the plan order. The single-pass
     # content_generation row is hidden on an evidence-free run (owner
     # design: generation starts at the outline tier); it appears only once
@@ -643,6 +680,59 @@ def test_generation_section_consolidated_grouping(state_dir):
     ]
     val = [p["name"] for p in payload["phases"] if p["group"] == "validation"]
     assert val == ["post_rewrite_validation"]
+
+
+def test_rail_section_order_for_sequenced_build_then_training():
+    """The rail's SECTION order for the sequenced build→training pipeline.
+
+    build→training is ONE pipeline: the training tail runs after archival and
+    finalization is genuinely last. Because the rail buckets by `group` in
+    FIRST-OCCURRENCE order, a group whose earliest phase sits early renders
+    early no matter what else it contains — so mapping `training` into
+    "generation" (or `finalization` into "archive", whose first member is
+    trainforge_assessment) would drag those post-build phases visually
+    BACKWARDS. This pins the grouping against the phase order itself rather
+    than against config/workflows.yaml, so it states the contract the rail
+    depends on even while the plan is being re-sequenced.
+    """
+    phase_order = [
+        "semantik_conversion",
+        "heading_judge",
+        "staging",
+        "chunking",
+        "objective_extraction",
+        "source_mapping",
+        "course_planning",
+        "concept_extraction",
+        "content_generation_outline",
+        "inter_tier_validation",
+        "content_generation_rewrite",
+        "assessment_synthesis",
+        "post_rewrite_validation",
+        "packaging",
+        "imscc_chunking",
+        "trainforge_assessment",
+        "training_synthesis",
+        "libv2_archival",
+        "vector_indexing",
+        "training",
+        "post_training_validation",
+        "evaluation",
+        "finalization",
+    ]
+    phases = [{"name": n, "group": progress_service.phase_group(n)} for n in phase_order]
+    sections = _rail_section_order(phases)
+    assert sections == CANONICAL_GROUP_ORDER
+    # Each section exactly once — the property that makes first-occurrence
+    # bucketing equal true execution order.
+    assert len(sections) == len(set(sections))
+    # No phase falls through to the catch-all bucket.
+    assert "other" not in sections
+    # The post-build tail is its own section, not a fold-back into an earlier
+    # one (the specific defect this test exists to prevent).
+    for name in ("training", "post_training_validation", "evaluation"):
+        assert progress_service.phase_group(name) == "training", name
+    assert progress_service.phase_group("finalization") == "finalization"
 
 
 def test_restore_restamp_suppressed_but_fast_phase_shown(state_dir):
@@ -1273,7 +1363,7 @@ def test_atomic_phases_stay_unmapped():
         assert name not in progress_service._PHASE_UNIT_SIDECARS, name
 
 
-# --------------------------------------------- trainforge_train (Stage-B)
+# ------------------------------- trainforge_train (the adapter-training tail)
 
 
 def test_trainforge_train_plan_renders_and_band_degrades(state_dir):
@@ -1292,8 +1382,13 @@ def test_trainforge_train_plan_renders_and_band_degrades(state_dir):
     payload = progress_service.run_progress(run_id)
     names = [p["name"] for p in payload["phases"]]
     assert names == ["training", "post_training_validation"]
-    assert _phase(payload, "training")["group"] == "generation"
-    assert _phase(payload, "post_training_validation")["group"] == "validation"
+    # Both phases sit in the post-build "training" section. The train phase
+    # used to map to "generation" and its validator to "validation" — two
+    # groups whose first occurrence in the BUILD plan is far earlier, which
+    # rendered the training tail inside those earlier sections once the two
+    # plans render on one rail.
+    assert _phase(payload, "training")["group"] == "training"
+    assert _phase(payload, "post_training_validation")["group"] == "training"
     assert payload["current_phase"] == "training"
     # No llm_usage.jsonl for a training run → honest nulls, nothing invented.
     stats = payload["stats"]

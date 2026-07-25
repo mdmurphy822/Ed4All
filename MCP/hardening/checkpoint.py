@@ -24,6 +24,17 @@ from lib.secure_paths import sanitize_path_component  # noqa: E402
 logger = logging.getLogger(__name__)
 
 
+def _duration_seconds(start_iso: Optional[str], end_iso: Optional[str]) -> float:
+    """Seconds between two ISO timestamps; 0.0 if either is unusable."""
+    if not start_iso or not end_iso:
+        return 0.0
+    try:
+        delta = datetime.fromisoformat(end_iso) - datetime.fromisoformat(start_iso)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, delta.total_seconds())
+
+
 @dataclass
 class PhaseCheckpoint:
     """Checkpoint state for a workflow phase."""
@@ -42,6 +53,18 @@ class PhaseCheckpoint:
     validation_results: Dict[str, Any] = field(default_factory=dict)
     error: Optional[str] = None
     error_details: Optional[Dict[str, Any]] = None
+    # Wall-clock accounting ACROSS resume segments. ``started_at`` is rewritten
+    # every time a phase re-enters, so on its own it reports only the LAST
+    # segment: a build that took 17 segments showed per-phase durations for the
+    # final one alone (a multi-hour conversion rendering as "1s"). These three
+    # accumulate instead, and are what a progress UI should read.
+    #   elapsed_seconds  — summed wall-clock over every segment of this phase
+    #   segments         — how many times the phase has been entered
+    #   first_started_at — the ORIGINAL start, never overwritten
+    # Absent on pre-existing checkpoints; the defaults keep those loadable.
+    elapsed_seconds: float = 0.0
+    segments: int = 1
+    first_started_at: Optional[str] = None
 
     def to_dict(self) -> Dict:
         """Convert to dictionary."""
@@ -140,14 +163,39 @@ class CheckpointManager:
         Returns:
             Created PhaseCheckpoint
         """
+        now = datetime.now()
+        # Carry wall-clock accounting forward across a resume. Without this the
+        # new segment's started_at replaces the old one and every second the
+        # phase already spent is lost from the record.
+        prior = self.load_checkpoint(phase_name)
+        elapsed_seconds = 0.0
+        segments = 1
+        first_started_at = now.isoformat()
+        if prior is not None:
+            elapsed_seconds = float(getattr(prior, "elapsed_seconds", 0.0) or 0.0)
+            segments = int(getattr(prior, "segments", 1) or 1) + 1
+            first_started_at = (
+                getattr(prior, "first_started_at", None) or prior.started_at
+            )
+            # A prior segment that never recorded its own elapsed (crash, kill
+            # -9, or a checkpoint written before this field existed) still has
+            # its start/end timestamps — fold them in so the total stays honest.
+            if not getattr(prior, "elapsed_seconds", 0.0) and prior.completed_at:
+                elapsed_seconds += _duration_seconds(
+                    prior.started_at, prior.completed_at
+                )
+
         checkpoint = PhaseCheckpoint(
             run_id=run_id,
             workflow_id=workflow_id,
             phase_name=phase_name,
             phase_index=phase_index,
             status="started",
-            started_at=datetime.now().isoformat(),
-            tasks_pending=task_ids.copy()
+            started_at=now.isoformat(),
+            tasks_pending=task_ids.copy(),
+            elapsed_seconds=elapsed_seconds,
+            segments=segments,
+            first_started_at=first_started_at,
         )
 
         self._write_checkpoint(checkpoint)
@@ -226,6 +274,7 @@ class CheckpointManager:
 
         checkpoint.status = "completed"
         checkpoint.completed_at = datetime.now().isoformat()
+        self._close_segment(checkpoint)
         if validation_results:
             checkpoint.validation_results = validation_results
 
@@ -270,6 +319,7 @@ class CheckpointManager:
 
         checkpoint.status = "failed"
         checkpoint.completed_at = datetime.now().isoformat()
+        self._close_segment(checkpoint)
         checkpoint.error = error
         checkpoint.error_details = error_details
         if validation_results:
@@ -315,6 +365,7 @@ class CheckpointManager:
 
         checkpoint.status = "paused"
         checkpoint.completed_at = datetime.now().isoformat()
+        self._close_segment(checkpoint)
         if reason:
             checkpoint.error = reason
         if error_details:
@@ -328,6 +379,23 @@ class CheckpointManager:
         )
 
         return checkpoint
+
+    @staticmethod
+    def _close_segment(checkpoint: PhaseCheckpoint) -> None:
+        """Fold the just-finished segment's wall-clock into the running total.
+
+        Called from every terminal transition (completed / failed / paused) so
+        ``elapsed_seconds`` is the phase's real cost across all its segments,
+        not just the last one. Idempotent per segment because each terminal
+        call sets a fresh ``completed_at`` immediately before this.
+        """
+        checkpoint.elapsed_seconds = round(
+            float(checkpoint.elapsed_seconds or 0.0)
+            + _duration_seconds(checkpoint.started_at, checkpoint.completed_at),
+            3,
+        )
+        if not checkpoint.first_started_at:
+            checkpoint.first_started_at = checkpoint.started_at
 
     def load_checkpoint(self, phase_name: str) -> Optional[PhaseCheckpoint]:
         """

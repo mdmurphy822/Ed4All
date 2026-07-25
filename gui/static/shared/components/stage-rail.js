@@ -4,10 +4,14 @@
  * Renders GET /api/runs/{run_id}/progress as:
  *   - a horizontal connected rail of phase nodes (wraps on narrow widths),
  *     visually grouped by the server-derived `group` (conversion / planning /
- *     generation / validation / packaging / archive) — the phase LIST and the
- *     grouping both come from the payload (config-driven), never hardcoded;
- *     phases are BUCKETED by group (first-occurrence order, within-group
- *     phase order preserved) so each section header renders exactly once;
+ *     generation / validation / packaging / archive / training /
+ *     finalization) — the phase LIST and the grouping both come from the
+ *     payload (config-driven), never hardcoded; phases are BUCKETED by group
+ *     (first-occurrence order, within-group phase order preserved) so each
+ *     section header renders exactly once. First-occurrence order means a
+ *     group's section lands wherever its EARLIEST phase sits, so the server's
+ *     grouping is what keeps the post-build training tail and finalization
+ *     rendering last;
  *   - node states: done ✓ · current (CSS pulse; static highlight under
  *     prefers-reduced-motion) · pending ○ · failed ✗ · skipped – (dimmed);
  *   - per-node time (small text under the node): completed phases show their
@@ -54,9 +58,11 @@ const STATE_GLYPHS = { done: '✓', current: '●', pending: '○', failed: '✗
 const STATE_WORDS = { done: 'done', current: 'in progress', pending: 'pending', failed: 'failed', skipped: 'skipped' };
 // Friendly HEADER label per server-derived `group`. The pipeline groups
 // (conversion / planning / generation / validation / packaging / archive)
-// render their raw key; the trailing post-build LoRA-training group carries a
-// proper header so it reads consistently with the others.
-const GROUP_LABELS = { training: 'Training' };
+// render their raw key; the two trailing groups of the ONE sequenced
+// build→training pipeline — the adapter training/evaluation tail and the
+// genuinely-last finalization step — carry proper headers so they read
+// consistently with the others.
+const GROUP_LABELS = { training: 'Training', finalization: 'Finalization' };
 
 function fmtDur(seconds) {
   if (!Number.isFinite(seconds) || seconds < 0) return '';
@@ -135,8 +141,9 @@ export function stageRail(opts = {}) {
     // Bucket phases by the server-derived `group` (first-occurrence order,
     // within-group phase order preserved) so each section header renders
     // exactly ONCE — conversion → planning → generation → validation →
-    // packaging → archive — even when the pipeline's phase order interleaves
-    // groups (owner design: one consolidated "generation" section).
+    // packaging → archive → training → finalization — even when the
+    // pipeline's phase order interleaves groups (owner design: one
+    // consolidated "generation" section).
     const groups = [];
     const byGroup = new Map();
     phases.forEach((p) => {

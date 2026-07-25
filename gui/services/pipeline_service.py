@@ -1,10 +1,12 @@
 """Full-pipeline chain service — the data behind ``GET /api/runs/{run_id}/pipeline``.
 
-Feeds the Studio build-progress page's FULL-pipeline view: Stage-A (the course
-BUILD run — ``textbook_to_course`` / ``course_generation``) followed by Stage-B
-(the ``trainforge_train`` LoRA-training run). These are two SEPARATE orchestrator
-run records correlated ONLY by the course slug (``lib.ontology.slugs``), so this
-module discovers the sibling stage by slugifying each run's course and matching.
+Feeds the Studio build-progress page's FULL-pipeline view of ONE sequenced
+pipeline: course build (``textbook_to_course`` / ``course_generation``)
+followed by adapter training (``trainforge_train``). Those are two SEPARATE
+orchestrator run records correlated ONLY by the course slug
+(``lib.ontology.slugs``) — an implementation detail of how the pipeline is
+executed, not two separate products — so this module discovers the sibling
+stage by slugifying each run's course and matching.
 
 Everything here is READ-ONLY and best-effort: it never mutates run state and
 never fabricates a run/slug/status. Sources:
@@ -14,7 +16,7 @@ never fabricates a run/slug/status. Sources:
   ``workflow_id``) OR a bare orchestrator workflow id
   (``state/workflows/<id>.json`` read directly). Its ``params.course_name`` /
   ``params.course_code`` slugifies to the correlation key.
-- **Sibling BUILD / TRAINING runs** — the newest run whose course slugifies to
+- **Sibling build / training runs** — the newest run whose course slugifies to
   the same key, discovered by scanning BOTH ``run_service.list_runs()`` (GUI +
   recency-windowed CLI records) AND every ``state/workflows/*.json`` directly
   (CLI/pilot-launched training runs have no GUI record). "Newest" is by
@@ -47,15 +49,20 @@ from gui.services import progress_service
 
 logger = logging.getLogger("gui.pipeline_service")
 
-# The two full-course BUILD workflows (Stage A). A run of either slugifies its
-# course the same way the trainforge_train (Stage B) run does, so the two
-# correlate by slug.
+# The two full-course BUILD workflows. A run of either slugifies its course the
+# same way the trainforge_train run does, so the two correlate by slug.
 BUILD_WORKFLOWS = ("textbook_to_course", "course_generation")
 TRAINING_WORKFLOW = "trainforge_train"
 
+# Operator-facing stage LABELS. Named for what the stage DOES, not for a
+# lettered phase: build→training is ONE sequenced pipeline, so no "Stage A /
+# Stage B" framing here or in any prose this module emits. The structural
+# ``stage`` KEYS ("build" / "training") are a wire contract consumed by
+# ``gui/static/studio/create.js::pipelineTrainingStage`` and pinned by
+# ``gui/tests/test_pipeline_service.py`` — labels are presentation, keys are not.
 _STAGE_LABELS = {
-    "build": "Stage A · Course build",
-    "training": "Stage B · LoRA training",
+    "build": "Course build",
+    "training": "Adapter training",
 }
 _DEFAULT_BUILD_WORKFLOW = "textbook_to_course"
 
@@ -368,7 +375,7 @@ def pipeline_chain(run_id: str) -> Optional[Dict[str, Any]]:
     """Build the ``GET /api/runs/{run_id}/pipeline`` payload; None → caller 404s.
 
     Resolves the queried run (GUI run id OR bare workflow id), slugifies its
-    course, and assembles the Stage-A (build) + Stage-B (training) chain. See the
+    course, and assembles the build → training chain. See the
     module docstring for the full contract. Never raises: any unexpected error is
     caught and surfaced as ``None`` (a 404), mirroring the read-only, best-effort
     posture of ``progress_service``.

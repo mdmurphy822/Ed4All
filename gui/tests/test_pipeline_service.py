@@ -1,9 +1,9 @@
 """Tests for the full-pipeline chain service + endpoint.
 
-``gui.services.pipeline_service.pipeline_chain`` correlates a course's Stage-A
-BUILD run (``textbook_to_course`` / ``course_generation``) with its Stage-B
-``trainforge_train`` run — two SEPARATE run records tied only by the course slug.
-These tests pin:
+``gui.services.pipeline_service.pipeline_chain`` correlates a course's BUILD run
+(``textbook_to_course`` / ``course_generation``) with its ``trainforge_train``
+adapter-training run — two SEPARATE run records tied only by the course slug,
+presented as the ONE sequenced pipeline they are. These tests pin:
 
 - build + training both present (discovered from GUI records),
 - training PLANNED-ONLY (not started) still emits the training stage with its
@@ -14,7 +14,10 @@ These tests pin:
   GUI record (CLI/pilot-launched),
 - a non-build workflow (``rag_training``) → a single stage, no training tail,
 - an unresolvable slug → single-stage chain with ``course_slug: null``,
-- never-raises on a corrupt workflow-state file.
+- never-raises on a corrupt workflow-state file,
+- the stage LABELS name what each stage does and carry no "Stage A / Stage B"
+  framing, while the structural ``stage`` KEYS stay the wire contract
+  ``create.js`` matches on.
 
 State isolated via ``state_dir`` + ``libv2_root``; the endpoint tests need
 fastapi (opt-in ``gui`` extra) and skip cleanly without it. All course
@@ -36,6 +39,16 @@ from lib.ontology.slugs import libv2_course_slug
 # Invented synthetic course identity (never a real book/campaign name).
 COURSE_NAME = "Sample Physics 101"
 COURSE_SLUG = libv2_course_slug(COURSE_NAME)
+
+
+def _training_plan_names() -> List[str]:
+    """The training workflow's REAL config phase names (never a hardcoded list)."""
+    from gui.services import progress_service
+
+    return [
+        str(p["name"])
+        for p in progress_service.phase_plan(pipeline_service.TRAINING_WORKFLOW)
+    ]
 
 
 @pytest.fixture(autouse=True)
@@ -160,7 +173,12 @@ def test_build_and_training_both_present(state_dir, libv2_root):
     assert training["run_id"] == "GUI-train-0001"
     assert training["present"] is True
     assert training["status"] == "completed"
-    assert training["planned_phases"] == ["training", "post_training_validation"]
+    # planned_phases is the REAL config plan, never a hardcoded list — asserted
+    # against progress_service.phase_plan so a re-sequencing of the training
+    # workflow's phases in config/workflows.yaml cannot silently drift the
+    # payload (nor break this test for merely declaring another phase).
+    assert training["planned_phases"] == _training_plan_names()
+    assert "training" in training["planned_phases"]
     assert training["model_ids"] == ["adapter-v1"]
 
 
@@ -178,8 +196,10 @@ def test_training_planned_only_still_emits_stage(state_dir, libv2_root):
     assert training["run_id"] is None
     assert training["status"] is None
     assert training["model_ids"] == []
-    # The planned tail is ALWAYS shown so the operator sees the full pipeline.
-    assert training["planned_phases"] == ["training", "post_training_validation"]
+    # The planned tail is ALWAYS shown so the operator sees the full pipeline
+    # (config-derived, see the note in the both-present test above).
+    assert training["planned_phases"] == _training_plan_names()
+    assert "training" in training["planned_phases"]
 
 
 # ---------------------------------------- training discovered via model dirs
@@ -318,6 +338,30 @@ def test_query_training_run_directly(state_dir, libv2_root):
     assert build["run_id"] == "GUI-build-0001"
     assert training["run_id"] == "GUI-train-q"  # the queried run, pinned
     assert chain["current_stage"] == "training"
+
+
+# ------------------------------------------------------------ stage labelling
+
+
+def test_stage_labels_carry_no_lettered_stage_framing(state_dir, libv2_root):
+    """Owner standing preference: build→training is ONE sequenced pipeline, so
+    no operator-facing label uses "Stage A" / "Stage B" framing — each stage is
+    named for what it does. The structural ``stage`` KEYS are a separate wire
+    contract (``create.js::pipelineTrainingStage`` matches ``stage ===
+    'training'``) and deliberately stay ``build`` / ``training``."""
+    build_id = _seed_build_run(state_dir)
+    chain = pipeline_service.pipeline_chain(build_id)
+    assert chain is not None
+    labels = [s["label"] for s in chain["stages"]]
+    for label in labels:
+        assert "stage a" not in label.lower(), label
+        assert "stage b" not in label.lower(), label
+    assert labels == ["Course build", "Adapter training"]
+    # Keys unchanged — the frontend matcher must keep working.
+    assert [s["stage"] for s in chain["stages"]] == ["build", "training"]
+    # Every declared label, including the single-stage fallback path's.
+    for label in pipeline_service._STAGE_LABELS.values():
+        assert "stage a" not in label.lower() and "stage b" not in label.lower()
 
 
 # ---------------------------------------------------------- robustness / 404

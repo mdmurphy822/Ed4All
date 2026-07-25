@@ -8,8 +8,8 @@ mutates run state:
   (cached by file mtime; NEVER a hardcoded phase list, so ``course_generation``
   / ``rag_training`` / ``trainforge_train`` render as correctly as
   ``textbook_to_course``). Each phase gets a coarse presentation ``group``
-  (conversion / planning / generation / validation / packaging / archive)
-  derived from name rules, never from phase indices.
+  (conversion / planning / generation / validation / packaging / archive /
+  training / finalization) derived from name rules, never from phase indices.
 - **Run state** — the GUI run record (``state/gui/runs/<run_id>.json``) resolved
   to its orchestrator workflow state (``state/workflows/<workflow_id>.json``):
   ``phase_outputs`` ``_completed``/``_skipped`` markers, ``failed_phase``,
@@ -176,6 +176,18 @@ def _workflows_config() -> Dict[str, Any]:
 # Exact-name → presentation group. Names not listed fall through to the keyword
 # rules below. Groups are a COARSE visual affordance (rail section labels), so
 # an imperfect bucket for a future phase is cosmetic, never functional.
+#
+# ORDERING CONTRACT: the rail BUCKETS phases by group in FIRST-OCCURRENCE order
+# (stage-rail.js::renderRail), so a group's section renders wherever its
+# EARLIEST member phase sits in the plan — regardless of where its other
+# members are. A group must therefore only span phases that are contiguous in
+# execution order, or it drags later phases visually backwards. That is exactly
+# why the post-build training tail (training / post_training_validation /
+# evaluation) is its OWN group and `finalization` is its own group: build→
+# training is one sequenced pipeline whose tail now runs AFTER the archive
+# phases, and `finalization` is genuinely last. Folding either back into
+# "archive" (whose first member is trainforge_assessment) would render them
+# inside that earlier section, i.e. visually BEFORE training.
 _EXACT_GROUPS: Dict[str, str] = {
     "semantik_conversion": "conversion",
     "dart_conversion": "conversion",  # legacy phase alias read-compat, legacy-token: allow
@@ -195,15 +207,19 @@ _EXACT_GROUPS: Dict[str, str] = {
     "training_synthesis": "archive",
     "libv2_archival": "archive",
     "vector_indexing": "archive",
-    "finalization": "archive",
-    "training": "generation",
+    # Post-build training tail — one sequenced pipeline, so these render as
+    # their own section AFTER archive rather than folding into an earlier one.
+    "training": "training",
+    "post_training_validation": "training",
+    "evaluation": "training",
+    "finalization": "finalization",
     # Owner design (group consolidation): ONE "generation" section spans the
     # whole authoring slice — the single-pass phase, both two-pass tiers, the
     # inter-tier validators between them, and assessment synthesis — so the
     # rail renders conversion → planning → generation → validation →
-    # packaging → archive with each header exactly once instead of
-    # interleaving generation/validation headers. post_rewrite_validation is
-    # the "validation" section.
+    # packaging → archive → training → finalization with each header exactly
+    # once instead of interleaving generation/validation headers.
+    # post_rewrite_validation is the "validation" section.
     "content_generation": "generation",
     "content_generation_outline": "generation",
     "inter_tier_validation": "generation",
@@ -228,8 +244,13 @@ _KEYWORD_GROUPS: Tuple[Tuple[str, str], ...] = (
     ("chunking", "packaging"),
     ("archiv", "archive"),
     ("index", "archive"),
-    ("final", "archive"),
-    ("training", "archive"),
+    # A future evaluation/training-tail phase name lands in the post-build
+    # training section, and anything "final" in its own trailing section —
+    # mirroring the exact map above so a fallback never renders a late phase
+    # inside an earlier group.
+    ("eval", "training"),
+    ("training", "training"),
+    ("final", "finalization"),
 )
 
 
@@ -414,15 +435,25 @@ def _read_checkpoints(orchestrator_run_id: str) -> Dict[str, Dict[str, Any]]:
         started = _parse_dt(payload.get("started_at"))
         completed = _parse_dt(payload.get("completed_at"))
         wallclock: Optional[float] = None
-        if started is not None and completed is not None:
+        # Prefer the CUMULATIVE figure the checkpoint now carries. started_at
+        # is rewritten on every resume, so its span measures only the final
+        # segment — on a heavily-resumed build that rendered a multi-hour
+        # conversion as "1s". Legacy checkpoints predate the field and fall
+        # back to the single-segment span.
+        cumulative = payload.get("elapsed_seconds")
+        if isinstance(cumulative, (int, float)) and cumulative > 0:
+            wallclock = round(float(cumulative), 1)
+        elif started is not None and completed is not None:
             delta = (completed - started).total_seconds()
             if delta >= 0:
                 wallclock = round(delta, 1)
+        segments = payload.get("segments")
         result[phase] = {
             "status": str(payload.get("status") or "").lower(),
-            "started_at": payload.get("started_at"),
+            "started_at": payload.get("first_started_at") or payload.get("started_at"),
             "completed_at": payload.get("completed_at"),
             "wallclock_s": wallclock,
+            "segments": int(segments) if isinstance(segments, int) and segments > 0 else 1,
         }
     return result
 
@@ -1110,7 +1141,7 @@ _PHASE_UNIT_SIDECARS: Dict[str, Dict[str, str]] = {
         "label": "chapters judged",
     },
     "training": {
-        # trainforge_train Stage-B (LoRA adapter train + eval). The eval
+        # The trainforge_train adapter-training phase (train + eval). The eval
         # harness's per-model-call progress stream
         # (Trainforge/eval/slm_eval_harness.py::_EvalProgressTracker.emit —
         # open("a") + write per event) lands at
