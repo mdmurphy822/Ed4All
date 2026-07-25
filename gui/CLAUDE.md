@@ -190,7 +190,19 @@ one; phase `group`s consolidate the whole authoring slice (single-pass +
 two-pass tiers + inter-tier validators + assessment synthesis) into ONE
 `generation` section so each rail header renders once; a near-zero (≤0.5s,
 i.e. restored-from-checkpoint) wall-clock is suppressed rather than shown as
-"0s". The payload also carries the run's LIVE course/book identity
+"0s". The group map is `progress_service.py::_EXACT_GROUPS` — eight groups,
+`conversion` → `planning` → `generation` → `validation` → `packaging` →
+`archive` → `training` (`training` / `post_training_validation` /
+`evaluation`) → `finalization`. The rail buckets phases by FIRST occurrence,
+so a group's section lands wherever its earliest member sits and a group must
+therefore span execution-contiguous phases: `finalization` and the post-build
+training tail each own their own key rather than folding into `archive` /
+`generation`, and the `_KEYWORD_GROUPS` fallbacks mirror the exact map
+(`eval`/`training` → `training`, `final` → `finalization`) so a future phase name
+cannot fall back into an earlier group. Known, pre-existing, untouched: in
+`course_generation` the trailing `validation` phase folds into the earlier
+validation section and renders before packaging — same defect class, needs a
+distinct group key. The payload also carries the run's LIVE course/book identity
 (`course_name` + `display_title`): the workflow state's `params` win over the
 GUI record's creation-time name, because an `--auto-name` run rebinds
 `params.course_name` mid-run (`workflow_runner._maybe_apply_auto_name`) —

@@ -62,6 +62,17 @@ ed4all stop --clear-all             # remove STOP_ALL (operator-owned)
 ed4all run textbook-to-course --corpus pdfs/ --course-name PHYS_101 \
   --skip-training --stop-after imscc_chunking
 
+# --with-training: OPT IN to the in-build training tail of
+# textbook_to_course (training -> post_training_validation -> evaluation,
+# between vector_indexing and finalization). OFF by default — a training
+# run is multi-hour and owns the whole card, so it never attaches to a
+# build implicitly. --skip-training WINS when both are passed. Also valid
+# on --resume (patches the persisted params before the resumed phases
+# run). Training an ALREADY-archived course without rebuilding stays
+# `ed4all run trainforge_train --course-name <slug>`.
+ed4all run textbook-to-course --corpus pdfs/ --course-name PHYS_101 \
+  --with-training
+
 # Hosted large-model build profile (--provider nvidia = the vendor
 # endpoint-registry key; SETUP — nothing dispatches to the cloud seat by
 # default; gated on a later RUN discussion). Full routing detail (YAML
@@ -439,7 +450,7 @@ through the explicit tools. Full contract: `lib/assistant/` module docstrings.
 | `extract_textbook_structure` | `objective_extraction` | Runs `SemanticStructureExtractor` over every staged SemantiK HTML file and merges per-file chapter/section hierarchies into a single `textbook_structure.json`. |
 | `plan_course_structure` | `course_planning` | Synthesizes canonical `TO-NN` / `CO-NN` learning objectives from the textbook structure and publishes `synthesized_objectives.json`. |
 
-**Phase-name dispatch override** (`MCP/core/executor.py::_PHASE_TOOL_MAPPING`): seven phases route by phase name, not agent name — `content_generation_outline` → `run_content_generation_outline`; `inter_tier_validation` → `run_inter_tier_validation`; `content_generation_rewrite` → `run_content_generation_rewrite`; `post_rewrite_validation` → `run_post_rewrite_validation`; `imscc_chunking` → `run_imscc_chunking`; `assessment_synthesis` → `run_assessment_synthesis`; `heading_judge` → `run_heading_judge` (the SEMANTIK_HEADING_JUDGE post-conversion Super heading-level judge — default ON, explicit falsey token opts out; skip-with-pass when explicitly off / born-digital, per-chapter fail-open copy-back). Validator-only phases declare `agents: []` in `config/workflows.yaml`; `workflow_runner._create_phase_tasks` synthesizes a virtual `phase-handler` task only when the phase appears in this map. The mapping cannot be inferred from YAML.
+**Phase-name dispatch override** (`MCP/core/executor.py::_PHASE_TOOL_MAPPING`): nine phases route by phase name, not agent name — `content_generation_outline` → `run_content_generation_outline`; `inter_tier_validation` → `run_inter_tier_validation`; `content_generation_rewrite` → `run_content_generation_rewrite`; `post_rewrite_validation` → `run_post_rewrite_validation`; `imscc_chunking` → `run_imscc_chunking`; `assessment_synthesis` → `run_assessment_synthesis`; `heading_judge` → `run_heading_judge` (the SEMANTIK_HEADING_JUDGE post-conversion Super heading-level judge — default ON, explicit falsey token opts out; skip-with-pass when explicitly off / born-digital, per-chapter fail-open copy-back); `training` → `run_training` (wraps `Trainforge.train_course` — the standalone `trainforge_train` workflow and the opt-in `textbook_to_course` tail share this one handler); `evaluation` → `run_evaluation` (held-out harness + grounded-answer arms, one verdict derived by calling `EvalGatingValidator` rather than re-implementing its thresholds). `run_training` / `run_evaluation` additionally sit in a deterministic-tool set keyed on the resolved tool name, so they execute in-process even under `ED4ALL_AGENT_DISPATCH` (the subagent fork happens before the registry lookup and cannot produce an adapter). Validator-only phases declare `agents: []` in `config/workflows.yaml`; `workflow_runner._create_phase_tasks` synthesizes a virtual `phase-handler` task only when the phase appears in this map. The mapping cannot be inferred from YAML.
 
 ### Analysis Tools
 
@@ -619,8 +630,44 @@ tracker.update_status("content_generator", "IN_PROGRESS",
        `TRAINFORGE_REQUIRE_EMBEDDINGS` is set (then fails closed on a
        broken embedding backend).
 
-21. finalization
-   └── Final validation and training data export.
+21. training (optional, --with-training)
+   └── Train the course-pinned SLM adapter in-build against the
+       just-archived LibV2 course. Validator-only-style phase
+       (`agents: []`) routed by phase NAME to `run_training` via
+       _PHASE_TOOL_MAPPING; wraps `Trainforge.train_course` (same
+       LocalBackend + TrainingRunner construction as the standalone
+       `trainforge_train` workflow) and asserts the base model through
+       BaseModelRegistry BEFORE constructing a runner, so an unknown
+       name returns the supported list instead of silently substituting.
+       Declares `seats: []` (the trainer wants the whole card, so every
+       vLLM seat must be down) and a 720-minute ceiling. Emits run_dir +
+       model_card_path + adapter_path. Skipped unless `--with-training`;
+       `--skip-training` always wins.
+
+22. post_training_validation (optional, --with-training)
+   └── Validator-only phase (`agents: []`, no handler) carrying the two
+       gates copied verbatim from `trainforge_train`: eval_gating (reads
+       <model_dir>/eval/eval_report.json; fails closed on faithfulness
+       regression / yes-bias / no-bias / source-match drop / baseline
+       regression) and family_completeness (fails closed on a partially
+       complete CURIE family). Both critical.
+
+23. evaluation (optional, --with-training)
+   └── Evaluate the trained adapter — held-out harness + grounded-answer
+       arms — and derive ONE verdict by calling EvalGatingValidator
+       itself, so the phase can never disagree with the gate above it.
+       Routed by phase NAME to `run_evaluation`; its report merges
+       ADDITIVELY into the same eval_report.json path that gate reads
+       (harness-owned keys preserved byte-for-byte). Ordered after
+       post_training_validation on purpose — no eval wall-clock is spent
+       on an adapter the gate already blocked. model_dir is threaded
+       from the training phase's run_dir.
+
+24. finalization
+   └── Final validation and training data export. Depends on
+       `evaluation`, so it is genuinely LAST; a default build (no
+       --with-training) still reaches it because a skipped phase stamps
+       `_completed` and the dependency check reads only that.
 ```
 
 ---
@@ -816,9 +863,9 @@ Summary by workflow (counts derived from `config/workflows.yaml`):
 |----------|---------:|--------:|------:|
 | `course_generation` | 34 | 30 | 64 |
 | `rag_training` | 4 | 3 | 7 |
-| `textbook_to_course` | 63 | 74 | 137 |
+| `textbook_to_course` | 65 | 74 | 139 |
 | `trainforge_train` | 2 | 0 | 2 |
-| **Total** | **103** | **107** | **210** |
+| **Total** | **105** | **107** | **212** |
 
 Per-wave gate-landing history (additions, demotions, deferred severity flips, with the intermediate running subtotals at each wave): `docs/validation/gate-history.md`. The table above is the current authoritative count; the history file's per-wave subtotals are provenance-only and do not sum to the current total.
 

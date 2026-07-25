@@ -62,13 +62,17 @@ implementation), add the `config/agents.yaml` entry, and wire the phase in
 
 ### 1.2 Dispatch routing — `MCP/core/executor.py`
 
-Agent name alone does not always determine the tool that runs. Seven phases
+Agent name alone does not always determine the tool that runs. Nine phases
 route by **phase name** rather than agent name via
 `MCP/core/executor.py::_PHASE_TOOL_MAPPING`; that mapping cannot be inferred
 from YAML. Validator-only phases declare `agents: []` and get a synthesized
-virtual `phase-handler` task only when the phase appears in that map. The
-canonical list of those seven phases is in `CLAUDE.md` § "Phase-name dispatch
-override" — read it there.
+virtual `phase-handler` task only when the phase appears in that map. Two of
+the nine (`training` → `run_training`, `evaluation` → `run_evaluation`) also
+sit in a deterministic-tool set keyed on the resolved tool name, which forces
+in-process execution under `ED4ALL_AGENT_DISPATCH` — the subagent fork happens
+before the registry lookup and cannot produce an adapter. The canonical list of
+those nine phases is in `CLAUDE.md` § "Phase-name dispatch override" — read it
+there.
 
 Pipeline-internal tools registered in
 `MCP/tools/pipeline_tools.py::_build_tool_registry` but deliberately **not**

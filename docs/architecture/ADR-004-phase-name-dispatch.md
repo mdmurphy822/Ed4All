@@ -51,7 +51,7 @@ Both mappings resolve to string keys in the registry built by
 but **only if the phase name appears in `_PHASE_TOOL_MAPPING`** (`workflow_runner.py:4927`). The mapping is
 therefore both the route and the existence condition for the task.
 
-Seven phases are routed this way today:
+Nine phases are routed this way today:
 
 | Phase | Tool | `agents:` in YAML | Why the override exists |
 |---|---|---|---|
@@ -62,6 +62,16 @@ Seven phases are routed this way today:
 | `assessment_synthesis` | `run_assessment_synthesis` | `[]` | Validator-only phase; **only** route |
 | `post_rewrite_validation` | `run_post_rewrite_validation` | `[]` | Validator-only phase; **only** route |
 | `imscc_chunking` | `run_imscc_chunking` | `["semantik-chunker"]` | Same agent, different chunkset kind and output dir |
+| `training` | `run_training` | `[]` | Validator-only-style phase; **only** route. Shared by `trainforge_train` and the opt-in `textbook_to_course` tail |
+| `evaluation` | `run_evaluation` | `[]` | Validator-only-style phase; **only** route |
+
+`training` / `evaluation` needed one thing beyond the mapping. `trainforge_train`'s
+`training` phase declares `agents: ["training-synthesizer"]`, which is in
+`AGENT_SUBAGENT_SET`, and the subagent fork happens **before** the registry lookup —
+so under `ED4ALL_AGENT_DISPATCH` the phase would still fork to a subagent, which
+cannot produce an adapter. A deterministic-tool set keyed on the RESOLVED tool name
+(`run_training` / `run_evaluation`) forces in-process execution. Phase-name routing
+alone is not sufficient whenever the phase's agent is subagent-classified.
 
 ## Rationale
 
@@ -118,8 +128,8 @@ The tools reached through these mappings are registered in `_build_tool_registry
 decorated with `@mcp.tool()`. They are pipeline-internal: `run_heading_judge`,
 `run_content_generation_outline`, `run_content_generation_rewrite`, `run_inter_tier_validation`,
 `run_post_rewrite_validation`, `run_assessment_synthesis`, `run_imscc_chunking`, the staged-HTML chunking
-tool, `run_concept_extraction`, `run_vector_indexing`, `build_source_module_map`, `extract_textbook_structure`,
-`plan_course_structure`. An external MCP client cannot invoke them, and grepping for `@mcp.tool` will not
+tool, `run_concept_extraction`, `run_vector_indexing`, `run_training`, `run_evaluation`,
+`build_source_module_map`, `extract_textbook_structure`, `plan_course_structure`. An external MCP client cannot invoke them, and grepping for `@mcp.tool` will not
 find them.
 
 ### Task ids record which route was taken
@@ -157,9 +167,10 @@ flowchart TD
 
 ## Open questions / known issues not addressed
 
-- `FOLLOWUP-ADR004-1` — No regression test pins the seven `_PHASE_TOOL_MAPPING` rows. The minimum viable
-  guard is a test asserting that every phase declaring `agents: []` in `config/workflows.yaml` has a
-  `_PHASE_TOOL_MAPPING` entry, which converts the silent-no-op failure mode into a test failure.
+- `FOLLOWUP-ADR004-1` — No regression test pins all nine `_PHASE_TOOL_MAPPING` rows. Note that the
+  originally-proposed guard ("every phase declaring `agents: []` has a mapping entry") is no longer a
+  valid invariant: `post_training_validation` declares `agents: []` *deliberately* without a mapping
+  entry, so it creates no tasks and runs only its gate chain.
 - `FOLLOWUP-ADR004-2` — The rejected "tool name on the phase in YAML" alternative would make the routing
   visible in the same file as the phase. If `workflows_meta.schema.json` ever gains a `handler:` field,
   `_PHASE_TOOL_MAPPING` becomes a migration target rather than a permanent fixture.

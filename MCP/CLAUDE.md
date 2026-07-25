@@ -80,7 +80,7 @@ chosen by walking these in order:
 
 **1. `_PHASE_TOOL_MAPPING` (phase-name override, `core/executor.py`)**
 
-Checked **before** the agent mapping. Seven phases route by phase NAME
+Checked **before** the agent mapping. Nine phases route by phase NAME
 regardless of which agent is threaded through the task:
 
 ```
@@ -91,7 +91,17 @@ post_rewrite_validation     -> run_post_rewrite_validation
 imscc_chunking              -> run_imscc_chunking
 assessment_synthesis        -> run_assessment_synthesis
 heading_judge               -> run_heading_judge
+training                    -> run_training
+evaluation                  -> run_evaluation
 ```
+
+`training` / `evaluation` are shared by the standalone `trainforge_train`
+workflow and the opt-in `textbook_to_course` training tail (`--with-training`).
+Phase-name routing alone is not sufficient for them: `training-synthesizer` is
+in `AGENT_SUBAGENT_SET` and the subagent fork happens **before** the registry
+lookup, so a deterministic-tool set keyed on the resolved tool name
+(`run_training` / `run_evaluation`) forces in-process execution even under
+`ED4ALL_AGENT_DISPATCH`.
 
 This mapping **cannot be inferred from YAML**. It also gates virtual-task
 synthesis: `workflow_runner._create_phase_tasks` synthesizes a single
@@ -172,8 +182,8 @@ so they are unreachable from external MCP clients. Current keys:
 `intake_imscc_package`, `package_imscc`, `plan_course_structure`,
 `remediate_course_content`, `run_assessment_synthesis`, `run_concept_extraction`,
 `run_content_generation_outline`, `run_content_generation_rewrite`,
-`run_heading_judge`, `run_imscc_chunking`,
-`run_inter_tier_validation`, `run_post_rewrite_validation`,
+`run_evaluation`, `run_heading_judge`, `run_imscc_chunking`,
+`run_inter_tier_validation`, `run_post_rewrite_validation`, `run_training`,
 `run_dart_chunking`, `run_vector_indexing`, `stage_semantik_outputs`, <!-- legacy-token: allow -->
 `synthesize_training`,
 `validate_assessment`.
@@ -277,6 +287,17 @@ the resume entry. Non-obvious: `_PHASE_NAME_ALIASES` maps the conversion phase's
 legacy name ↔ `semantik_conversion` both directions, so a checkpoint written
 under one phase name is still found under the other across the rename — a resume
 must not break on the rename.
+
+**Resume accounting (c7339ac1).** A phase that spans N resume segments is
+reported as ONE phase, not as its last segment. `start_phase` opens a segment
+but no longer rewrites `started_at`: the checkpoint keeps `first_started_at`,
+accumulates `elapsed_seconds` across segments, and counts `segments`;
+`complete_phase` / `fail_phase` / `pause_phase` each close their segment. A
+legacy checkpoint predating those fields is folded in from its timestamps rather
+than discarded. `pause_phase` also writes `status="paused"` — a pause has to be
+distinguishable from a finish, or a phase that stopped after ~2% of its units
+reports "completed". Consumers should prefer the cumulative `elapsed_seconds`
+over the single-segment span (`gui/services/progress_service.py` does).
 
 Graceful stop is a filesystem sentinel polled at unit boundaries. The shared
 primitives live outside this package in `lib/generation/stop_control.py`

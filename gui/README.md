@@ -801,7 +801,10 @@ view renders `stage-rail.js` (shared kit component), fed by a 3s poll of
 failed run renders statically — no pulse, no polling). The rail is a horizontal
 connected chain of phase nodes (wraps on narrow widths), visually grouped by the
 server-derived stage (conversion / planning / generation / validation /
-packaging / archive — name-derived, never phase indices). Node states: done ✓,
+packaging / archive / training / finalization — name-derived, never phase
+indices; the map is `progress_service.py::_EXACT_GROUPS`, and because the rail
+buckets by FIRST occurrence a group must span execution-contiguous phases, so
+the post-build training tail and finalization render last). Node states: done ✓,
 current (CSS pulse; a static highlight ring under `prefers-reduced-motion` —
 motion lives in `tokens.css`), pending ○, failed ✗, skipped – (dimmed, e.g.
 `enabled_when_env`-disabled tiers or `--skip-training`). Completed nodes show

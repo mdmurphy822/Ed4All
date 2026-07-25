@@ -57,7 +57,16 @@ flowchart TD
         P17["training_synthesis<br/>SKIPPED<br/>optional · --skip-training"]
         P18["libv2_archival<br/><i>libv2-archivist</i>"]
         P19["vector_indexing<br/>optional"]
-        P20["finalization"]
+    end
+
+    subgraph TRAIN["Training tail — opt-in (--with-training)"]
+        P20["training<br/><i>agents: []</i><br/>optional"]
+        P21["post_training_validation<br/><i>agents: []</i> · gates only<br/>optional"]
+        P22["evaluation<br/><i>agents: []</i><br/>optional"]
+    end
+
+    subgraph FIN["Finalize"]
+        P23["finalization"]
     end
 
     P0 --> P1 --> P2 --> P3 --> P4 --> P5
@@ -88,11 +97,17 @@ flowchart TD
     P14 --> P18
     P16 --> P18
     P17 --> P18
-    P18 --> P19 --> P20
+    P18 --> P19
+    P19 -.->|"opt-in"| P20 -.-> P21 -.-> P22
+    P22 --> P23
 
     classDef skipped fill:#eee,stroke:#999,stroke-dasharray: 4 3,color:#555
-    class P8,P17 skipped
+    class P8,P17,P20,P21,P22 skipped
 ```
+
+`finalization` depends on `evaluation`, not `vector_indexing`, so it is
+genuinely last. A default build still reaches it: a skipped phase stamps
+`_completed` in `phase_outputs`, and `_dependencies_met` reads only that.
 
 ### 1.1 Non-obvious facts about the current shape
 
@@ -177,6 +192,14 @@ optional:
 | `trainforge_assessment` | `generate_assessments` is false |
 | `training_synthesis` | `skip_training` is true (`--skip-training`) |
 | `vector_indexing` | embedding stack unavailable, unless `TRAINFORGE_REQUIRE_EMBEDDINGS` |
+| `training` | `with_training` is not true, or `skip_training` is true (`--skip-training` wins) |
+| `post_training_validation` | same as `training` |
+| `evaluation` | same as `training` |
+
+The training-tail branch sits **after** the `not phase.optional` guard, and
+`trainforge_train`'s same-named phases are not optional — so the standalone
+training workflow is structurally immune to it, with no name-based
+special-casing.
 
 **The `courseforge_stage` whitelist** (`_should_skip_for_courseforge_stage`,
 `:5198`) skips everything outside the named tier for the

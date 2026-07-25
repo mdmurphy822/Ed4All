@@ -28,7 +28,7 @@ Every chunk carries its Bloom's level, content type, key terms, misconceptions, 
 
 ## How it works
 
-`textbook-to-course` runs up to 21 phases end-to-end. Each phase checkpoints on
+`textbook-to-course` runs up to 24 phases end-to-end. Each phase checkpoints on
 completion (a failed or stopped run resumes where it left off), quality gates
 validate the artifacts between phases, and GPU model seats are started and
 stopped automatically so only the models a phase needs are ever resident.
@@ -55,16 +55,18 @@ stopped automatically so only the models a phase needs are ever resident.
 | 18 | `training_synthesis` | Synthesizes instruction + preference training pairs *(optional)* | Large model |
 | 19 | `libv2_archival` | Archives all artifacts to the local course library | — |
 | 20 | `vector_indexing` | Builds the per-course vector index so the course is immediately askable | Local embeddings |
-| 21 | `finalization` | Final validation and training-data export | — |
+| 21 | `training` | LoRA fine-tune of a small language model on the course's instruction + preference pairs (bf16 PEFT, licensing preflight, full provenance card) *(opt-in)* | Training (exclusive — all serving seats stopped) |
+| 22 | `post_training_validation` | Promotion gates on the trained adapter — eval thresholds and CURIE-family completeness *(opt-in)* | — |
+| 23 | `evaluation` | 5-layer × 3-tier eval matrix vs the base model, adapter audit, promote / hold / reject decision *(opt-in)* | Local eval models |
+| 24 | `finalization` | Final validation and training-data export | — |
 
-Once a course is archived, an optional follow-on workflow trains a
-course-pinned adapter from the synthesized pairs (`ed4all run trainforge_train
---course-code <slug> --base-model <name>`):
+Phases 21–23 are the **training tail**. They are off by default — a training run
+takes hours and needs the whole GPU — so they run only when you pass
+`--with-training`; `--skip-training` wins if you pass both. A default build skips
+them and still finishes at `finalization`.
 
-| # | Phase | What it does | GPU workload |
-|---|-------|--------------|--------------|
-| 22 | `trainforge_train` | LoRA fine-tune of a small language model on the course's instruction + preference pairs (bf16 PEFT, licensing preflight, full provenance card) | Training (exclusive — all serving seats stopped) |
-| 23 | post-training evaluation | 5-layer × 3-tier eval matrix vs the base model, adapter audit, promote / hold / reject decision | Local eval models |
+Training an already-archived course *without* rebuilding it stays a separate
+follow-on workflow: `ed4all run trainforge_train --course-name <slug>`.
 
 **GPU workload** legend: *OCR + vision models* — the lightweight extraction and
 alt-text seats; *Large model* — the main authoring/judging model seat; *Local

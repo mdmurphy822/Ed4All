@@ -54,8 +54,13 @@ Consequences:
 semantik_conversion → staging → chunking → objective_extraction → source_mapping
 → course_planning → concept_extraction → content_generation
 → assessment_synthesis → packaging → imscc_chunking → trainforge_assessment
-→ training_synthesis → libv2_archival → vector_indexing → finalization
+→ training_synthesis → libv2_archival → vector_indexing
+→ [training → post_training_validation → evaluation] → finalization
 ```
+
+The bracketed tail is **opt-in** (`--with-training`); a default build skips all
+three and still reaches `finalization`, because a skipped phase stamps
+`_completed` and the dependency check reads only that.
 
 **Two-pass** (`COURSEFORGE_TWO_PASS=true`): identical, except the single
 `content_generation` phase is disabled and replaced by the 4-phase slice:
@@ -96,7 +101,17 @@ Paths are relative to the Courseforge **export root**
 | 13 | `training_synthesis` | `training_specs/instruction_pairs.jsonl` + `preference_pairs.jsonl` | `TRAINFORGE_SYNTHESIS_PROVIDER` | `--stop-after training_synthesis`; skip via `--skip-training` |
 | 14 | `libv2_archival` | **LibV2** `courses/<slug>/` + `manifest` | deterministic | `--stop-after libv2_archival` |
 | 15 | `vector_indexing` | **LibV2** vector index under `courses/<slug>/` | embedding model (no authoring seat) | `--stop-after vector_indexing` |
-| 16 | `finalization` | run summary | deterministic | terminal phase |
+| 16 | `training` | **LibV2** `models/<model_id>/` (adapter + `model_card`) | none (the trainer wants the whole card — `seats: []`) | opt-in via `--with-training`; `--stop-after training`; always skipped under `--skip-training` |
+| 17 | `post_training_validation` | no artifact — gates only (`eval_gating`, `family_completeness`, both critical) | deterministic (validators) | opt-in via `--with-training`; `--stop-after post_training_validation` |
+| 18 | `evaluation` | merged additively into `<model_dir>/eval/eval_report.json` | held-out harness + grounded-answer arms | opt-in via `--with-training`; `--stop-after evaluation` |
+| 19 | `finalization` | run summary | deterministic | terminal phase |
+
+Phases 16-18 are the **opt-in training tail**. They are skipped unless
+`--with-training` is passed, and `--skip-training` wins when both are given. The
+flag also works on `--resume` (it patches the persisted params before the
+resumed phases run — without that patch it would be a silent no-op). Training an
+already-archived course without rebuilding stays
+`ed4all run trainforge_train --course-name <slug>`.
 
 ### 2.1 Pacing (`duration_weeks`) — how weeks are chosen when `--weeks` is unset
 

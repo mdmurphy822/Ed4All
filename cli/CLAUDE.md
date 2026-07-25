@@ -103,10 +103,16 @@ Mode/provider resolution: `--mode` → `LLM_MODE` → `local`;
 `_print_dry_run_plan`) and, for the hosted-seat profile, runs
 `_cloud_seat_preflight` — resolve + assert only, **no dispatch**.
 
-`--resume <run_id>` takes the `_resume_workflow` path. `--stop-after` and
-`--reuse-objectives` have dedicated resume-override helpers
-(`_apply_resume_stop_after_override`, `_apply_resume_reuse_objectives_override`)
-that patch the persisted params before the resumed phase runs.
+`--resume <run_id>` takes the `_resume_workflow` path. `--stop-after`,
+`--reuse-objectives` and `--with-training` have dedicated resume-override
+helpers (`_apply_resume_stop_after_override`,
+`_apply_resume_reuse_objectives_override`,
+`_apply_resume_with_training_override`) that patch the persisted params before
+the resumed phase runs — the runner reads those decisions from persisted state,
+so without the patch the flag would be a silent no-op on a resume.
+`_apply_resume_with_training_override` also takes the `--skip-training` value,
+because `--skip-training` wins over `--with-training` on the resume path exactly
+as it does on the creation path.
 
 ### Exit codes for `ed4all run`
 

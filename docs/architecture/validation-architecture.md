@@ -28,7 +28,7 @@ have different failure semantics:
 | **1. In-tool self-checks** | Inside a phase's tool, before it returns | Owned by the tool; can retry / regenerate its own units |
 | **2. Phase validation gates** | After a phase's tasks complete, in `TaskExecutor.execute_phase` | Declared in YAML; only a `critical` failure clears `gates_passed` |
 | **3. Post-loop aggregators** | Once, after the whole phase loop, in `WorkflowRunner.run_workflow` | Best-effort — an aggregator failure never changes `final_status` |
-| **4. Post-training eval gates** | In the separate `trainforge_train` workflow | Blocking unless `ED4ALL_GATE_ADVISORY` is truthy |
+| **4. Post-training eval gates** | On the `post_training_validation` phase — in the standalone `trainforge_train` workflow, and in `textbook_to_course`'s opt-in `--with-training` tail, which carries the same two gate rows verbatim | Blocking unless `ED4ALL_GATE_ADVISORY` is truthy |
 
 Layer 2 is what "validation gate" means everywhere else in the docs. Layers 3
 and 4 are covered in [§5](#5-post-loop-aggregators-and-course_status) and
@@ -175,10 +175,19 @@ records that it did not run. It is a *structured skip*, distinguishable from a
 real pass by both the issue code and the skip marker. The executor also logs a
 warning naming the validator, so builder drift is observable.
 
-Twelve of the 112 distinct validator paths declared across all workflows have no
-registered builder today; they sit on `training_synthesis` (9),
-`libv2_archival` (1, warning severity), and the `trainforge_train`
-post-training phase (2). They structured-skip when their phase runs.
+Three of the 113 distinct validator paths declared across all workflows have no
+registered builder today: `semantic_graph_rule_output` on `libv2_archival` (1,
+warning severity) and the two `post_training_validation` gates (`eval_gating`,
+`family_completeness` — declared on both `trainforge_train` and, since the
+`--with-training` tail landed, `textbook_to_course`). They structured-skip when
+their phase runs. The nine `training_synthesis` validators were in this list
+until b0ea5791; all ten of that phase's gates — five of them critical —
+resolved to `__no_builder_registered__` and were therefore skipped, so a
+training corpus reached archival with no validation at all. One shared builder
+(`_build_training_synthesis`) now serves all 13 registered dotted paths there
+(9 canonical + 4 deprecated aliases), deriving the corpus tree from
+`instruction_pairs_path` because `libv2_archival` has not run yet when the
+phase is gated.
 
 ### 3.2 Severity, `on_fail`, and `on_error`
 

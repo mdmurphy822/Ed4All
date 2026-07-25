@@ -504,20 +504,25 @@ HF-gated bases (Llama, Phi) need `HF_TOKEN` present at training time.
 Output lands at `LibV2/courses/<COURSE_SLUG>/models/<model_id>/` unless
 `--output-dir` overrides the models root.
 
-> **`ed4all run trainforge_train` does not currently reach `train_course`.**
-> The workflow exists in `config/workflows.yaml` and is accepted by
-> `SUPPORTED_WORKFLOWS` in `cli/commands/run.py`, and its `post_training_validation`
-> phase gates promotion on `eval_gating` + `family_completeness`. But its
-> `training` phase declares `agents: [training-synthesizer]`, and
-> `AGENT_TOOL_MAPPING` in `MCP/core/executor.py` maps `training-synthesizer` to
-> the `synthesize_training` tool — not to `Trainforge.train_course`. A repo-wide
-> grep for `train_course` / `TrainingRunner` under `MCP/` returns no dispatch
-> site. `ed4all run` also exposes no `--course-code` or `--base-model` option, so
-> there is no way to pass a base model through that path. **Use the
-> `python -m Trainforge.train_course` invocation above.**
-> `UNVERIFIED:` whether the `ed4all run trainforge_train` route is intended to be
-> wired to `train_course` and has regressed, or was always intended as the
-> synthesis-only path.
+> **`ed4all run trainforge_train` reaches `train_course` as of e15ad5f1.**
+> It previously did not: the `training` phase declares
+> `agents: [training-synthesizer]`, which `AGENT_TOOL_MAPPING` maps to
+> `synthesize_training` (instruction-pair synthesis), and no registry tool
+> wrapped `Trainforge.train_course` at all. Now a registry-only `run_training`
+> tool does, and the phase reaches it by NAME through
+> `MCP/core/executor.py::_PHASE_TOOL_MAPPING`, which is consulted BEFORE the
+> agent mapping; a deterministic-tool set additionally forces in-process
+> execution under `ED4ALL_AGENT_DISPATCH` (the subagent fork precedes the
+> registry lookup and cannot produce an adapter). `post_training_validation`
+> still gates promotion on `eval_gating` + `family_completeness`.
+>
+> Caveat that remains: `ed4all run` exposes no `--course-code` or
+> `--base-model` option. The course comes from `--course-name`; the base model
+> falls back to `ED4ALL_CAMPAIGN_BASE_MODEL` and then the campaign default,
+> resolved against `BaseModelRegistry` BEFORE a runner is constructed (an
+> unknown name returns the registry's supported list, never a silent
+> substitution). To pin a base model explicitly, use the
+> `python -m Trainforge.train_course` invocation above.
 
 A graceful stop during training raises `GracefulStopRequested`; on the standalone
 `python -m` path that converts to the canonical paused exit code **3**.
@@ -889,7 +894,7 @@ ed4all support-bundle --run-id <RUN_ID> -o ./ed4all-support.tar.gz # redacted bu
 | Conflict | Status |
 |---|---|
 | `dgx-spark.md` § (f) documents `ed4all run … --provider local`; the CLI rejects it (`click.Choice(["anthropic","openai","nvidia"])`). Reproduced against this checkout. | Real. Use the `*_PROVIDER` env vars instead, per §2.1. |
-| Root `CLAUDE.md` documents `ed4all run trainforge_train --course-code <slug> --base-model <name>`; `ed4all run` exposes neither option, and the `training` phase routes to `synthesize_training`, not `Trainforge.train_course`. | Real. Use `python -m Trainforge.train_course`, per §3.2. |
+| Root `CLAUDE.md` documents `ed4all run trainforge_train --course-code <slug> --base-model <name>`; `ed4all run` exposes neither option. | Partly resolved by e15ad5f1. The routing half is fixed — the `training` phase now reaches `Trainforge.train_course` via the `run_training` registry tool (phase-name dispatch), not `synthesize_training`. The FLAGS half stands: pass the course as `--course-name`, the base model via `ED4ALL_CAMPAIGN_BASE_MODEL`, or use `python -m Trainforge.train_course` per §3.2. |
 | `--dry-run` appears to print a different phase order than the run executes. | **Not a defect.** Both paths call the same `WorkflowRunner._topological_sort`; the order only diverges when the dry-run shell lacks `COURSEFORGE_TWO_PASS=true`, because several `depends_on_when_env:` edges are conditional on it. Export it before dry-running. |
 | The `ed4all gui --mode` help text asserts "The GUI has no auth"; `gui/auth.py` implements a shared-secret token gate over the operator routes in `full` mode. | Real (stale help string). The gate is a pass-through when no token is configured, so the help text is right for the default posture and wrong once a token is set. See §5.2. |
 

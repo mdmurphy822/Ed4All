@@ -95,7 +95,17 @@ any phase.
 | `training_synthesis` | `[]` |
 | `libv2_archival` | `[]` |
 | `vector_indexing` | `[]` |
+| `training` | `[]` |
+| `post_training_validation` | `[]` |
+| `evaluation` | `[]` |
 | `finalization` | `[]` |
+
+The last three are the opt-in `--with-training` tail. `training` annotates
+`seats: []` for a stronger reason than the phases above it: the trainer wants
+the WHOLE card, so every vLLM seat must be down before it loads (the campaign
+harness enforces the same invariant by `docker stop`-ing every registered seat
+first). An empty list is the explicit "this phase needs NO seat" annotation —
+distinct from an absent key.
 
 That reads as three regimes: the conversion pair on `semantik_conversion`, the
 single large reasoning seat `spark-super` across judging, planning, graph, and
@@ -120,7 +130,7 @@ flowchart LR
       RW["content_generation_rewrite"]
       AS["assessment_synthesis"]
     end
-    subgraph P2["validation, packaging, archival, indexing"]
+    subgraph P2["validation, packaging, archival, indexing, training tail"]
       PRV["post_rewrite_validation"]
       PK["packaging"]
       IC["imscc_chunking"]
@@ -128,12 +138,15 @@ flowchart LR
       TS["training_synthesis"]
       LV["libv2_archival"]
       VI["vector_indexing"]
+      TR["training"]
+      PTV["post_training_validation"]
+      EV["evaluation"]
       FIN["finalization"]
     end
 
     C -.->|"seats: [spark-glm, spark-qwen]"| SGLM["<b>spark-glm</b> — OCR/layout extraction<br/><b>spark-qwen</b> — vision description"]
     HJ & CP & CE & CG & OU & IV & RW & AS -.->|"seats: [spark-super]"| SSUP["<b>spark-super</b><br/>large reasoning seat"]
-    PRV & PK & IC & TA & TS & LV & VI & FIN -.->|"seats: [ ]"| FREE["NO seat — card free for<br/>in-process NLI + embedder"]
+    PRV & PK & IC & TA & TS & LV & VI & TR & PTV & EV & FIN -.->|"seats: [ ]"| FREE["NO seat — card free for<br/>in-process NLI + embedder,<br/>and for the trainer"]
 ```
 
 Four phases — `staging`, `chunking`, `objective_extraction`, `source_mapping` —
