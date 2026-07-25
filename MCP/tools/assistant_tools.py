@@ -212,7 +212,7 @@ def register_assistant_tools(mcp):
         Re-runs EVERY prepare check (a stale prepare is never trusted), then
         docker-stops every registered vLLM seat and VERIFIES none still serves
         (fails loudly, no launch, if one does), then spawns the fixed argv
-        ``ed4all run trainforge_train --course-code <slug> --base-model
+        ``ed4all run trainforge_train --course-name <slug> --base-model
         <validated>`` detached. All inherited from the underlying tool — the
         wrapper only passes the slug.
 

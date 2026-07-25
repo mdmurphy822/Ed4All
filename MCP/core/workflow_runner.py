@@ -5630,7 +5630,8 @@ class WorkflowRunner:
                 logger.info(
                     "Skipping optional phase %s: the in-build training tail is "
                     "opt-in — pass --with-training to run it (or use "
-                    "`ed4all run trainforge_train --course-code <slug>` "
+                    "`ed4all run trainforge_train --course-name <slug> "
+                    "--base-model <name>` "
                     "against the archived course).",
                     phase.name,
                 )

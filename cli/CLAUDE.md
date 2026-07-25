@@ -104,10 +104,11 @@ Mode/provider resolution: `--mode` → `LLM_MODE` → `local`;
 `_cloud_seat_preflight` — resolve + assert only, **no dispatch**.
 
 `--resume <run_id>` takes the `_resume_workflow` path. `--stop-after`,
-`--reuse-objectives` and `--with-training` have dedicated resume-override
-helpers (`_apply_resume_stop_after_override`,
+`--reuse-objectives`, `--with-training` and `--base-model` have dedicated
+resume-override helpers (`_apply_resume_stop_after_override`,
 `_apply_resume_reuse_objectives_override`,
-`_apply_resume_with_training_override`) that patch the persisted params before
+`_apply_resume_with_training_override`,
+`_apply_resume_base_model_override`) that patch the persisted params before
 the resumed phase runs — the runner reads those decisions from persisted state,
 so without the patch the flag would be a silent no-op on a resume.
 `_apply_resume_with_training_override` also takes the `--skip-training` value,
@@ -156,6 +157,23 @@ staleness heuristic and the resume path see the truth.
   disk. `--skip-conversion` keeps a `hidden=True` deprecated back-compat alias;
   the persisted skip run-param key is read-normalized so a run paused under the
   old flag name still `--resume`s.
+- **`--base-model`** pins the base the `training` phase trains an adapter ON
+  (the model being *trained*, never a synthesis teacher). It populates the
+  `base_model` workflow param that the phase's `inputs_from` block routes into
+  the `run_training` handler, so it governs BOTH the standalone
+  `ed4all run trainforge_train --course-name <slug> --base-model <name>`
+  workflow and the in-build `--with-training` tail. Resolution chain, highest
+  first: this flag > `ED4ALL_CAMPAIGN_BASE_MODEL` > the registry default
+  (`nemotron3-nano-30b`). `_validate_base_model` checks it at **parse time**
+  against `Trainforge/training/base_models.py::BaseModelRegistry` — the same
+  single registry `MCP/tools/pipeline_tools.py::_run_training` validates
+  against, a fail-fast echo rather than a second allowlist — so an unknown name
+  exits 2 with the supported list instead of silently training (and stamping a
+  model card for) some other base. A slim install that cannot import the
+  registry warns on stderr and lets the handler fail the run closed. The course
+  itself is `--course-name`; `--course-code` is *not* an `ed4all run` option
+  (it is the handler-side `inputs_from` param alias, and a real flag only on
+  the separate `python -m Trainforge.train_course` CLI).
 - **`--semantik-output-dir`** is the canonical staged-HTML directory flag; a
   `hidden=True` deprecated back-compat alias is retained. Both coalesce into the
   same param — the canonical flag wins if both are somehow passed.

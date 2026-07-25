@@ -8,7 +8,7 @@ LibV2 course and writes ``models/<model_id>/`` back into the same slug.
 
 Wired through the canonical CLI as::
 
-    ed4all run trainforge_train --course-code TST_101 \\
+    ed4all run trainforge_train --course-name TST_101 \\
         --base-model qwen2.5-1.5b
 
 …via :mod:`cli.commands.run`. This module also functions as a direct

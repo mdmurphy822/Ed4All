@@ -420,7 +420,7 @@ python -m Trainforge.synthesize_training --smoke-paraphrase …    # ~10min, con
 
 ```bash
 # Unified CLI:
-ed4all run trainforge_train --course-code <course-slug> --base-model qwen2.5-1.5b
+ed4all run trainforge_train --course-name <course-slug> --base-model qwen2.5-1.5b
 
 # Direct module invocation -- dry-run is CPU-only and produces a runner plan:
 python -m Trainforge.train_course \

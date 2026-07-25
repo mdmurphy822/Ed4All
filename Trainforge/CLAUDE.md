@@ -756,7 +756,7 @@ python -m Trainforge.train_course --course-code <course-slug> --base-model qwen2
 python -m Trainforge.train_course --course-code phys-101 --base-model llama-3.2-3b --backend runpod
 
 # Via the unified CLI (workflow registered in config/workflows.yaml):
-ed4all run trainforge_train --course-code <course-slug> --base-model qwen2.5-1.5b
+ed4all run trainforge_train --course-name <course-slug> --base-model qwen2.5-1.5b
 ```
 
 `--dry-run` produces a runner plan JSON dump without invoking the trainer (no GPU, no network). All non-dry-run modes require:
