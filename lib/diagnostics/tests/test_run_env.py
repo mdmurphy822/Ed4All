@@ -537,3 +537,110 @@ def run_env_table():
         }
         for name, row in _FAKE_REGISTRY.items()
     }
+
+
+# ---------------------------------------------------------------------------
+# P0-1: local-synthesis serving topology (ollama vs a vLLM seat)
+# ---------------------------------------------------------------------------
+
+
+class _FakeResp:
+    def __init__(self, body: bytes, status: int = 200):
+        self._body = body
+        self.status = status
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+@pytest.fixture
+def _clear_topology_env(monkeypatch):
+    for var in (
+        "ED4ALL_SEAT_BASE_URLS",
+        "ED4ALL_VLLM_CONTAINERS",
+        "ED4ALL_SEAT_LAUNCH_SPECS",
+        "LOCAL_SYNTHESIS_BASE_URL",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+
+def test_topology_no_registry_is_ollama(monkeypatch, _clear_topology_env):
+    topo = run_env.resolve_local_synthesis_topology()
+    assert topo.seat_registry_configured is False
+    assert topo.backend == "ollama"
+    assert ":11434" in topo.base_url_root
+
+
+def test_topology_registry_matching_base_url_is_vllm_seat(monkeypatch, _clear_topology_env):
+    monkeypatch.setenv("ED4ALL_SEAT_BASE_URLS", "spark-super=http://localhost:8001")
+    monkeypatch.setenv("LOCAL_SYNTHESIS_BASE_URL", "http://localhost:8001/v1")
+    topo = run_env.resolve_local_synthesis_topology()
+    assert topo.seat_registry_configured is True
+    assert topo.backend == "vllm"
+    assert topo.seat_name == "spark-super"
+    assert topo.base_url_root == "http://localhost:8001"
+
+
+def test_topology_registry_but_ollama_default_stays_ollama(monkeypatch, _clear_topology_env):
+    # Mixed topology: seats declared for OTHER roles, but local synthesis still
+    # points at ollama on 11434 → backend stays ollama (legacy path).
+    monkeypatch.setenv("ED4ALL_SEAT_BASE_URLS", "spark-nano=http://localhost:8004")
+    monkeypatch.setenv("LOCAL_SYNTHESIS_BASE_URL", "http://localhost:11434/v1")
+    topo = run_env.resolve_local_synthesis_topology()
+    assert topo.backend == "ollama"
+    assert topo.seat_name is None
+
+
+def test_topology_registry_unregistered_nonollama_is_vllm(monkeypatch, _clear_topology_env):
+    # A seat registry is configured (via containers) and LOCAL_SYNTHESIS_BASE_URL
+    # points at a non-ollama port not itself in the registry → still vLLM.
+    monkeypatch.setenv("ED4ALL_VLLM_CONTAINERS", "http://localhost:8001=vllm-super")
+    monkeypatch.setenv("LOCAL_SYNTHESIS_BASE_URL", "http://localhost:8009/v1")
+    topo = run_env.resolve_local_synthesis_topology()
+    assert topo.backend == "vllm"
+    assert topo.seat_name is None
+    assert topo.base_url_root == "http://localhost:8009"
+
+
+def test_topology_never_raises_on_broken_registry(monkeypatch, _clear_topology_env):
+    def boom(*a, **k):
+        raise RuntimeError("registry parse exploded")
+
+    monkeypatch.setattr("lib.vllm_container_lifecycle.parse_seat_registry", boom)
+    monkeypatch.setattr("lib.vllm_container_lifecycle.parse_container_registry", boom)
+    topo = run_env.resolve_local_synthesis_topology()
+    assert topo.backend == "ollama"  # degrades to legacy, no raise
+
+
+def test_normalize_root_strips_v1_and_slash():
+    assert run_env._normalize_root("http://localhost:8001/v1/") == "http://localhost:8001"
+    assert run_env._normalize_root("http://localhost:8001/") == "http://localhost:8001"
+    assert run_env._normalize_root(None) == ""
+
+
+def test_probe_v1_models_live(monkeypatch):
+    body = b'{"data": [{"id": "super-120b"}, {"id": "nano"}]}'
+    monkeypatch.setattr(
+        run_env.urllib.request, "urlopen", lambda req, timeout=0: _FakeResp(body)
+    )
+    live, ids, error = run_env.probe_v1_models("http://localhost:8001")
+    assert live is True
+    assert ids == ["super-120b", "nano"]
+    assert error is None
+
+
+def test_probe_v1_models_down_never_raises(monkeypatch):
+    def boom(req, timeout=0):
+        raise ConnectionError("refused")
+
+    monkeypatch.setattr(run_env.urllib.request, "urlopen", boom)
+    live, ids, error = run_env.probe_v1_models("http://localhost:8001")
+    assert live is False
+    assert ids == []
+    assert "ConnectionError" in error

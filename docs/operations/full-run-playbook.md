@@ -115,11 +115,13 @@ export ED4ALL_LIBV2_ROOT=/path/to/ed4all-data/LibV2   # optional explicit overri
 `ed4all doctor` has two modes. Preflight (default) probes the live environment;
 post-mortem (`--run-id`) reads a past run off disk and probes nothing.
 
-Check groups registered in `lib/diagnostics/`: `gpu`, `window`, `environment`,
-`provider`, `gpu_profile`, `postmortem`.
+Check groups registered in `lib/diagnostics/`: `gpu`, `gpu_profile`, `window`,
+`environment`, `provider`, `seat`, `postmortem`.
 
 ```bash
-# Default preflight: gpu / window / environment groups. Makes NO network calls.
+# Default preflight: gpu / gpu_profile / window / environment groups. Makes NO
+# network calls. The `seat` group (vLLM seat topology) is added automatically
+# when a seat registry (ED4ALL_SEAT_BASE_URLS / ED4ALL_VLLM_CONTAINERS) is set.
 ed4all doctor
 
 # Model the provider + seat fanout for the actual workflow you are about to run:

@@ -123,6 +123,37 @@ Paths are relative to the Courseforge **export root**
 ed4all run textbook-to-course --corpus book.pdf --course-name PHYS_101
 ```
 
+**Auto-named run (`--auto-name`)** — opt-in H1-derived, run-timestamped course
+slugs (owner directive: slugs inherit the H1 title SemantiK creates, combined
+with the run-init date/time). `--course-name` becomes the PROVISIONAL identity
+(run_id / `state/runs/<run_id>` / log tagging; omit it and the provisional is
+derived from the corpus filename). Immediately after `semantik_conversion`
+(+ `heading_judge`) completes — and before `staging`, the first phase that
+consumes identity into artifacts — the runner reads the accessible HTML's
+`<h1>` and rebinds the workflow's `course_name` to:
+
+```
+canonical_slug(h1_title)   # lib/ontology/slugs.py, whole-token capped at 60 chars
+  + "-" + YYYYMMDD-HHMM    # the run-INIT timestamp (workflow created_at)
+# e.g. intro-to-linear-algebra-20260722-0704
+```
+
+Every post-conversion phase (staging, chunking, LibV2 archival, vector index…)
+mints artifacts under the final slug; the raw `<h1>` is recorded on the params
+as `display_title` for manifests/GUI, the old name survives as
+`provisional_course_name`, and one `course_identity_rebind` decision-capture
+event records the rebind. The resolution is persisted on the workflow state,
+so a `--resume` keeps the same identity. **Honest fallbacks** (the provided
+name is KEPT, reason logged + captured — never a fabricated title): multi-file
+corpus (no single `<h1>` names it), missing `<h1>`, structural heading
+(`Chapter 3`, `Part IV`…), numeric-only or >120-char junk, or a title with no
+sluggable content. Default off → byte-identical current behavior.
+
+```bash
+ed4all run textbook-to-course --corpus book.pdf --auto-name          # provisional from filename
+ed4all run textbook-to-course --corpus book.pdf --course-name tmp-book --auto-name
+```
+
 **Stop after a stage, to inspect it** — `--stop-after` halts *after* the named phase
 completes and skips everything downstream. The name is the exact phase name from the
 table (validated against the workflow; unknown → error):
@@ -711,7 +742,9 @@ logged once (a dry-run report of the "logical order").
 | `semantik_conversion` | `[spark-glm, spark-qwen]` | GLM-OCR extract + Qwe3-VL describe (the Super judge, ~5-10% of pages, is cascade-internal). |
 | `staging` → `source_mapping` | *absent (no opinion)* | Deterministic phases; conversion seats stay resident until course_planning swaps them out in ONE transition. |
 | `course_planning` → `assessment_synthesis` | `[spark-super]` | The whole synthesis range runs on ONE warm Super seat — planning, concept extraction, outline, inter-tier validation (kept warm), rewrite, and assessments back-to-back. |
-| `post_rewrite_validation` → `finalization` | `[]` | Super retires exactly once; the NLI/embedding validation chain + packaging + archival + indexing get the whole GPU seat-free. |
+| `post_rewrite_validation` → `trainforge_assessment` | `[]` | Super retires after assessment_synthesis; the NLI/embedding validation chain + packaging + chunking get the whole GPU seat-free. |
+| `training_synthesis` | `[spark-super]` | In-build training-pair synthesis dispatches to the `local` registry row pointed at the Super seat (`LOCAL_SYNTHESIS_BASE_URL` → :8001) — the annotation re-seats Super for this phase so the reconcile doesn't evict the very seat the phase calls. |
+| `libv2_archival` → `finalization` | `[]` | Archival + vector indexing + finalization run seat-free again. |
 
 The `assessment_synthesis`-before-`post_rewrite_validation` ordering (assessment
 consumes only objectives + chunks, never the rewritten blocks) is what lets Super

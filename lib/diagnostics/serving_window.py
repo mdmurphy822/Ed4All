@@ -361,9 +361,63 @@ def serving_window_checks(ctx: CheckContext) -> List[CheckResult]:
         ]
 
 
+def _serving_window_vllm(ctx: CheckContext, topo) -> List[CheckResult]:
+    """vLLM-seat served-window note (P0-1): no ollama ``/api/show`` truncation warn.
+
+    ollama's ``/api/show`` served-window introspection is ollama-specific. A vLLM
+    seat serves a FIXED context window (``--max-model-len``, set at launch) that
+    ``/api/show`` cannot report, so probing it here mints a FALSE "served window
+    unknown" WARN. Instead we probe ``/v1/models`` liveness and emit INFO: the
+    ollama-only truncation comparison does not apply. NEVER raises.
+    """
+    from lib.diagnostics.run_env import probe_v1_models
+
+    root = topo.base_url_root
+    seat_label = topo.seat_name or "unregistered seat"
+    live, model_ids, error = probe_v1_models(root)
+    return [
+        CheckResult(
+            name="serving_window_vllm_seat",
+            group="window",
+            severity=Severity.INFO,
+            summary=(
+                f"local-synthesis backend is a vLLM seat ({seat_label}) at {root}; "
+                "ollama /api/show served-window introspection does not apply "
+                + ("(seat live)" if live else f"(seat not answering /v1/models: {error})")
+            ),
+            detail=(
+                "a vLLM seat serves a FIXED context window (--max-model-len set at "
+                "launch) that /api/show cannot report, so the ollama-only "
+                "head-truncation comparison is skipped; seat liveness is owned by "
+                "the 'seat' group"
+            ),
+            data={
+                "backend": "vllm",
+                "base_url": root,
+                "seat_name": topo.seat_name,
+                "live": live,
+                "served_model_ids": model_ids,
+                "error": error,
+            },
+        )
+    ]
+
+
 def _serving_window_checks(ctx: CheckContext) -> List[CheckResult]:
     """Inner body for :func:`serving_window_checks` (the public wrapper catches)."""
     results: List[CheckResult] = []
+
+    # P0-1: when a seat registry is configured and LOCAL_SYNTHESIS_BASE_URL
+    # resolves to a vLLM seat, skip the ollama /api/show probe (no false
+    # "served window unknown" WARN). No seat registry → legacy path unchanged.
+    try:
+        from lib.diagnostics.run_env import resolve_local_synthesis_topology
+
+        topo = resolve_local_synthesis_topology()
+        if topo.backend == "vllm":
+            return _serving_window_vllm(ctx, topo)
+    except Exception as exc:  # noqa: BLE001 — topology resolution must not crash the doctor
+        logger.debug("serving_window: topology resolution failed: %s", exc)
 
     model = resolve_local_model()
     probe = probe_served_window(ctx.base_url, model)

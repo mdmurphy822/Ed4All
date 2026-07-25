@@ -245,6 +245,17 @@ schemas/training/schema_translation_catalog.*.yaml
 plans/
 
 # =============================================================================
+# Seat launch scripts — machine-specific deployment infra, never tracked
+# =============================================================================
+# seats/*.sh carry absolute host paths (HF cache mounts), concrete model ids,
+# and port/GPU-utilization pins for ONE machine's vLLM stack. They are the
+# ED4ALL_SEAT_LAUNCH_SPECS targets. Only the sanitized template + the README
+# ship; every real seat script stays local-only.
+seats/*
+!seats/README.md
+!seats/launch-seat.example.sh
+
+# =============================================================================
 # Windows-from-WSL leftovers
 # =============================================================================
 # When a `.docx` is copied from Windows into WSL, NTFS attaches a
@@ -385,3 +396,6 @@ training-captures/*
 # No env-detail shell profiles tracked at project root (operator stacks live
 # untracked; the sanitized template is docs/operations/run-env.example.sh)
 /run-env*.sh
+
+# Vendor model docs (NVIDIA Nemotron model cards) — local reference, not distributed
+docs/vendor/

@@ -156,8 +156,92 @@ def _model_present(model: str, names: List[str]) -> bool:
     return any(name == model or name.split(":", 1)[0] == base for name in names)
 
 
+def _check_local_synthesis_vllm(ctx: CheckContext, topo) -> List[CheckResult]:
+    """vLLM-seat local-synthesis check (P0-1): probe ``/v1/models``, no ollama warn.
+
+    When LOCAL_SYNTHESIS_BASE_URL resolves to a vLLM seat (a seat registry is
+    configured), ollama is NOT the serving path — so the ollama ``/api/tags``
+    model-pull WARN would be a FALSE DEGRADED. Instead we probe the seat's
+    OpenAI-compatible ``/v1/models`` and report INFO (live/down is the seat
+    group's concern — down at rest is not an error here). NEVER raises.
+    """
+    from lib.diagnostics.run_env import probe_v1_models
+
+    root = topo.base_url_root
+    seat_label = topo.seat_name or "unregistered seat"
+    live, model_ids, error = probe_v1_models(root)
+    model = _resolve_local_model()
+
+    served_note = (
+        f"; serving {len(model_ids)} model(s): {model_ids}" if live else ""
+    )
+    results: List[CheckResult] = [
+        CheckResult(
+            name="local_synthesis_backend",
+            group="environment",
+            severity=Severity.INFO,
+            summary=(
+                f"local-synthesis backend is a vLLM seat ({seat_label}) at {root} "
+                + (f"— live{served_note}" if live else f"— not answering /v1/models ({error})")
+            ),
+            detail=(
+                "LOCAL_SYNTHESIS_BASE_URL resolves to a vLLM seat (a seat registry "
+                "is configured), so the ollama /api/tags model-pull check does not "
+                "apply; seat liveness is owned by the 'seat' group (down at rest is "
+                "not an error, e.g. between GPU-lifecycle phases)"
+            ),
+            data={
+                "backend": "vllm",
+                "base_url": root,
+                "seat_name": topo.seat_name,
+                "live": live,
+                "served_model_ids": model_ids,
+                "configured_model": model,
+                "error": error,
+            },
+        )
+    ]
+
+    # Configured LOCAL_SYNTHESIS_MODEL vs the seat's served ids — INFO only
+    # (vLLM --served-model-name conventions vary; never a false DEGRADED).
+    if live and model and model != "unknown":
+        present = any(
+            model == mid or model.split(":", 1)[0] == str(mid).split(":", 1)[0]
+            for mid in model_ids
+        )
+        results.append(
+            CheckResult(
+                name="local_synthesis_model",
+                group="environment",
+                severity=Severity.INFO,
+                summary=(
+                    f"configured LOCAL_SYNTHESIS_MODEL '{model}' "
+                    + ("matches" if present else "is not among")
+                    + f" the seat's served id(s) {model_ids}"
+                ),
+                data={"model": model, "served_model_ids": model_ids, "matched": present},
+            )
+        )
+    return results
+
+
 def _check_ollama(ctx: CheckContext) -> List[CheckResult]:
-    """ollama liveness + configured-model-pulled check (NEVER raises)."""
+    """ollama liveness + configured-model-pulled check (NEVER raises).
+
+    P0-1 topology awareness: when a seat registry is configured AND
+    LOCAL_SYNTHESIS_BASE_URL resolves to a vLLM seat, the ollama probe is
+    replaced by an OpenAI-compatible ``/v1/models`` check (no false ollama-pull
+    WARN). With no seat registry the legacy ollama path runs byte-identical.
+    """
+    try:
+        from lib.diagnostics.run_env import resolve_local_synthesis_topology
+
+        topo = resolve_local_synthesis_topology()
+        if topo.backend == "vllm":
+            return _check_local_synthesis_vllm(ctx, topo)
+    except Exception as exc:  # noqa: BLE001 — topology resolution must not crash the doctor
+        logger.debug("diagnostics.environment: topology resolution failed: %s", exc)
+
     # resolve_ollama_root never raises on well-formed input, but keep the
     # import + call inside the guarded sub-check so an import failure on a
     # broken tree degrades to a WARN rather than crashing the doctor.
@@ -477,6 +561,197 @@ def _check_dispatch_trap(ctx: CheckContext) -> List[CheckResult]:
 
 
 # --------------------------------------------------------------------- #
+# 5. Stale non-terminal workflow records (P1-4)
+# --------------------------------------------------------------------- #
+
+#: Terminal + resting statuses (normalized lowercase; ``complete`` folds to
+#: ``completed``). Mirrors ``gui/services/liveness.py::_FINAL_STATUSES`` plus the
+#: resting ``paused`` states (a paused run legitimately has no live process and
+#: carries a resume sidecar — it is NOT a stale RUNNING record).
+_TERMINAL_OR_RESTING_STATUSES = frozenset(
+    {
+        "completed",
+        "failed",
+        "cancelled",
+        "canceled",
+        "interrupted",
+        "timeout",
+        "error",
+        "paused",
+        "pausing",
+    }
+)
+
+#: How many stale run ids to name inline before summarizing "+N more".
+_STALE_RUN_LIST_CAP = 20
+
+
+def _resolve_workflows_dir():
+    """Resolve the ``state/workflows`` dir (honors the test ED4ALL_STATE_RUNS_DIR).
+
+    ``ED4ALL_STATE_RUNS_DIR`` points at ``<state_root>/runs`` (the same override
+    ``gui/shared_state`` + ``lib.paths`` honor), so its PARENT is the state root
+    and ``<state_root>/workflows`` is the sibling. Falls back to
+    ``lib.paths.STATE_WORKFLOWS``. Never raises.
+    """
+    from pathlib import Path
+
+    env_runs = os.environ.get("ED4ALL_STATE_RUNS_DIR")
+    if env_runs and env_runs.strip():
+        return Path(env_runs.strip()).parent / "workflows"
+    from lib.paths import STATE_WORKFLOWS
+
+    return STATE_WORKFLOWS
+
+
+def _scan_ed4all_run_processes() -> List[int]:
+    """Return the pids of live ``ed4all run`` processes (ADJACENT-token match).
+
+    A LOCAL COPY of ``gui/services/liveness.py::scan_pipeline_processes`` (the
+    established no-diagnostics→gui-dependency pattern): a process qualifies only
+    when ``/proc/<pid>/cmdline`` carries an exact ``ed4all`` (or ``.../ed4all``)
+    argv token IMMEDIATELY followed by a ``run`` token — token-adjacency, never a
+    ``pgrep -f`` substring match, so a ``bash -c '... ed4all run ...'`` wrapper
+    (whose whole script is one argv token) does not false-positive. NEVER raises;
+    a non-``/proc`` platform or an unreadable entry is skipped.
+    """
+    pids: List[int] = []
+    me = os.getpid()
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return pids
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        if pid == me:
+            continue
+        try:
+            with open(f"/proc/{entry}/cmdline", "rb") as fh:
+                raw = fh.read()
+        except OSError:
+            continue
+        argv = [tok.decode("utf-8", "replace") for tok in raw.split(b"\0") if tok]
+        for i in range(len(argv) - 1):
+            tok = argv[i]
+            if (tok == "ed4all" or tok.endswith("/ed4all")) and argv[i + 1] == "run":
+                pids.append(pid)
+                break
+    return pids
+
+
+def _check_stale_runs(ctx: CheckContext) -> List[CheckResult]:
+    """Surface non-terminal ``state/workflows/WF-*.json`` records with no live run.
+
+    The orchestrator has no reaper that stamps a crashed / killed CLI run
+    terminal, so a ``WF-*.json`` can say ``RUNNING`` forever. This scans the
+    workflow store for non-terminal (active-claimed) statuses and, when NO live
+    ``ed4all run`` process exists to back them, WARNs with the stale ids. NEVER
+    raises.
+    """
+    import glob
+    import json as _json
+
+    wf_dir = _resolve_workflows_dir()
+    try:
+        paths = sorted(glob.glob(str(wf_dir / "WF-*.json")))
+    except Exception as exc:  # noqa: BLE001 — a bad path must not crash the doctor
+        logger.debug("diagnostics.environment: workflows glob failed: %s", exc)
+        return [
+            CheckResult(
+                name="stale_runs",
+                group="environment",
+                severity=Severity.OK,
+                summary="stale-run scan skipped (workflows dir unavailable)",
+                data={"workflows_dir": str(wf_dir), "error": str(exc)},
+            )
+        ]
+
+    active: List[tuple] = []  # (run_id, normalized_status)
+    for path in paths:
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                doc = _json.load(fh)
+        except Exception:  # noqa: BLE001 — a malformed record is skipped, not fatal
+            continue
+        status = str((doc.get("status") if isinstance(doc, dict) else "") or "").strip().lower()
+        if status == "complete":
+            status = "completed"
+        if not status or status in _TERMINAL_OR_RESTING_STATUSES:
+            continue
+        run_id = (doc.get("id") if isinstance(doc, dict) else None) or os.path.basename(path)[:-5]
+        active.append((str(run_id), status))
+
+    if not active:
+        return [
+            CheckResult(
+                name="stale_runs",
+                group="environment",
+                severity=Severity.OK,
+                summary="no non-terminal workflow records in the store",
+                data={"workflows_dir": str(wf_dir), "scanned": len(paths)},
+            )
+        ]
+
+    live_pids = _scan_ed4all_run_processes()
+    ids = [rid for rid, _ in active]
+    shown = ids[:_STALE_RUN_LIST_CAP]
+    more = len(ids) - len(shown)
+    id_str = ", ".join(shown) + (f" (+{more} more)" if more > 0 else "")
+
+    if live_pids:
+        # Some ed4all run process(es) are alive — one MIGHT back a record here
+        # (per-run attribution needs corpus/id argv tokens, out of scope for a
+        # doctor summary), so report INFO rather than a false stale WARN.
+        return [
+            CheckResult(
+                name="stale_runs",
+                group="environment",
+                severity=Severity.INFO,
+                summary=(
+                    f"{len(active)} non-terminal workflow record(s) with "
+                    f"{len(live_pids)} live `ed4all run` process(es) present — "
+                    "per-run attribution not performed here"
+                ),
+                detail=f"non-terminal ids: {id_str}",
+                data={
+                    "count": len(active),
+                    "run_ids": ids,
+                    "live_pids": live_pids,
+                    "statuses": {rid: st for rid, st in active},
+                },
+            )
+        ]
+
+    return [
+        CheckResult(
+            name="stale_runs",
+            group="environment",
+            severity=Severity.WARN,
+            summary=(
+                f"{len(active)} non-terminal workflow record(s) but NO live "
+                f"`ed4all run` process — stale RUNNING record(s): {id_str}"
+            ),
+            detail=(
+                "the orchestrator does not reap a crashed / killed CLI run, so "
+                "these records claim active work with no process behind them"
+            ),
+            remediation=(
+                "mark each cancelled or resume it (`ed4all run --resume <id>`); "
+                "GC stale state with `ed4all state prune`"
+            ),
+            data={
+                "count": len(active),
+                "run_ids": ids,
+                "statuses": {rid: st for rid, st in active},
+                "workflows_dir": str(wf_dir),
+            },
+        )
+    ]
+
+
+# --------------------------------------------------------------------- #
 # Entry point + registration
 # --------------------------------------------------------------------- #
 
@@ -486,6 +761,7 @@ _SUBCHECKS: List[Callable[[CheckContext], List[CheckResult]]] = [
     _check_extras,
     _check_torch_nli,
     _check_dispatch_trap,
+    _check_stale_runs,
 ]
 
 

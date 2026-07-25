@@ -447,3 +447,59 @@ def test_checks_never_raise_on_probe_exception(monkeypatch):
     assert results[0].name == "serving_window_error"
     assert results[0].severity is Severity.WARN
     assert "unexpected" in results[0].summary
+
+
+# --------------------------------------------------------------------- #
+# P0-1: vLLM-seat topology branch — no ollama /api/show "unknown" WARN
+# --------------------------------------------------------------------- #
+
+
+class _Topo:
+    def __init__(self, backend, base_url_root="http://localhost:8001", seat_name="spark-super"):
+        self.backend = backend
+        self.base_url_root = base_url_root
+        self.seat_name = seat_name
+        self.seat_registry_configured = backend == "vllm"
+
+
+def test_serving_window_vllm_branch_info_no_warn(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "lib.diagnostics.run_env.resolve_local_synthesis_topology",
+        lambda: _Topo("vllm"),
+    )
+    monkeypatch.setattr(
+        "lib.diagnostics.run_env.probe_v1_models",
+        lambda root, **k: (True, ["super-120b"], None),
+    )
+
+    def _fail(*a, **k):
+        raise AssertionError("/api/show must NOT be probed on a vLLM host")
+
+    monkeypatch.setattr(sw, "probe_served_window", _fail)
+
+    results = sw.serving_window_checks(CheckContext())
+    names = {r.name for r in results}
+    assert names == {"serving_window_vllm_seat"}
+    res = results[0]
+    assert res.severity is Severity.INFO
+    assert res.data["backend"] == "vllm"
+    # No false DEGRADED.
+    assert resolve_exit_code(results) == 0
+
+
+def test_serving_window_ollama_backend_takes_legacy_path(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "lib.diagnostics.run_env.resolve_local_synthesis_topology",
+        lambda: _Topo("ollama"),
+    )
+    # Legacy path: probe returns a served window; no vllm result emitted.
+    monkeypatch.setattr(
+        sw,
+        "probe_served_window",
+        lambda base_url, model: sw.ServedWindow(32768, 32768, sw._SOURCE_PARAMETERS, "m", None),
+    )
+    monkeypatch.setattr(sw, "_resolve_assumed_budgets", lambda: [])
+    results = sw.serving_window_checks(CheckContext())
+    names = {r.name for r in results}
+    assert "serving_window_vllm_seat" not in names
+    assert "serving_window_served" in names

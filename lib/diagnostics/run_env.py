@@ -39,11 +39,13 @@ Design contract:
 from __future__ import annotations
 
 import contextlib
+import json as _json
 import logging
 import os
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, NamedTuple, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +181,160 @@ def key_status(
         "key_present": key_present,
         "base_url": base_url,
     }
+
+
+# ---------------------------------------------------------------------------
+# Local-synthesis serving topology (ollama vs a vLLM seat) — the P0-1 fix.
+#
+# The environment / window doctor groups hardcoded the ollama LOCAL_SYNTHESIS
+# topology (``/api/tags`` model-pull probe + ``/api/show`` served-window probe).
+# On a vLLM-seat host — where LOCAL_SYNTHESIS_BASE_URL points at an OpenAI-
+# compatible vLLM seat and a seat registry (ED4ALL_SEAT_BASE_URLS /
+# ED4ALL_VLLM_CONTAINERS) is configured — those ollama probes fail for a model
+# that is NOT the serving path, minting FALSE DEGRADED warns. This resolver
+# tells the checks which backend actually serves local synthesis so they can
+# probe the RIGHT endpoint (``/v1/models``) and skip the ollama-only warns.
+#
+# Legacy contract: when NO seat registry is configured, ``backend`` is always
+# ``"ollama"`` and the checks take their byte-identical legacy path.
+# ---------------------------------------------------------------------------
+
+#: Ollama's default local root (the ``local`` endpoint-registry base_url without
+#: ``/v1``). A LOCAL_SYNTHESIS_BASE_URL on port 11434 is treated as ollama.
+_OLLAMA_DEFAULT_PORT_TOKEN = ":11434"
+
+#: Short, latency-sensitive timeout (seconds) for the ``/v1/models`` liveness
+#: probe. A doctor preflight must not stall on a wedged / down seat.
+_V1_MODELS_TIMEOUT_SECONDS = 2.0
+
+
+class LocalSynthTopology(NamedTuple):
+    """Resolved local-synthesis serving topology (never-raising resolution).
+
+    - ``seat_registry_configured``: ED4ALL_SEAT_BASE_URLS or ED4ALL_VLLM_CONTAINERS
+      is non-empty (a vLLM seat topology is declared).
+    - ``backend``: ``"ollama"`` (legacy default) | ``"vllm"`` (LOCAL_SYNTHESIS_BASE_URL
+      resolves to a vLLM seat).
+    - ``base_url_root``: the resolved local-synthesis base URL in ROOT form
+      (trailing ``/`` and ``/v1`` stripped) — the endpoint the checks probe.
+    - ``seat_name``: the registered logical seat name backing ``base_url_root``
+      when it matched a registry entry, else ``None`` (e.g. a non-ollama base URL
+      that is not in the seat registry — still treated as vLLM).
+    - ``seats`` / ``containers``: the parsed registries (for the seat group).
+    """
+
+    seat_registry_configured: bool
+    backend: str
+    base_url_root: str
+    seat_name: Optional[str]
+    seats: Dict[str, str]
+    containers: Dict[str, str]
+
+
+def _normalize_root(url: Optional[str]) -> str:
+    """Normalize a base URL to ROOT form: strip a trailing ``/`` then a ``/v1``.
+
+    Mirrors :func:`lib.llm.vram_reclaim.resolve_ollama_root`'s ``/v1`` stripping
+    so a ``.../v1`` client base URL and a ``root`` seat-registry base URL compare
+    equal. Empty / ``None`` → ``""``.
+    """
+    u = (str(url).strip() if url else "").rstrip("/")
+    if u.endswith("/v1"):
+        u = u[: -len("/v1")].rstrip("/")
+    return u
+
+
+def _parse_seat_registries() -> Tuple[Dict[str, str], Dict[str, str]]:
+    """Best-effort parse of the two seat registries (never raises → ``({}, {})``)."""
+    try:
+        from lib.vllm_container_lifecycle import (  # lazy — cheap stdlib module
+            parse_container_registry,
+            parse_seat_registry,
+        )
+
+        return parse_seat_registry(), parse_container_registry()
+    except Exception as exc:  # noqa: BLE001 — a registry import must not crash the doctor
+        logger.debug("run_env: seat registry parse unavailable: %s", exc)
+        return {}, {}
+
+
+def resolve_local_synthesis_topology() -> LocalSynthTopology:
+    """Resolve whether local synthesis is served by ollama or a vLLM seat.
+
+    Reads the CURRENT ``os.environ`` (LOCAL_SYNTHESIS_BASE_URL + the seat
+    registries). Backend rules:
+
+    * No seat registry configured → ``ollama`` (legacy, byte-identical).
+    * Seat registry configured AND the resolved local-synthesis root matches a
+      registered seat/container base URL → ``vllm`` (with the matched seat name).
+    * Seat registry configured AND the resolved root is a NON-ollama endpoint
+      (not port 11434) → ``vllm`` (unregistered seat; ``seat_name=None``).
+    * Otherwise (e.g. seat registry configured but LOCAL_SYNTHESIS_BASE_URL still
+      points at ollama on 11434 — a mixed topology) → ``ollama``.
+
+    NEVER raises.
+    """
+    seats, containers = _parse_seat_registries()
+    seat_registry_configured = bool(seats) or bool(containers)
+
+    raw = _env("LOCAL_SYNTHESIS_BASE_URL")
+    # The ollama default when unset (the `local` endpoint registry base_url).
+    local_root = _normalize_root(raw) if raw else f"http://localhost{_OLLAMA_DEFAULT_PORT_TOKEN}"
+
+    # Map registered seat/container base URLs (root form) → seat name (or None).
+    registered: Dict[str, Optional[str]] = {}
+    for name, burl in seats.items():
+        registered.setdefault(_normalize_root(burl), name)
+    for burl in containers:
+        registered.setdefault(_normalize_root(burl), None)
+
+    backend = "ollama"
+    seat_name: Optional[str] = None
+    if seat_registry_configured:
+        if local_root in registered:
+            backend, seat_name = "vllm", registered[local_root]
+        elif _OLLAMA_DEFAULT_PORT_TOKEN not in local_root:
+            backend, seat_name = "vllm", None
+
+    return LocalSynthTopology(
+        seat_registry_configured=seat_registry_configured,
+        backend=backend,
+        base_url_root=local_root,
+        seat_name=seat_name,
+        seats=dict(seats),
+        containers=dict(containers),
+    )
+
+
+def probe_v1_models(
+    base_url_root: str, *, timeout: float = _V1_MODELS_TIMEOUT_SECONDS
+) -> Tuple[bool, List[str], Optional[str]]:
+    """Probe ``GET {base_url_root}/v1/models`` (stdlib urllib, bounded, never-raise).
+
+    Returns ``(live, model_ids, error)``: ``live`` is True on a 2xx with a parsed
+    body; ``model_ids`` are the served model ids (``data[].id``); ``error`` is a
+    short reason string on failure (down / refused / timeout / bad JSON), else
+    ``None``. Uses ``urllib`` (no httpx hard-dep) with a short timeout so a
+    wedged / down seat never stalls the doctor.
+    """
+    url = f"{str(base_url_root).rstrip('/')}/v1/models"
+    try:
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            code = int(getattr(resp, "status", None) or resp.getcode())
+            body = _json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001 — seat down / refused / timeout / bad JSON
+        logger.debug("run_env: /v1/models probe %s failed: %s", url, exc)
+        return False, [], f"{type(exc).__name__}: {exc}"
+    if not (200 <= code < 300):
+        return False, [], f"HTTP {code}"
+    model_ids: List[str] = []
+    data = body.get("data") if isinstance(body, dict) else None
+    if isinstance(data, list):
+        for entry in data:
+            if isinstance(entry, dict) and entry.get("id"):
+                model_ids.append(str(entry["id"]))
+    return True, model_ids, None
 
 
 # ---------------------------------------------------------------------------

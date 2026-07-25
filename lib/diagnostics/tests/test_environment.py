@@ -326,3 +326,181 @@ def test_run_subcheck_isolates_a_raising_subcheck() -> None:
     assert results[0].severity is Severity.WARN
     assert results[0].group == "environment"
     assert "kaboom" in results[0].summary
+
+
+# --------------------------------------------------------------------- #
+# 5. P0-1 vLLM-seat local-synthesis topology branch
+# --------------------------------------------------------------------- #
+
+
+class _Topo:
+    def __init__(self, backend, base_url_root="http://localhost:8001", seat_name="spark-super"):
+        self.backend = backend
+        self.base_url_root = base_url_root
+        self.seat_name = seat_name
+        self.seat_registry_configured = backend == "vllm"
+
+
+def test_check_ollama_vllm_branch_no_ollama_warn(monkeypatch) -> None:
+    # A vLLM topology → the ollama /api/tags probe is NOT used; no ollama-pull WARN.
+    monkeypatch.setattr(
+        "lib.diagnostics.run_env.resolve_local_synthesis_topology",
+        lambda: _Topo("vllm"),
+    )
+    monkeypatch.setattr(
+        "lib.diagnostics.run_env.probe_v1_models",
+        lambda root, **k: (True, ["super-120b"], None),
+    )
+    monkeypatch.setattr(env, "_resolve_local_model", lambda: "super-120b")
+
+    def _fail(*a, **k):
+        raise AssertionError("ollama /api/tags must NOT be probed on a vLLM host")
+
+    monkeypatch.setattr(env, "_fetch_ollama_tags", _fail)
+
+    results = env._check_ollama(CheckContext())
+    names = {r.name for r in results}
+    assert "local_synthesis_backend" in names
+    assert "ollama_model_pulled" not in names
+    backend = _by_name(results, "local_synthesis_backend")
+    assert backend.severity is Severity.INFO
+    assert backend.data["backend"] == "vllm"
+    # No WARN anywhere (no false DEGRADED).
+    assert all(r.severity is not Severity.WARN for r in results)
+
+
+def test_check_ollama_legacy_path_when_ollama_backend(monkeypatch) -> None:
+    # backend=ollama → byte-identical legacy path (still probes /api/tags).
+    monkeypatch.setattr(
+        "lib.diagnostics.run_env.resolve_local_synthesis_topology",
+        lambda: _Topo("ollama"),
+    )
+    monkeypatch.setattr(
+        "lib.diagnostics.serving_window.resolve_local_model",
+        lambda: "qwen2.5:7b-instruct-q4_K_M",
+    )
+    monkeypatch.setattr(
+        env, "_fetch_ollama_tags", lambda root, timeout: ["qwen2.5:7b-instruct-q4_K_M"]
+    )
+    results = env._check_ollama(CheckContext())
+    names = {r.name for r in results}
+    assert "ollama_reachable" in names
+    assert "ollama_model_pulled" in names
+    assert "local_synthesis_backend" not in names
+
+
+def test_check_ollama_topology_failure_falls_back_to_legacy(monkeypatch) -> None:
+    def boom():
+        raise RuntimeError("topology exploded")
+
+    monkeypatch.setattr(
+        "lib.diagnostics.run_env.resolve_local_synthesis_topology", boom
+    )
+    monkeypatch.setattr(
+        "lib.diagnostics.serving_window.resolve_local_model", lambda: "m:tag"
+    )
+    monkeypatch.setattr(env, "_fetch_ollama_tags", lambda root, timeout: ["m:tag"])
+    results = env._check_ollama(CheckContext())  # must not raise
+    assert _by_name(results, "ollama_reachable").severity is Severity.OK
+
+
+# --------------------------------------------------------------------- #
+# 6. P1-4 stale non-terminal workflow records
+# --------------------------------------------------------------------- #
+
+
+def _write_wf(dir_, run_id, status):
+    import json
+
+    (dir_ / f"{run_id}.json").write_text(json.dumps({"id": run_id, "status": status}))
+
+
+def test_stale_runs_warns_when_no_live_process(monkeypatch, tmp_path) -> None:
+    wf = tmp_path / "workflows"
+    wf.mkdir()
+    _write_wf(wf, "WF-1", "RUNNING")
+    _write_wf(wf, "WF-2", "PENDING")
+    _write_wf(wf, "WF-3", "COMPLETE")  # normalizes to completed → skipped
+    _write_wf(wf, "WF-4", "paused")  # resting → skipped
+    _write_wf(wf, "WF-5", "FAILED")  # terminal → skipped
+    monkeypatch.setattr(env, "_resolve_workflows_dir", lambda: wf)
+    monkeypatch.setattr(env, "_scan_ed4all_run_processes", lambda: [])
+
+    res = _by_name(env._check_stale_runs(CheckContext()), "stale_runs")
+    assert res.severity is Severity.WARN
+    assert set(res.data["run_ids"]) == {"WF-1", "WF-2"}
+    assert "resume" in res.remediation
+
+
+def test_stale_runs_ok_when_all_terminal(monkeypatch, tmp_path) -> None:
+    wf = tmp_path / "workflows"
+    wf.mkdir()
+    _write_wf(wf, "WF-1", "COMPLETE")
+    _write_wf(wf, "WF-2", "cancelled")
+    monkeypatch.setattr(env, "_resolve_workflows_dir", lambda: wf)
+    monkeypatch.setattr(env, "_scan_ed4all_run_processes", lambda: [])
+    res = _by_name(env._check_stale_runs(CheckContext()), "stale_runs")
+    assert res.severity is Severity.OK
+
+
+def test_stale_runs_info_when_live_process_present(monkeypatch, tmp_path) -> None:
+    wf = tmp_path / "workflows"
+    wf.mkdir()
+    _write_wf(wf, "WF-1", "RUNNING")
+    monkeypatch.setattr(env, "_resolve_workflows_dir", lambda: wf)
+    monkeypatch.setattr(env, "_scan_ed4all_run_processes", lambda: [4242])
+    res = _by_name(env._check_stale_runs(CheckContext()), "stale_runs")
+    assert res.severity is Severity.INFO
+    assert res.data["live_pids"] == [4242]
+
+
+def test_scan_ed4all_run_processes_adjacency(monkeypatch) -> None:
+    # The adjacency trap: a wrapper whose whole script is one argv token
+    # (`bash -c '... ed4all run ...'`) must NOT match; only adjacent
+    # ed4all/run tokens do.
+    fake = {
+        "100": [b"bash", b"-c", b"ed4all run textbook"],  # one token → no match
+        "101": [b"/usr/bin/ed4all", b"run", b"--corpus", b"x"],  # adjacent → match
+        "102": [b"python", b"-m", b"pytest"],  # unrelated
+    }
+
+    def fake_listdir(p):
+        return list(fake) + ["not_a_pid"]
+
+    class _Open:
+        def __init__(self, entry):
+            self.entry = entry
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            key = self.entry.split("/")[2]
+            return b"\0".join(fake[key]) + b"\0"
+
+    monkeypatch.setattr(env.os, "listdir", fake_listdir)
+    monkeypatch.setattr(env.os, "getpid", lambda: 999)
+    import builtins
+
+    real_open = builtins.open
+
+    def fake_open(path, *a, **k):
+        if isinstance(path, str) and path.startswith("/proc/") and path.endswith("/cmdline"):
+            return _Open(path)
+        return real_open(path, *a, **k)
+
+    monkeypatch.setattr(builtins, "open", fake_open)
+    pids = env._scan_ed4all_run_processes()
+    assert pids == [101]
+
+
+def test_stale_runs_never_raises_on_bad_dir(monkeypatch) -> None:
+    from pathlib import Path
+
+    monkeypatch.setattr(env, "_resolve_workflows_dir", lambda: Path("/nonexistent/xyz"))
+    monkeypatch.setattr(env, "_scan_ed4all_run_processes", lambda: [])
+    res = env._check_stale_runs(CheckContext())  # must not raise
+    assert isinstance(res, list) and res

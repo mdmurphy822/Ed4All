@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# ============================================================================
+# launch-super-hj.sh.example — big-context heading-judge Super seat (250k/4-seq)
+#
+# EXAMPLE / TEMPLATE. The owner REVIEWS this, copies it to
+# /opt/seats/launch-super-hj.sh (the path ED4ALL_SEAT_LAUNCH_SPECS points at for
+# spark-super-hj), and TUNES --gpu-memory-utilization for the 4-seq/250k KV
+# footprint on their box before enabling the seat schedule.
+#
+# WHY a SECOND Super seat: the synthesis Super (spark-super / vllm-super-final)
+# serves a 65k window at 128 concurrent seqs — great throughput for outline /
+# rewrite / planning. The heading_judge phase instead needs a MUCH larger context
+# per request (a whole chapter's heading skeleton + a thinking-heavy completion),
+# so it rides its OWN Super config: --max-model-len 250000 with --max-num-seqs 4
+# (dropping the seq count is what buys the ~250k KV budget on a single DGX-Spark-
+# class card). 250000 is safely under Nemotron-3-Super-120B's native 262144
+# ceiling, so NO long-context/rope flag is needed and there is no quality loss.
+#
+# The two Super configs are MUTUALLY EXCLUSIVE (they cannot co-reside), which is
+# why this is a DISTINCT container (vllm-super-hj) on a DISTINCT host port (8011).
+# The ED4ALL_SEAT_SCHEDULE reconcile is STOP-BEFORE-START, so it stops the 65k
+# Super before it `docker run`s this one — OOM-safe on one card.
+#
+# This MUST `docker run` (CREATE the container from nothing) rather than
+# `docker start` an existing one, so the schedule's cold-recreate self-heal can
+# bring the seat up from a clean slate after a `docker rm -f`.
+# ============================================================================
+
+set -euo pipefail
+
+# ---- Tunables (edit for your box) ------------------------------------------
+CONTAINER_NAME="${CONTAINER_NAME:-vllm-super-hj}"
+HOST_PORT="${HOST_PORT:-8011}"            # matches spark-super-hj in the registry
+SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-nemotron-3-super}"  # judge model id
+MODEL_PATH="${MODEL_PATH:-/models/nemotron-3-super-nvfp4}"  # local weights dir
+VLLM_IMAGE="${VLLM_IMAGE:-nvcr.io/nim/vllm:latest}"         # your NGC vLLM image
+# 250k/4-seq KV is heavy — start conservative and raise only after measuring.
+GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.80}"
+
+# Remove any stale container of the same name so this is a true CREATE (the
+# cold-recreate path already does `docker rm -f`, but keep it idempotent here).
+docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+
+# NOTE: `sg docker -c '...'` may be required on hosts where the launching user is
+# not in the docker group directly (DGX-Spark deployment note). Wrap this whole
+# `docker run` in `sg docker -c` there.
+exec docker run -d \
+  --name "${CONTAINER_NAME}" \
+  --gpus all \
+  --ipc=host \
+  -p "${HOST_PORT}:8000" \
+  -v "${MODEL_PATH}:${MODEL_PATH}:ro" \
+  "${VLLM_IMAGE}" \
+  --model "${MODEL_PATH}" \
+  --served-model-name "${SERVED_MODEL_NAME}" \
+  --max-model-len 250000 \
+  --max-num-seqs 4 \
+  --gpu-memory-utilization "${GPU_MEM_UTIL}" \
+  --kv-cache-dtype fp8
