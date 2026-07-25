@@ -8301,6 +8301,17 @@ def register_pipeline_tools(mcp):
                 with_schema_translation=with_schema_translation,
                 schema_translation_max_pairs=schema_translation_max_pairs,
             )
+        except GracefulStopRequested:
+            # A graceful stop is a PAUSE, not a failure — propagate it AS-IS so
+            # the executor surfaces a PAUSED task result and the phase
+            # checkpoint is stamped ``paused`` (resumable). This carve-out MUST
+            # precede the broad handler below: GracefulStopRequested subclasses
+            # RuntimeError, so ``except Exception`` swallowed it and returned an
+            # error dict instead. The phase then ran its gates and stamped
+            # ``completed`` — a phase that had synthesized ~2% of its chunks
+            # rendered as finished, and a --resume re-entered it as if done.
+            # Mirrors the identical carve-out on the objective-review pass.
+            raise
         except Exception as exc:
             return json.dumps({
                 "error": f"synthesize_training failed: {exc}",
@@ -26449,6 +26460,17 @@ def _build_tool_registry() -> dict:
                 with_schema_translation=with_schema_translation,
                 schema_translation_max_pairs=schema_translation_max_pairs,
             )
+        except GracefulStopRequested:
+            # A graceful stop is a PAUSE, not a failure — propagate it AS-IS so
+            # the executor surfaces a PAUSED task result and the phase
+            # checkpoint is stamped ``paused`` (resumable). This carve-out MUST
+            # precede the broad handler below: GracefulStopRequested subclasses
+            # RuntimeError, so ``except Exception`` swallowed it and returned an
+            # error dict instead. The phase then ran its gates and stamped
+            # ``completed`` — a phase that had synthesized ~2% of its chunks
+            # rendered as finished, and a --resume re-entered it as if done.
+            # Mirrors the identical carve-out on the objective-review pass.
+            raise
         except Exception as exc:
             return json.dumps({
                 "error": f"synthesize_training failed: {exc}",
@@ -33403,6 +33425,618 @@ def _build_tool_registry() -> dict:
         })
 
     registry["run_vector_indexing"] = _run_vector_indexing
+
+    # ================================================================= #
+    # trainforge_train phase handlers                                    #
+    # ------------------------------------------------------------------#
+    # Both route by PHASE NAME through                                   #
+    # ``executor._PHASE_TOOL_MAPPING``. Agent-name routing cannot reach  #
+    # them: the ``training`` phase declares the ``training-synthesizer`` #
+    # agent, whose AGENT_TOOL_MAPPING entry is ``synthesize_training`` — #
+    # the instruction/preference PAIR-SYNTHESIS tool. Left on the agent  #
+    # fallback the workflow re-synthesized pairs and reported "trained". #
+    # ================================================================= #
+
+    #: Campaign default when neither a kwarg nor ED4ALL_CAMPAIGN_BASE_MODEL
+    #: names a base. Mirrors the ED4ALL_CAMPAIGN_BASE_MODEL documented default.
+    _DEFAULT_TRAINING_BASE_MODEL = "nemotron3-nano-30b"
+
+    #: EvalGatingValidator codes that mean "could not judge" rather than
+    #: "judged and failed" — a missing / unparseable / smoke report is a HOLD
+    #: (re-run the eval), not a REJECT (the adapter is bad).
+    _EVAL_INCONCLUSIVE_CODES = frozenset({
+        "MISSING_MODEL_DIR",
+        "EVAL_REPORT_NOT_FOUND",
+        "EVAL_REPORT_INVALID_JSON",
+        "EVAL_REPORT_IS_SMOKE",
+    })
+
+    def _training_course_slug(kwargs: dict) -> tuple:
+        """``(course_name, course_slug)`` from the usual alias surface.
+
+        Slugified the same way ``_run_vector_indexing`` does, so both phases
+        resolve the SAME ``LibV2/courses/<slug>/`` directory the archival
+        phase wrote.
+        """
+        course_name = (
+            kwargs.get("course_name")
+            or kwargs.get("course")
+            or kwargs.get("name")
+            or kwargs.get("course_code")
+            or ""
+        ) or "UNKNOWN"
+        return course_name, course_name.lower().replace("_", "-").replace(" ", "-")
+
+    def _training_base_model(kwargs: dict) -> str:
+        """Resolve the base-model SHORT NAME (explicit > env > campaign default).
+
+        Resolution only — validity is asserted by ``BaseModelRegistry.resolve``
+        at each call site. Substituting a known-good base for an unrecognized
+        name would train (and stamp a model card for) a model the operator
+        never asked for, so an unknown name must reach the registry and raise.
+        """
+        for key in ("base_model", "base_model_name", "model"):
+            val = str(kwargs.get(key) or "").strip()
+            if val:
+                return val
+        return (
+            os.environ.get("ED4ALL_CAMPAIGN_BASE_MODEL", "").strip()
+            or _DEFAULT_TRAINING_BASE_MODEL
+        )
+
+    async def _run_training(**kwargs):
+        """Train one course-pinned adapter — the ``training`` phase handler.
+
+        Resolved kwargs (workflows.yaml ``inputs_from`` / param mapping):
+            course_name (aliases: course / name / course_code): the LibV2
+                course slug whose ``training_specs/`` feed the trainer.
+            base_model (aliases: base_model_name / model): base short name
+                resolved against ``BaseModelRegistry``; falls back to
+                ``ED4ALL_CAMPAIGN_BASE_MODEL`` then the campaign default.
+            output_dir (optional): models-root override (default
+                ``LibV2/courses/<slug>/models/``).
+            config_overrides (optional): YAML overriding the per-base
+                training config (LR, epochs, rank, …).
+            dry_run (optional): emit the model-card stub + decision capture
+                without calling the trainer (no GPU required).
+
+        Envelope (success):
+            {"success": true, "model_id", "run_dir", "model_card_path",
+             "adapter_path", "decision_capture_path", "metrics",
+             "course_slug", "base_model"}
+
+        Envelope (fail-closed): {"success": false, "error", "error_type",
+            "course_slug"}.
+
+        ``TrainingRunner`` owns its own DecisionCapture stream
+        (``training_run.jsonl``, 4+ events), so this wrapper deliberately adds
+        none — a second capture around the same call would double-count the
+        run in the training corpus.
+        """
+        course_name, course_slug = _training_course_slug(kwargs)
+        base_model = _training_base_model(kwargs)
+        dry_run = bool(kwargs.get("dry_run", False))
+        output_dir = kwargs.get("output_dir") or None
+        config_overrides = (
+            kwargs.get("config_overrides")
+            or kwargs.get("config_overrides_path")
+            or None
+        )
+
+        # Lazy import so a slim install (no training extras) can still import
+        # this module and run every non-training phase.
+        try:
+            from Trainforge.training import (
+                BaseModelRegistry,
+                LocalBackend,
+                TrainingRunner,
+            )
+        except Exception as exc:  # noqa: BLE001 — missing training deps
+            return json.dumps({
+                "success": False,
+                "error": (
+                    f"training dependencies unavailable: {exc}. Install the "
+                    f"[training] extra."
+                ),
+                "error_type": "dependency_missing",
+                "course_slug": course_slug,
+            })
+
+        # Fail LOUD on an unrecognized base: the KeyError text enumerates every
+        # supported short name. Never fall back to a default here — a silently
+        # substituted base would produce an adapter whose model card pins a
+        # model nobody selected.
+        try:
+            BaseModelRegistry.resolve(base_model)
+        except KeyError as exc:
+            return json.dumps({
+                "success": False,
+                # KeyError stringifies with surrounding quotes; strip them so
+                # the supported-name list reads cleanly in the phase error.
+                "error": str(exc).strip("'\""),
+                "error_type": "unknown_base_model",
+                "course_slug": course_slug,
+                "base_model": base_model,
+            })
+
+        try:
+            runner = TrainingRunner(
+                course_slug=course_slug,
+                base_model=base_model,
+                output_dir=Path(output_dir) if output_dir else None,
+                backend=LocalBackend(allow_no_gpu=dry_run),
+                dry_run=dry_run,
+                config_overrides_path=(
+                    Path(config_overrides) if config_overrides else None
+                ),
+            )
+            result = runner.run()
+        except GracefulStopRequested:
+            # A graceful stop is a PAUSE, not a failure — propagate it AS-IS so
+            # the executor surfaces a PAUSED task result and the phase
+            # checkpoint is stamped ``paused`` (resumable). This carve-out MUST
+            # precede the broad handler below: GracefulStopRequested subclasses
+            # RuntimeError, so ``except Exception`` swallowed it and returned an
+            # error dict instead. The phase then ran its gates and stamped
+            # ``completed`` — a half-trained adapter rendered as finished, and a
+            # --resume re-entered the phase as if done. Mirrors the identical
+            # carve-out on _synthesize_training.
+            raise
+        except Exception as exc:  # noqa: BLE001 — surface, never silently degrade
+            return json.dumps({
+                "success": False,
+                "error": f"training run failed: {exc}",
+                "error_type": "training_error",
+                "course_slug": course_slug,
+                "base_model": base_model,
+            })
+
+        return json.dumps({
+            "success": True,
+            "model_id": result.model_id,
+            "run_dir": str(result.run_dir),
+            "model_card_path": str(result.model_card_path),
+            "adapter_path": (
+                str(result.adapter_path) if result.adapter_path else None
+            ),
+            "decision_capture_path": str(result.decision_capture_path),
+            "metrics": dict(result.metrics or {}),
+            "course_slug": course_slug,
+            "course_name": course_name,
+            "base_model": base_model,
+            "dry_run": dry_run,
+        })
+
+    registry["run_training"] = _run_training
+
+    def _resolve_model_dir(kwargs: dict, course_dir: Path) -> tuple:
+        """``(model_dir, resolution)`` for the adapter under evaluation.
+
+        Explicit kwarg wins. Otherwise scan ``<course>/models/`` — a single
+        candidate is unambiguous; with several the NEWEST is taken and the
+        resolution mode is reported in the envelope so "which adapter did this
+        score?" is never a silent guess. ``(None, reason)`` when nothing
+        resolves.
+        """
+        for key in ("model_dir", "run_dir", "adapter_dir", "adapter_path"):
+            raw = kwargs.get(key)
+            if raw:
+                candidate = Path(raw)
+                # TrainingRunResult.adapter_path may point at the adapter FILE;
+                # every downstream consumer (AdapterCallable, the eval gate)
+                # wants its directory.
+                if candidate.is_file():
+                    candidate = candidate.parent
+                return candidate, f"explicit:{key}"
+        models_root = course_dir / "models"
+        candidates = sorted(
+            (p for p in models_root.glob("*") if p.is_dir()),
+            key=lambda p: p.stat().st_mtime,
+        ) if models_root.is_dir() else []
+        if not candidates:
+            return None, "no_models_dir"
+        if len(candidates) == 1:
+            return candidates[0], "sole_candidate"
+        return candidates[-1], "newest_of_%d" % len(candidates)
+
+    async def _run_evaluation(**kwargs):
+        """Score a trained adapter on BOTH eval arms — the ``evaluation`` phase.
+
+        Arm 1 (held-out matrix): ``Trainforge.eval.slm_eval_harness`` — the
+        5-layer x 3-tier suite that owns ``<model_dir>/eval/eval_report.json``.
+        ``TrainingRunner`` already invokes it inline on a non-dry training run,
+        so an existing report is REUSED rather than re-scored (a re-run means a
+        second 4-bit base load and a full probe sweep for identical numbers);
+        pass ``force=true`` to re-run it, and it IS run here when the report is
+        absent (the runner's eval bridge fell through, or the phase is pointed
+        at a pre-existing adapter).
+
+        Arm 2 (grounded answer): ``lib.retrieval.grounded_eval.run_grounded_eval``
+        over the course's gold set + refusal probes — retrieval, groundedness,
+        citation precision, refusal/abstention.
+
+        The arms are rolled into ONE verdict (``promote`` / ``hold`` /
+        ``reject``) and merged ADDITIVELY into ``eval_report.json``, which is
+        the exact path ``lib.validators.eval_gating.EvalGatingValidator``
+        reads. Harness-owned keys are never rewritten — the gate keeps seeing
+        the numbers the harness produced, and gains the grounded arm beside
+        them.
+
+        Resolved kwargs:
+            course_name (aliases: course / name / course_code)
+            model_dir (aliases: run_dir / adapter_dir / adapter_path):
+                the adapter run dir; auto-resolved from ``<course>/models/``
+                when absent.
+            base_model: needed only when arm 1 has to be RE-RUN here.
+            force: re-run arm 1 even when a report already exists.
+            run_heldout / run_grounded: per-arm opt-out (both default true).
+            engine / limit: grounded-arm retrieval knobs.
+            profile / max_prompts: held-out harness knobs.
+            dry_run: resolve + report the plan, score nothing, write nothing.
+
+        Envelope: {"success", "verdict", "verdict_reasons", "arms",
+            "report_path", "course_slug", "model_dir", "degraded", "warnings"}.
+
+        Graceful-degrade contract (lib/CLAUDE.md): an arm whose dependencies
+        are absent reports ``status: "unavailable"`` with a distinct reason and
+        the run continues — but a missing arm can never reach ``promote``, and
+        NO metric is ever fabricated for it.
+        """
+        course_name, course_slug = _training_course_slug(kwargs)
+        course_dir = (
+            _resolve_libv2_root(kwargs.get("libv2_root"))
+            / "courses"
+            / course_slug
+        )
+        dry_run = bool(kwargs.get("dry_run", False))
+        force = bool(kwargs.get("force", False))
+        run_heldout = bool(kwargs.get("run_heldout", True))
+        run_grounded = bool(kwargs.get("run_grounded", True))
+
+        if not course_dir.exists():
+            return json.dumps({
+                "success": False,
+                "error": (
+                    f"course directory not found at {course_dir}; the "
+                    f"evaluation phase scores an ARCHIVED course (gold set, "
+                    f"holdout split, chunkset all live under the slug)."
+                ),
+                "error_type": "course_missing",
+                "course_slug": course_slug,
+            })
+
+        model_dir, model_dir_resolution = _resolve_model_dir(kwargs, course_dir)
+        if model_dir is None:
+            return json.dumps({
+                "success": False,
+                "error": (
+                    f"no adapter to evaluate: neither model_dir/run_dir/"
+                    f"adapter_path was supplied nor does {course_dir}/models/ "
+                    f"hold a run dir. Run the training phase first."
+                ),
+                "error_type": "model_dir_missing",
+                "course_slug": course_slug,
+            })
+
+        warnings: List[str] = []
+        arms: Dict[str, Any] = {}
+        report_path = model_dir / "eval" / "eval_report.json"
+
+        if dry_run:
+            # Plan only. Emitting a verdict from an unscored adapter would be
+            # exactly the fabricated metric the contract forbids, so the
+            # verdict is HOLD and nothing is written.
+            return json.dumps({
+                "success": True,
+                "dry_run": True,
+                "verdict": "hold",
+                "verdict_reasons": ["DRY_RUN_NO_ARMS_SCORED"],
+                "arms": {
+                    "heldout": {"status": "skipped", "reason": "dry_run"},
+                    "grounded": {"status": "skipped", "reason": "dry_run"},
+                },
+                "report_path": str(report_path),
+                "course_slug": course_slug,
+                "model_dir": str(model_dir),
+                "model_dir_resolution": model_dir_resolution,
+                "degraded": True,
+                "warnings": ["EVAL_DRY_RUN"],
+            })
+
+        # ---------------- Arm 1 — held-out matrix --------------------- #
+        if not run_heldout:
+            arms["heldout"] = {"status": "skipped", "reason": "run_heldout=false"}
+            warnings.append("EVAL_HELDOUT_ARM_SKIPPED")
+        elif report_path.exists() and not force:
+            arms["heldout"] = {
+                "status": "reused",
+                "report_path": str(report_path),
+                "reason": "eval_report.json already emitted by TrainingRunner",
+            }
+        else:
+            base_model = _training_base_model(kwargs)
+            spec = None
+            try:
+                # Base resolution is its OWN try: a KeyError raised deeper in
+                # the harness must not be misreported as an unknown base model.
+                from Trainforge.training.base_models import BaseModelRegistry
+
+                spec = BaseModelRegistry.resolve(base_model)
+            except KeyError as exc:
+                # Loud, never substituted — the message lists every supported
+                # short name.
+                return json.dumps({
+                    "success": False,
+                    "error": str(exc).strip("'\""),
+                    "error_type": "unknown_base_model",
+                    "course_slug": course_slug,
+                    "base_model": base_model,
+                })
+            except (ImportError, ModuleNotFoundError) as exc:
+                arms["heldout"] = {
+                    "status": "unavailable",
+                    "reason": "EVAL_HELDOUT_DEPS_MISSING",
+                    "detail": str(exc),
+                }
+                warnings.append("EVAL_HELDOUT_DEPS_MISSING")
+
+            if spec is not None:
+                try:
+                    from Trainforge.eval.adapter_callable import AdapterCallable
+                    from Trainforge.eval.eval_config import load_eval_config
+                    from Trainforge.eval.slm_eval_harness import SLMEvalHarness
+
+                    eval_cfg = load_eval_config(course_dir).config
+                    harness = SLMEvalHarness(
+                        course_path=course_dir,
+                        model_callable=AdapterCallable(
+                            adapter_dir=model_dir,
+                            base_model_repo=spec.huggingface_repo,
+                            base_model_short_name=base_model,
+                            max_new_tokens=int(
+                                eval_cfg.get("max_new_tokens", 256)
+                            ),
+                            temperature=float(eval_cfg.get("temperature", 0.0)),
+                            top_p=float(eval_cfg.get("top_p", 1.0)),
+                            seed=int(eval_cfg.get("seed", 42)),
+                            revision=spec.default_revision,
+                        ),
+                        profile=kwargs.get("profile") or None,
+                        max_holdout_questions=kwargs.get("max_prompts") or None,
+                    )
+                    written = harness.run_all(output_path=report_path)
+                    arms["heldout"] = {
+                        "status": "ran",
+                        "report_path": str(written),
+                        "base_model": base_model,
+                    }
+                except GracefulStopRequested:
+                    # PAUSE, not failure — see the carve-out on _run_training.
+                    raise
+                except (ImportError, ModuleNotFoundError) as exc:
+                    # Dependency-availability escape hatch ONLY: a distinct
+                    # warning-shaped signal, never a downgrade to "passed".
+                    arms["heldout"] = {
+                        "status": "unavailable",
+                        "reason": "EVAL_HELDOUT_DEPS_MISSING",
+                        "detail": str(exc),
+                    }
+                    warnings.append("EVAL_HELDOUT_DEPS_MISSING")
+                except Exception as exc:  # noqa: BLE001 — present but broken
+                    # Deps resolved and the harness still failed: that is a real
+                    # breakage, not an availability gap. Fail loud.
+                    return json.dumps({
+                        "success": False,
+                        "error": f"held-out eval harness failed: {exc}",
+                        "error_type": "heldout_eval_error",
+                        "course_slug": course_slug,
+                        "model_dir": str(model_dir),
+                    })
+
+        # The gate is the authority on whether the held-out numbers promote, so
+        # ask IT rather than re-implementing its thresholds here — a local copy
+        # would drift and the phase would disagree with the gate that follows.
+        heldout_report: Dict[str, Any] = {}
+        heldout_codes: List[str] = []
+        try:
+            from lib.validators.eval_gating import EvalGatingValidator
+
+            gate_result = EvalGatingValidator().validate({
+                "gate_id": "eval_gating",
+                "model_dir": str(model_dir),
+                "thresholds": kwargs.get("thresholds") or {},
+            })
+            heldout_codes = [
+                issue.code for issue in gate_result.issues
+                if issue.severity == "critical"
+            ]
+        except Exception as exc:  # noqa: BLE001 — pre-verdict probe is advisory
+            warnings.append("EVAL_GATE_PROBE_FAILED")
+            logger.warning("eval_gating pre-verdict probe failed: %s", exc)
+            heldout_codes = ["EVAL_REPORT_NOT_FOUND"]
+        if report_path.exists():
+            try:
+                heldout_report = json.loads(
+                    report_path.read_text(encoding="utf-8")
+                )
+            except (OSError, json.JSONDecodeError) as exc:
+                warnings.append("EVAL_REPORT_UNREADABLE")
+                logger.warning("eval_report.json unreadable at %s: %s", report_path, exc)
+
+        # ---------------- Arm 2 — grounded answer --------------------- #
+        grounded_headline: Dict[str, Any] = {}
+        milestone_breaches: List[str] = []
+        if not run_grounded:
+            arms["grounded"] = {"status": "skipped", "reason": "run_grounded=false"}
+            warnings.append("EVAL_GROUNDED_ARM_SKIPPED")
+        else:
+            try:
+                from lib.retrieval.grounded_eval import (
+                    MILESTONE_CEILINGS,
+                    MILESTONE_TARGETS,
+                    run_grounded_eval,
+                )
+
+                grounded = run_grounded_eval(
+                    _PROJECT_ROOT,
+                    course_slug,
+                    engine=str(kwargs.get("engine") or "semantic"),
+                    limit=int(kwargs.get("limit") or 8),
+                )
+                grounded_headline = dict(grounded.get("headline") or {})
+                refusal = grounded_headline.get("refusal") or {}
+
+                def _headline_metric(name: str):
+                    """Milestone metrics live at the headline root except the
+                    two refusal rates, which sit under ``headline.refusal``."""
+                    if name in grounded_headline:
+                        return grounded_headline.get(name)
+                    return refusal.get(name)
+
+                for metric, target in MILESTONE_TARGETS.items():
+                    value = _headline_metric(metric)
+                    if value is None:
+                        # Unscored (e.g. NLI unavailable) — an absent number is
+                        # not a breach, and inventing 0.0 would manufacture one.
+                        continue
+                    breached = (
+                        float(value) > float(target)
+                        if metric in MILESTONE_CEILINGS
+                        else float(value) < float(target)
+                    )
+                    if breached:
+                        milestone_breaches.append(
+                            f"{metric}={float(value):.4f} vs {target}"
+                        )
+                arms["grounded"] = {
+                    "status": "ran",
+                    # The harness reports where it wrote under ``_written``.
+                    "report_path": (
+                        (grounded.get("_written") or {}).get("report_path")
+                    ),
+                    "milestone_breaches": milestone_breaches,
+                }
+            except GracefulStopRequested:
+                # PAUSE, not failure — see the carve-out note on _run_training.
+                raise
+            except Exception as exc:  # noqa: BLE001
+                # PipelineUnavailable (a NotImplementedError) and a missing
+                # gold set are dependency/precondition absences, not adapter
+                # findings — degrade with a distinct code and keep going.
+                arms["grounded"] = {
+                    "status": "unavailable",
+                    "reason": (
+                        "EVAL_GROUNDED_PIPELINE_UNAVAILABLE"
+                        if isinstance(exc, NotImplementedError)
+                        else "EVAL_GROUNDED_ARM_FAILED"
+                    ),
+                    "detail": str(exc),
+                }
+                warnings.append(str(arms["grounded"]["reason"]))
+
+        # ---------------- One verdict over both arms ------------------ #
+        # Precedence reject > hold > promote. A CONCLUSIVE held-out failure is
+        # the only reject: everything else that stops a promotion (an arm that
+        # could not run, a smoke report, an advisory milestone breach) means
+        # "not judged", which is a HOLD an operator can resolve by re-running.
+        reasons: List[str] = []
+        conclusive_fail = [
+            c for c in heldout_codes if c not in _EVAL_INCONCLUSIVE_CODES
+        ]
+        inconclusive = [c for c in heldout_codes if c in _EVAL_INCONCLUSIVE_CODES]
+        if conclusive_fail:
+            verdict = "reject"
+            reasons.extend(conclusive_fail)
+        elif (
+            inconclusive
+            or arms.get("heldout", {}).get("status") not in {"ran", "reused"}
+            or arms.get("grounded", {}).get("status") != "ran"
+            or milestone_breaches
+        ):
+            verdict = "hold"
+            reasons.extend(inconclusive)
+            for arm_name in ("heldout", "grounded"):
+                status = arms.get(arm_name, {}).get("status")
+                if status not in {"ran", "reused"}:
+                    reasons.append(f"{arm_name.upper()}_ARM_{str(status).upper()}")
+            if milestone_breaches:
+                reasons.append("GROUNDED_MILESTONE_BREACH")
+        else:
+            verdict = "promote"
+
+        # ---------------- Single merged report ------------------------ #
+        # ADDITIVE merge into the gate's canonical path: every harness-owned
+        # key is preserved byte-for-byte, and only this block's namespaced keys
+        # are written, so existing readers (EvalGatingValidator, hf_model_index)
+        # are unaffected while gaining the grounded arm beside the matrix.
+        merged = dict(heldout_report)
+        merged["evaluation"] = {
+            "schema_version": "1.0",
+            "evaluated_at": datetime.now().isoformat(),
+            "course_slug": course_slug,
+            "model_dir": str(model_dir),
+            "model_dir_resolution": model_dir_resolution,
+            "verdict": verdict,
+            "verdict_reasons": reasons,
+            "arms": arms,
+            "warnings": warnings,
+        }
+        if grounded_headline:
+            merged["grounded_answer"] = grounded_headline
+        try:
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = report_path.with_suffix(".json.tmp")
+            tmp_path.write_text(
+                json.dumps(merged, indent=2, default=str), encoding="utf-8"
+            )
+            tmp_path.replace(report_path)
+        except OSError as exc:
+            return json.dumps({
+                "success": False,
+                "error": f"failed to write merged eval report: {exc}",
+                "error_type": "report_write_error",
+                "course_slug": course_slug,
+                "model_dir": str(model_dir),
+            })
+
+        try:
+            from lib.decision_capture import (
+                DecisionCapture as _DecisionCapture,  # noqa: PLC0415
+            )
+            _DecisionCapture(
+                course_code=course_name,
+                phase="evaluation",
+                tool="pipeline",
+            ).log_decision(
+                decision_type="eval_run_decision",
+                decision=f"verdict={verdict}",
+                rationale=(
+                    f"run_evaluation for {course_slug} adapter at {model_dir}: "
+                    f"heldout={arms.get('heldout', {}).get('status')}, "
+                    f"grounded={arms.get('grounded', {}).get('status')}, "
+                    f"critical_gate_codes={heldout_codes or 'none'}, "
+                    f"milestone_breaches={milestone_breaches or 'none'} -> "
+                    f"{verdict} ({', '.join(reasons) or 'both arms clean'})."
+                ),
+            )
+        except Exception as _cap_exc:  # noqa: BLE001 — capture must not break eval
+            logger.debug("eval_run_decision capture failed: %s", _cap_exc)
+
+        return json.dumps({
+            "success": True,
+            "verdict": verdict,
+            "verdict_reasons": reasons,
+            "arms": arms,
+            "report_path": str(report_path),
+            "course_slug": course_slug,
+            "course_name": course_name,
+            "model_dir": str(model_dir),
+            "model_dir_resolution": model_dir_resolution,
+            "degraded": bool(warnings),
+            "warnings": warnings,
+        })
+
+    registry["run_evaluation"] = _run_evaluation
 
     # ================================================================= #
     # Runtime registry stubs for the 7 tools that AGENT_TOOL_MAPPING     #

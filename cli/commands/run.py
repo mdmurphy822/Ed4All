@@ -55,10 +55,20 @@ SUPPORTED_WORKFLOWS = {
     "textbook-to-course",  # hyphenated alias
     "course_generation",
     "rag_training",
-    # Wave 90 — post-import SLM adapter training stage. Generic
-    # workflow path: ``ed4all run trainforge_train --course-name TST_101``
-    # creates the workflow state via create_workflow_impl, then the
-    # ``training`` phase dispatches Trainforge/train_course.py.
+    # Wave 90 — post-import SLM adapter training stage, run STANDALONE
+    # against an already-archived LibV2 course. Generic workflow path:
+    # ``ed4all run trainforge_train --course-name TST_101`` creates the
+    # workflow state via create_workflow_impl, then the ``training`` phase
+    # routes by phase NAME through ``_PHASE_TOOL_MAPPING`` to the
+    # ``run_training`` registry handler, which drives the Trainforge
+    # train_course entry point (``Trainforge/train_course.py``).
+    #
+    # The SAME ``training`` phase (plus ``post_training_validation`` and
+    # ``evaluation``) is also declared in ``textbook_to_course`` between
+    # ``vector_indexing`` and ``finalization``, so a single build can run
+    # straight through to a trained + evaluated adapter with
+    # ``--with-training``. This standalone workflow stays the way to train
+    # WITHOUT rebuilding the course.
     "trainforge_train",
     # Phase 5 — Courseforge stage-by-stage subcommands. Each entry is
     # a thin alias over the underlying ``textbook_to_course`` workflow
@@ -248,6 +258,7 @@ def _build_workflow_params(
     courseforge_stage: Optional[str] = None,
     libv2_root: Optional[str] = None,
     skip_training: bool = False,
+    with_training: bool = False,
     provider: Optional[str] = None,
     stop_after: Optional[str] = None,
     license_note: Optional[str] = None,
@@ -366,6 +377,17 @@ def _build_workflow_params(
     # licensing posture documented in docs/LICENSING.md.
     if skip_training:
         params["skip_training"] = True
+
+    # --with-training: OPT IN to the in-build training tail
+    # (training -> post_training_validation -> evaluation, declared between
+    # vector_indexing and finalization in textbook_to_course). All three are
+    # optional phases that ``WorkflowRunner._should_skip_phase`` skips unless
+    # this param is truthy, so every existing invocation keeps its current
+    # cost profile. ``--skip-training`` WINS over this flag: the two are
+    # contradictory and skipping is the safe resolution, so we do not even
+    # record the opt-in when the suppress flag is also set.
+    if with_training and not skip_training:
+        params["with_training"] = True
 
     # W1 Gap C (§2.3): thread the EXPLICIT run provider into params so the
     # runner's authoring-route fill (`_apply_authoring_route_env`) honors an
@@ -599,7 +621,62 @@ async def _create_textbook_workflow(
         # byte-identical params on the workflow state.
         auto_name=bool(params.get("auto_name", False)),
     )
-    return json.loads(result)
+    response = json.loads(result)
+
+    # --with-training is NOT a ``create_textbook_pipeline`` kwarg (that helper
+    # rebuilds the persisted params dict from its explicit signature), so the
+    # opt-in is patched onto the freshly-written workflow state here. Same
+    # best-effort state-file patch pattern as the resume-time overrides below
+    # (``_apply_resume_stop_after_override``); a missing / unwritable state
+    # file simply leaves the run on the default (training tail skipped).
+    if params.get("with_training"):
+        _persist_workflow_param(
+            response.get("workflow_id"), "with_training", True,
+        )
+    return response
+
+
+def _persist_workflow_param(
+    workflow_id: Optional[str], key: str, value: Any,
+) -> bool:
+    """Patch one key onto a persisted workflow's ``params`` dict.
+
+    ``WorkflowRunner`` reads its skip decisions out of the persisted workflow
+    params, so a CLI flag that no creator kwarg carries has to be written into
+    the state file directly. Mirrors the read/normalize/write shape of
+    :func:`_apply_resume_stop_after_override`. Best-effort by contract: a
+    missing / unreadable / unwritable state file returns ``False`` and leaves
+    the run on whatever was already persisted.
+    """
+    if not workflow_id:
+        return False
+
+    from lib.paths import STATE_PATH  # noqa: PLC0415
+
+    workflow_path = STATE_PATH / "workflows" / f"{workflow_id}.json"
+    try:
+        state = json.loads(workflow_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(state, dict):
+        return False
+    stored = state.get("params")
+    if isinstance(stored, str):
+        try:
+            stored = json.loads(stored)
+        except ValueError:
+            stored = {}
+    if not isinstance(stored, dict):
+        stored = {}
+    stored[key] = value
+    state["params"] = stored
+    try:
+        workflow_path.write_text(
+            json.dumps(state, indent=2, default=str), encoding="utf-8",
+        )
+    except OSError:
+        return False
+    return True
 
 
 async def _create_generic_workflow(
@@ -898,6 +975,22 @@ def _build_orchestrator(
     ),
 )
 @click.option(
+    "--with-training",
+    "with_training",
+    is_flag=True,
+    default=False,
+    help=(
+        "Opt IN to the in-build training tail of textbook_to_course: the "
+        "training -> post_training_validation -> evaluation phases that run "
+        "between vector_indexing and finalization. OFF by default — a "
+        "training run is multi-hour and needs the whole GPU, so it never "
+        "attaches to a build implicitly. --skip-training WINS over this flag "
+        "(the two are contradictory; skipping is the safe resolution). "
+        "Training an ALREADY-archived course without rebuilding stays "
+        "``ed4all run trainforge_train --course-code <slug>``."
+    ),
+)
+@click.option(
     "--stop-after",
     "stop_after",
     default=None,
@@ -993,6 +1086,7 @@ def run_command(
     force_rerun: bool,
     libv2_root: Optional[str],
     skip_training: bool,
+    with_training: bool,
     stop_after: Optional[str],
     license_note: Optional[str],
     attribution: Optional[str],
@@ -1163,6 +1257,7 @@ def run_command(
         courseforge_stage=courseforge_stage,
         libv2_root=libv2_root,
         skip_training=skip_training,
+        with_training=with_training,
         stop_after=stop_after,
         license_note=license_note,
         attribution=attribution,
@@ -1197,6 +1292,12 @@ def run_command(
             # I3: an explicit --reuse-objectives on resume pins the resumed
             # course_planning phase (validated at parse time above).
             reuse_objectives=reuse_objectives,
+            # An explicit --with-training on resume patches the persisted
+            # opt-in so the resumed run executes the training tail;
+            # --skip-training is threaded through so the creation-path
+            # precedence (skip wins) holds on the resume path too.
+            with_training=with_training,
+            skip_training=skip_training,
         )
         return
 
@@ -1271,6 +1372,13 @@ def _dry_run_plan(
         # Respect --no-assessments by pruning the optional phase
         skip_trainforge = not params.get("generate_assessments", True)
         skip_training_flag = bool(params.get("skip_training", False))
+        # Opt-in in-build training tail (--with-training). Mirrors the runner's
+        # ``_should_skip_phase`` resolution so the dry-run plan shows the same
+        # phase list the live run will execute: OFF by default, and always OFF
+        # when --skip-training is set (skip_training wins).
+        with_training_flag = (
+            bool(params.get("with_training", False)) and not skip_training_flag
+        )
         skip_dart_flag = bool(params.get("skip_dart", False))
         reuse_objectives_path = params.get("reuse_objectives_path")
         # Phase 5 ST 6: --blocks filter annotation. Only the rewrite-tier
@@ -1294,11 +1402,24 @@ def _dry_run_plan(
         # for the dry-run annotation). Kept narrow because plan §3
         # explicitly scopes selection to the rewrite tier.
         block_filtered_phases = {"content_generation_rewrite"}
+        # The opt-in in-build training tail. Pruned from the plan unless
+        # --with-training was passed. Single source of truth for the phase
+        # names is WorkflowRunner._WITH_TRAINING_PHASES; the ``optional``
+        # guard mirrors _should_skip_phase exactly, so the standalone
+        # trainforge_train workflow (whose same-named phases are NOT optional)
+        # keeps its full plan.
+        with_training_phases = WorkflowRunner._WITH_TRAINING_PHASES
         phases = []
         for idx, phase in enumerate(sorted_phases):
             if skip_trainforge and phase.name == "trainforge_assessment":
                 continue
             if skip_training_flag and phase.name == "training_synthesis":
+                continue
+            if (
+                not with_training_flag
+                and phase.name in with_training_phases
+                and bool(getattr(phase, "optional", False))
+            ):
                 continue
             phase_entry = {
                 "order": len(phases) + 1,
@@ -2054,6 +2175,84 @@ def _apply_resume_reuse_objectives_override(
     return resolved
 
 
+def _apply_resume_with_training_override(
+    workflow_id: str,
+    explicit_with_training: bool,
+    explicit_skip_training: bool = False,
+) -> Optional[bool]:
+    """Persist an explicit resume-time ``--with-training`` opt-in.
+
+    Mirrors :func:`_apply_resume_stop_after_override` /
+    :func:`_apply_resume_reuse_objectives_override`.
+    ``WorkflowRunner._should_skip_phase`` reads the in-build training tail's
+    opt-in (``training`` -> ``post_training_validation`` -> ``evaluation``)
+    out of the PERSISTED workflow params, so a ``--with-training`` passed
+    alongside ``--resume`` has to be patched into the state file BEFORE the
+    run — otherwise the flag is a silent no-op and the whole tail is skipped
+    with no error. The patch reuses :func:`_persist_workflow_param` (the same
+    helper the creation path uses), so there is exactly one state-file
+    patcher.
+
+    Precedence + stickiness, both deliberate:
+
+    * ``--skip-training`` WINS over ``--with-training`` when both are passed,
+      exactly as on the creation path (``_build_workflow_params`` refuses to
+      even record the opt-in then). We likewise refuse to patch it here, and
+      say so out loud rather than silently applying it.
+    * The flag ABSENT on a resume leaves the persisted value ALONE — a run
+      created WITH the opt-in stays opted in across resumes. This matches the
+      ``--stop-after`` / ``--reuse-objectives`` precedent: a resume-time flag
+      is an override when supplied, never an implicit clear when omitted.
+      (Turning the tail back OFF for a persisted opt-in is therefore not a
+      resume-flag operation; it is an edit of the persisted params. Note that
+      a bare ``--skip-training`` on a resume is NOT wired into the persisted
+      params at all today — wiring it would also change ``training_synthesis``
+      behaviour, which is out of scope here — so it does not clear a persisted
+      opt-in either.)
+
+    Best-effort by contract (a missing / unreadable / unwritable state file
+    never raises), but a FAILED patch while the operator explicitly asked for
+    the tail is reported loudly — a silent no-op on an explicit flag is the
+    exact failure mode this helper exists to remove. Diagnostics go to stderr
+    so ``--json`` output stays machine-parseable.
+
+    Returns ``True`` when the opt-in was persisted, else ``None`` (nothing
+    patched).
+    """
+    if not explicit_with_training:
+        return None
+
+    if explicit_skip_training:
+        click.secho(
+            "--with-training ignored: --skip-training wins (the two are "
+            "contradictory; skipping is the safe resolution). The persisted "
+            "params are left untouched.",
+            fg="yellow",
+            err=True,
+        )
+        return None
+
+    if not _persist_workflow_param(workflow_id, "with_training", True):
+        click.secho(
+            f"WARNING: --with-training could NOT be persisted onto workflow "
+            f"{workflow_id} (state file missing, unreadable, or unwritable). "
+            "The resumed run will SKIP the training tail "
+            "(training -> post_training_validation -> evaluation).",
+            fg="red",
+            err=True,
+        )
+        return None
+
+    click.secho(
+        f"--with-training applied to {workflow_id}: the resumed run will "
+        "execute training -> post_training_validation -> evaluation before "
+        "finalization.",
+        fg="cyan",
+        err=True,
+    )
+    return True
+
+
 def _resume_workflow(
     *,
     workflow_id: str,
@@ -2064,6 +2263,8 @@ def _resume_workflow(
     watch: bool,
     stop_after: Optional[str] = None,
     reuse_objectives: Optional[str] = None,
+    with_training: bool = False,
+    skip_training: bool = False,
 ) -> None:
     """Resume an existing workflow state through the orchestrator.
 
@@ -2085,6 +2286,13 @@ def _resume_workflow(
         # with the fresh-run --reuse-objectives). Patched into the persisted
         # params before the run; unset → persisted value governs.
         _apply_resume_reuse_objectives_override(workflow_id, reuse_objectives)
+        # An explicit --with-training on the resume command opts the resumed
+        # run into the in-build training tail (parity with the fresh-run flag,
+        # which patches the same param at creation). --skip-training wins;
+        # the flag unset leaves the persisted value alone.
+        _apply_resume_with_training_override(
+            workflow_id, with_training, skip_training,
+        )
         orchestrator = _build_orchestrator(mode, provider=provider, model=model)
         if watch:
             click.secho(

@@ -5240,12 +5240,193 @@ workflows:
           - chunks_count
           - course_slug
 
+      # ======================================================================
+      # In-build training tail: training -> post_training_validation ->
+      # evaluation. Owner decision (2026-07-25): build->training is ONE
+      # sequenced pipeline, so ``finalization`` must be genuinely LAST. These
+      # three phases were previously only reachable via the SEPARATE
+      # ``trainforge_train`` workflow run after ``textbook_to_course`` had
+      # already finalized; that made "final validation and training data
+      # export" fire BEFORE the adapter it is supposed to describe existed.
+      #
+      # OPT-IN, not default. All three are ``optional: true`` AND
+      # ``_should_skip_phase`` skips them unless the operator passes
+      # ``--with-training`` (workflow param ``with_training``). Rationale:
+      # a training run is multi-hour and needs the whole card, so silently
+      # bolting it onto every build would change the cost profile of every
+      # existing pipeline invocation. ``--skip-training`` always wins over
+      # ``--with-training`` (contradictory flags resolve to the safe/cheap
+      # side). Default runs therefore skip all three, and because a skipped
+      # phase still records ``_completed: True`` in ``phase_outputs``,
+      # ``finalization``'s dependency on ``evaluation`` is satisfied either
+      # way — no special-case dependency plumbing needed.
+      #
+      # The standalone ``trainforge_train`` workflow is left intact below:
+      # ``ed4all run trainforge_train --course-code <slug>`` remains the way
+      # to train against an ALREADY-archived LibV2 course without rebuilding.
+      # ======================================================================
+      - name: training
+        # Routed by phase NAME to ``run_training`` via
+        # ``MCP/core/executor.py::_PHASE_TOOL_MAPPING`` (the validator-only /
+        # dedicated-handler convention used by inter_tier_validation,
+        # assessment_synthesis, heading_judge, ...). ``agents: []`` is what
+        # makes ``_create_phase_tasks`` synthesize the single virtual
+        # ``phase-handler`` task for the phase.
+        agents: []
+        # SEAT SCHEDULE: training wants the WHOLE card — every vLLM seat must
+        # be down before the trainer loads (the campaign harness enforces the
+        # same invariant by docker-stopping registered seats first). An empty
+        # list is the explicit "this phase needs NO seat" annotation.
+        seats: []
+        parallel: false
+        max_concurrent: 1
+        depends_on: [vector_indexing]
+        # Multi-hour by nature — mirrors the standalone
+        # ``trainforge_train::training`` ceiling rather than the 60-minute
+        # workflow default.
+        timeout_minutes: 720
+        optional: true
+        description: >
+          Train the course-pinned SLM adapter in-build (Trainforge
+          train_course) against the just-archived LibV2 course. Opt-in via
+          --with-training; always skipped under --skip-training.
+
+        # Param names match the ``run_training`` schema in
+        # ``MCP/core/tool_schemas.py`` (course_code is a declared alias of
+        # course_name); the mapper DROPS unknown keys, so nothing is routed
+        # here that the handler cannot consume.
+        inputs_from:
+          - param: course_code
+            source: workflow_params
+            key: course_name
+          # Base-model selector. Unset -> the key is omitted from the task
+          # params and the handler falls through to its own resolution chain
+          # (ED4ALL_CAMPAIGN_BASE_MODEL -> campaign default), which validates
+          # against Trainforge/training/base_models.py::BaseModelRegistry.
+          - param: base_model
+            source: workflow_params
+            key: base_model
+
+        # Mirrors the run_training success envelope. ``run_dir`` is the
+        # adapter dir the eval arm + EvalGatingValidator both read (the
+        # ``model_dir`` they name); it is threaded into ``evaluation`` below.
+        outputs:
+          - success
+          - model_id
+          - run_dir
+          - model_card_path
+          - adapter_path
+          - course_slug
+          - base_model
+
+      # Validator-only phase (``agents: []``, no dedicated handler needed
+      # beyond the virtual phase-handler task): re-uses the two gates from
+      # ``trainforge_train::post_training_validation`` VERBATIM so the
+      # in-build path enforces exactly the same promotion contract as the
+      # standalone training workflow. eval_gating reads
+      # <model_dir>/eval/eval_report.json and fails closed on faithfulness
+      # regression / yes-bias / no-bias / source-match drop / baseline
+      # regression; family_completeness fails closed when any CURIE family is
+      # partially complete.
+      - name: post_training_validation
+        agents: []
+        seats: []  # SEAT SCHEDULE: seat-free — gate-only, no LLM dispatch.
+        parallel: false
+        max_concurrent: 1
+        depends_on: [training]
+        timeout_minutes: 5
+        optional: true
+        description: Gate the trained adapter against eval thresholds before promotion
+
+        # No ``inputs_from`` / ``outputs``, exactly as in
+        # ``trainforge_train::post_training_validation``: this phase creates no
+        # tasks (``agents: []`` with no _PHASE_TOOL_MAPPING entry), so the only
+        # thing that runs here is the gate chain, and gate inputs are assembled
+        # by hardening/gate_input_routing.py from phase_outputs +
+        # workflow_params — not from a param routing table.
+        validation_gates:
+          - gate_id: eval_gating
+            validator: lib.validators.eval_gating.EvalGatingValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+
+          # Wave 137b: cross-CURIE coupling. Reads the post-overlay
+          # FORM_DATA dict + family_map.<family>.yaml; fails closed
+          # when any family is partially complete (mixed complete +
+          # degraded entries) so asymmetric anchoring can't reach the
+          # adapter.
+          - gate_id: family_completeness
+            validator: lib.validators.family_completeness.FamilyCompletenessValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+
+      # Post-promotion evaluation of the trained adapter against the course
+      # it was trained on. Ordered AFTER post_training_validation on purpose:
+      # the gate decides whether the adapter may be promoted at all, and
+      # there is no point spending eval wall-clock on an adapter the gate
+      # already blocked. Routed by phase NAME to ``run_evaluation`` via
+      # ``_PHASE_TOOL_MAPPING`` (same convention as ``training`` above).
+      - name: evaluation
+        agents: []
+        seats: []  # SEAT SCHEDULE: seat-free — the adapter under eval is not a vLLM seat.
+        parallel: false
+        max_concurrent: 1
+        depends_on: [post_training_validation]
+        timeout_minutes: 180
+        optional: true
+        description: >
+          Evaluate the trained course adapter (retrieval / grounded-answer /
+          eval-matrix surfaces) before final export. Opt-in via
+          --with-training; always skipped under --skip-training.
+
+        # Param names match the ``run_evaluation`` schema in
+        # ``MCP/core/tool_schemas.py``. ``model_dir`` is threaded from the
+        # ``training`` phase's ``run_dir`` (the two name the same adapter dir —
+        # run_dir is a declared alias of model_dir in the mapper). Referencing
+        # ``training`` rather than the intervening validator-only phase is
+        # deliberate: post_training_validation runs gates only and therefore
+        # surfaces no outputs of its own.
+        inputs_from:
+          - param: course_code
+            source: workflow_params
+            key: course_name
+          - param: model_dir
+            source: phase_outputs
+            phase: training
+            output: run_dir
+          - param: base_model
+            source: workflow_params
+            key: base_model
+          - param: libv2_root
+            source: workflow_params
+            key: libv2_root
+
+        outputs:
+          - success
+          - verdict
+          - report_path
+          - model_dir
+          - course_slug
+
       - name: finalization
         agents: [brightspace-packager]
         seats: []  # SEAT SCHEDULE: seat-free range — GPU belongs to NLI/embedding, Super retired.
         parallel: false
         max_concurrent: 1
-        depends_on: [vector_indexing]
+        # Owner decision (2026-07-25): finalization is genuinely LAST. It
+        # depends on ``evaluation`` (the tail of the opt-in training chain)
+        # rather than ``vector_indexing``. A skipped optional phase still
+        # records ``_completed: True``, so a default (non --with-training)
+        # run satisfies this dependency without executing any training phase.
+        depends_on: [evaluation]
         timeout_minutes: 30
         description: Final validation and training data export
 

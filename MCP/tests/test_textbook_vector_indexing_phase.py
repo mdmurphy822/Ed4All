@@ -86,12 +86,24 @@ def test_phase_depends_on_libv2_archival():
     assert _phase(_PHASE_NAME).get("depends_on") == ["libv2_archival"]
 
 
-def test_finalization_depends_on_vector_indexing():
-    assert _phase("finalization").get("depends_on") == [_PHASE_NAME], (
-        "finalization must depend on vector_indexing so the index build is "
-        "ordered before final export (a skipped optional phase still sets "
-        "_completed=True, so the dependency is satisfied either way)."
-    )
+def test_vector_indexing_ordered_before_finalization():
+    """finalization no longer depends on vector_indexing DIRECTLY.
+
+    Owner decision (2026-07-25): the opt-in in-build training tail
+    (training -> post_training_validation -> evaluation) was inserted between
+    vector_indexing and finalization so finalization is genuinely LAST, and
+    finalization's ``depends_on`` moved to ``[evaluation]``. The ordering
+    guarantee this test exists to protect — the index build happens before
+    final export — is now transitive through that chain, so we assert the
+    chain rather than the direct edge. (A skipped optional phase still sets
+    _completed=True, so the chain holds on a default non-training run; see
+    MCP/tests/test_textbook_training_tail_phases.py.)
+    """
+    assert _phase("training").get("depends_on") == [_PHASE_NAME]
+    assert _phase("finalization").get("depends_on") == ["evaluation"]
+
+    names = [p["name"] for p in _textbook_phases()]
+    assert names.index(_PHASE_NAME) < names.index("finalization")
 
 
 def test_config_loads_without_raising():

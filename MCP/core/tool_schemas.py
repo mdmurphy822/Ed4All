@@ -875,6 +875,74 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
         ),
     },
 
+    # trainforge_train phase handlers. Both are reached by PHASE NAME via
+    # executor._PHASE_TOOL_MAPPING, but the param mapper still resolves them by
+    # TOOL name — without these entries every dispatch raises
+    # ParameterMappingError("Unknown tool: ...") and the phase burns its retry
+    # budget instead of running (the Wave-32 synthesize_training regression).
+    "run_training": {
+        # course_name is the one kwarg the tool cannot derive: it resolves the
+        # LibV2 slug holding training_specs/ and receiving models/<model_id>/.
+        "required": ["course_name"],
+        "optional": [
+            "base_model",
+            "output_dir",
+            "config_overrides",
+            "dry_run",
+        ],
+        "defaults": {},
+        "param_mapping": {
+            "course": "course_name",
+            "name": "course_name",
+            "course_code": "course_name",
+            "base_model_name": "base_model",
+            "config_overrides_path": "config_overrides",
+        },
+        "description": (
+            "trainforge_train training phase handler — runs one "
+            "Trainforge.training.runner.TrainingRunner end-to-end and emits "
+            "LibV2/courses/<slug>/models/<model_id>/ (adapter + model card + "
+            "training_run.jsonl). An unknown base model fails loud via "
+            "BaseModelRegistry.resolve; a graceful stop propagates as a PAUSE."
+        ),
+    },
+
+    "run_evaluation": {
+        "required": ["course_name"],
+        "optional": [
+            "model_dir",
+            "base_model",
+            "force",
+            "run_heldout",
+            "run_grounded",
+            "engine",
+            "limit",
+            "profile",
+            "max_prompts",
+            "thresholds",
+            "libv2_root",
+            "dry_run",
+        ],
+        "defaults": {},
+        "param_mapping": {
+            "course": "course_name",
+            "name": "course_name",
+            "course_code": "course_name",
+            # The training phase reports its adapter under run_dir /
+            # adapter_path; both name the dir the eval + gate read.
+            "run_dir": "model_dir",
+            "adapter_dir": "model_dir",
+            "adapter_path": "model_dir",
+        },
+        "description": (
+            "trainforge_train evaluation phase handler — scores a trained "
+            "adapter on BOTH arms (the Trainforge/eval held-out matrix and the "
+            "lib/retrieval grounded-answer eval), derives one promote/hold/"
+            "reject verdict, and merges both additively into the "
+            "<model_dir>/eval/eval_report.json that EvalGatingValidator reads."
+        ),
+    },
+
 }
 
 

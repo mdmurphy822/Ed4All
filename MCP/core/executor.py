@@ -257,7 +257,35 @@ _PHASE_TOOL_MAPPING: Dict[str, str] = {
     # SEMANTIK_HEADING_JUDGE is DEFAULT-ON (explicit falsey token opts out);
     # skip-with-pass when explicitly off or no sidecars exist (born-digital).
     "heading_judge": "run_heading_judge",
+    # ``trainforge_train``. The training phase declares the
+    # ``training-synthesizer`` agent, whose AGENT_TOOL_MAPPING entry is
+    # ``synthesize_training`` — the instruction/preference PAIR-SYNTHESIS tool.
+    # On the agent fallback the workflow therefore re-synthesized training pairs
+    # and reported the phase complete without ever calling a trainer, so
+    # ``ed4all run trainforge_train`` trained nothing. Only a phase-name
+    # override can reach the real handler without repurposing the agent (which
+    # the training_synthesis phase of textbook_to_course still needs).
+    "training": "run_training",
+    # Post-training evaluation: rolls the held-out matrix + the grounded-answer
+    # arm into one verdict and merges both into the eval_report.json that
+    # ``post_training_validation``'s eval_gating gate reads.
+    "evaluation": "run_evaluation",
+    # NB: ``post_training_validation`` is deliberately ABSENT. It is a
+    # validator-only phase (``agents: []``) like ``inter_tier_validation`` /
+    # ``post_rewrite_validation``, but those two are mapped because each has a
+    # dedicated Python handler to run BEFORE its gates. post_training_validation
+    # has no handler — its ``eval_gating`` / ``family_completeness`` gates run
+    # through the gate manager at phase end, which needs no task. A mapping here
+    # would synthesize a virtual phase-handler task pointing at nothing.
 }
+
+
+#: Registry tools that must NEVER route through the subagent fork, keyed by the
+#: RESOLVED tool name rather than the agent name (see ``_invoke_tool``).
+_DETERMINISTIC_TRAINING_TOOLS: frozenset = frozenset({
+    "run_training",
+    "run_evaluation",
+})
 
 
 # =============================================================================
@@ -1220,6 +1248,16 @@ class TaskExecutor:
             _trainforge_synthesis_provider_set
             and agent_type == "training-synthesizer"
         )
+        # trainforge_train's ``training`` phase declares the subagent-classified
+        # ``training-synthesizer`` agent, but the phase-name override already
+        # resolved ``tool_name`` to the real trainer. Both trainforge_train
+        # handlers are deterministic compute (a trainer call, an eval harness) —
+        # there is nothing for an LLM subagent to author — so keying the guard
+        # on the RESOLVED tool name keeps them in-process no matter which agent
+        # the YAML threads through the task. A subagent cannot fabricate an
+        # adapter, so a fork here would silently produce a "trained" phase with
+        # no weights.
+        _force_inprocess_for_training = tool_name in _DETERMINISTIC_TRAINING_TOOLS
         if (
             _agent_dispatch_enabled()
             and self.dispatcher is not None
@@ -1230,6 +1268,7 @@ class TaskExecutor:
             and not _force_inprocess_for_courseplanner
             and not _force_inprocess_for_trainforge_assessment
             and not _force_inprocess_for_trainforge_synthesis
+            and not _force_inprocess_for_training
         ):
             # Param-mapping still runs so downstream agent prompts see
             # the same shape the Python tool would have received.

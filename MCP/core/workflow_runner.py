@@ -5592,6 +5592,51 @@ class WorkflowRunner:
         if phase.name == "training_synthesis":
             return bool(workflow_params.get("skip_training", False))
 
+        # In-build training tail (owner decision 2026-07-25: build->training is
+        # ONE sequenced pipeline, so finalization must be genuinely LAST). The
+        # ``training`` -> ``post_training_validation`` -> ``evaluation`` phases
+        # sit between ``vector_indexing`` and ``finalization`` in
+        # ``textbook_to_course`` but are OPT-IN: a training run is multi-hour
+        # and wants the whole GPU, so it must never attach to a build
+        # implicitly. Resolution order (both directions explicit):
+        #
+        #   * ``skip_training`` set  -> ALWAYS skip. ``--skip-training`` and
+        #     ``--with-training`` are contradictory; skipping is the safe
+        #     resolution (and ``_build_workflow_params`` already refuses to
+        #     record the opt-in when both are passed — this is the
+        #     defence-in-depth half of that contract).
+        #   * ``with_training`` truthy -> run.
+        #   * neither -> skip (the default for every pre-existing invocation).
+        #
+        # A skipped phase still records ``_completed: True`` in
+        # ``phase_outputs`` (see the skip branch in ``run_workflow``) and
+        # ``_dependencies_met`` only checks ``_completed``, so
+        # ``finalization``'s ``depends_on: [evaluation]`` stays satisfied on a
+        # default run — no special-case dependency plumbing required.
+        #
+        # NOTE the guard above this block: non-optional phases return early, so
+        # the STANDALONE ``trainforge_train`` workflow (whose same-named
+        # ``training`` / ``post_training_validation`` phases are NOT marked
+        # ``optional``) never reaches here and keeps running unconditionally.
+        if phase.name in self._WITH_TRAINING_PHASES:
+            if bool(workflow_params.get("skip_training", False)):
+                logger.info(
+                    "Skipping optional phase %s: --skip-training was passed "
+                    "(it wins over --with-training).",
+                    phase.name,
+                )
+                return True
+            if not bool(workflow_params.get("with_training", False)):
+                logger.info(
+                    "Skipping optional phase %s: the in-build training tail is "
+                    "opt-in — pass --with-training to run it (or use "
+                    "`ed4all run trainforge_train --course-code <slug>` "
+                    "against the archived course).",
+                    phase.name,
+                )
+                return True
+            return False
+
         # Marketable-v1 A2: vector_indexing runs by default but skips cleanly
         # (with a logged reason) when the embedding stack is unavailable UNLESS
         # the operator opts into strict mode via TRAINFORGE_REQUIRE_EMBEDDINGS.
@@ -5641,6 +5686,21 @@ class WorkflowRunner:
                 )
                 return True
         return False
+
+    # In-build training tail. SINGLE SOURCE OF TRUTH for the phase names
+    # gated by ``--with-training`` — consumed by ``_should_skip_phase``
+    # above and mirrored by ``cli/commands/run.py::_dry_run_plan`` so the
+    # planned phase list matches the executed one. Declared in
+    # ``config/workflows.yaml::textbook_to_course`` between
+    # ``vector_indexing`` and ``finalization``; every entry is
+    # ``optional: true`` there. The identically-named phases in the
+    # standalone ``trainforge_train`` workflow are NOT optional and are
+    # therefore unaffected (``_should_skip_phase`` returns early for them).
+    _WITH_TRAINING_PHASES: frozenset = frozenset({
+        "training",
+        "post_training_validation",
+        "evaluation",
+    })
 
     # Phase 5 Subtask 4: per-stage active-phase whitelist. Source of
     # truth for the four ``courseforge-*`` subcommand handlers in
