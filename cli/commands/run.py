@@ -259,6 +259,7 @@ def _build_workflow_params(
     libv2_root: Optional[str] = None,
     skip_training: bool = False,
     with_training: bool = False,
+    base_model: Optional[str] = None,
     provider: Optional[str] = None,
     stop_after: Optional[str] = None,
     license_note: Optional[str] = None,
@@ -388,6 +389,17 @@ def _build_workflow_params(
     # record the opt-in when the suppress flag is also set.
     if with_training and not skip_training:
         params["with_training"] = True
+
+    # --base-model: the base the ``training`` phase trains an adapter ON.
+    # config/workflows.yaml::training declares
+    # ``inputs_from: base_model <- workflow_params.base_model``, so writing the
+    # key here is what makes that (previously dead) route thread a real value
+    # into ``run_training``. Recorded ONLY when explicitly passed: an absent
+    # key leaves the handler's own chain intact
+    # (ED4ALL_CAMPAIGN_BASE_MODEL -> registry default), which is exactly the
+    # documented precedence CLI flag > env > default.
+    if base_model:
+        params["base_model"] = base_model
 
     # W1 Gap C (§2.3): thread the EXPLICIT run provider into params so the
     # runner's authoring-route fill (`_apply_authoring_route_env`) honors an
@@ -633,7 +645,60 @@ async def _create_textbook_workflow(
         _persist_workflow_param(
             response.get("workflow_id"), "with_training", True,
         )
+    # Same story for --base-model: ``create_textbook_pipeline`` has no
+    # base_model kwarg, so the in-build ``--with-training`` tail would resolve
+    # its base from the env/default chain and silently ignore the flag. The
+    # generic creator (``_create_generic_workflow``, which the standalone
+    # ``trainforge_train`` workflow uses) persists the whole params dict and
+    # needs no patch.
+    if params.get("base_model"):
+        _persist_workflow_param(
+            response.get("workflow_id"), "base_model", params["base_model"],
+        )
     return response
+
+
+def _validate_base_model(base_model: Optional[str]) -> None:
+    """Fail an unknown ``--base-model`` at PARSE time, loudly.
+
+    Delegates to ``Trainforge.training.base_models.BaseModelRegistry.resolve``
+    — the SAME single source of truth
+    ``MCP/tools/pipeline_tools.py::_run_training`` validates against — so there
+    is exactly one registry of legal base names and exactly one error message
+    listing the supported set. This is a fail-FAST echo of that check, not a
+    second (divergent) allowlist: an unknown name still reaches the handler's
+    own ``BaseModelRegistry.resolve`` if it somehow gets past here.
+
+    Unknown name => exit 2 with the registry's supported list. Never a silent
+    substitution: training (and the model card it stamps) must never run
+    against a base the operator did not name.
+
+    A slim install without the training extras cannot import the registry.
+    That is NOT a licence to guess: the value passes through unvalidated with a
+    stderr warning, and the handler fails the run closed at dispatch time.
+    """
+    if not base_model:
+        return
+    try:
+        from Trainforge.training.base_models import (  # noqa: PLC0415
+            BaseModelRegistry,
+        )
+    except ImportError as exc:
+        click.secho(
+            f"WARNING: could not import the base-model registry to validate "
+            f"--base-model {base_model!r} ({exc}); the training phase will "
+            "validate it and fail the run closed if it is unknown.",
+            fg="yellow",
+            err=True,
+        )
+        return
+    try:
+        BaseModelRegistry.resolve(base_model)
+    except KeyError as exc:
+        # KeyError str()s with surrounding quotes; the registry message
+        # already names every supported short name.
+        click.secho(f"--base-model: {exc.args[0]}", fg="red", err=True)
+        sys.exit(2)
 
 
 def _persist_workflow_param(
@@ -987,7 +1052,27 @@ def _build_orchestrator(
         "attaches to a build implicitly. --skip-training WINS over this flag "
         "(the two are contradictory; skipping is the safe resolution). "
         "Training an ALREADY-archived course without rebuilding stays "
-        "``ed4all run trainforge_train --course-code <slug>``."
+        "``ed4all run trainforge_train --course-name <slug>``."
+    ),
+)
+@click.option(
+    "--base-model",
+    "base_model",
+    default=None,
+    help=(
+        "Base-model SHORT NAME for the ``training`` phase (the model being "
+        "TRAINED, not a synthesis teacher). Populates the ``base_model`` "
+        "workflow param the phase's ``inputs_from`` block routes into the "
+        "``run_training`` handler, so it governs BOTH the standalone "
+        "``ed4all run trainforge_train --course-name <slug> --base-model "
+        "<name>`` workflow and the in-build ``--with-training`` tail. "
+        "Resolution chain, highest first: this flag > "
+        "``ED4ALL_CAMPAIGN_BASE_MODEL`` > the registry default "
+        "(nemotron3-nano-30b). Validated at PARSE time against "
+        "``Trainforge/training/base_models.py::BaseModelRegistry`` — the one "
+        "registry the training handler itself validates against — so an "
+        "unknown name exits 2 with the supported list rather than silently "
+        "training (and stamping a model card for) some other base."
     ),
 )
 @click.option(
@@ -1087,6 +1172,7 @@ def run_command(
     libv2_root: Optional[str],
     skip_training: bool,
     with_training: bool,
+    base_model: Optional[str],
     stop_after: Optional[str],
     license_note: Optional[str],
     attribution: Optional[str],
@@ -1158,6 +1244,12 @@ def run_command(
             fg="red",
         )
         sys.exit(2)
+
+    # Fail-fast base-model validation, BEFORE any workflow state is created and
+    # before the --dry-run / --resume branches, so a typo never leaves orphaned
+    # state on disk and never survives to a multi-hour training dispatch.
+    # Delegates to the ONE registry the training handler validates against.
+    _validate_base_model(base_model)
     effective_dart_output_dir = dart_output_dir or (
         DEFAULT_DART_OUTPUT_DIR if skip_dart else None
     )
@@ -1258,6 +1350,7 @@ def run_command(
         libv2_root=libv2_root,
         skip_training=skip_training,
         with_training=with_training,
+        base_model=base_model,
         stop_after=stop_after,
         license_note=license_note,
         attribution=attribution,
@@ -1298,6 +1391,9 @@ def run_command(
             # precedence (skip wins) holds on the resume path too.
             with_training=with_training,
             skip_training=skip_training,
+            # An explicit --base-model on resume re-pins the base the resumed
+            # training phase trains against (validated at parse time above).
+            base_model=base_model,
         )
         return
 
@@ -1744,6 +1840,10 @@ def _print_dry_run_plan(plan: Dict[str, Any]) -> None:
         click.echo(f"  Course:    {plan['params']['course_name']}")
     if plan.get("params", {}).get("corpus"):
         click.echo(f"  Corpus:    {plan['params']['corpus']}")
+    # --base-model: show the pin so an operator can confirm the flag actually
+    # reached workflow_params (the route the ``training`` phase reads).
+    if plan.get("params", {}).get("base_model"):
+        click.echo(f"  BaseModel: {plan['params']['base_model']}")
     # Phase 5 ST 6: surface --blocks / --force at the top level so
     # operators see the run-wide flags without scanning every phase.
     if plan.get("blocks_filter"):
@@ -2253,6 +2353,58 @@ def _apply_resume_with_training_override(
     return True
 
 
+def _apply_resume_base_model_override(
+    workflow_id: str,
+    explicit_base_model: Optional[str],
+) -> Optional[str]:
+    """Persist an explicit resume-time ``--base-model``.
+
+    Exact sibling of :func:`_apply_resume_with_training_override` and reuses
+    the SAME state-file patcher (:func:`_persist_workflow_param`) — there is
+    still exactly one patcher. The ``training`` phase resolves its base from
+    the PERSISTED workflow params (``inputs_from: base_model <-
+    workflow_params.base_model``), so a ``--base-model`` passed alongside
+    ``--resume`` has to be written into the state file BEFORE the run or it is
+    a silent no-op and the resumed run trains against whatever
+    ``ED4ALL_CAMPAIGN_BASE_MODEL`` / the registry default names.
+
+    Stickiness matches the ``--stop-after`` / ``--reuse-objectives`` /
+    ``--with-training`` precedent: the flag ABSENT on a resume leaves the
+    persisted value alone (a resume-time flag is an override when supplied,
+    never an implicit clear when omitted).
+
+    Best-effort by contract (a missing / unwritable state file never raises),
+    but a FAILED patch on an explicit flag is reported LOUDLY — silently
+    training a different base than the operator named is the exact failure this
+    helper exists to remove. Diagnostics go to stderr so ``--json`` output
+    stays machine-parseable.
+
+    Returns the persisted name, else ``None`` (nothing patched).
+    """
+    if not explicit_base_model:
+        return None
+
+    if not _persist_workflow_param(workflow_id, "base_model", explicit_base_model):
+        click.secho(
+            f"WARNING: --base-model could NOT be persisted onto workflow "
+            f"{workflow_id} (state file missing, unreadable, or unwritable). "
+            f"The resumed run will resolve its base from "
+            f"ED4ALL_CAMPAIGN_BASE_MODEL / the registry default, NOT "
+            f"{explicit_base_model!r}.",
+            fg="red",
+            err=True,
+        )
+        return None
+
+    click.secho(
+        f"--base-model applied to {workflow_id}: the resumed training phase "
+        f"will train against {explicit_base_model!r}.",
+        fg="cyan",
+        err=True,
+    )
+    return explicit_base_model
+
+
 def _resume_workflow(
     *,
     workflow_id: str,
@@ -2265,6 +2417,7 @@ def _resume_workflow(
     reuse_objectives: Optional[str] = None,
     with_training: bool = False,
     skip_training: bool = False,
+    base_model: Optional[str] = None,
 ) -> None:
     """Resume an existing workflow state through the orchestrator.
 
@@ -2293,6 +2446,11 @@ def _resume_workflow(
         _apply_resume_with_training_override(
             workflow_id, with_training, skip_training,
         )
+        # An explicit --base-model on the resume command re-pins the base the
+        # resumed ``training`` phase trains against (parity with the fresh-run
+        # flag, which writes the same param at creation). Unset -> the
+        # persisted value governs.
+        _apply_resume_base_model_override(workflow_id, base_model)
         orchestrator = _build_orchestrator(mode, provider=provider, model=model)
         if watch:
             click.secho(

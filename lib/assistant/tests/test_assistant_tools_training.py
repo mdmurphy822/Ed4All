@@ -401,9 +401,16 @@ def test_launch_happy_path_fixed_argv_exact(env, happy_launch):
     assert result["pid"] == 4321
     assert result["wf_id"] == WF_ID
     spawned = happy_launch["spawned"]
+    # ``--course-name`` is the REAL ``ed4all run`` option. This pin previously
+    # asserted ``--course-code`` — the handler-side param alias declared in
+    # config/workflows.yaml, never a CLI spelling — so it locked in a launch
+    # argv that click rejected with a UsageError before any workflow state was
+    # created. cli/tests/test_run_base_model.py now additionally parses this
+    # exact argv through the live click command, which is the check that makes
+    # the drift impossible to reintroduce.
     assert spawned["argv"] == [
         "ed4all", "run", "trainforge_train",
-        "--course-code", SLUG, "--base-model", "nemotron3-nano-30b",
+        "--course-name", SLUG, "--base-model", "nemotron3-nano-30b",
     ]
     assert "--force" not in spawned["argv"]
     assert len(spawned["argv"]) == 7  # no extra flags, ever

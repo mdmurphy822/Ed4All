@@ -1337,7 +1337,7 @@ def launch_training_run(slug: str) -> Dict[str, Any]:
     never trusted) → :func:`teardown_vllm_seats` (docker stop every registered
     seat, then VERIFY none still serves — fail loudly, no launch, if one does)
     → spawn the FIXED argv ``["ed4all", "run", "trainforge_train",
-    "--course-code", <slug>, "--base-model", <validated-base>]`` detached
+    "--course-name", <slug>, "--base-model", <validated-base>]`` detached
     (``start_new_session=True`` — setsid happens IN the spawned child itself,
     so ``proc.pid`` IS the real pipeline pid; no wrapper binary, the same
     solved pattern as :func:`campaign_resume_run`) → bounded WF-id poll →
@@ -1359,9 +1359,16 @@ def launch_training_run(slug: str) -> Dict[str, Any]:
         return result
 
     base_model = resolve_campaign_base_model()
+    # ``--course-name`` / ``--base-model`` are the REAL ``ed4all run`` options.
+    # ``--course-code`` is the handler-side param alias declared in
+    # config/workflows.yaml (``inputs_from: course_code <- course_name``), NOT a
+    # CLI spelling: passing it here made every campaign training launch die on
+    # a click UsageError before any workflow state was created.
+    # ``cli/tests/test_run_base_model.py`` pins this argv against the live
+    # click option set so the two can never drift again.
     argv = [
         "ed4all", "run", "trainforge_train",
-        "--course-code", slug, "--base-model", base_model,
+        "--course-name", slug, "--base-model", base_model,
     ]
     log_dir = CAMPAIGN_DIR / "logs"
     log_path = log_dir / f"train-{slug}-{_compact_ts()}.log"
@@ -1679,7 +1686,7 @@ CAMPAIGN_TOOL_SCHEMAS: List[Dict[str, Any]] = [
         "Launch a Stage-B LoRA training run: re-runs EVERY prepare check, docker-"
         "stops every registered vLLM seat and VERIFIES the card is free (fails "
         "loudly if a seat still serves), then spawns the fixed argv `ed4all run "
-        "trainforge_train --course-code <slug> --base-model <validated>` detached.",
+        "trainforge_train --course-name <slug> --base-model <validated>` detached.",
         {"slug": {"type": "string", "description": "The campaign book slug."}},
         ["slug"],
     ),

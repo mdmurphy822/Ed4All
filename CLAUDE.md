@@ -1222,7 +1222,7 @@ Validators (`lib/validators/`) — wiring in `docs/validation/gates.md`. Load-be
 
 ## Training Pipeline
 
-SLM training is a post-import LibV2 stage, not a step in `Trainforge/process_course.py`. Top-level command: `ed4all run trainforge_train --course-code <slug> --base-model <name>`. Full deep-dive (base-model registry, provider config, 5×3 eval matrix, 7-hash provenance, promotion workflow, decision-capture contract): `Trainforge/CLAUDE.md § Training Pipeline`.
+SLM training is a post-import LibV2 stage, not a step in `Trainforge/process_course.py`. Top-level command: `ed4all run trainforge_train --course-name <slug> --base-model <name>` (`--course-name` is the CLI flag; `course_code` is only the handler-side param alias declared in `config/workflows.yaml::training`'s `inputs_from` block). `--base-model` populates `workflow_params.base_model` — the route that phase reads — and is validated at parse time against `Trainforge/training/base_models.py::BaseModelRegistry`, so an unknown name exits 2 with the supported list instead of silently training another base. Precedence: `--base-model` > `ED4ALL_CAMPAIGN_BASE_MODEL` > the registry default (`nemotron3-nano-30b`). The same flag pins the base for the in-build `--with-training` tail, and re-pins it on `--resume`. Full deep-dive (base-model registry, provider config, 5×3 eval matrix, 7-hash provenance, promotion workflow, decision-capture contract): `Trainforge/CLAUDE.md § Training Pipeline`.
 
 ---
 
