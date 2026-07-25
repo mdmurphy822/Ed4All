@@ -420,6 +420,71 @@ def _build_source_refs(
     return inputs, []
 
 
+def _build_training_synthesis(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Dict[str, Any],
+) -> BuilderResult:
+    """Inputs for every gate on the ``training_synthesis`` phase.
+
+    All ten validators on that phase converge on one small key set
+    (``instruction_pairs_path`` / ``preference_pairs_path`` / ``chunks_path``
+    / ``training_specs_dir`` / ``course_dir`` / ``course_slug``, plus the two
+    graph paths ``min_edge_count`` reads), so a single builder serves them
+    rather than ten near-identical ones.
+
+    Why this exists: none of these validators had a builder, so the router's
+    ``__no_builder_registered__`` contract skipped the ENTIRE phase -- five
+    critical gates included. A corpus in which 86% of pairs leaked raw chunk
+    identifiers passed with no gate ever running. The dir keys are derived
+    from ``instruction_pairs_path`` because ``libv2_archival`` (which mints
+    the LibV2 course dir) runs AFTER this phase, so the pairs still live in
+    the Courseforge export's ``trainforge/training_specs/`` at gate time.
+    """
+    inst = _locate(phase_outputs, "instruction_pairs_path")
+    pref = _locate(phase_outputs, "preference_pairs_path")
+    chunks = _locate(
+        phase_outputs,
+        "imscc_chunks_path", "chunks_path", "semantik_chunks_path",
+    )
+    inputs: Dict[str, Any] = {}
+    if inst:
+        inputs["instruction_pairs_path"] = inst
+        specs_dir = Path(inst).parent
+        inputs["training_specs_dir"] = str(specs_dir)
+        # <corpus>/training_specs/instruction_pairs.jsonl -> <corpus>
+        inputs["course_dir"] = str(specs_dir.parent)
+        inputs["corpus_dir"] = str(specs_dir.parent)
+    if pref:
+        inputs["preference_pairs_path"] = pref
+    if chunks:
+        inputs["chunks_path"] = chunks
+    # min_edge_count requires BOTH graph paths. pedagogy_graph.json is not a
+    # phase output at this point (it is minted downstream at libv2_archival),
+    # but both files already sit in the corpus's own graph/ dir, so fall back
+    # to disk rather than letting the gate hard-fail on MISSING_INPUTS.
+    graph_dir = Path(inputs["course_dir"]) / "graph" if "course_dir" in inputs else None
+    for key, filename in (
+        ("concept_graph_path", "concept_graph_semantic.json"),
+        ("pedagogy_graph_path", "pedagogy_graph.json"),
+    ):
+        val = _locate(phase_outputs, key)
+        if not val and graph_dir is not None:
+            candidate = graph_dir / filename
+            if candidate.is_file():
+                val = str(candidate)
+        if val:
+            inputs[key] = val
+    slug = workflow_params.get("course_name") or workflow_params.get("course_code")
+    if isinstance(slug, str) and slug:
+        inputs["course_slug"] = slug
+    # The pairs file is the one universally-required input. Without it there
+    # is genuinely nothing to audit, so the gate skips rather than passing
+    # vacuously on an empty corpus.
+    if not inst:
+        return inputs, ["instruction_pairs_path"]
+    return inputs, []
+
+
 def _build_imscc(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
@@ -1959,6 +2024,22 @@ def _build_degraded_chunk_input(
     return {}, ["wrong_validator_class"]
 
 
+def _build_curie_anchoring_dispatch(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Dict[str, Any],
+) -> BuilderResult:
+    """Route CurieAnchoringValidator by which gate placement is live.
+
+    At ``training_synthesis`` the corpus pairs resolve and the real
+    anchoring audit runs; at the Phase 3 outline placement they do not, and
+    the degraded fail-loud marker is preserved so the YAML drift still
+    surfaces as a structured skip rather than a silent pass.
+    """
+    if _locate(phase_outputs, "instruction_pairs_path"):
+        return _build_training_synthesis(phase_outputs, workflow_params)
+    return _build_degraded_chunk_input(phase_outputs, workflow_params)
+
+
 def _build_chunk_health(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
@@ -3483,14 +3564,43 @@ def default_router() -> GateInputRouter:
     # as a structured GATE_SKIPPED_MISSING_INPUTS skip rather than a
     # silent no-builder pass. After W4 the YAML stops pointing here,
     # but the registrations stay as fail-loud safety against drift.
+    # CurieAnchoringValidator is wired at TWO places: the Phase 3 outline
+    # gate (the YAML misnomer above) AND, legitimately, the
+    # training_synthesis corpus gate. The blanket degraded registration
+    # skipped BOTH, so the real corpus gate never ran. Dispatch on whether
+    # the training-synthesis inputs resolve, keeping the fail-loud drift
+    # signal for the Phase 3 placement.
     r.register(
         "lib.validators.curie_anchoring.CurieAnchoringValidator",
-        _build_degraded_chunk_input,
+        _build_curie_anchoring_dispatch,
     )
     r.register(
         "lib.validators.content_type.ContentTypeValidator",
         _build_degraded_chunk_input,
     )
+
+    # --- training_synthesis corpus gates -------------------------------
+    # None of these had a builder, so EVERY gate on the phase (five of
+    # them critical) skipped with __no_builder_registered__ and the
+    # training corpus shipped unvalidated. One shared builder serves all
+    # of them; see _build_training_synthesis for the input contract.
+    for _dotted in (
+        "lib.validators.synthesis_quota.SynthesisQuotaValidator",
+        "lib.validators.min_edge_count.MinEdgeCountValidator",
+        "lib.validators.synthesis_diversity.SynthesisDiversityValidator",
+        "lib.validators.property_coverage.PropertyCoverageValidator",
+        "lib.validators.synthesis_leakage.SynthesisLeakageValidator",
+        "lib.validators.pair.claim_support.PairClaimSupportValidator",
+        "lib.validators.pair.lo_refs.PairLearningOutcomeRefsValidator",
+        "lib.validators.pair.objective_delivery.PairObjectiveDeliveryValidator",
+        "lib.validators.pair.promotion.TrainingPairPromotionValidator",
+        # Deprecated module aliases still resolvable from older YAML.
+        "lib.validators.pair_claim_support.PairClaimSupportValidator",
+        "lib.validators.pair_lo_refs.PairLearningOutcomeRefsValidator",
+        "lib.validators.pair_objective_delivery.PairObjectiveDeliveryValidator",
+        "lib.validators.training_pair_promotion.TrainingPairPromotionValidator",
+    ):
+        r.register(_dotted, _build_training_synthesis)
 
     # per-objective source-attribution gate at
     # course_planning. Builder resolves synthesized_objectives_path,
