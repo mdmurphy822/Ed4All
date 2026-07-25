@@ -6,7 +6,7 @@ phantom "Chapter 5: Systems of Linear Equations" / "Chapter 6: Polynomials"
 appearing in a ch1-3 extract).
 
 NO models / GPU. Exercises ``drop_toc_and_frontmatter`` on SYNTHETIC
-``region_provenance`` mirroring the real EA2e case, then chains the post-detector
+``region_provenance`` mirroring the observed scanned-textbook case, then chains the post-detector
 IR through ``build_chapters_ir`` → ``normalize_cascade_to_ed4all`` →
 ``SemantiKMarkersValidator``.
 
@@ -62,11 +62,11 @@ def _para(idx: int, text: str, *, raw: int = 0) -> dict:
     }
 
 
-def _ea2e_case() -> list[dict]:
+def _scan_toc_case() -> list[dict]:
     """Front matter = [authors, Preface, "Table of Contents", TOC run],
     then real content: Chapter 1 + 1.1 + "Prime Factorization" + blocks.
 
-    Mirrors the real EA2e defect: the book's full TOC is printed in the front
+    Mirrors the observed scanned-textbook defect: the book's full TOC is printed in the front
     matter and (without the detector) would sprout phantom Chapter 3/4/5/7/10
     headings inside a ch1-3 extract.
     """
@@ -111,13 +111,13 @@ def _text_set(provenance: list[dict]) -> set[str]:
 
 
 # ---------------------------------------------------------------------------
-# (1) EA2e case — phantom TOC run + front-matter boilerplate dropped;
+# (1) scanned-textbook case — phantom TOC run + front-matter boilerplate dropped;
 #     real chapters/sections survive.
 # ---------------------------------------------------------------------------
 
 
-def test_ea2e_toc_run_and_frontmatter_dropped():
-    prov = _ea2e_case()
+def test_scan_toc_run_and_frontmatter_dropped():
+    prov = _scan_toc_case()
     filtered, dropped = drop_toc_and_frontmatter(prov)
     texts = _text_set(filtered)
 
@@ -149,10 +149,10 @@ def test_ea2e_toc_run_and_frontmatter_dropped():
     assert dropped == 8, f"expected 8 drops, got {dropped}"
 
 
-def test_ea2e_chapter_count_reflects_only_real_chapters():
+def test_scan_chapter_count_reflects_only_real_chapters():
     """The post-detector IR has only the 2 real chapters, no phantoms."""
     class _Res:
-        region_provenance = _ea2e_case()
+        region_provenance = _scan_toc_case()
         heading_tree: list = []
 
     chapters = build_chapters_ir(_Res())
@@ -259,7 +259,7 @@ def test_real_numbered_headings_never_form_a_run():
 
 def test_chapter_index_cluster_without_pagenums_dropped(monkeypatch):
     """A back-to-back run (>=3) of 'Chapter N: Title' headings with NO content
-    between consecutive entries — the real EA2e chapter-index cluster, which
+    between consecutive entries — the observed scanned-textbook chapter-index cluster, which
     carries NO trailing page numbers — is dropped EVEN THOUGH it sits after the
     first real chapter anchor (so the front-matter TOC-run path never reaches
     it).
@@ -373,7 +373,7 @@ def test_two_chapter_openers_below_index_run_threshold_kept():
 @pytest.mark.parametrize("off_value", ["0", "false", "no", "off", "OFF"])
 def test_flag_off_byte_identical(monkeypatch, off_value):
     monkeypatch.setenv("SEMANTIK_DROP_FRONTMATTER_TOC", off_value)
-    prov = _ea2e_case()
+    prov = _scan_toc_case()
     filtered, dropped = drop_toc_and_frontmatter(prov)
     assert dropped == 0
     assert filtered == prov  # byte-identical, no phantom drops
@@ -381,7 +381,7 @@ def test_flag_off_byte_identical(monkeypatch, off_value):
 
 def test_flag_default_on_when_unset(monkeypatch):
     monkeypatch.delenv("SEMANTIK_DROP_FRONTMATTER_TOC", raising=False)
-    prov = _ea2e_case()
+    prov = _scan_toc_case()
     _filtered, dropped = drop_toc_and_frontmatter(prov)
     assert dropped == 8, "detector must be DEFAULT ON when flag unset"
 
@@ -389,7 +389,7 @@ def test_flag_default_on_when_unset(monkeypatch):
 @pytest.mark.parametrize("on_value", ["1", "true", "yes", "on", "garbage"])
 def test_flag_on_and_garbage_enables(monkeypatch, on_value):
     monkeypatch.setenv("SEMANTIK_DROP_FRONTMATTER_TOC", on_value)
-    prov = _ea2e_case()
+    prov = _scan_toc_case()
     _filtered, dropped = drop_toc_and_frontmatter(prov)
     assert dropped == 8, "truthy / garbage values must keep detector ON"
 
@@ -418,7 +418,7 @@ def _pp(idx: int, text: str, page: int, *, raw: int = 0) -> dict:
 
 
 def _preface_summary_case() -> list[dict]:
-    """Mirrors the REAL EA2e defect the index-cluster pass MISSES: a preface
+    """Mirrors the REAL scanned-textbook defect the index-cluster pass MISSES: a preface
     chapter-by-chapter SUMMARY — each "Chapter N: Title" FOLLOWED BY a real
     summary paragraph (content BETWEEN consecutive entries) — densely packed on
     pages 9-10, then the page-SPARSE real body starting page 13."""
@@ -591,7 +591,7 @@ def test_chain_ir_to_adapter_to_semantik_markers():
     from lib.validators.semantik_markers import SemantiKMarkersValidator
 
     class _Res:
-        region_provenance = _ea2e_case()
+        region_provenance = _scan_toc_case()
         heading_tree: list = []
 
     chapters = build_chapters_ir(_Res())
@@ -614,7 +614,7 @@ def test_chain_ir_to_adapter_to_semantik_markers():
 
     res = _Adapt()
     res.chapters = chapters
-    out = normalize_cascade_to_ed4all(res, pdf_stem="ea2e_ch1")
+    out = normalize_cascade_to_ed4all(res, pdf_stem="algebra_ch1")
 
     vres = SemantiKMarkersValidator().validate({"html_content": out["html"]})
     critical = [i for i in vres.issues if i.severity == "critical"]

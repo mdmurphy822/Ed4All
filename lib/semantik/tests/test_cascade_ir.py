@@ -660,7 +660,8 @@ def test_overflow_continuation_title_does_not_accumulate_cont():
     """A chapter that overflows the per-chapter block budget several times spills
     into continuation chapters whose title reads 'Title (cont.)' EVERY time —
     never the accumulating 'Title (cont.) (cont.) (cont.)' cascade (defect 2:
-    31 EA2e headings carried >=1 '(cont.)', one carried four).
+    on the observed scanned-algebra-textbook defect, 31 headings carried >=1
+    '(cont.)', one carried four).
 
     Uses the LEGACY boundary path (a single real 'Chapter N' L1 opener + a long
     run of headingless prose, no N.M sections → no section-number derivation),
@@ -724,7 +725,7 @@ def test_overflow_continuation_renders_without_heading_element():
     for i in range(_MAX_BLOCKS_PER_CHAPTER * 3):
         prov.append(_p(i + 1, f"Prose body sentence number {i}.", raw=i + 1))
 
-    out = normalize_cascade_to_ed4all(prov_result(prov), pdf_stem="ea2e_ch9")
+    out = normalize_cascade_to_ed4all(prov_result(prov), pdf_stem="algebra_ch9")
     html = out["html"]
     # The base title appears as a heading EXACTLY once; no "(cont.)" heading.
     assert len(re.findall(r"<h2>Chapter 9 Higher Roots</h2>", html)) == 1
@@ -752,7 +753,7 @@ def test_overflow_continuation_blocks_still_in_sidecar():
     for i in range(n):
         prov.append(_p(i + 1, f"Prose body sentence number {i}.", raw=i + 1))
 
-    out = normalize_cascade_to_ed4all(prov_result(prov), pdf_stem="ea2e_ch9")
+    out = normalize_cascade_to_ed4all(prov_result(prov), pdf_stem="algebra_ch9")
     sidecar = out["synthesized_sidecar"]
     # All n prose blocks are present in the sidecar (none lost to the spill).
     assert len(sidecar["sections"]) == n

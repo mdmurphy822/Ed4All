@@ -97,7 +97,12 @@ _RUNNING_HEADER_TITLE_MAX_WORDS = 8
 # accumulating "Title (cont.) (cont.) (cont.)" cascade (defect 2).
 _CONT_SUFFIX_RE = re.compile(r"(?:\s*\(cont\.\))+\s*$")
 
-from lib.semantik.adapter import _AdapterBlock, _AdapterChapter, _esc_text
+from lib.semantik.adapter import (
+    _AdapterBlock,
+    _AdapterChapter,
+    _esc_text,
+    _resolve_chapter_ladder_reconcile,
+)
 
 # Phantom-TOC + front-matter detector (root-cause fix for a PDF's full-book
 # TOC, printed in front matter, being classified as real chapter headings).
@@ -622,6 +627,30 @@ def _block_from_provenance(prov: Mapping[str, Any]) -> _AdapterBlock:
     repaired_text, ocr_repair_count = _resolve_ocr_repair(prov, raw_text)
     render_text = repaired_text if repaired_text is not None else raw_text
 
+    # SEMANTIK_CHAPTER_LADDER_RECONCILE — differentiate sub-chapter heading
+    # LEVELS from the layout/judged ``level`` instead of flattening every
+    # genuine heading to <h3>. A chapter opener is level 1 and is consumed as
+    # the chapter <h2> title (never a section block reaches here); a section
+    # heading nests ONE level below its layout depth relative to the chapter
+    # root — L2 direct section → <h3>, L3 subsection → <h4>, deeper clamped at
+    # <h5>/<h6>. Without this the adapter defaulted EVERY heading to <h3>,
+    # collapsing the whole-book hierarchy so the SEMANTIK_HEADING_JUDGE L2-vs-L3
+    # re-levelling (recorded on the layout heading blocks) never surfaced as
+    # distinct tags. Gated ON with the reconcile flag so its ``=0`` revert lever
+    # restores the flat-<h3> legacy render; a level-2 / absent / unparseable
+    # ``level`` keeps <h3>, so a uniform-level doc (e.g. the judge levelled every
+    # pending heading to L2) is byte-identical. Runs for BOTH the fresh
+    # in-lane conversion and the standalone judge re-render (same seam).
+    heading_level = 3
+    if region_kind == "heading" and _resolve_chapter_ladder_reconcile():
+        raw_level = prov.get("level")
+        try:
+            lvl_int = int(raw_level) if raw_level is not None else None
+        except (TypeError, ValueError):
+            lvl_int = None
+        if lvl_int is not None:
+            heading_level = min(max(lvl_int + 1, 3), 6)
+
     # A heading region carries no inner body HTML (the adapter renders the
     # heading element from heading_text); content regions render their kind.
     inner_html = (
@@ -645,6 +674,7 @@ def _block_from_provenance(prov: Mapping[str, Any]) -> _AdapterBlock:
         raw_block_index=int(prov.get("first_raw_block_index") or 0),
         raw_text=raw_text,
         heading_text=heading_text,
+        heading_level=heading_level,
         pages=pages,
         confidence=confidence,
         block_role=role,
@@ -722,6 +752,29 @@ def _count_real_l1_openers(provenance: Sequence[Mapping[str, Any]]) -> int:
         if _CHAPTER_OPENER_RE.match(text):
             count += 1
     return count
+
+
+def _l1_opener_ordinals(provenance: Sequence[Mapping[str, Any]]) -> set:
+    """The chapter ordinals of genuine ``Chapter N``-shaped L1 content openers.
+
+    The ordinal-set companion of :func:`_count_real_l1_openers` — used by the
+    chapter-ladder reconcile (SEMANTIK_CHAPTER_LADDER_RECONCILE) to detect a
+    document whose EXPLICIT opener series and IMPLICIT ``N.M`` major series
+    each miss different members (the double-ladder whole-book shape), so
+    the two series can be UNIONED by ordinal on the section-number path.
+    """
+    ordinals: set = set()
+    for prov in provenance:
+        if not _is_chapter_boundary(prov):
+            continue
+        m = _CHAPTER_OPENER_RE.match(str(prov.get("heading_text") or ""))
+        if not m:
+            continue
+        try:
+            ordinals.add(int(m.group(1)))
+        except (TypeError, ValueError):
+            continue
+    return ordinals
 
 
 def _chapter_titles_from_provenance(
@@ -838,6 +891,19 @@ def _build_chapters_by_section_number(
     """
     real_titles = _chapter_titles_from_provenance(provenance)
     header_titles = _running_header_chapter_titles(provenance)
+    # Front-matter chapter-root guard (SEMANTIK_CHAPTER_LADDER_RECONCILE,
+    # default ON): when the document carries EXPLICIT L1 chapter openers, any
+    # ``N.M``-derived chapter whose ordinal precedes the FIRST opener ordinal,
+    # encountered BEFORE any opener in document order, is pre-first-chapter
+    # front matter (a book whose preface numbers its own sections ``0.M``
+    # minted a phantom "Chapter 0" root). Such sections stay in the
+    # implicit leading chapter instead of opening a derived chapter. The
+    # document's own first opener is the anchor (the toc_frontmatter_detector
+    # "front-matter zone anchor" concept) — no ordinal is special-cased.
+    _reconcile = _resolve_chapter_ladder_reconcile()
+    _opener_ordinals = _l1_opener_ordinals(provenance) if _reconcile else set()
+    _first_opener_ordinal = min(_opener_ordinals) if _opener_ordinals else None
+    _seen_opener = False
 
     def _title_for(ordinal: int) -> str:
         return (
@@ -874,6 +940,17 @@ def _build_chapters_by_section_number(
     for prov in provenance:
         ordinal = _section_chapter_ordinal(prov)
         if ordinal is not None and ordinal != current_ordinal:
+            # Front-matter chapter-root guard: a pre-first-opener section with
+            # an ordinal below the first explicit opener (a preface's own 0.M
+            # numbering) must NOT mint a derived chapter root — it stays in
+            # the implicit leading (front-matter) chapter as a plain block.
+            if (
+                _first_opener_ordinal is not None
+                and not _seen_opener
+                and ordinal < _first_opener_ordinal
+            ):
+                _append_block(_block_from_provenance(prov))
+                continue
             # A section whose chapter number differs from the current chapter
             # opens a new chapter.
             title = _title_for(ordinal)
@@ -888,6 +965,7 @@ def _build_chapters_by_section_number(
         if _is_chapter_boundary(prov) and _CHAPTER_OPENER_RE.match(
             str(prov.get("heading_text") or "")
         ):
+            _seen_opener = True
             title = str(prov.get("heading_text") or "Chapter")
             current = _open_chapter(title)
             m = _CHAPTER_OPENER_RE.match(title)
@@ -995,7 +1073,7 @@ def build_chapters_ir(result: Any) -> List[_AdapterChapter]:
 
     # §3.4-B — section-number chapter derivation. When the surviving content
     # has ``N.M`` section headings but essentially NO real ``Chapter N`` L1
-    # content openers (the real EA2e case: the only L1 headings were the
+    # content openers (the observed scanned-textbook case: the only L1 headings were the
     # chapter INDEX, dropped by Part A; the actual content is all L2/L3
     # ``N.M`` sections), group sections into chapters by their leading number.
     # When real L1 openers ARE present, fall through to the legacy boundary
@@ -1013,7 +1091,7 @@ def build_chapters_ir(result: Any) -> List[_AdapterChapter]:
     #       real L1 openers than ordinals (a multi-chapter extract whose L1
     #       openers were the dropped chapter-INDEX), OR
     #   (b) at least one N.M chapter ordinal AND essentially ZERO real L1
-    #       openers (the real EA2e ch1-only capture: the only L1 headings were
+    #       openers (the observed single-chapter scan capture: the only L1 headings were
     #       the chapter index, dropped by Part A; the content is all N.M
     #       sections that would otherwise spill into un-headed "(cont.)"
     #       overflow chapters).
@@ -1021,6 +1099,27 @@ def build_chapters_ir(result: Any) -> List[_AdapterChapter]:
         (len(section_ordinals) >= 2 and real_l1_openers < len(section_ordinals))
         or real_l1_openers == 0
     )
+    # Chapter-ladder UNION (SEMANTIK_CHAPTER_LADDER_RECONCILE, default ON):
+    # when real L1 "Chapter N" openers exist but some N.M major has NO
+    # matching opener ordinal (the two series each miss different members —
+    # the reference whole-book shape: openers missed 12/19 by OCR, majors missed the
+    # section-less chapters), the legacy boundary path would silently fold the
+    # opener-less chapters into their predecessors. Take the section-number
+    # path instead — its walk already honors BOTH boundary kinds (a real L1
+    # opener AND a major change), i.e. it unions the two series by ordinal.
+    if (
+        not derive_by_section
+        and section_ordinals
+        and _resolve_chapter_ladder_reconcile()
+    ):
+        opener_ordinals = _l1_opener_ordinals(provenance)
+        if opener_ordinals and (section_ordinals - opener_ordinals):
+            derive_by_section = True
+            logger.info(
+                "chapter-ladder union: N.M major(s) %s carry no matching L1 "
+                "opener; taking the section-number path to union the series",
+                sorted(section_ordinals - opener_ordinals),
+            )
     if derive_by_section:
         logger.info(
             "section-number chapter derivation: %d distinct chapter "

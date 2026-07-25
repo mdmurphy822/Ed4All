@@ -114,6 +114,19 @@ def _outline_anchor_enabled() -> bool:
 _NM_HEADING_RE = re.compile(r"^\s*(\d+\.\d+)\s+(\S.*)$")
 _NM_SPLIT_RE = re.compile(r"\b(\d+\.\d+)\b")
 
+# Package 2c — ``Chapter N`` opener-label shapes. ``_CHAPTER_LABEL_PREFIX_RE``
+# recovers the chapter ORDINAL from any opener ("Chapter 4", "Chapter 4:
+# Discovery"); ``_BARE_CHAPTER_LABEL_RE`` recognises the information-free bare
+# label whose real title lives elsewhere in the article. Pure-shape and
+# publisher-neutral — the same universal ordinal-series shape the SemantiK
+# chapter-ladder reconcile reasons over, no book/publisher vocabulary.
+_CHAPTER_LABEL_PREFIX_RE = re.compile(r"^chapter\s+(\d+)\b", re.IGNORECASE)
+_BARE_CHAPTER_LABEL_RE = re.compile(r"^chapter\s+(\d+)\s*[.:]?$", re.IGNORECASE)
+# Any heading that OPENS with a section ordinal at any depth ("4.1 …",
+# "4.1.3 …", "7. …"). Such a heading belongs to the document's numbered spine
+# and can never be a chapter TITLE donor.
+_ORDINAL_OPENER_RE = re.compile(r"^\d+(?:\.\d+)*[.:]?\s")
+
 # Review / answer-key furniture words. An article whose TITLE carries one of
 # these opens the document's trailing review/answer-key zone (a scanned algebra
 # textbook prints the per-section openers as reprints there — see the plan's
@@ -2425,6 +2438,157 @@ class SemanticStructureExtractor:
                 )
         return occurrences
 
+    # ------------------------------------------------------------------
+    # Package 2c — article-boundary chapter anchoring (helpers).
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _chapter_label_ordinal(text: Optional[str]) -> Optional[int]:
+        """Chapter ordinal declared by a ``Chapter N`` heading, else ``None``.
+
+        Pure-shape, publisher-neutral: the ``Chapter N`` opener label is the
+        same universal ordinal-series shape the SemantiK chapter-ladder
+        reconcile reasons over. Used to give a title-only chapter the natural
+        ``ch{N}`` id + ordinal position instead of an opaque article id.
+        """
+        if not text:
+            return None
+        m = _CHAPTER_LABEL_PREFIX_RE.match(re.sub(r"\s+", " ", text).strip())
+        return int(m.group(1)) if m else None
+
+    @staticmethod
+    def _reid_chapter(chapter: ChapterStructure, new_id: str) -> None:
+        """Re-key a chapter (and its section id tree) onto ``new_id``."""
+
+        def _reid_sections(sections: List[SectionStructure], parent: str) -> None:
+            for idx, section in enumerate(sections, start=1):
+                section.id = f"{parent}_s{idx}"
+                _reid_sections(section.subsections, section.id)
+
+        chapter.id = new_id
+        _reid_sections(chapter.sections, new_id)
+
+    def _article_title_heading(self, article: Tag) -> Optional[Tag]:
+        """The article's own unnumbered title heading, if it carries one.
+
+        A converter that renders a printed chapter opener as a bare
+        ``<h2>Chapter N</h2>`` frequently emits the REAL chapter title as the
+        first unnumbered heading of the article body ("Discovery",
+        "Failure detection"). Returns that heading, or ``None`` when the
+        article opens straight into its numbered ``N.M`` spine (in which case
+        the title lives nowhere in this article and must not be invented).
+        """
+        for elem in self._article_section_elems(article):
+            heading = elem.find(["h1", "h2", "h3", "h4", "h5", "h6"])
+            if heading is None:
+                continue
+            text = re.sub(r"\s+", " ", heading.get_text(" ", strip=True)).strip()
+            if not text:
+                continue
+            if _ORDINAL_OPENER_RE.match(text):
+                # The article opens straight into its numbered spine at some
+                # depth — there is no title here and one must not be invented
+                # from a section (or sub-section) heading.
+                return None
+            if _is_noncontent_heading(text):
+                continue
+            return heading
+        return None
+
+    def _upgrade_bare_chapter_title(
+        self,
+        chapter: Optional[ChapterStructure],
+        article: Tag,
+        heading_tag: Optional[Tag],
+        heading_text: str,
+    ) -> bool:
+        """Give a BARE ``Chapter N`` opener its real title (Defect 3a).
+
+        Only fires when the article's chapter heading is the information-free
+        bare label ``Chapter N`` AND the article carries an unnumbered title
+        heading of its own — so the upgrade can only ADD information, never
+        overwrite a real title (an h1-derived chapter title is left alone).
+
+        Stamps a synthetic ``id`` on the chapter's own heading element when it
+        has none, so ``_populate_chapter_text`` still resolves the CHAPTER
+        scope (h2) rather than fuzzy-matching the adopted title's own (much
+        narrower) heading. Returns whether a title was adopted.
+        """
+        if heading_tag is None or not _BARE_CHAPTER_LABEL_RE.match(
+            re.sub(r"\s+", " ", heading_text or "").strip()
+        ):
+            return False
+        if chapter is not None and chapter.heading_text != heading_text:
+            # A real title already came from elsewhere (e.g. the file h1).
+            if not chapter.heading_text.strip().lower().startswith("chapter "):
+                return False
+        title_heading = self._article_title_heading(article)
+        if title_heading is None:
+            return False
+        title = re.sub(
+            r"\s+", " ", title_heading.get_text(" ", strip=True)
+        ).strip()
+        if not title:
+            return False
+        if not heading_tag.get("id"):
+            # Deterministic (document-order) synthetic id — never ``id()``,
+            # which would make the emitted structure non-reproducible.
+            self._chapter_stamp_counter = (
+                getattr(self, "_chapter_stamp_counter", 0) + 1
+            )
+            heading_tag["id"] = f"_ssx_chapter_{self._chapter_stamp_counter}"
+        if chapter is not None:
+            chapter.heading_text = title
+            chapter.heading_id = heading_tag.get("id")
+        return True
+
+    @classmethod
+    def _is_leading_front_matter_article(
+        cls,
+        heading_text: str,
+        doc_titles: set,
+        anchored_majors: List[int],
+        claimed_majors: set,
+        article_count: int,
+    ) -> bool:
+        """Whether a LEADING article is front matter rather than a chapter.
+
+        Only consulted before the first real chapter has been opened (the
+        ``toc_frontmatter_detector`` zone-anchor concept: everything at/after
+        the first real chapter is protected content, never front matter).
+
+        Three shape signals, all requiring the article to anchor NO declared
+        chapter section of its own:
+
+        * its title heading fails ``_is_noncontent_heading`` ("Preface",
+          "Copyright", "About the Authors", ...);
+        * in a MULTI-article document, its title heading is the document title
+          itself (the cover / half-title article that wraps the preface);
+        * its ``Chapter N`` opener label claims an ordinal that a LATER article
+          legitimately anchors with its own declared ``N.M`` sections — the
+          copyright/ISBN page whose running header the converter mis-read as a
+          chapter opener. A leading article that anchors nothing and duplicates
+          a real chapter's ordinal is furniture, not that chapter.
+
+        Publisher-neutral throughout: ordinal-series + document-title shapes
+        only, no book or publisher vocabulary.
+        """
+        if anchored_majors:
+            return False
+        if not heading_text:
+            return True
+        if _is_noncontent_heading(heading_text):
+            return True
+        if (
+            article_count > 1
+            and _normalize_outline_text(heading_text) in doc_titles
+        ):
+            return True
+        label_major = cls._chapter_label_ordinal(heading_text)
+        if label_major is not None and label_major in claimed_majors:
+            return True
+        return False
+
     def _build_chapters_outline_anchored(
         self,
         soup: BeautifulSoup,
@@ -2442,6 +2606,7 @@ class SemanticStructureExtractor:
         entries, outline_articles, title_sources = self._harvest_outline(soup)
         if not entries:
             return None
+        self._chapter_stamp_counter = 0
 
         outline_article_ids = {id(a) for a in outline_articles}
         occurrences = self._collect_outline_occurrences(
@@ -2453,7 +2618,16 @@ class SemanticStructureExtractor:
         # otherwise. Ordinals grouped by major -> one chapter each.
         h1 = soup.find("h1")
         h1_text = h1.get_text(strip=True) if h1 else ""
-        majors = sorted({int(o.split(".")[0]) for o in entries})
+        all_majors = sorted({int(o.split(".")[0]) for o in entries})
+        # Defect 2 — a ``0.M`` ordinal is FRONT-MATTER numbering (a preface
+        # numbering its own sections), never a chapter root: books number their
+        # chapters from 1. Suppressing major 0 kills the phantom "Chapter 0"
+        # that otherwise inflates ``chapter_count`` AND the autoscaled week
+        # count. Mirrors the SemantiK-side front-matter chapter-root guard
+        # (``SEMANTIK_CHAPTER_LADDER_RECONCILE`` arm 2b) at the extractor.
+        # Fail-safe: when major 0 is ALL the document declares, keep it — a
+        # front-matter-only file still yields its structure.
+        majors = [m for m in all_majors if m >= 1] or all_majors
         single_major = len(majors) == 1
 
         def _chapter_title(major: int) -> str:
@@ -2476,13 +2650,20 @@ class SemanticStructureExtractor:
         # One SectionStructure per declared entry; pick the surviving
         # occurrence (best zone), map its element for the content walk.
         chosen_by_elem: Dict[int, SectionStructure] = {}
+        chosen_major_by_elem: Dict[int, int] = {}
         unmatched_declared: List[Dict[str, str]] = []
         matched_sections = 0
         section_counters: Dict[int, int] = {m: 0 for m in majors}
 
         for ordinal in sorted(entries, key=_ordinal_sort_key):
             major = int(ordinal.split(".")[0])
-            chapter = chapters_by_major[major]
+            chapter = chapters_by_major.get(major)
+            if chapter is None:
+                # Front-matter ``0.M`` entry (see the major-0 guard above): no
+                # section node is minted, so its blocks flow through the demote
+                # path into the front-matter bucket instead of a phantom
+                # "Chapter 0". Never dropped, never a chapter.
+                continue
             occ_list = occurrences.get(ordinal, [])
             chosen = None
             if occ_list:
@@ -2513,6 +2694,7 @@ class SemanticStructureExtractor:
             if chosen is not None:
                 matched_sections += 1
                 chosen_by_elem[id(chosen["elem"])] = section
+                chosen_major_by_elem[id(chosen["elem"])] = major
             if best_zone != "body":
                 # Loss signal: no real body opener. The re-conversion work list
                 # for packages 4+5 (includes outline-only + answer-key-only +
@@ -2525,20 +2707,133 @@ class SemanticStructureExtractor:
                     }
                 )
 
-        # Content walk (document order): fill each surviving section with its
-        # chosen element's blocks; demote everything else to the current
-        # surviving section (or the chapter lead when nothing is open yet).
-        first_chapter = chapters_by_major[majors[0]]
+        # ------------------------------------------------------------------
+        # Content walk — ARTICLE-BOUNDARY anchored, in document order.
+        #
+        # The declared ``N.M`` spine above owns SECTION identity; the DPUB-ARIA
+        # ``<article role="doc-chapter">`` boundary owns CHAPTER identity:
+        #
+        #   * an article carrying a chosen declared section OPENS that
+        #     section's chapter and RESETS the open-section cursor, so an
+        #     article's leading prose can never bleed into the PREVIOUS
+        #     chapter's last section;
+        #   * an article with a real chapter-title heading but NO declared
+        #     ``N.M`` section mints its OWN chapter (Defect 1 — a title-only
+        #     chapter such as a short "Discovery" / "Final words" chapter used
+        #     to be absorbed wholesale into the previous chapter's last
+        #     section, so it got no chapter node and, under
+        #     ``ED4ALL_TO_CHAPTER_ANCHOR``, no terminal objective);
+        #   * a HEADLESS article stays a continuation of whatever chapter is
+        #     open — the Package-1 1a rule, which is exactly what keeps an
+        #     OCR-inflated per-page-wrapped scan corpus from re-exploding;
+        #   * the LEADING front-matter article never mints a chapter
+        #     (Defect 2); its blocks attach to the first real chapter's lead
+        #     so nothing is dropped, and the event is reported in diagnostics.
+        # ------------------------------------------------------------------
+        major_by_chapter_id: Dict[int, int] = {
+            id(ch): m for m, ch in chapters_by_major.items()
+        }
+        article_majors: Dict[int, List[int]] = {}
+        for article in articles:
+            found: List[int] = []
+            for elem in self._article_section_elems(article):
+                m = chosen_major_by_elem.get(id(elem))
+                if m is not None and m not in found:
+                    found.append(m)
+            article_majors[id(article)] = found
+        # Every declared major some article legitimately anchors — used to
+        # unmask a leading furniture page whose running header was mis-read as
+        # a "Chapter N" opener for a chapter that lives further down.
+        claimed_majors = {m for found in article_majors.values() for m in found}
+
+        doc_titles = {
+            _normalize_outline_text(t)
+            for t in (h1_text, soup.title.get_text(strip=True) if soup.title else "")
+            if t
+        }
+        residual_ids: set = {ch.id for ch in chapters_by_major.values()}
+
+        ordered: List[ChapterStructure] = []
+        emitted: set = set()
+        front_matter_blocks: List[ContentBlock] = []
+        front_matter_articles = 0
+        residual_chapters_minted = 0
+        titles_derived = 0
+        current_chapter: Optional[ChapterStructure] = None
         current_section: Optional[SectionStructure] = None
         demoted_headings = 0
-        for article in articles:
-            lead_blocks = self._extract_chapter_content(article, None)
-            target = (
-                current_section.content_blocks
-                if current_section is not None
-                else first_chapter.content_blocks
+
+        def _open(chapter: ChapterStructure) -> None:
+            """Open ``chapter`` and reset the section cursor (boundary reset)."""
+            nonlocal current_chapter, current_section
+            current_chapter = chapter
+            current_section = None
+            if id(chapter) not in emitted:
+                emitted.add(id(chapter))
+                ordered.append(chapter)
+
+        def _lead_target() -> List[ContentBlock]:
+            if current_section is not None:
+                return current_section.content_blocks
+            if current_chapter is not None:
+                return current_chapter.content_blocks
+            return front_matter_blocks
+
+        for art_index, article in enumerate(articles):
+            anchored = article_majors.get(id(article)) or []
+            heading_tag = self._article_content_heading(article)
+            heading_text = (
+                heading_tag.get_text(strip=True) if heading_tag is not None else ""
             )
-            target.extend(lead_blocks)
+
+            if anchored:
+                chapter = chapters_by_major[min(anchored)]
+                if self._upgrade_bare_chapter_title(
+                    chapter, article, heading_tag, heading_text
+                ):
+                    titles_derived += 1
+                _open(chapter)
+            elif heading_tag is None:
+                # Headless continuation (Package-1 1a). Keeps the currently
+                # open chapter AND section, so a per-page-wrapped scan corpus
+                # is grouped exactly as before. Nothing open yet => front
+                # matter (the document's leading cover / outline zone).
+                if current_chapter is None:
+                    front_matter_articles += 1
+            elif current_chapter is None and self._is_leading_front_matter_article(
+                heading_text, doc_titles, anchored, claimed_majors, len(articles)
+            ):
+                front_matter_articles += 1
+            else:
+                # Defect 1 — title-only chapter: no declared ``N.M`` section,
+                # but a real chapter-title heading. Build it with the tested
+                # Package-1 guarded builder so its own sections/blocks are
+                # assembled normally instead of being demoted into whatever
+                # chapter happened to be open.
+                residual = self._build_chapter_from_article_guarded(
+                    soup, article, art_index + 1, heading_tag, diag
+                )
+                if self._upgrade_bare_chapter_title(
+                    residual, article, heading_tag, heading_text
+                ):
+                    titles_derived += 1
+                label_major = self._chapter_label_ordinal(heading_text)
+                if (
+                    label_major is not None
+                    and f"ch{label_major}" not in residual_ids
+                ):
+                    self._reid_chapter(residual, f"ch{label_major}")
+                    major_by_chapter_id[id(residual)] = label_major
+                elif residual.id in residual_ids:
+                    self._reid_chapter(residual, f"{residual.id}_a{art_index}")
+                residual_ids.add(residual.id)
+                residual_chapters_minted += 1
+                _open(residual)
+                # The guarded builder already consumed this article's blocks.
+                continue
+
+            lead_blocks = self._extract_chapter_content(article, None)
+            _lead_target().extend(lead_blocks)
             for elem in self._article_section_elems(article):
                 blocks = self.block_classifier.classify_section(elem)
                 section = chosen_by_elem.get(id(elem))
@@ -2549,14 +2844,35 @@ class SemanticStructureExtractor:
                 heading = elem.find(["h1", "h2", "h3", "h4", "h5", "h6"])
                 if heading is not None and heading.get_text(strip=True):
                     demoted_headings += 1
-                target = (
-                    current_section.content_blocks
-                    if current_section is not None
-                    else first_chapter.content_blocks
-                )
-                target.extend(blocks)
+                _lead_target().extend(blocks)
 
-        chapters = [chapters_by_major[m] for m in majors]
+        if not ordered:
+            # Fail-safe: the article classification produced nothing at all
+            # (e.g. an all-front-matter document). Fall through to the
+            # Package-1 guarded chapters rather than emitting an empty book.
+            return None
+
+        # Declared majors no article ever opened (every entry declared-only)
+        # keep their sections; splice them back in ordinal position.
+        for major in majors:
+            chapter = chapters_by_major[major]
+            if id(chapter) in emitted:
+                continue
+            insert_at = len(ordered)
+            for idx, existing in enumerate(ordered):
+                other = major_by_chapter_id.get(id(existing))
+                if other is not None and other > major:
+                    insert_at = idx
+                    break
+            ordered.insert(insert_at, chapter)
+            emitted.add(id(chapter))
+
+        # Front matter is never a chapter, but is never dropped either: its
+        # blocks lead the first real chapter (document order preserved).
+        if front_matter_blocks:
+            ordered[0].content_blocks[:0] = front_matter_blocks
+
+        chapters = ordered
 
         # Diagnostics — improve the (previously fused-blind) declared estimate
         # and record the outline-anchor counters + loss list.
@@ -2568,7 +2884,34 @@ class SemanticStructureExtractor:
             "demoted_headings": demoted_headings,
             "unmatched_declared": unmatched_declared,
             "title_sources": title_sources,
+            "article_anchor": {
+                "articles": len(articles),
+                "chapters_emitted": len(chapters),
+                "residual_chapters": residual_chapters_minted,
+                "front_matter_articles": front_matter_articles,
+                "front_matter_blocks": len(front_matter_blocks),
+                "titles_derived": titles_derived,
+                "front_matter_majors": [m for m in all_majors if m not in majors],
+            },
         }
+
+        if residual_chapters_minted:
+            logger.info(
+                "SemanticStructureExtractor: STRUCTURE_ARTICLE_ANCHOR — minted "
+                "%d title-only chapter(s) from doc-chapter article boundaries "
+                "that declare no numbered N.M section (they would otherwise be "
+                "absorbed into the previous chapter).",
+                residual_chapters_minted,
+            )
+        if front_matter_articles:
+            logger.info(
+                "SemanticStructureExtractor: STRUCTURE_FRONT_MATTER_SUPPRESSED "
+                "— %d leading article(s) (%d block(s)) recognised as front "
+                "matter; no chapter minted, blocks attached to %s.",
+                front_matter_articles,
+                len(front_matter_blocks),
+                chapters[0].id,
+            )
 
         if unmatched_declared:
             logger.warning(

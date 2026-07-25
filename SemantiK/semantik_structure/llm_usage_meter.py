@@ -126,6 +126,60 @@ def _extract_reasoning_fields(data: Any) -> dict:
     return fields
 
 
+def record_provider_usage(
+    *,
+    provider: str,
+    model: str,
+    usage: Any = None,
+    duration_ms: float,
+    finish_reason: Optional[str] = None,
+    phase: Optional[str] = None,
+    extra: Optional[dict] = None,
+    output_dir: Optional[Any] = None,
+) -> None:
+    """Append ONE PROVIDER-keyed metering row (strict best-effort, never raises).
+
+    The OP2 / heading-judge row shape — ``{ts, provider, model, prompt_tokens,
+    completion_tokens, duration_ms}`` plus ``finish_reason`` when reported —
+    which is what the GUI stats band (``gui/services/progress_service.py``) and
+    the ``BuildCostAggregator`` key on (they read ``row["provider"]``; the
+    ``site``-keyed :func:`record_llm_usage` rows tally as provider "unknown").
+    Used by the GLM-OCR lane call sites (``semantik-glmocr`` /
+    ``semantik-alttext`` / the in-lane ``semantik-heading-judge`` fallback).
+
+    ``usage`` is the server-reported usage dict (or ``None``); token counts come
+    ONLY from it — absent usage → zeros, per the existing tap contract. ``extra``
+    carries additive per-surface fields (e.g. ``{"pages": N}``). Ledger
+    resolution is identical to :func:`record_llm_usage`: the run ledger when
+    ``ED4ALL_RUN_ID`` resolves, else the standalone sidecar.
+    """
+    try:
+        path = _run_ledger_path() or _sidecar_ledger_path(output_dir)
+        if path is None:
+            return
+        usage = usage if isinstance(usage, dict) else {}
+        row: dict = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "provider": str(provider),
+            "model": str(model),
+            "prompt_tokens": int(usage.get("prompt_tokens", 0) or 0),
+            "completion_tokens": int(usage.get("completion_tokens", 0) or 0),
+            "duration_ms": round(float(duration_ms), 3),
+        }
+        if phase:
+            row["phase"] = str(phase)
+        if finish_reason is not None:
+            row["finish_reason"] = str(finish_reason)
+        if isinstance(extra, dict):
+            for key, value in extra.items():
+                row.setdefault(str(key), value)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(_json.dumps(row) + "\n")
+    except Exception as exc:  # noqa: BLE001 — metering must never crash a call
+        logger.debug("llm_usage tap failed (ignoring): %s", exc)
+
+
 def record_llm_usage(
     *,
     site: str,

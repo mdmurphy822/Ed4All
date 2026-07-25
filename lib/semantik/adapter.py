@@ -52,6 +52,7 @@ from __future__ import annotations
 import hashlib
 import html as _html_module
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List, Optional, Sequence
@@ -3481,6 +3482,24 @@ _CHAPTER_APPARATUS_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Chapter-ladder reconcile (SEMANTIK_CHAPTER_LADDER_RECONCILE) — ordinal
+# capture variant of _CHAPTER_N_TITLE_RE for the multi-chapter document guard.
+_CHAPTER_N_ORDINAL_RE = re.compile(r"^\s*chapter\s+(\d+)\b", re.IGNORECASE)
+
+
+def _resolve_chapter_ladder_reconcile() -> bool:
+    """SEMANTIK_CHAPTER_LADDER_RECONCILE — default ON (falsey-set opt-out).
+
+    Adapter-side twin of the GLM-lane resolver (the glmocr package cannot be
+    imported from ``lib/`` — the cross-venv posture; precedent:
+    ``cascade_ir._resolve_glmocr_math_normalize``). Only the explicit falsey
+    tokens disable; unset / blank / truthy / garbage → on.
+    """
+    val = os.environ.get(
+        "SEMANTIK_CHAPTER_LADDER_RECONCILE", ""
+    ).strip().lower()
+    return val not in {"0", "false", "no", "off"}
+
 
 def _select_document_title(
     chapters: Sequence[_AdapterChapter], fallback: str
@@ -3497,7 +3516,36 @@ def _select_document_title(
     carrying NO review/outline/exercise/key-terms/practice-test qualifier — is
     the honest title. Falls back to the first chapter title, then the stem —
     never fabricates.
+
+    Multi-chapter guard (SEMANTIK_CHAPTER_LADDER_RECONCILE, default ON): when
+    the chapter titles carry ≥2 DISTINCT "Chapter N" ordinals the document is
+    a whole BOOK, and no single chapter's opener may become the document
+    title (the reference whole-book corpus shipped ``<h1>Chapter 0</h1>``
+    minted from a preface that numbers its own sections ``0.M``). Prefer the first NON-opener-shaped,
+    non-apparatus chapter title (the implicit leading chapter carrying the
+    real book title), else the stem. Single-chapter corpora (exactly one
+    ordinal) are byte-identical by construction.
     """
+    if _resolve_chapter_ladder_reconcile():
+        ordinals = set()
+        for ch in chapters:
+            m = _CHAPTER_N_ORDINAL_RE.match(ch.title or "")
+            if m:
+                try:
+                    ordinals.add(int(m.group(1)))
+                except (TypeError, ValueError):
+                    pass
+        if len(ordinals) >= 2:
+            for ch in chapters:
+                title = ch.title or ""
+                if not title:
+                    continue
+                if _CHAPTER_N_ORDINAL_RE.match(title):
+                    continue
+                if _CHAPTER_APPARATUS_RE.search(title):
+                    continue
+                return ch.title
+            return fallback
     for ch in chapters:
         title = ch.title or ""
         if _CHAPTER_N_TITLE_RE.match(title) and not _CHAPTER_APPARATUS_RE.search(

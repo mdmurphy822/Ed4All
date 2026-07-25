@@ -93,7 +93,7 @@ _MIN_CHAPTER_INDEX_RUN = 3
 # DOES sit between consecutive entries and the run never forms. The reliable
 # signal that survives content-between is PAGE DENSITY: a preface summary /
 # chapter index packs MANY chapter-level headings into a TINY page span (the
-# real EA2e defect — 8 "Chapter N" headings on pages 9-10), whereas the REAL
+# observed scanned-textbook defect — 8 "Chapter N" headings on pages 9-10), whereas the REAL
 # body is page-SPARSE (Chapter 1's body spans many pages before Chapter 2
 # appears). So a run of >= _ZONE_MIN_CHAPTER_CLUSTER chapter-pattern headings
 # whose page span is <= _ZONE_MAX_PAGE_WINDOW pages, located in the early-page
@@ -392,7 +392,7 @@ def _find_chapter_index_clusters(
     the rendered chapter index does.
 
     Unlike the front-matter TOC-run path, this is NOT zoned to the front matter
-    and NOT gated on trailing page numbers — the real EA2e defect is a cluster
+    and NOT gated on trailing page numbers — the observed scanned-textbook defect is a cluster
     of ``Chapter 1: …``, ``Chapter 2: …`` … back-to-back AFTER the first real
     chapter anchor (so the front-matter zone never reaches it).
 
@@ -631,7 +631,7 @@ def drop_toc_and_frontmatter(
     # TOC variant (a back-to-back run of "Chapter N[: Title]" / bare-ordinal
     # "N Title" headings with NO content-bearing region between consecutive
     # entries). NOT zoned to the front matter and NOT gated on trailing page
-    # numbers: the real EA2e defect is a cluster of "Chapter 1: …" … "Chapter
+    # numbers: the observed scanned-textbook defect is a cluster of "Chapter 1: …" … "Chapter
     # 10: …" rendered AFTER the first real chapter anchor, so the front-matter
     # zone never reaches it. Real chapter openers (each followed by content)
     # never form such a run.
