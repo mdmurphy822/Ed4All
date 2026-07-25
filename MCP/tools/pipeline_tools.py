@@ -640,6 +640,151 @@ def _assessment_manifest_entry(
     return entry
 
 
+def _resolve_assessment_harvest() -> bool:
+    """Resolve ``ED4ALL_TRAINFORGE_ASSESSMENT_HARVEST`` (default off).
+
+    When on, ``trainforge_assessment`` HARVESTS the already-emitted QTI out
+    of the packaged IMSCC and re-keys it onto the IMSCC chunk universe,
+    instead of running a SECOND generation pass over the same content. The
+    corpus + graph build (CourseProcessor) is untouched — only the question
+    source changes.
+
+    Default off → the legacy ``AssessmentGenerator.generate()`` path,
+    byte-identical.
+    """
+    return (
+        os.environ.get("ED4ALL_TRAINFORGE_ASSESSMENT_HARVEST", "") or ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _harvest_questions_from_imscc(
+    imscc_path: Path,
+    loaded_chunks: List[Dict[str, Any]],
+) -> Tuple[List[Any], Dict[str, Any]]:
+    """Parse the packaged IMSCC's QTI into ``QuestionData`` re-keyed to chunks.
+
+    The `assessment_synthesis` phase already authored grounded items and
+    packaging shipped them into the cartridge, so regenerating them here is a
+    duplicate pass over the same content. This reads them back instead.
+
+    Body parsing REUSES ``Trainforge.parsers.qti_parser.QTIParser._parse_item``
+    (stem / choices / correct response / points) so there is one QTI reader;
+    this function adds only the metadata that parser does not surface — the
+    item ``title`` (which the emitter sets to the objective id) and the
+    ``ed4all_*`` ``qtimetadata`` fields.
+
+    **Chunk re-keying is principled, not fuzzy.** A harvested item's
+    ``source_chunks`` are the IMSCC chunks whose ``learning_outcome_refs``
+    contain the item's ``objective_id``. That is the SAME relation the
+    fail-closed coverage rule asserts, so re-keying satisfies it by
+    construction rather than by text-similarity guessing. An item whose
+    objective resolves to NO chunk is DROPPED (counted, never fabricated a
+    citation for) — an uncovered item would fail that gate anyway.
+
+    Returns ``(questions, stats)``. Raises nothing: an unreadable archive
+    yields an empty list, and the caller decides whether that is fatal.
+    """
+    import xml.etree.ElementTree as _ET  # noqa: PLC0415
+    import zipfile as _zipfile  # noqa: PLC0415
+
+    from Trainforge.generators.assessment_generator import (  # noqa: PLC0415
+        QuestionData,
+    )
+    from Trainforge.parsers.qti_parser import QTIParser  # noqa: PLC0415
+
+    stats: Dict[str, Any] = {
+        "qti_files": 0, "items_seen": 0, "items_kept": 0,
+        "dropped_no_objective": 0, "dropped_no_chunk": 0, "dropped_unparsed": 0,
+    }
+
+    # objective_id -> [chunk_id, ...] from the IMSCC chunk universe.
+    by_objective: Dict[str, List[str]] = {}
+    for _c in loaded_chunks or []:
+        _cid = _c.get("id") or _c.get("chunk_id")
+        if not isinstance(_cid, str) or not _cid.strip():
+            continue
+        for _ref in _c.get("learning_outcome_refs") or []:
+            if isinstance(_ref, str) and _ref.strip():
+                by_objective.setdefault(_ref.strip().upper(), []).append(_cid)
+
+    def _local(tag: str) -> str:
+        return tag.rsplit("}", 1)[-1]
+
+    parser = QTIParser()
+    questions: List[Any] = []
+    try:
+        with _zipfile.ZipFile(imscc_path) as zf:
+            for name in zf.namelist():
+                if not name.lower().endswith(".xml"):
+                    continue
+                try:
+                    root = _ET.fromstring(zf.read(name))
+                except Exception:  # noqa: BLE001 — non-XML / broken entry
+                    continue
+                if _local(root.tag) != "questestinterop":
+                    continue
+                stats["qti_files"] += 1
+                for item in root.iter():
+                    if _local(item.tag) != "item":
+                        continue
+                    stats["items_seen"] += 1
+                    try:
+                        parsed = parser._parse_item(item)
+                    except Exception:  # noqa: BLE001
+                        parsed = None
+                    if parsed is None:
+                        stats["dropped_unparsed"] += 1
+                        continue
+                    meta: Dict[str, str] = {}
+                    for f in item.iter():
+                        if _local(f.tag) != "qtimetadatafield":
+                            continue
+                        label = value = None
+                        for kid in f:
+                            if _local(kid.tag) == "fieldlabel":
+                                label = (kid.text or "").strip()
+                            elif _local(kid.tag) == "fieldentry":
+                                value = (kid.text or "").strip()
+                        if label:
+                            meta[label] = value or ""
+                    objective_id = (
+                        meta.get("ed4all_objective_id")
+                        or (item.get("title") or "")
+                    ).strip()
+                    if not objective_id:
+                        stats["dropped_no_objective"] += 1
+                        continue
+                    chunk_ids = by_objective.get(objective_id.upper()) or []
+                    if not chunk_ids:
+                        stats["dropped_no_chunk"] += 1
+                        continue
+                    questions.append(QuestionData(
+                        question_id=parsed.id,
+                        question_type=(
+                            meta.get("ed4all_question_type") or parsed.type
+                        ),
+                        stem=parsed.stem,
+                        bloom_level=meta.get("ed4all_bloom_level") or "understand",
+                        objective_id=objective_id,
+                        choices=[
+                            {"id": c.id, "text": c.text, "is_correct": c.is_correct}
+                            for c in (parsed.choices or [])
+                        ],
+                        correct_answer=parsed.correct_response or "",
+                        points=parsed.points,
+                        feedback=parsed.feedback,
+                        source_chunks=list(dict.fromkeys(chunk_ids)),
+                        item_subtype=meta.get("ed4all_item_subtype") or None,
+                    ))
+                    stats["items_kept"] += 1
+    except (OSError, _zipfile.BadZipFile) as exc:
+        logger.warning(
+            "assessment harvest: cannot read IMSCC %s (%s); no items harvested.",
+            imscc_path, exc,
+        )
+    return questions, stats
+
+
 def _resolve_items_per_objective() -> int:
     """Resolve ``ED4ALL_ASSESSMENT_ITEMS_PER_OBJECTIVE`` (default ``1``).
 
@@ -25790,26 +25935,104 @@ def _build_tool_registry() -> dict:
                 capture=gen_capture, check_leaks=True,
                 teacher_roster=_teacher_roster,
             )
-            try:
-                assessment = generator.generate(
+            # ---- HARVEST mode (ED4ALL_TRAINFORGE_ASSESSMENT_HARVEST) ------- #
+            # assessment_synthesis already authored grounded items and
+            # packaging shipped them into the cartridge; regenerating here is
+            # a SECOND pass over the same content. When on, read them back and
+            # re-key onto the IMSCC chunk universe instead. The corpus + graph
+            # build above is untouched, and the IMSCC round-trip check still
+            # runs (this READS the packaged artifact, so it also proves the
+            # cartridge carries usable items).
+            #
+            # FAIL LOUD, never a silent degrade: an empty harvest returns a
+            # structured error rather than quietly falling back to generation,
+            # which would hide a packaging regression behind a duplicate pass.
+            if _resolve_assessment_harvest():
+                _hq, _hstats = _harvest_questions_from_imscc(
+                    Path(imscc_path_str), loaded_chunks,
+                )
+                logger.info(
+                    "generate_assessments: HARVEST mode — %s", _hstats,
+                )
+                if not _hq:
+                    logger.error(
+                        "generate_assessments: FAILING LOUD — harvest mode is "
+                        "on but the packaged IMSCC yielded ZERO usable items "
+                        "(%s).", _hstats,
+                    )
+                    return json.dumps({
+                        "success": False,
+                        "error_code": "TRAINFORGE_HARVEST_EMPTY",
+                        "error": (
+                            "assessment harvest yielded no items from the "
+                            f"packaged IMSCC: {_hstats}"
+                        ),
+                        "chunks_path": str(chunks_path),
+                    })
+                from Trainforge.generators.assessment_generator import (  # noqa: PLC0415,E501
+                    AssessmentData as _AssessmentData,
+                )
+                assessment = _AssessmentData(
+                    assessment_id=f"ASM-{course_id}-harvested",
+                    title=f"{course_id} Assessments (harvested)",
                     course_code=course_id,
-                    objective_ids=objective_ids,
-                    bloom_levels=bloom_levels,
-                    question_count=question_count,
-                    source_chunks=loaded_chunks,
+                    questions=_hq,
+                    objectives_targeted=sorted(
+                        {q.objective_id for q in _hq if q.objective_id}
+                    ),
+                    bloom_levels=sorted(
+                        {q.bloom_level for q in _hq if q.bloom_level}
+                    ),
                 )
-            except Exception as e:
-                logger.exception(
-                    "generate_assessments: FAILING LOUD — "
-                    "AssessmentGenerator.generate() raised."
-                )
-                return json.dumps({
-                    "success": False,
-                    "error_code": "TRAINFORGE_GENERATE_FAILED",
-                    "error": f"AssessmentGenerator.generate() failed: {e}",
-                    "traceback": _traceback.format_exc(limit=6),
-                    "chunks_path": str(chunks_path),
-                })
+                if gen_capture is not None:
+                    try:
+                        gen_capture.log_decision(
+                            decision_type="assessment_generation",
+                            decision=(
+                                f"Harvested {len(_hq)} assessment item(s) from "
+                                f"the packaged IMSCC instead of regenerating."
+                            ),
+                            rationale=(
+                                "ED4ALL_TRAINFORGE_ASSESSMENT_HARVEST is on: "
+                                "assessment_synthesis already authored these "
+                                "items and packaging shipped them, so a second "
+                                "generation pass would duplicate the work and "
+                                "produce a DIFFERENT item set than the cartridge "
+                                f"ships. Harvest stats: {_hstats}. Each item's "
+                                "source_chunks were re-keyed to IMSCC chunks "
+                                "whose learning_outcome_refs carry its "
+                                "objective_id, so the fail-closed coverage rule "
+                                "holds by construction; "
+                                f"{_hstats.get('dropped_no_chunk', 0)} item(s) "
+                                "with no covering chunk were dropped rather "
+                                "than given a fabricated citation."
+                            ),
+                        )
+                    except Exception:  # noqa: BLE001 — capture never aborts
+                        pass
+            else:
+                assessment = None
+            if assessment is None:
+                try:
+                    assessment = generator.generate(
+                        course_code=course_id,
+                        objective_ids=objective_ids,
+                        bloom_levels=bloom_levels,
+                        question_count=question_count,
+                        source_chunks=loaded_chunks,
+                    )
+                except Exception as e:
+                    logger.exception(
+                        "generate_assessments: FAILING LOUD — "
+                        "AssessmentGenerator.generate() raised."
+                    )
+                    return json.dumps({
+                        "success": False,
+                        "error_code": "TRAINFORGE_GENERATE_FAILED",
+                        "error": f"AssessmentGenerator.generate() failed: {e}",
+                        "traceback": _traceback.format_exc(limit=6),
+                        "chunks_path": str(chunks_path),
+                    })
 
             assessments_path = trainforge_dir / "assessments.json"
             assessment_doc = assessment.to_dict()

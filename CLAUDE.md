@@ -855,7 +855,7 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `NVIDIA_*` (vendor endpoint-registry row for the hosted large-model seat — `NVIDIA_API_KEY` / `NVIDIA_BASE_URL` / `NVIDIA_LARGE_MODEL`) | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 3 |
 | `SEMANTIK_*` (SemantiK semantic-cascade converter; also honors the single legacy `DART_THETA_DEVICE` compat env, aliased to `SEMANTIK_THETA_DEVICE`) <!-- legacy-token: allow --> | [`SemantiK/CLAUDE.md § Opt-In Behavior Flags`](SemantiK/CLAUDE.md) | 164 |
 | `COURSEFORGE_*` / `COURSEPLANNER_*` / `TEXTBOOK_SYNTHESIS_*` | [`Courseforge/CLAUDE.md § Opt-In Behavior Flags`](Courseforge/CLAUDE.md) | 45 |
-| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root index (below) + [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 253 |
+| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root index (below) + [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 254 |
 
 ### Cross-cutting flags (root-owned)
 
@@ -1113,6 +1113,7 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `ED4ALL_ASSESSMENT_APPARATUS_STRICT` | unset (off; **A5 auto-on for pipeline runs**) | Widened GENERIC apparatus markers on the assessment harvest paths — colon-less `Solution`/`Check`, all-caps `HOW TO` banners, leading `Figure|Table|Example N.N` captions, and glyph alt-text — closing the OCR'd-scan leak the legacy colon-anchored set misses. |
 | `ED4ALL_ASSESSMENT_ITEM_BANK` | unset (off; **A5 auto-on for pipeline runs**) | Emits the QTI 1.2 `<objectbank>` question-LIBRARY sidecar `06_assessments/item_bank.xml` (every item + queryable `ed4all_*` selection `qtimetadata`), recorded under its own `item_bank` manifest key so the packager never ships the bank as an exam. |
 | `ED4ALL_ASSESSMENT_ITEMS_PER_OBJECTIVE` | `1` | Expansive item-bank scaling — multiplies the per-objective item floor in `assessment_synthesis` (`max(question_count, n_objectives x N)`) so a course emits N items per objective instead of the 1-per-objective exam minimum. Folded into the quiz-unit fingerprint. Garbage / non-positive falls back to `1` (never 0 — that would collapse the archival-gate coverage floor). |
+| `ED4ALL_TRAINFORGE_ASSESSMENT_HARVEST` | unset (off) | `trainforge_assessment` HARVESTS the already-emitted QTI out of the packaged IMSCC and re-keys each item onto the IMSCC chunks whose `learning_outcome_refs` carry its `objective_id`, instead of running a SECOND generation pass over the same content. Corpus + graph build unchanged. Fails LOUD on an empty harvest (never a silent fallback). |
 | `ED4ALL_DISCUSSION_GROUNDING_NLI` | unset (off) | A5 text-grounded NLI arm for `discussion_assignment_grounded` — flips refs-only Jaccard to authoritative text-entailment where runnable (only tightens; legacy fallback). |
 | `ED4ALL_EVAL_COMPOSER_PROVIDER` | unset (absent) | E7a diagnostic-composer arm — composes eval answers on a stronger local seat while retrieval + gates stay byte-identical (separates retrieval vs composition failures). |
 | `ED4ALL_EVAL_COMPOSER_MODEL` | per-provider | Satellite of `ED4ALL_EVAL_COMPOSER_PROVIDER` — model-ID override for the diagnostic composer seat. |
