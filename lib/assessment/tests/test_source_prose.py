@@ -25,6 +25,7 @@ from lib.assessment.source_prose import (
     NON_PROSE_ROLES,
     ProseFilter,
     SHINGLE_CHARS,
+    SHORT_FRAGMENT_MIN,
     build_prose_filter,
     clean_chunks,
     resolve_clean_prose,
@@ -255,12 +256,69 @@ def test_empty_filter_is_falsey():
     assert not ProseFilter([])
 
 
-def test_fragments_below_shingle_length_are_ignored():
+def test_fragments_below_the_short_floor_are_ignored():
     filt = ProseFilter(["short"])
     assert not filt
     assert filt.fragment_count == 0
 
 
+def test_short_floor_is_below_the_shingle_width():
+    """The two mechanisms must abut, or fragments in the gap match nothing."""
+    assert SHORT_FRAGMENT_MIN < SHINGLE_CHARS
+
+
 def test_min_surviving_run_is_below_shingle_width():
     """A surviving run must be able to exist between two masked regions."""
     assert MIN_SURVIVING_RUN < SHINGLE_CHARS
+
+
+# ---- short-fragment regression ---------------------------------------------
+#
+# A display-math region flattens to a fragment shorter than the shingle window,
+# so shingling alone harvested it and then discarded it -- and it reached quiz
+# distractors verbatim. These pin the second mechanism.
+
+MATH = "$$ 120 = 10 v + 8 v - 15 v $$"
+STEP = "Combine like terms."
+
+DOC_MATH = f"""<html><body><main>
+  <section data-semantik-block-role="math"><p>{MATH}</p></section>
+  <section><p>{PROSE}</p></section>
+</main></body></html>"""
+
+
+@pytest.fixture()
+def math_doc(tmp_path):
+    path = tmp_path / "chapter_two_accessible.html"
+    path.write_text(DOC_MATH, encoding="utf-8")
+    return path
+
+
+def test_sub_shingle_math_region_is_harvested(math_doc):
+    filt = build_prose_filter([math_doc])
+    assert len(MATH) < SHINGLE_CHARS, "fixture must exercise the short path"
+    assert filt.is_non_prose(MATH)
+
+
+def test_sub_shingle_math_is_masked_out_of_chunk_text(math_doc):
+    """The exact shape that leaked: math dump followed by step commentary."""
+    filt = build_prose_filter([math_doc])
+    cleaned = filt.clean(f"{MATH} {STEP}")
+    assert MATH not in cleaned
+    # What is left is a sub-MIN_SURVIVING_RUN shard, so nothing is mined.
+    assert cleaned == ""
+
+
+def test_short_needles_do_not_eat_neighbouring_prose(math_doc):
+    filt = build_prose_filter([math_doc])
+    cleaned = filt.clean(f"{MATH} {PROSE}")
+    assert MATH not in cleaned
+    assert PROSE.rstrip(".") in cleaned
+
+
+def test_fragment_in_the_gap_below_the_floor_is_ignored():
+    """Between 1 and SHORT_FRAGMENT_MIN a fragment is a phrase, not a region."""
+    tiny = "x" * (SHORT_FRAGMENT_MIN - 1)
+    filt = ProseFilter([tiny])
+    assert not filt
+    assert filt.clean(f"{tiny} {PROSE}") == f"{tiny} {PROSE}"

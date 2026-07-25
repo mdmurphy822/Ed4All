@@ -82,6 +82,16 @@ SHINGLE_CHARS = 40
 #: keeps the mining pool readable.
 MIN_SURVIVING_RUN = 25
 
+#: Harvested fragments shorter than :data:`SHINGLE_CHARS` yield *no* shingle at
+#: all, so on a real corpus half the harvest (16,840 of 33,024 fragments,
+#: measured) was silently unusable -- and the apparatus that leaked hardest was
+#: exactly this size: a display-math region flattens to ``$$ 120 = 10 v + 8 v -
+#: 15 v $$`` (29 chars). Such a fragment is matched as an exact substring
+#: instead. The floor keeps the needle specific enough that a verbatim
+#: collision with ordinary prose stays rare; below it a fragment is a common
+#: phrase rather than an identifiable region.
+SHORT_FRAGMENT_MIN = 16
+
 _FALSEY = {"", "0", "false", "no", "off"}
 
 
@@ -104,46 +114,69 @@ class ProseFilter:
     chunker's flattening does not agree with ours at sentence granularity — a
     flattened table becomes ``"Step 1. hundredths place 23,658 Step 2."``,
     whose "sentences" are sub-20-character shards — so a sentence-level filter
-    keeps exactly the shards that carry the apparatus. Character masking has
-    no such blind spot: any 40-character window that occurs verbatim inside a
+    keeps exactly the shards that carry the apparatus. Character masking is
+    immune to that: any 40-character window occurring verbatim inside a
     non-prose region is masked out, and whatever survives between the masked
     runs is the prose.
+
+    Shingling alone has its *own* blind spot, though, and it is not a corner
+    case: a harvested fragment shorter than the window yields no shingle, so
+    it can never mask anything. On a real corpus that discarded half the
+    harvest, and the surviving contamination was precisely that size — display
+    math flattens to ``$$ 120 = 10 v + 8 v - 15 v $$``, 29 characters, which
+    then reached quiz distractors verbatim. Fragments between
+    :data:`SHORT_FRAGMENT_MIN` and :data:`SHINGLE_CHARS` are therefore matched
+    as exact substrings as well. Both mechanisms write into the same mask, so
+    a span is prose only if neither claims it.
     """
 
     def __init__(self, fragments: Iterable[str]) -> None:
         self._shingles: set[str] = set()
+        #: Short fragments keyed by length, so masking costs one pass per
+        #: distinct length (at most SHINGLE_CHARS - SHORT_FRAGMENT_MIN of them)
+        #: rather than one scan per needle.
+        self._short_by_len: Dict[int, set[str]] = {}
         n = 0
         for frag in fragments:
             frag = _norm(frag)
-            if len(frag) < SHINGLE_CHARS:
-                continue
-            n += 1
-            for i in range(len(frag) - SHINGLE_CHARS + 1):
-                self._shingles.add(frag[i:i + SHINGLE_CHARS])
+            if len(frag) >= SHINGLE_CHARS:
+                n += 1
+                for i in range(len(frag) - SHINGLE_CHARS + 1):
+                    self._shingles.add(frag[i:i + SHINGLE_CHARS])
+            elif len(frag) >= SHORT_FRAGMENT_MIN:
+                n += 1
+                self._short_by_len.setdefault(len(frag), set()).add(frag)
         self.fragment_count = n
 
     def __bool__(self) -> bool:
-        return bool(self._shingles)
+        return bool(self._shingles) or bool(self._short_by_len)
+
+    def _mask(self, span: str) -> bytearray:
+        """Mark every character of ``span`` that came from a non-prose region."""
+        mask = bytearray(len(span))
+        for i in range(max(0, len(span) - SHINGLE_CHARS + 1)):
+            if span[i:i + SHINGLE_CHARS] in self._shingles:
+                mask[i:i + SHINGLE_CHARS] = b"\x01" * SHINGLE_CHARS
+        for length, needles in self._short_by_len.items():
+            for i in range(max(0, len(span) - length + 1)):
+                if span[i:i + length] in needles:
+                    mask[i:i + length] = b"\x01" * length
+        return mask
 
     def is_non_prose(self, span: str) -> bool:
         """True when any window of ``span`` occurs inside a non-prose region."""
-        span = _norm(span)
-        if len(span) < SHINGLE_CHARS:
-            return False
-        return any(
-            span[i:i + SHINGLE_CHARS] in self._shingles
-            for i in range(len(span) - SHINGLE_CHARS + 1)
-        )
+        return any(self._mask(_norm(span)))
 
     def clean(self, text: str) -> str:
         """Return ``text`` with every non-prose span masked out."""
         span = _norm(text)
-        if len(span) < SHINGLE_CHARS:
+        mask = self._mask(span)
+        if not any(mask):
+            # Nothing was excised, so there are no shards to sweep up. Returning
+            # early keeps MIN_SURVIVING_RUN from swallowing a chunk that is
+            # simply short -- that threshold exists to drop the debris left
+            # *between* two masked regions, not text nobody matched.
             return span
-        mask = bytearray(len(span))
-        for i in range(len(span) - SHINGLE_CHARS + 1):
-            if span[i:i + SHINGLE_CHARS] in self._shingles:
-                mask[i:i + SHINGLE_CHARS] = b"\x01" * SHINGLE_CHARS
         runs: List[str] = []
         current: List[str] = []
         for char, masked in zip(span, mask):
