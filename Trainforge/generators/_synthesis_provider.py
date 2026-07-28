@@ -1329,6 +1329,7 @@ def build_synthesis_provider(
     max_parse_retries: Optional[int] = None,
     min_preserve_rate: Optional[float] = None,
     kind_bounds: Optional[Dict[str, tuple]] = None,
+    synthesis_seed: Optional[int] = None,
 ) -> "SynthesisProvider":
     """Construct the LEAF-EXACT :class:`SynthesisProvider` for the cutover.
 
@@ -1402,7 +1403,24 @@ def build_synthesis_provider(
             code="synthesis_contract_conflict",
         )
     if micro_enabled:
-        return MicroStagedSynthesisProvider(base_provider)  # type: ignore[return-value]
+        # ``MicroStagedSynthesisProvider`` takes a REQUIRED keyword-only
+        # ``synthesis_seed`` (it keys its per-stage deterministic selections on
+        # it). Omitting it here made micro-v1 unconstructible from production:
+        # the factory raised TypeError at every one of its dispatch sites, so
+        # the contract had never executed outside its own unit tests despite
+        # being selectable via ``TRAINFORGE_STAGED_SYNTHESIS_MICRO_V1``.
+        # Fail LOUDLY rather than substituting a default seed — a silently
+        # invented seed would make a run irreproducible while looking healthy.
+        if synthesis_seed is None:
+            raise SynthesisProviderError(
+                "micro-v1 staged synthesis requires an explicit "
+                "synthesis_seed; build_synthesis_provider was called without "
+                "one. Thread the run's seed through from run_synthesis.",
+                code="staged_micro_synthesis_seed_missing",
+            )
+        return MicroStagedSynthesisProvider(  # type: ignore[return-value]
+            base_provider, synthesis_seed=synthesis_seed,
+        )
     if v4_enabled:
         return StagedSynthesisProvider(base_provider)  # type: ignore[return-value]
     return base_provider

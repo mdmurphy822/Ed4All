@@ -449,23 +449,47 @@ def _eligible(chunk: Dict[str, Any]) -> bool:
     return bool(chunk.get("learning_outcome_refs")) and bool(chunk.get("id") or chunk.get("chunk_id"))
 
 
+def staged_objective_contract_enabled() -> bool:
+    """Return True when a staged contract owns canonical objective focus.
+
+    BOTH staged contracts — ``TRAINFORGE_STAGED_SYNTHESIS_V4`` and
+    ``TRAINFORGE_STAGED_SYNTHESIS_MICRO_V1`` — consume the focused provider
+    view produced by
+    :func:`Trainforge.synthesis_eligibility.focus_chunk_on_canonical_objective`,
+    and ``pair_eligibility`` requires ``synthesis_focus_objective`` to be
+    present on the chunk it is handed.
+
+    This predicate exists so the FOCUS seam and the ELIGIBILITY seam can never
+    disagree about which modes are staged.  They previously did: focus was
+    gated on v4 alone while eligibility admitted v4-or-micro-v1, so a micro-v1
+    run handed ``pair_eligibility`` an UNFOCUSED chunk and every chunk
+    carrying ``learning_outcome_refs`` reported
+    ``missing_canonical_objective_focus`` — a whole-corpus zero-pair emit with
+    no error raised.
+    """
+    from Trainforge.generators.staged_synthesis_micro import (
+        staged_synthesis_micro_v1_enabled,
+    )
+    from Trainforge.generators.staged_synthesis_provider import (
+        staged_synthesis_v4_enabled,
+    )
+
+    return staged_synthesis_v4_enabled() or staged_synthesis_micro_v1_enabled()
+
+
 def _focus_chunk_on_objective(
     chunk: Dict[str, Any],
     *,
     seed: int,
     objectives: Optional[Mapping[str, Mapping[str, Any]]] = None,
 ) -> Dict[str, Any]:
-    """Apply authoritative objective focus only for the staged-v4 contract.
+    """Apply authoritative objective focus for every staged contract.
 
-    The v4 workflow is opt-in at the provider surface.  Keeping this guard at
-    the earliest focus seam preserves the historical chunk view exactly when
-    the flag is off, including mock/fixture runs.
+    The staged workflows are opt-in at the provider surface.  Keeping this
+    guard at the earliest focus seam preserves the historical chunk view
+    exactly when no staged contract is selected, including mock/fixture runs.
     """
-    from Trainforge.generators.staged_synthesis_provider import (
-        staged_synthesis_v4_enabled,
-    )
-
-    if not staged_synthesis_v4_enabled():
+    if not staged_objective_contract_enabled():
         return chunk
     from Trainforge.synthesis_eligibility import (
         focus_chunk_on_canonical_objective,
@@ -483,13 +507,13 @@ def _pair_eligibility_for_mode(
     *,
     kind: str,
 ) -> Any:
-    """Return v4 eligibility or an unconditional legacy admission."""
-    from Trainforge.generators.staged_synthesis_micro import (
-        staged_synthesis_micro_v1_enabled,
-    )
-    from Trainforge.generators.staged_synthesis_provider import (
-        staged_synthesis_v4_enabled,
-    )
+    """Return staged eligibility or an unconditional legacy admission.
+
+    The staged predicate is shared verbatim with ``_focus_chunk_on_objective``
+    via :func:`staged_objective_contract_enabled`, because this function's
+    ``pair_eligibility`` branch is only meaningful on a chunk that seam
+    already focused.
+    """
     from Trainforge.synthesis_eligibility import (
         PairEligibility,
         content_gate_eligibility,
@@ -504,9 +528,7 @@ def _pair_eligibility_for_mode(
     content_gate = content_gate_eligibility(focused_chunk)
     if not content_gate.eligible:
         return content_gate
-    if not (
-        staged_synthesis_v4_enabled() or staged_synthesis_micro_v1_enabled()
-    ):
+    if not staged_objective_contract_enabled():
         return PairEligibility(True)
     return pair_eligibility(focused_chunk, kind=kind)
 
@@ -3536,7 +3558,7 @@ def run_synthesis(
                 build_synthesis_provider,
             )
             paraphrase_provider = build_synthesis_provider(
-                "together", capture=capture,
+                "together", capture=capture, synthesis_seed=seed,
             )
         else:
             from Trainforge.generators._together_provider import (
@@ -3574,7 +3596,7 @@ def run_synthesis(
                 build_synthesis_provider,
             )
             paraphrase_provider = build_synthesis_provider(
-                "local", **local_kwargs,
+                "local", synthesis_seed=seed, **local_kwargs,
             )
         else:
             from Trainforge.generators._local_provider import (
@@ -3727,6 +3749,23 @@ def run_synthesis(
             exc,
         )
         _objectives_map = {}
+    # A staged contract binds every emitted pair to an objective resolved from
+    # the authoritative artifact. Without that artifact the focus seam marks
+    # every chunk ``authoritative_objectives_unavailable`` and the run emits
+    # ZERO pairs while exiting 0 — a silent whole-corpus failure. Fail here
+    # instead, BEFORE any output state or provider is created, and name the
+    # artifact rather than defaulting an objective (which would manufacture
+    # training data with no real objective binding).
+    if staged_objective_contract_enabled() and not _objectives_map:
+        raise RuntimeError(
+            "staged training synthesis requires canonical objectives, but no "
+            "usable objectives artifact was found (searched: "
+            + ", ".join(str(path) for path in _objectives_candidates)
+            + "). This artifact is produced by the ``course_planning`` phase "
+            "(synthesized_objectives.json) and copied to the LibV2 archive as "
+            "objectives.json by ``libv2_archival``. Re-run those phases, or "
+            "point TRAINFORGE_SYNTHESIS_OBJECTIVES_PATH at the artifact."
+        )
     synthesis_run_contract_sha256 = (
         _synthesis_rejection_contract_fingerprint(
             provider=provider,
