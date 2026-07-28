@@ -16,6 +16,7 @@ dist/
 venv/
 .venv/
 .venv-gui/
+.venv-training/
 env/
 ENV/
 
@@ -87,6 +88,11 @@ Trainforge/output/*
 # =============================================================================
 # Ed4All - Runtime & State
 # =============================================================================
+# Ignore both root-level runtime files and newly introduced runtime
+# directories. Re-open one directory level solely so the existing per-root
+# .gitkeep exceptions below remain effective; nested contents stay ignored.
+state/*
+!state/*/
 state/locks/*
 !state/locks/.gitkeep
 state/logs/*

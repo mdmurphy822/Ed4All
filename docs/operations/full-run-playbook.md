@@ -470,8 +470,9 @@ required), `--course-code`, `--provider {mock,anthropic,claude_session,together,
 `--with-assessment-sft`, `--with-graph-sft`.
 
 **Licensing is decided here, not by which tool wrote the code.** The trained
-model is a derivative of whatever provider generated these pairs. `local` (an
-Apache-2.0 model on-device) or `together` (hosted OSS) are the clean routes;
+model is a derivative of whatever provider generated these pairs. `local` (the
+NVIDIA-licensed canonical Nano model on-device) or `together` (hosted OSS) are
+the clean routes;
 `--provider anthropic` fails closed for training-pair synthesis. Read
 [`../LICENSING.md`](../LICENSING.md) before choosing.
 
@@ -480,16 +481,36 @@ A per-pair resume sidecar is written to
 `--no-checkpoint`. A crashed 10-hour synthesis resumes without re-paying for
 completed pairs.
 
+When a prompt/validator contract changes, checkpoint reuse is intentionally the
+wrong operation: begin a fresh synthesis pass while retaining the upstream
+chunks, objectives, and assessments. Use the generic fresh-start tool in
+dry-run mode first:
+
+```bash
+python scripts/prepare_fresh_training_synthesis.py \
+  --workflow-state state/workflows/<WORKFLOW_ID>.json \
+  --training-specs-dir <PROJECT_WORKSPACE>/trainforge/training_specs \
+  --runs-dir state/runs
+```
+
+After reviewing the exact JSON plan, repeat with `--apply`. The tool archives
+the old pair/generation journals, pilot outputs, in-progress/final pair files,
+synthesis telemetry, phase checkpoint, and stale run stop sentinel. It resets
+`training_synthesis` plus already-observed downstream phase state, but preserves
+all earlier phase outputs and assessment inputs byte-for-byte. The archive
+contains the original workflow state and a move manifest, so discarded pilot
+evidence remains auditable. The tool never starts a service or resumes a run.
+
 ### 3.2 Train the adapter
 
 ```bash
 # Dry run first — emits the model card stub + decision capture, no GPU needed.
 python -m Trainforge.train_course \
-  --course-code <COURSE_SLUG> --base-model qwen2.5-1.5b --dry-run
+  --course-code <COURSE_SLUG> --base-model nemotron3-nano-30b --dry-run
 
 # Real training run.
 python -m Trainforge.train_course \
-  --course-code <COURSE_SLUG> --base-model qwen2.5-1.5b
+  --course-code <COURSE_SLUG> --base-model nemotron3-nano-30b
 ```
 
 Verified options: `--course-code` (accepts either the course-code form or the
@@ -497,9 +518,10 @@ LibV2 slug — both resolve identically), `--base-model` (required),
 `--config-overrides` (YAML), `--backend {local,runpod}` (default `local`;
 `runpod` is stubbed and fails loud), `--output-dir`, `--dry-run`.
 
-Base models registered in `Trainforge.training.BaseModelRegistry`:
-`llama-3.2-1b`, `llama-3.2-3b`, `phi-3.5-mini`, `qwen2.5-1.5b`, `smollm2-1.7b`.
-HF-gated bases (Llama, Phi) need `HF_TOKEN` present at training time.
+The canonical registry default is `nemotron3-nano-30b`, resolving to
+`nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16` at immutable revision
+`cbd3fa9f933d55ef16a84236559f4ee2a0526848`. Its checked-in configuration
+performs BF16 LoRA, not QLoRA.
 
 Output lands at `LibV2/courses/<COURSE_SLUG>/models/<model_id>/` unless
 `--output-dir` overrides the models root.
@@ -570,13 +592,13 @@ python scripts/retrieval_smoke.py \
 python -m Trainforge.eval.slm_eval_harness \
   --course-path LibV2/courses/<COURSE_SLUG> \
   --adapter-path LibV2/courses/<COURSE_SLUG>/models/<MODEL_ID> \
-  --base-model qwen2.5-1.5b --smoke
+  --base-model nemotron3-nano-30b --smoke
 
 # Full run, with the base-model ablation (~3x wall time).
 python -m Trainforge.eval.slm_eval_harness \
   --course-path LibV2/courses/<COURSE_SLUG> \
   --adapter-path LibV2/courses/<COURSE_SLUG>/models/<MODEL_ID> \
-  --base-model qwen2.5-1.5b --with-ablation
+  --base-model nemotron3-nano-30b --with-ablation
 ```
 
 Verified arguments: `--course-path` (required), `--adapter-path`,
@@ -591,6 +613,12 @@ the `post_training_validation` phase's `eval_gating` gate reads.
 Per-stage eval results checkpoint to
 `<course-path>/eval/.eval_results_checkpoint.jsonl` by default, so a crashed
 eval re-run skips completed evaluators.
+
+Only after the full report passes the promotion gates should retrieval
+generation bind the LoRA. The binding hook is the explicit served model ID
+(`ED4ALL_ANSWER_MODEL`, or `LOCAL_SYNTHESIS_MODEL` for other local generation
+surfaces). Until promotion, `nemotron-3-nano-30b-a3b` remains the base-model
+default; the pipeline does not fabricate or pre-bind an adapter ID.
 
 ---
 

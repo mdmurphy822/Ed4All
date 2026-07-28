@@ -15,13 +15,13 @@ Cross-reference: `docs/LICENSING.md` is the canonical ToS-posture document. Read
 | `TRAINFORGE_ASSESSMENT_PROVIDER` | `local` | **W-D15**: routes the Trainforge assessment-generator surface (assessment-question authoring grounded in course content chunks) through `Trainforge/generators/_assessment_provider.py::AssessmentGeneratorProvider`. The authored questions land in `assessments.json` and feed into the downstream `training_synthesis` instruction-pair / preference-pair surface, so this surface IS training-data exposure. Bypasses the Claude Code `assessment-generator` subagent dispatch. Reuses the same `LOCAL_SYNTHESIS_*` env vars as the other local-OSS surfaces. |
 | `TRAINFORGE_TARGET_MODELS` | `local/qwen2.5-14b,together/llama-3.3-70b` (or similar — operator-chosen CSV) | Cosmetic dataset_config.json field documenting which teacher models the corpus was synthesized against; lets the LibV2 audit trail record the actual ToS-clean teachers used. |
 | `ED4ALL_LLM_JUDGE_PROVIDER` | `local_nli` | Wave-102 ablation eval routes its qualitative-judge calls through a local NLI classifier (`MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli`) instead of the default `none` (no LLM judge) or `anthropic`. |
-| `COURSEFORGE_BLOCK_ROUTING_PATH` | `Courseforge/config/block_routing.license_clean.yaml` | Points the two-pass router at the sibling routing YAML that overrides the `large` capability tier from `claude-sonnet-4-6` to a 32B local Qwen. See "Calibration prerequisite" below. |
+| `COURSEFORGE_BLOCK_ROUTING_PATH` | optional legacy override | The checked-in routing YAML still has per-tier Qwen choices; it is not required for the canonical shared Nemotron seat. |
 
 Plus the prerequisites the pipeline already documents on the canonical `--provider local` path:
 
 - `COURSEFORGE_TWO_PASS=true` — required for `COURSEFORGE_BLOCK_ROUTING_PATH` to take effect.
 - `COURSEFORGE_PROVIDER=local` — routes the legacy single-pass content-generator surface; same env var the canonical `docs/LICENSING.md` recommends.
-- `LOCAL_SYNTHESIS_BASE_URL` (default `http://localhost:11434/v1`) and `LOCAL_SYNTHESIS_MODEL` (default `qwen2.5:7b-instruct-q4_K_M`) — read by every local-OSS provider (synthesis, curriculum-alignment, content-generator, outline, rewrite).
+- `LOCAL_SYNTHESIS_BASE_URL` (default `http://localhost:8000/v1`) and `LOCAL_SYNTHESIS_MODEL` (default `nemotron-3-nano-30b-a3b`) — read by every local-OSS provider (synthesis, curriculum-alignment, content-generator, outline, rewrite).
 - `CURRICULUM_ALIGNMENT_PROVIDER=local` — routes Trainforge teaching-role classification through the local server.
 
 ---
@@ -30,11 +30,9 @@ Plus the prerequisites the pipeline already documents on the canonical `--provid
 
 Before kicking off a license-clean run:
 
-- [ ] Local OSS model server is running. Ollama default (`http://localhost:11434/v1`), vLLM (`http://localhost:8000/v1`), llama.cpp server (`http://localhost:8080/v1`), or LM Studio (`http://localhost:1234/v1`) all work via the OpenAI-compatible client. Set `LOCAL_SYNTHESIS_BASE_URL` if not Ollama default.
+- [ ] A strict OpenAI-compatible local model server is running at `http://localhost:8000/v1`. Provision it with the exact pinned command in `docs/operations/nemotron-spark-serving.md` § “Serve Nano (fast tier)”. Ed4All does not launch a server and has no implicit Ollama fallback.
 - [ ] All required model pulls completed. For the recipe below the local server must serve:
-  - `qwen2.5:7b-instruct-q4_K_M` (outline tier; ~5 GB VRAM in 4-bit).
-  - `qwen2.5:14b-instruct-q4_K_M` (medium-tier rewrite; ~10 GB VRAM in 4-bit).
-  - `qwen2.5:32b-instruct-q4_K_M` (large-tier rewrite + assessment_item cascade; ~22 GB VRAM in 4-bit). On 16 GB hardware, fall back to Together (see "Together fallback" below).
+  - `nemotron-3-nano-30b-a3b` (canonical NVIDIA Nano served ID; roughly 30B total / 3.5B active parameters, with deployment memory determined by engine and precision).
   - `MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli` for the local-NLI judge — auto-downloaded by `transformers` on first call; no manual pull required.
 - [ ] **`ANTHROPIC_API_KEY` is explicitly UNSET** for the run. The orchestrator's `--mode local` default uses the Claude Code session, which does not consume the env var, but several legacy code paths (`Trainforge/generators/_anthropic_provider.py`, `Trainforge/eval/qualitative_judge.py` when `ED4ALL_LLM_JUDGE_PROVIDER=anthropic`) silently route to Anthropic if the key is present. Unsetting the key is the belt-and-braces guarantee that no legacy path leaks training-data through Anthropic.
 - [ ] Calibration prerequisite for `assessment_item` is met (see next section).
@@ -64,11 +62,8 @@ Until that calibration loop closes, courses built under the license-clean varian
 ## Recipe — minimum viable license-clean run
 
 ```bash
-# Local OSS server (Ollama default; swap base_url for vLLM / llama.cpp / LM Studio).
-ollama serve &
-ollama pull qwen2.5:7b-instruct-q4_K_M
-ollama pull qwen2.5:14b-instruct-q4_K_M
-ollama pull qwen2.5:32b-instruct-q4_K_M
+# Start the provisioned strict OpenAI-compatible TRT-LLM/vLLM seat.
+# The canonical seat serves nemotron-3-nano-30b-a3b on localhost:8000.
 
 # Belt-and-braces: explicitly unset Anthropic key.
 unset ANTHROPIC_API_KEY
@@ -77,16 +72,15 @@ unset ANTHROPIC_API_KEY
 export COURSEFORGE_REWRITE_PROVIDER=local
 export COURSEPLANNER_PROVIDER=local             # W-D14 — course-outliner surface
 export TRAINFORGE_ASSESSMENT_PROVIDER=local     # W-D15 — assessment-generator surface
-export TRAINFORGE_TARGET_MODELS="local/qwen2.5-14b,together/llama-3.3-70b"
+export TRAINFORGE_TARGET_MODELS="local/nemotron-3-nano-30b-a3b"
 export ED4ALL_LLM_JUDGE_PROVIDER=local_nli
-export COURSEFORGE_BLOCK_ROUTING_PATH=Courseforge/config/block_routing.license_clean.yaml
 
 # Prerequisites the canonical license-clean recipe already documents.
 export COURSEFORGE_TWO_PASS=true
 export COURSEFORGE_PROVIDER=local
 export CURRICULUM_ALIGNMENT_PROVIDER=local
-export LOCAL_SYNTHESIS_BASE_URL=http://localhost:11434/v1
-export LOCAL_SYNTHESIS_MODEL=qwen2.5:14b-instruct-q4_K_M
+export LOCAL_SYNTHESIS_BASE_URL=http://localhost:8000/v1
+export LOCAL_SYNTHESIS_MODEL=nemotron-3-nano-30b-a3b
 export TRAINFORGE_REQUIRE_EMBEDDINGS=true
 
 # Run the full pipeline.

@@ -37,6 +37,82 @@
 # Repo root, derived from this script — works from any checkout and any cwd.
 _ED4ALL_PROFILE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Canonical training-pair workflow: separate evidence planning from SFT and
+# DPO realization. An explicit operator value wins; unset uses the validated
+# staged path for this full-run profile.
+export TRAINFORGE_STAGED_SYNTHESIS_V4="${TRAINFORGE_STAGED_SYNTHESIS_V4:-true}"
+
+# ---- Staged synthesis preconditions (REQUIRED when TRAINFORGE_STAGED_SYNTHESIS_V4 is on)
+#
+# Staged synthesis validates THREE preconditions at orchestration time, before
+# any synthesis output is created. All three must be satisfied, and they cannot
+# be defaulted by code — they are operator-declared environment variables only.
+# Missing or invalid values fail the run LOUDLY before the first generation call.
+#
+# 1. The served model context-window size (tokens). YOU MUST SET THIS — this
+#    template deliberately supplies NO default. The value is per-deployment
+#    (it is whatever window the seat was actually launched with, e.g. vLLM
+#    --max-model-len / TRT-LLM --max_seq_len); read it off the running seat's
+#    serve command or /v1/models. A guessed value silently satisfies a
+#    fail-closed guard with the wrong window, which defeats the guard, so an
+#    unset value is left to fail LOUDLY before the first generation call.
+#    Synthesis validates it is positive and uses it to compute per-generation
+#    completion budgets.
+#    Failure message: "TRAINFORGE_SYNTHESIS_SERVED_CONTEXT_TOKENS must be a
+#    positive measured served model window before staged synthesis starts"
+export TRAINFORGE_SYNTHESIS_SERVED_CONTEXT_TOKENS="${TRAINFORGE_SYNTHESIS_SERVED_CONTEXT_TOKENS:-}"
+if [ -z "${TRAINFORGE_SYNTHESIS_SERVED_CONTEXT_TOKENS}" ]; then
+    echo "run-env.example.sh: WARNING — TRAINFORGE_SYNTHESIS_SERVED_CONTEXT_TOKENS is unset." >&2
+    echo "  Staged synthesis will fail closed before its first generation call." >&2
+    echo "  Set it to your seat's measured context window and re-source:" >&2
+    echo "    TRAINFORGE_SYNTHESIS_SERVED_CONTEXT_TOKENS=<tokens> source ./run-env.example.sh" >&2
+fi
+
+# 2. An embedding backend (sentence-transformers or HuggingFace) is required
+#    for evidence-grounded SFT pair selection. Synthesis requires this to be
+#    explicitly enabled (no automatic fallback). The embedder is loaded once
+#    at orchestration time — a failed load fails the run before synthesis.
+#    Failure message: "TRAINFORGE_REQUIRE_EMBEDDINGS=true is required for
+#    staged production synthesis; Jaccard fallback is not permitted"
+export TRAINFORGE_REQUIRE_EMBEDDINGS="${TRAINFORGE_REQUIRE_EMBEDDINGS:-true}"
+
+# 3. The exact model ID served at LOCAL_SYNTHESIS_BASE_URL. Staged synthesis
+#    validates that LOCAL_SYNTHESIS_MODEL is present in the id list reported by
+#    the server's OpenAI-compatible /v1/models endpoint. This prevents silent
+#    model-mismatch 404s mid-phase.
+#    Failure message (verbatim from
+#    Trainforge/synthesize_training.py::_preflight_local_staged_model_identity):
+#    "configured staged synthesis model <id> is not served by <base>/models;
+#    served ids=[...]"
+#    A seat launched WITHOUT --served-model-name reports its checkpoint path as
+#    the id, not a friendly name — e.g. the TRT-LLM seat in
+#    seats/launch-super-trtllm.sh serves the snapshot directory. Read the id off
+#    /v1/models and set it here; a guessed friendly name fails the preflight.
+#    NB: the two values below MUST describe the SAME seat as the context tokens
+#    above. The defaults name the Nano seat; if you point base_url at another
+#    seat (e.g. the Super seat on :8123), set the model id AND the context
+#    tokens above to THAT seat's launched window — they differ by more than an
+#    order of magnitude between seats, so a copied number is a wrong number.
+export LOCAL_SYNTHESIS_BASE_URL="${LOCAL_SYNTHESIS_BASE_URL:-http://127.0.0.1:8000/v1}"
+export LOCAL_SYNTHESIS_MODEL="${LOCAL_SYNTHESIS_MODEL:-nemotron-3-nano-30b-a3b}"
+
+# Hugging Face executes pinned repository-local model code from a generated
+# Python module cache. Some system/container installs leave the library's
+# default ~/.cache/huggingface/modules tree owned by another user; a later
+# trust_remote_code load then fails only after the multi-hour pipeline reaches
+# training. An explicit operator value always wins. Otherwise use an Ed4All-
+# owned XDG cache sibling, separate from the model-weight cache.
+if [ -z "${HF_MODULES_CACHE:-}" ]; then
+    _ED4ALL_XDG_CACHE_ROOT="${XDG_CACHE_HOME:-${HOME}/.cache}"
+    export HF_MODULES_CACHE="${_ED4ALL_XDG_CACHE_ROOT}/ed4all/huggingface/modules"
+fi
+if ! mkdir -p "${HF_MODULES_CACHE}" || [ ! -w "${HF_MODULES_CACHE}" ]; then
+    echo "run-env.example.sh: ERROR — HF_MODULES_CACHE is not writable:" >&2
+    echo "  ${HF_MODULES_CACHE}" >&2
+    echo "  Set HF_MODULES_CACHE to a writable directory and re-source." >&2
+    return 1 2>/dev/null || exit 1
+fi
+
 # Model-seat endpoints. Ports are DEFAULTS, not reservations — override any of
 # these in your shell before sourcing if they collide with something else on
 # the box. All three may be the same URL if you serve one seat.

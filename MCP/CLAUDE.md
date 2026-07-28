@@ -316,7 +316,13 @@ checkpoint and becomes `PAUSED`; a **task** timeout grace-drains then keeps the
 `TIMEOUT` classification and the transient-retry ladder. `_grace_seconds` in the
 executor computes the window. Per-phase batch timeout precedence: the phase's
 YAML `batch_timeout_minutes` wins over `ED4ALL_BATCH_TIMEOUT_MINUTES` /
-the executor-wide default, for that phase only.
+the executor-wide default, for that phase only. Likewise, the phase's
+`timeout_minutes` is forwarded as its phase-local per-task deadline and wins
+over `ED4ALL_TASK_TIMEOUT_MINUTES` / the executor default without mutating
+other phases. Resumes reload both values from the workflow registry; timeout
+values in an old task/checkpoint cannot pin the resumed phase to a stale
+deadline. A multi-day phase must declare both values because its single task
+and its whole batch are independent safety deadlines.
 
 `hardening/error_classifier.py` supplies `ErrorClassifier` (transient vs
 permanent), `PoisonPillDetector` (same-pattern failure threshold stops a batch),

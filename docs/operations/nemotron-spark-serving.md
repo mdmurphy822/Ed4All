@@ -12,7 +12,7 @@ The endpoint rows already exist in `config/endpoints.yaml`:
 |---------------|---------------------------|---------|--------------|
 | `spark-super` | `nemotron-3-super-120b-a12b` | Throughput / synthesis tier | `SPARK_BASE_URL` |
 | `spark-nano`  | `nemotron-3-nano-30b-a3b`   | Fast tier + interactive answer | `SPARK_BASE_URL` |
-| `local`       | `qwen2.5:7b-instruct-q4_K_M` | Existing Ollama seat (localhost:11434) | `LOCAL_SYNTHESIS_BASE_URL` |
+| `local`       | `nemotron-3-nano-30b-a3b` | Canonical strict OpenAI-compatible Nano seat (localhost:8000) | `LOCAL_SYNTHESIS_BASE_URL` |
 
 Both `spark-*` rows carry `provenance_provider: local` (genuinely local:
 self-hosted OSS weights on our own box under the NVIDIA Open Model License,
@@ -33,7 +33,7 @@ which permits commercial use **and** training on outputs). They share
 |------|----------------------|-------|
 | Super — DGX Spark **(recommended)** | `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4` | 120B / 12B-active LatentMoE + MTP. NVFP4 is the Spark-validated checkpoint (per the vLLM DGX Spark playbook). |
 | Super — B200/B300 | `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8` | The FP8 checkpoint the original ask named; fits a single B200/B300 with `--tensor-parallel-size 1`. Listed for completeness — **prefer NVFP4 on the Spark**. |
-| Nano — text | `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8` | 30B / 3.2B-active hybrid MoE. Fast tier + interactive answer. NVFP4 variant `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4` also exists — **verify which precision your Spark image prefers**. |
+| Nano — text / LoRA base | `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16` at revision `cbd3fa9f933d55ef16a84236559f4ee2a0526848` | Canonical training and retrieval-generation base: roughly 30B total / 3.5B active. BF16 is required by the checked-in LoRA config; `Trainforge/training/base_models.py` pins this exact repo and revision. |
 | Nano — Omni (multimodal, for SemantiK VLM) | `nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-FP8` | **CORRECTED repo id.** The ask's `nvidia/NVIDIA-Nemotron-3-Nano-Omni-30B-A3B` does not exist — the real repo has **no `NVIDIA-` prefix** and a **`-Reasoning-<precision>` suffix**. Variants: `-Reasoning-FP8` / `-Reasoning-BF16` / `-Reasoning-NVFP4`. Unifies video/audio/image/text; use for the SemantiK VLM (OCR/vision) surface. |
 
 ### Download
@@ -45,8 +45,9 @@ export HF_TOKEN=hf_...
 # Super (DGX Spark: NVFP4).
 huggingface-cli download nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4
 
-# Nano text (fast tier).
-huggingface-cli download nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8
+# Nano text / LoRA base. Pin the same immutable revision as the trainer.
+huggingface-cli download nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16 \
+  --revision cbd3fa9f933d55ef16a84236559f4ee2a0526848
 
 # Nano Omni (SemantiK VLM). VERIFY the precision your GPU/image wants.
 huggingface-cli download nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-FP8
@@ -57,34 +58,70 @@ huggingface-cli download nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-FP8
 
 ---
 
-## Option A — quick baseline via Ollama (`local` endpoint)
+## Strict OpenAI server (`local` / `spark-nano` throughput path)
 
-The **existing** `local` endpoint (`http://localhost:11434/v1`) already
-points at Ollama. This is the fastest way to smoke a Nemotron model, but
-**Ollama's batching is weak** — use it for the **interactive / answer path**,
-NOT the throughput/synthesis path.
+The canonical deployment is a TRT-LLM or vLLM OpenAI-compatible server on
+**port 8000**. Both `LOCAL_SYNTHESIS_BASE_URL` and `SPARK_BASE_URL` may point
+at that seat. Ed4All has no implicit Ollama endpoint or lifecycle fallback.
 
-```bash
-# Pull a Nemotron 3 tag (VERIFY the exact Ollama tag once it publishes —
-# 'nemotron3:...' is illustrative; check `ollama list` / the Ollama library).
-ollama pull nemotron3:nano          # verify tag
+### TensorRT-LLM structured-output synthesis seat
 
-# Point the existing `local` endpoint's MODEL env at it (base URL unchanged).
-export LOCAL_SYNTHESIS_MODEL=nemotron3:nano   # verify tag
-# LOCAL_SYNTHESIS_BASE_URL stays http://localhost:11434/v1 (endpoint default)
+TensorRT-LLM 1.3.0rc9 parses OpenAI `response_format` even when guided
+decoding is disabled. A successful flat JSON response therefore does not prove
+schema enforcement. Any staged-synthesis seat must set:
+
+```yaml
+guided_decoding_backend: xgrammar
 ```
 
-No new endpoint row is needed — `local` resolves `LOCAL_SYNTHESIS_MODEL` per
-its registry row. Good for a `ed4all doctor` / interactive `answer` smoke;
-throughput will be single-stream-ish because Ollama does not do the
-continuous batching that makes the Spark worth it.
+Readiness must confirm the startup log contains `Guided decoder initialized
+with backend: ...XGRAMMAR`. Use OpenAI
+`response_format.type=json_schema`; rc9 does not accept vLLM-style top-level
+`guided_json`, `guided_regex`, or `guided_grammar` fields.
 
----
+When `--reasoning_parser` is configured, rc9 rewrites schema guidance into a
+forced reasoning-plus-content grammar. A synthesis seat requiring thinking-off
+must omit that flag. The staged client fails loudly if `reasoning_content` is
+returned.
 
-## Option B — vLLM OpenAI server (`spark-super` / `spark-nano` throughput path)
+Readiness requires exact validation of flat and nested object/array schemas,
+enum/required/`additionalProperties: false`, an adversarial instruction, and
+the production plan/SFT/DPO schemas. Every response must have
+`finish_reason=stop`, with zero reasoning and zero truncation.
 
-This is the real throughput path. One vLLM OpenAI-compatible server on **port
-8000** serves the Spark seats. `SPARK_BASE_URL=http://localhost:8000/v1`.
+### Staged synthesis preconditions (operator environment setup)
+
+Staged synthesis validates three required operator environment variables at
+orchestration time, before any synthesis output or provider is created:
+
+1. **`TRAINFORGE_SYNTHESIS_SERVED_CONTEXT_TOKENS`** — The served model's
+   context window size (tokens). This is obtained from the model's HF card or
+   deployment notes. Staged synthesis fails closed if missing, blank, zero, or
+   non-numeric.
+   
+2. **`TRAINFORGE_REQUIRE_EMBEDDINGS=true`** — An embedding backend
+   (sentence-transformers or HuggingFace) is required for evidence-grounded SFT
+   pair selection. Staged synthesis fails closed if not explicitly set to one of
+   `{1, true, yes, on}` (case-insensitive).
+
+3. **`LOCAL_SYNTHESIS_MODEL`** — The exact model ID served at
+   `LOCAL_SYNTHESIS_BASE_URL`, validated against the server's OpenAI-compatible
+   `/v1/models` endpoint response by
+   `Trainforge/synthesize_training.py::_preflight_local_staged_model_identity`.
+   Staged synthesis fails closed if the ID is absent from the served list. This
+   prevents silent model-mismatch 404s mid-phase. Read the id off `/v1/models`
+   rather than guessing it: a seat launched without `--served-model-name`
+   (as `seats/launch-super-trtllm.sh` is) reports its checkpoint snapshot path
+   as the id.
+
+All three must be set in your shell environment before sourcing the run-env
+template. See `docs/operations/run-env.example.sh` for example declarations and
+`Trainforge/CLAUDE.md` § "Opt-In Behavior Flags" for per-flag detail.
+
+Primary references: NVIDIA TensorRT-LLM
+[guided decoding](https://github.com/NVIDIA/TensorRT-LLM/blob/v1.3.0rc9/docs/source/features/guided-decoding.md)
+and the rc9
+[OpenAI protocol translation](https://github.com/NVIDIA/TensorRT-LLM/blob/v1.3.0rc9/tensorrt_llm/serve/openai_protocol.py#L203-L250).
 
 ### Serve Super (DGX Spark, NVFP4)
 
@@ -143,7 +180,8 @@ docker run -d --name vllm-nano --ipc=host --restart unless-stopped \
   -e HF_TOKEN="$HF_TOKEN" \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   vllm/vllm-openai:cu130-nightly \
-  vllm serve nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8 \
+  vllm serve nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16 \
+    --revision cbd3fa9f933d55ef16a84236559f4ee2a0526848 \
     --served-model-name nemotron-3-nano-30b-a3b \
     --trust-remote-code \
     --max-model-len 131072 \
@@ -187,10 +225,21 @@ export COURSEFORGE_REWRITE_PROVIDER=spark-super
 export SPARK_SUPER_MODEL=nemotron-3-super-120b-a12b
 export SPARK_NANO_MODEL=nemotron-3-nano-30b-a3b
 
+# Generic local retrieval-generation resolves to the same base seat.
+export LOCAL_SYNTHESIS_BASE_URL=http://localhost:8000/v1
+export LOCAL_SYNTHESIS_MODEL=nemotron-3-nano-30b-a3b
+export ED4ALL_ANSWER_MODEL=nemotron-3-nano-30b-a3b
+
 # --- SemantiK VLM (OCR/vision) at the Omni model. ---
 export SEMANTIK_VLM_MODEL=nemotron-3-nano-omni-30b-a3b
 export SEMANTIK_VLM_BASE_URL=http://localhost:11434   # or the vLLM port serving Omni
 ```
+
+After course LoRA training, full evaluation, and promotion, set
+`ED4ALL_ANSWER_MODEL` (and the server-side served model name) to the promoted
+adapter ID. This is deliberately a deferred handoff: the base Nano ID remains
+the default until promotion, and this runbook never invents or pre-binds an
+adapter.
 
 ### GPU lifecycle stays ON
 
@@ -245,15 +294,47 @@ To raise the achievable aggregate tps, increase the vLLM server's
 `--max-num-seqs` (and re-run the benchmark with a matching `--concurrency`)
 until memory or the scaling curve flattens.
 
+### Selecting synthesis concurrency
+
+Concurrency is a property of the complete deployment and workload, not of the
+model name alone. Benchmark the exact model revision, engine image, server
+batch/token limits, prompt contract, and output allowance that production will
+use. Store raw reports under ignored `state/benchmarks/`; never copy
+course-derived prompts, responses, workflow IDs, machine paths, or local
+artifact hashes into tracked documentation.
+
+Sweep a bounded candidate set and require every cell to report:
+
+- complete requests and terminal synthesis units;
+- prompt, completion, and accepted-pair throughput;
+- p50/p95 latency and queue delay when observable;
+- context and scheduled-token headroom;
+- KV/Mamba/unified-memory headroom, or an explicit `unavailable`;
+- transport, output-cap, schema, and validator failures.
+
+Stop escalation at the first truncation, transport failure, engine-hang signal,
+or exhausted scheduler/cache headroom. Select the lowest concurrency on the
+accepted-pair-throughput plateau, then validate it with production-shaped SFT
+and DPO windows and a longer soak. A shallow `/health` or `/v1/models` response
+does not prove generation health; retain an exact structured generation probe.
+
+`TRAINFORGE_SYNTHESIS_MAX_CONCURRENT` defaults to `1`. Any higher value and any
+request-timeout override are deployment-specific operator settings that must be
+derived from the current benchmark, not copied from another machine's result.
+Re-benchmark after changing the model, revision, engine, prompt/schema,
+token cap, batch limit, or hardware.
+
 ---
 
 ## References
 
-- vLLM DGX Spark playbook: `vllm.ai/blog/2026-06-01-vllm-dgx-spark`
+- NVIDIA NeMo training source of truth in this repo:
+  `Trainforge/training/base_models.py` and
+  `Trainforge/training/configs/nemotron3-nano-30b.yaml`
 - Nemotron 3 Super Spark deployment guide (NVIDIA docs) — verify current URL.
 - HF repos: `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4`,
   `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8`,
-  `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8`,
+  `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16`,
   `nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-FP8`
 - Endpoint registry: `config/endpoints.yaml` (`spark-super` / `spark-nano` /
   `local` rows). Deployment-target notes: DGX Spark memory posture in the
