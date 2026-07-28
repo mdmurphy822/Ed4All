@@ -37,6 +37,8 @@ from __future__ import annotations
 from html.parser import HTMLParser
 from typing import List, Optional, Tuple
 
+from Trainforge.parsers.html_content_parser import _INLINE_TAGS, _TextAssembler
+
 # Tags whose content is intentionally dropped from the plain-text
 # representation (matches HTMLTextExtractor in html_content_parser.py).
 _DROP_TAGS = {"script", "style"}
@@ -58,17 +60,25 @@ class _XPathIndexer(HTMLParser):
 
     After ``feed()``, ``self.elements`` holds one entry per opened element:
         (xpath, tag, attrs_dict, text_content)
-    where ``text_content`` is the concatenated descendant text (same joining
-    semantics as HTMLTextExtractor: whitespace-stripped tokens joined by a
-    single space).
+    where ``text_content`` is the concatenated descendant text, assembled by
+    the SAME :class:`Trainforge.parsers.html_content_parser._TextAssembler`
+    the chunk-text extractor uses: source whitespace preserved (collapsed to
+    one space), inline-element boundaries contributing nothing, block-element
+    boundaries contributing a separator.
+
+    That sharing is load-bearing, not tidiness: ``chunker._locate`` computes a
+    chunk's ``char_span`` by ``str.find``-ing the chunk text (produced by
+    ``HTMLTextExtractor``) inside this walker's container text. If the two
+    whitespace models drift apart, every exact locate fails and every chunk
+    falls back to an approximated span.
     """
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
-        # Stack of (tag, sibling_index_for_tag, text_parts) — the live
-        # ancestor path from root to current open element. text_parts on
-        # each frame accumulates data seen while that element is open.
-        self._stack: List[Tuple[str, int, List[str]]] = []
+        # Stack of (tag, sibling_index_for_tag, assembler) — the live
+        # ancestor path from root to current open element. The assembler on
+        # each frame accumulates text seen while that element is open.
+        self._stack: List[Tuple[str, int, _TextAssembler]] = []
         # Per-parent, per-tag sibling counter. Key is the depth of the
         # parent on the stack (0 = document root). Value is a dict
         # tag -> count-so-far.
@@ -99,6 +109,10 @@ class _XPathIndexer(HTMLParser):
 
         attrs_dict = {k: v for k, v in attrs if v is not None}
 
+        # Block-element edge separates the surrounding text; inline does not.
+        if tag not in _INLINE_TAGS and self._stack:
+            self._stack[-1][2].boundary()
+
         if tag in _VOID_TAGS:
             # Void element xpath lives one level deeper than the current
             # stack frame but does not nest.
@@ -112,7 +126,7 @@ class _XPathIndexer(HTMLParser):
             return
 
         # Push: new frame starts its own sibling counter.
-        self._stack.append((tag, idx, []))
+        self._stack.append((tag, idx, _TextAssembler()))
         self._sibling_counts.append({})
         self._open_record_indices.append(len(self.elements))
         # Reserve the record; we fill ``text`` at end-tag time.
@@ -141,28 +155,30 @@ class _XPathIndexer(HTMLParser):
         self._close_top()
 
     def _close_top(self) -> None:
-        tag, idx, parts = self._stack[-1]
+        tag, idx, assembler = self._stack[-1]
         rec_idx = self._open_record_indices.pop()
         xpath = self._current_xpath()
-        joined = " ".join(parts)
+        joined = assembler.result()
         _, rec_tag, rec_attrs, _ = self.elements[rec_idx]
         self.elements[rec_idx] = (xpath, rec_tag, rec_attrs, joined)
-        # Bubble this element's text up to its parent's text_parts, so
+        # Bubble this element's text up to its parent's assembler, so
         # ancestors see the concatenated descendant text.
         self._stack.pop()
         self._sibling_counts.pop()
         if self._stack and rec_tag not in _DROP_TAGS:
-            self._stack[-1][2].append(joined)
+            parent = self._stack[-1][2]
+            parent.add_text(joined)
+            if rec_tag not in _INLINE_TAGS:
+                parent.boundary()
         if tag in _DROP_TAGS:
             self._drop_depth -= 1
 
     def handle_data(self, data: str):  # type: ignore[override]
         if self._drop_depth > 0:
             return
-        stripped = data.strip()
-        if not stripped or not self._stack:
+        if not data or not self._stack:
             return
-        self._stack[-1][2].append(stripped)
+        self._stack[-1][2].add_data(data)
 
     def close(self):  # type: ignore[override]
         # Flush any un-closed tags so their xpaths are recorded.
@@ -175,8 +191,11 @@ def build_index(html: str) -> List[Tuple[str, str, dict, str]]:
     """Walk ``html`` and return [(xpath, tag, attrs, plain_text), ...].
 
     The list is in document order (start-tag order). ``plain_text`` on each
-    entry is the concatenated descendant text, whitespace-stripped tokens
-    joined by single spaces — matches ``HTMLTextExtractor.get_text()``.
+    entry is the concatenated descendant text under the shared
+    ``_TextAssembler`` whitespace model — matches ``HTMLTextExtractor
+    .get_text()`` for prose (the extractor additionally drops
+    screen-reader-only / template-chrome / curie-anchor subtrees and emits
+    list/table structural delimiters, which this walker does not).
     """
     indexer = _XPathIndexer()
     indexer.feed(html)

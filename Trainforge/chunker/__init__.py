@@ -49,10 +49,26 @@ __version__ = CHUNKER_SCHEMA_VERSION
 # semantics of WHAT TEXT lands in a chunk's ``text`` field — i.e. the
 # ``Trainforge/parsers/html_content_parser.py::HTMLTextExtractor`` contract
 # (see ``Trainforge/CLAUDE.md`` § "Extraction-text change class (no opt-out
-# by design)"). Version ``1`` is the current always-on contract:
-# screen-reader-scaffolding suppression (``sr-only`` / ``visually-hidden`` /
-# ``aria-hidden="true"`` subtree drop) + structural delimiters (per-``<li>`` /
-# table-row newlines, ``|`` between table cells, ``: `` after each ``<dt>``).
+# by design)").
+#
+# Version ``1`` was: screen-reader-scaffolding suppression (``sr-only`` /
+# ``visually-hidden`` / ``aria-hidden="true"`` subtree drop) + structural
+# delimiters (per-``<li>`` / table-row newlines, ``|`` between table cells,
+# ``: `` after each ``<dt>``) — assembled by ``.strip()``-ing every HTML text
+# node and re-joining the pieces with a single space.
+#
+# Version ``2`` (current) keeps both of those and fixes the joining model
+# itself: the strip-and-space-join FABRICATED a separator at every inline tag
+# boundary, so ``<p>The result is <strong>79</strong>.</p>`` extracted as
+# ``The result is 79 .``. Text is now assembled whitespace-correctly
+# (``html_content_parser._TextAssembler``) — whitespace actually present in
+# the source is preserved (collapsed to one space), an INLINE element boundary
+# contributes no separator, and a BLOCK element boundary does — so the same
+# markup extracts as ``The result is 79.``. Corpora chunked under contract 1
+# carry that fabricated whitespace in their ``text`` field; it also tripped
+# the ``degenerate_source_stem`` arm of the training-synthesis content gate
+# (``Trainforge/synthesis_eligibility.py::_STEM_SLOT_GAP_RE``), so re-chunking
+# under contract 2 makes previously-excluded chunks eligible again.
 #
 # ``CHUNKER_SCHEMA_VERSION`` deliberately stays ``"v4"`` across extraction-text
 # changes (the emit shape is unchanged), so a coarse ``chunker_version`` check
@@ -64,7 +80,7 @@ __version__ = CHUNKER_SCHEMA_VERSION
 # extraction semantics change again (a new always-on suppression / delimiter
 # rule), so downstream provenance gates re-classify pre-change corpora as
 # legacy.
-EXTRACTION_TEXT_CONTRACT_VERSION = 1
+EXTRACTION_TEXT_CONTRACT_VERSION = 2
 
 from Trainforge.chunker.boilerplate import (
     DEFAULT_MIN_DOC_FRAC,

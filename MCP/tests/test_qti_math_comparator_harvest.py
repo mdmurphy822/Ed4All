@@ -102,8 +102,10 @@ def test_actual_markup_inside_math_span_remains_markup() -> None:
     )
     assert "<strong>" not in chunk["text"]
     assert "<em>" not in chunk["text"]
-    # The canonical HTML projection may insert token-boundary spaces where a
-    # nested element was removed; the comparison operators and operands must
-    # nevertheless survive.
-    assert "x <y$" in chunk["text"]
-    assert "a >b$" in chunk["text"]
+    # EXTRACTION_TEXT_CONTRACT_VERSION 2: an INLINE element boundary no longer
+    # fabricates a space, so removing the nested <strong>/<em> leaves the math
+    # span intact instead of splitting the operand off its operator. (Under
+    # contract 1 the same markup projected as "x <y$" / "a >b$" — the
+    # token-boundary space this assertion used to accommodate.)
+    assert "$x<y$" in chunk["text"]
+    assert "$a>b$" in chunk["text"]

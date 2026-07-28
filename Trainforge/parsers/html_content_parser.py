@@ -202,8 +202,155 @@ class ParsedHTMLModule:
     source_references: List[Dict[str, Any]] = field(default_factory=list)
 
 
+# ---------------------------------------------------------------------------
+# Whitespace-correct text assembly
+# ---------------------------------------------------------------------------
+#
+# HTML tags are not word separators. ``<p>The result is <strong>79</strong>.</p>``
+# renders as ``The result is 79.`` — the ``</strong>`` boundary contributes
+# nothing, because the only whitespace in that markup is the space the author
+# typed after "is". The pre-``EXTRACTION_TEXT_CONTRACT_VERSION``-2 extractor
+# instead ``.strip()``-ed every text node and re-joined the pieces with a
+# single space, so every inline tag boundary FABRICATED a space and the text
+# came out ``The result is 79 .``.
+#
+# ``_TextAssembler`` fixes that at the point the text is assembled rather than
+# by squashing the finished string: whitespace that was in the source is
+# preserved (collapsed to one space, per the HTML white-space processing
+# model), an INLINE element boundary contributes nothing on its own, and a
+# BLOCK element boundary contributes a separator (blocks are not run together).
+# Structural delimiters (list-item / table-row newlines, the between-cell pipe,
+# the post-``<dt>`` colon) are emitted as explicit tokens carrying their own
+# spacing instead of relying on the join.
+#
+# The same assembler backs ``Trainforge/parsers/xpath_walker.py``, whose
+# per-element text must stay byte-identical to this extractor's — the chunker
+# locates a chunk's ``char_span`` by ``str.find``-ing the chunk text inside the
+# walker's container text (``Trainforge/chunker/chunker.py::_locate``), so the
+# two projections diverging silently fabricates spans.
+
+#: HTML elements that are inline by default. A boundary between one of these
+#: and its surroundings contributes NO separator — only the whitespace that is
+#: actually present in the markup does. Everything NOT listed here (including
+#: unknown / custom elements) is treated as a block boundary and DOES separate,
+#: which is the conservative direction: a spurious space is a cosmetic defect,
+#: while a spurious JOIN ("theresult") corrupts the token stream.
+_INLINE_TAGS = frozenset({
+    "a", "abbr", "acronym", "b", "bdi", "bdo", "big", "cite", "code", "data",
+    "del", "dfn", "em", "font", "i", "ins", "kbd", "label", "mark", "meter",
+    "nobr", "output", "q", "rp", "rt", "ruby", "s", "samp", "small", "span",
+    "strike", "strong", "sub", "sup", "time", "tt", "u", "var", "wbr",
+})
+
+#: Characters that already act as a separator at the tail of the emitted text,
+#: so a pending separator collapses into them instead of doubling up.
+_SEPARATOR_CHARS = (" ", "\n")
+
+
+class _TextAssembler:
+    """Assemble plain text from an HTML token stream, whitespace-correctly.
+
+    Three emission primitives:
+
+    - :meth:`add_data` — a raw text node. Internal whitespace runs collapse to
+      a single space; LEADING / TRAILING whitespace is not discarded but
+      recorded as a pending separator, so ``is <strong>`` keeps its space while
+      ``is<strong>`` does not gain one.
+    - :meth:`boundary` — a block-element edge. Requests a separator; never
+      introduces one at the very start of the document, and never doubles an
+      existing one.
+    - :meth:`literal` / :meth:`hard_break` — explicit structural delimiters.
+
+    The pending-separator flag (rather than appending space strings eagerly) is
+    what makes the output correct BY CONSTRUCTION: a separator materializes
+    only when real text follows it, so no trailing or doubled whitespace can
+    be emitted and no post-hoc squashing pass is needed.
+    """
+
+    __slots__ = ("_parts", "_pending_space")
+
+    def __init__(self) -> None:
+        self._parts: List[str] = []
+        self._pending_space = False
+
+    # -- emission ------------------------------------------------------
+    def add_data(self, data: str) -> None:
+        """Append a raw HTML text node."""
+        if not data:
+            return
+        collapsed = " ".join(data.split())
+        if not collapsed:
+            # Whitespace-only text node between two elements: it IS the
+            # separator (``<b>a</b> <b>b</b>``), and nothing else.
+            self.boundary()
+            return
+        if data[:1].isspace():
+            self.boundary()
+        self._flush_space()
+        self._parts.append(collapsed)
+        if data[-1:].isspace():
+            self._pending_space = True
+
+    def add_text(self, text: str) -> None:
+        """Append already-assembled text (e.g. a child element's result)."""
+        if not text:
+            return
+        if text[:1].isspace():
+            self.boundary()
+            text = text.lstrip()
+            if not text:
+                return
+        self._flush_space()
+        self._parts.append(text)
+        if text[-1:].isspace():
+            self._pending_space = True
+
+    def boundary(self) -> None:
+        """Request a separator (block-element edge)."""
+        if self._parts:
+            self._pending_space = True
+
+    def literal(self, token: str, *, tight: bool = False) -> None:
+        """Emit a structural delimiter token.
+
+        ``tight=True`` suppresses any pending separator first, so a delimiter
+        that belongs to the preceding word (the ``<dt>`` colon) attaches to it.
+        """
+        if tight:
+            self._pending_space = False
+        else:
+            self._flush_space()
+        self._parts.append(token)
+        self._pending_space = False
+
+    def hard_break(self, token: str = "\n") -> None:
+        """Emit a line break, absorbing any pending separator."""
+        self._pending_space = False
+        if not self._parts or self._parts[-1].endswith(token):
+            return
+        self._parts.append(token)
+
+    # -- internals -----------------------------------------------------
+    def _flush_space(self) -> None:
+        if not self._pending_space:
+            return
+        self._pending_space = False
+        if self._parts and self._parts[-1][-1:] not in _SEPARATOR_CHARS:
+            self._parts.append(" ")
+
+    def result(self) -> str:
+        return "".join(self._parts)
+
+
 class HTMLTextExtractor(HTMLParser):
     """Extract text content from HTML.
+
+    Whitespace contract (``EXTRACTION_TEXT_CONTRACT_VERSION`` 2, see
+    :class:`_TextAssembler`): source whitespace is preserved (collapsed to one
+    space), an inline-element boundary contributes no separator of its own, and
+    a block-element boundary does. ``<p>The result is <strong>79</strong>.</p>``
+    therefore extracts as ``The result is 79.`` rather than the contract-1
+    ``The result is 79 .``.
 
     Skips:
       - ``<script>`` and ``<style>`` subtrees (always).
@@ -231,7 +378,11 @@ class HTMLTextExtractor(HTMLParser):
 
     def __init__(self):
         super().__init__()
-        self.text_parts = []
+        # Whitespace-correct assembly (EXTRACTION_TEXT_CONTRACT_VERSION 2).
+        # Replaces the old ``list[str]`` of ``.strip()``-ed text nodes joined
+        # by a single space, which fabricated a separator at every inline tag
+        # boundary. See ``_TextAssembler``.
+        self._text = _TextAssembler()
         self.current_tag = None
         self.in_script = False
         self.in_style = False
@@ -251,12 +402,12 @@ class HTMLTextExtractor(HTMLParser):
         self._a11y_hidden_depth = 0
         # Exemplar-parity wave (A-item pairing): SemantiK now emits real
         # <ul>/<ol>/<table>/<dl> structural bodies (lib/semantik/structure_emit).
-        # A flat ``' '.join`` would collapse those back to a run-on string, so
-        # the extractor emits lightweight delimiter tokens on the structural
-        # boundaries — a newline per <li> / table row / <dd>, a " | " between
-        # table cells, and a ": " after each <dt> — so the chunk text keeps the
-        # list/table/definition structure signal. Count of cells seen in the
-        # current table row (drives the between-cell pipe).
+        # Block boundaries alone would collapse those to a space-separated
+        # run-on, so the extractor emits lightweight delimiter tokens on the
+        # structural boundaries — a newline per <li> / table row / <dd>, a
+        # " | " between table cells, and a ": " after each <dt> — so the chunk
+        # text keeps the list/table/definition structure signal. Count of cells
+        # seen in the current table row (drives the between-cell pipe).
         self._row_cell_count = 0
         # Harvested ``data-cf-curie`` tokens. The subtree text is discarded
         # (376b64f contract) but the CURIE values are kept so the downstream
@@ -318,18 +469,29 @@ class HTMLTextExtractor(HTMLParser):
             self.in_script = True
         elif tag == 'style':
             self.in_style = True
+        # An INLINE element edge contributes nothing — only the whitespace
+        # actually present in the markup separates its text from its
+        # neighbours'. Every other element (block, sectioning, unknown /
+        # custom) separates.
+        if tag not in _INLINE_TAGS:
+            self._text.boundary()
         # A-item pairing — structural delimiters so list/table/dl markup does not
         # collapse to a run-on string. A between-cell " | " on the 2nd+ cell of a
         # row; a row-separating newline on <tr>.
         if tag in ('td', 'th'):
             if self._row_cell_count > 0 and not self._in_skipped_region():
-                self.text_parts.append('|')
+                self._text.literal('|')
+                self._text.boundary()
             self._row_cell_count += 1
         elif tag == 'tr':
             self._row_cell_count = 0
             if not self._in_skipped_region():
-                self.text_parts.append('\n')
+                self._text.hard_break()
         if self._is_template_chrome(attrs):
+            # Elided content still separates what surrounds it — otherwise an
+            # INLINE skip wrapper (a sr-only <span>, the force-injected curie
+            # <span>) would fuse its neighbours into one token.
+            self._text.boundary()
             self._template_chrome_depth += 1
         if self._is_curie_anchor(attrs):
             # Harvest the CURIE tokens BEFORE the subtree-skip swallows the
@@ -348,8 +510,10 @@ class HTMLTextExtractor(HTMLParser):
             self.curie_anchors.extend(tokens)
             if forced_value.strip().lower() == "true":
                 self.forced_curie_anchors.update(tokens)
+            self._text.boundary()
             self._curie_anchor_depth += 1
         if self._is_a11y_hidden(attrs):
+            self._text.boundary()
             self._a11y_hidden_depth += 1
 
     def handle_endtag(self, tag):
@@ -357,9 +521,14 @@ class HTMLTextExtractor(HTMLParser):
         # chrome/curie/a11y depth decrements below so the skip state is current):
         # a newline per <li> and <dd>, a ": " after each <dt> ("term: definition").
         if tag in ('li', 'dd') and not self._in_skipped_region():
-            self.text_parts.append('\n')
+            self._text.hard_break()
         elif tag == 'dt' and not self._in_skipped_region():
-            self.text_parts.append(':')
+            # The colon belongs to the term ("index: the index of …"), so it
+            # attaches tight and the following definition gets the separator.
+            self._text.literal(':', tight=True)
+            self._text.boundary()
+        elif tag not in _INLINE_TAGS:
+            self._text.boundary()
         if tag == 'script':
             self.in_script = False
         elif tag == 'style':
@@ -373,6 +542,7 @@ class HTMLTextExtractor(HTMLParser):
         # corresponds to a currently-open chrome region.
         if self._template_chrome_depth > 0 and tag in _CHROME_TAGS:
             self._template_chrome_depth -= 1
+            self._text.boundary()
         # Close data-cf-curie scope when we see the matching end tag for a
         # curie-anchored element. Same html.parser limitation (no attrs on
         # endtag): force-injection emits the attribute on a ``<span>`` only
@@ -380,12 +550,14 @@ class HTMLTextExtractor(HTMLParser):
         # decrements on that tag name while inside a curie-anchor region.
         if self._curie_anchor_depth > 0 and tag in _CURIE_ANCHOR_TAGS:
             self._curie_anchor_depth -= 1
+            self._text.boundary()
         # Close screen-reader-only scope. Same html.parser limitation (no
         # attrs on endtag): SemantiK emits these labels on a leaf ``<p>`` /
         # ``<span>`` carrying only the label text, so the counter decrements
         # on those tag names while inside an a11y-hidden region.
         if self._a11y_hidden_depth > 0 and tag in _A11Y_HIDDEN_TAGS:
             self._a11y_hidden_depth -= 1
+            self._text.boundary()
         self.current_tag = None
 
     def handle_startendtag(self, tag, attrs):
@@ -397,6 +569,13 @@ class HTMLTextExtractor(HTMLParser):
         elif tag == 'style':
             self.in_style = True
             self.in_style = False
+        # A self-closing BLOCK-level element (``<br/>``, ``<hr/>``, ``<img/>``)
+        # still separates the text on either side of it; a self-closing inline
+        # element does not. ``html.parser`` routes these here INSTEAD of
+        # handle_starttag/handle_endtag, so the boundary must be emitted here
+        # too or ``a<br/>b`` would run together.
+        if tag not in _INLINE_TAGS:
+            self._text.boundary()
         # Chrome / curie-anchor self-closers are transient — a self-closing
         # element has no subtree, so the counters are unaffected.
 
@@ -409,12 +588,10 @@ class HTMLTextExtractor(HTMLParser):
             return
         if self._a11y_hidden_depth > 0:
             return
-        text = data.strip()
-        if text:
-            self.text_parts.append(text)
+        self._text.add_data(data)
 
     def get_text(self) -> str:
-        return ' '.join(self.text_parts)
+        return self._text.result()
 
     def get_curies(self) -> list[str]:
         """Return every ``data-cf-curie`` token harvested during parsing.
