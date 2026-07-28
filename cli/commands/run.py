@@ -260,6 +260,7 @@ def _build_workflow_params(
     skip_training: bool = False,
     with_training: bool = False,
     base_model: Optional[str] = None,
+    instruction_variants_per_chunk: Optional[int] = None,
     provider: Optional[str] = None,
     stop_after: Optional[str] = None,
     license_note: Optional[str] = None,
@@ -400,6 +401,18 @@ def _build_workflow_params(
     # documented precedence CLI flag > env > default.
     if base_model:
         params["base_model"] = base_model
+
+    # --instruction-variants-per-chunk: the number of instruction units the
+    # ``training_synthesis`` phase synthesizes per chunk.
+    # config/workflows.yaml::training_synthesis declares
+    # ``inputs_from: instruction_variants_per_chunk <-
+    # workflow_params.instruction_variants_per_chunk``. Recorded ONLY when
+    # explicitly passed: an absent key leaves the handler's own default of 1,
+    # so an unflagged run stays byte-identical.
+    if instruction_variants_per_chunk is not None:
+        params["instruction_variants_per_chunk"] = int(
+            instruction_variants_per_chunk
+        )
 
     # W1 Gap C (§2.3): thread the EXPLICIT run provider into params so the
     # runner's authoring-route fill (`_apply_authoring_route_env`) honors an
@@ -1076,6 +1089,23 @@ def _build_orchestrator(
     ),
 )
 @click.option(
+    "--instruction-variants-per-chunk",
+    "instruction_variants_per_chunk",
+    type=int,
+    default=None,
+    help=(
+        "Number of INSTRUCTION units the training_synthesis phase synthesizes "
+        "per chunk. Populates the ``instruction_variants_per_chunk`` workflow "
+        "param the phase's ``inputs_from`` block routes into "
+        "``synthesize_training``. Unset (the default) leaves the handler's own "
+        "default of 1, i.e. byte-identical to every run before this flag "
+        "existed. Raise it to 2+ when reject-mined DPO negatives are wanted: "
+        "mined yield is STRUCTURALLY ZERO at 1, because a chunk holding a "
+        "single instruction unit can never hold both an accepted anchor and a "
+        "rejected unit to pair it against. Values below 1 are rejected."
+    ),
+)
+@click.option(
     "--stop-after",
     "stop_after",
     default=None,
@@ -1173,6 +1203,7 @@ def run_command(
     skip_training: bool,
     with_training: bool,
     base_model: Optional[str],
+    instruction_variants_per_chunk: Optional[int],
     stop_after: Optional[str],
     license_note: Optional[str],
     attribution: Optional[str],
@@ -1250,6 +1281,19 @@ def run_command(
     # state on disk and never survives to a multi-hour training dispatch.
     # Delegates to the ONE registry the training handler validates against.
     _validate_base_model(base_model)
+    # Fail fast on a nonsensical variant count rather than silently clamping it
+    # to 1 deep inside run_synthesis (where an operator who asked for reject
+    # mining would get an empty pool and no explanation).
+    if (
+        instruction_variants_per_chunk is not None
+        and instruction_variants_per_chunk < 1
+    ):
+        click.secho(
+            "--instruction-variants-per-chunk must be >= 1 "
+            f"(got {instruction_variants_per_chunk}).",
+            fg="red",
+        )
+        sys.exit(2)
     effective_dart_output_dir = dart_output_dir or (
         DEFAULT_DART_OUTPUT_DIR if skip_dart else None
     )
@@ -1351,6 +1395,7 @@ def run_command(
         skip_training=skip_training,
         with_training=with_training,
         base_model=base_model,
+        instruction_variants_per_chunk=instruction_variants_per_chunk,
         stop_after=stop_after,
         license_note=license_note,
         attribution=attribution,

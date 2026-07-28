@@ -1166,6 +1166,88 @@ def _build_assessment_artifacts_from_data(
 # id is SKIPPED (never emits an unanchored assessment chunk).
 # ---------------------------------------------------------------------------
 
+def _qti_local_name(tag: Any) -> str:
+    """Local (namespace-stripped) element name."""
+    return tag.rsplit("}", 1)[-1] if isinstance(tag, str) and "}" in tag else str(tag)
+
+
+def _qti_scoring_respcondition(item_el: Any) -> Any:
+    """Return the ``<respcondition>`` that carries this item's ANSWER KEY.
+
+    Mirrors ``Courseforge/scripts/qti_emitter.py::_find_scoring_respcondition``
+    (the emitter-side single source of truth): the scoring condition is the one
+    that awards SCORE, i.e. the one carrying a ``<setvar>``. This distinction is
+    load-bearing, not cosmetic — with ``COURSEFORGE_QTI_ITEMFEEDBACK`` on, the
+    emitter appends one EXTRA feedback-only ``<respcondition continue="Yes">``
+    per DISTRACTOR (each with a ``<varequal>`` naming that distractor's ident and
+    a ``<displayfeedback>``). Collecting ``varequal`` from the whole
+    ``<resprocessing>`` subtree would therefore harvest the wrong answers
+    alongside the right one.
+
+    Fallback when no condition carries a ``setvar``: accept only conditions that
+    are demonstrably NOT feedback (no ``<displayfeedback>``) and that actually
+    assert a ``<varequal>``. That admits third-party QTI which omits ``setvar``
+    without ever admitting a targeted-feedback distractor condition. Returns
+    ``None`` for an ungraded item (essay / short answer emit no
+    ``<resprocessing>`` at all) — that item is legitimately keyless.
+    """
+    conditions = [
+        cond
+        for resp in item_el
+        if _qti_local_name(resp.tag) == "resprocessing"
+        for cond in resp
+        if _qti_local_name(cond.tag) == "respcondition"
+    ]
+    for cond in conditions:
+        if any(_qti_local_name(c.tag) == "setvar" for c in cond):
+            return cond
+    for cond in conditions:
+        if any(_qti_local_name(c.tag) == "displayfeedback" for c in cond):
+            continue
+        if any(_qti_local_name(v.tag) == "varequal" for v in cond.iter()):
+            return cond
+    return None
+
+
+def _qti_collect_varequal(node: Any) -> List[Tuple[str, bool]]:
+    """Collect ``(value, requires_all)`` from a ``<conditionvar>`` subtree.
+
+    * ``<and>`` groups a MULTI-answer key (every listed value is part of the
+      correct response) -> ``requires_all=True``.
+    * ``<or>`` (and bare ``<varequal>`` siblings) group ALTERNATIVE accepted
+      forms of one answer -> ``requires_all=False``.
+    * ``<not>`` NEGATES its subtree: a value under it names something that must
+      NOT be selected, i.e. a WRONG answer. Those are dropped outright —
+      emitting one as the key would be exactly the plausible-but-wrong answer
+      the anti-fabrication rule forbids.
+
+    Unknown intermediate elements are recursed through (a namespace-agnostic
+    walk must not be defeated by an unrecognised wrapper).
+    """
+    out: List[Tuple[str, bool]] = []
+
+    def walk(el: Any, negated: bool, requires_all: bool) -> None:
+        for child in el:
+            name = _qti_local_name(child.tag)
+            if name == "not":
+                walk(child, True, requires_all)
+            elif name == "and":
+                walk(child, negated, True)
+            elif name == "or":
+                walk(child, negated, False)
+            elif name == "varequal":
+                value = (child.text or "").strip()
+                if value and not negated:
+                    out.append((value, requires_all))
+            else:
+                walk(child, negated, requires_all)
+
+    for cond_var in node:
+        if _qti_local_name(cond_var.tag) == "conditionvar":
+            walk(cond_var, False, False)
+    return out
+
+
 def _parse_qti_assessment_items(
     xml_text: str,
 ) -> Tuple[str, List[Dict[str, Any]]]:
@@ -1177,11 +1259,36 @@ def _parse_qti_assessment_items(
     ``choice_texts`` (response_label mattexts, document order). A non-QTI
     root (imsdt topic / assignment) or a parse error returns ``("", [])`` —
     the caller simply harvests nothing from that document.
+
+    ANSWER KEY (the fix for ``assessment_answer_key_missing``): the answer is
+    already IN the emitted QTI and was previously discarded. Each item
+    additionally carries:
+
+    * ``choices`` — ``[{"ident": ..., "html": ...}]`` in document order. The
+      per-choice ``@ident`` is what makes the key resolvable at all; the old
+      ``choice_texts``-only shape threw it away.
+    * ``answer_idents`` — the scoring ``<varequal>`` values that MATCH a
+      ``response_label/@ident``. Empty for a fill-in item (which has no
+      response labels) and for an ungraded item.
+    * ``answer_html`` — the resolved answer as authored. For a CHOICE item that
+      is the matched label's own material (ident -> choice text). For a
+      ``response_str``/``render_fib`` item there are no labels and the
+      ``<varequal>`` text IS the literal accepted answer string, so it is taken
+      verbatim.
+    * ``answer_match_rule`` — ``"all_of"`` when the key is an ``<and>`` group
+      (multi-select), else ``"any_of"`` (a single answer, or the ``<or>`` list of
+      accepted forms a pattern-match fill-in emits).
+    * ``unresolved_answer_idents`` — scoring ``<varequal>`` values on an item
+      that HAS response labels but which match no label ident. That combination
+      is a real parse/emit bug and the caller reports it loudly; it never
+      degrades into a guessed answer.
+
+    An item with no ``<resprocessing>`` at all (essay / short answer) is
+    legitimately keyless and stays keyless — no answer is invented for it.
     """
     import xml.etree.ElementTree as _ET
 
-    def _local(tag: Any) -> str:
-        return tag.rsplit("}", 1)[-1] if isinstance(tag, str) and "}" in tag else str(tag)
+    _local = _qti_local_name
 
     try:
         root = _ET.fromstring(xml_text)
@@ -1199,25 +1306,65 @@ def _parse_qti_assessment_items(
         elif lt == "item":
             stem_html = ""
             choice_texts: List[str] = []
+            choices: List[Dict[str, str]] = []
             label_matt_ids: set = set()
             for lab in el.iter():
                 if _local(lab.tag) != "response_label":
                     continue
+                label_texts: List[str] = []
                 for m in lab.iter():
                     if _local(m.tag) == "mattext":
                         label_matt_ids.add(id(m))
                         if m.text and m.text.strip():
                             choice_texts.append(m.text.strip())
+                            label_texts.append(m.text.strip())
+                choices.append({
+                    "ident": (lab.get("ident") or "").strip(),
+                    "html": "\n".join(label_texts),
+                })
             for m in el.iter():
                 if _local(m.tag) == "mattext" and id(m) not in label_matt_ids:
                     if m.text and m.text.strip():
                         stem_html = m.text.strip()
                         break
+
+            # ---- answer key ------------------------------------------------
+            html_by_ident = {
+                c["ident"]: c["html"] for c in choices if c["ident"]
+            }
+            scoring = _qti_scoring_respcondition(el)
+            key_values = (
+                _qti_collect_varequal(scoring) if scoring is not None else []
+            )
+            answer_idents: List[str] = []
+            answer_html: List[str] = []
+            unresolved: List[str] = []
+            requires_all = False
+            for value, value_requires_all in key_values:
+                requires_all = requires_all or value_requires_all
+                if value in html_by_ident:
+                    answer_idents.append(value)
+                    answer_html.append(html_by_ident[value])
+                elif choices:
+                    # The item declares response labels, so a scoring varequal
+                    # is supposed to name one of them. It named nothing we
+                    # know -> real bug; surfaced by the caller, never guessed.
+                    unresolved.append(value)
+                else:
+                    # response_str / render_fib: there are no labels and the
+                    # varequal text IS the accepted answer string.
+                    answer_html.append(value)
+
             items.append({
                 "ident": (el.get("ident") or "").strip(),
                 "objective_ref": (el.get("title") or "").strip(),
                 "stem_html": stem_html,
                 "choice_texts": choice_texts,
+                "choices": choices,
+                "answer_idents": answer_idents,
+                "answer_html": answer_html,
+                "answer_match_rule": "all_of" if requires_all else "any_of",
+                "unresolved_answer_idents": unresolved,
             })
     return title, items
 
@@ -1322,6 +1469,7 @@ def _harvest_qti_assessment_chunks(
             continue
         doc_stem = Path(inner_path).stem.lower().replace(" ", "-")
         skipped_unanchored = 0
+        unresolved_items = 0
         for pos, qti_item in enumerate(items):
             obj_ref = qti_item.get("objective_ref") or ""
             probe_item = {"objective_refs": [obj_ref]}
@@ -1346,6 +1494,40 @@ def _harvest_qti_assessment_chunks(
             if not text:
                 skipped_unanchored += 1
                 continue
+
+            # ---- answer key ------------------------------------------------
+            # A scoring <varequal> on an item that DECLARES response labels but
+            # names none of them is a real parse/emit bug, not a keyless item.
+            # Report it at ERROR with the full diagnostic (item ident,
+            # unmatched values, the idents that DO exist) rather than swallowing
+            # it. It is deliberately NOT raised: the harvest contract is
+            # per-item fail-soft, and aborting a multi-hour build over one
+            # malformed item would trade a loud log for a lost run. The item is
+            # left keyless — no answer is fabricated for it.
+            unresolved_values = qti_item.get("unresolved_answer_idents") or []
+            if unresolved_values:
+                unresolved_items += 1
+                logger.error(
+                    "qti-assessment-chunk harvest: item %r in %s has a "
+                    "resprocessing answer key naming %r, which matches NO "
+                    "response_label ident (known idents: %r). This is a QTI "
+                    "parse/emit bug — the item is left WITHOUT an answer key "
+                    "(never a guessed one) and will be excluded from training "
+                    "pair synthesis.",
+                    qti_item.get("ident"), inner_path, unresolved_values,
+                    [c.get("ident") for c in qti_item.get("choices") or []],
+                )
+            answer_texts: List[str] = []
+            for raw_answer in qti_item.get("answer_html") or []:
+                projected = _qti_plain_text(
+                    raw_answer, extractor=_harvest_plain_text,
+                )
+                # A literal fill-in answer (e.g. a bare number) survives the
+                # projection unchanged; fall back to the raw value only when the
+                # projection empties it, so a key is never silently dropped.
+                answer_texts.append(projected or str(raw_answer).strip())
+            answer_texts = [a for a in answer_texts if a]
+
             item_dict: Dict[str, Any] = {
                 "item_id": doc_stem,
                 "item_path": inner_path,
@@ -1393,7 +1575,61 @@ def _harvest_qti_assessment_chunks(
                 # SFT-source / answer paths exclude them by default (the
                 # assessment_sft_generator's grounding filter refuses to source
                 # any chunk carrying this marker).
+                #
+                # This marker is about GROUNDING, not about eligibility: it stops
+                # a verbatim publisher exercise from being cited as the SOURCE
+                # PASSAGE another pair is grounded in. That remains correct
+                # whether or not the item has a verified answer key, so it is
+                # left unconditional. It is also not what blocks these chunks
+                # from pair synthesis — nothing on the run_synthesis /
+                # pair_eligibility path reads ``practice_bank``, and
+                # ``assessment_sft_generator._is_practice_bank`` already
+                # excludes on ``chunk_type == "assessment_item"`` independently
+                # of the flag, so conditioning it would change no behavior at
+                # all.
                 chunk["practice_bank"] = True
+                # Stamp the recovered QTI answer key. ``correct_answer`` is the
+                # field name chosen from the four
+                # ``Trainforge/synthesis_eligibility.py::pair_eligibility``
+                # accepts, because it is the name the rest of the project
+                # already uses for "the correct answer text of ONE item" (the
+                # assessment generator's own field, the QTI emitter's input,
+                # and the item-level validators in ``lib/validators/``).
+                # ``answer_key`` here would collide with the established
+                # meaning of the instructor answer-key DOCUMENT
+                # (``answer_key.json`` / block-level ``content["answer_key"]``),
+                # and ``reference_answer`` / ``assessment_answer`` have no
+                # producer anywhere in the tree.
+                #
+                # Absent an answer (an essay / short-answer item emits no
+                # resprocessing) NOTHING is stamped: the chunk stays keyless and
+                # correctly stays ineligible, rather than carrying an invented
+                # key.
+                if answer_texts:
+                    # Kept a STRING for type stability (every existing
+                    # ``correct_answer`` producer/consumer in the tree is
+                    # scalar). The exact per-value list rides
+                    # ``correct_answers`` and its semantics ride
+                    # ``answer_match_rule``, so joining loses nothing.
+                    chunk["correct_answer"] = (
+                        answer_texts[0] if len(answer_texts) == 1
+                        else "; ".join(answer_texts)
+                    )
+                    chunk["correct_answers"] = list(answer_texts)
+                    # ``answer_match_rule`` disambiguates a multi-valued key:
+                    # "all_of" = a multi-select whose values are jointly the
+                    # answer; "any_of" = alternative accepted forms of one
+                    # answer (what a pattern-match fill-in emits).
+                    chunk["answer_match_rule"] = str(
+                        qti_item.get("answer_match_rule") or "any_of"
+                    )
+                    chunk["answer_key_source"] = "qti_resprocessing"
+                    answer_idents = list(qti_item.get("answer_idents") or [])
+                    if answer_idents:
+                        # The response_label @ident(s) the key resolved through
+                        # — kept alongside the text so the resolution is
+                        # auditable against the source QTI.
+                        chunk["correct_answer_idents"] = answer_idents
                 out.append(chunk)
                 next_idx += 1
         if skipped_unanchored:
@@ -1401,6 +1637,14 @@ def _harvest_qti_assessment_chunks(
                 "qti-assessment-chunk harvest: skipped %d unanchored/empty "
                 "item(s) in %s (no canonical LO ref on <item title>).",
                 skipped_unanchored, inner_path,
+            )
+        if unresolved_items:
+            logger.error(
+                "qti-assessment-chunk harvest: %d item(s) in %s carry a "
+                "resprocessing answer key that resolves to no known "
+                "response_label ident. Those items are keyless and will not "
+                "yield training pairs; fix the QTI emit or the parse.",
+                unresolved_items, inner_path,
             )
     return out
 
@@ -8375,6 +8619,7 @@ def register_pipeline_tools(mcp):
         with_schema_translation: bool = False,
         schema_translation_max_pairs: int = 50,
         required_training: bool = False,
+        instruction_variants_per_chunk: int = 1,
     ) -> str:
         """Generate SFT + DPO training pairs from a Trainforge corpus.
 
@@ -8441,6 +8686,12 @@ def register_pipeline_tools(mcp):
                 artifacts are non-empty. The workflow sets this from the
                 explicit ``with_training`` operator opt-in; false preserves
                 the legacy optional synthesis behavior.
+            instruction_variants_per_chunk: Instruction units synthesized
+                per chunk (default 1 = byte-identical legacy behavior).
+                Reject-mined DPO negatives
+                (``Trainforge/synthesis_reject_mining.py``) have
+                structurally zero yield below 2, since one unit per chunk
+                cannot hold both an accepted anchor and a rejected unit.
 
         Returns:
             JSON with ``success``, the two output paths, and a stats
@@ -8500,6 +8751,9 @@ def register_pipeline_tools(mcp):
                 abstention_max_pairs=abstention_max_pairs,
                 with_schema_translation=with_schema_translation,
                 schema_translation_max_pairs=schema_translation_max_pairs,
+                instruction_variants_per_chunk=max(
+                    1, int(instruction_variants_per_chunk or 1)
+                ),
             )
         except GracefulStopRequested:
             # A graceful stop is a PAUSE, not a failure — propagate it AS-IS so
@@ -26657,6 +26911,24 @@ def _build_tool_registry() -> dict:
         schema_translation_max_pairs = int(
             kwargs.get("schema_translation_max_pairs", 50)
         )
+        # Number of INSTRUCTION units synthesized per chunk. Default 1 =
+        # byte-identical to every run before this kwarg was plumbed. It is
+        # routed here (not only through the standalone
+        # ``Trainforge/synthesize_training.py`` argparse flag) because
+        # reject-mined DPO negatives (``Trainforge/synthesis_reject_mining.py``)
+        # have STRUCTURALLY ZERO yield below 2: a chunk with one instruction
+        # unit can never hold both an accepted anchor and a rejected unit, so
+        # the documented shadow-measurement path was unreachable from
+        # ``ed4all run``. Parse-with-fallback: garbage / non-positive -> 1
+        # (``run_synthesis`` additionally clamps with ``max(1, ...)``).
+        try:
+            instruction_variants_per_chunk = int(
+                kwargs.get("instruction_variants_per_chunk") or 1
+            )
+        except (TypeError, ValueError):
+            instruction_variants_per_chunk = 1
+        if instruction_variants_per_chunk < 1:
+            instruction_variants_per_chunk = 1
 
         try:
             from Trainforge.synthesize_training import (
@@ -26689,6 +26961,7 @@ def _build_tool_registry() -> dict:
                 abstention_max_pairs=abstention_max_pairs,
                 with_schema_translation=with_schema_translation,
                 schema_translation_max_pairs=schema_translation_max_pairs,
+                instruction_variants_per_chunk=instruction_variants_per_chunk,
             )
         except GracefulStopRequested:
             # A graceful stop is a PAUSE, not a failure — propagate it AS-IS so

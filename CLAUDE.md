@@ -106,6 +106,17 @@ ed4all objectives restructure \
 ed4all run textbook-to-course --corpus pdfs/ --course-name PHYS_101 \
   --reuse-conversion
 
+# --instruction-variants-per-chunk N: how many INSTRUCTION units the
+# training_synthesis phase synthesizes per chunk. Default 1 (unset = the
+# key is not even recorded, so behavior is byte-identical). Raise to 2+
+# when reject-mined DPO negatives are wanted — mined yield is
+# STRUCTURALLY ZERO at 1, since a chunk holding one instruction unit can
+# never hold both an accepted anchor and a rejected unit to pair it
+# against. Routed via workflow_params ->
+# config/workflows.yaml::training_synthesis.inputs_from -> run_synthesis.
+ed4all run textbook-to-course --corpus pdfs/ --course-name PHYS_101 \
+  --instruction-variants-per-chunk 2
+
 # Phase 5: stage-by-stage Courseforge two-pass subcommands — re-run a
 # single tier against an existing export (upstream phases pre-populate
 # from disk). See Courseforge/CLAUDE.md "Operator stage subcommands".

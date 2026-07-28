@@ -497,6 +497,10 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "with_schema_translation",
             "schema_translation_max_pairs",
             "required_training",
+            # Instruction units synthesized per chunk. Default 1 keeps every
+            # existing dispatch byte-identical; >=2 is the precondition for
+            # reject-mined DPO negatives to have any yield at all.
+            "instruction_variants_per_chunk",
         ],
         "defaults": {
             "provider": "mock",
@@ -512,6 +516,7 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "with_schema_translation": False,
             "schema_translation_max_pairs": 50,
             "required_training": False,
+            "instruction_variants_per_chunk": 1,
         },
         "param_mapping": {
             # Corpus dir aliases — registry variant accepts any of these
