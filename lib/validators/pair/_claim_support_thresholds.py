@@ -26,6 +26,7 @@ __all__ = [
     "_CONTENT_TOKEN_RE",
     "_DART_DISAGREEMENT_RATE_WARN_CEILING",
     "_DEFAULT_CONTRADICTION_FLOOR",
+    "_DEFAULT_CONTRADICTION_MAX_ENTAILMENT",
     "_DEFAULT_DART_CONTRADICTION_FLOOR",
     "_DEFAULT_ENTAILMENT_FLOOR",
     "_DEFAULT_MAX_CONTRADICTED_RATE",
@@ -48,6 +49,34 @@ _DEFAULT_ENTAILMENT_FLOOR: float = 0.70
 #: Per-claim contradiction floor — sentences at or above this
 #: contradiction score are considered "contradicted" by the cited chunk.
 _DEFAULT_CONTRADICTION_FLOOR: float = 0.50
+
+#: Per-claim entailment CEILING for the ``contradicted`` bucket: a sentence is
+#: only contradicted when contradiction clears the floor above AND entailment
+#: is below this. The contradiction head fires spuriously on long textbook
+#: premises — measured on real accepted pairs, entailment 0.989 coexisted with
+#: contradiction 0.825, 0.984 with 0.720, 0.975 with 0.516, 0.823 with 0.502.
+#: Those survived only because ``entailed`` is bucketed before ``contradicted``,
+#: which made the bucketing a trapdoor: a sentence carrying the same spurious
+#: contradiction while dipping just under the 0.70 entailment floor fell
+#: straight into ``contradicted``, whose 0.05 rate ceiling rejects a whole pair
+#: on one sentence. The adjudicated casualty scored entailment 0.406 /
+#: contradiction 0.549 while restating two sentences the same premise entailed
+#: at 0.998 each.
+#:
+#: 0.25 is chosen as follows. The casualty bounds the value from ABOVE at
+#: 0.406 — any higher and the evidenced error is not fixed — and 0.25 leaves
+#: ~0.15 of absolute margin there, comfortably beyond the low-order variation
+#: batched NLI scoring introduces. From BELOW it is bounded by wanting a
+#: genuine contradiction to still register: a decisive contradiction puts
+#: near-zero mass on entailment, so 0.25 (a quarter of the 3-way softmax
+#: assigned to the exact OPPOSITE relation) is already well past "the model is
+#: torn", not merely past numerical noise.
+#:
+#: This only ever moves a sentence from ``contradicted`` to ``unsupported``.
+#: It cannot make anything ``entailed`` — it sits far below the untouched 0.70
+#: entailment floor — and the moved sentence is still counted against the
+#: unsupported ceiling, so nothing is made permissible.
+_DEFAULT_CONTRADICTION_MAX_ENTAILMENT: float = 0.25
 
 #: Per-pair unsupported_claim_rate ceiling.
 _DEFAULT_MAX_UNSUPPORTED_RATE: float = 0.20
@@ -111,8 +140,10 @@ _CODE_EVIDENCE_CHAR_SPAN_MISMATCH: str = "EVIDENCE_CHAR_SPAN_MISMATCH"
 _CODE_EVIDENCE_QUOTE_MISSING: str = "EVIDENCE_QUOTE_MISSING"
 
 
-#: Sentence-split regex.
-_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+#: Atomic-claim split regex. Semicolons commonly join independent factual
+#: clauses in locally synthesized completions; treating the compound as one
+#: hypothesis can dilute two individually entailed claims below the NLI floor.
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?;])\s+")
 
 #: Word-token regex for sentence-length filtering.
 _CONTENT_TOKEN_RE = re.compile(r"[a-zA-Z]{2,}", re.UNICODE)

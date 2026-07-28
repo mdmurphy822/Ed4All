@@ -18,6 +18,7 @@ Coverage:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -240,6 +241,7 @@ def test_accept_path_instruction_clean_pair():
     )
     assert status == "validated"
     assert reason is None
+    assert new_fields["promotion_status"] == "validated"
     assert "answer_support_score" in new_fields
     assert new_fields["observed_bloom"] == "remember"
     assert new_fields["bloom_alignment"] is True
@@ -373,6 +375,271 @@ def test_reject_unsupported_answer():
     assert len(capture.events) == 1
 
 
+def _authoritative_claim_pair(
+    realizations: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Canary-027-shaped complete staged proof with generic content."""
+    values = realizations or [
+        (
+            "When objects travel in opposite directions, the distance "
+            "between them increases by adding how far each has moved."
+        )
+    ]
+    ids = [f"claim-{index}" for index in range(len(values))]
+    chosen = " ".join(values)
+    private_sha = "a" * 64
+    pair = _preference_pair(
+        prompt="Analyze the source-grounded relationship and explain it.",
+        chosen=chosen,
+        rejected="The quantities must always be subtracted.",
+    )
+    pair.update(
+        {
+            "projection_contract": "ed4all-dpo-preference.v2",
+            "deps_missing": False,
+            "claim_support_rate": 1.0,
+            "claim_contradicted_rate": 0.0,
+            "synthesis_plan_sha256": private_sha,
+            "per_claim_support": [
+                {
+                    "sentence": value,
+                    "outcome": "entailed",
+                    "entailment": 0.79,
+                    "contradiction": 0.15,
+                }
+                for value in values
+            ],
+            "provenance": {
+                "source_chunk_id": pair["source_chunk_id"],
+                "source_refs": ["generic-source#section"],
+                "synthesis_plan_sha256": private_sha,
+                "claim_realizations": dict(zip(ids, values)),
+                "assembled_realization": {
+                    "contract_version": (
+                        "ed4all.micro-stage-d-claim-realizations.v3"
+                    ),
+                    "ordered_claim_ids": ids,
+                    "item_sha256": [
+                        hashlib.sha256(value.encode()).hexdigest()
+                        for value in values
+                    ],
+                    "assembled_sha256": hashlib.sha256(
+                        chosen.encode()
+                    ).hexdigest(),
+                    "private_artifact_sha256": private_sha,
+                },
+            },
+        }
+    )
+    assembly = pair["provenance"]["assembled_realization"]
+    assembly["provenance_sha256"] = hashlib.sha256(
+        json.dumps(
+            assembly, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode()
+    ).hexdigest()
+    provenance = pair["provenance"]
+    provenance["provenance_sha256"] = hashlib.sha256(
+        json.dumps(
+            provenance, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode()
+    ).hexdigest()
+    return pair
+
+
+def test_canary027_complete_claim_proof_supersedes_only_low_lexical_support():
+    capture = _RecordingCapture()
+    pair = _authoritative_claim_pair()
+    validator = TrainingPairPromotionValidator(
+        embedder=None,
+        bloom_classifier=_StubBloomEnsemble(level="understand", score=0.1),
+        min_answer_support_score=0.40,
+    )
+    status, reason, fields = validator.validate_pair(
+        pair, kind="preference", chunk=_chunk(), decision_capture=capture,
+    )
+    assert fields["answer_support_score"] < 0.40
+    assert status == "validated"
+    assert reason is None
+    metrics = capture.events[0]["metrics"]
+    assert metrics["answer_support_outcome"] == "below_floor_superseded"
+    assert metrics["answer_support_authority"]["claim_count"] == 1
+    assert len(
+        metrics["answer_support_authority"]["proof_sha256"]
+    ) == 64
+    assert metrics["answer_support_authority"]["ordered_claim_ids"] == pair[
+        "provenance"
+    ]["assembled_realization"]["ordered_claim_ids"]
+    assert metrics["answer_support_authority"]["assembled_sha256"] == pair[
+        "provenance"
+    ]["assembled_realization"]["assembled_sha256"]
+    assert set(fields).isdisjoint(
+        {"answer_support_outcome", "answer_support_authority"}
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing_proof",
+        "unsupported_claim",
+        "contradiction",
+        "operator_polarity",
+        "numeric_drift",
+        "stale_item_hash",
+        "stale_assembled_hash",
+        "stale_private_hash",
+        "source_mismatch",
+        "missing_source_ref",
+        "substituted_source_ref",
+        "assembly_contract_drift",
+        "nonfinite_entailment",
+        "boolean_contradiction",
+        "deps_missing",
+    ],
+)
+def test_incomplete_or_tampered_claim_proof_cannot_supersede(
+    mutation: str,
+):
+    pair = _authoritative_claim_pair()
+    proof = pair["per_claim_support"][0]
+    assembly = pair["provenance"]["assembled_realization"]
+    if mutation == "missing_proof":
+        pair.pop("per_claim_support")
+    elif mutation == "unsupported_claim":
+        proof["outcome"] = "unsupported"
+        proof["entailment"] = 0.1
+    elif mutation == "contradiction":
+        proof["outcome"] = "contradicted"
+        proof["contradiction"] = 0.8
+        pair["claim_contradicted_rate"] = 1.0
+    elif mutation in {"operator_polarity", "numeric_drift"}:
+        suffix = (
+            " The values must be subtracted."
+            if mutation == "operator_polarity"
+            else " The result is 47."
+        )
+        pair["chosen"] += suffix
+    elif mutation == "stale_item_hash":
+        assembly["item_sha256"][0] = "b" * 64
+    elif mutation == "stale_assembled_hash":
+        assembly["assembled_sha256"] = "b" * 64
+    elif mutation == "stale_private_hash":
+        pair["synthesis_plan_sha256"] = "b" * 64
+    elif mutation == "source_mismatch":
+        pair["provenance"]["source_chunk_id"] = "other-source"
+    elif mutation == "missing_source_ref":
+        pair["provenance"]["source_refs"] = []
+    elif mutation == "substituted_source_ref":
+        pair["provenance"]["source_refs"] = ["other-source#section"]
+    elif mutation == "assembly_contract_drift":
+        assembly["contract_version"] = "ed4all.micro-stage-d-claim-realizations.v2"
+    elif mutation == "nonfinite_entailment":
+        proof["entailment"] = float("nan")
+    elif mutation == "boolean_contradiction":
+        proof["contradiction"] = False
+    elif mutation == "deps_missing":
+        pair["deps_missing"] = True
+    validator = TrainingPairPromotionValidator(
+        embedder=None,
+        bloom_classifier=_StubBloomEnsemble(level="understand", score=0.1),
+        min_answer_support_score=0.40,
+    )
+    status, reason, fields = validator.validate_pair(
+        pair, kind="preference", chunk=_chunk(),
+    )
+    assert fields["answer_support_score"] < 0.40
+    assert (status, reason) == ("rejected", "unsupported_answer")
+    assert fields["promotion_status"] == "rejected"
+
+
+def test_complete_multi_sentence_claim_mapping_is_required_in_order():
+    pair = _authoritative_claim_pair(
+        [
+            "A grounded first relation is established.",
+            "A grounded second relation follows from it.",
+        ]
+    )
+    validator = TrainingPairPromotionValidator(
+        embedder=None,
+        bloom_classifier=_StubBloomEnsemble(level="understand", score=0.1),
+        min_answer_support_score=0.99,
+    )
+    capture = _RecordingCapture()
+    status, reason, fields = validator.validate_pair(
+        pair, kind="preference", chunk=_chunk(), decision_capture=capture,
+    )
+    assert status == "validated"
+    assert reason is None
+    assert capture.events[0]["metrics"]["answer_support_authority"][
+        "claim_count"
+    ] == 2
+
+    pair["per_claim_support"].reverse()
+    capture = _RecordingCapture()
+    status, reason, fields = validator.validate_pair(
+        pair, kind="preference", chunk=_chunk(), decision_capture=capture,
+    )
+    assert capture.events[0]["metrics"]["answer_support_authority"] is None
+    assert (status, reason) == ("rejected", "unsupported_answer")
+
+
+def test_post_write_audit_recomputes_superseding_authority(tmp_path: Path):
+    pair = _authoritative_claim_pair()
+    validator = TrainingPairPromotionValidator(
+        embedder=None,
+        bloom_classifier=_StubBloomEnsemble(level="understand", score=0.1),
+        min_answer_support_score=0.40,
+    )
+    status, reason, fields = validator.validate_pair(
+        pair, kind="preference", chunk=_chunk(),
+    )
+    assert (status, reason) == ("validated", None)
+    pair.update(fields)
+    pair["promotion_status"] = status
+    path = tmp_path / "preference_pairs.jsonl"
+    path.write_text(json.dumps(pair) + "\n", encoding="utf-8")
+    result = validator.validate({"preference_pairs_path": str(path)})
+    assert result.passed is True
+
+    pair["provenance"]["assembled_realization"]["item_sha256"][0] = "f" * 64
+    path.write_text(json.dumps(pair) + "\n", encoding="utf-8")
+    result = validator.validate({"preference_pairs_path": str(path)})
+    assert result.passed is False
+    assert result.issues[0].code == "INVALID_ANSWER_SUPPORT_AUTHORITY"
+
+
+def test_promotion_preserves_complete_objective_bloom_projection():
+    pair = _authoritative_claim_pair()
+    pair["bloom_level"] = "analyze"
+    pair["lo_refs"] = ["co-generic"]
+    pair["bloom_alignment"] = None
+    pair["pair_objective_alignment_pass_rate"] = 1.0
+    pair["pair_objective_alignment"] = [{
+        "objective_id": "co-generic",
+        "status": "delivered",
+        "statement_entailment_score": 0.78,
+        "contradiction_score": 0.10,
+        "bloom_gap": 0,
+        "verb_match_count": 1,
+        "declared_bloom": "analyze",
+        "observed_bloom": "analyze",
+        "entailment_threshold": 0.45,
+    }]
+    validator = TrainingPairPromotionValidator(
+        embedder=None,
+        bloom_classifier=_StubBloomEnsemble(level="apply", score=0.1),
+    )
+    status, reason, fields = validator.validate_pair(
+        pair, kind="preference", chunk=_chunk(),
+    )
+    assert (status, reason) == ("validated", None)
+    assert fields["promotion_status"] == "validated"
+    assert fields["observed_bloom"] == "analyze"
+    assert fields["bloom_alignment"] is None
+
+
 def test_reject_weak_distractor():
     """Criterion 3 — chosen / rejected too close (preference only).
 
@@ -415,19 +682,19 @@ def test_reject_weak_distractor():
 def test_reject_low_bloom_alignment():
     """Criterion 6 — ensemble disagrees + winner score above floor."""
     capture = _RecordingCapture()
-    # Stub ensemble winner is "create" but the pair declares "remember".
+    # Stub classifier observes "remember" below the declared "create".
     v = TrainingPairPromotionValidator(
         embedder=_StubEmbedder(),
-        bloom_classifier=_StubBloomEnsemble(level="create", score=0.80),
+        bloom_classifier=_StubBloomEnsemble(level="remember", score=0.80),
     )
-    pair = _instruction_pair(bloom_level="remember")
+    pair = _instruction_pair(bloom_level="create")
     status, reason, new_fields = v.validate_pair(
         pair, kind="instruction", chunk=_chunk(),
         decision_capture=capture,
     )
     assert status == "rejected"
     assert reason == "low_bloom_alignment"
-    assert new_fields["observed_bloom"] == "create"
+    assert new_fields["observed_bloom"] == "remember"
     assert new_fields["bloom_alignment"] is False
     assert len(capture.events) == 1
 
@@ -441,9 +708,9 @@ def test_low_bloom_below_confidence_floor_does_not_reject():
     capture = _RecordingCapture()
     v = TrainingPairPromotionValidator(
         embedder=_StubEmbedder(),
-        bloom_classifier=_StubBloomEnsemble(level="create", score=0.30),
+        bloom_classifier=_StubBloomEnsemble(level="remember", score=0.30),
     )
-    pair = _instruction_pair(bloom_level="remember")
+    pair = _instruction_pair(bloom_level="create")
     status, reason, new_fields = v.validate_pair(
         pair, kind="instruction", chunk=_chunk(),
         decision_capture=capture,
@@ -451,9 +718,28 @@ def test_low_bloom_below_confidence_floor_does_not_reject():
     assert status == "validated"
     assert reason is None
     # Stamps land regardless of pass/fail.
-    assert new_fields["observed_bloom"] == "create"
-    assert new_fields["bloom_alignment"] is False
+    assert new_fields["observed_bloom"] == "remember"
+    assert new_fields["bloom_alignment"] is None
     assert len(capture.events) == 1
+
+
+def test_higher_observed_bloom_satisfies_declared_minimum():
+    """Evaluate-level delivery satisfies an apply-level objective."""
+    capture = _RecordingCapture()
+    v = TrainingPairPromotionValidator(
+        embedder=_StubEmbedder(),
+        bloom_classifier=_StubBloomEnsemble(level="evaluate", score=0.95),
+    )
+    pair = _instruction_pair(bloom_level="apply")
+    status, reason, new_fields = v.validate_pair(
+        pair, kind="instruction", chunk=_chunk(),
+        decision_capture=capture,
+    )
+
+    assert status == "validated"
+    assert reason is None
+    assert new_fields["observed_bloom"] == "evaluate"
+    assert new_fields["bloom_alignment"] is True
 
 
 def test_reject_generic_rationale():

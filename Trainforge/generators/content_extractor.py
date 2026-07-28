@@ -43,8 +43,18 @@ _BARE_INTEGER_ONLY = re.compile(r"^\s*\d+\s*$")
 # code. Publisher-SPECIFIC exercise banners ("Practice Makes Perfect", …) are
 # DATA, loaded from the shared apparatus lexicon by ``_apparatus_banner_re``
 # (owner rule: publisher vocab = data-driven lexicons, never hardcoded).
+#
+# ``Show answer`` is one member of a synonym family the same authoring surface
+# emits interchangeably ("Show answer" / "Show solution" / "Show work" /
+# "Show steps"); a colon never accompanies any of them, so a colon-anchored
+# rule cannot see them. Matching the family rather than the single phrase
+# closes the leak that shipped "Show solution The opposite of 7 is -7 …" as a
+# true/false stem. Capitalised ``Show`` is required (the pattern is
+# case-SENSITIVE), so mid-sentence prose — "the graph will show solution
+# sets" — is untouched.
 _APPARATUS_RE = re.compile(
-    r"\b(?:Solution\s*:|Check\s*:|Show answer|Try It\b|"
+    r"\b(?:Solution\s*:|Check\s*:|"
+    r"Show\s+(?:answers?|solutions?|work|steps?)\b|Try It\b|"
     r"In the following exercises|Answers? will vary)"
 )
 
@@ -161,6 +171,54 @@ _BARE_STEP_LABEL_RE = re.compile(r"^\s*Step\s+\d+\s*[.:)]?\s*$", re.IGNORECASE)
 #: ``Solution:`` / ``Check:`` — no subject words, no publisher phrases.
 _STEP_LABEL_PREFIX_RE = re.compile(r"^\s*Step\s+\d+\s*[.:)]", re.IGNORECASE)
 
+#: A generic pedagogical CALLOUT label opening the candidate ("Key Idea: …",
+#: "Note: …", "Common wrong turn: …"). Same shape as the step-label prefix
+#: above and the same vocabulary CLASS as ``Solution:`` / ``Check:``: these are
+#: DISCOURSE labels the authoring surface stamps on a boxed aside, not content.
+#: A sentence that still carries the label is a fragment of markup, so it must
+#: never become a stem, a definition, a key term, or an answer key.
+#:
+#: Two deliberate scope limits keep the pool healthy:
+#:   * ANCHORED at the start AND a colon is REQUIRED, so ordinary prose that
+#:     merely uses one of these words ("Note that the sum is even", "the
+#:     important idea here") never matches.
+#:   * CONTENT-TYPE labels are excluded on purpose — "Definition:",
+#:     "Example:", "Theorem:", "Property:", "Rule:", "Formula:" introduce
+#:     genuinely testable material, and the key-term extractor exists to mine
+#:     exactly those. Only discourse/aside labels are listed.
+_CALLOUT_LABEL_PREFIX_RE = re.compile(
+    r"^\s*(?:"
+    r"Key\s+(?:Idea|Point|Takeaway|Concept)"
+    r"|Big\s+Idea|Main\s+Idea|Takeaway"
+    r"|Note|Tip|Hint|Caution|Warning|Important|Remember|Reminder"
+    r"|Predict|Reflect|Recall"
+    r"|Common\s+(?:Error|Mistake|Wrong\s+Turn|Pitfall)|Pitfall|Misconception"
+    r"|Answer|Solution|Check"
+    r")\s*:",
+    re.IGNORECASE,
+)
+
+#: A canonical learning-objective REF opening the candidate ("CO-01: …",
+#: "TO-05: …"). The shape is this project's own LO-id convention
+#: (``lib/ontology/learning_objectives.py``, pattern ``^[A-Z]{2,}-\d{2,}$``),
+#: so matching it is structural, not corpus vocabulary. An objective statement
+#: is a course-design artifact — a promise about what the learner will be able
+#: to do — never a factual claim to test true/false or blank out.
+_LO_REF_PREFIX_RE = re.compile(r"^\s*[A-Z]{2,}-\d{2,}\s*:")
+
+#: A BARE anaphoric subject — a lone pronoun or demonstrative standing where
+#: the subject noun phrase belongs ("This is determined by its position …",
+#: "It is the same distance from 0 …"). Mined out of running prose, such a
+#: sentence loses its antecedent and becomes unanswerable on its own: a
+#: standalone assessment item cannot reference something the learner never
+#: saw. Deliberately BARE-only — "This process is called clearing" keeps its
+#: noun and survives — so the rule removes dangling fragments without
+#: thinning legitimate prose.
+_ANAPHORIC_SUBJECTS = frozenset({
+    "this", "that", "these", "those", "it", "they", "them",
+    "he", "she", "there", "here", "one", "both", "each", "such",
+})
+
 
 def _is_apparatus_text(text: str) -> bool:
     """True when the candidate text is exercise/solution APPARATUS.
@@ -197,8 +255,29 @@ def _is_apparatus_text(text: str) -> bool:
         or _GLYPH_ALT_TEXT_RE.search(c)
         or _BARE_STEP_LABEL_RE.match(c)
         or _STEP_LABEL_PREFIX_RE.match(c)
+        or _CALLOUT_LABEL_PREFIX_RE.match(c)
+        or _LO_REF_PREFIX_RE.match(c)
         for c in candidates
     )
+
+
+def _has_anaphoric_subject(subject: str) -> bool:
+    """True when ``subject`` is a BARE pronoun / demonstrative.
+
+    Such a subject has no antecedent once the sentence is lifted out of its
+    paragraph, so the resulting item is unanswerable by construction
+    ("This is determined by its position as the third digit from the right."
+     — *what* is?). This is a mining defect, not a linter artifact: the
+    sentence should never have entered the candidate pool.
+
+    Bare-only by design — a demonstrative that still carries its noun
+    ("This process is called clearing the equation") is self-contained and
+    survives.
+    """
+    tokens = re.findall(r"[A-Za-z']+", subject or "")
+    if len(tokens) != 1:
+        return False
+    return tokens[0].lower() in _ANAPHORIC_SUBJECTS
 
 
 def _is_apparatus_key_term(term: str, definition: str, context: str) -> bool:
@@ -831,6 +910,13 @@ class ContentExtractor:
                 subject = subject_match.group(1).strip() if subject_match else ""
 
                 if not subject or len(subject) < 3:
+                    continue
+
+                # A BARE pronoun / demonstrative subject loses its antecedent
+                # the moment the sentence leaves its paragraph, so the item
+                # built from it is unanswerable on its own. Reject at the
+                # source rather than let the linter flag the symptom.
+                if _has_anaphoric_subject(subject):
                     continue
 
                 norm = sentence.lower().strip()

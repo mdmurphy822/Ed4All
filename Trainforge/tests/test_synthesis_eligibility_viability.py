@@ -31,10 +31,15 @@ def test_broad_conjunctive_glossary_objective_rejects_partial_evidence() -> None
     focused = _focused_chunk(
         chunk_id="glossary-entry",
         action_object="domain, range, and codomain",
+        # >= the content-gate prose floor so this test still exercises the
+        # evidence-window contract rather than the pre-dispatch content gate.
         text=(
             "Domain is the set of permitted input values for a function. "
             "A glossary may describe those inputs with interval notation and "
-            "give several representative examples for learners to inspect."
+            "give several representative examples for learners to inspect. "
+            "Each entry lists the permitted input values, notes any value "
+            "that must be excluded, and shows how a learner would write the "
+            "permitted input set down using standard interval notation."
         ),
     )
 
@@ -48,10 +53,14 @@ def test_broad_conjunctive_line_objective_rejects_slope_only_evidence() -> None:
     focused = _focused_chunk(
         chunk_id="line-explanation",
         action_object="slope and vertical intercept",
+        # >= the content-gate prose floor so this test still exercises the
+        # evidence-window contract rather than the pre-dispatch content gate.
         text=(
             "Slope measures the rate of change of a straight line. It can be "
             "calculated as rise divided by run, and its sign determines "
-            "whether the line increases or decreases from left to right."
+            "whether the line increases or decreases from left to right. "
+            "A steeper line has a larger magnitude of rate of change, while "
+            "a flat line has a rate of change of zero everywhere along it."
         ),
     )
 

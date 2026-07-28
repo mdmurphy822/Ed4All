@@ -315,9 +315,20 @@ def test_unrelated_first_ref_does_not_override_aligned_ref() -> None:
 def test_malformed_assessment_is_ineligible_for_both_pair_kinds() -> None:
     focused = {
         "id": "assessment-fragment",
+        # Padded past the content gate's item-sized ceiling so this test keeps
+        # exercising the assessment-specific _MALFORMED_ASSESSMENT_RE branch
+        # rather than the pre-dispatch degenerate-stem check (which catches
+        # the same shape at item size — see test_generator_content_gate.py).
         "text": (
             "Which definition best matches the term Because of this, it ? "
-            "one unrelated phrase another unrelated phrase"
+            "one unrelated phrase another unrelated phrase and a further "
+            "stretch of filler wording that carries no answer key at all, "
+            "written out at length so the chunk clears the item-sized word "
+            "ceiling used by the deterministic pre-dispatch content gate, "
+            "while the leading question stem itself stays exactly as broken "
+            "as the harvested corpus item this fixture was copied from, with "
+            "no correct answer, no distractor list, and no rubric attached "
+            "anywhere in the surrounding body wording at any point at all."
         ),
         "chunk_type": "assessment_item",
         "learning_outcome_refs": ["co-01"],
@@ -339,9 +350,15 @@ def test_malformed_assessment_is_ineligible_for_both_pair_kinds() -> None:
 def test_dpo_requires_misconception_affordance_beyond_sft_evidence() -> None:
     focused = {
         "id": "plain-summary",
+        # >= the content-gate prose floor so this test still exercises the DPO
+        # misconception-affordance contract; deliberately still carries no
+        # misconception affordance token.
         "text": (
             "A polynomial contains terms joined by addition. Its degree is "
-            "determined by the greatest exponent present in those terms."
+            "determined by the greatest exponent present in those terms. "
+            "Writers usually order the terms from greatest exponent down to "
+            "least, so the leading term names the degree at a glance and the "
+            "trailing constant term sits last in the written expression."
         ),
         "chunk_type": "summary",
         "learning_outcome_refs": ["co-01"],

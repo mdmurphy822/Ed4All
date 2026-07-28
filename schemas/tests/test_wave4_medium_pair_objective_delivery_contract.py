@@ -523,30 +523,20 @@ def test_pair_objective_delivery_rejects_bloom_gap() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Test 4 — verb-cooccurrence axis fires (zero apply-level synonyms)
+# Test 4 — literal verb absence remains diagnostic, not semantic rejection
 # --------------------------------------------------------------------------- #
 
 
-def test_pair_objective_delivery_rejects_verb_absent() -> None:
-    """Plan §4 Test 4 — verb-axis miss path.
+def test_pair_objective_delivery_accepts_skill_without_literal_verb() -> None:
+    """A classified cognitive action need not repeat a Bloom verb.
 
     Pair text contains zero ``apply``-level synonyms (no ``apply``,
     ``demonstrate``, ``use``, ``solve``, ``implement``, ``execute``,
     etc. per ``schemas/taxonomies/bloom_verbs.json``). NLI passes
     (entailment=0.85), Bloom passes (declared=apply, observed=apply),
-    so ONLY the verb axis fires.
-
-    Per the W1.7.C ``_resolve_status`` semantics this can resolve to
-    EITHER ``"verb_only"`` (if the validator interprets the verb axis
-    as the sole survivor — but it isn't, the other two passed) or
-    ``"underdelivered"`` (the more typical case where verb is the only
-    axis that missed while the other two passed). The plan §4 text
-    explicitly accepts either status; the BLOCKING assertions are the
-    rejection reason and the verb_match_count.
-
-    Assert ``(status, reason) == ("rejected", "objective_verb_absent")``,
-    ``verb_match_count == 0``, and ``status in {"verb_only",
-    "underdelivered"}``.
+    so the instantiated-skill and observed-Bloom axes pass. Literal
+    verb occurrence remains visible as audit evidence but does not
+    override the semantic delivery verdict.
     """
     from lib.validators.pair_objective_delivery import (
         PairObjectiveDeliveryValidator,
@@ -565,8 +555,8 @@ def test_pair_objective_delivery_rejects_verb_absent() -> None:
         pair, kind="instruction", chunk=chunk, objectives=objectives,
     )
 
-    assert (status, reason) == ("rejected", "objective_verb_absent"), (
-        f"expected (rejected, objective_verb_absent); "
+    assert (status, reason) == ("validated", None), (
+        f"expected (validated, None); "
         f"got ({status!r}, {reason!r}); new_fields={new_fields!r}"
     )
     alignment = new_fields["pair_objective_alignment"]
@@ -580,13 +570,8 @@ def test_pair_objective_delivery_rejects_verb_absent() -> None:
         f"apply-level synonyms; got "
         f"verb_match_count={entry['verb_match_count']!r}"
     )
-    # Per the W1.7.C ``_resolve_status`` semantics — accept either
-    # "verb_only" (verb is the sole survivor) or "underdelivered"
-    # (verb is the only miss). The plan §4 text explicitly permits
-    # either.
-    assert entry["status"] in {"verb_only", "underdelivered"}, (
-        f"expected status in {{'verb_only', 'underdelivered'}} per "
-        f"the W1.7.C _resolve_status semantics; got "
+    assert entry["status"] == "delivered", (
+        f"expected delivered instantiated-skill status; got "
         f"status={entry['status']!r}, full_entry={entry!r}"
     )
 
@@ -618,13 +603,22 @@ def test_pair_objective_delivery_per_pair_kind_threshold_table() -> None:
     axis 3 — the others (``violation_detection.``, ``abstention.``,
     ``schema_translation.``) follow the same dispatch path.
 
-    Drift note: the contradiction score is held at 0.55 (above the
-    contradiction floor 0.50) so the NLI-miss two-condition guard
-    (per plan §3 axis 1: ``entailment < threshold AND contradiction >
-    contradiction_floor``) fires for the failing pairs. If the
-    contradiction were below 0.50 the entailment axis would
-    silently pass per the W1.7.C two-condition guard, masking the
-    threshold-dispatch test.
+    Drift note (superseded): the contradiction score used to be held at
+    0.55 — above the contradiction floor — because the entailment axis
+    was once a two-condition guard (``entailment < threshold AND
+    contradiction > contradiction_floor``). Under that guard a pair with
+    a below-floor entailment and a low contradiction passed silently,
+    which would have made this threshold-dispatch test vacuous.
+
+    That guard has since been tightened: entailment must clear its
+    per-kind floor on its own, closing the hole where a NEUTRAL answer
+    (near-zero entailment, near-zero contradiction) counted as delivered.
+    The 0.55 crutch is therefore no longer needed to keep the test
+    meaningful — and it actively distorted it, because 0.55 contradiction
+    beside 0.35 entailment describes a pair the classifier reads as
+    contradictory, which no floor table should accept. Holding
+    contradiction at 0.10 lets all three sub-tests turn purely on the
+    per-kind entailment floor, which is what this test exists to pin.
     """
     from lib.validators.pair_objective_delivery import (
         PairObjectiveDeliveryValidator,
@@ -632,10 +626,11 @@ def test_pair_objective_delivery_per_pair_kind_threshold_table() -> None:
 
     chunk = _chunk_payload()
     objectives = _objectives_map()
-    # Score: entailment=0.35 (between floors), contradiction=0.55
-    # (above contradiction floor so the two-condition NLI miss fires).
+    # Score: entailment=0.35 (between the per-kind floors), contradiction
+    # held BELOW the contradiction floor so each sub-test turns solely on
+    # the floor it is meant to exercise.
     stub = _StubNliClassifier(
-        score_fn=lambda premise, hypothesis: (0.35, 0.10, 0.55),
+        score_fn=lambda premise, hypothesis: (0.35, 0.55, 0.10),
     )
     validator = PairObjectiveDeliveryValidator(nli=stub)
 

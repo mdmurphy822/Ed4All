@@ -73,8 +73,8 @@ logger = logging.getLogger(__name__)
 
 # Defaults — kept as module-level constants so callers (and tests) can
 # import them without instantiating the provider.
-DEFAULT_BASE_URL = "http://localhost:11434/v1"
-DEFAULT_SYNTHESIS_MODEL = "qwen2.5:7b-instruct-q4_K_M"
+DEFAULT_BASE_URL = "http://localhost:8000/v1"
+DEFAULT_SYNTHESIS_MODEL = "nemotron-3-nano-30b-a3b"
 ENV_BASE_URL = "LOCAL_SYNTHESIS_BASE_URL"
 ENV_MODEL = "LOCAL_SYNTHESIS_MODEL"
 ENV_API_KEY = "LOCAL_SYNTHESIS_API_KEY"
@@ -168,6 +168,7 @@ class LocalSynthesisProvider:
         kind_bounds: Optional[Dict[str, tuple]] = None,
         max_parse_retries: Optional[int] = None,
         min_preserve_rate: Optional[float] = None,
+        response_dialect: Optional[str] = None,
     ) -> None:
         # API-key resolution. Local servers usually ignore auth; we
         # accept absence and substitute a stable placeholder so reverse
@@ -247,6 +248,7 @@ class LocalSynthesisProvider:
             # working post-refactor.
             sleep_fn=_local_sleep,
             json_mode=True,
+            response_dialect=response_dialect,
         )
 
     @property
@@ -435,13 +437,25 @@ class LocalSynthesisProvider:
         retry_budget = self._max_parse_retries
         while attempts < retry_budget:
             attempts += 1
-            text, usage, http_retries = self._chat_completion_raw(messages)
+            try:
+                text, usage, http_retries = self._chat_completion_raw(messages)
+            except SynthesisProviderError as exc:
+                if not getattr(exc, "_direct_capture_emitted", False):
+                    self._capture_failed_raw_call(
+                        required_keys, attempts,
+                        str(getattr(exc, "code", "") or type(exc).__name__),
+                        {},
+                    )
+                raise
             total_http_retries += http_retries
             last_usage = usage
             last_text = text
             parsed = self._oa_client._extract_json_lenient(text)
             if parsed is None:
                 last_err = "lenient JSON extraction returned None"
+                self._capture_failed_raw_call(
+                    required_keys, attempts, last_err, usage,
+                )
                 logger.warning(
                     "%s synthesis: lenient parse retry %d/%d: "
                     "no JSON object recoverable from response tail %r",
@@ -452,6 +466,9 @@ class LocalSynthesisProvider:
             missing = [k for k in required_keys if k not in parsed]
             if missing:
                 last_err = f"response missing required keys: {missing}"
+                self._capture_failed_raw_call(
+                    required_keys, attempts, last_err, usage,
+                )
                 logger.warning(
                     "%s synthesis: lenient parse retry %d/%d: %s",
                     self._provider_name, attempts, retry_budget,
@@ -462,6 +479,9 @@ class LocalSynthesisProvider:
             if short is not None:
                 field, length, floor = short
                 last_err = f"{field} length {length} below minimum {floor}"
+                self._capture_failed_raw_call(
+                    required_keys, attempts, last_err, usage,
+                )
                 logger.warning(
                     "%s synthesis: length-retry %d/%d: %s",
                     self._provider_name, attempts, retry_budget,
@@ -501,6 +521,9 @@ class LocalSynthesisProvider:
                         f"(preserved {preserved_rate:.2f} < floor "
                         f"{self._min_preserve_rate:.2f})"
                     )
+                    self._capture_failed_raw_call(
+                        required_keys, attempts, last_err, usage,
+                    )
                     logger.warning(
                         "%s synthesis: preserve-retry %d/%d: %s",
                         self._provider_name, attempts, retry_budget,
@@ -535,6 +558,25 @@ class LocalSynthesisProvider:
             f"after {retry_budget} attempts. Last error: {last_err}; "
             f"tail of last response: {last_text[-500:]!r}",
             code="paraphrase_invalid_after_retry",
+        )
+
+    def _capture_failed_raw_call(
+        self, required_keys: tuple, attempt: int, error: str,
+        usage: Dict[str, int],
+    ) -> None:
+        if self._capture is None:
+            return
+        kind = "preference" if "chosen" in required_keys else "instruction"
+        self._capture.log_decision(
+            decision_type="synthesis_provider_call",
+            decision=f"Rejected {kind} raw synthesis attempt {attempt}.",
+            rationale=(
+                f"model={self._model}, stage={kind}_raw, attempt={attempt}, "
+                f"max_tokens={self._max_tokens}, error={error}, "
+                f"prompt_tokens={int(usage.get('prompt_tokens', 0))}, "
+                f"completion_tokens={int(usage.get('completion_tokens', 0))}; "
+                "the response was not accepted into a training pair."
+            ),
         )
 
     @staticmethod
@@ -628,7 +670,17 @@ class LocalSynthesisProvider:
             "temperature": self._temperature,
             "max_tokens": self._max_tokens,
         }
-        body, retry_count = self._oa_client._post_with_retry(payload)
+        # Local training-pair generation is a constrained structured rewrite,
+        # not a reasoning/judgment pass. Keep hidden reasoning from consuming
+        # the fixed response budget even on the legacy rollback provider.
+        from Trainforge.generators._openai_compatible_client import (
+            apply_reasoning_thinking_off_payload,
+        )
+
+        apply_reasoning_thinking_off_payload(payload, force_thinking_off=True)
+        body, retry_count = self._oa_client.post_with_usage(
+            payload, task="local_synthesis_raw",
+        )
         text = self._oa_client._extract_text(body)
         usage = self._oa_client._extract_usage(body)
         return text, usage, retry_count
@@ -707,6 +759,18 @@ class LocalSynthesisProvider:
             if is_definition_kind
             else ""
         )
+        grounding_directive = (
+            "\n\nSOURCE GROUNDING: Treat the draft as a format hint, not a "
+            "source of facts. Replace generic draft assertions with one "
+            "concrete relationship, rule, or procedure supported by "
+            "the supplied source chunk. Reuse necessary technical "
+            "nouns, but change syntax and word order. No prompt or "
+            "completion may copy 50 consecutive source characters. "
+            "The completion must contain only one "
+            "to three short source-supported sentences. Do not add transfer "
+            "claims, learning advice, examples, quantities, or background "
+            "facts absent from the source."
+        )
         return (
             f"Chunk ID: {chunk_id}\n"
             f"Bloom level: {draft.get('bloom_level','unknown')}\n"
@@ -721,6 +785,7 @@ class LocalSynthesisProvider:
             f"'prompt' and 'completion'."
             f"{preserve}"
             f"{definition_directive}"
+            f"{grounding_directive}"
             f"{EVIDENCE_QUOTE_PROMPT_DIRECTIVE}"
             f"{cls._INSTRUCTION_JSON_DIRECTIVE}"
         )
@@ -736,6 +801,20 @@ class LocalSynthesisProvider:
         preserve = cls._preserve_directive(
             preserve_tokens or [], "the chosen completion",
         )
+        grounding_directive = (
+            "\n\nSOURCE GROUNDING: Treat the drafts as format hints, not "
+            "sources of facts. Rewrite the chosen answer around one concrete "
+            "relationship, rule, or procedure supported by the supplied "
+            "source chunk, reusing necessary technical nouns while changing "
+            "syntax and word order. No prompt or chosen answer may copy 50 "
+            "consecutive source characters. The chosen answer must be exactly ONE sentence of no more "
+            "than 25 words, closely restating one source fact without an "
+            "example, semicolon, learning advice, or transfer claim. Rewrite "
+            "the rejected answer as exactly one plausible, source-relevant "
+            "misconception in substantially different wording; fewer than "
+            "half its content words should overlap the chosen answer. Do not "
+            "form it by merely inserting 'not' or swapping one word."
+        )
         return (
             f"Chunk ID: {chunk_id}\n"
             f"Source: {draft.get('rejected_source','unknown')}\n"
@@ -749,6 +828,7 @@ class LocalSynthesisProvider:
             f"Rewrite all three. Return JSON with keys 'prompt', "
             f"'chosen', and 'rejected'."
             f"{preserve}"
+            f"{grounding_directive}"
             f"{EVIDENCE_QUOTE_PROMPT_DIRECTIVE}"
             f"{cls._PREFERENCE_JSON_DIRECTIVE}"
         )

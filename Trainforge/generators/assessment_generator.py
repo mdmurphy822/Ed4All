@@ -952,6 +952,48 @@ class AssessmentGenerator:
                     covered_objectives.add(obj_id)
                 elif isinstance(result, SkippedItem):
                     skipped_items.append(result)
+
+            # The first coverage pass is deliberately strict about rejecting
+            # contaminated or otherwise unusable source material.  A rejected
+            # item must not, however, be replaced by a duplicate item for an
+            # already-covered objective in the generic count-fill loop below.
+            # That previously made the requested question *count* look
+            # complete while leaving objectives unassessed.  Retry only the
+            # uncovered objectives, against the full source pool, rotating
+            # Bloom levels so the extractor advances to different grounded
+            # material on each attempt.
+            _coverage_retry_limit = max(4, len(bloom_levels) * 2)
+            for obj_id in objective_ids:
+                if obj_id in covered_objectives:
+                    continue
+                for _retry_idx in range(_coverage_retry_limit):
+                    bloom_level = bloom_levels[
+                        _retry_idx % len(bloom_levels)
+                    ]
+                    # The deterministic builders mine from the front of their
+                    # chunk list. Retrying an unchanged pool can therefore
+                    # reproduce the same apparatus-contaminated candidate on
+                    # every attempt. Rotate the real source pool so each retry
+                    # examines a different grounded starting point without
+                    # fabricating or weakening the apparatus guard.
+                    retry_chunks = source_chunks
+                    if source_chunks:
+                        offset = _retry_idx % len(source_chunks)
+                        retry_chunks = [
+                            *source_chunks[offset:],
+                            *source_chunks[:offset],
+                        ]
+                    result = self._apparatus_guard(self._generate_question(
+                        objective_id=obj_id,
+                        bloom_level=bloom_level,
+                        source_chunks=retry_chunks,
+                    ))
+                    if isinstance(result, QuestionData):
+                        questions.append(result)
+                        covered_objectives.add(obj_id)
+                        break
+                    if isinstance(result, SkippedItem):
+                        skipped_items.append(result)
             if self.capture:
                 uncovered = [
                     o for o in objective_ids if o not in covered_objectives
@@ -1069,6 +1111,97 @@ class AssessmentGenerator:
                             f"data contamination and maintain RAG corpus integrity."
                         ),
                     )
+
+                # Leak filtering runs after the coverage-first pass, so it can
+                # invalidate that pass by removing the only item for an
+                # objective. Repair only those newly-uncovered objectives and
+                # subject every replacement to the same leak check. If the
+                # deterministic generator cannot produce a safe replacement,
+                # fail loudly instead of returning an assessment that violates
+                # the caller's explicit coverage contract.
+                if ensure_objective_coverage:
+                    retained_objectives = {
+                        q.objective_id for q in questions
+                    }
+                    missing_objectives = [
+                        oid for oid in objective_ids
+                        if oid not in retained_objectives
+                    ]
+                    repair_attempt_limit = max(4, len(bloom_levels) * 2)
+
+                    def _leak_registration_payload(
+                        candidates: List[QuestionData],
+                    ) -> List[Dict[str, Any]]:
+                        payload: List[Dict[str, Any]] = []
+                        for candidate in candidates:
+                            item: Dict[str, Any] = {
+                                "id": candidate.question_id,
+                            }
+                            if candidate.correct_answer:
+                                item["correct_answer"] = (
+                                    candidate.correct_answer
+                                )
+                            elif candidate.choices:
+                                correct = [
+                                    choice["text"]
+                                    for choice in candidate.choices
+                                    if choice.get("is_correct")
+                                ]
+                                if correct:
+                                    item["correct_answers"] = correct
+                            payload.append(item)
+                        return payload
+
+                    for objective_id in missing_objectives:
+                        for repair_idx in range(repair_attempt_limit):
+                            bloom_level = bloom_levels[
+                                repair_idx % len(bloom_levels)
+                            ]
+                            replacement = self._apparatus_guard(
+                                self._generate_question(
+                                    objective_id=objective_id,
+                                    bloom_level=bloom_level,
+                                    source_chunks=source_chunks,
+                                )
+                            )
+                            if not isinstance(replacement, QuestionData):
+                                if isinstance(replacement, SkippedItem):
+                                    skipped_items.append(replacement)
+                                continue
+
+                            self._leak_checker.register_assessment(
+                                assessment_id,
+                                _leak_registration_payload(
+                                    [*questions, replacement]
+                                ),
+                            )
+                            leak_result = self._leak_checker.check_prompt(
+                                replacement.stem,
+                                assessment_id=assessment_id,
+                                question_id=replacement.question_id,
+                            )
+                            if leak_result.passed:
+                                questions.append(replacement)
+                                retained_objectives.add(objective_id)
+                                break
+                            logger.warning(
+                                "Rejected leak-repair item %s for %s: "
+                                "%d leak(s) found",
+                                replacement.question_id,
+                                objective_id,
+                                leak_result.leak_count,
+                            )
+
+                    still_missing = [
+                        oid for oid in objective_ids
+                        if oid not in retained_objectives
+                    ]
+                    if still_missing:
+                        raise RuntimeError(
+                            "Assessment coverage could not be restored after "
+                            "leak filtering for objective_ids="
+                            f"{still_missing}"
+                        )
 
         assessment = AssessmentData(
             assessment_id=assessment_id,
@@ -3027,8 +3160,72 @@ class AssessmentGenerator:
                     # Fall back to classic MC so the CO still gets an item.
                     fb = self.build_mc_single(
                         f"Q-{str(uuid.uuid4())[:8]}", obj_id,
-                        bloom_levels[0], source_chunks)
+                        bloom_levels[0], _scoped(obj_id))
                     _emit(fb, "mc_single")
+
+            # Repair genuine builder/fallback misses BEFORE count-fill. A
+            # numeric fill starts again at objective zero and can otherwise
+            # conceal missing tail objectives behind early duplicates.
+            covered = {q.objective_id for q in questions}
+            retry_limit = max(4, len(bloom_levels) * 2)
+            for objective_index, objective_id in enumerate(objective_ids):
+                if objective_id in covered:
+                    continue
+                objective_chunks = _scoped(objective_id)
+                for retry_index in range(retry_limit):
+                    subtype = (
+                        plan[(objective_index + retry_index + 1) % len(plan)]
+                        if plan else "mc_single"
+                    )
+                    bloom = bloom_levels[
+                        (objective_index + retry_index) % len(bloom_levels)
+                    ]
+                    retry_chunks = objective_chunks
+                    if objective_chunks:
+                        offset = retry_index % len(objective_chunks)
+                        retry_chunks = [
+                            *objective_chunks[offset:],
+                            *objective_chunks[:offset],
+                        ]
+                    produced = _emit(
+                        self._build_by_subtype(
+                            subtype,
+                            f"Q-{str(uuid.uuid4())[:8]}",
+                            objective_id,
+                            bloom,
+                            retry_chunks,
+                        ),
+                        subtype,
+                    )
+                    if not produced:
+                        produced = _emit(
+                            self.build_mc_single(
+                                f"Q-{str(uuid.uuid4())[:8]}",
+                                objective_id,
+                                bloom,
+                                retry_chunks,
+                            ),
+                            "mc_single",
+                        )
+                    if produced:
+                        covered.add(objective_id)
+                        break
+            missing = [
+                objective_id for objective_id in objective_ids
+                if objective_id not in covered
+            ]
+            if missing:
+                reasons = {
+                    objective_id: sorted({
+                        item.reason for item in skipped
+                        if item.objective_id == objective_id
+                    })
+                    for objective_id in missing
+                }
+                raise RuntimeError(
+                    "Diversified assessment could not produce a grounded "
+                    f"item for objective_ids={missing}; reasons={reasons}"
+                )
 
         # Count-driven fill across the planned mix.
         pos = 0
@@ -3043,14 +3240,40 @@ class AssessmentGenerator:
             produced = _emit(result, subtype)
             if not produced:
                 fb = self.build_mc_single(
-                    f"Q-{str(uuid.uuid4())[:8]}", obj_id, bloom, source_chunks)
+                    f"Q-{str(uuid.uuid4())[:8]}", obj_id, bloom,
+                    _scoped(obj_id))
                 _emit(fb, "mc_single")
             pos += 1
             attempts += 1
 
-        # Trim to the requested count (a two-tier builder can overshoot by 1).
+        # Trim to the requested count. A two-tier builder contributes two
+        # records for one objective; a naive prefix slice can therefore remove
+        # the only item for objectives near the end of the coverage-first
+        # pass. Reserve the first item for every requested objective before
+        # filling remaining slots with the earliest extras.
         if len(questions) > question_count:
-            questions = questions[:question_count]
+            if ensure_objective_coverage:
+                first_index_by_objective: Dict[str, int] = {}
+                for question_index, question in enumerate(questions):
+                    first_index_by_objective.setdefault(
+                        question.objective_id, question_index
+                    )
+                reserved = {
+                    first_index_by_objective[objective_id]
+                    for objective_id in objective_ids
+                    if objective_id in first_index_by_objective
+                }
+                keep_indices = set(reserved)
+                for question_index in range(len(questions)):
+                    if len(keep_indices) >= question_count:
+                        break
+                    keep_indices.add(question_index)
+                questions = [
+                    question for question_index, question in enumerate(questions)
+                    if question_index in keep_indices
+                ]
+            else:
+                questions = questions[:question_count]
 
         # Bounded LLM apply-arm (flag-gated, default OFF). Additive on top of
         # the deterministic tier; every drafted item passes the sympy /

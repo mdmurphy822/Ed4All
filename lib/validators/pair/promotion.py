@@ -33,14 +33,14 @@ in the GPT critique (lines 225-233):
 5. **source_free_generation** — ``source_chunk_id`` is missing or empty.
    The schema's ``trainable``-conditional already requires the field;
    the validator catches it loudly before the pair is checkpointed.
-6. **low_bloom_alignment** — :class:`BloomBertEnsemble` classification of
+6. **low_bloom_alignment** — pinned DeBERTa zero-shot classification of
    ``prompt + completion`` (or ``prompt + chosen`` for preference pairs)
-   disagrees with the declared ``bloom_level``, AND the ensemble
+   is below the declared minimum ``bloom_level``, AND the classifier
    winner's confidence exceeds the
    :data:`lib.validators.bloom_classifier_disagreement._DISAGREEMENT_CONFIDENCE_FLOOR`
-   (0.40 default). Stamps ``observed_bloom`` + ``bloom_alignment`` on
-   every audited pair regardless of pass/fail so the audit trail
-   carries the classification result.
+   (0.40 default). A higher observed level satisfies a lower declared
+   level. ``bloom_alignment`` is ``None`` below the confidence floor,
+   otherwise it records whether the declared minimum was met.
 7. **generic_rationale** — heuristic richness score on the ``rationale``
    field (unique-token-count / total-token-count). Default floor
    ``min_rationale_richness_score=0.30``.
@@ -80,8 +80,10 @@ replayable post-hoc via the ``training-captures/`` JSONL stream.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import math
 import os
 import re
 from pathlib import Path
@@ -96,6 +98,324 @@ from lib.validators.assessment_retrieval_grounding import (
 from lib.validators.bloom.classifier_disagreement import (
     _DISAGREEMENT_CONFIDENCE_FLOOR,
 )
+from lib.ontology.bloom import BLOOM_LEVELS
+from Trainforge.generators.objective_execution_contract import (
+    content_sha256 as _objective_content_sha256,
+    reconcile_completion_execution,
+    release_content_sha256,
+)
+
+_ANSWER_SUPPORT_AUTHORITY_CONTRACT = (
+    "ed4all.complete-claim-proof-answer-support.v1"
+)
+_OBJECTIVE_EXECUTION_AUTHORITY_CONTRACT = (
+    "ed4all.objective-execution-answer-support.v1"
+)
+
+
+def _objective_execution_answer_support_proof(
+    pair: Dict[str, Any], *, answer: str, source_chunk_id: str,
+    authorized_private_sidecar: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Reconcile the private worked-step proof and return a public authority."""
+    candidate = pair.get("_objective_execution_candidate")
+    sidecar = authorized_private_sidecar
+    if not isinstance(candidate, dict) or not isinstance(sidecar, dict):
+        return None
+    audits = candidate.get("pair_objective_execution")
+    records = candidate.get("execution_records")
+    requirements = sidecar.get("requirements")
+    objective_card = sidecar.get("objective_card")
+    if (
+        candidate.get("pair_objective_execution_pass_rate") != 1.0
+        or candidate.get("claim_support_rate") != 1.0
+        or candidate.get("claim_contradicted_rate") != 0.0
+        or not isinstance(audits, list)
+        or len(audits) != 1
+        or not isinstance(audits[0], dict)
+        or not isinstance(records, list)
+        or not isinstance(requirements, list)
+        or not isinstance(objective_card, dict)
+    ):
+        return None
+    audit = audits[0]
+    if (
+        audit.get("completion_only") is not True
+        or audit.get("status") != "delivered"
+        or audit.get("requirement_pass_rate") != 1.0
+        or audit.get("sidecar_sha256") != sidecar.get("sidecar_sha256")
+    ):
+        return None
+    source_bindings = sidecar.get("source_bindings")
+    claims = sidecar.get("claims")
+    if not isinstance(source_bindings, list) or not isinstance(claims, list):
+        return None
+    if source_chunk_id not in {
+        item.get("source_chunk_id")
+        for item in source_bindings if isinstance(item, dict)
+    }:
+        return None
+    if any(
+        not isinstance(item, dict)
+        or source_chunk_id not in (item.get("source_chunk_ids") or [])
+        for item in claims
+    ):
+        return None
+    requirement_contract = {
+        "contract_version": (
+            "ed4all.objective-requirement-normalization.v1"
+        ),
+        "objective_id": str(objective_card.get("id") or "").lower(),
+        "cognitive_task_type": None,
+        "result_required": any(
+            isinstance(item, dict) and item.get("kind") == "result"
+            for item in requirements
+        ),
+        "requirements": requirements,
+        "objective_contract_sha256": sidecar.get(
+            "objective_contract_sha256"
+        ),
+    }
+    try:
+        recomputed = reconcile_completion_execution(
+            completion=answer,
+            requirement_contract=requirement_contract,
+            execution_records=records,
+            sidecar=sidecar,
+            release_pair=pair,
+            validator_fingerprint=str(
+                audit.get("validator_fingerprint") or ""
+            ),
+        )
+    except ValueError:
+        return None
+    if recomputed != audit:
+        return None
+    proof_material = {
+        "contract": _OBJECTIVE_EXECUTION_AUTHORITY_CONTRACT,
+        "answer_sha256": _sha256_text(answer),
+        "source_chunk_id": source_chunk_id,
+        "release_content_sha256": release_content_sha256(pair),
+        "objective_contract_sha256": audit["objective_contract_sha256"],
+        "sidecar_sha256": audit["sidecar_sha256"],
+        "validator_fingerprint": audit["validator_fingerprint"],
+        "requirements": [{
+            "requirement_id": item.get("requirement_id"),
+            "completion_spans": item.get("completion_spans"),
+            "proof_sha256": item.get("proof_sha256"),
+        } for item in records],
+    }
+    return {
+        **proof_material,
+        "proof_sha256": _objective_content_sha256(proof_material),
+        "claim_count": len(claims),
+        "requirement_count": len(requirements),
+        "claim_support_rate": 1.0,
+        "claim_contradicted_rate": 0.0,
+    }
+
+
+def _replay_objective_execution_public_authority(
+    pair: Dict[str, Any], *, answer: str, source_chunk_id: str,
+) -> Optional[Dict[str, Any]]:
+    """Replay the release-safe projection after private sidecar stripping."""
+    candidate = pair.get("_objective_execution_candidate")
+    if not isinstance(candidate, dict):
+        return None
+    authority = candidate.get("answer_support_authority")
+    audits = candidate.get("pair_objective_execution")
+    records = candidate.get("execution_records")
+    if (
+        not isinstance(authority, dict)
+        or authority.get("contract")
+        != _OBJECTIVE_EXECUTION_AUTHORITY_CONTRACT
+        or not isinstance(audits, list)
+        or len(audits) != 1
+        or not isinstance(records, list)
+    ):
+        return None
+    audit = audits[0]
+    proof_material = {
+        "contract": _OBJECTIVE_EXECUTION_AUTHORITY_CONTRACT,
+        "answer_sha256": _sha256_text(answer),
+        "source_chunk_id": source_chunk_id,
+        "release_content_sha256": release_content_sha256(pair),
+        "objective_contract_sha256": audit.get(
+            "objective_contract_sha256"
+        ),
+        "sidecar_sha256": audit.get("sidecar_sha256"),
+        "validator_fingerprint": audit.get("validator_fingerprint"),
+        "requirements": [{
+            "requirement_id": item.get("requirement_id"),
+            "completion_spans": item.get("completion_spans"),
+            "proof_sha256": item.get("proof_sha256"),
+        } for item in records if isinstance(item, dict)],
+    }
+    if (
+        proof_material != {
+            key: authority.get(key) for key in proof_material
+        }
+        or authority.get("proof_sha256")
+        != _objective_content_sha256(proof_material)
+    ):
+        return None
+    return authority
+
+
+def _sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _complete_claim_proof(
+    pair: Dict[str, Any],
+    *,
+    answer: str,
+    source_chunk_id: str,
+) -> Optional[Dict[str, Any]]:
+    """Return authenticated stronger answer-support proof, or ``None``.
+
+    This deliberately recognizes only the staged v2 projection's complete,
+    same-byte realization chain.  Partial NLI, bare aggregate scores, and
+    legacy rows never acquire authority and continue through the existing
+    answer-support threshold.
+    """
+    if pair.get("projection_contract") not in {
+        "ed4all-dpo-preference.v2",
+        "ed4all-sft-chat.v2",
+    }:
+        return None
+    if pair.get("deps_missing") is not False:
+        return None
+    if pair.get("claim_support_rate") != 1.0:
+        return None
+    if pair.get("claim_contradicted_rate") != 0.0:
+        return None
+
+    provenance = pair.get("provenance")
+    if not isinstance(provenance, dict):
+        return None
+    if provenance.get("source_chunk_id") != source_chunk_id:
+        return None
+    source_refs = provenance.get("source_refs")
+    if (
+        not isinstance(source_refs, list)
+        or not source_refs
+        or any(not isinstance(ref, str) or not ref.strip() for ref in source_refs)
+    ):
+        return None
+    sealed_provenance = dict(provenance)
+    declared_provenance_sha = sealed_provenance.pop("provenance_sha256", None)
+    if declared_provenance_sha != hashlib.sha256(
+        json.dumps(
+            sealed_provenance, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest():
+        return None
+    realization_map = provenance.get("claim_realizations")
+    assembly = provenance.get("assembled_realization")
+    if not isinstance(realization_map, dict) or not realization_map:
+        return None
+    if not isinstance(assembly, dict):
+        return None
+    if (
+        assembly.get("contract_version")
+        != "ed4all.micro-stage-d-claim-realizations.v3"
+    ):
+        return None
+    sealed_assembly = dict(assembly)
+    declared_assembly_sha = sealed_assembly.pop("provenance_sha256", None)
+    if declared_assembly_sha != hashlib.sha256(
+        json.dumps(
+            sealed_assembly, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest():
+        return None
+    ordered_ids = assembly.get("ordered_claim_ids")
+    item_hashes = assembly.get("item_sha256")
+    if (
+        not isinstance(ordered_ids, list)
+        or not isinstance(item_hashes, list)
+        or len(ordered_ids) != len(item_hashes)
+        or len(ordered_ids) != len(realization_map)
+        or len(set(ordered_ids)) != len(ordered_ids)
+        or set(ordered_ids) != set(realization_map)
+    ):
+        return None
+    realizations = [realization_map.get(claim_id) for claim_id in ordered_ids]
+    if any(not isinstance(text, str) or not text.strip() for text in realizations):
+        return None
+    if item_hashes != [_sha256_text(text) for text in realizations]:
+        return None
+    if assembly.get("assembled_sha256") != _sha256_text(answer):
+        return None
+    if answer != " ".join(realizations):
+        return None
+    private_sha = assembly.get("private_artifact_sha256")
+    if (
+        not isinstance(private_sha, str)
+        or len(private_sha) != 64
+        or provenance.get("synthesis_plan_sha256") != private_sha
+        or pair.get("synthesis_plan_sha256") != private_sha
+    ):
+        return None
+
+    per_claim = pair.get("per_claim_support")
+    if not isinstance(per_claim, list) or len(per_claim) != len(realizations):
+        return None
+    for expected, proof in zip(realizations, per_claim):
+        if not isinstance(proof, dict):
+            return None
+        if proof.get("sentence") != expected or proof.get("outcome") != "entailed":
+            return None
+        entailment = proof.get("entailment")
+        contradiction = proof.get("contradiction")
+        if (
+            isinstance(entailment, bool)
+            or isinstance(contradiction, bool)
+            or not isinstance(entailment, (int, float))
+            or not isinstance(contradiction, (int, float))
+            or not math.isfinite(float(entailment))
+            or not math.isfinite(float(contradiction))
+            or not 0.0 <= float(entailment) <= 1.0
+            or not 0.0 <= float(contradiction) <= 1.0
+            or entailment < 0.70
+            or contradiction >= 0.50
+        ):
+            return None
+
+    proof_material = {
+        "contract": _ANSWER_SUPPORT_AUTHORITY_CONTRACT,
+        "source_chunk_id": source_chunk_id,
+        "source_refs": source_refs,
+        "ordered_claim_ids": ordered_ids,
+        "item_sha256": item_hashes,
+        "assembled_sha256": assembly["assembled_sha256"],
+        "private_artifact_sha256": private_sha,
+        "per_claim_support": per_claim,
+    }
+    proof_sha256 = hashlib.sha256(
+        json.dumps(
+            proof_material, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
+    return {
+        "contract": _ANSWER_SUPPORT_AUTHORITY_CONTRACT,
+        "proof_sha256": proof_sha256,
+        "claim_count": len(ordered_ids),
+        "ordered_claim_ids": list(ordered_ids),
+        "assembled_sha256": assembly["assembled_sha256"],
+        "private_artifact_sha256": private_sha,
+        "claim_support_rate": 1.0,
+        "claim_contradicted_rate": 0.0,
+        "min_entailment": min(
+            float(proof["entailment"]) for proof in per_claim
+        ),
+        "max_contradiction": max(
+            float(proof["contradiction"]) for proof in per_claim
+        ),
+    }
 
 # W-D7 T7.6: thresholds + strict-mode helper extracted into the
 # ``_pair_promotion_stages`` private subpackage. Re-exported here so
@@ -139,6 +459,8 @@ def _emit_decision(
     thresholds: Dict[str, float],
     embedder_strict: bool,
     fallback_to_jaccard: bool,
+    answer_support_authority: Optional[Dict[str, Any]],
+    answer_support_outcome: Optional[str],
 ) -> None:
     """Emit one ``training_pair_promotion_check`` decision per pair.
 
@@ -179,6 +501,11 @@ def _emit_decision(
         f"placeholder_match={placeholder_match or 'none'}, "
         f"embedder_strict_mode={embedder_strict}, "
         f"fallback_to_jaccard={fallback_to_jaccard}."
+        f" answer_support_outcome={answer_support_outcome or 'not_scored'}, "
+        f"answer_support_authority_contract="
+        f"{(answer_support_authority or {}).get('contract', 'none')}, "
+        f"answer_support_authority_sha256="
+        f"{(answer_support_authority or {}).get('proof_sha256', 'none')}."
     )
     metrics: Dict[str, Any] = {
         "pair_kind": pair_kind,
@@ -196,6 +523,8 @@ def _emit_decision(
         "placeholder_match": placeholder_match,
         "fallback_to_jaccard": fallback_to_jaccard,
         "embedder_strict_mode": embedder_strict,
+        "answer_support_outcome": answer_support_outcome,
+        "answer_support_authority": answer_support_authority,
         "thresholds": dict(thresholds),
     }
     try:
@@ -274,6 +603,30 @@ def _semantic_distinctness_jaccard(text_a: str, text_b: str) -> float:
     return float(1.0 - _jaccard_overlap(text_a, text_b))
 
 
+class _ZeroShotBloomClassifier:
+    """Bloom classifier backed by the pinned process-singleton NLI judge."""
+
+    def classify(self, text: str) -> Dict[str, Any]:
+        from lib.classifiers.bloom_zero_shot import zero_shot_bloom
+
+        result = zero_shot_bloom(text)
+        if result is None:
+            return {
+                "winner_level": "unknown",
+                "winner_score": 0.0,
+                "dispersion": 0.0,
+                "per_member": [],
+            }
+        level, score, distribution = result
+        return {
+            "winner_level": level,
+            "winner_score": score,
+            "dispersion": None,
+            "per_member": [("deberta-zero-shot", score)],
+            "distribution": distribution,
+        }
+
+
 def _classify_bloom(
     *,
     text: str,
@@ -293,7 +646,21 @@ def _classify_bloom(
     level = result.get("winner_level")
     score = result.get("winner_score")
     if level == "unknown" or not isinstance(level, str):
-        return None, None
+        # The legacy three-member ensemble may be unavailable (or intentionally
+        # retired). Use the already-loaded, SHA-pinned DeBERTa NLI singleton as
+        # the production classifier instead of silently stamping Bloom as
+        # unverifiable. No additional model weights are introduced.
+        try:
+            from lib.classifiers.bloom_zero_shot import zero_shot_bloom
+
+            zero_shot = zero_shot_bloom(text)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Zero-shot Bloom classification failed: %s", exc)
+            zero_shot = None
+        if zero_shot is None:
+            return None, None
+        zs_level, zs_score, _ = zero_shot
+        return zs_level, float(zs_score)
     return level, float(score) if isinstance(score, (int, float)) else None
 
 
@@ -392,25 +759,17 @@ class TrainingPairPromotionValidator:
         return self._embedder_resolved, False
 
     def _resolve_bloom_classifier(self) -> Any:
-        """Return a :class:`BloomBertEnsemble` (or injected override) or
-        ``None`` when the BERT extras aren't loadable. The ensemble
-        already implements the strict-mode toggle internally
-        (``TRAINFORGE_REQUIRE_BERT_ENSEMBLE``), so this resolver simply
-        forwards to its public constructor."""
+        """Return the pinned zero-shot Bloom classifier or an override."""
         if self._bloom_classifier_override is not None:
             return self._bloom_classifier_override
         if self._bloom_classifier_resolution_attempted:
             return self._bloom_classifier_resolved
         self._bloom_classifier_resolution_attempted = True
         try:
-            from lib.classifiers.bloom_bert_ensemble import (
-                BloomBertEnsemble,
-            )
-
-            self._bloom_classifier_resolved = BloomBertEnsemble()
+            self._bloom_classifier_resolved = _ZeroShotBloomClassifier()
         except Exception as exc:  # noqa: BLE001
             logger.debug(
-                "BloomBertEnsemble construction raised: %s", exc
+                "Zero-shot Bloom classifier construction raised: %s", exc
             )
             self._bloom_classifier_resolved = None
         return self._bloom_classifier_resolved
@@ -426,6 +785,7 @@ class TrainingPairPromotionValidator:
         kind: str,
         chunk: Optional[Dict[str, Any]] = None,
         decision_capture: Any = None,
+        authorized_private_sidecar: Optional[Dict[str, Any]] = None,
     ) -> Tuple[str, Optional[str], Dict[str, Any]]:
         """Audit one pair against the seven hard-rejection criteria.
 
@@ -510,9 +870,28 @@ class TrainingPairPromotionValidator:
         observed_bloom, bloom_winner_score = _classify_bloom(
             text=bloom_surface, classifier=bloom_classifier
         )
+        from lib.validators.pair.objective_delivery import (
+            recompute_complete_objective_bloom_authority,
+        )
+
+        objective_bloom_authority = (
+            recompute_complete_objective_bloom_authority(pair)
+        )
+        if objective_bloom_authority is not None:
+            observed_bloom = objective_bloom_authority["observed_bloom"]
         bloom_alignment: Optional[bool]
-        if observed_bloom is not None and declared_bloom is not None:
-            bloom_alignment = (observed_bloom == declared_bloom)
+        if (
+            observed_bloom in BLOOM_LEVELS
+            and declared_bloom in BLOOM_LEVELS
+            and bloom_winner_score is not None
+            and bloom_winner_score > _DISAGREEMENT_CONFIDENCE_FLOOR
+        ):
+            # Bloom is an ordered minimum-demand contract: demonstrating a
+            # higher cognitive level satisfies a lower declared objective.
+            bloom_alignment = (
+                BLOOM_LEVELS.index(observed_bloom)
+                >= BLOOM_LEVELS.index(declared_bloom)
+            )
         else:
             bloom_alignment = None
         new_fields["observed_bloom"] = observed_bloom
@@ -566,10 +945,31 @@ class TrainingPairPromotionValidator:
             if embedder is not None:
                 try:
                     vec_answer = embedder.encode(answer)
-                    vec_chunk = embedder.encode(chunk_text)
-                    cos = _cosine_similarity_safe(vec_answer, vec_chunk)
-                    if cos is not None:
-                        answer_support_score = cos
+                    # A whole long chunk is a poor embedding target for a
+                    # concise, correctly grounded answer. Reuse the claim
+                    # validator's bounded lexical retrieval only to select
+                    # candidate evidence windows, then retain the semantic
+                    # cosine gate and its existing threshold. This improves
+                    # evidence resolution without weakening the validator.
+                    from lib.validators.pair.claim_support import (
+                        _localized_source_premises,
+                    )
+
+                    support_surfaces = [chunk_text]
+                    support_surfaces.extend(
+                        _localized_source_premises(chunk_text, answer)
+                    )
+                    support_scores = [
+                        _cosine_similarity_safe(
+                            vec_answer, embedder.encode(surface)
+                        )
+                        for surface in support_surfaces
+                    ]
+                    valid_scores = [
+                        score for score in support_scores if score is not None
+                    ]
+                    if valid_scores:
+                        answer_support_score = max(valid_scores)
                     else:
                         answer_support_score = _jaccard_overlap(
                             answer, chunk_text
@@ -587,6 +987,38 @@ class TrainingPairPromotionValidator:
             else:
                 answer_support_score = _jaccard_overlap(answer, chunk_text)
         new_fields["answer_support_score"] = answer_support_score
+        answer_support_authority = (
+            _objective_execution_answer_support_proof(
+                pair, answer=answer, source_chunk_id=source_chunk_id,
+                authorized_private_sidecar=authorized_private_sidecar,
+            )
+            or _complete_claim_proof(
+                pair,
+                answer=answer,
+                source_chunk_id=source_chunk_id,
+            )
+        )
+        if (
+            answer_support_authority is not None
+            and answer_support_authority.get("contract")
+            == _OBJECTIVE_EXECUTION_AUTHORITY_CONTRACT
+            and isinstance(pair.get("_objective_execution_candidate"), dict)
+        ):
+            pair["_objective_execution_candidate"][
+                "answer_support_authority"
+            ] = dict(answer_support_authority)
+        answer_support_outcome: Optional[str] = None
+        if answer_support_score is not None:
+            answer_support_outcome = (
+                "meets_floor"
+                if answer_support_score
+                >= thresholds["min_answer_support_score"]
+                else (
+                    "below_floor_superseded"
+                    if answer_support_authority is not None
+                    else "below_floor"
+                )
+            )
 
         # ---- Criterion 3: weak distractor (preference only) ---- #
         distractor_distinctness: Optional[float] = None
@@ -668,6 +1100,7 @@ class TrainingPairPromotionValidator:
             and answer_support_score is not None
             and answer_support_score
             < thresholds["min_answer_support_score"]
+            and answer_support_authority is None
         ):
             rejection_reason = "unsupported_answer"
         elif (
@@ -680,7 +1113,10 @@ class TrainingPairPromotionValidator:
         elif (
             observed_bloom is not None
             and declared_bloom is not None
-            and observed_bloom != declared_bloom
+            and observed_bloom in BLOOM_LEVELS
+            and declared_bloom in BLOOM_LEVELS
+            and BLOOM_LEVELS.index(observed_bloom)
+            < BLOOM_LEVELS.index(declared_bloom)
             and bloom_winner_score is not None
             and bloom_winner_score > _DISAGREEMENT_CONFIDENCE_FLOOR
         ):
@@ -695,6 +1131,7 @@ class TrainingPairPromotionValidator:
         promotion_status = (
             "rejected" if rejection_reason is not None else "validated"
         )
+        new_fields["promotion_status"] = promotion_status
 
         _emit_decision(
             decision_capture,
@@ -714,6 +1151,8 @@ class TrainingPairPromotionValidator:
             thresholds=thresholds,
             embedder_strict=embedder_strict,
             fallback_to_jaccard=fallback_to_jaccard,
+            answer_support_authority=answer_support_authority,
+            answer_support_outcome=answer_support_outcome,
         )
 
         return promotion_status, rejection_reason, new_fields
@@ -803,6 +1242,7 @@ class TrainingPairPromotionValidator:
         issues: List[GateIssue] = []
         audited = 0
         missing_status_count = 0
+        invalid_authority_count = 0
         for path in (inst_path, pref_path):
             if path is None or not path.exists():
                 continue
@@ -833,6 +1273,74 @@ class TrainingPairPromotionValidator:
                                     ),
                                     location=str(path),
                                 ))
+                        score = row.get("answer_support_score")
+                        if (
+                            row.get("promotion_status") == "validated"
+                            and isinstance(score, (int, float))
+                            and score < self._min_answer_support_score
+                            and (
+                                isinstance(
+                                    row.get(
+                                        "_objective_execution_candidate"
+                                    ),
+                                    dict,
+                                )
+                                or (
+                                    row.get("projection_contract") in {
+                                        "ed4all-dpo-preference.v2",
+                                        "ed4all-sft-chat.v2",
+                                    }
+                                    and isinstance(
+                                        row.get("per_claim_support"), list,
+                                    )
+                                )
+                            )
+                        ):
+                            answer = str(
+                                row.get("completion")
+                                if path == inst_path
+                                else row.get("chosen")
+                                or ""
+                            )
+                            recomputed = (
+                                _replay_objective_execution_public_authority(
+                                    row,
+                                    answer=answer,
+                                    source_chunk_id=str(
+                                        row.get("source_chunk_id") or ""
+                                    ),
+                                )
+                                if isinstance(
+                                    row.get(
+                                        "_objective_execution_candidate"
+                                    ),
+                                    dict,
+                                )
+                                else _complete_claim_proof(
+                                    row,
+                                    answer=answer,
+                                    source_chunk_id=str(
+                                        row.get("source_chunk_id") or ""
+                                    ),
+                                )
+                            )
+                            if (
+                                recomputed is None
+                            ):
+                                invalid_authority_count += 1
+                                if len(issues) < 50:
+                                    issues.append(GateIssue(
+                                        severity="critical",
+                                        code=(
+                                            "INVALID_ANSWER_SUPPORT_AUTHORITY"
+                                        ),
+                                        message=(
+                                            f"{path.name}:{line_num} has "
+                                            "a non-reproducible superseding "
+                                            "answer-support proof."
+                                        ),
+                                        location=str(path),
+                                    ))
             except OSError as exc:
                 issues.append(GateIssue(
                     severity="critical",
@@ -843,8 +1351,12 @@ class TrainingPairPromotionValidator:
                     location=str(path),
                 ))
 
-        passed = missing_status_count == 0 and not any(
+        passed = (
+            missing_status_count == 0
+            and invalid_authority_count == 0
+            and not any(
             i.severity == "critical" for i in issues
+            )
         )
         action: Optional[str] = None if passed else "block"
 
@@ -860,7 +1372,9 @@ class TrainingPairPromotionValidator:
                     rationale=(
                         f"On-disk audit: {audited} pair(s) audited, "
                         f"{missing_status_count} missing "
-                        f"promotion_status. Strict embedder mode="
+                        f"promotion_status and {invalid_authority_count} "
+                        f"invalid answer-support authorities. "
+                        f"Strict embedder mode="
                         f"{embedder_strict}."
                     ),
                 )

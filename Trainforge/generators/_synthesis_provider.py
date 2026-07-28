@@ -47,6 +47,7 @@ unchanged.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple
@@ -83,6 +84,17 @@ ENV_MODEL = "TRAINFORGE_SYNTHESIS_MODEL"
 
 # Default provider (endpoint name) — the local seat.
 DEFAULT_PROVIDER = "local"
+
+# A length stop is transport-valid but unusable for strict JSON. Permit two
+# compact remediations without allowing the general parse-retry budget (ten in
+# production) to turn into ten full-cap generations.
+MAX_COMPACT_TRUNCATION_RETRIES = 2
+
+# Verbatim-copy remediation is a semantic rewrite loop, not a JSON parse
+# failure.  Keep its budget independent so malformed-output retries cannot
+# consume the two source-free rewrite opportunities (or accidentally grant
+# more of them).
+MAX_LEAKAGE_REWRITE_RETRIES = 2
 
 
 def _resolve_provenance_provider(provider: str) -> str:
@@ -203,6 +215,12 @@ class SynthesisProvider:
       lean renderer for EVERY pair kind. The preserve directive is gated
       separately by ``preserve_tokens_enabled``; on the cutover both
       flags co-vary with ``is_local`` (see :func:`build_synthesis_provider`).
+    - ``reasoning_thinking_off`` — explicitly disables reasoning-token output
+      for this synthesis request.  The provider factory enables it for the
+      local training-pair seat so an exact TRT-LLM deployment cannot consume
+      the fixed 800-token response budget with hidden reasoning.  Direct local
+      callers inherit the same safe default; hosted/non-local callers retain
+      their existing behavior unless they opt in explicitly.
     """
 
     def __init__(
@@ -221,6 +239,7 @@ class SynthesisProvider:
         terse_prompts: bool = True,
         preserve_tokens_enabled: bool = True,
         local_user_directives: bool = True,
+        reasoning_thinking_off: Optional[bool] = None,
     ) -> None:
         # The raw endpoint NAME — surfaced in the decision-capture rationale
         # + error messages so the audit trail records WHICH endpoint row was
@@ -278,6 +297,11 @@ class SynthesisProvider:
         # False → omitted, so the together path's rendered user prompt is
         # byte-identical to TogetherSynthesisProvider's lean renderer.
         self._local_user_directives = bool(local_user_directives)
+        self._reasoning_thinking_off = (
+            provider == "local"
+            if reasoning_thinking_off is None
+            else bool(reasoning_thinking_off)
+        )
 
         # Prompt-behavior switch — the ONLY per-mode difference.
         self._terse_prompts = bool(terse_prompts)
@@ -353,7 +377,21 @@ class SynthesisProvider:
         # When preserve is disabled (together-leaf parity), drop the tokens
         # entirely: no directive rendered, no preservation gate run.
         preserve = list(preserve_tokens or []) if self._preserve_tokens_enabled else []
-        user_prompt = self._render_instruction_user(draft, chunk_id, preserve)
+        user_prompt = self._render_instruction_user(
+            draft,
+            chunk_id,
+            preserve,
+            focus=chunk.get("synthesis_focus_objective"),
+        )
+        retry_contract = self._validator_contract(
+            bloom_level=str(
+                draft.get("bloom_level") or chunk.get("bloom_level") or ""
+            ),
+            content_type=str(
+                draft.get("content_type") or chunk.get("chunk_type") or ""
+            ),
+            answer_field="completion",
+        )
 
         parsed, usage, retry_count = self._call_with_parse(
             system_prompt=self._instruction_system_prompt,
@@ -362,6 +400,8 @@ class SynthesisProvider:
             required_keys=("prompt", "completion"),
             preserve_tokens=preserve,
             preserve_in_keys=("prompt", "completion"),
+            leakage_keys=("prompt", "completion"),
+            retry_contract=retry_contract,
         )
 
         out = dict(draft)
@@ -409,7 +449,21 @@ class SynthesisProvider:
         # When preserve is disabled (together-leaf parity), drop the tokens
         # entirely: no directive rendered, no preservation gate run.
         preserve = list(preserve_tokens or []) if self._preserve_tokens_enabled else []
-        user_prompt = self._render_preference_user(draft, chunk_id, preserve)
+        user_prompt = self._render_preference_user(
+            draft,
+            chunk_id,
+            preserve,
+            focus=chunk.get("synthesis_focus_objective"),
+        )
+        retry_contract = self._validator_contract(
+            bloom_level=str(
+                draft.get("bloom_level") or chunk.get("bloom_level") or ""
+            ),
+            content_type=str(
+                draft.get("content_type") or chunk.get("chunk_type") or ""
+            ),
+            answer_field="chosen",
+        )
 
         parsed, usage, retry_count = self._call_with_parse(
             system_prompt=self._preference_system_prompt,
@@ -418,6 +472,8 @@ class SynthesisProvider:
             required_keys=("prompt", "chosen", "rejected"),
             preserve_tokens=preserve,
             preserve_in_keys=("chosen",),
+            leakage_keys=("prompt", "chosen", "rejected"),
+            retry_contract=retry_contract,
         )
 
         out = dict(draft)
@@ -472,6 +528,8 @@ class SynthesisProvider:
         required_keys: tuple,
         preserve_tokens: Optional[List[str]] = None,
         preserve_in_keys: tuple = (),
+        leakage_keys: tuple = (),
+        retry_contract: str = "",
     ) -> Tuple[Dict[str, Any], Dict[str, int], int]:
         """Call the backend and parse JSON via the lenient extractor.
 
@@ -484,34 +542,67 @@ class SynthesisProvider:
         on a preservation miss, ``surface_form_preservation_failed``).
         """
         messages = self._build_messages(system_prompt, chunk_text, user_prompt)
-        attempts = 0
+        requests_made = 0
+        parse_retries = 0
         last_err: Optional[str] = None
         last_text: str = ""
         total_http_retries = 0
         last_usage: Dict[str, int] = {}
-        retry_budget = self._max_parse_retries
-        while attempts < retry_budget:
-            attempts += 1
-            text, usage, http_retries = self._chat_completion_raw(messages)
+        # Preserve the historical parse semantics: max_parse_retries names
+        # the total malformed-output attempt budget (so 1 means no retry).
+        # A value of zero still permits the one request needed to determine
+        # whether the response is truncated; it permits no parse retry.
+        parse_retry_budget = max(0, self._max_parse_retries - 1)
+        truncation_retries = 0
+        leakage_retries = 0
+        leakage_exhausted = False
+        while True:
+            requests_made += 1
+            try:
+                text, usage, http_retries = self._chat_completion_raw(messages)
+            except SynthesisProviderError as exc:
+                # A truncated response is a capacity/configuration failure,
+                # never a content-repair opportunity. Retrying with a shorter
+                # prompt would hide the no-go signal and could produce a
+                # different, silently reduced training artifact.
+                if not getattr(exc, "_direct_capture_emitted", False):
+                    self._capture_failed_raw_call(
+                        required_keys, requests_made,
+                        str(getattr(exc, "code", "") or type(exc).__name__),
+                        {},
+                    )
+                raise
             total_http_retries += http_retries
             last_usage = usage
             last_text = text
             parsed = self._oa_client._extract_json_lenient(text)
             if parsed is None:
                 last_err = "lenient JSON extraction returned None"
+                self._capture_failed_raw_call(
+                    required_keys, requests_made, last_err, usage,
+                )
+                if parse_retries >= parse_retry_budget:
+                    break
+                parse_retries += 1
                 logger.warning(
                     "%s synthesis: lenient parse retry %d/%d: "
                     "no JSON object recoverable from response tail %r",
-                    self._provider_name, attempts, retry_budget,
+                    self._provider_name, parse_retries, parse_retry_budget,
                     text[-120:],
                 )
                 continue
             missing = [k for k in required_keys if k not in parsed]
             if missing:
                 last_err = f"response missing required keys: {missing}"
+                self._capture_failed_raw_call(
+                    required_keys, requests_made, last_err, usage,
+                )
+                if parse_retries >= parse_retry_budget:
+                    break
+                parse_retries += 1
                 logger.warning(
                     "%s synthesis: lenient parse retry %d/%d: %s",
-                    self._provider_name, attempts, retry_budget,
+                    self._provider_name, parse_retries, parse_retry_budget,
                     last_err,
                 )
                 continue
@@ -519,13 +610,48 @@ class SynthesisProvider:
             if short is not None:
                 field, length, floor = short
                 last_err = f"{field} length {length} below minimum {floor}"
+                self._capture_failed_raw_call(
+                    required_keys, requests_made, last_err, usage,
+                )
+                if parse_retries >= parse_retry_budget:
+                    break
+                parse_retries += 1
                 logger.warning(
                     "%s synthesis: length-retry %d/%d: %s",
-                    self._provider_name, attempts, retry_budget,
+                    self._provider_name, parse_retries, parse_retry_budget,
                     last_err,
                 )
                 messages = self._append_length_remediation(
                     messages, field, length, floor,
+                )
+                continue
+            leaked = self._first_verbatim_leak(
+                parsed, chunk_text, leakage_keys,
+            )
+            if leaked is not None:
+                field, excerpt = leaked
+                last_err = (
+                    f"{field} contains a 50-character verbatim source span "
+                    f"{excerpt!r}"
+                )
+                self._capture_failed_raw_call(
+                    required_keys, requests_made, last_err, usage,
+                )
+                if leakage_retries >= MAX_LEAKAGE_REWRITE_RETRIES:
+                    leakage_exhausted = True
+                    break
+                leakage_retries += 1
+                logger.warning(
+                    "%s synthesis: leakage-retry %d/%d: %s",
+                    self._provider_name, leakage_retries,
+                    MAX_LEAKAGE_REWRITE_RETRIES, last_err,
+                )
+                messages = self._build_leakage_retry_messages(
+                    system_prompt=system_prompt,
+                    parsed=parsed,
+                    field=field,
+                    required_keys=required_keys,
+                    retry_contract=retry_contract,
                 )
                 continue
             # Surface-form preservation gate. After length passes, verify
@@ -548,9 +674,16 @@ class SynthesisProvider:
                         f"(preserved {preserved_rate:.2f} < floor "
                         f"{self._min_preserve_rate:.2f})"
                     )
+                    self._capture_failed_raw_call(
+                        required_keys, requests_made, last_err, usage,
+                    )
+                    if parse_retries >= parse_retry_budget:
+                        break
+                    parse_retries += 1
                     logger.warning(
                         "%s synthesis: preserve-retry %d/%d: %s",
-                        self._provider_name, attempts, retry_budget,
+                        self._provider_name, parse_retries,
+                        parse_retry_budget,
                         last_err,
                     )
                     messages = self._append_preserve_remediation(
@@ -564,21 +697,145 @@ class SynthesisProvider:
                     self._min_preserve_rate, missing_tokens,
                 )
             return parsed, last_usage, total_http_retries
+        if leakage_exhausted:
+            raise SynthesisProviderError(
+                f"{type(self).__name__}: provider output still contained a "
+                "50-character verbatim source span after "
+                f"{leakage_retries} bounded source-free rewrite retries. "
+                f"{last_err}; tail of last response: {last_text[-500:]!r}",
+                code="provider_output_verbatim_leakage",
+            )
         # Distinguish preservation failure so the caller can fall back to
         # the deterministic draft instead of dropping the pair entirely.
         if preserve_tokens and last_err and "surface forms missing" in last_err:
             raise SynthesisProviderError(
                 f"{type(self).__name__}: paraphrase dropped required surface "
-                f"forms after {retry_budget} attempts. {last_err}; "
+                f"forms after {requests_made} requests. {last_err}; "
                 f"tail of last response: {last_text[-500:]!r}",
                 code="surface_form_preservation_failed",
             )
+        if last_err == "output_truncated":
+            raise SynthesisProviderError(
+                f"{type(self).__name__}: backend repeatedly ended the "
+                f"structured response with finish_reason='length' after "
+                f"{truncation_retries} bounded compact retries at "
+                f"max_tokens={self._max_tokens}",
+                code="output_truncated",
+            )
         raise SynthesisProviderError(
             f"{type(self).__name__}: failed to obtain a valid paraphrase "
-            f"after {retry_budget} attempts. Last error: {last_err}; "
+            f"after {requests_made} requests "
+            f"({parse_retries}/{parse_retry_budget} parse retries). "
+            f"Last error: {last_err}; "
             f"tail of last response: {last_text[-500:]!r}",
             code="paraphrase_invalid_after_retry",
         )
+
+    def _capture_failed_raw_call(
+        self, required_keys: tuple, attempt: int, error: str,
+        usage: Dict[str, int],
+    ) -> None:
+        if self._capture is None:
+            return
+        kind = "preference" if "chosen" in required_keys else "instruction"
+        self._capture.log_decision(
+            decision_type="synthesis_provider_call",
+            decision=f"Rejected {kind} raw synthesis attempt {attempt}.",
+            rationale=(
+                f"model={self._model}, stage={kind}_raw, attempt={attempt}, "
+                f"max_tokens={self._max_tokens}, error={error}, "
+                f"prompt_tokens={int(usage.get('prompt_tokens', 0))}, "
+                f"completion_tokens={int(usage.get('completion_tokens', 0))}; "
+                "the response was not accepted into a training pair."
+            ),
+        )
+
+    @staticmethod
+    def _build_compact_retry_messages(
+        messages: List[Dict[str, str]],
+        required_keys: tuple,
+    ) -> List[Dict[str, str]]:
+        """Add a deterministic brevity turn after output truncation."""
+        limits = {
+            "prompt": 220,
+            "completion": 420,
+            "chosen": 280,
+            "rejected": 280,
+        }
+        requested = ", ".join(
+            f"{key}≤{limits.get(key, 280)} characters"
+            for key in required_keys
+        )
+        remediation = (
+            "The prior structured response exceeded the output-token cap. "
+            "Retry compactly with no analysis, preamble, evidence list, "
+            "markdown, or extra keys. Use one concise sentence per factual "
+            f"claim and obey these hard budgets: {requested}. Preserve the "
+            "same grounded meaning and required technical tokens. Return the "
+            "complete strict JSON object only."
+        )
+        return list(messages) + [{"role": "user", "content": remediation}]
+
+    @staticmethod
+    def _first_verbatim_leak(
+        parsed: Dict[str, Any],
+        chunk_text: str,
+        keys: tuple,
+        span_chars: int = 50,
+    ) -> Optional[Tuple[str, str]]:
+        """Return the first output field containing a source-copy span."""
+        source = str(chunk_text or "").lower()
+        if len(source) < span_chars:
+            return None
+        for key in keys:
+            candidate = str(parsed.get(key, "") or "")
+            lowered = candidate.lower()
+            for index in range(max(0, len(lowered) - span_chars + 1)):
+                window = lowered[index:index + span_chars]
+                if window in source:
+                    return key, candidate[index:index + span_chars]
+        return None
+
+    @staticmethod
+    def _build_leakage_retry_messages(
+        *,
+        system_prompt: str,
+        parsed: Dict[str, Any],
+        field: str,
+        required_keys: tuple,
+        retry_contract: str = "",
+    ) -> List[Dict[str, str]]:
+        # Do not resend the raw source on leakage retries. The first response
+        # was generated against it; subsequent turns are pure meaning-
+        # preserving rewrites of that grounded draft. Keeping the source in
+        # context caused Super to reproduce the same objective sentence over
+        # and over despite explicit anti-copy instructions.
+        draft = {
+            key: parsed.get(key, "")
+            for key in required_keys
+        }
+        remediation = (
+            f"Rewrite this grounded JSON because {field} copied too much "
+            "source wording:\n"
+            f"{json.dumps(draft, sort_keys=True)}\n\n"
+            "Keep every factual proposition, technical term, citation, and "
+            "cognitive demand, but use different clause structure, word "
+            "order, and connective language. Break up or reorder every phrase "
+            "longer than six words. Do not add facts. "
+            f"{retry_contract} "
+            "Return only a JSON "
+            f"object with exactly these keys: {', '.join(required_keys)}."
+        )
+        return [
+            {
+                "role": "system",
+                "content": (
+                    f"{system_prompt}\n\nYou are revising an already-grounded "
+                    "draft. Do not reconstruct or expand it from memory."
+                ),
+            },
+            {"role": "user", "content": remediation},
+        ]
 
     @staticmethod
     def _missing_preserve_tokens(
@@ -662,8 +919,13 @@ class SynthesisProvider:
             apply_reasoning_thinking_off_payload,
         )
 
-        apply_reasoning_thinking_off_payload(payload)
-        body, retry_count = self._oa_client._post_with_retry(payload)
+        apply_reasoning_thinking_off_payload(
+            payload,
+            force_thinking_off=self._reasoning_thinking_off,
+        )
+        body, retry_count = self._oa_client.post_with_usage(
+            payload, task="synthesis_raw",
+        )
         text = self._oa_client._extract_text(body)
         usage = self._oa_client._extract_usage(body)
         return text, usage, retry_count
@@ -704,9 +966,58 @@ class SynthesisProvider:
             f"rewrite them as natural language."
         )
 
+    @staticmethod
+    def _validator_contract(
+        *,
+        bloom_level: str,
+        content_type: str,
+        answer_field: str,
+    ) -> str:
+        """Render source-grounded constraints matching downstream validators."""
+        bloom = str(bloom_level or "").strip().lower()
+        content = str(content_type or "").strip().lower()
+        action = {
+            "analyze": (
+                "The prompt must explicitly ask to analyze, compare, contrast, "
+                "or examine a relationship; the answer must explain that "
+                "relationship using only source-supported evidence."
+            ),
+            "evaluate": (
+                "The prompt must explicitly ask for a judgment using a stated "
+                "source-grounded criterion; the answer must make and justify "
+                "that judgment without inventing a criterion or evidence."
+            ),
+            "create": (
+                "The prompt must explicitly ask the learner to construct, "
+                "formulate, or produce a representation from relationships or "
+                "quantities already stated in the source; the answer must "
+                "perform that construction without adding inputs."
+            ),
+        }.get(
+            bloom,
+            (
+                "Keep the prompt's requested cognitive action at the stated "
+                "Bloom level and answer that action directly."
+            ),
+        )
+        assessment = ""
+        if "assessment" in content:
+            assessment = (
+                " This is an assessment item: answer only its stated task and "
+                "do not add a new example, scenario, quantity, or premise."
+            )
+        return (
+            f"VALIDATOR CONTRACT for {answer_field}: {action}{assessment} "
+            "Use one independently supportable factual claim per sentence. "
+            "Omit generic benefits, advice, transfer claims, and background "
+            "not explicitly supported by the supplied source."
+        )
+
     def _render_instruction_user(
         self, draft: Dict[str, Any], chunk_id: str,
         preserve_tokens: Optional[List[str]] = None,
+        *,
+        focus: Optional[Any] = None,
     ) -> str:
         from Trainforge.generators._base_synthesis_provider import (
             EVIDENCE_QUOTE_PROMPT_DIRECTIVE,
@@ -739,6 +1050,44 @@ class SynthesisProvider:
                     "Do NOT emit a bare 'Define X.' or 'What is X?' prompt — "
                     "those are too short."
                 )
+        grounding_directive = ""
+        validator_contract = ""
+        if isinstance(focus, dict) and focus.get("id") and focus.get("statement"):
+            validator_contract = self._validator_contract(
+                bloom_level=str(draft.get("bloom_level") or ""),
+                content_type=str(draft.get("content_type") or ""),
+                answer_field="completion",
+            )
+            grounding_directive = (
+                "\n\nGROUNDING FOCUS: Rewrite this pair to teach only "
+                f"{focus['id']}: {focus['statement']} "
+                "Make the rewritten prompt explicitly ask the learner to "
+                "perform the same cognitive action on the same object, but "
+                "paraphrase the objective's syntax and surrounding wording. "
+                "Every factual claim in the completion must be directly "
+                "supported by that source objective or the supplied source "
+                "chunk. Do not add examples, quantities, procedures, or "
+                "background facts that the source does not state. Express "
+                "distinct factual claims as short separate sentences; do not "
+                "join independent claims with a semicolon. Reuse the source's "
+                "necessary technical nouns, but change syntax and word order "
+                "so no prompt or completion copies 50 consecutive source "
+                "characters. Each answer sentence must still map to evidence. Prefer one to "
+                "three sentences and omit unsupported framing."
+            )
+        elif self._local_user_directives:
+            grounding_directive = (
+                "\n\nSOURCE GROUNDING: Treat the draft as a format hint, not "
+                "a source of facts. Replace generic draft assertions with one "
+                "concrete relationship, rule, or procedure supported by "
+                "the supplied source chunk. Reuse necessary technical "
+                "nouns, but change syntax and word order. No prompt or "
+                "completion may copy 50 consecutive source characters. "
+                "The completion must contain only "
+                "one to three short source-supported sentences. Do not add "
+                "transfer claims, learning advice, examples, quantities, or "
+                "background facts absent from the source."
+            )
         return (
             f"Chunk ID: {chunk_id}\n"
             f"Bloom level: {draft.get('bloom_level','unknown')}\n"
@@ -753,6 +1102,8 @@ class SynthesisProvider:
             f"'prompt' and 'completion'."
             f"{preserve}"
             f"{definition_directive}"
+            f"{grounding_directive}"
+            f"{f'{chr(10)}{chr(10)}{validator_contract}' if validator_contract else ''}"
             f"{EVIDENCE_QUOTE_PROMPT_DIRECTIVE}"
             f"{self._INSTRUCTION_JSON_DIRECTIVE}"
         )
@@ -760,6 +1111,8 @@ class SynthesisProvider:
     def _render_preference_user(
         self, draft: Dict[str, Any], chunk_id: str,
         preserve_tokens: Optional[List[str]] = None,
+        *,
+        focus: Optional[Any] = None,
     ) -> str:
         from Trainforge.generators._base_synthesis_provider import (
             EVIDENCE_QUOTE_PROMPT_DIRECTIVE,
@@ -767,6 +1120,63 @@ class SynthesisProvider:
         preserve = self._preserve_directive(
             preserve_tokens or [], "the chosen completion",
         )
+        grounding_directive = ""
+        bloom_level = str(draft.get("bloom_level") or "").strip().lower()
+        validator_contract = ""
+        upper_bloom = bloom_level in {"analyze", "evaluate", "create"}
+        chosen_shape = (
+            "Keep the chosen completion to one or two short sentences. It "
+            "must execute the requested cognitive action using only "
+            "source-supported relationships or criteria. "
+            if upper_bloom
+            else
+            "Keep the chosen completion as exactly ONE sentence of no more "
+            "than 25 words that closely restates one source fact. "
+        )
+        if isinstance(focus, dict) and focus.get("id") and focus.get("statement"):
+            validator_contract = self._validator_contract(
+                bloom_level=bloom_level,
+                content_type=str(draft.get("content_type") or ""),
+                answer_field="chosen",
+            )
+            grounding_directive = (
+                "\n\nGROUNDING FOCUS: Rewrite this pair to teach only "
+                f"{focus['id']}: {focus['statement']} "
+                "Make the rewritten prompt explicitly ask the learner to "
+                "perform the same cognitive action on the same object, but "
+                "paraphrase the objective's syntax and surrounding wording. "
+                "Every factual claim in the chosen completion must be directly "
+                "supported by that source objective or the supplied source "
+                "chunk. Keep the rejected completion plausibly wrong, but do "
+                "not introduce unrelated subject matter. "
+                f"{chosen_shape}"
+                "Do not use semicolons, parentheses, or examples inside the "
+                "chosen completion. Reuse necessary technical nouns while "
+                "changing syntax and word order; neither prompt nor chosen "
+                "may copy 50 consecutive source characters. The "
+                "rejected answer must express one source-relevant misconception "
+                "in substantially different wording: fewer than half of its "
+                "content words should overlap the chosen answer. Do not create "
+                "the rejected answer by merely inserting 'not' or swapping a "
+                "single word."
+            )
+        elif self._local_user_directives:
+            grounding_directive = (
+                "\n\nSOURCE GROUNDING: Treat the drafts as format hints, not "
+                "sources of facts. Rewrite the chosen answer around one "
+                "concrete relationship, rule, or procedure supported by "
+                "the supplied source chunk, reusing necessary technical nouns "
+                "while changing syntax and word order. No prompt or chosen "
+                "answer may copy 50 consecutive source characters. "
+                "The chosen answer must be exactly ONE "
+                "sentence of no more than 25 words, closely restating one "
+                "source fact without an example, semicolon, learning advice, "
+                "or transfer claim. Rewrite the rejected answer as exactly one "
+                "plausible, source-relevant "
+                "misconception in substantially different wording; fewer than "
+                "half its content words should overlap the chosen answer. Do "
+                "not form it by merely inserting 'not' or swapping one word."
+            )
         return (
             f"Chunk ID: {chunk_id}\n"
             f"Source: {draft.get('rejected_source','unknown')}\n"
@@ -780,6 +1190,8 @@ class SynthesisProvider:
             f"Rewrite all three. Return JSON with keys 'prompt', "
             f"'chosen', and 'rejected'."
             f"{preserve}"
+            f"{grounding_directive}"
+            f"{f'{chr(10)}{chr(10)}{validator_contract}' if validator_contract else ''}"
             f"{EVIDENCE_QUOTE_PROMPT_DIRECTIVE}"
             f"{self._PREFERENCE_JSON_DIRECTIVE}"
         )
@@ -801,12 +1213,19 @@ class SynthesisProvider:
                 chunk_id=chunk_id,
             )
         if len(s) > hi:
-            hard = s[:hi]
-            period = hard.rfind(". ")
-            if period > lo:
-                s = hard[: period + 1]
-            else:
-                s = hard.rstrip() + "..."
+            raise SynthesisProviderError(
+                f"{kind} length {len(s)} exceeds maximum {hi}; refusing "
+                "field clamp/slice because that would truncate the training "
+                "artifact",
+                code="field_clamp_truncation",
+                chunk_id=chunk_id,
+                details={
+                    "terminal_truncation": True,
+                    "field": kind,
+                    "observed_length": len(s),
+                    "maximum_length": hi,
+                },
+            )
         return s
 
     def _emit_decision(
@@ -931,11 +1350,16 @@ def build_synthesis_provider(
       All three local-rendering axes (``terse_prompts`` system prompt +
       ``preserve_tokens_enabled`` + ``local_user_directives``) are driven
       consistently by ``is_local``.
-    - ``timeout=DEFAULT_TIMEOUT`` (60.0) — both leaves construct their
-      client with the explicit hard 60s timeout. Pinned HERE rather than as
-      the class default so :class:`SynthesisProvider` stays flexible for
-      non-cutover callers (which let the client resolve
-      ``ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS``).
+    - ``timeout=None`` — lets the shared OpenAI-compatible client honor
+      ``ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS`` when the operator sets it,
+      while its unset / garbage / non-positive fallback remains the
+      leaf-exact 60 seconds.  This matters for local Super workloads whose
+      production-shaped p99 can exceed the short-prompt benchmark without
+      changing the default for any provider.
+    - ``reasoning_thinking_off`` — enabled only for the local synthesis seat.
+      This is part of the local request contract rather than a run-only
+      environment tweak; other registry providers preserve their prior
+      reasoning behavior.
 
     ``model`` is NOT passed — ``None`` flows to the registry's per-provider
     ``model_env`` (``LOCAL_SYNTHESIS_MODEL`` / ``TOGETHER_SYNTHESIS_MODEL``),
@@ -944,17 +1368,44 @@ def build_synthesis_provider(
     threaded through; the together path passes None (leaf defaults).
     """
     is_local = provider == "local"
-    return SynthesisProvider(
+    base_provider = SynthesisProvider(
         provider=provider,
         capture=capture,
         terse_prompts=is_local,
         preserve_tokens_enabled=is_local,
         local_user_directives=is_local,
-        timeout=DEFAULT_TIMEOUT,
+        reasoning_thinking_off=is_local,
+        timeout=None,
         max_parse_retries=max_parse_retries,
         min_preserve_rate=min_preserve_rate,
         kind_bounds=kind_bounds,
     )
+    # Staged synthesis is an explicit opt-in.  Keeping the wrapper outside the
+    # base class makes the unset/default path byte-identical, while the active
+    # production workflow can separate evidence planning, SFT realization,
+    # and the two DPO branches into independently validated calls.
+    from Trainforge.generators.staged_synthesis_provider import (
+        StagedSynthesisProvider,
+        staged_synthesis_v4_enabled,
+    )
+    from Trainforge.generators.staged_synthesis_micro import (
+        MicroStagedSynthesisProvider,
+        staged_synthesis_micro_v1_enabled,
+    )
+
+    micro_enabled = staged_synthesis_micro_v1_enabled()
+    v4_enabled = staged_synthesis_v4_enabled()
+    if micro_enabled and v4_enabled:
+        raise SynthesisProviderError(
+            "staged synthesis contracts are mutually exclusive: both "
+            "micro-v1 and staged-v4 were enabled",
+            code="synthesis_contract_conflict",
+        )
+    if micro_enabled:
+        return MicroStagedSynthesisProvider(base_provider)  # type: ignore[return-value]
+    if v4_enabled:
+        return StagedSynthesisProvider(base_provider)  # type: ignore[return-value]
+    return base_provider
 
 
 __all__ = [

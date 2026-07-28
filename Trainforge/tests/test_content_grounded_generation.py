@@ -127,9 +127,22 @@ class TestContentExtractor:
             assert s.key_subject, f"Statement missing subject: {s.statement}"
 
     def test_extract_relationships(self):
-        rels = self.extractor.extract_relationships(SAMPLE_CHUNKS)
-        # Should find "Unlike intrinsic load, extraneous load..."
+        # Use two bounded noun phrases.  The longer ``Unlike intrinsic load,
+        # extraneous load can always be reduced ...`` sentence in
+        # ``SAMPLE_CHUNKS`` is deliberately *not* a valid relationship
+        # fixture: its second regex capture is a full finite-verb clause, and
+        # the anti-word-salad guard must reject it.
+        chunks = SAMPLE_CHUNKS + [{
+            "id": "chunk_relationship",
+            "text": "Intrinsic load differs from extraneous load.",
+        }]
+        rels = self.extractor.extract_relationships(chunks)
         assert len(rels) > 0, "Expected at least one relationship"
+        assert any(
+            rel.concept_a == "Intrinsic load"
+            and rel.concept_b == "extraneous load"
+            for rel in rels
+        )
 
     def test_extract_procedures(self):
         procs = self.extractor.extract_procedures(SAMPLE_CHUNKS)

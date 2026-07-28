@@ -382,6 +382,302 @@ def test_agnostic_recovers_fenced_where_strict_together_retries():
     assert len(seen) == 1
 
 
+def test_instruction_retries_adversarial_verbatim_source_copy():
+    source = _chunk()["text"]
+    leaky = json.dumps({
+        "prompt": "Explain the source concept and its later importance.",
+        "completion": source,
+    })
+    safe = json.dumps({
+        "prompt": "Why does topic X matter beyond its first introduction?",
+        "completion": (
+            "Later lessons rely on topic X, so learners need its core "
+            "definition before they can reason through subsequent examples."
+        ),
+    })
+    client = _client_yielding(
+        httpx.Response(200, json=_success_body(leaky)),
+        httpx.Response(200, json=_success_body(safe)),
+    )
+    provider = SynthesisProvider(
+        provider="local", client=client, max_parse_retries=2,
+    )
+
+    out = provider.paraphrase_instruction(_instruction_draft(), _chunk())
+
+    assert out["completion"] == json.loads(safe)["completion"]
+
+
+def test_preference_retries_verbatim_chosen_but_preserves_grounding():
+    source = _chunk()["text"]
+    leaky = json.dumps({
+        "prompt": "Explain topic X and its role in later course material.",
+        "chosen": source,
+        "rejected": (
+            "Topic X has no bearing on later lessons and can be ignored."
+        ),
+    })
+    safe = json.dumps({
+        "prompt": "How does topic X prepare a learner for later lessons?",
+        "chosen": (
+            "Understanding topic X gives learners the conceptual anchor "
+            "needed to interpret examples in subsequent chapters."
+        ),
+        "rejected": (
+            "Topic X is isolated from later lessons, so its definition "
+            "does not affect any subsequent examples."
+        ),
+    })
+    client = _client_yielding(
+        httpx.Response(200, json=_success_body(leaky)),
+        httpx.Response(200, json=_success_body(safe)),
+    )
+    provider = SynthesisProvider(
+        provider="local", client=client, max_parse_retries=2,
+    )
+
+    out = provider.paraphrase_preference(_preference_draft(), _chunk())
+
+    assert out["chosen"] == json.loads(safe)["chosen"]
+
+
+def test_leakage_rewrites_have_independent_two_retry_budget():
+    """A parse miss must not consume either source-free leakage rewrite."""
+    source = _chunk()["text"]
+    leaky = json.dumps({
+        "prompt": "Explain the source concept and its later importance.",
+        "completion": source,
+    })
+    safe = json.dumps({
+        "prompt": "How does topic X support later reasoning?",
+        "completion": (
+            "Topic X supplies a conceptual basis that learners apply when "
+            "they interpret later examples and compare their implications."
+        ),
+    })
+    client = _client_yielding(
+        httpx.Response(200, json=_success_body("not json")),
+        httpx.Response(200, json=_success_body(leaky)),
+        httpx.Response(200, json=_success_body(leaky)),
+        httpx.Response(200, json=_success_body(safe)),
+    )
+    provider = SynthesisProvider(
+        provider="local", client=client, max_parse_retries=2,
+    )
+
+    out = provider.paraphrase_instruction(_instruction_draft(), _chunk())
+
+    assert out["completion"] == json.loads(safe)["completion"]
+
+
+def test_leakage_exhaustion_is_loud_after_two_source_free_rewrites():
+    source = _chunk()["text"]
+    leaky = json.dumps({
+        "prompt": "Explain the source concept and its later importance.",
+        "completion": source,
+    })
+    client = _client_yielding(*[
+        httpx.Response(200, json=_success_body(leaky))
+        for _ in range(3)
+    ])
+    provider = SynthesisProvider(
+        provider="local", client=client, max_parse_retries=10,
+    )
+
+    with pytest.raises(SynthesisProviderError) as excinfo:
+        provider.paraphrase_instruction(_instruction_draft(), _chunk())
+
+    assert excinfo.value.code == "provider_output_verbatim_leakage"
+    assert "2 bounded source-free rewrite retries" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    ("bloom", "required_phrase"),
+    [
+        ("analyze", "analyze, compare, contrast, or examine a relationship"),
+        ("evaluate", "judgment using a stated source-grounded criterion"),
+        ("create", "construct, formulate, or produce a representation"),
+    ],
+)
+def test_upper_bloom_preference_contract_preserves_cognitive_action(
+    bloom, required_phrase,
+):
+    provider = SynthesisProvider(
+        provider="local",
+        client=_fixed_client(
+            json.dumps(
+                {
+                    "prompt": "Analyze the source relationship.",
+                    "chosen": "The relationship follows from the stated evidence.",
+                    "rejected": "The factors are unrelated.",
+                }
+            )
+        ),
+    )
+    draft = {
+        **_preference_draft(),
+        "bloom_level": bloom,
+        "content_type": "assessment_item",
+    }
+
+    rendered = provider._render_preference_user(
+        draft,
+        "chunk-upper",
+        focus={"id": "LO-1", "statement": "Evaluate the stated relationship."},
+    )
+
+    assert required_phrase in rendered
+    assert "one or two short sentences" in rendered
+    assert "answer only its stated task" in rendered
+    assert "exactly ONE sentence of no more than 25 words" not in rendered
+
+
+def test_low_bloom_preference_contract_retains_concise_grounded_shape():
+    provider = SynthesisProvider(
+        provider="local",
+        client=_fixed_client(
+            json.dumps(
+                {
+                    "prompt": "Explain the source fact.",
+                    "chosen": "The source states the relevant fact.",
+                    "rejected": "The source states an unrelated claim.",
+                }
+            )
+        ),
+    )
+    draft = {
+        **_preference_draft(),
+        "bloom_level": "understand",
+        "content_type": "explanation",
+    }
+
+    rendered = provider._render_preference_user(
+        draft,
+        "chunk-low",
+        focus={"id": "LO-2", "statement": "Explain the stated source fact."},
+    )
+
+    assert "exactly ONE sentence of no more than 25 words" in rendered
+    assert "one independently supportable factual claim per sentence" in rendered
+
+
+def test_source_free_leakage_retry_keeps_dynamic_validator_contract():
+    contract = SynthesisProvider._validator_contract(
+        bloom_level="evaluate",
+        content_type="assessment_item",
+        answer_field="chosen",
+    )
+    messages = SynthesisProvider._build_leakage_retry_messages(
+        system_prompt="Return grounded JSON.",
+        parsed={
+            "prompt": "Evaluate the relationship.",
+            "chosen": "The evidence supports the judgment.",
+            "rejected": "No relationship exists.",
+        },
+        field="chosen",
+        required_keys=("prompt", "chosen", "rejected"),
+        retry_contract=contract,
+    )
+
+    assert "source-grounded criterion" in messages[1]["content"]
+    assert "answer only its stated task" in messages[1]["content"]
+    assert "raw source text that must not be resent" not in json.dumps(messages)
+
+
+@pytest.mark.parametrize("parse_budget", [0, 1, 2, 10])
+def test_output_truncated_first_attempt_is_immediate_fatal(parse_budget):
+    truncated_body = _success_body('{"prompt":"unfinished')
+    truncated_body["choices"][0]["finish_reason"] = "length"
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json=truncated_body)
+
+    client = _make_client(handler)
+    provider = SynthesisProvider(
+        provider="local", client=client, max_parse_retries=parse_budget,
+    )
+
+    with pytest.raises(SynthesisProviderError) as excinfo:
+        provider.paraphrase_instruction(_instruction_draft(), _chunk())
+
+    assert excinfo.value.code == "output_truncated"
+    assert len(requests) == 1
+
+
+@pytest.mark.parametrize("parse_budget", [0, 1, 2, 10])
+def test_repeated_output_truncation_exhausts_bounded_retry_loudly(parse_budget):
+    truncated_body = _success_body('{"prompt":"unfinished')
+    truncated_body["choices"][0]["finish_reason"] = "length"
+    requests = []
+
+    def always_truncated(request):
+        requests.append(request)
+        return httpx.Response(200, json=truncated_body)
+
+    provider = SynthesisProvider(
+        provider="local",
+        client=_make_client(always_truncated),
+        max_parse_retries=parse_budget,
+    )
+
+    with pytest.raises(SynthesisProviderError) as excinfo:
+        provider.paraphrase_instruction(_instruction_draft(), _chunk())
+
+    assert excinfo.value.code == "output_truncated"
+    assert len(requests) == 1
+
+
+@pytest.mark.parametrize("parse_budget", [0, 1, 2])
+def test_malformed_json_uses_only_its_parse_retry_budget(parse_budget):
+    requests = []
+
+    def always_malformed(request):
+        requests.append(request)
+        return httpx.Response(200, json=_success_body("not JSON"))
+
+    provider = SynthesisProvider(
+        provider="local",
+        client=_make_client(always_malformed),
+        max_parse_retries=parse_budget,
+    )
+
+    with pytest.raises(SynthesisProviderError) as excinfo:
+        provider.paraphrase_instruction(_instruction_draft(), _chunk())
+
+    assert excinfo.value.code == "paraphrase_invalid_after_retry"
+    assert len(requests) == max(1, parse_budget)
+
+
+def test_truncation_preempts_malformed_retry_budget():
+    truncated = _success_body('{"prompt":"unfinished')
+    truncated["choices"][0]["finish_reason"] = "length"
+    responses = [
+        truncated,
+        _success_body("not JSON"),
+        truncated,
+        _success_body("terminal malformed response"),
+    ]
+    requests = []
+
+    def mixed_handler(request):
+        requests.append(request)
+        return httpx.Response(200, json=responses[len(requests) - 1])
+
+    provider = SynthesisProvider(
+        provider="local",
+        client=_make_client(mixed_handler),
+        max_parse_retries=2,
+    )
+
+    with pytest.raises(SynthesisProviderError) as excinfo:
+        provider.paraphrase_instruction(_instruction_draft(), _chunk())
+
+    assert excinfo.value.code == "output_truncated"
+    assert len(requests) == 1
+
+
 # ---------------------------------------------------------------------------
 # Provider tag == constructor provider (local / together / nvidia)
 # ---------------------------------------------------------------------------
@@ -407,8 +703,8 @@ def test_constructor_resolves_local_base_url_by_name():
     p = SynthesisProvider(
         provider="local", client=_fixed_client(_INSTRUCTION_COMPLETION),
     )
-    assert p.base_url == "http://localhost:11434/v1"
-    assert p.api_url == "http://localhost:11434/v1/chat/completions"
+    assert p.base_url == "http://localhost:8000/v1"
+    assert p.api_url == "http://localhost:8000/v1/chat/completions"
 
 
 def test_constructor_resolves_together_base_url_by_name():
@@ -654,16 +950,16 @@ def test_together_honors_its_own_model_env(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Bug #3 — the cutover builder pins the leaf's hard 60s timeout even when
-# ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS is set (often 300 in production).
+# The cutover builder preserves the 60s default but honors the established
+# cross-cutting operator override.
 # ---------------------------------------------------------------------------
 
 
-def test_builder_pins_60s_timeout_over_env(monkeypatch):
+def test_builder_honors_request_timeout_env(monkeypatch):
     monkeypatch.setenv("ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS", "300")
     # local needs no key + makes no HTTP call at construction.
     p = build_synthesis_provider("local")
-    assert p._oa_client._timeout == 60.0
+    assert p._oa_client._timeout == 300.0
 
 
 # ---------------------------------------------------------------------------
@@ -677,6 +973,7 @@ def test_build_synthesis_provider_local_mapping():
     assert p._preserve_tokens_enabled is True
     assert p._oa_client._timeout == 60.0
     assert p._provider_name == "local"
+    assert p._reasoning_thinking_off is True
 
 
 def test_build_synthesis_provider_together_mapping(monkeypatch):
@@ -686,6 +983,29 @@ def test_build_synthesis_provider_together_mapping(monkeypatch):
     assert p._preserve_tokens_enabled is False
     assert p._oa_client._timeout == 60.0
     assert p._provider_name == "together"
+    assert p._reasoning_thinking_off is False
+
+
+def test_local_builder_forces_thinking_off_without_environment(monkeypatch):
+    monkeypatch.delenv("ED4ALL_REASONING_THINKING_OFF", raising=False)
+    monkeypatch.setenv("ED4ALL_REASONING_LOW_EFFORT", "1")
+    seen: List[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            200, json=_success_body(_INSTRUCTION_COMPLETION)
+        )
+
+    provider = build_synthesis_provider("local")
+    provider._oa_client._client = _make_client(handler)
+    provider.paraphrase_instruction(_instruction_draft(), _chunk())
+
+    payload = json.loads(seen[0].content)
+    assert payload["chat_template_kwargs"] == {"enable_thinking": False}
+    assert payload["messages"][0]["content"].startswith(
+        "detailed thinking off\n\n"
+    )
 
 
 def test_build_synthesis_provider_threads_local_knobs():

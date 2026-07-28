@@ -26,7 +26,7 @@ so importers that still point at the anthropic module keep working.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 
 # Length sentinels — match instruction_factory.py / preference_factory.py
@@ -70,10 +70,12 @@ class SynthesisProviderError(RuntimeError):
         *,
         code: Optional[str] = None,
         chunk_id: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.chunk_id = chunk_id
+        self.details = dict(details or {})
 
 
 # ---------------------------------------------------------------------------

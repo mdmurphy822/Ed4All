@@ -25,8 +25,8 @@
     "completion": {
       "type": "string",
       "minLength": 50,
-      "maxLength": 600,
-      "description": "The target completion the model should produce."
+      "maxLength": 1200,
+      "description": "The target completion the model should produce. The 1200-char ceiling replaces an earlier 600: an objective-complete worked answer carries the condition, each required step, and the resulting conclusion, which does not fit in 600 characters. Generation was never token-starved at 600 (Stage D budgets 1536 tokens and observed answers used ~100), so the old cap did not trim long answers — it rejected them, which is why accepted answers were grounded but too shallow to execute their own prompt."
     },
     "chunk_id": {
       "type": "string",

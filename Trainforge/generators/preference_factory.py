@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import html
+import json
 import logging
 import random
 import re
@@ -147,22 +148,29 @@ def _jaccard(a: str, b: str) -> float:
 
 
 def _derive_topic(chunk: Dict[str, Any]) -> str:
+    """Return a human-readable topic phrase, or ``""`` when none exists.
+
+    Mirrors ``instruction_factory._derive_topic``: there is deliberately NO
+    LO-id fallback. Interpolating ``learning outcome co-117`` into a
+    learner-facing prompt slot produces syntactically valid, semantically
+    empty preference data. The caller treats ``""`` as an ineligibility
+    signal (no design-intent fallbacks).
+    """
     tags = chunk.get("concept_tags") or []
     if tags:
         # deslugify_concept strips a trailing ``-(co|to)-NN`` LO-ref suffix
         # before the hyphen-to-space transform, so ``property-paths-co-15``
         # becomes ``property paths`` instead of bleeding ``co 15`` artifact
         # tokens into the prompt. A plain hyphen-to-space replace would not.
-        return deslugify_concept(str(tags[0]))
+        derived = deslugify_concept(str(tags[0])).strip()
+        if derived:
+            return derived
     key_terms = chunk.get("key_terms") or []
     if key_terms and isinstance(key_terms[0], dict):
         term = key_terms[0].get("term")
-        if term:
-            return str(term)
-    lo_refs = chunk.get("learning_outcome_refs") or []
-    if lo_refs:
-        return f"learning outcome {lo_refs[0]}"
-    return "the course topic"
+        if term and str(term).strip():
+            return str(term).strip()
+    return ""
 
 
 def _seed_rng(chunk_id: str, seed: int) -> random.Random:
@@ -626,6 +634,30 @@ def synthesize_preference_pair(
 
     rng = _seed_rng(chunk_id, seed)
     topic = _derive_topic(chunk)
+    if not topic:
+        # No concept_tags and no key_terms -> no human-readable topic. This
+        # is a deterministic pre-dispatch exclusion, not a quality judgment
+        # on generated output; the LO-id template fill it replaces was never
+        # usable training data.
+        return PreferenceSynthesisResult(
+            pair=None,
+            quality={
+                "passed": False,
+                "ineligible": True,
+                "reason": "no_derivable_topic",
+                "content_sources": {
+                    "concept_tags": len(chunk.get("concept_tags") or []),
+                    "key_terms": len(chunk.get("key_terms") or []),
+                },
+            },
+            rationale=(
+                f"Chunk {chunk_id} has no concept_tags and no key_terms, so no "
+                f"human-readable topic can be derived (lo_refs={lo_refs} are "
+                "database keys, never a topic). Unit marked ineligible before "
+                "provider dispatch."
+            ),
+            source="none",
+        )
     misconceptions = chunk.get("misconceptions") or []
     normalised_mcs = [
         m for m in misconceptions
@@ -759,6 +791,17 @@ def synthesize_preference_pair(
         "decision_capture_id": "",
         "source": source,
         "rejected_source": source,
+        "template_id": (
+            "preference_misconception"
+            if normalised_mcs
+            else "preference_explanation"
+        ),
+        "content_type": str(
+            chunk.get("content_type_label")
+            or chunk.get("chunk_type")
+            or "unknown"
+        ),
+        "bloom_level": str(chunk.get("bloom_level") or "unknown").lower(),
         "provider": provider,
         "schema_version": "v1",
     }
@@ -828,12 +871,80 @@ def synthesize_preference_pair(
                 pair = provider_instance.paraphrase_preference(pair, chunk)
         except Exception as exc:
             code = getattr(exc, "code", None)
-            if code in (
+            if preserve_tokens and code in (
                 "surface_form_preservation_failed",
                 "paraphrase_invalid_after_retry",
             ):
                 pair = deterministic_draft
                 pair["paraphrase_fallback_reason"] = code
+            elif code == "provider_output_verbatim_leakage":
+                return PreferenceSynthesisResult(
+                    pair=None,
+                    quality={
+                        **quality,
+                        "passed": False,
+                        "no_verbatim_leakage": False,
+                        "reason": code,
+                    },
+                    rationale=(
+                        "Provider exhausted two bounded source-free leakage "
+                        "rewrites; the candidate was rejected without a "
+                        "deterministic fallback."
+                    ),
+                    source=source,
+                    misconception_id=mc_id,
+                )
+            elif (
+                isinstance(code, str)
+                and code.startswith("staged_")
+                and code.endswith("_invalid")
+                and bool(
+                    getattr(exc, "details", {}).get(
+                        "terminal_content_rejection"
+                    )
+                )
+            ):
+                evidence = dict(getattr(exc, "details", {}) or {})
+                if capture is not None:
+                    capture.log_decision(
+                        decision_type="preference_pair_generation",
+                        decision=(
+                            f"Rejected staged DPO candidate for chunk "
+                            f"{chunk_id}: {code}"
+                        ),
+                        rationale=(
+                            f"chunk_id={chunk_id}, stage="
+                            f"{evidence.get('stage', 'unknown')}, code={code}, "
+                            f"validation_error="
+                            f"{evidence.get('validation_error', 'unknown')}, "
+                            f"prompt_ref={evidence.get('prompt_ref', 'missing')}, "
+                            f"response_ref="
+                            f"{evidence.get('response_ref', 'missing')}; "
+                            "bounded validator-specific repairs were exhausted "
+                            "without substituting deterministic content."
+                        ),
+                        context=json.dumps(
+                            {"code": code, **evidence},
+                            sort_keys=True,
+                        ),
+                        task_id=f"{chunk_id}:preference:terminal-rejection",
+                    )
+                return PreferenceSynthesisResult(
+                    pair=None,
+                    quality={
+                        **quality,
+                        "passed": False,
+                        "reason": code,
+                        "rejection_evidence": evidence,
+                    },
+                    rationale=(
+                        f"Staged provider exhausted bounded repairs at "
+                        f"{evidence.get('stage', 'unknown')}; candidate was "
+                        "terminally rejected without fallback."
+                    ),
+                    source=source,
+                    misconception_id=mc_id,
+                )
             else:
                 raise
 
@@ -845,6 +956,28 @@ def synthesize_preference_pair(
     if preserve_tokens:
         pair = _enforce_preserve_tokens_in_preference(
             pair, preserve_tokens, capture=capture,
+        )
+
+    final_leak = (
+        _contains_verbatim_span(str(pair.get("prompt") or ""), chunk_text)
+        or _contains_verbatim_span(str(pair.get("chosen") or ""), chunk_text)
+        or _contains_verbatim_span(str(pair.get("rejected") or ""), chunk_text)
+    )
+    if final_leak:
+        return PreferenceSynthesisResult(
+            pair=None,
+            quality={
+                **quality,
+                "passed": False,
+                "no_verbatim_leakage": False,
+                "reason": "provider_output_verbatim_leakage",
+            },
+            rationale=(
+                "Final provider output contained a 50-character source span "
+                "after paraphrase/preservation postprocessing; pair dropped."
+            ),
+            source=source,
+            misconception_id=mc_id,
         )
 
     return PreferenceSynthesisResult(

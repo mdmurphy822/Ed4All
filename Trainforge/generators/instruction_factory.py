@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import html
+import json
 import logging
 import random
 import re
@@ -272,8 +273,17 @@ def _contains_verbatim_span(prompt: str, chunk_text: str, max_span: int = MAX_VE
 def _derive_topic(chunk: Dict[str, Any]) -> str:
     """Derive a short topic phrase for template filling.
 
-    Priority: concept_tags[0] -> first key_term.term -> first LO ref.
-    Never returns an empty string (caller guarantees LO refs exist).
+    Priority: concept_tags[0] -> first key_term.term.
+
+    Returns ``""`` when neither source yields a human-readable phrase. The
+    caller MUST treat that as an ineligibility signal.
+
+    There is deliberately NO fallback here. The previous
+    ``f"learning outcome {lo_refs[0]}"`` branch interpolated a database key
+    into a learner-facing slot, producing prompts/completions like
+    "explain the parts of learning outcome co-117" — syntactically valid,
+    semantically empty, and unusable as training data. Per the project's
+    no-design-intent-fallbacks rule the unit fails loudly instead.
     """
     tags = chunk.get("concept_tags") or []
     if tags:
@@ -283,16 +293,15 @@ def _derive_topic(chunk: Dict[str, Any]) -> str:
             # suffix before the hyphen-to-space transform, so
             # ``property-paths-co-15`` -> ``property paths`` rather than
             # ``property paths co 15``.
-            return deslugify_concept(t)
+            derived = deslugify_concept(t).strip()
+            if derived:
+                return derived
     key_terms = chunk.get("key_terms") or []
     if key_terms and isinstance(key_terms[0], dict):
         term = key_terms[0].get("term")
-        if term:
+        if term and str(term).strip():
             return str(term).strip()
-    lo_refs = chunk.get("learning_outcome_refs") or []
-    if lo_refs:
-        return f"learning outcome {lo_refs[0]}"
-    return "the course topic"
+    return ""
 
 
 def _normalize_bloom(bloom: Optional[str]) -> str:
@@ -328,11 +337,19 @@ def _select_template(bloom: str, content_type: str) -> Tuple[str, str]:
 def _build_completion(
     chunk: Dict[str, Any], topic: str, bloom: str, content_type: str, rng: random.Random,
     *, disallow_summary: bool = False,
-) -> str:
+) -> Optional[str]:
     """Build a deterministic completion that is not a verbatim chunk quote.
 
     Draws its content from structured chunk metadata (key_terms, misconceptions,
     concept_tags) so the completion is grounded but paraphrased.
+
+    Returns ``None`` when EVERY content branch (summary / key_terms /
+    concept_tags) came back empty. The Bloom tail is a closing-tone sentence,
+    not content: a completion consisting only of the tail is a fixed
+    boilerplate string with the chunk's topic slotted in, which is useless as
+    training data and is exactly what the corpus audit found dominating the
+    rejected pairs. Returning ``None`` (instead of shipping the tail alone)
+    lets the caller mark the unit ineligible before a model call is spent.
 
     ``disallow_summary=True`` skips the ``chunk.summary`` path entirely:
     ``chunk.summary`` is often a near-verbatim extract of chunk text, so
@@ -374,6 +391,12 @@ def _build_completion(
             hashlib.sha256(chunk_id_for_hash.encode("utf-8")).hexdigest(), 16
         ) % len(scaffolds)
         parts.append(scaffolds[idx])
+
+    if not parts:
+        # No summary, no key term, no concept tag: everything that follows
+        # is fixed boilerplate. Fail instead of manufacturing a content-free
+        # completion (no design-intent fallbacks).
+        return None
 
     # Add a bloom-flavored closing sentence so completion length and tone vary.
     bloom_tails = {
@@ -727,6 +750,32 @@ def synthesize_instruction_pair(
     bloom = _normalize_bloom(chunk.get("bloom_level"))
     content_type = _normalize_content_type(chunk)
     topic = _derive_topic(chunk)
+    if not topic:
+        # FIX 2: the LO-id topic fallback is gone. A chunk with no
+        # concept_tags and no key_terms has no human-readable topic, so the
+        # unit is a deterministic pre-dispatch exclusion, not a generated
+        # candidate that failed quality review. No model call is spent.
+        return InstructionSynthesisResult(
+            pair=None,
+            quality={
+                "passed": False,
+                "ineligible": True,
+                "reason": "no_derivable_topic",
+                "content_sources": {
+                    "concept_tags": len(chunk.get("concept_tags") or []),
+                    "key_terms": len(chunk.get("key_terms") or []),
+                },
+            },
+            template_id="none",
+            rationale=(
+                f"Chunk {chunk_id} has no concept_tags and no key_terms, so no "
+                f"human-readable topic can be derived (lo_refs={lo_refs} are "
+                "database keys, never a topic). Unit marked ineligible before "
+                "provider dispatch rather than filling the template with an "
+                "identifier."
+            ),
+            topic="",
+        )
     template_id, template = _select_template(bloom, content_type)
 
     prompt = template.format(topic=topic)
@@ -747,6 +796,34 @@ def synthesize_instruction_pair(
             leaked = False
 
     completion = _build_completion(chunk, topic, bloom, content_type, rng)
+    if completion is None:
+        # FIX 1: every content branch was empty, so the only thing left to
+        # emit was the fixed Bloom tail. Mark the unit ineligible (a
+        # deterministic pre-dispatch exclusion) instead of shipping
+        # boilerplate for a validator to reject downstream.
+        return InstructionSynthesisResult(
+            pair=None,
+            quality={
+                "passed": False,
+                "ineligible": True,
+                "reason": "no_groundable_completion_content",
+                "content_sources": {
+                    "summary_chars": len(
+                        str(chunk.get("summary") or "").strip()
+                    ),
+                    "key_terms": len(chunk.get("key_terms") or []),
+                    "concept_tags": len(chunk.get("concept_tags") or []),
+                },
+            },
+            template_id=template_id,
+            rationale=(
+                f"Chunk {chunk_id} yielded no summary, no key_terms and no "
+                f"concept_tags, so the completion would have been the fixed "
+                f"'{bloom}' Bloom tail alone. Unit marked ineligible before "
+                "provider dispatch rather than emitting a content-free pair."
+            ),
+            topic=topic,
+        )
 
     # Completion-side verbatim-leakage gate — the prompt-side gate above
     # does not cover this surface, and chunk.summary (the dominant input
@@ -756,9 +833,30 @@ def synthesize_instruction_pair(
     # text) the gate fails and the pair is dropped below.
     completion_leaked = _contains_verbatim_span(completion, chunk_text)
     if completion_leaked:
-        completion = _build_completion(
+        retry = _build_completion(
             chunk, topic, bloom, content_type, rng, disallow_summary=True,
         )
+        if retry is None:
+            # The summary was the ONLY content source and it leaked. This is
+            # a quality judgment on real content (not an absent-content
+            # exclusion), so it stays a rejection.
+            return InstructionSynthesisResult(
+                pair=None,
+                quality={
+                    "passed": False,
+                    "no_verbatim_leakage": False,
+                    "reason": "verbatim_leakage_left_no_content",
+                },
+                template_id=template_id,
+                rationale=(
+                    f"Chunk {chunk_id}'s summary was its only completion "
+                    "content source and it carried a 50-character verbatim "
+                    "span from chunk.text; the summary-free rebuild had no "
+                    "content left, so the pair is dropped."
+                ),
+                topic=topic,
+            )
+        completion = retry
         completion_leaked = _contains_verbatim_span(completion, chunk_text)
 
     # Assessment-scaffolding contamination check. Same retry pattern as
@@ -767,9 +865,27 @@ def synthesize_instruction_pair(
     # summary path, which is the typical carrier.
     completion_has_assessment = _contains_assessment_scaffolding(completion)
     if completion_has_assessment:
-        completion = _build_completion(
+        retry = _build_completion(
             chunk, topic, bloom, content_type, rng, disallow_summary=True,
         )
+        if retry is None:
+            return InstructionSynthesisResult(
+                pair=None,
+                quality={
+                    "passed": False,
+                    "no_assessment_scaffolding": False,
+                    "reason": "assessment_scaffolding_left_no_content",
+                },
+                template_id=template_id,
+                rationale=(
+                    f"Chunk {chunk_id}'s summary was its only completion "
+                    "content source and it carried assessment-outline "
+                    "scaffolding; the summary-free rebuild had no content "
+                    "left, so the pair is dropped."
+                ),
+                topic=topic,
+            )
+        completion = retry
         completion_has_assessment = _contains_assessment_scaffolding(completion)
 
     quality = {
@@ -884,12 +1000,80 @@ def synthesize_instruction_pair(
                 pair = provider_instance.paraphrase_instruction(pair, chunk)
         except Exception as exc:
             code = getattr(exc, "code", None)
-            if code in (
+            if preserve_tokens and code in (
                 "surface_form_preservation_failed",
                 "paraphrase_invalid_after_retry",
             ):
                 pair = deterministic_draft
                 pair["paraphrase_fallback_reason"] = code
+            elif code == "provider_output_verbatim_leakage":
+                return InstructionSynthesisResult(
+                    pair=None,
+                    quality={
+                        **quality,
+                        "passed": False,
+                        "no_verbatim_leakage": False,
+                        "reason": code,
+                    },
+                    template_id=template_id,
+                    rationale=(
+                        "Provider exhausted two bounded source-free leakage "
+                        "rewrites; the candidate was rejected without a "
+                        "deterministic fallback."
+                    ),
+                    topic=topic,
+                )
+            elif (
+                isinstance(code, str)
+                and code.startswith("staged_")
+                and code.endswith("_invalid")
+                and bool(
+                    getattr(exc, "details", {}).get(
+                        "terminal_content_rejection"
+                    )
+                )
+            ):
+                evidence = dict(getattr(exc, "details", {}) or {})
+                if capture is not None:
+                    capture.log_decision(
+                        decision_type="instruction_pair_synthesis",
+                        decision=(
+                            f"Rejected staged SFT candidate for chunk "
+                            f"{chunk_id}: {code}"
+                        ),
+                        rationale=(
+                            f"chunk_id={chunk_id}, stage="
+                            f"{evidence.get('stage', 'unknown')}, code={code}, "
+                            f"validation_error="
+                            f"{evidence.get('validation_error', 'unknown')}, "
+                            f"prompt_ref={evidence.get('prompt_ref', 'missing')}, "
+                            f"response_ref="
+                            f"{evidence.get('response_ref', 'missing')}; "
+                            "bounded validator-specific repairs were exhausted "
+                            "without substituting deterministic content."
+                        ),
+                        context=json.dumps(
+                            {"code": code, **evidence},
+                            sort_keys=True,
+                        ),
+                        task_id=f"{chunk_id}:instruction:terminal-rejection",
+                    )
+                return InstructionSynthesisResult(
+                    pair=None,
+                    quality={
+                        **quality,
+                        "passed": False,
+                        "reason": code,
+                        "rejection_evidence": evidence,
+                    },
+                    template_id=template_id,
+                    rationale=(
+                        f"Staged provider exhausted bounded repairs at "
+                        f"{evidence.get('stage', 'unknown')}; candidate was "
+                        "terminally rejected without fallback."
+                    ),
+                    topic=topic,
+                )
             else:
                 raise
 
@@ -902,6 +1086,32 @@ def synthesize_instruction_pair(
     if preserve_tokens:
         pair = _enforce_preserve_tokens_in_instruction(
             pair, preserve_tokens, capture=capture,
+        )
+
+    # The provider and preserve-token injection both run after the draft's
+    # original quality check. Re-audit the final emitted surfaces so neither
+    # an LLM response nor an injected definition can bypass the corpus gate.
+    final_leak = (
+        _contains_verbatim_span(str(pair.get("prompt") or ""), chunk_text)
+        or _contains_verbatim_span(
+            str(pair.get("completion") or ""), chunk_text,
+        )
+    )
+    if final_leak:
+        return InstructionSynthesisResult(
+            pair=None,
+            quality={
+                **quality,
+                "passed": False,
+                "no_verbatim_leakage": False,
+                "reason": "provider_output_verbatim_leakage",
+            },
+            template_id=template_id,
+            rationale=(
+                "Final provider output contained a 50-character source span "
+                "after paraphrase/preservation postprocessing; pair dropped."
+            ),
+            topic=topic,
         )
 
     rationale = (

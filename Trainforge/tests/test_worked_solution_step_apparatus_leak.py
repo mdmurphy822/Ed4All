@@ -184,3 +184,200 @@ def test_real_instructional_prose_still_harvests() -> None:
     extractor = ContentExtractor()
     assert extractor.extract_factual_statements([dict(chunk)])
     assert extractor.extract_key_terms([dict(chunk)])
+
+
+# =========================================================================== #
+# Round 2 — the apparatus vocabulary the first widening did not cover.
+#
+# After the step-prefix fix landed the production run regenerated and the gate
+# still failed at 0.75. Two of the four remaining VERB_LESS_STEM warnings were
+# apparatus that carries a label the marker set had never seen — verbatim from
+# `state/runs/<run>/checkpoints/trainforge_assessment_checkpoint.json`:
+#
+#   Q-cbc366e9: 'Show solution The opposite of 7 is -7 because it is the same...'
+#   Q-c17ddc7e: 'Key Idea: Each digit in a whole number has a place value ...'
+#
+# `Show solution` is a synonym of the already-covered `Show answer` and — like
+# the whole `Show <x>` family — carries NO delimiter, so a colon-anchored rule
+# cannot see it. `Key Idea:` is a generic pedagogical CALLOUT label, the same
+# discourse class as `Solution:` / `Check:`.
+#
+# A third warning was a dangling anaphoric fragment with no antecedent
+# (`This is determined by its position as the third digit from the right.`) —
+# unanswerable once lifted out of its paragraph, so it must never be mined.
+# =========================================================================== #
+
+#: Verbatim from the round-2 checkpoint.
+REAL_SHOW_SOLUTION_STEM = (
+    "Show solution The opposite of 7 is -7 because it is the same distance "
+    "from 0 but on the opposite side."
+)
+REAL_KEY_IDEA_STEM = (
+    "Key Idea: Each digit in a whole number has a place value based on its "
+    "position, such as trillions, billions, millions, thousands, hundreds, "
+    "tens, or ones."
+)
+REAL_ANAPHORIC_STATEMENT = (
+    "This is determined by its position as the third digit from the right."
+)
+
+
+def test_show_solution_is_apparatus_without_the_strict_flag(monkeypatch) -> None:
+    """The ``Show <x>`` family is a synonym set on the ALWAYS-ON marker.
+
+    ``Show answer`` was already unconditional; ``Show solution`` / ``Show
+    work`` / ``Show steps`` are the same marker emitted by the same authoring
+    surface, so they are matched on the same unconditional pattern rather than
+    behind the strict flag.
+    """
+    monkeypatch.delenv(_FLAG, raising=False)
+    assert _is_apparatus_text(REAL_SHOW_SOLUTION_STEM) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Show answer Yes, 42 is a multiple of 7.",
+        "Show solution The opposite of 7 is -7.",
+        "Show work 3x + 5 = 20 so x = 5.",
+        "Show steps First isolate the variable.",
+        "Show step First isolate the variable.",
+    ],
+)
+def test_show_family_synonyms_are_apparatus(text: str) -> None:
+    assert _is_apparatus_text(text) is True
+
+
+def test_show_family_does_not_swallow_ordinary_prose() -> None:
+    """The pattern is case-SENSITIVE on ``Show``, so mid-sentence prose is safe."""
+    assert _is_apparatus_text(
+        "The graph will show solution sets for the inequality."
+    ) is False
+
+
+def test_key_idea_callout_label_is_apparatus() -> None:
+    assert _is_apparatus_text(REAL_KEY_IDEA_STEM) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Key Idea: Place value determines a digit's worth.",
+        "Key Point: The sum of two even numbers is even.",
+        "Big Idea: Multiplication is repeated addition.",
+        "Note: A negative times a negative is positive.",
+        "Tip: Check the sign before simplifying.",
+        "Warning: Do not divide by zero.",
+        "Remember: The absolute value is never negative.",
+        "Common wrong turn: Confusing factors and multiples.",
+        "Misconception: A larger denominator means a larger fraction.",
+        "Predict: The fraction will have a denominator of 1000.",
+    ],
+)
+def test_generic_callout_labels_are_apparatus(text: str) -> None:
+    assert _is_apparatus_text(text) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # The label WORDS used as ordinary prose — no leading label + colon.
+        "Note that the sum of two even numbers is even.",
+        "The important idea is that place value determines a digit's worth.",
+        "Remember to check the sign before simplifying the expression.",
+        "A common mistake in this chapter is dividing before multiplying.",
+        # CONTENT-TYPE labels are deliberately NOT in the callout set — the
+        # key-term extractor exists to mine exactly these.
+        "Definition: A multiple of n is the product of n and a counting number.",
+        "Theorem: The sum of the angles of a triangle is 180 degrees.",
+        "Property: Addition is commutative.",
+    ],
+)
+def test_callout_rule_does_not_swallow_content(text: str) -> None:
+    assert _is_apparatus_text(text) is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "CO-01: Identify the place value of each digit in a whole number.",
+        "TO-05: Students will apply mathematical reasoning to real problems.",
+        "LO-12: Explain why the absolute value is never negative.",
+    ],
+)
+def test_learning_objective_refs_are_apparatus(text: str) -> None:
+    """An objective statement is course design, not a claim to test.
+
+    The shape is this project's OWN canonical LO-id convention
+    (``lib/ontology/learning_objectives.py``), so the rule is structural.
+    """
+    assert _is_apparatus_text(text) is True
+
+
+def test_callout_and_lo_rules_are_off_without_the_strict_flag(monkeypatch) -> None:
+    monkeypatch.delenv(_FLAG, raising=False)
+    assert _is_apparatus_text(REAL_KEY_IDEA_STEM) is False
+    assert _is_apparatus_text("CO-01: Identify the place value.") is False
+
+
+# --------------------------------------------------------------------------- #
+# Anaphoric-subject rejection at the mining layer.
+# --------------------------------------------------------------------------- #
+
+def test_anaphoric_subject_detection() -> None:
+    from Trainforge.generators.content_extractor import _has_anaphoric_subject
+
+    for bare in ("This", "That", "It", "They", "There", "one", "Such"):
+        assert _has_anaphoric_subject(bare) is True, bare
+    for real in ("This process", "The value", "A multiple of n", "Absolute value"):
+        assert _has_anaphoric_subject(real) is False, real
+
+
+def test_dangling_anaphor_is_not_mined_as_a_factual_statement() -> None:
+    """The verbatim failing stem must never re-enter the candidate pool."""
+    chunk = {
+        "id": "chunk_test_0005",
+        "text": (
+            "The place value of a digit is determined by where the digit sits "
+            "in the number. "
+            + REAL_ANAPHORIC_STATEMENT
+        ),
+    }
+    statements = ContentExtractor().extract_factual_statements([chunk])
+    texts = [s.statement for s in statements]
+    assert REAL_ANAPHORIC_STATEMENT not in texts
+    # …and the self-contained sentences from the same chunk still survive.
+    assert texts, "anaphor guard must not empty the pool"
+
+
+def test_round2_apparatus_never_reaches_the_statement_pool() -> None:
+    """End-to-end at the harvest layer, on the real flattened shapes."""
+    chunk = {
+        "id": "chunk_test_0006",
+        "text": (
+            "Find the opposite of 7, the opposite of -10, and simplify -(-6). "
+            + REAL_SHOW_SOLUTION_STEM
+            + " The opposite of -10 is 10 because it is the same distance "
+            "from 0 but on the opposite side."
+        ),
+    }
+    statements = ContentExtractor().extract_factual_statements([chunk])
+    for stmt in statements:
+        assert not stmt.statement.startswith("Show solution"), stmt
+        assert not stmt.statement.startswith("Key Idea"), stmt
+
+
+def test_key_idea_and_lo_ref_never_reach_the_key_term_pool() -> None:
+    chunk = {
+        "id": "chunk_test_0007",
+        "text": (
+            "CO-01: Identify the place value of each digit in a given whole "
+            "number up to trillions. "
+            + REAL_KEY_IDEA_STEM
+        ),
+    }
+    terms = ContentExtractor().extract_key_terms([chunk])
+    for term in terms:
+        assert not term.term.strip().lower().startswith("key idea"), term
+        assert not term.term.strip().lower().startswith("co-01"), term
+        assert not term.definition.strip().lower().startswith("key idea"), term

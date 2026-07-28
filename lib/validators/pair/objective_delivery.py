@@ -1,6 +1,6 @@
 """GPT Feedback v2 Wave 4 MEDIUM W4.C.1 — :class:`PairObjectiveDeliveryValidator`.
 
-Per-pair, per-objective tri-axis check that fans out every (pair, lo_id)
+Per-pair, per-objective semantic check that fans out every (pair, lo_id)
 tuple emitted by the synthesizer. Closes Gap C from the Wave 4 TIGHT
 investigation §3.3 ("pair-against-objective tri-axis (NLI + Bloom +
 verb)") on the Trainforge pair surface — the symmetric mirror of the
@@ -52,19 +52,26 @@ in :class:`PairLearningOutcomeRefsValidator`):
    ``text = prompt + " " + completion``. ``kind="preference"`` →
    ``text = prompt + " " + chosen``. Empty text → status
    ``unverifiable``, skip.
-3. **Axis 1 (NLI entailment)**: ``nli.score_pair(premise=text,
-   hypothesis=statement)``. Threshold from
+3. **Axis 1 (instantiated-skill semantics)**: score NLI in both
+   directions between the pair and the competency statement, and use
+   the stronger entailment signal. A training pair is an *instance* of
+   a competency, not a proposition that must logically entail the
+   complete competency statement. The reverse direction captures the
+   specialization relation without weakening the existing threshold.
+   Threshold from
    :data:`_PER_PAIR_KIND_ENTAILMENT_FLOOR` table (instruction=0.40,
-   preference=0.45, deterministic_template=0.30). Miss = ``entailment <
-   threshold AND contradiction > _CONTRADICTION_FLOOR``.
+   preference=0.45, deterministic_template=0.30). Miss =
+   ``entailment < threshold``.
 4. **Axis 2 (Bloom gap)**: ``bloom_gap = BLOOM_LEVELS.index(declared)
    - BLOOM_LEVELS.index(observed_bloom)``. ``observed_bloom =
    pair.get("observed_bloom")``. When ``observed_bloom is None``, axis
    silently skipped. Miss = ``gap >= _BLOOM_GAP_THRESHOLD`` (2).
-5. **Axis 3 (verb cooccurrence)**: ``synonym_set =
-   get_verbs()[declared_bloom] ∪ {bloom_verb}``. Search ``text.lower()``
-   for any ``\\b<verb>\\b`` whole-word match. Miss = zero matches AND
-   ``synonym_set`` non-empty.
+5. **Action realization evidence**: literal Bloom-verb matches are
+   recorded for audit only. They are not a validity condition. The
+   observed-Bloom classifier evaluates the cognitive work elicited by
+   the pair; requiring the objective's literal verb confuses wording
+   with skill delivery (for example, a response can correctly explain
+   a relationship without containing the word ``identify``).
 6. Resolve status via the shared
    :func:`lib.validators.block_objective_delivery._resolve_status`
    helper (imported as :data:`_resolve_block_objective_status` to
@@ -124,13 +131,13 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from MCP.hardening.validation_gates import GateIssue, GateResult
 from lib.classifiers.nli_classifier import NliClassifier, NliScore
-from lib.ontology.bloom import BLOOM_LEVELS, get_verbs
 
 # W-D7 T7.3: route through the shared
 # ``lib.utils.objective_delivery_axes`` package. The status mapper
@@ -186,10 +193,9 @@ _PER_PAIR_KIND_ENTAILMENT_FLOOR: Dict[str, float] = {
 _DEFAULT_ENTAILMENT_FLOOR: float = 0.40
 
 
-#: Contradiction floor — entailment misses only fire when contradiction
-#: is ALSO above this threshold. Filters surface-form variance from
-#: genuine misses; mirrors W1.7.C
-#: :data:`block_objective_delivery._CONTRADICTION_FLOOR`.
+#: Retained for constructor/API and audit compatibility. Contradiction
+#: is recorded conservatively across both NLI directions; the existing
+#: entailment floor remains the semantic decision threshold.
 _CONTRADICTION_FLOOR: float = 0.50
 
 
@@ -260,6 +266,9 @@ _CODE_MISSING_INPUTS: str = "MISSING_INPUTS"
 _REASON_OBJECTIVE_STATEMENT_UNDERSUPPORTED: str = "objective_statement_undersupported"
 _REASON_OBJECTIVE_BLOOM_UNDERMET: str = "objective_bloom_undermet"
 _REASON_OBJECTIVE_VERB_ABSENT: str = "objective_verb_absent"
+_REASON_OBJECTIVE_VALIDATION_UNAVAILABLE: str = (
+    "objective_validation_unavailable"
+)
 
 
 # --------------------------------------------------------------------- #
@@ -304,35 +313,42 @@ def _resolve_pair_kind(pair: Mapping[str, Any], *, kind: str) -> str:
 
 
 def _resolve_pair_text(pair: Mapping[str, Any], *, kind: str) -> str:
-    """Return the pair-surface text the tri-axis check operates on.
+    """Return completion-only evidence for objective delivery.
 
-    ``kind="instruction"`` → ``prompt + " " + completion``.
-    ``kind="preference"`` → ``prompt + " " + chosen``.
-
-    Distinct from W4.A which scores ``completion`` only (per-claim
-    decomposition); W4.C's tri-axis check operates on the FULL pair
-    text against the objective statement (mirrors W1.7.C's full-block-
-    text-against-objective-statement semantics).
+    A prompt states the requested objective and therefore contributes zero
+    evidence that the answer delivered it.
     """
-    prompt = str(pair.get("prompt") or "").strip()
     if kind == "instruction":
-        completion = str(pair.get("completion") or "").strip()
-        if prompt and completion:
-            return f"{prompt} {completion}"
-        return prompt or completion
+        return str(pair.get("completion") or "").strip()
     if kind == "preference":
-        chosen = str(pair.get("chosen") or "").strip()
-        if prompt and chosen:
-            return f"{prompt} {chosen}"
-        return prompt or chosen
+        return str(pair.get("chosen") or "").strip()
     # Unknown kind — best-effort fall-through. Try chosen then
     # completion; the caller is responsible for the kind contract.
-    fallback = str(
+    return str(
         pair.get("chosen") or pair.get("completion") or ""
     ).strip()
-    if prompt and fallback:
-        return f"{prompt} {fallback}"
-    return prompt or fallback
+
+
+_NAMED_SYMBOL_PATTERN = re.compile(
+    r"\b(coefficient|variable|parameter|constant|term)\s+"
+    r"(?:named\s+|called\s+)?([a-zA-Z])\b",
+    flags=re.IGNORECASE,
+)
+
+
+def _named_symbol_constraints(text: str) -> set[str]:
+    """Extract discriminative named-symbol constraints from math prose.
+
+    NLI models often treat ``coefficient a`` and ``coefficient c`` as
+    topically equivalent even though the substitution changes the taught
+    relationship. These compact constraints are semantic operands, not
+    lexical style requirements, so an objective's constraints must be
+    preserved by its concrete skill instance.
+    """
+    return {
+        f"{kind.lower()}:{symbol.lower()}"
+        for kind, symbol in _NAMED_SYMBOL_PATTERN.findall(text)
+    }
 
 
 def _resolve_pair_id(pair: Mapping[str, Any]) -> str:
@@ -374,6 +390,87 @@ def _resolve_lo_refs(pair: Mapping[str, Any]) -> List[str]:
     return out
 
 
+def recompute_complete_objective_bloom_authority(
+    pair: Mapping[str, Any],
+    *,
+    alignment_entries: Any = None,
+    pass_rate: Any = None,
+) -> Optional[Dict[str, Any]]:
+    """Recompute strict Bloom authority from canonical pair audit fields.
+
+    This release-facing proof is deliberately stricter than the ordinary
+    objective-delivery tolerance: every declared LO must be present in order,
+    delivered, above its existing entailment threshold, below the existing
+    contradiction ceiling, and at or above the declared Bloom level.
+    """
+    entries = (
+        pair.get("pair_objective_alignment")
+        if alignment_entries is None
+        else alignment_entries
+    )
+    rate = (
+        pair.get("pair_objective_alignment_pass_rate")
+        if pass_rate is None
+        else pass_rate
+    )
+    lo_refs = _resolve_lo_refs(pair)
+    declared = pair.get("bloom_level")
+    kind = "preference" if isinstance(pair.get("chosen"), str) else "instruction"
+    expected_threshold = _PER_PAIR_KIND_ENTAILMENT_FLOOR[
+        _resolve_pair_kind(pair, kind=kind)
+    ]
+    if (
+        not lo_refs
+        or rate != 1.0
+        or declared not in _SHARED_BLOOM_INDEX
+        or not isinstance(entries, list)
+        or len(entries) != len(lo_refs)
+    ):
+        return None
+    observed: List[str] = []
+    for lo_id, entry in zip(lo_refs, entries):
+        if not isinstance(entry, Mapping):
+            return None
+        seen = entry.get("observed_bloom")
+        entailment = entry.get("statement_entailment_score")
+        contradiction = entry.get("contradiction_score")
+        threshold = entry.get("entailment_threshold")
+        gap = entry.get("bloom_gap")
+        if (
+            entry.get("objective_id") != lo_id
+            or entry.get("status") != _STATUS_DELIVERED
+            or entry.get("declared_bloom") != declared
+            or seen not in _SHARED_BLOOM_INDEX
+            or isinstance(entailment, bool)
+            or isinstance(contradiction, bool)
+            or isinstance(threshold, bool)
+            or isinstance(gap, bool)
+            or not isinstance(entailment, (int, float))
+            or not isinstance(contradiction, (int, float))
+            or not isinstance(threshold, (int, float))
+            or not isinstance(gap, int)
+            or not math.isfinite(float(entailment))
+            or not math.isfinite(float(contradiction))
+            or not math.isfinite(float(threshold))
+            or not 0.0 <= float(entailment) <= 1.0
+            or not 0.0 <= float(contradiction) <= 1.0
+            or float(threshold) != expected_threshold
+            or entailment < expected_threshold
+            or contradiction >= _CONTRADICTION_FLOOR
+            or gap > 0
+            or _SHARED_BLOOM_INDEX[seen] < _SHARED_BLOOM_INDEX[declared]
+        ):
+            return None
+        observed.append(str(seen))
+    if len(set(observed)) != 1:
+        return None
+    return {
+        "observed_bloom": observed[0],
+        "objective_ids": list(lo_refs),
+        "entry_count": len(entries),
+    }
+
+
 def _emit_decision(
     capture: Any,
     *,
@@ -391,6 +488,9 @@ def _emit_decision(
     nli_loaded: bool,
     status: str,
     failure_codes: List[str],
+    reverse_entailment_score: Optional[float] = None,
+    semantic_constraint_matches: int = 0,
+    semantic_constraint_misses: Optional[List[str]] = None,
 ) -> None:
     """Emit one ``pair_objective_delivery_check`` decision per audited
     (pair, lo_id) tuple.
@@ -421,19 +521,29 @@ def _emit_decision(
     )
     gap_str = str(bloom_gap) if bloom_gap is not None else "n/a"
     verb_str = str(verb_match_count) if verb_match_count is not None else "n/a"
+    reverse_ent_str = (
+        f"{reverse_entailment_score:.4f}"
+        if reverse_entailment_score is not None
+        else "n/a"
+    )
+    constraint_misses = semantic_constraint_misses or []
     rationale = (
-        f"Pair-objective delivery check on {pair_kind!r} pair "
+        f"Pair-objective instantiated-skill delivery check on {pair_kind!r} pair "
         f"{pair_id or 'n/a'!r} (chunk_id={chunk_id or 'n/a'!r}) for "
         f"objective {objective_id or 'n/a'!r}: "
         f"declared_bloom={declared_bloom or 'n/a'!r}, "
         f"observed_bloom={observed_bloom or 'n/a'!r}, "
         f"bloom_gap={gap_str}, "
         f"statement_entailment_score={ent_str}, "
+        f"reverse_entailment_score={reverse_ent_str}, "
         f"contradiction_score={con_str}, "
         f"entailment_threshold={entailment_threshold:.4f}, "
         f"verb_match_count={verb_str}, "
         f"nli_loaded={nli_loaded}, "
         f"status={status}, "
+        f"semantic_contract='bidirectional_instantiated_skill', "
+        f"semantic_constraint_matches={semantic_constraint_matches}, "
+        f"semantic_constraint_misses={','.join(constraint_misses) or 'none'}, "
         f"failure_codes={','.join(failure_codes) or 'none'}."
     )
     try:
@@ -466,10 +576,9 @@ def _load_synthesized_objectives_for_w4c(
     * ``bloom_verb`` — canonical verb (verb-cooccurrence axis).
 
     Returns ``{lo_id: {"statement", "bloom_level", "bloom_verb"}}``.
-    Returns ``{}`` when the path is missing / unreadable / empty so the
-    W4.C.3 call-site can short-circuit to a graceful-degrade pass
-    (every (pair, lo_id) audit emits ``_CODE_OBJECTIVE_NOT_RESOLVED``
-    and stamps ``unverifiable``).
+    Returns ``{}`` when the path is missing / unreadable / empty. Real
+    providers fail closed on the resulting unverifiable objective
+    status; the mock plumbing provider is explicitly exempt.
 
     Cross-link: W4.C.3 imports this helper at the synthesizer's
     validator-instantiation block so the synthesized-objectives map
@@ -528,7 +637,7 @@ def _load_synthesized_objectives_for_w4c(
             else None
         )
 
-        out[lo_id] = {
+        out[lo_id.lower()] = {
             "statement": statement,
             "bloom_level": bloom_level,
             "bloom_verb": bloom_verb,
@@ -573,17 +682,14 @@ class PairObjectiveDeliveryValidator:
         decision_capture: Optional :class:`DecisionCapture` instance.
             Per-call captures override this constructor-level default.
 
-    Graceful-degrade arms (mirror W1.7.C
-    :class:`BlockObjectiveDeliveryValidator`):
+    Availability contract:
 
     * NLI loader returns ``None`` (extras absent / load failed) →
       stamp ``pair_objective_alignment=None`` +
       ``pair_objective_alignment_pass_rate=None``, emit
       :data:`_CODE_NLI_DEPS_MISSING` warning, return
-      ``("validated", None, ...)``. The on-disk audit gate already
-      covers the "pair carries audit fields" check; surfacing a
-      deps-missing fail at the per-pair layer would block every
-      CPU-only synthesis run.
+      ``("rejected", "objective_validation_unavailable", ...)`` for
+      real providers. The non-shippable mock provider remains exempt.
     * ``objectives`` map missing the cited ``lo_id`` → emit
       :data:`_CODE_OBJECTIVE_NOT_RESOLVED` warning per (pair, lo_id),
       status ``unverifiable``, skip all axes for that tuple.
@@ -621,11 +727,13 @@ class PairObjectiveDeliveryValidator:
         bloom_gap_threshold: int = _BLOOM_GAP_THRESHOLD,
         nli: Optional[NliClassifier] = None,
         decision_capture: Any = None,
+        require_verifiable: Optional[bool] = None,
     ) -> None:
         self._contradiction_floor = float(contradiction_floor)
         self._bloom_gap_threshold = int(bloom_gap_threshold)
         self._nli_override = nli
         self._decision_capture = decision_capture
+        self._require_verifiable = require_verifiable
 
     def _get_nli(self) -> Optional[NliClassifier]:
         """Resolve the NLI classifier — explicit override wins, else
@@ -675,7 +783,7 @@ class PairObjectiveDeliveryValidator:
                 :func:`_load_synthesized_objectives_for_w4c` and threads
                 it in here. ``None`` is tolerated — every (pair, lo_id)
                 audit emits :data:`_CODE_OBJECTIVE_NOT_RESOLVED` and
-                stamps ``unverifiable`` (graceful-degrade pass).
+                stamps ``unverifiable``; real providers reject it.
             decision_capture: Optional :class:`DecisionCapture` instance.
                 Per-call wins over the constructor default; when wired,
                 one ``pair_objective_delivery_check`` event per
@@ -684,10 +792,10 @@ class PairObjectiveDeliveryValidator:
         Returns:
             ``(promotion_status, rejection_reason, new_fields)``:
 
-            - ``promotion_status``: ``"validated"`` on pass (or
-              graceful-degrade arms), ``"rejected"`` only when EVERY
-              (pair, lo_id) entry resolved to ``underdelivered`` (the
-              pair has no pedagogically-aligned objective).
+            - ``promotion_status``: ``"validated"`` on a verifiable
+              pass; real-provider pairs are rejected when objective
+              validation is unavailable or every objective is
+              underdelivered.
             - ``rejection_reason``: one of
               ``"objective_statement_undersupported"``,
               ``"objective_bloom_undermet"``,
@@ -716,6 +824,15 @@ class PairObjectiveDeliveryValidator:
             str(chunk_id_raw).strip() if isinstance(chunk_id_raw, str) else None
         )
         pair_kind_bucket = _resolve_pair_kind(pair, kind=kind)
+        # Staged synthesis explicitly requires every objective axis to be
+        # verifiable. The optional constructor override lets its call site make
+        # that contract fail closed while the legacy flag-off path preserves
+        # the historical provider-based behavior.
+        requires_verifiable = (
+            bool(self._require_verifiable)
+            if self._require_verifiable is not None
+            else str(pair.get("provider") or "").lower() != "mock"
+        )
         entailment_threshold = _PER_PAIR_KIND_ENTAILMENT_FLOOR.get(
             pair_kind_bucket, _DEFAULT_ENTAILMENT_FLOOR
         )
@@ -756,7 +873,15 @@ class PairObjectiveDeliveryValidator:
                     status=_STATUS_UNVERIFIABLE,
                     failure_codes=[_CODE_NLI_DEPS_MISSING],
                 )
-            return "validated", None, new_fields
+            return (
+                (
+                    "rejected",
+                    _REASON_OBJECTIVE_VALIDATION_UNAVAILABLE,
+                    new_fields,
+                )
+                if requires_verifiable
+                else ("validated", None, new_fields)
+            )
 
         # Resolve the pair surface text (entailment + verb axes).
         pair_text = _resolve_pair_text(pair, kind=kind)
@@ -768,8 +893,6 @@ class PairObjectiveDeliveryValidator:
             observed_bloom_normalized = observed_bloom_raw.strip().lower()
             if observed_bloom_normalized in _BLOOM_INDEX:
                 observed_bloom = observed_bloom_normalized
-
-        verbs_by_level = get_verbs()  # Dict[str, Set[str]]
 
         alignment_entries: List[Dict[str, Any]] = []
         # Track per-axis "first miss" for reject precedence (NLI >
@@ -804,7 +927,15 @@ class PairObjectiveDeliveryValidator:
                 status=_STATUS_UNVERIFIABLE,
                 failure_codes=[],
             )
-            return "validated", None, new_fields
+            return (
+                (
+                    "rejected",
+                    _REASON_OBJECTIVE_VALIDATION_UNAVAILABLE,
+                    new_fields,
+                )
+                if requires_verifiable
+                else ("validated", None, new_fields)
+            )
 
         for lo_id in lo_refs:
             obj_dict = objectives_map.get(lo_id) if objectives_map else None
@@ -866,35 +997,80 @@ class PairObjectiveDeliveryValidator:
 
             # ---------- Axis 1: NLI entailment --------------- #
             entailment_score: Optional[float] = None
+            reverse_entailment_score: Optional[float] = None
             contradiction_score: Optional[float] = None
             entailment_passed: Optional[bool] = None  # None = skipped
+            objective_constraints = (
+                _named_symbol_constraints(statement) if statement else set()
+            )
+            pair_constraints = _named_symbol_constraints(pair_text)
+            semantic_constraint_matches = len(
+                objective_constraints.intersection(pair_constraints)
+            )
+            semantic_constraint_misses = sorted(
+                objective_constraints.difference(pair_constraints)
+            )
             if statement and pair_text:
+                forward_score: Optional[NliScore] = None
+                reverse_score: Optional[NliScore] = None
                 try:
-                    score: NliScore = nli.score_pair(
+                    forward_score = nli.score_pair(
                         premise=pair_text, hypothesis=statement,
                     )
-                    entailment_score = float(score.entailment)
-                    contradiction_score = float(score.contradiction)
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(
                         "NliClassifier.score_pair raised on pair-objective "
-                        "delivery (pair_id=%r, objective_id=%r): %s",
+                        "delivery forward direction "
+                        "(pair_id=%r, objective_id=%r): %s",
                         pair_id, lo_id, exc,
                     )
-                    entailment_score = None
-                    contradiction_score = None
+                    forward_score = None
 
-                if (
-                    entailment_score is not None
-                    and contradiction_score is not None
-                ):
-                    if (
-                        entailment_score < entailment_threshold
-                        and contradiction_score > self._contradiction_floor
-                    ):
-                        entailment_passed = False
-                    else:
-                        entailment_passed = True
+                if forward_score is not None:
+                    forward_entailment = float(forward_score.entailment)
+                    entailment_score = forward_entailment
+                    contradiction_score = float(forward_score.contradiction)
+                    # Only score the reverse direction when the traditional
+                    # pair→competency direction misses. This preserves the
+                    # legacy fast path while recognizing a concrete instance
+                    # of a broader skill.
+                    if forward_entailment < entailment_threshold:
+                        try:
+                            reverse_score = nli.score_pair(
+                                premise=statement, hypothesis=pair_text,
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning(
+                                "NliClassifier.score_pair raised on "
+                                "pair-objective delivery reverse direction "
+                                "(pair_id=%r, objective_id=%r): %s",
+                                pair_id, lo_id, exc,
+                            )
+                        if reverse_score is not None:
+                            reverse_entailment_score = float(
+                                reverse_score.entailment
+                            )
+                            entailment_score = max(
+                                forward_entailment, reverse_entailment_score
+                            )
+                            contradiction_score = max(
+                                contradiction_score,
+                                float(reverse_score.contradiction),
+                            )
+                    # All three are required. Entailment must clear the
+                    # per-kind floor in its own right: the earlier contract
+                    # failed a pair only when low entailment AND high
+                    # contradiction coincided, which let a NEUTRAL answer —
+                    # near-zero entailment, near-zero contradiction, i.e. text
+                    # the source neither supports nor denies — pass as
+                    # delivered. That is the shape unsupported generated
+                    # content takes, so it is the one case this axis most needs
+                    # to catch.
+                    entailment_passed = (
+                        entailment_score >= entailment_threshold
+                        and contradiction_score < self._contradiction_floor
+                        and not semantic_constraint_misses
+                    )
 
             # ---------- Axis 2: Bloom alignment --------------- #
             bloom_passed: Optional[bool] = None
@@ -914,30 +1090,18 @@ class PairObjectiveDeliveryValidator:
             # ---------- Axis 3: Action-verb cooccurrence ----- #
             verb_passed: Optional[bool] = None
             verb_match_count: Optional[int] = None
-            synonym_set: set = set()
-            if (
-                declared_bloom is not None
-                and declared_bloom in verbs_by_level
-            ):
-                synonym_set = set(verbs_by_level[declared_bloom])
-                if bloom_verb:
-                    synonym_set.add(bloom_verb)
-            elif bloom_verb:
-                # Declared bloom missing but objective carries a
-                # canonical verb — check the verb in isolation as a
-                # best-effort signal.
-                synonym_set = {bloom_verb}
-
-            if synonym_set and pair_text:
+            if bloom_verb and pair_text:
                 lowered = pair_text.lower()
-                matches = 0
-                for v in synonym_set:
-                    if not v:
-                        continue
-                    if re.search(rf"\b{re.escape(v)}\b", lowered):
-                        matches += 1
-                verb_match_count = matches
-                verb_passed = matches > 0
+                verb_match_count = int(
+                    bool(re.search(rf"\b{re.escape(bloom_verb)}\b", lowered))
+                )
+            # Literal action-verb occurrence is useful diagnostic evidence, but
+            # it is not evidence of cognitive demand. The observed-Bloom axis
+            # assesses whether the pair actually instantiates the requested
+            # skill; wording such as "How does..." can deliver an "identify"
+            # objective without repeating the token "identify".
+            if bloom_passed is not None:
+                verb_passed = True
 
             status = _resolve_block_objective_status(
                 entailment_passed=entailment_passed,
@@ -950,8 +1114,6 @@ class PairObjectiveDeliveryValidator:
                 pair_failure_codes.append(_CODE_STATEMENT_UNDERSUPPORTED)
             if bloom_passed is False:
                 pair_failure_codes.append(_CODE_BLOOM_UNDERMET)
-            if verb_passed is False:
-                pair_failure_codes.append(_CODE_VERB_ABSENT)
 
             alignment_entries.append({
                 "objective_id": lo_id,
@@ -983,6 +1145,9 @@ class PairObjectiveDeliveryValidator:
                 nli_loaded=nli_loaded,
                 status=status,
                 failure_codes=pair_failure_codes,
+                reverse_entailment_score=reverse_entailment_score,
+                semantic_constraint_matches=semantic_constraint_matches,
+                semantic_constraint_misses=semantic_constraint_misses,
             )
 
         # Compute pass rate over audited (pair, lo_id) tuples.
@@ -1002,10 +1167,18 @@ class PairObjectiveDeliveryValidator:
             total > 0
             and all(s == _STATUS_UNDERDELIVERED for s in per_lo_status)
         )
+        any_unverifiable = any(
+            s == _STATUS_UNVERIFIABLE for s in per_lo_status
+        )
 
         rejection_reason: Optional[str] = None
         promotion_status = "validated"
-        if all_underdelivered:
+        if any_unverifiable and requires_verifiable:
+            rejection_reason = _REASON_OBJECTIVE_VALIDATION_UNAVAILABLE
+            promotion_status = "rejected"
+        elif requires_verifiable and (
+            all_underdelivered or (total > 0 and passed_count == 0)
+        ):
             # Walk per-LO failure axes in pair-order; pick the first
             # axis hit per the NLI > Bloom > verb precedence.
             for axes in per_lo_failure_axes:
@@ -1029,6 +1202,13 @@ class PairObjectiveDeliveryValidator:
             "pair_objective_alignment": alignment_entries,
             "pair_objective_alignment_pass_rate": pass_rate,
         }
+        authority = recompute_complete_objective_bloom_authority(
+            pair,
+            alignment_entries=alignment_entries,
+            pass_rate=pass_rate,
+        )
+        if authority is not None:
+            new_fields["observed_bloom"] = authority["observed_bloom"]
         return promotion_status, rejection_reason, new_fields
 
     # ------------------------------------------------------------------ #
@@ -1242,6 +1422,7 @@ class PairObjectiveDeliveryValidator:
 
 __all__ = [
     "PairObjectiveDeliveryValidator",
+    "recompute_complete_objective_bloom_authority",
     "_load_synthesized_objectives_for_w4c",
     "_PER_PAIR_KIND_ENTAILMENT_FLOOR",
     "_DEFAULT_ENTAILMENT_FLOOR",

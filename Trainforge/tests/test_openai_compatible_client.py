@@ -473,6 +473,150 @@ def test_json_mode_includes_format_field():
     assert body.get("response_format") == {"type": "json_object"}
 
 
+def test_json_mode_negotiates_strict_trt_wire_once_and_keeps_json_validation(
+    monkeypatch,
+):
+    """TRT-LLM's structured ``extra_forbidden`` response removes only the
+    Ollama extension; OpenAI ``response_format`` remains on this and later
+    calls. The negotiation succeeds even with a one-attempt retry budget."""
+    import json as _json
+
+    monkeypatch.delenv("ED4ALL_LLM_OMIT_OLLAMA_FORMAT", raising=False)
+    bodies: List[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = _json.loads(request.content.decode("utf-8"))
+        bodies.append(body)
+        if body.get("format") == "json":
+            return httpx.Response(
+                400,
+                json={
+                    # Exact trtllm-serve 1.3 wire shape: pydantic errors are
+                    # Python-repr encoded inside the JSON ``error`` string.
+                    "error": (
+                        "[{'type': 'extra_forbidden', "
+                        "'loc': ('body', 'format'), "
+                        "'msg': 'Extra inputs are not permitted', "
+                        "'input': 'json'}]"
+                    )
+                },
+            )
+        return httpx.Response(200, json=_success_body('{"ok": true}'))
+
+    client = OpenAICompatibleClient(
+        base_url="http://127.0.0.1:8123/v1",
+        model="snapshot-id",
+        api_key="local",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep_fn=lambda _s: None,
+        max_retries=1,
+        json_mode=True,
+    )
+
+    assert client.chat_completion([{"role": "user", "content": "first"}])
+    assert client.chat_completion([{"role": "user", "content": "second"}])
+    assert [body.get("format") for body in bodies] == ["json", None, None]
+    assert all(
+        body.get("response_format") == {"type": "json_object"}
+        for body in bodies
+    )
+
+
+def test_strict_trt_negotiation_does_not_hide_non_json_success_body(monkeypatch):
+    """Removing an unsupported request field must not weaken response checks."""
+    import json as _json
+
+    monkeypatch.delenv("ED4ALL_LLM_OMIT_OLLAMA_FORMAT", raising=False)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = _json.loads(request.content.decode("utf-8"))
+        if body.get("format") == "json":
+            return httpx.Response(
+                400,
+                json={
+                    "detail": [{
+                        "type": "extra_forbidden",
+                        "loc": ["body", "format"],
+                    }]
+                },
+            )
+        return httpx.Response(200, content=b"not-json")
+
+    client = OpenAICompatibleClient(
+        base_url="http://127.0.0.1:8123/v1",
+        model="snapshot-id",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        max_retries=1,
+        json_mode=True,
+    )
+    with pytest.raises(SynthesisProviderError) as excinfo:
+        client.chat_completion([{"role": "user", "content": "x"}])
+    assert excinfo.value.code == "malformed_response"
+
+
+def test_explicit_caller_format_is_never_stripped_on_trt_rejection(monkeypatch):
+    """Dialect negotiation owns only the field injected by ``json_mode``."""
+    monkeypatch.delenv("ED4ALL_LLM_OMIT_OLLAMA_FORMAT", raising=False)
+    seen: List[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            400,
+            json={
+                "detail": [{
+                    "type": "extra_forbidden",
+                    "loc": ["body", "format"],
+                }]
+            },
+        )
+
+    client = OpenAICompatibleClient(
+        base_url="http://127.0.0.1:8123/v1",
+        model="snapshot-id",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        max_retries=3,
+        json_mode=True,
+    )
+    with pytest.raises(SynthesisProviderError) as excinfo:
+        client.chat_completion(
+            [{"role": "user", "content": "x"}],
+            extra_payload={"format": {"type": "object"}},
+        )
+    assert excinfo.value.code == "400"
+    assert len(seen) == 1
+
+
+def test_non_body_format_extra_forbidden_remains_fail_loud(monkeypatch):
+    """Only pydantic's exact ``body.format`` location enables negotiation."""
+    monkeypatch.delenv("ED4ALL_LLM_OMIT_OLLAMA_FORMAT", raising=False)
+    seen: List[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            400,
+            json={
+                "detail": [{
+                    "type": "extra_forbidden",
+                    "loc": ["query", "format"],
+                }]
+            },
+        )
+
+    client = OpenAICompatibleClient(
+        base_url="http://127.0.0.1:8123/v1",
+        model="snapshot-id",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        max_retries=3,
+        json_mode=True,
+    )
+    with pytest.raises(SynthesisProviderError) as excinfo:
+        client.chat_completion([{"role": "user", "content": "x"}])
+    assert excinfo.value.code == "400"
+    assert len(seen) == 1
+
+
 def test_json_mode_off_does_not_inject_format_fields():
     """Default ``json_mode=False`` leaves the payload untouched."""
     import json as _json
@@ -1208,6 +1352,164 @@ def test_ttft_off_row_has_no_ttft_field(monkeypatch, tmp_path):
         "ts", "provider", "model", "prompt_tokens", "completion_tokens",
         "duration_ms", "finish_reason",
     }
+
+
+def test_direct_raw_post_is_metered_once_with_run_phase_and_task(
+    monkeypatch, tmp_path
+):
+    """Raw provider dispatches use the exact-once meter, not bare POST."""
+    monkeypatch.setenv("ED4ALL_STATE_RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setenv("ED4ALL_RUN_ID", "RUN-DIRECT")
+    monkeypatch.setenv("ED4ALL_ACTIVE_PHASE", "training_synthesis")
+
+    seen_payloads = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_payloads.append(_json_ttft.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{
+                    "message": {"content": '{"ok":true}'},
+                    "finish_reason": "stop",
+                }],
+                "usage": {
+                    "prompt_tokens": 13,
+                    "completion_tokens": 5,
+                    "total_tokens": 18,
+                },
+            },
+        )
+
+    client = _build(transport_handler=handler)
+    payload = {
+        "model": "test-model",
+        "messages": [{"role": "user", "content": "x"}],
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+    body, retries = client.post_with_usage(
+        payload,
+        task="staged_synthesis:evidence_plan",
+    )
+    assert body["choices"][0]["finish_reason"] == "stop"
+    assert retries == 0
+    assert seen_payloads == [payload]
+    rows = [
+        _json_ttft.loads(line)
+        for line in (
+            tmp_path / "runs" / "RUN-DIRECT" / "llm_usage.jsonl"
+        ).read_text(encoding="utf-8").splitlines()
+    ]
+    assert rows == [{
+        "ts": rows[0]["ts"],
+        "provider": "test_provider",
+        "model": "test-model",
+        "prompt_tokens": 13,
+        "completion_tokens": 5,
+        "duration_ms": rows[0]["duration_ms"],
+        "run_id": "RUN-DIRECT",
+        "total_tokens": 18,
+        "task": "staged_synthesis:evidence_plan",
+        "phase": "training_synthesis",
+        "finish_reason": "stop",
+    }]
+
+
+def test_public_chat_completion_does_not_double_meter_direct_seam(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("ED4ALL_STATE_RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setenv("ED4ALL_RUN_ID", "RUN-PUBLIC-ONCE")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_success_body("ok"))
+
+    client = _build(transport_handler=handler)
+    assert client.chat_completion([{"role": "user", "content": "hi"}]) == "ok"
+    rows = (
+        tmp_path / "runs" / "RUN-PUBLIC-ONCE" / "llm_usage.jsonl"
+    ).read_text(encoding="utf-8").splitlines()
+    assert len(rows) == 1
+
+
+def test_direct_model_mismatch_fails_with_one_usage_and_one_capture(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("ED4ALL_STATE_RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setenv("ED4ALL_RUN_ID", "RUN-MODEL-MISMATCH")
+    class Capture:
+        def __init__(self):
+            self.calls = []
+
+        def log_decision(self, **kwargs):
+            self.calls.append(kwargs)
+
+    capture = Capture()
+    client = OpenAICompatibleClient(
+        base_url="http://test.invalid/v1",
+        model="configured-model",
+        provider_label="local",
+        capture=capture,
+        client=httpx.Client(transport=httpx.MockTransport(
+            lambda _request: pytest.fail("mismatch must fail before transport")
+        )),
+    )
+    with pytest.raises(SynthesisProviderError) as caught:
+        client.post_with_usage(
+            {"model": "foreign-model", "messages": [],
+             "max_tokens": 321},
+            task="staged_synthesis:plan_sft",
+        )
+    assert caught.value.code == "direct_model_identity_mismatch"
+    rows = (
+        tmp_path / "runs" / "RUN-MODEL-MISMATCH" / "llm_usage.jsonl"
+    ).read_text(encoding="utf-8").splitlines()
+    assert len(rows) == 1
+    row = _json_ttft.loads(rows[0])
+    assert row["model"] == "foreign-model"
+    assert row["error"] == "direct_model_identity_mismatch"
+    assert len(capture.calls) == 1
+    rationale = capture.calls[0]["rationale"]
+    assert "foreign-model" in rationale
+    assert "max_tokens=321" in rationale
+    assert "Bearer" not in rationale
+
+
+def test_direct_transport_exhaustion_has_one_usage_and_one_safe_capture(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("ED4ALL_STATE_RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setenv("ED4ALL_RUN_ID", "RUN-DIRECT-FAIL")
+
+    class Capture:
+        def __init__(self):
+            self.calls = []
+
+        def log_decision(self, **kwargs):
+            self.calls.append(kwargs)
+
+    capture = Capture()
+    client = _build(
+        capture=capture,
+        max_retries=0,
+        transport_handler=lambda _request: httpx.Response(
+            503, json={"error": "secret-server-message"}
+        ),
+    )
+    with pytest.raises(SynthesisProviderError):
+        client.post_with_usage(
+            {"model": "test-model", "messages": [],
+             "max_tokens": 444},
+            task="staged_synthesis:plan_sft",
+        )
+    rows = (
+        tmp_path / "runs" / "RUN-DIRECT-FAIL" / "llm_usage.jsonl"
+    ).read_text(encoding="utf-8").splitlines()
+    assert len(rows) == 1
+    assert len(capture.calls) == 1
+    rendered = _json_ttft.dumps(capture.calls[0], sort_keys=True)
+    assert "max_tokens=444" in rendered
+    assert "secret-server-message" not in rendered
 
 
 # ---------------------------------------------------------------------------

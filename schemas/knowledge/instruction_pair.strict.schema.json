@@ -25,8 +25,8 @@
     "completion": {
       "type": "string",
       "minLength": 50,
-      "maxLength": 600,
-      "description": "The target completion the model should produce."
+      "maxLength": 1200,
+      "description": "The target completion the model should produce. Kept in lockstep with instruction_pair.schema.json; see that file for why the ceiling moved from 600 to 1200."
     },
     "chunk_id": {
       "type": "string",

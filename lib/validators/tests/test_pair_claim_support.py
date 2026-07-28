@@ -12,6 +12,7 @@ Mirror of `lib/validators/tests/test_assessment_objective_alignment.py`.
 from __future__ import annotations
 
 import json
+import hashlib
 import sys
 from pathlib import Path
 
@@ -22,6 +23,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 from lib.validators.pair_claim_support import (  # noqa: E402
     PairClaimSupportValidator,
 )
+from lib.validators.pair.claim_support import _verified_micro_claim_premises
 
 
 # T1.4 stub — used in lib/validators/tests/test_pair_*.py (see plan §2
@@ -43,6 +45,27 @@ def _write_jsonl(path: Path, rows: list) -> None:
     with open(path, "w", encoding="utf-8") as f:
         for row in rows:
             f.write(json.dumps(row) + "\n")
+
+
+def test_verified_micro_claim_premise_requires_full_seal_and_exact_chain() -> None:
+    sentence = "Equal coefficients describe the same affine line."
+    quote = "Both equations have identical coefficients and are the same line."
+    provenance = {
+        "claim_realizations": {"abc": sentence},
+        "claim_evidence": [{
+            "claim_id": "abc", "claim": sentence,
+            "evidence_quote": quote, "source_block_id": "block-1",
+        }],
+    }
+    provenance["provenance_sha256"] = hashlib.sha256(json.dumps(
+        provenance, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    ).encode("utf-8")).hexdigest()
+    pair = {"provenance": provenance}
+    assert _verified_micro_claim_premises(
+        pair, [sentence], f"Context. {quote} More context.",
+    ) == {sentence: quote}
+    pair["provenance"]["claim_evidence"][0]["claim"] = "mutated"
+    assert _verified_micro_claim_premises(pair, [sentence], quote) == {}
 
 
 def _pair_with_audit_fields() -> dict:

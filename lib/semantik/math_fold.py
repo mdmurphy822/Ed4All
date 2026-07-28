@@ -61,6 +61,7 @@ from typing import Iterable
 
 __all__ = [
     "fold_math",
+    "normalize_math_notation",
     "count_math_folds",
     "MATH_WORDS",
     "strip_latex_commands",
@@ -139,6 +140,31 @@ _DIGIT_LETTER_RE = re.compile(r"(?<=[A-Za-z])(?=[0-9])|(?<=[0-9])(?=[A-Za-z])")
 # ---------------------------------------------------------------------------
 # Unicode math folding.
 # ---------------------------------------------------------------------------
+#: Superscript characters → the ASCII character they stand for. Owned here so
+#: BOTH consumers share one inventory: :func:`fold_math` splats it into
+#: :data:`_UNICODE_MAP` (bare ASCII, for lexical/shingle scoring) and
+#: :func:`normalize_math_notation` re-wraps it in caret form (for semantic /
+#: NLI scoring, where the exponent relation must survive).
+_SUPERSCRIPT_TO_ASCII: dict[str, str] = {
+    "⁰": "0", "¹": "1", "²": "2", "³": "3", "⁴": "4",
+    "⁵": "5", "⁶": "6", "⁷": "7", "⁸": "8", "⁹": "9",
+    "⁺": "+", "⁻": "-", "ⁿ": "n",
+}
+
+#: Subscript characters → the ASCII character they stand for. Same dual
+#: consumption as :data:`_SUPERSCRIPT_TO_ASCII`.
+_SUBSCRIPT_TO_ASCII: dict[str, str] = {
+    "₀": "0", "₁": "1", "₂": "2", "₃": "3", "₄": "4",
+    "₅": "5", "₆": "6", "₇": "7", "₈": "8", "₉": "9",
+}
+
+#: Unicode look-alikes with an exact ASCII spelling. Pure notation, no meaning
+#: change, so BOTH the lexical fold and the semantic normalizer apply them.
+_MATH_LOOKALIKE_TO_ASCII: dict[str, str] = {
+    "−": "-",   # U+2212 minus sign → hyphen-minus
+    "⁄": "/",   # fraction slash → solidus
+}
+
 _UNICODE_MAP: dict[str, str] = {
     # roots / operators
     "√": " sqrt ",
@@ -169,15 +195,10 @@ _UNICODE_MAP: dict[str, str] = {
     "α": " alpha ",
     "β": " beta ",
     # normalisation of look-alikes to ASCII
-    "−": "-",   # U+2212 minus sign → hyphen-minus
-    "⁄": "/",   # fraction slash → solidus
-    # superscript digits → ASCII digit (so ``x²`` → ``x2`` → split → ``x 2``)
-    "⁰": "0", "¹": "1", "²": "2", "³": "3", "⁴": "4",
-    "⁵": "5", "⁶": "6", "⁷": "7", "⁸": "8", "⁹": "9",
-    "⁺": "+", "⁻": "-", "ⁿ": "n",
-    # subscript digits → ASCII digit
-    "₀": "0", "₁": "1", "₂": "2", "₃": "3", "₄": "4",
-    "₅": "5", "₆": "6", "₇": "7", "₈": "8", "₉": "9",
+    **_MATH_LOOKALIKE_TO_ASCII,
+    # super/subscript digits → ASCII digit (so ``x²`` → ``x2`` → split → ``x 2``)
+    **_SUPERSCRIPT_TO_ASCII,
+    **_SUBSCRIPT_TO_ASCII,
 }
 _UNICODE_RE = re.compile("|".join(re.escape(k) for k in _UNICODE_MAP))
 
@@ -1590,6 +1611,61 @@ def fold_math(text: str) -> str:
     # 6. Split digit↔letter fusions in both directions.
     s = _DIGIT_LETTER_RE.sub(" ", s)
     return s
+
+
+#: Runs of super/subscript characters, folded as a unit so ``x¹⁰`` becomes
+#: ``x^10`` rather than ``x^1^0``.
+_SUPERSCRIPT_RUN_RE = re.compile(
+    "[" + "".join(re.escape(c) for c in _SUPERSCRIPT_TO_ASCII) + "]+"
+)
+_SUBSCRIPT_RUN_RE = re.compile(
+    "[" + "".join(re.escape(c) for c in _SUBSCRIPT_TO_ASCII) + "]+"
+)
+
+#: A LaTeX-braced short script argument: ``x^{2}`` / ``a_{ij}`` / ``x^{-1}``.
+#: Bounded to 3 characters so only genuine exponent/index atoms are unwrapped —
+#: a long ``^{\frac{1}{2}}`` group is left alone rather than mangled.
+_BRACED_SCRIPT_RE = re.compile(r"([\^_])\{(-?[A-Za-z0-9]{1,3})\}")
+
+_MATH_LOOKALIKE_RE = re.compile(
+    "|".join(re.escape(k) for k in _MATH_LOOKALIKE_TO_ASCII)
+)
+
+
+def normalize_math_notation(text: str) -> str:
+    """Canonicalize math NOTATION while preserving math MEANING.
+
+    The semantic-scoring counterpart of :func:`fold_math`. Both share one
+    character inventory (:data:`_SUPERSCRIPT_TO_ASCII`,
+    :data:`_SUBSCRIPT_TO_ASCII`, :data:`_MATH_LOOKALIKE_TO_ASCII`) but differ
+    in what they preserve, because they feed different metrics:
+
+    * :func:`fold_math` targets lexical shingle / junk scoring, so it folds
+      ``x²`` all the way down to the bare tokens ``x 2`` and drops LaTeX
+      control sequences entirely. That is correct for token overlap and wrong
+      for entailment — ``x 2`` no longer says "x squared", and an NLI model
+      reading it can no longer verify a claim about the exponent.
+    * This function keeps the relation and only unifies how it is written:
+      ``x²`` → ``x^2``, ``x₁`` → ``x_1``, ``x^{2}`` → ``x^2``, U+2212 → ``-``.
+
+    Deterministic, stdlib-only, idempotent, and a strict no-op on text with no
+    unicode scripts, no braced script argument, and no unicode look-alike — so
+    applying it to plain English prose returns the input unchanged.
+    """
+    if not text:
+        return text or ""
+    s = _SUPERSCRIPT_RUN_RE.sub(
+        lambda m: "^" + "".join(_SUPERSCRIPT_TO_ASCII[c] for c in m.group(0)),
+        text,
+    )
+    s = _SUBSCRIPT_RUN_RE.sub(
+        lambda m: "_" + "".join(_SUBSCRIPT_TO_ASCII[c] for c in m.group(0)),
+        s,
+    )
+    s = _BRACED_SCRIPT_RE.sub(lambda m: m.group(1) + m.group(2), s)
+    return _MATH_LOOKALIKE_RE.sub(
+        lambda m: _MATH_LOOKALIKE_TO_ASCII[m.group(0)], s,
+    )
 
 
 def count_math_folds(text: str) -> dict[str, int]:

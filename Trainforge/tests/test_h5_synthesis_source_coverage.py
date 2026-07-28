@@ -196,3 +196,95 @@ def test_h5_zero_eligible_chunks_zero_coverage(tmp_path: Path) -> None:
     block = doc["source_coverage"]
     assert block["coverage_pct"] == 0.0
     assert block["consumed_count"] == 0
+
+
+# --------------------------------------------------------------------------- #
+# Reject-mining funnel block (TRAINFORGE_DPO_MINE_REJECTS).
+#
+# The funnel used to live only on the returned ``SynthesisStats`` and in a log
+# line, which made ``shadow`` mode unusable as designed: the documented rollout
+# is "run shadow, read `emitted`, only flip to `on` once it clears the
+# trainer's min_dpo_pairs floor", and an operator cannot act on a number that
+# was never persisted. These tests pin the sidecar as that durable surface, and
+# pin that a mining-off run still emits a byte-identical legacy sidecar.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.unit
+def test_reject_mining_block_absent_when_mining_off(tmp_path: Path) -> None:
+    """Mining off → no ``reject_mining`` key at all (legacy sidecar intact)."""
+    stats = SynthesisStats(
+        chunks_total=4, chunks_eligible=4, instruction_pairs_emitted=4,
+    )
+    assert stats.reject_mining == {}, "default must be empty, not populated"
+
+    sidecar = tmp_path / "synthesis_summary.json"
+    _emit_synthesis_summary_sidecar(
+        sidecar, stats=stats, provider="local", course_code="MINE_OFF",
+    )
+    doc = json.loads(sidecar.read_text())
+    assert "reject_mining" not in doc
+    _validate_summary(doc)
+
+
+@pytest.mark.unit
+def test_reject_mining_block_persisted_and_schema_valid(tmp_path: Path) -> None:
+    """Shadow/on → the funnel lands in the sidecar and validates.
+
+    ``emitted`` is the number an operator reads to decide whether the corpus
+    would clear ``min_dpo_pairs: 50`` before flipping the flag to ``on``.
+    """
+    stats = SynthesisStats(
+        chunks_total=40, chunks_eligible=40, instruction_pairs_emitted=40,
+    )
+    stats.reject_mining = {
+        "mode_shadow": 1,
+        "candidates_seen": 30,
+        "stage_excluded": 4,
+        "contradicted": 2,
+        "identity_mismatch": 3,
+        "no_anchor": 5,
+        "emitted": 9,
+    }
+
+    sidecar = tmp_path / "synthesis_summary.json"
+    _emit_synthesis_summary_sidecar(
+        sidecar, stats=stats, provider="local", course_code="MINE_SHADOW",
+    )
+    doc = json.loads(sidecar.read_text())
+
+    block = doc["reject_mining"]
+    assert block["emitted"] == 9
+    assert block["mode_shadow"] == 1
+    assert block["no_anchor"] == 5
+    # Every counter must survive as an int -- a stringified count would defeat
+    # the whole point of persisting it.
+    assert all(isinstance(v, int) for v in block.values())
+    _validate_summary(doc)
+
+
+@pytest.mark.unit
+def test_reject_mining_skipped_reason_survives_as_string(tmp_path: Path) -> None:
+    """The one string key rides through and still schema-validates.
+
+    ``reject_mining_skipped`` is deliberately a string in an otherwise
+    int-valued dict: "the pass did not run" is not expressible as a count, and
+    reporting all-zero counters would read as "no candidates" rather than
+    "not evaluated".
+    """
+    stats = SynthesisStats(chunks_total=3, chunks_eligible=3)
+    stats.reject_mining = {
+        "candidates_seen": 0,
+        "emitted": 0,
+        "reject_mining_skipped": "incomplete_pass",
+    }
+
+    sidecar = tmp_path / "synthesis_summary.json"
+    _emit_synthesis_summary_sidecar(
+        sidecar, stats=stats, provider="local", course_code="MINE_SKIP",
+    )
+    doc = json.loads(sidecar.read_text())
+
+    assert doc["reject_mining"]["reject_mining_skipped"] == "incomplete_pass"
+    assert doc["reject_mining"]["emitted"] == 0
+    _validate_summary(doc)

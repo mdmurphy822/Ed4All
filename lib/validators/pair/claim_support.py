@@ -74,9 +74,13 @@ Algorithm (mirrors :meth:`ClaimSupportValidator._validate` lines
    audit gate already covers the "pair carries audit fields" check;
    the deps-missing path doesn't reject pairs.
 4. For each sentence: ``nli.score_pair(premise=chunk_text,
-   hypothesis=sentence)``. Bucket: ``entailed`` if entailment >=
-   :data:`_DEFAULT_ENTAILMENT_FLOOR` (0.70); ``contradicted`` if
-   contradiction >= :data:`_DEFAULT_CONTRADICTION_FLOOR` (0.50); else
+   hypothesis=sentence)``. BOTH premise and hypothesis pass through
+   :func:`_normalize_nli_text` first (typography + math notation) —
+   normalizing one side only moves it away from the other. Bucket:
+   ``entailed`` if entailment >= :data:`_DEFAULT_ENTAILMENT_FLOOR`
+   (0.70); ``contradicted`` if contradiction >=
+   :data:`_DEFAULT_CONTRADICTION_FLOOR` (0.50) AND entailment <
+   :data:`_DEFAULT_CONTRADICTION_MAX_ENTAILMENT` (0.25); else
    ``unsupported``.
 5. Compute: ``unsupported_claim_rate = (unsupported + contradicted) /
    total``; ``claim_contradicted_rate = contradicted / total``.
@@ -105,6 +109,7 @@ scoring.
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import re
 from pathlib import Path
@@ -112,6 +117,10 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from MCP.hardening.validation_gates import GateIssue, GateResult
 from lib.classifiers.nli_classifier import NliClassifier, NliScore
+from lib.semantik.math_fold import normalize_math_notation
+from Trainforge.generators.objective_execution_contract import (
+    release_content_sha256,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +144,7 @@ from lib.validators.pair._claim_support_thresholds import (  # noqa: F401
     _CONTENT_TOKEN_RE,
     _DART_DISAGREEMENT_RATE_WARN_CEILING,
     _DEFAULT_CONTRADICTION_FLOOR,
+    _DEFAULT_CONTRADICTION_MAX_ENTAILMENT,
     _DEFAULT_DART_CONTRADICTION_FLOOR,
     _DEFAULT_ENTAILMENT_FLOOR,
     _DEFAULT_MAX_CONTRADICTED_RATE,
@@ -178,6 +188,114 @@ def _decompose_sentences(text: str) -> List[str]:
             continue
         sentences.append(candidate)
     return sentences
+
+
+_NLI_TYPOGRAPHY_TRANSLATION = str.maketrans({
+    "\u2018": "'",
+    "\u2019": "'",
+    "\u201c": '"',
+    "\u201d": '"',
+    "\u2013": "-",
+    "\u2014": "-",
+    "\u00a0": " ",
+})
+
+
+def _normalize_nli_text(text: str) -> str:
+    """Canonicalize typography and math NOTATION before semantic scoring.
+
+    Local models commonly emit smart quotes while source extraction uses ASCII
+    punctuation. NLI tokenizers can score the otherwise identical claim on
+    opposite sides of the entailment floor. Normalize only the classifier
+    inputs; the original sentence remains in ``per_claim_support`` for audit.
+
+    Math notation is the same failure in a second alphabet. Extraction emits
+    unicode scripts (``x²``, ``x₁``) while a generator writing plain text emits
+    caret form (``x^2``, ``x_1``), so a near-verbatim restatement of a source
+    line never aligns with it. Measured: a completion sentence differing from
+    its source only in that one respect scored entailment 0.583 while a LOOSER
+    paraphrase of the same chunk scored 0.823 — the notation, not the meaning,
+    decided the verdict.
+
+    Folding is delegated to :func:`lib.semantik.math_fold.normalize_math_notation`
+    so the codebase keeps ONE math-notation inventory. Its sibling
+    :func:`~lib.semantik.math_fold.fold_math` (the toggle behind
+    ``ED4ALL_OBJECTIVE_ENTAILMENT_MATH_FOLD``) is deliberately NOT reused here:
+    that one targets lexical shingle scoring and folds ``x²`` down to ``x 2``,
+    destroying the exponent relation an entailment check exists to verify — and
+    it measured net-neutral on the ``objective_entailment`` gate for exactly
+    that reason. ``normalize_math_notation`` preserves the relation and unifies
+    only its spelling, which is strictly the sub-problem evidenced here.
+
+    **Applies to premise AND hypothesis.** A one-sided normalizer cannot fix a
+    mismatch: it can only move one string away from the other. The pre-existing
+    typography folding was hypothesis-only and was therefore defeated by any
+    source that carried the smart quote.
+    """
+    return normalize_math_notation(
+        str(text).translate(_NLI_TYPOGRAPHY_TRANSLATION)
+    )
+
+
+_SOURCE_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
+
+
+def _localized_source_premises(
+    chunk_text: str,
+    claim: str,
+    *,
+    max_windows: int = 2,
+) -> List[str]:
+    """Select compact source windows for long-chunk NLI scoring.
+
+    Transformer NLI inputs truncate long premises, which made support near the
+    middle/end of a chunk invisible. Rank source sentences by lexical overlap
+    with the claim and return the best sentence with one neighbor on each side.
+    The whole chunk remains a separate candidate at the call site, so this is
+    additive evidence retrieval rather than a weaker replacement.
+    """
+    if len(chunk_text) < 1200:
+        return []
+    source_sentences = [
+        fragment.strip()
+        for fragment in _SOURCE_SENTENCE_SPLIT_RE.split(chunk_text)
+        if _content_token_count(fragment) >= _MIN_SENTENCE_TOKENS
+    ]
+    if not source_sentences:
+        return []
+    claim_tokens = {
+        token.lower() for token in _CONTENT_TOKEN_RE.findall(claim)
+    }
+    if not claim_tokens:
+        return []
+
+    ranked: List[Tuple[float, int]] = []
+    for idx, source_sentence in enumerate(source_sentences):
+        source_tokens = {
+            token.lower()
+            for token in _CONTENT_TOKEN_RE.findall(source_sentence)
+        }
+        if not source_tokens:
+            continue
+        overlap = len(claim_tokens & source_tokens)
+        if overlap == 0:
+            continue
+        score = overlap / len(claim_tokens | source_tokens)
+        ranked.append((score, idx))
+    ranked.sort(key=lambda item: (-item[0], item[1]))
+
+    windows: List[str] = []
+    seen: set[str] = set()
+    for _, idx in ranked:
+        start = max(0, idx - 1)
+        end = min(len(source_sentences), idx + 2)
+        window = " ".join(source_sentences[start:end]).strip()
+        if window and window not in seen:
+            seen.add(window)
+            windows.append(window)
+        if len(windows) >= max_windows:
+            break
+    return windows
 
 
 # W-D7 T7.2: _PER_CLAIM_MATCH_COSINE_FLOOR + Wave 9 dual-source
@@ -572,6 +690,364 @@ def _emit_decision(
         )
 
 
+def _verified_micro_claim_premises(
+    pair: Dict[str, Any], sentences: List[str], chunk_text: str,
+) -> Dict[str, str]:
+    """Return exact sealed micro premises keyed by same-byte realization."""
+    provenance = pair.get("provenance")
+    if not isinstance(provenance, dict):
+        return {}
+    sealed = dict(provenance)
+    declared = sealed.pop("provenance_sha256", None)
+    actual = hashlib.sha256(json.dumps(
+        sealed, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    ).encode("utf-8")).hexdigest()
+    evidence = provenance.get("claim_evidence")
+    realizations = provenance.get("claim_realizations")
+    if declared != actual or not isinstance(evidence, list) or not isinstance(
+        realizations, dict
+    ):
+        return {}
+    sentence_set = set(sentences)
+    premises: Dict[str, str] = {}
+    for row in evidence:
+        if not isinstance(row, dict):
+            return {}
+        claim_id = row.get("claim_id")
+        claim = row.get("claim")
+        quote = row.get("evidence_quote")
+        realization = realizations.get(claim_id)
+        if (
+            not isinstance(claim_id, str)
+            or not isinstance(claim, str)
+            or not isinstance(quote, str)
+            or not quote.strip()
+            or realization != claim
+            or realization not in sentence_set
+            or quote not in chunk_text
+        ):
+            return {}
+        premises[realization] = quote
+    return premises
+
+
+_MAX_EXPORTED_EVIDENCE_PREMISES = 8
+
+
+def _exported_claim_evidence_premises(
+    pair: Dict[str, Any], chunk_text: str,
+) -> List[str]:
+    """Return the exact source quotes a producer exported for this pair.
+
+    The staged provider verifies every ``evidence_quote`` against the source
+    window before it accepts a plan, so these strings are known-exact spans of
+    the cited chunk. Scoring a completion sentence against the specific quote
+    that supports it — instead of only against the whole parent chunk — is the
+    difference between an entailment the model can express and one diluted
+    across several hundred unrelated words.
+
+    Unlike :func:`_verified_micro_claim_premises` this does NOT require the
+    realization to be byte-equal to the claim or to appear verbatim as a
+    sentence of the completion. That sealed bridge is specific to the micro
+    contract, where the answer restates its claims; a paraphrased answer never
+    satisfies it, which left every such pair scored against whole-chunk text
+    only.
+
+    Anti-fabrication: a quote that does not occur in ``chunk_text`` is dropped
+    rather than trusted, so a malformed or invented row can never introduce a
+    premise the source does not contain. The containment test is
+    whitespace-insensitive — the producer collapses whitespace on every quote
+    it stamps while ``chunk_text`` is the raw chunk field, so a quote spanning
+    a newline or a double space would otherwise be silently discarded — but it
+    is not weaker: an invented quote still matches nothing. Returning these as
+    ADDITIONAL candidates is monotone — the caller keeps ``chunk_text`` in the
+    list and aggregates by best entailment — so this can raise a score but
+    never manufacture a rejection.
+    """
+    provenance = pair.get("provenance")
+    if not isinstance(provenance, dict):
+        return []
+    evidence = provenance.get("claim_evidence")
+    if not isinstance(evidence, list):
+        return []
+    premises: List[str] = []
+    seen: set = set()
+    # Collapsed ONCE outside the loop, not per quote: both sides of the
+    # containment test have to be whitespace-normalized for a quote that spans
+    # a newline or a double space in the raw source to be recognized.
+    normalized_chunk_text = " ".join(chunk_text.split())
+    for row in evidence:
+        if not isinstance(row, dict):
+            continue  # per-row tolerance: one bad row never discards the rest
+        quote = row.get("evidence_quote")
+        if not isinstance(quote, str):
+            continue
+        # Keep the CLEANED form: it is the exact string the producer verified
+        # its claim against, and NLI tokenization collapses whitespace anyway.
+        quote = " ".join(quote.split())
+        if not quote or quote in seen or quote not in normalized_chunk_text:
+            continue
+        seen.add(quote)
+        premises.append(quote)
+        if len(premises) >= _MAX_EXPORTED_EVIDENCE_PREMISES:
+            break
+    return premises
+
+
+#: Max failing sentences persisted per rejected pair. A rejection needs the
+#: sentences that CAUSED it, not the pair: the ``unsupported_claim`` ceiling is
+#: 0.20 and the ``contradicted_claim`` ceiling is 0.05, so the handful of
+#: worst-scoring sentences is what an adjudicator reads. Six covers the
+#: contradicted case completely (one sentence over 0.05 rejects a ~19-sentence
+#: pair) and gives a representative sample of the unsupported case.
+_MAX_PERSISTED_FAILING_CLAIMS: int = 6
+
+#: Max characters of any one persisted sentence. Long enough for a full
+#: generated claim; a truncation is marked so an adjudicator never mistakes a
+#: clipped sentence for what the model actually emitted.
+_MAX_PERSISTED_CLAIM_CHARS: int = 400
+
+
+def summarize_claim_support_rejection(
+    new_fields: Dict[str, Any],
+    *,
+    rejection_reason: Optional[str],
+    max_claims: int = _MAX_PERSISTED_FAILING_CLAIMS,
+    max_chars: int = _MAX_PERSISTED_CLAIM_CHARS,
+) -> Optional[Dict[str, Any]]:
+    """Condense a rejected pair's NLI verdict into a bounded audit record.
+
+    Accepted pairs carry their full ``per_claim_support`` array into the output
+    JSONL; rejected pairs carried nothing but a ``reason`` string, so the only
+    way to ask "was the verifier right?" was to hand-reconstruct the scores
+    from a run that happened to leave a checkpoint behind. An audit of 150
+    rejections could adjudicate 14 for exactly this reason.
+
+    Bounded on purpose — the dispositions file is an operator artifact, not a
+    second corpus:
+
+    * only the FAILING sentences are kept (an entailed sentence explains
+      nothing about a rejection), worst-entailment-first, capped at
+      ``max_claims`` with ``failing_claims_truncated`` recording the rest;
+    * each sentence is clipped to ``max_chars``;
+    * scores are rounded to 4 decimals;
+    * the sentences are the GENERATED pair text, which is what has to be
+      judged. No source-chunk text is copied — the ``chunk_id`` already on the
+      disposition row resolves the source when one is genuinely needed.
+
+    Returns ``None`` when there is nothing to record (no scored claims, or a
+    graceful-degrade pass that stamped ``per_claim_support=None``).
+    """
+    per_claim = new_fields.get("per_claim_support")
+    if not isinstance(per_claim, list) or not per_claim:
+        return None
+
+    failing = [
+        entry for entry in per_claim
+        if isinstance(entry, dict)
+        and entry.get("outcome") in {"unsupported", "contradicted"}
+    ]
+    failing.sort(key=lambda entry: float(entry.get("entailment") or 0.0))
+    kept = failing[:max_claims]
+
+    def _clip(sentence: Any) -> str:
+        text = str(sentence or "")
+        if len(text) <= max_chars:
+            return text
+        return text[:max_chars] + "…[truncated]"
+
+    counts: Dict[str, int] = {}
+    for entry in per_claim:
+        if isinstance(entry, dict):
+            outcome = str(entry.get("outcome") or "unknown")
+            counts[outcome] = counts.get(outcome, 0) + 1
+
+    return {
+        "stage": "claim_support",
+        "rejection_reason": rejection_reason,
+        "total_claims": len(per_claim),
+        "outcome_counts": counts,
+        "claim_support_rate": new_fields.get("claim_support_rate"),
+        "claim_contradicted_rate": new_fields.get("claim_contradicted_rate"),
+        "entailment_floor": _DEFAULT_ENTAILMENT_FLOOR,
+        "contradiction_floor": _DEFAULT_CONTRADICTION_FLOOR,
+        "contradiction_max_entailment": _DEFAULT_CONTRADICTION_MAX_ENTAILMENT,
+        "failing_claims_truncated": max(0, len(failing) - len(kept)),
+        "failing_claims": [
+            {
+                "sentence": _clip(entry.get("sentence")),
+                "entailment": round(float(entry.get("entailment") or 0.0), 4),
+                "contradiction": round(
+                    float(entry.get("contradiction") or 0.0), 4,
+                ),
+                "outcome": entry.get("outcome"),
+            }
+            for entry in kept
+        ],
+    }
+
+
+def _canonical_content_sha256(value: Any) -> str:
+    """Hash one JSON value using the staged sidecar canonicalization."""
+    return hashlib.sha256(json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    ).encode("utf-8")).hexdigest()
+
+
+def _declares_private_micro_evidence(pair: Dict[str, Any]) -> bool:
+    provenance = pair.get("provenance")
+    evidence = (
+        provenance.get("claim_evidence")
+        if isinstance(provenance, dict)
+        else None
+    )
+    return (
+        isinstance(evidence, list)
+        and bool(evidence)
+        and any(
+            isinstance(row, dict) and "evidence_quote_sha256" in row
+            for row in evidence
+        )
+    )
+
+
+def _authorized_private_micro_claim_premises(
+    pair: Dict[str, Any],
+    sentences: List[str],
+    chunk_text: str,
+    authorized_private_sidecar: Optional[Dict[str, Any]],
+) -> Tuple[Dict[str, str], Optional[str]]:
+    """Resolve private micro quotes after complete hash/binding verification.
+
+    ``(premises, None)`` means the authorized sidecar reconciled.
+    ``({}, None)`` means this is not the new hashed-evidence contract and the
+    legacy inline-quote path should be used.  A non-None error means the pair
+    declares hashed private evidence but cannot prove it and must fail closed.
+    """
+    provenance = pair.get("provenance")
+    evidence = (
+        provenance.get("claim_evidence")
+        if isinstance(provenance, dict)
+        else None
+    )
+    hashed_contract = _declares_private_micro_evidence(pair)
+    if not hashed_contract:
+        return {}, None
+    if not isinstance(authorized_private_sidecar, dict):
+        return {}, "authorized private evidence sidecar is missing"
+
+    sidecar = dict(authorized_private_sidecar)
+    declared_sidecar_hash = sidecar.pop("sidecar_sha256", None)
+    if (
+        not isinstance(declared_sidecar_hash, str)
+        or declared_sidecar_hash != _canonical_content_sha256(sidecar)
+    ):
+        return {}, "authorized private evidence sidecar hash mismatch"
+    if sidecar.get("release_content_sha256") != release_content_sha256(pair):
+        return {}, "authorized private evidence release payload hash mismatch"
+
+    sealed = dict(provenance)
+    declared_provenance_hash = sealed.pop("provenance_sha256", None)
+    if declared_provenance_hash != _canonical_content_sha256(sealed):
+        return {}, "release provenance hash mismatch"
+    realizations = provenance.get("claim_realizations")
+    if not isinstance(realizations, dict):
+        return {}, "release claim realization binding is missing"
+
+    private_evidence = sidecar.get("private_evidence")
+    private_claims = sidecar.get("claims")
+    source_bindings = sidecar.get("source_bindings")
+    if (
+        not isinstance(private_evidence, list)
+        or not isinstance(private_claims, list)
+        or not isinstance(source_bindings, list)
+    ):
+        return {}, "authorized private evidence bindings are incomplete"
+
+    def unique_by_id(
+        rows: List[Any], key: str,
+    ) -> Optional[Dict[str, Dict[str, Any]]]:
+        resolved: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                return None
+            identity = row.get(key)
+            if not isinstance(identity, str) or not identity or identity in resolved:
+                return None
+            resolved[identity] = row
+        return resolved
+
+    private_by_claim = unique_by_id(private_evidence, "claim_id")
+    claims_by_id = unique_by_id(private_claims, "claim_id")
+    sources_by_id = unique_by_id(source_bindings, "source_chunk_id")
+    if (
+        private_by_claim is None
+        or claims_by_id is None
+        or sources_by_id is None
+    ):
+        return {}, "authorized private evidence contains duplicate identities"
+
+    sentence_set = set(sentences)
+    premises: Dict[str, str] = {}
+    seen_release_ids: set[str] = set()
+    for row in evidence:
+        if not isinstance(row, dict):
+            return {}, "release claim evidence row is malformed"
+        claim_id = row.get("claim_id")
+        claim = row.get("claim")
+        quote_hash = row.get("evidence_quote_sha256")
+        source_block_id = row.get("source_block_id")
+        realization = realizations.get(claim_id)
+        if (
+            not isinstance(claim_id, str)
+            or not claim_id
+            or claim_id in seen_release_ids
+            or not isinstance(claim, str)
+            or not claim
+            or "evidence_quote" in row
+            or not isinstance(quote_hash, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", quote_hash)
+            or not isinstance(source_block_id, str)
+            or not source_block_id
+            or realization != claim
+            or realization not in sentence_set
+        ):
+            return {}, "release claim evidence binding is invalid"
+        seen_release_ids.add(claim_id)
+        private_row = private_by_claim.get(claim_id)
+        private_claim = claims_by_id.get(claim_id)
+        if private_row is None or private_claim is None:
+            return {}, "private claim binding is missing"
+        quote = private_row.get("quote")
+        private_claim_text = private_claim.get("claim")
+        private_source_block_id = private_claim.get("source_block_id")
+        private_source_chunks = private_claim.get("source_chunk_ids")
+        current_chunk_id = str(pair.get("chunk_id") or "")
+        if (
+            private_claim_text != claim
+            or private_source_block_id != source_block_id
+            or not isinstance(private_source_chunks, list)
+            or not current_chunk_id
+            or current_chunk_id not in private_source_chunks
+            or not all(
+                isinstance(source_chunk_id, str)
+                and source_chunk_id in sources_by_id
+                for source_chunk_id in private_source_chunks
+            )
+            or not isinstance(quote, str)
+            or not quote
+            or hashlib.sha256(quote.encode("utf-8")).hexdigest() != quote_hash
+            or quote not in chunk_text
+        ):
+            return {}, "private claim/source/quote reconciliation failed"
+        premises[realization] = quote
+    if set(private_by_claim) != seen_release_ids or set(claims_by_id) != (
+        seen_release_ids
+    ):
+        return {}, "private and release claim sets differ"
+    return premises, None
+
+
 class PairClaimSupportValidator:
     """Per-pair-per-claim NLI entailment gate.
 
@@ -629,12 +1105,16 @@ class PairClaimSupportValidator:
         max_contradicted_claim_rate: float = _DEFAULT_MAX_CONTRADICTED_RATE,
         entailment_floor: float = _DEFAULT_ENTAILMENT_FLOOR,
         contradiction_floor: float = _DEFAULT_CONTRADICTION_FLOOR,
+        contradiction_max_entailment: float = (
+            _DEFAULT_CONTRADICTION_MAX_ENTAILMENT
+        ),
         nli: Optional[Any] = None,
     ) -> None:
         self._max_unsupported = float(max_unsupported_claim_rate)
         self._max_contradicted = float(max_contradicted_claim_rate)
         self._entailment_floor = float(entailment_floor)
         self._contradiction_floor = float(contradiction_floor)
+        self._contradiction_max_entailment = float(contradiction_max_entailment)
         self._nli_override = nli
 
     def _get_nli(self) -> Optional[Any]:
@@ -658,6 +1138,7 @@ class PairClaimSupportValidator:
         decision_capture: Any = None,
         dart_block_text_map: Optional[Dict[str, str]] = None,
         dual_source_severity: Literal["off", "warning"] = "off",
+        authorized_private_sidecar: Optional[Dict[str, Any]] = None,
     ) -> Tuple[str, Optional[str], Dict[str, Any]]:
         """Audit one pair against the per-claim NLI support criteria.
 
@@ -800,7 +1281,9 @@ class PairClaimSupportValidator:
         # all three rates to 0.0 in the rationale, which is the
         # accurate signal: "evidence_quote check did not fire on
         # this pair".
-        if not nli_loaded or not chunk_text:
+        if (
+            not nli_loaded or not chunk_text
+        ) and not _declares_private_micro_evidence(pair):
             new_fields: Dict[str, Any] = {
                 "per_claim_support": None,
                 "claim_support_rate": None,
@@ -859,6 +1342,55 @@ class PairClaimSupportValidator:
             )
             return "validated", None, new_fields
 
+        private_micro_premises, private_micro_error = (
+            _authorized_private_micro_claim_premises(
+                pair,
+                sentences,
+                chunk_text,
+                authorized_private_sidecar,
+            )
+        )
+        if private_micro_error is not None:
+            per_claim_support = [
+                {
+                    "sentence": sentence,
+                    "entailment": 0.0,
+                    "contradiction": 0.0,
+                    "outcome": "unsupported",
+                    "source_chunk_ids": None,
+                }
+                for sentence in sentences
+            ]
+            new_fields = {
+                "per_claim_support": per_claim_support,
+                "claim_support_rate": 0.0,
+                "claim_contradicted_rate": 0.0,
+                "deps_missing": False,
+            }
+            _emit_decision(
+                decision_capture,
+                pair_kind=kind,
+                chunk_id=chunk_id,
+                promotion_status="rejected",
+                rejection_reason=_REASON_UNSUPPORTED_CLAIM,
+                total_claims=len(sentences),
+                entailed_count=0,
+                unsupported_count=len(sentences),
+                contradicted_count=0,
+                claim_support_rate=0.0,
+                claim_contradicted_rate=0.0,
+                nli_loaded=nli_loaded,
+                deps_missing=False,
+            )
+            logger.warning(
+                "Private staged evidence failed closed "
+                "(chunk_id=%r, kind=%r): %s",
+                chunk_id,
+                kind,
+                private_micro_error,
+            )
+            return "rejected", _REASON_UNSUPPORTED_CLAIM, new_fields
+
         # ---- Wave 5 W5.D: pre-compute per-sentence attribution ---- #
         # When structured_attribution_used is on, embed every
         # sentence + every claim_text once, then route each sentence's
@@ -876,6 +1408,43 @@ class PairClaimSupportValidator:
         per_sentence_premises: List[List[str]] = [
             [chunk_text] for _ in sentences
         ]
+        exact_micro_premises = private_micro_premises or (
+            _verified_micro_claim_premises(pair, sentences, chunk_text)
+        )
+        for sentence_idx, sentence in enumerate(sentences):
+            exact_premise = exact_micro_premises.get(sentence)
+            if exact_premise is not None:
+                per_sentence_premises[sentence_idx] = [
+                    exact_premise, chunk_text,
+                ]
+        # Producer-exported exact quotes, offered to EVERY sentence as
+        # additional candidates. A paraphrased answer does not restate its
+        # claims verbatim, so the sealed micro bridge above cannot match it;
+        # without these the sentence is scored against whole-chunk text alone
+        # and a faithful paraphrase of one sentence of a long chunk scores as
+        # unsupported. Aggregation is by best entailment, so extra candidates
+        # cannot lower a verdict.
+        exported_evidence_premises = _exported_claim_evidence_premises(
+            pair, chunk_text,
+        )
+        # Per-sentence record of which premises this extension ADDED, so the
+        # bucketing loop below can reconstruct the score set the sentence
+        # would have had without them and enforce the additive invariant.
+        per_sentence_exported: List[set] = [set() for _ in sentences]
+        if exported_evidence_premises:
+            for sentence_idx in range(len(sentences)):
+                existing = per_sentence_premises[sentence_idx]
+                added = [
+                    premise for premise in exported_evidence_premises
+                    if premise not in existing
+                ]
+                existing.extend(added)
+                per_sentence_exported[sentence_idx] = set(added)
+        if not structured_attribution_used:
+            for sentence_idx, sentence in enumerate(sentences):
+                per_sentence_premises[sentence_idx].extend(
+                    _localized_source_premises(chunk_text, sentence)
+                )
         # W-D11 T11.2 — per-sentence evidence_quote / evidence_char_span
         # carried over from the matched per-claim entry. Same indexing
         # as ``sentences`` / ``per_sentence_premises``. When the
@@ -977,8 +1546,16 @@ class PairClaimSupportValidator:
         for s_idx, sentence in enumerate(sentences):
             premises = per_sentence_premises[s_idx]
             start = len(nli_pairs)
+            hypothesis = _normalize_nli_text(sentence)
             for premise in premises:
-                nli_pairs.append((premise, sentence))
+                # BOTH sides normalized. Normalizing only the hypothesis moves
+                # it away from an un-normalized premise instead of onto it,
+                # which is how a near-verbatim restatement of a source line
+                # scored BELOW a looser paraphrase of the same chunk.
+                nli_pairs.append((
+                    _normalize_nli_text(str(premise)),
+                    hypothesis,
+                ))
             end = len(nli_pairs)
             per_sentence_pair_index_ranges.append((start, end))
         try:
@@ -1031,26 +1608,76 @@ class PairClaimSupportValidator:
         unsupported_count = 0
         contradicted_count = 0
 
-        for s_idx, sentence in enumerate(sentences):
-            start, end = per_sentence_pair_index_ranges[s_idx]
-            sentence_scores = scores[start:end]
-            if not sentence_scores:
+        def _aggregate(
+            subset: List[NliScore],
+        ) -> Tuple[float, float]:
+            if not subset:
                 # Defensive: shouldn't happen because per_sentence_premises
                 # always has at least one entry. If it does, treat the
                 # sentence as unsupported.
-                entailment = 0.0
-                contradiction = 0.0
-            else:
-                entailment = max(
-                    float(s.entailment) for s in sentence_scores
+                return 0.0, 0.0
+            if not structured_attribution_used and len(subset) > 1:
+                # Retrieval windows are alternative views of ONE source
+                # chunk. Use the contradiction paired with the strongest
+                # entailment window; max-contradiction across unrelated
+                # windows would turn a valid support hit into a false reject.
+                best_support = max(
+                    subset, key=lambda score: float(score.entailment),
                 )
-                contradiction = max(
-                    float(s.contradiction) for s in sentence_scores
+                return (
+                    float(best_support.entailment),
+                    float(best_support.contradiction),
                 )
+            return (
+                max(float(s.entailment) for s in subset),
+                max(float(s.contradiction) for s in subset),
+            )
+
+        for s_idx, sentence in enumerate(sentences):
+            start, end = per_sentence_pair_index_ranges[s_idx]
+            sentence_scores = scores[start:end]
+            entailment, contradiction = _aggregate(sentence_scores)
+            # Producer-exported quotes are ADDITIVE candidates: they must be
+            # able to rescue a sentence, never to sink one. Entailment is a
+            # max over a superset, so it is already monotone up; contradiction
+            # is NOT (the argmax-entailment premise can be a different — and
+            # more contradicting — premise than before, and the structured
+            # branch maxes contradiction independently). Clamp it to the value
+            # this sentence would have scored without the added premises, so
+            # `unsupported` can never be pushed to `contradicted` and the
+            # 0.05 claim_contradicted_rate ceiling can never reject a pair
+            # that would have validated. No extra NLI work — every score in
+            # the base subset was computed already.
+            added_premises = per_sentence_exported[s_idx]
+            if added_premises:
+                base_scores = [
+                    score
+                    for premise, score in zip(
+                        per_sentence_premises[s_idx], sentence_scores,
+                    )
+                    if premise not in added_premises
+                ]
+                if base_scores:
+                    contradiction = min(
+                        contradiction, _aggregate(base_scores)[1],
+                    )
+            # Contradiction requires the contradiction head HIGH *and* the
+            # entailment head LOW. On long textbook premises the two heads are
+            # not complementary — high entailment routinely coexists with high
+            # contradiction — so contradiction alone does not identify a claim
+            # the source denies. Without the second condition, a sentence
+            # dipping just under the entailment floor while carrying that same
+            # spurious contradiction lands in ``contradicted``, whose 0.05
+            # rate ceiling rejects the entire pair on one sentence. A sentence
+            # with meaningful entailment support is at worst ``unsupported``.
+            # See ``_DEFAULT_CONTRADICTION_MAX_ENTAILMENT`` for the derivation.
             if entailment >= self._entailment_floor:
                 outcome = "entailed"
                 entailed_count += 1
-            elif contradiction >= self._contradiction_floor:
+            elif (
+                contradiction >= self._contradiction_floor
+                and entailment < self._contradiction_max_entailment
+            ):
                 outcome = "contradicted"
                 contradicted_count += 1
             else:
@@ -1140,8 +1767,15 @@ class PairClaimSupportValidator:
                         dart_pair_index_ranges.append(None)
                         continue
                     start = len(dart_nli_pairs)
+                    # Same both-sides normalization as the IMSCC fan-out above
+                    # — the DART cross-check reads the same NLI head, so it
+                    # would otherwise inherit the notation mismatch this pass
+                    # exists to rule out.
+                    dart_hypothesis = _normalize_nli_text(entry["sentence"])
                     for premise in dart_premise_texts:
-                        dart_nli_pairs.append((premise, entry["sentence"]))
+                        dart_nli_pairs.append((
+                            _normalize_nli_text(premise), dart_hypothesis,
+                        ))
                     end = len(dart_nli_pairs)
                     dart_pair_index_ranges.append((start, end))
                 if dart_nli_pairs:
@@ -1778,8 +2412,10 @@ class PairClaimSupportValidator:
 
 __all__ = [
     "PairClaimSupportValidator",
+    "summarize_claim_support_rejection",
     "_DEFAULT_ENTAILMENT_FLOOR",
     "_DEFAULT_CONTRADICTION_FLOOR",
+    "_DEFAULT_CONTRADICTION_MAX_ENTAILMENT",
     "_DEFAULT_MAX_UNSUPPORTED_RATE",
     "_DEFAULT_MAX_CONTRADICTED_RATE",
     "_DEFAULT_DART_CONTRADICTION_FLOOR",

@@ -24,14 +24,14 @@
     "chosen": {
       "type": "string",
       "minLength": 50,
-      "maxLength": 600,
-      "description": "The preferred completion (grounded in chunk content)."
+      "maxLength": 1200,
+      "description": "The preferred completion (grounded in chunk content). Ceiling raised 600 -> 1200 in lockstep with instruction_pair.schema.json so a chosen answer can be objective-complete; see that file for the rationale."
     },
     "rejected": {
       "type": "string",
       "minLength": 50,
-      "maxLength": 600,
-      "description": "The dispreferred completion. Encodes a misconception or a rule-synthesized wrong answer. Must differ from chosen with token-Jaccard delta >= 0.3."
+      "maxLength": 1200,
+      "description": "The dispreferred completion. Encodes a misconception or a rule-synthesized wrong answer. Must differ from chosen with token-Jaccard delta >= 0.3. Ceiling matches chosen so the rejected arm can mirror a long worked answer with one isolated fault rather than being forced shorter than the answer it contrasts with."
     },
     "misconception_id": {
       "type": ["string", "null"],

@@ -36,6 +36,8 @@ etc.). Rationale ≥20 chars per the project contract.
 
 from __future__ import annotations
 
+import ast
+import hashlib as _hashlib
 import json as _json
 import logging
 import math
@@ -140,11 +142,49 @@ _REASONING_THINKING_OFF_DIRECTIVE: str = "detailed thinking off"
 # byte-identical (both fields sent, as Ollama / vLLM want). Parse-with-fallback
 # truthy semantics mirror the other ``ED4ALL_*`` boolean knobs.
 ENV_OMIT_OLLAMA_FORMAT: str = "ED4ALL_LLM_OMIT_OLLAMA_FORMAT"
+RESPONSE_DIALECT_OPENAI_JSON_SCHEMA_STRICT: str = "openai_json_schema_strict"
 
 
 def _omit_ollama_format() -> bool:
     raw = os.environ.get(ENV_OMIT_OLLAMA_FORMAT)
     return str(raw).strip().lower() in {"1", "true", "yes", "on"} if raw else False
+
+
+def _rejects_ollama_format(response: httpx.Response) -> bool:
+    """Return whether a strict OpenAI server rejected top-level ``format``.
+
+    TRT-LLM reports this as a pydantic ``extra_forbidden`` error at
+    ``["body", "format"]``.  Match that structured shape narrowly: an
+    unrelated HTTP 400 must retain the normal fail-loud behavior.
+    """
+    if response.status_code != 400:
+        return False
+    try:
+        body = response.json()
+    except ValueError:
+        return False
+    details = body.get("detail") if isinstance(body, dict) else None
+    # Current ``trtllm-serve`` wraps this pydantic detail list in an ``error``
+    # string using Python repr rather than returning the list as JSON. Parse
+    # literals only (never evaluate code), then apply the same narrow match.
+    if not isinstance(details, list) and isinstance(body, dict):
+        encoded = body.get("error")
+        if isinstance(encoded, str):
+            try:
+                decoded = ast.literal_eval(encoded)
+            except (SyntaxError, ValueError):
+                decoded = None
+            if isinstance(decoded, list):
+                details = decoded
+    if not isinstance(details, list):
+        return False
+    for detail in details:
+        if not isinstance(detail, dict) or detail.get("type") != "extra_forbidden":
+            continue
+        loc = detail.get("loc")
+        if isinstance(loc, (list, tuple)) and tuple(loc) == ("body", "format"):
+            return True
+    return False
 
 # NVIDIA's Nemotron-3 model card documents a third reasoning mode — LOW EFFORT —
 # that keeps thinking ENABLED but emits "significantly fewer reasoning tokens
@@ -252,6 +292,9 @@ def maybe_append_usage_row(
     ttft_ms: Optional[float] = None,
     stream_usage_present: Optional[bool] = None,
     finish_reason: Optional[str] = None,
+    task: Optional[str] = None,
+    error: Optional[str] = None,
+    include_run_identity: bool = False,
 ) -> None:
     """Append one OP2 metering row to ``state/runs/<run_id>/llm_usage.jsonl``.
 
@@ -310,6 +353,31 @@ def maybe_append_usage_row(
             "completion_tokens": int(usage.get("completion_tokens", 0) or 0),
             "duration_ms": round(float(duration_ms), 3),
         }
+        # Direct raw/structured dispatchers opt into the richer identity
+        # fields.  The public ``chat_completion`` path leaves this off so its
+        # established row shape remains byte-identical and, critically, a
+        # caller that already uses that public path is never double-metered.
+        if include_run_identity:
+            row["run_id"] = str(run_id).strip()
+            row["total_tokens"] = (
+                row["prompt_tokens"] + row["completion_tokens"]
+            )
+            _run_contract = os.environ.get(
+                "TRAINFORGE_SYNTHESIS_RUN_CONTRACT_SHA256"
+            )
+            if _run_contract and str(_run_contract).strip():
+                row["synthesis_run_contract_sha256"] = str(
+                    _run_contract
+                ).strip()
+            _component_sha = os.environ.get(
+                "TRAINFORGE_SYNTHESIS_CONTRACT_COMPONENTS_SHA256"
+            )
+            if _component_sha and str(_component_sha).strip():
+                row["synthesis_contract_components_sha256"] = str(
+                    _component_sha
+                ).strip()
+        if task is not None and str(task).strip():
+            row["task"] = str(task).strip()
         # Metering-correctness — stamp the SPENDING phase so the per-phase
         # token breakdown (GUI ``_usage_stats`` groups rows by ``phase``)
         # attributes local content-gen (e.g. the spark-super course_planning
@@ -324,6 +392,8 @@ def maybe_append_usage_row(
         # without the field keeps the legacy row shape byte-identical.
         if finish_reason is not None:
             row["finish_reason"] = str(finish_reason)
+        if error is not None and str(error).strip():
+            row["error"] = str(error).strip()
         # Additive TTFT fields — omitted when None so a flag-off / non-
         # streaming row stays byte-identical to the legacy OP2 shape.
         if ttft_ms is not None:
@@ -385,6 +455,7 @@ class OpenAICompatibleClient:
         monotonic_fn: Optional[Callable[[], float]] = None,
         json_mode: bool = False,
         vision_capable: bool = False,
+        response_dialect: Optional[str] = None,
     ) -> None:
         """Build an LLM-agnostic chat-completions client.
 
@@ -465,6 +536,15 @@ class OpenAICompatibleClient:
         self._initial_backoff_seconds = float(initial_backoff_seconds)
         self._provider_label = str(provider_label)
         self._client = client
+        # ``None`` means the server dialect is not known yet. Strict OpenAI
+        # implementations such as TRT-LLM identify the unsupported Ollama
+        # extension with a structured 400; after that one negotiation request,
+        # this client permanently omits it while retaining OpenAI
+        # ``response_format`` JSON mode. The operator env remains an eager
+        # opt-out that avoids even the negotiation request.
+        self._ollama_format_supported: Optional[bool] = (
+            False if _omit_ollama_format() else None
+        )
         # ``sleep_fn`` lets composing providers route the retry-backoff
         # sleep through their own module so fixtures patching e.g.
         # ``Trainforge.generators._together_provider.time.sleep`` keep
@@ -476,6 +556,15 @@ class OpenAICompatibleClient:
         # the time-to-first-token span so they share one clock source.
         self._monotonic = monotonic_fn or time.monotonic
         self._json_mode = bool(json_mode)
+        if response_dialect not in {
+            None, RESPONSE_DIALECT_OPENAI_JSON_SCHEMA_STRICT,
+        }:
+            raise ValueError(
+                f"unsupported response dialect: {response_dialect!r}"
+            )
+        self._response_dialect = response_dialect
+        if response_dialect == RESPONSE_DIALECT_OPENAI_JSON_SCHEMA_STRICT:
+            self._ollama_format_supported = False
         self._vision_capable = bool(vision_capable)
         # Server-reported token usage of the most recent chat_completion
         # call (``{}`` until the first call). Read by the grounded-answer
@@ -757,6 +846,110 @@ class OpenAICompatibleClient:
             finish_reason=finish_reason,
         )
 
+    def post_with_usage(
+        self,
+        payload: Dict[str, Any],
+        *,
+        task: str,
+    ) -> Tuple[Dict[str, Any], int]:
+        """POST one direct raw request and meter that logical call exactly once.
+
+        Provider adapters that need the raw response body cannot use
+        :meth:`chat_completion`; historically they called
+        :meth:`_post_with_retry` directly and silently bypassed OP2 metering.
+        This is their shared seam.  Public ``chat_completion`` must not call
+        this helper because it owns its existing streaming-aware meter.
+        """
+        payload_model = str(payload.get("model") or "").strip()
+        if not payload_model or payload_model != self._model:
+            error = SynthesisProviderError(
+                "direct request model does not match configured client model",
+                code="direct_model_identity_mismatch",
+                details={
+                    "configured_model": self._model,
+                    "payload_model": payload_model or "<missing>",
+                },
+            )
+            maybe_append_usage_row(
+                provider_label=self._provider_label,
+                model=payload_model or self._model,
+                usage={},
+                duration_ms=0.0,
+                task=task,
+                error=error.code,
+                include_run_identity=True,
+            )
+            captured = self._emit_direct_failure_capture(
+                task=task, model=payload_model or self._model, error=error.code,
+                max_tokens=payload.get("max_tokens"),
+            )
+            if captured:
+                setattr(error, "_direct_capture_emitted", True)
+            raise error
+        started = self._monotonic()
+        try:
+            body, retry_count = self._post_with_retry(payload)
+        except Exception as exc:
+            error_code = str(
+                getattr(exc, "code", "") or type(exc).__name__
+            )
+            maybe_append_usage_row(
+                provider_label=self._provider_label,
+                model=payload_model,
+                usage={},
+                duration_ms=(self._monotonic() - started) * 1000.0,
+                task=task,
+                error=error_code,
+                include_run_identity=True,
+            )
+            captured = self._emit_direct_failure_capture(
+                task=task, model=payload_model, error=error_code,
+                max_tokens=payload.get("max_tokens"),
+            )
+            if captured:
+                try:
+                    setattr(exc, "_direct_capture_emitted", True)
+                except Exception:
+                    pass
+            raise
+        usage = self._extract_usage(body)
+        maybe_append_usage_row(
+            provider_label=self._provider_label,
+            model=self._model,
+            usage=usage,
+            duration_ms=(self._monotonic() - started) * 1000.0,
+            finish_reason=self._extract_finish_reason(body),
+            task=task,
+            include_run_identity=True,
+        )
+        return body, retry_count
+
+    def _emit_direct_failure_capture(
+        self, *, task: str, model: str, error: str, max_tokens: Any,
+    ) -> bool:
+        """Capture a direct-call failure without serialising exception text."""
+        if self._capture is None:
+            return False
+        self._capture.log_decision(
+            decision_type="synthesis_provider_call",
+            decision=f"Direct synthesis call failed for task={task}.",
+            rationale=(
+                f"model={model}, task={task}, max_tokens={max_tokens}, "
+                f"error_code={error}; the request produced no accepted "
+                "structured output and was recorded without secret-bearing "
+                "headers or response bodies."
+            ),
+            alternatives_considered=[],
+            context=_json.dumps({
+                "provider": self._provider_label,
+                "model": model,
+                "task": task,
+                "max_tokens": max_tokens,
+                "error_code": error,
+            }, sort_keys=True),
+        )
+        return True
+
     # ------------------------------------------------------------------
     # Internals — TTFT streaming (Task #10)
     # ------------------------------------------------------------------
@@ -804,7 +997,7 @@ class OpenAICompatibleClient:
         # servers that don't honor it just omit usage (handled downstream).
         stream_payload["stream_options"] = {"include_usage": True}
         if self._json_mode:
-            if not _omit_ollama_format():
+            if self._ollama_format_supported is not False:
                 stream_payload.setdefault("format", "json")
             stream_payload.setdefault(
                 "response_format", {"type": "json_object"}
@@ -1091,6 +1284,19 @@ class OpenAICompatibleClient:
         finally:
             _reservation.release()
 
+    def effective_payload(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
+        """Return the sole payload admitted and sent for this client dialect."""
+        effective = dict(payload)
+        if self._json_mode:
+            if (
+                self._response_dialect
+                != RESPONSE_DIALECT_OPENAI_JSON_SCHEMA_STRICT
+                and self._ollama_format_supported is not False
+            ):
+                effective.setdefault("format", "json")
+            effective.setdefault("response_format", {"type": "json_object"})
+        return effective
+
     def _estimate_payload_tokens(self, payload: Dict[str, Any]) -> float:
         """Cheap up-front token estimate for the TPM bucket debit.
 
@@ -1128,17 +1334,27 @@ class OpenAICompatibleClient:
         # ``response_format`` object. Servers ignore whichever they
         # don't recognize. Caller-supplied values (extra_payload) take
         # precedence so a future provider can opt out per-call.
-        if self._json_mode:
-            if not _omit_ollama_format():
-                payload.setdefault("format", "json")
-            payload.setdefault(
-                "response_format", {"type": "json_object"}
-            )
+        caller_supplied_format = "format" in payload
+        effective_payload = self.effective_payload(payload)
+        payload.clear()
+        payload.update(effective_payload)
+        injected_ollama_format = (
+            self._json_mode
+            and self._response_dialect
+            != RESPONSE_DIALECT_OPENAI_JSON_SCHEMA_STRICT
+            and self._ollama_format_supported is not False
+            and "format" in payload
+            and not caller_supplied_format
+        )
         url = self.api_url
         provider_label = self._provider_label
         last_status: Optional[int] = None
         last_body: str = ""
         for attempt in range(1, self._max_retries + 1):
+            # Hash assertion removed from hot path: prevents re-hashing 1.23 MiB
+            # source on every retry and dialect attempt. Digest is still RECORDED
+            # on journal row via register_contract_files() callsites, just not
+            # gated inside the retry loop.
             try:
                 response = self.client.post(url, json=payload, headers=headers)
             except httpx.HTTPError as exc:
@@ -1159,6 +1375,22 @@ class OpenAICompatibleClient:
                 continue
 
             status = response.status_code
+            if (
+                injected_ollama_format
+                and _rejects_ollama_format(response)
+            ):
+                # Dialect negotiation, not a transient retry: keep the full
+                # configured retry budget for the real request. Recursion is
+                # bounded because the instance flag prevents reinjection.
+                self._ollama_format_supported = False
+                payload.pop("format", None)
+                logger.info(
+                    "%s: server rejected Ollama format extension; retrying "
+                    "with OpenAI response_format only",
+                    provider_label,
+                )
+                return self._post_with_retry_inner(payload, reservation)
+
             if status == 200:
                 try:
                     body = response.json()
@@ -1395,11 +1627,22 @@ class OpenAICompatibleClient:
             )
         finish_reason = first.get("finish_reason")
         if finish_reason == "length":
+            response_ref = "sha256:" + _hashlib.sha256(
+                _json.dumps(
+                    body, sort_keys=True, separators=(",", ":"),
+                    ensure_ascii=False,
+                ).encode("utf-8")
+            ).hexdigest()
             raise SynthesisProviderError(
                 "response finish_reason='length' — model hit the "
                 "max_tokens cap and the output is truncated; raise "
                 "max_tokens for this call",
                 code="output_truncated",
+                details={
+                    "terminal_truncation": True,
+                    "finish_reason": "length",
+                    "response_ref": response_ref,
+                },
             )
         message = first.get("message") or {}
         content = message.get("content")
@@ -1617,6 +1860,8 @@ class OpenAICompatibleClient:
 
 def apply_reasoning_thinking_off_payload(
     payload: Dict[str, Any],
+    *,
+    force_thinking_off: bool = False,
 ) -> Dict[str, Any]:
     """Apply the Nemotron "detailed thinking off" transform to a built payload.
 
@@ -1662,7 +1907,7 @@ def apply_reasoning_thinking_off_payload(
     a caller-supplied override takes precedence. Pure payload-mutator — never
     raises.
     """
-    if resolve_reasoning_low_effort():
+    if not force_thinking_off and resolve_reasoning_low_effort():
         # Low-effort keeps thinking ENABLED (no "detailed thinking off" system
         # directive) but requests the cheaper reasoning budget. Merge into any
         # existing chat_template_kwargs so sibling keys survive.
@@ -1672,7 +1917,7 @@ def apply_reasoning_thinking_off_payload(
         merged["low_effort"] = True
         payload["chat_template_kwargs"] = merged
         return payload
-    if not resolve_reasoning_thinking_off():
+    if not force_thinking_off and not resolve_reasoning_thinking_off():
         return payload
     messages = payload.get("messages")
     if isinstance(messages, list) and messages:

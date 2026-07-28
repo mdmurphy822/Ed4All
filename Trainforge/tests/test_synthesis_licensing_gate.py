@@ -37,6 +37,26 @@ _GATE_ENV = "TRAINFORGE_ALLOW_ANTHROPIC_SYNTHESIS"
 _PROVIDER_ENV = "TRAINFORGE_SYNTHESIS_PROVIDER"
 
 
+def test_nemotron_nano_docs_never_claim_apache_license() -> None:
+    project_root = Path(__file__).resolve().parents[2]
+    licensing = (project_root / "docs" / "LICENSING.md").read_text(
+        encoding="utf-8"
+    )
+    local_row = next(
+        line for line in licensing.splitlines()
+        if line.startswith("| `local` (Nemotron Nano)")
+    )
+    subclass_row = next(
+        line for line in licensing.splitlines()
+        if line.startswith("| `SEMANTIK_SEMANTIC_SUBCLASS`")
+    )
+
+    for row in (local_row, subclass_row):
+        assert "NVIDIA Nemotron Open Model License" in row
+        assert "Apache 2.0" not in row
+        assert "Apache-2.0" not in row
+
+
 def _scrub(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(_GATE_ENV, raising=False)
     monkeypatch.delenv(_PROVIDER_ENV, raising=False)
