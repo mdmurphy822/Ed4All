@@ -585,6 +585,153 @@ def _is_term_like_concept(text: str) -> bool:
     return not is_fragment_phrase(core)
 
 
+# --------------------------------------------------------------------------- #
+# Definitional-subject guard for ``DEFINITION_PATTERNS``.
+#
+# Every definition pattern captures group 1 as "everything from the sentence
+# start up to the first copula" (``([A-Z][^.]*?)\s+(?:is|are)\s+…``). That is a
+# TERM only when the sentence really is "<Term> is a <definition>". On ordinary
+# prose the same shape fires on any sentence that happens to contain a copula,
+# so the capture is whatever preamble preceded it: an interrogative ("What is
+# the value of x?"), a demonstrative ("This is the third digit …"), an
+# existential ("There is a faster method …"), a subordinate/participial opener
+# ("Since 72 is a multiple of 8, …", "Shown below is the graph …"), or an
+# imperative ("Complete the following: _______ is …").
+#
+# None of those is a term, yet each one is minted, deduplicated course-wide, and
+# then reused as the fill-in-the-blank ANSWER and the MCQ stem subject — so one
+# fabricated term poisons every item generated from that chunk. Recall costs one
+# missed definition; precision costs a poisoned pair, so the guard is
+# deliberately strict.
+#
+# The rule: a definitional subject must read as a genuine short NOMINAL noun
+# phrase. Shape is delegated to :func:`_is_term_like_concept` (which layers the
+# canonical ``lib.ontology.lexical_concept_seeds.is_fragment_phrase`` filter on
+# top of length / word-count caps and a finite-verb / clause-connective
+# rejection); this adds the two signals that filter cannot see, because both are
+# grammatical roles rather than fragment shapes:
+#
+#   * a NON-NOMINAL head word — the subject position is filled by a pronoun,
+#     demonstrative, interrogative, existential, or subordinating/discourse
+#     opener instead of a noun;
+#   * LABEL / BLANK punctuation — a colon, semicolon, question/exclamation mark,
+#     dash run, or authored blank marks a label or an exercise prompt, never a
+#     term.
+#
+# Domain-agnostic: the head set is closed-class English function vocabulary, not
+# subject-matter words, so it carries across corpora unchanged.
+# --------------------------------------------------------------------------- #
+
+#: Closed-class words that can open a sentence but can never HEAD the noun
+#: phrase a definition defines. Union of the bare-anaphora set (reused from
+#: :data:`_ANAPHORIC_SUBJECTS` so the two guards can't drift) with the
+#: interrogative, existential, subordinating-conjunction and discourse-connective
+#: classes.
+_NON_NOMINAL_SUBJECT_HEADS = _ANAPHORIC_SUBJECTS | frozenset({
+    # Interrogatives / relatives.
+    "what", "which", "who", "whom", "whose", "when", "where", "why", "how",
+    # Subordinating conjunctions + adverbial / participial openers.
+    "since", "because", "if", "unless", "although", "though", "while",
+    "whereas", "after", "before", "once", "whenever", "wherever", "as",
+    "until", "whether", "given", "suppose", "assume", "notice", "note",
+    "recall", "consider", "shown", "using", "let", "so",
+    # Discourse connectives.
+    "but", "however", "therefore", "thus", "hence", "also", "then",
+    "meanwhile", "moreover", "furthermore", "nevertheless", "instead",
+    "otherwise", "besides", "again", "now", "yet", "still", "first",
+    "second", "next", "finally", "similarly", "conversely",
+})
+
+#: Punctuation that marks the capture as a LABEL or an authored exercise BLANK
+#: rather than a term ("Complete the following: _______", "Step 2 — solve",
+#: the emphasis marker in "The denominator _b_"). The underscore alternatives
+#: are deliberately boundary-scoped — a WORD-INTERNAL underscore is an
+#: identifier character, so ``slope_of_a_line`` and ``zero_product_property``
+#: stay eligible on a technical corpus.
+_SUBJECT_LABEL_PUNCT_RE = re.compile(r"[:;?!]|--|—|–|(?:^|\s)_|_(?:\s|$)|__")
+
+#: Determiners tolerated in front of a definitional subject. Wider than
+#: :data:`_LEADING_DETERMINER_RE` (which is scoped to relationship concepts):
+#: a definition sentence routinely opens "Every integer is …" / "Any polynomial
+#: is …", and the quantifier is not the head.
+_SUBJECT_LEADING_DETERMINER_RE = re.compile(
+    r"^(?:the|a|an|its|their|your|our|this|these|those|each|every|any|all|"
+    r"some|no|both|another|such)\s+",
+    re.IGNORECASE,
+)
+
+
+#: Prepositions that attach a single qualifying phrase to a noun-phrase head
+#: ("the perimeter OF a rectangle", "the number of decimal places IN the
+#: product"). See :func:`_head_np_is_term_like`.
+_SUBJECT_PP_SPLIT_RE = re.compile(r"\s+(?:of|in|for|between)\s+", re.IGNORECASE)
+#: Word cap for a subject that carries a prepositional qualifier. Wider than
+#: :data:`_MAX_TERM_WORDS` (which bounds a bare noun phrase) because the
+#: qualifier is part of the term, not clause glue.
+_MAX_SUBJECT_WORDS_WITH_PP = 8
+
+
+def _head_np_is_term_like(core: str) -> bool:
+    """True when ``core`` is a noun-phrase HEAD plus one prepositional qualifier.
+
+    ``is_fragment_phrase`` rejects any span carrying two or more function words,
+    which is right for clause glue but wrong for the qualified noun phrases a
+    textbook defines constantly — "the perimeter of a rectangle", "the degree of
+    a polynomial", "the least common multiple of two numbers". Each of those
+    spends both of its function-word budget slots on ONE prepositional
+    attachment.
+
+    So the head is tested on its own (it must be a genuine term by the same
+    canonical rules), and the qualifier is allowed provided the whole span stays
+    short and carries no clause marker — which is what separates "the slope of a
+    line" from "a fraction in which the numerator or the denominator".
+    """
+    if _CLAUSE_MARKER_RE.search(core):
+        return False
+    if len(core) > _MAX_TERM_CHARS:
+        return False
+    if len(core.split()) > _MAX_SUBJECT_WORDS_WITH_PP:
+        return False
+    parts = _SUBJECT_PP_SPLIT_RE.split(core, maxsplit=1)
+    if len(parts) != 2 or not parts[1].strip():
+        return False
+    return _is_term_like_concept(parts[0])
+
+
+def _is_definitional_subject(subject: str) -> bool:
+    """True when ``subject`` reads as a real definitional noun-phrase term.
+
+    Applied to group 1 of every :data:`ContentExtractor.DEFINITION_PATTERNS`
+    match before a :class:`KeyTerm` is minted. See the block comment above for
+    why the copula patterns need it and why precision is weighted over recall.
+    """
+    if not subject:
+        return False
+    stripped = subject.strip().strip("\"'").rstrip(".,;:")
+    if _SUBJECT_LABEL_PUNCT_RE.search(stripped):
+        return False
+    # Strip the leading determiner / quantifier first: it is never the head, and
+    # a definition sentence routinely opens with one ("Every integer is …").
+    had_determiner = bool(_SUBJECT_LEADING_DETERMINER_RE.match(stripped))
+    core = _SUBJECT_LEADING_DETERMINER_RE.sub("", stripped).strip()
+    head_tokens = re.findall(r"[A-Za-z']+", core)
+    if not head_tokens:
+        return False
+    # Role: the head must be a noun, not a closed-class sentence opener. A
+    # preceding determiner PROVES the head is nominal — "second"/"given"/"first"
+    # open a discourse move or a participial clause only when bare, never after
+    # "A" or "The" — so the head check applies to BARE subjects only. That keeps
+    # "The second law is the conservation of energy" and "The given information
+    # is the base and the height" while still dropping "Second, the result is …"
+    # and "Given that x is a positive integer, …".
+    if not had_determiner and head_tokens[0].lower() in _NON_NOMINAL_SUBJECT_HEADS:
+        return False
+    # Shape: short, no clause glue, passes the canonical fragment filter —
+    # either as a bare noun phrase or as a head plus one prepositional
+    # qualifier.
+    return _is_term_like_concept(core) or _head_np_is_term_like(core)
+
+
 class ContentExtractor:
     """Extract question-worthy elements from retrieved RAG chunks.
 
@@ -595,7 +742,26 @@ class ContentExtractor:
         statements = extractor.extract_factual_statements(chunks)
     """
 
-    # Patterns that indicate a definition
+    # Patterns that indicate a definition.
+    #
+    # ``re.IGNORECASE`` is applied pattern-wide so the CONNECTIVE matches in any
+    # case ("IS DEFINED AS" in an all-caps callout, "Refers To" in a title-cased
+    # heading). Under that flag ``[A-Z]`` matches lowercase too — so the subject
+    # anchor is a real constraint only where it is written case-SENSITIVE.
+    #
+    # Four of the five patterns are already bounded on the left by
+    # ``(?:^|(?<=\.\s))``, a genuine sentence-start anchor, so their ``[A-Z]``
+    # is redundant with it and case-insensitivity there costs nothing: it only
+    # admits sentence starts that are lowercase, which real content produces (an
+    # OCR'd line, a flattened glossary key — "denominator The denominator is the
+    # number below the fraction bar"). Those stay tolerant.
+    #
+    # The ``X, which is Y`` pattern has NO anchor — its ``[A-Z]`` is its ONLY
+    # left boundary — so a case-insensitive ``[A-Z]`` there lets the capture
+    # begin at any letter anywhere in the chunk, including mid-word, and it
+    # sweeps up whatever clause precedes the nearest ", which is". That one is
+    # scoped case-sensitive with ``(?-i:[A-Z])`` so the boundary means what it
+    # says, while the connective stays case-insensitive.
     DEFINITION_PATTERNS = [
         # "X is defined as Y"
         re.compile(
@@ -612,9 +778,10 @@ class ContentExtractor:
             r"(?:^|(?<=\.\s))([A-Z][^.]*?)\s+(?:is|are)\s+(?:the|a|an)\s+(.+?)(?:\.|$)",
             re.IGNORECASE,
         ),
-        # "X, which is Y,"
+        # "X, which is Y," — unanchored, so its subject boundary is
+        # case-SENSITIVE (see the note above).
         re.compile(
-            r"([A-Z][^,]*?),\s+which\s+(?:is|are)\s+(.+?)(?:,|\.|$)",
+            r"((?-i:[A-Z])[^,]*?),\s+which\s+(?:is|are)\s+(.+?)(?:,|\.|$)",
             re.IGNORECASE,
         ),
         # "X means Y"
@@ -766,6 +933,15 @@ class ContentExtractor:
                         continue
                     candidates_seen += 1
                     if _is_toc_fragment(term):
+                        continue
+                    # The copula patterns capture "sentence start → first
+                    # copula", which is a TERM only when the sentence really is
+                    # a definition. Require a genuine nominal definitional
+                    # subject so an interrogative / demonstrative / existential
+                    # / subordinate-clause / imperative preamble never becomes
+                    # a key term — and therefore never becomes a
+                    # fill-in-the-blank answer or an MCQ stem subject.
+                    if not _is_definitional_subject(term):
                         continue
                     # Apparatus text must never become a definition — nor the
                     # TERM, which is reused verbatim as the fill-in-the-blank
