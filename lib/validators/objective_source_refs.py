@@ -30,11 +30,15 @@ back-compat ``oneOf`` in
      ``chapters[*].sections[*].id`` → warning-severity
      ``OBJECTIVE_SOURCE_NOT_IN_TEXTBOOK_STRUCTURE``,
      ``action="regenerate"``.
-   * Any ``chunk_ids[*]`` entry not in the DART chunk-id universe →
+   * Any ``chunk_ids[*]`` entry not in the SemantiK chunk-id universe →
      warning-severity ``OBJECTIVE_CHUNK_NOT_IN_DART_MANIFEST``,
-     ``action="regenerate"``. Skipped when no
-     ``dart_chunks_manifest_path`` is provided so legacy archives
-     don't fail loud against an unavailable universe.
+     ``action="regenerate"``. (The issue code and the
+     ``dart_chunks_manifest_path`` input key keep their pre-SemantiK
+     spelling as persisted wire literals — see
+     ``ci/legacy_token_allowlist.txt`` — and no longer name a live
+     engine; the universe is read from ``semantik_chunks/chunks.jsonl``.)
+     Skipped when no ``dart_chunks_manifest_path`` is provided so legacy
+     archives don't fail loud against an unavailable universe.
    * **Split-brain citation-resolution net (GAP 1).** In addition to
      the per-LO warning above, the validator aggregates every cited
      ``chunk_ids[*]`` across all structured objectives and, when a
@@ -747,18 +751,19 @@ class ObjectiveSourceRefValidator:
                                         f"``source_refs[]`` entry "
                                         f"ref={ref_field!r} cites "
                                         f"chunk_id {cid!r} which does "
-                                        f"not resolve against the DART "
+                                        f"not resolve against the SemantiK "
                                         f"chunkset universe (size: "
                                         f"{len(chunks_universe)})."
                                     ),
                                     location=lo_id_value,
                                     suggestion=(
                                         "Verify the topic's "
-                                        "``dart_block_ids`` map to real "
-                                        "DART block IDs that survived "
-                                        "the chunking phase, or re-run "
-                                        "stage_semantik_outputs + chunking "
-                                        "to refresh the chunkset."
+                                        "``dart_block_ids`` field (name "
+                                        "kept for read-compat) maps to real "
+                                        "SemantiK source block IDs that "
+                                        "survived the chunking phase, or "
+                                        "re-run stage_semantik_outputs + "
+                                        "chunking to refresh the chunkset."
                                     ),
                                 ))
                             had_warning_miss = True

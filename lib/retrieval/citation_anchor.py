@@ -38,7 +38,7 @@ HTML-entity quirk: headings in chunk ``source`` carry double-escaped entities
 (``Week 1: Application &amp;amp; Activities``). The resolver compares *text*,
 not headings, so no unescaping pass is needed for that case.
 
-Two resolver-side normalization fixes (Marketable-v1) keep matching robust
+Four resolver-side normalization fixes (Marketable-v1) keep matching robust
 against page-vs-chunk drift WITHOUT re-chunking (the byte-stability contract):
 
   1. Body-chrome-safe page extraction. Courseforge stamps
@@ -63,7 +63,19 @@ against page-vs-chunk drift WITHOUT re-chunking (the byte-stability contract):
      below the 0.85 floor. The resolver ``html.unescape``s BOTH sides before
      shingling / substring, making the comparison entity-agnostic.
 
-Together these two fixes are normalization-only — they make matching robust
+  3. QTI nested-markup normalization. QTI 1.2 stores escaped HTML inside
+     ``mattext`` XML nodes. The chunker emits rendered text, while a plain
+     outer-XML extraction leaves the decoded inner tags as literal tokens.
+     The resolver strips only tag-shaped fragments from the comparison
+     projection; visible source tokens and the anchoring floor are unchanged.
+
+  4. Structural-heading projection. The chunker treats section headings as
+     metadata and may merge adjacent body runs without their labels. The
+     resolver compares against both the full visible page and a projection
+     with only ``h1``-``h6`` elements removed, taking the stronger honest
+     containment result. Body prose is never removed or synthesized.
+
+Together these fixes are normalization-only — they make matching robust
 against page/chunk drift, NOT content rewriting. The resolver stays strictly
 fail-closed: a chunk whose text is genuinely absent from the page still scores
 low and reports ``SPAN_FABRICATED``. (Measured on the rdf-shacl calibration
@@ -80,6 +92,7 @@ Run as a module for the WS1.2 calibration measure pass::
 
 from __future__ import annotations
 
+import difflib
 import html as _html
 import json
 import re
@@ -149,6 +162,42 @@ _BODY_CHROME_RE = re.compile(
     re.IGNORECASE,
 )
 
+# QTI 1.2 stores item prose as HTML escaped inside ``<mattext>`` XML nodes,
+# e.g. ``&lt;p&gt;Question&lt;/p&gt;``.  ``extract_plain_text`` parses the
+# outer XML and decodes the entity, leaving the *nested* ``<p>`` as literal
+# text.  The IMSCC chunker, correctly, parses that nested HTML before emitting
+# the assessment chunk.  Strip only syntactically tag-shaped fragments from
+# the comparison projection so both sides inhabit the same text space.  This
+# is deliberately narrow: mathematical comparisons such as ``x < 3`` do not
+# match because a tag must begin with a letter (or ``/`` + letter).
+_NESTED_MARKUP_TAGS = (
+    "a|abbr|article|aside|b|blockquote|br|code|dd|del|details|div|dl|dt|"
+    "em|figcaption|figure|footer|h[1-6]|header|i|kbd|li|main|mark|nav|"
+    "ol|p|pre|q|s|section|small|span|strong|sub|summary|sup|table|tbody|"
+    "td|tfoot|th|thead|tr|u|ul"
+)
+_NESTED_MARKUP_RE = re.compile(
+    r"<!--.*?-->|"
+    rf"</?(?:{_NESTED_MARKUP_TAGS})(?=[\s/>])[^<>]*>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+# Math emitters differ on whitespace around comparison/equality operators
+# (``y < 4`` versus ``y<4``) even though the visible expression is identical.
+# Canonicalize only operator-adjacent whitespace in the comparison projection.
+_MATH_OPERATOR_WS_RE = re.compile(r"\s*([<>=≤≥])\s*")
+
+# The chunker treats heading labels as structure and emits the associated body
+# prose.  A merged chunk can therefore join two body runs while the archived
+# HTML still has an intervening ``<hN>label</hN>``.  Keep both projections:
+# the ordinary visible page (for chunks that intentionally retain a heading)
+# and a body-only projection (for the normal chunker path).  Only heading
+# elements are removed; body prose is never rewritten or invented.
+_STRUCTURAL_HEADING_RE = re.compile(
+    r"<h([1-6])(?=[\s>])[^>]*>.*?</h\1\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+
 
 def _strip_root_template_chrome(html: str) -> str:
     """Drop ``data-cf-role="template-chrome"`` from structural-root tags only.
@@ -178,15 +227,76 @@ def _plain_text(html: str) -> str:
     return normalize_ws(text)
 
 
+def _plain_text_projections(html: str) -> Tuple[str, ...]:
+    """Return honest visible-text projections used by the chunker.
+
+    The first projection is the complete page text.  The second removes only
+    structural heading elements before extraction, matching merged chunks
+    whose section labels are metadata rather than body content.  Duplicate
+    projections are collapsed while preserving order.
+    """
+    full = _plain_text(html)
+    body_only = _plain_text(_STRUCTURAL_HEADING_RE.sub(" ", html))
+    return (full,) if body_only == full else (full, body_only)
+
+
 def _normalize_for_match(text: str) -> str:
-    """Entity-symmetric, whitespace-collapsed projection for fuzzy matching.
+    """Entity- and nested-markup-symmetric projection for fuzzy matching.
 
     ``html.unescape`` decodes named + numeric entities (``&rsquo;`` -> ``'``,
     ``&mdash;`` -> ``—``) so a chunk that retained raw entities compares equal
     to the page whose entities ``HTMLParser`` already decoded (module docstring
-    fix #2). Idempotent — text with no entities passes through unchanged.
+    fix #2).
+
+    A second, narrow normalization removes HTML tags revealed by that unescape.
+    This is required for QTI ``mattext``: the archived XML contains escaped
+    inner HTML while assessment chunks contain its rendered text.  Removing
+    tags changes no source claims and does not weaken containment: only markup
+    syntax is discarded, and all human-visible tokens must still match at the
+    unchanged shingle/floor settings.
+
+    Idempotent — plain text with no entities or tags passes through unchanged.
     """
-    return normalize_ws(_html.unescape(text or ""))
+    unescaped = _html.unescape(text or "")
+    without_nested_markup = _NESTED_MARKUP_RE.sub(" ", unescaped)
+    # Attribute values can themselves contain entities, so decode once more
+    # after removing the revealed tag shell.
+    normalized = normalize_ws(_html.unescape(without_nested_markup))
+    return _MATH_OPERATOR_WS_RE.sub(r"\1", normalized)
+
+
+def _ordered_segment_containment(
+    needle: str,
+    haystack: str,
+    *,
+    min_segment_tokens: int,
+) -> float:
+    """Fraction of needle tokens in ordered, source-verbatim body runs.
+
+    The chunker can omit structural labels between adjacent body sections.
+    Ordinary shingles crossing each omitted label then fail even though every
+    emitted body run is copied from the archived page.  This companion measure
+    credits only non-overlapping, document-ordered exact token runs at least as
+    long as the configured shingle size.  Short on-topic word collisions earn
+    no credit, so the unchanged containment threshold remains fail-closed for
+    fabricated prose.
+    """
+    needle_tokens = normalize_ws(needle).lower().split()
+    haystack_tokens = normalize_ws(haystack).lower().split()
+    if not needle_tokens or not haystack_tokens or min_segment_tokens <= 0:
+        return 0.0
+    matcher = difflib.SequenceMatcher(
+        None,
+        needle_tokens,
+        haystack_tokens,
+        autojunk=False,
+    )
+    matched = sum(
+        block.size
+        for block in matcher.get_matching_blocks()
+        if block.size >= min_segment_tokens
+    )
+    return matched / len(needle_tokens)
 
 
 def _iter_html_roots(course_dir: Path, roots: Tuple[str, ...]):
@@ -365,18 +475,34 @@ def resolve_citation_anchor(
     source_id, html = resolved
     source_path = Path(source_id) if isinstance(source_id, Path) else source_id
     chunk_text = chunk.get("text", "") or ""
-    page_text = _plain_text(html)
+    page_texts = _plain_text_projections(html)
 
     # Entity-symmetric projections (module docstring fix #2): unescape both
     # sides so a chunk that kept raw ``&rsquo;``/``&mdash;`` entities matches a
     # page whose entities HTMLParser already decoded. ``shingle_containment``
     # lowercases internally, so passing the normalized strings is sufficient.
     chunk_match = _normalize_for_match(chunk_text)
-    page_match = _normalize_for_match(page_text)
-    containment = shingle_containment(
-        chunk_match, page_match, shingle_size=shingle_size
+    page_matches = tuple(_normalize_for_match(text) for text in page_texts)
+    containment = 0.0
+    for page_match in page_matches:
+        shingle_rate = shingle_containment(
+            chunk_match, page_match, shingle_size=shingle_size
+        )
+        if shingle_rate >= containment_threshold:
+            candidate_rate = shingle_rate
+        else:
+            candidate_rate = max(
+                shingle_rate,
+                _ordered_segment_containment(
+                    chunk_match,
+                    page_match,
+                    min_segment_tokens=shingle_size,
+                ),
+            )
+        containment = max(containment, candidate_rate)
+    normalized_substr = any(
+        chunk_match in page_match for page_match in page_matches
     )
-    normalized_substr = chunk_match in page_match
 
     # 1) exact span verification (never repaired).
     if _exact_span_match(html, html_xpath, char_span, chunk_text):

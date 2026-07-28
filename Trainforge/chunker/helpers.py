@@ -29,7 +29,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from Trainforge.parsers.html_content_parser import HTMLTextExtractor
-from lib.ontology.learning_objectives import LO_ID_PATTERN
+from lib.ontology.learning_objectives import LO_ID_PATTERN, LO_ID_SCAN_PATTERN
 
 __all__ = [
     "build_semantik_block_offset_index",
@@ -692,6 +692,28 @@ def extract_learning_outcome_refs(
             for raw in sec_refs:
                 _extend(_normalize_lo_ref(raw, preserve_case=preserve_case))
             break
+
+    # Objective-catalog pages are a special provenance surface: their JSON-LD
+    # intentionally enumerates the entire course, so copying that page-wide
+    # list onto every split chunk falsely claims that each title/summary
+    # fragment delivers every objective. Prefer IDs actually visible in the
+    # chunk heading; title/summary fragments correctly remain unanchored. The
+    # canonical content pages still carry the same IDs, preserving course-wide
+    # objective coverage without fabricating per-chunk coverage.
+    _catalog_identity = " ".join(
+        str(item.get(key) or "")
+        for key in ("item_id", "title", "module_id", "module_title")
+    ).lower()
+    _is_objective_catalog = (
+        "learning objectives map" in _catalog_identity
+        or str(item.get("module_id") or "").lower() == "learning_objectives"
+    )
+    if not refs and _is_objective_catalog:
+        for raw in LO_ID_SCAN_PATTERN.findall(
+            str(section_heading or "").upper()
+        ):
+            _extend(_normalize_lo_ref(raw, preserve_case=preserve_case))
+        return refs
 
     # (2) Structured page-level LO ids from the parsed objectives list.
     if not refs:

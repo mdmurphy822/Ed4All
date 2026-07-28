@@ -179,6 +179,64 @@ def test_extract_lo_refs_page_level_fallback():
     assert set(refs) == {"to-01", "to-02"}, refs
 
 
+def test_objective_catalog_split_uses_only_chunk_local_ids():
+    """A course-wide objective map must not stamp every split with every LO."""
+    all_los = [
+        {"id": f"CO-{index:02d}"}
+        for index in range(1, 41)
+    ]
+    item = {
+        "item_id": "learning_objectives",
+        "module_id": "learning_objectives",
+        "title": "Learning Objectives Map",
+        "module_title": "Learning Objectives Map",
+        "sections": [],
+        "learning_objectives": all_los,
+        "objective_refs": [lo["id"] for lo in all_los],
+    }
+
+    title_refs = extract_learning_outcome_refs(item, "Learning Objectives Map")
+    local_refs = extract_learning_outcome_refs(
+        item, "CO-17 — Analyze a locally grounded concept",
+    )
+    summary_refs = extract_learning_outcome_refs(
+        item, "Objective Map Summary (part 2)",
+    )
+
+    assert title_refs == []
+    assert local_refs == ["co-17"]
+    assert summary_refs == []
+    assert len(local_refs) < len(all_los)
+
+
+def test_objective_catalog_localization_preserves_course_union():
+    """Canonical content pages preserve 100% coverage after map localization."""
+    objective_ids = [f"CO-{index:02d}" for index in range(1, 41)]
+    catalog = {
+        "item_id": "learning_objectives",
+        "module_id": "learning_objectives",
+        "title": "Learning Objectives Map",
+        "sections": [],
+        "learning_objectives": [{"id": ref} for ref in objective_ids],
+        "objective_refs": objective_ids,
+    }
+    catalog_chunks = [
+        extract_learning_outcome_refs(catalog, "Learning Objectives Map"),
+        extract_learning_outcome_refs(catalog, "CO-17 — Local objective"),
+        extract_learning_outcome_refs(catalog, "Objective Map Summary"),
+    ]
+    content_chunks = [
+        [ref.lower()]
+        for ref in objective_ids
+    ]
+
+    course_union = {
+        ref for refs in catalog_chunks + content_chunks for ref in refs
+    }
+    assert course_union == {ref.lower() for ref in objective_ids}
+    assert all(len(refs) < len(objective_ids) for refs in catalog_chunks)
+
+
 def test_no_lo_metadata_yields_empty():
     """Legacy page without LO metadata yields [] — no regression."""
     item = _item_from_html(_PAGE_WITHOUT_LOS)

@@ -359,6 +359,34 @@ def test_synthesis_quota_emits_capture_on_over_ceiling(tmp_path: Path) -> None:
     assert metrics["failure_code"] == "SYNTHESIS_QUOTA_OVER_CEILING"
 
 
+def test_synthesis_quota_local_requests_do_not_consume_session_budget(
+    tmp_path: Path,
+) -> None:
+    capture = _MockCapture()
+    course_dir = tmp_path / "course"
+    (course_dir / "imscc_chunks").mkdir(parents=True)
+    chunks = course_dir / "imscc_chunks" / "chunks.jsonl"
+    chunks.write_text(
+        "\n".join(
+            json.dumps({"id": f"c{i}", "learning_outcome_refs": ["TO-01"]})
+            for i in range(939)
+        ) + "\n",
+        encoding="utf-8",
+    )
+    result = SynthesisQuotaValidator().validate({
+        "course_dir": str(course_dir),
+        "instruction_variants_per_chunk": 1,
+        "synthesis_provider": "local",
+        "decision_capture": capture,
+    })
+
+    metrics = capture.calls[0]["metrics"]
+    assert metrics["provider_requests"] == 1878
+    assert metrics["estimated_dispatches"] == 0
+    assert metrics["provider"] == "local"
+    assert result.issues == []
+
+
 # ---------------------------------------------------------------------------
 # PropertyCoverageValidator
 # ---------------------------------------------------------------------------

@@ -6,15 +6,18 @@ ceiling. Default severity is 'warning' so operators get awareness
 without blocking; flip to 'critical' via inputs.severity to fail
 closed for batch / unattended runs.
 
-Estimate formula:
+Estimate formula for session-backed providers:
     estimated_dispatches = eligible_chunks * (instruction_variants + 1)
 
 Where the "+ 1" accounts for the per-chunk preference pair.
+Local/Together/mock traffic is reported separately as ``provider_requests``;
+it does not consume the finite Claude-session dispatch budget.
 """
 from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -38,6 +41,8 @@ def _emit_decision(
     estimated_dispatches: int,
     ceiling: int,
     skip_reason: Optional[str] = None,
+    provider: str = "unknown",
+    provider_requests: Optional[int] = None,
 ) -> None:
     """Emit one ``synthesis_quota_check`` decision per validate() call.
 
@@ -56,6 +61,8 @@ def _emit_decision(
         f"{instruction_variants}, "
         f"estimated_dispatches={estimated_dispatches} "
         f"(ceiling={ceiling}); skip_reason={skip_reason or 'none'}; "
+        f"provider={provider}; provider_requests="
+        f"{provider_requests if provider_requests is not None else estimated_dispatches}; "
         f"failure_code={code or 'none'}."
     )
     metrics: Dict[str, Any] = {
@@ -66,6 +73,12 @@ def _emit_decision(
         "skip_reason": skip_reason,
         "passed": bool(passed),
         "failure_code": code,
+        "provider": provider,
+        "provider_requests": int(
+            provider_requests
+            if provider_requests is not None
+            else estimated_dispatches
+        ),
     }
     try:
         capture.log_decision(
@@ -168,7 +181,21 @@ class SynthesisQuotaValidator:
                 issues=[],
             )
 
-        estimated = eligible * (variants + 1)
+        provider_requests = eligible * (variants + 1)
+        provider = str(
+            inputs.get("synthesis_provider")
+            or os.environ.get("TRAINFORGE_SYNTHESIS_PROVIDER")
+            or "unknown"
+        ).strip().lower()
+        # This gate protects the finite Claude-session dispatch budget. Local
+        # and hosted HTTP providers still make every request (reported as
+        # provider_requests) but consume zero session dispatches. Unknown
+        # callers retain the conservative legacy estimate.
+        estimated = (
+            0
+            if provider in {"local", "together", "mock"}
+            else provider_requests
+        )
 
         issues: List[GateIssue] = []
         if estimated > ceiling:
@@ -201,6 +228,7 @@ class SynthesisQuotaValidator:
             capture, passed=passed, code=failure_code,
             eligible_chunks=eligible, instruction_variants=variants,
             estimated_dispatches=estimated, ceiling=ceiling,
+            provider=provider, provider_requests=provider_requests,
         )
         return GateResult(
             gate_id=gate_id,

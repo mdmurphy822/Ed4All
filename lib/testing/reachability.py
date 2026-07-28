@@ -57,7 +57,7 @@ __all__ = [
 # ENV_BASE_URL) and Trainforge/synthesize_training.py (the
 # TRAINFORGE_SYNTHESIS_PROVIDER override). Duplicated here rather than imported
 # so the helper stays importable without pulling the generator stack.
-DEFAULT_LOCAL_SYNTHESIS_BASE_URL = "http://localhost:11434/v1"
+DEFAULT_LOCAL_SYNTHESIS_BASE_URL = "http://localhost:8000/v1"
 ENV_LOCAL_SYNTHESIS_BASE_URL = "LOCAL_SYNTHESIS_BASE_URL"
 ENV_TRAINFORGE_SYNTHESIS_PROVIDER = "TRAINFORGE_SYNTHESIS_PROVIDER"
 
@@ -99,8 +99,8 @@ def resolve_local_synthesis_base_url() -> str:
     """The base URL the ``local`` synthesis provider would dial.
 
     Mirrors ``_local_provider.py``: ``LOCAL_SYNTHESIS_BASE_URL`` env var if set
-    (and non-empty after strip), else the Ollama default
-    ``http://localhost:11434/v1``.
+    (and non-empty after strip), else the canonical local
+    OpenAI-compatible endpoint ``http://localhost:8000/v1``.
     """
     env = os.environ.get(ENV_LOCAL_SYNTHESIS_BASE_URL, "").strip()
     return env or DEFAULT_LOCAL_SYNTHESIS_BASE_URL

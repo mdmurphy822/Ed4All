@@ -21,18 +21,20 @@ legitimately-completed task result(s):
   * The ``--incomplete-phase`` (default ``semantik_conversion``) has its
     ``_completed`` flag flipped to ``False`` (and ``_resume_restored`` cleared)
     so the runner re-dispatches it. Its recorded output keys (e.g. the ch09
-    ``output_paths``) and the workflow ``tasks`` array are left untouched — the
-    already-converted units survive as inputs / per-task-checkpoint reuse.
+    ``output_paths``) survive as inputs. Tasks for this phase and the reset
+    downstream phases are removed so the runner creates one fresh task graph.
   * Every OTHER phase present in ``phase_outputs`` (the poisoned downstream set)
     is REMOVED entirely so those phases run fresh on the full corpus. Override
     the reset set with ``--reset-phases a,b,c`` if you want to keep some.
   * Workflow-level ``status`` is reset to ``CREATED``, and the stale
-    ``failed_phase`` / ``failure_reason`` / ``stopped_after`` markers are
-    cleared, so the resume starts clean.
+    ``failed_phase`` / ``failure_reason`` / ``paused_phase`` /
+    ``stopped_after`` markers are cleared, so the resume starts at the
+    explicitly uncompleted phase rather than retaining a later pause marker.
 
-Per-run executor checkpoints under ``state/runs/<run_id>/checkpoints/`` live in
-a per-invocation timestamped dir and are NOT consulted across a fresh resume
-(each run gets its own run dir), so they are intentionally left alone.
+Per-run executor checkpoints under ``state/runs/<run_id>/checkpoints/`` may be
+reused because ``params.run_id`` persists across resumes. This state-only tool
+reports which phase checkpoint files must be backed up and evicted separately;
+it never deletes files itself.
 
 Safety
 ------
@@ -51,6 +53,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -85,10 +88,18 @@ def build_plan(
     phase_outputs: Dict[str, Any] = state.get("phase_outputs", {}) or {}
 
     # Default reset set: every phase_output except the incomplete phase.
+    requested_reset_phases = (
+        [p for p in phase_outputs.keys() if p != incomplete_phase]
+        if reset_phases is None
+        else list(reset_phases)
+    )
     if reset_phases is None:
         to_reset = [p for p in phase_outputs.keys() if p != incomplete_phase]
     else:
         to_reset = [p for p in reset_phases if p in phase_outputs]
+    task_reset_phases = list(dict.fromkeys(
+        [incomplete_phase, *requested_reset_phases]
+    ))
 
     incomplete_present = incomplete_phase in phase_outputs
     incomplete_flag = (
@@ -99,15 +110,39 @@ def build_plan(
 
     clear_workflow_markers = {
         k: state.get(k)
-        for k in ("status", "failed_phase", "failure_reason", "stopped_after")
+        for k in (
+            "status", "failed_phase", "failure_reason", "paused_phase",
+            "stopped_after",
+        )
         if k in state
     }
+
+    local_checkpoint_paths: List[str] = []
+    if "assessment_synthesis" in task_reset_phases:
+        assessment_output = phase_outputs.get("assessment_synthesis") or {}
+        assessment_dir = (
+            assessment_output.get("assessments_dir")
+            or assessment_output.get("assessment_dir")
+            or assessment_output.get("qti_dir")
+        )
+        if not assessment_dir:
+            objective_output = phase_outputs.get("objective_extraction") or {}
+            project_path = objective_output.get("project_path")
+            if isinstance(project_path, str) and project_path:
+                assessment_dir = str(Path(project_path) / "06_assessments")
+        if isinstance(assessment_dir, str) and assessment_dir:
+            local_checkpoint_paths.append(
+                str(Path(assessment_dir) / ".assessments_checkpoint.jsonl")
+            )
 
     return {
         "incomplete_phase": incomplete_phase,
         "incomplete_present": incomplete_present,
         "incomplete_completed_flag_before": incomplete_flag,
         "reset_phases": to_reset,
+        "task_reset_phases": task_reset_phases,
+        "checkpoint_reset_phases": task_reset_phases,
+        "local_checkpoint_paths": local_checkpoint_paths,
         "kept_phases": [p for p in phase_outputs.keys() if p not in to_reset],
         "workflow_markers_before": clear_workflow_markers,
     }
@@ -128,10 +163,22 @@ def apply_plan(state: Dict[str, Any], plan: Dict[str, Any]) -> None:
         phase_outputs.pop(phase, None)
 
     state["phase_outputs"] = phase_outputs
+    reset_task_phases = set(plan.get("task_reset_phases") or [])
+    state["tasks"] = [
+        task for task in (state.get("tasks") or [])
+        if not (
+            isinstance(task, dict)
+            and task.get("phase") in reset_task_phases
+        )
+    ]
     state["status"] = "CREATED"
     state.pop("failed_phase", None)
     state.pop("failure_reason", None)
+    state.pop("paused_phase", None)
     state.pop("stopped_after", None)
+    state.pop("started_at", None)
+    state.pop("completed_at", None)
+    state["updated_at"] = datetime.now(timezone.utc).isoformat()
 
 
 def _print_plan(workflow_id: str, path: Path, plan: Dict[str, Any], apply: bool) -> None:
@@ -146,18 +193,32 @@ def _print_plan(workflow_id: str, path: Path, plan: Dict[str, Any], apply: bool)
         print(
             f"un-complete : {ip}  "
             f"(_completed {plan['incomplete_completed_flag_before']} -> False; "
-            f"recorded outputs + tasks preserved)"
+            f"recorded outputs preserved; reset-phase tasks dropped)"
         )
     if plan["reset_phases"]:
         print(f"reset (drop): {', '.join(plan['reset_phases'])}")
     else:
         print("reset (drop): <none>")
+    print(
+        "tasks (drop): "
+        + ", ".join(plan.get("task_reset_phases") or [])
+    )
+    print(
+        "checkpoints : back up, then evict files for "
+        + ", ".join(plan.get("checkpoint_reset_phases") or [])
+    )
+    for local_checkpoint in plan.get("local_checkpoint_paths") or []:
+        print(
+            "local ckpt : back up, then evict "
+            + local_checkpoint
+        )
     kept = [p for p in plan["kept_phases"] if p != ip]
     if kept:
         print(f"untouched   : {', '.join(kept)}")
     print(
         "workflow    : status -> CREATED; clearing "
-        f"{sorted(plan['workflow_markers_before'].keys())}"
+        f"{sorted(plan['workflow_markers_before'].keys())}; "
+        "clearing started_at/completed_at; refreshing updated_at"
     )
     print("-" * 68)
     if not apply:

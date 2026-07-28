@@ -48,29 +48,29 @@ def _libv2_courses_root() -> Path:
 
 
 def _discover_calibration_course() -> Path | None:
-    """Course dir whose ``objectives.json`` carries the curated co-09 CO.
+    """Return the course whose manifest declares the RDF/SHACL eval profile.
 
-    This is the calibration corpus the curated ``RETAG_VOCABULARIES``
-    co-09 / co-10 overrides were authored against; the assertions below
-    are calibration-specific, so a generic course would not satisfy
-    them. Returns ``None`` when no matching corpus is present.
+    Component-objective identifiers are course-local.  In particular, the
+    presence of ``co-09`` and ``co-10`` does not identify a course: any course
+    with ten component objectives has those IDs.  The library manifest's
+    ``eval_profile`` discriminator is the authoritative declaration used by
+    the evaluation harness, so use it here as well.
+
+    Returns ``None`` when no matching corpus is present.
     """
     courses_root = _libv2_courses_root()
     if not courses_root.is_dir():
         return None
     for course_dir in sorted(courses_root.iterdir()):
+        manifest = course_dir / "manifest.json"
         objectives = course_dir / "objectives.json"
-        if not objectives.exists():
+        if not manifest.exists() or not objectives.exists():
             continue
         try:
-            payload = json.loads(objectives.read_text(encoding="utf-8"))
+            manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))
         except (ValueError, OSError):
             continue
-        ids = {
-            (e.get("id") or "").lower()
-            for e in (payload.get("component_objectives") or [])
-        }
-        if "co-09" in ids and "co-10" in ids:
+        if manifest_payload.get("eval_profile") == "rdf_shacl":
             return course_dir
     return None
 
@@ -86,7 +86,7 @@ CALIBRATION_OBJECTIVES = (
 def _load_objectives():
     if CALIBRATION_OBJECTIVES is None or not CALIBRATION_OBJECTIVES.exists():
         pytest.skip(
-            "no calibration corpus (objectives.json with curated co-09/co-10) "
+            "no calibration corpus (manifest eval_profile=rdf_shacl) "
             "present under ED4ALL_LIBV2_ROOT / LibV2/courses/"
         )
     return json.loads(CALIBRATION_OBJECTIVES.read_text(encoding="utf-8"))

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
@@ -311,9 +312,23 @@ class AssessmentObjectiveAlignmentValidator:
                 synthesized_path
             )
 
-        questions = self._extract_questions(assessments_data)
+        questions = self._extract_questions(
+            assessments_data,
+            manifest_path=assessments_path,
+        )
         if not questions:
-            # Empty assessment file → skip with warning, not critical.
+            if inputs.get("require_complete_objective_coverage"):
+                return self._fail(
+                    gate_id,
+                    "ASSESSMENT_QUESTIONS_MISSING",
+                    (
+                        "Product assessment manifest contains no parseable "
+                        "QTI questions; complete objective coverage cannot be "
+                        "established."
+                    ),
+                    location=str(assessments_path),
+                )
+            # Legacy empty assessment file → skip with warning.
             issues.append(GateIssue(
                 severity="warning",
                 code="NO_QUESTIONS",
@@ -415,6 +430,44 @@ class AssessmentObjectiveAlignmentValidator:
                     location=str(assessments_path),
                     capture=capture,
                 )
+
+        if inputs.get("require_complete_objective_coverage"):
+            if synthesized_path is None:
+                return self._fail(
+                    gate_id,
+                    "CANONICAL_OBJECTIVE_UNIVERSE_MISSING",
+                    (
+                        "Strict product-assessment coverage requires an "
+                        "extant synthesized_objectives_path."
+                    ),
+                    location=str(synthesized_objectives_raw or ""),
+                )
+            canonical_ids = self._collect_objective_ids(synthesized_path)
+            if not canonical_ids:
+                return self._fail(
+                    gate_id,
+                    "CANONICAL_OBJECTIVE_UNIVERSE_EMPTY",
+                    "Canonical objective universe contains no objective ids.",
+                    location=str(synthesized_path),
+                )
+            question_ids = {
+                objective_id.lower()
+                for question in questions
+                for objective_id in self._question_objectives(question)
+            }
+            missing_from_assessments = canonical_ids - question_ids
+            if missing_from_assessments:
+                sample = ", ".join(sorted(missing_from_assessments)[:10])
+                issues.append(GateIssue(
+                    severity="critical",
+                    code="ASSESSMENT_OBJECTIVE_COVERAGE_INCOMPLETE",
+                    message=(
+                        f"{len(missing_from_assessments)}/{len(canonical_ids)} "
+                        "canonical objectives have no QTI assessment item. "
+                        f"Sample (first 10): {sample}."
+                    ),
+                    location=str(assessments_path),
+                ))
 
         if mismatches:
             # Roll up into a single critical issue with up to 10 samples
@@ -805,7 +858,11 @@ class AssessmentObjectiveAlignmentValidator:
             )
 
     @staticmethod
-    def _extract_questions(data: Any) -> List[Dict[str, Any]]:
+    def _extract_questions(
+        data: Any,
+        *,
+        manifest_path: Optional[Path] = None,
+    ) -> List[Dict[str, Any]]:
         """Pull the flat list of questions from an assessments payload.
 
         Supports both:
@@ -823,8 +880,48 @@ class AssessmentObjectiveAlignmentValidator:
                 for a in data["assessments"]:
                     if isinstance(a, dict) and isinstance(a.get("questions"), list):
                         out.extend(q for q in a["questions"] if isinstance(q, dict))
+                if out:
+                    return out
+            # Product assessment shape: manifest rows point to QTI XML files.
+            # Parse only declared qti resources; discussions and assignments
+            # remain owned by their dedicated grounding validator.
+            entries = data.get("assessments")
+            if isinstance(entries, list) and manifest_path is not None:
+                out: List[Dict[str, Any]] = []
+                for entry in entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    if str(entry.get("type") or "").lower() != "qti":
+                        continue
+                    filename = entry.get("file")
+                    if not isinstance(filename, str) or not filename:
+                        continue
+                    try:
+                        root = ET.parse(manifest_path.parent / filename).getroot()
+                    except (OSError, ET.ParseError):
+                        continue
+                    for item in root.findall(".//{*}item"):
+                        out.append({
+                            "question_id": str(item.get("ident") or ""),
+                            "objective_id": str(item.get("title") or ""),
+                        })
                 return out
         return []
+
+    @staticmethod
+    def _collect_objective_ids(path: Path) -> Set[str]:
+        """Load the canonical objective id universe, normalized."""
+        try:
+            from lib.validators.abcd_objective import _flatten_objectives
+
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            return {
+                str(obj.get("id") or obj.get("objective_id")).strip().lower()
+                for obj in _flatten_objectives(payload)
+                if str(obj.get("id") or obj.get("objective_id") or "").strip()
+            }
+        except (OSError, ValueError, ImportError):
+            return set()
 
     @staticmethod
     def _question_objectives(q: Dict[str, Any]) -> List[str]:

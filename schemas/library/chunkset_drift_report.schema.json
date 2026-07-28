@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ed4all.dev/ns/library/chunkset_drift_report.schema.json",
   "title": "ChunksetDriftReport v1.0",
-  "description": "Sidecar artifact emitted by lib.validators.chunkset_drift.ChunksetDriftValidator at <LibV2 course root>/drift_report.json. Records drift between the DART evidence chunkset (dart_chunks/chunks.jsonl) and the IMSCC packaged chunkset (imscc_chunks/chunks.jsonl): which DART block ids were never cited (DART_EVIDENCE_DROPPED) and which IMSCC chunks have no traceable origin (IMSCC_CLAIM_NOT_IN_DART). Wave 3 W3.D — schema 1.0.",
+  "description": "Sidecar artifact emitted by lib.validators.chunkset_drift.ChunksetDriftValidator at <LibV2 course root>/drift_report.json. Records drift between the SemantiK evidence chunkset (semantik_chunks/chunks.jsonl; legacy archives may still carry it at dart_chunks/chunks.jsonl, resolved on read by lib.libv2_storage) and the IMSCC packaged chunkset (imscc_chunks/chunks.jsonl): which source block ids were never cited (DART_EVIDENCE_DROPPED) and which IMSCC chunks have no traceable origin (IMSCC_CLAIM_NOT_IN_DART). The 'dart_' property names and the DART_* issue codes are pre-SemantiK spellings retained verbatim as persisted artifact/wire literals (see ci/legacy_token_allowlist.txt); they no longer name a live engine. Both drift_rate_* values are 0-1 fractions: drift_rate_in divides by imscc_chunk_count, drift_rate_out divides by the size of the source BLOCK-ID universe (NOT dart_chunk_count, which is the source chunk count and would yield values above 1). Wave 3 W3.D — schema 1.0.",
   "type": "object",
   "properties": {
     "schema_version": {"type": "string", "const": "1.0"},

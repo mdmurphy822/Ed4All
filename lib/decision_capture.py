@@ -78,12 +78,16 @@ def _coerce_record_field_list(values: Optional[List[Any]]) -> List[Any]:
     return [_coerce_record_field(item) for item in values]
 from .quality import assess_decision_quality
 
-# Phase 0 Hardening imports (graceful fallback if not available)
+# Phase 0 hardening components are optional independently.  Do not let an
+# absent RunManager disable the always-available sequence allocator.
 try:
     from .provenance import InputRef as ProvenanceInputRef  # noqa: F401
     from .provenance import OutputRef, create_input_ref, create_output_ref  # noqa: F401
+except ImportError:
+    pass
+
+try:
     from .run_manager import HARDENED_MODE, get_current_run
-    from .sequence_manager import generate_event_id, get_sequence_for_context
     HARDENING_AVAILABLE = True
 except ImportError:
     HARDENING_AVAILABLE = False
@@ -92,11 +96,7 @@ except ImportError:
     def get_current_run():
         return None
 
-    def get_sequence_for_context(run_id=None):
-        return 0, f"EVT_{hashlib.sha256(str(datetime.now()).encode()).hexdigest()[:16]}"
-
-    def generate_event_id():
-        return f"EVT_{hashlib.sha256(str(datetime.now()).encode()).hexdigest()[:16]}"
+from .sequence_manager import generate_event_id, get_sequence_for_context
 
 # Phase 0.5: WriteFacade for centralized write discipline
 try:
@@ -348,7 +348,11 @@ class DecisionCapture:
             # Use run_id from active run context
             self.run_id = self._run_context.run_id
         else:
-            self.run_id = os.environ.get('RUN_ID', f"{tool}_{course_code}_{self.session_id}")
+            self.run_id = (
+                os.environ.get("ED4ALL_RUN_ID")
+                or os.environ.get("RUN_ID")
+                or f"{tool}_{course_code}_{self.session_id}"
+            )
 
         self.course_id = course_code.replace(' ', '_').upper()  # Normalized: "MTH_101"
         self.module_id: Optional[str] = None  # Set per-module via set_module_context()
@@ -694,7 +698,10 @@ class DecisionCapture:
         **kwargs
     ) -> Dict[str, Any]:
         """Build a decision record dict from parameters."""
-        seq, event_id = get_sequence_for_context(self.run_id if self._run_context else None)
+        # A capture created outside RunManager still has a stable fallback
+        # ``run_id``.  Scope the sequence manager to it as well; passing None
+        # made every standalone/concurrent synthesis event receive seq=0.
+        seq, event_id = get_sequence_for_context(self.run_id)
 
         rationale_length = len(rationale) if rationale else 0
         quality_level = self._assess_quality(rationale_length, inputs_ref, alternatives_considered, decision_type)
@@ -731,6 +738,65 @@ class DecisionCapture:
                 **kwargs
             }
         }
+        fresh_start_id = getattr(self, "fresh_start_id", None)
+        if fresh_start_id is not None:
+            marker_digest = getattr(self, "fresh_start_marker_digest", None)
+            record["metadata"]["fresh_start_id"] = fresh_start_id
+            record["metadata"]["fresh_start_marker_digest"] = marker_digest
+            try:
+                context_value = json.loads(context) if context else {}
+            except (TypeError, ValueError):
+                context_value = {"detail": context}
+            if not isinstance(context_value, dict):
+                context_value = {"detail": context_value}
+            context_value["fresh_start_id"] = fresh_start_id
+            context_value["fresh_start_marker_digest"] = marker_digest
+            record["context"] = json.dumps(
+                context_value, sort_keys=True, separators=(",", ":"),
+            )
+        holdout_identity = getattr(self, "synthesis_holdout_identity", None)
+        if holdout_identity is not None:
+            identity = dict(holdout_identity)
+            record["metadata"]["synthesis_holdout_identity"] = identity
+            try:
+                context_value = json.loads(record["context"]) if record["context"] else {}
+            except (TypeError, ValueError):
+                context_value = {"detail": record["context"]}
+            if not isinstance(context_value, dict):
+                context_value = {"detail": context_value}
+            context_value["synthesis_holdout_identity"] = identity
+            record["context"] = json.dumps(
+                context_value, sort_keys=True, separators=(",", ":"),
+            )
+        run_contract = getattr(self, "synthesis_run_contract_sha256", None)
+        if run_contract is not None:
+            record["metadata"]["synthesis_run_contract_sha256"] = run_contract
+            components = getattr(
+                self, "synthesis_run_contract_components", None,
+            )
+            if components is not None:
+                record["metadata"]["synthesis_run_contract_components"] = dict(
+                    components
+                )
+            component_sha = getattr(
+                self, "synthesis_contract_components_sha256", None,
+            )
+            if component_sha is not None:
+                record["metadata"][
+                    "synthesis_contract_components_sha256"
+                ] = component_sha
+            try:
+                context_value = (
+                    json.loads(record["context"]) if record["context"] else {}
+                )
+            except (TypeError, ValueError):
+                context_value = {"detail": record["context"]}
+            if not isinstance(context_value, dict):
+                context_value = {"detail": context_value}
+            context_value["synthesis_run_contract_sha256"] = run_contract
+            record["context"] = json.dumps(
+                context_value, sort_keys=True, separators=(",", ":"),
+            )
 
         # Quality gating for training corpus filtering
         from .quality import check_quality_acceptable

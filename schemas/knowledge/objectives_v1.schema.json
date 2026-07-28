@@ -85,7 +85,7 @@
                     "minItems": 1
                   }
                 },
-                "required": ["ref", "chunk_ids"],
+                "required": ["chunk_ids"],
                 "additionalProperties": false
               }
             }
@@ -132,7 +132,7 @@
                     "minItems": 1
                   }
                 },
-                "required": ["ref", "chunk_ids"],
+                "required": ["chunk_ids"],
                 "additionalProperties": false
               }
             }

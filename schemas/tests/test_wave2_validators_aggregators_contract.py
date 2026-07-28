@@ -687,10 +687,12 @@ def test_5_per_pair_promotion_drop_is_visible() -> None:
             "weak_distractor",
         ))
 
-    # 1 low_bloom_alignment — declared "remember" but the stub
-    # ensemble winner is "create" with score above the 0.40 floor.
+    # 1 low_bloom_alignment — declared "create" but the stub ensemble
+    # (default_validator) returns "remember" with score above the 0.40 floor.
+    # The validator rejects when observed < declared; "remember" < "create"
+    # fires the rejection.
     bad_pairs.append((
-        _good_instruction_pair(bloom_level="remember"),
+        _good_instruction_pair(bloom_level="create"),
         "instruction",
         "low_bloom_alignment",
     ))
@@ -706,20 +708,34 @@ def test_5_per_pair_promotion_drop_is_visible() -> None:
         embedder=_StubEmbedder(),
         bloom_classifier=_StubBloomEnsemble(level="remember", score=0.85),
     )
+    # A "create"-winning ensemble: kept as the NEGATIVE control for the
+    # low_bloom_alignment fixture below.  The criterion fires on
+    # observed < declared, so a pair declaring "remember" against this
+    # classifier must NOT be rejected — that inverted pairing is what made the
+    # fixture assert a rejection the validator never emits.
     bloom_disagree_validator = TrainingPairPromotionValidator(
         embedder=_StubEmbedder(),
         bloom_classifier=_StubBloomEnsemble(level="create", score=0.80),
     )
-
     rejected_count = 0
     rejection_reasons_observed = Counter()
     capture = _RecordingCapture()
 
+    # Its own capture: ``capture`` is asserted below to hold exactly one event
+    # per bad_pairs entry, so the control must not append to it.
+    control_status, control_reason, _ = bloom_disagree_validator.validate_pair(
+        _good_instruction_pair(bloom_level="remember"),
+        kind="instruction", chunk=chunk, decision_capture=_RecordingCapture(),
+    )
+    assert control_reason != "low_bloom_alignment", (
+        "observed Bloom ABOVE declared must not fire low_bloom_alignment; "
+        f"got status={control_status!r} reason={control_reason!r}"
+    )
+
     for pair, kind, expected_reason in bad_pairs:
-        if expected_reason == "low_bloom_alignment":
-            v = bloom_disagree_validator
-        else:
-            v = default_validator
+        # Every case now runs the default validator; the "create"-winning
+        # ensemble is exercised by the negative control above instead.
+        v = default_validator
         status, reason, _new_fields = v.validate_pair(
             pair, kind=kind, chunk=chunk, decision_capture=capture
         )

@@ -574,12 +574,12 @@ def _warmup_provider(
     except ImportError:
         return
     base_url = os.environ.get(
-        "LOCAL_SYNTHESIS_BASE_URL", "http://localhost:11434/v1"
+        "LOCAL_SYNTHESIS_BASE_URL", "http://localhost:8000/v1"
     )
     # Strip the OpenAI-compat /v1 suffix to reach Ollama's native API.
     ollama_root = base_url.rstrip("/").removesuffix("/v1")
     model_name = model or os.environ.get(
-        "LOCAL_SYNTHESIS_MODEL", "qwen2.5:7b-instruct-q4_K_M"
+        "LOCAL_SYNTHESIS_MODEL", "nemotron-3-nano-30b-a3b"
     )
     print_fn(
         f"Pre-warming model {model_name!r} via {ollama_root}/api/generate "

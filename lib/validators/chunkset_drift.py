@@ -1,34 +1,57 @@
 """GPT Feedback v2 Wave 3 W3.D — ChunksetDriftValidator.
 
-Detects content drift between the DART evidence chunkset
-(``LibV2/courses/<slug>/dart_chunks/chunks.jsonl``) and the IMSCC
-packaged chunkset (``LibV2/courses/<slug>/imscc_chunks/chunks.jsonl``).
+Detects content drift between the SemantiK evidence chunkset
+(``LibV2/courses/<slug>/semantik_chunks/chunks.jsonl``; legacy archives
+may still carry it at ``dart_chunks/chunks.jsonl``, which
+``lib.libv2_storage`` resolves on read) and the IMSCC packaged chunkset
+(``LibV2/courses/<slug>/imscc_chunks/chunks.jsonl``).
 
 Two complementary drift axes are tracked:
 
-* **DART_EVIDENCE_DROPPED** (``drift_rate_out``): fraction of DART
-  block IDs that the IMSCC chunkset never cited via
+* **DART_EVIDENCE_DROPPED** (``drift_rate_out``): fraction of the
+  *source block-id universe* that the IMSCC chunkset never cited via
   ``source.source_references[].sourceId``. Surfaces the failure mode
   "the packager dropped half the textbook" — IMSCC restructuring may
-  legitimately collapse multiple DART blocks into a single page, but a
-  high drop rate signals lost evidence.
+  legitimately collapse multiple source blocks into a single page, but
+  a high drop rate signals lost evidence.
 * **IMSCC_CLAIM_NOT_IN_DART** (``drift_rate_in``): fraction of IMSCC
   chunks that have an empty ``source.source_references[]`` list.
   Surfaces the failure mode "we authored unattributed prose" — every
-  packaged claim should trace back to a DART source block.
+  packaged claim should trace back to a SemantiK source block.
+
+Units contract (both rates are 0-1 fractions)
+---------------------------------------------
+The two rates deliberately use *different* denominators because they
+count different populations:
+
+* ``drift_rate_in``  = unsourced IMSCC chunks / **total IMSCC chunks**.
+* ``drift_rate_out`` = dropped source block ids / **size of the source
+  block-id universe** (:func:`_collect_dart_block_ids`), NOT the source
+  *chunk* count. One evidence chunk cites many upstream block ids
+  (~30x on a real scanned textbook), so dividing by the chunk count
+  yields a "rate" far above 1.0 — it is a ratio, not a fraction. The
+  sidecar schema pins both rates at ``maximum: 1``, so the chunk-count
+  denominator also emitted schema-invalid artifacts.
+
+Naming note: the ``DART_*`` / ``dart_*`` issue codes and
+``drift_report.json`` field names are retained **verbatim** as persisted
+wire/artifact literals (see ``ci/legacy_token_allowlist.txt``); they
+carry the pre-SemantiK spelling for read-compat only and no longer
+name a live engine.
 
 Sidecar artifact (``<course_path>/drift_report.json``) is written
 best-effort per the schema at
 ``schemas/library/chunkset_drift_report.schema.json``. Operator-facing
 metric surface that future Wave 4+ work can promote to a critical
 gate; today's gate severity is **warning**, fail behaviour is
-**warn** (legitimate IMSCC restructuring synthesizes prose across DART
-blocks; default is observability, not enforcement).
+**warn** (legitimate IMSCC restructuring synthesizes prose across
+source blocks; default is observability, not enforcement).
 
 Decision capture: one ``chunkset_drift_check`` event per ``validate()``
-call carrying the six load-bearing metrics
+call carrying the seven load-bearing metrics
 (``drift_rate_in``, ``drift_rate_out``, ``dropped_count``,
-``unsourced_count``, ``total_dart_chunks``, ``total_imscc_chunks``).
+``unsourced_count``, ``total_dart_chunks``, ``total_source_block_ids``,
+``total_imscc_chunks``).
 """
 
 from __future__ import annotations
@@ -146,14 +169,19 @@ def _chunk_id(chunk: Dict[str, Any]) -> Optional[str]:
 
 
 def _collect_dart_block_ids(dart_chunks: List[Dict[str, Any]]) -> Set[str]:
-    """Build the universe of DART block identifiers.
+    """Build the universe of SemantiK source block identifiers.
 
-    Per W3.D plan: the union of every DART chunk's own id AND every
+    Per W3.D plan: the union of every evidence chunk's own id AND every
     ``source.source_references[].sourceId`` cited from inside that
     chunk. The union covers both id-based cross-walk identity (when
-    IMSCC chunks cite DART chunks directly) and source-ref-based
-    identity (when IMSCC chunks cite the upstream DART source the DART
-    chunk itself was derived from).
+    IMSCC chunks cite evidence chunks directly) and source-ref-based
+    identity (when IMSCC chunks cite the upstream ``semantik:{slug}#{block_id}``
+    source the evidence chunk itself was derived from).
+
+    NOTE (units): the returned set is much LARGER than
+    ``len(dart_chunks)`` — a single evidence chunk routinely cites tens
+    of upstream block ids. Callers computing a 0-1 drop *fraction* must
+    divide by ``len(...)`` of this set, never by the chunk count.
     """
     block_ids: Set[str] = set()
     for chunk in dart_chunks:
@@ -188,8 +216,11 @@ def _emit_chunkset_drift_decision(
 ) -> None:
     """Emit one ``chunkset_drift_check`` event per validate() call.
 
-    Rationale interpolates the six load-bearing metrics so a regression
-    test can substring-assert each one's presence.
+    Rationale interpolates the seven load-bearing metrics so a
+    regression test can substring-assert each one's presence.
+    ``total_source_block_ids`` is the ``drift_rate_out`` denominator —
+    carried explicitly so an operator can recompute the rate from the
+    capture without re-reading both chunksets.
     """
     if capture is None:
         return
@@ -201,6 +232,7 @@ def _emit_chunkset_drift_decision(
         "dropped_count={dropped_count}, "
         "unsourced_count={unsourced_count}, "
         "total_dart_chunks={total_dart_chunks}, "
+        "total_source_block_ids={total_source_block_ids}, "
         "total_imscc_chunks={total_imscc_chunks}."
     ).format(decision=decision, **metrics)
     enriched = dict(metrics)
@@ -275,7 +307,7 @@ def _write_drift_report_sidecar(
 
 
 class ChunksetDriftValidator:
-    """Wave 3 W3.D — drift detector across DART vs. IMSCC chunksets.
+    """Wave 3 W3.D — drift detector across SemantiK vs. IMSCC chunksets.
 
     Validator-protocol-compatible class wired as the ``chunkset_drift``
     gate on the ``libv2_archival`` phase. Severity at the gate level is
@@ -287,7 +319,11 @@ class ChunksetDriftValidator:
     """
 
     name = "chunkset_drift"
-    version = "1.0.0"
+    # 1.1.0 — `drift_rate_out` denominator corrected from the source
+    # CHUNK count to the source BLOCK-ID universe. Values emitted by
+    # 1.0.0 were inflated by the mean block-ids-per-chunk factor
+    # (~32x on a real scanned corpus) and are not comparable.
+    version = "1.1.0"
 
     def validate(self, inputs: Dict[str, Any]) -> GateResult:
         gate_id = inputs.get("gate_id", self.name)
@@ -400,9 +436,17 @@ class ChunksetDriftValidator:
             if imscc_chunk_count > 0
             else 0.0
         )
+        # Denominator is the size of the BLOCK-ID universe, not the
+        # source CHUNK count: `_collect_dart_block_ids` unions every
+        # chunk's own id with every sourceId it cites, so one chunk
+        # contributes many ids (~32x on a real scanned textbook). Using
+        # `dart_chunk_count` here made `drift_rate_out` a ratio that
+        # could exceed 1.0 (observed 32.36 on a live run) and violated
+        # the sidecar schema's `maximum: 1` bound.
+        total_dart_block_ids = len(dart_block_ids)
         drift_rate_out = (
-            len(dart_block_ids_dropped) / dart_chunk_count
-            if dart_chunk_count > 0
+            len(dart_block_ids_dropped) / total_dart_block_ids
+            if total_dart_block_ids > 0
             else 0.0
         )
 
@@ -428,8 +472,8 @@ class ChunksetDriftValidator:
                         f"(drift_rate_in={drift_rate_in:.4f}, "
                         f"warn_threshold={_DRIFT_RATE_IN_WARN_THRESHOLD:.2f}"
                         f"{elevated_marker}). "
-                        "Every packaged claim should trace back to a DART "
-                        "source block."
+                        "Every packaged claim should trace back to a "
+                        "SemantiK source block."
                     ),
                     location=str(imscc_path),
                     suggestion=(
@@ -450,7 +494,7 @@ class ChunksetDriftValidator:
                     message=(
                         f"IMSCC chunkset cited only "
                         f"{len(dart_block_ids - dropped_set)}/{len(dart_block_ids)}"
-                        f" DART block ids "
+                        f" SemantiK source block ids "
                         f"(drift_rate_out={drift_rate_out:.4f}, "
                         f"warn_threshold={_DRIFT_RATE_OUT_WARN_THRESHOLD:.2f})."
                         " The packager dropped more than half of the "
@@ -459,10 +503,12 @@ class ChunksetDriftValidator:
                     location=str(dart_path),
                     suggestion=(
                         "Inspect drift_report.json::dart_block_ids_dropped[]"
-                        " and verify the imscc_chunking phase preserves "
-                        "DART source attribution. Some attrition is "
-                        "expected from legitimate prose synthesis; a >50% "
-                        "drop signals a packaging regression."
+                        " (field name kept for artifact read-compat; the ids"
+                        " are SemantiK source block ids) and verify the "
+                        "imscc_chunking phase preserves source attribution. "
+                        "Some attrition is expected from legitimate prose "
+                        "synthesis; a >50% drop signals a packaging "
+                        "regression."
                     ),
                 )
             )
@@ -499,6 +545,7 @@ class ChunksetDriftValidator:
             "dropped_count": int(len(dart_block_ids_dropped)),
             "unsourced_count": int(len(imscc_chunks_unsourced)),
             "total_dart_chunks": int(dart_chunk_count),
+            "total_source_block_ids": int(total_dart_block_ids),
             "total_imscc_chunks": int(imscc_chunk_count),
         }
 
@@ -523,15 +570,16 @@ class ChunksetDriftValidator:
 
     @staticmethod
     def _zero_metrics() -> Dict[str, Any]:
-        """Return the six-key metric shape with zero values for the
+        """Return the seven-key metric shape with zero values for the
         early-return paths so the decision-capture rationale always
-        interpolates the same six fields."""
+        interpolates the same seven fields."""
         return {
             "drift_rate_in": 0.0,
             "drift_rate_out": 0.0,
             "dropped_count": 0,
             "unsourced_count": 0,
             "total_dart_chunks": 0,
+            "total_source_block_ids": 0,
             "total_imscc_chunks": 0,
         }
 

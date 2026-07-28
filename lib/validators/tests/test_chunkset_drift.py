@@ -441,3 +441,152 @@ def test_legacy_chunks_without_source_references_count_as_unsourced(
         not anchor.startswith("<unsourced_chunk_index_")
         for anchor in payload["imscc_chunks_unsourced"]
     )
+
+
+# --------------------------------------------------------------------------- #
+# Test 10 — drift_rate_out denominator is the BLOCK-ID universe, not the
+# source CHUNK count.
+#
+# REGRESSION GUARD. Every fixture above builds each evidence chunk with
+# exactly ONE self-citation (`_make_chunk("dart:00001", source_refs=
+# ["dart:00001"])`), so `len(block_id_universe) == len(chunks)` by
+# construction and the two candidate denominators are numerically
+# identical — which is precisely why the suite could not see a wrong
+# denominator. Real chunks cite MANY upstream `semantik:{slug}#{block_id}`
+# refs each (~31 per chunk on a live scanned textbook), so the universe
+# is ~32x the chunk count and the chunk-count denominator produced
+# `drift_rate_out=32.36` — a "rate" that is not a fraction and that
+# violates the sidecar schema's `maximum: 1`.
+#
+# The fixture below deliberately decouples the two counts.
+# --------------------------------------------------------------------------- #
+
+
+def _fanout_fixture(course: Path) -> tuple:
+    """2 evidence chunks x 9 distinct upstream refs → 20-id universe.
+
+    Universe = 2 own ids + 18 distinct cited sourceIds = 20, against a
+    source chunk count of 2. IMSCC cites 15 of the 20 → 5 dropped.
+
+      * correct rate (dropped / universe)    = 5 / 20 = 0.25  → PASS
+      * buggy rate   (dropped / chunk count) = 5 /  2 = 2.50  → would
+        fire DART_EVIDENCE_DROPPED *and* emit a schema-invalid sidecar.
+    """
+    dart_chunks = [
+        _make_chunk(
+            "dart:c1",
+            source_refs=[f"semantik:doc#b{i:02d}" for i in range(0, 9)],
+        ),
+        _make_chunk(
+            "dart:c2",
+            source_refs=[f"semantik:doc#b{i:02d}" for i in range(9, 18)],
+        ),
+    ]
+    universe_ids = ["dart:c1", "dart:c2"] + [
+        f"semantik:doc#b{i:02d}" for i in range(0, 18)
+    ]
+    assert len(universe_ids) == 20
+    # One IMSCC chunk citing 15 of the 20 ids → 5 dropped.
+    imscc_chunks = [_make_chunk("imscc:00001", source_refs=universe_ids[:15])]
+
+    dart_path = _write_jsonl(course / "dart_chunks" / "chunks.jsonl", dart_chunks)
+    imscc_path = _write_jsonl(
+        course / "imscc_chunks" / "chunks.jsonl", imscc_chunks,
+    )
+    return dart_path, imscc_path
+
+
+def test_drift_rate_out_denominator_is_block_id_universe_not_chunk_count(
+    tmp_path: Path,
+) -> None:
+    course = tmp_path / "course"
+    dart_path, imscc_path = _fanout_fixture(course)
+
+    capture = _FakeCapture()
+    result = ChunksetDriftValidator().validate(
+        {
+            "dart_chunks_path": str(dart_path),
+            "imscc_chunks_path": str(imscc_path),
+            "course_path": str(course),
+            "decision_capture": capture,
+        }
+    )
+
+    payload = json.loads(
+        (course / "drift_report.json").read_text(encoding="utf-8")
+    )
+
+    # The two counts genuinely differ — without this the test proves nothing.
+    assert payload["dart_chunk_count"] == 2
+    assert len(payload["dart_block_ids_dropped"]) == 5
+
+    # Correct denominator: 5 / 20.
+    assert payload["drift_rate_out"] == pytest.approx(0.25, rel=1e-9)
+    # Explicitly pin that the buggy chunk-count denominator is NOT used.
+    assert payload["drift_rate_out"] != pytest.approx(
+        5 / payload["dart_chunk_count"], rel=1e-9,
+    )
+    # A rate is a fraction: the schema bounds it at 1.
+    assert 0.0 <= payload["drift_rate_out"] <= 1.0
+
+    # 0.25 is under the 0.50 warn threshold → the gate must NOT fire.
+    codes = {i.code for i in result.issues}
+    assert "DART_EVIDENCE_DROPPED" not in codes, codes
+    assert result.passed is True, codes
+
+    # The denominator is carried on the capture so an operator can
+    # recompute the rate without re-reading both chunksets.
+    rationale = capture.decisions[0]["rationale"]
+    assert "total_source_block_ids=20" in rationale, rationale
+    assert "total_dart_chunks=2" in rationale, rationale
+
+
+def test_high_fanout_sidecar_still_satisfies_schema_rate_bounds(
+    tmp_path: Path,
+) -> None:
+    """The buggy denominator emitted drift_rate_out > 1 → schema-invalid.
+
+    Pins that a high-fan-out corpus (the shape that produced the live
+    32.36) round-trips the ``maximum: 1`` bound on both rates.
+    """
+    pytest.importorskip("jsonschema")
+    from jsonschema import Draft202012Validator
+
+    course = tmp_path / "course"
+    dart_chunks = [
+        _make_chunk(
+            f"dart:c{c}",
+            source_refs=[f"semantik:doc#c{c}_b{i:02d}" for i in range(30)],
+        )
+        for c in range(5)
+    ]
+    # IMSCC cites nothing → every id in the universe is dropped.
+    imscc_chunks = [_make_chunk("imscc:00001", source_refs=[])]
+    dart_path = _write_jsonl(course / "dart_chunks" / "chunks.jsonl", dart_chunks)
+    imscc_path = _write_jsonl(
+        course / "imscc_chunks" / "chunks.jsonl", imscc_chunks,
+    )
+
+    ChunksetDriftValidator().validate(
+        {
+            "dart_chunks_path": str(dart_path),
+            "imscc_chunks_path": str(imscc_path),
+            "course_path": str(course),
+        }
+    )
+
+    payload = json.loads(
+        (course / "drift_report.json").read_text(encoding="utf-8")
+    )
+    # 5 chunks, 5 + 150 = 155 ids, all dropped. Buggy denominator would
+    # have yielded 155 / 5 = 31.0 (the live 32.36 shape).
+    assert payload["dart_chunk_count"] == 5
+    assert len(payload["dart_block_ids_dropped"]) == 155
+    assert payload["drift_rate_out"] == pytest.approx(1.0, rel=1e-9)
+
+    schema_path = (
+        _REPO_ROOT / "schemas" / "library" / "chunkset_drift_report.schema.json"
+    )
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    errors = list(Draft202012Validator(schema).iter_errors(payload))
+    assert errors == [], [e.message for e in errors]

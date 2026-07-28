@@ -134,6 +134,110 @@ def stem_is_cloze(stem_text: str) -> bool:
     return bool(_CLOZE_GAP_RE.search(stem_text or ""))
 
 
+#: Finite copula / auxiliary verbs — the hinge of a declarative proposition.
+#: Same closed function-word class the content extractor screens declaratives
+#: with, kept in sync deliberately: a sentence the miner accepted as a factual
+#: claim is the same sentence the linter has to recognise as a proposition.
+_FINITE_VERB_RE = re.compile(
+    r"\b(?:is|are|was|were|has|have|had|can|could|will|would|shall|should|"
+    r"may|might|must|does|do|did|means|equals)\b",
+    re.IGNORECASE,
+)
+
+#: Function words that can OPEN a subject noun phrase (determiners,
+#: quantifiers, demonstratives, possessives, subject pronouns). An English
+#: IMPERATIVE opens with a bare verb instead — "Find three consecutive
+#: integers whose sum is -36." — so requiring one of these is the structural
+#: discriminator between a proposition to judge and a directive to follow.
+#: Closed function-word list: no subject vocabulary, no domain terms.
+_SUBJECT_OPENERS = frozenset({
+    "a", "an", "the", "this", "that", "these", "those",
+    "all", "any", "both", "each", "either", "every", "few", "many",
+    "most", "much", "neither", "no", "none", "one", "several", "some",
+    "his", "her", "hers", "its", "their", "theirs", "our", "ours",
+    "your", "yours", "my", "mine",
+    "he", "she", "it", "they", "we", "you", "i", "there",
+})
+
+#: A subject that is a lone pronoun / demonstrative has no antecedent once the
+#: sentence is lifted out of its paragraph, so the item is unanswerable on its
+#: own. Those are a genuine MINING defect (fixed at the harvest layer) and must
+#: keep being reported here rather than exempted.
+_BARE_ANAPHORIC_SUBJECTS = frozenset({
+    "this", "that", "these", "those", "it", "they", "them",
+    "he", "she", "there", "here", "one", "both", "each", "such",
+})
+
+_WORD_RE = re.compile(r"[A-Za-z0-9'’\-]+")
+
+
+def stem_is_declarative_proposition(stem_text: str) -> bool:
+    """True when the stem is a self-contained declarative PROPOSITION.
+
+    A true/false stem is a claim the learner judges, not an instruction the
+    learner follows: its cognitive demand rides on the item type, so it can
+    never carry a Bloom imperative and ``VERB_LESS_STEM`` is category-
+    inappropriate for it — the same argument that justifies the cloze
+    exemption in :func:`stem_is_cloze`.
+
+    The exemption is deliberately NOT "a true/false item may have any stem".
+    All four structural conditions must hold:
+
+    1. **Not interrogative** — no ``?``.
+    2. **Terminally punctuated** — ends ``.`` / ``!``, so a bare fragment
+       ("Step 2", a stray operand) is never exempted.
+    3. **Has a finite verb** — a copula/auxiliary hinge, so the stem asserts
+       something rather than naming it.
+    4. **Has a real subject before that verb**, whose first token is a
+       subject-opening function word. This is what keeps an IMPERATIVE out:
+       "Find three consecutive integers whose sum is -36." has a finite verb
+       ("is") but opens on a bare verb, not a determiner, so it stays
+       reported. A BARE anaphoric subject ("This is determined by its
+       position…") is likewise refused — that is a real mining defect, not a
+       linter artifact.
+
+    Condition 4 is conservative by construction: a legitimate proposition that
+    opens on a bare common noun ("Absolute value is the distance from zero.")
+    is NOT exempted and keeps warning. That direction is deliberate — a missed
+    exemption costs a warning, a wrong exemption silently retires the rule.
+
+    Callers must pass TAG-STRIPPED text.
+    """
+    text = re.sub(r"\s+", " ", stem_text or "").strip()
+    if not text or "?" in text:
+        return False
+    if not text.endswith((".", "!")):
+        return False
+    match = _FINITE_VERB_RE.search(text)
+    if match is None:
+        return False
+    subject_tokens = _WORD_RE.findall(text[: match.start()])
+    if not subject_tokens:
+        return False
+    first = subject_tokens[0].lower()
+    if len(subject_tokens) == 1 and first in _BARE_ANAPHORIC_SUBJECTS:
+        return False
+    return first in _SUBJECT_OPENERS
+
+
+def _is_declarative_tf(question: Any, stem_text: str) -> bool:
+    """True when ``question`` is a true/false item with a proposition stem.
+
+    BOTH conditions are required. The item-type half keeps the exemption from
+    leaking onto multiple-choice / short-answer stems (which SHOULD carry a
+    task verb); the stem-shape half keeps it from covering the malformed
+    true/false items — apparatus fragments, dangling anaphors, exercise
+    directives — that are real defects.
+    """
+    from lib.validators._assessment_helpers.placeholders import (
+        _normalize_question_type,
+    )
+
+    if _normalize_question_type(question) != "true_false":
+        return False
+    return stem_is_declarative_proposition(stem_text)
+
+
 class BloomAlignmentValidator:
     """Validates assessment alignment with Bloom's taxonomy."""
 
@@ -238,13 +342,16 @@ class BloomAlignmentValidator:
                     # Legacy behavior: count as aligned.
                     aligned += 1
                     q_aligned = True
-                elif stem_is_cloze(stem_text):
-                    # A cloze stem is a sentence with a gap, not an
-                    # instruction: the cognitive task rides on the item type
-                    # and the gap, so "no Bloom verb" is the CORRECT shape,
-                    # not a defect. Count it aligned (scoring it unaligned
-                    # would depress the alignment score for a structurally
-                    # valid item type) and emit no diagnostic.
+                elif stem_is_cloze(stem_text) or _is_declarative_tf(
+                    q, stem_text
+                ):
+                    # Two item types carry their cognitive demand in the TYPE
+                    # rather than in a stem imperative: a cloze (a sentence
+                    # with a gap) and a true/false (a proposition to judge).
+                    # For both, "no Bloom verb" is the CORRECT shape, not a
+                    # defect. Count aligned (scoring them unaligned would
+                    # depress the score for structurally valid item types) and
+                    # emit no diagnostic.
                     aligned += 1
                     q_aligned = True
                 else:

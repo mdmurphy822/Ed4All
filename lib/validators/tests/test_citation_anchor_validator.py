@@ -133,3 +133,221 @@ def test_custom_floor_lets_low_rate_pass(tmp_path):
     assert result.passed is True
     report = result.metadata["citation_anchor_report"]
     assert report["anchoring_rate"] == 0.5
+
+
+def test_imscc_qti_escaped_inner_html_anchors_visible_item_text(tmp_path):
+    """QTI mattext's escaped inner HTML is markup, not fabricated prose.
+
+    The chunker emits rendered prompt/choice text while the archived cartridge
+    keeps those fields as ``&lt;p&gt;...`` inside XML.  Citation comparison
+    must remove the revealed tag shells without changing the 0.95 gate floor.
+    """
+    import zipfile
+
+    course_dir = tmp_path / "course"
+    imscc_dir = course_dir / "source" / "imscc"
+    imscc_dir.mkdir(parents=True)
+    member = "06_assessments/week_01_quiz.xml"
+    qti = """<?xml version="1.0" encoding="UTF-8"?>
+<questestinterop>
+  <item>
+    <presentation>
+      <material><mattext texttype="text/html">&lt;p&gt;Which value is
+      &lt;em&gt;positive?&lt;/em&gt;&lt;/p&gt;</mattext></material>
+      <response_lid><render_choice>
+        <response_label><material><mattext texttype="text/html">
+          &lt;p&gt;Three&lt;/p&gt;
+        </mattext></material></response_label>
+        <response_label><material><mattext texttype="text/html">
+          &lt;p&gt;Negative three&lt;/p&gt;
+        </mattext></material></response_label>
+      </render_choice></response_lid>
+    </presentation>
+  </item>
+</questestinterop>"""
+    with zipfile.ZipFile(imscc_dir / "course.imscc", "w") as zf:
+        zf.writestr(member, qti)
+
+    chunk = {
+        "id": "assessment-1",
+        "text": "Which value is positive? Three Negative three",
+        "chunk_type": "assessment_item",
+        "source": {
+            "item_path": member,
+            "html_xpath": "/questestinterop[1]/item[1]",
+            "char_span": [0, 44],
+        },
+    }
+    chunks_path = tmp_path / "chunks.jsonl"
+    chunks_path.write_text(json.dumps(chunk) + "\n", encoding="utf-8")
+
+    result = CitationAnchorValidator().validate(
+        {
+            "chunks_path": str(chunks_path),
+            "course_dir": str(course_dir),
+            "chunkset_kind": "imscc",
+        }
+    )
+
+    assert result.passed is True
+    report = result.metadata["citation_anchor_report"]
+    assert report["anchoring_rate"] == 1.0
+    assert report["status_counts"]["span_fabricated"] == 0
+
+
+def test_merged_body_runs_anchor_across_structural_heading(tmp_path):
+    """Chunker-omitted section labels must not break body-prose anchoring."""
+    course_dir = tmp_path / "course"
+    html_dir = course_dir / "sources" / "textbooks"
+    html_dir.mkdir(parents=True)
+    (html_dir / "page.html").write_text(
+        "<html><body>"
+        "<h2>First section</h2>"
+        "<p>Alpha beta gamma delta epsilon zeta eta theta iota.</p>"
+        "<h2>Second section</h2>"
+        "<p>Kappa lambda mu nu xi omicron pi rho sigma.</p>"
+        "</body></html>",
+        encoding="utf-8",
+    )
+    chunk = {
+        "id": "merged-1",
+        "text": (
+            "Alpha beta gamma delta epsilon zeta eta theta iota. "
+            "Kappa lambda mu nu xi omicron pi rho sigma."
+        ),
+        "source": {
+            "item_path": "page.html",
+            "html_xpath": "/html[1]/body[1]",
+            "char_span": [0, 99],
+        },
+    }
+    chunks_path = tmp_path / "chunks.jsonl"
+    chunks_path.write_text(json.dumps(chunk) + "\n", encoding="utf-8")
+
+    result = CitationAnchorValidator().validate(
+        {
+            "chunks_path": str(chunks_path),
+            "course_dir": str(course_dir),
+            "chunkset_kind": "dart",
+        }
+    )
+
+    assert result.passed is True
+    report = result.metadata["citation_anchor_report"]
+    assert report["anchoring_rate"] == 1.0
+    assert report["status_counts"]["span_fabricated"] == 0
+
+
+def test_heading_projection_does_not_admit_absent_body_claim(tmp_path):
+    """Removing headings never turns source-absent prose into an anchor."""
+    course_dir = tmp_path / "course"
+    html_dir = course_dir / "sources" / "textbooks"
+    html_dir.mkdir(parents=True)
+    (html_dir / "page.html").write_text(
+        "<html><body><h2>Linear equations</h2>"
+        "<p>Alpha beta gamma delta epsilon zeta eta theta.</p>"
+        "</body></html>",
+        encoding="utf-8",
+    )
+    chunk = {
+        "id": "fabricated-1",
+        "text": (
+            "Linear equations always have exactly three solutions and every "
+            "coefficient must be positive."
+        ),
+        "source": {
+            "item_path": "page.html",
+            "html_xpath": "/html[1]/body[1]",
+            "char_span": [0, 88],
+        },
+    }
+    chunks_path = tmp_path / "chunks.jsonl"
+    chunks_path.write_text(json.dumps(chunk) + "\n", encoding="utf-8")
+
+    result = CitationAnchorValidator().validate(
+        {
+            "chunks_path": str(chunks_path),
+            "course_dir": str(course_dir),
+            "chunkset_kind": "dart",
+        }
+    )
+
+    assert result.passed is False
+    report = result.metadata["citation_anchor_report"]
+    assert report["anchoring_rate"] == 0.0
+    assert report["status_counts"]["span_fabricated"] == 1
+
+
+def test_qti_math_comparison_is_not_mistaken_for_nested_tag(tmp_path):
+    """``<C`` is algebra, while escaped ``<p>`` is nested QTI markup."""
+    import zipfile
+
+    course_dir = tmp_path / "course"
+    imscc_dir = course_dir / "source" / "imscc"
+    imscc_dir.mkdir(parents=True)
+    member = "assessment.xml"
+    qti = (
+        "<questestinterop><item><mattext texttype=\"text/html\">"
+        "&lt;p&gt;The boundary separates $A x+B y&gt;C$ from "
+        "$A x+B y&lt;C$.&lt;/p&gt;"
+        "</mattext></item></questestinterop>"
+    )
+    with zipfile.ZipFile(imscc_dir / "course.imscc", "w") as zf:
+        zf.writestr(member, qti)
+    chunk = {
+        "id": "math-1",
+        "text": "The boundary separates $A x+B y > C$ from $A x+B y < C$.",
+        "source": {"item_path": member},
+    }
+    chunks_path = tmp_path / "chunks.jsonl"
+    chunks_path.write_text(json.dumps(chunk) + "\n", encoding="utf-8")
+
+    result = CitationAnchorValidator().validate(
+        {
+            "chunks_path": str(chunks_path),
+            "course_dir": str(course_dir),
+            "chunkset_kind": "imscc",
+        }
+    )
+
+    assert result.passed is True
+    report = result.metadata["citation_anchor_report"]
+    assert report["anchoring_rate"] == 1.0
+    assert report["status_counts"]["span_fabricated"] == 0
+
+
+def test_ordered_body_segments_anchor_across_non_heading_label(tmp_path):
+    """Exact body runs remain anchored when chunker omits a page-only label."""
+    course_dir = tmp_path / "course"
+    html_dir = course_dir / "sources" / "textbooks"
+    html_dir.mkdir(parents=True)
+    first = "alpha beta gamma delta epsilon zeta eta theta"
+    second = "iota kappa lambda mu nu xi omicron pi"
+    (html_dir / "page.html").write_text(
+        "<html><body><p>"
+        + first
+        + "</p><div class='section-label'>Practice checkpoint</div><p>"
+        + second
+        + "</p></body></html>",
+        encoding="utf-8",
+    )
+    chunk = {
+        "id": "segmented-1",
+        "text": f"{first} {second}",
+        "source": {"item_path": "page.html"},
+    }
+    chunks_path = tmp_path / "chunks.jsonl"
+    chunks_path.write_text(json.dumps(chunk) + "\n", encoding="utf-8")
+
+    result = CitationAnchorValidator().validate(
+        {
+            "chunks_path": str(chunks_path),
+            "course_dir": str(course_dir),
+            "chunkset_kind": "dart",
+        }
+    )
+
+    assert result.passed is True
+    report = result.metadata["citation_anchor_report"]
+    assert report["anchoring_rate"] == 1.0
+    assert report["status_counts"]["span_fabricated"] == 0
