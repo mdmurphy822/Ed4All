@@ -51,6 +51,7 @@ from Trainforge.training.compute_backend import (
     LocalBackend,
     TrainingJobResult,
     TrainingJobSpec,
+    is_dpo_editorial_record,
 )
 from Trainforge.training.configs import TrainingConfig, load_config
 
@@ -229,6 +230,7 @@ class TrainingRunner:
             metrics: Dict[str, Any] = {}
 
             if not self.dry_run:
+                self._training_decision_capture = capture
                 job_result = self._dispatch_training(run_dir, should_run_dpo)
                 adapter_path = job_result.adapter_path
                 metrics = dict(job_result.metrics)
@@ -768,6 +770,12 @@ class TrainingRunner:
             training_config=self.config.to_dict(),
             output_dir=run_dir,
             run_dpo=run_dpo,
+            extra={
+                "course_dir": self.course_dir,
+                "decision_capture": getattr(
+                    self, "_training_decision_capture", None,
+                ),
+            },
         )
         return self.backend.run(spec)
 
@@ -873,6 +881,7 @@ class TrainingRunner:
             "top_p": float(eval_cfg.get("top_p", 1.0)),
             "seed": int(eval_cfg.get("seed", self.config.seed)),
             "revision": self.spec.default_revision,
+            "use_4bit": bool(self.config.use_4bit),
         }
         logger.info(
             "TrainingRunner: eval generation config loaded from %s "
@@ -990,9 +999,12 @@ class TrainingRunner:
             return None
 
         from Trainforge.eval.ablation_runner import AblationRunner, AblationSetup
-        from Trainforge.eval.adapter_callable import AdapterCallable
+        from Trainforge.eval.adapter_callable import (
+            AdapterCallable,
+            AdapterDisabledCallable,
+        )
         from Trainforge.eval.eval_config import load_eval_config
-        from Trainforge.eval.rag_callable import BaseOnlyCallable, RAGCallable
+        from Trainforge.eval.rag_callable import RAGCallable
 
         adapter_dir = (
             Path(adapter_path).parent
@@ -1010,6 +1022,7 @@ class TrainingRunner:
             "top_p": float(eval_cfg.get("top_p", 1.0)),
             "seed": int(eval_cfg.get("seed", self.config.seed)),
             "revision": self.spec.default_revision,
+            "use_4bit": bool(self.config.use_4bit),
         }
 
         adapter_callable = AdapterCallable(
@@ -1017,13 +1030,10 @@ class TrainingRunner:
             base_model_repo=self.spec.huggingface_repo,
             **callable_kwargs,
         )
-        base_callable = BaseOnlyCallable(
-            base_model_repo=self.spec.huggingface_repo,
-            max_new_tokens=callable_kwargs["max_new_tokens"],
-            temperature=callable_kwargs["temperature"],
-            base_model_short_name=self.spec.name,
-            eval_config=loaded_eval_config,
-        )
+        # One BF16 Nano base only: the base arm temporarily disables PEFT on
+        # the same resident model.  Two ~59-GiB bases cannot safely coexist on
+        # a 121-GiB Spark once activations/workspaces are included.
+        base_callable = AdapterDisabledCallable(adapter_callable)
         adapter_rag = RAGCallable(
             base_callable=adapter_callable,
             course_slug=self.course_slug,
@@ -1159,11 +1169,12 @@ def _count_dpo_eligible_records(path: Path, mode: str) -> int:
                 rec = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            source = str(rec.get("source") or rec.get("rejected_source") or "")
-            if rec.get("misconception_id") or source in {
-                "misconception",
-                "misconception_editorial",
-            }:
+            # LOCKSTEP: the SAME predicate the filter uses
+            # (compute_backend.is_dpo_editorial_record). Re-implementing the
+            # membership test here is how the count and the filter drift, and
+            # a drift means "run DPO" followed by an empty filtered set, which
+            # with dpo_fail_hard=True kills the run after SFT succeeded.
+            if is_dpo_editorial_record(rec):
                 count += 1
     return count
 

@@ -44,6 +44,14 @@ SYNTHESIS_ARTIFACT_NAMES = frozenset({
     "smoke_instruction_pairs.jsonl",
     "smoke_pilot_report.md",
     "smoke_preference_pairs.jsonl",
+    # Written by the synthesis runtime on a clean exit (the projection of the
+    # checkpoint's terminal rejected/ineligible rows). Omitting it made
+    # ``prepare_fresh_training_synthesis._preserved_input_paths`` classify it
+    # as a preserved UPSTREAM input and hash it into
+    # ``preserved_input_sha256``, so the next synthesis pass rewrote it and
+    # every later resume hard-failed with "preserved synthesis inputs changed
+    # after reset".
+    "synthesis_dispositions.jsonl",
     "synthesis_summary.json",
 })
 

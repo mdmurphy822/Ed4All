@@ -29,6 +29,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.utils.jsonschema import validate_pair_record  # noqa: E402
+from Trainforge.generators._synthesis_common import (  # noqa: E402
+    SynthesisProviderError,
+)
 
 from Trainforge.generators.instruction_factory import (
     COMPLETION_MAX,
@@ -249,6 +252,96 @@ def test_malformed_pair_rejected_with_diagnostic():
     pref = synthesize_preference_pair(bad_chunk, seed=1)
     assert inst.pair is None and inst.quality.get("reason") == "missing_chunk_id_or_lo_refs"
     assert pref.pair is None and pref.quality.get("reason") == "missing_chunk_id_or_lo_refs"
+
+
+def test_final_provider_outputs_cannot_bypass_verbatim_gate():
+    source = (
+        "A long canonical source sentence explains the relationship between "
+        "the first concept and every later worked example in the course."
+    )
+    chunk = {
+        "id": "chunk_provider_leak",
+        "text": source,
+        "summary": "The first concept supports later examples.",
+        "learning_outcome_refs": ["TO-01"],
+        "concept_tags": ["first-concept"],
+        "bloom_level": "understand",
+        "chunk_type": "explanation",
+    }
+
+    class _LeakyProvider:
+        def paraphrase_instruction(self, draft, supplied_chunk, **kwargs):
+            return {**draft, "completion": supplied_chunk["text"]}
+
+        def paraphrase_preference(self, draft, supplied_chunk, **kwargs):
+            return {**draft, "rejected": supplied_chunk["text"]}
+
+    provider = _LeakyProvider()
+    instruction = synthesize_instruction_pair(
+        chunk, seed=7, provider="local", paraphrase_provider=provider,
+    )
+    preference = synthesize_preference_pair(
+        chunk, seed=7, provider="local", paraphrase_provider=provider,
+    )
+
+    assert instruction.pair is None
+    assert instruction.quality["reason"] == "provider_output_verbatim_leakage"
+    assert preference.pair is None
+    assert preference.quality["reason"] == "provider_output_verbatim_leakage"
+
+
+def test_empty_preservation_list_never_enables_deterministic_fallback():
+    chunk = {
+        "id": "chunk_no_preserve_fallback",
+        "text": "A grounded explanation of a course concept.",
+        "summary": "A grounded explanation.",
+        "learning_outcome_refs": ["TO-01"],
+        "concept_tags": ["course-concept"],
+        "bloom_level": "understand",
+        "chunk_type": "explanation",
+    }
+
+    class _InvalidProvider:
+        def paraphrase_instruction(self, draft, supplied_chunk, **kwargs):
+            raise SynthesisProviderError(
+                "invalid after retry", code="paraphrase_invalid_after_retry",
+            )
+
+        def paraphrase_preference(self, draft, supplied_chunk, **kwargs):
+            raise SynthesisProviderError(
+                "invalid after retry", code="paraphrase_invalid_after_retry",
+            )
+
+    provider = _InvalidProvider()
+    with pytest.raises(SynthesisProviderError):
+        synthesize_instruction_pair(
+            chunk, seed=7, provider="local",
+            paraphrase_provider=provider, preserve_tokens=[],
+        )
+    with pytest.raises(SynthesisProviderError):
+        synthesize_preference_pair(
+            chunk, seed=7, provider="local",
+            paraphrase_provider=provider, preserve_tokens=[],
+        )
+
+
+def test_dpo_pair_carries_training_stratification_metadata():
+    chunk = {
+        "id": "chunk_dpo_metadata",
+        "text": "A grounded explanation of a course concept.",
+        "summary": "A grounded explanation of the concept and its use.",
+        "learning_outcome_refs": ["TO-01"],
+        "concept_tags": ["course-concept"],
+        "bloom_level": "apply",
+        "content_type_label": "worked_example",
+    }
+
+    result = synthesize_preference_pair(chunk, seed=7)
+
+    assert result.pair is not None
+    assert result.pair["template_id"] == "preference_explanation"
+    assert result.pair["content_type"] == "worked_example"
+    assert result.pair["bloom_level"] == "apply"
 
 
 def test_lo_filter_skips_orphan_chunks(tmp_path):
@@ -502,7 +595,9 @@ def test_dataset_config_statistics_updated(tmp_path):
 # Wave 107 — Phase A: claude_session provider routing
 # ---------------------------------------------------------------------------
 
-def test_run_synthesis_routes_claude_session_provider_through_dispatcher(tmp_path):
+def test_run_synthesis_routes_claude_session_provider_through_dispatcher(
+    tmp_path, monkeypatch,
+):
     """When provider='claude_session' is set and a dispatcher is supplied,
     run_synthesis must route paraphrase calls through ClaudeSessionProvider
     and tag emitted rows with provider='claude_session', not 'mock'."""
@@ -551,6 +646,25 @@ def test_run_synthesis_routes_claude_session_provider_through_dispatcher(tmp_pat
         )
 
     dispatcher = FakeLocalDispatcher(agent_tool=agent_tool)
+    # This is a provider-routing probe with synthetic generic responses, not
+    # an objective-delivery calibration. Dedicated validator tests cover the
+    # real fail-closed objective contract.
+    from lib.validators.pair.objective_delivery import (
+        PairObjectiveDeliveryValidator,
+    )
+
+    monkeypatch.setattr(
+        PairObjectiveDeliveryValidator,
+        "validate_pair",
+        lambda self, pair, **kwargs: (
+            "validated",
+            None,
+            {
+                "pair_objective_alignment": [],
+                "pair_objective_alignment_pass_rate": 1.0,
+            },
+        ),
+    )
     working = _make_working_copy(tmp_path)
     cache_path = working / "training_specs" / ".synthesis_cache.jsonl"
 

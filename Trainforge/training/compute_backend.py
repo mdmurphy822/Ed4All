@@ -143,6 +143,8 @@ class LocalBackend(ComputeBackend):
         trainer = PEFTTrainer(
             base_model=spec.base_model,
             training_config=spec.training_config,
+            course_dir=spec.extra.get("course_dir"),
+            decision_capture=spec.extra.get("decision_capture"),
         )
         # Wave 100: ensure the run-dir parent exists for TRL/PEFT
         # checkpoint emit. The actual adapter filename is owned by
@@ -254,6 +256,37 @@ def _read_jsonl(path: Path) -> list:
     return _utils_read_jsonl(path)
 
 
+#: The ``source`` / ``rejected_source`` values the
+#: ``editorial_or_misconception`` DPO filter admits.
+#:
+#: ``mined_rejection`` rows come from
+#: ``Trainforge/synthesis_reject_mining.py::select_mined_pairs`` — an accepted
+#: instruction completion as ``chosen`` against a near-miss REJECTED completion
+#: for the same chunk / objectives / base prompt / citation contract / teacher.
+#:
+#: LOCKSTEP CONTRACT: this set and the copy consumed by
+#: ``Trainforge/training/runner.py::_count_dpo_eligible_records`` must always
+#: agree. ``runner`` imports this constant precisely so they cannot drift —
+#: widening one alone gives the worst failure available here: the count says
+#: "run DPO", the filter then drops everything, and ``dpo_fail_hard=True``
+#: (``configs/__init__.py``) kills the run AFTER SFT already succeeded.
+DPO_EDITORIAL_SOURCES = frozenset({
+    "misconception",
+    "misconception_editorial",
+    "mined_rejection",
+})
+
+
+def is_dpo_editorial_record(rec: Any) -> bool:
+    """Whether one preference record passes ``editorial_or_misconception``.
+
+    The single predicate behind both the filter (here) and the pre-flight
+    count (``runner._count_dpo_eligible_records``).
+    """
+    source = str(rec.get("source") or rec.get("rejected_source") or "")
+    return bool(rec.get("misconception_id")) or source in DPO_EDITORIAL_SOURCES
+
+
 def _filter_dpo_pairs(records: list, mode: str) -> list:
     """Filter DPO pairs down to the high-signal preference sources."""
     if mode in ("", "all", None):
@@ -263,15 +296,7 @@ def _filter_dpo_pairs(records: list, mode: str) -> list:
             f"Unknown dpo_preference_filter={mode!r}; expected "
             "'all' or 'editorial_or_misconception'."
         )
-    out = []
-    for rec in records:
-        source = str(rec.get("source") or rec.get("rejected_source") or "")
-        if rec.get("misconception_id") or source in {
-            "misconception",
-            "misconception_editorial",
-        }:
-            out.append(rec)
-    return out
+    return [rec for rec in records if is_dpo_editorial_record(rec)]
 
 
 __all__ = [

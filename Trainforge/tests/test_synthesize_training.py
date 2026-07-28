@@ -99,6 +99,46 @@ def _synthetic_manifest() -> PropertyManifest:
     )
 
 
+def _bypass_objective_delivery_for_provider_plumbing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep provider-plumbing tests independent of the objective judge.
+
+    These tests deliberately install offline provider doubles and carry no
+    objective catalog or NLI model.  Fail-closed behavior for real providers is
+    covered directly in ``test_pair_objective_delivery.py``; here we preserve
+    the older tests' narrow focus on fallback and prompt-deduplication behavior.
+    """
+    from lib.validators.pair.objective_delivery import (
+        PairObjectiveDeliveryValidator,
+    )
+
+    def _validated(
+        self,
+        pair,
+        *,
+        kind,
+        chunk=None,
+        objectives=None,
+        decision_capture=None,
+    ):
+        del self, pair, kind, chunk, objectives, decision_capture
+        return (
+            "validated",
+            None,
+            {
+                "pair_objective_alignment": [],
+                "pair_objective_alignment_pass_rate": 1.0,
+            },
+        )
+
+    monkeypatch.setattr(
+        PairObjectiveDeliveryValidator,
+        "validate_pair",
+        _validated,
+    )
+
+
 def _shacl_manifest_for_violation_tests() -> PropertyManifest:
     """Wave 133c: minimal SHACL-family manifest that opts the mini
     course into the violation_generator gate. Used by the existing
@@ -540,6 +580,7 @@ def test_property_bearing_chunk_falls_back_to_deterministic_when_paraphrase_stri
     135d from ``surface_form_preservation_fallback``) and emits the
     pair instead of dropping it."""
     course_dir = _make_working_copy(tmp_path)
+    _bypass_objective_delivery_for_provider_plumbing(monkeypatch)
 
     # Inject a property manifest that matches text in every fixture chunk.
     manifest = PropertyManifest(
@@ -625,17 +666,18 @@ def test_property_bearing_chunk_falls_back_to_deterministic_when_paraphrase_stri
     )
 
 
-def test_paraphrase_invalid_after_retry_falls_back_to_deterministic_draft(
+def test_paraphrase_invalid_after_retry_without_preservation_fails_loud(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Wave 126: when the local provider exhausts retries on the 40-char
-    prompt floor (e.g. definition-style chunks producing 'Define X.'
-    prompts), the instruction + preference factories must fall back to
-    the deterministic draft instead of crashing the run. Closes the
-    cc07cc76 rebuild's chunk-3 IRI-definition failure mode where one
-    chunk's paraphrase exhaustion killed all 295 chunks of synthesis.
+    """Retry exhaustion cannot silently replace ordinary provider output.
+
+    Property-bearing chunks may still use the explicitly scoped preservation
+    fallback, but this fixture also contains chunks with no preservation
+    tokens.  The first such chunk must fail the run loudly instead of emitting
+    its deterministic draft as if provider synthesis had succeeded.
     """
     course_dir = _make_working_copy(tmp_path)
+    _bypass_objective_delivery_for_provider_plumbing(monkeypatch)
 
     monkeypatch.setattr(
         "lib.ontology.property_manifest.load_property_manifest",
@@ -671,38 +713,21 @@ def test_paraphrase_invalid_after_retry_falls_back_to_deterministic_draft(
         tool="trainforge",
     )
 
-    # Run should complete without raising, emitting deterministic fallback pairs.
-    stats = run_synthesis(
-        corpus_dir=course_dir,
-        course_code="demo-course-1",
-        provider="local",
-        seed=11,
-        capture=capture,
-        pilot_report_every=0,
-        curriculum_from_graph=False,
-    )
+    with pytest.raises(
+        SynthesisProviderError,
+        match="prompt length 29 below minimum 40",
+    ) as excinfo:
+        run_synthesis(
+            corpus_dir=course_dir,
+            course_code="demo-course-1",
+            provider="local",
+            seed=11,
+            capture=capture,
+            pilot_report_every=0,
+            curriculum_from_graph=False,
+        )
 
-    assert stats.instruction_pairs_emitted > 0, (
-        "Pairs should still be emitted via deterministic fallback, not "
-        "dropped on paraphrase exhaustion."
-    )
-
-    inst_path = course_dir / "training_specs" / "instruction_pairs.jsonl"
-    assert inst_path.exists()
-    import json as _json
-    fallback_count = 0
-    for line in inst_path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        rec = _json.loads(line)
-        if rec.get("paraphrase_fallback_reason") == "paraphrase_invalid_after_retry":
-            fallback_count += 1
-    assert fallback_count > 0, (
-        "Expected at least one pair carrying paraphrase_fallback_reason="
-        "'paraphrase_invalid_after_retry'; instead got "
-        f"{fallback_count} such pairs out of {stats.instruction_pairs_emitted} emitted."
-    )
+    assert excinfo.value.code == "paraphrase_invalid_after_retry"
 
 
 def test_run_synthesis_flag_off_constructs_legacy_local_leaf(
@@ -714,6 +739,7 @@ def test_run_synthesis_flag_off_constructs_legacy_local_leaf(
     AND keeps the default-ON suite from ever hitting a live localhost server
     if the default were to flip — both construction symbols are stubbed."""
     course_dir = _make_working_copy(tmp_path)
+    _bypass_objective_delivery_for_provider_plumbing(monkeypatch)
     monkeypatch.setenv("TRAINFORGE_AGNOSTIC_SYNTHESIS", "0")
 
     constructed: list[str] = []
@@ -1246,6 +1272,7 @@ def test_run_synthesis_dedupes_duplicate_instruction_prompts(
     and counted under ``rejected_reasons[instruction:duplicate_prompt]``.
     """
     course_dir = _make_working_copy(tmp_path)
+    _bypass_objective_delivery_for_provider_plumbing(monkeypatch)
 
     # Provider stub that always overrides the prompt to a fixed string.
     # Every chunk paraphrase produces an identical prompt — the dedupe
@@ -1303,6 +1330,7 @@ def test_run_synthesis_dedupes_duplicate_preference_prompts(
     before append and tallied under
     ``rejected_reasons[preference:duplicate_prompt]``."""
     course_dir = _make_working_copy(tmp_path)
+    _bypass_objective_delivery_for_provider_plumbing(monkeypatch)
 
     class _CollidingPrefProvider:
         def __init__(self, *args, **kwargs):
@@ -1421,6 +1449,45 @@ def test_with_abstention_flag_appends_pairs(tmp_path: Path) -> None:
         "instruction_pairs.jsonl should contain at least one "
         "abstention_probe pair"
     )
+
+
+def test_optional_generator_captures_are_contract_stamped_from_first_event(
+    tmp_path: Path,
+) -> None:
+    import json
+    from lib.decision_capture import DecisionCapture
+
+    course_dir = _make_working_copy(tmp_path)
+    _write_minimal_pedagogy_graph(course_dir)
+    capture = DecisionCapture(
+        course_code="contract-stamp",
+        phase="synthesize-training",
+        tool="trainforge",
+    )
+    run_synthesis(
+        corpus_dir=course_dir,
+        course_code="contract-stamp",
+        provider="mock",
+        seed=11,
+        capture=capture,
+        pilot_report_every=0,
+        curriculum_from_graph=False,
+        with_abstention=True,
+        abstention_max_pairs=4,
+    )
+    assert capture.decisions
+    aggregate = capture.synthesis_run_contract_sha256
+    component_sha = capture.synthesis_contract_components_sha256
+    assert aggregate and component_sha
+    for index, event in enumerate(capture.decisions):
+        metadata = event["metadata"]
+        context = json.loads(event["context"])
+        assert metadata["synthesis_run_contract_sha256"] == aggregate, index
+        assert (
+            metadata["synthesis_contract_components_sha256"]
+            == component_sha
+        ), index
+        assert context["synthesis_run_contract_sha256"] == aggregate, index
 
 
 def test_with_schema_translation_flag_appends_pairs(
@@ -2126,6 +2193,52 @@ def test_synthesis_checkpoint_schema_version_drift_invalidates(
     assert stats.instruction_pairs_emitted > 0
 
 
+def test_stale_terminal_rejection_fingerprint_regenerates(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    working = _make_working_copy(tmp_path)
+    checkpoint_path = working / "training_specs" / CHECKPOINT_NAME
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint_path.write_text(
+        _json.dumps({
+            "schema_version": "v1",
+            "chunk_id": "chunk_mc_01",
+            "kind": "instruction",
+            "variant_index": 0,
+            "pair": None,
+            "provider": "mock",
+            "seed": 17,
+            "disposition": "rejected",
+            "reason": "claim_support:unsupported_claim",
+            "contract_fingerprint": "stale-contract",
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+    caplog.set_level(logging.WARNING, logger="Trainforge.synthesize_training")
+    stats = run_synthesis(
+        corpus_dir=working,
+        course_code="MINI_TRAINING_101",
+        provider="mock",
+        seed=17,
+    )
+
+    emitted = [
+        _json.loads(line)
+        for line in (
+            working / "training_specs" / "instruction_pairs.jsonl"
+        ).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert any(row.get("chunk_id") == "chunk_mc_01" for row in emitted)
+    assert stats.claim_support_rejected == 0
+    assert any(
+        "rejection contract mismatch" in record.getMessage()
+        for record in caplog.records
+    )
+
+
 def test_synthesis_no_checkpoint_path_is_a_noop(tmp_path: Path) -> None:
     """Back-compat: when ``--no-checkpoint`` is passed (CLI sentinel
     routes through to ``synthesis_pairs_checkpoint_path`` as a
@@ -2154,3 +2267,172 @@ def test_synthesis_no_checkpoint_path_is_a_noop(tmp_path: Path) -> None:
         "Worker A: --no-checkpoint must skip sidecar creation entirely "
         "(no append handle opened, no append calls fired)."
     )
+
+
+def test_terminal_rejection_checkpoint_round_trips_without_pair_text(
+    tmp_path: Path,
+) -> None:
+    """Rejected work is resumable metadata, not leaked generated content."""
+    checkpoint = tmp_path / ".synthesis_pairs_checkpoint.jsonl"
+    with checkpoint.open("a", encoding="utf-8") as fh:
+        synthesize_training._checkpoint_terminal_rejection(
+            fh,
+            chunk_id="chunk_7",
+            kind="instruction",
+            variant_index=2,
+            provider="local",
+            seed=700,
+            reason="claim_support:unsupported_claim",
+            contract_fingerprint="f" * 64,
+        )
+
+    loaded = synthesize_training._load_synthesis_pairs_checkpoint(checkpoint)
+    record = loaded[("chunk_7", "instruction", 2)]
+    assert record["disposition"] == "rejected"
+    assert record["reason"] == "claim_support:unsupported_claim"
+    assert record["pair"] is None
+    assert record["contract_fingerprint"] == "f" * 64
+
+
+def test_rejection_contract_fingerprint_changes_with_runtime_model() -> None:
+    first = synthesize_training._synthesis_rejection_contract_fingerprint(
+        provider="local", model_id="model-a", pair_seed=17
+    )
+    repeated = synthesize_training._synthesis_rejection_contract_fingerprint(
+        provider="local", model_id="model-a", pair_seed=17
+    )
+    upgraded = synthesize_training._synthesis_rejection_contract_fingerprint(
+        provider="local", model_id="model-b", pair_seed=17
+    )
+
+    assert first == repeated
+    assert first != upgraded
+
+
+def test_rejection_fingerprint_changes_with_seed_and_runtime_policy(
+    monkeypatch,
+) -> None:
+    base = synthesize_training._synthesis_rejection_contract_fingerprint(
+        provider="local", model_id="model-a", pair_seed=17
+    )
+    other_seed = synthesize_training._synthesis_rejection_contract_fingerprint(
+        provider="local", model_id="model-a", pair_seed=18
+    )
+    monkeypatch.setenv("TRAINFORGE_REQUIRE_EMBEDDINGS", "true")
+    strict = synthesize_training._synthesis_rejection_contract_fingerprint(
+        provider="local", model_id="model-a", pair_seed=17
+    )
+    other_judge = synthesize_training._synthesis_rejection_contract_fingerprint(
+        provider="local",
+        model_id="model-a",
+        pair_seed=17,
+        judge_identity={
+            "nli_model": "replacement",
+            "nli_revision": "revision-b",
+            "sentence_embedder_model": "embedder-b",
+        },
+    )
+
+    assert base != other_seed
+    assert base != strict
+    assert base != other_judge
+
+
+def test_rejection_fingerprint_changes_with_source_endpoint_and_params() -> None:
+    common = {
+        "provider": "local",
+        "model_id": "model-a",
+        "pair_seed": 17,
+        "source_chunk": {
+            "id": "same-id",
+            "text": "Canonical source fact.",
+            "learning_outcome_refs": ["TO-01"],
+            "focused_objective": {
+                "id": "TO-01",
+                "statement": "Apply the canonical fact.",
+            },
+        },
+        "endpoint_identity": "http://127.0.0.1:8123/v1",
+        "generation_params": {
+            "temperature": 0.2,
+            "max_tokens": 800,
+            "reasoning_thinking_off": True,
+        },
+    }
+    base = synthesize_training._synthesis_rejection_contract_fingerprint(
+        **common
+    )
+    changed_source = synthesize_training._synthesis_rejection_contract_fingerprint(
+        **{**common, "source_chunk": {**common["source_chunk"], "text": "Corrected fact."}}
+    )
+    changed_endpoint = synthesize_training._synthesis_rejection_contract_fingerprint(
+        **{**common, "endpoint_identity": "http://127.0.0.1:9000/v1"}
+    )
+    changed_params = synthesize_training._synthesis_rejection_contract_fingerprint(
+        **{
+            **common,
+            "generation_params": {
+                **common["generation_params"],
+                "temperature": 0.3,
+            },
+        }
+    )
+
+    assert len({base, changed_source, changed_endpoint, changed_params}) == 4
+
+
+def test_legacy_or_malformed_rejection_contract_is_never_replayed() -> None:
+    current = "a" * 64
+
+    assert not synthesize_training._checkpoint_rejection_matches_contract(
+        {"disposition": "rejected"}, current
+    )
+    assert not synthesize_training._checkpoint_rejection_matches_contract(
+        {"disposition": "rejected", "contract_fingerprint": 123}, current
+    )
+    assert not synthesize_training._checkpoint_rejection_matches_contract(
+        {"disposition": "rejected", "contract_fingerprint": "b" * 64},
+        current,
+    )
+    assert synthesize_training._checkpoint_rejection_matches_contract(
+        {"disposition": "rejected", "contract_fingerprint": current},
+        current,
+    )
+
+
+def test_legacy_checkpoint_record_defaults_to_accepted(tmp_path: Path) -> None:
+    """Pre-disposition v1 accepted records remain replay-compatible."""
+    checkpoint = tmp_path / ".synthesis_pairs_checkpoint.jsonl"
+    checkpoint.write_text(
+        (
+            '{"schema_version":"v1","chunk_id":"chunk_1",'
+            '"kind":"preference","variant_index":0,'
+            '"pair":{"prompt":"kept"},"provider":"local","seed":1}\n'
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = synthesize_training._load_synthesis_pairs_checkpoint(checkpoint)
+    record = loaded[("chunk_1", "preference", 0)]
+    assert record.get("disposition", "accepted") == "accepted"
+    assert record["pair"]["prompt"] == "kept"
+
+
+def test_replayed_claim_rejection_restores_ladder_counters() -> None:
+    stats = synthesize_training.SynthesisStats()
+
+    synthesize_training._replay_terminal_rejection_stats(
+        stats,
+        kind="instruction",
+        reason="claim_support:unsupported_claim",
+    )
+
+    assert stats.instruction_pairs_rejected == 1
+    assert stats.candidate_pairs_total == 1
+    assert stats.dropped_count == 1
+    assert stats.rejected_promotion_pairs == 1
+    assert stats.claim_support_rejected == 1
+    assert stats.promotion_rejection_reasons == {"unsupported_claim": 1}
+    assert stats.rejected_reasons == {
+        "instruction:claim_support:unsupported_claim": 1
+    }

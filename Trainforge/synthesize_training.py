@@ -34,16 +34,25 @@ their rationales.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import html
+import io
 import json
 import logging
 import os
 import random
+import re
 import sys
+import threading
+import urllib.error
+import urllib.request
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import (
+    Any, Callable, Dict, Iterable, List, Mapping, NoReturn, Optional,
+    Sequence, Set, Tuple,
+)
 
 # Make project root importable when run as a script.
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -73,6 +82,13 @@ from Trainforge.generators.preference_factory import (  # noqa: E402
 from Trainforge.generators._synthesis_provider import (  # noqa: E402
     agnostic_synthesis_enabled,
 )
+from Trainforge.generators._synthesis_common import SynthesisProviderError  # noqa: E402
+from Trainforge.synthesis_journal import (  # noqa: E402
+    GenerationJournal,
+    MAX_TRANSIENT_RESUME_ATTEMPTS,
+    load_generation_journal,
+    summarize_generation_journal,
+)
 from Trainforge.curriculum import (  # noqa: E402
     DEFAULT_PREREQ_CONTEXT_TOKENS,
     build_curriculum_context,
@@ -81,11 +97,98 @@ from Trainforge.curriculum import (  # noqa: E402
     load_pedagogy_graph,
     order_pairs_by_curriculum,
 )
+from Trainforge.synthesis_concurrency import (  # noqa: E402
+    BoundedOrderedMap,
+    resolve_synthesis_max_concurrent,
+)
+from Trainforge.synthesis_progress import SynthesisProgressWriter  # noqa: E402
+from Trainforge.synthesis_reject_mining import (  # noqa: E402
+    MINE_MODE_OFF,
+    MINE_MODE_ON,
+    MINE_REJECTS_ENV,
+    MINED_PAIR_SOURCE,
+    RejectPool,
+    build_capture_payload,
+    resolve_max_fraction,
+    resolve_max_skeleton_freq,
+    resolve_min_fail_entailment,
+    resolve_min_support,
+    resolve_mine_rejects_mode,
+    select_mined_pairs,
+)
 
 logger = logging.getLogger(__name__)
 
 
 DEFAULT_SEED = 17  # Arbitrary but stable; stage adds chunk-index for variety.
+
+
+def _preflight_local_staged_model_identity(
+    *,
+    base_url: str,
+    local_model: str,
+    generic_model: str = "",
+    get_json: Optional[Callable[[str], Mapping[str, Any]]] = None,
+) -> str:
+    """Prove the staged local seat serves the explicitly configured model.
+
+    ``LOCAL_SYNTHESIS_MODEL`` is the canonical registry selector.
+    ``TRAINFORGE_SYNTHESIS_MODEL`` is retained only as a conflict detector:
+    it never overrides or substitutes for the registry selector.
+    """
+    expected = local_model.strip()
+    generic = generic_model.strip()
+    if not expected:
+        raise RuntimeError(
+            "LOCAL_SYNTHESIS_MODEL must be set explicitly for staged local "
+            "synthesis; registry defaults are not accepted"
+        )
+    if generic and generic != expected:
+        raise RuntimeError(
+            "conflicting synthesis model selectors: "
+            f"LOCAL_SYNTHESIS_MODEL={expected!r} but "
+            f"TRAINFORGE_SYNTHESIS_MODEL={generic!r}; "
+            "LOCAL_SYNTHESIS_MODEL is canonical"
+        )
+
+    models_url = f"{base_url.rstrip('/')}/models"
+
+    def _default_get_json(url: str) -> Mapping[str, Any]:
+        try:
+            with urllib.request.urlopen(url, timeout=10) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                f"unable to verify staged synthesis model identity at {url}: {exc}"
+            ) from exc
+        if not isinstance(payload, Mapping):
+            raise RuntimeError(
+                f"staged synthesis model identity response at {url} is not an object"
+            )
+        return payload
+
+    payload = (get_json or _default_get_json)(models_url)
+    if not isinstance(payload, Mapping):
+        raise RuntimeError(
+            f"staged synthesis model identity response at {models_url} is not an object"
+        )
+    rows = payload.get("data")
+    if not isinstance(rows, list):
+        raise RuntimeError(
+            f"staged synthesis model identity response at {models_url} "
+            "must contain data[]"
+        )
+    served_ids = {
+        str(row.get("id", "")).strip()
+        for row in rows
+        if isinstance(row, Mapping) and str(row.get("id", "")).strip()
+    }
+    if expected not in served_ids:
+        raise RuntimeError(
+            f"configured staged synthesis model {expected!r} is not served by "
+            f"{models_url}; served ids={sorted(served_ids)!r}"
+        )
+    return expected
 
 
 # the Anthropic-SDK training-pair synthesis path (the
@@ -139,6 +242,9 @@ class SynthesisStats:
     instruction_pairs_rejected: int = 0
     preference_pairs_emitted: int = 0
     preference_pairs_rejected: int = 0
+    instruction_pairs_ineligible: int = 0
+    preference_pairs_ineligible: int = 0
+    ineligible_reasons: Dict[str, int] = field(default_factory=dict)
     rejected_reasons: Dict[str, int] = field(default_factory=dict)
     # per-pair promotion-validator filter count. Increments
     # on every pair that the TrainingPairPromotionValidator rejects
@@ -207,6 +313,17 @@ class SynthesisStats:
     # post-run pilot report and the audit script.
     abstention_pairs_emitted: int = 0
     schema_translation_pairs_emitted: int = 0
+    # Reject-mining capture counters (TRAINFORGE_DPO_MINE_REJECTS). Left EMPTY
+    # when the flag is off, which is the default — an empty dict keeps every
+    # existing consumer's payload shape unchanged. Populated with the capture
+    # funnel (resume-cache rows scanned/admitted, captured this run, pool size)
+    # when mining is on or in shadow; the selection pass adds its own keys.
+    # Values are counts, with ONE deliberate exception: the selection pass
+    # writes the string key ``reject_mining_skipped`` when an incomplete
+    # generation pass made the reject pool biased, because "not evaluated" is
+    # not expressible as a count and all-zero counters would misread as "no
+    # candidates".
+    reject_mining: Dict[str, Any] = field(default_factory=dict)
     # per-pair claim-support (W4.A) + LO-refs (W4.B) +
     # objective-delivery (W4.C) filter counters. All three validators
     # run AFTER TrainingPairPromotionValidator (W2.E) returns
@@ -256,6 +373,9 @@ class SynthesisStats:
             "instruction_pairs_rejected": self.instruction_pairs_rejected,
             "preference_pairs_emitted": self.preference_pairs_emitted,
             "preference_pairs_rejected": self.preference_pairs_rejected,
+            "instruction_pairs_ineligible": self.instruction_pairs_ineligible,
+            "preference_pairs_ineligible": self.preference_pairs_ineligible,
+            "ineligible_reasons": dict(self.ineligible_reasons),
             "rejected_reasons": dict(self.rejected_reasons),
             "dropped_count": self.dropped_count,
             # promotion-ladder counters projected into the
@@ -327,6 +447,68 @@ def _write_jsonl(path: Path, records: Iterable[Dict[str, Any]]) -> int:
 
 def _eligible(chunk: Dict[str, Any]) -> bool:
     return bool(chunk.get("learning_outcome_refs")) and bool(chunk.get("id") or chunk.get("chunk_id"))
+
+
+def _focus_chunk_on_objective(
+    chunk: Dict[str, Any],
+    *,
+    seed: int,
+    objectives: Optional[Mapping[str, Mapping[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Apply authoritative objective focus only for the staged-v4 contract.
+
+    The v4 workflow is opt-in at the provider surface.  Keeping this guard at
+    the earliest focus seam preserves the historical chunk view exactly when
+    the flag is off, including mock/fixture runs.
+    """
+    from Trainforge.generators.staged_synthesis_provider import (
+        staged_synthesis_v4_enabled,
+    )
+
+    if not staged_synthesis_v4_enabled():
+        return chunk
+    from Trainforge.synthesis_eligibility import (
+        focus_chunk_on_canonical_objective,
+    )
+
+    return focus_chunk_on_canonical_objective(
+        chunk,
+        seed=seed,
+        objectives=objectives or {},
+    )
+
+
+def _pair_eligibility_for_mode(
+    focused_chunk: Mapping[str, Any],
+    *,
+    kind: str,
+) -> Any:
+    """Return v4 eligibility or an unconditional legacy admission."""
+    from Trainforge.generators.staged_synthesis_micro import (
+        staged_synthesis_micro_v1_enabled,
+    )
+    from Trainforge.generators.staged_synthesis_provider import (
+        staged_synthesis_v4_enabled,
+    )
+    from Trainforge.synthesis_eligibility import (
+        PairEligibility,
+        content_gate_eligibility,
+        pair_eligibility,
+    )
+
+    if focused_chunk.get("_eval_holdout_reserved") is True:
+        return PairEligibility(False, "eval_holdout_reserved")
+    # The content gate is a property of the SOURCE chunk, not of the staged
+    # contract, so it runs on every mode — the legacy path is exactly where
+    # the content-free pairs were being manufactured.
+    content_gate = content_gate_eligibility(focused_chunk)
+    if not content_gate.eligible:
+        return content_gate
+    if not (
+        staged_synthesis_v4_enabled() or staged_synthesis_micro_v1_enabled()
+    ):
+        return PairEligibility(True)
+    return pair_eligibility(focused_chunk, kind=kind)
 
 
 # ---------------------------------------------------------------------------
@@ -782,6 +964,16 @@ _INSTRUCTION_PROMPT_FRAMES = (
 )
 
 
+def _default_learner_persona() -> str:
+    """The persona slot ``_INSTRUCTION_PROMPT_FRAMES[1]`` interpolates.
+
+    Lazy-imported for the same reason ``_apply_instruction_variant`` does it:
+    the mock-provider call paths never need a property manifest.
+    """
+    from lib.ontology.property_manifest import DEFAULT_LEARNER_PERSONA
+    return DEFAULT_LEARNER_PERSONA
+
+
 def _apply_instruction_variant(
     pair: Dict[str, Any],
     variant_index: int,
@@ -818,6 +1010,8 @@ def _apply_instruction_variant(
 def _update_dataset_config(
     dataset_config_path: Path,
     stats: SynthesisStats,
+    *,
+    holdout_identity: Optional[Mapping[str, str]] = None,
 ) -> Dict[str, Any]:
     """Load existing dataset_config.json, update statistics, write back atomically.
 
@@ -859,6 +1053,8 @@ def _update_dataset_config(
     }
     config.setdefault("synthesis", {})
     config["synthesis"]["last_run"] = stats.as_dict()
+    if holdout_identity is not None:
+        config["synthesis"]["holdout_identity"] = dict(holdout_identity)
 
     tmp = dataset_config_path.with_suffix(dataset_config_path.suffix + ".tmp")
     with tmp.open("w", encoding="utf-8") as fh:
@@ -971,6 +1167,23 @@ def _emit_synthesis_summary_sidecar(
         "rejected_promotion_pairs": int(stats.rejected_promotion_pairs),
         "source_coverage": coverage_block,
     }
+
+    # Reject-mining funnel (TRAINFORGE_DPO_MINE_REJECTS). Emitted ONLY when the
+    # flag is on/shadow -- ``stats.reject_mining`` is left empty when mining is
+    # off, so the key is absent and a legacy sidecar stays byte-identical.
+    #
+    # This is load-bearing for the documented rollout, not telemetry garnish:
+    # the whole point of ``shadow`` mode is to measure yield before changing the
+    # corpus, and an operator cannot act on a number that only ever existed in a
+    # log line. ``synthesis_summary.json`` is where they read `emitted` to decide
+    # whether the corpus would clear the trainer's ``min_dpo_pairs: 50`` floor.
+    # Optional property on the schema; no ``schema_version`` bump (an
+    # absent-or-present optional key cannot break a reader).
+    if stats.reject_mining:
+        summary["reject_mining"] = {
+            key: (value if isinstance(value, str) else int(value))
+            for key, value in sorted(stats.reject_mining.items())
+        }
 
     sidecar_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = sidecar_path.with_suffix(sidecar_path.suffix + ".tmp")
@@ -1359,10 +1572,242 @@ def _resolve_pedagogy_graph_path(
 # exception path so postmortem inspection still works.
 
 _SYNTHESIS_CHECKPOINT_SCHEMA_VERSION = "v1"
+_PAIR_CHECKPOINT_LOCK = threading.Lock()
+_SYNTHESIS_REJECTION_CONTRACT_VERSION = "v1"
+
+# GENERATION_CONTRACT_FILES: files that decide MODEL CALL outcomes.
+# Fingerprint keys accepted rows + generation journal.  Changing these
+# files invalidates all resume-cached pairs. Verdict-policy changes
+# (validators, thresholds, classifiers, embedding) do NOT regenerate
+# previously-accepted pairs — only their verdict verdict digest changes.
+_GENERATION_CONTRACT_FILES = (
+    "Trainforge/synthesize_training.py",
+    "Trainforge/synthesis_eligibility.py",
+    "Trainforge/generators/_synthesis_provider.py",
+    "Trainforge/generators/_synthesis_common.py",
+    "Trainforge/generators/_openai_compatible_client.py",
+    "Trainforge/generators/staged_synthesis_provider.py",
+    "Trainforge/generators/_local_provider.py",
+    "Trainforge/generators/instruction_factory.py",
+    "Trainforge/generators/preference_factory.py",
+    "Trainforge/generators/synthesis_window_contract.py",
+    "Trainforge/synthesis_contract_guard.py",
+    "Trainforge/synthesis_concurrency.py",
+    "Trainforge/synthesis_journal.py",
+    "Trainforge/synthesis_fresh_start.py",
+    "lib/decision_capture.py",
+    "lib/utils/jsonl.py",
+    "schemas/knowledge/instruction_pair.schema.json",
+    "schemas/knowledge/preference_pair.schema.json",
+)
+
+# VERDICT_POLICY_FILES: files that decide VERDICT outcomes (pass/fail).
+# RECORDED on the row but NOT used to key fingerprint. Changing these
+# files re-evaluates ALL rows' verdicts without regenerating any pair.
+#
+# The tuple's name predates a third case: a file that DERIVES rows from
+# already-generated text (``synthesis_reject_mining``) rather than generating
+# or judging. It belongs here, not in the generation tuple, because the
+# operative question either tuple answers is "would resuming mix rows from two
+# implementations into one corpus?" — reject mining is recomputed from scratch
+# every run out of the full (resume-complete) reject pool and is never
+# resume-cached, so a mid-run edit changes only the derived output and cannot
+# mix generations. Putting it in _GENERATION_CONTRACT_FILES would re-key the
+# generation fingerprint and force every paused run to archive-and-restart for
+# a change that provably cannot alter a single model call.
+_VERDICT_POLICY_FILES = (
+    "lib/validators/pair/promotion.py",
+    "lib/validators/_pair_promotion_stages/thresholds.py",
+    "lib/validators/pair/claim_support.py",
+    "lib/validators/pair/_claim_support_thresholds.py",
+    "lib/validators/pair/lo_refs.py",
+    "lib/validators/pair/objective_delivery.py",
+    # The claim-support validator normalizes both NLI inputs through
+    # ``lib/semantik/math_fold.py::normalize_math_notation``, so that file
+    # decides verdicts too and belongs in the recorded policy digest.
+    "lib/semantik/math_fold.py",
+    "lib/classifiers/nli_classifier.py",
+    "lib/classifiers/bloom_bert_ensemble.py",
+    "lib/classifiers/bloom_zero_shot.py",
+    "lib/embedding/sentence_embedder.py",
+    "lib/ontology/bloom.py",
+    "lib/utils/objective_delivery_axes/status.py",
+    "lib/utils/objective_delivery_axes/nli.py",
+    "lib/utils/objective_delivery_axes/bloom_gap.py",
+    "lib/utils/objective_delivery_axes/verb_cooccurrence.py",
+    "Trainforge/synthesis_reject_mining.py",
+)
+
+# Legacy alias for backward compatibility; used for digest recording only.
+_SYNTHESIS_REJECTION_CONTRACT_FILES = (
+    _GENERATION_CONTRACT_FILES + _VERDICT_POLICY_FILES
+)
+
+# Runtime policy is allowlisted by prefix because synthesis, validator,
+# classifier, and embedding knobs can change generated content or terminal
+# verdicts.  This denylist stays intentionally tiny: these exact values affect
+# only scheduling/reporting, so hashing them would waste valid checkpoints
+# when an operator tunes throughput between resumes.
+_SYNTHESIS_FINGERPRINT_OPERATIONAL_ENV = frozenset({
+    "TRAINFORGE_SYNTHESIS_MAX_CONCURRENT",
+    "TRAINFORGE_EVAL_PROGRESS_EVERY",
+    "TRAINFORGE_SYNTHESIS_RUN_CONTRACT_SHA256",
+    "TRAINFORGE_SYNTHESIS_CONTRACT_COMPONENTS_SHA256",
+})
+_SYNTHESIS_FINGERPRINT_POLICY_PREFIXES = (
+    "TRAINFORGE_",
+    "ED4ALL_NLI_",
+    "ED4ALL_EMBED",
+    "ED4ALL_BLOOM_",
+)
+
+
+def _synthesis_runtime_policy_identity(
+    environment: Optional[Mapping[str, str]] = None,
+) -> Dict[str, str]:
+    """Return only output/verdict-affecting runtime policy.
+
+    Operational concurrency and telemetry cadence are excluded explicitly.
+    Transport controls such as ``ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS`` are not
+    in the policy-prefix allowlist: they alter how long a request may wait,
+    not its intended model request or validator contract. Model, prompt,
+    synthesis, NLI, embedding, and Bloom-policy inputs remain represented
+    here or in the fingerprint's explicit model/endpoint/generation fields.
+    """
+
+    source = os.environ if environment is None else environment
+    return {
+        key: value
+        for key, value in sorted(source.items())
+        if key not in _SYNTHESIS_FINGERPRINT_OPERATIONAL_ENV
+        and key.startswith(_SYNTHESIS_FINGERPRINT_POLICY_PREFIXES)
+    }
+
+
+def _synthesis_static_contract_components(
+    *,
+    provider: str,
+    model_id: str,
+    judge_identity: Optional[Mapping[str, str]] = None,
+    endpoint_identity: str = "",
+    generation_params: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Capture the immutable, diagnostic synthesis contract components.
+
+    ONLY GENERATION_CONTRACT_FILES feeds the fingerprint that keys accepted rows.
+    Verdict-policy changes are RECORDED on the row but do NOT regenerate it.
+    """
+
+    contract_files: Dict[str, str] = {}
+    for relative_path in _GENERATION_CONTRACT_FILES:
+        path = PROJECT_ROOT / relative_path
+        try:
+            contract_files[relative_path] = hashlib.sha256(
+                path.read_bytes()
+            ).hexdigest()
+        except OSError:
+            # Fail safe: a missing contract file still produces a deterministic
+            # distinct fingerprint rather than reusing an old rejection.
+            contract_files[relative_path] = "missing"
+    return {
+        "version": _SYNTHESIS_REJECTION_CONTRACT_VERSION,
+        "provider": str(provider),
+        "model_id": str(model_id),
+        "endpoint_sha256": _normalized_sha256(str(endpoint_identity)),
+        "generation_params_sha256": _normalized_sha256(
+            dict(generation_params or {})),
+        # Runtime policy can alter a rejection without changing source. Fold
+        # every synthesis/validator/classifier knob into the identity; values
+        # remain inside the SHA input and are never persisted.
+        "runtime_policy": _synthesis_runtime_policy_identity(),
+        "judge_identity": dict(judge_identity or {
+            "nli_model": "MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli",
+            "nli_revision": "6f5cf0a2b59cabb106aca4c287eed12e357e90eb",
+            "sentence_embedder_model": "all-MiniLM-L6-v2",
+        }),
+        "files": contract_files,
+    }
+
+
+def _verdict_policy_digest() -> Dict[str, Any]:
+    """Digest the verdict-policy files for the RECORD, never for the key.
+
+    The split above stopped FINGERPRINTING these files; without this they
+    would also stop being RECORDED, which is the failure that made the
+    original coupling look necessary: an auditor holding an accepted pair
+    could no longer tell WHICH verdict policy judged it, so the only way to
+    prove a pair was still valid was to re-key and regenerate it (the
+    archive-and-restart loop visible in ``state/backups/``).  The digest is
+    folded into ``synthesis_run_contract_components`` — which is stamped on
+    decision-capture metadata, the fresh-start marker, and (via its sha) every
+    journal row — but deliberately NOT into ``static_contract``, the only
+    component set ``_synthesis_rejection_contract_fingerprint`` hashes.  So a
+    claim-support or threshold edit changes what is recorded and changes
+    nothing that can invalidate an already-accepted pair.
+    """
+
+    policy_files: Dict[str, str] = {}
+    for relative_path in _VERDICT_POLICY_FILES:
+        path = PROJECT_ROOT / relative_path
+        try:
+            policy_files[relative_path] = hashlib.sha256(
+                path.read_bytes()
+            ).hexdigest()
+        except OSError:
+            # A missing verdict-policy file is recorded as such rather than
+            # raising: this surface must never be able to fail a run.
+            policy_files[relative_path] = "missing"
+    return {
+        "files": policy_files,
+        "sha256": _normalized_sha256(policy_files),
+    }
+
+
+def _normalized_sha256(value: Any) -> str:
+    normalized = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(normalized).hexdigest()
+
+
+def _synthesis_rejection_contract_fingerprint(
+    *,
+    provider: str,
+    model_id: str,
+    pair_seed: int,
+    judge_identity: Optional[Mapping[str, str]] = None,
+    source_chunk: Optional[Mapping[str, Any]] = None,
+    endpoint_identity: str = "",
+    generation_params: Optional[Mapping[str, Any]] = None,
+    static_components: Optional[Mapping[str, Any]] = None,
+) -> str:
+    """Fingerprint one unit from an immutable preflight contract."""
+
+    components = dict(static_components or _synthesis_static_contract_components(
+        provider=provider,
+        model_id=model_id,
+        judge_identity=judge_identity,
+        endpoint_identity=endpoint_identity,
+        generation_params=generation_params,
+    ))
+    payload = {
+        "static_contract": components,
+        "pair_seed": int(pair_seed),
+        "focused_source_sha256": _normalized_sha256(dict(source_chunk or {})),
+    }
+    encoded = json.dumps(
+        payload, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _load_synthesis_pairs_checkpoint(
     path: Optional[Path],
+    *,
+    expected_fresh_start_id: Optional[str] = None,
+    expected_marker_digest: Optional[str] = None,
+    expected_holdout_identity: Optional[Mapping[str, str]] = None,
+    expected_run_contract_sha256: Optional[str] = None,
 ) -> Dict[Tuple[str, str, int], Dict[str, Any]]:
     """Tolerant loader for the per-pair resume sidecar.
 
@@ -1387,8 +1832,18 @@ def _load_synthesis_pairs_checkpoint(
             try:
                 obj = json.loads(line)
             except json.JSONDecodeError:
+                if expected_fresh_start_id is not None:
+                    raise RuntimeError(
+                        "pair checkpoint contains a malformed row in "
+                        "fresh-start mode"
+                    )
                 continue
             if obj.get("schema_version") != _SYNTHESIS_CHECKPOINT_SCHEMA_VERSION:
+                if expected_fresh_start_id is not None:
+                    raise RuntimeError(
+                        "pair checkpoint contains an incompatible row in "
+                        "fresh-start mode"
+                    )
                 logger.warning(
                     "Synthesis checkpoint schema_version mismatch (expected %r, "
                     "got %r) — skipping entry",
@@ -1396,6 +1851,32 @@ def _load_synthesis_pairs_checkpoint(
                     obj.get("schema_version"),
                 )
                 continue
+            if expected_fresh_start_id is not None and (
+                obj.get("fresh_start_id") != expected_fresh_start_id
+                or obj.get("fresh_start_marker_digest") != expected_marker_digest
+            ):
+                raise RuntimeError(
+                    "pair checkpoint fresh-start identity mismatch; stale or "
+                    "copied dispositions cannot be replayed"
+                )
+            if (
+                expected_holdout_identity is not None
+                and obj.get("synthesis_holdout_identity")
+                != dict(expected_holdout_identity)
+            ):
+                raise RuntimeError(
+                    "pair checkpoint holdout identity mismatch; stale or "
+                    "copied dispositions cannot be replayed"
+                )
+            if (
+                expected_run_contract_sha256 is not None
+                and obj.get("synthesis_run_contract_sha256")
+                != expected_run_contract_sha256
+            ):
+                raise RuntimeError(
+                    "pair checkpoint synthesis run contract mismatch; "
+                    "mixed-version dispositions cannot be replayed"
+                )
             chunk_id = obj.get("chunk_id")
             kind = obj.get("kind")
             variant = obj.get("variant_index")
@@ -1404,7 +1885,13 @@ def _load_synthesis_pairs_checkpoint(
                     variant_int = int(variant or 0)
                 except (TypeError, ValueError):
                     continue
-                cache[(str(chunk_id), str(kind), variant_int)] = obj
+                key = (str(chunk_id), str(kind), variant_int)
+                if key in cache and expected_run_contract_sha256 is not None:
+                    raise RuntimeError(
+                        "pair checkpoint contains duplicate terminal semantic "
+                        f"key {key!r}"
+                    )
+                cache[key] = obj
     return cache
 
 
@@ -1414,16 +1901,26 @@ def _append_synthesis_pairs_checkpoint(
     chunk_id: str,
     kind: str,
     variant_index: int,
-    pair: Dict[str, Any],
+    pair: Optional[Dict[str, Any]],
     provider: str,
     seed: Optional[int] = None,
+    disposition: str = "accepted",
+    reason: Optional[str] = None,
+    contract_fingerprint: Optional[str] = None,
+    rejection_evidence: Optional[Mapping[str, Any]] = None,
 ) -> None:
-    """Append one accepted pair to the resume sidecar with immediate flush.
+    """Append one terminal pair disposition with immediate flush.
 
     Always a no-op when ``fh`` is None (resume cache disabled). Schema
     version is pinned by :data:`_SYNTHESIS_CHECKPOINT_SCHEMA_VERSION`;
     bumping it loudly invalidates pre-bump checkpoints via the
     ``logger.warning`` path in :func:`_load_synthesis_pairs_checkpoint`.
+
+    ``accepted`` records retain the emitted pair for replay. ``rejected``
+    records are generated candidates that failed a quality validator.
+    ``ineligible`` records are deterministic pre-dispatch exclusions and are
+    deliberately counted separately. Legacy v1 records without
+    ``disposition`` are interpreted as accepted by callers.
     """
     if fh is None:
         return
@@ -1435,8 +1932,939 @@ def _append_synthesis_pairs_checkpoint(
         "pair": pair,
         "provider": provider,
         "seed": seed,
+        "disposition": disposition,
+        "reason": reason,
+        "contract_fingerprint": contract_fingerprint,
     }
-    _utils_append_jsonl(fh, record, sort_keys=False)
+    fresh_start_id = getattr(fh, "_fresh_start_id", None)
+    if fresh_start_id is not None:
+        record["fresh_start_id"] = fresh_start_id
+        record["fresh_start_marker_digest"] = getattr(
+            fh, "_fresh_start_marker_digest", None,
+        )
+    run_contract_sha256 = getattr(fh, "_synthesis_run_contract_sha256", None)
+    if run_contract_sha256 is not None:
+        record["synthesis_run_contract_sha256"] = run_contract_sha256
+    component_manifest_sha256 = getattr(
+        fh, "_synthesis_contract_components_sha256", None,
+    )
+    if component_manifest_sha256 is not None:
+        record["synthesis_contract_components_sha256"] = (
+            component_manifest_sha256
+        )
+    holdout_identity = getattr(fh, "_synthesis_holdout_identity", None)
+    if holdout_identity is not None:
+        record["synthesis_holdout_identity"] = dict(holdout_identity)
+    if rejection_evidence:
+        record["rejection_evidence"] = dict(rejection_evidence)
+    with _PAIR_CHECKPOINT_LOCK:
+        key = (str(chunk_id), str(kind), int(variant_index))
+        terminal_keys = getattr(fh, "_terminal_semantic_keys", None)
+        if terminal_keys is None:
+            terminal_keys = set()
+            fh._terminal_semantic_keys = terminal_keys
+        if (
+            getattr(fh, "_enforce_terminal_uniqueness", False)
+            and key in terminal_keys
+        ):
+            raise RuntimeError(
+                "refusing duplicate pair terminal semantic key "
+                f"{key!r}"
+            )
+        _utils_append_jsonl(fh, record, sort_keys=False)
+        terminal_keys.add(key)
+
+
+#: Fields projected from a terminal checkpoint record into
+#: ``synthesis_dispositions.jsonl``. Deliberately excludes ``pair`` — a
+#: rejected row has none, and an ineligible row was never generated.
+_DISPOSITION_PROJECTED_FIELDS = (
+    "schema_version",
+    "chunk_id",
+    "kind",
+    "variant_index",
+    "provider",
+    "seed",
+    "disposition",
+    "reason",
+    "contract_fingerprint",
+)
+
+
+def _project_terminal_dispositions(
+    records: Iterable[Mapping[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Project rejected / ineligible checkpoint records into the operator file.
+
+    The checkpoint sidecar is unlinked on a clean exit, so whatever this
+    projection drops is gone for good. It previously dropped
+    ``rejection_evidence``, which is why a rejected pair left only a reason
+    string on disk and an audit of 150 claim-support rejections could
+    hand-adjudicate 14 of them: the per-sentence NLI scores that decided each
+    verdict existed only inside a deleted file.
+
+    ``rejection_evidence`` is carried through when present and OMITTED (not
+    nulled) when absent, so a row that never had one is byte-identical to
+    before and existing readers are unaffected. Bounding the evidence is the
+    producer's job (see
+    ``lib.validators.pair.claim_support.summarize_claim_support_rejection``);
+    this projection copies what it is given.
+    """
+    projected: List[Dict[str, Any]] = []
+    for record in records:
+        if record.get("disposition") not in {"rejected", "ineligible"}:
+            continue
+        row: Dict[str, Any] = {
+            field: record.get(field)
+            for field in _DISPOSITION_PROJECTED_FIELDS
+        }
+        evidence = record.get("rejection_evidence")
+        if evidence:
+            row["rejection_evidence"] = evidence
+        projected.append(row)
+    return projected
+
+
+def _checkpoint_terminal_rejection(
+    fh: Optional[Any],
+    *,
+    chunk_id: str,
+    kind: str,
+    variant_index: int,
+    provider: str,
+    seed: int,
+    reason: Optional[str],
+    contract_fingerprint: str,
+    rejection_evidence: Optional[Mapping[str, Any]] = None,
+    pair: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Persist a deterministic rejection so resume does not pay for it again.
+
+    ``pair`` is ``None`` on every legacy path and whenever reject mining is
+    off, which is the default — the row is then byte-identical to the one this
+    function has always written. When
+    ``Trainforge.synthesis_reject_mining.build_capture_payload`` returns a
+    payload (mining enabled, ``claim_support`` stage, both sides inside the
+    ``preference_pair`` length band) the full rejected completion rides on the
+    existing row instead of being discarded, so a later pass can mine it as a
+    DPO negative. Callers must pass the payload that helper returned, never a
+    raw pair, so the persisted row and the in-memory pool cannot disagree.
+    """
+    _append_synthesis_pairs_checkpoint(
+        fh,
+        chunk_id=chunk_id,
+        kind=kind,
+        variant_index=variant_index,
+        pair=pair,
+        provider=provider,
+        seed=seed,
+        disposition="rejected",
+        reason=str(reason or "unspecified_rejection"),
+        contract_fingerprint=contract_fingerprint,
+        rejection_evidence=rejection_evidence,
+    )
+
+
+def _checkpoint_terminal_ineligible(
+    fh: Optional[Any],
+    *,
+    chunk_id: str,
+    kind: str,
+    variant_index: int,
+    provider: str,
+    seed: int,
+    reason: Optional[str],
+    contract_fingerprint: str,
+) -> None:
+    """Persist a deterministic pre-dispatch exclusion for exact replay."""
+    _append_synthesis_pairs_checkpoint(
+        fh,
+        chunk_id=chunk_id,
+        kind=kind,
+        variant_index=variant_index,
+        pair=None,
+        provider=provider,
+        seed=seed,
+        disposition="ineligible",
+        reason=str(reason or "unspecified_ineligible"),
+        contract_fingerprint=contract_fingerprint,
+    )
+
+
+def _checkpoint_pair_matches_focus(
+    pair: Any,
+    focused_chunk: Dict[str, Any],
+) -> bool:
+    """Return whether an accepted cache record matches current LO scoping."""
+    if not isinstance(pair, dict):
+        return False
+    focus_active = any(
+        key in focused_chunk
+        for key in (
+            "synthesis_focus_objective",
+            "synthesis_focus_skip_reason",
+            "synthesis_focus_primary_ref",
+        )
+    )
+    if not focus_active:
+        return True
+    # Legacy v1 accepted records predate mandatory LO audit fields. Preserve
+    # their established replay contract; the live stale records this fix must
+    # invalidate carry an explicit (over-broad) ``lo_refs`` array.
+    if "lo_refs" not in pair:
+        return True
+    pair_refs = [
+        str(ref).strip().lower()
+        for ref in (pair.get("lo_refs") or [])
+        if str(ref).strip()
+    ]
+    focused_refs = [
+        str(ref).strip().lower()
+        for ref in (focused_chunk.get("learning_outcome_refs") or [])
+        if str(ref).strip()
+    ]
+    return bool(pair_refs) and pair_refs == focused_refs
+
+
+def _checkpoint_accepted_matches_contract(
+    record: Mapping[str, Any], current_fingerprint: str
+) -> bool:
+    """Validate modern accepted records while preserving legacy replay.
+
+    Accepted v1 rows written before contract fingerprints existed remain
+    replay-compatible. New accepted rows carry the complete contract identity,
+    so real model/prompt/validator/content changes invalidate them while
+    operational scheduling changes do not.
+    """
+
+    stored = record.get("contract_fingerprint")
+    return stored in (None, "") or (
+        isinstance(stored, str) and stored == current_fingerprint
+    )
+
+
+def _checkpoint_rejection_matches_contract(
+    record: Dict[str, Any], current_fingerprint: str
+) -> bool:
+    """Return True only for a terminal rejection from the exact contract."""
+    return (
+        record.get("disposition") == "rejected"
+        and isinstance(record.get("contract_fingerprint"), str)
+        and record["contract_fingerprint"] == current_fingerprint
+    )
+
+
+def _checkpoint_ineligible_matches_contract(
+    record: Mapping[str, Any], current_fingerprint: str
+) -> bool:
+    return (
+        record.get("disposition") == "ineligible"
+        and isinstance(record.get("contract_fingerprint"), str)
+        and record["contract_fingerprint"] == current_fingerprint
+    )
+
+
+def _resolve_cached_accepted_pair(
+    cached_record: Mapping[str, Any],
+    current_contract: str,
+    focused_chunk: Dict[str, Any],
+    *,
+    cache_key: Any = None,
+    invalidations: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Return the replayable accepted pair, or ``{}`` when it must regenerate.
+
+    FAIL-CLOSED GUARD. A ``rejected`` checkpoint row can now carry a ``pair``
+    (reject mining). The instruction replay branch warns on a rejected row
+    whose contract fingerprint does not match and then FALLS THROUGH to the
+    accepted branch, where :func:`_checkpoint_accepted_matches_contract`
+    returns True for a legacy ``None``/``""`` fingerprint. Before capture that
+    degraded harmlessly to ``{}`` because a rejected row's ``pair`` was always
+    ``null``; the moment rejected rows carry one, a rejected completion would
+    be replayed into ``instruction_records`` AS AN ACCEPTED PAIR. Refuse on
+    disposition first, before any contract check can admit it.
+
+    ``invalidations`` is an optional sink for the reasons the cached entry was
+    refused. The preference branch uses it to clear its ``_pref_cache_hit``
+    flag on exactly the two cases that cleared it before (contract mismatch,
+    focus mismatch) and NOT on a contract-compatible row whose pair is simply
+    absent — which never cleared it.
+    """
+
+    def _invalidate(reason: str) -> None:
+        if invalidations is not None:
+            invalidations.append(reason)
+
+    if cached_record.get("disposition") == "rejected":
+        stored_pair = cached_record.get("pair")
+        if isinstance(stored_pair, Mapping) and stored_pair:
+            # Only reachable with reject-mining capture on. Loud, because a
+            # silent pass here poisons the SFT corpus with rejected text.
+            logger.warning(
+                "Refusing to replay a REJECTED checkpoint pair as accepted "
+                "for %s — regenerating",
+                cache_key,
+            )
+        _invalidate("rejected_disposition")
+        return {}
+    if not _checkpoint_accepted_matches_contract(
+        cached_record, current_contract
+    ):
+        logger.warning(
+            "Synthesis checkpoint accepted contract "
+            "mismatch for %s — regenerating",
+            cache_key,
+        )
+        _invalidate("contract_mismatch")
+        cached_pair: Dict[str, Any] = {}
+    else:
+        cached_pair = cached_record.get("pair") or {}
+    if not _checkpoint_pair_matches_focus(cached_pair, focused_chunk):
+        logger.warning(
+            "Synthesis checkpoint objective focus mismatch "
+            "for %s: cached_lo_refs=%r current_lo_refs=%r "
+            "— regenerating",
+            cache_key,
+            cached_pair.get("lo_refs"),
+            focused_chunk.get("learning_outcome_refs"),
+        )
+        _invalidate("focus_mismatch")
+        cached_pair = {}
+    return cached_pair
+
+
+def _replay_terminal_rejection_stats(
+    stats: SynthesisStats,
+    *,
+    kind: str,
+    reason: str,
+) -> None:
+    """Reconstruct the counters a cached terminal rejection originally hit."""
+    if kind == "instruction":
+        stats.instruction_pairs_rejected += 1
+    else:
+        stats.preference_pairs_rejected += 1
+    stats.rejected_reasons[f"{kind}:{reason}"] = (
+        stats.rejected_reasons.get(f"{kind}:{reason}", 0) + 1
+    )
+
+    stage, separator, leaf_reason = reason.partition(":")
+    if not separator or stage not in {
+        "promotion",
+        "claim_support",
+        "lo_refs",
+        "objective_delivery",
+    }:
+        return
+    stats.candidate_pairs_total += 1
+    stats.dropped_count += 1
+    stats.rejected_promotion_pairs += 1
+    stats.promotion_rejection_reasons[leaf_reason] = (
+        stats.promotion_rejection_reasons.get(leaf_reason, 0) + 1
+    )
+    if stage == "claim_support":
+        stats.claim_support_rejected += 1
+    elif stage == "lo_refs":
+        stats.lo_refs_rejected += 1
+    elif stage == "objective_delivery":
+        stats.objective_delivery_rejected += 1
+
+
+def _record_ineligible_stats(
+    stats: SynthesisStats,
+    *,
+    kind: str,
+    reason: str,
+) -> None:
+    if kind == "instruction":
+        stats.instruction_pairs_ineligible += 1
+    else:
+        stats.preference_pairs_ineligible += 1
+    key = f"{kind}:{reason}"
+    stats.ineligible_reasons[key] = stats.ineligible_reasons.get(key, 0) + 1
+
+
+def _record_ineligible_disposition(
+    *,
+    stats: SynthesisStats,
+    checkpoint_fh: Optional[Any],
+    capture: DecisionCapture,
+    chunk_id: str,
+    kind: str,
+    variant_index: int,
+    provider: str,
+    seed: int,
+    reason: str,
+    contract_fingerprint: str,
+    detail: Optional[str] = None,
+) -> None:
+    _record_ineligible_stats(stats, kind=kind, reason=reason)
+    _checkpoint_terminal_ineligible(
+        checkpoint_fh,
+        chunk_id=chunk_id,
+        kind=kind,
+        variant_index=variant_index,
+        provider=provider,
+        seed=seed,
+        reason=reason,
+        contract_fingerprint=contract_fingerprint,
+    )
+    capture.log_decision(
+        decision_type=(
+            "instruction_pair_synthesis"
+            if kind == "instruction"
+            else "preference_pair_generation"
+        ),
+        decision=(
+            f"Marked {kind} unit for chunk {chunk_id} ineligible before "
+            f"provider dispatch: {reason}."
+        ),
+        rationale=(
+            f"Deterministic per-kind eligibility evaluated chunk_id={chunk_id}, "
+            f"kind={kind}, variant_index={variant_index}, seed={seed}, "
+            f"provider={provider}, reason={reason}"
+            + (f", signals[{detail}]" if detail else "")
+            + "; no model request was made "
+            "and the unit remains outside the quality-rejection denominator."
+        ),
+        context=(
+            f"chunk_id={chunk_id}; kind={kind}; "
+            f"eligibility_reason={reason}"
+            + (f"; eligibility_detail={detail}" if detail else "")
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class _ChunkGenerationBundle:
+    """Immutable generation results for one chunk.
+
+    Worker threads build only this value.  They never touch output JSONL,
+    checkpoints, aggregate counters, or dedupe sets; the source-order loop in
+    :func:`run_synthesis` remains the sole writer for all of that state.
+    ``None`` means the corresponding unit has a valid resume-checkpoint
+    disposition and therefore required no provider call.
+    """
+
+    instruction_results: Tuple[Optional[Any], ...]
+    preference_result: Optional[Any]
+    instruction_ineligible_reasons: Tuple[Optional[str], ...]
+    preference_ineligible_reason: Optional[str]
+    provider_results: int
+    cached_replays: int
+    fingerprint: str
+    errors: Tuple["_GenerationError", ...] = ()
+    transient_attempts: int = 0
+    recovered_units: int = 0
+    exhausted_units: int = 0
+    fatal_units: int = 0
+
+
+@dataclass(frozen=True)
+class _GenerationError:
+    chunk_id: str
+    kind: str
+    variant_index: int
+    attempt: int
+    transient: bool
+    error_type: str
+    message: str
+
+
+@dataclass(frozen=True)
+class _GenerationUnitOutcome:
+    result: Optional[Any]
+    provider_results: int = 0
+    cached_replays: int = 0
+    error: Optional[_GenerationError] = None
+    transient_attempts: int = 0
+    recovered_units: int = 0
+    exhausted_units: int = 0
+    fatal_units: int = 0
+
+
+def _pause_for_failed_seat_recovery(
+    recovery_coordinator: Any,
+    exc: BaseException,
+) -> NoReturn:
+    """Pause loudly after the one bounded infrastructure window is exhausted."""
+
+    from lib.generation.stop_control import (
+        GracefulStopRequested,
+        request_stop,
+    )
+
+    run_id = getattr(recovery_coordinator, "run_id", None)
+    sentinel = (
+        request_stop(
+            run_id,
+            scope="run",
+            reason="seat_unhealthy",
+            source="synthesis_recovery",
+        )
+        if run_id
+        else None
+    )
+    raise GracefulStopRequested(
+        "training_synthesis.seat_recovery",
+        0,
+        sentinel,
+    ) from exc
+
+
+def _is_transient_generation_error(exc: BaseException) -> bool:
+    if isinstance(exc, (TimeoutError, ConnectionError)):
+        return True
+    if not isinstance(exc, SynthesisProviderError):
+        return False
+    code = str(getattr(exc, "code", "") or "").lower()
+    return (
+        code in {
+            "429",
+            "max_retries_exceeded",
+            "malformed_response",
+        }
+        or (code.isdigit() and 500 <= int(code) <= 599)
+    )
+
+
+def _deserialize_generation_result(kind: str, payload: Mapping[str, Any]) -> Any:
+    if kind == "instruction":
+        from Trainforge.generators.instruction_factory import (
+            InstructionSynthesisResult,
+        )
+        return InstructionSynthesisResult(**dict(payload))
+    from Trainforge.generators.preference_factory import PreferenceSynthesisResult
+    return PreferenceSynthesisResult(**dict(payload))
+
+
+def _run_generation_unit(
+    *,
+    chunk_id: str,
+    kind: str,
+    variant_index: int,
+    fingerprint: str,
+    generation_cache: Dict[Tuple[str, str, int], Dict[str, Any]],
+    journal: GenerationJournal,
+    call: Callable[[], Any],
+    recovery_coordinator: Optional[Any] = None,
+) -> _GenerationUnitOutcome:
+    """Replay or execute one provider unit and durably record its outcome."""
+
+    key = (chunk_id, kind, variant_index)
+    prior = generation_cache.get(key)
+    prior_attempt = int((prior or {}).get("attempt", 0) or 0)
+    if (
+        prior
+        and prior.get("fingerprint") == fingerprint
+        and prior.get("disposition") == "success"
+        and isinstance(prior.get("result"), dict)
+    ):
+        return _GenerationUnitOutcome(
+            result=_deserialize_generation_result(kind, prior["result"]),
+            cached_replays=1,
+        )
+    attempt = (
+        prior_attempt + 1
+        if prior and prior.get("fingerprint") == fingerprint
+        else 1
+    )
+    if (
+        prior
+        and prior.get("fingerprint") == fingerprint
+        and prior.get("disposition") == "fatal"
+    ):
+        error = _GenerationError(
+            chunk_id, kind, variant_index, attempt, False,
+            str(prior.get("error_type") or "FatalGenerationError"),
+            str(prior.get("message") or "fatal generation error"),
+        )
+        return _GenerationUnitOutcome(result=None, error=error)
+    try:
+        result = call()
+    except Exception as exc:
+        recovery_eligible = False
+        if recovery_coordinator is not None:
+            from Trainforge.seat_recovery import (
+                eligible_engine_transport_failure,
+            )
+            recovery_eligible = eligible_engine_transport_failure(exc)
+        if recovery_eligible and recovery_coordinator.recover(
+            exc,
+            incident_context={
+                "workflow_phase": "training_synthesis",
+                "task_id": f"{chunk_id}:{kind}:{variant_index}",
+                "chunk_id": chunk_id,
+                "kind": kind,
+                "variant_index": variant_index,
+                "fingerprint": fingerprint,
+            },
+        ):
+            try:
+                result = call()
+            except Exception as retry_exc:
+                from Trainforge.seat_recovery import (
+                    eligible_engine_transport_failure,
+                )
+                if eligible_engine_transport_failure(retry_exc):
+                    _pause_for_failed_seat_recovery(
+                        recovery_coordinator,
+                        retry_exc,
+                    )
+                exc = retry_exc
+            else:
+                journal.append({
+                    "chunk_id": chunk_id,
+                    "kind": kind,
+                    "variant_index": variant_index,
+                    "fingerprint": fingerprint,
+                    "attempt": attempt,
+                    "disposition": "success",
+                    "result": asdict(result),
+                    "recovered_engine_incident": (
+                        recovery_coordinator.recovery_id
+                    ),
+                })
+                return _GenerationUnitOutcome(
+                    result=result,
+                    provider_results=1,
+                    recovered_units=1,
+                )
+        elif recovery_eligible:
+            # A confirmed dead seat that could not be recovered is
+            # infrastructure-unavailable, not bad content. Pause the run at
+            # this durable unit boundary so retries cannot burn the semantic
+            # three-attempt terminal lineage against the same dead engine.
+            _pause_for_failed_seat_recovery(recovery_coordinator, exc)
+        was_transient = _is_transient_generation_error(exc)
+        transient = was_transient
+        if transient and attempt >= MAX_TRANSIENT_RESUME_ATTEMPTS:
+            transient = False
+        disposition = "transient" if transient else "fatal"
+        row = {
+            "chunk_id": chunk_id,
+            "kind": kind,
+            "variant_index": variant_index,
+            "fingerprint": fingerprint,
+            "attempt": attempt,
+            "disposition": disposition,
+            "was_transient": was_transient,
+            "error_type": type(exc).__name__,
+            "message": str(exc)[:1000],
+        }
+        error_code = str(getattr(exc, "code", "") or "").strip()
+        if error_code:
+            row["error_code"] = error_code
+        if error_code in {
+            "output_truncated",
+            "staged_output_truncated",
+            "staged_context_window_exceeded",
+            "field_clamp_truncation",
+        }:
+            row["truncation_kind"] = error_code
+        journal.append(row)
+        error = _GenerationError(
+            chunk_id, kind, variant_index, attempt, transient,
+            type(exc).__name__, str(exc)
+        )
+        return _GenerationUnitOutcome(
+            result=None,
+            provider_results=1,
+            error=error,
+            transient_attempts=1,
+            exhausted_units=int(
+                was_transient
+                and not transient
+                and attempt >= MAX_TRANSIENT_RESUME_ATTEMPTS
+            ),
+            fatal_units=int(not transient),
+        )
+    row = {
+        "chunk_id": chunk_id,
+        "kind": kind,
+        "variant_index": variant_index,
+        "fingerprint": fingerprint,
+        "attempt": attempt,
+        "disposition": "success",
+        "result": asdict(result),
+    }
+    journal.append(row)
+    return _GenerationUnitOutcome(
+        result=result,
+        provider_results=1,
+        recovered_units=int(
+            bool(prior)
+            and prior.get("fingerprint") == fingerprint
+            and prior.get("disposition") == "transient"
+        ),
+    )
+
+
+def _call_with_seat_recovery(
+    call: Callable[[], Any],
+    *,
+    recovery_coordinator: Optional[Any],
+    incident_context: Optional[Mapping[str, Any]] = None,
+) -> Any:
+    """Run one sequential provider call with infrastructure-only recovery.
+
+    The healthy and non-engine-failure paths are exactly one direct call.
+    Exhausted timeout/5xx failures may consume the coordinator's single cold
+    recovery window, then retry the same semantic unit once. Recovery failure
+    pauses the run; it is never converted into content-attempt lineage.
+    """
+
+    try:
+        return call()
+    except Exception as exc:
+        if recovery_coordinator is None:
+            raise
+        from Trainforge.seat_recovery import eligible_engine_transport_failure
+
+        if not eligible_engine_transport_failure(exc):
+            raise
+        if recovery_coordinator.recover(
+            exc,
+            incident_context=dict(incident_context or {}),
+        ):
+            try:
+                return call()
+            except Exception as retry_exc:
+                if eligible_engine_transport_failure(retry_exc):
+                    _pause_for_failed_seat_recovery(
+                        recovery_coordinator,
+                        retry_exc,
+                    )
+                raise
+        _pause_for_failed_seat_recovery(recovery_coordinator, exc)
+
+
+def _checkpoint_skips_generation(
+    checkpoint_cache: Dict[Tuple[str, str, int], Dict[str, Any]],
+    *,
+    chunk_id: str,
+    kind: str,
+    variant_index: int,
+    provider: str,
+    seed: int,
+    focused_chunk: Dict[str, Any],
+    fingerprint_for_seed: Callable[[int, Mapping[str, Any]], str],
+) -> bool:
+    """Return whether a checkpoint disposition avoids a provider call.
+
+    This deliberately mirrors the source-order writer's stricter replay
+    checks.  Cross-pair prompt dedupe remains writer-owned; it can suppress an
+    accepted cached pair without causing a fresh provider call.
+    """
+
+    key = (chunk_id, kind, variant_index)
+    record = checkpoint_cache.get(key)
+    if not record or record.get("provider") != provider:
+        return False
+    if record.get("disposition") == "rejected":
+        return _checkpoint_rejection_matches_contract(
+            record,
+            fingerprint_for_seed(seed, focused_chunk),
+        )
+    if record.get("disposition") == "ineligible":
+        return _checkpoint_ineligible_matches_contract(
+            record,
+            fingerprint_for_seed(seed, focused_chunk),
+        )
+    if not _checkpoint_accepted_matches_contract(
+        record, fingerprint_for_seed(seed, focused_chunk)
+    ):
+        return False
+    pair = record.get("pair")
+    return bool(
+        isinstance(pair, dict)
+        and pair
+        and _checkpoint_pair_matches_focus(pair, focused_chunk)
+    )
+
+
+def _build_chunk_generation_bundle(
+    item: Tuple[int, Dict[str, Any]],
+    *,
+    seed: int,
+    provider: str,
+    instruction_variants: int,
+    paraphrase_provider: Optional[Any],
+    pilot_manifest: Optional[Any],
+    checkpoint_cache: Dict[Tuple[str, str, int], Dict[str, Any]],
+    generation_cache: Dict[Tuple[str, str, int], Dict[str, Any]],
+    generation_journal: GenerationJournal,
+    recovery_coordinator: Optional[Any],
+    fingerprint_for_seed: Callable[[int, Mapping[str, Any]], str],
+    objectives: Mapping[str, Mapping[str, Any]],
+    capture: DecisionCapture,
+) -> _ChunkGenerationBundle:
+    """Generate one chunk's provider-backed candidates without side effects.
+
+    Provider HTTP calls and their mandatory per-call DecisionCapture events may
+    run concurrently.  Artifact mutation and final per-pair capture events are
+    intentionally absent and remain in the ordered caller.
+    """
+
+    idx, chunk = item
+    chunk_text = str(chunk.get("text") or "")
+    preserve_tokens = (
+        pilot_manifest.detect_surface_forms(chunk_text)
+        if pilot_manifest is not None
+        else []
+    )
+    extra_anchor_tokens = sorted(
+        extract_curies(chunk_text) - set(preserve_tokens)
+    )[:6]
+    effective_preserve_tokens = preserve_tokens + extra_anchor_tokens
+    chunk_id = str(chunk.get("id") or chunk.get("chunk_id") or "")
+
+    focused_units: List[Tuple[int, Dict[str, Any]]] = []
+    for variant_index in range(instruction_variants):
+        unit_seed = seed + idx + (variant_index * 100_000)
+        focused_units.append(
+            (
+                unit_seed,
+                _focus_chunk_on_objective(
+                    chunk, seed=unit_seed, objectives=objectives,
+                ),
+            )
+        )
+    preference_seed = seed + idx
+    preference_focused = _focus_chunk_on_objective(
+        chunk, seed=preference_seed, objectives=objectives,
+    )
+    instruction_results: List[Optional[Any]] = []
+    instruction_ineligible_reasons: List[Optional[str]] = []
+    errors: List[_GenerationError] = []
+    provider_results = 0
+    cached_replays = 0
+    transient_attempts = 0
+    recovered_units = 0
+    exhausted_units = 0
+    fatal_units = 0
+    generation_iterator: Optional[Any] = None
+    fingerprints: List[str] = []
+    for variant_index, (pair_seed, focused) in enumerate(focused_units):
+        unit_fingerprint = fingerprint_for_seed(pair_seed, focused)
+        fingerprints.append(unit_fingerprint)
+        eligibility = _pair_eligibility_for_mode(
+            focused, kind="instruction",
+        )
+        if not eligibility.eligible:
+            instruction_results.append(None)
+            instruction_ineligible_reasons.append(eligibility.reason)
+            continue
+        instruction_ineligible_reasons.append(None)
+        if _checkpoint_skips_generation(
+            checkpoint_cache,
+            chunk_id=chunk_id,
+            kind="instruction",
+            variant_index=variant_index,
+            provider=provider,
+            seed=pair_seed,
+            focused_chunk=focused,
+            fingerprint_for_seed=fingerprint_for_seed,
+        ):
+            instruction_results.append(None)
+            continue
+        outcome = _run_generation_unit(
+            chunk_id=chunk_id,
+            kind="instruction",
+            variant_index=variant_index,
+            fingerprint=unit_fingerprint,
+            generation_cache=generation_cache,
+            journal=generation_journal,
+            recovery_coordinator=recovery_coordinator,
+            call=lambda focused=focused, pair_seed=pair_seed: synthesize_instruction_pair(
+                focused,
+                seed=pair_seed,
+                provider=provider,
+                paraphrase_provider=paraphrase_provider,
+                preserve_tokens=effective_preserve_tokens or None,
+                capture=capture,
+            ),
+        )
+        instruction_results.append(outcome.result)
+        provider_results += outcome.provider_results
+        cached_replays += outcome.cached_replays
+        transient_attempts += outcome.transient_attempts
+        recovered_units += outcome.recovered_units
+        exhausted_units += outcome.exhausted_units
+        fatal_units += outcome.fatal_units
+        if outcome.error is not None:
+            errors.append(outcome.error)
+
+    focused = preference_focused
+    preference_fingerprint = fingerprint_for_seed(preference_seed, focused)
+    fingerprints.append(preference_fingerprint)
+    preference_eligibility = _pair_eligibility_for_mode(
+        focused, kind="preference",
+    )
+    preference_ineligible_reason = (
+        None
+        if preference_eligibility.eligible
+        else preference_eligibility.reason
+    )
+    if preference_ineligible_reason is not None:
+        preference_result = None
+    elif _checkpoint_skips_generation(
+        checkpoint_cache,
+        chunk_id=chunk_id,
+        kind="preference",
+        variant_index=0,
+        provider=provider,
+        seed=preference_seed,
+        focused_chunk=focused,
+        fingerprint_for_seed=fingerprint_for_seed,
+    ):
+        preference_result = None
+    else:
+        outcome = _run_generation_unit(
+            chunk_id=chunk_id,
+            kind="preference",
+            variant_index=0,
+            fingerprint=preference_fingerprint,
+            generation_cache=generation_cache,
+            journal=generation_journal,
+            recovery_coordinator=recovery_coordinator,
+            call=lambda: synthesize_preference_pair(
+                focused,
+                seed=preference_seed,
+                provider=provider,
+                paraphrase_provider=paraphrase_provider,
+                preserve_tokens=effective_preserve_tokens or None,
+                capture=capture,
+            ),
+        )
+        preference_result = outcome.result
+        provider_results += outcome.provider_results
+        cached_replays += outcome.cached_replays
+        transient_attempts += outcome.transient_attempts
+        recovered_units += outcome.recovered_units
+        exhausted_units += outcome.exhausted_units
+        fatal_units += outcome.fatal_units
+        if outcome.error is not None:
+            errors.append(outcome.error)
+
+    return _ChunkGenerationBundle(
+        instruction_results=tuple(instruction_results),
+        preference_result=preference_result,
+        instruction_ineligible_reasons=tuple(
+            instruction_ineligible_reasons
+        ),
+        preference_ineligible_reason=preference_ineligible_reason,
+        provider_results=provider_results,
+        cached_replays=cached_replays,
+        fingerprint=hashlib.sha256(
+            "|".join(fingerprints).encode("utf-8")
+        ).hexdigest(),
+        errors=tuple(errors),
+        transient_attempts=transient_attempts,
+        recovered_units=recovered_units,
+        exhausted_units=exhausted_units,
+        fatal_units=fatal_units,
+    )
 
 
 def run_synthesis(
@@ -1479,6 +2907,9 @@ def run_synthesis(
     graph_sft_max_pairs: Optional[int] = None,
     holdout_split_path: Optional[Path] = None,
     staging_dir: Optional[Path] = None,
+    max_concurrent: Optional[int] = None,
+    expected_fresh_start_id: Optional[str] = None,
+    objectives_path: Optional[Path] = None,
 ) -> SynthesisStats:
     """Run the full synthesis stage for one course output directory.
 
@@ -1518,6 +2949,13 @@ def run_synthesis(
             Defaults to ``corpus_dir/training_specs``. The
             ``dataset_config.json`` is always written next to the JSONL
             outputs.
+        max_concurrent: Maximum immutable chunk-generation workers. ``None``
+            resolves ``TRAINFORGE_SYNTHESIS_MAX_CONCURRENT``; unset defaults
+            to the byte-identical sequential path (1). Values 2-48 use a
+            bounded pool while retaining a single source-order writer.
+        objectives_path: Optional authoritative objectives document. ``None``
+            resolves ``TRAINFORGE_SYNTHESIS_OBJECTIVES_PATH`` and otherwise
+            retains the historical corpus-relative objective lookup.
 
     Returns:
         :class:`SynthesisStats` with counts.
@@ -1540,6 +2978,7 @@ def run_synthesis(
     _env_provider = os.environ.get("TRAINFORGE_SYNTHESIS_PROVIDER", "").strip()
     if _env_provider:
         provider = _env_provider
+    resolved_max_concurrent = resolve_synthesis_max_concurrent(max_concurrent)
 
     # the Anthropic-SDK training-pair synthesis path was REMOVED.
     # ``provider="anthropic"`` is UNCONDITIONALLY forbidden here: there is no
@@ -1627,15 +3066,146 @@ def run_synthesis(
             "has no Claude Code session to dispatch to."
         )
 
+    # The staged production path must prove model identity before creating the
+    # output directory, inspecting resume state, opening a cache/sidecar, or
+    # constructing a provider.  This prevents a registry default (notably the
+    # Nano default) from silently serving a run explicitly intended for a
+    # different immutable snapshot.
+    from Trainforge.generators.staged_synthesis_provider import (
+        staged_synthesis_v4_enabled,
+    )
+    preflight_model_id: Optional[str] = None
+    if provider == "local" and staged_synthesis_v4_enabled():
+        preflight_model_id = _preflight_local_staged_model_identity(
+            base_url=os.environ.get(
+                "LOCAL_SYNTHESIS_BASE_URL", "http://localhost:8000/v1"
+            ),
+            local_model=os.environ.get("LOCAL_SYNTHESIS_MODEL", ""),
+            generic_model=os.environ.get("TRAINFORGE_SYNTHESIS_MODEL", ""),
+        )
+
     corpus_dir = Path(corpus_dir)
+    _env_objectives_path = os.environ.get(
+        "TRAINFORGE_SYNTHESIS_OBJECTIVES_PATH", ""
+    ).strip()
+    configured_objectives_path = (
+        Path(objectives_path)
+        if objectives_path is not None
+        else (Path(_env_objectives_path) if _env_objectives_path else None)
+    )
+    if (
+        configured_objectives_path is not None
+        and not configured_objectives_path.is_file()
+    ):
+        raise FileNotFoundError(
+            "Configured synthesis objectives file does not exist or is not "
+            f"a regular file: {configured_objectives_path}"
+        )
+    resolved_objectives_path = (
+        configured_objectives_path
+        if configured_objectives_path is not None
+        else corpus_dir / "objectives.json"
+    )
     # prefer imscc_chunks/, fall back to legacy corpus/ via shim.
     from lib.libv2_storage import resolve_imscc_chunks_path
     chunks_path = resolve_imscc_chunks_path(corpus_dir, "chunks.jsonl")
+    # Only the explicit holdout path moves corpus parsing ahead of output
+    # creation.  With the flag off, preserve the historical ordering exactly:
+    # output paths/sidecars/config preflight happen first and _read_chunks runs
+    # at its original point below.  This also avoids importing/reading any new
+    # contract or objective file on the legacy path.
+    holdout_enabled = str(
+        os.environ.get("TRAINFORGE_SYNTHESIS_HOLDOUT_EXCLUSION", "")
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    preflight_chunks: Optional[List[Dict[str, Any]]] = None
+    holdout_registry: Optional[Any] = None
+    holdout_identity: Optional[Mapping[str, str]] = None
+    if holdout_enabled:
+        from Trainforge.synthesis_holdout import load_synthesis_holdout_registry
+
+        preflight_chunks = _read_chunks(chunks_path)
+        holdout_registry = load_synthesis_holdout_registry(
+            chunks_path=chunks_path,
+            objectives_path=resolved_objectives_path,
+            chunks=preflight_chunks,
+        )
+        if holdout_registry is None:  # pragma: no cover - guarded above
+            raise RuntimeError("holdout enforcement did not produce a registry")
+        holdout_identity = holdout_registry.identity
     if output_dir is not None:
         training_specs_dir = Path(output_dir)
     else:
         training_specs_dir = corpus_dir / "training_specs"
     training_specs_dir.mkdir(parents=True, exist_ok=True)
+
+    # A workflow that requests a fresh synthesis attempt must prove that the
+    # scoped reset completed before this process even inspects stale sidecars,
+    # caches, journals, or checkpoints.  The identity is explicit so legacy
+    # standalone/pilot callers retain their established resume behavior.
+    requested_fresh_start_id = (
+        expected_fresh_start_id
+        or os.environ.get("TRAINFORGE_SYNTHESIS_FRESH_START_ID", "").strip()
+        or None
+    )
+    fresh_start_marker: Optional[Mapping[str, Any]] = None
+    if requested_fresh_start_id is not None:
+        from Trainforge.synthesis_fresh_start import require_fresh_start_marker
+
+        fresh_start_marker = require_fresh_start_marker(
+            training_specs_dir,
+            expected_fresh_start_id=requested_fresh_start_id,
+            expected_holdout_identity=holdout_identity,
+            allow_resume_artifacts=True,
+        )
+    fresh_start_marker_digest = (
+        str(fresh_start_marker.get("archive_manifest_sha256") or "")
+        if fresh_start_marker is not None
+        else None
+    )
+    if requested_fresh_start_id is not None and not fresh_start_marker_digest:
+        raise RuntimeError("fresh synthesis marker digest is required")
+
+    # Validate the measured served window once at orchestration time.  The
+    # provider retains its per-call headroom check, but a missing/garbage
+    # declaration must fail before any synthesis output or resume file opens.
+    from Trainforge.generators.staged_synthesis_provider import (
+        ENV_SERVED_CONTEXT_TOKENS,
+    )
+    production_embedder: Optional[Any] = None
+    if provider == "local" and staged_synthesis_v4_enabled():
+        raw_served_window = os.environ.get(ENV_SERVED_CONTEXT_TOKENS, "").strip()
+        try:
+            served_context_tokens = int(raw_served_window)
+        except (TypeError, ValueError):
+            served_context_tokens = 0
+        if served_context_tokens <= 0:
+            raise RuntimeError(
+                f"{ENV_SERVED_CONTEXT_TOKENS} must be a positive measured "
+                "served model window before staged synthesis starts"
+            )
+        if os.environ.get("TRAINFORGE_REQUIRE_EMBEDDINGS", "").strip().lower() not in {
+            "1", "true", "yes", "on",
+        }:
+            raise RuntimeError(
+                "TRAINFORGE_REQUIRE_EMBEDDINGS=true is required for staged "
+                "production synthesis; Jaccard fallback is not permitted"
+            )
+        from lib.embedding.sentence_embedder import try_load_embedder
+
+        production_embedder = try_load_embedder()
+        if production_embedder is None:
+            raise RuntimeError(
+                "configured synthesis embedder could not be loaded; Jaccard "
+                "fallback is not permitted"
+            )
+        probe = production_embedder.encode(
+            "Ed4All staged synthesis embedding readiness probe."
+        )
+        if probe is None or len(probe) == 0:
+            raise RuntimeError(
+                "configured synthesis embedder returned an empty readiness "
+                "probe; staged synthesis cannot start"
+            )
 
     # smoke modes route JSONL outputs to ``smoke_*`` siblings
     # so a smoke run never clobbers the canonical instruction_pairs.jsonl
@@ -1660,15 +3230,13 @@ def run_synthesis(
     # exception that propagates out) for postmortem.
     instruction_progress = instruction_out.with_suffix(".jsonl.in_progress")
     preference_progress = preference_out.with_suffix(".jsonl.in_progress")
-    for sidecar in (instruction_progress, preference_progress):
-        if sidecar.exists() and sidecar.stat().st_size > 0:
-            logger.warning(
-                "Wave 116: overwriting stale sidecar from a prior killed run: %s",
-                sidecar,
-            )
-    instruction_progress.parent.mkdir(parents=True, exist_ok=True)
-    inst_progress_fh = instruction_progress.open("w", encoding="utf-8")
-    pref_progress_fh = preference_progress.open("w", encoding="utf-8")
+    # Handles remain unopened until the complete run contract is validated.
+    # A mismatched resume must preserve existing sidecar bytes exactly.
+    # Deterministic pre-provider producers may append before the contract
+    # preflight completes. Buffer those bytes in memory so a mismatch leaves
+    # every existing sidecar byte-identical.
+    inst_progress_fh: Optional[Any] = io.StringIO()
+    pref_progress_fh: Optional[Any] = io.StringIO()
 
     # per-pair resume checkpoint sidecar. Hidden dotfile so
     # operators looking at ``training_specs/`` see the canonical artifacts
@@ -1699,21 +3267,58 @@ def run_synthesis(
         checkpoint_path = None
     else:
         checkpoint_path = Path(synthesis_pairs_checkpoint_path)
-    pair_checkpoint_cache = _load_synthesis_pairs_checkpoint(checkpoint_path)
-    if pair_checkpoint_cache:
-        logger.info(
-            "Worker A: resuming from synthesis checkpoint at %s — "
-            "%d cached pair(s) will skip the LLM dispatch.",
-            checkpoint_path,
-            len(pair_checkpoint_cache),
-        )
-    if checkpoint_path is not None:
-        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-        checkpoint_fh: Optional[Any] = checkpoint_path.open(
-            "a", encoding="utf-8",
-        )
-    else:
-        checkpoint_fh = None
+    pair_checkpoint_cache: Dict[
+        Tuple[str, str, int], Dict[str, Any]
+    ] = {}
+    checkpoint_fh: Optional[Any] = (
+        io.StringIO() if checkpoint_path is not None else None
+    )
+    if checkpoint_fh is not None:
+        checkpoint_fh._terminal_semantic_keys = set()
+
+    generation_checkpoint_path: Optional[Path] = (
+        None
+        if checkpoint_path is None or resolved_max_concurrent == 1
+        else training_specs_dir / ".synthesis_generation_checkpoint.jsonl"
+    )
+    generation_checkpoint_cache: Dict[
+        Tuple[str, str, int], Dict[str, Any]
+    ] = {}
+    generation_journal = GenerationJournal(
+        generation_checkpoint_path,
+        fresh_start_id=requested_fresh_start_id,
+        marker_digest=fresh_start_marker_digest,
+        holdout_identity=holdout_identity,
+    )
+    recovery_coordinator: Optional[Any] = None
+    if provider == "local":
+        from lib.vllm_container_lifecycle import resolve_seat_schedule_mode
+
+        if resolve_seat_schedule_mode():
+            from Trainforge.seat_recovery import (
+                SynthesisSeatRecoveryCoordinator,
+            )
+            from lib.paths import get_state_runs_dir
+
+            recovery_run_id = (
+                os.environ.get("ED4ALL_RUN_ID")
+                or os.environ.get("RUN_ID")
+            )
+            recovery_run_dir = (
+                get_state_runs_dir() / str(recovery_run_id)
+                if recovery_run_id
+                else None
+            )
+            recovery_coordinator = SynthesisSeatRecoveryCoordinator(
+                base_url=os.environ.get(
+                    "LOCAL_SYNTHESIS_BASE_URL",
+                    "http://localhost:8000/v1",
+                ),
+                run_dir=recovery_run_dir,
+                marker_path=(
+                    training_specs_dir / ".synthesis_seat_recovery.jsonl"
+                ),
+            )
 
     # load property manifest once. The manifest gates
     # ALL pilot-report writes (in-flight and final). pilot_report_every
@@ -1780,7 +3385,25 @@ def run_synthesis(
                 )
             stratify_dims.append(d_clean)
 
-    chunks = _read_chunks(chunks_path)
+    chunks = (
+        preflight_chunks
+        if preflight_chunks is not None
+        else _read_chunks(chunks_path)
+    )
+    if holdout_registry is not None:
+        # Use copies so the private dispatch sentinel can never leak back into
+        # the canonical corpus object or emitted training records.
+        chunks = [
+            {
+                **chunk,
+                **(
+                    {"_eval_holdout_reserved": True}
+                    if holdout_registry.reserves(chunk)
+                    else {}
+                ),
+            }
+            for chunk in chunks
+        ]
     # smoke modes. "deterministic" forces provider=mock and
     # subsamples to ~20 stratified chunks; "paraphrase" keeps the
     # configured provider but applies the same subsampling. Both write
@@ -1801,7 +3424,33 @@ def run_synthesis(
     stats.prereq_context_tokens = int(prereq_context_tokens)
     instruction_variants = max(1, int(instruction_variants_per_chunk))
     stats.instruction_variants_per_chunk = instruction_variants
-
+    # Reject-mining CAPTURE. Off by default: ``_mine_mode == "off"`` makes
+    # ``build_capture_payload`` return None at every rejection site, so the
+    # persisted row is byte-identical to the legacy one and the pool stays
+    # empty. Resolved once here, never re-read mid-run.
+    _mine_mode = resolve_mine_rejects_mode()
+    _reject_pool = RejectPool()
+    if _mine_mode != MINE_MODE_OFF:
+        logger.warning(
+            "%s=%s: rejected claim_support pairs will retain their full "
+            "completion on the pair checkpoint. This flag participates in the "
+            "synthesis run contract, so flipping it on a PAUSED run raises "
+            "FreshStartError and archives that run — it is a launch-time "
+            "decision only.",
+            MINE_REJECTS_ENV,
+            _mine_mode,
+        )
+        if instruction_variants < 2:
+            logger.warning(
+                "%s is enabled with instruction_variants_per_chunk=%d: mined "
+                "yield is STRUCTURALLY ZERO. One instruction unit per chunk "
+                "means a chunk can never hold both an accepted and a rejected "
+                "instruction unit, so no reject can ever be paired with an "
+                "anchor. Raise --instruction-variants to 2+ or expect an "
+                "empty pool.",
+                MINE_REJECTS_ENV,
+                instruction_variants,
+            )
     # load the pedagogy graph eagerly when curriculum mode
     # is active so a missing graph fails loud instead of silently degrading
     # to chunk-id ordering. The build itself is cheap (sub-1k concept dict
@@ -1839,6 +3488,11 @@ def run_synthesis(
             streaming=True,
         )
         owns_capture = True
+    if requested_fresh_start_id is not None:
+        capture.fresh_start_id = requested_fresh_start_id
+        capture.fresh_start_marker_digest = fresh_start_marker_digest
+    if holdout_identity is not None:
+        capture.synthesis_holdout_identity = holdout_identity
 
     # construct the claude_session paraphrase provider once per
     # run. The factory layer dispatches to whichever object is passed via
@@ -1928,6 +3582,80 @@ def run_synthesis(
             )
             paraphrase_provider = LocalSynthesisProvider(**local_kwargs)
 
+    rejection_contract_model_id = str(
+        getattr(paraphrase_provider, "_model", None)
+        or getattr(paraphrase_provider, "model", None)
+        or ("deterministic-mock-v1" if provider == "mock" else "unknown")
+    )
+    if preflight_model_id is not None and rejection_contract_model_id != preflight_model_id:
+        raise RuntimeError(
+            "staged synthesis provider model identity changed after preflight: "
+            f"verified={preflight_model_id!r}, provider={rejection_contract_model_id!r}"
+        )
+
+    _generation_param_names = (
+        "_temperature",
+        "_max_tokens",
+        "_max_parse_retries",
+        "_reasoning_thinking_off",
+        "_top_p",
+        "_seed",
+        "_template",
+        "_template_kwargs",
+        "_extra_body",
+    )
+    rejection_generation_params = {
+        name.removeprefix("_"): getattr(paraphrase_provider, name)
+        for name in _generation_param_names
+        if hasattr(paraphrase_provider, name)
+    }
+    rejection_endpoint_identity = str(
+        getattr(paraphrase_provider, "_base_url", None)
+        or getattr(paraphrase_provider, "base_url", None)
+        or ""
+    )
+    static_synthesis_contract_components = (
+        _synthesis_static_contract_components(
+            provider=provider,
+            model_id=rejection_contract_model_id,
+            endpoint_identity=rejection_endpoint_identity,
+            generation_params=rejection_generation_params,
+        )
+    )
+
+    def _rejection_fingerprint_for_seed(
+        pair_seed: int,
+        pair_chunk: Mapping[str, Any],
+    ) -> str:
+        contract = _synthesis_rejection_contract_fingerprint(
+            provider=provider,
+            model_id=rejection_contract_model_id,
+            pair_seed=pair_seed,
+            source_chunk=pair_chunk,
+            endpoint_identity=rejection_endpoint_identity,
+            generation_params=rejection_generation_params,
+            static_components=static_synthesis_contract_components,
+        )
+        if requested_fresh_start_id is None:
+            if holdout_identity is None:
+                return contract
+            return hashlib.sha256(
+                (
+                    json.dumps(
+                        holdout_identity, sort_keys=True, separators=(",", ":")
+                    )
+                    + "|"
+                    + contract
+                ).encode("utf-8")
+            ).hexdigest()
+        return hashlib.sha256(
+            (
+                f"{requested_fresh_start_id}|{fresh_start_marker_digest}|"
+                f"{json.dumps(holdout_identity or {}, sort_keys=True, separators=(',', ':'))}|"
+                f"{contract}"
+            ).encode("utf-8")
+        ).hexdigest()
+
     instruction_records: List[Dict[str, Any]] = []
     preference_records: List[Dict[str, Any]] = []
 
@@ -1947,39 +3675,135 @@ def run_synthesis(
     # an exception that propagates past the try-body leaves sidecars
     # in place for postmortem inspection.
     clean_exit = False
+    progress_writer: Optional[SynthesisProgressWriter] = None
+    generation_iterator: Optional[Any] = None
+    prior_run_contract_env = os.environ.get(
+        "TRAINFORGE_SYNTHESIS_RUN_CONTRACT_SHA256"
+    )
+    prior_component_contract_env = os.environ.get(
+        "TRAINFORGE_SYNTHESIS_CONTRACT_COMPONENTS_SHA256"
+    )
+    run_contract_env_set = False
+    provider_results_completed = 0
+    cached_generation_replays = 0
+    transient_attempts = 0
+    recovered_units = 0
+    exhausted_units = 0
+    fatal_units = 0
 
-    try:
-        # Log a stage-start decision so the capture file is never empty even if
-        # the corpus contains zero eligible chunks.
-        capture.log_decision(
-            decision_type="instruction_pair_synthesis",
-            decision=(
-                f"Starting instruction/preference synthesis over {len(chunks)} chunks "
-                f"for course '{course_code}' using provider='{provider}' seed={seed}."
-            ),
-            rationale=(
-                "Synthesizing SFT and DPO training pairs from enriched chunks produces a "
-                "training corpus that is both LO-aligned and bloom-aware. Pairs are "
-                "generated deterministically so a course regenerated later is stable and "
-                "reproducible for downstream fine-tuning."
-            ),
-            alternatives_considered=[
-                {
-                    "option": "emit-only-SFT",
-                    "reason_rejected": "loses misconception signal that DPO encodes",
-                },
-                {
-                    "option": "emit-only-DPO",
-                    "reason_rejected": "SFT pairs still needed for instruction tuning",
-                },
-            ],
+    # Contract preflight precedes the try-body because optional deterministic
+    # generators inside it also emit DecisionCapture events. Every event from
+    # this invocation must carry the same sealed identity.
+    from lib.validators.pair_objective_delivery import (
+        _load_synthesized_objectives_for_w4c,
+    )
+    _objectives_candidates = (
+        (resolved_objectives_path,)
+        if configured_objectives_path is not None
+        else (
+            corpus_dir / "course_planning" / "synthesized_objectives.json",
+            corpus_dir / "objectives.json",
+            corpus_dir / "synthesized_objectives.json",
+            corpus_dir / "01_learning_objectives"
+            / "synthesized_objectives.json",
+            corpus_dir.parent / "01_learning_objectives"
+            / "synthesized_objectives.json",
+            corpus_dir.parent.parent / "01_learning_objectives"
+            / "synthesized_objectives.json",
         )
-
+    )
+    _objectives_path: Optional[Path] = next(
+        (path for path in _objectives_candidates if path.exists()), None,
+    )
+    try:
+        _objectives_map = (
+            _load_synthesized_objectives_for_w4c(_objectives_path)
+            if _objectives_path is not None else {}
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "Failed to load canonical synthesis objectives from %s: %s",
+            _objectives_path,
+            exc,
+        )
+        _objectives_map = {}
+    synthesis_run_contract_sha256 = (
+        _synthesis_rejection_contract_fingerprint(
+            provider=provider,
+            model_id=rejection_contract_model_id,
+            pair_seed=0,
+            source_chunk={
+                "objectives": _objectives_map,
+                "holdout_identity": dict(holdout_identity or {}),
+            },
+            endpoint_identity=rejection_endpoint_identity,
+            generation_params=rejection_generation_params,
+            static_components=static_synthesis_contract_components,
+        )
+    )
+    synthesis_run_contract_components = {
+        **static_synthesis_contract_components,
+        "objectives_sha256": _normalized_sha256(_objectives_map),
+        "holdout_identity_sha256": _normalized_sha256(
+            dict(holdout_identity or {})
+        ),
+        # Recorded AFTER the fingerprint was taken from static components
+        # above, so verdict policy is auditable without being able to
+        # invalidate an accepted pair. See ``_verdict_policy_digest``.
+        "verdict_policy": _verdict_policy_digest(),
+    }
+    synthesis_contract_components_sha256 = _normalized_sha256(
+        synthesis_run_contract_components
+    )
+    if requested_fresh_start_id is not None:
+        from Trainforge.synthesis_fresh_start import (
+            bind_fresh_start_run_contract,
+        )
+        bind_fresh_start_run_contract(
+            training_specs_dir,
+            expected_fresh_start_id=requested_fresh_start_id,
+            run_contract_sha256=synthesis_run_contract_sha256,
+            resume_artifacts_exist=any(
+                path is not None and path.is_file() and path.stat().st_size > 0
+                for path in (checkpoint_path, generation_checkpoint_path)
+            ),
+            contract_components=synthesis_run_contract_components,
+        )
+        from Trainforge.synthesis_contract_guard import register_contract_files
+        register_contract_files({
+            str(PROJECT_ROOT / relative): digest
+            for relative, digest in static_synthesis_contract_components[
+                "files"
+            ].items()
+        })
+    os.environ["TRAINFORGE_SYNTHESIS_RUN_CONTRACT_SHA256"] = (
+        synthesis_run_contract_sha256
+    )
+    os.environ["TRAINFORGE_SYNTHESIS_CONTRACT_COMPONENTS_SHA256"] = (
+        synthesis_contract_components_sha256
+    )
+    run_contract_env_set = True
+    capture.synthesis_run_contract_sha256 = synthesis_run_contract_sha256
+    capture.synthesis_run_contract_components = (
+        synthesis_run_contract_components
+    )
+    capture.synthesis_contract_components_sha256 = (
+        synthesis_contract_components_sha256
+    )
+    try:
         # split chunk traversal into "count eligible" and
         # "iterate emit-order" so stratified sampling can reorder the
         # emit-order without changing the eligibility tally.
         eligible_chunks: List[Tuple[int, Dict[str, Any]]] = []
         for idx, chunk in enumerate(chunks):
+            if chunk.get("_eval_holdout_reserved") is True:
+                # Reserved units deliberately enter the normal two-kind
+                # traversal so each receives an explicit, resumable
+                # eval_holdout_reserved disposition. Pair eligibility rejects
+                # both branches before provider dispatch.
+                stats.chunks_eligible += 1
+                eligible_chunks.append((idx, chunk))
+                continue
             if not _eligible(chunk):
                 stats.chunks_skipped_no_lo += 1
                 continue
@@ -2012,6 +3836,18 @@ def run_synthesis(
                     )
         else:
             iter_chunks = list(eligible_chunks)
+
+        if resolved_max_concurrent > 1:
+            progress_writer = SynthesisProgressWriter(
+                run_id=os.environ.get("ED4ALL_RUN_ID"),
+                total_units=len(iter_chunks),
+                max_concurrent=resolved_max_concurrent,
+                provider=provider,
+                model=rejection_contract_model_id,
+                fresh_start_id=requested_fresh_start_id,
+                marker_digest=fresh_start_marker_digest,
+                holdout_identity=holdout_identity,
+            )
 
         # Effective per-artifact cap. None -> unlimited. We apply it to
         # instruction and preference outputs independently so a request for
@@ -2442,12 +4278,14 @@ def run_synthesis(
         # rejection chain (placeholder residue, unsupported answer,
         # weak distractor, unanswerable stem, source-free generation,
         # low Bloom alignment, generic rationale). Lazy-loads the
-        # embedder + BERT ensemble on first use; degrades gracefully
+        # embedder + pinned zero-shot Bloom classifier on first use; degrades gracefully
         # to Jaccard when [embedding] extras are absent.
         from lib.validators.training_pair_promotion import (
             TrainingPairPromotionValidator,
         )
-        _promotion_validator = TrainingPairPromotionValidator()
+        _promotion_validator = TrainingPairPromotionValidator(
+            embedder=production_embedder,
+        )
 
         # per-pair claim-support (W4.A) + LO-refs (W4.B)
         # filters. Both run AFTER the W2.E promotion validator returns
@@ -2463,6 +4301,7 @@ def run_synthesis(
         # gate-runner surface (phantom-LO is a structural mismatch).
         from lib.validators.pair_claim_support import (
             PairClaimSupportValidator,
+            summarize_claim_support_rejection,
         )
         from lib.validators.pair_lo_refs import (
             PairLearningOutcomeRefsValidator,
@@ -2533,42 +4372,360 @@ def run_synthesis(
         # fresh Courseforge run or replayed from a LibV2 archive.
         from lib.validators.pair_objective_delivery import (
             PairObjectiveDeliveryValidator,
-            _load_synthesized_objectives_for_w4c,
         )
-        # Resolve synthesized_objectives.json from one of three
-        # canonical layouts (priority order):
-        #   1. Courseforge run layout: <corpus_dir>/course_planning/synthesized_objectives.json
-        #   2. LibV2 archive layout: <corpus_dir>/objectives.json
-        #   3. Trainforge sibling layout: <corpus_dir>/synthesized_objectives.json
-        # The helper accepts both schema shapes so the call site does
-        # not need to discriminate. None on missing file → the helper
-        # returns ``{}`` so the validator no-ops every per-pair call
-        # (returns ``"validated"`` with empty ``new_fields``) and
-        # legacy corpora never block.
-        _objectives_candidates = (
-            corpus_dir / "course_planning" / "synthesized_objectives.json",
-            corpus_dir / "objectives.json",
-            corpus_dir / "synthesized_objectives.json",
+        # Staged-v4 makes canonical objective resolution part of the pair
+        # contract and therefore fails closed when it cannot be verified.
+        # The flag-off path retains the historical audit-only behavior so a
+        # bare legacy run is byte-compatible with its prior admission policy.
+        from Trainforge.generators.staged_synthesis_provider import (
+            staged_synthesis_v4_enabled,
         )
-        _objectives_path: Optional[Path] = next(
-            (p for p in _objectives_candidates if p.exists()), None,
+        _objective_delivery_validator = PairObjectiveDeliveryValidator(
+            require_verifiable=staged_synthesis_v4_enabled(),
         )
-        try:
-            _objectives_map = (
-                _load_synthesized_objectives_for_w4c(_objectives_path)
-                if _objectives_path is not None
-                else {}
-            )
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.warning(
-                "Wave 4 W4.C: failed to load synthesized_objectives "
-                "from %s: %s — W4.C will no-op for this run.",
-                _objectives_path, exc,
-            )
-            _objectives_map = {}
-        _objective_delivery_validator = PairObjectiveDeliveryValidator()
 
-        for idx, chunk in iter_chunks:
+        # Seal a fresh synthesis pass to one complete implementation/runtime
+        # contract before the first provider call. The complete objective map
+        # is available only after the W4.C preflight above.
+        synthesis_run_contract_sha256 = (
+            _synthesis_rejection_contract_fingerprint(
+                provider=provider,
+                model_id=rejection_contract_model_id,
+                pair_seed=0,
+                source_chunk={
+                    "objectives": _objectives_map,
+                    "holdout_identity": dict(holdout_identity or {}),
+                },
+                endpoint_identity=rejection_endpoint_identity,
+                generation_params=rejection_generation_params,
+                static_components=static_synthesis_contract_components,
+            )
+        )
+        synthesis_run_contract_components = {
+            **static_synthesis_contract_components,
+            "objectives_sha256": _normalized_sha256(_objectives_map),
+            "holdout_identity_sha256": _normalized_sha256(
+                dict(holdout_identity or {})
+            ),
+            # Same record-not-gate contract as the staged site above.
+            "verdict_policy": _verdict_policy_digest(),
+        }
+        synthesis_contract_components_sha256 = _normalized_sha256(
+            synthesis_run_contract_components
+        )
+        os.environ["TRAINFORGE_SYNTHESIS_CONTRACT_COMPONENTS_SHA256"] = (
+            synthesis_contract_components_sha256
+        )
+        os.environ["TRAINFORGE_SYNTHESIS_RUN_CONTRACT_SHA256"] = (
+            synthesis_run_contract_sha256
+        )
+        run_contract_env_set = True
+        capture.synthesis_run_contract_sha256 = synthesis_run_contract_sha256
+        capture.synthesis_run_contract_components = (
+            synthesis_run_contract_components
+        )
+        capture.synthesis_contract_components_sha256 = (
+            synthesis_contract_components_sha256
+        )
+        capture.log_decision(
+            decision_type="instruction_pair_synthesis",
+            decision=(
+                f"Starting instruction/preference synthesis over {len(chunks)} "
+                f"chunks for course '{course_code}' using provider="
+                f"'{provider}' seed={seed}."
+            ),
+            rationale=(
+                "The sealed synthesis contract now binds model, prompts, "
+                "schemas, validators, objectives, holdout, and implementation "
+                f"components before dispatch; contract="
+                f"{synthesis_run_contract_sha256}."
+            ),
+            alternatives_considered=[
+                {
+                    "option": "resume-with-unsealed-contract",
+                    "reason_rejected": (
+                        "could mix provider implementations across checkpoints"
+                    ),
+                },
+            ],
+        )
+        if requested_fresh_start_id is not None:
+            from Trainforge.synthesis_contract_guard import (
+                register_contract_files,
+            )
+            register_contract_files({
+                str(PROJECT_ROOT / relative): digest
+                for relative, digest in static_synthesis_contract_components[
+                    "files"
+                ].items()
+            })
+        if requested_fresh_start_id is not None:
+            from Trainforge.synthesis_fresh_start import (
+                bind_fresh_start_run_contract,
+            )
+
+            resume_artifacts_exist = any(
+                path is not None and path.is_file() and path.stat().st_size > 0
+                for path in (checkpoint_path, generation_checkpoint_path)
+            )
+            bind_fresh_start_run_contract(
+                training_specs_dir,
+                expected_fresh_start_id=requested_fresh_start_id,
+                run_contract_sha256=synthesis_run_contract_sha256,
+                resume_artifacts_exist=resume_artifacts_exist,
+                contract_components=synthesis_run_contract_components,
+            )
+            # Any absent/mixed row fails before worker construction/dispatch.
+        pair_checkpoint_cache = _load_synthesis_pairs_checkpoint(
+            checkpoint_path,
+            expected_fresh_start_id=requested_fresh_start_id,
+            expected_marker_digest=fresh_start_marker_digest,
+            expected_holdout_identity=holdout_identity,
+            expected_run_contract_sha256=(
+                synthesis_run_contract_sha256
+                if requested_fresh_start_id is not None else None
+            ),
+        )
+        generation_checkpoint_cache = load_generation_journal(
+            generation_checkpoint_path,
+            expected_fresh_start_id=requested_fresh_start_id,
+            expected_marker_digest=fresh_start_marker_digest,
+            expected_holdout_identity=holdout_identity,
+            expected_run_contract_sha256=(
+                synthesis_run_contract_sha256
+                if requested_fresh_start_id is not None else None
+            ),
+        )
+        if pair_checkpoint_cache:
+            logger.info(
+                "Resuming from %s with %d contract-compatible pair(s)",
+                checkpoint_path,
+                len(pair_checkpoint_cache),
+            )
+        if _mine_mode != MINE_MODE_OFF:
+            # Resume completeness: a rejected unit is SKIPPED on resume, never
+            # regenerated, so the prior run's rejected rows are the only place
+            # those candidates exist. Seeding from the already-identity-checked
+            # cache is what makes a killed-and-resumed run's pool identical to
+            # an uninterrupted one's — and a partial pool is a biased pool.
+            _seeded = _reject_pool.seed_from_checkpoint_cache(
+                pair_checkpoint_cache
+            )
+            if _seeded:
+                logger.info(
+                    "Reject mining: seeded %d mineable rejection(s) from the "
+                    "resume checkpoint",
+                    _seeded,
+                )
+
+        # No mutable resume/output file is opened until every identity and
+        # contract check above has succeeded.
+        for sidecar in (instruction_progress, preference_progress):
+            if sidecar.exists() and sidecar.stat().st_size > 0:
+                logger.warning("Overwriting resumable sidecar: %s", sidecar)
+        instruction_progress.parent.mkdir(parents=True, exist_ok=True)
+        buffered_instruction = inst_progress_fh.getvalue()
+        buffered_preference = pref_progress_fh.getvalue()
+        inst_progress_fh = instruction_progress.open("w", encoding="utf-8")
+        pref_progress_fh = preference_progress.open("w", encoding="utf-8")
+        if buffered_instruction:
+            inst_progress_fh.write(buffered_instruction)
+            inst_progress_fh.flush()
+        if buffered_preference:
+            pref_progress_fh.write(buffered_preference)
+            pref_progress_fh.flush()
+        if checkpoint_path is not None:
+            checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+            buffered_checkpoint = checkpoint_fh.getvalue()
+            checkpoint_fh = checkpoint_path.open("a", encoding="utf-8")
+            checkpoint_fh._terminal_semantic_keys = set(
+                pair_checkpoint_cache
+            )
+            checkpoint_fh._enforce_terminal_uniqueness = (
+                requested_fresh_start_id is not None
+            )
+            if buffered_checkpoint:
+                for buffered_line in buffered_checkpoint.splitlines():
+                    buffered_record = json.loads(buffered_line)
+                    if requested_fresh_start_id is not None:
+                        buffered_record["fresh_start_id"] = (
+                            requested_fresh_start_id
+                        )
+                        buffered_record["fresh_start_marker_digest"] = (
+                            fresh_start_marker_digest
+                        )
+                        buffered_record[
+                            "synthesis_run_contract_sha256"
+                        ] = synthesis_run_contract_sha256
+                        buffered_record[
+                            "synthesis_contract_components_sha256"
+                        ] = synthesis_contract_components_sha256
+                    if holdout_identity is not None:
+                        buffered_record["synthesis_holdout_identity"] = dict(
+                            holdout_identity
+                        )
+                    checkpoint_fh.write(
+                        json.dumps(buffered_record, separators=(",", ":"))
+                        + "\n"
+                    )
+                checkpoint_fh.flush()
+            if requested_fresh_start_id is not None:
+                checkpoint_fh._fresh_start_id = requested_fresh_start_id
+                checkpoint_fh._fresh_start_marker_digest = (
+                    fresh_start_marker_digest
+                )
+                checkpoint_fh._synthesis_run_contract_sha256 = (
+                    synthesis_run_contract_sha256
+                )
+                checkpoint_fh._synthesis_contract_components_sha256 = (
+                    synthesis_contract_components_sha256
+                )
+            if holdout_identity is not None:
+                checkpoint_fh._synthesis_holdout_identity = holdout_identity
+        generation_journal.run_contract_sha256 = (
+            synthesis_run_contract_sha256
+            if requested_fresh_start_id is not None else None
+        )
+        generation_journal.component_manifest_sha256 = (
+            synthesis_contract_components_sha256
+            if requested_fresh_start_id is not None else None
+        )
+
+        def _assert_live_synthesis_contract() -> None:
+            if requested_fresh_start_id is None:
+                return
+            live = _synthesis_static_contract_components(
+                provider=provider,
+                model_id=rejection_contract_model_id,
+                endpoint_identity=rejection_endpoint_identity,
+                generation_params=rejection_generation_params,
+            )
+            if live != static_synthesis_contract_components:
+                changed = sorted(
+                    key for key in set(live) | set(
+                        static_synthesis_contract_components
+                    )
+                    if live.get(key)
+                    != static_synthesis_contract_components.get(key)
+                )
+                raise RuntimeError(
+                    "synthesis implementation/runtime contract drifted during "
+                    "the run; checkpoint preserved and provider dispatch "
+                    f"blocked; changed components: {', '.join(changed)}"
+                )
+
+        def _build_checked_generation_bundle(
+            item: Tuple[int, Dict[str, Any]],
+        ) -> _ChunkGenerationBundle:
+            _assert_live_synthesis_contract()
+            return _build_chunk_generation_bundle(
+                item,
+                seed=seed,
+                provider=provider,
+                instruction_variants=instruction_variants,
+                paraphrase_provider=paraphrase_provider,
+                pilot_manifest=pilot_manifest,
+                checkpoint_cache=pair_checkpoint_cache,
+                generation_cache=generation_checkpoint_cache,
+                generation_journal=generation_journal,
+                recovery_coordinator=recovery_coordinator,
+                fingerprint_for_seed=_rejection_fingerprint_for_seed,
+                objectives=_objectives_map,
+                capture=capture,
+            )
+
+        if resolved_max_concurrent > 1 and provider == "claude_session":
+            raise ValueError(
+                "Concurrent training synthesis is not supported for "
+                "provider='claude_session'; its session dispatch budget and "
+                "mailbox ordering require max_concurrent=1."
+            )
+        if resolved_max_concurrent > 1:
+            logger.info(
+                "training_synthesis: bounded concurrent generation enabled "
+                "(max_concurrent=%d, queue_capacity=%d, ordered_writer=1)",
+                resolved_max_concurrent,
+                resolved_max_concurrent,
+            )
+
+        generation_map = BoundedOrderedMap(
+            iter_chunks,
+            (
+                _build_checked_generation_bundle
+                if resolved_max_concurrent > 1
+                else (lambda _item: _ChunkGenerationBundle(
+                    instruction_results=tuple(
+                        None for _ in range(instruction_variants)
+                    ),
+                    preference_result=None,
+                    instruction_ineligible_reasons=tuple(
+                        None for _ in range(instruction_variants)
+                    ),
+                    preference_ineligible_reason=None,
+                    provider_results=0,
+                    cached_replays=0,
+                    fingerprint="",
+                ))
+            ),
+            max_concurrent=resolved_max_concurrent,
+            stop_requested=(
+                stop_control.stop_requested
+                if resolved_max_concurrent > 1
+                else None
+            ),
+        )
+
+        generation_iterator = iter(generation_map)
+        for ordered_generation in generation_iterator:
+            _assert_live_synthesis_contract()
+            idx, chunk = ordered_generation.item
+            generation_bundle = ordered_generation.value
+            provider_results_completed += generation_bundle.provider_results
+            cached_generation_replays += generation_bundle.cached_replays
+            transient_attempts += generation_bundle.transient_attempts
+            recovered_units += generation_bundle.recovered_units
+            exhausted_units += generation_bundle.exhausted_units
+            fatal_units += generation_bundle.fatal_units
+            if generation_bundle.errors:
+                first_error = generation_bundle.errors[0]
+                if progress_writer is not None:
+                    active, queued, in_flight = generation_map.metrics_snapshot()
+                    journal_counts = summarize_generation_journal(
+                        generation_checkpoint_path
+                    )
+                    progress_writer.update(
+                        transient_count=sum(
+                            error.transient
+                            for error in generation_bundle.errors
+                        ),
+                        provider_results=journal_counts["provider_results"],
+                        cached_replays=cached_generation_replays,
+                        transient_attempts=journal_counts["transient_attempts"],
+                        recovered_units=journal_counts["recovered_units"],
+                        exhausted_units=journal_counts["exhausted_units"],
+                        fatal_units=journal_counts["fatal_units"],
+                        active_workers=active,
+                        queued_units=queued,
+                        in_flight=in_flight,
+                        gate_readiness="blocked",
+                        checkpointed=True,
+                    )
+                if first_error.transient:
+                    raise SynthesisProviderError(
+                        "Concurrent synthesis has retriable generation failures; "
+                        f"resume will retry only transient/missing units. First: "
+                        f"{first_error.kind}[{first_error.variant_index}] "
+                        f"chunk={first_error.chunk_id} attempt={first_error.attempt}: "
+                        f"{first_error.message}",
+                        code="concurrent_transient_generation",
+                        chunk_id=first_error.chunk_id,
+                    )
+                raise RuntimeError(
+                    "Concurrent synthesis encountered a deterministic fatal "
+                    f"generation error in {first_error.kind}"
+                    f"[{first_error.variant_index}] chunk={first_error.chunk_id}: "
+                    f"{first_error.error_type}: {first_error.message}"
+                )
             if _budget_exhausted_exc is not None:
                 break
             # Graceful stop ("checkpoint on command"). This is the same
@@ -2596,7 +4753,10 @@ def run_synthesis(
             # loop (NOT an asyncio.gather site), so the direct-raise
             # check_stop pattern applies — the STOP_MARKER return-value
             # discipline is only for gathered coroutines.
-            if stop_control.stop_requested():
+            if (
+                resolved_max_concurrent == 1
+                and stop_control.stop_requested()
+            ):
                 _stop_units = (
                     stats.instruction_pairs_emitted
                     + stats.preference_pairs_emitted
@@ -2612,6 +4772,32 @@ def run_synthesis(
                     stats.preference_pairs_emitted,
                     checkpoint_path,
                 )
+                if progress_writer is not None:
+                    progress_writer.update(
+                        state="paused",
+                        completed_units=chunks_processed_counter,
+                        terminal_units=chunks_processed_counter,
+                        accepted_count=_stop_units,
+                        rejected_count=(
+                            stats.instruction_pairs_rejected
+                            + stats.preference_pairs_rejected
+                        ),
+                        sft_count=stats.instruction_pairs_emitted,
+                        dpo_count=stats.preference_pairs_emitted,
+                        provider_results=provider_results_completed,
+                        cached_replays=cached_generation_replays,
+                        transient_attempts=transient_attempts,
+                        recovered_units=recovered_units,
+                        exhausted_units=exhausted_units,
+                        fatal_units=fatal_units,
+                        active_workers=0,
+                        queued_units=0,
+                        in_flight=0,
+                        stop_requested=True,
+                        gate_readiness="pending",
+                        rejection_reasons=stats.rejected_reasons,
+                        checkpointed=True,
+                    )
                 stop_control.check_stop(
                     "training_synthesis.pair_loop", _stop_units, run_id=None,
                 )
@@ -2666,6 +4852,34 @@ def run_synthesis(
                     stats.capped_at_max_pairs = True
                     break
                 pair_seed = seed + idx + (variant_index * 100_000)
+                pair_chunk = _focus_chunk_on_objective(
+                    chunk, seed=pair_seed, objectives=_objectives_map,
+                )
+                _inst_eligibility = _pair_eligibility_for_mode(
+                    pair_chunk, kind="instruction",
+                )
+                if not _inst_eligibility.eligible:
+                    _ineligible_reason = str(
+                        _inst_eligibility.reason or "unspecified_ineligible"
+                    )
+                    _record_ineligible_disposition(
+                        stats=stats,
+                        checkpoint_fh=checkpoint_fh,
+                        capture=capture,
+                        chunk_id=chunk_id_for_checkpoint,
+                        kind="instruction",
+                        variant_index=variant_index,
+                        provider=provider,
+                        seed=pair_seed,
+                        reason=_ineligible_reason,
+                        detail=getattr(_inst_eligibility, "detail", None),
+                        contract_fingerprint=(
+                            _rejection_fingerprint_for_seed(
+                                pair_seed, pair_chunk,
+                            )
+                        ),
+                    )
+                    continue
                 # per-pair resume-cache check. If the prior
                 # run already emitted this (chunk_id, "instruction",
                 # variant_index) triple, replay the cached pair into
@@ -2686,46 +4900,169 @@ def run_synthesis(
                             _cp_key, cached_provider, provider,
                         )
                     else:
-                        cached_pair = cached_record.get("pair") or {}
-                        cached_prompt = cached_pair.get("prompt", "")
-                        if cached_prompt in emitted_inst_prompts:
-                            # Cross-chunk dedupe still applies on resume
-                            # — skip the cached record, don't re-emit.
-                            stats.instruction_pairs_rejected += 1
-                            stats.rejected_reasons[
-                                "instruction:duplicate_prompt"
-                            ] = (
-                                stats.rejected_reasons.get(
-                                    "instruction:duplicate_prompt", 0,
-                                ) + 1
+                        if (
+                            cached_record.get("disposition") == "rejected"
+                            and not _checkpoint_rejection_matches_contract(
+                                cached_record,
+                                _rejection_fingerprint_for_seed(pair_seed, pair_chunk),
+                            )
+                        ):
+                            logger.warning(
+                                "Synthesis checkpoint rejection contract "
+                                "mismatch for %s — regenerating",
+                                _cp_key,
+                            )
+                        elif cached_record.get("disposition") == "rejected":
+                            cached_reason = str(
+                                cached_record.get("reason")
+                                or "unspecified_rejection"
+                            )
+                            # The cached rejection's per-seed contract
+                            # fingerprint MATCHED the one recomputed for this
+                            # run, so a candidate seeded from it belongs to the
+                            # CURRENT generation contract. This is the only
+                            # place that can decide it -- the fingerprint is a
+                            # function of the seed and the focused chunk, which
+                            # the pure mining module never sees. An unconfirmed
+                            # resume-cache candidate is dropped by
+                            # ``select_mined_pairs`` (funnel ``stale_contract``)
+                            # rather than paired against a current-contract
+                            # ``chosen``. No-op when mining is off (empty pool).
+                            _reject_pool.confirm_contract(_cp_key)
+                            _replay_terminal_rejection_stats(
+                                stats,
+                                kind="instruction",
+                                reason=cached_reason,
                             )
                             continue
-                        instruction_records.append(cached_pair)
-                        emitted_inst_prompts.add(cached_prompt)
-                        stats.instruction_pairs_emitted += 1
-                        # Mirror the cached pair to the .in_progress sidecar
-                        # so ``tail -f`` continues to surface every
-                        # accepted pair, regardless of whether it came
-                        # from the LLM or the resume cache.
-                        _utils_append_jsonl(inst_progress_fh, cached_pair)
-                        continue
+                        current_contract = _rejection_fingerprint_for_seed(
+                            pair_seed, pair_chunk
+                        )
+                        # Fail-closed: a rejected row (which may now carry a
+                        # pair) can reach here when its contract fingerprint
+                        # mismatched above, and must never replay as accepted.
+                        cached_pair = _resolve_cached_accepted_pair(
+                            cached_record,
+                            current_contract,
+                            pair_chunk,
+                            cache_key=_cp_key,
+                        )
+                        if not cached_pair:
+                            pass
+                        else:
+                            cached_prompt = cached_pair.get("prompt", "")
+                            if cached_prompt in emitted_inst_prompts:
+                                # Cross-chunk dedupe still applies on resume
+                                # — skip the cached record, don't re-emit.
+                                stats.instruction_pairs_rejected += 1
+                                stats.rejected_reasons[
+                                    "instruction:duplicate_prompt"
+                                ] = (
+                                    stats.rejected_reasons.get(
+                                        "instruction:duplicate_prompt", 0,
+                                    ) + 1
+                                )
+                                continue
+                            instruction_records.append(cached_pair)
+                            emitted_inst_prompts.add(cached_prompt)
+                            stats.instruction_pairs_emitted += 1
+                            # Mirror the cached pair to the .in_progress sidecar
+                            # so ``tail -f`` continues to surface every
+                            # accepted pair, regardless of whether it came
+                            # from the LLM or the resume cache.
+                            _utils_append_jsonl(inst_progress_fh, cached_pair)
+                            continue
                 try:
-                    inst_result = synthesize_instruction_pair(
-                        chunk,
-                        seed=pair_seed,
-                        provider=provider,
-                        paraphrase_provider=paraphrase_provider,
-                        preserve_tokens=effective_preserve_tokens or None,
-                        capture=capture,
-                    )
+                    if resolved_max_concurrent > 1:
+                        inst_result = generation_bundle.instruction_results[
+                            variant_index
+                        ]
+                        # A None slot means the prefetch planner found a valid
+                        # checkpoint disposition. The source-order cache branch
+                        # above must have consumed it; reaching here would imply
+                        # checkpoint validation drift between planner and writer.
+                        if inst_result is None:
+                            raise RuntimeError(
+                                "Concurrent synthesis checkpoint planner/writer "
+                                f"drift for instruction key {_cp_key}"
+                            )
+                    else:
+                        inst_result = _call_with_seat_recovery(
+                            lambda: synthesize_instruction_pair(
+                                pair_chunk,
+                                seed=pair_seed,
+                                provider=provider,
+                                paraphrase_provider=paraphrase_provider,
+                                preserve_tokens=(
+                                    effective_preserve_tokens or None
+                                ),
+                                capture=capture,
+                            ),
+                            recovery_coordinator=recovery_coordinator,
+                            incident_context={
+                                "workflow_phase": "training_synthesis",
+                                "task_id": (
+                                    f"{chunk_id_for_checkpoint}:"
+                                    f"instruction:{variant_index}"
+                                ),
+                                "chunk_id": chunk_id_for_checkpoint,
+                                "kind": "instruction",
+                                "variant_index": variant_index,
+                                "fingerprint": _rejection_fingerprint_for_seed(
+                                    pair_seed, pair_chunk
+                                ),
+                            },
+                        )
+                        provider_results_completed += 1
                 except _SBE as exc:
                     _budget_exhausted_exc = exc
                     break
-                if inst_result.pair is None:
+                if inst_result.pair is None and inst_result.quality.get(
+                    "ineligible"
+                ):
+                    # Deterministic pre-dispatch exclusion signalled by the
+                    # factory (no derivable topic / no groundable completion
+                    # content). Recorded as ineligible, NOT rejected: nothing
+                    # was generated to judge, and no model call was spent.
+                    _record_ineligible_disposition(
+                        stats=stats,
+                        checkpoint_fh=checkpoint_fh,
+                        capture=capture,
+                        chunk_id=chunk_id_for_checkpoint,
+                        kind="instruction",
+                        variant_index=variant_index,
+                        provider=provider,
+                        seed=pair_seed,
+                        reason=str(
+                            inst_result.quality.get("reason")
+                            or "unspecified_ineligible"
+                        ),
+                        detail=(
+                            f"content_sources="
+                            f"{inst_result.quality.get('content_sources')}"
+                        ),
+                        contract_fingerprint=_rejection_fingerprint_for_seed(
+                            pair_seed, pair_chunk,
+                        ),
+                    )
+                elif inst_result.pair is None:
                     stats.instruction_pairs_rejected += 1
                     reason = inst_result.quality.get("reason") or "gate_failed"
                     stats.rejected_reasons[f"instruction:{reason}"] = (
                         stats.rejected_reasons.get(f"instruction:{reason}", 0) + 1
+                    )
+                    _checkpoint_terminal_rejection(
+                        checkpoint_fh,
+                        chunk_id=chunk_id_for_checkpoint,
+                        kind="instruction",
+                        variant_index=variant_index,
+                        provider=provider,
+                        seed=pair_seed,
+                        contract_fingerprint=_rejection_fingerprint_for_seed(pair_seed, pair_chunk),
+                        reason=reason,
+                        rejection_evidence=inst_result.quality.get(
+                            "rejection_evidence"
+                        ),
                     )
                 else:
                     # Opt-in content_type enforcement against the ChunkType
@@ -2767,19 +5104,20 @@ def run_synthesis(
                         capture.log_decision(
                             decision_type="paraphrase_used_deterministic_draft",
                             decision=(
-                                f"Emitted deterministic draft for "
-                                f"instruction pair on chunk "
+                                f"Used the grounded deterministic instruction "
+                                f"draft for chunk "
                                 f"{inst_result.pair['chunk_id']}; paraphrase "
-                                f"path declined to anchor surface form(s) "
-                                f"{chunk_preserve_tokens}."
+                                f"failed with "
+                                f"{inst_result.pair['paraphrase_fallback_reason']} "
+                                f"while preserving {effective_preserve_tokens}."
                             ),
                             rationale=(
-                                f"Provider '{provider}' did not anchor required "
-                                f"property surface forms within the per-call "
-                                f"floor; the deterministic template draft "
-                                f"preserves property coverage at the cost of "
-                                f"paraphrase variety on chunks containing "
-                                f"{chunk_preserve_tokens}."
+                                f"Provider '{provider}' exhausted its bounded "
+                                f"paraphrase attempts with "
+                                f"{len(effective_preserve_tokens)} nonempty "
+                                "required preservation tokens; the already-"
+                                "grounded draft retains those exact tokens "
+                                "without adding unsupported content."
                             ),
                             context=f"chunk_id={inst_result.pair['chunk_id']}",
                         )
@@ -2794,6 +5132,16 @@ def run_synthesis(
                         stats.instruction_pairs_rejected += 1
                         stats.rejected_reasons["instruction:duplicate_prompt"] = (
                             stats.rejected_reasons.get("instruction:duplicate_prompt", 0) + 1
+                        )
+                        _checkpoint_terminal_rejection(
+                            checkpoint_fh,
+                            chunk_id=chunk_id_for_checkpoint,
+                            kind="instruction",
+                            variant_index=variant_index,
+                            provider=provider,
+                            seed=pair_seed,
+                            contract_fingerprint=_rejection_fingerprint_for_seed(pair_seed, pair_chunk),
+                            reason="duplicate_prompt",
                         )
                         continue
                     capture.log_decision(
@@ -2813,7 +5161,7 @@ def run_synthesis(
                         ),
                     )
                     inst_result.pair["decision_capture_id"] = _last_event_id(capture)
-                    if _attach_source_grounding(inst_result.pair, chunk):
+                    if _attach_source_grounding(inst_result.pair, pair_chunk):
                         stats.source_grounded_pairs += 1
                     # per-pair, post-emit, pre-write filter.
                     # Stamps audit fields on the pair regardless of
@@ -2829,7 +5177,7 @@ def run_synthesis(
                         _promotion_validator.validate_pair(
                             inst_result.pair,
                             kind="instruction",
-                            chunk=chunk,
+                            chunk=pair_chunk,
                             decision_capture=capture,
                         )
                     )
@@ -2852,6 +5200,16 @@ def run_synthesis(
                             stats.promotion_rejection_reasons.get(
                                 _reason_key, 0
                             ) + 1
+                        )
+                        _checkpoint_terminal_rejection(
+                            checkpoint_fh,
+                            chunk_id=chunk_id_for_checkpoint,
+                            kind="instruction",
+                            variant_index=variant_index,
+                            provider=provider,
+                            seed=pair_seed,
+                            contract_fingerprint=_rejection_fingerprint_for_seed(pair_seed, pair_chunk),
+                            reason=f"promotion:{_promo_reason}",
                         )
                         continue
                     inst_result.pair["promotion_status"] = _promo_status
@@ -2886,7 +5244,7 @@ def run_synthesis(
                             _claim_support_validator.validate_pair(
                                 inst_result.pair,
                                 kind="instruction",
-                                chunk=chunk,
+                                chunk=pair_chunk,
                                 chunk_id_to_text_map=(
                                     _claim_support_chunk_text_map
                                 ),
@@ -2919,12 +5277,62 @@ def run_synthesis(
                                 ) + 1
                             )
                             stats.claim_support_rejected += 1
+                            # Reject-mining capture. Returns None (today's
+                            # exact row) unless the flag is on AND both sides
+                            # sit inside the preference_pair length band.
+                            # claim_support is the only stage whose rejects
+                            # carry the per-claim NLI scores a near-miss
+                            # judgement needs.
+                            _reject_reason = f"claim_support:{_claim_reason}"
+                            _reject_fingerprint = (
+                                _rejection_fingerprint_for_seed(
+                                    pair_seed, pair_chunk,
+                                )
+                            )
+                            _reject_payload = build_capture_payload(
+                                inst_result.pair,
+                                reason=_reject_reason,
+                                mode=_mine_mode,
+                                kind="instruction",
+                            )
+                            _reject_pool.record_rejection(
+                                chunk_id=chunk_id_for_checkpoint,
+                                kind="instruction",
+                                variant_index=variant_index,
+                                pair=_reject_payload,
+                                provider=provider,
+                                seed=pair_seed,
+                                reason=_reject_reason,
+                                contract_fingerprint=_reject_fingerprint,
+                            )
+                            _checkpoint_terminal_rejection(
+                                checkpoint_fh,
+                                chunk_id=chunk_id_for_checkpoint,
+                                kind="instruction",
+                                variant_index=variant_index,
+                                provider=provider,
+                                seed=pair_seed,
+                                contract_fingerprint=_reject_fingerprint,
+                                reason=_reject_reason,
+                                pair=_reject_payload,
+                                # Persist the bounded per-sentence NLI verdict.
+                                # Without it a claim_support rejection leaves
+                                # only a reason string, so "was the verifier
+                                # right?" is unanswerable without a lucky
+                                # leftover checkpoint.
+                                rejection_evidence=(
+                                    summarize_claim_support_rejection(
+                                        _claim_fields,
+                                        rejection_reason=_claim_reason,
+                                    )
+                                ),
+                            )
                             continue
                         _lo_status, _lo_reason, _lo_fields = (
                             _lo_refs_validator.validate_pair(
                                 inst_result.pair,
                                 kind="instruction",
-                                chunk=chunk,
+                                chunk=pair_chunk,
                                 decision_capture=capture,
                             )
                         )
@@ -2948,6 +5356,30 @@ def run_synthesis(
                                 ) + 1
                             )
                             stats.lo_refs_rejected += 1
+                            # Routed through the same capture helper for
+                            # uniformity; it returns None for any stage other
+                            # than claim_support, so this row is unchanged. An
+                            # lo_refs reject already PASSED claim_support (its
+                            # prose is grounded) and failed on objective
+                            # binding, which the miner's anchor rule holds
+                            # constant — it would be an off-objective negative.
+                            _reject_payload = build_capture_payload(
+                                inst_result.pair,
+                                reason=f"lo_refs:{_lo_reason}",
+                                mode=_mine_mode,
+                                kind="instruction",
+                            )
+                            _checkpoint_terminal_rejection(
+                                checkpoint_fh,
+                                chunk_id=chunk_id_for_checkpoint,
+                                kind="instruction",
+                                variant_index=variant_index,
+                                provider=provider,
+                                seed=pair_seed,
+                                contract_fingerprint=_rejection_fingerprint_for_seed(pair_seed, pair_chunk),
+                                reason=f"lo_refs:{_lo_reason}",
+                                pair=_reject_payload,
+                            )
                             continue
                         # Per-pair tri-axis
                         # objective-delivery filter runs AFTER W4.B
@@ -2964,7 +5396,7 @@ def run_synthesis(
                             _objective_delivery_validator.validate_pair(
                                 inst_result.pair,
                                 kind="instruction",
-                                chunk=chunk,
+                                chunk=pair_chunk,
                                 objectives=_objectives_map,
                                 decision_capture=capture,
                             )
@@ -2991,6 +5423,26 @@ def run_synthesis(
                                 ) + 1
                             )
                             stats.objective_delivery_rejected += 1
+                            # Same as the lo_refs site: capture returns None
+                            # for this stage (a delivery/metadata failure, not
+                            # a grounding failure), so the row is unchanged.
+                            _reject_payload = build_capture_payload(
+                                inst_result.pair,
+                                reason=f"objective_delivery:{_obj_reason}",
+                                mode=_mine_mode,
+                                kind="instruction",
+                            )
+                            _checkpoint_terminal_rejection(
+                                checkpoint_fh,
+                                chunk_id=chunk_id_for_checkpoint,
+                                kind="instruction",
+                                variant_index=variant_index,
+                                provider=provider,
+                                seed=pair_seed,
+                                contract_fingerprint=_rejection_fingerprint_for_seed(pair_seed, pair_chunk),
+                                reason=f"objective_delivery:{_obj_reason}",
+                                pair=_reject_payload,
+                            )
                             continue
                         # All four validators (W2.E + W4.A + W4.B +
                         # W4.C) passed — surface on both the W2.E
@@ -3026,14 +5478,45 @@ def run_synthesis(
                         pair=inst_result.pair,
                         provider=provider,
                         seed=pair_seed,
+                        contract_fingerprint=_rejection_fingerprint_for_seed(
+                            pair_seed, pair_chunk
+                        ),
                     )
 
             # --- Preference pair ---
             pair_seed = seed + idx
+            pair_chunk = _focus_chunk_on_objective(
+                chunk, seed=pair_seed, objectives=_objectives_map,
+            )
             pref_capped = (
                 per_artifact_cap is not None
                 and stats.preference_pairs_emitted >= per_artifact_cap
             )
+            _pref_eligibility = _pair_eligibility_for_mode(
+                pair_chunk, kind="preference",
+            )
+            _pref_ineligible = (
+                not pref_capped and not _pref_eligibility.eligible
+            )
+            if _pref_ineligible:
+                _ineligible_reason = str(
+                    _pref_eligibility.reason or "unspecified_ineligible"
+                )
+                _record_ineligible_disposition(
+                    stats=stats,
+                    checkpoint_fh=checkpoint_fh,
+                    capture=capture,
+                    chunk_id=chunk_id_for_checkpoint,
+                    kind="preference",
+                    variant_index=0,
+                    provider=provider,
+                    seed=pair_seed,
+                    reason=_ineligible_reason,
+                    detail=getattr(_pref_eligibility, "detail", None),
+                    contract_fingerprint=(
+                        _rejection_fingerprint_for_seed(pair_seed, pair_chunk)
+                    ),
+                )
             # per-pair resume-cache check for the preference
             # branch. Single-variant (only one preference pair per
             # chunk), so the variant_index is always 0.
@@ -3042,6 +5525,7 @@ def run_synthesis(
                 chunk_id_for_checkpoint
                 and _pref_cp_key in pair_checkpoint_cache
                 and not pref_capped
+                and not _pref_ineligible
             )
             if _pref_cache_hit:
                 cached_record = pair_checkpoint_cache[_pref_cp_key]
@@ -3054,24 +5538,68 @@ def run_synthesis(
                     )
                     _pref_cache_hit = False
                 else:
-                    cached_pair = cached_record.get("pair") or {}
-                    cached_prompt = cached_pair.get("prompt", "")
-                    if cached_prompt in emitted_pref_prompts:
-                        stats.preference_pairs_rejected += 1
-                        stats.rejected_reasons[
-                            "preference:duplicate_prompt"
-                        ] = (
-                            stats.rejected_reasons.get(
-                                "preference:duplicate_prompt", 0,
-                            ) + 1
+                    if (
+                        cached_record.get("disposition") == "rejected"
+                        and not _checkpoint_rejection_matches_contract(
+                            cached_record,
+                            _rejection_fingerprint_for_seed(pair_seed, pair_chunk),
+                        )
+                    ):
+                        logger.warning(
+                            "Synthesis checkpoint rejection contract "
+                            "mismatch for %s — regenerating",
+                            _pref_cp_key,
+                        )
+                        _pref_cache_hit = False
+                    elif cached_record.get("disposition") == "rejected":
+                        cached_reason = str(
+                            cached_record.get("reason")
+                            or "unspecified_rejection"
+                        )
+                        _replay_terminal_rejection_stats(
+                            stats,
+                            kind="preference",
+                            reason=cached_reason,
                         )
                     else:
-                        preference_records.append(cached_pair)
-                        emitted_pref_prompts.add(cached_prompt)
-                        stats.preference_pairs_emitted += 1
-                        _utils_append_jsonl(pref_progress_fh, cached_pair)
+                        current_contract = _rejection_fingerprint_for_seed(
+                            pair_seed, pair_chunk
+                        )
+                        _pref_cache_invalidations: List[str] = []
+                        cached_pair = _resolve_cached_accepted_pair(
+                            cached_record,
+                            current_contract,
+                            pair_chunk,
+                            cache_key=_pref_cp_key,
+                            invalidations=_pref_cache_invalidations,
+                        )
+                        if _pref_cache_invalidations:
+                            # Same two conditions that cleared the flag before
+                            # (contract mismatch, focus mismatch). A
+                            # contract-compatible row with no pair records no
+                            # invalidation and leaves the flag alone, as it did.
+                            _pref_cache_hit = False
+                        cached_prompt = cached_pair.get("prompt", "")
+                        if cached_pair and cached_prompt in emitted_pref_prompts:
+                            stats.preference_pairs_rejected += 1
+                            stats.rejected_reasons[
+                                "preference:duplicate_prompt"
+                            ] = (
+                                stats.rejected_reasons.get(
+                                    "preference:duplicate_prompt", 0,
+                                ) + 1
+                            )
+                            cached_pair = {}
+                        if cached_pair:
+                            preference_records.append(cached_pair)
+                            emitted_pref_prompts.add(cached_prompt)
+                            stats.preference_pairs_emitted += 1
+                            _utils_append_jsonl(pref_progress_fh, cached_pair)
             if pref_capped:
                 stats.capped_at_max_pairs = True
+            elif _pref_ineligible:
+                # Deterministic pre-dispatch exclusion recorded above.
+                pass
             elif _pref_cache_hit:
                 # Cache hit handled above — fall through to the
                 # post-pair pilot_report progress block at end of
@@ -3079,39 +5607,106 @@ def run_synthesis(
                 pass
             else:
                 try:
-                    pref_result = synthesize_preference_pair(
-                        chunk,
-                        seed=pair_seed,
-                        provider=provider,
-                        paraphrase_provider=paraphrase_provider,
-                        preserve_tokens=effective_preserve_tokens or None,
-                        capture=capture,
-                    )
+                    if resolved_max_concurrent > 1:
+                        pref_result = generation_bundle.preference_result
+                        if pref_result is None:
+                            raise RuntimeError(
+                                "Concurrent synthesis checkpoint planner/writer "
+                                f"drift for preference key {_pref_cp_key}"
+                            )
+                    else:
+                        pref_result = _call_with_seat_recovery(
+                            lambda: synthesize_preference_pair(
+                                pair_chunk,
+                                seed=pair_seed,
+                                provider=provider,
+                                paraphrase_provider=paraphrase_provider,
+                                preserve_tokens=(
+                                    effective_preserve_tokens or None
+                                ),
+                                capture=capture,
+                            ),
+                            recovery_coordinator=recovery_coordinator,
+                            incident_context={
+                                "workflow_phase": "training_synthesis",
+                                "task_id": (
+                                    f"{chunk_id_for_checkpoint}:preference:0"
+                                ),
+                                "chunk_id": chunk_id_for_checkpoint,
+                                "kind": "preference",
+                                "variant_index": 0,
+                                "fingerprint": _rejection_fingerprint_for_seed(
+                                    pair_seed, pair_chunk
+                                ),
+                            },
+                        )
+                        provider_results_completed += 1
                 except _SBE as exc:
                     _budget_exhausted_exc = exc
                     break
-                if pref_result.pair is None:
+                if pref_result.pair is None and pref_result.quality.get(
+                    "ineligible"
+                ):
+                    _record_ineligible_disposition(
+                        stats=stats,
+                        checkpoint_fh=checkpoint_fh,
+                        capture=capture,
+                        chunk_id=chunk_id_for_checkpoint,
+                        kind="preference",
+                        variant_index=0,
+                        provider=provider,
+                        seed=pair_seed,
+                        reason=str(
+                            pref_result.quality.get("reason")
+                            or "unspecified_ineligible"
+                        ),
+                        detail=(
+                            f"content_sources="
+                            f"{pref_result.quality.get('content_sources')}"
+                        ),
+                        contract_fingerprint=_rejection_fingerprint_for_seed(
+                            pair_seed, pair_chunk,
+                        ),
+                    )
+                elif pref_result.pair is None:
                     stats.preference_pairs_rejected += 1
                     reason = pref_result.quality.get("reason") or "gate_failed"
                     stats.rejected_reasons[f"preference:{reason}"] = (
                         stats.rejected_reasons.get(f"preference:{reason}", 0) + 1
+                    )
+                    _checkpoint_terminal_rejection(
+                        checkpoint_fh,
+                        chunk_id=chunk_id_for_checkpoint,
+                        kind="preference",
+                        variant_index=0,
+                        provider=provider,
+                        seed=pair_seed,
+                        contract_fingerprint=_rejection_fingerprint_for_seed(pair_seed, pair_chunk),
+                        reason=reason,
+                        rejection_evidence=pref_result.quality.get(
+                            "rejection_evidence"
+                        ),
                     )
                 else:
                     if pref_result.pair.get("paraphrase_fallback_reason"):
                         capture.log_decision(
                             decision_type="paraphrase_used_deterministic_draft",
                             decision=(
-                                f"Emitted deterministic draft for "
-                                f"preference pair on chunk "
+                                f"Used the grounded deterministic preference "
+                                f"draft for chunk "
                                 f"{pref_result.pair['chunk_id']}; paraphrase "
-                                f"path declined to anchor surface form(s) "
-                                f"{chunk_preserve_tokens} in chosen field."
+                                f"failed with "
+                                f"{pref_result.pair['paraphrase_fallback_reason']} "
+                                f"while preserving {effective_preserve_tokens} "
+                                "in the chosen field."
                             ),
                             rationale=(
-                                f"Provider '{provider}' did not anchor required "
-                                f"property surface forms in the chosen completion "
-                                f"within the per-call floor; deterministic draft "
-                                f"preserves property coverage."
+                                f"Provider '{provider}' exhausted its bounded "
+                                f"paraphrase attempts with "
+                                f"{len(effective_preserve_tokens)} nonempty "
+                                "required preservation tokens; the already-"
+                                "grounded chosen draft retains those exact "
+                                "tokens without adding unsupported content."
                             ),
                             context=f"chunk_id={pref_result.pair['chunk_id']}",
                         )
@@ -3124,6 +5719,16 @@ def run_synthesis(
                         stats.preference_pairs_rejected += 1
                         stats.rejected_reasons["preference:duplicate_prompt"] = (
                             stats.rejected_reasons.get("preference:duplicate_prompt", 0) + 1
+                        )
+                        _checkpoint_terminal_rejection(
+                            checkpoint_fh,
+                            chunk_id=chunk_id_for_checkpoint,
+                            kind="preference",
+                            variant_index=0,
+                            provider=provider,
+                            seed=pair_seed,
+                            contract_fingerprint=_rejection_fingerprint_for_seed(pair_seed, pair_chunk),
+                            reason="duplicate_prompt",
                         )
                     else:
                         capture.log_decision(
@@ -3138,7 +5743,7 @@ def run_synthesis(
                             context=f"quality={pref_result.quality}",
                         )
                         pref_result.pair["decision_capture_id"] = _last_event_id(capture)
-                        if _attach_source_grounding(pref_result.pair, chunk):
+                        if _attach_source_grounding(pref_result.pair, pair_chunk):
                             stats.source_grounded_pairs += 1
                         # per-pair promotion filter on the
                         # preference branch. Mirrors the instruction
@@ -3157,7 +5762,7 @@ def run_synthesis(
                             _promotion_validator.validate_pair(
                                 pref_result.pair,
                                 kind="preference",
-                                chunk=chunk,
+                                chunk=pair_chunk,
                                 decision_capture=capture,
                             )
                         )
@@ -3183,6 +5788,16 @@ def run_synthesis(
                                 stats.promotion_rejection_reasons.get(
                                     _pref_reason_key, 0
                                 ) + 1
+                            )
+                            _checkpoint_terminal_rejection(
+                                checkpoint_fh,
+                                chunk_id=chunk_id_for_checkpoint,
+                                kind="preference",
+                                variant_index=0,
+                                provider=provider,
+                                seed=pair_seed,
+                                contract_fingerprint=_rejection_fingerprint_for_seed(pair_seed, pair_chunk),
+                                reason=f"promotion:{_pref_promo_reason}",
                             )
                         else:
                             pref_result.pair["promotion_status"] = (
@@ -3212,7 +5827,7 @@ def run_synthesis(
                                     _claim_support_validator.validate_pair(
                                         pref_result.pair,
                                         kind="preference",
-                                        chunk=chunk,
+                                        chunk=pair_chunk,
                                         chunk_id_to_text_map=(
                                             _claim_support_chunk_text_map
                                         ),
@@ -3249,13 +5864,36 @@ def run_synthesis(
                                         ) + 1
                                     )
                                     stats.claim_support_rejected += 1
+                                    _checkpoint_terminal_rejection(
+                                        checkpoint_fh,
+                                        chunk_id=chunk_id_for_checkpoint,
+                                        kind="preference",
+                                        variant_index=0,
+                                        provider=provider,
+                                        seed=pair_seed,
+                                        contract_fingerprint=_rejection_fingerprint_for_seed(pair_seed, pair_chunk),
+                                        reason=(
+                                            "claim_support:"
+                                            f"{_pref_claim_reason}"
+                                        ),
+                                        # Same bounded per-sentence NLI
+                                        # verdict as the instruction branch.
+                                        rejection_evidence=(
+                                            summarize_claim_support_rejection(
+                                                _pref_claim_fields,
+                                                rejection_reason=(
+                                                    _pref_claim_reason
+                                                ),
+                                            )
+                                        ),
+                                    )
                                     _pref_w4_rejected = True
                                 else:
                                     _pref_lo_status, _pref_lo_reason, _pref_lo_fields = (
                                         _lo_refs_validator.validate_pair(
                                             pref_result.pair,
                                             kind="preference",
-                                            chunk=chunk,
+                                            chunk=pair_chunk,
                                             decision_capture=capture,
                                         )
                                     )
@@ -3285,6 +5923,16 @@ def run_synthesis(
                                             ) + 1
                                         )
                                         stats.lo_refs_rejected += 1
+                                        _checkpoint_terminal_rejection(
+                                            checkpoint_fh,
+                                            chunk_id=chunk_id_for_checkpoint,
+                                            kind="preference",
+                                            variant_index=0,
+                                            provider=provider,
+                                            seed=pair_seed,
+                                            contract_fingerprint=_rejection_fingerprint_for_seed(pair_seed, pair_chunk),
+                                            reason=f"lo_refs:{_pref_lo_reason}",
+                                        )
                                         _pref_w4_rejected = True
                                     else:
                                         # Per-pair
@@ -3310,7 +5958,7 @@ def run_synthesis(
                                             _objective_delivery_validator.validate_pair(
                                                 pref_result.pair,
                                                 kind="preference",
-                                                chunk=chunk,
+                                                chunk=pair_chunk,
                                                 objectives=_objectives_map,
                                                 decision_capture=capture,
                                             )
@@ -3341,6 +5989,19 @@ def run_synthesis(
                                                 ) + 1
                                             )
                                             stats.objective_delivery_rejected += 1
+                                            _checkpoint_terminal_rejection(
+                                                checkpoint_fh,
+                                                chunk_id=chunk_id_for_checkpoint,
+                                                kind="preference",
+                                                variant_index=0,
+                                                provider=provider,
+                                                seed=pair_seed,
+                                                contract_fingerprint=_rejection_fingerprint_for_seed(pair_seed, pair_chunk),
+                                                reason=(
+                                                    "objective_delivery:"
+                                                    f"{_pref_obj_reason}"
+                                                ),
+                                            )
                                             _pref_w4_rejected = True
                                         else:
                                             # All four validators
@@ -3383,6 +6044,11 @@ def run_synthesis(
                                     pair=pref_result.pair,
                                     provider=provider,
                                     seed=pair_seed,
+                                    contract_fingerprint=(
+                                        _rejection_fingerprint_for_seed(
+                                            pair_seed, pair_chunk
+                                        )
+                                    ),
                                 )
 
             # every N processed chunks, regenerate the
@@ -3392,6 +6058,41 @@ def run_synthesis(
             # write keeps a concurrent ``cat`` / ``less`` from
             # observing a half-written file.
             chunks_processed_counter += 1
+            if progress_writer is not None:
+                active, queued, in_flight = generation_map.metrics_snapshot()
+                journal_counts = summarize_generation_journal(
+                    generation_checkpoint_path
+                )
+                _accepted = (
+                    stats.instruction_pairs_emitted
+                    + stats.preference_pairs_emitted
+                )
+                _rejected = (
+                    stats.instruction_pairs_rejected
+                    + stats.preference_pairs_rejected
+                )
+                progress_writer.update(
+                    completed_units=chunks_processed_counter,
+                    terminal_units=chunks_processed_counter,
+                    accepted_count=_accepted,
+                    rejected_count=_rejected,
+                    sft_count=stats.instruction_pairs_emitted,
+                    dpo_count=stats.preference_pairs_emitted,
+                    provider_results=journal_counts["provider_results"],
+                    cached_replays=cached_generation_replays,
+                    transient_count=0,
+                    transient_attempts=journal_counts["transient_attempts"],
+                    recovered_units=journal_counts["recovered_units"],
+                    exhausted_units=journal_counts["exhausted_units"],
+                    fatal_units=journal_counts["fatal_units"],
+                    active_workers=active,
+                    queued_units=queued,
+                    in_flight=in_flight,
+                    stop_requested=stop_control.stop_requested(),
+                    gate_readiness="pending",
+                    rejection_reasons=stats.rejected_reasons,
+                    checkpointed=True,
+                )
             if (
                 pilot_manifest is not None
                 and pilot_report_every > 0
@@ -3430,6 +6131,39 @@ def run_synthesis(
                     logger.warning(
                         "Wave 117: pilot_report.md write failed: %s", exc,
                     )
+
+        # Under concurrent generation, a stop request closes the submission
+        # window and drains every already-started unit through this sole
+        # ordered writer before pausing. This bounds stop latency to at most
+        # ``max_concurrent`` chunks while ensuring a successful provider call
+        # is never abandoned and re-paid on resume.
+        if generation_map.stopped_early:
+            _stop_units = (
+                stats.instruction_pairs_emitted
+                + stats.preference_pairs_emitted
+            )
+            logger.warning(
+                "training_synthesis: concurrent stop drained %d submitted "
+                "chunk(s), checkpointed %d pair(s), and submitted no new "
+                "work after the stop boundary; pausing resumably.",
+                generation_map.submitted_count,
+                _stop_units,
+            )
+            if progress_writer is not None:
+                progress_writer.update(
+                    state="paused",
+                    active_workers=0,
+                    queued_units=0,
+                    in_flight=0,
+                    stop_requested=True,
+                    gate_readiness="pending",
+                    checkpointed=True,
+                )
+            stop_control.check_stop(
+                "training_synthesis.concurrent_pair_loop",
+                _stop_units,
+                run_id=None,
+            )
 
         # --- misconception -> DPO pair augmentation --------------------------
         # Emit one DPO pair per editorial (misconception, correction) entry
@@ -3482,6 +6216,65 @@ def run_synthesis(
                     stats.misconception_dpo_pairs_emitted += 1
                     # mirror to .in_progress sidecar.
                     _utils_append_jsonl(pref_progress_fh, pair)
+
+        # --- reject-mined DPO negatives -------------------------------------
+        # Placement is load-bearing: AFTER the misconception block so mined
+        # rows join the same preference buffer, but BEFORE the record sort
+        # (whose key subscripts ``r["chunk_id"]`` unguarded), BEFORE the
+        # mandatory gold-set decontamination, and BEFORE the JSONL write.
+        _mine_funnel: Dict[str, int] = {}
+        _mine_skipped: Optional[str] = None
+        if _mine_mode != MINE_MODE_OFF:
+            if generation_map.stopped_early or _budget_exhausted_exc is not None:
+                # A partial pool is a BIASED pool: an interrupted pass has
+                # rejects only for the chunks it reached, so mining it would
+                # skew the negatives toward the front of the corpus. Skip
+                # loudly rather than emitting a lopsided preference set.
+                _mine_skipped = "incomplete_pass"
+                logger.warning(
+                    "Reject mining skipped (%s): the generation pass did not "
+                    "complete, so the reject pool is partial and a partial "
+                    "pool is a biased pool.",
+                    _mine_skipped,
+                )
+            else:
+                _mine_rows, _mine_funnel_obj = select_mined_pairs(
+                    _reject_pool.candidates(),
+                    instruction_records,
+                    persona=(
+                        pilot_manifest.learner_persona
+                        if pilot_manifest is not None
+                        else _default_learner_persona()
+                    ),
+                    mode=_mine_mode,
+                    capture=capture,
+                    event_id_fn=_last_event_id,
+                    min_support=resolve_min_support(),
+                    min_fail_entailment=resolve_min_fail_entailment(),
+                    max_skeleton_freq=resolve_max_skeleton_freq(),
+                    max_fraction=resolve_max_fraction(),
+                    emitted_pref_prompts=emitted_pref_prompts,
+                )
+                _mine_funnel = _mine_funnel_obj.as_dict()
+                for _mined_pair in _mine_rows:
+                    # Mined rows honour --max-pairs exactly like every other
+                    # emitted preference pair; a per-artifact cap the operator
+                    # set must not be silently exceeded by a derived row.
+                    if (
+                        per_artifact_cap is not None
+                        and stats.preference_pairs_emitted >= per_artifact_cap
+                    ):
+                        stats.capped_at_max_pairs = True
+                        break
+                    preference_records.append(_mined_pair)
+                    stats.preference_pairs_emitted += 1
+                    _utils_append_jsonl(pref_progress_fh, _mined_pair)
+                if _mine_rows:
+                    logger.info(
+                        "Reject mining emitted %d DPO negative(s) with "
+                        "source=%s.",
+                        len(_mine_rows), MINED_PAIR_SOURCE,
+                    )
 
         # surface budget telemetry on stats whether
         # the loop completed normally OR hit the dispatch cap.
@@ -3740,8 +6533,14 @@ def run_synthesis(
             instruction_records, _quarantined_inst = decontaminate_pairs(
                 instruction_records, _gold_questions, capture=capture,
             )
+            # ``capture=capture`` matches the instruction arm: a mined
+            # ``rejected`` side is exactly the row that most needs a drop
+            # trail, and the default text projection already screens
+            # prompt + completion + chosen + rejected (see
+            # pair_decontamination._pair_fields), so a gold-set leak on the
+            # rejected side is caught, not just on chosen.
             preference_records, _quarantined_pref = decontaminate_pairs(
-                preference_records, _gold_questions,
+                preference_records, _gold_questions, capture=capture,
             )
             _quarantined_total = len(_quarantined_inst) + len(_quarantined_pref)
             stats.decontam_quarantined = _quarantined_total
@@ -3777,7 +6576,30 @@ def run_synthesis(
 
         _write_jsonl(instruction_out, instruction_records)
         _write_jsonl(preference_out, preference_records)
-        _update_dataset_config(dataset_config_path, stats)
+        _update_dataset_config(
+            dataset_config_path, stats, holdout_identity=holdout_identity,
+        )
+        if _mine_mode != MINE_MODE_OFF:
+            # Capture + selection funnel onto the returned SynthesisStats.
+            # Assigned BEFORE _emit_synthesis_summary_sidecar below, which
+            # copies it into synthesis_summary.json as the OPTIONAL
+            # ``reject_mining`` block -- the only durable surface a shadow run
+            # has. Left absent entirely when mining is off, so the sidecar is
+            # byte-identical on a legacy run.
+            stats.reject_mining = {
+                "mode_shadow": int(_mine_mode != MINE_MODE_ON),
+                **_reject_pool.counters(),
+                **_mine_funnel,
+            }
+            if _mine_skipped:
+                # A string in an otherwise int-valued dict, deliberately: the
+                # reason a pass mined nothing is not expressible as a count,
+                # and silently reporting all-zero counters would read as "no
+                # candidates" rather than "not evaluated".
+                stats.reject_mining["reject_mining_skipped"] = _mine_skipped
+            logger.info(
+                "Reject mining capture funnel: %s", stats.reject_mining,
+            )
         # W3.H sub-task H5: emit ``training_specs/synthesis_summary.json``
         # sidecar carrying the canonical source_coverage block. items_consumed
         # = chunks_eligible (the upstream item denominator); pairs_emitted
@@ -3833,21 +6655,88 @@ def run_synthesis(
         # additionally check ``_budget_exhausted_exc`` in the finally
         # to keep the sidecars on cap-exhausted runs.
         clean_exit = True
+        if progress_writer is not None:
+            progress_writer.update(
+                state="complete",
+                active_workers=0,
+                queued_units=0,
+                in_flight=0,
+                stop_requested=False,
+                gate_readiness="ready",
+                checkpointed=True,
+            )
 
     finally:
+        # A consumer-side exception occurs while the ordered iterator is
+        # suspended at ``yield``. Explicitly closing it first enters
+        # BoundedOrderedMap's unwind path, cancels not-started futures, and
+        # waits for every already-running worker to finish its durable journal
+        # append. No terminal snapshot may be written before this barrier.
+        if generation_iterator is not None:
+            close_iterator = getattr(generation_iterator, "close", None)
+            if callable(close_iterator):
+                close_iterator()
+        # Contract context must outlive every joined worker and its final
+        # DecisionCapture/usage append.
+        if run_contract_env_set:
+            from Trainforge.synthesis_contract_guard import clear_contract_files
+            clear_contract_files()
+            if prior_run_contract_env is None:
+                os.environ.pop(
+                    "TRAINFORGE_SYNTHESIS_RUN_CONTRACT_SHA256", None,
+                )
+            else:
+                os.environ["TRAINFORGE_SYNTHESIS_RUN_CONTRACT_SHA256"] = (
+                    prior_run_contract_env
+                )
+            if prior_component_contract_env is None:
+                os.environ.pop(
+                    "TRAINFORGE_SYNTHESIS_CONTRACT_COMPONENTS_SHA256", None,
+                )
+            else:
+                os.environ[
+                    "TRAINFORGE_SYNTHESIS_CONTRACT_COMPONENTS_SHA256"
+                ] = prior_component_contract_env
+        if progress_writer is not None and not clean_exit:
+            # A graceful concurrent stop stamps PAUSED before raising. Preserve
+            # that state; every other exception is a loud failed snapshot.
+            current = progress_writer.payload.get("state")
+            journal_counts = summarize_generation_journal(
+                generation_checkpoint_path
+            )
+            terminal_state = "paused" if current == "paused" else "failed"
+            progress_writer.update(
+                state=terminal_state,
+                transient_count=journal_counts["transient_pending_units"],
+                provider_results=journal_counts["provider_results"],
+                transient_attempts=journal_counts["transient_attempts"],
+                recovered_units=journal_counts["recovered_units"],
+                exhausted_units=journal_counts["exhausted_units"],
+                fatal_units=journal_counts["fatal_units"],
+                active_workers=0,
+                queued_units=0,
+                in_flight=0,
+                stop_requested=stop_control.stop_requested(),
+                gate_readiness=(
+                    "pending" if terminal_state == "paused" else "blocked"
+                ),
+                checkpointed=True,
+            )
         # always close sidecar file handles, even on
         # exception. Delete only on a fully clean exit (no exception
         # propagated AND no budget cap hit). On budget-exceeded or
         # any other early exit, the sidecars stay on disk so the
         # operator has inspectable partial output.
-        try:
-            inst_progress_fh.close()
-        except Exception as e:  # pragma: no cover - defensive
-            logger.warning("Failed to close instruction sidecar: %s", e)
-        try:
-            pref_progress_fh.close()
-        except Exception as e:  # pragma: no cover - defensive
-            logger.warning("Failed to close preference sidecar: %s", e)
+        if inst_progress_fh is not None:
+            try:
+                inst_progress_fh.close()
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning("Failed to close instruction sidecar: %s", e)
+        if pref_progress_fh is not None:
+            try:
+                pref_progress_fh.close()
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning("Failed to close preference sidecar: %s", e)
         # close the resume checkpoint handle, mirroring the
         # existing Wave-116 sidecar close logic. The append handle
         # always closes; the file itself is unlinked only on a
@@ -3865,7 +6754,22 @@ def run_synthesis(
             instruction_progress.unlink(missing_ok=True)
             preference_progress.unlink(missing_ok=True)
             if checkpoint_path is not None and checkpoint_path.exists():
+                # Accepted records now live in the canonical output JSONL.
+                # Preserve quality rejections and deterministic pre-dispatch
+                # exclusions as distinct compact diagnostics.
+                terminal_dispositions = _project_terminal_dispositions(
+                    _load_synthesis_pairs_checkpoint(checkpoint_path).values()
+                )
+                _write_jsonl(
+                    training_specs_dir / "synthesis_dispositions.jsonl",
+                    terminal_dispositions,
+                )
                 checkpoint_path.unlink()
+            if (
+                generation_checkpoint_path is not None
+                and generation_checkpoint_path.exists()
+            ):
+                generation_checkpoint_path.unlink()
 
         if owns_capture:
             try:
@@ -3915,6 +6819,7 @@ def run_synthesis_from_libv2(
     holdout_split_path: Optional[Path] = None,
     synthesis_pairs_checkpoint_path: Optional[Path] = None,
     staging_dir: Optional[Path] = None,
+    max_concurrent: Optional[int] = None,
 ) -> SynthesisStats:
     """Run synthesis directly against a LibV2 course archive.
 
@@ -3989,6 +6894,7 @@ def run_synthesis_from_libv2(
         holdout_split_path=holdout_split_path,
         synthesis_pairs_checkpoint_path=synthesis_pairs_checkpoint_path,
         staging_dir=staging_dir,
+        max_concurrent=max_concurrent,
     )
 
 
@@ -4056,6 +6962,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--synthesis-contract",
+        choices=["legacy", "staged-v4", "micro-v1"],
+        default=None,
+        help=(
+            "Explicit synthesis orchestration contract. micro-v1 selects "
+            "ed4all.staged-synthesis-micro.v1; it is never inferred from an "
+            "ambient flag. Omit to preserve the historical environment-driven "
+            "legacy/staged-v4 path byte-for-byte."
+        ),
+    )
+    p.add_argument(
         "--seed",
         type=int,
         default=DEFAULT_SEED,
@@ -4071,6 +6988,16 @@ def build_parser() -> argparse.ArgumentParser:
             "SynthesisBudgetExceeded; partial output is preserved in "
             "<corpus>/training_specs/.synthesis_cache.jsonl and the next "
             "run resumes for free."
+        ),
+    )
+    p.add_argument(
+        "--max-concurrent",
+        type=int,
+        default=None,
+        help=(
+            "Bounded immutable generation workers (1-48). Unset resolves "
+            "TRAINFORGE_SYNTHESIS_MAX_CONCURRENT, whose legacy default is 1. "
+            "Results are committed by one deterministic source-order writer."
         ),
     )
     p.add_argument(
@@ -4540,6 +7467,7 @@ def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
             with_graph_sft=with_graph_sft,
             graph_sft_max_pairs=graph_sft_max_pairs,
             synthesis_pairs_checkpoint_path=checkpoint_arg,
+            max_concurrent=args.max_concurrent,
         )
     else:
         if not args.course_code:
@@ -4579,6 +7507,7 @@ def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
             with_graph_sft=with_graph_sft,
             graph_sft_max_pairs=graph_sft_max_pairs,
             synthesis_pairs_checkpoint_path=checkpoint_arg,
+            max_concurrent=args.max_concurrent,
         )
 
     print("\n[Synthesis] Complete.")

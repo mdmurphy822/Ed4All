@@ -10,6 +10,7 @@ from scripts.prepare_fresh_training_synthesis import apply_plan, build_plan
 from Trainforge.synthesis_fresh_start import (
     FreshStartError,
     MARKER_NAME,
+    SYNTHESIS_ARTIFACT_NAMES,
     require_fresh_start_marker,
 )
 
@@ -259,3 +260,50 @@ def test_plan_manifest_and_marker_preserve_exact_holdout_identity(
     assert require_fresh_start_marker(
         specs, expected_holdout_identity=identity
     ) == marker
+
+
+def test_synthesis_dispositions_is_a_synthesis_artifact_not_an_input(
+    tmp_path: Path,
+) -> None:
+    """``synthesis_dispositions.jsonl`` is synthesis-OWNED, not upstream input.
+
+    The synthesis runtime writes it on every clean exit (the projection of the
+    checkpoint's terminal rejected/ineligible rows). While it was missing from
+    ``SYNTHESIS_ARTIFACT_NAMES`` the fresh-start tool classified it as a
+    preserved upstream input and hashed it into ``preserved_input_sha256``, so
+    the very next synthesis pass rewrote it and every later resume hard-failed
+    with "preserved synthesis inputs changed after reset".
+    """
+    workflow, specs, runs, archive = _fixture(tmp_path)
+    dispositions = specs / "synthesis_dispositions.jsonl"
+    dispositions.write_text(
+        json.dumps({"chunk_id": "chunk-0001", "disposition": "rejected"})
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert "synthesis_dispositions.jsonl" in SYNTHESIS_ARTIFACT_NAMES
+
+    plan = build_plan(
+        workflow_state_path=workflow,
+        training_specs_dir=specs,
+        runs_dir=runs,
+        archive_dir=archive,
+    )
+    preserved = {
+        Path(path).name for path in plan["preserved_input_sha256"]
+    }
+    assert "synthesis_dispositions.jsonl" not in preserved
+    archived = {Path(path).name for path in plan["artifacts_to_archive"]}
+    assert "synthesis_dispositions.jsonl" in archived
+
+    # Synthesis rewrites the file on its next clean exit. Pre-fix that was a
+    # hard resume failure, because the file's OLD hash sat in
+    # ``preserved_input_sha256``; it must now be a plain resume artifact.
+    apply_plan(plan)
+    dispositions.write_text(
+        json.dumps({"chunk_id": "chunk-0002", "disposition": "rejected"})
+        + "\n",
+        encoding="utf-8",
+    )
+    assert require_fresh_start_marker(specs, allow_resume_artifacts=True)

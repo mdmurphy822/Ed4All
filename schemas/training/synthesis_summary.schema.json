@@ -33,6 +33,17 @@
     "validated_pairs_total": {"type": "integer", "minimum": 0},
     "trainable_pairs_total": {"type": "integer", "minimum": 0},
     "rejected_promotion_pairs": {"type": "integer", "minimum": 0},
+    "reject_mining": {
+      "type": "object",
+      "description": "OPTIONAL reject-mined-DPO-negative funnel, emitted only when TRAINFORGE_DPO_MINE_REJECTS is `shadow` or `on` (absent entirely when the flag is off, so a legacy sidecar is byte-identical). Counters are the capture-pool tallies plus the selection funnel (candidates_seen -> ... -> emitted); `mode_shadow` is 1 when the pass ran in shadow (selected but emitted nothing). This block is the ONLY durable surface for a shadow run: an operator reads `emitted` here to decide whether the corpus would clear the trainer's `min_dpo_pairs: 50` floor before flipping the flag to `on`. Not schema-versioned separately and NOT a `schema_version` bump: an absent-or-present optional key cannot break a reader.",
+      "properties": {
+        "reject_mining_skipped": {
+          "type": "string",
+          "description": "Present only when the pass mined nothing for a structural reason rather than a count (currently `incomplete_pass` — the generation pass stopped early or exhausted its dispatch budget, so the reject pool is partial and a partial pool is a biased pool)."
+        }
+      },
+      "additionalProperties": {"type": "integer", "minimum": 0}
+    },
     "source_coverage": {
       "type": "object",
       "description": "Canonical W3.H source_coverage block. Drop reason codes for the H5 synthesis arrow: the W2.E TrainingPairPromotionValidator rejection codes (placeholder_residue, unsupported_answer, weak_distractor, unanswerable_stem, source_free_generation, low_bloom_alignment, generic_rationale) plus any legacy per-pair rejection codes from SynthesisStats.rejected_reasons. The `internal_drop_reason_missing` bucket fires when the silent-gaming check trips.",
