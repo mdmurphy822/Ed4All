@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.local/schemas/events/training_telemetry.schema.json",
+  "title": "Ed4All live LoRA training telemetry event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "sequence",
+    "recorded_at",
+    "run_id",
+    "stage",
+    "event",
+    "status",
+    "global_step",
+    "max_steps",
+    "epoch",
+    "metrics"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "event_id": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "sequence": { "type": "integer", "minimum": 1 },
+    "recorded_at": { "type": "string", "format": "date-time" },
+    "run_id": { "type": "string", "minLength": 1 },
+    "stage": { "enum": ["sft", "dpo"] },
+    "event": {
+      "enum": ["stage_start", "progress", "checkpoint", "stage_end", "selection"]
+    },
+    "status": { "enum": ["running", "completed", "paused"] },
+    "global_step": { "type": "integer", "minimum": 0 },
+    "max_steps": { "type": "integer", "minimum": 0 },
+    "epoch": { "type": ["number", "null"] },
+    "metrics": {
+      "type": "object",
+      "description": "Measured trainer, tokenization, memory, checkpoint, and selection metrics. Unavailable values are null; readers must not infer them.",
+      "additionalProperties": {
+        "type": ["number", "integer", "string", "boolean", "null"]
+      }
+    }
+  }
+}

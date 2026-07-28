@@ -1,0 +1,277 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.example/schemas/manual_eval_review.schema.json",
+  "title": "Manual evaluation review",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "review_type",
+    "reviewer",
+    "independence_attestation",
+    "subject",
+    "method",
+    "aggregate",
+    "items"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "manual-eval-review-v1"
+    },
+    "review_type": {
+      "const": "independent_item_level_manual_review"
+    },
+    "reviewer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label", "role"],
+      "properties": {
+        "label": {"type": "string", "minLength": 1},
+        "role": {
+          "enum": ["primary", "independent", "adjudicator"]
+        }
+      }
+    },
+    "independence_attestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "did_not_author_subject_items",
+        "did_not_copy_prior_verdicts",
+        "reviewed_all_items_individually"
+      ],
+      "properties": {
+        "did_not_author_subject_items": {"const": true},
+        "did_not_copy_prior_verdicts": {"const": true},
+        "reviewed_all_items_individually": {"const": true}
+      }
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "item_count"],
+      "properties": {
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "item_count": {"type": "integer", "minimum": 1}
+      }
+    },
+    "method": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["judgment_method", "limitations"],
+      "properties": {
+        "judgment_method": {
+          "const": "manual_item_level_semantic_judgment"
+        },
+        "limitations": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      }
+    },
+    "aggregate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["verdict_counts", "defect_code_counts"],
+      "properties": {
+        "verdict_counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["approve", "reject", "escalate"],
+          "properties": {
+            "approve": {"type": "integer", "minimum": 0},
+            "reject": {"type": "integer", "minimum": 0},
+            "escalate": {"type": "integer", "minimum": 0}
+          }
+        },
+        "defect_code_counts": {
+          "type": "object",
+          "propertyNames": {"pattern": "^[A-Z][A-Z0-9_]+$"},
+          "additionalProperties": {"type": "integer", "minimum": 1}
+        }
+      }
+    },
+    "items": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "item_id",
+          "item_fingerprint",
+          "verdict",
+          "reasons",
+          "checks",
+          "evidence"
+        ],
+        "properties": {
+          "item_id": {"type": "string", "minLength": 1},
+          "item_fingerprint": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "verdict": {
+            "enum": ["approve", "reject", "escalate"]
+          },
+          "reasons": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["code", "severity", "detail"],
+              "properties": {
+                "code": {
+                  "type": "string",
+                  "pattern": "^[A-Z][A-Z0-9_]+$"
+                },
+                "severity": {
+                  "enum": ["critical", "major", "minor"]
+                },
+                "detail": {"type": "string", "minLength": 20}
+              }
+            }
+          },
+          "checks": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "assignment_binding",
+              "answer_key_binding",
+              "proof_integrity",
+              "task_answer_consistency",
+              "split_specific_quality",
+              "objective_alignment",
+              "bloom_alignment",
+              "citation_integrity",
+              "citation_semantic_support",
+              "split_fidelity",
+              "uniqueness",
+              "split_separation"
+            ],
+            "properties": {
+              "assignment_binding": {"type": "boolean"},
+              "answer_key_binding": {"type": "boolean"},
+              "proof_integrity": {"type": "boolean"},
+              "task_answer_consistency": {"type": "boolean"},
+              "split_specific_quality": {"type": "boolean"},
+              "objective_alignment": {"type": "boolean"},
+              "bloom_alignment": {"type": "boolean"},
+              "citation_integrity": {"type": "boolean"},
+              "citation_semantic_support": {"type": "boolean"},
+              "split_fidelity": {"type": "boolean"},
+              "uniqueness": {"type": "boolean"},
+              "split_separation": {"type": "boolean"}
+            }
+          },
+          "evidence": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "assignment",
+              "answer_key",
+              "proof_replay",
+              "semantic_judgment",
+              "citations",
+              "separation"
+            ],
+            "properties": {
+              "assignment": {
+                "type": "object",
+                "required": ["source_assignment_id", "source_family_id"],
+                "properties": {
+                  "source_assignment_id": {"type": "string", "minLength": 1},
+                  "source_family_id": {"type": "string", "minLength": 1}
+                }
+              },
+              "answer_key": {
+                "type": "object",
+                "required": ["keyed_results_sha256"],
+                "properties": {
+                  "keyed_results_sha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  }
+                }
+              },
+              "proof_replay": {
+                "type": "object",
+                "required": ["proof_sha256", "replay_passed"],
+                "properties": {
+                  "proof_sha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  },
+                  "replay_passed": {"type": "boolean"}
+                }
+              },
+              "semantic_judgment": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "task_semantic_rationale",
+                  "task_answer_rationale",
+                  "split_specific_rationale",
+                  "objective_rationale",
+                  "bloom_rationale",
+                  "source_support_rationale"
+                ],
+                "properties": {
+                  "task_semantic_rationale": {"type": "string", "minLength": 20},
+                  "task_answer_rationale": {"type": "string", "minLength": 20},
+                  "split_specific_rationale": {"type": "string", "minLength": 20},
+                  "objective_rationale": {"type": "string", "minLength": 20},
+                  "bloom_rationale": {"type": "string", "minLength": 20},
+                  "source_support_rationale": {"type": "string", "minLength": 20}
+                }
+              },
+              "citations": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "chunk_id",
+                    "quote_sha256",
+                    "exact_span_replayed",
+                    "semantic_support",
+                    "semantic_support_rationale"
+                  ],
+                  "properties": {
+                    "chunk_id": {"type": "string", "minLength": 1},
+                    "quote_sha256": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{64}$"
+                    },
+                    "exact_span_replayed": {"type": "boolean"},
+                    "semantic_support": {"type": "boolean"},
+                    "semantic_support_rationale": {
+                      "type": "string",
+                      "minLength": 20
+                    }
+                  }
+                }
+              },
+              "separation": {
+                "type": "object",
+                "required": [
+                  "dev_overlap",
+                  "duplicate_item",
+                  "family_policy_satisfied"
+                ],
+                "properties": {
+                  "dev_overlap": {"type": "boolean"},
+                  "duplicate_item": {"type": "boolean"},
+                  "family_policy_satisfied": {"type": "boolean"}
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.invalid/schemas/deterministic-eval-item-v1.json",
+  "title": "Deterministic adapter evaluation item",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "item_id",
+    "split",
+    "source_family_id",
+    "source_chunk_id",
+    "objective",
+    "bloom",
+    "content_type",
+    "generator",
+    "question",
+    "canonical_problem",
+    "answers",
+    "expected_keypoints",
+    "proof",
+    "retrieval",
+    "provenance",
+    "fingerprint"
+  ],
+  "properties": {
+    "schema_version": {"const": "deterministic-eval-v1"},
+    "item_id": {"type": "string", "minLength": 1},
+    "split": {
+      "enum": ["checkpoint_dev", "grounding_stress", "pedagogy_misconception"]
+    },
+    "source_family_id": {"type": "string", "pattern": "^family-[0-9a-f]{16}$"},
+    "source_chunk_id": {"type": "string", "minLength": 1},
+    "objective": {
+      "type": "object",
+      "required": ["id", "statement"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "statement": {"type": "string", "minLength": 1}
+      }
+    },
+    "generator": {
+      "type": "object",
+      "required": ["name", "version", "model_calls", "polish_enabled", "seed_sha256"],
+      "properties": {
+        "model_calls": {"const": 0},
+        "polish_enabled": {"const": false}
+      }
+    },
+    "answers": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "proof": {
+      "type": "object",
+      "required": [
+        "proof_type",
+        "inputs_sha256",
+        "recompute_algorithm",
+        "recomputed_answer",
+        "answer_equivalent",
+        "residual",
+        "checks"
+      ],
+      "properties": {
+        "answer_equivalent": {"const": true},
+        "residual": {"const": 0}
+      }
+    },
+    "fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"split": {"const": "checkpoint_dev"}}},
+      "then": {"required": ["objective_probe"]}
+    },
+    {
+      "if": {"properties": {"split": {"const": "grounding_stress"}}},
+      "then": {"required": ["grounding"]}
+    },
+    {
+      "if": {"properties": {"split": {"const": "pedagogy_misconception"}}},
+      "then": {"required": ["pedagogy"]}
+    }
+  ]
+}
