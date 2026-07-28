@@ -548,7 +548,9 @@ def test_live_run_tab_in_primary_nav_and_routed():
     start = create_js.index("function renderLiveRun(")
     body = create_js[start : create_js.index("\n}", start)]
     assert "api('/api/runs')" in body  # the merged run list (incl. CLI runs)
-    assert "'running', 'paused'" in body  # live preference over other states
+    assert "r.effective_status || r.status" in body
+    assert "'building', 'running'" in body  # active wins over paused history
+    assert "status(r) === 'paused'" in body
     assert "renderProgress(shell, runId)" in body  # thin delegation, no fork
     assert "emptyState(" in body and "#/runs" in body, (
         "no live run must render the empty state with a Run-history CTA"

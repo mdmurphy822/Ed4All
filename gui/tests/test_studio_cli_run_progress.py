@@ -129,3 +129,14 @@ def test_both_paths_share_the_stage_rail_helper():
     cli_body = _top_level_function(js, "renderCliRunProgress")
     assert "railCtl.apply(snapshot)" in cli_body
     assert "railCtl.start()" in cli_body
+
+
+def test_merged_rail_deduplicates_integrated_training_tail():
+    """Integrated and correlated standalone training must not duplicate nodes."""
+    js = _js()
+    helper = _top_level_function(js, "appendUniqueTrainingPhases")
+    assert "new Set(leading.map" in helper
+    assert "present.has(name)" in helper
+    mount = _top_level_function(js, "mountStageRail")
+    assert "appendUniqueTrainingPhases(buildPhases, trainingPhases)" in mount
+    assert "phases: [...buildPhases, ...trainingPhases]" not in mount

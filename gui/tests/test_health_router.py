@@ -150,6 +150,35 @@ def test_group_selection_excludes_provider_postmortem_and_gates_seat(monkeypatch
     assert health_service._select_groups() == ["gpu", "window", "seat", "future_x"]
 
 
+def test_gui_health_marks_unused_legacy_local_backend_inactive(monkeypatch):
+    """Catalog availability alone must not activate the Ollama diagnostics."""
+    for key in (
+        "LOCAL_SYNTHESIS_BASE_URL",
+        "LOCAL_SYNTHESIS_MODEL",
+        "LLM_PROVIDER",
+        "COURSEFORGE_OUTLINE_PROVIDER",
+        "COURSEFORGE_REWRITE_PROVIDER",
+        "TRAINFORGE_SYNTHESIS_PROVIDER",
+        "TRAINFORGE_ASSESSMENT_PROVIDER",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(
+        "gui.settings_store.load_settings",
+        lambda: {"env": {}, "model_routing": {"global": {"provider": "spark-super"}}},
+    )
+    assert health_service._local_synthesis_active() is False
+
+
+def test_gui_health_activates_explicit_openai_compatible_local_endpoint(monkeypatch):
+    """Configured TRT/vLLM-style local endpoints retain live validation."""
+    monkeypatch.setenv("LOCAL_SYNTHESIS_BASE_URL", "http://localhost:8123/v1")
+    monkeypatch.setattr(
+        "gui.settings_store.load_settings",
+        lambda: {"env": {}, "model_routing": {}},
+    )
+    assert health_service._local_synthesis_active() is True
+
+
 # ------------------------------------------------------------- auth parity
 def test_health_doctor_is_not_operator_classified():
     # Parity with /api/health, /api/runs — open (the Dashboard is the product).

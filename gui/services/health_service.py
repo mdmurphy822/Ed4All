@@ -176,6 +176,51 @@ def _select_groups() -> List[str]:
     return selected
 
 
+def _local_synthesis_active() -> bool:
+    """Whether the GUI's current provider configuration uses local synthesis.
+
+    The endpoint registry contains historical/available backends; presence in
+    that catalog does not make a backend active. Resolve activation from the
+    live process env plus the persisted GUI settings operators actually edit.
+    This prevents an unused legacy Ollama default from degrading health while
+    retaining the OpenAI-compatible probe whenever a local endpoint is
+    explicitly configured.
+    """
+    local_keys = ("LOCAL_SYNTHESIS_BASE_URL", "LOCAL_SYNTHESIS_MODEL")
+    provider_keys = (
+        "LLM_PROVIDER",
+        "COURSEFORGE_OUTLINE_PROVIDER",
+        "COURSEFORGE_REWRITE_PROVIDER",
+        "TRAINFORGE_SYNTHESIS_PROVIDER",
+        "TRAINFORGE_ASSESSMENT_PROVIDER",
+    )
+    if any(os.environ.get(k, "").strip() for k in local_keys):
+        return True
+    if any(os.environ.get(k, "").strip().lower() == "local" for k in provider_keys):
+        return True
+    try:
+        from gui import settings_store  # noqa: PLC0415
+
+        doc = settings_store.load_settings()
+    except Exception:  # noqa: BLE001 — absent/corrupt settings means inactive
+        return False
+    env = doc.get("env") if isinstance(doc, dict) else {}
+    if isinstance(env, dict):
+        if any(str(env.get(k) or "").strip() for k in local_keys):
+            return True
+        if any(
+            str(env.get(k) or "").strip().lower() == "local"
+            for k in provider_keys
+        ):
+            return True
+    routing = doc.get("model_routing") if isinstance(doc, dict) else {}
+    if isinstance(routing, dict):
+        for row in routing.values():
+            if isinstance(row, dict) and str(row.get("provider") or "").strip().lower() == "local":
+                return True
+    return False
+
+
 def _safe_gate(gate: Callable[[], bool]) -> bool:
     """Evaluate an env-gate predicate, treating any failure as 'absent'."""
     try:
@@ -274,7 +319,13 @@ def _compute_global() -> Dict[str, Any]:
     try:
         _bootstrap()
         groups = _select_groups()
-        results = run_checks(CheckContext(base_url=None), groups=groups)
+        results = run_checks(
+            CheckContext(
+                base_url=None,
+                local_synthesis_active=_local_synthesis_active(),
+            ),
+            groups=groups,
+        )
         return _shape_payload(results)
     except Exception as exc:  # noqa: BLE001 — degrade to an error payload
         logger.exception("health: global doctor compute failed")

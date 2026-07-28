@@ -120,6 +120,13 @@ _USAGE_TAIL_ROWS = 500
 _SEAT_PROBE_TIMEOUT_SECONDS = 0.75
 _SEAT_PROBE_TTL_SECONDS = 5.0
 
+# Atomic phase snapshots live below the run-scoped telemetry directory.  The
+# filename is derived from a phase name already present in the workflow plan;
+# arbitrary paths from a snapshot are never followed.
+_PHASE_TELEMETRY_SCHEMA_VERSION = 2
+_PHASE_TELEMETRY_STATES = frozenset({"running", "paused", "failed", "complete"})
+_SAFE_PHASE_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
+
 
 # --------------------------------------------------------------------- paths
 
@@ -139,6 +146,104 @@ def _runs_dir() -> Path:
     from lib.paths import get_state_runs_dir  # noqa: PLC0415
 
     return Path(get_state_runs_dir())
+
+
+def _read_phase_telemetry(
+    orchestrator_run_id: str, phase_names: List[str]
+) -> Dict[str, Dict[str, Any]]:
+    """Read valid, run-bound atomic phase telemetry snapshots.
+
+    Snapshots are optional presentation evidence.  A missing, partially
+    replaced, malformed, wrong-version, wrong-run, or wrong-phase document is
+    ignored wholesale so telemetry can never break the progress endpoint or
+    leak metrics between runs.
+    """
+    if not orchestrator_run_id:
+        return {}
+    root = _runs_dir() / orchestrator_run_id / "telemetry"
+    found: Dict[str, Dict[str, Any]] = {}
+    for phase_name in phase_names:
+        if not _SAFE_PHASE_NAME.fullmatch(phase_name):
+            continue
+        path = root / f"{phase_name}.json"
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, UnicodeError):
+            continue
+        if (
+            not isinstance(raw, dict)
+            or raw.get("schema_version") != _PHASE_TELEMETRY_SCHEMA_VERSION
+            or raw.get("phase") != phase_name
+            or str(raw.get("run_id") or "") != orchestrator_run_id
+            or raw.get("state") not in _PHASE_TELEMETRY_STATES
+            or raw.get("gate_readiness") not in {"pending", "blocked", "ready"}
+            or not isinstance(raw.get("backpressure"), bool)
+            or not isinstance(raw.get("stop_requested"), bool)
+            or not isinstance(raw.get("provider"), str)
+            or not isinstance(raw.get("model"), str)
+        ):
+            continue
+        # The writer contract uses non-negative numeric counters/rates.  Reject
+        # a whole corrupt snapshot rather than selectively displaying a
+        # plausible-looking subset.
+        numeric_keys = (
+            "elapsed_seconds",
+            "total_units",
+            "completed_units",
+            "terminal_units",
+            "accepted_count",
+            "rejected_count",
+            "transient_count",
+            "sft_count",
+            "dpo_count",
+            "provider_results",
+            "cached_replays",
+            "transient_attempts",
+            "recovered_units",
+            "exhausted_units",
+            "fatal_units",
+            "active_workers",
+            "max_concurrent",
+            "queued_units",
+            "in_flight",
+            "throughput_units_per_second",
+            "eta_seconds",
+        )
+        malformed = False
+        for key in numeric_keys:
+            value = raw.get(key)
+            if key not in {"throughput_units_per_second", "eta_seconds"} and value is None:
+                malformed = True
+                break
+            if value is not None and (
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or value < 0
+            ):
+                malformed = True
+                break
+        reasons = raw.get("rejection_reasons")
+        if (
+            malformed
+            or raw["completed_units"] > raw["total_units"]
+            or raw["terminal_units"] > raw["completed_units"]
+            or raw["max_concurrent"] < 1
+            or raw["active_workers"] > raw["max_concurrent"]
+            or raw["in_flight"] > raw["max_concurrent"]
+            or raw["active_workers"] + raw["queued_units"]
+            != raw["in_flight"]
+            or not isinstance(reasons, dict)
+            or any(
+                not isinstance(key, str)
+                or not isinstance(value, int)
+                or isinstance(value, bool)
+                or value < 0
+                for key, value in reasons.items()
+            )
+        ):
+            continue
+        found[phase_name] = raw
+    return found
 
 
 # --------------------------------------------------- workflow config (cached)
@@ -491,7 +596,11 @@ class _UsageAccumulator:
         # (ts_epoch|None, prompt, completion) per row, for per-phase
         # attribution against the checkpoint windows (re-bucketed per poll —
         # windows move while the run advances, the rows never do).
-        self.rows_ts: List[Tuple[Optional[float], int, int]] = []
+        # (explicit_phase|None, ts_epoch|None, prompt, completion) per row.
+        # Newer taps stamp the spending phase directly; that writer-owned
+        # identity is stronger evidence than a checkpoint wall-clock join.
+        # Older rows without it retain the temporal fallback.
+        self.rows_ts: List[Tuple[Optional[str], Optional[float], int, int]] = []
         # ---- page-metered rows (SemantiK GLM-OCR conversion lane): those
         # rows meter HONEST ZERO tokens and carry their real progress in a
         # positive-int ``pages`` field + ``duration_ms`` instead. Aggregated
@@ -569,7 +678,13 @@ class _UsageAccumulator:
             bucket[1] += prompt
             bucket[2] += completion
             row_ts = _ts_epoch(row.get("ts"))
-            self.rows_ts.append((row_ts, prompt, completion))
+            raw_phase = row.get("phase")
+            explicit_phase = (
+                str(raw_phase).strip()
+                if isinstance(raw_phase, str) and raw_phase.strip()
+                else None
+            )
+            self.rows_ts.append((explicit_phase, row_ts, prompt, completion))
             # Page-metered row: a positive int ``pages`` (bool excluded — a
             # JSON ``true`` must never count as one page). Garbage / missing /
             # non-positive values simply don't contribute.
@@ -826,17 +941,16 @@ def _percentile(values: List[float], q: float) -> Optional[float]:
 
 
 def _attribute_rows_to_phases(
-    rows_ts: List[Tuple[Optional[float], int, int]],
+    rows_ts: List[Tuple[Optional[str], Optional[float], int, int]],
     checkpoints: Dict[str, Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    """Bucket usage rows into the checkpoint wall-clock windows.
+    """Bucket usage rows by writer identity, then checkpoint wall-clock.
 
-    A row lands in the first (start-ordered) phase window containing its
-    epoch; an in-flight window (no ``completed_at``) is open-ended. Rows
-    before the first window, in inter-phase gaps, or with an unparseable
-    ``ts`` land in an explicit ``unattributed`` bucket — NEVER guessed into a
-    phase. Returned rows are window-ordered, only nonzero buckets included,
-    ``unattributed`` (when nonzero) last.
+    A non-blank row ``phase`` is direct evidence emitted by the spending call
+    site and wins. Legacy rows without that field land in the first
+    (start-ordered) checkpoint window containing their epoch; an in-flight
+    window is open-ended. Rows carrying neither form of evidence land in the
+    explicit ``unattributed`` bucket — NEVER guessed into a phase.
     """
     windows: List[Tuple[float, Optional[float], str]] = []
     for phase, ckpt in checkpoints.items():
@@ -848,9 +962,12 @@ def _attribute_rows_to_phases(
 
     buckets: Dict[str, List[int]] = {}  # phase → [calls, prompt, completion]
     unattributed = [0, 0, 0]
-    for ts, prompt, completion in rows_ts:
-        target: Optional[str] = None
-        if ts is not None:
+    explicit_order: List[str] = []
+    for explicit_phase, ts, prompt, completion in rows_ts:
+        target: Optional[str] = explicit_phase
+        if target is not None and target not in explicit_order:
+            explicit_order.append(target)
+        if target is None and ts is not None:
             for start, end, phase in windows:
                 if ts >= start and (end is None or ts <= end):
                     target = phase
@@ -861,7 +978,11 @@ def _attribute_rows_to_phases(
         bucket[2] += completion
 
     out: List[Dict[str, Any]] = []
-    for _start, _end, phase in windows:
+    ordered_phases = [phase for _start, _end, phase in windows]
+    ordered_phases.extend(
+        phase for phase in explicit_order if phase not in ordered_phases
+    )
+    for phase in ordered_phases:
         counts = buckets.get(phase)
         if counts and counts[0] > 0:
             out.append(
@@ -1141,25 +1262,59 @@ _PHASE_UNIT_SIDECARS: Dict[str, Dict[str, str]] = {
         "label": "chapters judged",
     },
     "training": {
-        # The trainforge_train adapter-training phase (train + eval). The eval
-        # harness's per-model-call progress stream
-        # (Trainforge/eval/slm_eval_harness.py::_EvalProgressTracker.emit —
-        # open("a") + write per event) lands at
-        # <libv2>/courses/<slug>/models/<model_id>/eval/eval_progress.jsonl.
-        # <model_id> is minted at run start (TrainingRunner.run), so the
-        # NEWEST matching file is tailed (mode "glob_file"). Empty until the
-        # in-phase eval stage begins — honest, not a gap. The runner's
-        # training_run.jsonl is deliberately NOT mapped: it is a whole-file
-        # decision-capture mirror written ONCE at run end
-        # (Trainforge/training/runner.py::_save_decision_run_log via
-        # write_jsonl), not an incremental stream.
+        # The trainforge_train adapter-fit stream is distinct from evaluation:
+        # <libv2>/courses/<slug>/models/<model_id>/training_telemetry.v1.jsonl.
+        # <model_id> is minted at run start, so the NEWEST matching file is
+        # tailed (mode "glob_file"). Evaluation has its own eval_progress
+        # stream and must never stand in for live SFT/DPO progress.
         "anchor": "libv2_course_slug",
         "relpath": "models",
-        "glob": "*/eval/eval_progress.jsonl",
+        "glob": "*/training_telemetry.v1.jsonl",
         "mode": "glob_file",
-        "label": "eval calls",
+        "label": "training events",
     },
 }
+
+
+def _training_telemetry_snapshot(
+    current_phase: Optional[str],
+    params: Dict[str, Any],
+    phase_outputs: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Return the newest trainer-owned atomic snapshot for the training phase.
+
+    The snapshot is display evidence only.  It never implies adapter
+    promotion, completion, or success; those decisions remain owned by the
+    workflow/checkpoint-selection artifacts.
+    """
+    if current_phase != "training":
+        return None
+    spec = _PHASE_UNIT_SIDECARS["training"]
+    anchor = _resolve_unit_anchor(spec["anchor"], params, phase_outputs)
+    if anchor is None:
+        return None
+    matches = _unit_dir_files(
+        anchor / spec["relpath"], "*/training_telemetry.latest.v1.json"
+    )
+    if not matches:
+        return None
+    path = matches[-1]
+    try:
+        if path.stat().st_size > 1024 * 1024:
+            return None
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+        return None
+    event = payload.get("event")
+    stage = payload.get("stage")
+    metrics = payload.get("metrics")
+    if not isinstance(event, str) or stage not in {"sft", "dpo"}:
+        return None
+    if not isinstance(metrics, dict):
+        return None
+    return payload
 
 # Hard ceiling on how many sidecar bytes a single (first-attach) count may
 # read. Sidecars grow to tens of MB on a big corpus; anything past this cap is
@@ -1239,15 +1394,20 @@ def _resolve_unit_anchor(
         # trainforge_assessment phase output:
         # <corpus>/assessments.json → one parent up;
         # <corpus>/corpus/chunks.jsonl → two parents up.
+        # Only the named producer owns these paths. Earlier assessment phases
+        # can carry an identically named ``assessments_path`` rooted in a
+        # different Courseforge directory; scanning every phase therefore
+        # resolves a valid-looking but wrong sidecar path.
+        out = phase_outputs.get("trainforge_assessment")
+        if not isinstance(out, dict):
+            return None
         for out_key, levels in (("assessments_path", 1), ("chunks_path", 2)):
-            for out in phase_outputs.values():
-                if isinstance(out, dict):
-                    p = out.get(out_key)
-                    if isinstance(p, str) and p.strip():
-                        anchor = Path(p)
-                        for _ in range(levels):
-                            anchor = anchor.parent
-                        return anchor
+            p = out.get(out_key)
+            if isinstance(p, str) and p.strip():
+                anchor = Path(p)
+                for _ in range(levels):
+                    anchor = anchor.parent
+                return anchor
         return None
     if kind == "run_dir":
         # state/runs/<params.run_id>/ — the orchestrator run dir
@@ -1573,6 +1733,45 @@ _SEAT_PROBE_CACHE: Dict[str, Tuple[float, Optional[str]]] = {}
 _SEAT_PROBE_LOCK = threading.Lock()
 
 
+def _active_run_seat_registry(
+    workflow_id: Optional[str],
+    orchestrator_run_id: Optional[str],
+    params: Dict[str, Any],
+) -> Dict[str, str]:
+    """Resolve the seat registry owned by the attributed CLI process.
+
+    A standalone ``ed4all run`` can carry a deliberate per-run seat overlay
+    that the already-running GUI process does not inherit. Read only that
+    attributed same-user process's ``ED4ALL_SEAT_BASE_URLS`` value from procfs;
+    unrelated process environments and all other variables remain unread.
+    Missing/unreadable procfs simply yields an empty overlay.
+    """
+    try:
+        from gui.services import liveness  # noqa: PLC0415
+        from lib.vllm_container_lifecycle import parse_seat_registry  # noqa: PLC0415
+
+        tokens = liveness.attribution_tokens_from_params(
+            params, orchestrator_run_id, wf_id=workflow_id
+        )
+        if not tokens:
+            return {}
+        for pid, argv in liveness.scan_pipeline_processes():
+            if not any(tok in arg for tok in tokens for arg in argv):
+                continue
+            try:
+                raw = Path(f"/proc/{pid}/environ").read_bytes()
+            except OSError:
+                continue
+            prefix = b"ED4ALL_SEAT_BASE_URLS="
+            for entry in raw.split(b"\0"):
+                if entry.startswith(prefix):
+                    value = entry[len(prefix) :].decode("utf-8", "replace")
+                    return parse_seat_registry(value)
+    except Exception:  # noqa: BLE001 — optional read-only discovery
+        return {}
+    return {}
+
+
 def _probe_seat_model(base_url: str) -> Optional[str]:
     """``GET {base_url}/v1/models`` → first served model id; None when down.
 
@@ -1606,7 +1805,9 @@ def _probe_seat_model(base_url: str) -> Optional[str]:
     return model
 
 
-def _serving_seat(phase_seats: List[str]) -> Optional[Dict[str, Any]]:
+def _serving_seat(
+    phase_seats: List[str], run_registry: Optional[Dict[str, str]] = None
+) -> Optional[Dict[str, Any]]:
     """First registered seat answering ``/v1/models``; phase seats first.
 
     Registry = ``ED4ALL_SEAT_BASE_URLS`` via the canonical
@@ -1618,7 +1819,9 @@ def _serving_seat(phase_seats: List[str]) -> Optional[Dict[str, Any]]:
 
         registry = parse_seat_registry()
     except Exception:  # noqa: BLE001 — registry parse is best-effort
-        return None
+        registry = {}
+    # The attributed runner's overlay is the execution truth for this run.
+    registry.update(run_registry or {})
     if not registry:
         return None
     ordered: List[Tuple[str, str]] = []
@@ -1637,7 +1840,9 @@ def _serving_seat(phase_seats: List[str]) -> Optional[Dict[str, Any]]:
 
 
 def _seat_activity(
-    current_phase: Optional[str], current_seats: List[str]
+    current_phase: Optional[str],
+    current_seats: List[str],
+    run_registry: Optional[Dict[str, str]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Surface an in-progress SEAT SWAP / cold-start as its OWN state.
 
@@ -1691,6 +1896,9 @@ def _seat_activity(
     waiting: List[Dict[str, Any]] = []
     concern = False
     for name in current_seats:
+        run_url = (run_registry or {}).get(name)
+        if run_url and _probe_seat_model(run_url) is not None:
+            continue
         seat = by_name.get(name)
         if seat is None:
             # The phase names a seat that is NOT in the registry at all — a loud
@@ -1790,6 +1998,9 @@ def run_progress(run_id: str) -> Optional[Dict[str, Any]]:
 
     orchestrator_run_id = str(params.get("run_id") or "")
     checkpoints = _read_checkpoints(orchestrator_run_id)
+    phase_telemetry = _read_phase_telemetry(
+        orchestrator_run_id, [str(ph["name"]) for ph in plan]
+    )
 
     # --- stop_after cut: phases strictly after the halt phase never run.
     stop_after = params.get("stop_after")
@@ -1819,6 +2030,7 @@ def run_progress(run_id: str) -> Optional[Dict[str, Any]]:
         out = phase_outputs.get(name)
         out = out if isinstance(out, dict) else {}
         ckpt = checkpoints.get(name) or {}
+        telemetry_state = (phase_telemetry.get(name) or {}).get("state")
         state_token: Optional[str] = None
         if out.get("_skipped"):
             state_token = "skipped"
@@ -1830,6 +2042,12 @@ def run_progress(run_id: str) -> Optional[Dict[str, Any]]:
             state_token = "done"
         elif failed_phase == name and run_failed:
             state_token = "failed"
+        elif telemetry_state == "complete":
+            state_token = "done"
+        elif telemetry_state == "failed":
+            state_token = "failed"
+        elif telemetry_state == "paused":
+            state_token = "paused"
         elif stop_after_index is not None and ph["index"] > stop_after_index:
             state_token = "skipped"
         elif skip_training and name == "training_synthesis":
@@ -1916,21 +2134,37 @@ def run_progress(run_id: str) -> Optional[Dict[str, Any]]:
 
     phases: List[Dict[str, Any]] = []
     current_phase: Optional[str] = None
+    telemetry_current = (
+        next(
+            (
+                ph["name"]
+                for ph in plan
+                if (phase_telemetry.get(ph["name"]) or {}).get("state") == "running"
+            ),
+            None,
+        )
+        if not is_terminal
+        else None
+    )
     for ph in plan:
         name = ph["name"]
         if name in hidden_phases:
             continue
         state_token = resolved.get(name)
         if state_token is None:
-            if not is_terminal and current_phase is None and (
-                checkpoint_current is None or checkpoint_current == name
-            ):
+            is_current = (
+                name == telemetry_current
+                if telemetry_current is not None
+                else checkpoint_current is None or checkpoint_current == name
+            )
+            if not is_terminal and current_phase is None and is_current:
                 state_token = "current"
                 current_phase = name
             else:
                 state_token = "pending"
         ckpt = checkpoints.get(name) or {}
         wallclock = ckpt.get("wallclock_s")
+        telemetry = phase_telemetry.get(name) or {}
         started_raw = ckpt.get("started_at")
         completed_raw = ckpt.get("completed_at")
         if (
@@ -1945,16 +2179,32 @@ def run_progress(run_id: str) -> Optional[Dict[str, Any]]:
             # deterministic phase (staging / source_mapping, ~0.1-0.3s) is never
             # blank; the renderer formats any sub-second span as "<1s".
             wallclock = None
-        phases.append(
-            {
-                "name": name,
-                "index": ph["index"],
-                "state": state_token,
-                "group": ph["group"],
-                "label": _phase_label(name),
-                "wallclock_s": wallclock,
-            }
-        )
+        if wallclock is None and telemetry.get("state") in {
+            "paused",
+            "failed",
+            "complete",
+        }:
+            # A terminal telemetry snapshot retains the phase's cumulative
+            # elapsed time across resumes.  It is stronger than a suppressed
+            # zero-duration resume re-stamp, but never replaces a real
+            # checkpoint wall-clock.
+            elapsed = telemetry.get("elapsed_seconds")
+            if isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool):
+                wallclock = elapsed
+        node = {
+            "name": name,
+            "index": ph["index"],
+            "state": state_token,
+            "group": ph["group"],
+            "label": _phase_label(name),
+            "wallclock_s": wallclock,
+        }
+        # Preserve a completed/paused phase's last real metrics even after the
+        # rail advances.  This is additive and generic: any planned phase may
+        # publish the same versioned envelope.
+        if telemetry:
+            node["telemetry"] = telemetry
+        phases.append(node)
 
     # --- elapsed time in the current phase. Anchor preference: the current
     # phase's own in-flight checkpoint ``started_at`` (stamped at phase start)
@@ -2005,22 +2255,42 @@ def run_progress(run_id: str) -> Optional[Dict[str, Any]]:
     phase_units = _phase_unit_progress(current_phase, params, phase_outputs)
     if phase_units is not None:
         stats["phase_units"] = phase_units
+    training_telemetry = _training_telemetry_snapshot(
+        current_phase, params, phase_outputs
+    )
+    if training_telemetry is not None:
+        stats["training_telemetry"] = training_telemetry
     # The comprehensive detail matrix (additive — the band's top-level keys
     # above stay byte-compatible). Omitted when no source file exists.
     detail = _usage_detail(orchestrator_run_id, checkpoints)
     if detail is not None:
         stats["detail"] = detail
+    if phase_telemetry:
+        # Keep phase telemetry separate from LLM usage detail.  Consumers can
+        # render it even on deterministic/no-usage phases.
+        stats["phase_telemetry"] = [
+            phase_telemetry[ph["name"]]
+            for ph in plan
+            if ph["name"] in phase_telemetry
+        ]
     if is_terminal:
         stats["seat"] = None
     else:
         current_seats = next(
             (ph["seats"] for ph in plan if ph["name"] == current_phase), []
         )
-        stats["seat"] = _serving_seat(list(current_seats or []))
+        run_seat_registry = _active_run_seat_registry(
+            workflow_id, orchestrator_run_id, params
+        )
+        stats["seat"] = _serving_seat(
+            list(current_seats or []), run_seat_registry
+        )
         # An in-progress seat swap / cold-start on a seat THIS phase declares —
         # surfaced as its OWN state, NEVER folded into the phase's wallclock_s
         # (see _seat_activity). Omitted whenever every needed seat is live.
-        seat_activity = _seat_activity(current_phase, list(current_seats or []))
+        seat_activity = _seat_activity(
+            current_phase, list(current_seats or []), run_seat_registry
+        )
         if seat_activity is not None:
             stats["seat_activity"] = seat_activity
 

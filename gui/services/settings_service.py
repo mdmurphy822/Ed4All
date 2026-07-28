@@ -21,11 +21,9 @@ from typing import Any, Dict, Optional
 
 from gui import env_catalog, settings_store
 
-# Default base URL for the local OpenAI-compatible server when neither
-# os.environ nor the settings env block names one. Port 11434 is Ollama's
-# default; a vLLM / llama.cpp / LM Studio deployment overrides
-# LOCAL_SYNTHESIS_BASE_URL to its own host:port.
-_DEFAULT_LOCAL_BASE_URL = "http://localhost:11434/v1"
+# Default strict OpenAI-compatible local endpoint. TRT-LLM/vLLM deployments
+# may override the host/port through LOCAL_SYNTHESIS_BASE_URL.
+_DEFAULT_LOCAL_BASE_URL = "http://localhost:8000/v1"
 
 # Short network timeout (seconds) for live reachability probes so a stuck
 # server can't hang the request.

@@ -178,7 +178,21 @@ carries the band. It never
 mutates run state and never fabricates: unknown workflow → the observed
 `phase_outputs` order; no usage rows → null/zero stats; empty seat registry →
 no probe at all; no sidecar on disk → `phase_units` omitted entirely, and no
-totals are ever estimated. Four honesty contracts on the rail payload: an
+totals are ever estimated. The same endpoint consumes optional, atomic,
+versioned phase snapshots from
+`state/runs/<run_id>/telemetry/<phase>.json`. Snapshot filenames are derived
+only from the workflow's planned phase names; schema/version/run/phase/state
+and metric types are validated fail-safe, so missing, partial, malformed, or
+cross-run documents are ignored wholesale. Valid snapshots are exposed on the
+matching phase node and in `stats.phase_telemetry`, including after completion,
+so the generic rail can render real chunk counts, pair counts, relationally
+valid active/queued/in-flight concurrency, generation/cache and transient
+lifecycle counts, throughput, ETA, gate readiness, provider/model, and
+rejection reasons. Impossible count/concurrency relationships invalidate the
+whole optional snapshot. Telemetry state maps
+`running → current`, `paused → paused`, `failed → failed`, and
+`complete → done`; authoritative workflow completion/skip markers still win.
+Four honesty contracts on the rail payload: an
 env-conditional phase with NO observed marker evidence renders `pending`,
 never a skip guessed from the serving process env; when the plan carries BOTH
 sides of an `enabled_when_env` variable (single-pass `content_generation` vs
@@ -219,12 +233,23 @@ files under `state/runs/<run_id>/heading_judge/` — a growing-directory
 source; `training_synthesis` tails its per-pair
 `training_specs/.synthesis_pairs_checkpoint.jsonl`; the `trainforge_train`
 `training` phase tails the NEWEST
-`models/<model_id>/eval/eval_progress.jsonl` eval-harness stream, its
-`training_run.jsonl` being a run-end whole-file mirror, not incremental)
+`models/<model_id>/training_telemetry.v1.jsonl` SFT/DPO stream, with the
+atomic `training_telemetry.latest.v1.json` snapshot feeding normalized live
+training details; evaluation remains a separate stream and
+`training_run.jsonl` remains a run-end whole-file mirror)
 mapped to truncated,
 HTML-stripped display rows — absent sidecar → `rows: []`, and phases whose
 artifacts are atomic whole-file emits (chunking, packaging, vector_indexing,
 semantik_conversion, …) are deliberately unmapped rather than fabricated.
+Training-synthesis sidecars resolve from the `trainforge_assessment` phase
+output specifically: earlier phases can carry same-named `assessments_path`
+keys rooted elsewhere and must not win by dictionary order. For CLI workflows
+launched with a per-run seat overlay, progress reads only the attributed
+same-user `ed4all run` process's `ED4ALL_SEAT_BASE_URLS` procfs entry; this lets
+an already-running GUI recognize the runner's warm seat without inheriting or
+exposing unrelated environment values. Usage rows carrying a writer-stamped
+`phase` use that direct identity in `stats.detail.by_phase`; checkpoint
+wall-clock attribution is only the legacy fallback for rows without `phase`.
 Tests: `gui/tests/test_run_progress.py`.
 
 `gui/services/liveness.py` derives an honest `effective_status` (ADDITIVE — it

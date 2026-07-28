@@ -69,17 +69,16 @@ from lib.llm.endpoints import openai_compatible_legacy_registry
 # ``nvidia-deepseek``) the GUI does not surface; they are intentionally NOT
 # listed here so no default selection changes.
 _DERIVED_PROVIDER_META: List[Dict[str, Any]] = [
-    # ``local`` is ANY local OpenAI-compatible server (vLLM / Ollama /
-    # llama.cpp / LM Studio) — NOT hard-wired to Ollama. Its default base_url
-    # points at port 11434 (Ollama's default) only as a fallback; a vLLM seat
-    # deployment overrides LOCAL_SYNTHESIS_BASE_URL to its own host:port. The
+    # ``local`` is a strict OpenAI-compatible server (TRT-LLM / vLLM /
+    # llama.cpp / LM Studio) — no Ollama-native fallback. A deployment
+    # overrides LOCAL_SYNTHESIS_BASE_URL to its own host:port. The
     # registry name stays ``"local"`` because Trainforge and the resolver all
     # key on that literal. The GUI marks it vision-capable for the routing
     # dropdown (overlay); the real enable is LOCAL_VISION_CAPABLE + a vision
     # LOCAL_SYNTHESIS_MODEL at resolve time.
     {
         "name": "local",
-        "label": "Local model server (OpenAI-compatible: vLLM, Ollama, llama.cpp)",
+        "label": "Local model server (OpenAI-compatible: TRT-LLM, vLLM, llama.cpp)",
         "vision_capable": True,
     },
     {"name": "together", "label": "Together AI (text)"},
@@ -362,10 +361,10 @@ def _build_catalog() -> List[Dict[str, Any]]:
             "label": "Local Base URL",
             "category": "local",
             "type": "string",
-            "default": "http://localhost:11434/v1",
+            "default": "http://localhost:8000/v1",
             "help": (
                 "Base URL of the local OpenAI-compatible server "
-                "(Ollama / vLLM / llama.cpp / LM Studio)."
+                "(TRT-LLM / vLLM / llama.cpp / LM Studio)."
             ),
             "applies_to": "local",
         },
@@ -374,7 +373,7 @@ def _build_catalog() -> List[Dict[str, Any]]:
             "label": "Local Model",
             "category": "local",
             "type": "string",
-            "default": "qwen2.5:7b-instruct-q4_K_M",
+            "default": "nemotron-3-nano-30b-a3b",
             "help": "Model identifier the local server expects.",
             "applies_to": "local",
         },
@@ -764,7 +763,7 @@ def _build_catalog() -> List[Dict[str, Any]]:
             "help": (
                 "Answer model ID override. Resolution chain: explicit arg "
                 "> ED4ALL_ANSWER_MODEL > LOCAL_SYNTHESIS_MODEL > registry "
-                "default (qwen2.5:7b-instruct-q4_K_M)."
+                "default (nemotron-3-nano-30b-a3b)."
             ),
             "applies_to": "retrieval",
         },

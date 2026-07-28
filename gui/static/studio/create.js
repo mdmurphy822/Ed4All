@@ -795,7 +795,10 @@ function mountStageRail(runId, ariaLabel, onState, opts = {}) {
       ? (Array.isArray(trainP.phases) ? trainP.phases : []).map((p) => ({ ...p, group: 'training' }))
       : plannedTrainingPhases(training);
 
-    const merged = { ...base, phases: [...buildPhases, ...trainingPhases] };
+    const merged = {
+      ...base,
+      phases: appendUniqueTrainingPhases(buildPhases, trainingPhases),
+    };
     const { eff, raw } = render(merged, activeRunId);
 
     // Latch only when the WHOLE pipeline is done. Training follows a
@@ -1219,6 +1222,30 @@ function plannedTrainingPhases(stage) {
   }));
 }
 
+/**
+ * Append a separately-launched training run only for phase names the build
+ * plan does not already own.
+ *
+ * Modern textbook_to_course plans contain the opt-in LoRA tail themselves:
+ * vector_indexing -> training -> post_training_validation -> evaluation ->
+ * finalization. The pipeline-chain endpoint can still expose a correlated
+ * standalone trainforge_train run for older runs, but blindly concatenating
+ * it would duplicate "training" and "post training validation" on the rail.
+ * Name-based de-duplication keeps both generations of run records readable
+ * without assuming a particular workflow or phase index.
+ */
+function appendUniqueTrainingPhases(buildPhases, trainingPhases) {
+  const leading = Array.isArray(buildPhases) ? buildPhases : [];
+  const trailing = Array.isArray(trainingPhases) ? trainingPhases : [];
+  const present = new Set(leading.map((p) => String((p && p.name) || '')));
+  return [...leading, ...trailing.filter((p) => {
+    const name = String((p && p.name) || '');
+    if (!name || present.has(name)) return false;
+    present.add(name);
+    return true;
+  })];
+}
+
 /* ==================================================== live run (#/live) */
 
 // Statuses that mean a run is over — the complement is "live". Mirrors the
@@ -1249,8 +1276,14 @@ export async function renderLiveRun(shell) {
     toastErr(e, 'Could not load runs');
     return;
   }
-  const status = (r) => String((r && r.status) || '').toLowerCase();
-  const target = runs.find((r) => ['running', 'paused'].includes(status(r)))
+  // ``effective_status`` is the liveness-aware truth for CLI runs. Prefer a
+  // genuinely active build before resumable pauses: list order alone can put
+  // a newer paused stage-child ahead of the parent workflow that is running.
+  const status = (r) => String(
+    (r && (r.effective_status || r.status)) || ''
+  ).toLowerCase();
+  const target = runs.find((r) => ['building', 'running'].includes(status(r)))
+    || runs.find((r) => status(r) === 'paused')
     || runs.find((r) => !LIVE_RUN_OVER.includes(status(r)));
   if (!target) {
     shell.setBusy(false);

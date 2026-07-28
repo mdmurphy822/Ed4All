@@ -1271,6 +1271,38 @@ def test_training_synthesis_units_and_tail_from_pairs_checkpoint(
     assert tail["label"] == "pairs done"
 
 
+def test_training_synthesis_anchor_ignores_same_named_earlier_phase_path(
+    state_dir, tmp_path
+):
+    """The tail follows trainforge_assessment, not the first same-named key."""
+    wrong = tmp_path / "earlier-assessments"
+    corpus = tmp_path / "trainforge-corpus"
+    sidecar = corpus / "training_specs" / ".synthesis_pairs_checkpoint.jsonl"
+    _append_content_rows(
+        sidecar,
+        [{"chunk_id": "right-chunk", "pair": {"instruction": "right"}}],
+    )
+    outputs = _outputs_through_trainforge_assessment(
+        {"assessments_path": str(corpus / "assessments.json")}
+    )
+    outputs["assessment_synthesis"] = {
+        "_completed": True,
+        "assessments_path": str(wrong / "assessments.json"),
+    }
+    run_id = _seed_run(
+        state_dir,
+        run_id="GUI-tail-pairs-producer",
+        workflow_id="WF-20260101-tail0032",
+        orch_run_id="TTC_tail_pairs_producer",
+        phase_outputs=outputs,
+    )
+    payload = progress_service.run_progress(run_id)
+    assert payload["stats"]["phase_units"]["count"] == 1
+    tail = progress_service.output_tail(run_id)
+    assert tail["row_count"] == 1
+    assert tail["rows"][0]["label"] == "right-chunk"
+
+
 def test_heading_judge_units_and_tail_from_judgments_dir(state_dir, tmp_path):
     """heading_judge is a growing DIRECTORY (one {stem}.heading_judgments.json
     per chapter under state/runs/<run_id>/heading_judge/ —
@@ -1398,33 +1430,41 @@ def test_trainforge_train_plan_renders_and_band_degrades(state_dir):
     assert "detail" not in stats
 
 
-def test_trainforge_train_eval_progress_units_and_tail(state_dir, libv2_root):
-    """The training phase tails the eval harness's per-model-call stream
-    (Trainforge/eval/slm_eval_harness.py::_EvalProgressTracker.emit) at
-    <libv2>/courses/<slug>/models/<model_id>/eval/eval_progress.jsonl — the
+def test_trainforge_train_progress_units_snapshot_and_tail(state_dir, libv2_root):
+    """The training phase tails its distinct SFT/DPO telemetry stream at
+    <libv2>/courses/<slug>/models/<model_id>/training_telemetry.v1.jsonl — the
     NEWEST matching stream, since <model_id> is minted at run start. The
     anchor mirrors TrainingRunner._resolve_course_dir (canonical
     libv2_course_slug off params.course_name)."""
     import os as _os
 
     course = libv2_root / "courses" / "tst-101"  # libv2_course_slug("TST_101")
-    old = course / "models" / "model-old" / "eval" / "eval_progress.jsonl"
-    new = course / "models" / "model-new" / "eval" / "eval_progress.jsonl"
+    old = course / "models" / "model-old" / "training_telemetry.v1.jsonl"
+    new = course / "models" / "model-new" / "training_telemetry.v1.jsonl"
     _append_content_rows(
-        old, [{"event": "run_start", "elapsed_seconds": 0.0, "total_calls": 0}]
+        old, [{"schema_version": 1, "event": "stage_start", "stage": "sft"}]
     )
     _append_content_rows(
         new,
         [
-            {"event": "stage_start", "stage": "faithfulness",
-             "expected_calls": 40, "elapsed_seconds": 0.1, "total_calls": 0},
-            {"event": "model_call", "stage": "faithfulness",
-             "elapsed_seconds": 12.5, "total_calls": 5},
+            {"schema_version": 1, "event": "stage_start", "stage": "sft",
+             "status": "running", "global_step": 0, "max_steps": 40,
+             "metrics": {}},
+            {"schema_version": 1, "event": "progress", "stage": "sft",
+             "status": "running", "global_step": 5, "max_steps": 40,
+             "metrics": {"loss": 1.25, "eta_seconds": 70.0}},
         ],
     )
+    latest = new.parent / "training_telemetry.latest.v1.json"
+    latest.write_text(json.dumps({
+        "schema_version": 1, "event": "progress", "stage": "sft",
+        "status": "running", "global_step": 5, "max_steps": 40,
+        "metrics": {"loss": 1.25, "eta_seconds": 70.0},
+    }), encoding="utf-8")
     base = 1_700_000_000
     _os.utime(old, (base, base))
     _os.utime(new, (base + 60, base + 60))
+    _os.utime(latest, (base + 60, base + 60))
 
     run_id = _seed_run(
         state_dir,
@@ -1438,18 +1478,23 @@ def test_trainforge_train_eval_progress_units_and_tail(state_dir, libv2_root):
     assert payload["current_phase"] == "training"
     units = payload["stats"]["phase_units"]
     assert units["count"] == 2  # rows in the NEWEST stream only
-    assert units["label"] == "eval calls"
-    assert units["source"] == "eval_progress.jsonl"
+    assert units["label"] == "training events"
+    assert units["source"] == "training_telemetry.v1.jsonl"
+    telemetry = payload["stats"]["training_telemetry"]
+    assert telemetry["stage"] == "sft"
+    assert telemetry["global_step"] == 5
+    assert telemetry["metrics"]["eta_seconds"] == 70.0
 
     tail = progress_service.output_tail(run_id)
     assert tail["row_count"] == 2
-    assert [r["label"] for r in tail["rows"]] == ["stage_start", "model_call"]
-    assert '"total_calls": 5' in tail["rows"][-1]["text"]
+    assert [r["label"] for r in tail["rows"]] == ["stage_start", "progress"]
+    assert '"global_step": 5' in tail["rows"][-1]["text"]
 
 
-def test_trainforge_train_no_eval_stream_yet_omits_units(state_dir, libv2_root):
-    """HONESTY: mid-train (before the eval stage mints its stream) the field
-    is omitted and the tail is empty — never a fabricated 0."""
+def test_trainforge_train_no_training_stream_yet_omits_units(
+    state_dir, libv2_root
+):
+    """HONESTY: before training mints its stream, no progress is fabricated."""
     (libv2_root / "courses" / "tst-101" / "models").mkdir(parents=True)
     run_id = _seed_run(
         state_dir,
@@ -1818,6 +1863,51 @@ def test_detail_by_phase_attribution_and_unattributed(state_dir):
     ]
 
 
+def test_detail_explicit_phase_wins_over_checkpoint_window(state_dir):
+    """Writer-stamped phase identity is not discarded by a stale time join."""
+    run_id = _seed_run(
+        state_dir,
+        run_id="GUI-prog-explicit-phase",
+        workflow_id="WF-20260101-prog0021b",
+        orch_run_id="TTC_prog_explicit_phase",
+        checkpoints={},
+        usage_rows=[
+            {
+                "ts": "2026-01-01T00:00:00+00:00",
+                "provider": "local",
+                "model": "model",
+                "phase": "content_generation_outline",
+                "prompt_tokens": 10,
+                "completion_tokens": 20,
+                "duration_ms": 1000,
+            },
+            {
+                "ts": "not-a-time",
+                "provider": "local",
+                "model": "model",
+                "prompt_tokens": 30,
+                "completion_tokens": 40,
+                "duration_ms": 1000,
+            },
+        ],
+    )
+    by_phase = progress_service.run_progress(run_id)["stats"]["detail"]["by_phase"]
+    assert by_phase == [
+        {
+            "phase": "content_generation_outline",
+            "calls": 1,
+            "prompt_tokens": 10,
+            "completion_tokens": 20,
+        },
+        {
+            "phase": "unattributed",
+            "calls": 1,
+            "prompt_tokens": 30,
+            "completion_tokens": 40,
+        },
+    ]
+
+
 def test_detail_omitted_without_any_source(state_dir):
     """No llm_usage.jsonl and no vram_trajectory.jsonl → no stats.detail."""
     run_id = _seed_run(
@@ -2181,6 +2271,40 @@ def test_seat_activity_absent_when_all_needed_seats_live(state_dir, monkeypatch)
     run_id = _run_parked_on_heading_judge(state_dir, "GUI-sa-live", "TTC_sa_live")
     payload = progress_service.run_progress(run_id)
     assert payload["current_phase"] == "heading_judge"
+    assert "seat_activity" not in payload["stats"]
+
+
+def test_run_owned_seat_overlay_recognizes_live_standalone_seat(
+    state_dir, monkeypatch
+):
+    """A CLI runner's attributed registry overrides the GUI's stale env."""
+    run_id = _seed_run(
+        state_dir,
+        run_id="GUI-seat-run-overlay",
+        workflow_id="WF-20260101-seat-overlay",
+        orch_run_id="TTC_seat_run_overlay",
+        phase_outputs={"semantik_conversion": {"_completed": True}},
+    )
+    monkeypatch.setattr(
+        progress_service,
+        "_active_run_seat_registry",
+        lambda *_args: {_SUPER: "http://runner-seat.invalid:8123"},
+    )
+    monkeypatch.setattr(
+        progress_service,
+        "_probe_seat_model",
+        lambda url: "served-snapshot" if "runner-seat" in url else None,
+    )
+    monkeypatch.setattr(
+        "gui.services.seat_service.seat_overview",
+        lambda: {"seats": []},
+    )
+    payload = progress_service.run_progress(run_id)
+    assert payload["stats"]["seat"] == {
+        "name": _SUPER,
+        "url": "http://runner-seat.invalid:8123",
+        "model": "served-snapshot",
+    }
     assert "seat_activity" not in payload["stats"]
 
 

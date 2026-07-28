@@ -54,8 +54,8 @@
 
 import { el, clear } from '../dom.js';
 
-const STATE_GLYPHS = { done: '✓', current: '●', pending: '○', failed: '✗', skipped: '–' };
-const STATE_WORDS = { done: 'done', current: 'in progress', pending: 'pending', failed: 'failed', skipped: 'skipped' };
+const STATE_GLYPHS = { done: '✓', current: '●', paused: 'Ⅱ', pending: '○', failed: '✗', skipped: '–' };
+const STATE_WORDS = { done: 'done', current: 'in progress', paused: 'paused', pending: 'pending', failed: 'failed', skipped: 'skipped' };
 // Friendly HEADER label per server-derived `group`. The pipeline groups
 // (conversion / planning / generation / validation / packaging / archive)
 // render their raw key; the two trailing groups of the ONE sequenced
@@ -172,6 +172,13 @@ export function stageRail(opts = {}) {
           ? p.elapsed_s
           : (typeof p.wallclock_s === 'number' ? p.wallclock_s : null);
         const wall = nodeSeconds !== null ? fmtDur(nodeSeconds) : '';
+        const tm = p.telemetry && typeof p.telemetry === 'object' ? p.telemetry : null;
+        let metric = '';
+        if (tm && Number.isFinite(tm.completed_units) && Number.isFinite(tm.total_units) && tm.total_units > 0) {
+          metric = `${tm.completed_units}/${tm.total_units}`;
+        } else if (tm && Number.isFinite(tm.accepted_count)) {
+          metric = `${tm.accepted_count} accepted`;
+        }
         // The current node's dot carries the `stage-pulse` motion utility —
         // its animation (and reduced-motion static-highlight swap) lives in
         // tokens.css, the single motion layer.
@@ -189,6 +196,9 @@ export function stageRail(opts = {}) {
           wall
             ? el('span', { class: 'stage-node-time tabular-nums', text: wall })
             : el('span', { class: 'stage-node-time', 'aria-hidden': 'true', text: ' ' }),
+          metric
+            ? el('span', { class: 'stage-node-time tabular-nums', text: metric })
+            : null,
         ]);
         nodes.appendChild(li);
       });
@@ -255,6 +265,51 @@ export function stageRail(opts = {}) {
         text: String(s.phase_units.count),
       })));
     }
+    const train = s.training_telemetry;
+    if (train && (train.stage === 'sft' || train.stage === 'dpo')) {
+      const step = Number.isFinite(train.global_step) ? train.global_step : null;
+      const total = Number.isFinite(train.max_steps) ? train.max_steps : null;
+      if (step !== null) {
+        rows.push(statRow(`${train.stage.toUpperCase()} step`, el('dd', {
+          class: 'tabular-nums',
+          text: `${step}${total !== null ? ` / ${total}` : ''}`,
+        })));
+      }
+      const tm = train.metrics || {};
+      if (Number.isFinite(tm.eta_seconds)) {
+        rows.push(statRow('training ETA', el('dd', {
+          class: 'tabular-nums',
+          text: fmtDur(tm.eta_seconds),
+        })));
+      }
+      if (Number.isFinite(tm.non_padding_tokens_per_second)) {
+        rows.push(statRow('useful tok/s', el('dd', {
+          class: 'tabular-nums',
+          text: String(Math.round(tm.non_padding_tokens_per_second)),
+        })));
+      }
+    }
+    const activeTelemetry = Array.isArray(s.phase_telemetry)
+      ? s.phase_telemetry.find((item) => item && item.phase === payload.current_phase)
+      : null;
+    if (activeTelemetry && Number.isFinite(activeTelemetry.completed_units)) {
+      const total = Number.isFinite(activeTelemetry.total_units) && activeTelemetry.total_units > 0
+        ? ` / ${activeTelemetry.total_units}`
+        : '';
+      rows.push(statRow('phase units', el('dd', {
+        class: 'tabular-nums',
+        text: `${activeTelemetry.completed_units}${total}`,
+      })));
+    }
+    if (activeTelemetry && Number.isFinite(activeTelemetry.active_workers)) {
+      const maximum = Number.isFinite(activeTelemetry.max_concurrent)
+        ? ` / ${activeTelemetry.max_concurrent}`
+        : '';
+      rows.push(statRow('concurrency', el('dd', {
+        class: 'tabular-nums',
+        text: `${activeTelemetry.active_workers}${maximum}`,
+      })));
+    }
     if (s.seat && (s.seat.model || s.seat.name)) {
       const seatText = [s.seat.name, s.seat.model].filter(Boolean).join(' · ');
       rows.push(statRow('serving', el('dd', { text: seatText })));
@@ -295,18 +350,22 @@ export function stageRail(opts = {}) {
 
   function renderDetail(payload) {
     const d = (payload.stats || {}).detail;
+    const phaseTelemetry = Array.isArray((payload.stats || {}).phase_telemetry)
+      ? payload.stats.phase_telemetry
+      : [];
     clear(detailBody);
     // The server OMITS stats.detail when no source file exists — hide the
     // whole disclosure rather than rendering an empty shell (honesty
     // contract: nothing fabricated, nothing implied).
-    if (!d || typeof d !== 'object') {
+    const train = (payload.stats || {}).training_telemetry;
+    if ((!d || typeof d !== 'object') && !phaseTelemetry.length && !train) {
       detailHost.hidden = true;
       return;
     }
     detailHost.hidden = false;
 
     const lines = el('dl', { class: 'stage-stats stage-detail-lines' });
-    const t = d.totals;
+    const t = d && d.totals;
     if (t) {
       lines.appendChild(detailLine('calls', Number.isFinite(t.calls) ? String(t.calls) : '—'));
       lines.appendChild(detailLine(
@@ -314,7 +373,7 @@ export function stageRail(opts = {}) {
         `${fmtTokens(t.prompt_tokens)} in · ${fmtTokens(t.completion_tokens)} out · ${fmtTokens(t.total_tokens)} total`,
       ));
     }
-    if (d.throughput) {
+    if (d && d.throughput) {
       // Three clearly-named figures: window aggregate (matches the band's
       // tok/s), per-stream (what one request experiences under concurrency),
       // and the cumulative run average.
@@ -328,19 +387,19 @@ export function stageRail(opts = {}) {
         lines.appendChild(detailLine('avg tok/s (cumulative)', String(d.throughput.avg_tok_s)));
       }
     }
-    const lat = d.latency;
+    const lat = d && d.latency;
     if (lat && (typeof lat.ttft_p50_ms === 'number' || typeof lat.ttft_p95_ms === 'number')) {
       lines.appendChild(detailLine('TTFT p50 / p95', `${fmtMs(lat.ttft_p50_ms)} / ${fmtMs(lat.ttft_p95_ms)}`));
     }
     if (lat && (typeof lat.duration_mean_ms === 'number' || typeof lat.duration_median_ms === 'number')) {
       lines.appendChild(detailLine('call time mean / median', `${fmtMs(lat.duration_mean_ms)} / ${fmtMs(lat.duration_median_ms)}`));
     }
-    if (d.health) {
+    if (d && d.health) {
       // Tripwires: a real 0 is worth showing (it means "no truncation seen").
       lines.appendChild(detailLine('truncated (finish=length)', String(d.health.truncated_calls ?? '—')));
       lines.appendChild(detailLine('usage missing', String(d.health.usage_missing_calls ?? '—')));
     }
-    if (d.vram && d.vram.latest) {
+    if (d && d.vram && d.vram.latest) {
       const v = d.vram.latest;
       const free = Number.isFinite(v.free_mib) ? fmtTokens(v.free_mib) : '—';
       const total = Number.isFinite(v.total_mib) ? fmtTokens(v.total_mib) : '—';
@@ -352,7 +411,73 @@ export function stageRail(opts = {}) {
     }
     if (lines.childNodes.length) detailBody.appendChild(lines);
 
-    if (Array.isArray(d.by_model) && d.by_model.length) {
+    if (train && (train.stage === 'sft' || train.stage === 'dpo')) {
+      const tm = train.metrics || {};
+      const trainingLines = el('dl', { class: 'stage-stats stage-detail-lines' });
+      trainingLines.appendChild(detailLine(
+        'training stage / status',
+        `${train.stage.toUpperCase()} · ${train.status || train.event || '—'}`,
+      ));
+      if (Number.isFinite(train.global_step)) {
+        trainingLines.appendChild(detailLine(
+          'step / total',
+          `${train.global_step} / ${Number.isFinite(train.max_steps) ? train.max_steps : '—'}`,
+        ));
+      }
+      const metrics = [
+        ['epoch', tm.epoch ?? train.epoch],
+        ['elapsed / ETA', Number.isFinite(tm.elapsed_seconds)
+          ? `${fmtDur(tm.elapsed_seconds)} / ${Number.isFinite(tm.eta_seconds) ? fmtDur(tm.eta_seconds) : '—'}`
+          : null],
+        ['loss', tm.loss],
+        ['learning rate', tm.learning_rate],
+        ['gradient norm', tm.grad_norm],
+        ['examples/s', tm.examples_per_second],
+        ['steps/s', tm.steps_per_second],
+        ['non-padding tokens/s', tm.non_padding_tokens_per_second],
+        ['length p50 / p95 / max', [tm.sequence_length_p50, tm.sequence_length_p95, tm.sequence_length_max]
+          .some(Number.isFinite)
+          ? `${tm.sequence_length_p50 ?? '—'} / ${tm.sequence_length_p95 ?? '—'} / ${tm.sequence_length_max ?? '—'}`
+          : null],
+        ['truncated examples', tm.truncated_examples],
+        ['padding fraction', tm.padding_fraction],
+        ['completion-mask coverage', tm.completion_mask_fraction],
+        ['consumed / skipped', Number.isFinite(tm.consumed_examples) || Number.isFinite(tm.skipped_examples)
+          ? `${tm.consumed_examples ?? '—'} / ${tm.skipped_examples ?? '—'}`
+          : null],
+        ['CUDA allocated / reserved', Number.isFinite(tm.cuda_allocated_bytes) || Number.isFinite(tm.cuda_reserved_bytes)
+          ? `${fmtTokens(tm.cuda_allocated_bytes)} / ${fmtTokens(tm.cuda_reserved_bytes)} bytes`
+          : null],
+        ['CUDA free / total', Number.isFinite(tm.cuda_free_bytes) || Number.isFinite(tm.cuda_total_bytes)
+          ? `${fmtTokens(tm.cuda_free_bytes)} / ${fmtTokens(tm.cuda_total_bytes)} bytes`
+          : null],
+        ['host memory available / total', Number.isFinite(tm.host_memory_available_bytes) || Number.isFinite(tm.host_memory_total_bytes)
+          ? `${fmtTokens(tm.host_memory_available_bytes)} / ${fmtTokens(tm.host_memory_total_bytes)} bytes`
+          : null],
+        ['checkpoint', tm.selected_checkpoint || tm.checkpoint_path || null],
+        ['checkpoint size / save time', Number.isFinite(tm.checkpoint_bytes) || Number.isFinite(tm.checkpoint_duration_seconds)
+          ? `${fmtTokens(tm.checkpoint_bytes)} bytes / ${Number.isFinite(tm.checkpoint_duration_seconds) ? fmtDur(tm.checkpoint_duration_seconds) : '—'}`
+          : null],
+        ['probe score', tm.probe_score],
+        ['SFT baseline / DPO delta', Number.isFinite(tm.selected_sft_baseline) || Number.isFinite(tm.dpo_delta)
+          ? `${tm.selected_sft_baseline ?? '—'} / ${tm.dpo_delta ?? '—'}`
+          : null],
+        ['early stop', typeof tm.early_stop_triggered !== 'undefined'
+          ? (tm.early_stop_triggered ? 'yes' : 'no')
+          : null],
+      ];
+      metrics.forEach(([label, value]) => {
+        if (value !== null && typeof value !== 'undefined') {
+          trainingLines.appendChild(detailLine(label, String(value)));
+        }
+      });
+      detailBody.appendChild(el('div', { class: 'stage-detail-section' }, [
+        el('p', { class: 'stage-detail-heading', text: 'LoRA training' }),
+        trainingLines,
+      ]));
+    }
+
+    if (d && Array.isArray(d.by_model) && d.by_model.length) {
       detailBody.appendChild(detailTable(
         'By model',
         ['provider', 'model', 'calls', 'in', 'out'],
@@ -362,7 +487,7 @@ export function stageRail(opts = {}) {
         ]),
       ));
     }
-    if (Array.isArray(d.by_phase) && d.by_phase.length) {
+    if (d && Array.isArray(d.by_phase) && d.by_phase.length) {
       detailBody.appendChild(detailTable(
         'By phase',
         ['phase', 'calls', 'in', 'out'],
@@ -374,6 +499,45 @@ export function stageRail(opts = {}) {
         ]),
       ));
     }
+    phaseTelemetry.forEach((tm) => {
+      if (!tm || typeof tm !== 'object' || !tm.phase) return;
+      const rows = [
+        ['state', tm.state || '—'],
+        ['units', Number.isFinite(tm.completed_units)
+          ? `${tm.completed_units}${Number.isFinite(tm.total_units) && tm.total_units > 0 ? ` / ${tm.total_units}` : ''}`
+          : '—'],
+        ['pairs accepted / rejected', [tm.accepted_count, tm.rejected_count]
+          .map((v) => Number.isFinite(v) ? String(v) : '—').join(' / ')],
+        ['SFT / DPO', [tm.sft_count, tm.dpo_count]
+          .map((v) => Number.isFinite(v) ? String(v) : '—').join(' / ')],
+        ['generation results / cached replays', [tm.provider_results, tm.cached_replays]
+          .map((v) => Number.isFinite(v) ? String(v) : '—').join(' / ')],
+        ['workers active / max', Number.isFinite(tm.active_workers)
+          ? `${tm.active_workers}${Number.isFinite(tm.max_concurrent) ? ` / ${tm.max_concurrent}` : ''}`
+          : '—'],
+        ['queued / in flight', [tm.queued_units, tm.in_flight]
+          .map((v) => Number.isFinite(v) ? String(v) : '—').join(' / ')],
+        ['transient pending / attempts', [tm.transient_count, tm.transient_attempts]
+          .map((v) => Number.isFinite(v) ? String(v) : '—').join(' / ')],
+        ['recovered / exhausted / fatal', [tm.recovered_units, tm.exhausted_units, tm.fatal_units]
+          .map((v) => Number.isFinite(v) ? String(v) : '—').join(' / ')],
+        ['throughput', Number.isFinite(tm.throughput_units_per_second)
+          ? `${tm.throughput_units_per_second} units/s`
+          : '—'],
+        ['ETA', Number.isFinite(tm.eta_seconds) ? fmtDur(tm.eta_seconds) : '—'],
+        ['gate readiness', tm.gate_readiness || '—'],
+        ['provider · model', [tm.provider, tm.model].filter(Boolean).join(' · ') || '—'],
+      ];
+      const reasons = tm.rejection_reasons && typeof tm.rejection_reasons === 'object'
+        ? Object.entries(tm.rejection_reasons).sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+        : [];
+      reasons.forEach(([reason, count]) => rows.push([`rejected: ${reason}`, String(count)]));
+      detailBody.appendChild(detailTable(
+        `${titleWords(tm.phase)} telemetry`,
+        ['metric', 'value'],
+        rows,
+      ));
+    });
   }
 
   /**

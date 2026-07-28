@@ -190,7 +190,7 @@ mirrored in `env_catalog.PROVIDERS`. Current providers:
 | Provider | Label | API key env | Default base URL | Vision |
 |----------|-------|-------------|------------------|:------:|
 | `anthropic` | Anthropic (Claude) | `ANTHROPIC_API_KEY` | — | ✓ |
-| `local` | Local model server (OpenAI-compatible: vLLM, Ollama, llama.cpp) | `LOCAL_SYNTHESIS_API_KEY` (optional) | `http://localhost:11434/v1` | ✓¹ |
+| `local` | Local model server (OpenAI-compatible: TRT-LLM, vLLM, llama.cpp) | `LOCAL_SYNTHESIS_API_KEY` (optional) | `http://localhost:8000/v1` | ✓¹ |
 | `together` | Together AI (text) | `TOGETHER_API_KEY` | `https://api.together.xyz/v1` | — |
 | `together-vision` | Together AI (vision) | `TOGETHER_API_KEY` | `https://api.together.xyz/v1` | ✓ |
 | `groq` | Groq | `GROQ_API_KEY` | `https://api.groq.com/openai/v1` | — |
@@ -207,15 +207,14 @@ Per-task routing slots (each → its canonical env var on render): `global`
 
 ### The `local` provider = any local OpenAI-compatible server
 
-The `local` provider is **backend-agnostic**: it is any local OpenAI-compatible
-model server — vLLM, Ollama, llama.cpp, LM Studio, etc. Its default base URL
-points at port `11434` (Ollama's default, `http://localhost:11434/v1`) only as
-a fallback; point `LOCAL_SYNTHESIS_BASE_URL` at your seat (e.g.
-`http://localhost:8001` for a vLLM seat) to use it instead. The registry name
+The `local` provider is a strict OpenAI-compatible model server — TRT-LLM,
+vLLM, llama.cpp, or LM Studio. Its default base URL is the canonical local
+seat at `http://localhost:8000/v1`; there is no implicit Ollama endpoint or
+lifecycle fallback. Point `LOCAL_SYNTHESIS_BASE_URL` at another compatible
+seat when needed. The registry name
 stays `local` because SemantiK / Trainforge / the provider resolver all key on
 that literal; the GUI shows the human label "Local model server (OpenAI-compatible:
-vLLM, Ollama, llama.cpp)". Ollama is one supported backend, not *the* local
-backend.
+TRT-LLM, vLLM, llama.cpp)".
 
 **Live model discovery (protocol-first):** `GET /api/settings/local-models`
 probes the OpenAI-compatible `GET <root>/v1/models` endpoint FIRST (vLLM, Ollama,
@@ -308,7 +307,7 @@ partial directory.
 | POST | `/api/runs/phase` | `{workflow, phase, course_name?, project_id?, mode?, provider?, model?, options{}}` | `{run_id, status, tasks?, gate_results?}` (422 on failure) |
 | GET | `/api/runs` | — | `{runs: [<run record>...]}` (newest first) |
 | GET | `/api/runs/{run_id}` | — | the run record (404 if unknown). On a failed run the record carries `failed_phase` + `failure_reason`. |
-| GET | `/api/runs/{run_id}/progress` | — | Stage-tracker payload for the pipeline rail + live stats band: `{run_id, workflow_id, workflow, status, phases:[{name, index, state, group, label, wallclock_s}], current_phase, failed_phase, failure_reason, stats:{tok_s, streams?, calls, prompt_tokens, completion_tokens, ttft_p50_ms, phase_elapsed_s, seat:{name, url, model}\|null}, updated_at}`. Phase `state` is `done \| current \| pending \| failed \| skipped`; the phase list is the run's own `config/workflows.yaml` plan (workflow-agnostic, cached — when the plan carries both sides of an `enabled_when_env` branch, the not-taken side is omitted from the list: a branchy row that resolved skipped, or the negative-clause fallback row with no evidence of running yet), merged with the orchestrator workflow state, checkpoint wall-clocks, and a bounded tail of the OP2 `llm_usage.jsonl` tap (`tok_s` is the AGGREGATE seat throughput — sliding-window completion tokens over the window's wall span; `streams` is the estimated in-flight request count over that window, omitted when not computable; the per-stream figure is `stats.detail.throughput.per_stream_tok_s`; nulls when no usage yet). `seat` is a TTL-cached `/v1/models` probe over the `ED4ALL_SEAT_BASE_URLS` registry (null when no seat registry / terminal run). Cheap enough to poll at 2–5s. Accepts a GUI run id or a bare orchestrator workflow id; typed 404 otherwise. |
+| GET | `/api/runs/{run_id}/progress` | — | Stage-tracker payload for the pipeline rail + live stats band: `{run_id, workflow_id, workflow, status, phases:[{name, index, state, group, label, wallclock_s, telemetry?}], current_phase, failed_phase, failure_reason, stats:{tok_s, streams?, calls, prompt_tokens, completion_tokens, ttft_p50_ms, phase_elapsed_s, phase_telemetry?, seat:{name, url, model}\|null}, updated_at}`. Phase `state` is `done \| current \| paused \| pending \| failed \| skipped`; the phase list is the run's own `config/workflows.yaml` plan (workflow-agnostic, cached — when the plan carries both sides of an `enabled_when_env` branch, the not-taken side is omitted from the list: a branchy row that resolved skipped, or the negative-clause fallback row with no evidence of running yet), merged with the orchestrator workflow state, checkpoint wall-clocks, optional versioned atomic `state/runs/<run_id>/telemetry/<phase>.json` snapshots, and a bounded tail of the OP2 `llm_usage.jsonl` tap. Telemetry is run/phase/schema/type validated fail-safe; invalid documents are omitted, while valid completed metrics remain visible after the phase advances. (`tok_s` is the AGGREGATE seat throughput — sliding-window completion tokens over the window's wall span; `streams` is the estimated in-flight request count over that window, omitted when not computable; the per-stream figure is `stats.detail.throughput.per_stream_tok_s`; nulls when no usage yet). `seat` is a TTL-cached `/v1/models` probe over the `ED4ALL_SEAT_BASE_URLS` registry (null when no seat registry / terminal run). Cheap enough to poll at 2–5s. Accepts a GUI run id or a bare orchestrator workflow id; typed 404 otherwise. |
 | GET | `/api/runs/{run_id}/output-tail` | — | Live-output tail for the run's CURRENT phase (the Studio "Live output" panel): `{run_id, phase, source, label, row_count, rows:[{seq, label, text}]}` — the last ≤15 complete rows of the phase's per-unit resume-checkpoint sidecar (or, for `heading_judge`, the newest per-chapter judgment files — a growing-directory source; `training_synthesis` tails its per-pair `training_specs/.synthesis_pairs_checkpoint.jsonl`), each mapped to a bounded display record (`text` HTML-stripped + truncated to ~500 chars with a trailing `…`; rows without a content field render a compact JSON of their payload minus fingerprint/schema bookkeeping). Bounded seek-from-end read (~2 MB cap); corrupt / mid-append partial rows are skipped; absent sidecar or unmapped phase → honest `rows: []` with `source: null`. Typed 404 when the run is unknown. |
 | GET | `/api/runs/{run_id}/validation-report` | — | `{run_id, report, report_path, failed_gates:[{phase, gate_id, severity, message, issues_count}], failed_phase, failure_reason}`. `report` is the `courseforge_validation_report.json` body when present, else `null` with an explanatory `note`. 404 if the run is unknown. |
 | POST | `/api/runs/{run_id}/cancel` | — | `{run_id, status}` (404 if unknown) |
@@ -806,7 +805,7 @@ indices; the map is `progress_service.py::_EXACT_GROUPS`, and because the rail
 buckets by FIRST occurrence a group must span execution-contiguous phases, so
 the post-build training tail and finalization render last). Node states: done ✓,
 current (CSS pulse; a static highlight ring under `prefers-reduced-motion` —
-motion lives in `tokens.css`), pending ○, failed ✗, skipped – (dimmed, e.g.
+motion lives in `tokens.css`), paused Ⅱ, pending ○, failed ✗, skipped – (dimmed, e.g.
 `enabled_when_env`-disabled tiers or `--skip-training`). Completed nodes show
 their checkpoint wall-clock under the node. The stats band shows tokens/sec
 (AGGREGATE seat throughput: sliding-window completion tokens over the window's
@@ -815,7 +814,14 @@ serving many requests concurrently, so per-request speed is roughly
 aggregate ÷ N; the per-stream figure lives in the detail disclosure), total LLM calls,
 prompt/completion token totals, TTFT p50 (when the run streams under
 `ED4ALL_LLM_TTFT_METER`), elapsed time in the current phase, and the currently
-serving vLLM seat/model. Every state pairs its color with a glyph +
+serving vLLM seat/model. A valid run-scoped phase telemetry snapshot adds the
+node's completed/total chunk units and generic detail rows for pair
+accepted/rejected and SFT/DPO counts, active/maximum workers, queued/in-flight
+units, generation results versus cache replays, transient lifecycle,
+throughput, ETA, gate readiness, provider/model, and rejection reasons. The
+reader rejects impossible relationships (`terminal > completed > total`,
+`active + queued != in_flight`, or concurrency above maximum); metrics remain
+visible on completed phases. Every state pairs its color with a glyph +
 visually-hidden text (never color-only), and the rail adds no live region — the
 console's single `role=status` line stays the only announcer.
 

@@ -320,6 +320,8 @@ a.card:hover { border-color: var(--accent); }
 .stage-node.is-done .stage-node-name  { color: var(--fg); }
 .stage-node.is-failed .stage-node-dot { border-color: var(--phase-failed); color: var(--phase-failed); }
 .stage-node.is-failed .stage-node-name { color: var(--phase-failed); }
+.stage-node.is-paused .stage-node-dot  { border-color: var(--warn); color: var(--warn); }
+.stage-node.is-paused .stage-node-name { color: var(--warn); font-weight: 600; }
 .stage-node.is-skipped { opacity: 0.55; }
 /* The current node's dot also carries the `stage-pulse` MOTION utility class
  * (set in stage-rail.js). The animation itself lives in tokens.css — the single
