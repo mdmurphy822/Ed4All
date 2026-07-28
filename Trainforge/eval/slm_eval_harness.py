@@ -1511,12 +1511,17 @@ def main() -> None:  # pragma: no cover — CLI passthrough
                 "--adapter-path and --base-model are required unless --stub "
                 "is set. Pass both to evaluate the real trained adapter."
             )
-        from Trainforge.eval.adapter_callable import AdapterCallable
+        from Trainforge.eval.adapter_callable import (
+            AdapterCallable,
+            AdapterDisabledCallable,
+        )
         from Trainforge.eval.eval_config import load_eval_config
-        from Trainforge.eval.rag_callable import BaseOnlyCallable, RAGCallable
+        from Trainforge.eval.rag_callable import RAGCallable
         from Trainforge.training.base_models import BaseModelRegistry
+        from Trainforge.training.configs import load_config
 
         spec = BaseModelRegistry.resolve(args.base_model)
+        training_cfg = load_config(args.base_model)
         loaded_cfg = load_eval_config(course_path)
         cfg = loaded_cfg.config
         callable_kwargs: Dict[str, Any] = {
@@ -1526,6 +1531,7 @@ def main() -> None:  # pragma: no cover — CLI passthrough
             "top_p": float(cfg.get("top_p", 1.0)),
             "seed": int(cfg.get("seed", 42)),
             "revision": spec.default_revision,
+            "use_4bit": bool(training_cfg.use_4bit),
         }
         adapter_dir = Path(args.adapter_path)
         _model = AdapterCallable(
@@ -1538,13 +1544,7 @@ def main() -> None:  # pragma: no cover — CLI passthrough
                 AblationRunner,
                 AblationSetup,
             )
-            base_callable = BaseOnlyCallable(
-                base_model_repo=spec.huggingface_repo,
-                max_new_tokens=callable_kwargs["max_new_tokens"],
-                temperature=callable_kwargs["temperature"],
-                base_model_short_name=args.base_model,
-                eval_config=loaded_cfg,
-            )
+            base_callable = AdapterDisabledCallable(_model)
             slug = course_path.name
             adapter_rag = RAGCallable(
                 base_callable=_model, course_slug=slug, eval_config=loaded_cfg,

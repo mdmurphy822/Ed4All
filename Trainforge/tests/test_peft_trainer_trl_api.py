@@ -209,6 +209,10 @@ def _install_fake_ml(monkeypatch, *, sftconfig_accepts_completion_only, labels):
         "Trainforge.training.peft_trainer._require_training_deps_impl",
         lambda *, require_bnb: None,
     )
+    monkeypatch.setattr(
+        "Trainforge.training.peft_trainer._assert_supported_runtime",
+        lambda: {},
+    )
 
     fake_torch = types.ModuleType("torch")
     fake_torch.bfloat16 = "bfloat16"

@@ -168,9 +168,15 @@ def fake_transformers(monkeypatch):
         def __init__(self, **kwargs):
             self.kwargs = kwargs
 
+    class _AutoConfig:
+        @classmethod
+        def from_pretrained(cls, repo, **kwargs):
+            return types.SimpleNamespace(model_type="nemotron_h")
+
     fake_mod.AutoModelForCausalLM = _AutoModel
     fake_mod.AutoTokenizer = _AutoTokenizer
     fake_mod.BitsAndBytesConfig = _BnBConfig
+    fake_mod.AutoConfig = _AutoConfig
     monkeypatch.setitem(sys.modules, "transformers", fake_mod)
     return fake_mod, fake_tokenizer, fake_model
 
@@ -229,6 +235,34 @@ def test_init_loads_model_and_caches(
     # Adapter dir is the source of the PEFT load (not the base repo).
     last_call = fake_peft.PeftModel.from_pretrained_calls[-1]
     assert last_call["adapter_path"] == str(adapter_dir)
+
+
+def test_nano_probe_loads_pinned_bf16_without_quantization(
+    fake_torch, fake_transformers, fake_peft, adapter_dir, monkeypatch,
+):
+    fake_mod, _tokenizer, _model = fake_transformers
+    fake_torch.cuda.is_available = lambda: True
+    fake_torch.cuda.is_bf16_supported = lambda: True
+    fake_torch.bfloat16 = "bfloat16-stub"
+    monkeypatch.setattr(
+        "Trainforge.training.peft_trainer._missing_mamba_kernel_packages",
+        lambda: [],
+    )
+    from Trainforge.eval.adapter_callable import AdapterCallable
+
+    AdapterCallable(
+        adapter_dir=adapter_dir,
+        base_model_repo="nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
+        base_model_short_name="nemotron3-nano-30b",
+        revision="pinned-revision",
+        use_4bit=False,
+    )
+    kwargs = fake_mod.AutoModelForCausalLM.last_kwargs
+    assert kwargs["revision"] == "pinned-revision"
+    assert kwargs["trust_remote_code"] is True
+    assert kwargs["torch_dtype"] == "bfloat16-stub"
+    assert kwargs["device_map"] == "auto"
+    assert "quantization_config" not in kwargs
 
 
 def test_call_reuses_cached_model(

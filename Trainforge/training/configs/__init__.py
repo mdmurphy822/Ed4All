@@ -68,6 +68,12 @@ class TrainingConfig:
     min_dpo_pairs: int = 50
     dpo_preference_filter: str = "editorial_or_misconception"
     dpo_fail_hard: bool = True
+    # DPO needs its own calibrated rate.  ``None`` preserves legacy sibling
+    # recipes, but the 30B Nano path fails loud until a measured canary selects
+    # an override; reusing the SFT rate implicitly is not acceptable there.
+    dpo_learning_rate: Optional[float] = None
+    # Operator-only canary bound. ``None`` is the production path.
+    max_steps: Optional[int] = None
 
     # ------------------------------------------------------------------ #
     # S8 training-recipe orchestration knobs (NOT persisted to the model  #
@@ -86,10 +92,11 @@ class TrainingConfig:
     # Early-stopping patience (epochs) for the narrow/repetitive-corpus
     # overfit guard; consumed by the checkpoint-selection scaffolding.
     early_stopping_patience: int = 1
-    # Which downstream probe the checkpoint selector optimises. Canonical
-    # values: "gold_keypoint_coverage" | "sympy_correctness" | "pair_loss".
-    # Pair/held-out loss is only an overfit tripwire, never the selector.
-    checkpoint_selection_metric: str = "gold_keypoint_coverage"
+    # Empty preserves the legacy final-epoch path.  A per-base/course config
+    # explicitly enables selection with "gold_keypoint_coverage",
+    # "sympy_correctness", or "composite". Pair/held-out loss is only an
+    # overfit tripwire, never a production selector.
+    checkpoint_selection_metric: str = ""
 
 
     # Fields the model_card schema's ``training_config`` object accepts

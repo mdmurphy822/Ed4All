@@ -28,8 +28,9 @@ Wave 101 design constraints:
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from Trainforge.training.base_models import (
     BaseModelRegistry,
@@ -72,6 +73,7 @@ class AdapterCallable:
         revision: Optional[str] = None,
         device: Optional[str] = None,
         base_model_short_name: Optional[str] = None,
+        use_4bit: bool = True,
     ) -> None:
         """Load base + adapter once and cache the model.
 
@@ -116,6 +118,7 @@ class AdapterCallable:
         self.top_p = float(top_p)
         self.seed = int(seed) if seed is not None else None
         self.revision = revision
+        self.use_4bit = bool(use_4bit)
 
         # Heavy imports - only here, not at module import time.
         import torch  # type: ignore
@@ -155,12 +158,58 @@ class AdapterCallable:
             )
         self.spec = spec
 
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.float16,
-            bnb_4bit_use_double_quant=True,
-        )
+        model_kwargs: dict[str, Any] = {
+            "revision": revision,
+            "trust_remote_code": bool(spec.trust_remote_code),
+        }
+        if self.use_4bit:
+            model_kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_use_double_quant=True,
+            )
+            model_kwargs["device_map"] = device
+        elif device == "cuda":
+            if not torch.cuda.is_bf16_supported():
+                raise RuntimeError(
+                    "AdapterCallable: bf16 checkpoint evaluation requested "
+                    "but torch.cuda.is_bf16_supported() returned False."
+                )
+            model_kwargs.update({
+                "torch_dtype": torch.bfloat16,
+                "device_map": "auto",
+            })
+
+        if spec.name == "nemotron3-nano-30b":
+            if self.use_4bit:
+                raise RuntimeError(
+                    "AdapterCallable: nemotron3-nano-30b checkpoint probes "
+                    "must use BF16; 4-bit loading is unsupported for the "
+                    "pinned hybrid Nemotron-H architecture."
+                )
+            from transformers import AutoConfig  # type: ignore
+            config = AutoConfig.from_pretrained(
+                base_model_repo,
+                revision=revision,
+                trust_remote_code=True,
+            )
+            if getattr(config, "model_type", None) != "nemotron_h":
+                raise RuntimeError(
+                    "AdapterCallable: pinned Nano identity mismatch; expected "
+                    "model_type='nemotron_h', got "
+                    f"{getattr(config, 'model_type', None)!r}."
+                )
+            from Trainforge.training.peft_trainer import (
+                _missing_mamba_kernel_packages,
+            )
+            missing = _missing_mamba_kernel_packages()
+            if missing:
+                raise RuntimeError(
+                    "AdapterCallable: refusing Nano checkpoint evaluation "
+                    "without fused Mamba kernels; missing "
+                    f"{missing}."
+                )
 
         logger.info(
             "AdapterCallable: loading base model %s in 4-bit on %s",
@@ -169,9 +218,7 @@ class AdapterCallable:
         try:
             base_model = AutoModelForCausalLM.from_pretrained(
                 base_model_repo,
-                revision=revision,
-                quantization_config=bnb_config,
-                device_map=device,
+                **model_kwargs,
             )
         except AttributeError as exc:
             # Audit 2026-04-30 / Phase B remediation hint: catch the
@@ -198,11 +245,15 @@ class AdapterCallable:
         # vocabulary matches). Fall back to the base repo when the
         # adapter dir is missing tokenizer files.
         try:
-            tokenizer = AutoTokenizer.from_pretrained(str(adapter_dir))
+            tokenizer = AutoTokenizer.from_pretrained(
+                str(adapter_dir),
+                trust_remote_code=bool(spec.trust_remote_code),
+            )
         except (OSError, ValueError):
             tokenizer = AutoTokenizer.from_pretrained(
                 base_model_repo,
                 revision=revision,
+                trust_remote_code=bool(spec.trust_remote_code),
             )
 
         # Apply the saved LoRA adapter on top of the 4-bit base.
@@ -220,6 +271,66 @@ class AdapterCallable:
         self._model = model
         self._tokenizer = tokenizer
 
+    @contextmanager
+    def adapter_disabled(self) -> Iterator[None]:
+        """Temporarily evaluate the pinned base without loading a second copy.
+
+        Nano's BF16 base is roughly 59 GiB.  Keeping an adapter model and an
+        independent base-only model resident would consume essentially the
+        whole 121-GiB Spark before activations.  PEFT's supported
+        ``disable_adapter`` context evaluates the frozen base through the same
+        object and restores the adapter on exit.
+        """
+        disable = getattr(self._model, "disable_adapter", None)
+        if disable is None:
+            raise RuntimeError(
+                "AdapterCallable: loaded PEFT model does not expose "
+                "disable_adapter(); base-vs-adapter ablation cannot run "
+                "without allocating a second base model."
+            )
+        with disable():
+            yield
+
+    def _generation_inputs(self, prompt: str) -> dict[str, Any]:
+        """Render inference through the pinned tokenizer's training template."""
+        messages = [{"role": "user", "content": str(prompt)}]
+        kwargs: dict[str, Any] = {
+            "add_generation_prompt": True,
+            "tokenize": True,
+            "return_dict": True,
+            "return_tensors": "pt",
+        }
+        if self.spec.name == "nemotron3-nano-30b":
+            # The pinned Nano template supports this argument and uses it to
+            # emit the same closed <think></think> boundary used by SFT.
+            kwargs["enable_thinking"] = False
+        try:
+            rendered = self._tokenizer.apply_chat_template(messages, **kwargs)
+        except (AttributeError, TypeError) as exc:
+            if self.spec.name == "nemotron3-nano-30b":
+                raise RuntimeError(
+                    "AdapterCallable: pinned Nano tokenizer could not render "
+                    "the required thinking-off chat template; refusing an "
+                    "evaluation with train/inference format drift."
+                ) from exc
+            # Older non-reasoning sibling tokenizers retain the legacy
+            # formatter path for compatibility.
+            formatted = format_instruction(
+                self.spec, {"prompt": prompt, "completion": ""},
+            )
+            rendered = self._tokenizer(formatted, return_tensors="pt")
+        if not isinstance(rendered, dict):
+            # BatchEncoding is a Mapping subclass in real transformers, while
+            # lightweight test doubles commonly return plain namespaces.
+            try:
+                rendered = dict(rendered)
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError(
+                    "AdapterCallable: tokenizer chat template did not return "
+                    "a tensor mapping."
+                ) from exc
+        return {k: v.to(self.device) for k, v in rendered.items()}
+
     def __call__(self, prompt: str) -> str:
         """Run one generation pass.
 
@@ -227,21 +338,7 @@ class AdapterCallable:
         with the cached model, decodes, strips special tokens, and
         returns the assistant turn.
         """
-        # Wrap the prompt in the trained chat template. We pass an
-        # empty completion because format_instruction's contract
-        # requires both keys; the assistant turn is left blank for the
-        # model to fill in.
-        formatted = format_instruction(
-            self.spec, {"prompt": prompt, "completion": ""},
-        )
-
-        # Tokenize without padding (single-sample inference).
-        inputs = self._tokenizer(
-            formatted,
-            return_tensors="pt",
-        )
-        # Move tensors to the same device as the model.
-        inputs = {k: v.to(self.device) for k, v in inputs.items()}
+        inputs = self._generation_inputs(prompt)
 
         gen_kwargs: dict[str, Any] = {
             "max_new_tokens": self.max_new_tokens,
@@ -268,4 +365,20 @@ class AdapterCallable:
         return text.strip()
 
 
-__all__ = ["AdapterCallable"]
+class AdapterDisabledCallable:
+    """Base-only view over one resident :class:`AdapterCallable`.
+
+    The wrapper is intentionally synchronous: the evaluation harness runs its
+    setups sequentially, so adapter enable/disable state can never leak across
+    concurrent generations.
+    """
+
+    def __init__(self, adapter_callable: AdapterCallable) -> None:
+        self.adapter_callable = adapter_callable
+
+    def __call__(self, prompt: str) -> str:
+        with self.adapter_callable.adapter_disabled():
+            return self.adapter_callable(prompt)
+
+
+__all__ = ["AdapterCallable", "AdapterDisabledCallable"]

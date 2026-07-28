@@ -19,14 +19,24 @@ the QLoRA config, and route the result to the run dir.
 """
 from __future__ import annotations
 
+import gc
+import json
 import logging
+import os
+import shutil
+import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from Trainforge.training.base_models import (
     BaseModelRegistry,
     BaseModelSpec,
     format_instruction,
+)
+from Trainforge.training.telemetry import (
+    TrainingTelemetryWriter,
+    build_training_telemetry_callback,
+    tokenized_dataset_metrics,
 )
 from lib.generation.stop_control import (
     GracefulStopRequested,
@@ -36,6 +46,59 @@ from lib.generation.stop_control import (
 
 
 logger = logging.getLogger(__name__)
+
+_TRAINER_CHECKPOINT_ROOT = ".trainer_checkpoints"
+_TRAINER_STAGES = frozenset({"sft", "dpo"})
+
+
+def _write_training_diagnostics(
+    output_dir: Path,
+    *,
+    stage: str,
+    trainer: Any,
+    torch_module: Any,
+    elapsed_s: float,
+    pair_count: int,
+    max_seq_length: int,
+) -> None:
+    """Persist measured trainer and memory telemetry without inventing values."""
+    cuda = getattr(torch_module, "cuda", None)
+    cuda_available = bool(cuda and cuda.is_available())
+    stage_data: Dict[str, Any] = {
+        "elapsed_seconds": round(elapsed_s, 6),
+        "pair_count": pair_count,
+        "configured_max_seq_length": max_seq_length,
+        "log_history": list(getattr(getattr(trainer, "state", None),
+                                    "log_history", []) or []),
+        "cuda_available": cuda_available,
+    }
+    if cuda_available:
+        for name in ("max_memory_allocated", "max_memory_reserved"):
+            metric = getattr(cuda, name, None)
+            if callable(metric):
+                stage_data[f"cuda_{name}_bytes"] = int(metric())
+    try:
+        meminfo = Path("/proc/meminfo").read_text(encoding="utf-8")
+        available = next(
+            line for line in meminfo.splitlines()
+            if line.startswith("MemAvailable:")
+        )
+        stage_data["host_mem_available_bytes_after"] = (
+            int(available.split()[1]) * 1024
+        )
+    except (OSError, StopIteration, ValueError):
+        stage_data["host_mem_available_bytes_after"] = None
+    diagnostics_path = output_dir / "training_diagnostics.json"
+    payload: Dict[str, Any] = {"schema_version": 1, "stages": {}}
+    if diagnostics_path.exists():
+        payload = json.loads(diagnostics_path.read_text(encoding="utf-8"))
+    payload.setdefault("stages", {})[stage] = stage_data
+    temporary = diagnostics_path.with_suffix(".json.tmp")
+    temporary.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, diagnostics_path)
 
 
 # --------------------------------------------------------------------------- #
@@ -161,6 +224,57 @@ def _resume_arg(output_dir: Path) -> Optional[bool]:
     return True if _has_trainer_checkpoint(output_dir) else None
 
 
+def _stage_checkpoint_dir(output_dir: Path, stage: str) -> Path:
+    """Return the checkpoint namespace owned by one trainer stage.
+
+    SFT and DPO use different trainer classes, optimizer states, and dataset
+    shapes.  A native checkpoint from one is therefore not a valid resume
+    source for the other.  Keeping both under the final adapter directory is
+    useful for one-artifact backup/restore, but each stage gets an exclusive
+    child directory.
+    """
+    normalized = str(stage).strip().lower()
+    if normalized not in _TRAINER_STAGES:
+        raise ValueError(
+            f"unknown trainer stage {stage!r}; expected one of "
+            f"{sorted(_TRAINER_STAGES)}"
+        )
+    return Path(output_dir) / _TRAINER_CHECKPOINT_ROOT / normalized
+
+
+def _assert_no_legacy_shared_checkpoints(output_dir: Path) -> None:
+    """Reject ambiguous pre-isolation checkpoints at the adapter root.
+
+    Historical runs wrote both SFT and DPO ``checkpoint-*`` directories into
+    ``output_dir``.  Their stage cannot be inferred safely from the directory
+    name, so automatically moving or consuming them risks restoring the wrong
+    trainer state.  Fail loudly and leave them untouched for an operator-led
+    migration.
+    """
+    try:
+        legacy = sorted(
+            p.name
+            for p in Path(output_dir).iterdir()
+            if p.is_dir() and p.name.startswith("checkpoint-")
+        )
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise RuntimeError(
+            f"could not inspect trainer output directory {output_dir} for "
+            f"legacy shared checkpoints: {type(exc).__name__}: {exc}"
+        ) from exc
+    if legacy:
+        raise RuntimeError(
+            "ambiguous legacy trainer checkpoints found at the adapter root "
+            f"{output_dir}: {legacy}. SFT and DPO checkpoints are now isolated "
+            f"under {_TRAINER_CHECKPOINT_ROOT}/sft and "
+            f"{_TRAINER_CHECKPOINT_ROOT}/dpo; do not auto-migrate these files "
+            "because their originating stage is not encoded. Review or remove "
+            "them before resuming."
+        )
+
+
 def _raise_if_stopped(stop_cb: Any, site_id: str) -> None:
     """Surface a graceful stop as ``GracefulStopRequested`` after ``train()``.
 
@@ -177,6 +291,35 @@ def _raise_if_stopped(stop_cb: Any, site_id: str) -> None:
         )
 
 
+def _promote_selected_checkpoint(selected_dir: Path, output_dir: Path) -> Path:
+    """Copy the selected PEFT checkpoint's inference artifacts to run root."""
+    selected_dir = Path(selected_dir)
+    required = selected_dir / "adapter_model.safetensors"
+    if not required.is_file():
+        raise RuntimeError(
+            "selected checkpoint is missing adapter_model.safetensors: "
+            f"{selected_dir}"
+        )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    excluded = {
+        "optimizer.pt", "scheduler.pt", "rng_state.pth", "trainer_state.json",
+    }
+    for source in selected_dir.iterdir():
+        if not source.is_file() or source.name in excluded:
+            continue
+        destination = output_dir / source.name
+        tmp = destination.with_suffix(destination.suffix + ".selected.tmp")
+        shutil.copy2(source, tmp)
+        tmp.replace(destination)
+        copied += 1
+    if copied == 0 or not (output_dir / required.name).is_file():
+        raise RuntimeError(
+            f"failed to promote selected checkpoint {selected_dir} to {output_dir}"
+        )
+    return output_dir / required.name
+
+
 def _missing_mamba_kernel_packages() -> List[str]:
     """Names of the Mamba fast-path kernel packages that fail to import.
 
@@ -188,11 +331,26 @@ def _missing_mamba_kernel_packages() -> List[str]:
     gate. Monkeypatch seam for tests.
     """
     missing: List[str] = []
-    for module in ("mamba_ssm", "causal_conv1d"):
-        try:
-            __import__(module)
-        except ImportError:
-            missing.append(module)
+    try:
+        from mamba_ssm.ops.triton.selective_state_update import (  # type: ignore # noqa: F401
+            selective_state_update,
+        )
+        from mamba_ssm.ops.triton.ssd_combined import (  # type: ignore # noqa: F401
+            mamba_chunk_scan_combined,
+            mamba_split_conv1d_scan_combined,
+        )
+        from mamba_ssm.ops.triton.layernorm_gated import (  # type: ignore # noqa: F401
+            rmsnorm_fn,
+        )
+    except Exception as exc:  # noqa: BLE001 — binary/ABI failures matter too
+        missing.append(f"mamba_ssm ({type(exc).__name__}: {exc})")
+    try:
+        from causal_conv1d import (  # type: ignore # noqa: F401
+            causal_conv1d_fn,
+            causal_conv1d_update,
+        )
+    except Exception as exc:  # noqa: BLE001 — binary/ABI failures matter too
+        missing.append(f"causal_conv1d ({type(exc).__name__}: {exc})")
     return missing
 
 
@@ -226,6 +384,15 @@ def _require_training_deps_impl(*, require_bnb: bool) -> None:
             f"PEFTTrainer requires the [training] extra. Missing: {missing}. "
             f"Install with: pip install 'ed4all[training]'."
         )
+
+
+def _assert_supported_runtime() -> Dict[str, str]:
+    """Validate the qualified dependency band before any weight allocation."""
+    from Trainforge.training.runtime_preflight import (
+        assert_supported_training_runtime,
+    )
+
+    return assert_supported_training_runtime()
 
 
 # --------------------------------------------------------------------------- #
@@ -390,10 +557,151 @@ class PEFTTrainer:
         *,
         base_model: str,
         training_config: Dict[str, Any],
+        course_dir: Optional[Path] = None,
+        decision_capture: Optional[Any] = None,
+        checkpoint_probe_factory: Optional[
+            Callable[[str, Path], Callable[[Path], Dict[str, float]]]
+        ] = None,
     ) -> None:
         self.base_model = base_model
         self.spec: BaseModelSpec = BaseModelRegistry.resolve(base_model)
         self.training_config = dict(training_config)
+        self.course_dir = Path(course_dir) if course_dir is not None else None
+        self.decision_capture = decision_capture
+        self.checkpoint_probe_factory = checkpoint_probe_factory
+        self._stage_selection_scores: Dict[str, float] = {}
+
+    def _select_and_promote_checkpoint(
+        self,
+        *,
+        stage: str,
+        checkpoint_dir: Path,
+        output_dir: Path,
+    ) -> Optional[Path]:
+        """Select by configured downstream metric; ``None`` means legacy mode."""
+        metric = str(
+            self.training_config.get("checkpoint_selection_metric", "")
+            or ""
+        ).strip()
+        if not metric:
+            return None
+        if self.checkpoint_probe_factory is not None:
+            probe = self.checkpoint_probe_factory(stage, checkpoint_dir)
+        else:
+            if self.course_dir is None:
+                raise RuntimeError(
+                    "checkpoint selection is enabled but PEFTTrainer received "
+                    "no course_dir for the held-out downstream probes"
+                )
+            from Trainforge.training.checkpoint_probe import CourseCheckpointProbe
+            probe = CourseCheckpointProbe(
+                course_dir=self.course_dir,
+                stage=stage,
+                state_root=output_dir / ".checkpoint_probe_state",
+                spec=self.spec,
+                training_config=self.training_config,
+                metric=metric,
+                capture=self.decision_capture,
+            )
+        from Trainforge.training.checkpoint_selection import (
+            _METRIC_HIGHER_IS_BETTER,
+            run_checkpoint_selection,
+        )
+        selected = run_checkpoint_selection(
+            checkpoint_dir,
+            probe,
+            metric=metric,
+            early_stopping_patience=int(
+                self.training_config.get("early_stopping_patience", 1)
+            ),
+            strict=True,
+        )
+        if selected is None:  # strict=True already makes this unreachable.
+            raise RuntimeError(
+                f"checkpoint selection produced no {stage} checkpoint"
+            )
+        selected_score = selected.score(metric)
+        if selected_score is None:
+            raise RuntimeError(
+                f"selected {stage} checkpoint has no {metric!r} score"
+            )
+        if stage == "dpo":
+            sft_score = self._stage_selection_scores.get("sft")
+            if sft_score is None:
+                raise RuntimeError(
+                    "DPO checkpoint promotion requires the selected SFT "
+                    "baseline score from the same run."
+                )
+            higher = _METRIC_HIGHER_IS_BETTER.get(metric, True)
+            regressed = (
+                selected_score < sft_score
+                if higher else selected_score > sft_score
+            )
+            if regressed:
+                raise RuntimeError(
+                    "best DPO checkpoint regressed against the selected SFT "
+                    f"baseline on {metric}: dpo={selected_score:.6f}, "
+                    f"sft={sft_score:.6f}; refusing DPO promotion."
+                )
+        self._stage_selection_scores[stage] = float(selected_score)
+        selection_report: Dict[str, Any] = {}
+        selection_report_path = checkpoint_dir / "checkpoint_selection.json"
+        try:
+            selection_report = json.loads(
+                selection_report_path.read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError):
+            selection_report = {}
+        sft_baseline = (
+            self._stage_selection_scores.get("sft")
+            if stage == "dpo" else None
+        )
+        TrainingTelemetryWriter(output_dir, stage=stage).emit(
+            "selection",
+            status="completed",
+            global_step=int(selected.step),
+            metrics={
+                "selected_checkpoint": selected.checkpoint_dir.name,
+                "probe_metric": metric,
+                "probe_score": float(selected_score),
+                "selected_sft_baseline": sft_baseline,
+                "dpo_delta": (
+                    float(selected_score) - float(sft_baseline)
+                    if stage == "dpo" and sft_baseline is not None else None
+                ),
+                "early_stop_triggered": int(
+                    selection_report.get("stopped_after_step") is not None
+                ),
+                "early_stop_after_step": selection_report.get(
+                    "stopped_after_step"
+                ),
+            },
+        )
+        if self.decision_capture is not None:
+            baseline = self._stage_selection_scores.get("sft")
+            self.decision_capture.log_decision(
+                decision_type="eval_run_decision",
+                decision=(
+                    f"Selected {stage} checkpoint {selected.checkpoint_dir.name} "
+                    f"at {metric}={selected_score:.6f}."
+                ),
+                rationale=(
+                    f"Downstream probe selected step={selected.step} for "
+                    f"base={self.base_model}, stage={stage}, metric={metric}, "
+                    f"score={selected_score:.6f}; SFT baseline="
+                    f"{baseline if baseline is not None else 'not-applicable'}."
+                ),
+                alternatives_considered=[
+                    "Promote the final epoch without downstream comparison",
+                    "Promote a DPO checkpoint that regresses from SFT",
+                ],
+            )
+        return _promote_selected_checkpoint(selected.checkpoint_dir, output_dir)
+
+    def _checkpoint_selection_enabled(self) -> bool:
+        return bool(str(
+            self.training_config.get("checkpoint_selection_metric", "") or ""
+        ).strip())
 
     # ------------------------------------------------------------------ #
     # Hybrid-Mamba fast-path preflight                                    #
@@ -429,14 +737,35 @@ class PEFTTrainer:
                 trust_remote_code=True,
             )
         except Exception as exc:  # noqa: BLE001 - preflight best-effort
-            logger.warning(
-                "PEFTTrainer: could not resolve the model config for the "
-                "Mamba fast-path preflight (%s); check SKIPPED — the model "
-                "load will surface any real problem.",
-                exc,
+            effective_cache = os.environ.get("HF_MODULES_CACHE", "")
+            try:
+                from transformers.dynamic_module_utils import (  # type: ignore
+                    HF_MODULES_CACHE,
+                )
+                effective_cache = str(HF_MODULES_CACHE)
+            except Exception:  # noqa: BLE001 — retain env-derived diagnostic
+                effective_cache = effective_cache or "<transformers default>"
+            raise RuntimeError(
+                "refusing trust_remote_code model load because the pinned "
+                f"AutoConfig preflight failed for repo="
+                f"{self.spec.huggingface_repo!r}, "
+                f"revision={self.spec.default_revision!r}, "
+                f"effective_HF_MODULES_CACHE={effective_cache!r}: "
+                f"{type(exc).__name__}: {exc}. Set HF_MODULES_CACHE to a "
+                "writable directory before Python starts; the run environment "
+                "template provides a portable default."
+            ) from exc
+        model_type = getattr(model_config, "model_type", None)
+        if self.base_model == "nemotron3-nano-30b" and model_type != "nemotron_h":
+            raise RuntimeError(
+                "pinned Nano AutoConfig identity mismatch: expected "
+                f"model_type='nemotron_h' for repo="
+                f"{self.spec.huggingface_repo!r}, "
+                f"revision={self.spec.default_revision!r}, got "
+                f"{model_type!r}; refusing to load or train a differently "
+                "resolved architecture."
             )
-            return
-        if getattr(model_config, "model_type", None) != "nemotron_h":
+        if model_type != "nemotron_h":
             return
         missing = _missing_mamba_kernel_packages()
         if missing:
@@ -480,6 +809,10 @@ class PEFTTrainer:
             ``adapter.safetensors`` — the Wave 100 fix renames the
             returned path to match.
         """
+        _assert_no_legacy_shared_checkpoints(output_dir)
+        checkpoint_dir = _stage_checkpoint_dir(output_dir, "sft")
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
         # Graceful-stop preflight: a sentinel armed BEFORE the (expensive)
         # weight load / trainer build stops the run here with zero GPU work.
         check_stop("trainforge_train.fit_sft.preflight", 0)
@@ -489,6 +822,7 @@ class PEFTTrainer:
         # path is actually requested so a plain bf16 CUDA box trains without it.
         use_4bit = bool(self.training_config.get("use_4bit", False))
         _require_training_deps_impl(require_bnb=use_4bit)
+        _assert_supported_runtime()
 
         # Heavy imports — only reachable when deps are installed.
         import torch  # type: ignore
@@ -539,11 +873,31 @@ class PEFTTrainer:
                 "prompt": [pair["prompt"] for pair in instruction_pairs],
                 "completion": [pair["completion"] for pair in instruction_pairs],
             })
+            # ``format_instruction`` matches each registered tokenizer's chat
+            # template, so length/truncation metrics describe the actual
+            # rendered training sequence rather than raw string concatenation.
+            telemetry_sequences = [
+                format_instruction(self.spec, pair)
+                for pair in instruction_pairs
+            ]
+            telemetry_completions = [
+                pair["completion"] for pair in instruction_pairs
+            ]
         else:
             formatted_texts = [
                 format_instruction(self.spec, pair) for pair in instruction_pairs
             ]
             dataset = Dataset.from_dict({"text": formatted_texts})
+            telemetry_sequences = formatted_texts
+            telemetry_completions = None
+        telemetry_dataset_metrics = tokenized_dataset_metrics(
+            tokenizer=tokenizer,
+            sequences=telemetry_sequences,
+            completion_sequences=telemetry_completions,
+            max_seq_length=int(self.training_config.get(
+                "max_seq_length", self.spec.recommended_max_seq_length,
+            )),
+        )
 
         lora_config = LoraConfig(
             r=int(self.training_config.get("lora_rank", self.spec.recommended_lora_rank)),
@@ -603,7 +957,7 @@ class PEFTTrainer:
             surface="trl.SFTConfig(max_seq_length=/max_length=)",
         )
         sft_config_kwargs: Dict[str, Any] = {
-            "output_dir": str(output_dir),
+            "output_dir": str(checkpoint_dir),
             "num_train_epochs": int(self.training_config.get("epochs", 3)),
             "per_device_train_batch_size": int(
                 self.training_config.get("batch_size", 4)
@@ -624,6 +978,10 @@ class PEFTTrainer:
             "save_strategy": "epoch",
             "logging_steps": 10,
         }
+        if self.training_config.get("max_steps") is not None:
+            sft_config_kwargs["max_steps"] = int(
+                self.training_config["max_steps"]
+            )
         # Per-epoch checkpoint retention (S8 checkpoint-selection scaffolding):
         # keep every epoch's checkpoint so the downstream-probe selector can
         # pick the best one out-of-band. Defaults to config.epochs.
@@ -691,22 +1049,69 @@ class PEFTTrainer:
         # Resume from a prior graceful-stop's native checkpoint when present;
         # only pass the kwarg when actually resuming so the fresh-run call
         # stays signature-compatible with the trusted TRL default.
-        _resume = _resume_arg(output_dir)
+        _resume = _resume_arg(checkpoint_dir)
+        telemetry_cb = build_training_telemetry_callback(
+            run_dir=output_dir,
+            stage="sft",
+            pair_count=len(instruction_pairs),
+            configured_max_seq_length=int(self.training_config.get(
+                "max_seq_length", self.spec.recommended_max_seq_length,
+            )),
+            torch_module=torch,
+            resumed=bool(_resume),
+            dataset_metrics=telemetry_dataset_metrics,
+        )
+        if not hasattr(trainer, "add_callback"):
+            raise RuntimeError(
+                "TRL SFTTrainer lacks add_callback; live training telemetry "
+                "cannot be guaranteed"
+            )
+        trainer.add_callback(telemetry_cb)
+        _train_started = time.monotonic()
         if _resume:
             trainer.train(resume_from_checkpoint=_resume)
         else:
             trainer.train()
+        _write_training_diagnostics(
+            output_dir,
+            stage="sft",
+            trainer=trainer,
+            torch_module=torch,
+            elapsed_s=time.monotonic() - _train_started,
+            pair_count=len(instruction_pairs),
+            max_seq_length=int(self.training_config.get(
+                "max_seq_length", self.spec.recommended_max_seq_length,
+            )),
+        )
         # Surface the pause BEFORE the final consolidated save_model (R5): the
         # native checkpoint is already on disk, so the run is resumable and the
         # runner must not emit a "completed" adapter / model card.
         _raise_if_stopped(stop_cb, "trainforge_train.fit_sft")
-        trainer.save_model(str(output_dir))
+        if self._checkpoint_selection_enabled():
+            # A Nano BF16 base occupies roughly half of a 121-GB Spark.  The
+            # downstream probe loads the same pinned base plus one checkpoint;
+            # release Trainer's training copy first so selection is strictly
+            # sequential rather than attempting two base models concurrently.
+            del trainer
+            del model
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        selected_adapter = self._select_and_promote_checkpoint(
+            stage="sft",
+            checkpoint_dir=checkpoint_dir,
+            output_dir=output_dir,
+        )
+        if selected_adapter is None:
+            trainer.save_model(str(output_dir))
 
         # TRL's save_model() writes adapter_model.safetensors (with
         # underscore). Wave 99 worker found the old "adapter.safetensors"
         # return value tripped the runner's adapter-presence guard
         # because the file on disk was actually adapter_model.safetensors.
-        adapter_path = output_dir / "adapter_model.safetensors"
+        adapter_path = selected_adapter or (
+            output_dir / "adapter_model.safetensors"
+        )
         return adapter_path
 
     # ------------------------------------------------------------------ #
@@ -793,12 +1198,17 @@ class PEFTTrainer:
         Returns:
             Path to the consolidated DPO+SFT adapter.
         """
+        _assert_no_legacy_shared_checkpoints(output_dir)
+        checkpoint_dir = _stage_checkpoint_dir(output_dir, "dpo")
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
         # Graceful-stop preflight (see fit_sft): stop before the DPO weight
         # load when a sentinel is already armed.
         check_stop("trainforge_train.fit_dpo.preflight", 0)
 
         use_4bit = bool(self.training_config.get("use_4bit", False))
         _require_training_deps_impl(require_bnb=use_4bit)
+        _assert_supported_runtime()
 
         from datasets import Dataset  # type: ignore
         from peft import PeftModel  # type: ignore
@@ -816,6 +1226,14 @@ class PEFTTrainer:
             "rejected": [pair["rejected"] for pair in preference_pairs],
         }
         dataset = Dataset.from_dict(rows)
+        dpo_sequences: List[str] = []
+        dpo_completions: List[str] = []
+        for pair in preference_pairs:
+            prompt = str(pair["prompt"])
+            for key in ("chosen", "rejected"):
+                completion = str(pair[key])
+                dpo_sequences.append(f"{prompt}{completion}")
+                dpo_completions.append(completion)
 
         # Hoisted ABOVE dpo_config_kwargs: these were previously defined
         # only after the tokenizer load (~40 lines below), so the dict
@@ -824,9 +1242,21 @@ class PEFTTrainer:
         # Trainforge/tests/test_peft_trainer_nemotron.py::test_fit_dpo_*.
         cuda_ok = bool(torch.cuda.is_available())
         bf16_ok = bool(cuda_ok and torch.cuda.is_bf16_supported())
+        dpo_learning_rate = self.training_config.get("dpo_learning_rate")
+        if self.base_model == "nemotron3-nano-30b" and dpo_learning_rate is None:
+            raise RuntimeError(
+                "Nemotron Nano DPO requires an explicitly calibrated "
+                "dpo_learning_rate. Run the documented short DPO canary and "
+                "supply the selected value through --config-overrides; the "
+                "SFT learning_rate is not reused implicitly."
+            )
+        if dpo_learning_rate is None:
+            dpo_learning_rate = self.training_config.get(
+                "learning_rate", 2e-4,
+            )
 
         dpo_config_kwargs: Dict[str, Any] = {
-            "output_dir": str(output_dir),
+            "output_dir": str(checkpoint_dir),
             "num_train_epochs": int(self.training_config.get("epochs", 3)),
             "per_device_train_batch_size": int(
                 self.training_config.get("batch_size", 4)
@@ -834,7 +1264,7 @@ class PEFTTrainer:
             "gradient_accumulation_steps": int(
                 self.training_config.get("gradient_accumulation_steps", 1)
             ),
-            "learning_rate": float(self.training_config.get("learning_rate", 2e-4)),
+            "learning_rate": float(dpo_learning_rate),
             "warmup_ratio": float(self.training_config.get("warmup_ratio", 0.0)),
             "weight_decay": float(self.training_config.get("weight_decay", 0.0)),
             "seed": int(self.training_config.get("seed", 42)),
@@ -842,7 +1272,34 @@ class PEFTTrainer:
             "bf16": bf16_ok,
             "fp16": bool(cuda_ok and not bf16_ok),
             "optim": "paged_adamw_8bit" if use_4bit else "adamw_torch",
+            "save_strategy": "epoch",
         }
+        if self.training_config.get("max_steps") is not None:
+            dpo_config_kwargs["max_steps"] = int(
+                self.training_config["max_steps"]
+            )
+        dpo_length_field = _accepted_kwarg(
+            DPOConfig,
+            ["max_length", "max_seq_length"],
+            default="max_length",
+            surface="trl.DPOConfig(max_length=/max_seq_length=)",
+        )
+        dpo_config_kwargs[dpo_length_field] = int(
+            self.training_config.get(
+                "max_seq_length", self.spec.recommended_max_seq_length,
+            )
+        )
+        if bool(self.training_config.get("gradient_checkpointing", False)):
+            dpo_config_kwargs["gradient_checkpointing"] = True
+            dpo_config_kwargs["gradient_checkpointing_kwargs"] = {
+                "use_reentrant": False,
+            }
+        dpo_config_kwargs["chat_template_kwargs"] = {
+            "enable_thinking": False,
+        }
+        _dpo_save_total_limit = self.training_config.get("save_total_limit")
+        if _dpo_save_total_limit is not None:
+            dpo_config_kwargs["save_total_limit"] = int(_dpo_save_total_limit)
         dpo_args = DPOConfig(**_filter_accepted(DPOConfig, dpo_config_kwargs))
 
         # Wave 100: DPOTrainer expects a model directory or HF repo ID,
@@ -877,6 +1334,14 @@ class PEFTTrainer:
             )
         if getattr(tokenizer, "pad_token", None) is None:
             tokenizer.pad_token = tokenizer.eos_token
+        telemetry_dataset_metrics = tokenized_dataset_metrics(
+            tokenizer=tokenizer,
+            sequences=dpo_sequences,
+            completion_sequences=dpo_completions,
+            max_seq_length=int(self.training_config.get(
+                "max_seq_length", self.spec.recommended_max_seq_length,
+            )),
+        )
 
         # (cuda_ok / bf16_ok are computed once, above dpo_config_kwargs.)
         base_kwargs: Dict[str, Any] = {
@@ -937,21 +1402,63 @@ class PEFTTrainer:
             train_dataset=dataset,
             **{dpo_tok_field: tokenizer},
         )
-        # Graceful-stop seam (same contract as fit_sft). NB: DPO shares
-        # ``output_dir`` with the SFT phase, so ``checkpoint-*`` here can
-        # co-exist with SFT's — resume_from_checkpoint auto-selects the
-        # highest global_step, which is the DPO one once DPO has stepped.
+        # Graceful-stop seam (same contract as fit_sft). DPO owns a distinct
+        # checkpoint namespace, so it can never select an SFT optimizer/trainer
+        # state merely because the SFT global step is numerically higher.
         stop_cb = _build_stop_callback()
         if stop_cb is not None and hasattr(trainer, "add_callback"):
             trainer.add_callback(stop_cb)
-        _resume = _resume_arg(output_dir)
+        _resume = _resume_arg(checkpoint_dir)
+        telemetry_cb = build_training_telemetry_callback(
+            run_dir=output_dir,
+            stage="dpo",
+            pair_count=len(preference_pairs),
+            configured_max_seq_length=int(self.training_config.get(
+                "max_seq_length", self.spec.recommended_max_seq_length,
+            )),
+            torch_module=torch,
+            resumed=bool(_resume),
+            dataset_metrics=telemetry_dataset_metrics,
+        )
+        if not hasattr(trainer, "add_callback"):
+            raise RuntimeError(
+                "TRL DPOTrainer lacks add_callback; live training telemetry "
+                "cannot be guaranteed"
+            )
+        trainer.add_callback(telemetry_cb)
+        _train_started = time.monotonic()
         if _resume:
             trainer.train(resume_from_checkpoint=_resume)
         else:
             trainer.train()
+        _write_training_diagnostics(
+            output_dir,
+            stage="dpo",
+            trainer=trainer,
+            torch_module=torch,
+            elapsed_s=time.monotonic() - _train_started,
+            pair_count=len(preference_pairs),
+            max_seq_length=int(self.training_config.get(
+                "max_seq_length", self.spec.recommended_max_seq_length,
+            )),
+        )
         _raise_if_stopped(stop_cb, "trainforge_train.fit_dpo")
-        trainer.save_model(str(output_dir))
-        return output_dir / "adapter_model.safetensors"
+        if self._checkpoint_selection_enabled():
+            del trainer
+            del peft_model
+            del base_model
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        selected_adapter = self._select_and_promote_checkpoint(
+            stage="dpo",
+            checkpoint_dir=checkpoint_dir,
+            output_dir=output_dir,
+        )
+        if selected_adapter is None:
+            trainer.save_model(str(output_dir))
+            selected_adapter = output_dir / "adapter_model.safetensors"
+        return selected_adapter
 
 
 __all__ = ["PEFTTrainer"]

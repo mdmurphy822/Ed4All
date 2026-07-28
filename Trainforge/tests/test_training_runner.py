@@ -774,7 +774,10 @@ def test_fit_sft_adapter_filename(tmp_path: Path, monkeypatch):
 
     class _FakeTrainer:
         def __init__(self, *args, **kwargs):
-            pass
+            self.callbacks = []
+
+        def add_callback(self, callback):
+            self.callbacks.append(callback)
 
         def train(self):
             pass
@@ -818,6 +821,10 @@ def test_fit_sft_adapter_filename(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(
         "Trainforge.training.peft_trainer._require_training_deps",
         lambda: None,
+    )
+    monkeypatch.setattr(
+        "Trainforge.training.peft_trainer._assert_supported_runtime",
+        lambda: {},
     )
 
     # Patch the modules pulled in by fit_sft. Use sys.modules patching

@@ -351,7 +351,10 @@ def test_local_backend_dpo_stop_not_swallowed(tmp_path, monkeypatch, stop_env):
     out_dir = tmp_path / "run_dir"
 
     class _FakePEFT:
-        def __init__(self, *, base_model, training_config) -> None:
+        def __init__(
+            self, *, base_model, training_config,
+            course_dir=None, decision_capture=None,
+        ) -> None:
             pass
 
         def fit_sft(self, pairs, output_dir):

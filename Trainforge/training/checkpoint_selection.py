@@ -11,22 +11,22 @@ This module is the deterministic, CPU-only wiring for that:
 * per-epoch checkpoint enumeration over the trainer's ``checkpoint-<step>``
   dirs (paired with ``save_total_limit`` retention in the SFTConfig),
 * a ``ProbeRunner`` hook interface that consumes a checkpoint dir and returns
-  a metric dict (the actual GPU probes run OUT-OF-BAND — this module never
-  loads a model),
+  a metric dict (the production course-aware GPU runner lives in
+  ``checkpoint_probe.py``; this deterministic selector never loads a model),
 * deterministic ``select_best_checkpoint`` with an overfit-preferring
   tie-break (earliest epoch wins a tie), and
 * ``run_checkpoint_selection`` that ties it together and persists a
   ``checkpoint_selection.json`` audit record.
 
 Nothing here imports torch / trl / transformers. A caller supplies a
-``ProbeRunner`` (a callable / object) that owns the GPU work; the default
-in-repo runners raise a clear "runs out-of-band" error until an operator wires
-a real probe, so the scaffolding never fabricates a score.
+``ProbeRunner`` (a callable / object) that owns the GPU work, so the selector
+never fabricates a score.
 """
 from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -151,13 +151,16 @@ def run_checkpoint_selection(
     metric: str = "gold_keypoint_coverage",
     higher_is_better: Optional[bool] = None,
     write_report: bool = True,
+    early_stopping_patience: Optional[int] = None,
+    strict: bool = False,
 ) -> Optional[CheckpointProbeResult]:
     """Run ``probe_runner`` over every epoch checkpoint and select the best.
 
     ``probe_runner`` owns the GPU work (loads each checkpoint, runs the gold
     key-point-coverage + sympy-correctness probes, returns a metric dict). A
-    runner exception on one checkpoint is logged and that checkpoint is
-    skipped (a corrupt mid-run checkpoint never sinks the whole selection).
+    In compatibility mode a runner exception is logged and skipped. Production
+    passes ``strict=True`` so any missing/invalid metric or failed checkpoint
+    probe fails the run instead of silently selecting another epoch.
 
     Persists ``<output_dir>/checkpoint_selection.json`` (audit trail: per
     checkpoint metrics + the selected step + the selection metric) when
@@ -173,38 +176,160 @@ def run_checkpoint_selection(
         )
         return None
 
+    if metric not in _METRIC_HIGHER_IS_BETTER:
+        raise ValueError(
+            f"checkpoint_selection: unsupported metric {metric!r}; expected "
+            f"one of {sorted(_METRIC_HIGHER_IS_BETTER)}"
+        )
+    if early_stopping_patience is not None and early_stopping_patience < 1:
+        raise ValueError(
+            "checkpoint_selection: early_stopping_patience must be >= 1 "
+            f"when configured, got {early_stopping_patience!r}"
+        )
+
     results: List[CheckpointProbeResult] = []
+    stopped_after_step: Optional[int] = None
+    best_seen: Optional[float] = None
+    stale_epochs = 0
+    direction = (
+        _METRIC_HIGHER_IS_BETTER[metric]
+        if higher_is_better is None
+        else bool(higher_is_better)
+    )
     for step, ckpt_dir in checkpoints:
         try:
             metrics = probe_runner(ckpt_dir)
         except Exception as exc:  # noqa: BLE001 - one bad checkpoint
+            if strict:
+                raise RuntimeError(
+                    "checkpoint_selection: downstream probe failed for "
+                    f"{ckpt_dir}: {type(exc).__name__}: {exc}"
+                ) from exc
             logger.warning(
                 "checkpoint_selection: probe_runner failed on %s (%s); "
                 "skipping.", ckpt_dir, exc,
             )
             continue
         if not isinstance(metrics, dict):
+            if strict:
+                raise RuntimeError(
+                    "checkpoint_selection: downstream probe returned "
+                    f"{type(metrics).__name__}, not a metric mapping, for "
+                    f"{ckpt_dir}"
+                )
             logger.warning(
                 "checkpoint_selection: probe_runner returned %s (not a dict) "
                 "for %s; skipping.", type(metrics).__name__, ckpt_dir,
+            )
+            continue
+        numeric_metrics = {
+            k: float(v) for k, v in metrics.items()
+            if isinstance(v, (int, float))
+        }
+        score = (
+            combine_probe_metrics(numeric_metrics)
+            if metric == "composite"
+            else numeric_metrics.get(metric)
+        )
+        if score is None or not math.isfinite(float(score)):
+            if strict:
+                raise RuntimeError(
+                    f"checkpoint_selection: required metric {metric!r} is "
+                    f"missing or non-finite for {ckpt_dir}; returned keys="
+                    f"{sorted(metrics)}"
+                )
+            logger.warning(
+                "checkpoint_selection: required metric %r missing/non-finite "
+                "for %s; skipping.",
+                metric,
+                ckpt_dir,
             )
             continue
         results.append(
             CheckpointProbeResult(
                 checkpoint_dir=ckpt_dir,
                 step=step,
-                metrics={k: float(v) for k, v in metrics.items()
-                         if isinstance(v, (int, float))},
+                metrics=numeric_metrics,
             )
         )
+        if early_stopping_patience is not None:
+            current = float(score)
+            improved = best_seen is None or (
+                current > best_seen if direction else current < best_seen
+            )
+            if improved:
+                best_seen = current
+                stale_epochs = 0
+            else:
+                stale_epochs += 1
+                if stale_epochs >= early_stopping_patience:
+                    stopped_after_step = step
+                    break
 
     selected = select_best_checkpoint(
         results, metric=metric, higher_is_better=higher_is_better,
     )
+    if strict and selected is None:
+        raise RuntimeError(
+            f"checkpoint_selection: no checkpoint produced a valid {metric!r} "
+            f"score under {output_dir}"
+        )
 
     if write_report:
-        _write_selection_report(output_dir, results, selected, metric)
+        _write_selection_report(
+            output_dir,
+            results,
+            selected,
+            metric,
+            early_stopping_patience=early_stopping_patience,
+            stopped_after_step=stopped_after_step,
+        )
     return selected
+
+
+def _apply_early_stopping_window(
+    results: List[CheckpointProbeResult],
+    *,
+    metric: str,
+    higher_is_better: Optional[bool],
+    patience: Optional[int],
+) -> Tuple[List[CheckpointProbeResult], Optional[int]]:
+    """Return the chronological prefix retained by downstream early stopping.
+
+    Probes are evaluated after TRL has flushed its epoch checkpoints.  Applying
+    patience to their chronological scores produces the same selected adapter
+    as an online callback, while avoiding model mutation inside Trainer's
+    callback stack.  It does not claim to save training compute.
+    """
+    ordered = sorted(results, key=lambda item: item.step)
+    if patience is None:
+        return ordered, None
+    direction = (
+        _METRIC_HIGHER_IS_BETTER[metric]
+        if higher_is_better is None
+        else bool(higher_is_better)
+    )
+    best: Optional[float] = None
+    stale = 0
+    retained: List[CheckpointProbeResult] = []
+    stopped_after: Optional[int] = None
+    for result in ordered:
+        score = result.score(metric)
+        if score is None:
+            continue
+        retained.append(result)
+        improved = best is None or (
+            float(score) > best if direction else float(score) < best
+        )
+        if improved:
+            best = float(score)
+            stale = 0
+        else:
+            stale += 1
+            if stale >= patience:
+                stopped_after = result.step
+                break
+    return retained, stopped_after
 
 
 def _write_selection_report(
@@ -212,6 +337,9 @@ def _write_selection_report(
     results: List[CheckpointProbeResult],
     selected: Optional[CheckpointProbeResult],
     metric: str,
+    *,
+    early_stopping_patience: Optional[int] = None,
+    stopped_after_step: Optional[int] = None,
 ) -> None:
     payload: Dict[str, Any] = {
         "selection_metric": metric,
@@ -219,6 +347,9 @@ def _write_selection_report(
         "selected_checkpoint": (
             str(selected.checkpoint_dir) if selected else None
         ),
+        "early_stopping_patience": early_stopping_patience,
+        "early_stopping_triggered": stopped_after_step is not None,
+        "stopped_after_step": stopped_after_step,
         "checkpoints": [
             {
                 "step": r.step,

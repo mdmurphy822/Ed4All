@@ -71,6 +71,9 @@ def _install_fake_ml(
 
         def train(self, *a, **k):
             captured["trained"] = True
+            captured.setdefault("train_calls", []).append(
+                {"args": a, "kwargs": k}
+            )
 
         def save_model(self, path):
             (Path(path) / "adapter_model.safetensors").write_bytes(b"x")
@@ -149,15 +152,27 @@ def _install_fake_ml(
                      per_device_train_batch_size=None,
                      gradient_accumulation_steps=None, learning_rate=None,
                      warmup_ratio=None, weight_decay=None, seed=None,
-                     bf16=None, fp16=None, optim=None):
+                     bf16=None, fp16=None, optim=None, max_length=None,
+                     gradient_checkpointing=None,
+                     gradient_checkpointing_kwargs=None,
+                     chat_template_kwargs=None, save_strategy=None):
             captured["dpo_config_kwargs"] = {
                 "bf16": bf16, "fp16": fp16, "optim": optim,
                 "output_dir": output_dir,
+                "max_length": max_length,
+                "gradient_checkpointing": gradient_checkpointing,
+                "gradient_checkpointing_kwargs":
+                    gradient_checkpointing_kwargs,
+                "chat_template_kwargs": chat_template_kwargs,
             }
 
     monkeypatch.setattr(
         "Trainforge.training.peft_trainer._require_training_deps_impl",
         lambda *, require_bnb: None,
+    )
+    monkeypatch.setattr(
+        "Trainforge.training.peft_trainer._assert_supported_runtime",
+        lambda: {},
     )
 
     fake_torch = types.ModuleType("torch")
@@ -256,7 +271,9 @@ def test_fit_sft_threads_trust_remote_code_for_nemotron(tmp_path, monkeypatch):
     )
     trainer = PEFTTrainer(
         base_model="nemotron3-nano-30b",
-        training_config={"epochs": 1, "batch_size": 1},
+        training_config={
+            "epochs": 1, "batch_size": 1, "dpo_learning_rate": 1e-6,
+        },
     )
     out = tmp_path / "run"
     out.mkdir()
@@ -329,7 +346,9 @@ def test_fit_dpo_threads_trust_remote_code_on_base_model(tmp_path, monkeypatch):
     )
     trainer = PEFTTrainer(
         base_model="nemotron3-nano-30b",
-        training_config={"epochs": 1, "batch_size": 1},
+        training_config={
+            "epochs": 1, "batch_size": 1, "dpo_learning_rate": 1e-6,
+        },
     )
     out = tmp_path / "run"
     out.mkdir()
@@ -371,6 +390,41 @@ def test_mamba_fast_path_missing_raises_for_nemotron(monkeypatch):
     assert "aarch64" in msg
 
 
+def test_mamba_autoconfig_permission_error_fails_loud(monkeypatch):
+    _install_fake_ml(monkeypatch, auto_config_model_type="nemotron_h")
+    from transformers import AutoConfig
+
+    def _permission_denied(*args, **kwargs):
+        raise PermissionError("generated module cache is read-only")
+
+    monkeypatch.setattr(AutoConfig, "from_pretrained", _permission_denied)
+    monkeypatch.setenv("HF_MODULES_CACHE", "/portable/cache/modules")
+    trainer = PEFTTrainer(
+        base_model="nemotron3-nano-30b",
+        training_config={},
+    )
+    with pytest.raises(RuntimeError) as exc:
+        trainer._assert_mamba_fast_path()
+    msg = str(exc.value)
+    assert "AutoConfig preflight failed" in msg
+    assert "PermissionError" in msg
+    assert "generated module cache is read-only" in msg
+    assert "HF_MODULES_CACHE" in msg
+    assert "cbd3fa9f933d55ef16a84236559f4ee2a0526848" in msg
+
+
+def test_mamba_autoconfig_identity_mismatch_fails_loud(monkeypatch):
+    _install_fake_ml(monkeypatch, auto_config_model_type="unexpected_arch")
+    trainer = PEFTTrainer(
+        base_model="nemotron3-nano-30b",
+        training_config={},
+    )
+    with pytest.raises(RuntimeError, match="identity mismatch") as exc:
+        trainer._assert_mamba_fast_path()
+    assert "expected model_type='nemotron_h'" in str(exc.value)
+    assert "unexpected_arch" in str(exc.value)
+
+
 def test_mamba_fast_path_does_not_fire_for_qwen(monkeypatch):
     _install_fake_ml(monkeypatch)
     monkeypatch.setattr(
@@ -403,10 +457,117 @@ def test_fit_sft_aborts_before_load_when_kernels_missing(tmp_path, monkeypatch):
 
 
 def test_missing_mamba_probe_real_import_shape():
-    # On this box the packages are absent (env changes deferred): the probe
-    # must return a subset of the two canonical names, never crash.
+    # The probe validates the exact fused symbols, including binary/ABI import
+    # failures, and must always attribute a failure to one of the two packages.
     missing = _missing_mamba_kernel_packages()
-    assert set(missing) <= {"mamba_ssm", "causal_conv1d"}
+    assert all(
+        item.startswith(("mamba_ssm", "causal_conv1d"))
+        for item in missing
+    )
+
+
+# ---------------------------------------------------------------------- #
+# Stage-isolated native checkpoints                                      #
+# ---------------------------------------------------------------------- #
+
+
+def test_sft_and_dpo_use_disjoint_checkpoint_namespaces(tmp_path, monkeypatch):
+    captured = _install_fake_ml(monkeypatch)
+    trainer = PEFTTrainer(
+        base_model="qwen2.5-1.5b",
+        training_config={"epochs": 1, "batch_size": 1},
+    )
+    out = tmp_path / "run"
+    out.mkdir()
+
+    # An existing SFT checkpoint must not make a fresh DPO trainer resume.
+    sft_checkpoint = out / ".trainer_checkpoints" / "sft" / "checkpoint-9"
+    sft_checkpoint.mkdir(parents=True)
+    sft_dir = tmp_path / "sft-adapter"
+    sft_dir.mkdir()
+    trainer.fit_dpo(
+        [{"prompt": "Q?", "chosen": "good", "rejected": "bad"}],
+        sft_dir,
+        out,
+    )
+    assert captured["dpo_config_kwargs"]["output_dir"] == str(
+        out / ".trainer_checkpoints" / "dpo"
+    )
+    assert captured["train_calls"][-1]["kwargs"] == {}
+
+
+def test_dpo_resumes_only_its_own_checkpoint(tmp_path, monkeypatch):
+    captured = _install_fake_ml(monkeypatch)
+    trainer = PEFTTrainer(
+        base_model="qwen2.5-1.5b",
+        training_config={"epochs": 1, "batch_size": 1},
+    )
+    out = tmp_path / "run"
+    (out / ".trainer_checkpoints" / "dpo" / "checkpoint-4").mkdir(
+        parents=True
+    )
+    sft_dir = tmp_path / "sft-adapter"
+    sft_dir.mkdir()
+    trainer.fit_dpo(
+        [{"prompt": "Q?", "chosen": "good", "rejected": "bad"}],
+        sft_dir,
+        out,
+    )
+    assert captured["train_calls"][-1]["kwargs"] == {
+        "resume_from_checkpoint": True
+    }
+
+
+def test_sft_ignores_dpo_checkpoint_and_uses_sft_namespace(
+    tmp_path, monkeypatch
+):
+    captured = _install_fake_ml(monkeypatch)
+    trainer = PEFTTrainer(
+        base_model="qwen2.5-1.5b",
+        training_config={"epochs": 1, "batch_size": 1},
+    )
+    out = tmp_path / "run"
+    (out / ".trainer_checkpoints" / "dpo" / "checkpoint-12").mkdir(
+        parents=True
+    )
+    trainer.fit_sft([{"prompt": "Q?", "completion": "A."}], out)
+    assert captured["sft_config_kwargs"]["output_dir"] == str(
+        out / ".trainer_checkpoints" / "sft"
+    )
+    assert captured["train_calls"][-1]["kwargs"] == {}
+
+
+def test_sft_resumes_only_its_own_checkpoint(tmp_path, monkeypatch):
+    captured = _install_fake_ml(monkeypatch)
+    trainer = PEFTTrainer(
+        base_model="qwen2.5-1.5b",
+        training_config={"epochs": 1, "batch_size": 1},
+    )
+    out = tmp_path / "run"
+    (out / ".trainer_checkpoints" / "sft" / "checkpoint-3").mkdir(
+        parents=True
+    )
+    trainer.fit_sft([{"prompt": "Q?", "completion": "A."}], out)
+    assert captured["train_calls"][-1]["kwargs"] == {
+        "resume_from_checkpoint": True
+    }
+
+
+def test_legacy_shared_checkpoint_fails_loud_without_moving_it(
+    tmp_path, monkeypatch
+):
+    captured = _install_fake_ml(monkeypatch)
+    trainer = PEFTTrainer(
+        base_model="qwen2.5-1.5b",
+        training_config={"epochs": 1, "batch_size": 1},
+    )
+    out = tmp_path / "run"
+    legacy = out / "checkpoint-7"
+    legacy.mkdir(parents=True)
+    with pytest.raises(RuntimeError, match="ambiguous legacy trainer checkpoints"):
+        trainer.fit_sft([{"prompt": "Q?", "completion": "A."}], out)
+    assert legacy.is_dir()
+    assert "trained" not in captured
 
 
 # ---------------------------------------------------------------------- #

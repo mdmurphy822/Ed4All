@@ -28,6 +28,9 @@
 
 base_model: nemotron3-nano-30b
 learning_rate: 1.0e-4
+# Intentionally unset: a short Nano DPO canary must select this independently
+# of the SFT learning rate before production DPO is allowed to start.
+dpo_learning_rate: null
 epochs: 3
 lora_rank: 16
 lora_alpha: 32
