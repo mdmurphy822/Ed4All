@@ -213,8 +213,9 @@ class LocalSynthTopology(NamedTuple):
 
     - ``seat_registry_configured``: ED4ALL_SEAT_BASE_URLS or ED4ALL_VLLM_CONTAINERS
       is non-empty (a vLLM seat topology is declared).
-    - ``backend``: ``"ollama"`` (legacy default) | ``"vllm"`` (LOCAL_SYNTHESIS_BASE_URL
-      resolves to a vLLM seat).
+    - ``backend``: ``"ollama"`` (legacy default) | ``"vllm"`` (registered
+      vLLM seat) | ``"openai_compatible"`` (an explicit non-Ollama endpoint,
+      including TRT-LLM).
     - ``base_url_root``: the resolved local-synthesis base URL in ROOT form
       (trailing ``/`` and ``/v1`` stripped) — the endpoint the checks probe.
     - ``seat_name``: the registered logical seat name backing ``base_url_root``
@@ -264,7 +265,10 @@ def resolve_local_synthesis_topology() -> LocalSynthTopology:
     Reads the CURRENT ``os.environ`` (LOCAL_SYNTHESIS_BASE_URL + the seat
     registries). Backend rules:
 
-    * No seat registry configured → ``ollama`` (legacy, byte-identical).
+    * An explicit non-Ollama ``LOCAL_SYNTHESIS_BASE_URL`` is
+      ``openai_compatible`` even without a seat registry (TRT-LLM, vLLM,
+      llama.cpp, and similar servers all expose ``/v1/models``).
+    * No explicit URL and no seat registry → ``ollama`` (legacy).
     * Seat registry configured AND the resolved local-synthesis root matches a
       registered seat/container base URL → ``vllm`` (with the matched seat name).
     * Seat registry configured AND the resolved root is a NON-ollama endpoint
@@ -294,7 +298,9 @@ def resolve_local_synthesis_topology() -> LocalSynthTopology:
         if local_root in registered:
             backend, seat_name = "vllm", registered[local_root]
         elif _OLLAMA_DEFAULT_PORT_TOKEN not in local_root:
-            backend, seat_name = "vllm", None
+            backend, seat_name = "openai_compatible", None
+    elif raw and _OLLAMA_DEFAULT_PORT_TOKEN not in local_root:
+        backend, seat_name = "openai_compatible", None
 
     return LocalSynthTopology(
         seat_registry_configured=seat_registry_configured,

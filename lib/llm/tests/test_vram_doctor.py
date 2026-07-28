@@ -148,7 +148,7 @@ def test_snapshot_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     _install_fake_httpx(monkeypatch, client)
 
-    snap = snapshot_vram()
+    snap = snapshot_vram("http://localhost:11434/v1")
     assert snap.cuda_available is True
     assert snap.free_mib == 200
     assert snap.total_mib == 8 * 1024  # 8 GiB in MiB
@@ -164,7 +164,7 @@ def test_snapshot_torch_absent(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _FakeClient({"models": []})
     _install_fake_httpx(monkeypatch, client)
 
-    snap = snapshot_vram()
+    snap = snapshot_vram("http://localhost:11434/v1")
     assert snap.cuda_available is False
     assert snap.free_mib is None
     assert snap.total_mib is None
@@ -179,7 +179,7 @@ def test_snapshot_cuda_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     _install_fake_httpx(monkeypatch, _FakeClient({"models": []}))
 
-    snap = snapshot_vram()
+    snap = snapshot_vram("http://localhost:11434/v1")
     assert snap.cuda_available is False
     assert snap.free_mib is None
     assert snap.probe_source == "unavailable"
@@ -195,7 +195,7 @@ def test_snapshot_ollama_down(monkeypatch: pytest.MonkeyPatch) -> None:
 
     _install_fake_httpx(monkeypatch, _DownClient({"models": []}))
 
-    snap = snapshot_vram()
+    snap = snapshot_vram("http://localhost:11434/v1")
     assert snap.resident_models == []
     assert snap.error is not None
     assert "unreachable" in snap.error
@@ -214,7 +214,7 @@ def test_snapshot_httpx_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("builtins.__import__", _no_httpx)
     monkeypatch.delitem(sys.modules, "httpx", raising=False)
 
-    snap = snapshot_vram()
+    snap = snapshot_vram("http://localhost:11434/v1")
     assert snap.resident_models == []
     assert snap.error is not None and "httpx" in snap.error
 
@@ -253,7 +253,7 @@ def test_snapshot_probe_source_is_torch_when_value_is_torch_derived(
     )
     _install_fake_httpx(monkeypatch, _FakeClient({"models": []}))
 
-    snap = snapshot_vram()
+    snap = snapshot_vram("http://localhost:11434/v1")
     assert snap.free_mib == 5419
     assert snap.probe_source == "torch"  # NOT "nvml" despite the NVML init
 
@@ -326,7 +326,7 @@ def test_doctor_and_evictor_share_ps_parser(monkeypatch: pytest.MonkeyPatch) -> 
     # Doctor projects to name + vram_mib.
     monkeypatch.setattr(vram_doctor, "_import_torch", lambda: None)
     _install_fake_httpx(monkeypatch, _FakeClient(payload))
-    snap = snapshot_vram()
+    snap = snapshot_vram("http://localhost:11434/v1")
     assert snap.resident_models == [{"name": "qwen2.5:7b", "vram_mib": 5_300}]
     assert vram_reclaim is not None  # imported for the identity assertion above
 
@@ -339,7 +339,7 @@ def test_doctor_uses_short_ps_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_httpx.Client.return_value = _FakeClient({"models": []})
     monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
 
-    snapshot_vram()
+    snapshot_vram("http://localhost:11434/v1")
 
     fake_httpx.Client.assert_called_once()
     _args, kwargs = fake_httpx.Client.call_args

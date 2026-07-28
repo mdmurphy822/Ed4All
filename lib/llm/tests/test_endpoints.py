@@ -96,10 +96,10 @@ def test_local_no_key_required_uses_default(monkeypatch):
     r = ep.resolve_endpoint("local")
     assert r.api_key_required is False
     assert r.api_key == "local"  # api_key_default floor
-    assert r.base_url == "http://localhost:11434/v1"
+    assert r.base_url == "http://localhost:8000/v1"
     # 2-tier design: the local row default_model is the 7B that fits an 8GB
     # GPU fully resident (LOCAL_SYNTHESIS_MODEL still overrides per-run).
-    assert r.model == "qwen2.5:7b-instruct-q4_K_M"
+    assert r.model == "nemotron-3-nano-30b-a3b"
     assert r.provenance_provider == "local"
 
 

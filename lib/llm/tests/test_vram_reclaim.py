@@ -39,19 +39,19 @@ def test_resolve_ollama_root_strips_v1_suffix(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The OpenAI-compatible /v1 suffix is stripped to reach /api/*."""
-    assert resolve_ollama_root() == "http://localhost:11434"
+    assert resolve_ollama_root() == ""
     monkeypatch.setenv(ENV_BASE_URL, "http://localhost:8000/v1")
-    assert resolve_ollama_root() == "http://localhost:8000"
+    assert resolve_ollama_root() == ""
     # No /v1 suffix → returned as-is (trailing slash trimmed).
     monkeypatch.setenv(ENV_BASE_URL, "http://gpu-box:11434/")
-    assert resolve_ollama_root() == "http://gpu-box:11434"
+    assert resolve_ollama_root() == ""
     # explicit arg beats env
     monkeypatch.setenv(ENV_BASE_URL, "http://localhost:11434/v1")
     assert resolve_ollama_root("http://other:9999/v1") == "http://other:9999"
 
 
-def test_default_base_url_is_ollama() -> None:
-    assert DEFAULT_BASE_URL == "http://localhost:11434/v1"
+def test_no_implicit_ollama_base_url() -> None:
+    assert DEFAULT_BASE_URL == ""
 
 
 # --------------------------------------------------------------------- #
@@ -115,7 +115,7 @@ def test_evict_resolves_model_from_api_ps_and_unloads(
     client = _FakeClient(ps_models=[{"name": "qwen2.5:7b-instruct-q4_K_M"}])
     _install_fake_httpx(monkeypatch, client)
 
-    assert evict_local_llm() is True
+    assert evict_local_llm(base_url="http://localhost:11434/v1") is True
     # Discovery hit /api/ps at the native root.
     assert client.get_calls == ["http://localhost:11434/api/ps"]
     # Unload POSTed keep_alive:0 for the resident model.
@@ -137,22 +137,22 @@ def test_evict_unloads_every_resident_model(
     )
     _install_fake_httpx(monkeypatch, client)
 
-    assert evict_local_llm() is True
+    assert evict_local_llm(base_url="http://localhost:11434/v1") is True
     unloaded = {p["json"]["model"] for p in client.post_calls}
     assert unloaded == {"qwen2.5:7b", "nomic-embed-text"}
 
 
-def test_evict_honors_base_url_env(
+def test_local_synthesis_url_does_not_enable_ollama_reclaim(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """LOCAL_SYNTHESIS_BASE_URL drives the reclaim host (v1 stripped)."""
+    """A strict OpenAI seat never implies an Ollama-native lifecycle API."""
     monkeypatch.setenv(ENV_BASE_URL, "http://gpu-box:11434/v1")
     client = _FakeClient(ps_models=[{"name": "qwen2.5:14b"}])
     _install_fake_httpx(monkeypatch, client)
 
-    assert evict_local_llm() is True
-    assert client.get_calls == ["http://gpu-box:11434/api/ps"]
-    assert client.post_calls[0]["url"] == "http://gpu-box:11434/api/generate"
+    assert evict_local_llm() is False
+    assert client.get_calls == []
+    assert client.post_calls == []
 
 
 # --------------------------------------------------------------------- #

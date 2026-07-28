@@ -60,6 +60,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, NamedTuple, Optional, Union
 
+from lib.file_lock import file_lock
+from lib.paths import STATE_PATH
+
 logger = logging.getLogger(__name__)
 
 #: Master switch — **default OFF**. Only the truthy tokens (case-insensitive)
@@ -86,9 +89,8 @@ ENV_SEAT_SCHEDULE = "ED4ALL_SEAT_SCHEDULE"
 #: e.g. ``spark-super=http://localhost:8001,spark-glm=http://localhost:8002``.
 #: The base_url then resolves to a docker container via
 #: :data:`ENV_VLLM_CONTAINERS` (which stays the single container registry). A
-#: seat name that does not resolve here is a CONFIG gap → warn + skip (never a
-#: run-failing error), so ``ED4ALL_SEAT_SCHEDULE`` on with an empty/partial map
-#: degrades softly to no-op on the unmapped seats.
+#: A required seat name that does not resolve here is a CONFIG gap and the
+#: workflow readiness boundary fails loudly before provider dispatch.
 ENV_SEAT_BASE_URLS = "ED4ALL_SEAT_BASE_URLS"
 
 #: Data-driven per-seat LAUNCH-SPEC registry (``seat_name=<launch spec>``) that
@@ -177,7 +179,10 @@ _COHERENCE_TIMEOUT_SECONDS = 45.0
 
 #: The fixed prompt the coherence probe POSTs. Deliberately trivial: any coherent
 #: seat can echo it; a mode-collapsed seat emits degenerate soup / null content.
-_COHERENCE_PROMPT = "Reply with exactly this word and nothing else: SEATOK"
+_COHERENCE_PROMPT = (
+    'Return exactly one JSON object matching this schema and no prose: '
+    '{"seat_ok":true}'
+)
 
 #: Max completion tokens for the coherence probe (small — we only need enough to
 #: tell coherent text from degenerate output).
@@ -803,25 +808,21 @@ def _first_model_id(base_url: str, *, timeout: float = _PROBE_TIMEOUT_SECONDS) -
 
 
 def _looks_coherent(text: Optional[str]) -> bool:
-    """Heuristic: is ``text`` sane content vs mode-collapsed degenerate output?
-
-    Rejects: ``None`` / empty / whitespace-only content, content with no
-    alphanumeric character, and single-character-repeat soup (e.g. ``"!!!!!!"``
-    or one glyph repeated). Deliberately permissive on WHAT the model said — we
-    only need to tell coherent text from the null/soup a restarted-then-collapsed
-    seat emits (memory: a seat can pass ``/v1/models`` yet return null content).
-    """
+    """Require the minimal structured probe contract, not merely sane text."""
     if not text:
         return False
     stripped = str(text).strip()
     if not stripped:
         return False
-    if not any(ch.isalnum() for ch in stripped):
+    try:
+        payload = json.loads(stripped)
+    except (TypeError, ValueError):
         return False
-    # Degenerate single-glyph repetition (mode collapse) → not coherent.
-    if len(set(stripped.replace(" ", ""))) <= 1:
-        return False
-    return True
+    return (
+        isinstance(payload, dict)
+        and set(payload) == {"seat_ok"}
+        and payload["seat_ok"] is True
+    )
 
 
 def coherence_probe(
@@ -831,13 +832,13 @@ def coherence_probe(
     timeout: float = _COHERENCE_TIMEOUT_SECONDS,
     max_tokens: int = _COHERENCE_MAX_TOKENS,
 ) -> bool:
-    """CONTENT-level coherence probe: POST a fixed prompt, require sane content.
+    """CONTENT-level coherence probe: require a minimal JSON schema round-trip.
 
     A seat can pass the ``/v1/models`` liveness probe yet emit degenerate soup /
     null content after a ``docker start`` (mode-collapse doctrine). This probe
     POSTs :data:`_COHERENCE_PROMPT` to ``{base_url}/v1/chat/completions`` (model
     id auto-resolved from ``/v1/models``) and returns ``True`` only when the
-    response carries non-empty, non-degenerate assistant content
+    response carries the exact ``{"seat_ok": true}`` object
     (:func:`_looks_coherent`).
 
     NEVER raises — any failure (no model id, HTTP error, malformed JSON, empty /
@@ -965,6 +966,7 @@ def _emit_recreate_capture(
     reason: str,
     load_seconds: Optional[float],
     launched: bool,
+    run_dir: Optional[Union[str, Path]] = None,
 ) -> None:
     """Emit a DecisionCapture recording a seat COLD-RECREATE (best-effort).
 
@@ -978,9 +980,28 @@ def _emit_recreate_capture(
     try:
         from lib.decision_capture import DecisionCapture
 
+        run_identity = (
+            Path(run_dir).name
+            if run_dir is not None
+            else os.environ.get("ED4ALL_RUN_ID", "").strip()
+        )
+        if not run_identity:
+            logger.warning(
+                "vllm_container_lifecycle: recreate capture skipped because "
+                "no run-scoped identity is available."
+            )
+            return
+        phase_identity = (
+            os.environ.get("ED4ALL_PHASE_NAME", "").strip()
+            or (
+                "training_synthesis"
+                if "synthesis_engine_dead:" in reason
+                else "seat_schedule"
+            )
+        )
         dc = DecisionCapture(
-            course_code="_seat_schedule_",
-            phase="seat_schedule",
+            course_code=run_identity,
+            phase=phase_identity,
             tool="orchestrator",
         )
         dc.log_decision(
@@ -1078,6 +1099,7 @@ def recreate_seat(
         _emit_recreate_capture(
             seat_name, base_url, container,
             reason=reason, load_seconds=None, launched=False,
+            run_dir=run_dir,
         )
         logger.error(
             "vllm_container_lifecycle: seat %r launch spec did not succeed; "
@@ -1114,6 +1136,7 @@ def recreate_seat(
     _emit_recreate_capture(
         seat_name, base_url, container,
         reason=reason, load_seconds=reload_seconds, launched=True,
+        run_dir=run_dir,
     )
     if reload_seconds is None:
         logger.warning(
@@ -1180,6 +1203,120 @@ class SeatStartResult(NamedTuple):
     load_seconds: Optional[float]
     recreated: bool
     base_url: Optional[str]
+
+
+class SeatRecoveryResult(NamedTuple):
+    """Outcome of a locked deep-health recovery attempt."""
+
+    ok: bool
+    reason: str
+    seat_name: Optional[str]
+    recreated: bool
+    engine_signals: tuple[str, ...]
+    load_seconds: Optional[float]
+
+
+def _seat_for_base_url(base_url: str) -> Optional[str]:
+    normalized = str(base_url).rstrip("/")
+    if normalized.endswith("/v1"):
+        normalized = normalized[:-3]
+    matches = sorted(
+        seat for seat, url in parse_seat_registry().items()
+        if str(url).rstrip("/").removesuffix("/v1") == normalized
+    )
+    return matches[0] if matches else None
+
+
+def _engine_failure_signals(seat_name: str) -> tuple[str, ...]:
+    """Best-effort recent TRT fatal signals; never treats absence as health."""
+    base_url = resolve_seat_base_url(seat_name) or ""
+    normalized = str(base_url).rstrip("/").removesuffix("/v1")
+    container = _lookup_container(normalized)
+    if not container:
+        return ()
+    try:
+        proc = subprocess.run(
+            ["docker", "logs", "--tail", "400", container],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        text = f"{proc.stdout}\n{proc.stderr}"
+    except Exception:  # noqa: BLE001
+        return ()
+    needles = (
+        "Hang detected",
+        "RequestError",
+        "sampler_event.synchronize",
+    )
+    return tuple(token for token in needles if token in text)
+
+
+def recover_seat_for_base_url(
+    base_url: str,
+    *,
+    run_dir: Optional[Union[str, Path]] = None,
+    reason: str,
+) -> SeatRecoveryResult:
+    """Singleflight cold recovery after a failed deep generation probe.
+
+    Every waiter probes again *under* the cross-process seat lock.  Therefore
+    only the first caller recreates; siblings observe the healed generation
+    path and return ``already_recovered``.  A recreated seat must pass two
+    independent chat completions before it is released to workload traffic.
+    """
+
+    seat_name = _seat_for_base_url(base_url)
+    if not seat_name:
+        return SeatRecoveryResult(
+            False, "unmapped_base_url", None, False, (), None
+        )
+    lock_dir = STATE_PATH / "seat_recovery"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in seat_name)
+    try:
+        # A Super cold load can take 8-10 minutes.  This lock must block for
+        # the whole lifecycle operation: ``file_lock`` deliberately proceeds
+        # unlocked after a finite timeout, which is unsafe for docker rm/run.
+        with file_lock(lock_dir / f"{safe}.lock", timeout=None):
+            mapped = resolve_seat_base_url(seat_name)
+            if mapped and coherence_probe(mapped, max_tokens=32):
+                return SeatRecoveryResult(
+                    True, "already_recovered", seat_name, False, (), 0.0
+                )
+            signals = _engine_failure_signals(seat_name)
+            reload_seconds = recreate_seat(
+                seat_name, run_dir=run_dir, reason=reason
+            )
+            if reload_seconds is None:
+                return SeatRecoveryResult(
+                    False, "recreate_failed", seat_name, True, signals, None
+                )
+            healthy = bool(mapped) and all(
+                coherence_probe(mapped, max_tokens=32) for _ in range(2)
+            )
+            return SeatRecoveryResult(
+                healthy,
+                "recovered" if healthy else "post_recreate_probe_failed",
+                seat_name,
+                True,
+                signals,
+                reload_seconds,
+            )
+    except Exception as exc:  # noqa: BLE001 - lifecycle surface never raises
+        logger.error(
+            "vllm_container_lifecycle: recovery lock/lifecycle failed for "
+            "seat %r (%s): %s",
+            seat_name,
+            base_url,
+            exc,
+        )
+        return SeatRecoveryResult(
+            False,
+            f"recovery_exception:{type(exc).__name__}",
+            seat_name,
+            False,
+            (),
+            None,
+        )
 
 
 def start_seat_coherent(
@@ -1263,7 +1400,7 @@ def start_seat_coherent(
             recreated=True, base_url=base_url,
         )
     # Stage b again: BOUNDED coherence check after the cold recreate.
-    if _coherence_check(base_url, seat_name=seat_name):
+    if all(coherence_probe(base_url) for _ in range(2)):
         logger.info(
             "vllm_container_lifecycle: seat %r COLD-RECREATED and now COHERENT "
             "after %.1fs (self-heal succeeded).",
@@ -1312,4 +1449,6 @@ __all__ = [
     "recreate_seat",
     "start_seat_coherent",
     "SeatStartResult",
+    "SeatRecoveryResult",
+    "recover_seat_for_base_url",
 ]

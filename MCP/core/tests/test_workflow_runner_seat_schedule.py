@@ -122,12 +122,10 @@ def test_seat_transitions_across_two_pass_order(monkeypatch, _seat_env):
             name, set(desired), seat_state, None
         )
 
-    # Super starts EXACTLY twice: once at course_planning (held warm through
-    # assessment_synthesis — never cold-restarted inside that range), and
-    # once at training_synthesis (2026-07-22 in-build training synthesis:
-    # the pair paraphrase pass dispatches to the local Super seat, so the
-    # schedule brings it back up after the seat-free NLI validation range).
-    assert starts.count("spark-super") == 2
+    # Every declared boundary deep-probes the required Super seat, including
+    # carried residency, because shallow health can remain green after TRT's
+    # generation executor wedges.
+    assert starts.count("spark-super") == 8
     assert starts.count("spark-glm") == 1
     assert starts.count("spark-qwen") == 1
     # Super is stopped three times: the fresh-run clean-start sweep at the
@@ -252,9 +250,8 @@ def test_start_failure_raises_loud(monkeypatch, _seat_env):
     assert "could not be brought up" in str(ei.value).lower()
 
 
-def test_unmapped_seat_is_config_gap_not_loud(monkeypatch):
-    """A declared seat missing from ED4ALL_SEAT_BASE_URLS is a config gap:
-    warn + skip, never a run-failing raise."""
+def test_unmapped_required_seat_fails_loud(monkeypatch):
+    """A required seat missing from the registry fails before dispatch."""
     monkeypatch.setenv(vcl.ENV_SEAT_SCHEDULE, "1")
     monkeypatch.setenv(vcl.ENV_SEAT_BASE_URLS, "")  # nothing mapped
     monkeypatch.setenv(vcl.ENV_VLLM_CONTAINERS, "")
@@ -262,11 +259,10 @@ def test_unmapped_seat_is_config_gap_not_loud(monkeypatch):
         vcl, "start_seat_coherent",
         lambda seat, **k: pytest.fail("started an unmapped seat"),
     )
-    # Does not raise; returns the desired set.
-    new = WorkflowRunner._apply_seat_schedule_blocking(
-        "course_planning", {"spark-super"}, None, None
-    )
-    assert new == {"spark-super"}
+    with pytest.raises(SeatScheduleProbeError, match="not mapped"):
+        WorkflowRunner._apply_seat_schedule_blocking(
+            "course_planning", {"spark-super"}, None, None
+        )
 
 
 # --------------------------------------------------------------------------

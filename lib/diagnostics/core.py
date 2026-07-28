@@ -82,6 +82,10 @@ class CheckContext:
     base_url: Optional[str] = None
     run_config: Optional[dict] = None
     run_id: Optional[str] = None
+    # ``None`` preserves the CLI's legacy default-local diagnostic posture.
+    # The GUI supplies a real configuration verdict so an inactive historical
+    # Ollama endpoint is not treated as an active deployment dependency.
+    local_synthesis_active: Optional[bool] = None
 
 
 #: A check is a callable taking a :class:`CheckContext` and returning a

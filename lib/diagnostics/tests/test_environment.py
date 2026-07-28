@@ -369,6 +369,48 @@ def test_check_ollama_vllm_branch_no_ollama_warn(monkeypatch) -> None:
     assert all(r.severity is not Severity.WARN for r in results)
 
 
+def test_inactive_legacy_local_model_does_not_warn_or_probe(monkeypatch) -> None:
+    """An available-but-inactive Ollama catalog entry is not deployment health."""
+    monkeypatch.setattr(
+        env,
+        "_fetch_ollama_tags",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("inactive Ollama must not be probed")
+        ),
+    )
+    results = env._check_ollama(CheckContext(local_synthesis_active=False))
+    assert [r.name for r in results] == ["local_synthesis_inactive"]
+    assert results[0].severity is Severity.INFO
+    assert "qwen" not in results[0].summary.lower()
+    assert "not pulled" not in results[0].summary.lower()
+
+
+def test_explicit_trt_openai_endpoint_validates_without_ollama(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "lib.diagnostics.run_env.resolve_local_synthesis_topology",
+        lambda: _Topo("openai_compatible", base_url_root="http://localhost:8123"),
+    )
+    monkeypatch.setattr(
+        "lib.diagnostics.run_env.probe_v1_models",
+        lambda root, **k: (True, ["trt-snapshot-id"], None),
+    )
+    monkeypatch.setattr(env, "_resolve_local_model", lambda: "trt-snapshot-id")
+    monkeypatch.setattr(
+        env,
+        "_fetch_ollama_tags",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("TRT endpoint must not invoke Ollama")
+        ),
+    )
+    results = env._check_ollama(CheckContext(local_synthesis_active=True))
+    assert {r.name for r in results} == {
+        "local_synthesis_backend",
+        "local_synthesis_model",
+    }
+    assert all(r.severity is not Severity.WARN for r in results)
+    assert results[0].data["backend"] == "openai_compatible"
+
+
 def test_check_ollama_legacy_path_when_ollama_backend(monkeypatch) -> None:
     # backend=ollama → byte-identical legacy path (still probes /api/tags).
     monkeypatch.setattr(

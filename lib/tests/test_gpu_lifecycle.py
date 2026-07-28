@@ -117,7 +117,7 @@ def test_release_ollama_multi_model_unloads_each(monkeypatch):
     )
     _install_fake_httpx(monkeypatch, client)
 
-    evicted = gl.release_ollama_models()
+    evicted = gl.release_ollama_models("http://localhost:11434/v1")
 
     assert evicted == ["qwen2.5:7b", "qwen2.5-vl:7b"]
     assert client.unloaded == ["qwen2.5:7b", "qwen2.5-vl:7b"]
@@ -126,7 +126,7 @@ def test_release_ollama_multi_model_unloads_each(monkeypatch):
 def test_release_ollama_empty_when_none_resident(monkeypatch):
     client = _FakeClient([])
     _install_fake_httpx(monkeypatch, client)
-    assert gl.release_ollama_models() == []
+    assert gl.release_ollama_models("http://localhost:11434/v1") == []
     assert client.unloaded == []
 
 
@@ -134,7 +134,7 @@ def test_release_ollama_failsoft_on_ps_error(monkeypatch):
     client = _FakeClient([{"name": "x"}], get_raises=True)
     _install_fake_httpx(monkeypatch, client)
     # /api/ps blows up → empty list, never raises.
-    assert gl.release_ollama_models() == []
+    assert gl.release_ollama_models("http://localhost:11434/v1") == []
 
 
 def test_release_ollama_partial_when_one_unload_fails(monkeypatch):
@@ -143,14 +143,14 @@ def test_release_ollama_partial_when_one_unload_fails(monkeypatch):
     )
     _install_fake_httpx(monkeypatch, client)
     # Only the model that unloaded cleanly is reported.
-    assert gl.release_ollama_models() == ["good"]
+    assert gl.release_ollama_models("http://localhost:11434/v1") == ["good"]
 
 
 def test_release_ollama_failsoft_when_httpx_absent(monkeypatch):
     # Simulate httpx import failing.
     monkeypatch.setitem(sys.modules, "httpx", None)
     # ``import httpx`` with a None entry raises ImportError → caught.
-    assert gl.release_ollama_models() == []
+    assert gl.release_ollama_models("http://localhost:11434/v1") == []
 
 
 # --------------------------------------------------------------------------

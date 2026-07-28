@@ -370,21 +370,21 @@ def _probe_with(monkeypatch, message: dict, captured: dict):
 
 def test_coherence_probe_sends_thinking_off_kwargs(monkeypatch):
     captured: dict = {}
-    ok = _probe_with(monkeypatch, {"content": "SEATOK"}, captured)
+    ok = _probe_with(monkeypatch, {"content": '{"seat_ok":true}'}, captured)
     assert ok is True
     assert captured["body"]["chat_template_kwargs"] == {"enable_thinking": False}
     assert captured["body"]["max_tokens"] >= 64  # 24 starved reasoning seats
 
 
-def test_coherence_probe_accepts_reasoning_only_content(monkeypatch):
+def test_coherence_probe_rejects_reasoning_without_structured_content(monkeypatch):
     captured: dict = {}
     ok = _probe_with(
         monkeypatch,
         {"content": None,
-         "reasoning_content": "The user wants the word SEATOK, so I will reply."},
+         "reasoning_content": "The requested JSON would indicate seat health."},
         captured,
     )
-    assert ok is True
+    assert ok is False
 
 
 def test_coherence_probe_still_rejects_empty_both(monkeypatch):

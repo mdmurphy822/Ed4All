@@ -487,6 +487,52 @@ def test_serving_window_vllm_branch_info_no_warn(monkeypatch) -> None:
     assert resolve_exit_code(results) == 0
 
 
+def test_inactive_legacy_model_has_no_window_warning_or_probe(monkeypatch) -> None:
+    monkeypatch.setattr(
+        sw,
+        "probe_served_window",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("inactive Ollama must not be probed")
+        ),
+    )
+    results = sw.serving_window_checks(
+        CheckContext(local_synthesis_active=False)
+    )
+    assert [r.name for r in results] == ["serving_window_inactive"]
+    assert results[0].severity is Severity.INFO
+    assert "qwen" not in results[0].summary.lower()
+    assert resolve_exit_code(results) == 0
+
+
+def test_explicit_trt_endpoint_uses_v1_models_not_ollama_show(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "lib.diagnostics.run_env.resolve_local_synthesis_topology",
+        lambda: _Topo(
+            "openai_compatible",
+            base_url_root="http://localhost:8123",
+            seat_name=None,
+        ),
+    )
+    monkeypatch.setattr(
+        "lib.diagnostics.run_env.probe_v1_models",
+        lambda root, **k: (True, ["trt-snapshot-id"], None),
+    )
+    monkeypatch.setattr(
+        sw,
+        "probe_served_window",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("TRT endpoint must not invoke Ollama /api/show")
+        ),
+    )
+    results = sw.serving_window_checks(
+        CheckContext(local_synthesis_active=True)
+    )
+    assert [r.name for r in results] == ["serving_window_vllm_seat"]
+    assert results[0].severity is Severity.INFO
+    assert results[0].data["backend"] == "openai_compatible"
+    assert resolve_exit_code(results) == 0
+
+
 def test_serving_window_ollama_backend_takes_legacy_path(monkeypatch) -> None:
     monkeypatch.setattr(
         "lib.diagnostics.run_env.resolve_local_synthesis_topology",

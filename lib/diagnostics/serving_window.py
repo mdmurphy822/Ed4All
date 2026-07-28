@@ -55,7 +55,7 @@ _API_SHOW_TIMEOUT_SECONDS = 2.0
 #: it lazily/defensively in :func:`resolve_local_model` and fall back to this
 #: literal so importing the diagnostics check never drags in the synthesis
 #: provider stack).
-_DEFAULT_LOCAL_MODEL = "qwen2.5:7b-instruct-q4_K_M"
+_DEFAULT_LOCAL_MODEL = "nemotron-3-nano-30b-a3b"
 
 #: Below-or-equal this served window, GROUNDED rewrite authoring is unsafe:
 #: median grounded rewrite prompts run ~24k tok, so an 8192 window is a
@@ -373,7 +373,12 @@ def _serving_window_vllm(ctx: CheckContext, topo) -> List[CheckResult]:
     from lib.diagnostics.run_env import probe_v1_models
 
     root = topo.base_url_root
-    seat_label = topo.seat_name or "unregistered seat"
+    seat_label = topo.seat_name or "explicit endpoint"
+    backend_label = (
+        "a vLLM seat"
+        if topo.backend == "vllm"
+        else "an OpenAI-compatible endpoint"
+    )
     live, model_ids, error = probe_v1_models(root)
     return [
         CheckResult(
@@ -381,8 +386,8 @@ def _serving_window_vllm(ctx: CheckContext, topo) -> List[CheckResult]:
             group="window",
             severity=Severity.INFO,
             summary=(
-                f"local-synthesis backend is a vLLM seat ({seat_label}) at {root}; "
-                "ollama /api/show served-window introspection does not apply "
+                f"local-synthesis backend is {backend_label} ({seat_label}) at {root}; "
+                "Ollama /api/show served-window introspection does not apply "
                 + ("(seat live)" if live else f"(seat not answering /v1/models: {error})")
             ),
             detail=(
@@ -392,7 +397,7 @@ def _serving_window_vllm(ctx: CheckContext, topo) -> List[CheckResult]:
                 "the 'seat' group"
             ),
             data={
-                "backend": "vllm",
+                "backend": topo.backend,
                 "base_url": root,
                 "seat_name": topo.seat_name,
                 "live": live,
@@ -407,6 +412,22 @@ def _serving_window_checks(ctx: CheckContext) -> List[CheckResult]:
     """Inner body for :func:`serving_window_checks` (the public wrapper catches)."""
     results: List[CheckResult] = []
 
+    if ctx.local_synthesis_active is False:
+        return [
+            CheckResult(
+                name="serving_window_inactive",
+                group="window",
+                severity=Severity.INFO,
+                summary="local-synthesis served-window check is not active",
+                detail=(
+                    "No active local synthesis provider or explicit "
+                    "LOCAL_SYNTHESIS_BASE_URL/_MODEL is configured, so an "
+                    "Ollama /api/show probe would test an unused endpoint."
+                ),
+                data={"active": False},
+            )
+        ]
+
     # P0-1: when a seat registry is configured and LOCAL_SYNTHESIS_BASE_URL
     # resolves to a vLLM seat, skip the ollama /api/show probe (no false
     # "served window unknown" WARN). No seat registry → legacy path unchanged.
@@ -414,7 +435,7 @@ def _serving_window_checks(ctx: CheckContext) -> List[CheckResult]:
         from lib.diagnostics.run_env import resolve_local_synthesis_topology
 
         topo = resolve_local_synthesis_topology()
-        if topo.backend == "vllm":
+        if topo.backend in {"vllm", "openai_compatible"}:
             return _serving_window_vllm(ctx, topo)
     except Exception as exc:  # noqa: BLE001 — topology resolution must not crash the doctor
         logger.debug("serving_window: topology resolution failed: %s", exc)

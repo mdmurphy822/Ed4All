@@ -63,15 +63,16 @@ endpoints:
 
   local:
     kind: openai_compatible
-    base_url: http://localhost:11434/v1
+    base_url: http://localhost:8000/v1
     base_url_env: LOCAL_SYNTHESIS_BASE_URL
     api_key_env: LOCAL_SYNTHESIS_API_KEY
     api_key_default: local
     api_key_required: false
     model_env: LOCAL_SYNTHESIS_MODEL
-    # 7B that fits an 8GB GPU fully resident (portable standard Ollama
-    # tag). The registry default; LOCAL_SYNTHESIS_MODEL overrides per-run.
-    default_model: qwen2.5:7b-instruct-q4_K_M
+    # Canonical local NVIDIA Nano served id. Deployments may use TRT-LLM,
+    # vLLM, or another strict OpenAI-compatible server; the transport never
+    # relies on Ollama-native request fields or lifecycle behavior.
+    default_model: nemotron-3-nano-30b-a3b
     # The answer path imposes loopback as a CONSUMER overlay; the endpoint
     # itself is local-by-default but is NOT gated here.
     loopback_only: false

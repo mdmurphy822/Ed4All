@@ -165,6 +165,8 @@ def _query_resident_models(base_url: Optional[str] = None) -> tuple[List[Dict[st
         return [], f"httpx unavailable: {exc}"
 
     root = resolve_ollama_root(base_url)
+    if not root:
+        return [], None
     try:
         # SHORT timeout — the doctor is latency-sensitive (preflight +
         # per-phase); it must NOT inherit the evictor's 30s reclaim timeout.

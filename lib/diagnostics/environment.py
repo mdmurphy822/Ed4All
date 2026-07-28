@@ -157,7 +157,7 @@ def _model_present(model: str, names: List[str]) -> bool:
 
 
 def _check_local_synthesis_vllm(ctx: CheckContext, topo) -> List[CheckResult]:
-    """vLLM-seat local-synthesis check (P0-1): probe ``/v1/models``, no ollama warn.
+    """OpenAI-compatible local check: probe ``/v1/models``, no Ollama warn.
 
     When LOCAL_SYNTHESIS_BASE_URL resolves to a vLLM seat (a seat registry is
     configured), ollama is NOT the serving path — so the ollama ``/api/tags``
@@ -168,7 +168,12 @@ def _check_local_synthesis_vllm(ctx: CheckContext, topo) -> List[CheckResult]:
     from lib.diagnostics.run_env import probe_v1_models
 
     root = topo.base_url_root
-    seat_label = topo.seat_name or "unregistered seat"
+    seat_label = topo.seat_name or "explicit endpoint"
+    backend_label = (
+        "a vLLM seat"
+        if topo.backend == "vllm"
+        else "an OpenAI-compatible endpoint"
+    )
     live, model_ids, error = probe_v1_models(root)
     model = _resolve_local_model()
 
@@ -181,17 +186,17 @@ def _check_local_synthesis_vllm(ctx: CheckContext, topo) -> List[CheckResult]:
             group="environment",
             severity=Severity.INFO,
             summary=(
-                f"local-synthesis backend is a vLLM seat ({seat_label}) at {root} "
+                f"local-synthesis backend is {backend_label} ({seat_label}) at {root} "
                 + (f"— live{served_note}" if live else f"— not answering /v1/models ({error})")
             ),
             detail=(
-                "LOCAL_SYNTHESIS_BASE_URL resolves to a vLLM seat (a seat registry "
-                "is configured), so the ollama /api/tags model-pull check does not "
-                "apply; seat liveness is owned by the 'seat' group (down at rest is "
-                "not an error, e.g. between GPU-lifecycle phases)"
+                "LOCAL_SYNTHESIS_BASE_URL resolves to an OpenAI-compatible "
+                "non-Ollama endpoint, so the Ollama /api/tags model-pull check "
+                "does not apply; registered-seat liveness remains owned by the "
+                "'seat' group."
             ),
             data={
-                "backend": "vllm",
+                "backend": topo.backend,
                 "base_url": root,
                 "seat_name": topo.seat_name,
                 "live": live,
@@ -233,11 +238,26 @@ def _check_ollama(ctx: CheckContext) -> List[CheckResult]:
     replaced by an OpenAI-compatible ``/v1/models`` check (no false ollama-pull
     WARN). With no seat registry the legacy ollama path runs byte-identical.
     """
+    if ctx.local_synthesis_active is False:
+        return [
+            CheckResult(
+                name="local_synthesis_inactive",
+                group="environment",
+                severity=Severity.INFO,
+                summary="local-synthesis endpoint is not active in the current provider configuration",
+                detail=(
+                    "Ollama model-pull checks apply only when a local synthesis "
+                    "provider or LOCAL_SYNTHESIS_BASE_URL/_MODEL is configured."
+                ),
+                data={"active": False},
+            )
+        ]
+
     try:
         from lib.diagnostics.run_env import resolve_local_synthesis_topology
 
         topo = resolve_local_synthesis_topology()
-        if topo.backend == "vllm":
+        if topo.backend in {"vllm", "openai_compatible"}:
             return _check_local_synthesis_vllm(ctx, topo)
     except Exception as exc:  # noqa: BLE001 — topology resolution must not crash the doctor
         logger.debug("diagnostics.environment: topology resolution failed: %s", exc)

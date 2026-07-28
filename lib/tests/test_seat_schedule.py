@@ -97,7 +97,10 @@ def test_all_registered_seat_names():
 @pytest.mark.parametrize(
     "text,ok",
     [
-        ("SEATOK", True), ("  ok now  ", True), ("The answer is 42.", True),
+        ('{"seat_ok":true}', True), (' { "seat_ok": true } ', True),
+        ("SEATOK", False), ("The answer is 42.", False),
+        ('{"seat_ok":false}', False), ('{"ok":true}', False),
+        ('{"seat_ok":true,"extra":1}', False), ('{"seat_ok":1}', False),
         (None, False), ("", False), ("    ", False),
         ("!!!!", False), ("aaaa", False), ("        ", False),
         (".", False),
@@ -205,7 +208,14 @@ _MODELS_OK = {"data": [{"id": "nemotron-super"}]}
 
 
 def test_coherence_probe_ok(monkeypatch):
-    chat = {"choices": [{"message": {"role": "assistant", "content": "SEATOK"}}]}
+    chat = {
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": '{"seat_ok":true}',
+            },
+        }],
+    }
     monkeypatch.setattr(vcl.urllib.request, "urlopen",
                         _fake_urlopen_factory(_MODELS_OK, chat))
     assert vcl.coherence_probe("http://localhost:8001") is True
@@ -375,11 +385,13 @@ class _FakeDC:
     """DecisionCapture stand-in that records every log_decision call."""
 
     calls = []
+    instances = []
 
     def __init__(self, course_code=None, phase=None, tool=None, **kw):
         self.course_code = course_code
         self.phase = phase
         self.tool = tool
+        _FakeDC.instances.append(self)
 
     def log_decision(self, **kw):
         _FakeDC.calls.append(kw)
@@ -396,6 +408,7 @@ def _launch_env(monkeypatch, _seat_env):
 @pytest.fixture
 def _fake_capture(monkeypatch):
     _FakeDC.calls = []
+    _FakeDC.instances = []
     import lib.decision_capture as dc_mod
     monkeypatch.setattr(dc_mod, "DecisionCapture", _FakeDC)
     return _FakeDC
@@ -415,15 +428,27 @@ def test_recreate_seat_happy_path(monkeypatch, _launch_env, _fake_capture):
     assert launch_calls == ["/opt/seats/launch-super.sh"]
 
 
-def test_recreate_seat_emits_decision_capture(monkeypatch, _launch_env, _fake_capture):
+def test_recreate_seat_emits_decision_capture(
+    monkeypatch, tmp_path, _launch_env, _fake_capture
+):
+    run_dir = tmp_path / "WF-real-run"
+    monkeypatch.setenv("ED4ALL_PHASE_NAME", "training_synthesis")
     monkeypatch.setattr(vcl, "_run_docker", lambda args, **k: True)
     monkeypatch.setattr(vcl, "_run_launch_spec", lambda spec, **k: True)
     monkeypatch.setattr(vcl, "_probe_ready", lambda base_url, **k: True)
     monkeypatch.setattr(vcl.time, "sleep", lambda *_a, **_k: None)
 
-    vcl.recreate_seat("spark-super", reason="warm_start_incoherent", timeout_seconds=5.0)
+    vcl.recreate_seat(
+        "spark-super",
+        reason="warm_start_incoherent",
+        timeout_seconds=5.0,
+        run_dir=run_dir,
+    )
 
     assert len(_fake_capture.calls) == 1, "recreate must emit exactly one DecisionCapture"
+    assert len(_fake_capture.instances) == 1
+    assert _fake_capture.instances[0].course_code == "WF-real-run"
+    assert _fake_capture.instances[0].phase == "training_synthesis"
     call = _fake_capture.calls[0]
     assert call["decision_type"] == "seat_cold_recreate"
     rationale = call["rationale"]
@@ -441,13 +466,24 @@ def test_recreate_seat_no_launch_spec_returns_none(monkeypatch, _seat_env, _fake
     assert _fake_capture.calls == []  # no recreate attempted → no capture
 
 
-def test_recreate_seat_launch_failure_returns_none(monkeypatch, _launch_env, _fake_capture):
+def test_recreate_seat_launch_failure_returns_none(
+    monkeypatch, tmp_path, _launch_env, _fake_capture
+):
+    run_dir = tmp_path / "WF-launch-failure"
+    monkeypatch.setenv("ED4ALL_PHASE_NAME", "seat_schedule")
     monkeypatch.setattr(vcl, "_run_docker", lambda args, **k: True)
     monkeypatch.setattr(vcl, "_run_launch_spec", lambda spec, **k: False)  # launch fails
     monkeypatch.setattr(vcl, "_probe_ready", lambda *a, **k: pytest.fail("probed after failed launch"))
-    assert vcl.recreate_seat("spark-super", timeout_seconds=5.0) is None
+    assert vcl.recreate_seat(
+        "spark-super",
+        timeout_seconds=5.0,
+        run_dir=run_dir,
+    ) is None
     # A recreate was ATTEMPTED (rm + launch) so a capture still fires (launched=False).
     assert len(_fake_capture.calls) == 1
+    assert len(_fake_capture.instances) == 1
+    assert _fake_capture.instances[0].course_code == "WF-launch-failure"
+    assert _fake_capture.instances[0].phase == "seat_schedule"
     assert "relaunch_ok=False" in _fake_capture.calls[0]["rationale"]
 
 

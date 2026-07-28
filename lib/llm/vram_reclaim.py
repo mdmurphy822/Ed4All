@@ -43,20 +43,18 @@ treats ``False`` as "could not free VRAM" and falls back to CPU.
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-#: Env var carrying the local OpenAI-compatible model server base URL —
-#: the SAME env the local synthesis provider reads
-#: (:data:`Trainforge.generators._local_provider.ENV_BASE_URL`). Default
-#: is the Ollama default. We strip a trailing ``/v1`` to reach the native
-#: ``/api/*`` endpoints.
+#: Retained compatibility name. LOCAL_SYNTHESIS_BASE_URL now denotes a strict
+#: OpenAI-compatible TRT-LLM/vLLM endpoint and is deliberately NOT consumed by
+#: this Ollama-native helper.
 ENV_BASE_URL = "LOCAL_SYNTHESIS_BASE_URL"
 
-#: Default base URL (Ollama default), matching the local synthesis client.
-DEFAULT_BASE_URL = "http://localhost:11434/v1"
+#: No implicit Ollama endpoint. Callers supporting an explicitly configured
+#: legacy Ollama deployment must pass ``base_url=``.
+DEFAULT_BASE_URL = ""
 
 #: Per-request timeout (seconds) for the reclaim HTTP calls. Short — this
 #: is a fire-and-return hand-off, not a generation call; we don't want to
@@ -67,17 +65,15 @@ _RECLAIM_TIMEOUT_SECONDS = 30.0
 def resolve_ollama_root(base_url: Optional[str] = None) -> str:
     """Resolve the ollama server ROOT (no ``/v1`` suffix).
 
-    Resolution chain (mirrors the local synthesis client): explicit
-    ``base_url`` arg > ``LOCAL_SYNTHESIS_BASE_URL`` env > the Ollama
-    default. The OpenAI-compatible ``/v1`` suffix is stripped because
+    Only an explicit ``base_url`` activates this legacy helper.
+    ``LOCAL_SYNTHESIS_BASE_URL`` is not consulted because it now identifies
+    the active TRT-LLM/vLLM OpenAI-compatible endpoint. The ``/v1`` suffix is stripped because
     ollama's native ``/api/ps`` + ``/api/generate`` endpoints live at the
     server root, not under ``/v1``.
     """
-    resolved = (
-        base_url
-        or os.environ.get(ENV_BASE_URL)
-        or DEFAULT_BASE_URL
-    ).strip() or DEFAULT_BASE_URL
+    resolved = str(base_url or "").strip()
+    if not resolved:
+        return ""
     resolved = resolved.rstrip("/")
     if resolved.endswith("/v1"):
         resolved = resolved[: -len("/v1")].rstrip("/")
@@ -177,6 +173,8 @@ def evict_local_llm(base_url: Optional[str] = None) -> bool:
         return False
 
     root = resolve_ollama_root(base_url)
+    if not root:
+        return False
     try:
         with httpx.Client(timeout=_RECLAIM_TIMEOUT_SECONDS) as client:
             resident = _list_running_models(client, root)

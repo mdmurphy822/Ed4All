@@ -25,9 +25,12 @@ def test_unknown_provider_returns_none():
 def test_local_provider_falls_back_to_roster():
     meta = license_metadata_for_provider("local")
     assert meta is not None
-    # `local` resolves its default model (qwen2.5:7b) → Apache-2.0 safe.
+    # `local` resolves canonical pinned Nemotron Nano via the roster.
     assert meta["license_verdict"] == "safe"
-    assert meta["license_spdx"] == "Apache-2.0"
+    assert (
+        meta["license_spdx"]
+        == "LicenseRef-NVIDIA-Nemotron-OML-2025-12-15"
+    )
 
 
 def test_accessor_does_not_mutate_registry():

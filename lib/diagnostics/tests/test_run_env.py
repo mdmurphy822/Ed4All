@@ -597,15 +597,29 @@ def test_topology_registry_but_ollama_default_stays_ollama(monkeypatch, _clear_t
     assert topo.seat_name is None
 
 
-def test_topology_registry_unregistered_nonollama_is_vllm(monkeypatch, _clear_topology_env):
+def test_topology_registry_unregistered_nonollama_is_openai_compatible(
+    monkeypatch, _clear_topology_env
+):
     # A seat registry is configured (via containers) and LOCAL_SYNTHESIS_BASE_URL
     # points at a non-ollama port not itself in the registry → still vLLM.
     monkeypatch.setenv("ED4ALL_VLLM_CONTAINERS", "http://localhost:8001=vllm-super")
     monkeypatch.setenv("LOCAL_SYNTHESIS_BASE_URL", "http://localhost:8009/v1")
     topo = run_env.resolve_local_synthesis_topology()
-    assert topo.backend == "vllm"
+    assert topo.backend == "openai_compatible"
     assert topo.seat_name is None
     assert topo.base_url_root == "http://localhost:8009"
+
+
+def test_topology_explicit_trt_endpoint_without_registry_is_openai_compatible(
+    monkeypatch, _clear_topology_env
+):
+    """TRT-LLM speaks the OpenAI wire protocol and never gets Ollama probes."""
+    monkeypatch.setenv("LOCAL_SYNTHESIS_BASE_URL", "http://localhost:8123/v1")
+    topo = run_env.resolve_local_synthesis_topology()
+    assert topo.seat_registry_configured is False
+    assert topo.backend == "openai_compatible"
+    assert topo.seat_name is None
+    assert topo.base_url_root == "http://localhost:8123"
 
 
 def test_topology_never_raises_on_broken_registry(monkeypatch, _clear_topology_env):

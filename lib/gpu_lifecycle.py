@@ -140,6 +140,8 @@ def release_ollama_models(
         return []
 
     root = resolve_ollama_root(base_url)
+    if not root:
+        return []
     evicted: List[str] = []
     try:
         with httpx.Client(timeout=_SWEEP_TIMEOUT_SECONDS) as client:
