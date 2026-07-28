@@ -32,7 +32,13 @@ from Trainforge.training.compute_backend import (  # noqa: F401
     TrainingJobResult,
     TrainingJobSpec,
 )
-from Trainforge.training.configs import TrainingConfig, load_config  # noqa: F401
+from Trainforge.training.configs import (  # noqa: F401
+    ConfigOverrideError,
+    TrainingConfig,
+    coerce_config_overrides,
+    load_config,
+    parse_config_overrides,
+)
 from Trainforge.training.runner import (  # noqa: F401
     TrainingRunner,
     TrainingRunResult,
@@ -43,6 +49,7 @@ __all__ = [
     "BaseModelRegistry",
     "BaseModelSpec",
     "ComputeBackend",
+    "ConfigOverrideError",
     "LocalBackend",
     "RunPodBackend",
     "TrainingConfig",
@@ -50,6 +57,8 @@ __all__ = [
     "TrainingJobSpec",
     "TrainingRunResult",
     "TrainingRunner",
+    "coerce_config_overrides",
     "format_instruction",
     "load_config",
+    "parse_config_overrides",
 ]

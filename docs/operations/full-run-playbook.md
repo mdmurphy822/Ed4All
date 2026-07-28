@@ -515,8 +515,34 @@ python -m Trainforge.train_course \
 
 Verified options: `--course-code` (accepts either the course-code form or the
 LibV2 slug — both resolve identically), `--base-model` (required),
-`--config-overrides` (YAML), `--backend {local,runpod}` (default `local`;
+`--config-overrides` (per-run `TrainingConfig` overrides — a YAML/JSON file
+path, an inline JSON object, or inline `key=value[,key=value]` pairs; the same
+flag exists on `ed4all run`), `--backend {local,runpod}` (default `local`;
 `runpod` is stubbed and fails loud), `--output-dir`, `--dry-run`.
+
+`--config-overrides` is how a `dpo_learning_rate` reaches the trainer:
+`Trainforge/training/configs/nemotron3-nano-30b.yaml` ships it `null` on
+purpose, and `Trainforge/training/peft_trainer.py` raises rather than reusing
+the SFT rate, so DPO on that base does not start without it. Supply the value
+the short DPO canary selected:
+
+```bash
+python -m Trainforge.train_course \
+  --course-code <COURSE_SLUG> --base-model nemotron3-nano-30b \
+  --config-overrides dpo_learning_rate=<canary value>
+
+# ...or through the pipeline, on a fresh run or a --resume:
+ed4all run trainforge_train --course-name <COURSE_SLUG> \
+  --base-model nemotron3-nano-30b \
+  --config-overrides dpo_learning_rate=<canary value>
+```
+
+Both routes validate the spec against the real `TrainingConfig` field set
+before anything starts — an unknown key, a bad type, or an out-of-range
+value exits nonzero (naming the supported field list on an unknown key)
+rather than surfacing hours in. The override set is
+recorded on `model_card.json::config_overrides`, so the run stays
+reproducible.
 
 The canonical registry default is `nemotron3-nano-30b`, resolving to
 `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16` at immutable revision

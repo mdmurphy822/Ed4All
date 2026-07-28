@@ -32,7 +32,7 @@ import signal
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import click
 
@@ -260,6 +260,7 @@ def _build_workflow_params(
     skip_training: bool = False,
     with_training: bool = False,
     base_model: Optional[str] = None,
+    config_overrides: Optional[Union[Dict[str, Any], str]] = None,
     instruction_variants_per_chunk: Optional[int] = None,
     provider: Optional[str] = None,
     stop_after: Optional[str] = None,
@@ -401,6 +402,26 @@ def _build_workflow_params(
     # documented precedence CLI flag > env > default.
     if base_model:
         params["base_model"] = base_model
+
+    # --config-overrides: the per-run TrainingConfig override set the
+    # ``training`` phase applies on top of the checked-in per-base YAML.
+    # config/workflows.yaml::training declares
+    # ``inputs_from: config_overrides <- workflow_params.config_overrides``.
+    # The value here is ALREADY validated + type-coerced (the caller ran it
+    # through Trainforge.training.configs.parse_config_overrides at parse
+    # time), so what lands in workflow state is a plain JSON-serializable
+    # dict of real TrainingConfig fields. Recorded ONLY when overrides were
+    # actually supplied: an empty/absent key leaves the per-base YAML the sole
+    # source, so an unflagged run stays byte-identical.
+    if config_overrides:
+        params["config_overrides"] = (
+            dict(config_overrides)
+            if isinstance(config_overrides, dict)
+            # Slim install: the parser could not be imported, so the RAW spec
+            # travels and the handler re-parses it (see
+            # :func:`_validate_config_overrides`).
+            else config_overrides
+        )
 
     # --instruction-variants-per-chunk: the number of instruction units the
     # ``training_synthesis`` phase synthesizes per chunk.
@@ -668,6 +689,16 @@ async def _create_textbook_workflow(
         _persist_workflow_param(
             response.get("workflow_id"), "base_model", params["base_model"],
         )
+    # Same story for --config-overrides: ``create_textbook_pipeline`` has no
+    # config_overrides kwarg, so without this patch the in-build
+    # ``--with-training`` tail would resolve the untouched per-base YAML and
+    # the flag would be a silent no-op.
+    if params.get("config_overrides"):
+        _persist_workflow_param(
+            response.get("workflow_id"),
+            "config_overrides",
+            params["config_overrides"],
+        )
     return response
 
 
@@ -712,6 +743,54 @@ def _validate_base_model(base_model: Optional[str]) -> None:
         # already names every supported short name.
         click.secho(f"--base-model: {exc.args[0]}", fg="red", err=True)
         sys.exit(2)
+
+
+def _validate_config_overrides(
+    config_overrides: Optional[str],
+) -> Optional[Union[Dict[str, Any], str]]:
+    """Parse + validate ``--config-overrides`` at PARSE time, loudly.
+
+    Delegates to ``Trainforge.training.configs.parse_config_overrides`` — the
+    SAME canonical parser ``MCP/tools/pipeline_tools.py::_run_training``
+    normalizes through — so there is exactly one definition of what a legal
+    override is, and exactly one error message listing the supported keys.
+    This is a fail-FAST echo, not a second allowlist.
+
+    Unknown key / bad type / out-of-range value => exit 2 with the supported
+    set. Never a silent drop: an override that does not apply must not leave
+    the operator believing a hand-calibrated ``dpo_learning_rate`` reached the
+    trainer, and a garbage value must die here rather than six hours into a
+    run.
+
+    A slim install without the training extras cannot import the parser. That
+    is NOT a licence to guess: the RAW string passes through with a stderr
+    warning, and the handler re-parses it and fails the phase closed.
+    """
+    if not config_overrides:
+        return None
+    try:
+        from Trainforge.training.configs import (  # noqa: PLC0415
+            ConfigOverrideError,
+            parse_config_overrides,
+        )
+    except ImportError as exc:
+        click.secho(
+            f"WARNING: could not import the training-config parser to "
+            f"validate --config-overrides ({exc}); the training phase will "
+            "validate it and fail the run closed if it is invalid.",
+            fg="yellow",
+            err=True,
+        )
+        # Pass the RAW spec through rather than dropping it — the handler
+        # accepts the same shapes and re-parses. Dropping would silently
+        # train at the per-base defaults.
+        return config_overrides
+    try:
+        parsed = parse_config_overrides(config_overrides)
+    except ConfigOverrideError as exc:
+        click.secho(f"--config-overrides: {exc}", fg="red", err=True)
+        sys.exit(2)
+    return parsed or None
 
 
 def _persist_workflow_param(
@@ -1089,6 +1168,32 @@ def _build_orchestrator(
     ),
 )
 @click.option(
+    "--config-overrides",
+    "config_overrides",
+    default=None,
+    help=(
+        "PER-RUN TrainingConfig overrides for the ``training`` phase, as "
+        "either a YAML/JSON file path, an inline JSON object, or inline "
+        "``key=value[,key=value]`` pairs (list fields use ``|`` between "
+        "items, e.g. ``target_modules=q_proj|k_proj``). Populates the "
+        "``config_overrides`` workflow param the phase's ``inputs_from`` "
+        "block routes into ``run_training``, so it governs BOTH ``ed4all run "
+        "trainforge_train`` and the in-build ``--with-training`` tail, and it "
+        "is re-applied on ``--resume``. Unset (the default) leaves the "
+        "checked-in per-base YAML untouched — byte-identical to every run "
+        "before this flag existed. This is the ONLY pipeline route to fields "
+        "the per-base YAML deliberately leaves unset: "
+        "``Trainforge/training/configs/nemotron3-nano-30b.yaml`` ships "
+        "``dpo_learning_rate: null`` and the trainer RAISES rather than "
+        "reusing the SFT rate, so ``--config-overrides "
+        "dpo_learning_rate=<canary value>`` is what makes Nemotron Nano DPO "
+        "startable. Validated at PARSE time against the real TrainingConfig "
+        "field set: an unknown key, a bad type, or an out-of-range value exits 2 "
+        "(naming the supported field list on an unknown key) rather than "
+        "being dropped or discovered hours into a training run. ``base_model`` is rejected here — use --base-model."
+    ),
+)
+@click.option(
     "--instruction-variants-per-chunk",
     "instruction_variants_per_chunk",
     type=int,
@@ -1203,6 +1308,7 @@ def run_command(
     skip_training: bool,
     with_training: bool,
     base_model: Optional[str],
+    config_overrides: Optional[str],
     instruction_variants_per_chunk: Optional[int],
     stop_after: Optional[str],
     license_note: Optional[str],
@@ -1281,6 +1387,12 @@ def run_command(
     # state on disk and never survives to a multi-hour training dispatch.
     # Delegates to the ONE registry the training handler validates against.
     _validate_base_model(base_model)
+    # --config-overrides is parsed + validated against the real
+    # TrainingConfig field set BEFORE any workflow state is written, so a
+    # typo'd key or a garbage value costs seconds instead of surviving into
+    # a multi-hour training run. Returns the coerced dict the rest of the
+    # command threads (or the raw spec on a slim install; see the helper).
+    resolved_config_overrides = _validate_config_overrides(config_overrides)
     # Fail fast on a nonsensical variant count rather than silently clamping it
     # to 1 deep inside run_synthesis (where an operator who asked for reject
     # mining would get an empty pool and no explanation).
@@ -1395,6 +1507,7 @@ def run_command(
         skip_training=skip_training,
         with_training=with_training,
         base_model=base_model,
+        config_overrides=resolved_config_overrides,
         instruction_variants_per_chunk=instruction_variants_per_chunk,
         stop_after=stop_after,
         license_note=license_note,
@@ -1439,6 +1552,9 @@ def run_command(
             # An explicit --base-model on resume re-pins the base the resumed
             # training phase trains against (validated at parse time above).
             base_model=base_model,
+            # An explicit --config-overrides on resume re-pins the per-run
+            # TrainingConfig overrides the resumed training phase applies.
+            config_overrides=resolved_config_overrides,
         )
         return
 
@@ -2450,6 +2566,60 @@ def _apply_resume_base_model_override(
     return explicit_base_model
 
 
+def _apply_resume_config_overrides_override(
+    workflow_id: str,
+    explicit_config_overrides: Optional[Union[Dict[str, Any], str]],
+) -> Optional[Union[Dict[str, Any], str]]:
+    """Persist an explicit resume-time ``--config-overrides``.
+
+    Exact sibling of :func:`_apply_resume_base_model_override` and reuses the
+    SAME state-file patcher (:func:`_persist_workflow_param`). The ``training``
+    phase reads its override set out of the PERSISTED workflow params
+    (``inputs_from: config_overrides <- workflow_params.config_overrides``), so
+    a ``--config-overrides`` passed alongside ``--resume`` has to be written
+    into the state file BEFORE the run or it is a silent no-op and the resumed
+    run trains at the checked-in per-base defaults — which, on a base whose
+    YAML ships ``dpo_learning_rate: null``, means the DPO stage raises instead
+    of running.
+
+    Stickiness matches the ``--base-model`` / ``--with-training`` precedent:
+    the flag ABSENT on a resume leaves the persisted value alone (a resume-time
+    flag is an override when supplied, never an implicit clear when omitted).
+
+    Best-effort by contract (a missing / unwritable state file never raises),
+    but a FAILED patch on an explicit flag is reported LOUDLY. Diagnostics go
+    to stderr so ``--json`` output stays machine-parseable.
+
+    Returns the persisted override set, else ``None`` (nothing patched).
+    """
+    if not explicit_config_overrides:
+        return None
+
+    value = (
+        dict(explicit_config_overrides)
+        if isinstance(explicit_config_overrides, dict)
+        else explicit_config_overrides
+    )
+    if not _persist_workflow_param(workflow_id, "config_overrides", value):
+        click.secho(
+            f"WARNING: --config-overrides could NOT be persisted onto workflow "
+            f"{workflow_id} (state file missing, unreadable, or unwritable). "
+            f"The resumed training phase will use the checked-in per-base "
+            f"training config, NOT {value!r}.",
+            fg="red",
+            err=True,
+        )
+        return None
+
+    click.secho(
+        f"--config-overrides applied to {workflow_id}: the resumed training "
+        f"phase will train with {value!r} merged over the per-base config.",
+        fg="cyan",
+        err=True,
+    )
+    return value
+
+
 def _resume_workflow(
     *,
     workflow_id: str,
@@ -2463,6 +2633,7 @@ def _resume_workflow(
     with_training: bool = False,
     skip_training: bool = False,
     base_model: Optional[str] = None,
+    config_overrides: Optional[Union[Dict[str, Any], str]] = None,
 ) -> None:
     """Resume an existing workflow state through the orchestrator.
 
@@ -2496,6 +2667,10 @@ def _resume_workflow(
         # flag, which writes the same param at creation). Unset -> the
         # persisted value governs.
         _apply_resume_base_model_override(workflow_id, base_model)
+        # An explicit --config-overrides on the resume command re-pins the
+        # per-run TrainingConfig overrides the resumed ``training`` phase
+        # merges over the per-base YAML (parity with --base-model above).
+        _apply_resume_config_overrides_override(workflow_id, config_overrides)
         orchestrator = _build_orchestrator(mode, provider=provider, model=model)
         if watch:
             click.secho(

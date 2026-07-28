@@ -37,9 +37,11 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from Trainforge.training import (  # noqa: E402
     BaseModelRegistry,
+    ConfigOverrideError,
     LocalBackend,
     RunPodBackend,
     TrainingRunner,
+    parse_config_overrides,
 )
 from lib.generation.stop_control import GracefulStopRequested  # noqa: E402
 from lib.ontology.slugs import libv2_course_slug  # noqa: E402
@@ -81,11 +83,14 @@ def _slugify(course_code: str) -> str:
 )
 @click.option(
     "--config-overrides",
-    type=click.Path(exists=True, dir_okay=False),
     default=None,
     help=(
-        "Optional YAML file whose top-level keys override the per-base "
-        "training config defaults (LR, epochs, rank, etc.)."
+        "Optional per-run TrainingConfig overrides (LR, epochs, rank, "
+        "dpo_learning_rate, ...), as a YAML/JSON file path, an inline JSON "
+        "object, or inline key=value[,key=value] pairs (list fields use '|' "
+        "between items). Parsed by the SAME canonical parser the pipeline's "
+        "training phase uses, so an unknown key or an out-of-range value "
+        "fails here rather than mid-run."
     ),
 )
 @click.option(
@@ -138,6 +143,13 @@ def train_course_command(
     """
     slug = _slugify(course_code)
 
+    # Parse + validate BEFORE any backend or runner exists, so a typo'd
+    # override key costs a second rather than a training run.
+    try:
+        overrides = parse_config_overrides(config_overrides)
+    except ConfigOverrideError as exc:
+        raise click.BadParameter(str(exc), param_hint="--config-overrides")
+
     backend_choice = (backend or "local").lower()
     backend_obj = (
         LocalBackend(allow_no_gpu=dry_run)
@@ -151,7 +163,7 @@ def train_course_command(
         output_dir=Path(output_dir) if output_dir else None,
         backend=backend_obj,
         dry_run=dry_run,
-        config_overrides_path=Path(config_overrides) if config_overrides else None,
+        config_overrides=overrides or None,
     )
     # NB: a graceful stop (``ed4all stop`` sentinel tripping mid-training) makes
     # ``runner.run()`` raise ``GracefulStopRequested``. It is deliberately NOT

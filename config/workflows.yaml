@@ -5338,6 +5338,24 @@ workflows:
           - param: base_model
             source: workflow_params
             key: base_model
+          # Per-run TrainingConfig overrides (``ed4all run
+          # --config-overrides <path-or-inline>``). Absent from
+          # workflow_params -> the key is omitted from the task params and
+          # the handler resolves the per-base YAML exactly as before, i.e.
+          # byte-identical to every run before this route existed. It exists
+          # because some fields CANNOT be supplied any other way through the
+          # pipeline: Trainforge/training/configs/nemotron3-nano-30b.yaml
+          # ships dpo_learning_rate: null on purpose and
+          # Trainforge/training/peft_trainer.py RAISES rather than reusing
+          # the SFT rate, so DPO on that base was unreachable through
+          # `ed4all run` until this route existed. The value is the
+          # already-validated dict the CLI coerced against the TrainingConfig
+          # field set at parse time; the handler re-normalizes it through the
+          # same canonical parser and fails the phase CLOSED on anything
+          # unknown or out of range.
+          - param: config_overrides
+            source: workflow_params
+            key: config_overrides
 
         # Mirrors the run_training success envelope. ``run_dir`` is the
         # adapter dir the eval arm + EvalGatingValidator both read (the

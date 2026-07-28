@@ -34,7 +34,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 from lib.decision_capture import DecisionCapture
 from lib.licensing import (
@@ -53,7 +53,11 @@ from Trainforge.training.compute_backend import (
     TrainingJobSpec,
     is_dpo_editorial_record,
 )
-from Trainforge.training.configs import TrainingConfig, load_config
+from Trainforge.training.configs import (
+    TrainingConfig,
+    coerce_config_overrides,
+    load_config,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -150,6 +154,7 @@ class TrainingRunner:
         dry_run: bool = False,
         libv2_root: Optional[Path] = None,
         config_overrides_path: Optional[Path] = None,
+        config_overrides: Optional[Mapping[str, Any]] = None,
     ) -> None:
         """
         Args:
@@ -171,15 +176,38 @@ class TrainingRunner:
             libv2_root: Override for ``LIBV2_COURSES`` (testing).
             config_overrides_path: Optional path forwarded into
                 :func:`load_config` when ``config`` is None.
+            config_overrides: Optional PER-RUN override mapping (the
+                ``--config-overrides`` route). Validated + type-coerced via
+                :func:`coerce_config_overrides` — an unknown key or an
+                out-of-range value raises here rather than surviving into a
+                multi-hour run. Applied on top of a pre-resolved ``config``
+                too, so an explicitly-supplied config can never silently
+                swallow the operator's overrides. Recorded on the model card
+                (``config_overrides``) because an adapter trained at a
+                hand-picked rate is unreproducible if the rate is nowhere on
+                disk.
         """
         self.course_slug = course_slug
         self.base_model = base_model
         self.dry_run = bool(dry_run)
         self.libv2_root = Path(libv2_root) if libv2_root else LIBV2_COURSES
         self.spec: BaseModelSpec = BaseModelRegistry.resolve(base_model)
-        self.config: TrainingConfig = config or load_config(
-            base_model, course_overrides=config_overrides_path,
+        self.config_overrides: Dict[str, Any] = (
+            coerce_config_overrides(config_overrides) if config_overrides else {}
         )
+        self.config: TrainingConfig
+        if config is not None:
+            self.config = (
+                config.merged(self.config_overrides)
+                if self.config_overrides
+                else config
+            )
+        else:
+            self.config = load_config(
+                base_model,
+                course_overrides=config_overrides_path,
+                overrides=self.config_overrides or None,
+            )
         self.backend: ComputeBackend = backend or LocalBackend(
             allow_no_gpu=self.dry_run,
         )
@@ -577,6 +605,8 @@ class TrainingRunner:
                 f"learning_rate={self.config.learning_rate}, "
                 f"lora_rank={self.config.lora_rank}, "
                 f"max_seq_length={self.config.max_seq_length}. "
+                f"Per-run config overrides: "
+                f"{dict(sorted(self.config_overrides.items())) or 'none'}. "
                 f"Provenance hashes pin LibV2 artifacts so the card "
                 f"is fully replayable post-hoc."
             ),
@@ -810,6 +840,16 @@ class TrainingRunner:
             "provenance": provenance,
             "created_at": _iso_now(),
         }
+
+        # PER-RUN overrides, recorded verbatim. ``training_config`` above
+        # carries the EFFECTIVE values but not which of them the operator
+        # chose by hand; without this block an adapter trained at a canary-
+        # selected dpo_learning_rate is indistinguishable from one that
+        # inherited a checked-in YAML, and the run is not reproducible.
+        # Omitted entirely when empty, so an unflagged run's card is
+        # byte-identical to every card written before this field existed.
+        if self.config_overrides:
+            card["config_overrides"] = dict(sorted(self.config_overrides.items()))
 
         if eval_scores is not None:
             # Filter to canonical keys the schema accepts so the

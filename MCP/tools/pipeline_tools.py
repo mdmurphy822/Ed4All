@@ -34114,8 +34114,15 @@ def _build_tool_registry() -> dict:
                 ``ED4ALL_CAMPAIGN_BASE_MODEL`` then the campaign default.
             output_dir (optional): models-root override (default
                 ``LibV2/courses/<slug>/models/``).
-            config_overrides (optional): YAML overriding the per-base
-                training config (LR, epochs, rank, …).
+            config_overrides (optional, alias config_overrides_path): the
+                per-run TrainingConfig override set (LR, epochs, rank,
+                dpo_learning_rate, …). Accepts the already-validated dict the
+                CLI routes through ``workflow_params.config_overrides``, a
+                YAML/JSON file path, an inline JSON object, or an inline
+                ``key=value`` spec — all normalized through the ONE canonical
+                parser (``Trainforge.training.configs.parse_config_overrides``).
+                An unknown key or an out-of-range value fails the phase
+                CLOSED; it is never dropped.
             dry_run (optional): emit the model-card stub + decision capture
                 without calling the trainer (no GPU required).
 
@@ -34147,8 +34154,10 @@ def _build_tool_registry() -> dict:
         try:
             from Trainforge.training import (
                 BaseModelRegistry,
+                ConfigOverrideError,
                 LocalBackend,
                 TrainingRunner,
+                parse_config_overrides,
             )
         except Exception as exc:  # noqa: BLE001 — missing training deps
             return json.dumps({
@@ -34178,6 +34187,24 @@ def _build_tool_registry() -> dict:
                 "base_model": base_model,
             })
 
+        # Normalize the override spec through the ONE canonical parser before
+        # a runner exists. Every shape the route can deliver — the validated
+        # dict the CLI persisted into workflow_params, a YAML/JSON file path
+        # (the standalone contract), an inline JSON object, an inline
+        # key=value spec — resolves here. Fails the phase CLOSED: an unknown
+        # key must never be silently dropped into a multi-hour run, and a
+        # garbage value must never be discovered by the trainer.
+        try:
+            resolved_overrides = parse_config_overrides(config_overrides)
+        except ConfigOverrideError as exc:
+            return json.dumps({
+                "success": False,
+                "error": f"invalid config_overrides: {exc}",
+                "error_type": "invalid_config_overrides",
+                "course_slug": course_slug,
+                "base_model": base_model,
+            })
+
         try:
             runner = TrainingRunner(
                 course_slug=course_slug,
@@ -34185,9 +34212,7 @@ def _build_tool_registry() -> dict:
                 output_dir=Path(output_dir) if output_dir else None,
                 backend=LocalBackend(allow_no_gpu=dry_run),
                 dry_run=dry_run,
-                config_overrides_path=(
-                    Path(config_overrides) if config_overrides else None
-                ),
+                config_overrides=resolved_overrides or None,
             )
             result = runner.run()
         except GracefulStopRequested:

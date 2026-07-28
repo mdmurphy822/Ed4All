@@ -143,7 +143,20 @@
         "dpo_fail_hard": {
           "type": "boolean",
           "description": "Whether a DPO-stage failure fails the run instead of falling back to SFT."
+        },
+        "dpo_learning_rate": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Effective DPO-stage learning rate. Emitted only when set — some bases (nemotron3-nano-30b) require an operator-calibrated value and refuse to reuse the SFT rate, so the adapter is not reproducible without it."
         }
+      }
+    },
+    "config_overrides": {
+      "type": "object",
+      "description": "Per-run TrainingConfig overrides the operator supplied via --config-overrides, recorded verbatim. training_config above carries the EFFECTIVE values but not which of them were hand-picked; without this an adapter trained at a canary-selected dpo_learning_rate is indistinguishable from one that inherited the checked-in per-base YAML. Keys are validated against the TrainingConfig field set at parse time. Omitted entirely when no override was supplied.",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": ["number", "integer", "string", "boolean", "array", "null"]
       }
     },
     "provenance": {

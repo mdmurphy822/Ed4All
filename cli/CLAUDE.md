@@ -104,11 +104,13 @@ Mode/provider resolution: `--mode` → `LLM_MODE` → `local`;
 `_cloud_seat_preflight` — resolve + assert only, **no dispatch**.
 
 `--resume <run_id>` takes the `_resume_workflow` path. `--stop-after`,
-`--reuse-objectives`, `--with-training` and `--base-model` have dedicated
+`--reuse-objectives`, `--with-training`, `--base-model` and
+`--config-overrides` have dedicated
 resume-override helpers (`_apply_resume_stop_after_override`,
 `_apply_resume_reuse_objectives_override`,
 `_apply_resume_with_training_override`,
-`_apply_resume_base_model_override`) that patch the persisted params before
+`_apply_resume_base_model_override`,
+`_apply_resume_config_overrides_override`) that patch the persisted params before
 the resumed phase runs — the runner reads those decisions from persisted state,
 so without the patch the flag would be a silent no-op on a resume.
 `_apply_resume_with_training_override` also takes the `--skip-training` value,
@@ -174,6 +176,28 @@ staleness heuristic and the resume path see the truth.
   itself is `--course-name`; `--course-code` is *not* an `ed4all run` option
   (it is the handler-side `inputs_from` param alias, and a real flag only on
   the separate `python -m Trainforge.train_course` CLI).
+- **`--config-overrides`** carries PER-RUN `TrainingConfig` fields into the
+  `training` phase — a YAML/JSON file path, an inline JSON object, or inline
+  `key=value[,key=value]` pairs (list fields use `|` between items). It
+  populates the `config_overrides` workflow param routed by the phase's
+  `inputs_from` block into `run_training`, so it governs both
+  `ed4all run trainforge_train` and the in-build `--with-training` tail, and
+  `_apply_resume_config_overrides_override` re-pins it on a resume.
+  `_validate_config_overrides` parses it at **parse time** through
+  `Trainforge/training/configs/__init__.py::parse_config_overrides` — the same single
+  parser `MCP/tools/pipeline_tools.py::_run_training` normalizes through, a
+  fail-fast echo rather than a second allowlist — so an unknown key, a bad
+  type, or an out-of-range value exits 2, naming the supported field list on
+  an unknown key. An
+  override is never silently dropped and never invents a dataclass attribute;
+  `base_model` is locked out (it is `--base-model`'s, and letting an override
+  rewrite it would desync the model card from the loaded weights). Unset →
+  the key is omitted entirely and the checked-in per-base YAML is the sole
+  source. It exists because some fields are otherwise unreachable through the
+  pipeline: `Trainforge/training/configs/nemotron3-nano-30b.yaml` ships
+  `dpo_learning_rate: null` and the trainer raises rather than reusing the
+  SFT rate. A slim install that cannot import the parser warns on stderr and
+  passes the raw spec through for the handler to re-parse and fail closed on.
 - **`--semantik-output-dir`** is the canonical staged-HTML directory flag; a
   `hidden=True` deprecated back-compat alias is retained. Both coalesce into the
   same param — the canonical flag wins if both are somehow passed.

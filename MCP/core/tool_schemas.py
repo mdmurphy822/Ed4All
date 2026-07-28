@@ -894,6 +894,12 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
         "optional": [
             "base_model",
             "output_dir",
+            # Per-run TrainingConfig override set. Routed from
+            # workflow_params.config_overrides as an already-validated dict;
+            # a YAML/JSON path or inline spec string is equally accepted (the
+            # handler normalizes every shape through
+            # Trainforge.training.configs.parse_config_overrides). No default
+            # — an absent key leaves the per-base YAML untouched.
             "config_overrides",
             "dry_run",
         ],
