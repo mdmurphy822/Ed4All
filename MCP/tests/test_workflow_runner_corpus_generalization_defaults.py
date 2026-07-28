@@ -84,6 +84,7 @@ def test_measured_graph_shaping_quartet_is_complete():
     """prune + fragment-filter + merge + fan-out-cap all present, page-level
     plus the recovery paths."""
     expected = {
+        "TRAINFORGE_STAGED_SYNTHESIS_V4": "true",
         "TRAINFORGE_PRUNE_SCAFFOLDING_CONCEPTS": "true",
         "TRAINFORGE_SEED_TECH_CONCEPTS": "true",
         "TRAINFORGE_FILTER_FRAGMENT_CONCEPTS": "true",

@@ -44,9 +44,14 @@ if str(PROJECT_ROOT) not in sys.path:
 from MCP.tools import pipeline_tools as pt  # noqa: E402
 from MCP.tools.pipeline_tools import (  # noqa: E402
     _build_tool_registry,
+    _dedup_assessment_stems,
     _harvest_qti_assessment_chunks,
     _index_objective_records,
     _parse_qti_assessment_items,
+)
+from MCP.hardening.gate_input_routing import (  # noqa: E402
+    _build_assessment_objective_alignment,
+    _build_discussion_assignment_grounding,
 )
 from Trainforge.generators.assessment_generator import (  # noqa: E402
     AssessmentGenerator,
@@ -272,6 +277,46 @@ def _run_assessment_synthesis_fixture(registry, tmp_path, monkeypatch, course):
     return Path(result["assessments_dir"])
 
 
+def test_assessment_phase_surfaces_gate_inputs(
+    registry, tmp_path, monkeypatch
+):
+    course = "GATEINPUT"
+    exports_root = _write_fixture_export(tmp_path, course)
+    chunks_path = _write_fixture_chunkset(tmp_path, course)
+    monkeypatch.setattr(pt, "courseforge_exports_dir", lambda: exports_root)
+
+    result = json.loads(asyncio.run(
+        registry["run_assessment_synthesis"](
+            project_id=f"PROJ-{course}-20260719000000",
+            course_name=course,
+            dart_chunks_path=str(chunks_path),
+            question_count=2,
+        )
+    ))
+
+    payload_path = Path(result["assessments_path"])
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    assert result["chunks_path"] == str(chunks_path)
+    assert result["qti_dir"] == result["assessment_dir"]
+    assert payload["assessments"]
+    assert result["discussion_items"]
+    assert result["assignment_items"]
+
+    phase_outputs = {"assessment_synthesis": result}
+    alignment_inputs, alignment_missing = (
+        _build_assessment_objective_alignment(phase_outputs, {})
+    )
+    grounding_inputs, grounding_missing = (
+        _build_discussion_assignment_grounding(phase_outputs, {})
+    )
+    assert alignment_missing == []
+    assert alignment_inputs["assessments_path"] == str(payload_path)
+    assert alignment_inputs["chunks_path"] == str(chunks_path)
+    assert grounding_missing == []
+    assert grounding_inputs["discussion_items"]
+    assert grounding_inputs["assignment_items"]
+
+
 def test_quiz_tier_emits_item_per_co(registry, tmp_path, monkeypatch):
     course = "PERCOCOV"
     assessments_dir = _run_assessment_synthesis_fixture(
@@ -449,6 +494,14 @@ def test_harvest_skips_non_qti_and_unanchored_items(tmp_path):
             "id": kwargs["chunk_id"],
             "chunk_type": kwargs["chunk_type"],
             "learning_outcome_refs": kwargs["item"]["objective_refs"],
+            "source": {
+                "source_references": [
+                    {"sourceId": source_id}
+                    for source_id in kwargs["item"].get(
+                        "source_references", []
+                    )
+                ]
+            },
         }
 
     chunks = _harvest_qti_assessment_chunks(
@@ -459,12 +512,18 @@ def test_harvest_skips_non_qti_and_unanchored_items(tmp_path):
         create_chunk=_fake_create_chunk,
         existing_chunks=[{"id": "demo_chunk_00007"}],
         course_code="DEMO",
+        objective_source_references={
+            "CO-01": ["semantik:source-document#block-1"],
+        },
     )
     assert len(chunks) == 1
     assert chunks[0]["learning_outcome_refs"] == ["CO-01"]
     # id sequence continues after the existing max suffix.
     assert chunks[0]["id"] == "demo_chunk_00008"
     assert emitted[0]["chunk_type"] == "assessment_item"
+    assert chunks[0]["source"]["source_references"] == [
+        {"sourceId": "semantik:source-document#block-1"}
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -536,6 +595,63 @@ def test_packet_integrity_strict_passes_with_per_co_assessment_chunks(tmp_path):
     assert not coverage_issues, [
         (i.issue_code, i.message) for i in coverage_issues
     ]
+
+
+def test_cross_quiz_dedup_preserves_packet_integrity_coverage(tmp_path):
+    """Identical stems across objectives retain one anchored survivor each."""
+    from lib.validators.libv2.packet_integrity import PacketIntegrityValidator
+
+    assessments = [
+        {
+            "assessment_id": "quiz-a",
+            "questions": [
+                {
+                    "stem": "Which grounded statement is accurate?",
+                    "objective_id": ref.upper(),
+                }
+                for ref in ("to-01", "co-01", "co-02", "co-03")
+            ],
+        },
+        {
+            "assessment_id": "quiz-b",
+            "questions": [
+                {
+                    "stem": "Which grounded statement is accurate?",
+                    "objective_id": ref.upper(),
+                }
+                for ref in ("to-02", "co-04", "co-05")
+            ],
+        },
+    ]
+    survivors, report = _dedup_assessment_stems(assessments)
+    surviving_refs = {
+        question["objective_id"].lower()
+        for assessment in survivors
+        for question in assessment["questions"]
+    }
+    assert surviving_refs == {
+        "to-01", "to-02", "co-01", "co-02", "co-03", "co-04", "co-05",
+    }
+    assert report["objectives_losing_coverage"] == []
+
+    assessment_chunks = [
+        {
+            "id": f"percocov_chunk_4{index:04d}",
+            "chunk_type": "assessment_item",
+            "text": f"Quiz item for {ref}.",
+            "learning_outcome_refs": [ref],
+        }
+        for index, ref in enumerate(sorted(surviving_refs))
+    ]
+    archive = _write_archive(
+        tmp_path, _teaching_chunks() + assessment_chunks
+    )
+    result = PacketIntegrityValidator(strict_coverage=True).validate(archive)
+    coverage_issues = [
+        issue for issue in result.issues
+        if issue.issue_code in _COVERAGE_CODES
+    ]
+    assert not coverage_issues
 
 
 def test_packet_integrity_strict_fails_without_per_co_coverage(tmp_path):

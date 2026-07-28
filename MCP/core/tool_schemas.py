@@ -496,6 +496,7 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "abstention_max_pairs",
             "with_schema_translation",
             "schema_translation_max_pairs",
+            "required_training",
         ],
         "defaults": {
             "provider": "mock",
@@ -510,6 +511,7 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "abstention_max_pairs": 1000,
             "with_schema_translation": False,
             "schema_translation_max_pairs": 50,
+            "required_training": False,
         },
         "param_mapping": {
             # Corpus dir aliases — registry variant accepts any of these

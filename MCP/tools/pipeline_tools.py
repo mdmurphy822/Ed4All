@@ -958,10 +958,12 @@ def _dedup_assessment_stems(
     Deterministic pre-emit guard: the W10 phase hands the same corpus-wide
     chunk pool to every per-TO quiz, so deterministic templates can mint the
     SAME stem in many quizzes (book-1 canary: 325/765 items in exact-duplicate
-    groups). First occurrence (quiz-list order, i.e. week order) wins; every
-    later exact duplicate is DROPPED — an honest count reduction beats salad
-    duplication. A quiz whose questions all collapse is dropped entirely
-    (never emit an empty QTI document).
+    groups). The first occurrence per normalized stem wins, and later copies
+    are dropped unless that copy is the first surviving item for a distinct
+    objective. This keeps the minimum objective-anchored survivor required by
+    the strict archival coverage contract without exempting redundant copies
+    for objectives that already retain another item. A quiz whose questions
+    all collapse is dropped entirely (never emit an empty QTI document).
 
     Accepts both ``AssessmentData``-shaped objects (``.questions`` of
     ``QuestionData``) and their cached ``to_dict()`` form (``["questions"]``
@@ -1001,6 +1003,17 @@ def _dedup_assessment_stems(
             oid = str(_field(q, "objective_id") or "").strip()
             if key and key in seen_stems:
                 seen_stems[key] += 1
+                # Coverage-preserving canonical survivor: a stem duplicated
+                # across distinct objectives cannot be collapsed to one QTI
+                # item because QTI carries a single objective_id. Keep only
+                # the first such item for an objective that otherwise has no
+                # surviving assessment; later duplicates for an already
+                # covered objective still collapse normally.
+                if oid and oid not in kept_objectives:
+                    kept.append(q)
+                    total_after += 1
+                    kept_objectives.add(oid)
+                    continue
                 duplicates_removed += 1
                 if oid:
                     dropped_by_objective[oid] = (
@@ -1209,12 +1222,57 @@ def _parse_qti_assessment_items(
     return title, items
 
 
+_QTI_MATH_SPAN_RE = re.compile(
+    r"(?s)(\$\$.*?\$\$|(?<!\\)\$(?:\\.|[^$])+\$|"
+    r"\\\(.*?\\\)|\\\[.*?\\\])"
+)
+_QTI_NESTED_TAG_RE = re.compile(
+    r"(?is)</?[A-Za-z][A-Za-z0-9:_-]*(?:\s[^<>]*?)?/?>"
+)
+
+
+def _protect_qti_math_comparators(value: str) -> str:
+    """Entity-escape comparison operators inside delimited QTI math.
+
+    QTI XML parsing decodes ``&lt;`` back to a literal ``<`` before the
+    nested-HTML projection runs.  ``HTMLParser`` then interprets an expression
+    such as ``$Ax+By<C$`` as the start of a tag and drops the tail.  Escape
+    only comparator characters inside ``$...$``, ``$$...$$``, ``\\(...\\)``,
+    or ``\\[...\\]`` spans before that second parse.  Real nested markup is
+    left intact, including markup inside a math span, so the canonical HTML
+    sanitizer still strips tags and suppresses script/style subtrees.
+    """
+
+    def protect_span(match: re.Match[str]) -> str:
+        span = match.group(0)
+        pieces: List[str] = []
+        cursor = 0
+        for tag in _QTI_NESTED_TAG_RE.finditer(span):
+            literal = span[cursor:tag.start()]
+            pieces.append(literal.replace("<", "&lt;").replace(">", "&gt;"))
+            pieces.append(tag.group(0))
+            cursor = tag.end()
+        pieces.append(
+            span[cursor:].replace("<", "&lt;").replace(">", "&gt;")
+        )
+        return "".join(pieces)
+
+    return _QTI_MATH_SPAN_RE.sub(protect_span, str(value or ""))
+
+
+def _qti_plain_text(value: str, *, extractor: Any) -> str:
+    """Project nested QTI HTML while retaining literal math comparators."""
+
+    return extractor(_protect_qti_math_comparators(value)).strip()
+
+
 def _harvest_qti_assessment_chunks(
     qti_entries: List[Dict[str, str]],
     *,
     create_chunk: Any,
     existing_chunks: List[Dict[str, Any]],
     course_code: str,
+    objective_source_references: Optional[Dict[str, List[str]]] = None,
 ) -> List[Dict[str, Any]]:
     """Mint one ``assessment_item`` chunk per objective-anchored QTI item.
 
@@ -1272,11 +1330,16 @@ def _harvest_qti_assessment_chunks(
                 continue
             stem_html = qti_item.get("stem_html") or ""
             text_parts: List[str] = []
-            stem_text = _harvest_plain_text(stem_html).strip() if stem_html else ""
+            stem_text = (
+                _qti_plain_text(stem_html, extractor=_harvest_plain_text)
+                if stem_html else ""
+            )
             if stem_text:
                 text_parts.append(stem_text)
             for choice in qti_item.get("choice_texts") or []:
-                choice_text = _harvest_plain_text(choice).strip()
+                choice_text = _qti_plain_text(
+                    choice, extractor=_harvest_plain_text,
+                )
                 if choice_text:
                     text_parts.append(choice_text)
             text = "\n".join(text_parts).strip()
@@ -1297,6 +1360,11 @@ def _harvest_qti_assessment_chunks(
                 "objective_refs": [obj_ref],
                 "misconceptions": [],
             }
+            grounded_source_ids = (
+                (objective_source_references or {}).get(obj_ref) or []
+            )
+            if grounded_source_ids:
+                item_dict["source_references"] = grounded_source_ids
             try:
                 chunk = create_chunk(
                     chunk_id=_mint_chunk_id(
@@ -1335,6 +1403,92 @@ def _harvest_qti_assessment_chunks(
                 skipped_unanchored, inner_path,
             )
     return out
+
+
+def _load_objective_source_reference_map(
+    course_dir: Path,
+) -> Dict[str, List[str]]:
+    """Resolve objective ids to canonical sourceIds through real chunk joins.
+
+    ``objectives.json`` stores the source chunk ids used to ground each TO/CO;
+    ``semantik_chunks/chunks.jsonl`` stores those chunks' canonical
+    ``source.source_references``. Joining the two lets QTI assessment chunks
+    inherit provenance without guessing from objective text or fabricating a
+    source locator.
+    """
+    objectives_path = course_dir / "objectives.json"
+    chunks_path = course_dir / "semantik_chunks" / "chunks.jsonl"
+    if not objectives_path.exists() or not chunks_path.exists():
+        return {}
+    try:
+        objectives = json.loads(objectives_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+    refs_by_chunk: Dict[str, List[str]] = {}
+    try:
+        for line in chunks_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            chunk = json.loads(line)
+            chunk_id = str(chunk.get("id") or "").strip()
+            refs = []
+            for ref in (chunk.get("source") or {}).get(
+                "source_references", []
+            ):
+                source_id = (
+                    ref.get("sourceId") if isinstance(ref, dict) else ref
+                )
+                if source_id:
+                    refs.append(str(source_id))
+            if chunk_id and refs:
+                refs_by_chunk[chunk_id] = refs
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+    records: List[Dict[str, Any]] = []
+    for key in (
+        "terminal_objectives",
+        "terminal_outcomes",
+        "component_objectives",
+        "learning_outcomes",
+    ):
+        value = objectives.get(key)
+        if isinstance(value, list):
+            records.extend(r for r in value if isinstance(r, dict))
+    for chapter in objectives.get("chapter_objectives") or []:
+        if isinstance(chapter, dict):
+            records.extend(
+                r for r in chapter.get("objectives") or []
+                if isinstance(r, dict)
+            )
+
+    result: Dict[str, List[str]] = {}
+    for record in records:
+        objective_id = str(record.get("id") or "").strip()
+        chunk_ids = list(record.get("source_chunk_ids") or [])
+        for source_ref in record.get("source_refs") or []:
+            if isinstance(source_ref, dict):
+                chunk_ids.extend(source_ref.get("chunk_ids") or [])
+        seen: set = set()
+        source_ids: List[str] = []
+        for chunk_id in chunk_ids:
+            for source_id in refs_by_chunk.get(str(chunk_id), []):
+                if source_id not in seen:
+                    seen.add(source_id)
+                    source_ids.append(source_id)
+                    # Keep the QTI sidecar bounded. The objective-to-chunk
+                    # join can span a whole terminal outcome and tens of
+                    # thousands of SemantiK blocks; the first 16 canonical,
+                    # genuinely cited sourceIds are sufficient provenance
+                    # without ballooning every assessment chunk.
+                    if len(source_ids) >= 16:
+                        break
+            if len(source_ids) >= 16:
+                break
+        if objective_id and source_ids:
+            result[objective_id] = source_ids
+    return result
 
 
 def _synthesize_prose_prompt(
@@ -4429,6 +4583,38 @@ def _semantik_block_source_references(
         if pages:
             entry["pages"] = sorted(set(pages))
         out.append(entry)
+    return out
+
+
+def _canonical_source_id_references(
+    source_ids: Optional[List[str]],
+) -> List[Dict[str, Any]]:
+    """Convert canonical ``data-cf-source-ids`` values to source references.
+
+    Courseforge-authored HTML carries already-canonical
+    ``semantik:{slug}#{block_id}`` identifiers in ``data-cf-source-ids``.
+    The IMSCC chunker harvests them as ``section_source_ids`` but historically
+    discarded that callback argument and only emitted references reconstructed
+    from ``data-semantik-*`` / legacy ``data-dart-*`` attributes.  Preserve
+    valid canonical identifiers verbatim, deduplicated first-seen; malformed
+    values are rejected rather than normalized into fabricated join keys.
+    """
+    out: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw_source_id in source_ids or []:
+        source_id = str(raw_source_id or "").strip()
+        if (
+            not source_id
+            or source_id in seen
+            or not _DART_SOURCE_ID_RE.match(source_id)
+        ):
+            continue
+        seen.add(source_id)
+        out.append({
+            "sourceId": source_id,
+            "role": "primary",
+            "extractor": "synthesized",
+        })
     return out
 
 
@@ -8188,6 +8374,7 @@ def register_pipeline_tools(mcp):
         abstention_max_pairs: int = 1000,
         with_schema_translation: bool = False,
         schema_translation_max_pairs: int = 50,
+        required_training: bool = False,
     ) -> str:
         """Generate SFT + DPO training pairs from a Trainforge corpus.
 
@@ -8250,12 +8437,19 @@ def register_pipeline_tools(mcp):
                 comparison / reasoning / pitfall / combination).
             schema_translation_max_pairs: Cap on schema-translation
                 pairs (default 50).
+            required_training: Fail loudly unless both canonical pair
+                artifacts are non-empty. The workflow sets this from the
+                explicit ``with_training`` operator opt-in; false preserves
+                the legacy optional synthesis behavior.
 
         Returns:
             JSON with ``success``, the two output paths, and a stats
-            summary. When ``chunks.jsonl`` is missing the call returns
-            ``{"success": true, "skipped": true}`` so callers never
-            crash on the no-LLM-available / no-corpus path.
+            summary.
+
+        Raises:
+            RuntimeError: When ``required_training`` is true and the corpus is
+                missing, synthesis fails, or the canonical pair artifacts are
+                absent/empty.
         """
         try:
             from Trainforge.synthesize_training import (
@@ -8263,6 +8457,10 @@ def register_pipeline_tools(mcp):
                 run_synthesis,
             )
         except Exception as exc:
+            if required_training:
+                raise RuntimeError(
+                    f"Failed to import synthesize_training: {exc}"
+                ) from exc
             return json.dumps({
                 "error": f"Failed to import synthesize_training: {exc}",
             })
@@ -8272,10 +8470,12 @@ def register_pipeline_tools(mcp):
         from lib.libv2_storage import resolve_imscc_chunks_path
         chunks_path = resolve_imscc_chunks_path(corpus_dir_path, "chunks.jsonl")
         if not chunks_path.exists():
-            logger.warning(
-                "synthesize_training: chunks.jsonl missing at %s; skipping",
-                chunks_path,
+            message = (
+                "synthesize_training requires a real chunk corpus; "
+                f"chunks.jsonl is missing at {chunks_path}"
             )
+            if required_training:
+                raise RuntimeError(message)
             return json.dumps({
                 "success": True,
                 "skipped": True,
@@ -8313,20 +8513,44 @@ def register_pipeline_tools(mcp):
             # Mirrors the identical carve-out on the objective-review pass.
             raise
         except Exception as exc:
+            if required_training:
+                raise RuntimeError(
+                    f"synthesize_training failed for {corpus_dir_path}: {exc}"
+                ) from exc
             return json.dumps({
                 "error": f"synthesize_training failed: {exc}",
                 "corpus_dir": str(corpus_dir_path),
             })
 
+        instruction_pairs_path = (
+            corpus_dir_path / "training_specs" / "instruction_pairs.jsonl"
+        )
+        preference_pairs_path = (
+            corpus_dir_path / "training_specs" / "preference_pairs.jsonl"
+        )
+        missing_outputs = [
+            str(path)
+            for path in (instruction_pairs_path, preference_pairs_path)
+            if not path.is_file() or path.stat().st_size == 0
+        ]
+        unusable_outputs = (
+            missing_outputs
+            or stats.instruction_pairs_emitted <= 0
+            or stats.preference_pairs_emitted <= 0
+        )
+        if required_training and unusable_outputs:
+            raise RuntimeError(
+                "synthesize_training produced no usable training corpus: "
+                f"instruction_count={stats.instruction_pairs_emitted}, "
+                f"preference_count={stats.preference_pairs_emitted}, "
+                f"missing_or_empty={missing_outputs}"
+            )
+
         return json.dumps({
             "success": True,
             "corpus_dir": str(corpus_dir_path),
-            "instruction_pairs_path": str(
-                corpus_dir_path / "training_specs" / "instruction_pairs.jsonl"
-            ),
-            "preference_pairs_path": str(
-                corpus_dir_path / "training_specs" / "preference_pairs.jsonl"
-            ),
+            "instruction_pairs_path": str(instruction_pairs_path),
+            "preference_pairs_path": str(preference_pairs_path),
             "instruction_pairs_count": stats.instruction_pairs_emitted,
             "preference_pairs_count": stats.preference_pairs_emitted,
             "chunks_eligible": stats.chunks_eligible,
@@ -26350,10 +26574,13 @@ def _build_tool_registry() -> dict:
           shell rather than crashing.
         * ``seed`` (int, default ``DEFAULT_SEED`` from
           ``synthesize_training`` so re-runs are byte-identical).
+        * ``required_training`` — true only for an explicit in-build training
+          run; makes missing, failed, or empty pair production fatal.
 
         Returns a JSON string with ``instruction_pairs_path``,
         ``preference_pairs_path``, and the ``SynthesisStats`` dict.
         """
+        required_training = bool(kwargs.get("required_training", False))
         # Resolve the corpus directory.
         corpus_dir = (
             kwargs.get("corpus_dir")
@@ -26371,28 +26598,27 @@ def _build_tool_registry() -> dict:
                 # the Trainforge root is two parents up.
                 corpus_dir = str(Path(chunks_path).parent.parent)
         if not corpus_dir:
-            return json.dumps({
-                "error": (
-                    "synthesize_training requires corpus_dir / "
-                    "trainforge_dir / assessments_path / chunks_path to "
-                    "locate imscc_chunks/chunks.jsonl (or legacy "
-                    "corpus/chunks.jsonl)"
-                ),
-            })
+            message = (
+                "synthesize_training requires corpus_dir / "
+                "trainforge_dir / assessments_path / chunks_path to "
+                "locate imscc_chunks/chunks.jsonl (or legacy "
+                "corpus/chunks.jsonl)"
+            )
+            if required_training:
+                raise RuntimeError(message)
+            return json.dumps({"error": message})
 
         corpus_dir_path = Path(corpus_dir)
         # Phase 7c: prefer imscc_chunks/, fall back to legacy corpus/.
         from lib.libv2_storage import resolve_imscc_chunks_path
         chunks_path = resolve_imscc_chunks_path(corpus_dir_path, "chunks.jsonl")
         if not chunks_path.exists():
-            # Skip-with-warning: downstream archival can still run, we
-            # just won't have new training pairs. This is the safe
-            # no-LLM-available path the audit calls out.
-            logger.warning(
-                "synthesize_training: chunks.jsonl missing at %s; "
-                "skipping training-pair synthesis. ",
-                chunks_path,
+            message = (
+                "synthesize_training requires a real chunk corpus; "
+                f"chunks.jsonl is missing at {chunks_path}"
             )
+            if required_training:
+                raise RuntimeError(message)
             return json.dumps({
                 "success": True,
                 "skipped": True,
@@ -26438,6 +26664,10 @@ def _build_tool_registry() -> dict:
                 run_synthesis,
             )
         except Exception as exc:  # pragma: no cover — dependency error
+            if required_training:
+                raise RuntimeError(
+                    f"Failed to import synthesize_training: {exc}"
+                ) from exc
             return json.dumps({
                 "error": f"Failed to import synthesize_training: {exc}",
             })
@@ -26472,6 +26702,10 @@ def _build_tool_registry() -> dict:
             # Mirrors the identical carve-out on the objective-review pass.
             raise
         except Exception as exc:
+            if required_training:
+                raise RuntimeError(
+                    f"synthesize_training failed for {corpus_dir_path}: {exc}"
+                ) from exc
             return json.dumps({
                 "error": f"synthesize_training failed: {exc}",
                 "corpus_dir": str(corpus_dir_path),
@@ -26483,6 +26717,23 @@ def _build_tool_registry() -> dict:
         preference_pairs_path = (
             corpus_dir_path / "training_specs" / "preference_pairs.jsonl"
         )
+        missing_outputs = [
+            str(path)
+            for path in (instruction_pairs_path, preference_pairs_path)
+            if not path.is_file() or path.stat().st_size == 0
+        ]
+        unusable_outputs = (
+            missing_outputs
+            or stats.instruction_pairs_emitted <= 0
+            or stats.preference_pairs_emitted <= 0
+        )
+        if required_training and unusable_outputs:
+            raise RuntimeError(
+                "synthesize_training produced no usable training corpus: "
+                f"instruction_count={stats.instruction_pairs_emitted}, "
+                f"preference_count={stats.preference_pairs_emitted}, "
+                f"missing_or_empty={missing_outputs}"
+            )
 
         return json.dumps({
             "success": True,
@@ -31856,6 +32107,28 @@ def _build_tool_registry() -> dict:
         built_assessments, _dedup_report = _dedup_assessment_stems(
             built_assessments
         )
+        _emitted_objective_ids = {
+            str(
+                getattr(q, "objective_id", None)
+                if not isinstance(q, dict)
+                else q.get("objective_id")
+            ).strip()
+            for assessment in built_assessments
+            for q in (
+                getattr(assessment, "questions", None)
+                if not isinstance(assessment, dict)
+                else assessment.get("questions")
+            ) or []
+        }
+        _missing_emitted_objectives = sorted(
+            valid_objective_ids - _emitted_objective_ids
+        )
+        if _missing_emitted_objectives:
+            raise RuntimeError(
+                "Assessment synthesis did not produce an emit-ready quiz "
+                "item for every objective; missing objective_ids="
+                f"{_missing_emitted_objectives}"
+            )
         if _dedup_report["duplicates_removed"]:
             logger.warning(
                 "run_assessment_synthesis: cross-quiz stem dedup collapsed "
@@ -32122,6 +32395,30 @@ def _build_tool_registry() -> dict:
         # ============================================================== #
         # 3. EMIT — XML + manifest via the pure helpers.                 #
         # ============================================================== #
+        # Persist the exact structured payload consumed by the alignment
+        # gate. QTI is the LMS product surface, but parsing it back into the
+        # generator's richer objective-bearing shape would discard the
+        # discussion/assignment records and make the phase gate input-starved.
+        _assessment_payload_path = out_dir / "assessment_items.json"
+        _assessment_payload_path.write_text(
+            json.dumps(
+                {
+                    "assessments": [
+                        (
+                            assessment.to_dict()
+                            if hasattr(assessment, "to_dict")
+                            else assessment
+                        )
+                        for assessment in built_assessments
+                    ],
+                    "discussion_items": discussions,
+                    "assignment_items": assignments,
+                },
+                indent=2,
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
         try:
             artifacts = _build_assessment_artifacts_from_data(
                 built_assessments, discussions, assignments
@@ -32242,6 +32539,16 @@ def _build_tool_registry() -> dict:
         )
         return json.dumps({
             "success": True,
+            # These aliases are intentionally explicit: workflow output
+            # projection only persists declared keys, and the validation-gate
+            # builders need both the JSON assessment payload and the QTI
+            # directory during this phase (before Trainforge runs).
+            "assessments_path": str(out_dir / "assessment_items.json"),
+            "assessment_dir": str(out_dir),
+            "qti_dir": str(out_dir),
+            "chunks_path": str(dart_chunks_path),
+            "discussion_items": discussions,
+            "assignment_items": assignments,
             "assessments_dir": str(out_dir),
             "manifest_path": str(out_dir / "manifest.json"),
             "assessment_count": len(manifest["assessments"]),
@@ -32777,15 +33084,46 @@ def _build_tool_registry() -> dict:
             # $defs.Source.source_document_sha256.
             if source_imscc_sha256:
                 source["source_document_sha256"] = source_imscc_sha256
-            # B1+B2 parity with the DART path: when an imscc-chunked page
-            # happens to carry DART provenance attributes, mint the same
-            # canonical source_references[]. No-op for ordinary IMSCC /
-            # Courseforge HTML (no ``data-dart-*`` attrs → harvest is empty).
-            dart_refs = _semantik_block_source_references(
+            # Preserve both provenance surfaces accepted by the parser:
+            #
+            # * SemantiK / legacy DART block attributes arrive as
+            #   ``dart_source_refs`` and need canonical sourceIds minted.
+            # * Courseforge-authored IMSCC HTML carries already-canonical
+            #   sourceIds in ``data-cf-source-ids``; the merge path hands
+            #   those to this callback as ``section_source_ids``.
+            #
+            # The latter was previously ignored, leaving every authored
+            # IMSCC chunk unattributed even though the packaged HTML retained
+            # its source join keys.  Union first-seen so a richer block ref
+            # (with pages) wins when both surfaces name the same sourceId.
+            source_refs = _semantik_block_source_references(
                 dart_source_refs, item.get("item_id") or ""
             )
-            if dart_refs:
-                source["source_references"] = dart_refs
+            _seen_source_ids = {
+                ref.get("sourceId") for ref in source_refs
+                if isinstance(ref, dict) and ref.get("sourceId")
+            }
+            # The HTML parser also aggregates page-level
+            # ``data-cf-source-ids`` into ``item["source_references"]``.
+            # Section-local IDs take precedence, while the page aggregate is
+            # the required fallback for a wrapper whose provenance attribute
+            # encloses the heading/section rather than living on each parsed
+            # ContentSection node.
+            _cf_source_ids = list(section_source_ids or [])
+            for _page_ref in item.get("source_references") or []:
+                if isinstance(_page_ref, dict):
+                    _page_source_id = _page_ref.get("sourceId")
+                else:
+                    _page_source_id = _page_ref
+                if _page_source_id:
+                    _cf_source_ids.append(str(_page_source_id))
+            for ref in _canonical_source_id_references(_cf_source_ids):
+                if ref["sourceId"] in _seen_source_ids:
+                    continue
+                _seen_source_ids.add(ref["sourceId"])
+                source_refs.append(ref)
+            if source_refs:
+                source["source_references"] = source_refs
             # Wave3-Anew2: bloom_level + difficulty resolution via the
             # canonical JSON-LD > data-cf > heuristic cascade.
             bloom_level, bloom_source = _resolve_chunk_bloom_level(item, text)
@@ -32940,11 +33278,19 @@ def _build_tool_registry() -> dict:
         _qti_assessment_chunks: List[Dict[str, Any]] = []
         if qti_entries:
             try:
+                _course_dir = (
+                    _resolve_libv2_root(kwargs.get("libv2_root"))
+                    / "courses"
+                    / course_slug
+                )
                 _qti_assessment_chunks = _harvest_qti_assessment_chunks(
                     qti_entries,
                     create_chunk=_create_chunk,
                     existing_chunks=chunks,
                     course_code=course_code,
+                    objective_source_references=(
+                        _load_objective_source_reference_map(_course_dir)
+                    ),
                 )
             except Exception as exc:  # noqa: BLE001 — never break chunking
                 logger.warning(

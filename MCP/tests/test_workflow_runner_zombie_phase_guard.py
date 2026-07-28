@@ -16,7 +16,8 @@ scoped so it does NOT fire on legitimate no-output phases:
   * Validator-only phases (``agents: []`` -> synthesised ``phase-handler``
     task) that PASS their gates emit a COMPLETE result with no canonical
     keys; keyed on a COMPLETE result existing, those still complete.
-  * Optional phases (``optional: true``) are excluded outright.
+  * Optional phases are excluded unless ``with_training`` explicitly makes
+    ``training_synthesis`` a required artifact boundary.
   * A normal phase with COMPLETE task results completes.
   * A phase with successful tasks but a genuinely empty canonical-key set
     still completes (don't over-trigger).
@@ -41,7 +42,10 @@ from MCP.core.workflow_runner import WorkflowRunner
 
 
 def _write_workflow_state(
-    state_root, workflow_id: str, workflow_type: str = "test_wf"
+    state_root,
+    workflow_id: str,
+    workflow_type: str = "test_wf",
+    params: Dict[str, Any] | None = None,
 ) -> None:
     """Materialise the minimal on-disk workflow-state JSON run_workflow reads."""
     wf_dir = state_root / "workflows"
@@ -51,7 +55,7 @@ def _write_workflow_state(
             {
                 "workflow_id": workflow_id,
                 "type": workflow_type,
-                "params": {},
+                "params": params or {},
                 "phase_outputs": {},
                 "tasks": [],
             }
@@ -69,6 +73,7 @@ def _run(
     *,
     phases: List[WorkflowPhase],
     execute_phase_side_effect,
+    params: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """Drive ``run_workflow`` with a mocked executor and a tmp STATE_PATH.
 
@@ -84,7 +89,7 @@ def _run(
     monkeypatch.setenv("LOCAL_DISPATCHER_ALLOW_STUB", "1")
 
     workflow_id = "WF-TEST-0001"
-    _write_workflow_state(state_root, workflow_id)
+    _write_workflow_state(state_root, workflow_id, params=params)
 
     executor = MagicMock()
     executor.execute_phase = AsyncMock(side_effect=execute_phase_side_effect)
@@ -226,6 +231,33 @@ def test_optional_phase_unaffected_by_guard(tmp_path, monkeypatch) -> None:
     persisted = _load_persisted_phase_outputs(tmp_path)
     # The guard did NOT force _completed=False; the normal path stamped True.
     assert persisted["training_synthesis"]["_completed"] is True
+
+
+def test_with_training_makes_synthesis_failure_block(
+    tmp_path, monkeypatch
+) -> None:
+    phases = [
+        WorkflowPhase(
+            name="training_synthesis",
+            agents=["training-synthesizer"],
+            optional=True,
+        ),
+    ]
+
+    async def side_effect(*_a, **_kw):  # noqa: ANN001
+        return {"T-1": _result("T-1", "ERROR", {"error": "no pairs"})}, True, []
+
+    out = _run(
+        tmp_path,
+        monkeypatch,
+        phases=phases,
+        execute_phase_side_effect=side_effect,
+        params={"with_training": True},
+    )
+
+    assert out["status"] == "FAILED"
+    persisted = _load_persisted_phase_outputs(tmp_path)
+    assert persisted["training_synthesis"]["_completed"] is False
 
 
 # --------------------------------------------------------------------------

@@ -220,6 +220,7 @@ async def test_run_workflow_forwards_phase_batch_timeout(
     phase = WorkflowPhase(
         name="slow_phase",
         agents=["content-generator"],
+        timeout_minutes=10080,
         batch_timeout_minutes=240,
     )
     config = OrchestratorConfig()
@@ -251,7 +252,16 @@ async def test_run_workflow_forwards_phase_batch_timeout(
     state_dir.mkdir(parents=True)
     workflow_id = "WF-TF-TIMEOUT"
     (state_dir / f"{workflow_id}.json").write_text(
-        json.dumps({"type": "tf_timeout_test", "params": {}})
+        json.dumps({
+            "type": "tf_timeout_test",
+            "params": {},
+            # A persisted incomplete phase exercises the resume path: timeout
+            # policy must come from the freshly loaded registry, never stale
+            # task/checkpoint state.
+            "phase_outputs": {
+                "slow_phase": {"_completed": False, "_paused": True}
+            },
+        })
     )
 
     with patch("MCP.core.workflow_runner.STATE_PATH", tmp_path / "state"):
@@ -261,3 +271,4 @@ async def test_run_workflow_forwards_phase_batch_timeout(
         "run_workflow must forward phase.batch_timeout_minutes (240) to "
         f"execute_phase, got {recorded.get('phase_batch_timeout_minutes')!r}"
     )
+    assert recorded.get("phase_task_timeout_minutes") == 10080

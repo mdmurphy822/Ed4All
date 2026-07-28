@@ -68,6 +68,33 @@ def test_libv2_manifest_skipped_when_no_signals():
     assert missing == ["manifest_path"]
 
 
+def test_libv2_manifest_prefers_archival_output_over_earlier_manifests(
+    tmp_path: Path,
+):
+    """Chunk/assessment manifests must never shadow the LibV2 manifest."""
+    earlier = tmp_path / "assessment" / "manifest.json"
+    earlier.parent.mkdir()
+    earlier.write_text('{"schema": "assessment"}', encoding="utf-8")
+    course_dir = tmp_path / "course"
+    course_dir.mkdir()
+    archived = course_dir / "manifest.json"
+    archived.write_text('{"libv2_version": "1.2.0"}', encoding="utf-8")
+
+    outputs = {
+        "trainforge_assessment": {"manifest_path": str(earlier)},
+        "libv2_archival": {
+            "manifest_path": str(archived),
+            "course_dir": str(course_dir),
+        },
+    }
+    inputs, missing = _build_libv2_manifest(outputs, {})
+    assert missing == []
+    assert inputs == {
+        "manifest_path": str(archived),
+        "course_dir": str(course_dir),
+    }
+
+
 # --------------------------------------------------------------------- #
 # assessment_objective_alignment — chunks fallback
 # --------------------------------------------------------------------- #

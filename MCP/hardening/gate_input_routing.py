@@ -637,13 +637,30 @@ def _build_assessment_quality(
     control reach the QTI-surface fallback below, which is what should have
     handled this phase all along.
     """
-    path_str = _locate(
-        phase_outputs,
-        "assessments_path",
-        "assessment_path",
-        "output_path",
-        "assessment_id",  # trainforge fallback
+    # Phase-local Trainforge output must win over the earlier product
+    # assessment payload once that phase exists. Key-major global lookup would
+    # otherwise keep selecting assessment_synthesis.assessments_path and make
+    # the critical Trainforge gate score the wrong population.
+    trainforge_output = phase_outputs.get("trainforge_assessment") or {}
+    path_str = (
+        trainforge_output.get("assessments_path")
+        or trainforge_output.get("assessment_path")
+        or trainforge_output.get("output_path")
     )
+    if not path_str:
+        assessment_output = phase_outputs.get("assessment_synthesis") or {}
+        path_str = (
+            assessment_output.get("assessments_path")
+            or assessment_output.get("assessment_path")
+        )
+    if not path_str:
+        path_str = _locate(
+            phase_outputs,
+            "assessments_path",
+            "assessment_path",
+            "output_path",
+            "assessment_id",  # trainforge fallback
+        )
     if path_str:
         try:
             path = Path(path_str)
@@ -664,7 +681,29 @@ def _build_assessment_quality(
             )
             ok = False
         if ok:
-            return {"assessment_path": str(path)}, []
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                payload = None
+            if isinstance(payload, dict) and isinstance(
+                payload.get("assessments"), list
+            ):
+                questions = [
+                    question
+                    for assessment in payload["assessments"]
+                    if isinstance(assessment, dict)
+                    for question in assessment.get("questions") or []
+                    if isinstance(question, dict)
+                ]
+                if questions:
+                    return {
+                        "assessment_data": {"questions": questions}
+                    }, []
+                # A product manifest has assessments[] rows but no embedded
+                # questions; let the existing QTI fallback parse the declared
+                # exam XML rather than returning a vacuous JSON payload.
+            else:
+                return {"assessment_path": str(path)}, []
 
     # Assessment-quality overhaul (Phase 2) — PORT AssessmentQualityValidator
     # onto the W10 product surface. The ``assessment_synthesis`` phase ships no
@@ -839,8 +878,19 @@ def _build_libv2_manifest(
     ``manifest_path`` isn't surfaced explicitly it derives as
     ``course_dir/manifest.json``.
     """
-    manifest = _locate(phase_outputs, "manifest_path")
-    course_dir = _locate(phase_outputs, "course_dir")
+    # Prefer the archive phase as an atomic pair.  A full workflow contains
+    # several earlier ``manifest_path`` outputs (chunking, packaging,
+    # assessment generation, ...); a recursive first-match lookup can pair one
+    # of those manifests with the LibV2 course directory and validate the
+    # wrong schema.  Keep the recursive lookup only for legacy direct callers
+    # that do not provide phase-indexed outputs.
+    archival = phase_outputs.get("libv2_archival")
+    if isinstance(archival, dict):
+        manifest = archival.get("manifest_path")
+        course_dir = archival.get("course_dir")
+    else:
+        manifest = _locate(phase_outputs, "manifest_path")
+        course_dir = _locate(phase_outputs, "course_dir")
 
     if not manifest and course_dir:
         try:
@@ -2624,9 +2674,33 @@ def _build_assessment_objective_alignment(
     (``rag_training`` legacy workflow), preserving byte-identical
     pre-W5.E behaviour.
     """
-    assessments = _locate(
-        phase_outputs, "assessments_path", "assessment_path", "output_path",
-    )
+    # The pre-packaging assessment_synthesis handler emits the canonical
+    # manifest as ``manifest_path`` (and its parent as ``assessments_dir``).
+    # Resolve that phase explicitly before consulting the generic Trainforge
+    # aliases: a global ``output_path`` fallback can otherwise select an
+    # unrelated upstream artifact.
+    assessment_phase = phase_outputs.get("assessment_synthesis") or {}
+    assessments = assessment_phase.get("assessments_path")
+    if not (isinstance(assessments, str) and assessments):
+        assessments = assessment_phase.get("manifest_path")
+    if not (isinstance(assessments, str) and assessments):
+        assessment_dir = assessment_phase.get("assessments_dir")
+        if isinstance(assessment_dir, str) and assessment_dir:
+            assessments = str(Path(assessment_dir) / "manifest.json")
+    if not (isinstance(assessments, str) and assessments):
+        trainforge_phase = phase_outputs.get("trainforge_assessment") or {}
+        assessments = (
+            trainforge_phase.get("assessments_path")
+            or trainforge_phase.get("assessment_path")
+            or trainforge_phase.get("output_path")
+        )
+    if not (isinstance(assessments, str) and assessments):
+        assessments = _locate(
+            phase_outputs,
+            "manifest_path",
+            "assessments_path",
+            "assessment_path",
+        )
     if not assessments:
         return {}, ["assessments_path"]
 
@@ -2639,11 +2713,28 @@ def _build_assessment_objective_alignment(
     synthesized = _resolve_objectives_path(phase_outputs, workflow_params)
     if synthesized:
         inputs["synthesized_objectives_path"] = synthesized
+    # The product assessment seam promises full canonical-objective coverage.
+    # Scope the strict two-way check to this phase so legacy Trainforge/rag
+    # callers retain the historical one-way reference-validation contract.
+    if isinstance(assessment_phase, dict) and assessment_phase:
+        inputs["require_complete_objective_coverage"] = True
 
     # Chunks live at ``{trainforge_dir}/imscc_chunks/chunks.jsonl``
     # (Phase 7c rename of the legacy ``corpus/`` directory). If the
     # phase output surfaces chunks_path explicitly, prefer that.
     chunks = _locate(phase_outputs, "chunks_path")
+    if not chunks:
+        # assessment_synthesis consumes the source chunkset as
+        # ``dart_chunks_path`` but does not re-emit it. Route the authoritative
+        # chunking output directly (dual-read current + legacy envelope names).
+        chunks = _chunking_chunks_path(phase_outputs.get("chunking") or {})
+    if not chunks:
+        chunks = _locate(
+            phase_outputs,
+            "semantik_chunks_path",
+            "dart_chunks_path",
+            "imscc_chunks_path",
+        )
     if not chunks:
         # Derive from assessments path: walk up to find an
         # imscc_chunks/ (or legacy corpus/) sibling with chunks.jsonl,

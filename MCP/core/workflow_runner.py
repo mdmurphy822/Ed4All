@@ -138,6 +138,11 @@ except Exception:  # noqa: BLE001 — defensive: fall back to in-tree default
 # sites all consult ``os.environ`` at call time, so a run-scoped set takes
 # effect for every downstream phase handler.
 _CORPUS_GENERALIZATION_ENV_DEFAULTS: Dict[str, str] = {
+    # Canonical full workflows opt into evidence-plan-first training-pair
+    # synthesis. This changes prompt orchestration only; provider/model
+    # selection remains on TRAINFORGE_SYNTHESIS_PROVIDER. Setdefault semantics
+    # preserve an explicit operator rollback.
+    "TRAINFORGE_STAGED_SYNTHESIS_V4": "true",
     # Chunking stage (PAGE-level tags — TRAINFORGE_CHUNK_LOCAL_TAGS left unset)
     "TRAINFORGE_PRUNE_SCAFFOLDING_CONCEPTS": "true",
     "TRAINFORGE_SEED_TECH_CONCEPTS": "true",
@@ -2158,7 +2163,14 @@ class WorkflowRunner:
             known = set(current_seats)
 
         to_stop = sorted(known - desired)
-        to_start = sorted(desired - (set(current_seats) if current_seats else set()))
+        # Deep-probe every required seat at every phase boundary, including a
+        # carried/already-running seat.  TRT can leave /health and /v1/models
+        # green after its generation executor has wedged; trusting carried
+        # state allowed retries to consume semantic lineage against a dead
+        # engine. ``start_seat_coherent`` is idempotent for a healthy resident
+        # seat and cold-recovers an incoherent one under the established
+        # fail-loud contract.
+        to_start = sorted(desired)
 
         for seat in to_stop:
             # Best-effort — a stop failure must not fail the phase (the worst
@@ -2172,16 +2184,10 @@ class WorkflowRunner:
         for seat in to_start:
             base_url = resolve_seat_base_url(seat)
             if not base_url:
-                # CONFIG gap (seat name not in ED4ALL_SEAT_BASE_URLS): warn +
-                # skip, never a run-failing error — the pipeline's own provider
-                # call will surface a hard error later if the seat is truly
-                # required and truly absent.
-                logger.warning(
-                    "seat_schedule[%s]: seat %r not mapped in ED4ALL_SEAT_BASE_URLS "
-                    "→ skipping (config gap).",
-                    phase_name, seat,
+                raise SeatScheduleProbeError(
+                    f"seat_schedule[{phase_name}]: required seat {seat!r} is "
+                    "not mapped in ED4ALL_SEAT_BASE_URLS"
                 )
-                continue
             # Bring the seat up, WAIT until it is live AND coherent, and
             # AUTOMATICALLY cold-recreate (docker rm -f + relaunch via
             # ED4ALL_SEAT_LAUNCH_SPECS) once if the warm start mode-collapses
@@ -2758,6 +2764,9 @@ class WorkflowRunner:
                 phase_outputs=phase_outputs,
                 workflow_params=workflow_params,
                 extract_phase_outputs_fn=self._extract_phase_outputs,
+                phase_task_timeout_minutes=getattr(
+                    phase, "timeout_minutes", None
+                ),
                 # Plumb the per-phase YAML ``batch_timeout_minutes`` (e.g.
                 # content_generation_rewrite's 240) into execute_phase so a
                 # slow local-7B phase is not killed at the executor-wide
@@ -2844,9 +2853,9 @@ class WorkflowRunner:
             #     ``phase-handler`` task) that PASS their gates emit a
             #     COMPLETE result with no canonical keys — keyed on a
             #     COMPLETE result existing, those still complete.
-            #   * Optional phases (``optional: true``, e.g.
-            #     ``training_synthesis``) are excluded outright; they may
-            #     be skipped/empty by design.
+            #   * Optional phases are excluded unless explicit
+            #     ``with_training`` makes ``training_synthesis`` a required
+            #     training-data boundary for this run.
             #   * Phases that ran zero tasks (pure gate-chain phases) are
             #     excluded — there is nothing that "failed".
             #   * Gate failures are handled by the existing fail path
@@ -2856,8 +2865,16 @@ class WorkflowRunner:
                 r.status == "COMPLETE" for r in results.values()
             )
             has_canonical_output = bool(extracted)
-            if (
+            phase_is_required = (
                 not getattr(phase, "optional", False)
+                or (
+                    phase_name == "training_synthesis"
+                    and bool(workflow_params.get("with_training", False))
+                    and not bool(workflow_params.get("skip_training", False))
+                )
+            )
+            if (
+                phase_is_required
                 and len(tasks) > 0
                 and not any_task_succeeded
                 and not has_canonical_output
@@ -2910,13 +2927,14 @@ class WorkflowRunner:
             # misses). Stamp ``_completed=False`` and fail the workflow here so
             # a later resume re-runs the phase (its per-task checkpoints let the
             # already-converted units be reused). Excludes optional phases
-            # (partial by design), zero-task phases (nothing dispatched), and
+            # (partial by design) unless explicit ``with_training`` makes
+            # synthesis required, zero-task phases (nothing dispatched), and
             # fully-complete phases (byte-stable happy path).
             completed_count = sum(
                 1 for r in results.values() if r.status == "COMPLETE"
             )
             if (
-                not getattr(phase, "optional", False)
+                phase_is_required
                 and len(tasks) > 0
                 and completed_count < len(tasks)
             ):
@@ -3014,7 +3032,7 @@ class WorkflowRunner:
                 r.status in ("ERROR", "TIMEOUT", "FAILED")
                 for r in results.values()
             )
-            if phase_failed and not getattr(phase, "optional", False):
+            if phase_failed and phase_is_required:
                 logger.error(f"Phase {phase_name} failed, stopping workflow")
                 final_status = "FAILED"
                 failed_phase = phase_name
@@ -3027,7 +3045,7 @@ class WorkflowRunner:
                 )
                 break
 
-            if not gates_passed and not getattr(phase, "optional", False):
+            if not gates_passed and phase_is_required:
                 # A course_planning gate failure
                 # (e.g. one unentailed terminal objective) retries gracefully
                 # instead of killing the whole run. Default 0 keeps the legacy
@@ -6072,6 +6090,9 @@ class WorkflowRunner:
                         phase_outputs=phase_outputs,
                         workflow_params=workflow_params,
                         extract_phase_outputs_fn=self._extract_phase_outputs,
+                        phase_task_timeout_minutes=getattr(
+                            phase, "timeout_minutes", None
+                        ),
                         phase_batch_timeout_minutes=getattr(
                             phase, "batch_timeout_minutes", None
                         ),

@@ -64,8 +64,16 @@ def _executor() -> TaskExecutor:
     return ex
 
 
-async def _run(gate_configs: List[Dict[str, Any]]):
+async def _run(
+    gate_configs: List[Dict[str, Any]],
+    *,
+    phase_name: str = "post_rewrite_validation",
+    workflow_params: Dict[str, Any] | None = None,
+    router=None,
+):
     ex = _executor()
+    if router is not None:
+        ex.gate_input_router = router
 
     async def _fake_parallel(*_a, **_k):
         return {}
@@ -73,16 +81,40 @@ async def _run(gate_configs: List[Dict[str, Any]]):
     with patch.object(ex, "_execute_parallel", _fake_parallel):
         _results, gates_passed, gate_results = await ex.execute_phase(
             workflow_id="W_gate_sev_001",
-            phase_name="post_rewrite_validation",
+            phase_name=phase_name,
             phase_index=1,
             tasks=[],
             gate_configs=gate_configs,
             max_concurrent=1,
             phase_outputs={},
-            workflow_params={},
+            workflow_params=workflow_params or {},
             extract_phase_outputs_fn=None,
         )
     return gates_passed, gate_results
+
+
+@pytest.mark.asyncio
+async def test_required_training_synthesis_missing_gate_input_blocks():
+    class _MissingRouter:
+        def build(self, validator_path, phase_outputs, workflow_params):
+            return {}, ["instruction_pairs_path"]
+
+    gates_passed, gate_results = await _run(
+        [{
+            "gate_id": "synthesis_quota",
+            "validator": "lib.validators.synthesis_quota.SynthesisQuotaValidator",
+            "severity": "warning",
+            "threshold": {},
+        }],
+        phase_name="training_synthesis",
+        workflow_params={"with_training": True},
+        router=_MissingRouter(),
+    )
+
+    assert gates_passed is False
+    result = _by_id(gate_results)["synthesis_quota"]
+    assert result["passed"] is False
+    assert result["waiver_info"]["reason"] == "instruction_pairs_path"
 
 
 def _by_id(gate_results):

@@ -438,6 +438,9 @@ def _grace_seconds(timeout_seconds: float) -> float:
 _TASK_STOP_EVENT: "contextvars.ContextVar[Optional[threading.Event]]" = (
     contextvars.ContextVar("ed4all_task_stop_event", default=None)
 )
+_PHASE_TASK_TIMEOUT_SECONDS: "contextvars.ContextVar[Optional[int]]" = (
+    contextvars.ContextVar("ed4all_phase_task_timeout_seconds", default=None)
+)
 
 
 def current_task_stop_event() -> Optional[threading.Event]:
@@ -450,6 +453,11 @@ def current_task_stop_event() -> Optional[threading.Event]:
     never pause the run. Returns ``None`` outside a managed tool invocation.
     """
     return _TASK_STOP_EVENT.get()
+
+
+def _effective_task_timeout_seconds(default_seconds: int) -> int:
+    """Resolve a phase-local task deadline without mutating executor defaults."""
+    return _PHASE_TASK_TIMEOUT_SECONDS.get() or default_seconds
 
 
 # CUDA-OOM detection + free-VRAM probe live in the shared ``lib.llm.oom`` module
@@ -986,7 +994,10 @@ class TaskExecutor:
                 )
 
             except asyncio.TimeoutError as e:
-                last_error = f"Task timed out after {self.timeout_seconds}s"
+                task_timeout_seconds = _effective_task_timeout_seconds(
+                    self.timeout_seconds
+                )
+                last_error = f"Task timed out after {task_timeout_seconds}s"
                 logger.warning(f"[{self.run_id}] Task {task_id} attempt {attempt + 1} timed out")
 
                 # Phase 0: Classify timeout error
@@ -1361,18 +1372,21 @@ class TaskExecutor:
             tool_task: "asyncio.Task[Any]" = asyncio.ensure_future(
                 tool_func(**mapped_params)
             )
+            task_timeout_seconds = _effective_task_timeout_seconds(
+                self.timeout_seconds
+            )
             done, pending = await asyncio.wait(
-                {tool_task}, timeout=self.timeout_seconds
+                {tool_task}, timeout=task_timeout_seconds
             )
             if tool_task in pending:
                 # Per-task deadline hit — signal the task-scoped stop channel and
                 # grant the grace window. Deliberately does NOT call request_stop
                 # (that would write the run-scoped sentinel and pause the run).
                 stop_event.set()
-                grace_seconds = _grace_seconds(self.timeout_seconds)
+                grace_seconds = _grace_seconds(task_timeout_seconds)
                 logger.warning(
                     f"[{self.run_id}] Tool '{tool_name}' hit task deadline "
-                    f"{self.timeout_seconds}s; signalled task-scoped stop, "
+                    f"{task_timeout_seconds}s; signalled task-scoped stop, "
                     f"granting {grace_seconds:.1f}s grace before hard cancel"
                 )
                 done, pending = await asyncio.wait(
@@ -1387,7 +1401,7 @@ class TaskExecutor:
                 except asyncio.CancelledError:
                     pass
                 raise asyncio.TimeoutError(
-                    f"Tool '{tool_name}' exceeded {self.timeout_seconds}s "
+                    f"Tool '{tool_name}' exceeded {task_timeout_seconds}s "
                     f"(+ grace) task timeout"
                 )
             # Completed within the deadline or drained within grace — surface the
@@ -1906,6 +1920,7 @@ class TaskExecutor:
         extract_phase_outputs_fn: Optional[
             Callable[[str, Dict[str, "ExecutionResult"]], Dict[str, Any]]
         ] = None,
+        phase_task_timeout_minutes: Optional[int] = None,
         phase_batch_timeout_minutes: Optional[int] = None,
     ) -> Tuple[Dict[str, ExecutionResult], bool, Optional[List[Dict]]]:
         """
@@ -1924,6 +1939,9 @@ class TaskExecutor:
             tasks: List of tasks to execute
             gate_configs: Optional list of validation gate configurations
             max_concurrent: Maximum concurrent tasks
+            phase_task_timeout_minutes: Optional per-task deadline sourced
+                from the phase's ``timeout_minutes``. This is phase-local and
+                does not mutate the executor-wide default.
             phase_batch_timeout_minutes: Optional per-phase whole-batch
                 wall-clock timeout (minutes) sourced from the phase config
                 (workflows.yaml ``batch_timeout_minutes``). When set and
@@ -1951,6 +1969,14 @@ class TaskExecutor:
                 _phase_min = int(phase_batch_timeout_minutes)
                 if _phase_min > 0:
                     batch_timeout_seconds = _phase_min * 60
+            except (TypeError, ValueError):
+                pass
+        task_timeout_seconds = self.timeout_seconds
+        if phase_task_timeout_minutes is not None:
+            try:
+                _phase_task_min = int(phase_task_timeout_minutes)
+                if _phase_task_min > 0:
+                    task_timeout_seconds = _phase_task_min * 60
             except (TypeError, ValueError):
                 pass
 
@@ -2001,6 +2027,9 @@ class TaskExecutor:
         # ``finally`` so a nested/next phase never inherits a stale name.
         _prev_active_phase = getattr(self, "_active_phase_name", None)
         self._active_phase_name = phase_name
+        _phase_timeout_token = _PHASE_TASK_TIMEOUT_SECONDS.set(
+            task_timeout_seconds
+        )
         # Metering context: also publish the active phase in the environment so
         # an in-process content-gen LLM usage tap (which is NOT passed the
         # executor instance) can stamp the SPENDING phase on its
@@ -2131,6 +2160,7 @@ class TaskExecutor:
                 # whenever any worker drained on the graceful stop.
                 results = batch_task.result()
         finally:
+            _PHASE_TASK_TIMEOUT_SECONDS.reset(_phase_timeout_token)
             # Graceful stop: clear the published active phase so a subsequent
             # (or nested) phase never inherits a stale name. Per-task
             # checkpointing only needs it while ``_execute_parallel`` ran above.
@@ -2368,6 +2398,11 @@ class TaskExecutor:
                 # the gate as skipped rather than silently passing.
                 if missing:
                     reason = ", ".join(missing)
+                    synthesis_required = (
+                        phase_name == "training_synthesis"
+                        and bool(_workflow_params.get("with_training", False))
+                        and not bool(_workflow_params.get("skip_training", False))
+                    )
                     logger.warning(
                         f"[{self.run_id}] Gate {gate.gate_id} "
                         f"({gate.validator_path}) skipped — missing inputs: "
@@ -2377,7 +2412,7 @@ class TaskExecutor:
                         gate_id=gate.gate_id,
                         validator_name=gate.validator_path,
                         validator_version="skipped",
-                        passed=True,
+                        passed=not synthesis_required,
                         score=None,
                         issues=[GateIssue(
                             severity="warning",
@@ -2402,6 +2437,13 @@ class TaskExecutor:
                     except Exception:
                         pass
                     gate_results_list.append(skipped_result)
+                    if synthesis_required:
+                        # ``--with-training`` makes the pair corpus a required
+                        # artifact, even though the phase remains optional for
+                        # legacy build-only invocations. A missing gate input
+                        # therefore proves the synthesis contract was not met;
+                        # it cannot be recorded as a passing structured skip.
+                        gates_passed = False
                     continue
 
                 # Merge the router-produced inputs with fallback blob
