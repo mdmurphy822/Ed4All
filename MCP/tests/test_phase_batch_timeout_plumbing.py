@@ -50,7 +50,21 @@ def test_workflows_yaml_parses_rewrite_batch_timeout() -> None:
 
     Pre-fix WorkflowPhase had no such field, so this assertion could not
     even be expressed — the YAML value was silently dropped.
+
+    The assertion is against the RAW yaml rather than a hardcoded number:
+    what must hold is that whatever the operator writes in the phase block
+    arrives on the dataclass. Pinning the literal turns a legitimate
+    retune of the ceiling into a test failure, which teaches people to
+    edit the test rather than think about the value. What is worth
+    pinning is that the phase declares one at all, and that it is not
+    silently the executor-wide 30-minute default.
     """
+    import yaml  # noqa: PLC0415 - test-local
+
+    raw = yaml.safe_load(
+        (Path(__file__).parent.parent.parent
+         / "config" / "workflows.yaml").read_text(encoding="utf-8")
+    )
     config = OrchestratorConfig.load()
 
     for workflow_type in ("textbook_to_course", "course_generation"):
@@ -63,10 +77,26 @@ def test_workflows_yaml_parses_rewrite_batch_timeout() -> None:
         assert rewrite is not None, (
             f"{workflow_type} has no content_generation_rewrite phase"
         )
-        assert rewrite.batch_timeout_minutes == 240, (
-            f"{workflow_type}.content_generation_rewrite must carry the "
-            f"YAML batch_timeout_minutes: 240, got "
-            f"{rewrite.batch_timeout_minutes!r}"
+        raw_phase = next(
+            p for p in raw["workflows"][workflow_type]["phases"]
+            if p.get("name") == "content_generation_rewrite"
+        )
+        declared = raw_phase.get("batch_timeout_minutes")
+        assert declared is not None, (
+            f"{workflow_type}.content_generation_rewrite must DECLARE a "
+            f"batch_timeout_minutes — without one it silently inherits the "
+            f"30-minute executor default, which cannot fit the tier."
+        )
+        assert rewrite.batch_timeout_minutes == declared, (
+            f"{workflow_type}.content_generation_rewrite declares "
+            f"batch_timeout_minutes: {declared} in YAML but WorkflowPhase "
+            f"carries {rewrite.batch_timeout_minutes!r} — the value is being "
+            f"dropped between config and dataclass."
+        )
+        assert declared > 30, (
+            f"{workflow_type}.content_generation_rewrite declares "
+            f"{declared} min, at or below the executor-wide 30-minute "
+            f"fallback the per-phase value exists to override."
         )
 
 
