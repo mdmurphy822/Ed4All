@@ -625,9 +625,34 @@ tracker.update_status("content_generator", "IN_PROGRESS",
        `TRAINFORGE_SYNTHESIS_PROVIDER` (license-clean local/together —
        the anthropic SDK path fails closed; no `ANTHROPIC_API_KEY`
        involvement).
+       Reads `imscc_chunks/chunks.jsonl` (via
+       `lib/libv2_storage.py::resolve_imscc_chunks_path`; legacy
+       `corpus/chunks.jsonl` is a fallback only) plus `objectives.json`;
+       writes `training_specs/instruction_pairs.jsonl` +
+       `preference_pairs.jsonl`.
+       Runs under the `staged-v4` synthesis contract —
+       `workflow_runner` setdefaults `TRAINFORGE_STAGED_SYNTHESIS_V4=true`
+       and passes no CLI selector. `--synthesis-contract` is a
+       `python -m Trainforge.synthesize_training` flag, NOT a pipeline
+       route. `micro-v1` is selectable but cannot complete a production
+       run today (its Stage A needs an `action_object` the production
+       objective loader strips) — see
+       `Trainforge/CLAUDE.md § Training-pair synthesis`.
+       The phase routes only `course_code` / `provider` / `seed` /
+       `required_training` / `instruction_variants_per_chunk` + the four
+       deterministic generators. The assessment-SFT and graph-SFT
+       programs are reachable ONLY via `ED4ALL_WITH_ASSESSMENT_SFT` /
+       `ED4ALL_WITH_GRAPH_SFT`; `include_dpo_from_misconceptions` has no
+       env or `inputs_from` route at all and is CLI-only.
        Emits a per-pair resume sidecar at
        `training_specs/.synthesis_pairs_checkpoint.jsonl` (opt out via
        `--no-checkpoint`).
+       NOTE: preference-pair ELIGIBILITY is not DPO ADMISSIBILITY. The
+       trainer's default `dpo_preference_filter=editorial_or_misconception`
+       admits only pairs carrying `misconception_id` or a
+       misconception/mined `source`; a chunkset with no structured
+       `misconceptions[]` emits all-`rule_synthesized` pairs, which count
+       zero against `min_dpo_pairs` and fail the run closed.
 
 19. libv2_archival
    └── Archive course artifacts to LibV2 (raw PDFs, SemantiK HTML, IMSCC,
@@ -909,7 +934,7 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 
 | Prefix | Owner | Flag count |
 |--------|-------|-----------:|
-| `TRAINFORGE_*` / `LOCAL_SYNTHESIS_*` / `TOGETHER_*` / `ANTHROPIC_SYNTHESIS_*` / `CURRICULUM_ALIGNMENT_*` / `WAVE18_*` | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 75 |
+| `TRAINFORGE_*` / `LOCAL_SYNTHESIS_*` / `TOGETHER_*` / `ANTHROPIC_SYNTHESIS_*` / `CURRICULUM_ALIGNMENT_*` / `WAVE18_*` | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 76 |
 | `NVIDIA_*` (vendor endpoint-registry row for the hosted large-model seat — `NVIDIA_API_KEY` / `NVIDIA_BASE_URL` / `NVIDIA_LARGE_MODEL`) | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 3 |
 | `SEMANTIK_*` (SemantiK semantic-cascade converter; also honors the single legacy `DART_THETA_DEVICE` compat env, aliased to `SEMANTIK_THETA_DEVICE`) <!-- legacy-token: allow --> | [`SemantiK/CLAUDE.md § Opt-In Behavior Flags`](SemantiK/CLAUDE.md) | 164 |
 | `COURSEFORGE_*` / `COURSEPLANNER_*` / `TEXTBOOK_SYNTHESIS_*` | [`Courseforge/CLAUDE.md § Opt-In Behavior Flags`](Courseforge/CLAUDE.md) | 45 |
@@ -1235,7 +1260,7 @@ Validators (`lib/validators/`) — wiring in `docs/validation/gates.md`. Load-be
 
 ## Training Pipeline
 
-SLM training is a post-import LibV2 stage, not a step in `Trainforge/process_course.py`. Top-level command: `ed4all run trainforge_train --course-name <slug> --base-model <name>` (`--course-name` is the CLI flag; `course_code` is only the handler-side param alias declared in `config/workflows.yaml::training`'s `inputs_from` block). `--base-model` populates `workflow_params.base_model` — the route that phase reads — and is validated at parse time against `Trainforge/training/base_models.py::BaseModelRegistry`, so an unknown name exits 2 with the supported list instead of silently training another base. Precedence: `--base-model` > `ED4ALL_CAMPAIGN_BASE_MODEL` > the registry default (`nemotron3-nano-30b`). The same flag pins the base for the in-build `--with-training` tail, and re-pins it on `--resume`. `--config-overrides <path-or-inline>` is the sibling route for per-run `TrainingConfig` fields — it populates `workflow_params.config_overrides` (the `config_overrides` route on the same `inputs_from` block), accepts a YAML/JSON file path, an inline JSON object, or inline `key=value[,key=value]` pairs (list fields use `|` between items), and is likewise re-applied on `--resume`. It is validated at parse time against the real `TrainingConfig` field set via the one canonical parser `Trainforge/training/configs/__init__.py::parse_config_overrides`, so an unknown key, a bad type, or an out-of-range value exits 2 (naming the supported field list on an unknown key) rather than being dropped or discovered mid-run; `base_model` is rejected there (use `--base-model`). This is the ONLY pipeline route to a field the checked-in per-base YAML deliberately leaves unset — `Trainforge/training/configs/nemotron3-nano-30b.yaml` ships `dpo_learning_rate: null` and `Trainforge/training/peft_trainer.py` RAISES rather than reusing the SFT rate, so Nemotron Nano DPO is unstartable without it. The supplied override set is recorded verbatim on `model_card.json::config_overrides` (and the effective `dpo_learning_rate` on `training_config`), because an adapter trained at a hand-picked rate is otherwise unreproducible. Full deep-dive (base-model registry, provider config, 5×3 eval matrix, 7-hash provenance, promotion workflow, decision-capture contract): `Trainforge/CLAUDE.md § Training Pipeline`.
+SLM training is a post-import LibV2 stage, not a step in `Trainforge/process_course.py`. Top-level command: `ed4all run trainforge_train --course-name <slug> --base-model <name>` (`--course-name` is the CLI flag; `course_code` is only the handler-side param alias declared in `config/workflows.yaml::training`'s `inputs_from` block). `--base-model` populates `workflow_params.base_model` — the route that phase reads — and is validated at parse time against `Trainforge/training/base_models.py::BaseModelRegistry`, so an unknown name exits 2 with the supported list instead of silently training another base. Precedence: `--base-model` > `ED4ALL_CAMPAIGN_BASE_MODEL` > the registry default (`nemotron3-nano-30b`). The same flag pins the base for the in-build `--with-training` tail, and re-pins it on `--resume`. `--config-overrides <path-or-inline>` is the sibling route for per-run `TrainingConfig` fields — it populates `workflow_params.config_overrides` (the `config_overrides` route on the same `inputs_from` block), accepts a YAML/JSON file path, an inline JSON object, or inline `key=value[,key=value]` pairs (list fields use `|` between items), and is likewise re-applied on `--resume`. It is validated at parse time against the real `TrainingConfig` field set via the one canonical parser `Trainforge/training/configs/__init__.py::parse_config_overrides`, so an unknown key, a bad type, or an out-of-range value exits 2 (naming the supported field list on an unknown key) rather than being dropped or discovered mid-run; `base_model` is rejected there (use `--base-model`). This is the ONLY pipeline route to a field the checked-in per-base YAML deliberately leaves unset — `Trainforge/training/configs/nemotron3-nano-30b.yaml` ships `dpo_learning_rate: null` and `Trainforge/training/peft_trainer.py` RAISES rather than reusing the SFT rate, so Nemotron Nano DPO is unstartable without it. The supplied override set is recorded verbatim on `model_card.json::config_overrides` (and the effective `dpo_learning_rate` on `training_config`), because an adapter trained at a hand-picked rate is otherwise unreproducible. A real fit runs through the repository-managed training environment — `scripts/bootstrap-training-env.sh` then `scripts/ed4all-training`, which fails on a version-band violation BEFORE loading weights — not a bare `pip install ed4all[training]` (that extra is the portable band for dry-run planning, eval, and CI). Nemotron Nano additionally requires the documented canary preflight (`max_steps: 1` + `dpo_learning_rate: 1.0e-6` via `--config-overrides`, inspected for loss / peak GPU memory / wall time before the measured DPO rate is pinned): [`docs/operations/nemotron-lora-canary.md`](docs/operations/nemotron-lora-canary.md). No canary command runs automatically. Full deep-dive (base-model registry, provider config, 5×3 eval matrix, 7-hash provenance, promotion workflow, decision-capture contract): `Trainforge/CLAUDE.md § Training Pipeline`; the synthesis path that produces its inputs: `Trainforge/CLAUDE.md § Training-pair synthesis — what actually runs`.
 
 ---
 

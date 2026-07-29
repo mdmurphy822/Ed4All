@@ -6,7 +6,7 @@ Living architecture map for the Trainforge subsystem. Cross-references the proje
 
 ## Overview
 
-Trainforge is the assessment-generation, knowledge-graph synthesis, training-pair synthesis, SLM training, and SLM evaluation subsystem of Ed4All. It consumes IMSCC packages (typically produced by Courseforge) and emits a LibV2-compatible RAG corpus plus, optionally, a course-pinned QLoRA adapter with a model card, an eval report, and an ablation report. It is the origin of every artifact a downstream retrieval consumer or trained-model consumer reads.
+Trainforge is the assessment-generation, knowledge-graph synthesis, training-pair synthesis, SLM training, and SLM evaluation subsystem of Ed4All. It consumes IMSCC packages (typically produced by Courseforge) and emits a LibV2-compatible RAG corpus plus, optionally, a course-pinned LoRA adapter (bf16 by default; QLoRA is opt-in) with a model card, an eval report, and an ablation report. It is the origin of every artifact a downstream retrieval consumer or trained-model consumer reads.
 
 ```
    IMSCC / HTML                                       (Courseforge output)
@@ -32,7 +32,7 @@ Trainforge is the assessment-generation, knowledge-graph synthesis, training-pai
             |
             v
 +-----------------------+
-|  synthesize_training  |   generators/{anthropic,together,local,
+|  synthesize_training  |   generators/{local,together,
 |  .py                  |               claude_session,mock}
 +-----------+-----------+
             |
@@ -134,7 +134,7 @@ Synthesis providers and the assessment generator.
 | `question_factory.py`, `instruction_factory.py`, `preference_factory.py`, `summary_factory.py` | Type-specific factories. |
 | `content_extractor.py` | Key-term / statement / relationship extraction from chunk text. |
 | `assessment_quality_report.py` | Builds the `assessments` dimension of `quality_report.json`. |
-| `_anthropic_provider.py` | Anthropic SDK paraphrase backend (default model `claude-sonnet-4-6`). |
+| `_anthropic_provider.py` | Anthropic **identity constants only** (`DEFAULT_SYNTHESIS_MODEL` / `ENV_API_KEY` / `ENV_MODEL`), imported by the curriculum + assessment backends. The training-pair SDK provider was removed in Phase 4. |
 | `_together_provider.py` | Together AI OpenAI-compatible paraphrase backend. |
 | `_local_provider.py` | Local OpenAI-compatible (Ollama / vLLM / llama.cpp / LM Studio) paraphrase backend. |
 | `_claude_session_provider.py` | Claude Code session-dispatch paraphrase backend (subagent). |
@@ -190,7 +190,7 @@ The `ChunkLabelResolver` indirection (Phase A 2026-04-30) exists because earlier
 |--------|------|
 | `runner.py::TrainingRunner` | End-to-end orchestrator -- one course -> one model_id. Wave 90 contract surface. |
 | `base_models.py::BaseModelRegistry` + `SUPPORTED_BASES` | The five short-name keys (`qwen2.5-1.5b`, `llama-3.2-1b`, `llama-3.2-3b`, `smollm2-1.7b`, `phi-3.5-mini`); pins HF repo + revision + chat template + LoRA defaults. `format_instruction()` resolves chatml / llama3 / phi3 templates. |
-| `peft_trainer.py` | QLoRA SFT + DPO trainer. Loads in nf4 + double-quant when `use_4bit=true`; auto-selects `paged_adamw_8bit` + bf16/fp16. |
+| `peft_trainer.py` | LoRA SFT + DPO trainer. **bf16 LoRA is the default recipe** (`use_4bit=false`); QLoRA is opt-in — `use_4bit=true` loads nf4 + double-quant and auto-selects `paged_adamw_8bit`. `nemotron3-nano-30b` is bf16-only (QLoRA unsupported for that arch), and its DPO stage RAISES unless `dpo_learning_rate` is supplied via `--config-overrides`. |
 | `compute_backend.py` | `LocalBackend` (CUDA-required) + stubbed `RunPodBackend` for Wave 90 follow-up. |
 | `configs/__init__.py::TrainingConfig` | Canonical config dataclass; per-base YAML in `configs/<short-name>.yaml` materializes production defaults. Schema mirrored in `schemas/models/model_card.schema.json::training_config`. |
 
@@ -252,14 +252,16 @@ Full ontology map: `schemas/ONTOLOGY.md`.
 | Provider | Module | Use case | License-clean for training data? |
 |----------|--------|----------|-----------------------------------|
 | `mock` | factories under `generators/` | Plumbing tests only -- 30-template factory; trains a template-recognizer SLM. | N/A (no LLM call). Wave 107 `MOCK_PROVIDER_CORPUS` validator fails closed on promotion. |
-| `anthropic` | `_anthropic_provider.py` | Highest-quality paraphrase via Anthropic SDK. | No -- Anthropic ToS restricts outputs from training-data use. |
-| `claude_session` | `_claude_session_provider.py` | Paraphrase via the running Claude Code session (subagent dispatch). | No -- Anthropic Consumer Terms (Pro/Max). |
+| `anthropic` | -- | **REMOVED (Phase 4).** `run_synthesis` fails closed on it unconditionally; `AnthropicSynthesisProvider` and its SDK transport no longer exist. `_anthropic_provider.py` survives only as identity constants for the out-of-scope curriculum/assessment backends. | N/A -- unreachable by construction. |
+| `claude_session` | `_claude_session_provider.py` | Paraphrase via the running Claude Code session (subagent dispatch). Gated behind `TRAINFORGE_ALLOW_ANTHROPIC_SYNTHESIS`. | No -- Anthropic Consumer Terms (Pro/Max). |
 | `together` | `_together_provider.py` | Cloud OSS teacher (default `meta-llama/Llama-3.3-70B-Instruct-Turbo`) via OpenAI-compatible endpoint. | Yes -- Together ToS permits training-data use; underlying model license still applies. |
-| `local` | `_local_provider.py` | Local OpenAI-compatible server (Ollama / vLLM / llama.cpp / LM Studio); default `qwen2.5:14b-instruct-q4_K_M` (Apache 2.0). | Yes -- recommended default for license-clean training data. |
+| `local` | `_local_provider.py` | Local OpenAI-compatible server (TRT-LLM / vLLM / llama.cpp / LM Studio); default `nemotron-3-nano-30b-a3b`, resolved by `LOCAL_SYNTHESIS_MODEL` (staged synthesis REQUIRES it explicitly and verifies it against `/v1/models`). | Yes -- recommended default for license-clean training data. |
 
 The curriculum-alignment surface uses the same provider abstraction via `_curriculum_provider.py::CurriculumAlignmentProvider`, selected by `CURRICULUM_ALIGNMENT_PROVIDER`. The shared `_openai_compatible_client.py` backs both `together` and `local` and surfaces a single `llm_chat_call` decision capture per call.
 
-Defaults: training-data synthesis prefers `--provider local` for an air-gapped clean corpus, or `--provider together` as the cloud fallback. Anthropic providers stay wired for backward compatibility but are not the recommended default for shippable training corpora.
+Defaults: training-data synthesis prefers `--provider local` for an air-gapped clean corpus, or `--provider together` as the cloud fallback. The Anthropic SDK path is gone (not merely deprecated); `claude_session` remains wired behind an acknowledgment gate and is not a recommended source for a shippable training corpus.
+
+Contract selection (`legacy` / `staged-v4` / `micro-v1`), the reachability of each pair program from each entry point, and the eligibility-vs-DPO-admission distinction are documented in `Trainforge/CLAUDE.md § "Training-pair synthesis — what actually runs"`. Pipeline runs use `staged-v4`.
 
 ---
 
@@ -366,7 +368,7 @@ Most-relevant Trainforge flags. The full `TRAINFORGE_*` table lives in `Trainfor
 | `TRAINFORGE_SHACL_CLOSED_WORLD` | Merge closed-world shapes into the SHACL graph (Wave 88). |
 | `TRAINFORGE_SEED_TECH_CONCEPTS` | Seed canonical W3C surface forms into `concept_tags` (Wave 82 Phase C). |
 | `TRAINFORGE_VALIDATE_RULE_OUTPUTS` | Enable the `semantic_graph_rule_output` advisory gate (silent-zero detector). |
-| `ANTHROPIC_SYNTHESIS_MODEL` | Override default Claude model used by `_anthropic_provider.py`. |
+| `ANTHROPIC_SYNTHESIS_MODEL` | Override the default Claude model for the surviving anthropic backends (curriculum alignment / assessment / Courseforge generators). It no longer affects training-pair synthesis — that path is removed. |
 | `TOGETHER_API_KEY` / `TOGETHER_SYNTHESIS_MODEL` | Required key + optional model override for `--provider together`. |
 | `LOCAL_SYNTHESIS_BASE_URL` / `LOCAL_SYNTHESIS_MODEL` / `LOCAL_SYNTHESIS_API_KEY` | Wire `--provider local` to a local OpenAI-compatible server. |
 | `CURRICULUM_ALIGNMENT_PROVIDER` | Selects the LLM backend for `align_chunks.py` teaching-role classification. |

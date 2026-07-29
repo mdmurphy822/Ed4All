@@ -626,6 +626,10 @@ Alongside per-gate validation, `CourseProcessor._write_metadata` folds an `asses
 
 Trainforge-owned env-var toggles (default off unless noted). All gate opt-in strict / stable-ID / provenance / experimental behavior; backward-compatible by default. Long-form rationale also lives in `schemas/ONTOLOGY.md` § 12.
 
+**Count: 76** flags across `TRAINFORGE_*` / `LOCAL_SYNTHESIS_*` / `TOGETHER_*` / `ANTHROPIC_SYNTHESIS_*` / `CURRICULUM_ALIGNMENT_*` / `WAVE18_*`, plus the **3** vendor `NVIDIA_*` rows (`NVIDIA_API_KEY` / `NVIDIA_BASE_URL` / `NVIDIA_LARGE_MODEL`) — one row per flag, matching the per-prefix figures in the root `CLAUDE.md` index. Two `ED4ALL_*` rows below (`ED4ALL_ASSESSMENT_PROSE_PROVIDER`, `ED4ALL_ASSESSMENT_DIVERSIFIED`) are documented here rather than in the root table because Trainforge owns their behavior; they are counted against the root's `ED4ALL_*` total, not these.
+
+Not flags, and deliberately absent from the table: `TRAINFORGE_SYNTHESIS_RUN_CONTRACT_SHA256` and `TRAINFORGE_SYNTHESIS_CONTRACT_COMPONENTS_SHA256` are **written** into the environment by `run_synthesis` so downstream steps can read the generation-contract fingerprint. Setting either by hand does not configure anything.
+
 | Flag | When on |
 |------|---------|
 | `TRAINFORGE_ALIGN_CHUNKS_MODEL` | Overrides the default `claude-haiku-4-5-20251001` LLM model used by the legacy direct-classification path in `Trainforge/align_chunks.py::classify_teaching_roles` (and the embedded `process_course --align` Namespace handoff). Resolution chain in `_resolve_align_model()`: explicit `--llm-model` flag / kwarg > env var > default. The same env var resolves both the standalone `python -m Trainforge.align_chunks` CLI and the `Trainforge/process_course.py --align` invocation, so an operator retraining the curriculum-alignment surface against a different teacher only sets one variable. Recommended: leave unset for legacy parity. |
@@ -693,10 +697,11 @@ Trainforge-owned env-var toggles (default off unless noted). All gate opt-in str
 | `TRAINFORGE_SYNTHESIS_FRESH_START_ID` | Optional run-scoped identity requiring a matching, verified fresh-start marker before synthesis inspects resume sidecars or creates provider/output state. The explicit Python `expected_fresh_start_id=` argument takes precedence. Unset preserves the established standalone resume path. This is an integrity token, not a provider/model selector, so no `docs/LICENSING.md` row. |
 | `TRAINFORGE_SYNTHESIS_SERVED_CONTEXT_TOKENS` | **REQUIRED precondition for staged synthesis** (`TRAINFORGE_STAGED_SYNTHESIS_V4=true`). The measured context-window size (tokens) of the served model at `LOCAL_SYNTHESIS_BASE_URL`. Staged synthesis validates this is a positive integer at orchestration time, before any output is created, and uses it to compute per-generation completion budgets and evidence windows. The value must be obtained from the model's HF model card or deployment documentation and declared as an operator environment variable — it cannot be defaulted by code. Missing, blank, zero, or non-numeric values fail LOUD before the first synthesis call with message: `"TRAINFORGE_SYNTHESIS_SERVED_CONTEXT_TOKENS must be a positive measured served model window before staged synthesis starts"`. **No typical value is documented on purpose** — the window is per-deployment (it is whatever the seat was actually launched with, e.g. vLLM `--max-model-len` / TRT-LLM `--max_seq_len`), and the same model family is served at different windows by different launch profiles, so read it off the running seat's own serve command or `/v1/models` rather than copying a number from here. No-op when staged synthesis is off (`TRAINFORGE_STAGED_SYNTHESIS_V4!=true`). Selects no LLM provider/model → no `docs/LICENSING.md` row. |
 | `TRAINFORGE_SYNTHESIS_PROVIDER` | Selects the synthesis-provider backend for the Trainforge training-synthesizer surface (`Trainforge/synthesize_training.py::run_synthesis`, instantiated by `MCP/tools/pipeline_tools.py::_synthesize_training`). Values: `mock` (deterministic template factory — DO NOT use for promotable training data; the `MOCK_PROVIDER_CORPUS` gate fails closed), `anthropic` (**REMOVED Phase 4** — the SDK training path no longer exists; `run_synthesis` fails closed unconditionally, no ack escape), `claude_session` (ToS-restricted per Anthropic Consumer Terms; ack-gated via `TRAINFORGE_ALLOW_ANTHROPIC_SYNTHESIS`), `together` (Together AI ToS — permits training-data generation), and `local` (the strict OpenAI-compatible TRT-LLM/vLLM provider). **Recommended setting for ToS-clean training-pair synthesis is `local` with the canonical `LOCAL_SYNTHESIS_MODEL=nemotron-3-nano-30b-a3b`, governed by the NVIDIA Nemotron Open Model License.** An explicit Qwen override is an optional non-default route and carries its selected checkpoint's license. The emitted instruction / preference pairs are the canonical SLM training corpus consumed by `Trainforge.train_course`. Reuses the same `LOCAL_SYNTHESIS_*` / `TOGETHER_*` / `ANTHROPIC_SYNTHESIS_*` env vars as `COURSEFORGE_PROVIDER` / `COURSEPLANNER_PROVIDER` / `TRAINFORGE_ASSESSMENT_PROVIDER` so one local server serves all task surfaces. **Marketable-v1 D4 — license-clean by default:** on a `textbook_to_course` / `course_generation` pipeline run, `MCP/core/workflow_runner.py::_apply_corpus_generalization_defaults` now setdefaults this env to `LLM_PROVIDER > "local"` (the CLI mirror of the GUI `run_service._apply_authoring_route_env` fill), so a fresh CLI/GUI run routes training-pair synthesis through a license-clean provider instead of the Claude Code subagent. Unset outside a pipeline run (a bare `run_synthesis` / MCP-tool / CLI call) → the `provider=` kwarg / `--provider` default (`mock`) takes effect, or the legacy Claude Code subagent dispatch fires when `ED4ALL_AGENT_DISPATCH=true`, preserving backward compatibility. **Short-circuit semantics:** setting `TRAINFORGE_SYNTHESIS_PROVIDER` to any non-empty value overrides `ED4ALL_AGENT_DISPATCH=true` for the `training-synthesizer` agent only — the executor falls through to `_synthesize_training`, which invokes `run_synthesis` with the env-var-resolved provider in lieu of the Claude Code subagent. The env var ALSO overrides the caller-supplied `provider=` kwarg inside `run_synthesis` itself, so an operator pinning the backend via environment doesn't need to thread the value through every caller. Other Wave-74 agents (content-generator, course-outliner, assessment-generator, etc.) keep dispatching unchanged. Closes Finding 1 of `plans/dispatch-7-execution-inspection-2026-05.md`: pre-Wave1-I1 the training-synthesizer was the sole subagent-classified agent with no provider short-circuit, leaving `--skip-training` as the only operator-discipline safety against Claude authoring promotable training-pair corpus content (forbidden per `docs/LICENSING.md`). (License: see `docs/LICENSING.md` for the per-provider ToS + per-model layer.) |
+| `TRAINFORGE_SYNTHESIS_MODEL` | **Conflict detector only — it never selects a model.** The model is resolved by the per-provider `model_env` (`LOCAL_SYNTHESIS_MODEL` / `TOGETHER_SYNTHESIS_MODEL`) via the endpoint registry. When this variable is set during staged LOCAL synthesis it must equal `LOCAL_SYNTHESIS_MODEL`, otherwise `Trainforge/synthesize_training.py` fails the run as an ambiguous configuration before the first generation call. Setting it alone changes nothing; setting it to a different value than the canonical variable is a loud failure, never a silent override. Previously documented only inside the `LOCAL_SYNTHESIS_MODEL` / `TRAINFORGE_AGNOSTIC_SYNTHESIS` prose — it now has its own row so the flag inventory is complete. Selects no provider/model → no `docs/LICENSING.md` row of its own. |
 | `TRAINFORGE_SYNTHESIS_MAX_CONCURRENT` | Bounded training-pair generation concurrency (`Trainforge/synthesis_concurrency.py`, consumed by `run_synthesis`). Unset / blank / garbage / non-positive resolves to `1`, which uses the exact legacy sequential call order, constructs no thread pool, and creates neither the concurrent generation journal nor run telemetry. Values `2..48` fan immutable per-chunk SFT/DPO generation across a bounded executor; at most N futures exist, while one source-order writer alone mutates dedupe sets, counters, output JSONL, and pair checkpoints. Each worker durably appends and `fsync`s its own raw provider result immediately on completion, before ordered emission, so completed high-sequence calls survive a crash behind a slow low-sequence call. Successful units replay without provider calls; transport/429/5xx/malformed-response failures persist as retriable attempt metadata and retry only that unit on resume; the third failed resume attempt becomes durable fatal. Deterministic failures persist fatal immediately. On error, finalization explicitly closes the ordered iterator, cancels not-started work, waits for running siblings to finish journaling, re-summarizes the complete journal, and only then writes failed/paused telemetry; no worker can append after the terminal snapshot. Failures remain loud and there is no serial fallback. Concurrent telemetry uses chunks consistently for total/completed/terminal; accepted/rejected and SFT/DPO remain pair counters. `active_workers + queued_units == in_flight <= max_concurrent`. Logical chunk/pair gauges are absolute across replay, while the durable journal supplies lifetime generation-result, transient-pending/attempt, recovered, exhausted, and fatal counts; `cached_replays` is separate. A generation result is deliberately not labelled an HTTP request because provider-internal retry/dialect attempts belong to the existing LLM usage transport tap. A stop request closes submissions, drains already-started units through the writer, checkpoints them, then pauses. Values above 48 raise. `provider=claude_session` is restricted to 1 because its mailbox/budget ordering is not concurrency-safe. The equivalent explicit CLI/API knob is `--max-concurrent`. Selects no provider/model, so no `docs/LICENSING.md` row. The legacy defaults remain concurrency 1 and request timeout 60s. Any higher setting is deployment-specific and must be selected from the current production-shaped benchmark; see `docs/operations/nemotron-spark-serving.md`. |
 | `TRAINFORGE_AGNOSTIC_SYNTHESIS` | **Default ON.** Routes the OpenAI-compatible training-pair synthesis seats (`local` / `together`) through the registry-driven `Trainforge/generators/_synthesis_provider.py::SynthesisProvider` (resolved by NAME from `config/endpoints.yaml` via `build_openai_compatible_client`) instead of the per-vendor leaf classes (`LocalSynthesisProvider` / `TogetherSynthesisProvider`). The single construction is `build_synthesis_provider(provider, …)`, which pins the leaf-exact parity knobs — `terse_prompts` (local terse / hosted verbose) and `preserve_tokens_enabled` (local honors `preserve_tokens`; together never injected a preserve directive) — while leaving timeout resolution to the shared client: unset / garbage / non-positive `ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS` keeps the leaf-exact 60s default, and a positive operator value overrides it. The builder lets the per-provider `model_env` (`LOCAL_SYNTHESIS_MODEL` / `TOGETHER_SYNTHESIS_MODEL`) resolve the model; `TRAINFORGE_SYNTHESIS_MODEL` never overrides that registry value and is only a staged-local conflict detector. Wired at 6 sites: `synthesize_training.py::run_synthesis` (×2) + `instruction_factory.py` (×2) + `preference_factory.py` (×2). Parse-with-fallback, mirroring the other `TRAINFORGE_*` toggles: unset / empty → ON; an explicit `0` / `false` / `no` / `off` (case-insensitive) → OFF (the legacy per-vendor leaf rollback path); anything else → ON. The `anthropic` / `claude_session` / `mock` seats + the licensing guards are UNTOUCHED by this flag. Selects no LLM provider/model itself (the per-provider seat is chosen by `TRAINFORGE_SYNTHESIS_PROVIDER` / `--provider`) → no `docs/LICENSING.md` row. Regression nets: `Trainforge/tests/test_synthesis_provider.py`, `test_synthesis_provider_cutover.py`, `test_synthesis_model_identity_preflight.py`. |
 | `TRAINFORGE_STAGED_SYNTHESIS_V4` | Staged evidence-first training-pair synthesis. Unset / false / garbage keeps the legacy provider path byte-identical; truthy (`1`/`true`/`yes`/`on`) runs a strict evidence/objective plan call, an SFT realization call, and independent DPO chosen/rejected realization calls. Every call has bounded exact validator-specific repair, two source-free leakage rewrites with fail-loud exhaustion, and DecisionCapture prompt/response SHA-256 audit references. Canonical full `textbook_to_course` / `course_generation` workflows setdefault it on; an explicit false value is a portable rollback. The provider/model and licensing posture still come solely from `TRAINFORGE_SYNTHESIS_PROVIDER`. |
-| `TRAINFORGE_STAGED_SYNTHESIS_MICRO_V1` | Selects the versioned `ed4all.staged-synthesis-micro.v1` A-F micro-call orchestration contract. **Operator entry is explicit:** `python -m Trainforge.synthesize_training --corpus <course-dir> --course-code <course-code> --provider local --synthesis-contract micro-v1`; an ambient truthy flag without that CLI selector fails before synthesis. The flag is default off; unset / false / garbage preserves the byte-identical legacy route. `--synthesis-contract micro-v1` has authoritative CLI precedence and writes micro=true plus V4=false for the process. Direct library configuration with both micro and `TRAINFORGE_STAGED_SYNTHESIS_V4` truthy fails closed with `synthesis_contract_conflict` rather than choosing a path. Micro calls inherit the selected `TRAINFORGE_SYNTHESIS_PROVIDER`, endpoint, and model unchanged, so the license-clean provider gate and posture are identical to other training-pair synthesis. The contract journals started/terminal units in a fingerprinted, fsynced resume sidecar, checks the run stop sentinel at unit boundaries, and resumes only terminal artifacts matching the complete contract/input identity; corrupt, ambiguous, or drifted state fails closed. Final `committed_complete` / `terminal_hold` authority and all downstream corpus validation, training-data audit, promotion, and evaluation gates remain unchanged. The inherited claim thresholds remain entailment `0.70` and contradiction `0.50`; this selector does not tune gates. |
+| `TRAINFORGE_STAGED_SYNTHESIS_MICRO_V1` | Selects the versioned `ed4all.staged-synthesis-micro.v1` A-F micro-call orchestration contract. **Operator entry is explicit:** `python -m Trainforge.synthesize_training --corpus <course-dir> --course-code <course-code> --provider local --synthesis-contract micro-v1`. The flag is default off; unset / false / garbage preserves the byte-identical legacy route. `--synthesis-contract micro-v1` resolves to micro=true plus V4=false for the process, in `main()` before any provider is constructed. An ambient value that DISAGREES with the selection exits non-zero naming the conflicting variable — the flag never silently overrides the environment, and the environment never silently overrides the flag. Omitting the flag leaves both switches untouched, which is what the pipeline's own `training_synthesis` phase relies on (`MCP/core/workflow_runner.py` sets `TRAINFORGE_STAGED_SYNTHESIS_V4=true` directly and passes no CLI selector); an ambient truthy flag without the CLI selector is therefore a supported route, not a failure. Direct library configuration with both micro and `TRAINFORGE_STAGED_SYNTHESIS_V4` truthy fails closed with `synthesis_contract_conflict` rather than choosing a path. `instruction_variants_per_chunk > 1` is REFUSED under micro-v1: every micro stage keys on the run-level `synthesis_seed` (`paraphrase_instruction` even overwrites the draft's per-variant `seed` with it) and the focused chunk is identical across variants, so variant 1 would emit a duplicate row for a second full ladder of model calls — measured 449/449 identical variant-0/variant-1 focused chunks on a 939-chunk corpus. Production generation units bind their resume-store identity from `(kind, variant_index)` via `bind_micro_generation_unit`; the pilot harness's `_micro_manifest_identity` draft stamp still wins where present, and a blank `variant` is rejected with `staged_micro_draft_identity_variant_blank` rather than silently collapsing two units onto one state file. Micro calls inherit the selected `TRAINFORGE_SYNTHESIS_PROVIDER`, endpoint, and model unchanged, so the license-clean provider gate and posture are identical to other training-pair synthesis. The contract journals started/terminal units in a fingerprinted, fsynced resume sidecar, checks the run stop sentinel at unit boundaries, and resumes only terminal artifacts matching the complete contract/input identity; corrupt, ambiguous, or drifted state fails closed. Final `committed_complete` / `terminal_hold` authority and all downstream corpus validation, training-data audit, promotion, and evaluation gates remain unchanged. The inherited claim thresholds remain entailment `0.70` and contradiction `0.50`; this selector does not tune gates. |
 | `TRAINFORGE_ALLOW_ANTHROPIC_SYNTHESIS` | **Acknowledgment gate, not a provider selector (Marketable-v1 D4).** Gates the `claude_session` TRAINING-PAIR synthesis route ONLY (`Trainforge/synthesize_training.py::run_synthesis`). **Phase 4: the `anthropic` SDK training path was REMOVED** — `provider="anthropic"` fails closed UNCONDITIONALLY (this flag does NOT unlock it; the `AnthropicSynthesisProvider` class + its SDK transport were deleted, so the corpus is license-clean by construction). The emitted instruction / preference pairs ARE the canonical SLM training corpus (the adapter is a derivative work of them), and the documented license-clean default is `--provider local` with pinned Nemotron Nano on the strict TRT-LLM/vLLM seat under the NVIDIA Nemotron Open Model License, or `--provider together` (hosted OSS) — so selecting `claude_session` (a SEPARATE Claude-Code-session route, Anthropic Consumer Terms) for this surface is a fail-loud opt-in. When the effective provider resolves to `claude_session` and this env is NOT truthy (`1`/`true`/`yes`/`on`), `run_synthesis` raises `SynthesisLicensingError` BEFORE any LLM dispatch, with a message pointing at `docs/LICENSING.md` § "Synthesis providers". Set this only if you hold a separate written agreement with Anthropic permitting derivative training; a truthy value logs a warning and proceeds. Does NOT affect the assessment / textbook / curriculum / content-generator provider surfaces (those carry their own ToS rows). Regression net: `Trainforge/tests/test_synthesis_licensing_gate.py`. (License: see `docs/LICENSING.md`.) |
 | `TRAINFORGE_COGNITIVE_TASK_TYPE` | GPT Feedback (May 12) item 5 — observable cognitive task verb axis (`classify` / `compute` / `debug` / `critique` / `explain` / `compare` / `construct` / ...), orthogonal to `bloom_level`. Default unset → only the chunk + misconception schema slots are populated (additive on optional fields via `lib/ontology/cognitive_task.py::detect_cognitive_task_type`, byte-identical legacy behavior preserved). When on, `Trainforge/generators/assessment_generator.py` tags each emitted question with the `cognitive_task_type` detected (via `lib/ontology/cognitive_task.py::detect_cognitive_task_type`) from the question stem — an additive OPTIONAL `QuestionData` field OMITTED from `to_dict()` when unset so legacy assessment output is byte-identical; it fires one `cognitive_task_type_detection` DecisionCapture event per tagged question (dynamic rationale: detected verb, stem prefix, `question_id`, objective, `bloom_level`). Conservative: a stem with no canonical task verb leaves the field `None` (no fabricated axis). The always-on chunk + misconception emit below stays independent of this flag (it calls `detect_cognitive_task_type` directly, not via the env var). The chunk + misconception emit is **always** on because it's a no-op for legacy corpora (optional schema field, omitted on no-match). Canonical 15-value enum lives at `schemas/taxonomies/cognitive_task_type.json`. Detection mirrors `lib.ontology.bloom.detect_bloom_level`'s longest-verb-first whole-word match; substrings (e.g. `"classifier"`) deliberately don't match `"classify"`. Decision-capture rationale interpolates the chunk-text prefix, detected verb, and chunk's `bloom_level` so an audit can replay why the axis was assigned. Provider/license axis untouched — this flag does not select an LLM backend. |
 | `TRAINFORGE_IRT_DIFFICULTY_SCAFFOLD` | Honest IRT difficulty-calibration scaffold (response-data-gated; **NO fabricated IRT parameters**). Default off → byte-identical: chunks carry only the heuristic `difficulty` string, no `difficulty_provenance` / `difficulty_irt` field, no `difficulty_distribution_descriptor` in corpus_stats or course_manifest `content_profile`, the response seam is never read, and no `difficulty_calibration` decision event fires. When truthy (`1`/`true`/`yes`/`on`): `lib/assessment/irt_difficulty.py` stamps `difficulty_provenance='heuristic'` on every emitted chunk (both the IMSCC `process_course._create_chunk` path and the `chunking` / `imscc_chunking` chunk-emit sites in `MCP/tools/pipeline_tools.py`) and, ONLY when the learner-response seam (`<libv2>/courses/<slug>/responses/item_responses.jsonl`) supplies `>= DEFAULT_MIN_RESPONSES` real responses for an item, overrides that item's band via a deterministic proportion-correct → band map and writes a real `difficulty_irt` block (`difficulty_b` = Rasch `ln((1-p)/p)`; `discrimination_a` = the FIXED 1PL convention `1.0`, explicitly NOT a fitted 2PL value; `n_responses` = the real sample) tagged `provenance='calibrated'` — never fabricating parameters with no data (an under-sampled item stays heuristic, no IRT block). Adds the deterministic `difficulty_distribution_descriptor` (modal_level / ordinal_entropy / balance_ratio / calibrated_fraction / provenance) to corpus_stats + the LibV2 `course_manifest` `content_profile`, and the warning-day-1 `difficulty_provenance` gate at `textbook_to_course::libv2_archival` (anti-fabrication: no `difficulty_irt` without backing responses; `# TODO(calibration)` critical-flip deferred). The response seam is schematized at `schemas/assessment/item_response.schema.json` but **no response data is shipped**. Emits one `difficulty_calibration` decision event per run. Selects no provider/model → no `docs/LICENSING.md` row. Parse-with-fallback: garbage/falsey → off. Regression nets: `lib/assessment/tests/test_irt_difficulty.py`, `lib/validators/tests/test_difficulty_provenance.py`. |
@@ -790,6 +795,147 @@ Measured rationale: the prune + tech-seed + fragment-filter + content-aware-typi
 
 ---
 
+## Training-pair synthesis — what actually runs
+
+This section describes the **current code**, not the intended design. Where a
+capability exists but cannot be reached from a production run, that is stated
+outright.
+
+### The three entry points are not equivalent
+
+| Entry point | How it is invoked | What it can reach |
+|-------------|-------------------|-------------------|
+| Pipeline phase `training_synthesis` | `ed4all run textbook-to-course` (skipped by `--skip-training`). Agent `training-synthesizer` → registry tool `synthesize_training` in `MCP/tools/pipeline_tools.py::_build_tool_registry`. | `course_code`, `provider`, `seed`, `required_training`, `instruction_variants_per_chunk`, and the four deterministic generators (`with_kg_metadata`, `with_violation_detection`, `with_abstention`, `with_schema_translation`). **Nothing else.** |
+| CLI `python -m Trainforge.synthesize_training` | Direct module invocation. | The full `run_synthesis` surface, including `--synthesis-contract`, `--include-dpo-from-misconceptions`, `--with-assessment-sft`, `--with-graph-sft`. |
+| External MCP tool `synthesize_training` | FastMCP client. | Same parameter set as the pipeline phase. |
+
+Consequence — **reachability of the pair programs**:
+
+| Pair program | Reachable from `ed4all run`? | How it is actually selected |
+|--------------|------------------------------|-----------------------------|
+| Core SFT (`instruction_pairs.jsonl`) | Yes | Always. |
+| Core DPO (`preference_pairs.jsonl`) | Yes | Always. |
+| Assessment SFT (S1) | Yes, **env only** | `ED4ALL_WITH_ASSESSMENT_SFT=1`. The `with_assessment_sft` kwarg is not routed by the phase; the env var is OR'd in inside `run_synthesis`. |
+| Graph SFT (S5) | Yes, **env only** | `ED4ALL_WITH_GRAPH_SFT=1`. Same mechanism. |
+| kg-metadata / violation-detection / abstention / schema-translation | Yes | Kwargs on the registry tool; default off. |
+| Misconception-editorial DPO augmentation | **No** | `include_dpo_from_misconceptions` has **no env var and no `inputs_from` route** — it is reachable only from the CLI's `--include-dpo-from-misconceptions`. |
+| Reject-mined DPO negatives | Yes, but inert at the default | `TRAINFORGE_DPO_MINE_REJECTS` **plus** `--instruction-variants-per-chunk >= 2`; mined yield is structurally zero at 1 variant. |
+
+### Contract selection
+
+Three contracts, selected by two env switches:
+
+| Contract | `TRAINFORGE_STAGED_SYNTHESIS_V4` | `TRAINFORGE_STAGED_SYNTHESIS_MICRO_V1` |
+|----------|----------------------------------|-----------------------------------------|
+| `legacy` | false | false |
+| `staged-v4` | true | false |
+| `micro-v1` | false | true |
+
+`--synthesis-contract {legacy,staged-v4,micro-v1}` is wired: `main()` calls
+`apply_synthesis_contract_selection` before any provider is constructed, which
+writes that env pair for the process. It is **not** a `run_synthesis` kwarg —
+programmatic and pipeline callers set the env vars directly. Omitting the flag
+leaves the environment untouched; an ambient value that *disagrees* with the
+flag raises `SynthesisContractConflict` rather than being silently overridden.
+
+**Pipeline runs are `staged-v4`.** `MCP/core/workflow_runner.py` setdefaults
+`TRAINFORGE_STAGED_SYNTHESIS_V4=true` for every `textbook_to_course` /
+`course_generation` run and passes no CLI selector.
+
+**micro-v1 cannot complete a production run today.** Its Stage A requires a
+non-empty `action_object` on the objective card (`staged_synthesis_micro.py`
+`required_scalars`), but production objectives reach synthesis through
+`lib/validators/pair/objective_delivery.py::_load_synthesized_objectives_for_w4c`,
+which projects every LO down to exactly `{statement, bloom_level, bloom_verb}` —
+its docstring says so, and loading an archived `objectives.json` through it
+returns those three keys and no more. Every unit therefore fails
+`staged_micro_A_objective_card_incomplete: action_object`. `staged-v4` is
+unaffected (only micro's `required_scalars` demands the field). Until that
+projection carries the ABCD behavior block, micro-v1 is selectable but not
+usable. Micro-v1 additionally **refuses** `instruction_variants_per_chunk > 1`.
+
+### Inputs and outputs
+
+Reads, from the LibV2 course dir:
+
+- `imscc_chunks/chunks.jsonl` via `lib/libv2_storage.py::resolve_imscc_chunks_path`
+  — the legacy `corpus/chunks.jsonl` is a fallback only. (Several in-code
+  docstrings still say `corpus/chunks.jsonl`; the resolver is authoritative.)
+- `objectives.json`, projected as above.
+- Optional: `eval/holdout_split.json`, the holdout-exclusion registry
+  (`TRAINFORGE_SYNTHESIS_HOLDOUT_*`), `assessments.json` (S1),
+  `graph/concept_graph_semantic.json` (S5).
+
+Writes, under `training_specs/`:
+
+- `instruction_pairs.jsonl`, `preference_pairs.jsonl` (the corpus).
+- `.synthesis_pairs_checkpoint.jsonl` (resume sidecar; `--no-checkpoint` opts out).
+- `decontam_quarantine.jsonl` (gold-set leaks).
+
+An eval-holdout registry, when present, marks reserved chunks
+`_eval_holdout_reserved` and short-circuits them before eligibility. **Any
+eligibility census that ignores the registry counts chunks the run will
+refuse.**
+
+### Eligibility is not DPO admission
+
+Two independent gates, and conflating them is the standing failure mode:
+
+1. **Admission to synthesis** — `synthesize_training._pair_eligibility_for_mode`
+   → `synthesis_eligibility.pair_eligibility` → for `kind="preference"`,
+   `staged_synthesis_micro.micro_preference_eligibility`. This is
+   **contract-independent**: `staged-v4` and `micro-v1` call the same predicate.
+2. **Admission to DPO training** — `Trainforge/training/compute_backend.py::is_dpo_editorial_record`,
+   under the default `dpo_preference_filter=editorial_or_misconception`. It
+   requires `misconception_id`, or `source` in
+   `{misconception, misconception_editorial, mined_rejection}`.
+
+`preference_factory.synthesize_preference_pair` stamps `source="misconception"`
++ `misconception_id` **only** from a non-empty structured `chunk["misconceptions"]`;
+otherwise the pair is `source="rule_synthesized", misconception_id=None`. The
+staged providers copy the draft (`out = dict(draft)`), so paraphrasing never
+adds either field.
+
+So a corpus whose chunks carry no structured `misconceptions[]` emits preference
+pairs that are **all** `rule_synthesized`, `_count_dpo_eligible_records` returns
+0, and with `min_dpo_pairs=50` + `dpo_fail_hard=true` the trainer raises
+`InsufficientPreferencePairsError` **before any weight is trained** — the run
+fails, it does not quietly degrade to SFT-only. SFT-only is an explicit opt-in:
+`--config-overrides dpo_fail_hard=false`. Passing
+`_pair_eligibility_for_mode(kind="preference")` does **not** mean a pair is
+DPO-admissible; measure the trainer-side count with
+`is_dpo_editorial_record`, not the eligibility predicate.
+
+### The block → pair route, and the distillation posture
+
+DPO preference candidates are recovered from Courseforge's authored
+**misconception cards**, which survive into chunk HTML as
+`<div class="misconception-card" data-cf-block-id=...>` with class-labelled
+`misconception-claim` / `misconception-correction` descendants.
+`synthesis_window_contract._structured_misconception_pairs` re-reads that
+markup to recover the authored `(claim, correction)` boundary that chunking
+collapses, and `micro_preference_eligibility` prefers it over the legacy
+cue-phrase regex (which only matches three fixed openers and misses most
+authored prose). Each admitted candidate carries the authoring block's
+`data-cf-block-id` as `source_block_id`.
+
+**State this plainly rather than implying direct textbook grounding.** Those
+cards are written by the large local teacher model during Courseforge's rewrite
+tier; they are grounded in the source chunks and passed `post_rewrite_validation`
+(including `block_prose_entailment` and `claim_support`), but a pair derived
+from one is **distilled from that teacher**, not lifted from the textbook. It is
+licence-clean under the Nemotron entry in `lib/licensing/teacher_roster.py`
+(verdict `safe`, `commercial_use: true`) and under the
+`TRAINFORGE_SYNTHESIS_PROVIDER=local` row of `docs/LICENSING.md`. Record the
+teacher and this provenance in the model card.
+
+Known limitation, unfixed: **nothing verifies that the DPO rejected side is
+false.** `lib/validators/pair/claim_support.py` scores only `pair["chosen"]`, so
+a card whose "misconception" is actually a true statement ships as the rejected
+completion. Sample and hand-score rejected completions before trusting a DPO run.
+
+---
+
 ## Training Pipeline
 
 Trainforge produces SLM (Small Language Model) adapters from already-imported LibV2 courses. End-state: `LibV2/courses/<slug>/models/<model_id>/` carries `adapter.safetensors` + `model_card.json` + `eval_report.json` + `training_run.jsonl`. The model card pins seven SHA-256 provenance hashes to the LibV2 paths that produced the adapter, making the run independently auditable. Hugging Face is the upload target.
@@ -834,13 +980,29 @@ python -m Trainforge.train_course --course-code phys-101 --base-model llama-3.2-
 ed4all run trainforge_train --course-name <course-slug> --base-model qwen2.5-1.5b
 ```
 
-`--dry-run` produces a runner plan JSON dump without invoking the trainer (no GPU, no network). All non-dry-run modes require:
+`--dry-run` produces a runner plan JSON dump without invoking the trainer (no GPU, no network).
+
+**Real fitting runs through the repository-managed training environment, not a
+bare `pip install`.** `scripts/bootstrap-training-env.sh` builds the qualified
+band offline-first from `$ED4ALL_TRAINING_WHEEL_DIR`, and `scripts/ed4all-training`
+is the launcher — it fails **before** any model weight loads if Torch,
+Transformers, TRL, PEFT, Accelerate or Datasets falls outside that band. Do not
+repair a band failure by editing the system Python environment. Full profile
+detail (the `gb10-cu130` aarch64 profile, wheel SHA-256 pins,
+`ED4ALL_TRAINING_OFFLINE_ONLY`, `ED4ALL_TRAINING_PROFILE`) and the **required
+Nemotron Nano canary preflight** — a copied override file carrying
+`max_steps: 1` + `dpo_learning_rate: 1.0e-6`, run through `scripts/ed4all-training`,
+inspected for SFT/DPO loss + peak GPU memory + wall time before the measured DPO
+rate is pinned for production — live in
+[`docs/operations/nemotron-lora-canary.md`](../docs/operations/nemotron-lora-canary.md).
+No canary command runs automatically; GPU execution and go/no-go stay operator
+decisions.
 
 ```bash
 pip install ed4all[training]    # pulls torch>=2.1, transformers>=4.49,<4.50, trl>=0.12,<0.13, peft>=0.10, accelerate>=1.0,<2.0, bitsandbytes>=0.45,<0.47, datasets>=2.18, safetensors>=0.4, lm-eval>=0.4 (gated by LM_EVAL_ENABLED)
 ```
 
-The `[training]` extra is **not** part of the default install — CPU-only dev installs (SemantiK conversion / Courseforge / Trainforge synthesis) stay slim.
+The `[training]` extra is **not** part of the default install — CPU-only dev installs (SemantiK conversion / Courseforge / Trainforge synthesis) stay slim. It declares the *portable* band; it is the right install for dry-run planning, eval-side `AdapterCallable` work, and CI, but a production fit on the pinned hardware profile should come from the bootstrap above.
 
 #### Dependency contract
 
