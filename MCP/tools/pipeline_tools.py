@@ -21273,15 +21273,41 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
     # the escalation path; set ED4ALL_REWRITE_MAX_ESCALATION_SHARE=1.0 to
     # disable the guard (an operator who genuinely wants a template-rendered
     # course). Parse-with-fallback: garbage / out-of-range -> the default.
+    # Parse note: a value ABOVE 1.0 is clamped to 1.0 (disabled) rather than
+    # reverted to the default. An escalation share can never exceed 1.0, so
+    # "2" or "1.5" can only have been typed by an operator reaching for "off";
+    # falling back to 0.5 would hand them a STRICTER guard than they asked for,
+    # silently, on the one knob someone reaches for mid-incident. A negative or
+    # unparseable value has no such obvious intent and takes the default.
     _max_escalation_share = 0.5
-    try:
-        _raw_share = os.environ.get("ED4ALL_REWRITE_MAX_ESCALATION_SHARE")
-        if _raw_share:
+    _raw_share = os.environ.get("ED4ALL_REWRITE_MAX_ESCALATION_SHARE")
+    if _raw_share:
+        try:
             _parsed_share = float(_raw_share)
-            if 0.0 <= _parsed_share <= 1.0:
+        except (TypeError, ValueError):
+            logger.warning(
+                "rewrite phase: ED4ALL_REWRITE_MAX_ESCALATION_SHARE=%r is not "
+                "a number; using the %.2f default.",
+                _raw_share, _max_escalation_share,
+            )
+        else:
+            if _parsed_share < 0.0:
+                logger.warning(
+                    "rewrite phase: ED4ALL_REWRITE_MAX_ESCALATION_SHARE=%r is "
+                    "negative; using the %.2f default.",
+                    _raw_share, _max_escalation_share,
+                )
+            elif _parsed_share > 1.0:
+                logger.warning(
+                    "rewrite phase: ED4ALL_REWRITE_MAX_ESCALATION_SHARE=%r "
+                    "exceeds 1.0; an escalation share cannot, so reading this "
+                    "as 1.0 (guard DISABLED) rather than silently reverting to "
+                    "the %.2f default.",
+                    _raw_share, _max_escalation_share,
+                )
+                _max_escalation_share = 1.0
+            else:
                 _max_escalation_share = _parsed_share
-    except (TypeError, ValueError):
-        _max_escalation_share = 0.5
 
     # Small-N floor. On a handful of blocks a high escalation SHARE carries no
     # information — one block failing consensus is 100% of a one-block page and
@@ -21297,20 +21323,40 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
         )
         _escalated_share = _n_escalated / _n_blocks
         if _escalated_share > _max_escalation_share:
+            # Report WHICH markers dominated instead of asserting a cause. The
+            # counter above is deliberately broad (any truthy marker), so it
+            # also catches outline-carried markers and genuine per-block
+            # consensus failures — a weak model having a bad run can cross this
+            # ceiling without a transport fault anywhere. Halting is still
+            # right; naming one cause with certainty is not. The histogram is
+            # what actually tells the operator which world they are in.
+            _marker_counts: Dict[str, int] = {}
+            for _b in rewrite_blocks:
+                _m = getattr(_b, "escalation_marker", None)
+                if _m:
+                    _marker_counts[str(_m)] = _marker_counts.get(str(_m), 0) + 1
+            _marker_summary = ", ".join(
+                f"{_k}={_v}" for _k, _v in
+                sorted(_marker_counts.items(), key=lambda kv: -kv[1])
+            ) or "(none recorded)"
             raise RuntimeError(
                 f"rewrite tier authored almost nothing: "
                 f"{_n_escalated}/{_n_blocks} block(s) "
                 f"({_escalated_share:.1%}) fell through to the escalation "
-                f"path, above the {_max_escalation_share:.0%} ceiling. A "
-                f"failure this uniform is a transport fault, not per-block "
-                f"quality — check the rewrite provider's dispatch errors in "
-                f"the run log (a strict-OpenAI seat rejects the Ollama-only "
-                f"`options.num_ctx` extra with HTTP 400 extra_forbidden "
-                f"unless ED4ALL_LLM_OMIT_OLLAMA_FORMAT is set; also verify "
-                f"the served model name and seat reachability). Emitting "
-                f"blocks_final.jsonl now would ship a template-rendered "
-                f"course as if it were authored. Set "
-                f"ED4ALL_REWRITE_MAX_ESCALATION_SHARE=1.0 to override. "
+                f"path, above the {_max_escalation_share:.0%} ceiling. "
+                f"Markers: {_marker_summary}. Emitting blocks_final.jsonl now "
+                f"would ship a largely template-rendered course as if it were "
+                f"authored, so the phase stops here. "
+                f"A share this high is MOST OFTEN a transport fault that fails "
+                f"every request identically — check the rewrite provider's "
+                f"dispatch errors in the run log first (a strict-OpenAI seat "
+                f"such as vLLM/TRT-LLM rejects the Ollama-only "
+                f"`options.num_ctx` extra with HTTP 400 extra_forbidden unless "
+                f"ED4ALL_LLM_OMIT_OLLAMA_FORMAT is set; also verify the served "
+                f"model name and seat reachability). If dispatches were "
+                f"succeeding, this is instead a model/validator-quality "
+                f"problem and the markers above say which. Set "
+                f"ED4ALL_REWRITE_MAX_ESCALATION_SHARE=1.0 to proceed anyway. "
                 f"course={course_code}."
             )
 

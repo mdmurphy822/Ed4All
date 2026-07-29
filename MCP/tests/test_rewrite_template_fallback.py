@@ -464,3 +464,76 @@ def test_small_corpus_escalation_does_not_trip_the_guard(tmp_path, monkeypatch):
         libv2_root=str(tmp_path / "libv2"),
     )))
     assert result.get("success") is True, result
+
+
+def test_out_of_range_share_reads_as_disabled_not_default(tmp_path, monkeypatch):
+    """`=1.5` means "off", not "stricter than I asked for".
+
+    An escalation share cannot exceed 1.0, so a value above it can only have
+    been typed by an operator reaching for the escape hatch. Reverting to the
+    0.5 default would hand them a TIGHTER guard than they requested, silently,
+    on the one knob someone reaches for mid-incident.
+    """
+    import asyncio
+    import json as _json
+
+    monkeypatch.setenv("ED4ALL_REWRITE_MAX_ESCALATION_SHARE", "1.5")
+    project_id, blocks_validated = _build_rewrite_fixture(
+        tmp_path, monkeypatch, n_blocks=25,
+    )
+    _patch_router_always_escalates(monkeypatch)
+
+    result = _json.loads(asyncio.run(pt._run_content_generation_rewrite(
+        project_id=project_id,
+        blocks_validated_path=str(blocks_validated),
+        libv2_root=str(tmp_path / "libv2"),
+    )))
+    assert result.get("success") is True, result
+
+
+def test_unparseable_share_takes_the_default(tmp_path, monkeypatch):
+    """Garbage carries no intent, so it falls back to the 0.5 default."""
+    import asyncio
+    import pytest as _pytest
+
+    monkeypatch.setenv("ED4ALL_REWRITE_MAX_ESCALATION_SHARE", "banana")
+    project_id, blocks_validated = _build_rewrite_fixture(
+        tmp_path, monkeypatch, n_blocks=25,
+    )
+    _patch_router_always_escalates(monkeypatch)
+
+    with _pytest.raises(RuntimeError, match="authored almost nothing"):
+        asyncio.run(pt._run_content_generation_rewrite(
+            project_id=project_id,
+            blocks_validated_path=str(blocks_validated),
+            libv2_root=str(tmp_path / "libv2"),
+        ))
+
+
+def test_raise_reports_marker_histogram_without_asserting_cause(
+    tmp_path, monkeypatch,
+):
+    """The message must say WHICH markers dominated, not name one cause.
+
+    The counter is deliberately broad, so a weak model failing validator
+    consensus can cross the ceiling with no transport fault anywhere. Halting
+    is still right; printing a confident misdiagnosis at 3am is not.
+    """
+    import asyncio
+    import pytest as _pytest
+
+    project_id, blocks_validated = _build_rewrite_fixture(
+        tmp_path, monkeypatch, n_blocks=25,
+    )
+    _patch_router_always_escalates(monkeypatch)
+
+    with _pytest.raises(RuntimeError) as exc:
+        asyncio.run(pt._run_content_generation_rewrite(
+            project_id=project_id,
+            blocks_validated_path=str(blocks_validated),
+            libv2_root=str(tmp_path / "libv2"),
+        ))
+    msg = str(exc.value)
+    assert "Markers: validator_consensus_fail=25" in msg
+    assert "MOST OFTEN" in msg, "cause must be offered, not asserted"
+    assert "model/validator-quality" in msg, "alternative cause must be named"
