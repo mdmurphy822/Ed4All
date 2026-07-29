@@ -48,8 +48,22 @@ def _build_libv2_course(tmp_path: Path, slug: str = "tst-101") -> Path:
         '{"prompt": "Q?", "completion": "A.", "chunk_id": "c1"}\n',
         encoding="utf-8",
     )
+    # Admissible (editorial_or_misconception) rows clearing the default
+    # min_dpo_pairs=50 — an empty preference file describes a course the runner
+    # must refuse under the shipped dpo_fail_hard=true, so even a dry-run smoke
+    # test needs a corpus that could legitimately train.
     (course / "training_specs" / "preference_pairs.jsonl").write_text(
-        "",
+        "".join(
+            json.dumps({
+                "prompt": f"Which statement about the CLI is correct? ({i})",
+                "chosen": "The dry run plans a plan without loading weights.",
+                "rejected": "The dry run loads the weights before planning.",
+                "chunk_id": "c1",
+                "source": "misconception",
+                "misconception_id": f"mc_{i:016x}",
+            }) + "\n"
+            for i in range(50)
+        ),
         encoding="utf-8",
     )
     (course / "training_specs" / "dataset_config.json").write_text(

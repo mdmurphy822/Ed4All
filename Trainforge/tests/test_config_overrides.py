@@ -257,10 +257,23 @@ def _course(tmp_path: Path) -> Path:
         json.dumps({"prompt": "p", "completion": "c", "provider": "local"}) + "\n",
         encoding="utf-8",
     )
+    # 50 admissible (editorial_or_misconception) rows clear the default
+    # min_dpo_pairs floor. A single non-editorial row filters to zero, which
+    # under the shipped dpo_fail_hard=true is a course the runner must refuse —
+    # so these config-override / model-card tests would otherwise be asserting
+    # against a run that never legitimately starts.
     specs.joinpath("preference_pairs.jsonl").write_text(
-        json.dumps(
-            {"prompt": "p", "chosen": "a", "rejected": "b", "provider": "local"}
-        ) + "\n",
+        "".join(
+            json.dumps({
+                "prompt": f"p{i}",
+                "chosen": "a",
+                "rejected": "b",
+                "provider": "local",
+                "source": "misconception",
+                "misconception_id": f"mc_{i:016x}",
+            }) + "\n"
+            for i in range(50)
+        ),
         encoding="utf-8",
     )
     specs.joinpath("dataset_config.json").write_text("{}", encoding="utf-8")

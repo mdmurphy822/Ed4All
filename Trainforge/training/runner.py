@@ -63,6 +63,15 @@ from Trainforge.training.configs import (
 logger = logging.getLogger(__name__)
 
 
+class InsufficientPreferencePairsError(RuntimeError):
+    """The corpus cannot support the DPO stage the run requires.
+
+    Raised BEFORE any weight is trained, so an operator who asked for a
+    DPO-tuned adapter never discovers at promotion time that they were
+    quietly handed SFT-only weights.
+    """
+
+
 # ---------------------------------------------------------------------- #
 # Provenance contract                                                     #
 # ---------------------------------------------------------------------- #
@@ -720,6 +729,28 @@ class TrainingRunner:
         min_pairs = int(self.config.min_dpo_pairs)
         instr_count = _count_jsonl_records(instr_path)
         if filtered_count < min_pairs:
+            # `dpo_fail_hard` means "a DPO problem kills the run rather than
+            # silently shipping SFT-only weights". LocalBackend already
+            # enforces that for the same below-floor condition
+            # (compute_backend.py::_run_local raises when the filtered count
+            # is short), but it only ever sees that branch when run_dpo is
+            # True -- so returning False here short-circuited the loud guard
+            # and degraded to SFT-only exactly where it was meant to stop.
+            # Honour the flag on this branch too; set dpo_fail_hard=false to
+            # opt in to SFT-only explicitly.
+            if bool(self.config.dpo_fail_hard):
+                raise InsufficientPreferencePairsError(
+                    f"DPO is required (dpo_fail_hard=true) but the filtered "
+                    f"preference-pair count={filtered_count} "
+                    f"(raw={pair_count}, "
+                    f"filter={self.config.dpo_preference_filter!r}) for "
+                    f"course {self.course_slug!r} is below min_dpo_pairs="
+                    f"{min_pairs}. Refusing to train an SFT-only adapter "
+                    f"and label it complete. Either synthesize more "
+                    f"admissible preference pairs, or opt in to SFT-only "
+                    f"explicitly with "
+                    f"--config-overrides dpo_fail_hard=false."
+                )
             return False, (
                 f"Filtered DPO preference pair count={filtered_count} "
                 f"(raw={pair_count}, filter={self.config.dpo_preference_filter!r}) "

@@ -39,6 +39,9 @@ from Trainforge.training import (  # noqa: E402
     load_config,
 )
 from Trainforge.training.compute_backend import TrainingJobSpec  # noqa: E402
+from Trainforge.training.runner import (  # noqa: E402
+    InsufficientPreferencePairsError,
+)
 from lib.validators.libv2_model import LibV2ModelValidator  # noqa: E402
 
 
@@ -91,8 +94,24 @@ def _build_libv2_course(tmp_path: Path, slug: str = "tst-101") -> Path:
         }) + "\n",
         encoding="utf-8",
     )
+    # Enough admissible (editorial_or_misconception) rows to clear the
+    # default min_dpo_pairs=50 floor. A fixture with an EMPTY preference
+    # file is not a neutral default -- with dpo_fail_hard=true (the shipped
+    # default) it is a course the runner must refuse to train, so these
+    # card/provenance/capture tests would be asserting against a run that
+    # never legitimately starts.
     (course_dir / "training_specs" / "preference_pairs.jsonl").write_text(
-        "",
+        "".join(
+            json.dumps({
+                "prompt": f"Which statement about fixtures is correct? ({i})",
+                "chosen": "A fixture is a small reusable test setup.",
+                "rejected": "A fixture is the assertion that ends a test.",
+                "chunk_id": "c1",
+                "source": "misconception",
+                "misconception_id": f"mc_{i:016x}",
+            }) + "\n"
+            for i in range(50)
+        ),
         encoding="utf-8",
     )
     (course_dir / "training_specs" / "dataset_config.json").write_text(
@@ -490,8 +509,24 @@ def _build_libv2_course_no_vocab(tmp_path: Path, slug: str = "tst-101-novocab") 
         }) + "\n",
         encoding="utf-8",
     )
+    # Enough admissible (editorial_or_misconception) rows to clear the
+    # default min_dpo_pairs=50 floor. A fixture with an EMPTY preference
+    # file is not a neutral default -- with dpo_fail_hard=true (the shipped
+    # default) it is a course the runner must refuse to train, so these
+    # card/provenance/capture tests would be asserting against a run that
+    # never legitimately starts.
     (course_dir / "training_specs" / "preference_pairs.jsonl").write_text(
-        "",
+        "".join(
+            json.dumps({
+                "prompt": f"Which statement about fixtures is correct? ({i})",
+                "chosen": "A fixture is a small reusable test setup.",
+                "rejected": "A fixture is the assertion that ends a test.",
+                "chunk_id": "c1",
+                "source": "misconception",
+                "misconception_id": f"mc_{i:016x}",
+            }) + "\n"
+            for i in range(50)
+        ),
         encoding="utf-8",
     )
     (course_dir / "training_specs" / "dataset_config.json").write_text(
@@ -1088,3 +1123,55 @@ def test_runner_eval_bridge_uses_eval_config_generation_settings(
     assert captured["top_p"] == 0.9
     assert captured["seed"] == 123
     assert captured["revision"] == runner.spec.default_revision
+
+
+# ---------------------------------------------------------------------- #
+# DPO is required by default -- never a silent SFT-only degrade           #
+# ---------------------------------------------------------------------- #
+
+
+def _starve_preference_pairs(libv2_root: Path) -> None:
+    (
+        libv2_root / "tst-101" / "training_specs" / "preference_pairs.jsonl"
+    ).write_text("", encoding="utf-8")
+
+
+def test_below_floor_preference_corpus_refuses_to_train(libv2_root: Path):
+    """dpo_fail_hard=true must BLOCK, not quietly train SFT-only weights.
+
+    LocalBackend already raises on this condition, but only sees it when
+    run_dpo is True -- so the runner returning False short-circuited the
+    guard and produced an SFT-only adapter labelled complete.
+    """
+    _starve_preference_pairs(libv2_root)
+    runner = TrainingRunner(
+        course_slug="tst-101",
+        base_model="qwen2.5-1.5b",
+        libv2_root=libv2_root,
+        dry_run=True,
+    )
+
+    with pytest.raises(InsufficientPreferencePairsError) as excinfo:
+        runner.run()
+
+    message = str(excinfo.value)
+    # The operator needs the counts and the explicit opt-out, not just "no".
+    assert "min_dpo_pairs=50" in message
+    assert "dpo_fail_hard=false" in message
+
+
+def test_sft_only_is_reachable_by_explicit_opt_in(libv2_root: Path):
+    """Opting out stays possible -- it just has to be said out loud."""
+    _starve_preference_pairs(libv2_root)
+    runner = TrainingRunner(
+        course_slug="tst-101",
+        base_model="qwen2.5-1.5b",
+        libv2_root=libv2_root,
+        dry_run=True,
+        config_overrides={"dpo_fail_hard": False},
+    )
+
+    should_run_dpo, rationale = runner._decide_run_dpo()
+
+    assert should_run_dpo is False
+    assert "SFT-only" in rationale
