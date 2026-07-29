@@ -714,7 +714,7 @@ export ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS=600
   concurrency) and `--resume` serves every judged unit from cache. The Stage-6
   authoring twin is `SEMANTIK_STAGE6_CHECKPOINT`.
 
-Full per-flag detail: `SemantiK/CLAUDE.md § Opt-In Behavior Flags`. The container-
+Full per-flag detail: `docs/operations/behavior-flags-semantik.md`. The container-
 level vLLM seat lease (`ED4ALL_VLLM_CONTAINER_LIFECYCLE` / `ED4ALL_VLLM_CONTAINERS`)
 and time-to-first-token metering (`ED4ALL_LLM_TTFT_METER`) are in the root
 `CLAUDE.md` index + `docs/operations/behavior-flags.md`.

@@ -190,7 +190,7 @@ _CHAPTER_BATCH_SIZE = 10
 # ``lib.retrieval._prompts.resolve_num_ctx()`` (which reads ``ED4ALL_ANSWER_
 # NUM_CTX``, default 4096), so one knob drives both the answer path and the
 # synthesis window budget — but synthesis gets its OWN override. Documented in
-# ``Courseforge/CLAUDE.md`` § Opt-In Behavior Flags. No provider/model selected,
+# ``docs/operations/behavior-flags-courseforge.md``. No provider/model selected,
 # so no ``docs/LICENSING.md`` row.
 _SYNTHESIS_NUM_CTX_ENV = "TEXTBOOK_SYNTHESIS_NUM_CTX"
 

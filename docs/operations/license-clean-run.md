@@ -146,7 +146,7 @@ not a training-data corpus. The standard content → training-data caveat applie
 operators who want a fully ToS-clean training corpus should keep
 `SEMANTIK_SPECIALIST_PROVIDER=local` (the default), which leaves the conversion
 path with zero cloud exposure. Full flag detail + the licensing row:
-`SemantiK/CLAUDE.md § Opt-In Behavior Flags` and `docs/LICENSING.md`.
+`docs/operations/behavior-flags-semantik.md` and `docs/LICENSING.md`.
 
 ### Assessment-generator subagent (W-D15) — closed
 

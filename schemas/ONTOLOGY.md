@@ -1282,7 +1282,7 @@ accepted on READ (the `source_reference.schema.json` pattern is `^(?:dart|semant
 Canonical reference: **`SemantiK/CLAUDE.md`** (cascade stages 1–13, council adapters, the full
 `SEMANTIK_*` flag family). Ontology-relevant SemantiK behaviors:
 
-- **`SEMANTIK_*` flag family** (owner: `SemantiK/CLAUDE.md § Opt-In Behavior Flags`). All
+- **`SEMANTIK_*` flag family** (owner: `docs/operations/behavior-flags-semantik.md`). All
   parse-with-fallback, byte-stable / off-or-local by default. Provider/model selectors:
   `SEMANTIK_SPECIALIST_PROVIDER` (local in-process GGUF council vs hosted OpenAI-compatible endpoint)
   + `SEMANTIK_SPECIALIST_MODEL` / `SEMANTIK_STRUCTURE_REVIEW_MODEL` seats (hosted large-model default via
@@ -1396,10 +1396,10 @@ Environment-variable flags gate opt-in behavior to preserve backward-compat with
 
 Per-flag rows now live in subsystem CLAUDE.md files (one row per flag, one owner per prefix):
 
-- `TRAINFORGE_*` / `LOCAL_SYNTHESIS_*` / `TOGETHER_*` / `ANTHROPIC_SYNTHESIS_*` / `CURRICULUM_ALIGNMENT_*` / `WAVE18_*` → `Trainforge/CLAUDE.md § Opt-In Behavior Flags`.
-- `SEMANTIK_*` (the license-clean SemantiK semantic-cascade PDF→structured-content converter) → `SemantiK/CLAUDE.md § Opt-In Behavior Flags`.
-- `COURSEFORGE_*` → `Courseforge/CLAUDE.md § Opt-In Behavior Flags`.
-- `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) → root `CLAUDE.md § Opt-In Behavior Flags`.
+- `TRAINFORGE_*` / `LOCAL_SYNTHESIS_*` / `TOGETHER_*` / `ANTHROPIC_SYNTHESIS_*` / `CURRICULUM_ALIGNMENT_*` / `WAVE18_*` → `docs/operations/behavior-flags-trainforge.md`.
+- `SEMANTIK_*` (the license-clean SemantiK semantic-cascade PDF→structured-content converter) → `docs/operations/behavior-flags-semantik.md`.
+- `COURSEFORGE_*` → `docs/operations/behavior-flags-courseforge.md`.
+- `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) → `docs/operations/behavior-flags.md`.
 
 The table below mirrors the v0.2.0 / Wave 82-85 subset for historical context; the canonical per-flag rows are in the subsystem files above.
 
@@ -1413,7 +1413,7 @@ The table below mirrors the v0.2.0 / Wave 82-85 subset for historical context; t
 | `TRAINFORGE_STRICT_EVIDENCE` | Strips FallbackProvenance from the evidence discriminator; unknown rules + shape-drifting known rules fail validation. |
 | `TRAINFORGE_SOURCE_PROVENANCE` | Evidence arms emit `source_references[]` sourced from chunks' `source.source_references[]`. Off: arms emit the pre-provenance shape. |
 | `DECISION_VALIDATION_STRICT` | Fails closed on unknown `decision_type` values in decision captures. |
-| `SEMANTIK_SPECIALIST_PROVIDER` | Selects the SemantiK Stage-6 specialist + Stage-5d structure-reviewer generation backend (`local` in-process GGUF council vs a hosted OpenAI-compatible endpoint). See `SemantiK/CLAUDE.md § Opt-In Behavior Flags` for the full `SEMANTIK_*` family (incl. `SEMANTIK_STRUCTURE_REVIEW`, `SEMANTIK_BLOCK_RESEGMENT`, the figure/table-recovery passes, and `*_MODEL` seats). |
+| `SEMANTIK_SPECIALIST_PROVIDER` | Selects the SemantiK Stage-6 specialist + Stage-5d structure-reviewer generation backend (`local` in-process GGUF council vs a hosted OpenAI-compatible endpoint). See `docs/operations/behavior-flags-semantik.md` for the full `SEMANTIK_*` family (incl. `SEMANTIK_STRUCTURE_REVIEW`, `SEMANTIK_BLOCK_RESEGMENT`, the figure/table-recovery passes, and `*_MODEL` seats). |
 | `LOCAL_DISPATCHER_ALLOW_STUB` | Permits `LocalDispatcher` to emit a stubbed `PhaseOutput` when no `agent_tool` callable is wired in. Tests / dry-run only; production `--mode local` runs fail loudly without it set. |
 | `TRAINFORGE_PROVENANCE_CORPUS` | Worker L: absolute path to a locally regenerated `chunks.jsonl` consumed by `Trainforge/tests/test_provenance.py` to assert 100% `source.html_xpath` + `source.char_span` coverage. Unset / pre-Worker-E corpora → those tests `pytest.skip`. Test-only — no production code path reads this flag. |
 | `TRAINFORGE_SEED_TECH_CONCEPTS` | Wave 82 Phase C: enables `lib/ontology/tech_anchors.py::detect_anchors`, which scans chunk text for W3C foundational-tech surface forms (RDF, RDFS, OWL, SHACL, SPARQL, Turtle, JSON-LD, `owl:sameAs`, …) and appends matching anchor slugs to `concept_tags` so the 2-chunk co-occurrence gate admits standalone concept nodes for them. Default off so legacy corpora don't shift tag distributions on rebuild. |

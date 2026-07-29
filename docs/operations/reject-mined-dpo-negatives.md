@@ -305,7 +305,7 @@ reject mining largely unnecessary.
 
 ## 7. Related
 
-- Flag rows (master + four satellites): `Trainforge/CLAUDE.md § Opt-In Behavior Flags`
+- Flag rows (master + four satellites): `docs/operations/behavior-flags-trainforge.md`
 - Selection implementation: `Trainforge/synthesis_reject_mining.py`
 - Pipeline hook: `Trainforge/synthesize_training.py::run_synthesis` (after the
   misconception-DPO block, before the record sort / gold-set decontamination /
