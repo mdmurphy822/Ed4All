@@ -235,6 +235,32 @@ class ParsedHTMLModule:
 #: unknown / custom elements) is treated as a block boundary and DOES separate,
 #: which is the conservative direction: a spurious space is a cosmetic defect,
 #: while a spurious JOIN ("theresult") corrupts the token stream.
+#: LaTeX that only positions things on the page. QuickLaTeX ships these
+#: through the same rendered-image channel as real expressions, so a math-alt
+#: harvest that did not strip them would splice ``\phantom{\rule{1.5em}{0ex}}``
+#: into instructional prose as if it were content.
+_MATH_LAYOUT_ONLY_RE = re.compile(
+    r"\\(?:phantom|hphantom|vphantom|rule|hspace|vspace|quad|qquad|,|;|:|!)"
+    r"(?:\s*\{[^{}]*\})*|[{}\s]",
+    re.IGNORECASE,
+)
+
+#: SemantiK's not-recoverable-figure carrier. The expression it stands in for
+#: lives in the element's ``aria-label``; its own text is the literal
+#: ``[figure]``. See ``lib/semantik/math_fold.py::_figure_placeholder``.
+_NOTATION_CLASS = "semantik-figure-notation"
+
+#: The placeholder's trailing annotation, which describes the CONVERSION rather
+#: than the content and must not reach chunk text.
+_NOTATION_ANNOTATION_RE = re.compile(
+    r"\s*\((?:image not recoverable|notation could not be rendered)\)\s*$",
+    re.IGNORECASE,
+)
+
+#: Tag the notation carrier is emitted on — mirrors ``_CURIE_ANCHOR_TAGS``,
+#: since ``html.parser`` gives no attributes on an end tag.
+_NOTATION_TAGS = {"span"}
+
 _INLINE_TAGS = frozenset({
     "a", "abbr", "acronym", "b", "bdi", "bdo", "big", "cite", "code", "data",
     "del", "dfn", "em", "font", "i", "ins", "kbd", "label", "mark", "meter",
@@ -420,6 +446,14 @@ class HTMLTextExtractor(HTMLParser):
         # by ``RewriteProvider._force_inject_curies``). A set — order is not
         # meaningful, and a token may appear on multiple forced spans.
         self.forced_curie_anchors: set[str] = set()
+        # SemantiK notation-placeholder scope. The expression is emitted from
+        # ``aria-label`` at the start tag, so the element's own ``[figure]``
+        # text must then be discarded. Unlike the three counters above this
+        # tracks the ``<span>`` NESTING LEVEL each open carrier was seen at,
+        # because a nested ``<span>`` inside the carrier would otherwise close
+        # the scope early and leak the tail of the placeholder text.
+        self._span_depth = 0
+        self._notation_levels: list[int] = []
 
     def _is_template_chrome(self, attrs) -> bool:
         for name, value in attrs:
@@ -461,10 +495,16 @@ class HTMLTextExtractor(HTMLParser):
             or self._template_chrome_depth > 0
             or self._curie_anchor_depth > 0
             or self._a11y_hidden_depth > 0
+            or bool(self._notation_levels)
         )
 
     def handle_starttag(self, tag, attrs):
         self.current_tag = tag
+        if tag in _NOTATION_TAGS:
+            self._span_depth += 1
+        if tag == "img":
+            # html.parser routes `<img>` here when it is not self-closed.
+            self._emit_math_alt(tag, attrs)
         if tag == 'script':
             self.in_script = True
         elif tag == 'style':
@@ -515,6 +555,10 @@ class HTMLTextExtractor(HTMLParser):
         if self._is_a11y_hidden(attrs):
             self._text.boundary()
             self._a11y_hidden_depth += 1
+        # Checked LAST so the expression is emitted into the stream before the
+        # subtree-skip starts discarding this element's own ``[figure]`` text.
+        if tag in _NOTATION_TAGS and self._emit_notation_label(attrs):
+            self._notation_levels.append(self._span_depth)
 
     def handle_endtag(self, tag):
         # A-item pairing — item / definition delimiters (checked BEFORE the
@@ -558,9 +602,103 @@ class HTMLTextExtractor(HTMLParser):
         if self._a11y_hidden_depth > 0 and tag in _A11Y_HIDDEN_TAGS:
             self._a11y_hidden_depth -= 1
             self._text.boundary()
+        # Close the notation-placeholder scope. ``html.parser`` gives no attrs
+        # on an end tag, so the carrier is matched by the ``<span>`` nesting
+        # level it opened at — a nested ``<span>`` inside it closes at a deeper
+        # level and therefore cannot end the scope early.
+        if tag in _NOTATION_TAGS:
+            if self._notation_levels and self._notation_levels[-1] == self._span_depth:
+                self._notation_levels.pop()
+                self._text.boundary()
+            self._span_depth = max(0, self._span_depth - 1)
         self.current_tag = None
 
+    def _emit_math_alt(self, tag, attrs) -> None:
+        """Emit a math image's ``alt`` LaTeX as inline text.
+
+        A rendered-math ``<img>`` carries the expression in ``alt`` and
+        nothing in the text stream, so an equation is DELETED by extraction:
+        ``Solve <img alt="x^2+5x+6=0"/> for x.`` came out as ``Solve for x.``
+        On a Pressbooks/QuickLaTeX maths textbook that is not an edge case --
+        one measured book renders 14,508 formulas this way, so every equation
+        in it was silently absent from chunk text, and no downstream stage can
+        recover what extraction dropped.
+
+        Deliberately NARROW. Only images explicitly marked as rendered maths
+        are read (QuickLaTeX's ``ql-img``/``quicklatex`` classes, MathJax /
+        KaTeX equivalents, or ``role="math"``). General ``img/@alt`` is left
+        alone: figure captions and decorative alt are a known noise source
+        that ``ED4ALL_ASSESSMENT_CLEAN_PROSE`` masks on purpose, and widening
+        this to every image would re-introduce exactly that.
+
+        Layout-only LaTeX is dropped. QuickLaTeX emits spacing directives
+        (``\\phantom{\\rule{1.5em}{0ex}}``) through the same channel as real
+        expressions; those carry no content and would be pure noise in prose.
+        """
+        attrs_map = {key: (value or "") for key, value in attrs}
+        classes = str(attrs_map.get("class", "")).lower()
+        role = str(attrs_map.get("role", "")).lower()
+        is_math = (
+            role == "math"
+            or any(
+                marker in classes
+                for marker in ("ql-img", "quicklatex", "mathjax", "katex")
+            )
+        )
+        if not is_math:
+            return
+        alt = " ".join(str(attrs_map.get("alt", "")).split())
+        if not alt:
+            return
+        # Strip layout-only directives, then require something left over.
+        residue = _MATH_LAYOUT_ONLY_RE.sub(" ", alt).strip()
+        if not residue:
+            return
+        self._text.add_data(alt)
+
+    def _emit_notation_label(self, attrs) -> bool:
+        """Emit a SemantiK notation placeholder's ``aria-label`` as inline text.
+
+        SemantiK does not pass a rendered-maths ``<img>`` through to its
+        accessible HTML. ``lib/semantik/math_fold.py::_figure_placeholder``
+        replaces it with
+
+            <span class="semantik-figure-notation" role="img"
+                  aria-label="{expression} (image not recoverable)">[figure]</span>
+
+        which is right for the scan lane it was written for — there the image
+        really is unrecoverable. On a vendor-HTML maths textbook the ``alt`` it
+        folds into ``aria-label`` IS the mathematics, so without this the only
+        thing reaching chunk text is the literal token ``[figure]``. Measured on
+        one converted book: 15,721 ``[figure]`` placeholders against 27
+        surviving LaTeX tokens, i.e. essentially every equation destroyed at
+        extraction, after conversion had preserved 90% of them.
+
+        Returns True when the element's own subtree text should be suppressed,
+        so the ``[figure]`` literal does not land beside the expression it was
+        standing in for.
+        """
+        attrs_map = {key: (value or "") for key, value in attrs}
+        classes = str(attrs_map.get("class", "")).lower()
+        if _NOTATION_CLASS not in classes.split():
+            return False
+        label = " ".join(str(attrs_map.get("aria-label", "")).split())
+        if not label:
+            return False
+        # Drop the placeholder's own annotation — "(image not recoverable)" /
+        # "(notation could not be rendered)" describes the CONVERSION, not the
+        # content, and would otherwise repeat thousands of times in chunk text.
+        label = _NOTATION_ANNOTATION_RE.sub("", label).strip()
+        if not label:
+            return True
+        if not _MATH_LAYOUT_ONLY_RE.sub(" ", label).strip():
+            return True  # layout-only spacing directives carry no content
+        self._text.add_data(label)
+        return True
+
     def handle_startendtag(self, tag, attrs):
+        if tag == "img":
+            self._emit_math_alt(tag, attrs)
         # Self-closing chrome elements (rare but possible, e.g., <br data-cf-role="template-chrome"/>)
         # shouldn't leave the counter incremented.
         if tag == 'script':
@@ -587,6 +725,8 @@ class HTMLTextExtractor(HTMLParser):
         if self._curie_anchor_depth > 0:
             return
         if self._a11y_hidden_depth > 0:
+            return
+        if self._notation_levels:
             return
         self._text.add_data(data)
 
