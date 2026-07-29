@@ -77,13 +77,28 @@ class WorkflowRecord:
 
     @property
     def updated_dt(self) -> datetime:
-        """Sortable timestamp; falls back to mtime if updated_at missing."""
+        """Sortable timestamp; falls back to mtime if updated_at missing.
+
+        Always timezone-AWARE. ``updated_at`` is written by several producers,
+        and some stamp an offset while others do not, so the raw values are a
+        mix of naive and aware — sorting that mix raises ``TypeError: can't
+        compare offset-naive and offset-aware datetimes`` and takes the whole
+        prune down, which in turn leaves ``ed4all doctor`` permanently DEGRADED
+        on stale runs it cannot GC.
+
+        A naive value is interpreted in the local zone rather than forced to
+        UTC: the naive producers stamp ``datetime.now()``, so local is what
+        they meant, and reading them as UTC would shift every one of them by
+        the host's offset.
+        """
         if self.updated_at:
             try:
-                return datetime.fromisoformat(self.updated_at)
+                parsed = datetime.fromisoformat(self.updated_at)
             except ValueError:
                 pass
-        return datetime.fromtimestamp(self.path.stat().st_mtime)
+            else:
+                return parsed if parsed.tzinfo else parsed.astimezone()
+        return datetime.fromtimestamp(self.path.stat().st_mtime).astimezone()
 
 
 @dataclass
