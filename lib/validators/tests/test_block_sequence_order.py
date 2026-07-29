@@ -97,6 +97,39 @@ def test_worked_before_guided_passes():
     assert result.issues == []
 
 
+def test_guided_before_another_objectives_worked_example_not_flagged():
+    """A page holds several independent objective sequences.
+
+    CO-01 is taught then practised; CO-02 is taught, MODELLED, then practised.
+    Both fade gradients are correct, but CO-01's practice sits earlier on the
+    page than CO-02's worked_example. A positional reading calls that
+    out-of-order; the fade gradient is per skill, so it is not.
+    """
+    blocks = [
+        _block("concept", 0, objective_ids=("CO-01",)),
+        _block("example", 1, objective_ids=("CO-01",)),
+        _block("activity", 2, objective_ids=("CO-01",)),
+        _block("concept", 3, objective_ids=("CO-02",)),
+        _block("worked_example", 4, objective_ids=("CO-02",)),
+        _block("activity", 5, objective_ids=("CO-02",)),
+    ]
+    result = _validate(blocks)
+    codes = [i.code for i in result.issues]
+    assert "WORKED_BEFORE_GUIDED_OUT_OF_ORDER" not in codes
+
+
+def test_guided_before_its_own_objectives_worked_example_flags():
+    """The same objective IS practised before it is modelled — a real miss."""
+    blocks = [
+        _block("concept", 0, objective_ids=("CO-01",)),
+        _block("activity", 1, objective_ids=("CO-01",)),
+        _block("worked_example", 2, objective_ids=("CO-01",)),
+    ]
+    result = _validate(blocks)
+    assert result.passed is False
+    assert "WORKED_BEFORE_GUIDED_OUT_OF_ORDER" in [i.code for i in result.issues]
+
+
 # ---------------------------------------------------------------------------
 # Check spacing
 # ---------------------------------------------------------------------------

@@ -271,18 +271,49 @@ class BlockSequenceOrderValidator:
             types = [getattr(b, "block_type", None) for b in group]
 
             # (1) WORKED_BEFORE_GUIDED_OUT_OF_ORDER — a guided-practice block
-            # appears before any worked_example, while a worked_example DOES
-            # exist later on the page (i.e. modelling came after guided
-            # practice).
+            # appears before the worked_example that should model it, while
+            # that worked_example DOES exist later on the page (i.e. modelling
+            # came after guided practice).
+            #
+            # The fade gradient is a property of ONE skill: B05 models an
+            # objective, B08 then fades scaffolding on THAT objective. A page
+            # routinely carries several independent objective sequences, so a
+            # bare positional ``min(guided) < min(worked)`` reads CO-b's
+            # modelling as if it were owed to CO-a's practice and flags a page
+            # whose every individual sequence is correctly ordered. Scope the
+            # comparison per objective — the same reading rule (2) already
+            # applies to check spacing.
+            #
+            # Blocks carrying no objective_ids cannot be scoped, so they keep
+            # the positional reading rather than silently passing.
             worked_idxs = [
                 i for i, t in enumerate(types) if t in WORKED_EXAMPLE_TYPES
             ]
             guided_idxs = [
                 i for i, t in enumerate(types) if t in GUIDED_PRACTICE_TYPES
             ]
-            worked_before_guided = bool(worked_idxs) and bool(guided_idxs) and (
-                min(guided_idxs) < min(worked_idxs)
-            )
+            worked_before_guided = False
+            if worked_idxs and guided_idxs:
+                for g_idx in guided_idxs:
+                    g_objs = _objective_set(group[g_idx])
+                    if not g_objs:
+                        if g_idx < min(worked_idxs):
+                            worked_before_guided = True
+                            break
+                        continue
+                    if any(
+                        w_idx < g_idx
+                        and (_objective_set(group[w_idx]) & g_objs)
+                        for w_idx in worked_idxs
+                    ):
+                        continue  # this skill was modelled first — correct
+                    if any(
+                        w_idx > g_idx
+                        and (_objective_set(group[w_idx]) & g_objs)
+                        for w_idx in worked_idxs
+                    ):
+                        worked_before_guided = True
+                        break
 
             # (2) CHECK_NOT_SPACED — a check block immediately follows the
             # exposition that taught the SAME objective with no intervening
