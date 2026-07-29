@@ -32803,6 +32803,14 @@ def _build_tool_registry() -> dict:
         # gate. QTI is the LMS product surface, but parsing it back into the
         # generator's richer objective-bearing shape would discard the
         # discussion/assignment records and make the phase gate input-starved.
+        # Own the directory rather than inheriting it. ``out_dir`` is normally
+        # created as a side effect of the checkpoint-sidecar machinery, so this
+        # write appears safe — but under ``ED4ALL_GENERATION_CHECKPOINT=0`` (or
+        # any site flag that turns the family off) no sidecar is opened, the
+        # directory never gets made, and the first write of the phase raises
+        # FileNotFoundError. The checkpoint family is a RESUME optimisation; a
+        # phase's ability to emit its own artifact must not depend on it.
+        out_dir.mkdir(parents=True, exist_ok=True)
         _assessment_payload_path = out_dir / "assessment_items.json"
         _assessment_payload_path.write_text(
             json.dumps(
