@@ -1322,6 +1322,38 @@ class SynthesisProvider:
         )
 
 
+#: Env knob for the per-call completion budget of the training-pair synthesis
+#: seat. The `800` default is 7B-calibrated and TRUNCATES a verbose large
+#: model: the staged path raises `staged_output_truncated` on
+#: `finish_reason=length`, which is a DETERMINISTIC FATAL, so one truncated
+#: unit kills the whole run. Nothing could raise it -- every dispatch site
+#: calls `build_synthesis_provider` without a `max_tokens`, so the 800 was
+#: unreachable from configuration.
+#:
+#: This mirrors the existing `COURSEFORGE_OUTLINE_MAX_TOKENS` /
+#: `TEXTBOOK_SYNTHESIS_MAX_TOKENS` knobs. The staged path already refuses a
+#: budget that will not fit (`staged_context_window_exceeded` checks
+#: prompt + max_output against the measured served window), so raising this
+#: cannot silently overflow the seat.
+ENV_SYNTHESIS_MAX_OUTPUT_TOKENS = "TRAINFORGE_SYNTHESIS_MAX_OUTPUT_TOKENS"
+_DEFAULT_SYNTHESIS_MAX_OUTPUT_TOKENS = 800
+
+
+def resolve_synthesis_max_output_tokens() -> int:
+    """Return the per-call completion budget for the synthesis seat.
+
+    Parse-with-fallback, matching every sibling knob: unset / garbage /
+    non-positive yields the legacy ``800`` so an unset environment is
+    byte-identical.
+    """
+    raw = str(os.environ.get(ENV_SYNTHESIS_MAX_OUTPUT_TOKENS, "")).strip()
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_SYNTHESIS_MAX_OUTPUT_TOKENS
+    return value if value > 0 else _DEFAULT_SYNTHESIS_MAX_OUTPUT_TOKENS
+
+
 def build_synthesis_provider(
     provider: str,
     *,
@@ -1377,6 +1409,7 @@ def build_synthesis_provider(
         local_user_directives=is_local,
         reasoning_thinking_off=is_local,
         timeout=None,
+        max_tokens=resolve_synthesis_max_output_tokens(),
         max_parse_retries=max_parse_retries,
         min_preserve_rate=min_preserve_rate,
         kind_bounds=kind_bounds,

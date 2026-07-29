@@ -45,6 +45,33 @@ _BLOOM = frozenset(
 )
 _MAX_STAGE_REPAIRS = 2
 _MAX_LEAKAGE_REWRITES = 2
+
+#: Env override for the per-stage validator-repair budget.
+#:
+#: The default 2 is thin against the strictest repair contract in this module:
+#: ``_claim_repair_diff`` freezes every already-VALID claim and requires the
+#: repaired response to echo each one BYTE-IDENTICALLY and in order
+#: (``_stable_json`` equality, subsequence match). A model fixing claim N that
+#: incidentally rewords a good claim burns an attempt on
+#: "claim repair reordered or mutated a frozen stable claim" — measured as the
+#: single largest rejection cause on a real cohort (10 of ~30 stage failures).
+#: The repair instruction DOES name that failure, so the retry is informed
+#: rather than blind, which is what makes extra attempts worth buying.
+#:
+#: Raising this trades wall-clock for yield and cannot weaken a verdict: every
+#: attempt runs the SAME validator, so a pair still has to pass on its merits.
+#: Parse-with-fallback — unset / garbage / negative yields 2, byte-identical.
+ENV_MAX_STAGE_REPAIRS = "TRAINFORGE_SYNTHESIS_MAX_STAGE_REPAIRS"
+
+
+def resolve_max_stage_repairs() -> int:
+    """Return the per-stage validator-repair budget."""
+    raw = str(os.environ.get(ENV_MAX_STAGE_REPAIRS, "")).strip()
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return _MAX_STAGE_REPAIRS
+    return value if value >= 0 else _MAX_STAGE_REPAIRS
 _VERBATIM_SPAN = 50
 _FAULT_REASONING_MARKERS = (
     " because ", " therefore ", " so ", " which means ", " since ",
@@ -2025,10 +2052,15 @@ class StagedSynthesisProvider:
         leakage_canonical_contract_text: Iterable[str] = (),
         leakage_nondistinctive_contexts: Iterable[Mapping[str, Any]] = (),
         response_schema: Optional[Mapping[str, Any]] = None,
-        max_stage_repairs: int = _MAX_STAGE_REPAIRS,
+        max_stage_repairs: Optional[int] = None,
         max_leakage_repairs: int = _MAX_LEAKAGE_REWRITES,
         max_output_tokens: Optional[int] = None,
     ) -> _StageResult:
+        # None means "no caller opinion" -> take the env-resolved budget. An
+        # explicit caller value still wins, and still has to pass the same
+        # nonnegative-integer contract below.
+        if max_stage_repairs is None:
+            max_stage_repairs = resolve_max_stage_repairs()
         for budget_name, budget in (
             ("max_stage_repairs", max_stage_repairs),
             ("max_leakage_repairs", max_leakage_repairs),
