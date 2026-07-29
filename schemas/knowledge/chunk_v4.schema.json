@@ -413,6 +413,26 @@
         "cognitive_task_type": {
           "$ref": "https://ed4all.dev/ns/taxonomies/v1/cognitive_task_type.schema.json#/$defs/CognitiveTaskType",
           "description": "GPT Feedback (May 12) item 5: observable cognitive task verb (classify / compute / debug / critique / ...). Axis orthogonal to bloom_level — captures WHAT the learner is asked to do. Optional; populated when the misconception's correction or statement carries a canonical task verb. Trainforge normalizes JSON-LD camelCase (cognitiveTaskType) to snake_case in html_content_parser."
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Canonical misconception ID minted by lib/ontology/misconception_id.py::canonical_mc_id over (misconception, correction, bloom_level). Read by Trainforge/generators/staged_synthesis_micro.py::micro_preference_eligibility, which REJECTS the entry when a supplied ID disagrees with the recomputed canonical one. Optional — omit it and the canonical ID is derived. Permitted here because additionalProperties is false and the eligibility arm already reads this key; without it a provenance-carrying misconception was unrepresentable."
+        },
+        "mechanism_evidence": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Source-grounded evidence explaining WHY the misconception is wrong — the DPO rejected-branch justification. Read by micro_preference_eligibility, which falls back to error_mechanism and then to 'correction' when absent. Optional."
+        },
+        "error_mechanism": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Alias for mechanism_evidence, read second in the same fallback chain. Optional."
+        },
+        "source_block_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Authored block instance the misconception came from, shape {page_id}#{block_type}_{slug}_{idx}. Preserves per-block provenance through to the emitted preference pair; micro_preference_eligibility falls back to the chunk ID when absent. Optional."
         }
       }
     }

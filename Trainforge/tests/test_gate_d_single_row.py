@@ -1165,7 +1165,12 @@ def test_execute_pilot_real_seam_projects_complete_dpo_and_verifies(
       MicroStagedSynthesisProvider, micro_contract_fingerprint,
     )
     assert micro_contract_fingerprint() == (
-        "16154a2bfcc2455039ff66d06bf1a2dda5befa00979ff8921167f73acc2d4ae7"
+        # Re-sealed when micro_preference_eligibility's Arm B learned to
+        # defer to Arm A on an authored misconception card both arms now
+        # recover (the chunk read seam populates chunk["misconceptions"], so
+        # the same card reached both and minted one id twice — which the
+        # collision check read as an id that fails to identify).
+        "a74f895977d2d387f92e2a411e4838457989b302f0bc88b867413a4f5a29c871"
     )
     root,candidate,stages=_functional_transaction_fixture(tmp_path)
     monkeypatch.setenv("TRAINFORGE_SYNTHESIS_SERVED_CONTEXT_TOKENS","32768")

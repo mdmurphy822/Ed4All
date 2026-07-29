@@ -34,6 +34,7 @@ their rationales.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import html
 import io
@@ -434,7 +435,24 @@ class SynthesisStats:
 def _read_chunks(chunks_path: Path) -> List[Dict[str, Any]]:
     if not chunks_path.exists():
         raise FileNotFoundError(f"chunks.jsonl not found at {chunks_path}")
-    return _utils_read_jsonl(chunks_path)
+    chunks = _utils_read_jsonl(chunks_path)
+    # The ONE seam both synthesis reads go through (preflight + main), so
+    # eligibility and emission cannot see different misconceptions. Recovery
+    # fills only an absent/empty field, from each chunk's own markup; an
+    # authored list is returned untouched, so a corpus whose chunker already
+    # lands structured misconceptions is byte-identical. See
+    # ``synthesis_window_contract.resolve_chunk_misconceptions`` for why this
+    # has to happen before the emitter rather than at the window layer.
+    from Trainforge.generators.synthesis_window_contract import (
+        resolve_chunk_misconceptions,
+    )
+    for chunk in chunks:
+        if not isinstance(chunk, dict) or chunk.get("misconceptions"):
+            continue
+        recovered = resolve_chunk_misconceptions(chunk)
+        if recovered:
+            chunk["misconceptions"] = recovered
+    return chunks
 
 
 def _write_jsonl(path: Path, records: Iterable[Dict[str, Any]]) -> int:
@@ -475,6 +493,111 @@ def staged_objective_contract_enabled() -> bool:
     )
 
     return staged_synthesis_v4_enabled() or staged_synthesis_micro_v1_enabled()
+
+
+# ---------------------------------------------------------------------------
+# Synthesis-contract selection (``--synthesis-contract``).
+#
+# The three contracts are selected by two mutually-exclusive environment
+# switches read deep inside ``build_synthesis_provider``.  The CLI flag is the
+# documented operator entry, so it must RESOLVE to that env pair before any
+# provider is constructed; leaving it unread meant an operator following the
+# documented invocation silently got whatever the ambient environment said.
+#
+# Omitting the flag preserves the historical environment-driven path
+# byte-for-byte — this is a resolver, not a new default.
+# ---------------------------------------------------------------------------
+ENV_STAGED_SYNTHESIS_V4 = "TRAINFORGE_STAGED_SYNTHESIS_V4"
+ENV_STAGED_SYNTHESIS_MICRO_V1 = "TRAINFORGE_STAGED_SYNTHESIS_MICRO_V1"
+
+SYNTHESIS_CONTRACT_ENV = {
+    "legacy": {ENV_STAGED_SYNTHESIS_V4: "false",
+               ENV_STAGED_SYNTHESIS_MICRO_V1: "false"},
+    "staged-v4": {ENV_STAGED_SYNTHESIS_V4: "true",
+                  ENV_STAGED_SYNTHESIS_MICRO_V1: "false"},
+    "micro-v1": {ENV_STAGED_SYNTHESIS_V4: "false",
+                 ENV_STAGED_SYNTHESIS_MICRO_V1: "true"},
+}
+SYNTHESIS_CONTRACT_CHOICES = tuple(SYNTHESIS_CONTRACT_ENV)
+
+# Mirrors the ``_TRUE`` frozenset both contract modules parse with, so this
+# resolver cannot disagree with the switches it is setting.
+_SYNTHESIS_CONTRACT_TRUE = frozenset({"1", "true", "yes", "on"})
+
+
+class SynthesisContractConflict(RuntimeError):
+    """An explicit --synthesis-contract disagrees with the ambient env."""
+
+
+def resolve_synthesis_contract_env(selection: str) -> Dict[str, str]:
+    """Return the env pair for one documented contract spelling."""
+    try:
+        return dict(SYNTHESIS_CONTRACT_ENV[str(selection)])
+    except KeyError as exc:
+        raise ValueError(
+            "synthesis contract must be one of "
+            f"{', '.join(SYNTHESIS_CONTRACT_CHOICES)}; got {selection!r}"
+        ) from exc
+
+
+def apply_synthesis_contract_selection(
+    selection: Optional[str],
+    environ: Optional[Any] = None,
+) -> Optional[Dict[str, str]]:
+    """Apply an explicit contract selection to the process environment.
+
+    ``None`` leaves the environment untouched (historical env-driven path).
+    An ambient switch that DISAGREES with the selection is a loud failure
+    rather than a silent override: an operator who asked for one contract must
+    never be given another, and an operator whose environment already pins a
+    contract must never have it changed out from under them without noticing.
+    """
+    if selection is None:
+        return None
+    desired = resolve_synthesis_contract_env(selection)
+    source = os.environ if environ is None else environ
+    conflicts = []
+    for name, value in desired.items():
+        ambient = str(source.get(name, "")).strip()
+        if not ambient:
+            continue
+        ambient_on = ambient.lower() in _SYNTHESIS_CONTRACT_TRUE
+        if ambient_on != (value == "true"):
+            conflicts.append(
+                f"{name}={ambient!r} (selection requires {value!r})"
+            )
+    if conflicts:
+        raise SynthesisContractConflict(
+            f"--synthesis-contract {selection} conflicts with the ambient "
+            "environment: " + "; ".join(conflicts) + ". Unset the conflicting "
+            "variable(s) or drop the flag."
+        )
+    for name, value in desired.items():
+        source[name] = value
+    return desired
+
+
+def _micro_generation_unit(kind: str, variant_index: int) -> Any:
+    """Bind the micro contract's per-unit resume identity.
+
+    ``MicroStagedSynthesisProvider`` keys its resume-store FILE PATH on a
+    per-unit identity whose only caller-supplied field is the variant token.
+    Production drafts carry no manifest stamp (only the pilot harness does), so
+    the unit is bound here from ``(kind, variant_index)`` — the same key the
+    checkpoint cache and generation journal already use — keeping the micro
+    resume store 1:1 with the outer journal's units.  Returns a no-op context
+    for every other contract, so the non-micro path is byte-identical.
+    """
+    from Trainforge.generators.staged_synthesis_micro import (
+        bind_micro_generation_unit,
+        staged_synthesis_micro_v1_enabled,
+    )
+
+    if not staged_synthesis_micro_v1_enabled():
+        return contextlib.nullcontext()
+    return bind_micro_generation_unit(
+        kind=kind, variant_index=variant_index,
+    )
 
 
 def _focus_chunk_on_objective(
@@ -1609,6 +1732,13 @@ _GENERATION_CONTRACT_FILES = (
     "Trainforge/generators/_synthesis_common.py",
     "Trainforge/generators/_openai_compatible_client.py",
     "Trainforge/generators/staged_synthesis_provider.py",
+    # The micro contract's twin of staged_synthesis_provider.py. It decides
+    # model-call outcomes exactly as its V4 sibling does, AND it owns
+    # ``micro_preference_eligibility`` — the preference-admission predicate
+    # that synthesis_eligibility.py delegates to for BOTH contracts — so an
+    # edit here changes which chunks generate preference pairs. Without this
+    # entry a resumed run appended post-edit rows to a pre-edit corpus.
+    "Trainforge/generators/staged_synthesis_micro.py",
     "Trainforge/generators/_local_provider.py",
     "Trainforge/generators/instruction_factory.py",
     "Trainforge/generators/preference_factory.py",
@@ -2790,23 +2920,24 @@ def _build_chunk_generation_bundle(
         ):
             instruction_results.append(None)
             continue
-        outcome = _run_generation_unit(
-            chunk_id=chunk_id,
-            kind="instruction",
-            variant_index=variant_index,
-            fingerprint=unit_fingerprint,
-            generation_cache=generation_cache,
-            journal=generation_journal,
-            recovery_coordinator=recovery_coordinator,
-            call=lambda focused=focused, pair_seed=pair_seed: synthesize_instruction_pair(
-                focused,
-                seed=pair_seed,
-                provider=provider,
-                paraphrase_provider=paraphrase_provider,
-                preserve_tokens=effective_preserve_tokens or None,
-                capture=capture,
-            ),
-        )
+        with _micro_generation_unit("instruction", variant_index):
+            outcome = _run_generation_unit(
+                chunk_id=chunk_id,
+                kind="instruction",
+                variant_index=variant_index,
+                fingerprint=unit_fingerprint,
+                generation_cache=generation_cache,
+                journal=generation_journal,
+                recovery_coordinator=recovery_coordinator,
+                call=lambda focused=focused, pair_seed=pair_seed: synthesize_instruction_pair(
+                    focused,
+                    seed=pair_seed,
+                    provider=provider,
+                    paraphrase_provider=paraphrase_provider,
+                    preserve_tokens=effective_preserve_tokens or None,
+                    capture=capture,
+                ),
+            )
         instruction_results.append(outcome.result)
         provider_results += outcome.provider_results
         cached_replays += outcome.cached_replays
@@ -2842,23 +2973,24 @@ def _build_chunk_generation_bundle(
     ):
         preference_result = None
     else:
-        outcome = _run_generation_unit(
-            chunk_id=chunk_id,
-            kind="preference",
-            variant_index=0,
-            fingerprint=preference_fingerprint,
-            generation_cache=generation_cache,
-            journal=generation_journal,
-            recovery_coordinator=recovery_coordinator,
-            call=lambda: synthesize_preference_pair(
-                focused,
-                seed=preference_seed,
-                provider=provider,
-                paraphrase_provider=paraphrase_provider,
-                preserve_tokens=effective_preserve_tokens or None,
-                capture=capture,
-            ),
-        )
+        with _micro_generation_unit("preference", 0):
+            outcome = _run_generation_unit(
+                chunk_id=chunk_id,
+                kind="preference",
+                variant_index=0,
+                fingerprint=preference_fingerprint,
+                generation_cache=generation_cache,
+                journal=generation_journal,
+                recovery_coordinator=recovery_coordinator,
+                call=lambda: synthesize_preference_pair(
+                    focused,
+                    seed=preference_seed,
+                    provider=provider,
+                    paraphrase_provider=paraphrase_provider,
+                    preserve_tokens=effective_preserve_tokens or None,
+                    capture=capture,
+                ),
+            )
         preference_result = outcome.result
         provider_results += outcome.provider_results
         cached_replays += outcome.cached_replays
@@ -3446,6 +3578,35 @@ def run_synthesis(
     stats.prereq_context_tokens = int(prereq_context_tokens)
     instruction_variants = max(1, int(instruction_variants_per_chunk))
     stats.instruction_variants_per_chunk = instruction_variants
+    if instruction_variants > 1:
+        from Trainforge.generators.staged_synthesis_micro import (
+            staged_synthesis_micro_v1_enabled,
+        )
+
+        if staged_synthesis_micro_v1_enabled():
+            # micro-v1 has NO per-variant entropy. Measured on a 939-chunk
+            # corpus: all 449 instruction-eligible chunks produce a
+            # BYTE-IDENTICAL focused chunk for variant 0 and variant 1
+            # (``_focus_chunk_on_objective``'s seed only breaks ties among
+            # equally-ranked objectives, and after focus there is one), and
+            # every micro stage keys on the RUN-level ``synthesis_seed``, not
+            # on the per-variant ``pair_seed`` — ``paraphrase_instruction``
+            # even overwrites the draft's ``seed`` with it. So variant 1 would
+            # emit a functionally identical training row while consuming a
+            # second full stage ladder of model calls.
+            #
+            # Refuse rather than silently duplicate. Giving micro-v1 genuine
+            # per-variant entropy is a contract change (it would re-key the
+            # micro fingerprint), so it is an owner decision, not a default.
+            raise ValueError(
+                "micro-v1 staged synthesis does not support "
+                f"instruction_variants_per_chunk={instruction_variants}: every "
+                "micro stage keys on the run-level synthesis seed and the "
+                "focused chunk is identical across variants, so variants >1 "
+                "emit duplicate rows for a second ladder of model calls. Pass "
+                "--instruction-variants-per-chunk 1, or select --synthesis-"
+                "contract staged-v4."
+            )
     # Reject-mining CAPTURE. Off by default: ``_mine_mode == "off"`` makes
     # ``build_capture_payload`` return None at every rejection site, so the
     # persisted row is byte-identical to the legacy one and the pool stays
@@ -5026,32 +5187,37 @@ def run_synthesis(
                                 f"drift for instruction key {_cp_key}"
                             )
                     else:
-                        inst_result = _call_with_seat_recovery(
-                            lambda: synthesize_instruction_pair(
-                                pair_chunk,
-                                seed=pair_seed,
-                                provider=provider,
-                                paraphrase_provider=paraphrase_provider,
-                                preserve_tokens=(
-                                    effective_preserve_tokens or None
+                        with _micro_generation_unit(
+                            "instruction", variant_index,
+                        ):
+                            inst_result = _call_with_seat_recovery(
+                                lambda: synthesize_instruction_pair(
+                                    pair_chunk,
+                                    seed=pair_seed,
+                                    provider=provider,
+                                    paraphrase_provider=paraphrase_provider,
+                                    preserve_tokens=(
+                                        effective_preserve_tokens or None
+                                    ),
+                                    capture=capture,
                                 ),
-                                capture=capture,
-                            ),
-                            recovery_coordinator=recovery_coordinator,
-                            incident_context={
-                                "workflow_phase": "training_synthesis",
-                                "task_id": (
-                                    f"{chunk_id_for_checkpoint}:"
-                                    f"instruction:{variant_index}"
-                                ),
-                                "chunk_id": chunk_id_for_checkpoint,
-                                "kind": "instruction",
-                                "variant_index": variant_index,
-                                "fingerprint": _rejection_fingerprint_for_seed(
-                                    pair_seed, pair_chunk
-                                ),
-                            },
-                        )
+                                recovery_coordinator=recovery_coordinator,
+                                incident_context={
+                                    "workflow_phase": "training_synthesis",
+                                    "task_id": (
+                                        f"{chunk_id_for_checkpoint}:"
+                                        f"instruction:{variant_index}"
+                                    ),
+                                    "chunk_id": chunk_id_for_checkpoint,
+                                    "kind": "instruction",
+                                    "variant_index": variant_index,
+                                    "fingerprint": (
+                                        _rejection_fingerprint_for_seed(
+                                            pair_seed, pair_chunk
+                                        )
+                                    ),
+                                },
+                            )
                         provider_results_completed += 1
                 except _SBE as exc:
                     _budget_exhausted_exc = exc
@@ -5654,31 +5820,34 @@ def run_synthesis(
                                 f"drift for preference key {_pref_cp_key}"
                             )
                     else:
-                        pref_result = _call_with_seat_recovery(
-                            lambda: synthesize_preference_pair(
-                                pair_chunk,
-                                seed=pair_seed,
-                                provider=provider,
-                                paraphrase_provider=paraphrase_provider,
-                                preserve_tokens=(
-                                    effective_preserve_tokens or None
+                        with _micro_generation_unit("preference", 0):
+                            pref_result = _call_with_seat_recovery(
+                                lambda: synthesize_preference_pair(
+                                    pair_chunk,
+                                    seed=pair_seed,
+                                    provider=provider,
+                                    paraphrase_provider=paraphrase_provider,
+                                    preserve_tokens=(
+                                        effective_preserve_tokens or None
+                                    ),
+                                    capture=capture,
                                 ),
-                                capture=capture,
-                            ),
-                            recovery_coordinator=recovery_coordinator,
-                            incident_context={
-                                "workflow_phase": "training_synthesis",
-                                "task_id": (
-                                    f"{chunk_id_for_checkpoint}:preference:0"
-                                ),
-                                "chunk_id": chunk_id_for_checkpoint,
-                                "kind": "preference",
-                                "variant_index": 0,
-                                "fingerprint": _rejection_fingerprint_for_seed(
-                                    pair_seed, pair_chunk
-                                ),
-                            },
-                        )
+                                recovery_coordinator=recovery_coordinator,
+                                incident_context={
+                                    "workflow_phase": "training_synthesis",
+                                    "task_id": (
+                                        f"{chunk_id_for_checkpoint}:preference:0"
+                                    ),
+                                    "chunk_id": chunk_id_for_checkpoint,
+                                    "kind": "preference",
+                                    "variant_index": 0,
+                                    "fingerprint": (
+                                        _rejection_fingerprint_for_seed(
+                                            pair_seed, pair_chunk
+                                        )
+                                    ),
+                                },
+                            )
                         provider_results_completed += 1
                 except _SBE as exc:
                     _budget_exhausted_exc = exc
@@ -7002,12 +7171,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--synthesis-contract",
-        choices=["legacy", "staged-v4", "micro-v1"],
+        choices=list(SYNTHESIS_CONTRACT_CHOICES),
         default=None,
         help=(
             "Explicit synthesis orchestration contract. micro-v1 selects "
-            "ed4all.staged-synthesis-micro.v1; it is never inferred from an "
-            "ambient flag. Omit to preserve the historical environment-driven "
+            "ed4all.staged-synthesis-micro.v1. Resolves to the "
+            "TRAINFORGE_STAGED_SYNTHESIS_V4 / "
+            "TRAINFORGE_STAGED_SYNTHESIS_MICRO_V1 pair for the process before "
+            "any provider is constructed; an ambient value that DISAGREES "
+            "with the selection is a loud failure, never a silent override. "
+            "Omit to preserve the historical environment-driven "
             "legacy/staged-v4 path byte-for-byte."
         ),
     )
@@ -7399,6 +7572,18 @@ def build_parser() -> argparse.ArgumentParser:
 def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
     if args is None:
         args = build_parser().parse_args()
+
+    # Resolve the explicit contract selector BEFORE anything reads the two
+    # staged-synthesis switches (``staged_objective_contract_enabled`` at the
+    # focus seam, ``build_synthesis_provider`` at construction). Leaving this
+    # unread is what made the documented `--synthesis-contract micro-v1`
+    # invocation a no-op that silently ran whatever the environment said.
+    try:
+        apply_synthesis_contract_selection(
+            getattr(args, "synthesis_contract", None)
+        )
+    except (SynthesisContractConflict, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
 
     stratify_dims = _parse_stratify_arg(getattr(args, "stratify", ""))
     include_dpo = bool(getattr(args, "include_dpo_from_misconceptions", False))

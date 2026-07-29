@@ -7,6 +7,8 @@ DecisionCapture, intent/HTTP ledger, context-window, and terminal-error seams.
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import hashlib
 import inspect
 import json
@@ -14,7 +16,7 @@ import os
 import re
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Dict, Iterable, Mapping, Optional, Sequence
+from typing import Any, Dict, Iterable, Iterator, Mapping, Optional, Sequence
 
 from lib.generation import stop_control
 from lib.ontology.misconception_id import canonical_mc_id
@@ -147,6 +149,111 @@ def staged_synthesis_micro_v1_enabled(
         str(source.get(ENV_STAGED_SYNTHESIS_MICRO_V1, "")).strip().lower()
         in _TRUE
     )
+
+
+# ---------------------------------------------------------------------------
+# Generation-unit identity.
+#
+# ``_resume_store`` keys the per-unit resume FILE PATH on an identity whose
+# only caller-supplied fields are ``variant`` and ``repetition`` — every other
+# field it re-derives from the chunk and draft it was already handed.  That
+# makes ``variant`` the sole discriminator between two generation units of the
+# same chunk and kind, and a blank one silently collapses them onto one file
+# (variant 1 then replays variant 0's terminal artifacts stage for stage).
+#
+# There are two ways to supply it, in precedence order:
+#   1. ``draft["_micro_manifest_identity"]`` — the pilot harness stamps its
+#      Latin-square cell coordinates there and that binding stays authoritative.
+#   2. :func:`bind_micro_generation_unit` — the production path wraps each
+#      generation unit in this context manager.  ``production_variant_token``
+#      derives the token from ``(kind, variant_index)``, the canonical
+#      production unit key already used by the checkpoint cache and the
+#      generation journal, so the micro resume store stays 1:1 with the units
+#      the outer journal tracks.
+# Neither present is a LOUD failure — never a defaulted identity.
+# ---------------------------------------------------------------------------
+MICRO_PRODUCTION_REPETITION = 0
+
+_MICRO_UNIT_BINDING: "contextvars.ContextVar[Optional[Dict[str, Any]]]" = (
+    contextvars.ContextVar("_MICRO_UNIT_BINDING", default=None)
+)
+
+
+def production_variant_token(kind: str, variant_index: int) -> str:
+    """Return the injective-in-``variant_index`` production variant token."""
+    return f"{_clean(kind)}-{int(variant_index)}"
+
+
+@contextlib.contextmanager
+def bind_micro_generation_unit(
+    *, kind: str, variant_index: int,
+    repetition: int = MICRO_PRODUCTION_REPETITION,
+) -> "Iterator[Dict[str, Any]]":
+    """Bind the current generation unit for micro's resume-store identity.
+
+    Thread-safe: the binding lives in a :mod:`contextvars` variable, and worker
+    threads start from a fresh context, so a binding established inside a
+    worker is invisible to every other worker.  Non-micro providers never read
+    it, so wrapping a call is a no-op for them.
+    """
+    binding = {
+        "kind": _clean(kind),
+        "variant": production_variant_token(kind, variant_index),
+        "repetition": int(repetition),
+    }
+    token = _MICRO_UNIT_BINDING.set(binding)
+    try:
+        yield binding
+    finally:
+        _MICRO_UNIT_BINDING.reset(token)
+
+
+def current_micro_generation_unit() -> Optional[Dict[str, Any]]:
+    """Return the bound generation unit, or ``None`` when unbound."""
+    binding = _MICRO_UNIT_BINDING.get()
+    return dict(binding) if isinstance(binding, Mapping) else None
+
+
+def build_micro_manifest_identity(
+    chunk: Mapping[str, Any], *, kind: str, variant: Any,
+    repetition: Any = MICRO_PRODUCTION_REPETITION,
+    draft: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Build the canonical micro draft identity for one generation unit.
+
+    Single source of truth: ``_resume_store`` builds BOTH the expected identity
+    and (on the bound path) the supplied one through this function, so the two
+    cannot drift apart into a spurious ``staged_micro_draft_identity_invalid``.
+    """
+    variant_token = _clean(variant)
+    if not variant_token:
+        # A blank variant passes an equality check against ``_clean(None)``
+        # while destroying the only per-unit discriminator in the resume-store
+        # path.  Refuse it rather than let two units share one state file.
+        raise SynthesisProviderError(
+            "micro synthesis draft identity requires a non-blank variant: it "
+            "keys the per-unit resume-store path, so a blank one lets two "
+            "generation units of the same chunk replay each other's stages",
+            code="staged_micro_draft_identity_variant_blank",
+        )
+    try:
+        repetition_index = int(repetition)
+    except (TypeError, ValueError) as exc:
+        raise SynthesisProviderError(
+            "micro synthesis draft identity requires an integer repetition",
+            code="staged_micro_draft_identity_invalid",
+        ) from exc
+    return {
+        "chunk_id": _clean(chunk.get("id") or chunk.get("chunk_id")),
+        "chunk_sha256": _sha(_stable_json(chunk)),
+        "kind": kind,
+        "variant": variant_token,
+        "repetition": repetition_index,
+        "draft": {
+            "provider": _clean(draft.get("provider")),
+            "source_chunk_id": _clean(draft.get("source_chunk_id")),
+        },
+    }
 
 
 def _schema_sha(schema: Mapping[str, Any]) -> str:
@@ -1214,7 +1321,13 @@ def micro_preference_eligibility(
     for item in chunk.get("misconceptions") or []:
         if not isinstance(item, Mapping):
             continue
-        claim = _clean(item.get("misconception"))
+        # ``statement`` is a schema-legal alias for ``misconception``
+        # (chunk_v4 $defs.Misconception requires one OR the other), and the
+        # content-generator subagents emit it. Reading only one spelling made
+        # a schema-valid misconception read as claim_missing here while
+        # build_evidence_window read the OTHER spelling — one alias, two
+        # readers, opposite keys.
+        claim = _clean(item.get("misconception") or item.get("statement"))
         correction = _clean(item.get("correction"))
         mechanism = _clean(
             item.get("mechanism_evidence") or item.get("error_mechanism")
@@ -1248,6 +1361,17 @@ def micro_preference_eligibility(
             "source_polarity": "incorrect_with_correction",
         })
 
+    # Arm A is the DESIGNED path and Arm B below is its fallback for corpora
+    # whose blocks carry no structural split. Once the chunk read seam
+    # recovers authored cards into ``chunk["misconceptions"]``, BOTH arms see
+    # the same card and mint the same content-addressed id — which the
+    # collision check below would read as an id that fails to identify, and
+    # reject the whole chunk. It is the same candidate found twice, not two
+    # candidates colliding, so Arm B defers here. A repeat WITHIN Arm B still
+    # collides: two distinct blocks minting one id is the case the check is
+    # for.
+    structured_ids = {candidate["id"] for candidate in candidates}
+
     claim_pattern = re.compile(
         r"(?:a\s+common\s+misconception\s+is\s+that|"
         r"students?\s+may\s+incorrectly\s+believe\s+that|"
@@ -1267,37 +1391,74 @@ def micro_preference_eligibility(
         )
         if not role_enabled:
             continue
-        match = claim_pattern.search(text)
-        if not match:
+        # An authored misconception card carries its own (claim, correction)
+        # boundary in its markup; ``build_evidence_window`` recovers it as
+        # ``misconception_pairs``.  Prefer it over the prose cue pattern: the
+        # pattern requires one of three fixed openers, and authored prose has
+        # no fixed opener, so it recognises a minority of real cards.  The
+        # pattern stays as the fallback for corpora whose blocks carry no
+        # structural split.
+        structured = block.get("misconception_pairs") or []
+        extracted: list[tuple[str, str, str]] = []
+        if structured:
+            for item in structured:
+                if not isinstance(item, Mapping):
+                    continue
+                # The authored correction IS the mechanism evidence, matching
+                # the structured arm above (``mechanism_evidence or
+                # error_mechanism or correction``).
+                correction = _clean(item.get("correction"))
+                extracted.append((
+                    _clean(item.get("claim")), correction, correction,
+                ))
+        else:
+            match = claim_pattern.search(text)
+            if match:
+                extracted.append((
+                    _clean(match.group("claim")),
+                    _clean(match.group("correction")),
+                    # No structural boundary is available on this path, so the
+                    # whole block text remains the best mechanism evidence.
+                    text,
+                ))
+        if not extracted:
             rejection_counts["claim_missing"] += 1
             continue
-        claim = _clean(match.group("claim"))
-        correction = _clean(match.group("correction"))
-        if not correction:
-            rejection_counts["correction_missing"] += 1
-            continue
-        mechanism = text
-        if not re.search(
-            r"\b(?:correct|rather|instead|means|not|false|true)\b",
-            mechanism, flags=re.IGNORECASE,
-        ):
-            rejection_counts["mechanism_missing"] += 1
-            continue
-        candidates.append({
-            "id": canonical_mc_id(claim, correction, bloom_level),
-            "misconception": claim,
-            "correction": correction,
-            "mechanism_evidence": mechanism,
-            "bloom_level": bloom_level,
-            "source_block_id": block_id,
-            "source_role": (
-                role if role != "evidence" else "misconception_evidence"
-            ),
-            "source_polarity": (
-                polarity if polarity != "factual"
-                else "incorrect_with_correction"
-            ),
-        })
+        for claim, correction, mechanism in extracted:
+            if not claim:
+                rejection_counts["claim_missing"] += 1
+                continue
+            if not correction:
+                rejection_counts["correction_missing"] += 1
+                continue
+            # The structured arm above accepts any non-empty correction as
+            # mechanism evidence.  This arm previously additionally required a
+            # lexical token ("correct"/"not"/"instead"/...), which rejected
+            # correct corrective prose that happened to phrase itself
+            # differently ("non-zero" does not match \bnot\b).  One predicate
+            # now governs both arms.
+            if not mechanism:
+                rejection_counts["mechanism_missing"] += 1
+                continue
+            fallback_id = canonical_mc_id(claim, correction, bloom_level)
+            if fallback_id in structured_ids:
+                # Already admitted by Arm A from the same authored card.
+                continue
+            candidates.append({
+                "id": fallback_id,
+                "misconception": claim,
+                "correction": correction,
+                "mechanism_evidence": mechanism,
+                "bloom_level": bloom_level,
+                "source_block_id": block_id,
+                "source_role": (
+                    role if role != "evidence" else "misconception_evidence"
+                ),
+                "source_polarity": (
+                    polarity if polarity != "factual"
+                    else "incorrect_with_correction"
+                ),
+            })
 
     by_id: Dict[str, Dict[str, Any]] = {}
     collisions: set[str] = set()
@@ -2438,21 +2599,36 @@ class MicroStagedSynthesisProvider(StagedSynthesisProvider):
             return None
         draft_identity = draft.get("_micro_manifest_identity")
         if not isinstance(draft_identity, Mapping):
-            raise SynthesisProviderError(
-                "micro synthesis requires manifest-bound draft identity",
-                code="staged_micro_draft_identity_missing",
+            # No manifest-stamped identity: fall back to the explicitly bound
+            # production generation unit.  Unbound stays a LOUD failure — a
+            # defaulted identity would silently share one resume-store file
+            # across units.
+            bound = current_micro_generation_unit()
+            if bound is None:
+                raise SynthesisProviderError(
+                    "micro synthesis requires manifest-bound draft identity: "
+                    "the draft carried no '_micro_manifest_identity' and the "
+                    "call was not wrapped in bind_micro_generation_unit(...)",
+                    code="staged_micro_draft_identity_missing",
+                )
+            if bound.get("kind") != kind:
+                raise SynthesisProviderError(
+                    "micro synthesis generation-unit binding names kind "
+                    f"{bound.get('kind')!r} but the call is {kind!r}",
+                    code="staged_micro_draft_identity_invalid",
+                )
+            draft_identity = build_micro_manifest_identity(
+                chunk, kind=kind, variant=bound.get("variant"),
+                repetition=bound.get("repetition", MICRO_PRODUCTION_REPETITION),
+                draft=draft,
             )
-        expected_draft_identity = {
-            "chunk_id": _clean(chunk.get("id") or chunk.get("chunk_id")),
-            "chunk_sha256": _sha(_stable_json(chunk)),
-            "kind": kind,
-            "variant": _clean(draft_identity.get("variant")),
-            "repetition": int(draft_identity.get("repetition", 0)),
-            "draft": {
-                "provider": _clean(draft.get("provider")),
-                "source_chunk_id": _clean(draft.get("source_chunk_id")),
-            },
-        }
+        expected_draft_identity = build_micro_manifest_identity(
+            chunk, kind=kind, variant=draft_identity.get("variant"),
+            repetition=draft_identity.get(
+                "repetition", MICRO_PRODUCTION_REPETITION,
+            ),
+            draft=draft,
+        )
         if dict(draft_identity) != expected_draft_identity:
             raise SynthesisProviderError(
                 "micro synthesis draft identity differs from runtime inputs",
@@ -3861,9 +4037,14 @@ __all__ = [
     "MicroStagedSynthesisProvider",
     "assemble_claims",
     "assemble_claim_realizations",
+    "MICRO_PRODUCTION_REPETITION",
+    "bind_micro_generation_unit",
+    "build_micro_manifest_identity",
+    "current_micro_generation_unit",
     "deterministic_stage_a_task",
     "immutable_artifact_error",
     "micro_contract_components",
+    "production_variant_token",
     "micro_contract_fingerprint",
     "micro_preference_eligibility",
     "numeric_closed_world_error",

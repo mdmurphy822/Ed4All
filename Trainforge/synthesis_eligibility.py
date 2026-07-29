@@ -58,6 +58,86 @@ _MALFORMED_ASSESSMENT_RE = re.compile(
 )
 
 
+# ---------------------------------------------------------------------------
+# Chunk text-field contract
+# ---------------------------------------------------------------------------
+#
+# ``text`` is the canonical chunk_v4 prose field and the ONLY one any emitter
+# in this tree writes (measured: 5,012/5,012 archived chunks carry ``text``;
+# zero carry ``content`` or ``body``).  ``content`` / ``body`` are READ-side
+# aliases that sibling readers already tolerate —
+# ``lib/validators/chunk_wcag_status.py`` reads ``text or content or html``,
+# ``MCP/hardening/gate_input_routing.py`` and ``lib/objectives/*`` read
+# ``text or body`` — so a mapping that reaches this module in one of those
+# shapes must resolve here the same way it resolves there.  Accepting them on
+# READ is the whole widening: nothing in this module ever WRITES a chunk, and
+# the alias set is closed (add a producer, not an alias).
+#
+# The load-bearing half is the FAILURE mode.  ``chunk.get("text") or ""``
+# collapses two different facts into one empty string:
+#
+#   * "this chunk declares itself empty"     -> a real, gate-able disposition
+#     (``chunk_carries_no_groundable_content`` / ``degenerate_source_stem``),
+#   * "this mapping has no prose field AT ALL" -> shape drift, which the gate
+#     then silently scored as slot-filler residue and excluded from synthesis.
+#
+# The second case is what produced the false ``degenerate_source_stem``
+# verdict on a chunk whose prose was sitting in ``content``.  Per the project's
+# no-design-intent-fallbacks rule it now raises instead of being defaulted to
+# empty prose.
+CHUNK_TEXT_FIELDS: Tuple[str, ...] = ("text", "content", "body")
+
+
+class ChunkTextContractError(ValueError):
+    """A chunk mapping carries no prose field under any accepted alias.
+
+    Raised — never defaulted to ``""`` — because a missing field and a
+    declared-empty field are different facts, and only the second one is a
+    verdict this module is entitled to reach.  Silently conflating them
+    excluded real chunks from synthesis under a fabricated
+    ``degenerate_source_stem`` reason.
+    """
+
+
+def resolve_chunk_text(chunk: Mapping[str, Any]) -> str:
+    """Return a chunk's prose, resolved across :data:`CHUNK_TEXT_FIELDS`.
+
+    Precedence is declaration order: the canonical ``text`` wins whenever it
+    carries prose, and an alias is consulted only when the higher-precedence
+    fields are absent or blank.
+
+    An explicitly blank value under ANY accepted alias returns ``""`` — that
+    is an honest empty chunk and the content gate owns the verdict.  A mapping
+    carrying NONE of the accepted keys raises :class:`ChunkTextContractError`,
+    naming the keys it did carry so the drifting producer is identifiable.
+    """
+    if not isinstance(chunk, Mapping):
+        raise ChunkTextContractError(
+            f"chunk text is unresolvable on {type(chunk).__name__}; "
+            f"expected a mapping carrying one of {list(CHUNK_TEXT_FIELDS)}"
+        )
+    declared = False
+    for field in CHUNK_TEXT_FIELDS:
+        if field not in chunk:
+            continue
+        declared = True
+        value = chunk[field]
+        if value is None:
+            continue
+        text = str(value)
+        if text.strip():
+            return text
+    if declared:
+        # Every alias present was blank/None: a genuinely empty chunk.
+        return ""
+    raise ChunkTextContractError(
+        "chunk carries no prose field under any accepted alias "
+        f"{list(CHUNK_TEXT_FIELDS)}; chunk_id="
+        f"{chunk.get('id') or chunk.get('chunk_id') or '<unidentified>'!r}, "
+        f"keys={sorted(str(key) for key in chunk)}"
+    )
+
+
 @dataclass(frozen=True)
 class PairEligibility:
     eligible: bool
@@ -173,7 +253,7 @@ def describe_content_sources(chunk: Mapping[str, Any]) -> Dict[str, Any]:
     Exposed (rather than inlined) so the DecisionCapture rationale on a
     skipped unit can name exactly which sources were empty.
     """
-    text = " ".join(str(chunk.get("text") or "").split())
+    text = " ".join(resolve_chunk_text(chunk).split())
     return {
         "concept_tags": _concept_tag_count(chunk),
         "key_terms": _key_term_count(chunk),
@@ -268,7 +348,7 @@ def content_gate_eligibility(chunk: Mapping[str, Any]) -> PairEligibility:
     # of a long instructional chunk (see _STEM_ITEM_MAX_WORD_MULTIPLE).
     item_word_ceiling = min_prose * _STEM_ITEM_MAX_WORD_MULTIPLE
     if sources["prose_words"] <= item_word_ceiling:
-        text = str(chunk.get("text") or "")
+        text = resolve_chunk_text(chunk)
         stem = leading_stem(text)
         min_content = resolve_min_stem_content_words()
         # Signal 1 (slot gap) reads the STEM — that is where the template
@@ -491,7 +571,7 @@ def focus_chunk_on_canonical_objective(
         )
         return focused
 
-    text = str(chunk.get("text") or "")
+    text = resolve_chunk_text(chunk)
     inline_ids = []
     for match in _OBJECTIVE_LINE_RE.finditer(text):
         objective_id = match.group("id").lower()
@@ -599,7 +679,7 @@ def pair_eligibility(
     except ValueError:
         return PairEligibility(False, "objective_evidence_window_not_viable")
 
-    text = " ".join(str(focused_chunk.get("text") or "").split())
+    text = " ".join(resolve_chunk_text(focused_chunk).split())
     if len(text) < 80 or len(_tokens(text)) < 8:
         return PairEligibility(False, "insufficient_standalone_evidence")
 

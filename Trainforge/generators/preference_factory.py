@@ -728,9 +728,33 @@ def synthesize_preference_pair(
     # there. The scaffolding gate DOES cover rejected, because
     # _rule_synthesize_rejected derives from chosen via token swaps and the
     # question pattern survives negation, so scaffolding propagates into it.
+    #
+    # The chosen side is compared against the chunk MINUS this pair's own
+    # authored correction. On the misconception branch `_build_chosen`
+    # RETURNS that correction — it is the ground truth the pair exists to
+    # teach the model to prefer — and the correction is by construction a
+    # span of the chunk it was authored into, so an unqualified comparison
+    # rejects every misconception-derived pair and the designed DPO path
+    # emits nothing. Excluding one span is narrower than relaxing the check:
+    # `chosen` is still leak-checked against the whole of the REST of the
+    # chunk, and the prompt side is untouched.
+    #
+    # This is the only verbatim guard on the preference path —
+    # `lib/validators/synthesis_leakage.py` audits `prompt` / `completion`
+    # (instruction rows) and never reads `chosen` / `rejected` — so it is
+    # deliberately narrowed here rather than deferred to a later gate.
+    # Both authored sides are excluded, not just the correction: the rejected
+    # side of a misconception pair is the authored CLAIM, which is likewise a
+    # span of the chunk it was authored into.
+    chosen_leak_source = chunk_text
+    if selected_mc:
+        for field in ("correction", "misconception", "statement"):
+            authored = str(selected_mc.get(field) or "").strip()
+            if authored:
+                chosen_leak_source = chosen_leak_source.replace(authored, " ")
     leak_ok = (
         not _contains_verbatim_span(prompt, chunk_text)
-        and not _contains_verbatim_span(chosen, chunk_text)
+        and not _contains_verbatim_span(chosen, chosen_leak_source)
     )
     assessment_ok = (
         not _contains_assessment_scaffolding(chosen)
@@ -958,10 +982,20 @@ def synthesize_preference_pair(
             pair, preserve_tokens, capture=capture,
         )
 
+    # Same narrowing as the draft-stage gate above, for the same reason and
+    # on the same one span: the chosen/rejected sides of a misconception pair
+    # ARE the authored correction and claim, so comparing them against a
+    # chunk that still contains those sentences rejects the pair for
+    # containing its own ground truth. Both sides keep their full check
+    # against the rest of the chunk; the prompt side is unchanged.
     final_leak = (
         _contains_verbatim_span(str(pair.get("prompt") or ""), chunk_text)
-        or _contains_verbatim_span(str(pair.get("chosen") or ""), chunk_text)
-        or _contains_verbatim_span(str(pair.get("rejected") or ""), chunk_text)
+        or _contains_verbatim_span(
+            str(pair.get("chosen") or ""), chosen_leak_source,
+        )
+        or _contains_verbatim_span(
+            str(pair.get("rejected") or ""), chosen_leak_source,
+        )
     )
     if final_leak:
         return PreferenceSynthesisResult(

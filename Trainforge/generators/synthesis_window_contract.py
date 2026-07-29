@@ -238,6 +238,127 @@ def _role_and_polarity(tag: Any) -> tuple[str, str]:
     return "evidence", "factual"
 
 
+def _structured_misconception_pairs(tag: Any) -> list[Dict[str, str]]:
+    """Recover a block's authored (claim, correction) split from its own markup.
+
+    A misconception card is emitted as ONE block: only the outer element
+    carries ``data-cf-block-id``, so :func:`build_evidence_window` collapses
+    the whole card into a single ``text`` and the authored boundary between
+    the false claim and its correction is lost.  Downstream, DPO admission
+    needs exactly that boundary.
+
+    The descendants ARE labelled — the same class tokens
+    :func:`_role_and_polarity` already recognises — so the split is recovered
+    by re-reading the card's own structure rather than re-deriving it from
+    prose with a sentence heuristic (which corrupts every card whose heading
+    merges into the first sentence).
+
+    This is additive metadata only: block membership, ``role``, ``polarity``
+    and ``text`` are untouched, so ``evidence_text``, the rendered window and
+    every instruction-side consumer stay byte-identical.
+    """
+    claims: list[str] = []
+    corrections: list[str] = []
+    for child in tag.find_all(True):
+        if child.get("data-cf-block-id"):
+            # A nested block owns its own window entry; never reach across.
+            continue
+        role, _polarity = _role_and_polarity(child)
+        text = _clean(child.get_text(" ", strip=True))
+        if not text:
+            continue
+        if role == "misconception_claim":
+            claims.append(text)
+        elif role == "misconception_correction":
+            corrections.append(text)
+    pairs: list[Dict[str, str]] = []
+    for index, claim in enumerate(claims):
+        if index >= len(corrections):
+            break
+        pairs.append({"claim": claim, "correction": corrections[index]})
+    return pairs
+
+
+def resolve_chunk_misconceptions(
+    chunk: Mapping[str, Any],
+) -> list[Dict[str, Any]]:
+    """Return a chunk's structured misconceptions, recovering authored cards.
+
+    ``chunk["misconceptions"]`` is the field EVERY downstream consumer reads:
+    :func:`Trainforge.generators.staged_synthesis_micro.micro_preference_eligibility`
+    Arm A (admission to synthesis), and — decisively —
+    :func:`Trainforge.generators.preference_factory.synthesize_preference_pair`,
+    which stamps ``source="misconception"`` + a real ``misconception_id`` ONLY
+    from a non-empty value here.  Those two stamps are the whole of DPO
+    admission: ``Trainforge.training.compute_backend.is_dpo_editorial_record``
+    admits a pair on `misconception_id` or an editorial `source`, and nothing
+    else.
+
+    That is why recovering the authored split at the EVIDENCE-WINDOW layer
+    alone is not enough.  ``build_evidence_window`` hands
+    ``misconception_pairs`` to the eligibility predicate, so a corpus of
+    authored cards reads as ELIGIBLE — while the emitter, reading this field
+    and finding it empty, stamps every emitted pair ``rule_synthesized`` with
+    no ``misconception_id``.  The filtered DPO count is then zero on a corpus
+    the gate just called eligible, and (``dpo_fail_hard=true``) the trainer
+    refuses the run.  Eligibility and emission have to read the SAME
+    misconceptions, so this resolver is the one place that decides them.
+
+    Authored value wins: a chunk carrying a non-empty ``misconceptions`` list
+    is returned untouched.  Recovery only fills a field that is absent or
+    empty, from the chunk's OWN markup — never from another chunk, never
+    synthesized.  A corpus whose chunker already lands structured
+    misconceptions is therefore byte-identical through this function.
+    """
+    authored = chunk.get("misconceptions")
+    if isinstance(authored, list) and any(
+        isinstance(item, Mapping) for item in authored
+    ):
+        return list(authored)
+    html = str(chunk.get("html") or "")
+    if not html:
+        return []
+    bloom_level = _clean(chunk.get("bloom_level"))
+    soup = BeautifulSoup(html, "html.parser")
+    recovered: list[Dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for tag in soup.find_all(True):
+        block_id = _clean(tag.get("data-cf-block-id"))
+        if not block_id:
+            continue
+        # Mirror build_evidence_window's deepest-occurrence rule so a nested
+        # wrapper cannot claim its child's card.
+        if any(
+            child.get("data-cf-block-id") == tag.get("data-cf-block-id")
+            for child in tag.find_all(True)
+        ):
+            continue
+        for pair in _structured_misconception_pairs(tag):
+            claim = _clean(pair.get("claim"))
+            correction = _clean(pair.get("correction"))
+            if not claim or not correction:
+                continue
+            key = (claim.lower(), correction.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            entry: Dict[str, Any] = {
+                "misconception": claim,
+                "correction": correction,
+                # The authored correction IS the mechanism evidence, matching
+                # micro_preference_eligibility's own
+                # ``mechanism_evidence or error_mechanism or correction``
+                # fallback chain. No `id` is stamped: Arm A recomputes the
+                # canonical one and REJECTS a supplied id that disagrees.
+                "mechanism_evidence": correction,
+                "source_block_id": block_id,
+            }
+            if bloom_level:
+                entry["bloom_level"] = bloom_level
+            recovered.append(entry)
+    return recovered
+
+
 def build_evidence_window(
     chunk: Mapping[str, Any], focus: Mapping[str, Any],
 ) -> Dict[str, Any]:
@@ -271,16 +392,37 @@ def build_evidence_window(
             if not text or key in seen:
                 continue
             seen.add(key)
-            blocks.append({
+            block: Dict[str, Any] = {
                 "block_id": block_id,
                 "role": role,
                 "polarity": polarity,
                 "text": text,
-            })
+            }
+            misconception_pairs = _structured_misconception_pairs(tag)
+            if misconception_pairs:
+                block["misconception_pairs"] = misconception_pairs
+            blocks.append(block)
     if not blocks:
         source = _clean(chunk.get("text"))
         if not source:
             raise ValueError("staged synthesis evidence window has no source text")
+        # DELIBERATELY reads ``statement`` only, NOT the ``misconception``
+        # spelling chunk_v4 also permits. This asymmetry is load-bearing and
+        # must not be "fixed" into symmetry: ``micro_preference_eligibility``
+        # Arm A consumes ``chunk["misconceptions"]`` and REQUIRES the claim to
+        # be source-backed (present in the chunk's own text), so a structured
+        # DPO misconception is embedded in the source BY CONSTRUCTION. Making
+        # this guard see the ``misconception`` spelling therefore refuses the
+        # whole chunk for exactly the shape Arm A exists to consume, and Arm A
+        # becomes unreachable on any flat (no-HTML) chunk.
+        #
+        # A ``statement``-keyed misconception on a flat chunk IS still refused
+        # here, so that shape stays unreachable by Arm A. That is a real
+        # residual tension between this polarity guard and Arm A's
+        # source-backing requirement, not something to paper over by relaxing
+        # either side; resolving it needs an owner decision about which
+        # spelling means "structured DPO source" and which means "this prose
+        # embeds a known error".
         misconception_texts = [
             _clean(item.get("statement")).lower()
             for item in (chunk.get("misconceptions") or [])
