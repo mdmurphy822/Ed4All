@@ -21253,6 +21253,67 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
         except Exception:  # noqa: BLE001
             pass
 
+    # WHOLESALE-DISPATCH-FAILURE GUARD. The per-block escalation above is a
+    # safety net for the block that loses a consensus vote or blows its
+    # parse-retry budget: it keeps the outline block, marks it, and lets the
+    # deterministic template renderer author something from key_claims rather
+    # than dropping grounded content off the page. That is right per block.
+    #
+    # It is NOT right for the whole tier. When essentially every block takes
+    # that path the rewrite tier did not run at all — the usual cause is a
+    # transport-level fault that fails identically for every request (a
+    # strict-OpenAI seat 400-ing the Ollama-only `options.num_ctx` extra, a
+    # wrong served model name, an unreachable seat). The phase would otherwise
+    # report `_completed: True`, pass its gates on template markup, and hand a
+    # course of un-authored blocks to packaging, archival, and training
+    # synthesis. Measured 2026-07-29: 4,984/5,091 blocks (97.9%) escalated
+    # against a TRT-LLM seat and the build carried on.
+    #
+    # Fail loudly instead. The threshold is the share of blocks that reached
+    # the escalation path; set ED4ALL_REWRITE_MAX_ESCALATION_SHARE=1.0 to
+    # disable the guard (an operator who genuinely wants a template-rendered
+    # course). Parse-with-fallback: garbage / out-of-range -> the default.
+    _max_escalation_share = 0.5
+    try:
+        _raw_share = os.environ.get("ED4ALL_REWRITE_MAX_ESCALATION_SHARE")
+        if _raw_share:
+            _parsed_share = float(_raw_share)
+            if 0.0 <= _parsed_share <= 1.0:
+                _max_escalation_share = _parsed_share
+    except (TypeError, ValueError):
+        _max_escalation_share = 0.5
+
+    # Small-N floor. On a handful of blocks a high escalation SHARE carries no
+    # information — one block failing consensus is 100% of a one-block page and
+    # is exactly the per-block case the fallback exists to serve. The guard is
+    # about a corpus-wide pattern, so it only speaks once there are enough
+    # blocks for "uniform" to mean something.
+    _min_blocks_for_guard = 20
+    _n_blocks = len(rewrite_blocks)
+    if _n_blocks >= _min_blocks_for_guard and _max_escalation_share < 1.0:
+        _n_escalated = sum(
+            1 for _b in rewrite_blocks
+            if getattr(_b, "escalation_marker", None)
+        )
+        _escalated_share = _n_escalated / _n_blocks
+        if _escalated_share > _max_escalation_share:
+            raise RuntimeError(
+                f"rewrite tier authored almost nothing: "
+                f"{_n_escalated}/{_n_blocks} block(s) "
+                f"({_escalated_share:.1%}) fell through to the escalation "
+                f"path, above the {_max_escalation_share:.0%} ceiling. A "
+                f"failure this uniform is a transport fault, not per-block "
+                f"quality — check the rewrite provider's dispatch errors in "
+                f"the run log (a strict-OpenAI seat rejects the Ollama-only "
+                f"`options.num_ctx` extra with HTTP 400 extra_forbidden "
+                f"unless ED4ALL_LLM_OMIT_OLLAMA_FORMAT is set; also verify "
+                f"the served model name and seat reachability). Emitting "
+                f"blocks_final.jsonl now would ship a template-rendered "
+                f"course as if it were authored. Set "
+                f"ED4ALL_REWRITE_MAX_ESCALATION_SHARE=1.0 to override. "
+                f"course={course_code}."
+            )
+
     # Persist final blocks JSONL (consumed by post_rewrite_validation).
     blocks_final_path = out_dir / "blocks_final.jsonl"
     with blocks_final_path.open("w", encoding="utf-8") as fh:

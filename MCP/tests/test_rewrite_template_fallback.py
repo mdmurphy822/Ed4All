@@ -338,3 +338,129 @@ def test_fallback_fires_on_escalated_block_in_emit_loop(tmp_path, monkeypatch):
     assert blocks_final and _P(blocks_final).exists()
     final_text = _P(blocks_final).read_text(encoding="utf-8")
     assert "validator_consensus_fail" in final_text
+
+
+def _build_rewrite_fixture(tmp_path, monkeypatch, *, n_blocks: int):
+    """Project scaffolding + ``n_blocks`` outline blocks, ready to rewrite."""
+    import json as _json
+
+    exports_root = tmp_path / "exports"
+    exports_root.mkdir()
+    monkeypatch.setattr(pt, "courseforge_exports_dir", lambda: exports_root)
+
+    project_id = "PROJ-GUARD"
+    project_root = exports_root / project_id
+    (project_root / "01_learning_objectives").mkdir(parents=True)
+    (project_root / "project_config.json").write_text(
+        _json.dumps({"course_name": "EX_101"}), encoding="utf-8",
+    )
+    (project_root / "01_learning_objectives"
+     / "synthesized_objectives.json").write_text(
+        _json.dumps({
+            "terminal_objectives": [
+                {"id": "TO-01", "statement": "Simplify fractions."},
+            ],
+            "chapter_objectives": [
+                {"objectives": [{"id": "CO-01", "statement": "Find the GCF."}]},
+            ],
+        }),
+        encoding="utf-8",
+    )
+
+    blocks_validated = project_root / "blocks_validated.jsonl"
+    with blocks_validated.open("w", encoding="utf-8") as fh:
+        for i in range(n_blocks):
+            fh.write(_json.dumps({
+                "block_id": f"week_01_content_01#example_simplify_{i}",
+                "block_type": "example",
+                "page_id": "week_01_content_01",
+                "sequence": i,
+                "content": {"key_claims": [
+                    {"claim": f"Write the fraction {i + 1}/8.",
+                     "source_chunk_ids": ["c1"]},
+                    {"claim": "Divide both by the GCF 2.",
+                     "source_chunk_ids": ["c1"]},
+                ]},
+                "objective_ids": ["CO-01"],
+            }) + "\n")
+    return project_id, blocks_validated
+
+
+def _patch_router_always_escalates(monkeypatch):
+    """Every dispatch escalates — the shape a transport fault leaves behind."""
+    import dataclasses as _dc
+
+    monkeypatch.setattr(
+        "Courseforge.router.router.CourseforgeRouter."
+        "route_rewrite_with_remediation",
+        lambda self, blk, **kw: _dc.replace(
+            blk, escalation_marker="validator_consensus_fail",
+        ),
+        raising=False,
+    )
+
+
+def test_wholesale_escalation_fails_loudly(tmp_path, monkeypatch):
+    """A tier where EVERY block escalates must not report success.
+
+    A uniform failure is a transport fault (a strict-OpenAI seat 400-ing the
+    Ollama-only ``options.num_ctx`` extra, a wrong served model name, an
+    unreachable seat), not per-block quality. Emitting blocks_final.jsonl
+    would hand packaging, archival, and training synthesis a template-rendered
+    course as if it had been authored.
+    """
+    import asyncio
+    import pytest as _pytest
+
+    project_id, blocks_validated = _build_rewrite_fixture(
+        tmp_path, monkeypatch, n_blocks=25,
+    )
+    _patch_router_always_escalates(monkeypatch)
+
+    with _pytest.raises(RuntimeError, match="authored almost nothing"):
+        asyncio.run(pt._run_content_generation_rewrite(
+            project_id=project_id,
+            blocks_validated_path=str(blocks_validated),
+            libv2_root=str(tmp_path / "libv2"),
+        ))
+
+
+def test_wholesale_escalation_guard_can_be_overridden(tmp_path, monkeypatch):
+    """An operator who genuinely wants the template course can opt out."""
+    import asyncio
+    import json as _json
+
+    monkeypatch.setenv("ED4ALL_REWRITE_MAX_ESCALATION_SHARE", "1.0")
+    project_id, blocks_validated = _build_rewrite_fixture(
+        tmp_path, monkeypatch, n_blocks=25,
+    )
+    _patch_router_always_escalates(monkeypatch)
+
+    result = _json.loads(asyncio.run(pt._run_content_generation_rewrite(
+        project_id=project_id,
+        blocks_validated_path=str(blocks_validated),
+        libv2_root=str(tmp_path / "libv2"),
+    )))
+    assert result.get("success") is True, result
+
+
+def test_small_corpus_escalation_does_not_trip_the_guard(tmp_path, monkeypatch):
+    """Below the small-N floor the SHARE carries no information.
+
+    One block failing consensus is 100% of a one-block page — exactly the
+    per-block case the template fallback exists to serve.
+    """
+    import asyncio
+    import json as _json
+
+    project_id, blocks_validated = _build_rewrite_fixture(
+        tmp_path, monkeypatch, n_blocks=3,
+    )
+    _patch_router_always_escalates(monkeypatch)
+
+    result = _json.loads(asyncio.run(pt._run_content_generation_rewrite(
+        project_id=project_id,
+        blocks_validated_path=str(blocks_validated),
+        libv2_root=str(tmp_path / "libv2"),
+    )))
+    assert result.get("success") is True, result
