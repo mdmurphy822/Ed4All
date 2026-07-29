@@ -33,14 +33,27 @@ in the GPT critique (lines 225-233):
 5. **source_free_generation** — ``source_chunk_id`` is missing or empty.
    The schema's ``trainable``-conditional already requires the field;
    the validator catches it loudly before the pair is checkpointed.
-6. **low_bloom_alignment** — pinned DeBERTa zero-shot classification of
+6. **low_bloom_alignment** — Bloom classification of
    ``prompt + completion`` (or ``prompt + chosen`` for preference pairs)
    is below the declared minimum ``bloom_level``, AND the classifier
-   winner's confidence exceeds the
-   :data:`lib.validators.bloom_classifier_disagreement._DISAGREEMENT_CONFIDENCE_FLOOR`
-   (0.40 default). A higher observed level satisfies a lower declared
-   level. ``bloom_alignment`` is ``None`` below the confidence floor,
-   otherwise it records whether the declared minimum was met.
+   winner's confidence exceeds ``bloom_alignment_min_confidence``. A
+   higher observed level satisfies a lower declared level.
+
+   **The reject arm is RETIRED**, exactly as criterion 4 above is: the
+   default floor is ``1.01`` and scores are softmax probabilities bounded
+   by 1.0, so the strict ``>`` can never fire. ``observed_bloom`` /
+   ``bloom_alignment`` are still stamped on every pair for audit and
+   calibration. The backing classifier is not trustworthy enough to
+   discard training data — the three-member BERT ensemble degrades to the
+   ``unknown`` sentinel (per-member dispatch is an unfinished
+   placeholder) and classification falls through to the DeBERTa zero-shot
+   head, which is itself pending replacement. Re-arm by passing an
+   explicit ``bloom_alignment_min_confidence`` in [0.0, 1.0] once a
+   purpose-trained Bloom classifier lands.
+
+   NB: ``bloom_alignment`` is still computed against
+   :data:`lib.validators.bloom.classifier_disagreement._DISAGREEMENT_CONFIDENCE_FLOOR`
+   (0.40) — that governs the *audit stamp*, not the reject.
 7. **generic_rationale** — heuristic richness score on the ``rationale``
    field (unique-token-count / total-token-count). Default floor
    ``min_rationale_richness_score=0.30``.
@@ -426,6 +439,7 @@ from lib.validators._pair_promotion_stages.thresholds import (  # noqa: F401
     DEFAULT_DPO_MIN_DISTRACTOR_DISTINCTNESS,
     DEFAULT_MIN_ANSWER_SUPPORT_SCORE,
     DEFAULT_MIN_PROMPT_CHUNK_JACCARD,
+    DEFAULT_BLOOM_ALIGNMENT_MIN_CONFIDENCE,
     DEFAULT_MIN_RATIONALE_RICHNESS_SCORE,
     _FALLBACK_DPO_MIN_DISTRACTOR_DISTINCTNESS,
     _FALLBACK_MIN_ANSWER_SUPPORT_SCORE,
@@ -699,6 +713,9 @@ class TrainingPairPromotionValidator:
             DEFAULT_DPO_MIN_DISTRACTOR_DISTINCTNESS
         ),
         min_prompt_chunk_jaccard: float = DEFAULT_MIN_PROMPT_CHUNK_JACCARD,
+        bloom_alignment_min_confidence: float = (
+            DEFAULT_BLOOM_ALIGNMENT_MIN_CONFIDENCE
+        ),
         min_rationale_richness_score: float = (
             DEFAULT_MIN_RATIONALE_RICHNESS_SCORE
         ),
@@ -708,6 +725,7 @@ class TrainingPairPromotionValidator:
         self._min_answer_support_score = min_answer_support_score
         self._dpo_min_distractor_distinctness = dpo_min_distractor_distinctness
         self._min_prompt_chunk_jaccard = min_prompt_chunk_jaccard
+        self._bloom_alignment_min_confidence = bloom_alignment_min_confidence
         self._min_rationale_richness_score = min_rationale_richness_score
         # Lazy-load on first use so a slim install + test injection
         # both work; mirrors the
@@ -819,6 +837,9 @@ class TrainingPairPromotionValidator:
             ),
             "min_prompt_chunk_jaccard": float(
                 self._min_prompt_chunk_jaccard
+            ),
+            "bloom_alignment_min_confidence": float(
+                self._bloom_alignment_min_confidence
             ),
             "min_rationale_richness_score": float(
                 self._min_rationale_richness_score
@@ -1118,7 +1139,13 @@ class TrainingPairPromotionValidator:
             and BLOOM_LEVELS.index(observed_bloom)
             < BLOOM_LEVELS.index(declared_bloom)
             and bloom_winner_score is not None
-            and bloom_winner_score > _DISAGREEMENT_CONFIDENCE_FLOOR
+            # RETIRED reject arm. The default floor sits above 1.0, and
+            # scores are softmax probabilities, so this can never fire —
+            # `observed_bloom` / `bloom_alignment` are still stamped for
+            # audit. See DEFAULT_BLOOM_ALIGNMENT_MIN_CONFIDENCE for why the
+            # backing classifier is not trusted to discard training data.
+            and bloom_winner_score
+            > thresholds["bloom_alignment_min_confidence"]
         ):
             rejection_reason = "low_bloom_alignment"
         elif (

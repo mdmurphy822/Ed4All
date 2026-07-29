@@ -679,13 +679,47 @@ def test_reject_weak_distractor():
     assert len(capture.events) == 1
 
 
-def test_reject_low_bloom_alignment():
-    """Criterion 6 — ensemble disagrees + winner score above floor."""
+def test_low_bloom_alignment_reject_arm_is_retired_by_default():
+    """Criterion 6 — clear disagreement, high confidence, still NO reject.
+
+    The backing Bloom head is not trustworthy enough to discard training
+    data (the BERT ensemble degrades to the ``unknown`` sentinel, so
+    classification falls through to the DeBERTa zero-shot head, which is
+    itself pending replacement). The default confidence floor sits above
+    1.0 so the strict ``>`` can never fire — but the SIGNAL is still
+    stamped, which is the whole point of retiring rather than deleting.
+    """
     capture = _RecordingCapture()
-    # Stub classifier observes "remember" below the declared "create".
+    # Stub classifier observes "remember", far below the declared "create",
+    # at a confidence that would have rejected under the old 0.40 floor.
     v = TrainingPairPromotionValidator(
         embedder=_StubEmbedder(),
         bloom_classifier=_StubBloomEnsemble(level="remember", score=0.80),
+    )
+    pair = _instruction_pair(bloom_level="create")
+    status, reason, new_fields = v.validate_pair(
+        pair, kind="instruction", chunk=_chunk(),
+        decision_capture=capture,
+    )
+    assert status == "validated"
+    assert reason is None
+    # Audit stamps survive the retirement.
+    assert new_fields["observed_bloom"] == "remember"
+    assert new_fields["bloom_alignment"] is False
+    assert len(capture.events) == 1
+
+
+def test_low_bloom_alignment_reject_arm_is_re_armable():
+    """Retired, not deleted: an explicit floor in [0, 1] restores the reject.
+
+    Guards the path back — once a purpose-trained Bloom classifier lands,
+    re-arming must be a threshold change, not a code change.
+    """
+    capture = _RecordingCapture()
+    v = TrainingPairPromotionValidator(
+        embedder=_StubEmbedder(),
+        bloom_classifier=_StubBloomEnsemble(level="remember", score=0.80),
+        bloom_alignment_min_confidence=0.40,
     )
     pair = _instruction_pair(bloom_level="create")
     status, reason, new_fields = v.validate_pair(
@@ -696,7 +730,6 @@ def test_reject_low_bloom_alignment():
     assert reason == "low_bloom_alignment"
     assert new_fields["observed_bloom"] == "remember"
     assert new_fields["bloom_alignment"] is False
-    assert len(capture.events) == 1
 
 
 def test_low_bloom_below_confidence_floor_does_not_reject():
