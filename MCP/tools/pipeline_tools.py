@@ -45,6 +45,15 @@ logger = logging.getLogger(__name__)
 # is the median/most-common course-objective level and a safe neutral default.
 _FALLBACK_BLOOM_LEVEL = "apply"
 
+#: File extensions that name a CORPUS INPUT — the thing the conversion lane
+#: converts. Single source of truth for both the ``--corpus <dir>`` intake glob
+#: and the heading judge's sidecar-stem allowlist (the GLM-OCR lane names its
+#: sidecars ``{input stem}.glmocr_layout.json``, so this run's corpus stems are
+#: exactly the sidecars it owns).
+_CORPUS_INPUT_SUFFIXES = frozenset({
+    ".pdf", ".htm", ".html", ".xhtml", ".md", ".markdown", ".txt",
+})
+
 # Derived paths
 SEMANTIK_BATCH_OUTPUT_DIR = PROJECT_ROOT / "SemantiK" / "batch_output"
 COURSEFORGE_INPUTS = PROJECT_ROOT / "Courseforge" / "inputs" / "textbooks"
@@ -8088,12 +8097,28 @@ async def create_textbook_pipeline(
         if courseforge_stage:
             pdfs = []
         else:
-            # Parse PDF paths
+            # Parse corpus paths. A DIRECTORY is globbed for every corpus-input
+            # suffix the conversion lane accepts, not just ``*.pdf``: a
+            # directory of publisher HTML is a documented corpus shape (it is
+            # what ``ed4all convert`` takes), and a comma-separated list of the
+            # same files was already accepted here, so the directory form
+            # rejecting them was an inconsistency rather than a contract.
             pdf_path = Path(pdf_paths)
             if pdf_path.is_dir():
-                pdfs = list(pdf_path.glob("*.pdf"))
+                pdfs = sorted(
+                    child
+                    for child in pdf_path.iterdir()
+                    if child.is_file()
+                    and child.suffix.lower() in _CORPUS_INPUT_SUFFIXES
+                )
                 if not pdfs:
-                    return json.dumps({"error": f"No PDF files found in directory: {pdf_paths}"})
+                    return json.dumps({
+                        "error": (
+                            f"No corpus input files found in directory: "
+                            f"{pdf_paths} (looked for "
+                            f"{', '.join(sorted(_CORPUS_INPUT_SUFFIXES))})"
+                        )
+                    })
             else:
                 pdfs = [Path(p.strip()) for p in pdf_paths.split(",")]
 
@@ -22050,12 +22075,11 @@ def _heading_judge_corpus_dirs(pdf_paths: Any) -> List[Path]:
     return dirs
 
 
-#: File extensions that name a CORPUS INPUT (the thing SemantiK converts). The
-#: GLM-OCR lane names its sidecars ``{input stem}.glmocr_layout.json``, so the
-#: stems of this run's own corpus inputs are exactly the sidecars it owns.
-_HEADING_JUDGE_CORPUS_SUFFIXES = frozenset({
-    ".pdf", ".htm", ".html", ".xhtml", ".md", ".markdown", ".txt", ".epub",
-})
+#: Alias of the canonical corpus-input suffix set defined near the top of this
+#: module. Kept as a named alias because the heading judge's use of it — the
+#: sidecar-stem allowlist — reads differently from the intake glob's, and the
+#: name documents that at the call site.
+_HEADING_JUDGE_CORPUS_SUFFIXES = _CORPUS_INPUT_SUFFIXES
 
 
 def _heading_judge_corpus_stems(pdf_paths: Any) -> Set[str]:
