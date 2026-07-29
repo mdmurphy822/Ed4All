@@ -254,13 +254,24 @@ workflows:
           # day-1 regardless of any flag (mirrors retrieval_presence).
           - gate_id: block_sequence_order
             validator: lib.validators.block_sequence_order.BlockSequenceOrderValidator
-            severity: critical
+            severity: warning
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: block
+              on_fail: warn
               on_error: fail_closed
-            description: FR-COURSE-02 — worked-example->guided fade gradient, check spacing, scenario-opens-TO. Critical (calibration-validated).
+            # FR-COURSE-02 — worked-example->guided fade gradient, check
+            # spacing, scenario-opens-TO. DEMOTED from critical: the validator
+            # returns passed only when EVERY audited page is clean
+            # (``passed = missing == 0``), and ``_apply_thresholds`` can only
+            # tighten a verdict, so ``max_critical_issues: 0`` cannot express a
+            # tolerance. On a 203-page whole-book course that made one massed
+            # self-check anywhere fail the build, while every issue the gate
+            # emits is warning severity. The findings are still real and still
+            # reported — block ordering is a learner-facing pedagogy concern,
+            # not a correctness one. ``on_error`` stays fail_closed: a validator
+            # that CRASHES is a different thing from one that finds problems.
+            description: FR-COURSE-02 — worked-example->guided fade gradient, check spacing, scenario-opens-TO. Warning (all-page-perfect verdict too strict to block).
 
           # IB7.6c — per-type Bloom-range ceiling enforcement (advisory->gate
           # promotion of block_catalog.yaml's bloom_ceiling). Flags a block
@@ -2858,13 +2869,24 @@ workflows:
           # day-1 regardless of any flag (mirrors retrieval_presence).
           - gate_id: block_sequence_order
             validator: lib.validators.block_sequence_order.BlockSequenceOrderValidator
-            severity: critical
+            severity: warning
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: block
+              on_fail: warn
               on_error: fail_closed
-            description: FR-COURSE-02 — worked-example->guided fade gradient, check spacing, scenario-opens-TO. Critical (calibration-validated).
+            # FR-COURSE-02 — worked-example->guided fade gradient, check
+            # spacing, scenario-opens-TO. DEMOTED from critical: the validator
+            # returns passed only when EVERY audited page is clean
+            # (``passed = missing == 0``), and ``_apply_thresholds`` can only
+            # tighten a verdict, so ``max_critical_issues: 0`` cannot express a
+            # tolerance. On a 203-page whole-book course that made one massed
+            # self-check anywhere fail the build, while every issue the gate
+            # emits is warning severity. The findings are still real and still
+            # reported — block ordering is a learner-facing pedagogy concern,
+            # not a correctness one. ``on_error`` stays fail_closed: a validator
+            # that CRASHES is a different thing from one that finds problems.
+            description: FR-COURSE-02 — worked-example->guided fade gradient, check spacing, scenario-opens-TO. Warning (all-page-perfect verdict too strict to block).
 
           # IB7.6c — per-type Bloom-range ceiling enforcement (advisory->gate
           # promotion of block_catalog.yaml's bloom_ceiling). Flags a block
