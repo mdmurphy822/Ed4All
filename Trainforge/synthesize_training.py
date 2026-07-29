@@ -444,15 +444,89 @@ def _read_chunks(chunks_path: Path) -> List[Dict[str, Any]]:
     # ``synthesis_window_contract.resolve_chunk_misconceptions`` for why this
     # has to happen before the emitter rather than at the window layer.
     from Trainforge.generators.synthesis_window_contract import (
+        resolve_chunk_key_terms,
         resolve_chunk_misconceptions,
     )
     for chunk in chunks:
-        if not isinstance(chunk, dict) or chunk.get("misconceptions"):
+        if not isinstance(chunk, dict):
             continue
-        recovered = resolve_chunk_misconceptions(chunk)
-        if recovered:
-            chunk["misconceptions"] = recovered
+        if not chunk.get("misconceptions"):
+            recovered = resolve_chunk_misconceptions(chunk)
+            if recovered:
+                chunk["misconceptions"] = recovered
+        # Same recovery, different authored artifact. Empty `key_terms` is
+        # what makes `_derive_topic` splice an LO id into the topic slot, so
+        # this is the difference between grounding on "absolute value" and
+        # grounding on "learning outcome co-117".
+        if not chunk.get("key_terms"):
+            terms = resolve_chunk_key_terms(chunk)
+            if terms:
+                chunk["key_terms"] = terms
+    _backfill_topicless_concept_tags(chunks)
     return chunks
+
+
+def _backfill_topicless_concept_tags(chunks: List[Dict[str, Any]]) -> None:
+    """Give topic-less chunks a deterministic lexical concept tag.
+
+    A chunk with NEITHER ``concept_tags`` NOR ``key_terms`` has no topic
+    ``preference_factory._derive_topic`` can name, so it falls back to
+    splicing the learning-outcome id into the topic slot ("...explain the
+    parts of learning outcome co-117"). That is the documented source of
+    content-free completions the entailment gate correctly scores ~0.03, and
+    it is the majority case here: 49% of chunks on the measured course, 59%
+    and 84% on the other two.
+
+    The derivation is the project's OWN canonical remedy for this defect,
+    ``lib/ontology/lexical_concept_seeds.derive_lexical_concept_seeds`` — the
+    same helper ``TRAINFORGE_PAGE_CONCEPT_FALLBACK`` uses at chunking time.
+    It is purely lexical/statistical (no embeddings, no LLM), so nothing is
+    invented: a tag is assigned only when the chunk's OWN text contains the
+    derived term. Chunks already carrying a topic are untouched, so a corpus
+    whose chunker populated concept_tags is unchanged.
+
+    Applied here rather than at chunking because these chunksets are already
+    archived: re-deriving at the read seam avoids a full re-chunk (which
+    would move ``imscc_chunks_sha256`` and invalidate the model card's
+    provenance hash) while giving the generator the same signal.
+    """
+    topicless = [
+        chunk for chunk in chunks
+        if isinstance(chunk, dict)
+        and not chunk.get("concept_tags")
+        and not chunk.get("key_terms")
+        and str(chunk.get("text") or "").strip()
+    ]
+    if not topicless:
+        return
+    from lib.ontology.lexical_concept_seeds import (
+        derive_lexical_concept_seeds,
+    )
+    try:
+        seeds = derive_lexical_concept_seeds(topicless, min_doc_freq=2)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("lexical concept-tag backfill failed: %s", exc)
+        return
+    if not seeds:
+        return
+    # Longest first: a chunk gets its most specific matching seed.
+    ordered = sorted(seeds, key=lambda s: (-len(s), s))
+    tagged = 0
+    for chunk in topicless:
+        haystack = " ".join(str(chunk.get("text") or "").lower().split())
+        matched = [
+            seed for seed in ordered
+            if seed.replace("-", " ") in haystack
+        ][:5]
+        if matched:
+            chunk["concept_tags"] = matched
+            tagged += 1
+    if tagged:
+        logger.info(
+            "lexical concept-tag backfill: tagged %d of %d topic-less chunks "
+            "from %d derived seeds",
+            tagged, len(topicless), len(seeds),
+        )
 
 
 def _write_jsonl(path: Path, records: Iterable[Dict[str, Any]]) -> int:

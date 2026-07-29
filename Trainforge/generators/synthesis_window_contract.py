@@ -359,6 +359,96 @@ def resolve_chunk_misconceptions(
     return recovered
 
 
+#: Class tokens marking a vocabulary/definition card in authored chunk HTML.
+_VOCAB_CARD_CLASSES = ("vocab-card", "definition-box", "callout-definition")
+#: Class token marking the TERM inside such a card.
+_KEY_TERM_CLASS = "key-term"
+#: Class token marking the provenance backlink, which is never definition text.
+_KEY_TERM_SOURCE_CLASS = "key-term-source"
+
+
+def resolve_chunk_key_terms(
+    chunk: Mapping[str, Any],
+) -> list[Dict[str, str]]:
+    """Return a chunk's ``key_terms``, recovering authored vocabulary cards.
+
+    ``key_terms`` is populated on **0%** of every archived course measured
+    (openstax / alg / mmo), because the parser harvests it only from JSON-LD
+    (``keyTerms`` / ``blocks[].key_terms``) and the rewrite tier emits
+    vocabulary as HTML cards instead. The content is right there in the chunk:
+    one measured course carries 300 ``vocab_card`` blocks, 248
+    ``definition-box`` and 107 ``vocab-term`` spans while reporting zero key
+    terms.
+
+    That emptiness is load-bearing, not cosmetic.
+    ``preference_factory._derive_topic`` needs ``concept_tags`` OR
+    ``key_terms`` to name a topic; with both empty it falls back to splicing a
+    database key into the topic slot ("...explain the parts of learning
+    outcome co-117"), which is the documented source of content-free
+    completions that NLI correctly scores ~0.03 entailment. Recovering the
+    authored terms gives the generator a real topic and a real definition to
+    ground against.
+
+    Same contract as :func:`resolve_chunk_misconceptions`: an authored
+    non-empty ``key_terms`` is returned untouched, recovery reads only the
+    chunk's OWN markup, and nothing is synthesized.
+    """
+    authored = chunk.get("key_terms")
+    if isinstance(authored, list) and any(
+        isinstance(item, Mapping) for item in authored
+    ):
+        return list(authored)
+    html = str(chunk.get("html") or "")
+    if not html:
+        return []
+    soup = BeautifulSoup(html, "html.parser")
+    recovered: list[Dict[str, str]] = []
+    seen: set[str] = set()
+    for card in soup.find_all(True):
+        classes = card.get("class") or []
+        if not any(token in classes for token in _VOCAB_CARD_CLASSES):
+            continue
+        term = ""
+        term_node = card.find(
+            lambda tag: _KEY_TERM_CLASS in (tag.get("class") or [])
+            and _KEY_TERM_SOURCE_CLASS not in (tag.get("class") or [])
+        )
+        if term_node is not None:
+            term = _clean(term_node.get_text(" ", strip=True))
+        if not term:
+            # `data-cf-term` carries the slug; only used when the card has no
+            # rendered term, and never invented from the definition text.
+            term = _clean(str(card.get("data-cf-term") or "")).replace("-", " ")
+        if not term:
+            continue
+        definition = ""
+        for node in card.find_all(["p", "dd", "div", "span"]):
+            node_classes = node.get("class") or []
+            if _KEY_TERM_SOURCE_CLASS in node_classes:
+                continue
+            text = _clean(node.get_text(" ", strip=True))
+            if not text or text == term:
+                continue
+            # The rendered definition often repeats the term as a lead-in
+            # ("absolute value The absolute value of ..."); keep the sentence,
+            # just drop a duplicated leading term so the pair reads cleanly.
+            lowered = text.lower()
+            if lowered.startswith(term.lower()) and len(text) > len(term) + 1:
+                text = text[len(term):].lstrip(" :-—")
+            if len(text) < len(term) + 2:
+                continue
+            definition = text
+            break
+        if not definition:
+            continue
+        key = term.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        recovered.append({"term": term, "definition": definition})
+    return recovered
+
+
 def build_evidence_window(
     chunk: Mapping[str, Any], focus: Mapping[str, Any],
 ) -> Dict[str, Any]:
