@@ -988,6 +988,56 @@ def check_legacy_token_leak(verbose: bool = False) -> CheckResult:
     return result
 
 
+def check_layout(verbose: bool = False) -> CheckResult:
+    """Fail when a tracked file violates the repository layout schema.
+
+    The schema (closed top level, frozen lib/*.py flat-module ratchet,
+    docs/ four-bucket taxonomy with no single-file dirs, frozen scripts/
+    loose-file snapshot) is documented in
+    ``docs/architecture/repo-organization.md`` § 2/§ 6. Detection and the
+    allowlist live in ``ci/layout_guard.py``. Scans ``git ls-files`` only.
+    An unscannable tree (no git) is a warning + pass, not a silent skip;
+    any violation fails the check with the offending path + reason.
+    """
+    start_time = time.time()
+    result = CheckResult(name="repo_layout", passed=False, message="")
+
+    try:
+        from ci import layout_guard
+    except ImportError as e:
+        result.errors.append(f"layout_guard import failed: {e}")
+        result.message = "Layout guard unavailable"
+        result.duration_seconds = time.time() - start_time
+        return result
+
+    try:
+        violations = layout_guard.scan_repository(PROJECT_ROOT)
+    except RuntimeError as e:
+        result.message = f"Layout scan skipped: {e}"
+        result.warnings.append(result.message)
+        result.passed = True
+        result.duration_seconds = time.time() - start_time
+        return result
+
+    result.details["violation_count"] = len(violations)
+    if violations:
+        for v in violations:
+            result.errors.append(v.format())
+        result.passed = False
+        result.message = f"{len(violations)} repo layout violation(s) in tracked files"
+    else:
+        result.passed = True
+        result.message = "Tracked tree matches the repo layout schema"
+
+    if verbose:
+        logger.info(f"  {result.message}")
+        for v in violations:
+            logger.warning(f"    {v.format()}")
+
+    result.duration_seconds = time.time() - start_time
+    return result
+
+
 def check_provenance_enum_sync(verbose: bool = False) -> CheckResult:
     """Verify the closed Touch.provider enum is in sync across all sites.
 
@@ -1092,6 +1142,7 @@ def run_integrity_checks(
         ("LibV2 Vendor Sync", lambda: check_libv2_vendor_sync(verbose)),
         ("Course Slug Leak", lambda: check_course_slug_leak(verbose)),
         ("Legacy Token Leak", lambda: check_legacy_token_leak(verbose)),
+        ("Repo Layout", lambda: check_layout(verbose)),
         ("Provenance Enum Sync", lambda: check_provenance_enum_sync(verbose)),
         (
             "Validator Test Coverage",

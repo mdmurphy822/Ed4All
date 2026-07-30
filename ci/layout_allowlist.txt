@@ -1,0 +1,122 @@
+# ci/layout_allowlist.txt
+#
+# Backing data for ci/layout_guard.py. Five entry kinds, one per line,
+# `#`-comments allowed (inline or full-line). RATCHET: this file may only
+# shrink. Adding a line requires justification in the SAME PR (say why the
+# new top-level dir / root file / flat lib module / docs single-file dir /
+# loose scripts file earns an exception to docs/architecture/repo-organization.md).
+#
+#   dir:<name>       tracked top-level directory (first path segment)
+#   file:<name>      tracked root-level file
+#   libflat:<name>   frozen snapshot of tracked lib/*.py flat modules
+#                    (depth exactly 1, excludes lib/__init__.py) — new
+#                    lib code belongs in a lib/<topic>/ subpackage instead
+#   docsingle:<name> escape hatch for a docs/<name>/ dir that legitimately
+#                    holds exactly one tracked file (none seeded today)
+#   script:<name>    frozen snapshot of tracked scripts/* loose files
+#                    (depth exactly 1) — Phase 2 retaxonomies these into
+#                    scripts/{ops,harness}/; subdirs are unrestricted
+#                    containers and are not checked here
+
+# --- top-level directories (seeded from the tracked tree, 2026-07-29) ------
+dir:.claude
+dir:.github
+dir:ci
+dir:cli
+dir:config
+dir:Courseforge
+dir:docs
+dir:gui
+dir:inputs
+dir:lib
+dir:LibV2
+dir:MCP
+dir:schemas
+dir:scripts
+dir:seats
+dir:SemantiK
+dir:state
+dir:tests
+dir:Trainforge
+dir:training-captures
+
+# --- root-level files (seeded from the tracked tree, 2026-07-29) -----------
+file:.dockerignore
+file:.gitignore
+file:AGENTS.md
+file:ARCHITECTURE.md
+file:CLAUDE.md
+file:CONTRIBUTING.md
+file:Dockerfile
+file:Dockerfile.gui
+file:LICENSE
+file:Makefile
+file:NOTICE
+file:README.md
+file:VERSIONING.md
+file:conftest.py
+file:docker-compose.yml
+file:pyproject.toml
+file:pytest.ini
+file:run-gui.bat
+file:run-gui.sh
+
+# --- lib/ flat-module ratchet (frozen snapshot, 2026-07-29) ----------------
+libflat:chunk_heading_sanity.py
+libflat:constants.py
+libflat:content_store.py
+libflat:course_autoname.py
+libflat:course_identity.py
+libflat:decision_capture.py
+libflat:error_taxonomy.py
+libflat:file_lock.py
+libflat:gpu_lifecycle.py
+libflat:hash_chain.py
+libflat:leak_checker.py
+libflat:libv2_fsck.py
+libflat:libv2_storage.py
+libflat:page_label.py
+libflat:path_constants.py
+libflat:paths.py
+libflat:provenance.py
+libflat:quality.py
+libflat:replay_engine.py
+libflat:run_finalizer.py
+libflat:secrets_filter.py
+libflat:secure_paths.py
+libflat:sequence_manager.py
+libflat:state_manager.py
+libflat:streaming_capture.py
+libflat:textbook_title_sanitize.py
+libflat:tool_registry.py
+libflat:trainforge_capture.py
+libflat:validation.py
+libflat:vllm_container_lifecycle.py
+libflat:write_facade.py
+
+# --- docs/ single-file-dir escapes (none currently needed) -----------------
+
+# --- scripts/ loose-file snapshot (frozen, 2026-07-29 — Phase 2 shrinks this)
+script:assemble_enduser_page.py
+script:bootstrap-training-env.sh
+script:build_demo_course.py
+script:calibrate_phase4_thresholds.py
+script:calibration_harness.py
+script:ed4all-training
+script:gold_compare.py
+script:gpu_guard.sh
+script:mailbox_servicer.py
+script:nvidia_corpus_to_semantik.py
+script:ocr_recall_ab.py
+script:prepare_fresh_training_synthesis.py
+script:rasterize_pdf_scan.py
+script:reasoning_qc_calibration_ab.py
+script:render_audit.py
+script:repair_partial_resume_state.py
+script:retrieval_smoke.py
+script:run_post_courseforge_tail.py
+script:semantik_rerender.py
+script:shoot_pages.py
+script:stratified_synthesis_pilot.py
+script:structure_scorecard.py
+script:subclass_pilot.py
