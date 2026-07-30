@@ -15,7 +15,8 @@ Point Ed4All at a textbook PDF (or a directory of PDFs) and a course name, and i
 - **An LMS-ready IMSCC package** — weekly modules with pages, activities, self-checks, summaries, and discussions, importable into Brightspace, Canvas, Blackboard, or Moodle.
 - **Bloom's-aligned learning objectives** — per module and per page, each tagged with a cognitive domain and linked back to the source content.
 - **A knowledge graph** — chunked content with key terms, misconceptions, learning-outcome references, and a typed concept graph covering taxonomic and pedagogical structure.
-- **A reusable archive** — the course is indexed into a local knowledge repository you can query with BM25 retrieval, filter by concept or objective, and reuse across courses.
+- **A reusable archive** — the course is indexed into a local knowledge repository you can query with hybrid retrieval (BM25 fused with dense vector search via reciprocal rank fusion), filter by concept or objective, and reuse across courses.
+- **Training data, and optionally a course-tuned model** — instruction pairs for supervised fine-tuning (SFT) and preference pairs for direct preference optimization (DPO), synthesized from the course's own chunks and assessments. Pass `--with-training` and Ed4All goes one step further: a LoRA fine-tune (bf16 PEFT) of a small language model on those pairs, with promotion gates, a base-vs-adapter eval matrix, and a full provenance model card.
 
 Every chunk carries its Bloom's level, content type, key terms, misconceptions, and the original PDF region it came from, so downstream LLMs can ground their answers in cited source material.
 
@@ -52,18 +53,21 @@ stopped automatically so only the models a phase needs are ever resident.
 | 15 | `packaging` | Packages the course as IMSCC | — |
 | 16 | `imscc_chunking` | Emits the post-packaging retrieval chunkset | — |
 | 17 | `trainforge_assessment` | Generates assessments from the packaged course *(optional)* | — |
-| 18 | `training_synthesis` | Synthesizes instruction + preference training pairs *(optional)* | Large model |
+| 18 | `training_synthesis` | Synthesizes SFT instruction pairs and DPO preference pairs from the course chunks and assessments *(optional)* | Large model |
 | 19 | `libv2_archival` | Archives all artifacts to the local course library | — |
-| 20 | `vector_indexing` | Builds the per-course vector index so the course is immediately askable | Local embeddings |
-| 21 | `training` | LoRA fine-tune of a small language model on the course's instruction + preference pairs (bf16 PEFT, licensing preflight, full provenance card) *(opt-in)* | Training (exclusive — all serving seats stopped) |
+| 20 | `vector_indexing` | Builds the per-course vector index, enabling semantic and hybrid-RRF retrieval so the course is immediately askable | Local embeddings |
+| 21 | `training` | LoRA fine-tune (SFT + DPO) of a small language model on the course's instruction and preference pairs (bf16 PEFT, licensing preflight, full provenance card) *(opt-in)* | Training (exclusive — all serving seats stopped) |
 | 22 | `post_training_validation` | Promotion gates on the trained adapter — eval thresholds and CURIE-family completeness *(opt-in)* | — |
 | 23 | `evaluation` | 5-layer × 3-tier eval matrix vs the base model, adapter audit, promote / hold / reject decision *(opt-in)* | Local eval models |
 | 24 | `finalization` | Final validation and training-data export | — |
 
-Phases 21–23 are the **training tail**. They are off by default — a training run
-takes hours and needs the whole GPU — so they run only when you pass
-`--with-training`; `--skip-training` wins if you pass both. A default build skips
-them and still finishes at `finalization`.
+Phases 18 and 21–23 are the **training path**. Phase 18 synthesizes the corpus —
+SFT instruction pairs and DPO preference pairs, grounded in the course's own
+chunks and assessments — and phases 21–23 fine-tune a small language model on it
+with LoRA, then gate and evaluate the result. The fine-tune is off by default (a
+training run takes hours and needs the whole GPU), so phases 21–23 run only when
+you pass `--with-training`; `--skip-training` wins if you pass both. A default
+build skips them and still finishes at `finalization`.
 
 Training an already-archived course *without* rebuilding it stays a separate
 follow-on workflow: `ed4all run trainforge_train --course-name <slug>`.
@@ -93,8 +97,8 @@ ML extras so a default install never pulls multi-GB GPU wheels:
 
 | Extra | Adds | When you need it |
 |-------|------|------------------|
-| `embedding` | `sentence-transformers` + `torch` | Semantic retrieval and the statistical-tier content validators. Without it those validators degrade to warnings and retrieval falls back to BM25. |
-| `training` | `torch` + `transformers` + `trl` + `peft` + `bitsandbytes` | Fine-tuning a course-pinned SLM adapter (`ed4all run trainforge_train`). Requires a GPU. |
+| `embedding` | `sentence-transformers` + `torch` | Semantic and hybrid-RRF retrieval, plus the statistical-tier content validators. Without it those validators degrade to warnings and retrieval falls back to BM25 alone. |
+| `training` | `torch` + `transformers` + `trl` + `peft` + `bitsandbytes` | LoRA fine-tuning (SFT + DPO) of a course-pinned SLM adapter (`ed4all run trainforge_train`). Requires a GPU. |
 
 Install them alongside `[full]` only when needed:
 
@@ -236,8 +240,8 @@ Ed4All is organised around four components that each do one job well, plus the g
 
 - **SemantiK** turns PDFs into accessible, semantic HTML using a license-clean extraction cascade (text layer, layout analysis, OCR, and learned structure/semantic classification) with per-block source provenance.
 - **Courseforge** generates structured weekly course modules with learning objectives, assessments, interactive components, and rich machine-readable metadata, and packages them as IMSCC.
-- **Trainforge** extracts content from the course package into pedagogically tagged chunks, builds a typed concept graph, and generates Bloom's-aligned assessments.
-- **LibV2** is the archive and retrieval layer: a flat-storage course repository with BM25 retrieval, metadata filters, and cross-course concept indexes.
+- **Trainforge** extracts content from the course package into pedagogically tagged chunks, builds a typed concept graph, and generates Bloom's-aligned assessments. It also synthesizes the SFT instruction pairs and DPO preference pairs, and owns the LoRA training, evaluation, and promotion workflow for course-pinned adapters.
+- **LibV2** is the archive and retrieval layer: a flat-storage course repository with hybrid BM25 + vector retrieval fused by reciprocal rank fusion (RRF), metadata filters, and cross-course concept indexes.
 
 Supporting directories: **MCP** hosts the orchestrator and tool server, **cli** is the `ed4all` command line entry point, and **lib** holds shared validators and ontology helpers. Output artefacts land under `Courseforge/exports/`, `LibV2/courses/`, and `runtime/training-captures/`.
 
